@@ -56,6 +56,9 @@ async def run_cli_client(agent_id: str, plan_mode: bool = False):
                 elif msg_type == "ask_user":
                     question = data.get("question", "")
                     print_ask_user(question)
+                elif msg_type == "reflection":
+                    from xmclaw.cli.rich_ui import print_reflection
+                    print_reflection(data.get("data", {}))
                 elif msg_type == "done":
                     if response_buffer and not response_buffer.endswith("\n"):
                         print()

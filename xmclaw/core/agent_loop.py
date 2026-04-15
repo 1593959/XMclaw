@@ -8,6 +8,7 @@ from xmclaw.tools.registry import ToolRegistry
 from xmclaw.memory.manager import MemoryManager
 from xmclaw.core.prompt_builder import PromptBuilder
 from xmclaw.core.cost_tracker import CostTracker
+from xmclaw.core.reflection import ReflectionEngine
 from xmclaw.genes.manager import GeneManager
 from xmclaw.utils.log import logger
 
@@ -25,6 +26,8 @@ class AgentLoop:
         self.plan_mode = False
         self.pending_question: str | None = None
         self.pending_answer: str | None = None
+        self.reflection = ReflectionEngine(llm_router, memory)
+        self._turn_history: list[dict] = []
 
     async def run(self, user_input: str) -> AsyncIterator[str]:
         """Run the agent loop, yielding JSON-encoded events."""
@@ -66,6 +69,8 @@ class AgentLoop:
             tool_calls = self._extract_tool_calls(full_response)
 
             if not tool_calls:
+                turn = {"user": user_input, "assistant": full_response, "tool_calls": tool_calls}
+                self._turn_history.append(turn)
                 await self.memory.save_turn(self.agent_id, user_input, full_response, tool_calls)
                 break
 
@@ -86,6 +91,8 @@ class AgentLoop:
                     self.pending_question = question
                     yield json.dumps({"type": "ask_user", "question": question})
                     yield json.dumps({"type": "state", "state": "WAITING", "thought": "等待用户回复..."})
+                    turn = {"user": user_input, "assistant": full_response, "tool_calls": tool_calls}
+                    self._turn_history.append(turn)
                     await self.memory.save_turn(self.agent_id, user_input, full_response, tool_calls)
                     return
 
@@ -99,12 +106,23 @@ class AgentLoop:
             messages.append({"role": "assistant", "content": full_response})
             messages.append({"role": "user", "content": self._format_observations(observations)})
 
+            turn = {"user": user_input, "assistant": full_response, "tool_calls": tool_calls}
+            self._turn_history.append(turn)
             await self.memory.save_turn(self.agent_id, user_input, full_response, tool_calls)
 
         # Cost summary
         cost_info = self.cost_tracker.estimate(messages)
         yield json.dumps({"type": "cost", "tokens": cost_info.get("tokens", 0), "cost": cost_info.get("cost", 0)})
 
+        # Reflection
+        try:
+            reflection = await self.reflection.reflect(self.agent_id, self._turn_history)
+            if reflection:
+                yield json.dumps({"type": "reflection", "data": reflection})
+        except Exception as e:
+            logger.error("reflection_failed", agent_id=self.agent_id, error=str(e))
+
+        self._turn_history.clear()
         yield json.dumps({"type": "done"})
         logger.info("agent_loop_end", agent_id=self.agent_id, turns=turn)
 

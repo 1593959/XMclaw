@@ -629,6 +629,23 @@ class MainWindow(QMainWindow):
         self.ws_thread.start()
 
     def _on_ws_message(self, msg: dict):
+        msg_type = msg.get("type", "")
+        if msg_type == "reflection":
+            data = msg.get("data", {})
+            summary = data.get("summary", "Reflection")
+            problems = data.get("problems", [])
+            lessons = data.get("lessons", [])
+            improvements = data.get("improvements", [])
+            lines = [f"[Reflection] {summary}"]
+            if problems:
+                lines.append("问题: " + "; ".join(problems))
+            if lessons:
+                lines.append("教训: " + "; ".join(lessons))
+            if improvements:
+                lines.append("改进: " + "; ".join(improvements))
+            self._add_bubble("\n".join(lines), False)
+            return
+
         role = msg.get("role", "agent")
         content = msg.get("content", "")
         if role == "agent":

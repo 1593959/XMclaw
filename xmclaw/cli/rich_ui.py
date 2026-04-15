@@ -53,5 +53,22 @@ def print_ask_user(question: str):
     )
 
 
+def print_reflection(data: dict):
+    summary = data.get("summary", "")
+    problems = data.get("problems", [])
+    lessons = data.get("lessons", [])
+    improvements = data.get("improvements", [])
+    content = f"[bold]{summary}[/bold]\n\n"
+    if problems:
+        content += "[red]问题:[/red]\n" + "\n".join(f"  - {p}" for p in problems) + "\n\n"
+    if lessons:
+        content += "[yellow]教训:[/yellow]\n" + "\n".join(f"  - {l}" for l in lessons) + "\n\n"
+    if improvements:
+        content += "[green]改进:[/green]\n" + "\n".join(f"  - {i}" for i in improvements) + "\n\n"
+    console.print(
+        Panel(content.strip(), title="[cyan]Reflection[/cyan]", border_style="cyan")
+    )
+
+
 def create_spinner(text: str = "Thinking..."):
     return Spinner("dots", text=text)
