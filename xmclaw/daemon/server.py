@@ -131,12 +131,27 @@ async def write_file(agent_id: str, path: str, data: dict):
     return {"status": "ok"}
 
 
-# Memory API (placeholder using file-based search for now)
+# Memory API: vector search + file fallback
 @app.get("/api/agent/{agent_id}/memory/search")
 async def search_memory(agent_id: str, q: str):
+    # Primary: vector search via MemoryManager
+    vector_results = []
+    try:
+        memories = await orchestrator.memory.search(q, agent_id=agent_id, top_k=10)
+        for m in memories:
+            vector_results.append({
+                "type": "vector",
+                "source": m.get("source", "unknown"),
+                "content": m.get("content", ""),
+                "distance": m.get("distance"),
+                "created_at": m.get("created_at"),
+            })
+    except Exception as e:
+        logger.warning("vector_memory_search_failed", error=str(e))
+
+    # Fallback: file-based keyword search
     agent_dir = AGENTS_DIR / agent_id
-    results = []
-    # Search in MEMORY.md and session files
+    file_results = []
     for root, _, filenames in os.walk(agent_dir):
         for fname in filenames:
             if fname.endswith(".md") or fname.endswith(".jsonl"):
@@ -153,13 +168,14 @@ async def search_memory(agent_id: str, q: str):
                                 end = min(len(lines), i + 2)
                                 snippet = "\n".join(lines[start:end])
                                 break
-                        results.append({
+                        file_results.append({
+                            "type": "file",
                             "file": fpath.relative_to(agent_dir).as_posix(),
                             "snippet": snippet,
                         })
                 except Exception:
                     pass
-    return {"results": results[:20]}
+    return {"vector_results": vector_results, "file_results": file_results[:10]}
 
 
 # Task API

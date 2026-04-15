@@ -63,3 +63,7 @@ class AnthropicClient:
             if hasattr(block, "text"):
                 return block.text
         return ""
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        logger.error("anthropic_embed_not_supported")
+        return []

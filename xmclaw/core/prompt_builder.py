@@ -24,6 +24,9 @@ Self-awareness:
 Active Genes:
 {genes}
 
+Relevant Memories:
+{memories}
+
 Rules:
 1. Always think step by step.
 2. Use tools when necessary.
@@ -48,11 +51,13 @@ Use the ask_user tool to confirm before taking action.
     def build(self, user_input: str, context: dict[str, Any], plan_mode: bool = False) -> list[dict[str, str]]:
         messages = []
 
-        # System prompt with tool descriptions and active genes
+        # System prompt with tool descriptions, active genes, and memories
         tool_descriptions = context.get("tool_descriptions", "")
         genes = context.get("matched_genes", [])
         genes_text = "\n".join(f"- {g.get('name')}: {g.get('description')}" for g in genes) if genes else "None"
-        system = self.SYSTEM_PROMPT.format(tools=tool_descriptions, genes=genes_text)
+        memories = context.get("memories", [])
+        memories_text = "\n".join(f"- [{m.get('source', 'unknown')}] {m.get('content', '')[:200]}" for m in memories[:5]) if memories else "None"
+        system = self.SYSTEM_PROMPT.format(tools=tool_descriptions, genes=genes_text, memories=memories_text)
         if plan_mode:
             system += "\n\n" + self.PLAN_MODE_PROMPT
         messages.append({"role": "system", "content": system})

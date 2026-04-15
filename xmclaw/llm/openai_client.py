@@ -41,3 +41,17 @@ class OpenAIClient:
             stream=False,
         )
         return response.choices[0].message.content or ""
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        if not self.api_key:
+            logger.error("openai_api_key_missing")
+            return []
+        try:
+            response = await self.client.embeddings.create(
+                model="text-embedding-3-small",
+                input=texts,
+            )
+            return [item.embedding for item in response.data]
+        except Exception as e:
+            logger.error("openai_embed_error", error=str(e))
+            return []

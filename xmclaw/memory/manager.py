@@ -14,14 +14,18 @@ from typing import Any
 
 from xmclaw.memory.sqlite_store import SQLiteStore
 from xmclaw.memory.session_manager import SessionManager
+from xmclaw.memory.vector_store import VectorStore
+from xmclaw.llm.router import LLMRouter
 from xmclaw.utils.paths import BASE_DIR, get_agent_dir
 from xmclaw.utils.log import logger
 
 
 class MemoryManager:
-    def __init__(self):
+    def __init__(self, llm_router: LLMRouter | None = None):
         self.sqlite: SQLiteStore | None = None
         self.sessions: SessionManager | None = None
+        self.vectors: VectorStore | None = None
+        self.llm = llm_router
         self._initialized = False
 
     async def initialize(self) -> None:
@@ -31,10 +35,13 @@ class MemoryManager:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.sqlite = SQLiteStore(db_path)
         self.sessions = SessionManager(get_agent_dir("default") / "memory" / "sessions")
+        self.vectors = VectorStore(db_path, llm_router=self.llm)
         self._initialized = True
         logger.info("memory_manager_initialized")
 
     async def close(self) -> None:
+        if self.vectors:
+            self.vectors.close()
         if self.sqlite:
             self.sqlite.close()
         self._initialized = False
@@ -42,8 +49,10 @@ class MemoryManager:
     async def load_context(self, agent_id: str, user_input: str) -> dict[str, Any]:
         """Load context for prompt building."""
         history = await self.sessions.get_recent(agent_id, limit=10) if self.sessions else []
+        memories = await self.search(user_input, agent_id=agent_id, top_k=5) if self.vectors else []
         return {
             "history": history,
+            "memories": memories,
             "tool_descriptions": "",  # Filled by orchestrator
         }
 
@@ -56,11 +65,20 @@ class MemoryManager:
                 "assistant": response,
                 "tool_calls": tool_calls,
             })
+        if self.vectors:
+            await self.vectors.add(agent_id, f"User: {user_input}\nAgent: {response}", source="turn")
 
-    async def search(self, query: str, top_k: int = 5) -> list[dict]:
-        """Search long-term memory. Placeholder for ChromaDB integration."""
-        # TODO: integrate ChromaDB vector search
-        return []
+    async def search(self, query: str, agent_id: str | None = None, top_k: int = 5) -> list[dict]:
+        """Search long-term memory via vector store."""
+        if not self.vectors:
+            return []
+        return await self.vectors.search(query, agent_id=agent_id, top_k=top_k)
+
+    async def add_memory(self, agent_id: str, content: str, source: str = "manual", metadata: dict | None = None) -> int:
+        """Explicitly add a memory entry."""
+        if not self.vectors:
+            return -1
+        return await self.vectors.add(agent_id, content, source=source, metadata=metadata)
 
     def save_insight(self, agent_id: str, insight: dict) -> None:
         """Save an insight to SQLite."""

@@ -30,3 +30,17 @@ class LLMRouter:
         if not client:
             raise ValueError(f"Unknown provider: {provider}")
         return await client.complete(messages)
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        """Generate embeddings. Falls back to openai if default provider doesn't support it."""
+        provider = self.config.llm.get("default_provider", "anthropic")
+        client = self.clients.get(provider)
+        if client and hasattr(client, "embed"):
+            result = await client.embed(texts)
+            if result:
+                return result
+        # Fallback to openai client for embeddings
+        openai_client = self.clients.get("openai")
+        if openai_client:
+            return await openai_client.embed(texts)
+        return []

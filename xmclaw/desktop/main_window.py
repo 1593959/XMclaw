@@ -631,28 +631,21 @@ class MainWindow(QMainWindow):
         self.memory_result_list.clear()
         if not query:
             return
-        agent_dir = get_agent_dir(self.agent_id)
-        results = []
-        for root, _, filenames in os.walk(agent_dir):
-            for fname in filenames:
-                if fname.endswith(".md") or fname.endswith(".jsonl"):
-                    fpath = Path(root) / fname
-                    try:
-                        text = fpath.read_text(encoding="utf-8")
-                        if query.lower() in text.lower():
-                            lines = text.splitlines()
-                            for i, line in enumerate(lines):
-                                if query.lower() in line.lower():
-                                    start = max(0, i - 1)
-                                    end = min(len(lines), i + 2)
-                                    snippet = "\n".join(lines[start:end])
-                                    break
-                            rel = fpath.relative_to(agent_dir).as_posix()
-                            results.append(f"[{rel}]\n{snippet}")
-                    except Exception:
-                        pass
-        for r in results[:20]:
-            self.memory_result_list.addItem(r)
+        import httpx
+        try:
+            resp = httpx.get(f"http://127.0.0.1:8765/api/agent/{self.agent_id}/memory/search", params={"q": query}, timeout=10.0)
+            data = resp.json()
+            for r in data.get("vector_results", []):
+                dist = r.get("distance", "")
+                source = r.get("source", "unknown")
+                content = r.get("content", "")[:300]
+                self.memory_result_list.addItem(f"[向量] [{source}] (score={dist})\n{content}")
+            for r in data.get("file_results", []):
+                file = r.get("file", "")
+                snippet = r.get("snippet", "")
+                self.memory_result_list.addItem(f"[文件] [{file}]\n{snippet}")
+        except Exception as e:
+            self.memory_result_list.addItem(f"搜索失败: {e}")
 
     def _load_settings(self):
         path = get_agent_dir(self.agent_id) / "agent.json"

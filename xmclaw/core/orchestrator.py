@@ -10,7 +10,7 @@ class AgentOrchestrator:
     def __init__(self):
         self.llm = LLMRouter()
         self.tools = ToolRegistry()
-        self.memory = MemoryManager()
+        self.memory = MemoryManager(llm_router=self.llm)
         self.agents: dict[str, AgentLoop] = {}
 
     async def initialize(self) -> None:
