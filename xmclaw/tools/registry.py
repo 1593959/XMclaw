@@ -22,6 +22,7 @@ from xmclaw.tools.memory_search import MemorySearchTool
 from xmclaw.tools.git import GitTool
 from xmclaw.tools.computer_use import ComputerUseTool
 from xmclaw.tools.test_tool import TestTool
+from xmclaw.tools.mcp_tool import MCPTool
 from xmclaw.llm.router import LLMRouter
 from xmclaw.utils.log import logger
 from xmclaw.utils.paths import BASE_DIR
@@ -53,6 +54,7 @@ class ToolRegistry:
             GitTool(),
             ComputerUseTool(),
             TestTool(llm_router=self.llm),
+            MCPTool(),
         ]
         for tool in tools:
             self._tools[tool.name] = tool
