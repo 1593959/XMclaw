@@ -1,214 +1,175 @@
-# XMclaw 架构设计
-
-## 整体架构
-
-XMclaw 采用 **分层架构 + 事件驱动** 的设计：
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      交互层 (Presentation)                   │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │  Desktop    │  │   Web UI    │  │       CLI           │  │
-│  │  (PySide6)  │  │  (Agent OS) │  │   (Rich + Typer)    │  │
-│  └──────┬──────┘  └──────┬──────┘  └──────────┬──────────┘  │
-└─────────┼────────────────┼────────────────────┼─────────────┘
-          │                │                    │
-          └────────────────┴────────────────────┘
-                             │
-                    WebSocket (ws://localhost:8765)
-                             │
-┌────────────────────────────┼─────────────────────────────────┐
-│                      网关层 (Gateway)                        │
-│              WebSocketGateway / FastAPI Server               │
-└────────────────────────────┼─────────────────────────────────┘
-                             │
-┌────────────────────────────┼─────────────────────────────────┐
-│                      核心层 (Core)                           │
-│  ┌─────────────────────────────────────────────────────────┐ │
-│  │              AgentOrchestrator                          │ │
-│  │   ┌─────────┐  ┌─────────────┐  ┌─────────────────┐    │ │
-│  │   │ AgentLoop│← │ LLMRouter   │  │ ToolRegistry    │    │ │
-│  │   └────┬────┘  └─────────────┘  └─────────────────┘    │ │
-│  │        │                                                 │ │
-│  │   ┌────┴────┐  ┌─────────────┐  ┌─────────────────┐    │ │
-│  │   │PromptBuilder│ │MemoryManager│  │ ReflectionEngine│    │ │
-│  │   └─────────┘  └─────────────┘  └─────────────────┘    │ │
-│  └─────────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────┘
-                             │
-┌────────────────────────────┼─────────────────────────────────┐
-│                      扩展层 (Extensions)                     │
-│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌────────┐ │
-│  │  Tools  │ │ Memory  │ │Evolution│ │  Genes  │ │  MCP   │ │
-│  └─────────┘ └─────────┘ └─────────┘ └─────────┘ └────────┘ │
-└──────────────────────────────────────────────────────────────┘
-```
-
+---
+summary: "XMclaw system architecture, components, data flows, and wire protocol"
+read_when:
+- Working on gateway protocol, clients, or core runtime
+- Extending tools, memory, or evolution subsystems
+- Debugging agent loop behavior
+title: "Architecture"
 ---
 
-## 数据流
+# Architecture
 
-### 1. 用户请求流
+## Overview
 
-```
-用户输入
-    │
-    ▼
-Desktop/Web/CLI ──WebSocket──► Daemon Server
-    │                              │
-    │                              ▼
-    │                      AgentOrchestrator
-    │                              │
-    │                              ▼
-    │                         AgentLoop.run()
-    │                              │
-    │              ┌───────────────┼───────────────┐
-    │              ▼               ▼               ▼
-    │         PromptBuilder    LLMRouter      ToolRegistry
-    │              │               │               │
-    │              ▼               ▼               ▼
-    │         System Prompt    Stream Chunks   Tool Execution
-    │                              │               │
-    │                              └───────┬───────┘
-    │                                      │
-    │                              MemoryManager.save_turn()
-    │                                      │
-    │                              ReflectionEngine.reflect()
-    │                                      │
-    ◄──────────────────────────────────────┘
-                              WebSocket Response
-```
+- A single long-lived **Daemon** owns the Gateway (FastAPI + WebSocket) and the Agent runtime.
+- **Clients** (desktop app, CLI, web UI) connect to the Daemon over **WebSocket** on the configured bind host (default `127.0.0.1:8765`).
+- **AgentLoop** runs inside the Daemon. It is the only place that holds LLM state, tool registry, and memory managers.
+- One Daemon per host; it is the only place that opens LLM streaming sessions and vector DB connections.
+- The **Web UI** is served by the Daemon HTTP server under `/` (static files) and `/agent/{id}` (WebSocket endpoints).
 
-### 2. 自主进化流
+## Components and flows
 
-```
-对话历史 (JSONL)
-    │
-    ▼
-EvolutionEngine.observe()
-    │
-    ├──► PatternDetector → 意图/模式统计
-    │
-    ├──► TrendAnalyzer → 高频需求/痛点
-    │
-    ├──► InsightExtractor → 结构化洞察
-    │
-    ▼
-EvolutionEngine.evolve()
-    │
-    ├──► GeneForge.generate() → Gene 代码
-    │       │
-    │       ▼
-    │   EvolutionValidator.run() → 验证
-    │       │
-    │       ▼
-    │   GeneManager.register() → 注册
-    │
-    ├──► SkillForge.generate() → Skill 代码
-    │       │
-    │       ▼
-    │   EvolutionValidator.run() → 验证
-    │       │
-    │       ▼
-    │   ToolRegistry._load_generated_skills() → 热重载
-    │
-    ▼
-MemoryManager.save_insight() → 长期记忆
+### Daemon (gateway + runtime)
+- Maintains WebSocket connections for all clients.
+- Exposes a typed WS API (streaming chunks, state events, tool results, ask_user pauses).
+- Validates inbound frames and routes them to the correct AgentLoop instance.
+- Emits events: `chunk`, `state`, `tool_call`, `tool_result`, `ask_user`, `reflection`, `cost`, `done`, `error`.
+- Hosts the evolution scheduler, which periodically analyzes conversation logs and generates Genes/Skills.
+
+### Clients (desktop / CLI / web)
+- One WS connection per client session.
+- Send user messages as JSON frames.
+- Subscribe to streaming events and render them in real time.
+- The desktop app uses PySide6; the CLI uses `prompt_toolkit` + `rich`; the web UI uses vanilla JS.
+
+### AgentLoop (core runtime)
+- Receives user input and assembles the full message context.
+- Injects matched **Genes** into the system prompt via `PromptBuilder`.
+- Streams the LLM response and parses tool calls (`<function>...</function>`).
+- Dispatches tool execution through `ToolRegistry`.
+- Saves conversation turns to `MemoryManager`.
+- Runs `ReflectionEngine` after the loop ends.
+
+### Memory
+- **SessionManager**: JSONL logs per agent.
+- **SQLiteStore**: Structured metadata (configs, todos, tasks, insights).
+- **VectorStore**: SQLite-vec + LLM embeddings for semantic search.
+
+### Evolution
+- **EvolutionEngine**: Observes logs, detects patterns, and triggers Gene/Skill generation.
+- **GeneForge / SkillForge**: LLM-based code generation.
+- **EvolutionValidator**: Compiles, imports, instantiates, and executes generated code before registration.
+- **GeneManager**: Matches user input to Genes and injects them into prompts.
+- **ToolRegistry**: Hot-reloads generated Skills without restart.
+
+## Connection lifecycle (single client)
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Daemon
+    Client->>Daemon: WS connect /agent/{id}
+    Daemon-->>Client: accepted
+    Note right of Daemon: AgentLoop instantiated if new
+    Client->>Daemon: {role:"user", content:"hello"}
+    Daemon-->>Client: event:state {THINKING}
+    Daemon-->>Client: event:chunk (streaming)
+    Daemon-->>Client: event:tool_call {name, args}
+    Daemon-->>Client: event:tool_result {tool, result}
+    Daemon-->>Client: event:chunk (resumed streaming)
+    Daemon-->>Client: event:reflection {data}
+    Daemon-->>Client: event:cost {tokens, cost}
+    Daemon-->>Client: event:done
 ```
 
----
+## Wire protocol (summary)
 
-## 控制流
+- Transport: WebSocket, text frames with JSON payloads.
+- After connection accept, clients send messages as:
+  `{role: "user", content: "..."}`
+- The Daemon responds with a stream of events. Each event is a JSON object with a `type` field.
 
-### AgentLoop 单次迭代
+### Event types
 
-```python
-while turn < max_turns:
-    1. LLM stream → 接收思考过程文本
-    2. 解析 tool calls (<function>...</function>)
-    3. 如果没有 tool calls:
-         - 保存对话回合
-         - break
-    4. 执行每个 tool:
-         - 调用 ToolRegistry.execute()
-         - 发送 tool_result 事件到客户端
-         - 检测自修改 (文件/代码变更)
-         - 如果是 ask_user → 暂停，等待用户回复
-    5. 将观察结果追加到 messages
-    6. 进入下一轮
+| Type | Direction | Description |
+|------|-----------|-------------|
+| `chunk` | S→C | Streaming text fragment from the LLM |
+| `state` | S→C | Agent state change (`THINKING`, `TOOL_CALL`, `WAITING`, etc.) |
+| `tool_call` | S→C | Notification that a tool is about to be executed |
+| `tool_result` | S→C | Result of a tool execution |
+| `ask_user` | S→C | Pause the loop and wait for human input |
+| `reflection` | S→C | Post-conversation self-review result |
+| `cost` | S→C | Token usage and estimated cost summary |
+| `done` | S→C | End of the current turn |
+| `error` | S→C | Runtime error |
 
-# 循环结束后
-7. CostTracker 统计 token 消耗
-8. ReflectionEngine.reflect() 自动反思
-9. 发送 done 事件
+### Example frames
+
+Client send:
+```json
+{"role": "user", "content": "Write a Python script that prints hello"}
 ```
 
-### WebSocket 消息协议
+Server events (stream):
+```json
+{"type": "state", "state": "THINKING", "thought": "Analyzing request..."}
+{"type": "chunk", "content": "I'll"}
+{"type": "chunk", "content": " create"}
+{"type": "tool_call", "tool": "file_write", "args": {"path": "hello.py", "content": "print('hello')"}}
+{"type": "tool_result", "tool": "file_write", "result": "File written: hello.py"}
+{"type": "reflection", "data": {"summary": "Task completed", "problems": [], "lessons": [], "improvements": []}}
+{"type": "cost", "tokens": 420, "cost": 0.002}
+{"type": "done"}
+```
 
-| 消息类型 | 方向 | 说明 |
-|---------|------|------|
-| `chunk` | Server → Client | 流式文本片段 |
-| `state` | Server → Client | 状态更新 (THINKING, TOOL_CALL, WAITING 等) |
-| `tool_call` | Server → Client | 工具调用通知 |
-| `tool_result` | Server → Client | 工具执行结果 |
-| `ask_user` | Server → Client | 暂停等待用户确认 |
-| `reflection` | Server → Client | 反思结果 |
-| `cost` | Server → Client | Token/Cost 统计 |
-| `done` | Server → Client | 本轮结束 |
-| `error` | Server → Client | 错误信息 |
+## AgentLoop lifecycle
 
----
+```mermaid
+flowchart TD
+    A[User Input] --> B{Plan mode?}
+    B -->|Yes| C[Generate plan & pause]
+    B -->|No| D[Build prompt with Genes]
+    D --> E[Stream LLM response]
+    E --> F{Tool calls?}
+    F -->|No| G[Save turn & break]
+    F -->|Yes| H[Execute tools]
+    H --> I{ask_user?}
+    I -->|Yes| J[Pause & wait for answer]
+    I -->|No| K[Append observations]
+    K --> E
+    G --> L[Reflection]
+    L --> M[Cost summary]
+    M --> N[Emit done]
+```
 
-## 关键模块职责
+## Data flows
 
-### `daemon/`
-- `server.py`: FastAPI + WebSocket 服务端，处理所有客户端连接
-- `lifecycle.py`: Daemon 启动/停止/状态管理
-- `config.py`: 全局配置加载
+### Request flow
+1. Client sends a message over WS.
+2. Daemon routes it to `AgentOrchestrator.run_agent()`.
+3. `AgentLoop.run()` loads context from `MemoryManager`.
+4. `PromptBuilder` assembles the system prompt, injecting matched Genes.
+5. `LLMRouter.stream()` sends the request to the configured provider.
+6. Chunks are yielded back to the client in real time.
+7. Tool calls are parsed and dispatched to `ToolRegistry.execute()`.
+8. Observations are appended to the message history for the next turn.
+9. After the loop ends, `ReflectionEngine.reflect()` analyzes the conversation.
+10. `MemoryManager` saves the turn and any new insights.
 
-### `core/`
-- `agent_loop.py`: 核心智能体循环（思考-行动-观察）
-- `orchestrator.py`: Agent 实例管理器
-- `prompt_builder.py`: 系统提示词构建（含 Gene 注入）
-- `reflection.py`: 对话反思引擎
-- `cost_tracker.py`: Token 消耗统计
+### Evolution flow
+1. `EvolutionEngine` reads recent JSONL session logs.
+2. `PatternDetector` extracts intent frequencies and user feedback signals.
+3. `TrendAnalyzer` identifies high-frequency needs and pain points.
+4. `InsightExtractor` generates structured insights.
+5. If VFM score is high enough, `GeneForge` and/or `SkillForge` generate code.
+6. `EvolutionValidator` compiles, imports, instantiates, and runs the generated code.
+7. Valid Genes are registered in `GeneManager`; valid Skills are saved to `shared/skills/`.
+8. `ToolRegistry` hot-reloads new Skills on the next tool lookup.
+9. Results are written to `shared/memory.db` and `MEMORY.md`.
 
-### `llm/`
-- `router.py`: 统一路由到 OpenAI 或 Anthropic 客户端
-- `clients/`: 各 LLM 提供商的具体实现
+## Invariants
 
-### `tools/`
-- `registry.py`: 工具注册表，支持热重载生成 Skill
-- `base.py`: Tool 抽象基类
-- 内置工具: `file_read/write/edit`, `bash`, `browser`, `web_search/fetch`, `todo`, `task`, `ask_user`, `agent`, `skill`, `memory_search`, `glob`, `grep`, `git`, `computer_use`, `test`, `mcp`
+- **One Daemon per host**: There is never more than one XMclaw Daemon process running on a single machine.
+- **One AgentLoop per agent_id**: `AgentOrchestrator` maintains a single `AgentLoop` instance per agent ID.
+- **WebSocket is the only transport**: All real-time communication between clients and the Daemon uses WebSocket.
+- **Genes are read-only at runtime**: Genes are matched and injected into prompts; they do not mutate during a turn.
+- **Skills are hot-reloaded**: Newly generated Skills become available without Daemon restart, but existing turns do not retroactively gain access to them.
+- **Memory is persisted immediately**: Every conversation turn is written to JSONL and vector store before the `done` event is emitted.
+- **Reflection is best-effort**: If the reflection LLM call fails, the turn still completes normally.
 
-### `memory/`
-- `manager.py`: 统一记忆管理入口
-- `sqlite_store.py`: 结构化数据存储
-- `session_manager.py`: 对话会话 JSONL 存储
-- `vector_store.py`: SQLite-vec + LLM Embedding 向量检索
+## Related
 
-### `evolution/`
-- `engine.py`: 进化引擎主控
-- `gene_forge.py`: Gene 代码生成
-- `skill_forge.py`: Skill 代码生成
-- `validator.py`: 进化产物验证器
-- `vfm.py`: 价值函数模型评分
-
-### `genes/`
-- `manager.py`: Gene 匹配与注入
-- `base.py`: Gene 抽象基类
-
-### `desktop/`
-- `app.py`: PySide6 应用入口
-- `main_window.py`: Agent OS 主窗口（6 个视图）
-- `ws_client.py`: WebSocket QThread 客户端
-
-### `cli/`
-- `main.py`: Typer CLI 入口
-- `client.py`: WebSocket CLI 客户端
-- `rich_ui.py`: Rich 渲染组件
-
-### `web/`
-- `index.html`: Agent OS Web UI
-- `main.js`: 前端逻辑与 WebSocket 处理
+- [Tools](./TOOLS.md) — Tool registry, built-in tools, and skill generation
+- [Evolution](./EVOLUTION.md) — Gene/Skill generation, VFM scoring, and hot reload
+- [Desktop](./DESKTOP.md) — Native PySide6 app usage
+- [CLI](./CLI.md) — Terminal client and commands

@@ -1,122 +1,148 @@
-# XMclaw CLI 使用手册
+---
+summary: "Terminal interface commands and chat protocol"
+read_when:
+- Using the CLI for the first time
+- Looking up available commands
+- Understanding how CLI renders streaming events
+title: "CLI"
+---
 
-XMclaw 提供完整的命令行界面，基于 **Typer** 和 **Rich** 构建。
+# CLI
+
+XMclaw's CLI is built with **Typer** (commands) and **Rich** (rendering). It provides full access to the agent runtime from the terminal.
 
 ---
 
-## 安装与入口
+## Entry point
 
-安装项目后，CLI 命令 `xmclaw` 即可使用：
+After installing the project, the `xmclaw` command is available:
 
 ```bash
-pip install -e .
 xmclaw --help
 ```
 
----
-
-## 核心命令
-
-### 服务管理
+You can also run it as a module:
 
 ```bash
-# 启动 Daemon
+python -m xmclaw.cli.main --help
+```
+
+---
+
+## Commands
+
+### Daemon management
+
+```bash
+# Start the Daemon
 xmclaw start
 
-# 停止 Daemon
+# Stop the Daemon
 xmclaw stop
 
-# 查看 Daemon 状态
+# Check Daemon status
 xmclaw status
 ```
 
-### 聊天交互
+### Chat
 
 ```bash
-# 进入交互式聊天
+# Start an interactive chat session
 xmclaw chat
 
-# 指定 Agent
+# Chat with a specific agent
 xmclaw chat --agent myagent
 
-# 开启计划模式
+# Start in plan mode
 xmclaw chat --plan
 ```
 
-聊天中支持的特殊输入：
-- `/quit` 或 `/exit` — 退出聊天
-- 普通消息 — 发送给 Agent
-- 当 Agent 弹出 `ask_user` 时，直接输入回复即可
+In chat mode:
+- Type normally to send messages.
+- Type `/quit` or `/exit` to leave.
+- When the agent asks a question via `ask_user`, just type your answer.
 
-### 任务管理
+### Tasks
 
 ```bash
-# 列出所有任务
+# List all tasks
 xmclaw task-list
 
-# 创建新任务
-xmclaw task-create "实现用户登录" --description "添加 JWT 认证和登录页面"
+# Create a new task
+xmclaw task-create "Implement auth" --description "Add JWT login and middleware"
 ```
 
-### 进化状态
+### Evolution
 
 ```bash
-# 查看 Gene 和 Skill 数量
+# Show Gene and Skill counts
 xmclaw evolution-status
 ```
 
-### 记忆搜索
+### Memory
 
 ```bash
-# 搜索记忆文件
-xmclaw memory-search "数据库配置"
+# Search memory files
+xmclaw memory-search "database config"
 
-# 指定 Agent
-xmclaw memory-search "项目进度" --agent default
+# Search a specific agent's memory
+xmclaw memory-search "project progress" --agent default
 ```
 
-### 配置查看
+### Configuration
 
 ```bash
-# 显示当前 Agent 配置
+# Display current agent config
 xmclaw config-show
 ```
 
 ---
 
-## 消息类型展示
+## Event rendering
 
-CLI 支持完整的 WebSocket 协议，不同类型的消息会有不同的 Rich 渲染效果：
+The CLI receives the full WebSocket event stream. Each event type is rendered differently:
 
-| 消息类型 | CLI 展示 |
-|---------|---------|
-| `chunk` | 流式文本输出 |
-| `state` | 灰色斜体状态提示 |
-| `tool_result` | 黄色边框 Panel |
-| `ask_user` | 洋红色边框确认 Panel |
-| `reflection` | 青色边框 Reflection Panel |
-| `error` | 红色错误文本 |
+| Event type | CLI output |
+|------------|------------|
+| `chunk` | Streamed text (no prefix) |
+| `state` | Dim italic line: `State: THINKING \| Analyzing request...` |
+| `tool_result` | Yellow-bordered panel with tool name and result snippet |
+| `ask_user` | Magenta-bordered panel asking for confirmation |
+| `reflection` | Cyan-bordered panel with summary, problems, lessons, and improvements |
+| `error` | Red error text |
 
 ---
 
-## 计划模式使用示例
+## Plan mode example
 
 ```bash
 $ xmclaw chat --plan
-You: 帮我重构用户模块，添加缓存和日志
-[State: PLANNING | 计划模式已开启，正在构建执行计划...]
-[Agent 输出计划...]
-[ask_user] XMclaw 询问: 是否按以上计划执行？
-You: 可以，但第3步先跳过
-[Agent 开始执行...]
+You: Refactor the user module to add caching and logging
+[State: PLANNING | Plan mode enabled, constructing execution plan...]
+[Agent outputs a multi-step plan...]
+[ask_user] XMclaw asks: Execute the above plan?
+You: Yes, but skip step 3 for now
+[Agent begins execution...]
+[tool_result] file_edit -> Updated user.py
+[tool_result] bash -> pytest passed
+[reflection] Task completed successfully
+[done]
 ```
 
 ---
 
-## 开发调试
+## Development debugging
 
 ```bash
-# 直接运行 Python 模块
+# Run commands directly via Python module
 python -m xmclaw.cli.main start
-python -m xmclaw.cli.main chat
+python -m xmclaw.cli.main chat --plan
+python -m xmclaw.cli.main evolution-status
 ```
+
+---
+
+## Related
+
+- [Desktop](./DESKTOP.md) — GUI alternative to the CLI
+- [Architecture](./ARCHITECTURE.md) — WebSocket protocol and event types

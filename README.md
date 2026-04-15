@@ -1,138 +1,165 @@
 # XMclaw
 
-**敬宇专属 Agent 运行时** — 对标 OpenClaw / Hermes Agent / Claude Code，完全独立开发。
+**Local-first, self-evolving AI Agent runtime.**
 
-XMclaw 是一个本地优先、自主进化、具备人格化交互的 AI Agent 操作系统。它不只是聊天机器人，而是一个能思考、能行动、能学习、能自我改进的智能体运行时。
+Built for 敬宇. Inspired by OpenClaw, Hermes Agent, and Claude Code.
 
----
-
-## 核心特性
-
-| 特性 | 说明 |
-|------|------|
-| **本地优先** | 所有数据、记忆、配置都保存在本地，隐私完全可控 |
-| **双 LLM 端口** | 同时支持 OpenAI 兼容 API 和 Anthropic Claude API |
-| **原生桌面应用** | PySide6 构建的 Agent OS 仪表盘，非浏览器页面 |
-| **自主进化** | 对话分析 → Gene/Skill 自动生成 → 验证 → 注册 → 热重载 完整闭环 |
-| **Plan 模式** | 复杂任务先制定计划，再逐步执行，用户可随时确认 |
-| **任务系统** | 支持多任务并行追踪，Task 面板可视化 |
-| **ask_user 暂停** | 关键操作自动暂停等待用户确认，安全可控 |
-| **向量记忆** | SQLite-vec + LLM Embedding，长期记忆可检索 |
-| **Reflection 反思** | 每次对话结束后自动反思，提取教训和改进建议 |
-| **Computer Use** | 桌面截屏、鼠标点击、键盘输入，操控本地应用 |
-| **自动测试** | 自动生成 pytest 单元测试并执行，验证代码修改 |
-| **MCP 集成** | 支持 Model Context Protocol，连接外部 MCP Servers |
-| **Git 集成** | 代码修改后一键 commit/push，版本可控 |
-| **流式对话** | WebSocket 实时流式输出，体验丝滑 |
+[Website](#) · [Docs](./docs) · [Architecture](./docs/ARCHITECTURE.md) · [Evolution](./docs/EVOLUTION.md) · [Tools](./docs/TOOLS.md)
 
 ---
 
-## 快速开始
+## What is XMclaw?
 
-### 安装
+XMclaw is a **personal AI agent operating system** that runs entirely on your machine. It is not a chatbot. It is a runtime that can think, act, remember, reflect, and improve itself over time.
 
-```bash
-# 克隆项目
-cd XMclaw
+- **Local-first**: All memory, config, and evolution data stays on your device.
+- **Dual LLM ports**: OpenAI-compatible APIs and Anthropic Claude.
+- **Self-evolving**: Automatically generates Genes and Skills from conversation patterns.
+- **Agent OS dashboard**: A native desktop app built with PySide6.
+- **CLI-first**: Powerful terminal interface with streaming, plan mode, and tool visibility.
 
-# 安装依赖
-pip install -e .
+---
 
-# 可选：安装 Computer Use 依赖
-pip install pyautogui mss Pillow
+## Everything we built so far
 
-# 可选：安装 MCP 依赖
-pip install mcp
+### Core runtime
+- [x] **Daemon + WebSocket gateway** — FastAPI server with real-time streaming
+- [x] **AgentLoop** — Think → act → observe → reflect cycle
+- [x] **Orchestrator** — Multi-agent instance management
+- [x] **PromptBuilder** — Dynamic system prompt assembly with Gene injection
+- [x] **LLMRouter** — Unified OpenAI and Anthropic client routing
+- [x] **CostTracker** — Token and cost estimation per turn
+
+### Memory
+- [x] **Session logs** — JSONL conversation history
+- [x] **SQLite metadata store** — Agent configs, todos, task states
+- [x] **Vector memory** — SQLite-vec with LLM embeddings for long-term retrieval
+- [x] **MEMORY.md / PROFILE.md integration** — Structured long-term memory files
+
+### Tools
+- [x] `file_read`, `file_write`, `file_edit`
+- [x] `bash` — with dangerous/suspicious pattern guards
+- [x] `browser` — headless and visible modes
+- [x] `web_search`, `web_fetch`
+- [x] `todo`, `task`
+- [x] `ask_user` — pause and resume for human confirmation
+- [x] `agent` — spawn sub-agents for delegated work
+- [x] `skill` — dynamically load generated skills
+- [x] `memory_search` — vector search over long-term memory
+- [x] `glob`, `grep`
+- [x] `git` — commit, push, pull, status
+- [x] `computer_use` — screenshot, click, type, keypress
+- [x] `test` — auto-generate and run pytest suites
+- [x] `mcp` — Model Context Protocol integration
+
+### Autonomous evolution
+- [x] **Pattern detection** — Intent and trend analysis from conversation logs
+- [x] **Insight extraction** — Structured lessons and improvement opportunities
+- [x] **GeneForge** — Auto-generate behavioral Genes with prompt injection
+- [x] **SkillForge** — Auto-generate executable Skill tools
+- [x] **EvolutionValidator** — Real execution validation (compile + import + instantiate + run)
+- [x] **VFM scoring** — Value Function Model decides whether to solidify
+- [x] **Hot reload** — New Skills are available immediately without restart
+- [x] **ReflectionEngine** — Post-conversation self-review and lesson extraction
+
+### Interfaces
+- [x] **Desktop app** — PySide6 Agent OS dashboard with 6 views (chat, workspace, evolution, memory, tools, settings)
+- [x] **Web UI** — Agent OS dashboard in the browser
+- [x] **CLI** — Rich-based terminal client with full protocol support
+
+### Plan mode & task system
+- [x] **Plan mode** — Agent thinks before acting; plans are user-editable
+- [x] **Task system** — Track long-running tasks across sessions
+- [x] **ask_user pause** — Agent state becomes WAITING until human responds
+
+---
+
+## How it works (short)
+
+```
+User (Desktop / Web / CLI)
+           │
+           ▼
+    WebSocket Gateway
+           │
+           ▼
+    ┌──────────────┐
+    │ AgentLoop    │
+    │  - Prompt    │
+    │  - LLM       │
+    │  - Tools     │
+    │  - Memory    │
+    │  - Reflect   │
+    └──────────────┘
+           │
+     ┌─────┴─────┐
+     ▼           ▼
+  Genes      Skills
+     │           │
+     └─────┬─────┘
+           ▼
+    Evolution Engine
 ```
 
-### 启动
+1. The user sends a message over WebSocket.
+2. `AgentLoop` assembles context, injects matched **Genes**, and streams the LLM response.
+3. If the model emits tool calls, `ToolRegistry` executes them and returns observations.
+4. The loop continues until the model has no more tools to call.
+5. `ReflectionEngine` reviews the conversation and saves lessons.
+6. The `EvolutionEngine` periodically analyzes logs and generates new **Genes** and **Skills**.
+
+---
+
+## Quick start
 
 ```bash
-# 启动 Daemon（后台服务）
+# Install
+pip install -e .
+
+# Optional extras
+pip install pyautogui mss Pillow   # computer_use
+pip install mcp                     # MCP integration
+
+# Start the daemon
 xmclaw start
 
-# 打开桌面应用
+# Open the desktop app
 python -m xmclaw.desktop.app
 
-# 或使用 CLI 聊天
+# Or use the CLI
 xmclaw chat
-
-# 计划模式聊天
 xmclaw chat --plan
 
-# 停止 Daemon
+# Stop the daemon
 xmclaw stop
 ```
 
-### 配置 LLM
-
-编辑 `agents/default/agent.json`：
-
-```json
-{
-  "llm": {
-    "default_provider": "anthropic",
-    "anthropic": {
-      "default_model": "claude-3-5-sonnet-20241022",
-      "api_key": "sk-...",
-      "base_url": "https://api.anthropic.com/v1"
-    }
-  }
-}
-```
+Configure your LLM in `agents/default/agent.json`.
 
 ---
 
-## 项目结构
+## Key subsystems
 
-```
-XMclaw/
-├── xmclaw/
-│   ├── daemon/          # FastAPI + WebSocket 服务端
-│   ├── gateway/         # WebSocket 客户端抽象
-│   ├── core/            # AgentLoop、Orchestrator、PromptBuilder、Reflection
-│   ├── llm/             # LLM 路由（OpenAI / Anthropic）
-│   ├── tools/           # 工具注册表与内置工具
-│   ├── memory/          # 记忆管理（SQLite + JSONL + 向量）
-│   ├── evolution/       # 自主进化引擎（Gene/Skill 生成）
-│   ├── genes/           # Gene 管理系统
-│   ├── desktop/         # PySide6 桌面应用
-│   ├── cli/             # 命令行工具
-│   └── web/             # Agent OS Web UI
-├── agents/              # 各 Agent 的数据目录
-├── shared/              # 共享数据（genes、skills、memory.db）
-├── tests/               # 单元测试
-├── README.md
-└── docs/
-    ├── ARCHITECTURE.md
-    ├── TOOLS.md
-    ├── EVOLUTION.md
-    ├── DESKTOP.md
-    └── CLI.md
-```
+| Subsystem | Docs | Description |
+|-----------|------|-------------|
+| Architecture | [ARCHITECTURE.md](./docs/ARCHITECTURE.md) | Gateway, agent loop, wire protocol, data flow |
+| Tools | [TOOLS.md](./docs/TOOLS.md) | Built-in tools, skill generation, security model |
+| Evolution | [EVOLUTION.md](./docs/EVOLUTION.md) | Gene/Skill generation, VFM, hot reload |
+| Desktop | [DESKTOP.md](./docs/DESKTOP.md) | Native app usage guide |
+| CLI | [CLI.md](./docs/CLI.md) | Terminal commands and chat protocol |
 
 ---
 
-## 文档索引
+## Development principles
 
-- [架构设计](docs/ARCHITECTURE.md) — 系统架构、数据流、控制流
-- [工具系统](docs/TOOLS.md) — 所有内置工具说明和扩展方式
-- [自主进化](docs/EVOLUTION.md) — Gene/Skill 进化机制详解
-- [桌面应用](docs/DESKTOP.md) — Agent OS 仪表盘使用指南
-- [CLI 工具](docs/CLI.md) — 命令行完整使用手册
-
----
-
-## 开发原则
-
-1. **不能慢、不能记不住事** — 性能与记忆是底线
-2. **每次修改立即 git commit** — 版本可控，随时回滚
-3. **先 CLI 后 GUI 后语音** — 渐进式交互扩展
-4. **模块之间连接必须明确** — 数据流/控制流清晰可追踪
-5. **自动验证、自动反思、自动进化** — 闭环自增强
+1. **Never slow, never forget** — Performance and memory are non-negotiable.
+2. **Commit after every change** — Git is our safety net.
+3. **CLI first, then GUI, then voice** — Progressive interaction expansion.
+4. **Connections must be explicit** — Every module's inputs and outputs are traceable.
+5. **Verify, reflect, evolve** — Closed-loop self-improvement.
 
 ---
 
 ## License
 
-MIT — 敬宇专属，自由使用。
+MIT — Built for 敬宇.

@@ -1,162 +1,161 @@
-# XMclaw 自主进化系统
+---
+summary: "Autonomous evolution: Gene/Skill generation, validation, and hot reload"
+read_when:
+- Working on the evolution engine
+- Understanding how Genes and Skills are created
+- Debugging solidification or validation failures
+title: "Evolution"
+---
 
-XMclaw 的自主进化系统是其核心差异化能力。它让 Agent 能够从对话中**自动学习**，生成可执行的 **Gene（基因/行为模式）** 和 **Skill（工具技能）**，并持续自我改进。
+# Evolution
+
+XMclaw's autonomous evolution system is its key differentiator. The agent learns from conversation, generates executable **Genes** (behavioral patterns) and **Skills** (tools), and continuously improves itself.
 
 ---
 
-## 进化闭环
+## The evolution loop (PCEC)
 
 ```
-对话历史
-    │
-    ▼
-┌─────────────────┐
-│   OBSERVE       │  观察用户行为模式
-│   (观察)        │  意图统计、趋势分析、洞察提取
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│    LEARN        │  从模式中学习
-│   (学习)        │  生成 Gene / Skill 设计
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│    EVOLVE       │  代码生成
-│   (进化)        │  GeneForge / SkillForge 生成 Python 代码
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│    VALIDATE     │  真实运行验证
-│   (验证)        │  py_compile + importlib + 实例化 + execute()
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│    SOLIDIFY     │  固化注册
-│   (固化)        │  注册到 GeneManager / ToolRegistry
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│    RELOAD       │  热重载
-│   (重载)        │  立即生效，无需重启
-└─────────────────┘
+Conversation logs
+        │
+        ▼
+   ┌─────────┐
+   │ OBSERVE │  Pattern detection, intent stats, trend analysis
+   └────┬────┘
+        │
+        ▼
+   ┌─────────┐
+   │  LEARN  │  Insight extraction, Gene/Skill design
+   └────┬────┘
+        │
+        ▼
+   ┌─────────┐
+   │ EVOLVE  │  Code generation (GeneForge / SkillForge)
+   └────┬────┘
+        │
+        ▼
+   ┌─────────┐
+   │ VALIDATE│  Compile + import + instantiate + execute
+   └────┬────┘
+        │
+        ▼
+   ┌─────────┐
+   │ SOLIDIFY│  Register in GeneManager / ToolRegistry
+   └────┬────┘
+        │
+        ▼
+   ┌─────────┐
+   │ RELOAD  │  Hot reload without restart
+   └─────────┘
 ```
 
 ---
 
-## Gene 系统
+## Genes
 
-### 什么是 Gene？
+### What is a Gene?
 
-Gene 是**行为的抽象模板**。它定义了在特定情境下 Agent 应该如何调整自己的系统提示词或行为策略。
+A Gene is an **abstract behavioral template**. It defines how the agent should adjust its system prompt or strategy in specific situations.
 
-例如：
-- `gene_proactive_retrieval`: 在搜索前优先查记忆
-- `gene_error_repair`: 遇到错误时自动尝试修复
+Examples:
+- `gene_proactive_retrieval`: "Before searching the web, check long-term memory first."
+- `gene_error_repair`: "When you encounter an error, attempt an automatic fix before asking the user."
 
-### Gene 结构
+### Gene structure
 
 ```python
 class Gene:
     gene_id: str
     name: str
     description: str
-    trigger: dict      # 触发条件（关键词、意图、正则）
-    prompt_addition: str   # 注入到 system prompt 的文本
-    priority: int      # 优先级，高优先级先注入
+    trigger: dict          # keywords, intents, regex patterns
+    prompt_addition: str   # text injected into the system prompt
+    priority: int          # higher = injected earlier
 ```
 
-### Gene 注入流程
+### Gene injection flow
 
-1. 用户发送消息
-2. `GeneManager.match(user_input)` 根据触发条件匹配 Gene
-3. `PromptBuilder` 将匹配到的 Gene 的 `prompt_addition` 注入 system prompt
-4. LLM 在生成回复时自然遵循这些行为模式
-
----
-
-## Skill 系统
-
-### 什么是 Skill？
-
-Skill 是**可执行工具的代码封装**。与 Gene 不同，Skill 直接扩展 Agent 能做的事情。
-
-例如：
-- `auto_entity_reference_v26`: 自动提取用户输入中的文件路径、URL、邮箱
-- `auto_repair_v30`: 自动修复跨会话问题
-
-### Skill 生成流程
-
-1. `SkillForge` 分析洞察（高频需求、用户痛点）
-2. 使用 LLM 生成完整的 Python Tool 子类代码
-3. `EvolutionValidator` 验证代码：
-   - `py_compile` 语法检查
-   - `importlib` 动态导入
-   - 实例化 Tool 子类
-   - 调用 `execute()` 真实运行
-4. 保存到 `shared/skills/skill_{name}.py`
-5. `ToolRegistry` 热重载，立即可用
-
-### Skill 版本管理
-
-- 不限制版本数量，每次在最新版本基础上迭代
-- 自动清理旧版本，只保留最近 2 个版本
-- 避免文件无限堆积
+1. User sends a message.
+2. `GeneManager.match(user_input)` selects Genes whose triggers match.
+3. `PromptBuilder` appends each matched Gene's `prompt_addition` to the system prompt.
+4. The LLM naturally follows these behavioral instructions when generating a response.
 
 ---
 
-## 进化触发条件
+## Skills
 
-进化不是每次对话都运行，而是满足以下条件时才触发：
+### What is a Skill?
 
-1. **对话数量阈值**: 积累足够多的新对话
-2. **时间间隔**: 距离上次进化 ≥ 30 分钟
-3. **模式检测**: 检测到新的用户行为模式
-4. **VFM 评分**: 进化产出的价值评分必须超过阈值
+A Skill is an **executable tool**. Unlike a Gene, a Skill directly extends what the agent can *do*.
 
----
+Examples:
+- `auto_entity_reference_v26`: Extracts file paths, URLs, and emails from user input.
+- `auto_repair_v30`: Attempts automatic fixes based on cross-session error patterns.
 
-## VFM（价值函数模型）
+### Skill generation flow
 
-VFM 用于评估一次进化是否"值得"固化：
+1. `SkillForge` analyzes insights (high-frequency needs, user pain points).
+2. An LLM generates a complete Python `Tool` subclass.
+3. `EvolutionValidator` runs four checks:
+   - `py_compile` syntax check
+   - `importlib` dynamic import
+   - Instantiate the Tool subclass
+   - Call `execute()` with sample arguments
+4. If all checks pass, the file is saved to `shared/skills/skill_{name}.py`.
+5. `ToolRegistry` hot-reloads the skill on the next lookup.
 
-| 评分维度 | 说明 |
-|---------|------|
-| 新颖性 | 是否解决了以前没有覆盖到的问题 |
-| 通用性 | 是否能应用到多种场景 |
-| 可验证性 | 生成的代码是否能通过真实运行验证 |
-| 简洁性 | 实现是否简洁，不引入过度复杂度 |
+### Skill versioning
 
-VFM 总分 ≥ 阈值（默认 30/100）时，进化产物才会被固化。
-
----
-
-## 洞察提取
-
-进化引擎从对话中提取以下类型的洞察：
-
-- **高频意图**: 用户反复请求某类操作
-- **未满足需求**: 用户表达了 Agent 当前做不到的事
-- **负面反馈**: 用户纠正或不满
-- **成功模式**: 用户认可的有效行为
-
-这些洞察会同时保存到：
-- `shared/memory.db` 的 `insights` 表
-- `agents/{agent_id}/MEMORY.md` 的长期记忆
+- Unlimited iterations are allowed; each version improves the previous one.
+- Automatic cleanup keeps only the 2 most recent versions to prevent clutter.
 
 ---
 
-## 查看进化状态
+## Triggers
 
-### 桌面端
-进入侧边栏「进化」视图，可查看：
-- Genes 列表
-- Skills 列表
-- Insights（洞察）
+Evolution does not run on every conversation. It triggers when:
+
+1. **Conversation volume**: Enough new turns have accumulated.
+2. **Time interval**: At least 30 minutes have passed since the last cycle.
+3. **Pattern detection**: New user behavior patterns are observed.
+4. **VFM threshold**: The generated artifact scores high enough on the Value Function Model.
+
+---
+
+## VFM (Value Function Model)
+
+VFM decides whether an evolutionary artifact is worth keeping.
+
+| Dimension | Weight | Description |
+|-----------|--------|-------------|
+| Novelty | 25% | Solves a previously uncovered problem |
+| Generality | 25% | Applicable across multiple scenarios |
+| Verifiability | 25% | Passes real execution validation |
+| Simplicity | 25% | Clean, non-bloated implementation |
+
+Artifacts with a total score ≥ 30/100 are solidified.
+
+---
+
+## Insights
+
+The evolution engine extracts the following insight types from conversation logs:
+
+- **High-frequency intents**: Repeated user requests for the same category of task.
+- **Unmet needs**: Things the user asked for that the agent could not do.
+- **Negative feedback**: Corrections, complaints, or failed expectations.
+- **Success patterns**: Behaviors the user explicitly praised or accepted.
+
+Insights are persisted to:
+- `shared/memory.db` (`insights` table)
+- `agents/{agent_id}/MEMORY.md` (long-term memory)
+
+---
+
+## Viewing evolution state
+
+### Desktop app
+Open the **Evolution** sidebar view to see Genes, Skills, and Insights.
 
 ### CLI
 ```bash
@@ -164,4 +163,11 @@ xmclaw evolution-status
 ```
 
 ### Web UI
-在 Agent OS 仪表盘的 Evolution 面板中查看。
+Navigate to the **Evolution** panel in the Agent OS dashboard.
+
+---
+
+## Related
+
+- [Architecture](./ARCHITECTURE.md) — Where the evolution engine sits in the system
+- [Tools](./TOOLS.md) — How generated skills are loaded and executed

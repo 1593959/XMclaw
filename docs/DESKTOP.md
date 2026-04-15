@@ -1,143 +1,137 @@
-# XMclaw 桌面应用使用指南
+---
+summary: "Native PySide6 desktop app usage guide"
+read_when:
+- Launching or using the desktop app
+- Understanding the 6 main views
+- Troubleshooting connection or UI issues
+title: "Desktop App"
+---
 
-XMclaw 桌面端是一个基于 **PySide6** 构建的原生应用，提供完整的 Agent OS 仪表盘体验。
+# Desktop App
+
+XMclaw's desktop app is a native **PySide6** application. It is not a web page in a frame — it is a real desktop application with system tray support.
 
 ---
 
-## 启动方式
+## Launch
 
 ```bash
 python -m xmclaw.desktop.app
 ```
 
-启动后会自动：
-1. 检查 Daemon 是否运行，如果没有则自动拉起
-2. 连接 WebSocket
-3. 加载 Agent 数据（待办、任务、文件树、进化状态等）
+On startup, the app:
+1. Checks whether the Daemon is running; starts it if not.
+2. Opens a WebSocket connection to `ws://127.0.0.1:8765/agent/default`.
+3. Loads agent data: todos, tasks, workspace files, evolution state, and settings.
 
 ---
 
-## 界面布局
+## Layout
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  XMclaw              ● 连接中                                │
+│  XMclaw              ● connected                             │
 ├───────┬─────────────────────────────────────────────────────┤
-│       │  仪表盘                                              │
-│  侧边栏 │  ┌────────────────────────┬─────────────────────┐  │
-│       │  │                        │   智能体状态         │  │
-│ 仪表盘  │  │      聊天区域           │   当前思考...        │  │
-│ 工作区  │  │                        │   活跃工具...        │  │
-│ 进化   │  │                        │   文件操作...        │  │
-│ 记忆   │  │                        ├─────────────────────┤  │
-│ 工具日志 │  │                        │   待办事项           │  │
-│ 设置   │  │                        │   活跃任务           │  │
-│       │  └────────────────────────┴─────────────────────┘  │
+│       │  Dashboard                                         │
+│  Nav  │  ┌────────────────────────┬─────────────────────┐  │
+│       │  │                        │   Agent State       │  │
+│  ─────│  │      Chat area          │   Current thought   │  │
+│  Dash │  │                        │   Active tool       │  │
+│  WS   │  │                        │   File operation    │  │
+│  Evo  │  │                        ├─────────────────────┤  │
+│  Mem  │  │                        │   Todos             │  │
+│  Logs │  │                        │   Tasks             │  │
+│  Set  │  └────────────────────────┴─────────────────────┘  │
 └───────┴─────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 各视图说明
+## Views
 
-### 1. 仪表盘
+### Dashboard
+- **Chat area**: Streaming conversation with user and agent bubbles.
+- **Plan mode**: Toggle the "Plan" button to make the agent think before acting.
+- **Right panel**: Live agent state, current thought, active tool, file operation, todos, and tasks.
 
-- **聊天区域**: 流式对话，支持用户和 Agent 消息气泡
-- **计划模式**: 点击输入框左侧的「计划」按钮开启。开启后 Agent 会先制定计划，再执行
-- **右侧面板**: 显示当前状态、待办事项、活跃任务
+#### Plan mode
+1. Click the **Plan** button (it highlights when active).
+2. Type a complex request.
+3. The agent generates a step-by-step plan and pauses.
+4. Reply with confirmation or edits.
+5. The agent executes the approved plan.
 
-#### 计划模式
+#### ask_user popup
+When the agent needs confirmation, a modal dialog appears:
+- Enter your response and click **OK** to proceed.
+- Click **Cancel** to abort; the agent receives a cancellation message.
 
-1. 点击「计划」按钮（变为高亮状态）
-2. 输入你的复杂需求
-3. Agent 会生成执行计划并暂停，等待你确认
-4. 你可以回复「继续」或修改计划
-5. 确认后 Agent 按步骤执行
+### Workspace
+- **File tree**: Browse the agent's working directory.
+- **Editor**: Click a file to edit it inline.
+- **Save**: Persist changes back to disk.
+- **Import**: Copy external files into the workspace.
+- **Git toolbar**:
+  - `Git Status` — run `git status`
+  - `Git Pull` — run `git pull`
+  - `Git Commit` — enter a message and commit
+  - `Git Push` — run `git push`
 
-#### ask_user 弹窗
+### Evolution
+Inspect the agent's self-improvement output:
+- **Genes**: Active behavioral Genes.
+- **Skills**: Auto-generated Skills.
+- **Insights**: Extracted lessons and patterns.
 
-当 Agent 执行关键操作前，会弹出确认窗口：
-- 你可以输入确认信息
-- 或点击取消，Agent 会收到取消通知
+Click **Refresh** to update the lists.
 
----
+### Memory
+- **Search box**: Enter keywords to search long-term memory.
+- **Results**: Matching file paths and text snippets.
 
-### 2. 工作区
-
-- **文件树**: 浏览 Agent 工作目录的所有文件
-- **文件编辑器**: 点击文件树中的文件即可编辑
-- **保存按钮**: 保存当前编辑的文件
-- **导入文件**: 从外部导入文件到工作区
-- **Git 工具栏**:
-  - `Git 状态`: 查看 git status
-  - `Git Pull`: 拉取远程更新
-  - `Git Commit`: 弹出对话框输入提交信息并提交
-  - `Git Push`: 推送到远程仓库
-
----
-
-### 3. 进化
-
-查看 XMclaw 自主进化系统的产出：
-
-- **Genes**: 当前激活的所有 Gene
-- **Skills**: 自动生成的所有 Skill
-- **Insights**: 从对话中提取的洞察和教训
-
-点击「刷新」按钮可更新列表。
-
----
-
-### 4. 记忆
-
-- **搜索框**: 输入关键词搜索长期记忆
-- **搜索结果**: 显示包含关键词的文件路径和片段
-
-搜索范围包括：
+Searched sources:
 - `MEMORY.md`
 - `PROFILE.md`
-- 会话日志（`.jsonl`）
-- 其他 `.md` 文件
+- Session logs (`.jsonl`)
+- Any other `.md` files in the agent directory
+
+### Tool Logs
+- A running list of every tool call the agent has executed.
+- Shows tool name, arguments, and result summary.
+- Click **Clear logs** to reset the view.
+
+### Settings
+| Setting | Description |
+|---------|-------------|
+| Default LLM provider | `anthropic` or `openai` |
+| Model name | e.g. `claude-3-5-sonnet-20241022` |
+| API Key | Provider API key |
+| Base URL | Custom endpoint (optional) |
+| Enable evolution | Toggle autonomous evolution |
+| Evolution interval | Minimum minutes between cycles |
+
+Click **Save settings** to persist. Some changes require a Daemon restart.
 
 ---
 
-### 5. 工具日志
+## System tray
 
-- 显示 Agent 执行过的所有工具调用记录
-- 包括工具名称、参数、执行结果
-- 点击「清空日志」可清除显示
-
----
-
-### 6. 设置
-
-配置 Agent 的核心参数：
-
-| 选项 | 说明 |
-|------|------|
-| 默认 LLM 提供商 | `anthropic` 或 `openai` |
-| 模型名称 | 如 `claude-3-5-sonnet-20241022` |
-| API Key | LLM API 密钥 |
-| Base URL | 自定义 API 地址（可选） |
-| 启用进化 | 开关自主进化系统 |
-| 进化间隔 | 每次进化的最小间隔（分钟） |
-
-修改后点击「保存设置」即可生效。
+- Closing the window minimizes to the system tray instead of quitting.
+- Double-click the tray icon to restore the window.
+- Right-click the tray icon for **Show** and **Quit** options.
 
 ---
 
-## 系统托盘
+## Shortcuts
 
-XMclaw 支持最小化到系统托盘：
-- 点击窗口关闭按钮时，默认最小化到托盘
-- 托盘图标右键菜单：显示窗口 / 退出
-- 双击托盘图标可恢复窗口
+| Shortcut | Action |
+|----------|--------|
+| `Enter` (in input) | Send message |
+| `Ctrl + Enter` | Insert newline in input |
 
 ---
 
-## 快捷键
+## Related
 
-| 快捷键 | 功能 |
-|--------|------|
-| `Enter` (在输入框中) | 发送消息 |
-| `Ctrl + Enter` | 输入框换行 |
+- [CLI](./CLI.md) — Terminal alternative to the desktop app
+- [Architecture](./ARCHITECTURE.md) — How the desktop client connects to the Daemon
