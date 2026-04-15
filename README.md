@@ -2,7 +2,7 @@
 
 **Local-first, self-evolving AI Agent runtime.**
 
-Built for 敬宇. Inspired by OpenClaw, Hermes Agent, and Claude Code.
+Inspired by OpenClaw, Hermes Agent, and Claude Code.
 
 [Website](#) · [Docs](./docs) · [Architecture](./docs/ARCHITECTURE.md) · [Evolution](./docs/EVOLUTION.md) · [Tools](./docs/TOOLS.md)
 
@@ -162,4 +162,4 @@ Configure your LLM in `agents/default/agent.json`.
 
 ## License
 
-MIT — Built for 敬宇.
+MIT
