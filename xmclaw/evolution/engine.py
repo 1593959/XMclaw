@@ -2,6 +2,7 @@
 import json
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from xmclaw.memory.manager import MemoryManager
@@ -15,6 +16,17 @@ from xmclaw.evolution.validator import EvolutionValidator
 from xmclaw.daemon.config import DaemonConfig
 from xmclaw.utils.log import logger
 from xmclaw.utils.paths import BASE_DIR
+
+
+async def _reload_tool_registry() -> None:
+    """Reload generated skills into the global tool registry."""
+    try:
+        from xmclaw.tools.registry import ToolRegistry
+        registry = ToolRegistry()
+        await registry._load_generated_skills()
+        logger.info("tool_registry_reloaded_after_skill")
+    except Exception as e:
+        logger.warning("tool_registry_reload_failed", error=str(e))
 
 
 class EvolutionEngine:
@@ -64,8 +76,64 @@ class EvolutionEngine:
                 if skill:
                     results["actions"].append({"type": "skill", "id": skill["id"]})
 
+        # 4. Record and notify
+        await self._record_results(results)
+        if results["actions"]:
+            await self._notify_user(results)
+
         logger.info("evolution_cycle_end", agent_id=self.agent_id, results=results)
         return results
+
+    async def _record_results(self, results: dict[str, Any]) -> None:
+        """Write evolution results to long-term memory (MEMORY.md)."""
+        memory_md = BASE_DIR.parent / "MEMORY.md"
+        if not memory_md.exists():
+            memory_md = BASE_DIR / "MEMORY.md"
+        if not memory_md.exists():
+            return
+
+        lines = [f"\n- **{datetime.now().strftime('%Y-%m-%d %H:%M')}** 进化循环结果:"]
+        if not results["actions"]:
+            lines.append("  - 无实质产出")
+        else:
+            for action in results["actions"]:
+                atype = action["type"]
+                aid = action["id"]
+                lines.append(f"  - {atype.upper()} 生成: `{aid}`")
+
+        content = "\n".join(lines)
+        try:
+            with open(memory_md, "a", encoding="utf-8") as f:
+                f.write(content + "\n")
+        except Exception as e:
+            logger.warning("evolution_memory_write_failed", error=str(e))
+
+        # Also append to daily log
+        from xmclaw.utils.paths import get_agent_dir
+        today = datetime.now().strftime("%Y-%m-%d")
+        daily_log = get_agent_dir(self.agent_id) / "memory" / f"{today}.md"
+        daily_log.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with open(daily_log, "a", encoding="utf-8") as f:
+                f.write(f"\n## 进化记录 [{datetime.now().strftime('%H:%M')}]\n")
+                if not results["actions"]:
+                    f.write("- 无实质产出\n")
+                else:
+                    for action in results["actions"]:
+                        f.write(f"- {action['type'].upper()}: `{action['id']}`\n")
+        except Exception as e:
+            logger.warning("evolution_daily_log_write_failed", error=str(e))
+
+    async def _notify_user(self, results: dict[str, Any]) -> None:
+        """Proactively notify user of evolution results via desktop/web if available."""
+        try:
+            from xmclaw.daemon.server import app
+            # For now, just log. In the future, push via WebSocket or desktop notification.
+            actions = results.get("actions", [])
+            summary = ", ".join(f"{a['type']} {a['id']}" for a in actions)
+            logger.info("evolution_notify", summary=summary)
+        except Exception:
+            pass
 
     async def _get_recent_sessions(self) -> list[dict]:
         if not self.memory.sessions:
@@ -130,11 +198,11 @@ class EvolutionEngine:
             text = await self.llm.complete([{"role": "user", "content": prompt}])
             gene_data = json.loads(text.strip().strip("`").replace("json", "").strip())
             concept = {
-                "name": gene_data.get("name", "Unnamed Gene"),
-                "description": gene_data.get("description", ""),
-                "trigger": gene_data.get("trigger", ""),
-                "action": gene_data.get("action", ""),
-                "source": decision["insight"].get("source", ""),
+                "name": str(gene_data.get("name", "Unnamed Gene")),
+                "description": str(gene_data.get("description", "")),
+                "trigger": str(gene_data.get("trigger", "")),
+                "action": str(gene_data.get("action", "")),
+                "source": str(decision["insight"].get("source", "")),
             }
 
             # VFM scoring
@@ -150,7 +218,7 @@ class EvolutionEngine:
                 return None
 
             # Validate
-            validation = self.validator.validate_gene(Path(gene["path"]))
+            validation = await self.validator.validate_gene(Path(gene["path"]))
             if not validation["passed"]:
                 logger.warning("gene_validation_failed", gene_id=gene["id"], errors=validation)
                 return None
@@ -158,6 +226,8 @@ class EvolutionEngine:
             # Save to DB
             db = SQLiteStore(self.db_path)
             db.insert_gene(self.agent_id, gene)
+
+            # Auto-rollback on failure is handled by validation gate above
             logger.info("gene_generated_and_validated", gene_id=gene["id"], name=gene["name"], score=scores["total"])
             return gene
         except Exception as e:
@@ -186,7 +256,7 @@ class EvolutionEngine:
             return None
 
         # Validate
-        validation = self.validator.validate_skill(Path(skill["path"]))
+        validation = await self.validator.validate_skill(Path(skill["path"]))
         if not validation["passed"]:
             logger.warning("skill_validation_failed", skill_id=skill["id"], errors=validation)
             return None
@@ -194,5 +264,9 @@ class EvolutionEngine:
         # Register in DB
         db = SQLiteStore(self.db_path)
         db.insert_skill(self.agent_id, skill)
+
+        # Trigger tool registry reload so the new skill is immediately available
+        await _reload_tool_registry()
+
         logger.info("skill_generated_and_validated", skill_id=skill["id"], name=skill["name"], score=scores["total"])
         return skill

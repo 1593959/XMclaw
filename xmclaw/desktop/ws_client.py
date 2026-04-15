@@ -6,8 +6,12 @@ from PySide6.QtCore import QThread, Signal
 
 
 class WSClientThread(QThread):
-    message_received = Signal(str, str)  # type, content
-    connection_changed = Signal(bool)    # connected
+    message_received = Signal(dict)
+    chunk_received = Signal(str)
+    state_changed = Signal(str, str)
+    ask_user = Signal(str)
+    tool_called = Signal(dict)
+    connection_changed = Signal(bool)
 
     def __init__(self, agent_id: str, parent=None):
         super().__init__(parent)
@@ -25,20 +29,33 @@ class WSClientThread(QThread):
                 async with websockets.connect(self.uri) as ws:
                     self.connection_changed.emit(True)
                     send_task = asyncio.create_task(self._sender(ws))
-                    async for message in ws:
-                        data = json.loads(message)
-                        self.message_received.emit(data.get("type", ""), data.get("content", ""))
+                    async for raw in ws:
+                        data = json.loads(raw)
+                        self._handle(data)
                     send_task.cancel()
             except Exception:
                 self.connection_changed.emit(False)
                 await asyncio.sleep(2)
+
+    def _handle(self, data: dict):
+        msg_type = data.get("type", "")
+        if msg_type == "chunk":
+            self.chunk_received.emit(data.get("content", ""))
+        elif msg_type == "state":
+            self.state_changed.emit(data.get("state", ""), data.get("thought", ""))
+        elif msg_type == "ask_user":
+            self.ask_user.emit(data.get("question", ""))
+        elif msg_type == "tool_result":
+            self.tool_called.emit({"name": data.get("tool", ""), "result": data.get("result", "")})
+        else:
+            self.message_received.emit(data)
 
     async def _sender(self, ws):
         while self._running:
             text = await self._queue.get()
             await ws.send(json.dumps({"role": "user", "content": text}))
 
-    def send(self, text: str) -> None:
+    def send_message(self, text: str) -> None:
         try:
             self._queue.put_nowait(text)
         except Exception:

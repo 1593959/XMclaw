@@ -5,7 +5,7 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, Request
 from fastapi.responses import JSONResponse
 from xmclaw.daemon.config import DaemonConfig
 from xmclaw.core.orchestrator import AgentOrchestrator
@@ -162,6 +162,27 @@ async def search_memory(agent_id: str, q: str):
     return {"results": results[:20]}
 
 
+# Task API
+@app.get("/api/agent/{agent_id}/tasks")
+async def get_tasks(agent_id: str):
+    path = AGENTS_DIR / agent_id / "workspace" / "tasks.json"
+    if not path.exists():
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+@app.post("/api/agent/{agent_id}/tasks")
+async def update_tasks(agent_id: str, request: Request):
+    data = await request.json()
+    workspace = AGENTS_DIR / agent_id / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    path = workspace / "tasks.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    return {"status": "ok"}
+
+
 # Evolution Status API
 @app.get("/api/evolution/status")
 async def evolution_status():
@@ -193,12 +214,22 @@ async def agent_websocket(websocket: WebSocket, agent_id: str):
                 try:
                     parsed = json.loads(chunk)
                     await websocket.send_text(chunk)
+                    # If ask_user event, pause and wait for next client message
+                    if parsed.get("type") == "ask_user":
+                        # The loop has already returned; next client message will be the answer
+                        pass
                 except json.JSONDecodeError:
                     await websocket.send_text(json.dumps({"type": "chunk", "content": chunk}))
 
+            # Only send done if the loop actually finished (not ask_user pause)
+            agent = orchestrator.agents.get(agent_id)
+            if agent and agent.pending_question:
+                # Waiting for user answer; don't send done yet
+                continue
             await websocket.send_text(json.dumps({"type": "done"}))
     except Exception as e:
-        logger.error("websocket_error", agent_id=agent_id, error=str(e))
+        import traceback
+        logger.error("websocket_error", agent_id=agent_id, error=str(e), traceback=traceback.format_exc())
         try:
             await websocket.send_text(json.dumps({"type": "error", "content": str(e)}))
             await websocket.close()

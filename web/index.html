@@ -8,700 +8,287 @@
 </head>
 <body>
     <div class="app">
-        <!-- Sidebar -->
+        <!-- 侧边栏 -->
         <aside class="sidebar">
             <div class="sidebar-header">
                 <div class="logo">XMclaw</div>
-                <div class="tagline">Self-Evolving Agent OS</div>
+                <div class="tagline">自进化智能体操作系统</div>
             </div>
             <nav class="nav">
                 <a href="#" class="nav-item active" data-view="dashboard">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
-                    <span>Dashboard</span>
+                    <span>仪表盘</span>
                 </a>
                 <a href="#" class="nav-item" data-view="workspace">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-                    <span>Workspace</span>
+                    <span>工作区</span>
                 </a>
                 <a href="#" class="nav-item" data-view="evolution">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/><path d="M18 12h4"/><path d="m16.2 16.2 2.9 2.9"/><path d="M12 18v4"/><path d="m4.9 19.1 2.9-2.9"/><path d="M2 12h4"/><path d="m4.9 4.9 2.9 2.9"/></svg>
-                    <span>Evolution</span>
+                    <span>进化</span>
                 </a>
                 <a href="#" class="nav-item" data-view="memory">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10H12V2z"/><path d="M12 2a10 10 0 0 1 10 10"/><path d="M12 12 21.9 9.6"/></svg>
-                    <span>Memory</span>
+                    <span>记忆</span>
                 </a>
                 <a href="#" class="nav-item" data-view="tools">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-                    <span>Tools</span>
+                    <span>工具日志</span>
                 </a>
                 <a href="#" class="nav-item" data-view="settings">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                    <span>Settings</span>
+                    <span>设置</span>
                 </a>
             </nav>
             <div class="sidebar-footer">
                 <div class="status-row">
-                    <span class="status-dot" id="status-dot"></span>
-                    <span class="status-text" id="status-text">Connecting</span>
+                    <div class="status-dot" id="status-dot"></div>
+                    <span id="status-text">未连接</span>
                 </div>
             </div>
         </aside>
 
-        <!-- Main Content -->
+        <!-- 主内容区 -->
         <main class="main">
-            <!-- Top Bar -->
-            <header class="topbar">
-                <div class="topbar-title" id="topbar-title">Dashboard</div>
+            <div class="topbar">
+                <div class="topbar-title" id="topbar-title">仪表盘</div>
                 <div class="topbar-meta">
-                    <div class="stat-pill" id="evolution-pill">
-                        <span id="evolution-count">0 Genes</span>
+                    <div class="stat-pill">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/><path d="M18 12h4"/><path d="m16.2 16.2 2.9 2.9"/><path d="M12 18v4"/><path d="m4.9 19.1 2.9-2.9"/><path d="M2 12h4"/><path d="m4.9 4.9 2.9 2.9"/></svg>
+                        <span id="evolution-count">0 基因 · 0 技能</span>
                     </div>
-                    <div class="stat-pill" id="todo-pill">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-                        <span id="todo-count">0 Todos</span>
+                    <div class="stat-pill">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                        <span id="todo-count">0 待办</span>
                     </div>
-                    <div class="stat-pill" id="cost-pill">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M16 8h-6a2 2 0 0 0 0 4h4a2 2 0 0 1 0 4H8"/><path d="M12 18V6"/></svg>
+                    <div class="stat-pill">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
                         <span id="cost-display">$0.0000</span>
                     </div>
-                    <div class="stat-pill" id="token-pill">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
+                    <div class="stat-pill">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
                         <span id="token-display">0 tokens</span>
                     </div>
-                    <span class="model-badge" id="model-badge">default</span>
+                    <div class="model-badge" id="model-badge">default</div>
                 </div>
-            </header>
+            </div>
 
-            <!-- Dashboard View -->
-            <div class="view active" id="view-dashboard">
-                <div class="dashboard">
-                    <!-- Left: Chat -->
-                    <div class="dashboard-left">
-                        <div class="plan-mode-bar" id="plan-mode-bar" style="display:none">
-                            <span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg> Plan Mode Active — XMclaw will think before acting</span>
-                            <button id="cancel-plan">Cancel</button>
-                        </div>
-                        <div class="chat" id="chat"></div>
-                        <div class="input-area">
-                            <div class="input-actions">
-                                <button class="input-action" id="toggle-plan" title="Toggle Plan Mode">
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
-                                    <span>Plan</span>
+            <!-- 视图容器 -->
+            <div class="content">
+                <!-- 仪表盘 -->
+                <div class="view active" id="view-dashboard">
+                    <div class="dashboard">
+                        <!-- 左侧聊天 -->
+                        <div class="dashboard-left">
+                            <div class="plan-mode-bar" id="plan-mode-bar" style="display:none">
+                                <span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg> 计划模式已开启 — XMclaw 将先思考再行动</span>
+                                <button id="cancel-plan">取消</button>
+                            </div>
+                            <div class="chat" id="chat"></div>
+                            <div class="input-area">
+                                <div class="input-actions">
+                                    <button class="input-action" id="toggle-plan" title="切换计划模式">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+                                        <span>计划</span>
+                                    </button>
+                                </div>
+                                <textarea id="input" placeholder="向 XMclaw 发送指令..." rows="1"></textarea>
+                                <button id="send" aria-label="发送">
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
                                 </button>
                             </div>
-                            <textarea id="input" placeholder="Command XMclaw..." rows="1"></textarea>
-                            <button id="send" aria-label="Send">
-                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-                            </button>
                         </div>
-                    </div>
 
-                    <!-- Right: Agent Status Panel -->
-                    <div class="dashboard-right">
-                        <div class="panel">
-                            <div class="panel-header">
-                                <span>Agent State</span>
-                                <span class="panel-badge" id="state-badge">IDLE</span>
-                            </div>
-                            <div class="panel-body">
-                                <div class="state-item">
-                                    <div class="state-label">Current Thought</div>
-                                    <div class="state-value" id="current-thought">Waiting for input...</div>
+                        <!-- 右侧面板 -->
+                        <div class="dashboard-right">
+                            <div class="panel">
+                                <div class="panel-header">
+                                    <span>智能体状态</span>
+                                    <span class="panel-badge" id="state-badge">空闲</span>
                                 </div>
-                                <div class="state-item">
-                                    <div class="state-label">Active Tool</div>
-                                    <div class="state-value" id="active-tool">—</div>
-                                </div>
-                                <div class="state-item">
-                                    <div class="state-label">File Operation</div>
-                                    <div class="state-value" id="active-file">—</div>
+                                <div class="panel-body">
+                                    <div class="state-item">
+                                        <div class="state-label">当前思考</div>
+                                        <div class="state-value" id="current-thought">等待输入...</div>
+                                    </div>
+                                    <div class="state-item">
+                                        <div class="state-label">活跃工具</div>
+                                        <div class="state-value" id="active-tool">—</div>
+                                    </div>
+                                    <div class="state-item">
+                                        <div class="state-label">文件操作</div>
+                                        <div class="state-value" id="active-file">—</div>
+                                    </div>
                                 </div>
                             </div>
-                        </div>
 
-                        <div class="panel">
-                            <div class="panel-header">
-                                <span>Todos</span>
-                                <button class="panel-action" id="add-todo">+ Add</button>
+                            <div class="panel">
+                                <div class="panel-header">
+                                    <span>待办事项</span>
+                                    <button class="panel-action" id="add-todo">+ 添加</button>
+                                </div>
+                                <div class="panel-body compact" id="todo-list">
+                                    <div class="empty-state">暂无待办</div>
+                                </div>
                             </div>
-                            <div class="panel-body compact" id="todo-list">
-                                <div class="empty-state">No todos</div>
-                            </div>
-                        </div>
 
-                        <div class="panel">
-                            <div class="panel-header">
-                                <span>Recent Tool Calls</span>
-                                <button class="panel-action" id="clear-tools">Clear</button>
+                            <div class="panel">
+                                <div class="panel-header">
+                                    <span>任务列表</span>
+                                    <button class="panel-action" id="add-task">+ 添加</button>
+                                </div>
+                                <div class="panel-body compact" id="task-list">
+                                    <div class="empty-state">暂无任务</div>
+                                </div>
                             </div>
-                            <div class="panel-body compact" id="recent-tools">
-                                <div class="empty-state">No tools used yet</div>
-                            </div>
-                        </div>
 
-                        <div class="panel">
-                            <div class="panel-header">
-                                <span>Self-Modification Log</span>
+                            <div class="panel">
+                                <div class="panel-header">
+                                    <span>最近工具调用</span>
+                                    <button class="panel-action" id="clear-tools">清空</button>
+                                </div>
+                                <div class="panel-body compact" id="recent-tools">
+                                    <div class="empty-state">尚未使用工具</div>
+                                </div>
                             </div>
-                            <div class="panel-body compact" id="self-mod-log">
-                                <div class="empty-state">No self-modifications yet</div>
+
+                            <div class="panel">
+                                <div class="panel-header">
+                                    <span>自修改记录</span>
+                                </div>
+                                <div class="panel-body compact" id="self-mod-log">
+                                    <div class="empty-state">暂无自修改</div>
+                                </div>
                             </div>
                         </div>
                     </div>
                 </div>
-            </div>
 
-            <!-- Workspace View -->
-            <div class="view" id="view-workspace">
-                <div class="workspace">
-                    <div class="workspace-sidebar">
-                        <div class="workspace-header">Files</div>
-                        <div class="file-tree" id="file-tree">
-                            <div class="empty-state">Loading...</div>
-                        </div>
-                    </div>
-                    <div class="workspace-main">
+                <!-- 工作区 -->
+                <div class="view" id="view-workspace">
+                    <div class="workspace">
                         <div class="workspace-toolbar">
-                            <span id="editor-path">Select a file</span>
-                            <button class="btn-primary" id="save-file-btn" style="display:none">Save</button>
+                            <input type="text" id="workspace-search" placeholder="搜索工作区文件...">
+                            <button id="workspace-refresh">刷新</button>
                         </div>
-                        <textarea class="workspace-editor" id="workspace-editor" placeholder="Select a file from the left to view or edit..." readonly></textarea>
+                        <div class="workspace-files" id="workspace-files">
+                            <div class="empty-state">加载中...</div>
+                        </div>
+                        <div class="workspace-preview" id="workspace-preview">
+                            <div class="empty-state">选择一个文件查看内容</div>
+                        </div>
                     </div>
                 </div>
-            </div>
 
-            <!-- Evolution View -->
-            <div class="view" id="view-evolution">
-                <div class="page-header">
-                    <h2>Evolution Timeline</h2>
-                    <p>Track Gene generation, Skill iteration, and validation results.</p>
+                <!-- 进化 -->
+                <div class="view" id="view-evolution">
+                    <div class="evolution">
+                        <div class="evo-header">
+                            <div class="evo-stat">
+                                <div class="evo-number" id="evo-genes">0</div>
+                                <div class="evo-label">Gene</div>
+                            </div>
+                            <div class="evo-stat">
+                                <div class="evo-number" id="evo-skills">0</div>
+                                <div class="evo-label">Skill</div>
+                            </div>
+                            <div class="evo-stat">
+                                <div class="evo-number" id="evo-cycles">0</div>
+                                <div class="evo-label">进化轮次</div>
+                            </div>
+                        </div>
+                        <div class="evo-section">
+                            <h3>进化时间线</h3>
+                            <div class="timeline" id="evolution-timeline">
+                                <div class="empty-state">暂无进化事件</div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-                <div class="timeline" id="evolution-timeline">
-                    <div class="empty-state">No evolution events yet. Start a conversation to trigger learning.</div>
-                </div>
-            </div>
 
-            <!-- Memory View -->
-            <div class="view" id="view-memory">
-                <div class="page-header">
-                    <h2>Memory Explorer</h2>
-                    <p>Search across session history, user preferences, and learned patterns.</p>
+                <!-- 记忆 -->
+                <div class="view" id="view-memory">
+                    <div class="memory">
+                        <div class="memory-search">
+                            <input type="text" id="memory-query" placeholder="搜索记忆...">
+                            <button id="memory-search-btn">搜索</button>
+                        </div>
+                        <div class="memory-results" id="memory-results">
+                            <div class="empty-state">输入关键词搜索长期记忆</div>
+                        </div>
+                    </div>
                 </div>
-                <div class="memory-toolbar">
-                    <input type="text" id="memory-search" placeholder="Search memory...">
-                    <button class="btn-primary" id="memory-search-btn">Search</button>
-                </div>
-                <div class="memory-results" id="memory-results">
-                    <div class="empty-state">Enter a query to search memory.</div>
-                </div>
-            </div>
 
-            <!-- Tools View -->
-            <div class="view" id="view-tools">
-                <div class="page-header">
-                    <h2>Tool Execution Log</h2>
-                    <p>Every tool call, argument, and result is logged here for transparency.</p>
+                <!-- 工具日志 -->
+                <div class="view" id="view-tools">
+                    <div class="tools-log" id="tools-log">
+                        <div class="empty-state">暂无工具调用记录</div>
+                    </div>
                 </div>
-                <div class="tool-log" id="tool-log">
-                    <div class="empty-state">No tool executions yet.</div>
-                </div>
-            </div>
 
-            <!-- Settings View -->
-            <div class="view" id="view-settings">
-                <div class="settings-panel">
-                    <h2>LLM Configuration</h2>
-                    <div class="form-group">
-                        <label>Provider</label>
-                        <select id="setting-provider">
-                            <option value="openai">OpenAI</option>
-                            <option value="anthropic">Anthropic</option>
-                        </select>
+                <!-- 设置 -->
+                <div class="view" id="view-settings">
+                    <div class="settings">
+                        <div class="setting-group">
+                            <div class="setting-label">LLM 提供商</div>
+                            <select id="setting-provider">
+                                <option value="anthropic">Anthropic</option>
+                                <option value="openai">OpenAI</option>
+                            </select>
+                        </div>
+                        <div class="setting-group">
+                            <div class="setting-label">API 密钥</div>
+                            <input type="password" id="setting-apikey" placeholder="sk-...">
+                        </div>
+                        <div class="setting-group">
+                            <div class="setting-label">模型</div>
+                            <input type="text" id="setting-model" placeholder="例如 claude-3-5-sonnet-20241022">
+                        </div>
+                        <div class="setting-group">
+                            <div class="setting-label">Base URL（可选）</div>
+                            <input type="text" id="setting-baseurl" placeholder="https://api.anthropic.com">
+                        </div>
+                        <button class="btn-primary" id="save-settings">保存设置</button>
                     </div>
-                    <div class="form-group">
-                        <label>API Key</label>
-                        <input type="password" id="setting-apikey" placeholder="sk-...">
-                    </div>
-                    <div class="form-group">
-                        <label>Model</label>
-                        <input type="text" id="setting-model" placeholder="gpt-4o or claude-3-5-sonnet">
-                    </div>
-                    <div class="form-group">
-                        <label>Temperature</label>
-                        <input type="range" id="setting-temp" min="0" max="2" step="0.1" value="0.7">
-                        <span class="range-value" id="temp-value">0.7</span>
-                    </div>
-                    <button class="btn-primary" id="save-settings">Save Settings</button>
                 </div>
             </div>
         </main>
     </div>
-    <script src="/static/main.js"></script>
-</body>
-</html>
-                            <div class="panel-header">
-                                <span>Agent State</span>
-                                <span class="panel-badge" id="state-badge">IDLE</span>
-                            </div>
-                            <div class="panel-body">
-                                <div class="state-item">
-                                    <div class="state-label">Current Thought</div>
-                                    <div class="state-value" id="current-thought">Waiting for input...</div>
-                                </div>
-                                <div class="state-item">
-                                    <div class="state-label">Active Tool</div>
-                                    <div class="state-value" id="active-tool">—</div>
-                                </div>
-                                <div class="state-item">
-                                    <div class="state-label">File Operation</div>
-                                    <div class="state-value" id="active-file">—</div>
-                                </div>
-                            </div>
-                        </div>
 
-                        <div class="panel">
-                            <div class="panel-header">
-                                <span>Recent Tool Calls</span>
-                                <button class="panel-action" id="clear-tools">Clear</button>
-                            </div>
-                            <div class="panel-body compact" id="recent-tools">
-                                <div class="empty-state">No tools used yet</div>
-                            </div>
-                        </div>
-
-                        <div class="panel">
-                            <div class="panel-header">
-                                <span>Self-Modification Log</span>
-                            </div>
-                            <div class="panel-body compact" id="self-mod-log">
-                                <div class="empty-state">No self-modifications yet</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+    <!-- 模态框：ask_user -->
+    <div class="modal" id="ask-modal" style="display:none">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>XMclaw 需要您的确认</h3>
             </div>
-
-            <!-- Workspace View -->
-            <div class="view" id="view-workspace">
-                <div class="workspace">
-                    <div class="workspace-sidebar">
-                        <div class="workspace-header">Files</div>
-                        <div class="file-tree" id="file-tree">
-                            <div class="empty-state">Loading...</div>
-                        </div>
-                    </div>
-                    <div class="workspace-main">
-                        <div class="workspace-toolbar">
-                            <span id="editor-path">Select a file</span>
-                            <button class="btn-primary" id="save-file-btn" style="display:none">Save</button>
-                        </div>
-                        <textarea class="workspace-editor" id="workspace-editor" placeholder="Select a file from the left to view or edit..." readonly></textarea>
-                    </div>
-                </div>
+            <div class="modal-body">
+                <p id="ask-message"></p>
+                <textarea id="ask-input" rows="3" placeholder="输入回复..."></textarea>
             </div>
-
-            <!-- Evolution View -->
-            <div class="view" id="view-evolution">
-                <div class="page-header">
-                    <h2>Evolution Timeline</h2>
-                    <p>Track Gene generation, Skill iteration, and validation results.</p>
-                </div>
-                <div class="timeline" id="evolution-timeline">
-                    <div class="empty-state">No evolution events yet. Start a conversation to trigger learning.</div>
-                </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" id="ask-cancel">取消</button>
+                <button class="btn-primary" id="ask-submit">确认</button>
             </div>
-
-            <!-- Memory View -->
-            <div class="view" id="view-memory">
-                <div class="page-header">
-                    <h2>Memory Explorer</h2>
-                    <p>Search across session history, user preferences, and learned patterns.</p>
-                </div>
-                <div class="memory-toolbar">
-                    <input type="text" id="memory-search" placeholder="Search memory...">
-                    <button class="btn-primary" id="memory-search-btn">Search</button>
-                </div>
-                <div class="memory-results" id="memory-results">
-                    <div class="empty-state">Enter a query to search memory.</div>
-                </div>
-            </div>
-
-            <!-- Tools View -->
-            <div class="view" id="view-tools">
-                <div class="page-header">
-                    <h2>Tool Execution Log</h2>
-                    <p>Every tool call, argument, and result is logged here for transparency.</p>
-                </div>
-                <div class="tool-log" id="tool-log">
-                    <div class="empty-state">No tool executions yet.</div>
-                </div>
-            </div>
-
-            <!-- Settings View -->
-            <div class="view" id="view-settings">
-                <div class="settings-panel">
-                    <h2>LLM Configuration</h2>
-                    <div class="form-group">
-                        <label>Provider</label>
-                        <select id="setting-provider">
-                            <option value="openai">OpenAI</option>
-                            <option value="anthropic">Anthropic</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>API Key</label>
-                        <input type="password" id="setting-apikey" placeholder="sk-...">
-                    </div>
-                    <div class="form-group">
-                        <label>Model</label>
-                        <input type="text" id="setting-model" placeholder="gpt-4o or claude-3-5-sonnet">
-                    </div>
-                    <div class="form-group">
-                        <label>Temperature</label>
-                        <input type="range" id="setting-temp" min="0" max="2" step="0.1" value="0.7">
-                        <span class="range-value" id="temp-value">0.7</span>
-                    </div>
-                    <button class="btn-primary" id="save-settings">Save Settings</button>
-                </div>
-            </div>
-        </main>
+        </div>
     </div>
-    <script src="/static/main.js"></script>
-</body>
-</html>
-                            <div class="panel-header">
-                                <span>Todos</span>
-                                <button class="panel-action" id="add-todo">+ Add</button>
-                            </div>
-                            <div class="panel-body compact" id="todo-list">
-                                <div class="empty-state">No todos</div>
-                            </div>
-                        </div>
 
-                        <div class="panel"svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/></svg>
-                        <span id="evolution-count">0 Genes</span>
-                    </div>
-                    <div class="stat-pill" id="todo-pill">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-                        <span id="todo-count">0 Todos</span>
-                    </div>
-                    <div class="stat-pill" id="cost-pill">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M16 8h-6a2 2 0 0 0 0 4h4a2 2 0 0 1 0 4H8"/><path d="M12 18V6"/></svg>
-                        <span id="cost-display">$0.0000</span>
-                    </div>
-                    <div class="stat-pill" id="token-pill">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
-                        <span id="token-display">0 tokens</span>
-                    </div>
-                    <span class="model-badge" id="model-badge">default</span>
-                </div>
-            </header>
-
-            <!-- Dashboard View -->
-            <div class="view active" id="view-dashboard">
-                <div class="dashboard">
-                    <!-- Left: Chat -->
-                    <div class="dashboard-left">
-                        <div class="plan-mode-bar" id="plan-mode-bar" style="display:none">
-                            <span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg> Plan Mode Active — XMclaw will think before acting</span>
-                            <button id="cancel-plan">Cancel</button>
-                        </div>
-                        <div class="chat" id="chat"></div>
-                        <div class="input-area">
-                            <div class="input-actions">
-                                <button class="input-action" id="toggle-plan" title="Toggle Plan Mode">
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
-                                    <span>Plan</span>
-                                </button>
-                            </div>
-                            <textarea id="input" placeholder="Command XMclaw..." rows="1"></textarea>
-                            <button id="send" aria-label="Send">
-                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-                            </button>
-                        </div>
-                    </div>
-
-                    <!-- Right: Agent Status Panel -->
-                    <div class="dashboard-right">
-                        <div class="panel">
-                            <div class="panel-header">
-                                <span>Agent State</span>
-                                <span class="panel-badge" id="state-badge">IDLE</span>
-                            </div>
-                            <div class="panel-body">
-                                <div class="state-item">
-                                    <div class="state-label">Current Thought</div>
-                                    <div class="state-value" id="current-thought">Waiting for input...</div>
-                                </div>
-                                <div class="state-item">
-                                    <div class="state-label">Active Tool</div>
-                                    <div class="state-value" id="active-tool">—</div>
-                                </div>
-                                <div class="state-item">
-                                    <div class="state-label">File Operation</div>
-                                    <div class="state-value" id="active-file">—</div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="panel">
-                            <div class="panel-header">
-                                <span>Todos</span>
-                                <button class="panel-action" id="add-todo">+ Add</button>
-                            </div>
-                            <div class="panel-body compact" id="todo-list">
-                                <div class="empty-state">No todos</div>
-                            </div>
-                        </div>
-
-                        <div class="panel">
-                            <div class="panel-header">
-                                <span>Recent Tool Calls</span>
-                                <button class="panel-action" id="clear-tools">Clear</button>
-                            </div>
-                            <div class="panel-body compact" id="recent-tools">
-                                <div class="empty-state">No tools used yet</div>
-                            </div>
-                        </div>
-
-                        <div class="panel">
-                            <div class="panel-header">
-                                <span>Self-Modification Log</span>
-                            </div>
-                            <div class="panel-body compact" id="self-mod-log">
-                                <div class="empty-state">No self-modifications yet</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+    <!-- 模态框：添加待办/任务 -->
+    <div class="modal" id="item-modal" style="display:none">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="item-modal-title">添加</h3>
             </div>
-
-            <!-- Workspace View -->
-            <div class="view" id="view-workspace">
-                <div class="workspace">
-                    <div class="workspace-sidebar">
-                        <div class="workspace-header">Files</div>
-                        <div class="file-tree" id="file-tree">
-                            <div class="empty-state">Loading...</div>
-                        </div>
-                    </div>
-                    <div class="workspace-main">
-                        <div class="workspace-toolbar">
-                            <span id="editor-path">Select a file</span>
-                            <button class="btn-primary" id="save-file-btn" style="display:none">Save</button>
-                        </div>
-                        <textarea class="workspace-editor" id="workspace-editor" placeholder="Select a file from the left to view or edit..." readonly></textarea>
-                    </div>
-                </div>
+            <div class="modal-body">
+                <input type="text" id="item-modal-input" placeholder="标题">
+                <textarea id="item-modal-desc" rows="2" placeholder="描述（可选）"></textarea>
             </div>
-
-            <!-- Evolution View -->
-            <div class="view" id="view-evolution">
-                <div class="page-header">
-                    <h2>Evolution Timeline</h2>
-                    <p>Track Gene generation, Skill iteration, and validation results.</p>
-                </div>
-                <div class="timeline" id="evolution-timeline">
-                    <div class="empty-state">No evolution events yet. Start a conversation to trigger learning.</div>
-                </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" id="item-modal-cancel">取消</button>
+                <button class="btn-primary" id="item-modal-save">保存</button>
             </div>
-
-            <!-- Memory View -->
-            <div class="view" id="view-memory">
-                <div class="page-header">
-                    <h2>Memory Explorer</h2>
-                    <p>Search across session history, user preferences, and learned patterns.</p>
-                </div>
-                <div class="memory-toolbar">
-                    <input type="text" id="memory-search" placeholder="Search memory...">
-                    <button class="btn-primary" id="memory-search-btn">Search</button>
-                </div>
-                <div class="memory-results" id="memory-results">
-                    <div class="empty-state">Enter a query to search memory.</div>
-                </div>
-            </div>
-
-            <!-- Tools View -->
-            <div class="view" id="view-tools">
-                <div class="page-header">
-                    <h2>Tool Execution Log</h2>
-                    <p>Every tool call, argument, and result is logged here for transparency.</p>
-                </div>
-                <div class="tool-log" id="tool-log">
-                    <div class="empty-state">No tool executions yet.</div>
-                </div>
-            </div>
-
-            <!-- Settings View -->
-            <div class="view" id="view-settings">
-                <div class="settings-panel">
-                    <h2>LLM Configuration</h2>
-                    <div class="form-group">
-                        <label>Provider</label>
-                        <select id="setting-provider">
-                            <option value="openai">OpenAI</option>
-                            <option value="anthropic">Anthropic</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>API Key</label>
-                        <input type="password" id="setting-apikey" placeholder="sk-...">
-                    </div>
-                    <div class="form-group">
-                        <label>Model</label>
-                        <input type="text" id="setting-model" placeholder="gpt-4o or claude-3-5-sonnet">
-                    </div>
-                    <div class="form-group">
-                        <label>Temperature</label>
-                        <input type="range" id="setting-temp" min="0" max="2" step="0.1" value="0.7">
-                        <span class="range-value" id="temp-value">0.7</span>
-                    </div>
-                    <button class="btn-primary" id="save-settings">Save Settings</button>
-                </div>
-            </div>
-        </main>
+        </div>
     </div>
+
     <script src="/static/main.js"></script>
 </body>
 </html>
-                            <div class="panel-header">
-                                <span>Agent State</span>
-                                <span class="panel-badge" id="state-badge">IDLE</span>
-                            </div>
-                            <div class="panel-body">
-                                <div class="state-item">
-                                    <div class="state-label">Current Thought</div>
-                                    <div class="state-value" id="current-thought">Waiting for input...</div>
-                                </div>
-                                <div class="state-item">
-                                    <div class="state-label">Active Tool</div>
-                                    <div class="state-value" id="active-tool">—</div>
-                                </div>
-                                <div class="state-item">
-                                    <div class="state-label">File Operation</div>
-                                    <div class="state-value" id="active-file">—</div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="panel">
-                            <div class="panel-header">
-                                <span>Recent Tool Calls</span>
-                                <button class="panel-action" id="clear-tools">Clear</button>
-                            </div>
-                            <div class="panel-body compact" id="recent-tools">
-                                <div class="empty-state">No tools used yet</div>
-                            </div>
-                        </div>
-
-                        <div class="panel">
-                            <div class="panel-header">
-                                <span>Self-Modification Log</span>
-                            </div>
-                            <div class="panel-body compact" id="self-mod-log">
-                                <div class="empty-state">No self-modifications yet</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Workspace View -->
-            <div class="view" id="view-workspace">
-                <div class="workspace">
-                    <div class="workspace-sidebar">
-                        <div class="workspace-header">Files</div>
-                        <div class="file-tree" id="file-tree">
-                            <div class="empty-state">Loading...</div>
-                        </div>
-                    </div>
-                    <div class="workspace-main">
-                        <div class="workspace-toolbar">
-                            <span id="editor-path">Select a file</span>
-                            <button class="btn-primary" id="save-file-btn" style="display:none">Save</button>
-                        </div>
-                        <textarea class="workspace-editor" id="workspace-editor" placeholder="Select a file from the left to view or edit..." readonly></textarea>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Evolution View -->
-            <div class="view" id="view-evolution">
-                <div class="page-header">
-                    <h2>Evolution Timeline</h2>
-                    <p>Track Gene generation, Skill iteration, and validation results.</p>
-                </div>
-                <div class="timeline" id="evolution-timeline">
-                    <div class="empty-state">No evolution events yet. Start a conversation to trigger learning.</div>
-                </div>
-            </div>
-
-            <!-- Memory View -->
-            <div class="view" id="view-memory">
-                <div class="page-header">
-                    <h2>Memory Explorer</h2>
-                    <p>Search across session history, user preferences, and learned patterns.</p>
-                </div>
-                <div class="memory-toolbar">
-                    <input type="text" id="memory-search" placeholder="Search memory...">
-                    <button class="btn-primary" id="memory-search-btn">Search</button>
-                </div>
-                <div class="memory-results" id="memory-results">
-                    <div class="empty-state">Enter a query to search memory.</div>
-                </div>
-            </div>
-
-            <!-- Tools View -->
-            <div class="view" id="view-tools">
-                <div class="page-header">
-                    <h2>Tool Execution Log</h2>
-                    <p>Every tool call, argument, and result is logged here for transparency.</p>
-                </div>
-                <div class="tool-log" id="tool-log">
-                    <div class="empty-state">No tool executions yet.</div>
-                </div>
-            </div>
-
-            <!-- Settings View -->
-            <div class="view" id="view-settings">
-                <div class="settings-panel">
-                    <h2>LLM Configuration</h2>
-                    <div class="form-group">
-                        <label>Provider</label>
-                        <select id="setting-provider">
-                            <option value="openai">OpenAI</option>
-                            <option value="anthropic">Anthropic</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>API Key</label>
-                        <input type="password" id="setting-apikey" placeholder="sk-...">
-                    </div>
-                    <div class="form-group">
-                        <label>Model</label>
-                        <input type="text" id="setting-model" placeholder="gpt-4o or claude-3-5-sonnet">
-                    </div>
-                    <div class="form-group">
-                        <label>Temperature</label>
-                        <input type="range" id="setting-temp" min="0" max="2" step="0.1" value="0.7">
-                        <span class="range-value" id="temp-value">0.7</span>
-                    </div>
-                    <button class="btn-primary" id="save-settings">Save Settings</button>
-                </div>
-            </div>
-        </main>
-    </div>
-    <script src="/static/main.js"></script>
-</body>
-</html>
-                            <div class="panel-header">
-                                <span>Todos</span>
-                                <button class="panel-action" id="add-todo">+ Add</button>
-                            </div>
-                            <div class="panel-body compact" id="todo-list">
-                                <div class="empty-state">No todos</div>
-                            </div>
-                        </div>
-
-                        <div class="panel"

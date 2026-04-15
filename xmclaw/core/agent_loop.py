@@ -8,6 +8,7 @@ from xmclaw.tools.registry import ToolRegistry
 from xmclaw.memory.manager import MemoryManager
 from xmclaw.core.prompt_builder import PromptBuilder
 from xmclaw.core.cost_tracker import CostTracker
+from xmclaw.genes.manager import GeneManager
 from xmclaw.utils.log import logger
 
 
@@ -19,16 +20,37 @@ class AgentLoop:
         self.memory = memory
         self.builder = PromptBuilder()
         self.cost_tracker = CostTracker()
+        self.gene_manager = GeneManager(agent_id)
         self.max_turns = 50
+        self.plan_mode = False
+        self.pending_question: str | None = None
+        self.pending_answer: str | None = None
 
     async def run(self, user_input: str) -> AsyncIterator[str]:
         """Run the agent loop, yielding JSON-encoded events."""
         logger.info("agent_loop_start", agent_id=self.agent_id, input=user_input[:200])
 
-        yield json.dumps({"type": "state", "state": "THINKING", "thought": "Analyzing request..."})
+        # Handle plan mode toggle from input
+        if user_input.startswith("[PLAN MODE]"):
+            self.plan_mode = True
+            user_input = user_input.replace("[PLAN MODE]", "").strip()
+            yield json.dumps({"type": "state", "state": "PLANNING", "thought": "计划模式已开启，正在构建执行计划..."})
+        elif user_input.startswith("[RESUME]"):
+            # Resume from ask_user with answer
+            self.pending_answer = user_input.replace("[RESUME]", "").strip()
+            user_input = self.pending_answer
+            self.pending_question = None
+            yield json.dumps({"type": "state", "state": "THINKING", "thought": "继续处理用户回复..."})
+        else:
+            # Normal message: clear any pending question state
+            self.pending_question = None
+            self.pending_answer = None
+            yield json.dumps({"type": "state", "state": "THINKING", "thought": "分析请求中..."})
 
         context = await self.memory.load_context(self.agent_id, user_input)
-        messages = self.builder.build(user_input, context)
+        context["tool_descriptions"] = self._build_tool_descriptions()
+        context["matched_genes"] = self.gene_manager.match(user_input)
+        messages = self.builder.build(user_input, context, plan_mode=self.plan_mode)
 
         turn = 0
         while turn < self.max_turns:
@@ -50,15 +72,27 @@ class AgentLoop:
             # Execute tools
             observations = []
             for call in tool_calls:
-                yield json.dumps({"type": "state", "state": "TOOL_CALL", "thought": f"Using {call['name']}..."})
-                yield json.dumps({"type": "tool_call", "tool": call["name"], "args": call.get("arguments", {})})
+                tool_name = call["name"]
+                args = call.get("arguments", {})
 
-                result = await self.tools.execute(call["name"], call.get("arguments", {}))
-                observations.append({"tool": call["name"], "result": result})
+                yield json.dumps({"type": "state", "state": "TOOL_CALL", "thought": f"Using {tool_name}..."})
+                yield json.dumps({"type": "tool_call", "tool": tool_name, "args": args})
 
-                yield json.dumps({"type": "tool_result", "tool": call["name"], "result": result})
+                result = await self.tools.execute(tool_name, args)
 
-                # Detect self-modification (file operations on own codebase)
+                # Handle ask_user special pause
+                if tool_name == "ask_user" and result.startswith("[ASK_USER]"):
+                    question = result.replace("[ASK_USER]", "").strip()
+                    self.pending_question = question
+                    yield json.dumps({"type": "ask_user", "question": question})
+                    yield json.dumps({"type": "state", "state": "WAITING", "thought": "等待用户回复..."})
+                    await self.memory.save_turn(self.agent_id, user_input, full_response, tool_calls)
+                    return
+
+                observations.append({"tool": tool_name, "result": result})
+                yield json.dumps({"type": "tool_result", "tool": tool_name, "result": result})
+
+                # Detect self-modification
                 await self._detect_self_mod(call, result)
 
             # Append to messages for next turn
@@ -89,9 +123,17 @@ class AgentLoop:
         return calls
 
     def _format_observations(self, observations: list[dict]) -> str:
-        lines = ["Observation results:"]
+        lines = ["工具执行结果："]
         for obs in observations:
             lines.append(f"- {obs['tool']}: {obs['result']}")
+        return "\n".join(lines)
+
+    def _build_tool_descriptions(self) -> str:
+        """Build a formatted string of all available tools and their parameters."""
+        lines = []
+        for tool in self.tools._tools.values():
+            params = ", ".join([f"{k}: {v.get('type', 'any')}" for k, v in tool.parameters.items()])
+            lines.append(f"- {tool.name}: {tool.description} Parameters: ({params})")
         return "\n".join(lines)
 
     async def _detect_self_mod(self, call: dict, result: any) -> None:
@@ -104,8 +146,4 @@ class AgentLoop:
             path = args.get("file_path", args.get("path", ""))
             if "xmclaw" in path.lower() or "XMclaw" in path:
                 action = "read" if name == "file_read" else "modify"
-                # Emit self-mod event
-                # This is yielded from run() via a side-channel pattern: we can't yield here directly,
-                # but we can log it and the orchestrator/daemon can pick it up via an event bus in the future.
-                # For now, we inject a special log marker that the server could intercept.
                 logger.info("self_mod_detected", agent_id=self.agent_id, file=path, action=action)

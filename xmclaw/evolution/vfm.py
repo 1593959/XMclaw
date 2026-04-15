@@ -49,7 +49,7 @@ class VFMScorer:
 
     def _score_actionability(self, artifact: dict[str, Any]) -> float:
         """Can it actually be executed?"""
-        action = artifact.get("action", "")
+        action = str(artifact.get("action", ""))
         if not action:
             return 3.0
         # Check for actionable verbs

@@ -1,5 +1,6 @@
 """Gene forge: generate executable Python code from a Gene concept."""
 import json
+import textwrap
 import uuid
 from pathlib import Path
 from typing import Any
@@ -28,7 +29,7 @@ class {class_name}(GeneBase):
 
     async def execute(self, context: dict) -> str:
         """Execute the gene's action."""
-        {action_body}
+{action_body}
         return "Gene {name} activated."
 '''
 
@@ -50,9 +51,16 @@ class GeneForge:
             action_body = action_body.strip()
             if action_body.startswith("```"):
                 action_body = action_body.strip("`").replace("python", "").strip()
+            # Ensure proper indentation for method body (dedent then indent)
+            lines = [line for line in action_body.splitlines() if line.strip()]
+            if not lines:
+                action_body = "        pass"
+            else:
+                dedented = textwrap.dedent(action_body)
+                action_body = "\n".join("        " + line for line in dedented.splitlines())
         except Exception as e:
             logger.error("gene_forge_llm_failed", error=str(e))
-            action_body = "pass"
+            action_body = "        pass"
 
         code = GENE_TEMPLATE.format(
             gene_id=gene_id,
@@ -91,9 +99,18 @@ Description: {concept.get('description')}
 Trigger: {concept.get('trigger')}
 Action: {concept.get('action')}
 
-Write ONLY the body of the `execute` method (no method signature, no class wrapper).
-The method has access to `context` (dict with "user_input", "agent_id", etc.).
-Use `await` for any async operations.
+Write ONLY the body of the `execute` method (no method signature, no class wrapper, no `def` line).
+The body will be placed inside:
+
+    async def execute(self, context: dict) -> str:
+        # YOUR CODE HERE
+
+Rules:
+1. The method has access to `context` (dict with "user_input", "agent_id", etc.).
+2. Use `await` for any async operations.
+3. Return a string result.
+4. Do NOT write `return` at the top level. All code must be indented as if inside the method.
+5. Do NOT include any markdown code blocks (no ```python).
 
 Example output:
     user_input = context.get("user_input", "")

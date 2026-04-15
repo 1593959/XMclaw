@@ -49,7 +49,15 @@ function switchView(view) {
     currentView = view;
     navItems.forEach(n => n.classList.toggle('active', n.dataset.view === view));
     views.forEach(v => v.classList.toggle('active', v.id === `view-${view}`));
-    topbarTitle.textContent = view.charAt(0).toUpperCase() + view.slice(1);
+    const viewNames = {
+        dashboard: '仪表盘',
+        workspace: '工作区',
+        evolution: '进化',
+        memory: '记忆',
+        tools: '工具日志',
+        settings: '设置'
+    };
+    topbarTitle.textContent = viewNames[view] || view;
     if (view === 'workspace') loadWorkspaceFiles();
     if (view === 'evolution') loadEvolutionStatus();
 }
@@ -74,7 +82,7 @@ saveSettingsBtn.addEventListener('click', () => {
         temperature: parseFloat(settingTemp.value)
     };
     localStorage.setItem('xmclaw_settings', JSON.stringify(settings));
-    showToast('Settings saved');
+    showToast('设置已保存');
     modelBadge.textContent = settings.model || settings.provider;
 });
 
@@ -255,11 +263,78 @@ async function saveTodos() {
 }
 
 addTodoBtn.addEventListener('click', async () => {
-    const text = prompt('New todo:');
+    const text = prompt('新待办事项：');
     if (!text) return;
     todos.push({ id: Date.now(), text, done: false });
     renderTodos();
     await saveTodos();
+});
+
+// Tasks
+const taskList = document.getElementById('task-list');
+const addTaskBtn = document.getElementById('add-task');
+let tasks = [];
+
+async function loadTasks() {
+    try {
+        const res = await fetch(`/api/agent/${AGENT_ID}/tasks`);
+        tasks = await res.json();
+        renderTasks();
+    } catch {
+        taskList.innerHTML = '<div class="empty-state">Failed to load tasks</div>';
+    }
+}
+
+function renderTasks() {
+    if (tasks.length === 0) {
+        taskList.innerHTML = '<div class="empty-state">No tasks</div>';
+        return;
+    }
+    taskList.innerHTML = tasks.map((t, i) => `
+        <div class="task-item" style="padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px">
+            <div style="display: flex; align-items: center; gap: 8px">
+                <span style="padding: 2px 6px; border-radius: 4px; background: ${statusColor(t.status)}; color: #000; font-size: 10px; font-weight: 600; text-transform: uppercase">${t.status}</span>
+                <span style="flex: 1">${escapeHtml(t.title)}</span>
+                <button onclick="deleteTask(${i})" style="background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 14px">×</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+function statusColor(status) {
+    const map = {
+        pending: '#f59e0b',
+        in_progress: '#3b82f6',
+        completed: '#10b981',
+        failed: '#ef4444',
+    };
+    return map[status] || '#6b7280';
+}
+
+window.deleteTask = async function(idx) {
+    tasks.splice(idx, 1);
+    renderTasks();
+    try {
+        await fetch(`/api/agent/${AGENT_ID}/tasks`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(tasks)
+        });
+    } catch {}
+};
+
+addTaskBtn.addEventListener('click', async () => {
+    const text = prompt('新任务标题：');
+    if (!text) return;
+    tasks.push({ id: Date.now().toString(), title: text, description: '', status: 'pending', created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+    renderTasks();
+    try {
+        await fetch(`/api/agent/${AGENT_ID}/tasks`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(tasks)
+        });
+    } catch {}
 });
 
 // Timeline
@@ -356,7 +431,7 @@ window.openWorkspaceFile = async function(path) {
     currentFilePath = path;
     renderFileTree();
     editorPath.textContent = path;
-    workspaceEditor.value = 'Loading...';
+    workspaceEditor.value = '加载中...';
     workspaceEditor.readOnly = true;
     saveFileBtn.style.display = 'none';
     try {
@@ -366,7 +441,7 @@ window.openWorkspaceFile = async function(path) {
         workspaceEditor.readOnly = false;
         saveFileBtn.style.display = 'inline-block';
     } catch {
-        workspaceEditor.value = 'Failed to load file';
+        workspaceEditor.value = '加载文件失败';
     }
 };
 
@@ -378,9 +453,9 @@ saveFileBtn.addEventListener('click', async () => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ content: workspaceEditor.value })
         });
-        showToast('File saved');
+        showToast('文件已保存');
     } catch {
-        showToast('Failed to save file');
+        showToast('保存文件失败');
     }
 });
 
@@ -436,15 +511,16 @@ function connect() {
 
     ws.onopen = () => {
         statusDot.classList.add('connected');
-        statusText.textContent = 'Connected';
+        statusText.textContent = '已连接';
         statusText.style.color = 'var(--accent)';
         loadTodos();
+        loadTasks();
         loadEvolutionStatus();
     };
 
     ws.onclose = () => {
         statusDot.classList.remove('connected');
-        statusText.textContent = 'Reconnecting...';
+        statusText.textContent = '重新连接中...';
         statusText.style.color = 'var(--text-dim)';
         setTimeout(connect, 2000);
     };
@@ -473,7 +549,7 @@ function connect() {
                 renderToolLog();
             }
             activeTool.textContent = '—';
-            setAgentState('THINKING', 'Processing result...');
+            setAgentState('THINKING', '处理结果中...');
         } else if (data.type === 'file_op') {
             setAgentState('SELF_MOD', `Modified ${data.file || 'file'}`);
             activeFile.textContent = `${data.action || 'write'}: ${data.file || '-'}`;
@@ -486,14 +562,14 @@ function connect() {
         } else if (data.type === 'done') {
             removeTyping();
             currentMessageEl = null;
-            setAgentState('IDLE', 'Waiting for input...');
+            setAgentState('IDLE', '等待输入...');
             activeTool.textContent = '—';
             activeFile.textContent = '—';
         } else if (data.type === 'error') {
             removeTyping();
             addMessage(data.content, 'error');
             currentMessageEl = null;
-            setAgentState('IDLE', 'Error occurred');
+            setAgentState('IDLE', '发生错误');
         } else if (data.type === 'cost') {
             totalTokens += data.tokens || 0;
             totalCost += data.cost || 0;
@@ -504,8 +580,68 @@ function connect() {
             if (data.skill) skillCount++;
             evolutionCount.textContent = `${geneCount} Genes · ${skillCount} Skills`;
             addTimelineEvent(data.subtype || 'gene', data.title, data.desc);
+        } else if (data.type === 'ask_user') {
+            showAskUserDialog(data.question);
         }
     };
+}
+
+function showAskUserDialog(question) {
+    removeTyping();
+    setAgentState('WAITING', '等待用户回复...');
+
+    const overlay = document.createElement('div');
+    overlay.id = 'ask-user-overlay';
+    overlay.style.cssText = `
+        position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0,0,0,0.7); z-index: 2000;
+        display: flex; align-items: center; justify-content: center;
+    `;
+
+    const box = document.createElement('div');
+    box.style.cssText = `
+        background: var(--surface); border: 1px solid var(--border);
+        border-radius: 12px; padding: 24px; width: 90%; max-width: 480px;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    `;
+
+    box.innerHTML = `
+        <div style="font-size: 14px; font-weight: 600; margin-bottom: 12px; color: var(--accent)">XMclaw is asking...</div>
+        <div style="font-size: 13px; margin-bottom: 16px; line-height: 1.5">${escapeHtml(question)}</div>
+        <textarea id="ask-user-input" rows="3" style="width: 100%; resize: vertical; margin-bottom: 12px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-size: 13px"></textarea>
+        <div style="display: flex; gap: 10px; justify-content: flex-end">
+            <button id="ask-user-cancel" style="padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--text); font-size: 12px; cursor: pointer">Cancel</button>
+            <button id="ask-user-submit" style="padding: 8px 16px; border-radius: 6px; border: none; background: var(--accent); color: #000; font-size: 12px; font-weight: 600; cursor: pointer">Reply</button>
+        </div>
+    `;
+
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    const answerInput = document.getElementById('ask-user-input');
+    answerInput.focus();
+
+    document.getElementById('ask-user-cancel').addEventListener('click', () => {
+        overlay.remove();
+        setAgentState('IDLE', '等待输入...');
+    });
+
+    document.getElementById('ask-user-submit').addEventListener('click', () => {
+        const answer = answerInput.value.trim();
+        if (!answer) return;
+        overlay.remove();
+        addMessage(answer, 'user');
+        showTyping();
+        setAgentState('THINKING', '继续处理中...');
+        ws.send(JSON.stringify({ role: 'user', content: `[RESUME] ${answer}` }));
+    });
+
+    answerInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            document.getElementById('ask-user-submit').click();
+        }
+    });
 }
 
 function appendChunk(el, text) {
@@ -603,7 +739,7 @@ function sendMessage() {
     input.style.height = 'auto';
     showTyping();
     currentMessageEl = null;
-    setAgentState('THINKING', 'Analyzing request...');
+    setAgentState('THINKING', '分析请求中...');
 
     const settings = localStorage.getItem('xmclaw_settings');
     const payload = { role: 'user', content: finalText };

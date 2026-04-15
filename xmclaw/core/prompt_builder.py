@@ -8,7 +8,7 @@ You have access to tools. When you need to use a tool, output in this exact form
 
 <function>tool_name</function>
 <arguments>
-{"key": "value"}
+{{"key": "value"}}
 </arguments>
 
 Available tools:
@@ -21,6 +21,9 @@ Self-awareness:
 - You can restart your daemon with bash: "xmclaw stop && xmclaw start"
 - You evolve by generating new Genes and Skills based on observed patterns
 
+Active Genes:
+{genes}
+
 Rules:
 1. Always think step by step.
 2. Use tools when necessary.
@@ -29,12 +32,29 @@ Rules:
 5. When asked to improve yourself, use file tools to modify your own code.
 """
 
-    def build(self, user_input: str, context: dict[str, Any]) -> list[dict[str, str]]:
+    PLAN_MODE_PROMPT = """You are in PLAN MODE. Do not execute tools yet.
+Instead, analyze the request and produce a step-by-step execution plan.
+
+Your plan should include:
+1. What information you need to gather
+2. What tools you will use and in what order
+3. What files you might need to read or modify
+4. Any potential risks or edge cases
+
+After producing the plan, ask the user if they want you to proceed with execution.
+Use the ask_user tool to confirm before taking action.
+"""
+
+    def build(self, user_input: str, context: dict[str, Any], plan_mode: bool = False) -> list[dict[str, str]]:
         messages = []
 
-        # System prompt with tool descriptions
+        # System prompt with tool descriptions and active genes
         tool_descriptions = context.get("tool_descriptions", "")
-        system = self.SYSTEM_PROMPT.format(tools=tool_descriptions)
+        genes = context.get("matched_genes", [])
+        genes_text = "\n".join(f"- {g.get('name')}: {g.get('description')}" for g in genes) if genes else "None"
+        system = self.SYSTEM_PROMPT.format(tools=tool_descriptions, genes=genes_text)
+        if plan_mode:
+            system += "\n\n" + self.PLAN_MODE_PROMPT
         messages.append({"role": "system", "content": system})
 
         # Recent conversation history

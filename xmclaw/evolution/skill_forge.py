@@ -1,5 +1,6 @@
 """Skill forge: generate executable Python code for a Skill."""
 import json
+import textwrap
 import uuid
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,7 @@ class {class_name}(Tool):
 
     async def execute(self, **kwargs) -> str:
         """Execute the skill."""
-        {action_body}
+{action_body}
 '''
 
 
@@ -43,9 +44,16 @@ class SkillForge:
             code_body = code_body.strip()
             if code_body.startswith("```"):
                 code_body = code_body.strip("`").replace("python", "").strip()
+            # Ensure proper indentation for method body (dedent then indent)
+            lines = [line for line in code_body.splitlines() if line.strip()]
+            if not lines:
+                code_body = "        return 'Skill executed.'"
+            else:
+                dedented = textwrap.dedent(code_body)
+                code_body = "\n".join("        " + line for line in dedented.splitlines())
         except Exception as e:
             logger.error("skill_forge_llm_failed", error=str(e))
-            code_body = "return 'Skill executed.'"
+            code_body = "        return 'Skill executed.'"
 
         # Parse parameters from concept or default
         parameters = concept.get("parameters", {
@@ -88,10 +96,18 @@ class SkillForge:
 Skill Name: {concept.get('name')}
 Description: {concept.get('description')}
 
-Write ONLY the body of the `execute` method (no method signature, no class wrapper).
-The method receives keyword arguments via `**kwargs`.
-Use `await` for any async operations.
-Return a string result.
+Write ONLY the body of the `execute` method (no method signature, no class wrapper, no `def` line).
+The body will be placed inside:
+
+    async def execute(self, **kwargs) -> str:
+        # YOUR CODE HERE
+
+Rules:
+1. The method receives keyword arguments via `**kwargs`.
+2. Use `await` for any async operations.
+3. Return a string result.
+4. Do NOT write `return` at the top level. All code must be indented as if inside the method.
+5. Do NOT include any markdown code blocks (no ```python).
 
 Example output:
     query = kwargs.get("query", "")
