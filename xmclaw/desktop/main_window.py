@@ -211,6 +211,183 @@ class MainWindow(QMainWindow):
         QScrollArea { border: none; }
         """
 
+    def _build_dashboard(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(12)
+
+        # 顶部栏
+        topbar = QHBoxLayout()
+        self.topbar_title = QLabel("仪表盘")
+        self.topbar_title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        self.topbar_title.setStyleSheet("color: #00d4aa;")
+        topbar.addWidget(self.topbar_title)
+        topbar.addStretch()
+        self.state_badge = QLabel("空闲")
+        self.state_badge.setStyleSheet("background-color: #2a2a2a; color: #e0e0e0; padding: 4px 12px; border-radius: 12px; font-size: 12px;")
+        topbar.addWidget(self.state_badge)
+        layout.addLayout(topbar)
+
+        # 计划模式横幅
+        self.plan_banner = QLabel("计划模式已开启 — XMclaw 将先思考再行动")
+        self.plan_banner.setStyleSheet("background-color: #1f3a3a; color: #00d4aa; padding: 8px 14px; border-radius: 8px; font-size: 13px;")
+        self.plan_banner.setVisible(False)
+        layout.addWidget(self.plan_banner)
+
+        # 内容区分割
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # 左侧聊天区
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
+
+        self.chat_scroll = QScrollArea()
+        self.chat_scroll.setWidgetResizable(True)
+        self.chat_container = QWidget()
+        self.chat_layout = QVBoxLayout(self.chat_container)
+        self.chat_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.chat_layout.setSpacing(10)
+        self.chat_layout.addStretch()
+        self.chat_scroll.setWidget(self.chat_container)
+        left_layout.addWidget(self.chat_scroll)
+
+        input_row = QHBoxLayout()
+        self.plan_btn = QPushButton("计划")
+        self.plan_btn.setObjectName("planBtn")
+        self.plan_btn.setCheckable(True)
+        self.plan_btn.setFixedWidth(70)
+        self.plan_btn.clicked.connect(self._toggle_plan)
+        input_row.addWidget(self.plan_btn)
+        self.input_box = QTextEdit()
+        self.input_box.setPlaceholderText("向 XMclaw 发送指令...")
+        self.input_box.setFixedHeight(60)
+        self.input_box.textChanged.connect(self._auto_resize_input)
+        input_row.addWidget(self.input_box, 1)
+        send_btn = QPushButton("发送")
+        send_btn.setFixedWidth(80)
+        send_btn.clicked.connect(self._send_message)
+        input_row.addWidget(send_btn)
+        left_layout.addLayout(input_row)
+        splitter.addWidget(left)
+
+        # 右侧信息面板
+        right = QWidget()
+        right.setMaximumWidth(380)
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(12)
+
+        # 状态面板
+        state_panel = QVBoxLayout()
+        state_title = QLabel("智能体状态")
+        state_title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        state_panel.addWidget(state_title)
+        self.current_thought = QLabel("等待输入...")
+        self.current_thought.setStyleSheet("color: #aaa; font-size: 12px;")
+        state_panel.addWidget(QLabel("当前思考:"))
+        state_panel.addWidget(self.current_thought)
+        self.active_tool_label = QLabel("—")
+        self.active_tool_label.setStyleSheet("color: #aaa; font-size: 12px;")
+        state_panel.addWidget(QLabel("活跃工具:"))
+        state_panel.addWidget(self.active_tool_label)
+        self.active_file_label = QLabel("—")
+        self.active_file_label.setStyleSheet("color: #aaa; font-size: 12px;")
+        state_panel.addWidget(QLabel("文件操作:"))
+        state_panel.addWidget(self.active_file_label)
+        right_layout.addLayout(state_panel)
+
+        # 待办面板
+        todo_title = QLabel("待办事项")
+        todo_title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        right_layout.addWidget(todo_title)
+        self.todo_list = QListWidget()
+        right_layout.addWidget(self.todo_list)
+        todo_btn = QPushButton("刷新待办")
+        todo_btn.clicked.connect(self._load_todos)
+        right_layout.addWidget(todo_btn)
+
+        # 任务面板
+        task_title = QLabel("活跃任务")
+        task_title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        right_layout.addWidget(task_title)
+        self.task_list = QListWidget()
+        right_layout.addWidget(self.task_list)
+        task_btn = QPushButton("刷新任务")
+        task_btn.clicked.connect(self._load_tasks)
+        right_layout.addWidget(task_btn)
+
+        right_layout.addStretch()
+        splitter.addWidget(right)
+        splitter.setSizes([900, 380])
+        layout.addWidget(splitter, 1)
+        self.stack.addWidget(page)
+
+    def _build_workspace(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(12)
+
+        title = QLabel("工作区文件")
+        title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        title.setStyleSheet("color: #00d4aa;")
+        layout.addWidget(title)
+
+        desc = QLabel("浏览和编辑 Agent 工作目录中的文件。")
+        desc.setStyleSheet("color: #888;")
+        layout.addWidget(desc)
+
+        # 工具栏
+        toolbar = QHBoxLayout()
+        self.ws_path_label = QLabel(str(get_agent_dir(self.agent_id)))
+        self.ws_path_label.setStyleSheet("color: #aaa; font-size: 12px;")
+        toolbar.addWidget(self.ws_path_label)
+        toolbar.addStretch()
+
+        git_status_btn = QPushButton("Git 状态")
+        git_status_btn.clicked.connect(lambda: self._run_git_command("status"))
+        toolbar.addWidget(git_status_btn)
+
+        git_pull_btn = QPushButton("Git Pull")
+        git_pull_btn.clicked.connect(lambda: self._run_git_command("pull"))
+        toolbar.addWidget(git_pull_btn)
+
+        git_commit_btn = QPushButton("Git Commit")
+        git_commit_btn.clicked.connect(self._git_commit_dialog)
+        toolbar.addWidget(git_commit_btn)
+
+        git_push_btn = QPushButton("Git Push")
+        git_push_btn.clicked.connect(lambda: self._run_git_command("push"))
+        toolbar.addWidget(git_push_btn)
+
+        import_btn = QPushButton("导入文件")
+        import_btn.clicked.connect(self._import_file)
+        toolbar.addWidget(import_btn)
+        layout.addLayout(toolbar)
+
+        # 文件树 + 编辑器
+        hsplit = QSplitter(Qt.Orientation.Horizontal)
+
+        self.file_tree = QTreeWidget()
+        self.file_tree.setHeaderLabels(["文件", "大小"])
+        self.file_tree.setColumnWidth(0, 220)
+        self.file_tree.itemClicked.connect(self._on_file_selected)
+        hsplit.addWidget(self.file_tree)
+
+        self.file_editor = QTextEdit()
+        self.file_editor.setPlaceholderText("选择一个文件进行编辑...")
+        hsplit.addWidget(self.file_editor)
+        hsplit.setSizes([300, 900])
+        layout.addWidget(hsplit, 1)
+
+        save_btn = QPushButton("保存文件")
+        save_btn.clicked.connect(self._save_file)
+        layout.addWidget(save_btn)
+        self.stack.addWidget(page)
+
     def _build_evolution(self):
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -598,6 +775,56 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "导入失败", str(e))
 
+    def _run_git_command(self, command: str):
+        agent_dir = get_agent_dir(self.agent_id)
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(agent_dir), *command.split()],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            output = result.stdout + "\n" + result.stderr
+            QMessageBox.information(self, f"Git {command}", output.strip() or "完成")
+        except Exception as e:
+            QMessageBox.warning(self, f"Git {command} 失败", str(e))
+
+    def _git_commit_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Git Commit")
+        dialog.setMinimumWidth(400)
+        dialog.setStyleSheet(self._stylesheet())
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("提交信息:"))
+        msg_input = QLineEdit()
+        msg_input.setPlaceholderText("例如: 修复 bug、更新配置...")
+        layout.addWidget(msg_input)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dialog.accept)
+        btns.rejected.connect(dialog.reject)
+        layout.addWidget(btns)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        message = msg_input.text().strip()
+        if not message:
+            QMessageBox.warning(self, "提交失败", "提交信息不能为空")
+            return
+        agent_dir = get_agent_dir(self.agent_id)
+        try:
+            subprocess.run(["git", "-C", str(agent_dir), "add", "."], check=True, capture_output=True)
+            result = subprocess.run(
+                ["git", "-C", str(agent_dir), "commit", "-m", message],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            output = result.stdout + "\n" + result.stderr
+            QMessageBox.information(self, "Git Commit", output.strip() or "提交成功")
+        except Exception as e:
+            QMessageBox.warning(self, "Git Commit 失败", str(e))
+
     def _load_evolution(self):
         self.gene_list.clear()
         self.skill_list.clear()
@@ -631,21 +858,28 @@ class MainWindow(QMainWindow):
         self.memory_result_list.clear()
         if not query:
             return
-        import httpx
-        try:
-            resp = httpx.get(f"http://127.0.0.1:8765/api/agent/{self.agent_id}/memory/search", params={"q": query}, timeout=10.0)
-            data = resp.json()
-            for r in data.get("vector_results", []):
-                dist = r.get("distance", "")
-                source = r.get("source", "unknown")
-                content = r.get("content", "")[:300]
-                self.memory_result_list.addItem(f"[向量] [{source}] (score={dist})\n{content}")
-            for r in data.get("file_results", []):
-                file = r.get("file", "")
-                snippet = r.get("snippet", "")
-                self.memory_result_list.addItem(f"[文件] [{file}]\n{snippet}")
-        except Exception as e:
-            self.memory_result_list.addItem(f"搜索失败: {e}")
+        agent_dir = get_agent_dir(self.agent_id)
+        results = []
+        for root, _, filenames in os.walk(agent_dir):
+            for fname in filenames:
+                if fname.endswith(".md") or fname.endswith(".jsonl"):
+                    fpath = Path(root) / fname
+                    try:
+                        text = fpath.read_text(encoding="utf-8")
+                        if query.lower() in text.lower():
+                            lines = text.splitlines()
+                            for i, line in enumerate(lines):
+                                if query.lower() in line.lower():
+                                    start = max(0, i - 1)
+                                    end = min(len(lines), i + 2)
+                                    snippet = "\n".join(lines[start:end])
+                                    break
+                            rel = fpath.relative_to(agent_dir).as_posix()
+                            results.append(f"[{rel}]\n{snippet}")
+                    except Exception:
+                        pass
+        for r in results[:20]:
+            self.memory_result_list.addItem(r)
 
     def _load_settings(self):
         path = get_agent_dir(self.agent_id) / "agent.json"
