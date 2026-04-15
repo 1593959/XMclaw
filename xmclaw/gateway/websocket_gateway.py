@@ -23,11 +23,12 @@ class WebSocketGateway(Gateway):
         async for raw in self.ws:
             data = json.loads(raw)
             if data.get("type") == "done":
+                yield raw
                 break
             if data.get("type") == "error":
-                yield f"[Error: {data.get('content')}]"
+                yield raw
                 break
-            yield data.get("content", "")
+            yield raw
 
     async def disconnect(self) -> None:
         if self.ws:

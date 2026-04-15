@@ -22,12 +22,35 @@ def print_user(text: str):
     console.print(f"[bold green]You:[/bold green] {text}")
 
 
-def print_agent(text: str):
-    console.print(f"[bold blue]XMclaw:[/bold blue] {text}")
+def print_agent(text: str, end: str = "\n", flush: bool = False):
+    console.print(text, end=end)
 
 
 def print_tool(name: str, result: str):
-    console.print(f"[dim][Tool {name}]: {result[:200]}[/dim]")
+    console.print(
+        Panel(
+            f"[dim]{result[:500]}[/dim]",
+            title=f"[yellow]Tool: {name}[/yellow]",
+            border_style="yellow",
+        )
+    )
+
+
+def print_state(state: str, thought: str):
+    console.print(
+        f"[dim italic]State: {state} | {thought[:100]}...[/dim italic]",
+        highlight=False,
+    )
+
+
+def print_ask_user(question: str):
+    console.print(
+        Panel(
+            f"[bold magenta]{question}[/bold magenta]",
+            title="[magenta]XMclaw 询问[/magenta]",
+            border_style="magenta",
+        )
+    )
 
 
 def create_spinner(text: str = "Thinking..."):
