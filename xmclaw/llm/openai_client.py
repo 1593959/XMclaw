@@ -43,15 +43,29 @@ class OpenAIClient:
         return response.choices[0].message.content or ""
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        if not self.api_key:
-            logger.error("openai_api_key_missing")
-            return []
-        try:
-            response = await self.client.embeddings.create(
-                model="text-embedding-3-small",
-                input=texts,
-            )
-            return [item.embedding for item in response.data]
-        except Exception as e:
-            logger.error("openai_embed_error", error=str(e))
-            return []
+        if self.api_key:
+            try:
+                response = await self.client.embeddings.create(
+                    model="text-embedding-3-small",
+                    input=texts,
+                )
+                return [item.embedding for item in response.data]
+            except Exception as e:
+                logger.error("openai_embed_error", error=str(e))
+        # Fallback to local Ollama embedding for testing
+        return await self._ollama_embed(texts)
+
+    async def _ollama_embed(self, texts: list[str]) -> list[list[float]]:
+        import aiohttp
+        url = "http://127.0.0.1:11434/api/embeddings"
+        results = []
+        async with aiohttp.ClientSession() as session:
+            for text in texts:
+                try:
+                    async with session.post(url, json={"model": "qwen3-embedding:0.6b", "prompt": text}) as resp:
+                        data = await resp.json()
+                        results.append(data.get("embedding", []))
+                except Exception as e:
+                    logger.error("ollama_embed_error", error=str(e))
+                    results.append([])
+        return results

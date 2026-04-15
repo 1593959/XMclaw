@@ -108,6 +108,7 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("XMclaw")
         self.setMinimumSize(1280, 800)
+        self.resize(1400, 900)
         self.setStyleSheet(self._stylesheet())
 
         central = QWidget()
@@ -594,6 +595,11 @@ class MainWindow(QMainWindow):
 
     def _setup_tray(self):
         self.tray = QSystemTrayIcon(self)
+        # Use a simple fallback icon to avoid "No Icon set" warning
+        from PySide6.QtGui import QIcon, QPixmap, QColor
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(QColor("#00d4aa"))
+        self.tray.setIcon(QIcon(pixmap))
         self.tray.setVisible(True)
         tray_menu = QMenu()
         show_action = QAction("显示", self)

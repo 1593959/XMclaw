@@ -49,7 +49,7 @@ class VectorStore:
             self.conn.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors USING vec0(
                     memory_id INTEGER PRIMARY KEY,
-                    embedding FLOAT[1536] distance_metric=cosine
+                    embedding FLOAT[1024] distance_metric=cosine
                 )
             """)
         except sqlite3.OperationalError as e:
@@ -86,14 +86,13 @@ class VectorStore:
                        distance
                 FROM memory_vectors v
                 JOIN memories m ON v.memory_id = m.id
-                WHERE 1=1
+                WHERE v.embedding MATCH ? AND k = ?
             """
-            params = [self._serialize(embedding)]
+            params = [self._serialize(embedding), top_k]
             if agent_id:
                 sql += " AND m.agent_id = ?"
                 params.append(agent_id)
-            sql += " ORDER BY v.embedding MATCH ? LIMIT ?"
-            params.append(top_k)
+            sql += " ORDER BY distance"
             cursor = self.conn.execute(sql, params)
             rows = cursor.fetchall()
             return [

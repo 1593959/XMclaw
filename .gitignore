@@ -56,3 +56,20 @@ Thumbs.db
 # Config files with secrets
 daemon/config.json
 agents/*/agent.json
+
+# Test artifacts
+test_*.py
+test_*.txt
+test_*.json
+test_*.png
+screenshot.png
+hello_world.py
+find_*.py
+inspect_*.py
+print_*.py
+rewrite_*.py
+gen_*.py
+
+# Backups
+xmclaw/desktop/main_window_*.py
+xmclaw/desktop/main_window_backup.py

@@ -17,6 +17,8 @@ class AgentOrchestrator:
         logger.info("orchestrator_initializing")
         await self.tools.load_all()
         await self.memory.initialize()
+        # Share memory manager with tools that need it (e.g. memory_search)
+        AgentOrchestrator._tool_memory = self.memory
         logger.info("orchestrator_ready")
 
     async def shutdown(self) -> None:

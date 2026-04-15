@@ -9,6 +9,8 @@ def main():
     app.setQuitOnLastWindowClosed(False)
     window = MainWindow()
     window.show()
+    window.raise_()
+    window.activateWindow()
     sys.exit(app.exec())
 
 
