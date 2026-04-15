@@ -66,15 +66,22 @@ class EvolutionEngine:
 
         results = {"status": "running", "insights": len(insights), "actions": []}
 
+        # Run generation in parallel for speed
+        import asyncio
+        coros = []
         for decision in decisions:
             if decision["type"] == "gene":
-                gene = await self._generate_gene(decision)
-                if gene:
-                    results["actions"].append({"type": "gene", "id": gene["id"]})
+                coros.append(self._generate_gene(decision))
             elif decision["type"] == "skill":
-                skill = await self._generate_skill(decision)
-                if skill:
-                    results["actions"].append({"type": "skill", "id": skill["id"]})
+                coros.append(self._generate_skill(decision))
+
+        generated = await asyncio.gather(*coros, return_exceptions=True)
+        for item in generated:
+            if isinstance(item, Exception):
+                logger.error("evolution_generation_error", error=str(item))
+                continue
+            if item:
+                results["actions"].append({"type": item.get("type", "unknown"), "id": item["id"]})
 
         # 4. Record and notify
         await self._record_results(results)
@@ -138,7 +145,7 @@ class EvolutionEngine:
     async def _get_recent_sessions(self) -> list[dict]:
         if not self.memory.sessions:
             return []
-        return await self.memory.sessions.get_all(self.agent_id)
+        return await self.memory.sessions.get_recent(self.agent_id, limit=20)
 
     def _extract_insights(self, sessions: list[dict]) -> list[dict]:
         """Extract patterns from sessions."""
@@ -196,7 +203,8 @@ class EvolutionEngine:
         prompt = self.builder.build_evolution_prompt([decision["insight"]])
         try:
             text = await self.llm.complete([{"role": "user", "content": prompt}])
-            gene_data = json.loads(text.strip().strip("`").replace("json", "").strip())
+            text = text.strip().strip("`").replace("json", "").strip()
+            gene_data = json.loads(text)
             concept = {
                 "name": str(gene_data.get("name", "Unnamed Gene")),
                 "description": str(gene_data.get("description", "")),
@@ -204,6 +212,7 @@ class EvolutionEngine:
                 "action": str(gene_data.get("action", "")),
                 "source": str(decision["insight"].get("source", "")),
             }
+            action_body = gene_data.get("action_body")
 
             # VFM scoring
             scores = self.vfm.score_gene(concept)
@@ -212,8 +221,8 @@ class EvolutionEngine:
                 logger.info("gene_rejected_by_vfm", concept=concept["name"], score=scores["total"])
                 return None
 
-            # Forge executable code
-            gene = await self.gene_forge.forge(concept)
+            # Forge executable code (pass action_body to skip second LLM call)
+            gene = await self.gene_forge.forge(concept, action_body=action_body)
             if not gene:
                 return None
 
@@ -223,6 +232,7 @@ class EvolutionEngine:
                 logger.warning("gene_validation_failed", gene_id=gene["id"], errors=validation)
                 return None
 
+            gene["type"] = "gene"
             # Save to DB
             db = SQLiteStore(self.db_path)
             db.insert_gene(self.agent_id, gene)
@@ -250,8 +260,21 @@ class EvolutionEngine:
             logger.info("skill_rejected_by_vfm", concept=concept["name"], score=scores["total"])
             return None
 
+        # Try to generate action_body in one LLM call to avoid second forge LLM call
+        action_body = None
+        try:
+            prompt = self.builder.build_evolution_prompt([insight])
+            text = await self.llm.complete([{"role": "user", "content": prompt}])
+            text = text.strip().strip("`").replace("json", "").strip()
+            data = json.loads(text)
+            action_body = data.get("action_body")
+            if action_body:
+                concept["parameters"] = data.get("parameters", {"input": {"type": "string", "description": "Input for the skill"}})
+        except Exception:
+            pass
+
         # Forge executable code
-        skill = await self.skill_forge.forge(concept)
+        skill = await self.skill_forge.forge(concept, action_body=action_body)
         if not skill:
             return None
 
@@ -261,6 +284,7 @@ class EvolutionEngine:
             logger.warning("skill_validation_failed", skill_id=skill["id"], errors=validation)
             return None
 
+        skill["type"] = "skill"
         # Register in DB
         db = SQLiteStore(self.db_path)
         db.insert_skill(self.agent_id, skill)

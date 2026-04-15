@@ -12,6 +12,7 @@ class DaemonConfig:
     memory: dict
     tools: dict
     gateway: dict
+    mcp_servers: dict
 
     @classmethod
     def load(cls, path: Path | None = None) -> "DaemonConfig":
@@ -24,6 +25,11 @@ class DaemonConfig:
             return config
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
+        # Backfill missing fields for compatibility
+        default_data = cls.default().__dict__
+        for key, value in default_data.items():
+            if key not in data:
+                data[key] = value
         return cls(**data)
 
     @classmethod
@@ -64,4 +70,5 @@ class DaemonConfig:
                 "host": "127.0.0.1",
                 "port": 8765,
             },
+            mcp_servers={},
         )

@@ -548,6 +548,7 @@ function connect() {
                 renderRecentTools();
                 renderToolLog();
             }
+            addToolResultMessage(toolHistory[0]?.tool || 'tool', data.result);
             activeTool.textContent = '—';
             setAgentState('THINKING', '处理结果中...');
         } else if (data.type === 'file_op') {
@@ -692,6 +693,35 @@ function addToolMessage(tool, args) {
         </div>
         <pre style="margin:0;background:transparent;padding:0;font-size:11px;border:none">${escapeHtml(argsText)}</pre>
     `;
+
+    row.appendChild(el);
+    chat.appendChild(row);
+    scrollToBottom();
+}
+
+function addToolResultMessage(tool, result) {
+    const row = document.createElement('div');
+    row.className = 'message-row tool-result';
+
+    const el = document.createElement('div');
+    el.className = 'message tool-result';
+
+    if (typeof result === 'string' && result.startsWith('data:image/')) {
+        el.innerHTML = `
+            <div class="tool-header">
+                <span class="tool-name">${escapeHtml(tool)} result</span>
+            </div>
+            <img src="${result}" style="max-width:100%;border-radius:8px;margin-top:6px;border:1px solid var(--border)" alt="screenshot">
+        `;
+    } else {
+        const text = String(result).slice(0, 800);
+        el.innerHTML = `
+            <div class="tool-header">
+                <span class="tool-name">${escapeHtml(tool)} result</span>
+            </div>
+            <pre style="margin:0;background:transparent;padding:0;font-size:11px;border:none;white-space:pre-wrap">${escapeHtml(text)}${String(result).length > 800 ? '...' : ''}</pre>
+        `;
+    }
 
     row.appendChild(el);
     chat.appendChild(row);

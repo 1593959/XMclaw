@@ -1,12 +1,12 @@
 """
-Tool 'bash' was used 10 times recently.
+Tool 'file_read' was used 5 times recently.
 Auto-generated Skill for XMclaw.
 """
 from xmclaw.tools.base import Tool
 
-class AutoFrequentBashUsage(Tool):
-    name = "skill_28a491c7"
-    description = """Tool 'bash' was used 10 times recently."""
+class AutoFrequentFileReadUsage(Tool):
+    name = "skill_b0960098"
+    description = """Tool 'file_read' was used 5 times recently."""
     parameters = {
     "input": {
         "type": "string",

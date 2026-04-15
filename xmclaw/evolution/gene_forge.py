@@ -40,27 +40,29 @@ class GeneForge:
         self.output_dir = BASE_DIR / "shared" / "genes"
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    async def forge(self, concept: dict[str, Any]) -> dict[str, Any] | None:
+    async def forge(self, concept: dict[str, Any], action_body: str | None = None) -> dict[str, Any] | None:
         """Turn a gene concept into executable Python code."""
         gene_id = f"gene_{uuid.uuid4().hex[:8]}"
         class_name = self._to_class_name(concept.get("name", "AutoGene"))
 
-        prompt = self._build_prompt(concept, class_name)
-        try:
-            action_body = await self.llm.complete([{"role": "user", "content": prompt}])
-            action_body = action_body.strip()
-            if action_body.startswith("```"):
-                action_body = action_body.strip("`").replace("python", "").strip()
-            # Ensure proper indentation for method body (dedent then indent)
-            lines = [line for line in action_body.splitlines() if line.strip()]
-            if not lines:
+        if action_body is None:
+            prompt = self._build_prompt(concept, class_name)
+            try:
+                action_body = await self.llm.complete([{"role": "user", "content": prompt}])
+                action_body = action_body.strip()
+                if action_body.startswith("```"):
+                    action_body = action_body.strip("`").replace("python", "").strip()
+            except Exception as e:
+                logger.error("gene_forge_llm_failed", error=str(e))
                 action_body = "        pass"
-            else:
-                dedented = textwrap.dedent(action_body)
-                action_body = "\n".join("        " + line for line in dedented.splitlines())
-        except Exception as e:
-            logger.error("gene_forge_llm_failed", error=str(e))
+
+        # Ensure proper indentation for method body (dedent then indent)
+        lines = [line for line in action_body.splitlines() if line.strip()]
+        if not lines:
             action_body = "        pass"
+        else:
+            dedented = textwrap.dedent(action_body)
+            action_body = "\n".join("        " + line for line in dedented.splitlines())
 
         code = GENE_TEMPLATE.format(
             gene_id=gene_id,

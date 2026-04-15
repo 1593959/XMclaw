@@ -74,11 +74,16 @@ Use the ask_user tool to confirm before taking action.
 
     def build_evolution_prompt(self, insights: list[dict]) -> str:
         lines = [
-            "Based on the following user behavior insights, generate a new Gene (behavior rule):",
+            "Based on the following user behavior insights, generate a new Gene or Skill:",
             "",
         ]
         for i, insight in enumerate(insights, 1):
             lines.append(f"{i}. {insight.get('title')}: {insight.get('description')}")
         lines.append("")
-        lines.append("Generate a Gene in JSON format with fields: id, name, description, trigger, action")
+        lines.append(
+            'Generate the response in JSON format with fields: '
+            'name, description, trigger, action, action_body. '
+            'The "action_body" field must contain ONLY the body of the `execute` method '
+            '(indented as if inside the method, no `def` line, no markdown).'
+        )
         return "\n".join(lines)

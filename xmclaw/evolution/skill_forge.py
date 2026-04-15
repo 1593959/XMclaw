@@ -33,27 +33,31 @@ class SkillForge:
         self.output_dir = BASE_DIR / "shared" / "skills"
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    async def forge(self, concept: dict[str, Any]) -> dict[str, Any] | None:
+    async def forge(self, concept: dict[str, Any], action_body: str | None = None) -> dict[str, Any] | None:
         """Turn a skill concept into executable Python code."""
         skill_id = f"skill_{uuid.uuid4().hex[:8]}"
         class_name = self._to_class_name(concept.get("name", "AutoSkill"))
 
-        prompt = self._build_prompt(concept, class_name)
-        try:
-            code_body = await self.llm.complete([{"role": "user", "content": prompt}])
-            code_body = code_body.strip()
-            if code_body.startswith("```"):
-                code_body = code_body.strip("`").replace("python", "").strip()
-            # Ensure proper indentation for method body (dedent then indent)
-            lines = [line for line in code_body.splitlines() if line.strip()]
-            if not lines:
+        if action_body is None:
+            prompt = self._build_prompt(concept, class_name)
+            try:
+                code_body = await self.llm.complete([{"role": "user", "content": prompt}])
+                code_body = code_body.strip()
+                if code_body.startswith("```"):
+                    code_body = code_body.strip("`").replace("python", "").strip()
+            except Exception as e:
+                logger.error("skill_forge_llm_failed", error=str(e))
                 code_body = "        return 'Skill executed.'"
-            else:
-                dedented = textwrap.dedent(code_body)
-                code_body = "\n".join("        " + line for line in dedented.splitlines())
-        except Exception as e:
-            logger.error("skill_forge_llm_failed", error=str(e))
+        else:
+            code_body = action_body
+
+        # Ensure proper indentation for method body (dedent then indent)
+        lines = [line for line in code_body.splitlines() if line.strip()]
+        if not lines:
             code_body = "        return 'Skill executed.'"
+        else:
+            dedented = textwrap.dedent(code_body)
+            code_body = "\n".join("        " + line for line in dedented.splitlines())
 
         # Parse parameters from concept or default
         parameters = concept.get("parameters", {

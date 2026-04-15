@@ -393,6 +393,7 @@ html, body {
 .message-row.user { justify-content: flex-end; }
 .message-row.agent,
 .message-row.tool,
+.message-row.tool-result,
 .message-row.error { justify-content: flex-start; }
 
 .message {
@@ -422,6 +423,15 @@ html, body {
     font-size: 11px;
     font-family: "SF Mono", Monaco, monospace;
     padding: 8px 12px;
+}
+
+.message.tool-result {
+    background: var(--info-bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 12px;
+    padding: 10px 14px;
+    max-width: 90%;
 }
 
 .message.error {

@@ -15,10 +15,10 @@ class MCPTool(Tool):
     )
 
     def __init__(self):
-        self._sessions: dict[str, Any] = {}
         self._available = False
         try:
-            import mcp
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
             self._available = True
         except ImportError:
             pass
@@ -77,7 +77,7 @@ class MCPTool(Tool):
             return f"[Error: Unknown action '{action}']"
 
     def _list_servers(self) -> str:
-        """List configured MCP servers from agent config."""
+        """List configured MCP servers from daemon config."""
         from xmclaw.daemon.config import DaemonConfig
         config = DaemonConfig.load()
         mcp_servers = getattr(config, "mcp_servers", {})
@@ -85,66 +85,70 @@ class MCPTool(Tool):
             return "No MCP servers configured."
         lines = ["Configured MCP servers:"]
         for name, info in mcp_servers.items():
-            lines.append(f"  - {name}: {info.get('command', info.get('url', 'unknown'))}")
+            cmd = info.get("command", info.get("url", "unknown"))
+            args = " ".join(info.get("args", []))
+            lines.append(f"  - {name}: {cmd} {args}")
         return "\n".join(lines)
 
     async def _list_tools(self, server_name: str) -> str:
-        session = await self._get_session(server_name)
-        if session is None:
-            return f"[Error: MCP server '{server_name}' not found or failed to connect]"
         try:
-            tools = await session.list_tools()
-            lines = [f"Tools available on '{server_name}':"]
-            for tool in tools:
-                lines.append(f"  - {tool.name}: {tool.description}")
-            return "\n".join(lines)
+            result = await self._with_session(server_name, self._do_list_tools)
+            return result
         except Exception as e:
             logger.error("mcp_list_tools_failed", server=server_name, error=str(e))
             return f"[Error listing tools: {e}]"
 
+    async def _do_list_tools(self, session) -> str:
+        tools_result = await session.list_tools()
+        tools = getattr(tools_result, "tools", tools_result)
+        lines = [f"Tools available:"]
+        for tool in tools:
+            name = getattr(tool, "name", str(tool))
+            desc = getattr(tool, "description", "")
+            lines.append(f"  - {name}: {desc}")
+        return "\n".join(lines)
+
     async def _call_tool(self, server_name: str, tool_name: str, arguments: dict) -> str:
-        session = await self._get_session(server_name)
-        if session is None:
-            return f"[Error: MCP server '{server_name}' not found or failed to connect]"
         try:
-            result = await session.call_tool(tool_name, arguments)
-            return f"[MCP result] {result}"
+            result = await self._with_session(server_name, lambda s: s.call_tool(tool_name, arguments))
+            return self._format_result(result)
         except Exception as e:
             logger.error("mcp_call_tool_failed", server=server_name, tool=tool_name, error=str(e))
             return f"[Error calling MCP tool: {e}]"
 
-    async def _get_session(self, server_name: str):
-        if server_name in self._sessions:
-            return self._sessions[server_name]
+    def _format_result(self, result) -> str:
+        """Format CallToolResult into a string."""
+        if hasattr(result, "content"):
+            parts = []
+            for item in result.content:
+                if hasattr(item, "text"):
+                    parts.append(item.text)
+                else:
+                    parts.append(str(item))
+            return "\n".join(parts)
+        return str(result)
 
+    async def _with_session(self, server_name: str, callback):
+        """Create a temporary MCP session, run callback, then clean up."""
         from xmclaw.daemon.config import DaemonConfig
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+
         config = DaemonConfig.load()
         mcp_servers = getattr(config, "mcp_servers", {})
         if server_name not in mcp_servers:
-            return None
+            raise RuntimeError(f"MCP server '{server_name}' not configured")
 
         server_config = mcp_servers[server_name]
-        try:
-            import mcp
-            from mcp import ClientSession, StdioServerParameters
-            from mcp.client.stdio import stdio_client
+        command = server_config.get("command", "")
+        args = server_config.get("args", [])
+        env = server_config.get("env")
 
-            command = server_config.get("command", "")
-            args = server_config.get("args", [])
-            env = server_config.get("env")
+        if not command:
+            raise RuntimeError(f"MCP server '{server_name}' has no command")
 
-            params = StdioServerParameters(
-                command=command,
-                args=args,
-                env=env,
-            )
-            transport = stdio_client(params)
-            read, write = await transport.__aenter__()
-            session = ClientSession(read, write)
-            await session.initialize()
-            self._sessions[server_name] = session
-            logger.info("mcp_session_created", server=server_name)
-            return session
-        except Exception as e:
-            logger.error("mcp_session_failed", server=server_name, error=str(e))
-            return None
+        params = StdioServerParameters(command=command, args=args, env=env)
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                return await callback(session)

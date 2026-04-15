@@ -148,6 +148,7 @@ class MainWindow(QMainWindow):
             ("进化", "evolution"),
             ("记忆", "memory"),
             ("工具日志", "tools"),
+            ("Computer Use", "computer"),
             ("设置", "settings"),
         ]
         self._sidebar_map = {}
@@ -173,6 +174,7 @@ class MainWindow(QMainWindow):
         self._build_evolution()
         self._build_memory()
         self._build_tools()
+        self._build_computer_use()
         self._build_settings()
         layout.addWidget(self.stack, 1)
 
@@ -492,6 +494,140 @@ class MainWindow(QMainWindow):
         layout.addWidget(clear_btn)
         self.stack.addWidget(page)
 
+
+    def _build_computer_use(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(12)
+
+        title = QLabel("Computer Use")
+        title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        title.setStyleSheet("color: #00d4aa;")
+        layout.addWidget(title)
+
+        desc = QLabel("远程控制计算机桌面：截图、点击、移动、输入、按键、滚动、拖拽。")
+        desc.setStyleSheet("color: #888;")
+        layout.addWidget(desc)
+
+        self.screenshot_label = QLabel("点击截图按钮获取屏幕画面")
+        self.screenshot_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.screenshot_label.setStyleSheet("background-color: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; color: #666;")
+        self.screenshot_label.setMinimumHeight(240)
+        layout.addWidget(self.screenshot_label, 1)
+
+        grid = QHBoxLayout()
+
+        coord_group = QGroupBox("坐标")
+        coord_layout = QHBoxLayout()
+        self.cu_x = QSpinBox()
+        self.cu_x.setRange(0, 9999)
+        self.cu_x.setValue(500)
+        coord_layout.addWidget(QLabel("X:"))
+        coord_layout.addWidget(self.cu_x)
+        self.cu_y = QSpinBox()
+        self.cu_y.setRange(0, 9999)
+        self.cu_y.setValue(500)
+        coord_layout.addWidget(QLabel("Y:"))
+        coord_layout.addWidget(self.cu_y)
+        coord_group.setLayout(coord_layout)
+        grid.addWidget(coord_group)
+
+        end_group = QGroupBox("终点坐标 (拖拽用)")
+        end_layout = QHBoxLayout()
+        self.cu_end_x = QSpinBox()
+        self.cu_end_x.setRange(0, 9999)
+        self.cu_end_x.setValue(600)
+        end_layout.addWidget(QLabel("End X:"))
+        end_layout.addWidget(self.cu_end_x)
+        self.cu_end_y = QSpinBox()
+        self.cu_end_y.setRange(0, 9999)
+        self.cu_end_y.setValue(600)
+        end_layout.addWidget(QLabel("End Y:"))
+        end_layout.addWidget(self.cu_end_y)
+        end_group.setLayout(end_layout)
+        grid.addWidget(end_group)
+
+        scroll_group = QGroupBox("滚动")
+        scroll_layout = QHBoxLayout()
+        self.cu_scroll_y = QSpinBox()
+        self.cu_scroll_y.setRange(-9999, 9999)
+        self.cu_scroll_y.setValue(-300)
+        scroll_layout.addWidget(QLabel("Y:"))
+        scroll_layout.addWidget(self.cu_scroll_y)
+        self.cu_scroll_x = QSpinBox()
+        self.cu_scroll_x.setRange(-9999, 9999)
+        self.cu_scroll_x.setValue(0)
+        scroll_layout.addWidget(QLabel("X:"))
+        scroll_layout.addWidget(self.cu_scroll_x)
+        scroll_group.setLayout(scroll_layout)
+        grid.addWidget(scroll_group)
+
+        layout.addLayout(grid)
+
+        btn_row = QHBoxLayout()
+        screenshot_btn = QPushButton("截图")
+        screenshot_btn.clicked.connect(lambda: self._send_cu("screenshot"))
+        btn_row.addWidget(screenshot_btn)
+
+        click_btn = QPushButton("点击")
+        click_btn.clicked.connect(lambda: self._send_cu("click", x=self.cu_x.value(), y=self.cu_y.value()))
+        btn_row.addWidget(click_btn)
+
+        move_btn = QPushButton("移动")
+        move_btn.clicked.connect(lambda: self._send_cu("move", x=self.cu_x.value(), y=self.cu_y.value()))
+        btn_row.addWidget(move_btn)
+
+        type_btn = QPushButton("输入文字")
+        type_btn.clicked.connect(lambda: self._send_cu_type())
+        btn_row.addWidget(type_btn)
+
+        key_btn = QPushButton("按键")
+        key_btn.clicked.connect(lambda: self._send_cu_key())
+        btn_row.addWidget(key_btn)
+
+        scroll_btn = QPushButton("滚动")
+        scroll_btn.clicked.connect(lambda: self._send_cu("scroll", scroll_y=self.cu_scroll_y.value(), scroll_x=self.cu_scroll_x.value(), x=self.cu_x.value(), y=self.cu_y.value()))
+        btn_row.addWidget(scroll_btn)
+
+        drag_btn = QPushButton("拖拽")
+        drag_btn.clicked.connect(lambda: self._send_cu("drag", x=self.cu_x.value(), y=self.cu_y.value(), end_x=self.cu_end_x.value(), end_y=self.cu_end_y.value()))
+        btn_row.addWidget(drag_btn)
+
+        layout.addLayout(btn_row)
+        layout.addStretch()
+        self.stack.addWidget(page)
+
+    def _send_cu(self, action: str, **kwargs):
+        args = {"action": action, **kwargs}
+        payload = f"<function>computer_use</function><arguments>{__import__('json').dumps(args)}</arguments>"
+        if self.ws_thread and self.ws_thread.isRunning():
+            self.ws_thread.send_message(payload)
+
+    def _send_cu_type(self):
+        text, ok = __import__('PySide6.QtWidgets', fromlist=['QInputDialog']).QInputDialog.getText(self, "输入文字", "要输入的内容:")
+        if ok and text:
+            self._send_cu("type", text=text)
+
+    def _send_cu_key(self):
+        key, ok = __import__('PySide6.QtWidgets', fromlist=['QInputDialog']).QInputDialog.getText(self, "按键", "按键名称 (如 enter, ctrl, alt, tab):")
+        if ok and key:
+            self._send_cu("key", key=key)
+
+    def _show_screenshot(self, b64_url: str):
+        try:
+            from PySide6.QtGui import QPixmap
+            import base64
+            header, b64data = b64_url.split(",", 1)
+            data = base64.b64decode(b64data)
+            pixmap = QPixmap()
+            pixmap.loadFromData(data)
+            scaled = pixmap.scaledToWidth(min(pixmap.width(), self.screenshot_label.width()), Qt.TransformationMode.SmoothTransformation)
+            self.screenshot_label.setPixmap(scaled)
+            self.screenshot_label.setText("")
+        except Exception as e:
+            self.screenshot_label.setText(f"截图加载失败: {e}")
+
     def _build_settings(self):
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -534,6 +670,40 @@ class MainWindow(QMainWindow):
 
         layout.addLayout(form)
 
+        # MCP 服务器配置
+        mcp_title = QLabel("MCP 服务器")
+        mcp_title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        mcp_title.setStyleSheet("color: #00d4aa; margin-top: 16px;")
+        layout.addWidget(mcp_title)
+
+        self.mcp_list = QListWidget()
+        self.mcp_list.setMaximumHeight(120)
+        layout.addWidget(self.mcp_list)
+
+        mcp_form = QFormLayout()
+        self.mcp_name_input = QLineEdit()
+        self.mcp_name_input.setPlaceholderText("server名称，例如: filesystem")
+        mcp_form.addRow("名称:", self.mcp_name_input)
+        self.mcp_cmd_input = QLineEdit()
+        self.mcp_cmd_input.setPlaceholderText("启动命令，例如: npx -y @modelcontextprotocol/server-filesystem")
+        mcp_form.addRow("命令:", self.mcp_cmd_input)
+        self.mcp_args_input = QLineEdit()
+        self.mcp_args_input.setPlaceholderText("参数，用空格分隔")
+        mcp_form.addRow("参数:", self.mcp_args_input)
+        self.mcp_env_input = QLineEdit()
+        self.mcp_env_input.setPlaceholderText("环境变量，例如: KEY=value,FOO=bar")
+        mcp_form.addRow("环境变量:", self.mcp_env_input)
+        layout.addLayout(mcp_form)
+
+        mcp_btn_row = QHBoxLayout()
+        add_mcp_btn = QPushButton("添加/更新")
+        add_mcp_btn.clicked.connect(self._add_mcp_server)
+        mcp_btn_row.addWidget(add_mcp_btn)
+        del_mcp_btn = QPushButton("删除选中")
+        del_mcp_btn.clicked.connect(self._del_mcp_server)
+        mcp_btn_row.addWidget(del_mcp_btn)
+        layout.addLayout(mcp_btn_row)
+
         save_btn = QPushButton("保存设置")
         save_btn.clicked.connect(self._save_settings)
         layout.addWidget(save_btn)
@@ -562,10 +732,11 @@ class MainWindow(QMainWindow):
             "evolution": "进化",
             "memory": "记忆",
             "tools": "工具日志",
+            "computer": "Computer Use",
             "settings": "设置",
         }
         self.topbar_title.setText(titles.get(key, key))
-        idx = ["dashboard", "workspace", "evolution", "memory", "tools", "settings"].index(key)
+        idx = ["dashboard", "workspace", "evolution", "memory", "tools", "computer", "settings"].index(key)
         self.stack.setCurrentIndex(idx)
         if key == "workspace":
             self._load_workspace()
@@ -701,6 +872,8 @@ class MainWindow(QMainWindow):
         self.active_tool_label.setText(name)
         if name in ("file_read", "file_write", "file_edit"):
             self.active_file_label.setText(str(result)[:80])
+        if name == "computer_use" and isinstance(result, str) and result.startswith("data:image/"):
+            self._show_screenshot(result)
 
     def _on_connection_change(self, connected: bool):
         if connected:
@@ -949,8 +1122,14 @@ class MainWindow(QMainWindow):
             evo = data.get("evolution", {})
             self.evo_check.setChecked(evo.get("enabled", True))
             self.evo_interval.setValue(evo.get("interval_minutes", 30))
+            self._mcp_servers = data.get("mcp_servers", {})
+            self.mcp_list.clear()
+            for name, cfg in self._mcp_servers.items():
+                cmd = cfg.get("command", "")
+                args = " ".join(cfg.get("args", []))
+                self.mcp_list.addItem(f"{name}: {cmd} {args}")
         except Exception:
-            pass
+            self._mcp_servers = {}
 
     def _save_settings(self):
         path = BASE_DIR / "daemon" / "config.json"
@@ -973,5 +1152,45 @@ class MainWindow(QMainWindow):
             "enabled": self.evo_check.isChecked(),
             "interval_minutes": self.evo_interval.value(),
         }
+        data["mcp_servers"] = getattr(self, "_mcp_servers", {})
         path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         QMessageBox.information(self, "保存成功", "设置已保存，部分选项需要重启 Daemon 生效。")
+
+    def _add_mcp_server(self):
+        name = self.mcp_name_input.text().strip()
+        cmd = self.mcp_cmd_input.text().strip()
+        args = self.mcp_args_input.text().strip().split()
+        env_text = self.mcp_env_input.text().strip()
+        env = {}
+        if env_text:
+            for pair in env_text.split(","):
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    env[k.strip()] = v.strip()
+        if not name or not cmd:
+            QMessageBox.warning(self, "输入错误", "名称和命令不能为空")
+            return
+        if not hasattr(self, "_mcp_servers"):
+            self._mcp_servers = {}
+        self._mcp_servers[name] = {"command": cmd, "args": args, "env": env}
+        self.mcp_list.clear()
+        for n, cfg in self._mcp_servers.items():
+            args_str = " ".join(cfg.get("args", []))
+            self.mcp_list.addItem(f"{n}: {cfg.get('command', '')} {args_str}")
+        self.mcp_name_input.clear()
+        self.mcp_cmd_input.clear()
+        self.mcp_args_input.clear()
+        self.mcp_env_input.clear()
+
+    def _del_mcp_server(self):
+        item = self.mcp_list.currentItem()
+        if not item:
+            return
+        text = item.text()
+        name = text.split(":")[0]
+        if hasattr(self, "_mcp_servers") and name in self._mcp_servers:
+            del self._mcp_servers[name]
+            self.mcp_list.clear()
+            for n, cfg in self._mcp_servers.items():
+                args_str = " ".join(cfg.get("args", []))
+                self.mcp_list.addItem(f"{n}: {cfg.get('command', '')} {args_str}")

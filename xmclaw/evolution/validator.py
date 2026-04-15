@@ -64,12 +64,14 @@ class EvolutionValidator:
 
             instance = gene_cls()
             test_context = {"user_input": "test input for gene validation"}
-            matched = await instance.evaluate(test_context)
+            matched = await asyncio.wait_for(instance.evaluate(test_context), timeout=10)
             if matched:
-                result = await instance.execute(test_context)
+                result = await asyncio.wait_for(instance.execute(test_context), timeout=10)
                 if not isinstance(result, str):
                     return False, f"execute() must return str, got {type(result)}"
             return True, "Runtime OK"
+        except asyncio.TimeoutError:
+            return False, "Runtime timeout"
         except Exception as e:
             return False, f"Runtime error: {e}"
 
@@ -112,10 +114,12 @@ class EvolutionValidator:
                 else:
                     dummy_args[param_name] = None
 
-            result = await instance.execute(**dummy_args)
+            result = await asyncio.wait_for(instance.execute(**dummy_args), timeout=10)
             if not isinstance(result, str):
                 return False, f"execute() must return str, got {type(result)}"
             return True, "Runtime OK"
+        except asyncio.TimeoutError:
+            return False, "Runtime timeout"
         except Exception as e:
             return False, f"Runtime error: {e}"
 
