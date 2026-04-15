@@ -438,6 +438,16 @@ class MainWindow(QMainWindow):
         insight_layout.addWidget(insight_btn)
         tabs.addTab(insight_tab, "Insights")
 
+        # Reflections
+        reflection_tab = QWidget()
+        reflection_layout = QVBoxLayout(reflection_tab)
+        self.reflection_list = QListWidget()
+        reflection_layout.addWidget(self.reflection_list)
+        reflection_btn = QPushButton("刷新反思记录")
+        reflection_btn.clicked.connect(self._load_evolution)
+        reflection_layout.addWidget(reflection_btn)
+        tabs.addTab(reflection_tab, "Reflections")
+
         layout.addWidget(tabs, 1)
         self.stack.addWidget(page)
 
@@ -1029,6 +1039,7 @@ class MainWindow(QMainWindow):
         self.gene_list.clear()
         self.skill_list.clear()
         self.insight_list.clear()
+        self.reflection_list.clear()
 
         genes_dir = BASE_DIR / "shared" / "genes"
         if genes_dir.exists():
@@ -1040,15 +1051,35 @@ class MainWindow(QMainWindow):
             for f in sorted(skills_dir.glob("skill_*.py")):
                 self.skill_list.addItem(f"{f.stem}  ({f.name})")
 
-        # insights from SQLite via HTTP worker would be better; fallback to simple listing
         db_path = BASE_DIR / "shared" / "memory.db"
         if db_path.exists():
             try:
                 import sqlite3
                 conn = sqlite3.connect(str(db_path))
-                cursor = conn.execute("SELECT title, description, source, created_at FROM insights ORDER BY created_at DESC LIMIT 50")
+                # insights
+                cursor = conn.execute("SELECT title, description, source, created_at FROM insights WHERE source != 'reflection' ORDER BY created_at DESC LIMIT 50")
                 for row in cursor.fetchall():
                     self.insight_list.addItem(f"[{row[3]}] {row[0]} ({row[2]}): {row[1]}")
+                # reflections
+                cursor = conn.execute("SELECT title, description, source, created_at FROM insights WHERE source = 'reflection' ORDER BY created_at DESC LIMIT 50")
+                for row in cursor.fetchall():
+                    try:
+                        import json
+                        data = json.loads(row[1])
+                        summary = data.get('summary', row[0])
+                        problems = data.get('problems', [])
+                        lessons = data.get('lessons', [])
+                        improvements = data.get('improvements', [])
+                        text = f"[{row[3]}] {summary}"
+                        if problems:
+                            text += f" | 问题: {'; '.join(problems)}"
+                        if lessons:
+                            text += f" | 教训: {'; '.join(lessons)}"
+                        if improvements:
+                            text += f" | 改进: {'; '.join(improvements)}"
+                        self.reflection_list.addItem(text)
+                    except Exception:
+                        self.reflection_list.addItem(f"[{row[3]}] {row[0]}: {row[1]}")
                 conn.close()
             except Exception:
                 pass

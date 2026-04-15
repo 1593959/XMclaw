@@ -434,6 +434,18 @@ html, body {
     max-width: 90%;
 }
 
+.message.reflection {
+    background: rgba(138, 43, 226, 0.1);
+    border: 1px solid rgba(138, 43, 226, 0.3);
+    color: var(--text);
+    font-size: 12px;
+    padding: 10px 14px;
+    max-width: 85%;
+    border-bottom-left-radius: 4px;
+}
+
+.message-row.reflection { justify-content: flex-start; }
+
 .message.error {
     background: var(--error-bg);
     color: #ff6b6b;

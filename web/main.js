@@ -581,6 +581,8 @@ function connect() {
             if (data.skill) skillCount++;
             evolutionCount.textContent = `${geneCount} Genes · ${skillCount} Skills`;
             addTimelineEvent(data.subtype || 'gene', data.title, data.desc);
+        } else if (data.type === 'reflection') {
+            addReflectionMessage(data.data || {});
         } else if (data.type === 'ask_user') {
             showAskUserDialog(data.question);
         }
@@ -722,6 +724,35 @@ function addToolResultMessage(tool, result) {
             <pre style="margin:0;background:transparent;padding:0;font-size:11px;border:none;white-space:pre-wrap">${escapeHtml(text)}${String(result).length > 800 ? '...' : ''}</pre>
         `;
     }
+
+    row.appendChild(el);
+    chat.appendChild(row);
+    scrollToBottom();
+}
+
+function addReflectionMessage(data) {
+    const summary = data.summary || 'Reflection';
+    const problems = data.problems || [];
+    const lessons = data.lessons || [];
+    const improvements = data.improvements || [];
+
+    const row = document.createElement('div');
+    row.className = 'message-row reflection';
+
+    const el = document.createElement('div');
+    el.className = 'message reflection';
+
+    let body = `<div style="font-weight:600;margin-bottom:4px">🧠 ${escapeHtml(summary)}</div>`;
+    if (problems.length) {
+        body += `<div style="color:#ff6b6b;font-size:11px;margin-top:4px">问题: ${escapeHtml(problems.join('; '))}</div>`;
+    }
+    if (lessons.length) {
+        body += `<div style="color:#ffc107;font-size:11px;margin-top:4px">教训: ${escapeHtml(lessons.join('; '))}</div>`;
+    }
+    if (improvements.length) {
+        body += `<div style="color:#00d4aa;font-size:11px;margin-top:4px">改进: ${escapeHtml(improvements.join('; '))}</div>`;
+    }
+    el.innerHTML = body;
 
     row.appendChild(el);
     chat.appendChild(row);
