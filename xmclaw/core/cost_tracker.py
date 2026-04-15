@@ -38,3 +38,10 @@ class CostTracker:
             "total_cost_usd": round(self.total_cost_usd, 4),
             "call_count": len(self.calls),
         }
+
+    def estimate(self, messages: list[dict]) -> dict[str, Any]:
+        """Rough token estimation based on character count."""
+        total_chars = sum(len(m.get("content", "")) for m in messages)
+        tokens = int(total_chars / 4)
+        cost = tokens / 1_000_000 * 3.0  # rough average
+        return {"tokens": tokens, "cost": round(cost, 6)}

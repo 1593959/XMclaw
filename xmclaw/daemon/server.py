@@ -48,8 +48,14 @@ async def agent_websocket(websocket: WebSocket, agent_id: str):
             message = json.loads(data)
             user_input = message.get("content", "")
 
-            async for chunk in orchestrstrator.run_agent(agent_id, user_input):
-                await websocket.send_text(json.dumps({"type": "chunk", "content": chunk}))
+            async for chunk in orchestrator.run_agent(agent_id, user_input):
+                # chunk is already a JSON string from agent_loop
+                try:
+                    parsed = json.loads(chunk)
+                    await websocket.send_text(chunk)
+                except json.JSONDecodeError:
+                    # Fallback for legacy plain text
+                    await websocket.send_text(json.dumps({"type": "chunk", "content": chunk}))
 
             await websocket.send_text(json.dumps({"type": "done"}))
     except Exception as e:

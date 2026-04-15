@@ -5,7 +5,17 @@ const statusDot = document.getElementById('status-dot');
 const statusText = document.getElementById('status-text');
 const topbarTitle = document.getElementById('topbar-title');
 const modelBadge = document.getElementById('model-badge');
-const tokenCount = document.getElementById('token-count');
+const costDisplay = document.getElementById('cost-display');
+const tokenDisplay = document.getElementById('token-display');
+const evolutionCount = document.getElementById('evolution-count');
+
+const stateBadge = document.getElementById('state-badge');
+const currentThought = document.getElementById('current-thought');
+const activeTool = document.getElementById('active-tool');
+const activeFile = document.getElementById('active-file');
+const recentTools = document.getElementById('recent-tools');
+const selfModLog = document.getElementById('self-mod-log');
+const clearToolsBtn = document.getElementById('clear-tools');
 
 const navItems = document.querySelectorAll('.nav-item');
 const views = document.querySelectorAll('.view');
@@ -13,14 +23,20 @@ const views = document.querySelectorAll('.view');
 const WS_URL = 'ws://127.0.0.1:8765/agent/default';
 let ws = null;
 let currentMessageEl = null;
-let currentView = 'chat';
+let currentView = 'dashboard';
+
+let totalCost = 0;
+let totalTokens = 0;
+let geneCount = 0;
+let skillCount = 0;
+let toolHistory = [];
+let selfModHistory = [];
 
 // View switching
 navItems.forEach(item => {
     item.addEventListener('click', (e) => {
         e.preventDefault();
-        const view = item.dataset.view;
-        switchView(view);
+        switchView(item.dataset.view);
     });
 });
 
@@ -75,12 +91,177 @@ function showToast(msg) {
     const el = document.createElement('div');
     el.textContent = msg;
     el.style.cssText = `
-        position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-        background: var(--accent); color: #000; padding: 10px 20px;
-        border-radius: 8px; font-size: 13px; font-weight: 500; z-index: 1000;
+        position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+        background: var(--accent); color: #000; padding: 10px 18px;
+        border-radius: 8px; font-size: 12px; font-weight: 600; z-index: 1000;
     `;
     document.body.appendChild(el);
-    setTimeout(() => el.remove(), 2000);
+    setTimeout(() => el.remove(), 1800);
+}
+
+// Agent state updates
+function setAgentState(state, thought) {
+    stateBadge.textContent = state;
+    if (thought) currentThought.textContent = thought;
+    if (state === 'THINKING') {
+        stateBadge.style.background = 'var(--info-bg)';
+        stateBadge.style.color = '#2196f3';
+    } else if (state === 'TOOL_CALL') {
+        stateBadge.style.background = 'var(--warn-bg)';
+        stateBadge.style.color = '#ffc107';
+    } else if (state === 'SELF_MOD') {
+        stateBadge.style.background = 'var(--accent-weak)';
+        stateBadge.style.color = 'var(--accent)';
+    } else {
+        stateBadge.style.background = 'var(--accent-weak)';
+        stateBadge.style.color = 'var(--accent)';
+    }
+}
+
+function addToolCall(tool, args, result) {
+    const entry = { tool, args, result, time: new Date().toLocaleTimeString() };
+    toolHistory.unshift(entry);
+    if (toolHistory.length > 20) toolHistory.pop();
+    renderRecentTools();
+    renderToolLog();
+}
+
+function addSelfMod(file, action) {
+    const entry = { file, action, time: new Date().toLocaleTimeString() };
+    selfModHistory.unshift(entry);
+    if (selfModHistory.length > 20) selfModHistory.pop();
+    renderSelfModLog();
+    addTimelineEvent('self_mod', `Self-modification: ${action}`, file);
+}
+
+function renderRecentTools() {
+    if (toolHistory.length === 0) {
+        recentTools.innerHTML = '<div class="empty-state">No tools used yet</div>';
+        return;
+    }
+    recentTools.innerHTML = toolHistory.slice(0, 5).map(t => `
+        <div class="state-item" style="margin-bottom:10px">
+            <div class="state-value code" style="font-size:11px">
+                <span style="color:var(--accent)">${escapeHtml(t.tool)}</span>(${formatArgs(t.args)})
+            </div>
+            <div class="state-label" style="margin-top:3px;font-size:10px">${t.time}</div>
+        </div>
+    `).join('');
+}
+
+function renderSelfModLog() {
+    if (selfModHistory.length === 0) {
+        selfModLog.innerHTML = '<div class="empty-state">No self-modifications yet</div>';
+        return;
+    }
+    selfModLog.innerHTML = selfModHistory.slice(0, 5).map(m => `
+        <div class="state-item" style="margin-bottom:10px">
+            <div class="state-value" style="font-size:11px">${escapeHtml(m.action)}</div>
+            <div class="state-label" style="margin-top:3px;font-size:10px">${escapeHtml(m.file)} · ${m.time}</div>
+        </div>
+    `).join('');
+}
+
+function formatArgs(args) {
+    if (!args) return '';
+    try {
+        const a = typeof args === 'string' ? JSON.parse(args) : args;
+        const keys = Object.keys(a).slice(0, 2);
+        return keys.map(k => `${k}=${String(a[k]).slice(0, 20)}`).join(', ');
+    } catch {
+        return String(args).slice(0, 40);
+    }
+}
+
+clearToolsBtn.addEventListener('click', () => {
+    toolHistory = [];
+    renderRecentTools();
+    renderToolLog();
+});
+
+// Timeline
+function addTimelineEvent(type, title, desc) {
+    const timeline = document.getElementById('evolution-timeline');
+    const empty = timeline.querySelector('.empty-state');
+    if (empty) empty.remove();
+
+    const iconMap = {
+        gene: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/></svg>',
+        skill: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
+        validation: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>',
+        self_mod: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>',
+        default: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>'
+    };
+
+    const iconClass = type === 'validation_fail' ? 'fail' : type === 'adl_warn' ? 'warn' : '';
+    const item = document.createElement('div');
+    item.className = 'timeline-item';
+    item.innerHTML = `
+        <div class="timeline-icon ${iconClass}">${iconMap[type] || iconMap.default}</div>
+        <div class="timeline-content">
+            <div class="timeline-title">${escapeHtml(title)}</div>
+            <div class="timeline-desc">${escapeHtml(desc)}</div>
+            <div class="timeline-meta">${new Date().toLocaleString()}</div>
+        </div>
+    `;
+    timeline.insertBefore(item, timeline.firstChild);
+}
+
+// Tool Log page
+function renderToolLog() {
+    const log = document.getElementById('tool-log');
+    if (toolHistory.length === 0) {
+        log.innerHTML = '<div class="empty-state">No tool executions yet.</div>';
+        return;
+    }
+    log.innerHTML = toolHistory.map((t, i) => `
+        <div class="tool-log-entry">
+            <div class="tool-log-header" onclick="toggleToolLog(${i})">
+                <span class="tool-log-name">${escapeHtml(t.tool)}</span>
+                <span class="tool-log-time">${t.time}</span>
+            </div>
+            <div class="tool-log-body" id="tool-log-${i}" style="display:none">
+Args:
+${escapeHtml(JSON.stringify(t.args, null, 2))}
+
+Result:
+${escapeHtml(t.result || '(pending)')}
+            </div>
+        </div>
+    `).join('');
+}
+
+window.toggleToolLog = function(idx) {
+    const el = document.getElementById(`tool-log-${idx}`);
+    if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+};
+
+// Memory search
+const memorySearch = document.getElementById('memory-search');
+const memorySearchBtn = document.getElementById('memory-search-btn');
+const memoryResults = document.getElementById('memory-results');
+
+memorySearchBtn.addEventListener('click', doMemorySearch);
+memorySearch.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') doMemorySearch();
+});
+
+function doMemorySearch() {
+    const q = memorySearch.value.trim();
+    if (!q) return;
+    memoryResults.innerHTML = '<div class="empty-state">Searching...</div>';
+    // Placeholder: in real implementation, call /api/memory/search
+    setTimeout(() => {
+        memoryResults.innerHTML = `
+            <div class="memory-card">
+                <div class="memory-card-header">
+                    <span class="memory-card-type">Session</span>
+                    <span class="memory-card-time">Just now</span>
+                </div>
+                <div class="memory-card-body">Memory search is not yet connected to the backend. Query: "${escapeHtml(q)}"</div>
+            </div>
+        `;
+    }, 400);
 }
 
 // WebSocket
@@ -112,23 +293,54 @@ function connect() {
             scrollToBottom();
         } else if (data.type === 'tool_call') {
             removeTyping();
+            setAgentState('TOOL_CALL', `Using ${data.tool}...`);
+            activeTool.textContent = `${data.tool}(${formatArgs(data.args)})`;
+            addToolCall(data.tool, data.args, data.result);
             addToolMessage(data.tool, data.args);
             scrollToBottom();
+        } else if (data.type === 'tool_result') {
+            if (toolHistory.length > 0) {
+                toolHistory[0].result = data.result;
+                renderRecentTools();
+                renderToolLog();
+            }
+            activeTool.textContent = '—';
+            setAgentState('THINKING', 'Processing result...');
+        } else if (data.type === 'file_op') {
+            setAgentState('SELF_MOD', `Modified ${data.file || 'file'}`);
+            activeFile.textContent = `${data.action || 'write'}: ${data.file || '-'}`;
+            addSelfMod(data.file, data.action);
+            if (currentView !== 'dashboard') {
+                showToast(`Self-mod: ${data.action} ${data.file}`);
+            }
+        } else if (data.type === 'state') {
+            setAgentState(data.state, data.thought);
         } else if (data.type === 'done') {
             removeTyping();
             currentMessageEl = null;
+            setAgentState('IDLE', 'Waiting for input...');
+            activeTool.textContent = '—';
+            activeFile.textContent = '—';
         } else if (data.type === 'error') {
             removeTyping();
             addMessage(data.content, 'error');
             currentMessageEl = null;
+            setAgentState('IDLE', 'Error occurred');
         } else if (data.type === 'cost') {
-            tokenCount.textContent = `${data.tokens || '-'} tokens · $${data.cost || '-'}`;
+            totalTokens += data.tokens || 0;
+            totalCost += data.cost || 0;
+            tokenDisplay.textContent = `${totalTokens.toLocaleString()} tokens`;
+            costDisplay.textContent = `$${totalCost.toFixed(4)}`;
+        } else if (data.type === 'evolution') {
+            if (data.gene) geneCount++;
+            if (data.skill) skillCount++;
+            evolutionCount.textContent = `${geneCount} Genes · ${skillCount} Skills`;
+            addTimelineEvent(data.subtype || 'gene', data.title, data.desc);
         }
     };
 }
 
 function appendChunk(el, text) {
-    // Simple markdown-like formatting for code blocks
     let html = el.innerHTML;
     const escaped = text
         .replace(/&/g, '&amp;')
@@ -139,9 +351,7 @@ function appendChunk(el, text) {
 }
 
 function formatMessage(html) {
-    // Inline code
     html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-    // Code blocks
     html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
     return html;
 }
@@ -173,10 +383,10 @@ function addToolMessage(tool, args) {
     const argsText = args ? JSON.stringify(args, null, 2) : '{}';
     el.innerHTML = `
         <div class="tool-header">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
             <span class="tool-name">${escapeHtml(tool)}</span>
         </div>
-        <pre style="margin:0;background:transparent;padding:0;font-size:12px">${escapeHtml(argsText)}</pre>
+        <pre style="margin:0;background:transparent;padding:0;font-size:11px;border:none">${escapeHtml(argsText)}</pre>
     `;
 
     row.appendChild(el);
@@ -220,6 +430,7 @@ function sendMessage() {
     input.style.height = 'auto';
     showTyping();
     currentMessageEl = null;
+    setAgentState('THINKING', 'Analyzing request...');
 
     const settings = localStorage.getItem('xmclaw_settings');
     const payload = { role: 'user', content: text };
@@ -242,7 +453,7 @@ input.addEventListener('keydown', (e) => {
 
 input.addEventListener('input', () => {
     input.style.height = 'auto';
-    input.style.height = Math.min(input.scrollHeight, 140) + 'px';
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
 });
 
 loadSettings();
