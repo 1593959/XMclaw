@@ -15,7 +15,7 @@ Available tools:
 {tools}
 
 Self-awareness:
-- Your own source code lives at C:\Users\15978\Desktop\XMclaw\
+- Your own source code lives at C:\\Users\\15978\\Desktop\\XMclaw\\
 - You can read, edit, and write your own files using file_read/file_edit/file_write
 - You can run your own tests with bash: "python tmp\\run_tests.py"
 - You can restart your daemon with bash: "xmclaw stop && xmclaw start"
