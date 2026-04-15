@@ -43,7 +43,17 @@ class AgentLoop:
             self.pending_answer = user_input.replace("[RESUME]", "").strip()
             user_input = self.pending_answer
             self.pending_question = None
+            # If resuming from plan mode, disable it so we execute the plan
+            was_plan_mode = self.plan_mode
+            self.plan_mode = False
             yield json.dumps({"type": "state", "state": "THINKING", "thought": "继续处理用户回复..."})
+            # For plan mode resume, append the plan context to messages so the agent knows what to execute
+            if was_plan_mode:
+                # Rebuild context with the original plan from the last turn
+                last_turn = self._turn_history[-1] if self._turn_history else None
+                if last_turn:
+                    plan_text = last_turn.get("assistant", "")
+                    user_input = f"[继续执行以下计划]\n{plan_text}\n\n用户确认：{user_input}"
         else:
             # Normal message: clear any pending question state
             self.pending_question = None
@@ -55,9 +65,9 @@ class AgentLoop:
         context["matched_genes"] = self.gene_manager.match(user_input)
         messages = self.builder.build(user_input, context, plan_mode=self.plan_mode)
 
-        turn = 0
-        while turn < self.max_turns:
-            turn += 1
+        turn_count = 0
+        while turn_count < self.max_turns:
+            turn_count += 1
 
             # Stream thinking
             full_response = ""
@@ -68,11 +78,19 @@ class AgentLoop:
             # Parse tool calls
             tool_calls = self._extract_tool_calls(full_response)
 
+            turn_data = {"user": user_input, "assistant": full_response, "tool_calls": tool_calls}
+            self._turn_history.append(turn_data)
+            await self.memory.save_turn(self.agent_id, user_input, full_response, tool_calls)
+
             if not tool_calls:
-                turn = {"user": user_input, "assistant": full_response, "tool_calls": tool_calls}
-                self._turn_history.append(turn)
-                await self.memory.save_turn(self.agent_id, user_input, full_response, tool_calls)
                 break
+
+            # Plan mode: pause before executing tools, wait for user confirmation
+            if self.plan_mode and turn_count == 1:
+                self.pending_question = f"计划已生成，是否执行？\n\n计划内容：\n{full_response}"
+                yield json.dumps({"type": "ask_user", "question": self.pending_question})
+                yield json.dumps({"type": "state", "state": "WAITING", "thought": "等待用户确认计划..."})
+                return
 
             # Execute tools
             observations = []
@@ -91,9 +109,6 @@ class AgentLoop:
                     self.pending_question = question
                     yield json.dumps({"type": "ask_user", "question": question})
                     yield json.dumps({"type": "state", "state": "WAITING", "thought": "等待用户回复..."})
-                    turn = {"user": user_input, "assistant": full_response, "tool_calls": tool_calls}
-                    self._turn_history.append(turn)
-                    await self.memory.save_turn(self.agent_id, user_input, full_response, tool_calls)
                     return
 
                 observations.append({"tool": tool_name, "result": result})
@@ -105,10 +120,6 @@ class AgentLoop:
             # Append to messages for next turn
             messages.append({"role": "assistant", "content": full_response})
             messages.append({"role": "user", "content": self._format_observations(observations)})
-
-            turn = {"user": user_input, "assistant": full_response, "tool_calls": tool_calls}
-            self._turn_history.append(turn)
-            await self.memory.save_turn(self.agent_id, user_input, full_response, tool_calls)
 
         # Cost summary
         cost_info = self.cost_tracker.estimate(messages)
@@ -124,12 +135,12 @@ class AgentLoop:
 
         self._turn_history.clear()
         yield json.dumps({"type": "done"})
-        logger.info("agent_loop_end", agent_id=self.agent_id, turns=turn)
+        logger.info("agent_loop_end", agent_id=self.agent_id, turns=turn_count)
 
     def _extract_tool_calls(self, text: str) -> list[dict]:
         """Extract tool calls from LLM response."""
         calls = []
-        pattern = r"<function>(.*?)</function>.*?\n<arguments>(.*?)\n</arguments>"
+        pattern = r"<function>(.*?)</function>\s*<arguments>(.*?)</arguments>"
         for match in re.finditer(pattern, text, re.DOTALL):
             name = match.group(1).strip()
             args_raw = match.group(2).strip()

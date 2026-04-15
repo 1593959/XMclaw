@@ -8,6 +8,22 @@ from xmclaw.llm.router import LLMRouter
 from xmclaw.utils.log import logger
 
 
+def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
+    try:
+        conn.execute("SELECT vec_version()")
+        return True
+    except sqlite3.OperationalError:
+        pass
+    try:
+        import sqlite_vec
+        conn.enable_load_extension(True)
+        conn.load_extension(sqlite_vec.loadable_path())
+        return True
+    except Exception as e:
+        logger.warning("sqlite_vec_load_failed", error=str(e))
+        return False
+
+
 class VectorStore:
     def __init__(self, db_path: Path, llm_router: LLMRouter | None = None):
         self.db_path = db_path
@@ -17,9 +33,7 @@ class VectorStore:
         self._init_vec()
 
     def _init_vec(self) -> None:
-        try:
-            self.conn.execute("SELECT vec_version()")
-        except sqlite3.OperationalError:
+        if not _load_sqlite_vec(self.conn):
             logger.warning("sqlite_vec_not_loaded")
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS memories (
