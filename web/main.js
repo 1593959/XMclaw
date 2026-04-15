@@ -8,6 +8,7 @@ const modelBadge = document.getElementById('model-badge');
 const costDisplay = document.getElementById('cost-display');
 const tokenDisplay = document.getElementById('token-display');
 const evolutionCount = document.getElementById('evolution-count');
+const todoCount = document.getElementById('todo-count');
 
 const stateBadge = document.getElementById('state-badge');
 const currentThought = document.getElementById('current-thought');
@@ -31,6 +32,10 @@ let geneCount = 0;
 let skillCount = 0;
 let toolHistory = [];
 let selfModHistory = [];
+let todos = [];
+let planMode = false;
+
+const AGENT_ID = 'default';
 
 // View switching
 navItems.forEach(item => {
@@ -45,6 +50,8 @@ function switchView(view) {
     navItems.forEach(n => n.classList.toggle('active', n.dataset.view === view));
     views.forEach(v => v.classList.toggle('active', v.id === `view-${view}`));
     topbarTitle.textContent = view.charAt(0).toUpperCase() + view.slice(1);
+    if (view === 'workspace') loadWorkspaceFiles();
+    if (view === 'evolution') loadEvolutionStatus();
 }
 
 // Settings
@@ -98,6 +105,23 @@ function showToast(msg) {
     document.body.appendChild(el);
     setTimeout(() => el.remove(), 1800);
 }
+
+// Plan Mode
+const togglePlanBtn = document.getElementById('toggle-plan');
+const planModeBar = document.getElementById('plan-mode-bar');
+const cancelPlanBtn = document.getElementById('cancel-plan');
+
+togglePlanBtn.addEventListener('click', () => {
+    planMode = !planMode;
+    togglePlanBtn.classList.toggle('active', planMode);
+    planModeBar.style.display = planMode ? 'flex' : 'none';
+});
+
+cancelPlanBtn.addEventListener('click', () => {
+    planMode = false;
+    togglePlanBtn.classList.remove('active');
+    planModeBar.style.display = 'none';
+});
 
 // Agent state updates
 function setAgentState(state, thought) {
@@ -179,6 +203,65 @@ clearToolsBtn.addEventListener('click', () => {
     renderToolLog();
 });
 
+// Todos
+const todoList = document.getElementById('todo-list');
+const addTodoBtn = document.getElementById('add-todo');
+
+async function loadTodos() {
+    try {
+        const res = await fetch(`/api/agent/${AGENT_ID}/todos`);
+        todos = await res.json();
+        renderTodos();
+    } catch {
+        todoList.innerHTML = '<div class="empty-state">Failed to load todos</div>';
+    }
+}
+
+function renderTodos() {
+    todoCount.textContent = `${todos.filter(t => !t.done).length} Todos`;
+    if (todos.length === 0) {
+        todoList.innerHTML = '<div class="empty-state">No todos</div>';
+        return;
+    }
+    todoList.innerHTML = todos.map((t, i) => `
+        <div class="todo-item ${t.done ? 'done' : ''}">
+            <input type="checkbox" ${t.done ? 'checked' : ''} onchange="toggleTodo(${i})">
+            <span>${escapeHtml(t.text)}</span>
+            <button onclick="deleteTodo(${i})">×</button>
+        </div>
+    `).join('');
+}
+
+window.toggleTodo = async function(idx) {
+    todos[idx].done = !todos[idx].done;
+    renderTodos();
+    await saveTodos();
+};
+
+window.deleteTodo = async function(idx) {
+    todos.splice(idx, 1);
+    renderTodos();
+    await saveTodos();
+};
+
+async function saveTodos() {
+    try {
+        await fetch(`/api/agent/${AGENT_ID}/todos`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(todos)
+        });
+    } catch {}
+}
+
+addTodoBtn.addEventListener('click', async () => {
+    const text = prompt('New todo:');
+    if (!text) return;
+    todos.push({ id: Date.now(), text, done: false });
+    renderTodos();
+    await saveTodos();
+});
+
 // Timeline
 function addTimelineEvent(type, title, desc) {
     const timeline = document.getElementById('evolution-timeline');
@@ -236,6 +319,71 @@ window.toggleToolLog = function(idx) {
     if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
 };
 
+// Workspace
+const fileTree = document.getElementById('file-tree');
+const workspaceEditor = document.getElementById('workspace-editor');
+const editorPath = document.getElementById('editor-path');
+const saveFileBtn = document.getElementById('save-file-btn');
+let currentFilePath = null;
+let workspaceFiles = [];
+
+async function loadWorkspaceFiles() {
+    fileTree.innerHTML = '<div class="empty-state">Loading...</div>';
+    try {
+        const res = await fetch(`/api/agent/${AGENT_ID}/files`);
+        const data = await res.json();
+        workspaceFiles = data.files || [];
+        renderFileTree();
+    } catch {
+        fileTree.innerHTML = '<div class="empty-state">Failed to load files</div>';
+    }
+}
+
+function renderFileTree() {
+    if (workspaceFiles.length === 0) {
+        fileTree.innerHTML = '<div class="empty-state">No files</div>';
+        return;
+    }
+    fileTree.innerHTML = workspaceFiles.map(f => `
+        <div class="file-tree-item ${f.path === currentFilePath ? 'active' : ''}" onclick="openWorkspaceFile('${f.path}')">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            <span style="overflow:hidden;text-overflow:ellipsis">${escapeHtml(f.path)}</span>
+        </div>
+    `).join('');
+}
+
+window.openWorkspaceFile = async function(path) {
+    currentFilePath = path;
+    renderFileTree();
+    editorPath.textContent = path;
+    workspaceEditor.value = 'Loading...';
+    workspaceEditor.readOnly = true;
+    saveFileBtn.style.display = 'none';
+    try {
+        const res = await fetch(`/api/agent/${AGENT_ID}/file?path=${encodeURIComponent(path)}`);
+        const data = await res.json();
+        workspaceEditor.value = data.content || '';
+        workspaceEditor.readOnly = false;
+        saveFileBtn.style.display = 'inline-block';
+    } catch {
+        workspaceEditor.value = 'Failed to load file';
+    }
+};
+
+saveFileBtn.addEventListener('click', async () => {
+    if (!currentFilePath) return;
+    try {
+        await fetch(`/api/agent/${AGENT_ID}/file?path=${encodeURIComponent(currentFilePath)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: workspaceEditor.value })
+        });
+        showToast('File saved');
+    } catch {
+        showToast('Failed to save file');
+    }
+});
+
 // Memory search
 const memorySearch = document.getElementById('memory-search');
 const memorySearchBtn = document.getElementById('memory-search-btn');
@@ -246,22 +394,40 @@ memorySearch.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') doMemorySearch();
 });
 
-function doMemorySearch() {
+async function doMemorySearch() {
     const q = memorySearch.value.trim();
     if (!q) return;
     memoryResults.innerHTML = '<div class="empty-state">Searching...</div>';
-    // Placeholder: in real implementation, call /api/memory/search
-    setTimeout(() => {
-        memoryResults.innerHTML = `
+    try {
+        const res = await fetch(`/api/agent/${AGENT_ID}/memory/search?q=${encodeURIComponent(q)}`);
+        const data = await res.json();
+        const results = data.results || [];
+        if (results.length === 0) {
+            memoryResults.innerHTML = '<div class="empty-state">No results found.</div>';
+            return;
+        }
+        memoryResults.innerHTML = results.map(r => `
             <div class="memory-card">
                 <div class="memory-card-header">
-                    <span class="memory-card-type">Session</span>
-                    <span class="memory-card-time">Just now</span>
+                    <span class="memory-card-type">${escapeHtml(r.file)}</span>
                 </div>
-                <div class="memory-card-body">Memory search is not yet connected to the backend. Query: "${escapeHtml(q)}"</div>
+                <div class="memory-card-body"><pre style="background:#0a0a0a;padding:10px;border-radius:6px;font-size:12px">${escapeHtml(r.snippet)}</pre></div>
             </div>
-        `;
-    }, 400);
+        `).join('');
+    } catch {
+        memoryResults.innerHTML = '<div class="empty-state">Search failed.</div>';
+    }
+}
+
+// Evolution status
+async function loadEvolutionStatus() {
+    try {
+        const res = await fetch('/api/evolution/status');
+        const data = await res.json();
+        geneCount = data.gene_count || 0;
+        skillCount = data.skill_count || 0;
+        evolutionCount.textContent = `${geneCount} Genes · ${skillCount} Skills`;
+    } catch {}
 }
 
 // WebSocket
@@ -272,6 +438,8 @@ function connect() {
         statusDot.classList.add('connected');
         statusText.textContent = 'Connected';
         statusText.style.color = 'var(--accent)';
+        loadTodos();
+        loadEvolutionStatus();
     };
 
     ws.onclose = () => {
@@ -425,6 +593,11 @@ function sendMessage() {
     const text = input.value.trim();
     if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
 
+    let finalText = text;
+    if (planMode) {
+        finalText = `[PLAN MODE] ${text}`;
+    }
+
     addMessage(text, 'user');
     input.value = '';
     input.style.height = 'auto';
@@ -433,7 +606,7 @@ function sendMessage() {
     setAgentState('THINKING', 'Analyzing request...');
 
     const settings = localStorage.getItem('xmclaw_settings');
-    const payload = { role: 'user', content: text };
+    const payload = { role: 'user', content: finalText };
     if (settings) {
         try {
             payload.settings = JSON.parse(settings);

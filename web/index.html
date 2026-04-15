@@ -19,6 +19,10 @@
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
                     <span>Dashboard</span>
                 </a>
+                <a href="#" class="nav-item" data-view="workspace">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                    <span>Workspace</span>
+                </a>
                 <a href="#" class="nav-item" data-view="evolution">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/><path d="M18 12h4"/><path d="m16.2 16.2 2.9 2.9"/><path d="M12 18v4"/><path d="m4.9 19.1 2.9-2.9"/><path d="M2 12h4"/><path d="m4.9 4.9 2.9 2.9"/></svg>
                     <span>Evolution</span>
@@ -51,8 +55,11 @@
                 <div class="topbar-title" id="topbar-title">Dashboard</div>
                 <div class="topbar-meta">
                     <div class="stat-pill" id="evolution-pill">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/></svg>
                         <span id="evolution-count">0 Genes</span>
+                    </div>
+                    <div class="stat-pill" id="todo-pill">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                        <span id="todo-count">0 Todos</span>
                     </div>
                     <div class="stat-pill" id="cost-pill">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M16 8h-6a2 2 0 0 0 0 4h4a2 2 0 0 1 0 4H8"/><path d="M12 18V6"/></svg>
@@ -71,8 +78,18 @@
                 <div class="dashboard">
                     <!-- Left: Chat -->
                     <div class="dashboard-left">
+                        <div class="plan-mode-bar" id="plan-mode-bar" style="display:none">
+                            <span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg> Plan Mode Active — XMclaw will think before acting</span>
+                            <button id="cancel-plan">Cancel</button>
+                        </div>
                         <div class="chat" id="chat"></div>
                         <div class="input-area">
+                            <div class="input-actions">
+                                <button class="input-action" id="toggle-plan" title="Toggle Plan Mode">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+                                    <span>Plan</span>
+                                </button>
+                            </div>
                             <textarea id="input" placeholder="Command XMclaw..." rows="1"></textarea>
                             <button id="send" aria-label="Send">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
@@ -105,6 +122,16 @@
 
                         <div class="panel">
                             <div class="panel-header">
+                                <span>Todos</span>
+                                <button class="panel-action" id="add-todo">+ Add</button>
+                            </div>
+                            <div class="panel-body compact" id="todo-list">
+                                <div class="empty-state">No todos</div>
+                            </div>
+                        </div>
+
+                        <div class="panel">
+                            <div class="panel-header">
                                 <span>Recent Tool Calls</span>
                                 <button class="panel-action" id="clear-tools">Clear</button>
                             </div>
@@ -125,6 +152,25 @@
                 </div>
             </div>
 
+            <!-- Workspace View -->
+            <div class="view" id="view-workspace">
+                <div class="workspace">
+                    <div class="workspace-sidebar">
+                        <div class="workspace-header">Files</div>
+                        <div class="file-tree" id="file-tree">
+                            <div class="empty-state">Loading...</div>
+                        </div>
+                    </div>
+                    <div class="workspace-main">
+                        <div class="workspace-toolbar">
+                            <span id="editor-path">Select a file</span>
+                            <button class="btn-primary" id="save-file-btn" style="display:none">Save</button>
+                        </div>
+                        <textarea class="workspace-editor" id="workspace-editor" placeholder="Select a file from the left to view or edit..." readonly></textarea>
+                    </div>
+                </div>
+            </div>
+
             <!-- Evolution View -->
             <div class="view" id="view-evolution">
                 <div class="page-header">
@@ -140,7 +186,7 @@
             <div class="view" id="view-memory">
                 <div class="page-header">
                     <h2>Memory Explorer</h2>
-                        <p>Search across session history, user preferences, and learned patterns.</p>
+                    <p>Search across session history, user preferences, and learned patterns.</p>
                 </div>
                 <div class="memory-toolbar">
                     <input type="text" id="memory-search" placeholder="Search memory...">
@@ -194,3 +240,468 @@
     <script src="/static/main.js"></script>
 </body>
 </html>
+                            <div class="panel-header">
+                                <span>Agent State</span>
+                                <span class="panel-badge" id="state-badge">IDLE</span>
+                            </div>
+                            <div class="panel-body">
+                                <div class="state-item">
+                                    <div class="state-label">Current Thought</div>
+                                    <div class="state-value" id="current-thought">Waiting for input...</div>
+                                </div>
+                                <div class="state-item">
+                                    <div class="state-label">Active Tool</div>
+                                    <div class="state-value" id="active-tool">—</div>
+                                </div>
+                                <div class="state-item">
+                                    <div class="state-label">File Operation</div>
+                                    <div class="state-value" id="active-file">—</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="panel">
+                            <div class="panel-header">
+                                <span>Recent Tool Calls</span>
+                                <button class="panel-action" id="clear-tools">Clear</button>
+                            </div>
+                            <div class="panel-body compact" id="recent-tools">
+                                <div class="empty-state">No tools used yet</div>
+                            </div>
+                        </div>
+
+                        <div class="panel">
+                            <div class="panel-header">
+                                <span>Self-Modification Log</span>
+                            </div>
+                            <div class="panel-body compact" id="self-mod-log">
+                                <div class="empty-state">No self-modifications yet</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Workspace View -->
+            <div class="view" id="view-workspace">
+                <div class="workspace">
+                    <div class="workspace-sidebar">
+                        <div class="workspace-header">Files</div>
+                        <div class="file-tree" id="file-tree">
+                            <div class="empty-state">Loading...</div>
+                        </div>
+                    </div>
+                    <div class="workspace-main">
+                        <div class="workspace-toolbar">
+                            <span id="editor-path">Select a file</span>
+                            <button class="btn-primary" id="save-file-btn" style="display:none">Save</button>
+                        </div>
+                        <textarea class="workspace-editor" id="workspace-editor" placeholder="Select a file from the left to view or edit..." readonly></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Evolution View -->
+            <div class="view" id="view-evolution">
+                <div class="page-header">
+                    <h2>Evolution Timeline</h2>
+                    <p>Track Gene generation, Skill iteration, and validation results.</p>
+                </div>
+                <div class="timeline" id="evolution-timeline">
+                    <div class="empty-state">No evolution events yet. Start a conversation to trigger learning.</div>
+                </div>
+            </div>
+
+            <!-- Memory View -->
+            <div class="view" id="view-memory">
+                <div class="page-header">
+                    <h2>Memory Explorer</h2>
+                    <p>Search across session history, user preferences, and learned patterns.</p>
+                </div>
+                <div class="memory-toolbar">
+                    <input type="text" id="memory-search" placeholder="Search memory...">
+                    <button class="btn-primary" id="memory-search-btn">Search</button>
+                </div>
+                <div class="memory-results" id="memory-results">
+                    <div class="empty-state">Enter a query to search memory.</div>
+                </div>
+            </div>
+
+            <!-- Tools View -->
+            <div class="view" id="view-tools">
+                <div class="page-header">
+                    <h2>Tool Execution Log</h2>
+                    <p>Every tool call, argument, and result is logged here for transparency.</p>
+                </div>
+                <div class="tool-log" id="tool-log">
+                    <div class="empty-state">No tool executions yet.</div>
+                </div>
+            </div>
+
+            <!-- Settings View -->
+            <div class="view" id="view-settings">
+                <div class="settings-panel">
+                    <h2>LLM Configuration</h2>
+                    <div class="form-group">
+                        <label>Provider</label>
+                        <select id="setting-provider">
+                            <option value="openai">OpenAI</option>
+                            <option value="anthropic">Anthropic</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>API Key</label>
+                        <input type="password" id="setting-apikey" placeholder="sk-...">
+                    </div>
+                    <div class="form-group">
+                        <label>Model</label>
+                        <input type="text" id="setting-model" placeholder="gpt-4o or claude-3-5-sonnet">
+                    </div>
+                    <div class="form-group">
+                        <label>Temperature</label>
+                        <input type="range" id="setting-temp" min="0" max="2" step="0.1" value="0.7">
+                        <span class="range-value" id="temp-value">0.7</span>
+                    </div>
+                    <button class="btn-primary" id="save-settings">Save Settings</button>
+                </div>
+            </div>
+        </main>
+    </div>
+    <script src="/static/main.js"></script>
+</body>
+</html>
+                            <div class="panel-header">
+                                <span>Todos</span>
+                                <button class="panel-action" id="add-todo">+ Add</button>
+                            </div>
+                            <div class="panel-body compact" id="todo-list">
+                                <div class="empty-state">No todos</div>
+                            </div>
+                        </div>
+
+                        <div class="panel"svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/></svg>
+                        <span id="evolution-count">0 Genes</span>
+                    </div>
+                    <div class="stat-pill" id="todo-pill">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                        <span id="todo-count">0 Todos</span>
+                    </div>
+                    <div class="stat-pill" id="cost-pill">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M16 8h-6a2 2 0 0 0 0 4h4a2 2 0 0 1 0 4H8"/><path d="M12 18V6"/></svg>
+                        <span id="cost-display">$0.0000</span>
+                    </div>
+                    <div class="stat-pill" id="token-pill">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
+                        <span id="token-display">0 tokens</span>
+                    </div>
+                    <span class="model-badge" id="model-badge">default</span>
+                </div>
+            </header>
+
+            <!-- Dashboard View -->
+            <div class="view active" id="view-dashboard">
+                <div class="dashboard">
+                    <!-- Left: Chat -->
+                    <div class="dashboard-left">
+                        <div class="plan-mode-bar" id="plan-mode-bar" style="display:none">
+                            <span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg> Plan Mode Active — XMclaw will think before acting</span>
+                            <button id="cancel-plan">Cancel</button>
+                        </div>
+                        <div class="chat" id="chat"></div>
+                        <div class="input-area">
+                            <div class="input-actions">
+                                <button class="input-action" id="toggle-plan" title="Toggle Plan Mode">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+                                    <span>Plan</span>
+                                </button>
+                            </div>
+                            <textarea id="input" placeholder="Command XMclaw..." rows="1"></textarea>
+                            <button id="send" aria-label="Send">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Right: Agent Status Panel -->
+                    <div class="dashboard-right">
+                        <div class="panel">
+                            <div class="panel-header">
+                                <span>Agent State</span>
+                                <span class="panel-badge" id="state-badge">IDLE</span>
+                            </div>
+                            <div class="panel-body">
+                                <div class="state-item">
+                                    <div class="state-label">Current Thought</div>
+                                    <div class="state-value" id="current-thought">Waiting for input...</div>
+                                </div>
+                                <div class="state-item">
+                                    <div class="state-label">Active Tool</div>
+                                    <div class="state-value" id="active-tool">—</div>
+                                </div>
+                                <div class="state-item">
+                                    <div class="state-label">File Operation</div>
+                                    <div class="state-value" id="active-file">—</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="panel">
+                            <div class="panel-header">
+                                <span>Todos</span>
+                                <button class="panel-action" id="add-todo">+ Add</button>
+                            </div>
+                            <div class="panel-body compact" id="todo-list">
+                                <div class="empty-state">No todos</div>
+                            </div>
+                        </div>
+
+                        <div class="panel">
+                            <div class="panel-header">
+                                <span>Recent Tool Calls</span>
+                                <button class="panel-action" id="clear-tools">Clear</button>
+                            </div>
+                            <div class="panel-body compact" id="recent-tools">
+                                <div class="empty-state">No tools used yet</div>
+                            </div>
+                        </div>
+
+                        <div class="panel">
+                            <div class="panel-header">
+                                <span>Self-Modification Log</span>
+                            </div>
+                            <div class="panel-body compact" id="self-mod-log">
+                                <div class="empty-state">No self-modifications yet</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Workspace View -->
+            <div class="view" id="view-workspace">
+                <div class="workspace">
+                    <div class="workspace-sidebar">
+                        <div class="workspace-header">Files</div>
+                        <div class="file-tree" id="file-tree">
+                            <div class="empty-state">Loading...</div>
+                        </div>
+                    </div>
+                    <div class="workspace-main">
+                        <div class="workspace-toolbar">
+                            <span id="editor-path">Select a file</span>
+                            <button class="btn-primary" id="save-file-btn" style="display:none">Save</button>
+                        </div>
+                        <textarea class="workspace-editor" id="workspace-editor" placeholder="Select a file from the left to view or edit..." readonly></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Evolution View -->
+            <div class="view" id="view-evolution">
+                <div class="page-header">
+                    <h2>Evolution Timeline</h2>
+                    <p>Track Gene generation, Skill iteration, and validation results.</p>
+                </div>
+                <div class="timeline" id="evolution-timeline">
+                    <div class="empty-state">No evolution events yet. Start a conversation to trigger learning.</div>
+                </div>
+            </div>
+
+            <!-- Memory View -->
+            <div class="view" id="view-memory">
+                <div class="page-header">
+                    <h2>Memory Explorer</h2>
+                    <p>Search across session history, user preferences, and learned patterns.</p>
+                </div>
+                <div class="memory-toolbar">
+                    <input type="text" id="memory-search" placeholder="Search memory...">
+                    <button class="btn-primary" id="memory-search-btn">Search</button>
+                </div>
+                <div class="memory-results" id="memory-results">
+                    <div class="empty-state">Enter a query to search memory.</div>
+                </div>
+            </div>
+
+            <!-- Tools View -->
+            <div class="view" id="view-tools">
+                <div class="page-header">
+                    <h2>Tool Execution Log</h2>
+                    <p>Every tool call, argument, and result is logged here for transparency.</p>
+                </div>
+                <div class="tool-log" id="tool-log">
+                    <div class="empty-state">No tool executions yet.</div>
+                </div>
+            </div>
+
+            <!-- Settings View -->
+            <div class="view" id="view-settings">
+                <div class="settings-panel">
+                    <h2>LLM Configuration</h2>
+                    <div class="form-group">
+                        <label>Provider</label>
+                        <select id="setting-provider">
+                            <option value="openai">OpenAI</option>
+                            <option value="anthropic">Anthropic</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>API Key</label>
+                        <input type="password" id="setting-apikey" placeholder="sk-...">
+                    </div>
+                    <div class="form-group">
+                        <label>Model</label>
+                        <input type="text" id="setting-model" placeholder="gpt-4o or claude-3-5-sonnet">
+                    </div>
+                    <div class="form-group">
+                        <label>Temperature</label>
+                        <input type="range" id="setting-temp" min="0" max="2" step="0.1" value="0.7">
+                        <span class="range-value" id="temp-value">0.7</span>
+                    </div>
+                    <button class="btn-primary" id="save-settings">Save Settings</button>
+                </div>
+            </div>
+        </main>
+    </div>
+    <script src="/static/main.js"></script>
+</body>
+</html>
+                            <div class="panel-header">
+                                <span>Agent State</span>
+                                <span class="panel-badge" id="state-badge">IDLE</span>
+                            </div>
+                            <div class="panel-body">
+                                <div class="state-item">
+                                    <div class="state-label">Current Thought</div>
+                                    <div class="state-value" id="current-thought">Waiting for input...</div>
+                                </div>
+                                <div class="state-item">
+                                    <div class="state-label">Active Tool</div>
+                                    <div class="state-value" id="active-tool">—</div>
+                                </div>
+                                <div class="state-item">
+                                    <div class="state-label">File Operation</div>
+                                    <div class="state-value" id="active-file">—</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="panel">
+                            <div class="panel-header">
+                                <span>Recent Tool Calls</span>
+                                <button class="panel-action" id="clear-tools">Clear</button>
+                            </div>
+                            <div class="panel-body compact" id="recent-tools">
+                                <div class="empty-state">No tools used yet</div>
+                            </div>
+                        </div>
+
+                        <div class="panel">
+                            <div class="panel-header">
+                                <span>Self-Modification Log</span>
+                            </div>
+                            <div class="panel-body compact" id="self-mod-log">
+                                <div class="empty-state">No self-modifications yet</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Workspace View -->
+            <div class="view" id="view-workspace">
+                <div class="workspace">
+                    <div class="workspace-sidebar">
+                        <div class="workspace-header">Files</div>
+                        <div class="file-tree" id="file-tree">
+                            <div class="empty-state">Loading...</div>
+                        </div>
+                    </div>
+                    <div class="workspace-main">
+                        <div class="workspace-toolbar">
+                            <span id="editor-path">Select a file</span>
+                            <button class="btn-primary" id="save-file-btn" style="display:none">Save</button>
+                        </div>
+                        <textarea class="workspace-editor" id="workspace-editor" placeholder="Select a file from the left to view or edit..." readonly></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Evolution View -->
+            <div class="view" id="view-evolution">
+                <div class="page-header">
+                    <h2>Evolution Timeline</h2>
+                    <p>Track Gene generation, Skill iteration, and validation results.</p>
+                </div>
+                <div class="timeline" id="evolution-timeline">
+                    <div class="empty-state">No evolution events yet. Start a conversation to trigger learning.</div>
+                </div>
+            </div>
+
+            <!-- Memory View -->
+            <div class="view" id="view-memory">
+                <div class="page-header">
+                    <h2>Memory Explorer</h2>
+                    <p>Search across session history, user preferences, and learned patterns.</p>
+                </div>
+                <div class="memory-toolbar">
+                    <input type="text" id="memory-search" placeholder="Search memory...">
+                    <button class="btn-primary" id="memory-search-btn">Search</button>
+                </div>
+                <div class="memory-results" id="memory-results">
+                    <div class="empty-state">Enter a query to search memory.</div>
+                </div>
+            </div>
+
+            <!-- Tools View -->
+            <div class="view" id="view-tools">
+                <div class="page-header">
+                    <h2>Tool Execution Log</h2>
+                    <p>Every tool call, argument, and result is logged here for transparency.</p>
+                </div>
+                <div class="tool-log" id="tool-log">
+                    <div class="empty-state">No tool executions yet.</div>
+                </div>
+            </div>
+
+            <!-- Settings View -->
+            <div class="view" id="view-settings">
+                <div class="settings-panel">
+                    <h2>LLM Configuration</h2>
+                    <div class="form-group">
+                        <label>Provider</label>
+                        <select id="setting-provider">
+                            <option value="openai">OpenAI</option>
+                            <option value="anthropic">Anthropic</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>API Key</label>
+                        <input type="password" id="setting-apikey" placeholder="sk-...">
+                    </div>
+                    <div class="form-group">
+                        <label>Model</label>
+                        <input type="text" id="setting-model" placeholder="gpt-4o or claude-3-5-sonnet">
+                    </div>
+                    <div class="form-group">
+                        <label>Temperature</label>
+                        <input type="range" id="setting-temp" min="0" max="2" step="0.1" value="0.7">
+                        <span class="range-value" id="temp-value">0.7</span>
+                    </div>
+                    <button class="btn-primary" id="save-settings">Save Settings</button>
+                </div>
+            </div>
+        </main>
+    </div>
+    <script src="/static/main.js"></script>
+</body>
+</html>
+                            <div class="panel-header">
+                                <span>Todos</span>
+                                <button class="panel-action" id="add-todo">+ Add</button>
+                            </div>
+                            <div class="panel-body compact" id="todo-list">
+                                <div class="empty-state">No todos</div>
+                            </div>
+                        </div>
+
+                        <div class="panel"

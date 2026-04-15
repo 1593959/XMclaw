@@ -11,6 +11,7 @@ class EvolutionScheduler:
         self.engine = EvolutionEngine(agent_id)
         self.scheduler = AsyncIOScheduler()
         self.config = DaemonConfig.load()
+        self.running = False
 
     async def start(self) -> None:
         await self.engine.initialize()
@@ -23,10 +24,12 @@ class EvolutionScheduler:
             replace_existing=True,
         )
         self.scheduler.start()
+        self.running = True
         logger.info("evolution_scheduler_started", interval_minutes=interval)
 
     def stop(self) -> None:
         self.scheduler.shutdown()
+        self.running = False
         logger.info("evolution_scheduler_stopped")
 
     async def _run_cycle(self) -> None:
