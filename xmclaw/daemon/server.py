@@ -203,10 +203,10 @@ async def update_tasks(agent_id: str, request: Request):
 @app.get("/api/evolution/status")
 async def evolution_status():
     # Read from evolution engine state if available; fallback to filesystem
-    genes_dir = BASE_DIR / "xmclaw" / "genes"
-    skills_dir = BASE_DIR / "skills" if (BASE_DIR / "skills").exists() else BASE_DIR / "xmclaw" / "skills"
-    gene_count = len(list(genes_dir.glob("*.json"))) if genes_dir.exists() else 0
-    skill_count = len([d for d in skills_dir.iterdir() if d.is_dir()]) if skills_dir.exists() else 0
+    genes_dir = BASE_DIR / "shared" / "genes"
+    skills_dir = BASE_DIR / "shared" / "skills"
+    gene_count = len(list(genes_dir.glob("gene_*.py"))) if genes_dir.exists() else 0
+    skill_count = len(list(skills_dir.glob("skill_*.py"))) if skills_dir.exists() else 0
     return {
         "enabled": config.evolution.get("enabled", True),
         "gene_count": gene_count,

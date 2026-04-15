@@ -36,7 +36,9 @@ def start_daemon() -> int:
     if sys.platform == "win32":
         proc = subprocess.Popen(
             [sys.executable, "-m", "xmclaw.daemon.server"],
-            creationflags=subprocess.CREATE_NEW_CONSOLE,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         PID_FILE.write_text(str(proc.pid))
         print(f"Daemon started with PID {proc.pid}")

@@ -458,9 +458,12 @@ class MainWindow(QMainWindow):
         self.memory_search_box = QLineEdit()
         self.memory_search_box.setPlaceholderText("输入关键词搜索记忆...")
         search_row.addWidget(self.memory_search_box)
-        search_btn = QPushButton("搜索")
-        search_btn.clicked.connect(self._search_memory)
-        search_row.addWidget(search_btn)
+        search_file_btn = QPushButton("文件搜索")
+        search_file_btn.clicked.connect(self._search_memory)
+        search_row.addWidget(search_file_btn)
+        search_vec_btn = QPushButton("向量搜索")
+        search_vec_btn.clicked.connect(self._search_memory_vector)
+        search_row.addWidget(search_vec_btn)
         layout.addLayout(search_row)
 
         self.memory_result_list = QListWidget()
@@ -712,6 +715,9 @@ class MainWindow(QMainWindow):
     def _refresh_all_data(self):
         self._load_todos()
         self._load_tasks()
+        self._load_workspace()
+        self._load_evolution()
+        self._load_settings()
 
     def _load_todos(self):
         path = get_agent_dir(self.agent_id) / "workspace" / "todos.json"
@@ -904,8 +910,33 @@ class MainWindow(QMainWindow):
         for r in results[:20]:
             self.memory_result_list.addItem(r)
 
+    def _search_memory_vector(self):
+        query = self.memory_search_box.text().strip()
+        self.memory_result_list.clear()
+        if not query:
+            return
+        try:
+            import requests
+            url = f"http://127.0.0.1:8765/api/agent/{self.agent_id}/memory/search"
+            resp = requests.get(url, params={"query": query, "top_k": 10}, timeout=10)
+            data = resp.json()
+            vec = data.get("vector_results", [])
+            files = data.get("file_results", [])
+            if vec:
+                self.memory_result_list.addItem("=== 向量记忆 ===")
+                for r in vec:
+                    self.memory_result_list.addItem(f"[{r.get('source', '?')}] {r.get('content', '')[:300]}")
+            if files:
+                self.memory_result_list.addItem("=== 文件匹配 ===")
+                for r in files:
+                    self.memory_result_list.addItem(f"[{r.get('file', '?')}]\n{r.get('snippet', '')[:300]}")
+            if not vec and not files:
+                self.memory_result_list.addItem("未找到相关记忆")
+        except Exception as e:
+            self.memory_result_list.addItem(f"[向量搜索失败: {e}]")
+
     def _load_settings(self):
-        path = get_agent_dir(self.agent_id) / "agent.json"
+        path = BASE_DIR / "daemon" / "config.json"
         if not path.exists():
             return
         try:
@@ -924,7 +955,7 @@ class MainWindow(QMainWindow):
             pass
 
     def _save_settings(self):
-        path = get_agent_dir(self.agent_id) / "agent.json"
+        path = BASE_DIR / "daemon" / "config.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {}
         if path.exists():
