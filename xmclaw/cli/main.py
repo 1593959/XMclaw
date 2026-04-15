@@ -106,9 +106,9 @@ def memory_search(query: str, agent_id: str = typer.Option("default", "--agent",
 
 
 @app.command()
-def config_show(agent_id: str = typer.Option("default", "--agent", "-a")):
-    """Show agent configuration."""
-    path = get_agent_dir(agent_id) / "agent.json"
+def config_show():
+    """Show daemon configuration."""
+    path = BASE_DIR / "daemon" / "config.json"
     if not path.exists():
         typer.echo("No config found.")
         return

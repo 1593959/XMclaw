@@ -805,10 +805,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "导入失败", str(e))
 
     def _run_git_command(self, command: str):
-        agent_dir = get_agent_dir(self.agent_id)
         try:
             result = subprocess.run(
-                ["git", "-C", str(agent_dir), *command.split()],
+                ["git", "-C", str(BASE_DIR), *command.split()],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -839,11 +838,10 @@ class MainWindow(QMainWindow):
         if not message:
             QMessageBox.warning(self, "提交失败", "提交信息不能为空")
             return
-        agent_dir = get_agent_dir(self.agent_id)
         try:
-            subprocess.run(["git", "-C", str(agent_dir), "add", "."], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(BASE_DIR), "add", "."], check=True, capture_output=True)
             result = subprocess.run(
-                ["git", "-C", str(agent_dir), "commit", "-m", message],
+                ["git", "-C", str(BASE_DIR), "commit", "-m", message],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
