@@ -2,7 +2,7 @@
 
 **Local-first, self-evolving AI Agent runtime.**
 
-Inspired by OpenClaw, Hermes Agent, and Claude Code.
+
 
 [Website](#) · [Docs](./docs) · [Architecture](./docs/ARCHITECTURE.md) · [Evolution](./docs/EVOLUTION.md) · [Tools](./docs/TOOLS.md)
 
