@@ -21,13 +21,16 @@ from xmclaw.tools.skill_tool import SkillTool
 from xmclaw.tools.memory_search import MemorySearchTool
 from xmclaw.tools.git import GitTool
 from xmclaw.tools.computer_use import ComputerUseTool
+from xmclaw.tools.test_tool import TestTool
+from xmclaw.llm.router import LLMRouter
 from xmclaw.utils.log import logger
 from xmclaw.utils.paths import BASE_DIR
 
 
 class ToolRegistry:
-    def __init__(self):
+    def __init__(self, llm_router: LLMRouter | None = None):
         self._tools: dict[str, Tool] = {}
+        self.llm = llm_router
 
     async def load_all(self) -> None:
         """Load all built-in tools and auto-generated skills."""
@@ -49,6 +52,7 @@ class ToolRegistry:
             MemorySearchTool(),
             GitTool(),
             ComputerUseTool(),
+            TestTool(llm_router=self.llm),
         ]
         for tool in tools:
             self._tools[tool.name] = tool

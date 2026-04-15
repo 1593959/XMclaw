@@ -9,7 +9,7 @@ from xmclaw.utils.log import logger
 class AgentOrchestrator:
     def __init__(self):
         self.llm = LLMRouter()
-        self.tools = ToolRegistry()
+        self.tools = ToolRegistry(llm_router=self.llm)
         self.memory = MemoryManager(llm_router=self.llm)
         self.agents: dict[str, AgentLoop] = {}
 

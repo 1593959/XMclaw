@@ -35,7 +35,7 @@ Task: {task}
 
         # Create a fresh sub-agent with its own isolated state
         llm = LLMRouter()
-        tools = ToolRegistry()
+        tools = ToolRegistry(llm_router=llm)
         memory = MemoryManager()
         await tools.load_all()
         await memory.initialize()
