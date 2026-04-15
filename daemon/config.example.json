@@ -1,0 +1,37 @@
+{
+  "llm": {
+    "default_provider": "anthropic",
+    "openai": {
+      "api_key": "",
+      "base_url": "https://api.openai.com/v1",
+      "default_model": "gpt-4.1"
+    },
+    "anthropic": {
+      "api_key": "",
+      "base_url": "https://api.anthropic.com/v1",
+      "default_model": "claude-3-5-sonnet-20241022"
+    }
+  },
+  "evolution": {
+    "enabled": true,
+    "interval_minutes": 30,
+    "daily_review_hour": 22,
+    "vfm_threshold": 20,
+    "max_genes_per_day": 10,
+    "auto_rollback": true
+  },
+  "memory": {
+    "vector_db_path": "shared/vector_db",
+    "session_retention_days": 7,
+    "max_context_tokens": 120000
+  },
+  "tools": {
+    "bash_timeout": 300,
+    "sandbox_timeout": 30,
+    "browser_headless": false
+  },
+  "gateway": {
+    "host": "127.0.0.1",
+    "port": 8765
+  }
+}

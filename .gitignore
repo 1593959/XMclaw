@@ -52,3 +52,7 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+
+# Config files with secrets
+daemon/config.json
+agents/*/agent.json

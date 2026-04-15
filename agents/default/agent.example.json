@@ -1,0 +1,33 @@
+{
+  "id": "default",
+  "name": "XMclaw Default Agent",
+  "llm": {
+    "provider": "anthropic",
+    "model": "claude-3-5-sonnet-20241022"
+  },
+  "personality": {
+    "mood": "focused",
+    "style": "direct",
+    "proactive": true
+  },
+  "memory": {
+    "enabled": true,
+    "max_history": 20
+  },
+  "tools": {
+    "enabled": [
+      "file_read",
+      "file_write",
+      "file_edit",
+      "bash",
+      "web_search",
+      "browser",
+      "todo",
+      "memory_search"
+    ]
+  },
+  "evolution": {
+    "enabled": true,
+    "auto_learn": true
+  }
+}
