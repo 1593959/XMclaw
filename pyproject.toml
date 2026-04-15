@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "xmclaw"
+version = "0.1.0"
+description = "XMclaw - A local-first, self-evolving AI Agent runtime"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "websockets>=14.0",
+    "PySide6>=6.8.0",
+    "rich>=13.9.0",
+    "prompt-toolkit>=3.0.50",
+    "typer>=0.15.0",
+    "openai>=1.60.0",
+    "anthropic>=0.49.0",
+    "playwright>=1.50.0",
+    "chromadb>=0.6.0",
+    "apscheduler>=3.11.0",
+    "structlog>=25.1.0",
+    "pydantic>=2.10.0",
+    "httpx>=0.28.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.25.0",
+    "ruff>=0.9.0",
+    "mypy>=1.14.0",
+]
+
+[project.scripts]
+xmclaw = "xmclaw.cli.main:app"
+xmclaw-desktop = "xmclaw.desktop.app:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
