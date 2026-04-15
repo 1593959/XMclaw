@@ -19,6 +19,8 @@ from xmclaw.tools.ask_user import AskUserTool
 from xmclaw.tools.agent_tool import AgentTool
 from xmclaw.tools.skill_tool import SkillTool
 from xmclaw.tools.memory_search import MemorySearchTool
+from xmclaw.tools.git import GitTool
+from xmclaw.tools.computer_use import ComputerUseTool
 from xmclaw.utils.log import logger
 from xmclaw.utils.paths import BASE_DIR
 
@@ -45,6 +47,8 @@ class ToolRegistry:
             AgentTool(),
             SkillTool(),
             MemorySearchTool(),
+            GitTool(),
+            ComputerUseTool(),
         ]
         for tool in tools:
             self._tools[tool.name] = tool
