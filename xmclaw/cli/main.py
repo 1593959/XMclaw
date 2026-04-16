@@ -7,6 +7,7 @@ from pathlib import Path
 from xmclaw.daemon.lifecycle import start_daemon, stop_daemon, daemon_status
 from xmclaw.cli.client import run_cli_client
 from xmclaw.utils.paths import BASE_DIR, get_agent_dir
+from xmclaw.tools.registry import ToolRegistry
 
 app = typer.Typer(help="XMclaw - Local-first AI Agent runtime")
 
@@ -113,6 +114,57 @@ def config_show():
         typer.echo("No config found.")
         return
     typer.echo(path.read_text(encoding="utf-8"))
+
+
+
+@app.command("test")
+def test_cmd(
+    action: str = typer.Option("run_all", "--action", "-a", help="generate | run | run_all"),
+    target: str = typer.Option("", "--target", "-t", help="Target file path for generate/run"),
+):
+    """Auto-generate and run tests."""
+    async def _run():
+        reg = ToolRegistry()
+        await reg.load_all()
+        args = {"action": action}
+        if target:
+            args["target"] = target
+        result = await reg.execute("test", args)
+        typer.echo(result)
+    asyncio.run(_run())
+
+
+@app.command("computer-use")
+def computer_use(
+    action: str = typer.Argument(..., help="screenshot | click | move | type | keypress | scroll | drag"),
+    x: int = typer.Option(0, "--x", help="X coordinate"),
+    y: int = typer.Option(0, "--y", help="Y coordinate"),
+    end_x: int = typer.Option(0, "--end-x", help="End X for drag"),
+    end_y: int = typer.Option(0, "--end-y", help="End Y for drag"),
+    text: str = typer.Option("", "--text", "-t", help="Text to type"),
+    key: str = typer.Option("", "--key", "-k", help="Key or combo (e.g. ctrl+c)"),
+    scroll_y: int = typer.Option(0, "--scroll-y", help="Scroll amount"),
+):
+    """Remote control the computer desktop."""
+    async def _run():
+        reg = ToolRegistry()
+        await reg.load_all()
+        args = {"action": action}
+        if action in ("click", "move", "scroll", "drag"):
+            args["x"] = x
+            args["y"] = y
+        if action == "drag":
+            args["end_x"] = end_x
+            args["end_y"] = end_y
+        if action == "type":
+            args["text"] = text
+        if action == "keypress":
+            args["key"] = key
+        if action == "scroll":
+            args["scroll_y"] = scroll_y
+        result = await reg.execute("computer_use", args)
+        typer.echo(result)
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

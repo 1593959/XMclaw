@@ -41,7 +41,9 @@ On startup, the app:
 │  Evo  │  │                        ├─────────────────────┤  │
 │  Mem  │  │                        │   Todos             │  │
 │  Logs │  │                        │   Tasks             │  │
-│  Set  │  └────────────────────────┴─────────────────────┘  │
+│  Comp │  │                        ├─────────────────────┤  │
+│  Set  │  │                        │   File operation    │  │
+│       │  └────────────────────────┴─────────────────────┘  │
 └───────┴─────────────────────────────────────────────────────┘
 ```
 
@@ -98,7 +100,18 @@ Searched sources:
 ### Tool Logs
 - A running list of every tool call the agent has executed.
 - Shows tool name, arguments, and result summary.
+- **Test panel**: Generate tests for a target file, run a specific test file, or run the full suite (`pytest tests/`).
 - Click **Clear logs** to reset the view.
+
+### Computer Use
+Remote control your computer directly from the desktop app:
+- **Screenshot**: Capture the full desktop and display it in the app.
+- **Click / Move**: Set X/Y coordinates and click or move the mouse.
+- **Type / Keypress**: Send text or key combinations (e.g., `Ctrl+C`).
+- **Scroll**: Scroll the mouse wheel at a given position.
+- **Drag**: Drag from start coordinates to end coordinates.
+
+> Safety: `pyautogui.FAILSAFE` is enabled. Move the mouse to a screen corner to abort any ongoing action.
 
 ### Settings
 | Setting | Description |

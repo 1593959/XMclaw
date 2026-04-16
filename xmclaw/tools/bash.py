@@ -27,9 +27,9 @@ class BashTool(Tool):
 
     # Dangerous patterns that should be blocked or require explicit confirmation
     DANGEROUS_PATTERNS = [
-        (r"\brm\s+-rf\s+/\b", "Destructive filesystem operation"),
+        (r"\brm\s+-rf\s+/", "Destructive filesystem operation"),
         (r"\bdd\s+if=.*of=/dev/", "Direct disk write"),
-        (r"\bmv\s+.*\s+/\b", "Moving files to root"),
+        (r"\bmv\s+.*\s+/", "Moving files to root"),
         (r"\bformat\b", "Disk format operation"),
         (r"\bdel\s+/[fFq]", "Force delete operation"),
         (r"\brd\s+/s\s+/q", "Force directory removal"),

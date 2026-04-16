@@ -96,6 +96,41 @@ xmclaw memory-search "project progress" --agent default
 xmclaw config-show
 ```
 
+### Testing
+
+```bash
+# Run the full test suite
+xmclaw test --action run_all
+
+# Generate tests for a specific module
+xmclaw test --action generate --target xmclaw/tools/bash.py
+
+# Run a specific test file
+xmclaw test --action run --target tests/test_bash.py
+```
+
+### Computer Use
+
+```bash
+# Take a screenshot
+xmclaw computer-use screenshot
+
+# Click at coordinates
+xmclaw computer-use click --x 500 --y 300
+
+# Type text
+xmclaw computer-use type --text "hello world"
+
+# Press a key combo
+xmclaw computer-use keypress --key ctrl+c
+
+# Scroll
+xmclaw computer-use scroll --x 500 --y 300 --scroll-y -200
+
+# Drag
+xmclaw computer-use drag --x 100 --y 100 --end-x 300 --end-y 300
+```
+
 ---
 
 ## Event rendering
