@@ -342,5 +342,20 @@
     </div>
 
     <script src="/static/main.js"></script>
+    <script>
+        console.log('[INLINE DEBUG] main.js loaded');
+        console.log('[INLINE DEBUG] typeof connect =', typeof connect);
+        console.log('[INLINE DEBUG] WS_URL =', typeof WS_URL !== 'undefined' ? WS_URL : 'UNDEFINED');
+        console.log('[INLINE DEBUG] document.readyState =', document.readyState);
+        // If connect is not a function after 2s, JS definitely crashed
+        setTimeout(() => {
+            if (typeof connect !== 'function') {
+                console.error('[INLINE DEBUG] FATAL: connect() is not defined! JS crashed before this line.');
+            } else {
+                console.log('[INLINE DEBUG] connect is defined, calling it manually...');
+                connect();
+            }
+        }, 2000);
+    </script>
 </body>
 </html>

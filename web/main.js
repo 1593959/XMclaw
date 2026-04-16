@@ -594,7 +594,9 @@ async async function loadEvolutionStatus() {
 
 // WebSocket
 function connect() {
+    console.log('[DEBUG] connect() called, WS_URL =', WS_URL);
     ws = new WebSocket(WS_URL);
+    console.log('[DEBUG] WebSocket created, readyState =', ws.readyState);
 
     ws.onopen = () => {
         statusDot.classList.add('connected');
@@ -915,6 +917,16 @@ input.addEventListener('input', () => {
 
 loadSettings();
 connect();
+
+// Global error handler for debugging
+window.addEventListener('error', (e) => {
+    console.error('[GLOBAL ERROR]', e.message, 'at', e.filename, ':', e.lineno);
+});
+
+// Periodic WS status reporter
+setInterval(() => {
+    if (ws) console.log('[DEBUG WS] readyState =', ws.readyState, '| url =', ws.url);
+}, 3000);
 
 // Memory search
 async function loadMemorySearch() {

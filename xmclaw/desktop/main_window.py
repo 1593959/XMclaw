@@ -97,8 +97,11 @@ class MainWindow(QMainWindow):
         self.web_view.settings().setAttribute(QWebEngineSettings.JavascriptEnabled, True)
         self.web_view.settings().setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
         self.web_view.page().setBackgroundColor(Qt.white)
-        self.web_view.setPage(_DebugWebEnginePage(self.web_view.page()))
+        # Replace page with debug version that captures JS console
+        debug_page = _DebugWebEnginePage(self.web_view.page())
+        self.web_view.setPage(debug_page)
         self.web_view.loadFinished.connect(self._on_load_finished)
+        print("[Desktop] WebView configured with JS console capture", file=sys.stderr)
         self.web_view.load(QUrl(WEB_URL))
         layout.addWidget(self.web_view)
 
