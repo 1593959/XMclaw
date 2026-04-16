@@ -3,359 +3,362 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>XMclaw</title>
+    <title>XMclaw — AI Agent OS</title>
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-    <div class="app">
-        <!-- 侧边栏 -->
-        <aside class="sidebar">
-            <div class="sidebar-header">
-                <div class="logo">XMclaw</div>
-                <div class="tagline">自进化智能体操作系统</div>
+<div class="app">
+    <!-- ===== SIDEBAR ===== -->
+    <aside class="sidebar">
+        <div class="sidebar-brand">
+            <div class="brand-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
             </div>
-            <nav class="nav">
-                <a href="#" class="nav-item active" data-view="dashboard">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
-                    <span>仪表盘</span>
-                </a>
-                <a href="#" class="nav-item" data-view="workspace">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-                    <span>工作区</span>
-                </a>
-                <a href="#" class="nav-item" data-view="evolution">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/><path d="M18 12h4"/><path d="m16.2 16.2 2.9 2.9"/><path d="M12 18v4"/><path d="m4.9 19.1 2.9-2.9"/><path d="M2 12h4"/><path d="m4.9 4.9 2.9 2.9"/></svg>
-                    <span>进化</span>
-                </a>
-                <a href="#" class="nav-item" data-view="memory">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10H12V2z"/><path d="M12 2a10 10 0 0 1 10 10"/><path d="M12 12 21.9 9.6"/></svg>
-                    <span>记忆</span>
-                </a>
-                <a href="#" class="nav-item" data-view="tools">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-                    <span>工具日志</span>
-                </a>
-                <a href="#" class="nav-item" data-view="settings">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                    <span>设置</span>
-                </a>
-            </nav>
-            <div class="sidebar-footer">
-                <div class="status-row">
-                    <div class="status-dot" id="status-dot"></div>
-                    <span id="status-text">未连接</span>
-                </div>
+            <div>
+                <div class="brand-name">XMclaw</div>
+                <div class="brand-tagline">AI Agent OS</div>
             </div>
-        </aside>
+        </div>
 
-        <!-- 主内容区 -->
-        <main class="main">
-            <div class="topbar">
-                <div class="topbar-title" id="topbar-title">仪表盘</div>
-                <div class="topbar-meta">
-                    <div class="stat-pill">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/><path d="M18 12h4"/><path d="m16.2 16.2 2.9 2.9"/><path d="M12 18v4"/><path d="m4.9 19.1 2.9-2.9"/><path d="M2 12h4"/><path d="m4.9 4.9 2.9 2.9"/></svg>
-                        <span id="evolution-count">0 基因 · 0 技能</span>
-                    </div>
-                    <div class="stat-pill">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-                        <span id="todo-count">0 待办</span>
-                    </div>
-                    <div class="stat-pill">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-                        <span id="cost-display">$0.0000</span>
-                    </div>
-                    <div class="stat-pill">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-                        <span id="token-display">0 tokens</span>
-                    </div>
-                    <div class="model-badge" id="model-badge">default</div>
-                </div>
-            </div>
+        <nav class="nav">
+            <a href="#" class="nav-item active" data-view="dashboard">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+                <span>仪表盘</span>
+            </a>
+            <a href="#" class="nav-item" data-view="workspace">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                <span>工作区</span>
+            </a>
+            <a href="#" class="nav-item" data-view="evolution">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/><path d="M18 12h4"/><path d="m16.2 16.2 2.9 2.9"/><path d="M12 18v4"/><path d="m4.9 19.1 2.9-2.9"/><path d="M2 12h4"/><path d="m4.9 4.9 2.9 2.9"/></svg>
+                <span>进化</span>
+            </a>
+            <a href="#" class="nav-item" data-view="memory">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>
+                <span>记忆</span>
+            </a>
+            <a href="#" class="nav-item" data-view="tools">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+                <span>工具日志</span>
+            </a>
+            <a href="#" class="nav-item" data-view="settings">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                <span>设置</span>
+            </a>
+        </nav>
 
-            <!-- 视图容器 -->
-            <div class="content">
-                <!-- 仪表盘 -->
-                <div class="view active" id="view-dashboard">
-                    <div class="dashboard">
-                        <!-- 左侧聊天 -->
-                        <div class="dashboard-left">
-                            <div class="plan-mode-bar" id="plan-mode-bar" style="display:none">
-                                <span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg> 计划模式已开启 — XMclaw 将先思考再行动</span>
-                                <button id="cancel-plan">取消</button>
-                            </div>
-                            <div class="chat" id="chat"></div>
-                            <div class="input-area">
-                                <div class="input-actions">
-                                    <button class="input-action" id="toggle-plan" title="切换计划模式">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
-                                        <span>计划</span>
-                                    </button>
-                                </div>
-                                <textarea id="input" placeholder="向 XMclaw 发送指令..." rows="1"></textarea>
-                                <button id="send" aria-label="发送">
-                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        <div class="sidebar-footer">
+            <div class="status-row">
+                <div class="status-dot" id="status-dot"></div>
+                <span id="status-text">未连接</span>
+            </div>
+        </div>
+    </aside>
+
+    <!-- ===== MAIN ===== -->
+    <main class="main">
+        <!-- Topbar -->
+        <div class="topbar">
+            <div class="topbar-title" id="topbar-title">仪表盘</div>
+            <div class="topbar-meta">
+                <div class="stat-pill">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/><path d="M18 12h4"/><path d="m16.2 16.2 2.9 2.9"/><path d="M12 18v4"/><path d="m4.9 19.1 2.9-2.9"/><path d="M2 12h4"/><path d="m4.9 4.9 2.9 2.9"/></svg>
+                    <span id="evolution-count">0 Genes · 0 Skills</span>
+                </div>
+                <div class="stat-pill">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                    <span id="todo-count">0 待办</span>
+                </div>
+                <div class="stat-pill">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                    <span id="cost-display">$0.0000</span>
+                </div>
+                <div class="stat-pill">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                    <span id="token-display">0 tokens</span>
+                </div>
+                <div class="model-badge" id="model-badge">default</div>
+            </div>
+        </div>
+
+        <!-- Views -->
+        <div class="content">
+
+            <!-- ===== DASHBOARD ===== -->
+            <div class="view active" id="view-dashboard">
+                <div class="dashboard">
+                    <!-- Chat area -->
+                    <div class="dashboard-left">
+                        <div class="plan-mode-bar" id="plan-mode-bar" style="display:none">
+                            <span style="display:flex;align-items:center;gap:7px">
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+                                计划模式已开启 — 先思考，再行动
+                            </span>
+                            <button id="cancel-plan">取消</button>
+                        </div>
+                        <div class="chat" id="chat"></div>
+                        <div class="input-area">
+                            <div class="input-actions">
+                                <button class="input-action" id="toggle-plan" title="切换计划模式">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+                                    <span>计划</span>
                                 </button>
                             </div>
+                            <textarea id="input" placeholder="向 XMclaw 发送指令..." rows="1"></textarea>
+                            <button id="send" aria-label="发送">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Right panels -->
+                    <div class="dashboard-right">
+                        <div class="panel">
+                            <div class="panel-header">
+                                <span>智能体状态</span>
+                                <span class="panel-badge" id="state-badge">空闲</span>
+                            </div>
+                            <div class="panel-body">
+                                <div class="state-item">
+                                    <div class="state-label">当前思考</div>
+                                    <div class="state-value" id="current-thought">等待输入...</div>
+                                </div>
+                                <div class="state-item">
+                                    <div class="state-label">活跃工具</div>
+                                    <div class="state-value" id="active-tool">—</div>
+                                </div>
+                                <div class="state-item">
+                                    <div class="state-label">文件操作</div>
+                                    <div class="state-value" id="active-file">—</div>
+                                </div>
+                            </div>
                         </div>
 
-                        <!-- 右侧面板 -->
-                        <div class="dashboard-right">
-                            <div class="panel">
-                                <div class="panel-header">
-                                    <span>智能体状态</span>
-                                    <span class="panel-badge" id="state-badge">空闲</span>
-                                </div>
-                                <div class="panel-body">
-                                    <div class="state-item">
-                                        <div class="state-label">当前思考</div>
-                                        <div class="state-value" id="current-thought">等待输入...</div>
-                                    </div>
-                                    <div class="state-item">
-                                        <div class="state-label">活跃工具</div>
-                                        <div class="state-value" id="active-tool">—</div>
-                                    </div>
-                                    <div class="state-item">
-                                        <div class="state-label">文件操作</div>
-                                        <div class="state-value" id="active-file">—</div>
-                                    </div>
-                                </div>
+                        <div class="panel">
+                            <div class="panel-header">
+                                <span>待办事项</span>
+                                <button class="panel-action" id="add-todo">+ 添加</button>
                             </div>
-
-                            <div class="panel">
-                                <div class="panel-header">
-                                    <span>待办事项</span>
-                                    <button class="panel-action" id="add-todo">+ 添加</button>
-                                </div>
-                                <div class="panel-body compact" id="todo-list">
-                                    <div class="empty-state">暂无待办</div>
-                                </div>
+                            <div class="panel-body compact" id="todo-list">
+                                <div class="empty-state">暂无待办</div>
                             </div>
+                        </div>
 
-                            <div class="panel">
-                                <div class="panel-header">
-                                    <span>任务列表</span>
-                                    <button class="panel-action" id="add-task">+ 添加</button>
-                                </div>
-                                <div class="panel-body compact" id="task-list">
-                                    <div class="empty-state">暂无任务</div>
-                                </div>
+                        <div class="panel">
+                            <div class="panel-header">
+                                <span>任务列表</span>
+                                <button class="panel-action" id="add-task">+ 添加</button>
                             </div>
-
-                            <div class="panel">
-                                <div class="panel-header">
-                                    <span>最近工具调用</span>
-                                    <button class="panel-action" id="clear-tools">清空</button>
-                                </div>
-                                <div class="panel-body compact" id="recent-tools">
-                                    <div class="empty-state">尚未使用工具</div>
-                                </div>
+                            <div class="panel-body compact" id="task-list">
+                                <div class="empty-state">暂无任务</div>
                             </div>
+                        </div>
 
-                            <div class="panel">
-                                <div class="panel-header">
-                                    <span>自修改记录</span>
-                                </div>
-                                <div class="panel-body compact" id="self-mod-log">
-                                    <div class="empty-state">暂无自修改</div>
-                                </div>
+                        <div class="panel">
+                            <div class="panel-header">
+                                <span>最近工具调用</span>
+                                <button class="panel-action" id="clear-tools">清空</button>
+                            </div>
+                            <div class="panel-body compact" id="recent-tools">
+                                <div class="empty-state">尚未使用工具</div>
+                            </div>
+                        </div>
+
+                        <div class="panel">
+                            <div class="panel-header"><span>自修改记录</span></div>
+                            <div class="panel-body compact" id="self-mod-log">
+                                <div class="empty-state">暂无自修改</div>
                             </div>
                         </div>
                     </div>
                 </div>
+            </div>
 
-                <!-- 工作区 -->
-                <div class="view" id="view-workspace">
-                    <div class="workspace">
-                        <div class="workspace-toolbar">
-                            <input type="text" id="workspace-search" placeholder="搜索工作区文件...">
-                            <button id="workspace-refresh">刷新</button>
+            <!-- ===== WORKSPACE ===== -->
+            <div class="view" id="view-workspace">
+                <div class="workspace">
+                    <div class="workspace-sidebar">
+                        <div class="workspace-header">
+                            <span>文件</span>
+                            <button class="workspace-refresh-btn" id="workspace-refresh" title="刷新">
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"/></svg>
+                            </button>
                         </div>
-                        <div class="workspace-files" id="workspace-files">
+                        <div class="file-tree" id="file-tree">
                             <div class="empty-state">加载中...</div>
                         </div>
-                        <div class="workspace-preview" id="workspace-preview">
-                            <div class="empty-state">选择一个文件查看内容</div>
+                    </div>
+                    <div class="workspace-main">
+                        <div class="workspace-toolbar">
+                            <span class="editor-path" id="editor-path">未选择文件</span>
+                            <button class="btn-sm" id="save-file-btn" style="display:none">保存</button>
+                        </div>
+                        <textarea id="workspace-editor" readonly placeholder="从左侧选择一个文件..."></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ===== EVOLUTION ===== -->
+            <div class="view" id="view-evolution">
+                <div class="evolution-page">
+                    <div class="evo-stats">
+                        <div class="evo-stat-card">
+                            <div class="evo-number" id="evo-genes">0</div>
+                            <div class="evo-label">Genes</div>
+                        </div>
+                        <div class="evo-stat-card">
+                            <div class="evo-number" id="evo-skills">0</div>
+                            <div class="evo-label">Skills</div>
+                        </div>
+                        <div class="evo-stat-card">
+                            <div class="evo-number" id="evo-cycles">0</div>
+                            <div class="evo-label">进化轮次</div>
+                        </div>
+                    </div>
+                    <div id="evolution-content"></div>
+                    <div class="evo-timeline-section">
+                        <h3>进化时间线</h3>
+                        <div class="timeline" id="evolution-timeline">
+                            <div class="empty-state">暂无进化事件</div>
                         </div>
                     </div>
                 </div>
+            </div>
 
-                <!-- 进化 -->
-                <div class="view" id="view-evolution">
-                    <div class="evolution">
-                        <div class="evo-header">
-                            <div class="evo-stat">
-                                <div class="evo-number" id="evo-genes">0</div>
-                                <div class="evo-label">Gene</div>
-                            </div>
-                            <div class="evo-stat">
-                                <div class="evo-number" id="evo-skills">0</div>
-                                <div class="evo-label">Skill</div>
-                            </div>
-                            <div class="evo-stat">
-                                <div class="evo-number" id="evo-cycles">0</div>
-                                <div class="evo-label">进化轮次</div>
-                            </div>
-                        </div>
-                        <div class="evo-section">
-                            <h3>进化时间线</h3>
-                            <div class="timeline" id="evolution-timeline">
-                                <div class="empty-state">暂无进化事件</div>
-                            </div>
-                        </div>
+            <!-- ===== MEMORY ===== -->
+            <div class="view" id="view-memory">
+                <div class="memory-page">
+                    <div class="memory-search-row">
+                        <input type="text" id="memory-query" placeholder="搜索长期记忆...">
+                        <button id="memory-search-btn">搜索</button>
+                    </div>
+                    <div id="memory-results">
+                        <div class="empty-state">输入关键词搜索记忆</div>
                     </div>
                 </div>
+            </div>
 
-                <!-- 记忆 -->
-                <div class="view" id="view-memory">
-                    <div class="memory">
-                        <div class="memory-search">
-                            <input type="text" id="memory-query" placeholder="搜索记忆...">
-                            <button id="memory-search-btn">搜索</button>
+            <!-- ===== TOOLS LOG ===== -->
+            <div class="view" id="view-tools">
+                <div class="tools-page">
+                    <div class="test-panel">
+                        <h3>自动测试</h3>
+                        <div class="test-row">
+                            <input type="text" id="test-target" placeholder="目标文件路径 (如 xmclaw/tools/computer_use.py)">
+                            <button class="btn-primary" id="btn-test-generate" style="font-size:12px;padding:7px 13px">生成测试</button>
+                            <button class="btn-primary" id="btn-test-run" style="font-size:12px;padding:7px 13px">运行</button>
+                            <button class="btn-primary" id="btn-test-runall" style="font-size:12px;padding:7px 13px">全部运行</button>
                         </div>
-                        <div class="memory-results" id="memory-results">
-                            <div class="empty-state">输入关键词搜索长期记忆</div>
-                        </div>
+                        <pre id="test-output"></pre>
                     </div>
-                </div>
-
-                <!-- 工具日志 -->
-                <div class="view" id="view-tools">
-                    <div class="test-panel" style="margin-bottom: 16px; padding: 14px; background: var(--panel-bg); border-radius: var(--radius); border: 1px solid var(--border);">
-                        <h3 style="font-size: 13px; margin-bottom: 10px; color: var(--accent);">自动测试</h3>
-                        <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
-                            <input type="text" id="test-target" placeholder="目标文件路径 (如 xmclaw/tools/computer_use.py)" style="flex: 1; min-width: 220px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
-                            <button class="btn-primary" id="btn-test-generate" style="padding: 8px 14px; font-size: 12px;">生成测试</button>
-                            <button class="btn-primary" id="btn-test-run" style="padding: 8px 14px; font-size: 12px;">运行测试</button>
-                            <button class="btn-primary" id="btn-test-runall" style="padding: 8px 14px; font-size: 12px;">运行全部</button>
-                        </div>
-                        <pre id="test-output" style="margin-top: 12px; background: #0a0a0a; padding: 10px; border-radius: 6px; font-size: 11px; max-height: 260px; overflow: auto; display: none; border: 1px solid var(--border);"></pre>
-                    </div>
-                    <div class="tools-log" id="tools-log">
+                    <div id="tool-log">
                         <div class="empty-state">暂无工具调用记录</div>
                     </div>
                 </div>
+            </div>
 
-                <!-- 设置 -->
-                <div class="view" id="view-settings">
-                    <div class="view-header">
+            <!-- ===== SETTINGS ===== -->
+            <div class="view" id="view-settings">
+                <div class="settings-page">
+                    <div class="settings-page-header">
                         <h2>设置</h2>
                         <button class="btn-primary" id="save-settings">保存</button>
                     </div>
-                    <div class="view-body">
-                        <div class="settings-tabs">
-                            <div class="settings-tab active" data-stab="llm">LLM</div>
-                            <div class="settings-tab" data-stab="evolution">进化</div>
-                            <div class="settings-tab" data-stab="memory">记忆</div>
-                            <div class="settings-tab" data-stab="tools">工具</div>
-                            <div class="settings-tab" data-stab="gateway">网关</div>
-                            <div class="settings-tab" data-stab="mcp">MCP</div>
+                    <div class="settings-tabs">
+                        <div class="settings-tab active" data-stab="llm">LLM</div>
+                        <div class="settings-tab" data-stab="evolution">进化</div>
+                        <div class="settings-tab" data-stab="memory">记忆</div>
+                        <div class="settings-tab" data-stab="tools">工具</div>
+                        <div class="settings-tab" data-stab="gateway">网关</div>
+                        <div class="settings-tab" data-stab="mcp">MCP</div>
+                    </div>
+                    <div class="settings-panels">
+                        <div class="settings-panel active" id="stab-llm">
+                            <div class="setting-card">
+                                <h3>模型配置</h3>
+                                <div class="form-row"><label>Provider</label><select id="setting-provider"><option value="anthropic">Anthropic</option><option value="openai">OpenAI</option></select></div>
+                                <div class="form-row"><label>API Key</label><input type="password" id="setting-apikey" placeholder="sk-..."></div>
+                                <div class="form-row"><label>Model</label><input type="text" id="setting-model" placeholder="claude-sonnet-4-6"></div>
+                                <div class="form-row"><label>Temperature</label><input type="range" id="setting-temp" min="0" max="2" step="0.1" value="0.7"><span id="temp-value">0.7</span></div>
+                            </div>
                         </div>
-                        <div class="settings-panels">
-                            <div class="settings-panel active" id="stab-llm">
-                                <div class="setting-card">
-                                    <h3>模型配置</h3>
-                                    <div class="form-row"><label>Provider</label><select id="setting-provider"><option value="anthropic">Anthropic</option><option value="openai">OpenAI</option></select></div>
-                                    <div class="form-row"><label>API Key</label><input type="password" id="setting-apikey" placeholder="sk-..." /></div>
-                                    <div class="form-row"><label>Model</label><input type="text" id="setting-model" placeholder="claude-sonnet-4-6" /></div>
-                                    <div class="form-row"><label>Temperature</label><input type="range" id="setting-temp" min="0" max="2" step="0.1" value="0.7" style="width:120px"/><span id="temp-value">0.7</span></div>
-                                </div>
+                        <div class="settings-panel" id="stab-evolution">
+                            <div class="setting-card">
+                                <h3>进化配置</h3>
+                                <div class="form-row"><label>启用进化</label><input type="checkbox" id="evo-enabled" checked></div>
+                                <div class="form-row"><label>间隔(分钟)</label><input type="number" id="evo-interval" value="30"></div>
+                                <div class="form-row"><label>每日复盘时间</label><input type="number" id="evo-daily" value="22"></div>
+                                <div class="form-row"><label>VFM 阈值</label><input type="number" id="evo-vfm" value="20"></div>
                             </div>
-                            <div class="settings-panel" id="stab-evolution">
-                                <div class="setting-card">
-                                    <h3>进化配置</h3>
-                                    <div class="form-row"><label>启用进化</label><input type="checkbox" id="evo-enabled" checked /></div>
-                                    <div class="form-row"><label>间隔(分钟)</label><input type="number" id="evo-interval" value="30" /></div>
-                                    <div class="form-row"><label>每日复盘时间</label><input type="number" id="evo-daily" value="22" /></div>
-                                    <div class="form-row"><label>VFM 阈值</label><input type="number" id="evo-vfm" value="20" /></div>
-                                </div>
+                        </div>
+                        <div class="settings-panel" id="stab-memory">
+                            <div class="setting-card">
+                                <h3>记忆配置</h3>
+                                <div class="form-row"><label>向量库路径</label><input type="text" id="mem-vector"></div>
+                                <div class="form-row"><label>会话保留天数</label><input type="number" id="mem-retention" value="7"></div>
+                                <div class="form-row"><label>最大上下文 tokens</label><input type="number" id="mem-tokens" value="120000"></div>
                             </div>
-                            <div class="settings-panel" id="stab-memory">
-                                <div class="setting-card">
-                                    <h3>记忆配置</h3>
-                                    <div class="form-row"><label>向量库路径</label><input type="text" id="mem-vector" /></div>
-                                    <div class="form-row"><label>会话保留天数</label><input type="number" id="mem-retention" value="7" /></div>
-                                    <div class="form-row"><label>最大上下文 tokens</label><input type="number" id="mem-tokens" value="120000" /></div>
-                                </div>
+                        </div>
+                        <div class="settings-panel" id="stab-tools">
+                            <div class="setting-card">
+                                <h3>工具配置</h3>
+                                <div class="form-row"><label>Bash 超时(秒)</label><input type="number" id="tool-bash" value="300"></div>
+                                <div class="form-row"><label>沙盒超时(秒)</label><input type="number" id="tool-sandbox" value="30"></div>
+                                <div class="form-row"><label>浏览器无头模式</label><input type="checkbox" id="tool-headless"></div>
                             </div>
-                            <div class="settings-panel" id="stab-tools">
-                                <div class="setting-card">
-                                    <h3>工具配置</h3>
-                                    <div class="form-row"><label>Bash 超时(秒)</label><input type="number" id="tool-bash" value="300" /></div>
-                                    <div class="form-row"><label>沙盒超时(秒)</label><input type="number" id="tool-sandbox" value="30" /></div>
-                                    <div class="form-row"><label>浏览器无头模式</label><input type="checkbox" id="tool-headless" /></div>
-                                </div>
+                        </div>
+                        <div class="settings-panel" id="stab-gateway">
+                            <div class="setting-card">
+                                <h3>网关配置</h3>
+                                <div class="form-row"><label>WebSocket 端口</label><input type="number" id="gw-ws" value="8765"></div>
+                                <div class="form-row"><label>HTTP 端口</label><input type="number" id="gw-http" value="8080"></div>
                             </div>
-                            <div class="settings-panel" id="stab-gateway">
-                                <div class="setting-card">
-                                    <h3>网关配置</h3>
-                                    <div class="form-row"><label>WebSocket 端口</label><input type="number" id="gw-ws" value="8765" /></div>
-                                    <div class="form-row"><label>HTTP 端口</label><input type="number" id="gw-http" value="8080" /></div>
-                                </div>
-                            </div>
-                            <div class="settings-panel" id="stab-mcp">
-                                <div class="setting-card">
-                                    <h3>MCP 服务器</h3>
-                                    <div id="mcp-list"></div>
-                                    <button class="btn-secondary" id="mcp-add">添加服务器</button>
-                                </div>
+                        </div>
+                        <div class="settings-panel" id="stab-mcp">
+                            <div class="setting-card">
+                                <h3>MCP 服务器</h3>
+                                <div id="mcp-list"></div>
+                                <button class="btn-secondary" id="mcp-add">+ 添加服务器</button>
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
-        </main>
-    </div>
 
-    <!-- 模态框：ask_user -->
-    <div class="modal" id="ask-modal" style="display:none">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>XMclaw 需要您的确认</h3>
-            </div>
-            <div class="modal-body">
-                <p id="ask-message"></p>
-                <textarea id="ask-input" rows="3" placeholder="输入回复..."></textarea>
-            </div>
-            <div class="modal-footer">
-                <button class="btn-secondary" id="ask-cancel">取消</button>
-                <button class="btn-primary" id="ask-submit">确认</button>
-            </div>
+        </div><!-- .content -->
+    </main>
+</div><!-- .app -->
+
+<!-- ===== MODAL: ask_user ===== -->
+<div class="modal" id="ask-modal" style="display:none">
+    <div class="modal-content">
+        <div class="modal-header"><h3>XMclaw 需要您的确认</h3></div>
+        <div class="modal-body">
+            <p id="ask-message"></p>
+            <textarea id="ask-input" rows="3" placeholder="输入回复..."></textarea>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-secondary" id="ask-cancel">取消</button>
+            <button class="btn-primary" id="ask-submit">确认</button>
         </div>
     </div>
+</div>
 
-    <!-- 模态框：添加待办/任务 -->
-    <div class="modal" id="item-modal" style="display:none">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3 id="item-modal-title">添加</h3>
-            </div>
-            <div class="modal-body">
-                <input type="text" id="item-modal-input" placeholder="标题">
-                <textarea id="item-modal-desc" rows="2" placeholder="描述（可选）"></textarea>
-            </div>
-            <div class="modal-footer">
-                <button class="btn-secondary" id="item-modal-cancel">取消</button>
-                <button class="btn-primary" id="item-modal-save">保存</button>
-            </div>
+<!-- ===== MODAL: add todo/task ===== -->
+<div class="modal" id="item-modal" style="display:none">
+    <div class="modal-content">
+        <div class="modal-header"><h3 id="item-modal-title">添加</h3></div>
+        <div class="modal-body">
+            <input type="text" id="item-modal-input" placeholder="标题">
+            <textarea id="item-modal-desc" rows="2" placeholder="描述（可选）"></textarea>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-secondary" id="item-modal-cancel">取消</button>
+            <button class="btn-primary" id="item-modal-save">保存</button>
         </div>
     </div>
+</div>
 
-    <script src="/static/main.js"></script>
-    <script>
-        console.log('[INLINE DEBUG] main.js loaded');
-        console.log('[INLINE DEBUG] typeof connect =', typeof connect);
-        console.log('[INLINE DEBUG] WS_URL =', typeof WS_URL !== 'undefined' ? WS_URL : 'UNDEFINED');
-        console.log('[INLINE DEBUG] document.readyState =', document.readyState);
-        // If connect is not a function after 2s, JS definitely crashed
-        setTimeout(() => {
-            if (typeof connect !== 'function') {
-                console.error('[INLINE DEBUG] FATAL: connect() is not defined! JS crashed before this line.');
-            } else {
-                console.log('[INLINE DEBUG] connect is defined, calling it manually...');
-                connect();
-            }
-        }, 2000);
-    </script>
+<script src="/static/main.js"></script>
 </body>
 </html>
