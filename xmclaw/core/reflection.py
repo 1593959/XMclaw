@@ -5,6 +5,7 @@ from typing import AsyncIterator
 from xmclaw.llm.router import LLMRouter
 from xmclaw.memory.manager import MemoryManager
 from xmclaw.utils.log import logger
+from xmclaw.evolution.auto_improver import AutoImprover
 
 
 REFLECTION_PROMPT = """\
@@ -47,8 +48,11 @@ class ReflectionEngine:
             result = self._extract_json(response)
             if result:
                 logger.info("reflection_completed", agent_id=agent_id, summary=result.get("summary", ""))
-                await self._save_reflection(agent_id, result)
-                return result
+                improvement = await self._save_reflection(agent_id, result)
+                return {
+                    "reflection": result,
+                    "improvement": improvement,
+                }
             else:
                 logger.warning("reflection_parse_failed", agent_id=agent_id, raw=response[:500])
                 return {}
@@ -93,10 +97,10 @@ class ReflectionEngine:
                 pass
         return None
 
-    async def _save_reflection(self, agent_id: str, result: dict) -> None:
-        """Save reflection results to memory."""
+    async def _save_reflection(self, agent_id: str, result: dict) -> dict:
+        """Save reflection results to memory and trigger auto-improvement."""
         if not self.memory:
-            return
+            return {}
 
         # Save as insight
         insight = {
@@ -115,3 +119,13 @@ class ReflectionEngine:
             f"Improvements: {', '.join(result.get('improvements', []))}"
         )
         await self.memory.add_memory(agent_id, content, source="reflection")
+
+        # Trigger auto-improvement pipeline
+        try:
+            improver = AutoImprover()
+            improvement_result = await improver.improve_from_reflection(agent_id, result)
+            logger.info("auto_improvement_triggered", agent_id=agent_id, result=improvement_result)
+            return improvement_result
+        except Exception as e:
+            logger.error("auto_improvement_failed", agent_id=agent_id, error=str(e))
+            return {"status": "error", "error": str(e)}

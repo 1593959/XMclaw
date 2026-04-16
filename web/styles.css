@@ -1142,6 +1142,18 @@ html, body {
   font-size: 12px;
 }
 
+.viewer-btn {
+  background: rgba(255,255,255,0.1);
+  border: 1px solid rgba(255,255,255,0.2);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  margin-left: 6px;
+}
+.viewer-btn:hover { background: rgba(255,255,255,0.2); }
+
 /* ===== RESPONSIVE ===== */
 @media (max-width: 960px) { .dashboard-right { display: none; } }
 @media (max-width: 680px) { .sidebar { display: none; } }

@@ -717,7 +717,7 @@ function connect() {
             evolutionCount.textContent = `${geneCount} Genes · ${skillCount} Skills`;
             addTimelineEvent(data.subtype || 'gene', data.title, data.desc);
         } else if (data.type === 'reflection') {
-            addReflectionMessage(data.data || {});
+            addReflectionMessage(data.data || {}, data.improvement || {});
         } else if (data.type === 'ask_user') {
             showAskUserDialog(data.question);
         }
@@ -865,7 +865,7 @@ function addToolResultMessage(tool, result) {
     scrollToBottom();
 }
 
-function addReflectionMessage(data) {
+function addReflectionMessage(data, improvement) {
     const summary = data.summary || 'Reflection';
     const problems = data.problems || [];
     const lessons = data.lessons || [];
@@ -887,6 +887,22 @@ function addReflectionMessage(data) {
     if (improvements.length) {
         body += `<div style="color:#00d4aa;font-size:11px;margin-top:4px">改进: ${escapeHtml(improvements.join('; '))}</div>`;
     }
+
+    if (improvement && improvement.status !== 'nothing_to_improve') {
+        const actions = improvement.actions || [];
+        for (const action of actions) {
+            if (action.type === 'gene' && action.status === 'created') {
+                body += `<div style="color:#a78bfa;font-size:11px;margin-top:6px">✨ 已自动生成 Gene: <strong>${escapeHtml(action.name)}</strong> <button class="viewer-btn" onclick="loadEntity('gene','${action.gene_id}')">查看</button></div>`;
+            } else if (action.type === 'skill' && action.status === 'created') {
+                body += `<div style="color:#a78bfa;font-size:11px;margin-top:6px">✨ 已自动生成 Skill: <strong>${escapeHtml(action.name)}</strong> <button class="viewer-btn" onclick="loadEntity('skill','${action.skill_id}')">查看</button></div>`;
+            } else if (action.type === 'patch' && action.status === 'proposed') {
+                body += `<div style="color:#f59e0b;font-size:11px;margin-top:6px">📋 核心代码修改提案: <strong>${escapeHtml(action.proposal_id)}</strong> <button class="viewer-btn" onclick="showToast('请在 shared/proposals 目录中审核补丁')">查看路径</button></div>`;
+            } else if (action.type === 'gene' || action.type === 'skill') {
+                body += `<div style="color:#9ca3af;font-size:11px;margin-top:6px">⚠️ ${escapeHtml(action.type)} 生成失败: ${escapeHtml(action.status)}</div>`;
+            }
+        }
+    }
+
     el.innerHTML = body;
 
     row.appendChild(el);

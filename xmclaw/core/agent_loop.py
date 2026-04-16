@@ -150,11 +150,15 @@ class AgentLoop:
         cost_info = self.cost_tracker.estimate(messages)
         yield json.dumps({"type": "cost", "tokens": cost_info.get("tokens", 0), "cost": cost_info.get("cost", 0)})
 
-        # Reflection
+        # Reflection + Auto-improvement
         try:
-            reflection = await self.reflection.reflect(self.agent_id, self._turn_history)
-            if reflection:
-                yield json.dumps({"type": "reflection", "data": reflection})
+            reflection_result = await self.reflection.reflect(self.agent_id, self._turn_history)
+            if reflection_result:
+                yield json.dumps({
+                    "type": "reflection",
+                    "data": reflection_result.get("reflection", {}),
+                    "improvement": reflection_result.get("improvement", {}),
+                })
         except Exception as e:
             logger.error("reflection_failed", agent_id=self.agent_id, error=str(e))
 
