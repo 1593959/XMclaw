@@ -19,7 +19,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineSettings
 
 DAEMON_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "daemon", "server.py"))
-WEB_URL = "http://127.0.0.1:8080"
+WEB_URL = "http://127.0.0.1:8765"
 
 
 def is_daemon_running():
