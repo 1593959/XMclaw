@@ -6,10 +6,10 @@ import urllib.request
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
-    QSystemTrayIcon, QMenu, QAction, QMessageBox
+    QSystemTrayIcon, QMenu, QMessageBox
 )
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QAction
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineSettings
 
