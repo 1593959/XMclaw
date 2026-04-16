@@ -43,6 +43,7 @@ build/
 .tracker/record_*.json
 .tracker/latest.json
 .tracker/progress.log
+daemon/pid
 
 # PyInstaller
 *.manifest
