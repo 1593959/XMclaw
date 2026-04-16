@@ -928,6 +928,35 @@ setInterval(() => {
     if (ws) console.log('[DEBUG WS] readyState =', ws.readyState, '| url =', ws.url);
 }, 3000);
 
+// Inject debug overlay into the page so we can see it visually
+(function() {
+    const overlay = document.createElement('div');
+    overlay.id = 'dbg-overlay';
+    overlay.style.cssText = 'position:fixed;top:5px;right:5px;background:#111;border:1px solid #0f0;padding:8px 12px;color:#0f0;font-family:monospace;font-size:11px;z-index:99999;max-width:320px;max-height:300px;overflow:auto;';
+    document.body.appendChild(overlay);
+
+    const log = (msg, color) => {
+        const el = document.createElement('div');
+        el.style.color = color || '#0f0';
+        el.textContent = new Date().toISOString().split('T')[1].slice(0,8) + ' ' + msg;
+        overlay.prepend(el);
+    };
+
+    window._dbgLog = log;
+    log('main.js loaded', '#ff0');
+    log('typeof connect = ' + typeof connect, typeof connect === 'function' ? '#0f0' : '#f44');
+    log('WS_URL = ' + WS_URL, '#0af');
+
+    setTimeout(() => {
+        if (typeof connect !== 'function') {
+            log('FATAL: connect not defined! JS crashed.', '#f44');
+        } else {
+            log('Calling connect()...', '#ff0');
+            connect();
+        }
+    }, 1000);
+})();
+
 // Memory search
 async function loadMemorySearch() {
     const q = document.getElementById('memory-query')?.value?.trim();
