@@ -60,6 +60,7 @@ function switchView(view) {
         evolution: '进化',
         memory: '记忆',
         tools: '工具日志',
+        agents: '多代理',
         settings: '设置'
     };
     topbarTitle.textContent = viewNames[view] || view;
@@ -67,6 +68,7 @@ function switchView(view) {
     if (view === 'evolution') loadEvolutionStatus();
     if (view === 'memory') loadMemorySearch();
     if (view === 'tools') loadToolsLogs();
+    if (view === 'agents') loadAgentsView();
 }
 
 // Settings
@@ -1151,6 +1153,179 @@ document.addEventListener('keydown', (e) => {
 });
 
 document.getElementById('btn-new-chat')?.addEventListener('click', newSession);
+
+// ===== MULTI-AGENT =====
+async function loadAgentsView() {
+    try {
+        const [agentsRes, teamsRes] = await Promise.all([
+            fetch('/api/agents'),
+            fetch('/api/teams')
+        ]);
+        const agentsData = await agentsRes.json();
+        const teamsData = await teamsRes.json();
+
+        const agentsList = document.getElementById('agents-list');
+        const teamsList = document.getElementById('teams-list');
+
+        // Render agents
+        const agents = agentsData.agents || [];
+        if (agents.length === 0) {
+            agentsList.innerHTML = '<div class="empty">暂无代理</div>';
+        } else {
+            agentsList.innerHTML = agents.map(a => `
+                <div class="agent-card">
+                    <div class="agent-header">
+                        <span class="agent-name">${escapeHtml(a.agent_id)}</span>
+                        <span class="agent-status ${a.status}">${a.status === 'idle' ? '空闲' : a.status === 'busy' ? '忙碌' : '离线'}</span>
+                    </div>
+                    <div style="font-size:11px;color:var(--text-dim)">计划模式: ${a.plan_mode ? '开启' : '关闭'} | 最大轮数: ${a.max_turns}</div>
+                    <div class="agent-actions">
+                        <button onclick="delegateToAgent('${a.agent_id}')">委派任务</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // Render teams
+        const teams = teamsData.teams || {};
+        const teamNames = Object.keys(teams);
+        if (teamNames.length === 0) {
+            teamsList.innerHTML = '<div class="empty">暂无团队</div>';
+        } else {
+            teamsList.innerHTML = teamNames.map(name => {
+                const members = teams[name] || [];
+                return `
+                <div class="team-card">
+                    <div class="team-header">
+                        <span class="team-name">${escapeHtml(name)}</span>
+                        <button onclick="deleteTeam('${name}')" style="background:transparent;border:none;color:#ff6b6b;cursor:pointer;font-size:11px">删除</button>
+                    </div>
+                    <div class="team-agents">成员: ${members.length ? members.map(m => escapeHtml(m)).join(', ') : '无'}</div>
+                    <div class="team-actions">
+                        <button onclick="addAgentToTeam('${name}')">+ 添加代理</button>
+                        <button onclick="removeAgentFromTeam('${name}')">- 移除代理</button>
+                        <button onclick="delegateToTeam('${name}')">委派任务</button>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+    } catch (e) {
+        console.error('loadAgentsView error', e);
+    }
+}
+
+document.getElementById('create-team-btn')?.addEventListener('click', async () => {
+    const name = prompt('请输入团队名称:');
+    if (!name) return;
+    try {
+        const res = await fetch('/api/teams', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name })
+        });
+        if (res.ok) {
+            showToast('团队创建成功');
+            loadAgentsView();
+        } else {
+            const data = await res.json();
+            showToast('创建失败: ' + (data.error || '未知错误'));
+        }
+    } catch (e) {
+        showToast('创建失败');
+    }
+});
+
+async function deleteTeam(name) {
+    if (!confirm(`确定删除团队 "${name}" 吗?`)) return;
+    try {
+        const res = await fetch(`/api/teams/${name}`, { method: 'DELETE' });
+        if (res.ok) {
+            showToast('团队已删除');
+            loadAgentsView();
+        } else {
+            const data = await res.json();
+            showToast('删除失败: ' + (data.error || '未知错误'));
+        }
+    } catch (e) {
+        showToast('删除失败');
+    }
+}
+
+async function addAgentToTeam(teamName) {
+    const agentId = prompt('请输入要添加的代理 ID:');
+    if (!agentId) return;
+    try {
+        const res = await fetch(`/api/teams/${teamName}/agents/${agentId}`, { method: 'POST' });
+        if (res.ok) {
+            showToast('代理已添加');
+            loadAgentsView();
+        } else {
+            const data = await res.json();
+            showToast('添加失败: ' + (data.error || '未知错误'));
+        }
+    } catch (e) {
+        showToast('添加失败');
+    }
+}
+
+async function removeAgentFromTeam(teamName) {
+    const agentId = prompt('请输入要移除的代理 ID:');
+    if (!agentId) return;
+    try {
+        const res = await fetch(`/api/teams/${teamName}/agents/${agentId}`, { method: 'DELETE' });
+        if (res.ok) {
+            showToast('代理已移除');
+            loadAgentsView();
+        } else {
+            const data = await res.json();
+            showToast('移除失败: ' + (data.error || '未知错误'));
+        }
+    } catch (e) {
+        showToast('移除失败');
+    }
+}
+
+async function delegateToAgent(agentId) {
+    const task = prompt(`请输入要委派给 ${agentId} 的任务:`);
+    if (!task) return;
+    try {
+        const res = await fetch(`/api/agents/${agentId}/delegate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ task })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            showToast(`任务已委派给 ${agentId}`);
+            alert('结果:\n' + JSON.stringify(data.result, null, 2));
+        } else {
+            showToast('委派失败: ' + (data.error || '未知错误'));
+        }
+    } catch (e) {
+        showToast('委派失败');
+    }
+}
+
+async function delegateToTeam(teamName) {
+    const task = prompt(`请输入要委派给团队 ${teamName} 的任务:`);
+    if (!task) return;
+    try {
+        const res = await fetch(`/api/teams/${teamName}/delegate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ task })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            showToast(`任务已委派给团队 ${teamName}`);
+            alert('结果:\n' + JSON.stringify(data.results, null, 2));
+        } else {
+            showToast('委派失败: ' + (data.error || '未知错误'));
+        }
+    } catch (e) {
+        showToast('委派失败');
+    }
+}
 
 // ===== INIT =====
 newSession();

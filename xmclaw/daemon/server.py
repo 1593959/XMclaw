@@ -318,6 +318,111 @@ async def get_tools_logs():
     return {"logs": logs}
 
 
+# ── Multi-Agent Orchestration APIs ─────────────────────────────────────────
+
+@app.get("/api/agents")
+async def list_agents():
+    """List all active agents and their status."""
+    agents = []
+    for agent_id, agent in orchestrator.agents.items():
+        agents.append({
+            "agent_id": agent_id,
+            "status": "busy" if agent.pending_question else "idle",
+            "plan_mode": agent.plan_mode,
+            "max_turns": agent.max_turns,
+        })
+    # Also list agent directories
+    if AGENTS_DIR.exists():
+        for agent_dir in AGENTS_DIR.iterdir():
+            if agent_dir.is_dir():
+                aid = agent_dir.name
+                if not any(a["agent_id"] == aid for a in agents):
+                    agents.append({"agent_id": aid, "status": "offline", "plan_mode": False})
+    return {"agents": agents}
+
+
+@app.get("/api/teams")
+async def list_teams():
+    """List all teams."""
+    return {"teams": orchestrator._teams}
+
+
+@app.post("/api/teams")
+async def create_team(request: Request):
+    data = await request.json()
+    name = data.get("name", "")
+    if not name:
+        return JSONResponse({"error": "Team name is required"}, status_code=400)
+    if name in orchestrator._teams:
+        return JSONResponse({"error": "Team already exists"}, status_code=409)
+    orchestrator.create_team(name)
+    return {"status": "ok", "team": name, "agents": []}
+
+
+@app.delete("/api/teams/{team_name}")
+async def delete_team(team_name: str):
+    if team_name not in orchestrator._teams:
+        return JSONResponse({"error": "Team not found"}, status_code=404)
+    del orchestrator._teams[team_name]
+    return {"status": "ok"}
+
+
+@app.post("/api/teams/{team_name}/agents/{agent_id}")
+async def add_agent_to_team(team_name: str, agent_id: str):
+    if team_name not in orchestrator._teams:
+        return JSONResponse({"error": "Team not found"}, status_code=404)
+    if agent_id in orchestrator._teams[team_name]:
+        return JSONResponse({"error": "Agent already in team"}, status_code=409)
+    orchestrator._teams[team_name].append(agent_id)
+    return {"status": "ok", "team": team_name, "agents": orchestrator._teams[team_name]}
+
+
+@app.delete("/api/teams/{team_name}/agents/{agent_id}")
+async def remove_agent_from_team(team_name: str, agent_id: str):
+    if team_name not in orchestrator._teams:
+        return JSONResponse({"error": "Team not found"}, status_code=404)
+    if agent_id not in orchestrator._teams[team_name]:
+        return JSONResponse({"error": "Agent not in team"}, status_code=404)
+    orchestrator._teams[team_name].remove(agent_id)
+    return {"status": "ok", "team": team_name, "agents": orchestrator._teams[team_name]}
+
+
+@app.post("/api/agents/{agent_id}/delegate")
+async def delegate_to_agent(agent_id: str, request: Request):
+    """Delegate a task to a specific agent."""
+    data = await request.json()
+    task = data.get("task", "")
+    if not task:
+        return JSONResponse({"error": "Task is required"}, status_code=400)
+    try:
+        result = await orchestrator.delegate(agent_id, task)
+        return {"status": "ok", "agent_id": agent_id, "result": result}
+    except Exception as e:
+        logger.error("delegate_agent_failed", agent_id=agent_id, error=str(e))
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/teams/{team_name}/delegate")
+async def delegate_to_team(team_name: str, request: Request):
+    """Delegate a task to all agents in a team."""
+    data = await request.json()
+    task = data.get("task", "")
+    if not task:
+        return JSONResponse({"error": "Task is required"}, status_code=400)
+    if team_name not in orchestrator._teams:
+        return JSONResponse({"error": "Team not found"}, status_code=404)
+    agents = orchestrator._teams[team_name]
+    if not agents:
+        return JSONResponse({"error": "Team has no agents"}, status_code=400)
+    results = {}
+    for agent_id in agents:
+        try:
+            results[agent_id] = await orchestrator.delegate(agent_id, task)
+        except Exception as e:
+            results[agent_id] = {"error": str(e)}
+    return {"status": "ok", "team": team_name, "results": results}
+
+
 @app.websocket("/agent/{agent_id}")
 async def agent_websocket(websocket: WebSocket, agent_id: str):
     await websocket.accept()

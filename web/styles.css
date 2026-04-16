@@ -1154,6 +1154,61 @@ html, body {
 }
 .viewer-btn:hover { background: rgba(255,255,255,0.2); }
 
+/* ===== MULTI-AGENT ===== */
+.agents-layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.agent-card, .team-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  margin-bottom: 10px;
+}
+.agent-card .agent-header, .team-card .team-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.agent-name, .team-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+.agent-status {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.08);
+}
+.agent-status.idle { background: rgba(0,212,170,0.15); color: #00d4aa; }
+.agent-status.busy { background: rgba(255,193,7,0.15); color: #ffc107; }
+.agent-status.offline { background: rgba(148,163,184,0.15); color: #94a3b8; }
+.team-agents {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin: 6px 0;
+}
+.team-actions, .agent-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.team-actions button, .agent-actions button {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.team-actions button:hover, .agent-actions button:hover {
+  background: rgba(255,255,255,0.15);
+}
+
 /* ===== RESPONSIVE ===== */
 @media (max-width: 960px) { .dashboard-right { display: none; } }
 @media (max-width: 680px) { .sidebar { display: none; } }
