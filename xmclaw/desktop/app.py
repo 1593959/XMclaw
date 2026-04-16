@@ -1,17 +1,27 @@
 """Desktop application entry point."""
+import os
 import sys
+
+# Force software rendering before any Qt imports
+# These MUST be set before QApplication is created
+os.environ.setdefault("QT_QPA_PLATFORM", "windows:software")
+os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --no-sandbox")
+os.environ.setdefault("QTWEBENGINE_DISABLE_GPU", "1")
+
 from PySide6.QtWidgets import QApplication
 from xmclaw.desktop.main_window import MainWindow
 
 
 def main():
-    # Disable GPU acceleration to prevent crashes on some systems
     if "--disable-gpu" not in sys.argv:
         sys.argv.append("--disable-gpu")
     if "--no-sandbox" not in sys.argv:
         sys.argv.append("--no-sandbox")
 
+    print("[Desktop] QT_QPA_PLATFORM =", os.environ.get("QT_QPA_PLATFORM"), file=sys.stderr)
+    print("[Desktop] Creating QApplication...", file=sys.stderr)
     app = QApplication(sys.argv)
+    print("[Desktop] QApplication created", file=sys.stderr)
     app.setQuitOnLastWindowClosed(False)
 
     try:
@@ -26,7 +36,10 @@ def main():
     window.show()
     window.raise_()
     window.activateWindow()
-    sys.exit(app.exec())
+    print("[Desktop] Entering event loop...", file=sys.stderr)
+    result = app.exec()
+    print(f"[Desktop] Event loop exited with code {result}", file=sys.stderr)
+    sys.exit(result)
 
 
 if __name__ == "__main__":
