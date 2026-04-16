@@ -1,45 +1,130 @@
-"""Desktop application entry point."""
+"""Desktop application entry point — browser + system tray."""
 import os
 import sys
+import subprocess
+import time
+import webbrowser
+import urllib.request
+from pathlib import Path
 
-# Force software rendering before any Qt imports
-# These MUST be set before QApplication is created
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --no-sandbox --use-gl=swiftshader")
-os.environ.setdefault("QTWEBENGINE_DISABLE_GPU", "1")
+# Project root (parent of xmclaw/ package)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_LOGS_DIR = _PROJECT_ROOT / "logs"
+_DAEMON_LOG = _LOGS_DIR / "daemon_desktop.log"
 
-from PySide6.QtWidgets import QApplication
-from xmclaw.desktop.main_window import MainWindow
+DAEMON_MODULE = "xmclaw.daemon.server"
+
+
+def _get_daemon_url() -> str:
+    """Read gateway URL from config, fallback to default."""
+    try:
+        import json
+        config_path = _PROJECT_ROOT / "daemon" / "config.json"
+        if config_path.exists():
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+            gw = data.get("gateway", {})
+            host = gw.get("host", "127.0.0.1")
+            port = gw.get("port", 8765)
+            return f"http://{host}:{port}"
+    except Exception:
+        pass
+    return "http://127.0.0.1:8765"
+
+
+def _is_daemon_running(url: str) -> bool:
+    """Check if daemon is responding."""
+    try:
+        with urllib.request.urlopen(f"{url}/health", timeout=2):
+            return True
+    except Exception:
+        return False
+
+
+def _wait_for_daemon(url: str, timeout: int = 15, interval: float = 0.5) -> bool:
+    """Poll daemon health endpoint until ready or timeout."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _is_daemon_running(url):
+            return True
+        time.sleep(interval)
+    return False
+
+
+def _start_daemon_subprocess() -> subprocess.Popen:
+    """Start the daemon as a background subprocess."""
+    _LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    log_file = open(_DAEMON_LOG, "w", encoding="utf-8")
+
+    startup_info = None
+    creation_flags = 0
+    if sys.platform == "win32":
+        startup_info = subprocess.STARTUPINFO()
+        startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP
+
+    process = subprocess.Popen(
+        [sys.executable, "-m", DAEMON_MODULE],
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        cwd=str(_PROJECT_ROOT),
+        startupinfo=startup_info,
+        creationflags=creation_flags,
+    )
+    return process
 
 
 def main():
-    if "--disable-gpu" not in sys.argv:
-        sys.argv.append("--disable-gpu")
-    if "--no-sandbox" not in sys.argv:
-        sys.argv.append("--no-sandbox")
+    """Entry point for xmclaw-desktop command."""
+    # Bypass proxy for localhost
+    os.environ.setdefault("NO_PROXY", "127.0.0.1,localhost")
+    os.environ.setdefault("no_proxy", "127.0.0.1,localhost")
 
-    print("[Desktop] QT_QPA_PLATFORM =", os.environ.get("QT_QPA_PLATFORM"), file=sys.stderr)
-    print("[Desktop] Creating QApplication...", file=sys.stderr)
-    app = QApplication(sys.argv)
-    print("[Desktop] QApplication created", file=sys.stderr)
-    app.setQuitOnLastWindowClosed(False)
+    url = _get_daemon_url()
+    daemon_proc = None
 
-    try:
-        window = MainWindow()
-    except Exception as e:
-        import traceback
-        print(f"[Desktop FATAL] MainWindow.__init__ crashed: {e}", file=sys.stderr)
-        traceback.print_exc()
-        input("按回车退出...")
-        return
+    print(f"[XMclaw Desktop] Checking daemon at {url}...", file=sys.stderr)
 
-    window.show()
-    window.raise_()
-    window.activateWindow()
-    print("[Desktop] Entering event loop...", file=sys.stderr)
-    result = app.exec()
-    print(f"[Desktop] Event loop exited with code {result}", file=sys.stderr)
-    sys.exit(result)
+    if not _is_daemon_running(url):
+        print("[XMclaw Desktop] Daemon not running. Starting...", file=sys.stderr)
+        daemon_proc = _start_daemon_subprocess()
+        time.sleep(1)
+
+        # Check if daemon crashed immediately
+        if daemon_proc.poll() is not None:
+            try:
+                log = _DAEMON_LOG.read_text(encoding="utf-8")
+            except Exception:
+                log = "(no log)"
+            print(f"[XMclaw Desktop] FATAL: Daemon exited immediately (code {daemon_proc.returncode})", file=sys.stderr)
+            print(f"Log:\n{log[-800:]}", file=sys.stderr)
+            sys.exit(1)
+
+        print("[XMclaw Desktop] Waiting for daemon (up to 15s)...", file=sys.stderr)
+        if not _wait_for_daemon(url):
+            try:
+                log = _DAEMON_LOG.read_text(encoding="utf-8")
+            except Exception:
+                log = "(no log)"
+            print(f"[XMclaw Desktop] FATAL: Daemon did not respond within 15s.", file=sys.stderr)
+            print(f"Log:\n{log[-800:]}", file=sys.stderr)
+            sys.exit(1)
+
+        print("[XMclaw Desktop] Daemon is ready!", file=sys.stderr)
+    else:
+        print("[XMclaw Desktop] Daemon already running.", file=sys.stderr)
+
+    # Open browser
+    print(f"[XMclaw Desktop] Opening browser: {url}", file=sys.stderr)
+    webbrowser.open(url)
+
+    # Run system tray (blocks until quit)
+    from xmclaw.desktop.tray import TrayApp
+    tray = TrayApp(url=url, daemon_process=daemon_proc)
+    print("[XMclaw Desktop] System tray active. Right-click tray icon for menu.", file=sys.stderr)
+    tray.run()
+
+    print("[XMclaw Desktop] Exiting.", file=sys.stderr)
 
 
 if __name__ == "__main__":
