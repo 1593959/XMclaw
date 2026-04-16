@@ -13,13 +13,12 @@ from PySide6.QtGui import QIcon, QAction
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineSettings
 
-DAEMON_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "daemon", "server.py")
-)
+DAEMON_MODULE = "xmclaw.daemon.server"  # Python module path for daemon
 WEB_URL = "http://127.0.0.1:8765"
-DAEMON_LOG = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "logs", "daemon_desktop.log")
-)
+
+# Compute log path relative to project root (parent of xmclaw/)
+_XMCLAW_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+DAEMON_LOG = os.path.join(_XMCLAW_ROOT, "logs", "daemon_desktop.log")
 
 
 def wait_for_daemon(timeout=15, interval=0.5):
@@ -44,7 +43,7 @@ def is_daemon_running():
 
 
 def start_daemon():
-    """Start daemon with visible console for debugging."""
+    """Start daemon via python -m to work regardless of install location."""
     log_dir = os.path.dirname(DAEMON_LOG)
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
@@ -57,7 +56,7 @@ def start_daemon():
         startup_info.wShowWindow = 1  # SW_SHOWNORMAL — show console for debugging
 
     process = subprocess.Popen(
-        [sys.executable, DAEMON_PATH],
+        [sys.executable, "-m", DAEMON_MODULE],
         stdout=log_file,
         stderr=subprocess.STDOUT,
         startupinfo=startup_info,
