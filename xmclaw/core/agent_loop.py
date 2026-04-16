@@ -28,6 +28,31 @@ class AgentLoop:
         self.pending_answer: str | None = None
         self.reflection = ReflectionEngine(llm_router, memory)
         self._turn_history: list[dict] = []
+        self._load_markdown_configs()
+
+    def _load_markdown_configs(self) -> None:
+        """Load SOUL.md, PROFILE.md, AGENTS.md from agent directory."""
+        self._soul = ""
+        self._profile = ""
+        self._agents = ""
+        try:
+            from xmclaw.utils.paths import get_agent_dir
+            agent_dir = get_agent_dir(self.agent_id)
+            if agent_dir is None:
+                return
+            for fname, attr in [
+                ("SOUL.md", "_soul"),
+                ("PROFILE.md", "_profile"),
+                ("AGENTS.md", "_agents"),
+            ]:
+                p = agent_dir / fname
+                if p.exists():
+                    try:
+                        setattr(self, attr, p.read_text(encoding="utf-8"))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     async def run(self, user_input: str) -> AsyncIterator[str]:
         """Run the agent loop, yielding JSON-encoded events."""
