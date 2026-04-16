@@ -77,3 +77,6 @@ xmclaw/desktop/main_window_backup.py
 
 # Tool result temp files
 tool_result/
+
+# Claude worktree config
+.claude/worktrees/
