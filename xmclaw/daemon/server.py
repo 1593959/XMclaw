@@ -215,11 +215,38 @@ async def execute_tool(agent_id: str, tool_name: str, request: Request):
 # Evolution Status API
 @app.get("/api/evolution/status")
 async def evolution_status():
-    # Read from evolution engine state if available; fallback to filesystem
     genes_dir = BASE_DIR / "shared" / "genes"
     skills_dir = BASE_DIR / "shared" / "skills"
-    gene_count = len(list(genes_dir.glob("gene_*.py"))) if genes_dir.exists() else 0
-    skill_count = len(list(skills_dir.glob("skill_*.py"))) if skills_dir.exists() else 0
+    genes = []
+    skills = []
+    if genes_dir.exists():
+        for f in sorted(genes_dir.glob("gene_*.py")):
+            try:
+                content = f.read_text(encoding="utf-8")
+                name = f.stem
+                desc = ""
+                for line in content.splitlines()[:10]:
+                    if line.strip().startswith('"""') and len(line.strip()) > 3:
+                        desc = line.strip().strip('"').strip()
+                        break
+                genes.append({"name": name, "description": desc or "Gene", "filename": f.name})
+            except Exception:
+                pass
+    if skills_dir.exists():
+        for f in sorted(skills_dir.glob("skill_*.py")):
+            try:
+                content = f.read_text(encoding="utf-8")
+                name = f.stem
+                desc = ""
+                for line in content.splitlines()[:10]:
+                    if '"description"' in line or "'description'" in line:
+                        parts = line.split(':', 1)
+                        if len(parts) == 2:
+                            desc = parts[1].strip().strip('",\'').strip('"').strip("'")
+                            break
+                skills.append({"name": name, "description": desc or "Skill", "filename": f.name})
+            except Exception:
+                pass
     logs = []
     log_dir = BASE_DIR / "logs"
     if log_dir.exists():
@@ -230,11 +257,29 @@ async def evolution_status():
                 pass
     return {
         "enabled": config.evolution.get("enabled", True),
-        "gene_count": gene_count,
-        "skill_count": skill_count,
+        "gene_count": len(genes),
+        "skill_count": len(skills),
+        "genes": genes,
+        "skills": skills,
         "scheduler_running": evo_scheduler.running if hasattr(evo_scheduler, "running") else False,
         "logs": logs,
     }
+
+
+# Evolution Entity Content API
+@app.get("/api/evolution/entity/{entity_type}/{name}")
+async def get_evolution_entity(entity_type: str, name: str):
+    if entity_type not in ("gene", "skill"):
+        return JSONResponse({"error": "Invalid entity type"}, status_code=400)
+    target_dir = BASE_DIR / "shared" / ("genes" if entity_type == "gene" else "skills")
+    target_file = target_dir / f"{name}.py"
+    if not target_file.exists():
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    try:
+        content = target_file.read_text(encoding="utf-8")
+        return {"name": name, "type": entity_type, "content": content}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 # Daemon Config API

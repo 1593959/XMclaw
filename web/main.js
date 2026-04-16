@@ -578,6 +578,33 @@ async function loadEvolutionStatus() {
                 <div class="evo-card"><div class="evo-num">${skillCount}</div><div class="evo-label">Skills</div></div>
                 <div class="evo-card"><div class="evo-num">${data.scheduler_running ? '运行中' : '已停止'}</div><div class="evo-label">调度器</div></div>
             </div>`;
+
+            // Genes list
+            if (data.genes && data.genes.length) {
+                html += '<h4 style="margin:14px 0 6px;font-size:13px;color:var(--text-dim)">Genes</h4>';
+                html += '<div class="entity-list">';
+                for (const g of data.genes) {
+                    html += `<div class="entity-item" onclick="loadEntity('gene','${g.name}')">
+                        <span class="entity-name">${escapeHtml(g.name)}</span>
+                        <span class="entity-type">Gene</span>
+                    </div>`;
+                }
+                html += '</div>';
+            }
+
+            // Skills list
+            if (data.skills && data.skills.length) {
+                html += '<h4 style="margin:14px 0 6px;font-size:13px;color:var(--text-dim)">Skills</h4>';
+                html += '<div class="entity-list">';
+                for (const s of data.skills) {
+                    html += `<div class="entity-item" onclick="loadEntity('skill','${s.name}')">
+                        <span class="entity-name">${escapeHtml(s.name)}</span>
+                        <span class="entity-type">Skill</span>
+                    </div>`;
+                }
+                html += '</div>';
+            }
+
             if (data.logs && data.logs.length) {
                 html += '<div class="evo-logs"><h4>最近日志</h4>';
                 for (const log of data.logs.slice(0, 5)) {
@@ -589,6 +616,21 @@ async function loadEvolutionStatus() {
         }
     } catch (e) {
         console.error('loadEvolutionStatus error', e);
+    }
+}
+
+async function loadEntity(type, name) {
+    try {
+        const res = await fetch(`/api/evolution/entity/${type}/${name}`);
+        const data = await res.json();
+        if (data.content) {
+            openViewer(`${name} (${type})`, [type, name], data.content);
+        } else {
+            showToast('加载失败: ' + (data.error || '未知错误'));
+        }
+    } catch (e) {
+        console.error('loadEntity error', e);
+        showToast('加载失败');
     }
 }
 
@@ -619,6 +661,7 @@ function connect() {
 
         if (data.type === 'chunk') {
             removeTyping();
+            hideWelcome();
             if (!currentMessageEl) {
                 currentMessageEl = addMessage('', 'agent');
             }
@@ -651,10 +694,13 @@ function connect() {
             setAgentState(data.state, data.thought);
         } else if (data.type === 'done') {
             removeTyping();
+            if (currentMessageEl) flushChunk(currentMessageEl);
             currentMessageEl = null;
+            isStreaming = false;
             setAgentState('IDLE', '等待输入...');
             activeTool.textContent = '—';
             activeFile.textContent = '—';
+            saveCurrentSession();
         } else if (data.type === 'error') {
             removeTyping();
             addMessage(data.content, 'error');
@@ -977,3 +1023,118 @@ async function loadToolsLogs() {
         el.innerHTML = '<div class="empty-state">加载失败</div>';
     }
 }
+
+
+// ===== SESSION MANAGEMENT =====
+function generateSessionId() {
+    return 'sess_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
+}
+
+function getSessionTitle() {
+    const firstUser = chat.querySelector('.message-row.user .message');
+    if (firstUser) {
+        const text = firstUser.textContent.trim().slice(0, 24);
+        return text || '新会话';
+    }
+    return '新会话';
+}
+
+function saveCurrentSession() {
+    if (!currentSessionId) {
+        currentSessionId = generateSessionId();
+    }
+    const html = chat.innerHTML;
+    const existing = sessions.find(s => s.id === currentSessionId);
+    if (existing) {
+        existing.html = html;
+        existing.title = getSessionTitle();
+        existing.updated = Date.now();
+    } else {
+        sessions.unshift({ id: currentSessionId, title: getSessionTitle(), html: html, updated: Date.now() });
+    }
+    renderSessionList();
+}
+
+function renderSessionList() {
+    const list = document.getElementById('session-list');
+    if (!list) return;
+    list.innerHTML = sessions.map(s => `
+        <div class="session-item ${s.id === currentSessionId ? 'active' : ''}" data-id="${s.id}">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            <span style="overflow:hidden;text-overflow:ellipsis">${escapeHtml(s.title)}</span>
+        </div>
+    `).join('');
+    list.querySelectorAll('.session-item').forEach(item => {
+        item.addEventListener('click', () => switchSession(item.dataset.id));
+    });
+}
+
+function switchSession(id) {
+    saveCurrentSession();
+    const s = sessions.find(x => x.id === id);
+    if (!s) return;
+    currentSessionId = id;
+    chat.innerHTML = s.html || '';
+    renderSessionList();
+    if (chat.children.length === 0) showWelcome(); else hideWelcome();
+}
+
+function newSession() {
+    saveCurrentSession();
+    currentSessionId = generateSessionId();
+    chat.innerHTML = '';
+    showWelcome();
+    renderSessionList();
+    input.focus();
+}
+
+function clearChat() {
+    chat.innerHTML = '';
+    showWelcome();
+    saveCurrentSession();
+}
+
+// ===== GENE/SKILL VIEWER =====
+function openViewer(title, meta, code) {
+    const modal = document.getElementById('viewer-modal');
+    document.getElementById('viewer-title').textContent = title;
+    document.getElementById('viewer-meta').innerHTML = meta.map(m => `<span>${escapeHtml(m)}</span>`).join('');
+    const codeEl = document.querySelector('#viewer-code code');
+    codeEl.textContent = code;
+    codeEl.className = '';
+    modal.style.display = 'flex';
+    if (typeof hljs !== 'undefined') hljs.highlightElement(codeEl);
+}
+
+function closeViewer() {
+    document.getElementById('viewer-modal').style.display = 'none';
+}
+
+document.getElementById('viewer-close')?.addEventListener('click', closeViewer);
+document.getElementById('viewer-ok')?.addEventListener('click', closeViewer);
+document.getElementById('viewer-copy')?.addEventListener('click', () => {
+    const code = document.querySelector('#viewer-code code').textContent;
+    navigator.clipboard.writeText(code).then(() => showToast('已复制到剪贴板'));
+});
+
+// ===== SHORTCUTS =====
+document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.key === 'Enter') {
+        e.preventDefault();
+        sendMessage();
+    } else if (e.ctrlKey && (e.key === 'l' || e.key === 'L')) {
+        e.preventDefault();
+        clearChat();
+    } else if (e.ctrlKey && (e.key === 'n' || e.key === 'N')) {
+        e.preventDefault();
+        newSession();
+    } else if (e.key === '/' && document.activeElement !== input) {
+        e.preventDefault();
+        input.focus();
+    }
+});
+
+document.getElementById('btn-new-chat')?.addEventListener('click', newSession);
+
+// ===== INIT =====
+newSession();

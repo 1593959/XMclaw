@@ -21,7 +21,11 @@ from xmclaw.tools.skill_tool import SkillTool
 from xmclaw.tools.memory_search import MemorySearchTool
 from xmclaw.tools.git import GitTool
 from xmclaw.tools.computer_use import ComputerUseTool
-from tests.test_tool import TestTool
+try:
+    from tests.test_tool import TestTool
+    _has_test_tool = True
+except ImportError:
+    _has_test_tool = False
 from xmclaw.tools.mcp_tool import MCPTool
 from xmclaw.llm.router import LLMRouter
 from xmclaw.utils.log import logger
@@ -53,9 +57,10 @@ class ToolRegistry:
             MemorySearchTool(),
             GitTool(),
             ComputerUseTool(),
-            TestTool(llm_router=self.llm),
             MCPTool(),
         ]
+        if _has_test_tool:
+            tools.append(TestTool(llm_router=self.llm))
         for tool in tools:
             self._tools[tool.name] = tool
 

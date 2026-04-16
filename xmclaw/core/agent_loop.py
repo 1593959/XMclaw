@@ -190,14 +190,14 @@ class AgentLoop:
             lines.append(f"- {tool.name}: {tool.description} Parameters: ({params})")
         return "\n".join(lines)
 
-    async def _detect_self_mod(self, call: dict, result: any) -> None:
-        """Detect if the agent is modifying its own source code."""
-        import json
+    async def _detect_self_mod(self, call: dict, result: any) -> dict | None:
+        """Detect if the agent is modifying files. Returns file_op event dict or None."""
         name = call.get("name", "")
         args = call.get("arguments", {})
 
         if name in ("file_write", "file_edit", "file_read"):
             path = args.get("file_path", args.get("path", ""))
-            if "xmclaw" in path.lower() or "XMclaw" in path:
-                action = "read" if name == "file_read" else "modify"
-                logger.info("self_mod_detected", agent_id=self.agent_id, file=path, action=action)
+            action = "read" if name == "file_read" else "write"
+            logger.info("file_op_detected", agent_id=self.agent_id, file=path, action=action)
+            return {"type": "file_op", "file": path, "action": action}
+        return None
