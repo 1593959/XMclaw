@@ -27,6 +27,7 @@ try:
 except ImportError:
     _has_test_tool = False
 from xmclaw.tools.mcp_tool import MCPTool
+from xmclaw.tools.github_tool import GitHubTool
 from xmclaw.llm.router import LLMRouter
 from xmclaw.utils.log import logger
 from xmclaw.utils.paths import BASE_DIR
@@ -58,6 +59,7 @@ class ToolRegistry:
             GitTool(),
             ComputerUseTool(),
             MCPTool(),
+            GitHubTool(),
         ]
         if _has_test_tool:
             tools.append(TestTool(llm_router=self.llm))

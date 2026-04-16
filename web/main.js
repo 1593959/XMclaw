@@ -98,6 +98,10 @@ async function loadDaemonConfig() {
             settingModel.value = (llm.openai || {}).default_model || '';
         }
         modelBadge.textContent = settingModel.value || provider;
+
+        // MCP config
+        renderMCPList(cfg.mcp_servers || {});
+
         localStorage.setItem('xmclaw_settings', JSON.stringify({
             provider,
             apiKey: settingApiKey.value,
@@ -124,6 +128,7 @@ saveSettingsBtn.addEventListener('click', async () => {
             cfg.llm.openai.api_key = apiKey;
             cfg.llm.openai.default_model = model;
         }
+        cfg.mcp_servers = collectMCPConfig();
         await fetch('/api/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -148,6 +153,59 @@ function loadSettings() {
         });
     });
     // memory search listeners are set up globally
+    initMCPUI();
+}
+
+// ===== MCP CONFIG UI =====
+let mcpServers = {};
+
+function initMCPUI() {
+    document.getElementById('mcp-add')?.addEventListener('click', () => addMCPEntry());
+}
+
+function renderMCPList(servers) {
+    mcpServers = { ...servers };
+    const list = document.getElementById('mcp-list');
+    if (!list) return;
+    list.innerHTML = '';
+    Object.entries(servers).forEach(([name, cfg]) => {
+        addMCPEntry(name, cfg);
+    });
+}
+
+function addMCPEntry(name = '', cfg = { command: 'npx', args: [], env: {} }) {
+    const list = document.getElementById('mcp-list');
+    if (!list) return;
+    const id = 'mcp_' + Math.random().toString(36).slice(2, 9);
+    const div = document.createElement('div');
+    div.className = 'mcp-server-item';
+    div.dataset.mcpId = id;
+    div.innerHTML = `
+        <div style="display:flex;gap:8px;flex:1;align-items:center">
+            <input type="text" placeholder="名称" value="${escapeHtml(name)}" class="mcp-name" style="width:120px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:12px">
+            <input type="text" placeholder="命令" value="${escapeHtml(cfg.command || '')}" class="mcp-cmd" style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:12px">
+            <input type="text" placeholder="参数 (逗号分隔)" value="${escapeHtml((cfg.args || []).join(','))}" class="mcp-args" style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:12px">
+        </div>
+        <button class="mcp-del" style="background:transparent;border:none;color:#ff6b6b;cursor:pointer;font-size:14px">×</button>
+    `;
+    div.querySelector('.mcp-del').addEventListener('click', () => div.remove());
+    list.appendChild(div);
+}
+
+function collectMCPConfig() {
+    const servers = {};
+    document.querySelectorAll('#mcp-list .mcp-server-item').forEach(item => {
+        const name = item.querySelector('.mcp-name')?.value?.trim();
+        const cmd = item.querySelector('.mcp-cmd')?.value?.trim();
+        const argsStr = item.querySelector('.mcp-args')?.value?.trim() || '';
+        if (!name || !cmd) return;
+        servers[name] = {
+            command: cmd,
+            args: argsStr ? argsStr.split(',').map(s => s.trim()) : [],
+            env: {}
+        };
+    });
+    return servers;
 }
 
 function showToast(msg) {
