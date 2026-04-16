@@ -21,7 +21,7 @@ from xmclaw.tools.skill_tool import SkillTool
 from xmclaw.tools.memory_search import MemorySearchTool
 from xmclaw.tools.git import GitTool
 from xmclaw.tools.computer_use import ComputerUseTool
-from xmclaw.tools.test_tool import TestTool
+from tests.test_tool import TestTool
 from xmclaw.tools.mcp_tool import MCPTool
 from xmclaw.llm.router import LLMRouter
 from xmclaw.utils.log import logger
