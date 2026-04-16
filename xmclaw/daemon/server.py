@@ -74,7 +74,8 @@ async def get_todos(agent_id: str):
 
 
 @app.post("/api/agent/{agent_id}/todos")
-async def update_todos(agent_id: str, data: list):
+async def update_todos(agent_id: str, request: Request):
+    data = await request.json()
     workspace = AGENTS_DIR / agent_id / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     path = workspace / "todos.json"

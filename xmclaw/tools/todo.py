@@ -31,6 +31,11 @@ class TodoTool(Tool):
         if TODO_FILE.exists():
             todos = json.loads(TODO_FILE.read_text(encoding="utf-8"))
 
+        # Normalize todos: ensure every item has an id
+        for i, t in enumerate(todos):
+            if "id" not in t:
+                t["id"] = i + 1
+
         if action == "add" and text:
             new_id = max([t["id"] for t in todos], default=0) + 1
             todos.append({"id": new_id, "text": text, "done": False})
@@ -42,20 +47,20 @@ class TodoTool(Tool):
                 return "No todos."
             lines = []
             for t in todos:
-                status = "[x]" if t["done"] else "[ ]"
-                lines.append(f"{status} #{t['id']}: {t['text']}")
+                status = "[x]" if t.get("done") else "[ ]"
+                lines.append(f"{status} #{t.get('id', '?')}: {t.get('text', '')}")
             return "\n".join(lines)
 
         elif action == "complete" and todo_id is not None:
             for t in todos:
-                if t["id"] == todo_id:
+                if t.get("id") == todo_id:
                     t["done"] = True
                     self._save(todos)
                     return f"Completed todo #{todo_id}"
             return f"Todo #{todo_id} not found"
 
         elif action == "delete" and todo_id is not None:
-            todos = [t for t in todos if t["id"] != todo_id]
+            todos = [t for t in todos if t.get("id") != todo_id]
             self._save(todos)
             return f"Deleted todo #{todo_id}"
 
