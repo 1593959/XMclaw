@@ -47,6 +47,8 @@ class WSClientThread(QThread):
             self.ask_user.emit(data.get("question", ""))
         elif msg_type == "tool_result":
             self.tool_called.emit({"name": data.get("tool", ""), "result": data.get("result", "")})
+        elif msg_type == "tool_call":
+            self.tool_called.emit({"name": data.get("tool", ""), "arguments": data.get("arguments", {})})
         else:
             self.message_received.emit(data)
 
@@ -55,9 +57,17 @@ class WSClientThread(QThread):
             text = await self._queue.get()
             await ws.send(json.dumps({"role": "user", "content": text}))
 
-    def send_message(self, text: str) -> None:
+    def send_message(self, text: str, plan_mode: bool = False) -> None:
         try:
-            self._queue.put_nowait(text)
+            payload = {"role": "user", "content": text, "plan_mode": plan_mode}
+            self._queue.put_nowait(json.dumps(payload))
+        except Exception:
+            pass
+
+    def send_answer(self, text: str) -> None:
+        try:
+            payload = {"role": "user", "content": text}
+            self._queue.put_nowait(json.dumps(payload))
         except Exception:
             pass
 

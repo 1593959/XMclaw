@@ -220,12 +220,57 @@ async def evolution_status():
     skills_dir = BASE_DIR / "shared" / "skills"
     gene_count = len(list(genes_dir.glob("gene_*.py"))) if genes_dir.exists() else 0
     skill_count = len(list(skills_dir.glob("skill_*.py"))) if skills_dir.exists() else 0
+    logs = []
+    log_dir = BASE_DIR / "logs"
+    if log_dir.exists():
+        for f in sorted(log_dir.glob("*.log"), reverse=True)[:20]:
+            try:
+                logs.append({"name": f.name, "content": f.read_text(encoding="utf-8")[-4000:]})
+            except Exception:
+                pass
     return {
         "enabled": config.evolution.get("enabled", True),
         "gene_count": gene_count,
         "skill_count": skill_count,
         "scheduler_running": evo_scheduler.running if hasattr(evo_scheduler, "running") else False,
+        "logs": logs,
     }
+
+
+# Daemon Config API
+@app.get("/api/config")
+async def get_daemon_config():
+    return {
+        "llm": config.llm,
+        "evolution": config.evolution,
+        "memory": config.memory,
+        "tools": config.tools,
+        "gateway": config.gateway,
+        "mcp_servers": config.mcp_servers,
+    }
+
+
+@app.post("/api/config")
+async def update_daemon_config(data: dict):
+    path = BASE_DIR / "daemon" / "config.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    return {"status": "ok"}
+
+
+# Tools log API
+@app.get("/api/tools/logs")
+async def get_tools_logs():
+    logs = []
+    log_dir = BASE_DIR / "logs"
+    if log_dir.exists():
+        for f in sorted(log_dir.glob("tools*.log"), reverse=True)[:10]:
+            try:
+                logs.append({"name": f.name, "content": f.read_text(encoding="utf-8")[-8000:]})
+            except Exception:
+                pass
+    return {"logs": logs}
 
 
 @app.websocket("/agent/{agent_id}")

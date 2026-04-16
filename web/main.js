@@ -65,6 +65,8 @@ function switchView(view) {
     topbarTitle.textContent = viewNames[view] || view;
     if (view === 'workspace') loadWorkspaceFiles();
     if (view === 'evolution') loadEvolutionStatus();
+    if (view === 'memory') loadMemorySearch();
+    if (view === 'tools') loadToolsLogs();
 }
 
 // Settings
@@ -79,32 +81,72 @@ settingTemp.addEventListener('input', () => {
     tempValue.textContent = settingTemp.value;
 });
 
-saveSettingsBtn.addEventListener('click', () => {
-    const settings = {
-        provider: settingProvider.value,
-        apiKey: settingApiKey.value,
-        model: settingModel.value,
-        temperature: parseFloat(settingTemp.value)
-    };
-    localStorage.setItem('xmclaw_settings', JSON.stringify(settings));
-    showToast('设置已保存');
-    modelBadge.textContent = settings.model || settings.provider;
+async function loadDaemonConfig() {
+    try {
+        const res = await fetch('/api/config');
+        const cfg = await res.json();
+        const llm = cfg.llm || {};
+        const provider = llm.default_provider || 'anthropic';
+        settingProvider.value = provider;
+        if (provider === 'anthropic') {
+            settingApiKey.value = (llm.anthropic || {}).api_key || '';
+            settingModel.value = (llm.anthropic || {}).default_model || '';
+        } else {
+            settingApiKey.value = (llm.openai || {}).api_key || '';
+            settingModel.value = (llm.openai || {}).default_model || '';
+        }
+        modelBadge.textContent = settingModel.value || provider;
+        localStorage.setItem('xmclaw_settings', JSON.stringify({
+            provider,
+            apiKey: settingApiKey.value,
+            model: settingModel.value
+        }));
+    } catch {}
+}
+
+saveSettingsBtn.addEventListener('click', async () => {
+    const provider = settingProvider.value;
+    const apiKey = settingApiKey.value;
+    const model = settingModel.value;
+    try {
+        const res = await fetch('/api/config');
+        const cfg = await res.json();
+        cfg.llm = cfg.llm || {};
+        cfg.llm.default_provider = provider;
+        if (provider === 'anthropic') {
+            cfg.llm.anthropic = cfg.llm.anthropic || {};
+            cfg.llm.anthropic.api_key = apiKey;
+            cfg.llm.anthropic.default_model = model;
+        } else {
+            cfg.llm.openai = cfg.llm.openai || {};
+            cfg.llm.openai.api_key = apiKey;
+            cfg.llm.openai.default_model = model;
+        }
+        await fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(cfg)
+        });
+        localStorage.setItem('xmclaw_settings', JSON.stringify({ provider, apiKey, model }));
+        showToast('设置已保存到 Daemon');
+        modelBadge.textContent = model || provider;
+    } catch (e) {
+        showToast('保存失败: ' + e.message);
+    }
 });
 
 function loadSettings() {
-    const raw = localStorage.getItem('xmclaw_settings');
-    if (!raw) return;
-    try {
-        const s = JSON.parse(raw);
-        if (s.provider) settingProvider.value = s.provider;
-        if (s.apiKey) settingApiKey.value = s.apiKey;
-        if (s.model) settingModel.value = s.model;
-        if (s.temperature !== undefined) {
-            settingTemp.value = s.temperature;
-            tempValue.textContent = s.temperature;
-        }
-        modelBadge.textContent = s.model || s.provider || 'default';
-    } catch {}
+    loadDaemonConfig();
+    document.querySelectorAll('.settings-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.settings-panel').forEach(p => p.classList.remove('active'));
+            tab.classList.add('active');
+            document.getElementById('stab-' + tab.dataset.stab).classList.add('active');
+        });
+    });
+    document.getElementById('memory-search-btn')?.addEventListener('click', loadMemorySearch);
+    document.getElementById('memory-query')?.addEventListener('keydown', e => { if (e.key === 'Enter') loadMemorySearch(); });
 }
 
 function showToast(msg) {
@@ -522,14 +564,32 @@ async function doMemorySearch() {
 }
 
 // Evolution status
-async function loadEvolutionStatus() {
+async async function loadEvolutionStatus() {
     try {
         const res = await fetch('/api/evolution/status');
         const data = await res.json();
         geneCount = data.gene_count || 0;
         skillCount = data.skill_count || 0;
         evolutionCount.textContent = `${geneCount} Genes · ${skillCount} Skills`;
-    } catch {}
+        const evoContent = document.getElementById('evolution-content');
+        if (evoContent) {
+            let html = `<div class="evo-cards">
+                <div class="evo-card"><div class="evo-num">${geneCount}</div><div class="evo-label">Genes</div></div>
+                <div class="evo-card"><div class="evo-num">${skillCount}</div><div class="evo-label">Skills</div></div>
+                <div class="evo-card"><div class="evo-num">${data.scheduler_running ? '运行中' : '已停止'}</div><div class="evo-label">调度器</div></div>
+            </div>`;
+            if (data.logs && data.logs.length) {
+                html += '<div class="evo-logs"><h4>最近日志</h4>';
+                for (const log of data.logs.slice(0, 5)) {
+                    html += `<div class="evo-log-item"><strong>${escapeHtml(log.name)}</strong><pre>${escapeHtml(log.content.slice(-800))}</pre></div>`;
+                }
+                html += '</div>';
+            }
+            evoContent.innerHTML = html;
+        }
+    } catch (e) {
+        console.error('loadEvolutionStatus error', e);
+    }
 }
 
 // WebSocket
@@ -855,3 +915,56 @@ input.addEventListener('input', () => {
 
 loadSettings();
 connect();
+
+// Memory search
+async function loadMemorySearch() {
+    const q = document.getElementById('memory-query')?.value?.trim();
+    const resultsEl = document.getElementById('memory-results');
+    if (!resultsEl) return;
+    if (!q) {
+        resultsEl.innerHTML = '<div class="empty-state">输入关键词搜索记忆</div>';
+        return;
+    }
+    try {
+        const res = await fetch(`/api/agent/${AGENT_ID}/memory/search?q=` + encodeURIComponent(q));
+        const data = await res.json();
+        let html = '';
+        if (data.vector_results && data.vector_results.length) {
+            html += '<h4>向量记忆</h4>';
+            for (const r of data.vector_results) {
+                html += `<div class="memory-item"><div class="memory-source">${escapeHtml(r.source)}</div><div class="memory-content">${escapeHtml(r.content)}</div></div>`;
+            }
+        }
+        if (data.file_results && data.file_results.length) {
+            html += '<h4>文件匹配</h4>';
+            for (const r of data.file_results) {
+                html += `<div class="memory-item"><div class="memory-source">${escapeHtml(r.file)}</div><pre>${escapeHtml(r.snippet)}</pre></div>`;
+            }
+        }
+        if (!html) html = '<div class="empty-state">未找到匹配结果</div>';
+        resultsEl.innerHTML = html;
+    } catch (e) {
+        resultsEl.innerHTML = '<div class="empty-state">搜索失败</div>';
+    }
+}
+
+// Tools logs
+async function loadToolsLogs() {
+    const el = document.getElementById('tools-content');
+    if (!el) return;
+    try {
+        const res = await fetch('/api/tools/logs');
+        const data = await res.json();
+        if (!data.logs || !data.logs.length) {
+            el.innerHTML = '<div class="empty-state">暂无工具日志</div>';
+            return;
+        }
+        let html = '';
+        for (const log of data.logs) {
+            html += `<div class="tool-log-item"><strong>${escapeHtml(log.name)}</strong><pre>${escapeHtml(log.content)}</pre></div>`;
+        }
+        el.innerHTML = html;
+    } catch (e) {
+        el.innerHTML = '<div class="empty-state">加载失败</div>';
+    }
+}

@@ -1,19 +1,19 @@
 :root {
-    --bg: #0a0a0a;
-    --surface: #141414;
-    --surface-hover: #1a1a1a;
-    --panel-bg: #0f0f0f;
-    --border: #2a2a2a;
-    --text: #e8e8e8;
-    --text-dim: #888;
-    --accent: #00d4aa;
-    --accent-hover: #00b894;
-    --accent-weak: rgba(0, 212, 170, 0.12);
-    --user-bg: #143d36;
-    --agent-bg: #1f1f1f;
-    --error-bg: rgba(255, 107, 107, 0.1);
-    --warn-bg: rgba(255, 193, 7, 0.1);
-    --info-bg: rgba(33, 150, 243, 0.1);
+    --bg: #FDF8F3;
+    --surface: #FFFDF9;
+    --surface-hover: #FFF8F0;
+    --panel-bg: #FFFFFF;
+    --border: #E8DDD4;
+    --text: #3D2C1F;
+    --text-dim: #7D6B5D;
+    --accent: #E67E22;
+    --accent-hover: #D35400;
+    --accent-weak: rgba(230, 126, 34, 0.12);
+    --user-bg: #FFE8D6;
+    --agent-bg: #FFFFFF;
+    --error-bg: rgba(192, 57, 43, 0.08);
+    --warn-bg: rgba(243, 156, 18, 0.08);
+    --info-bg: rgba(41, 128, 185, 0.08);
     --radius: 12px;
     --radius-sm: 8px;
 }
@@ -977,3 +977,34 @@ html, body {
         display: none;
     }
 }
+/* Memory search */
+.memory-search-row { display: flex; gap: 10px; margin-bottom: 16px; }
+.memory-search-row input { flex: 1; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+.memory-search-row button { padding: 10px 18px; border-radius: 8px; border: none; background: var(--accent); color: #fff; font-weight: 600; cursor: pointer; }
+.memory-search-row button:hover { background: var(--accent-hover); }
+#memory-results { display: flex; flex-direction: column; gap: 12px; }
+.memory-item { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+.memory-item .memory-source { font-size: 11px; color: var(--text-dim); margin-bottom: 6px; }
+.memory-item .memory-content { font-size: 13px; line-height: 1.5; }
+
+/* Evolution cards */
+.evo-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.evo-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; text-align: center; }
+.evo-num { font-size: 22px; font-weight: 700; color: var(--accent); }
+.evo-label { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+.evo-logs h4 { margin-bottom: 10px; font-size: 14px; }
+.evo-log-item { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px; margin-bottom: 10px; }
+.evo-log-item pre { font-size: 11px; color: var(--text-dim); white-space: pre-wrap; margin-top: 6px; }
+
+/* Settings tabs */
+.settings-tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+.settings-tab { padding: 8px 14px; border-radius: 8px; font-size: 13px; cursor: pointer; background: var(--surface); border: 1px solid var(--border); color: var(--text-dim); }
+.settings-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.settings-panel { display: none; }
+.settings-panel.active { display: block; }
+.settings-panels .setting-card { margin-bottom: 12px; }
+
+/* Tool logs */
+#tools-content { display: flex; flex-direction: column; gap: 10px; }
+.tool-log-item { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
+.tool-log-item pre { font-size: 11px; color: var(--text-dim); white-space: pre-wrap; margin-top: 6px; }

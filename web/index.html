@@ -238,27 +238,68 @@
 
                 <!-- 设置 -->
                 <div class="view" id="view-settings">
-                    <div class="settings">
-                        <div class="setting-group">
-                            <div class="setting-label">LLM 提供商</div>
-                            <select id="setting-provider">
-                                <option value="anthropic">Anthropic</option>
-                                <option value="openai">OpenAI</option>
-                            </select>
+                    <div class="view-header">
+                        <h2>设置</h2>
+                        <button class="btn-primary" id="save-settings">保存</button>
+                    </div>
+                    <div class="view-body">
+                        <div class="settings-tabs">
+                            <div class="settings-tab active" data-stab="llm">LLM</div>
+                            <div class="settings-tab" data-stab="evolution">进化</div>
+                            <div class="settings-tab" data-stab="memory">记忆</div>
+                            <div class="settings-tab" data-stab="tools">工具</div>
+                            <div class="settings-tab" data-stab="gateway">网关</div>
+                            <div class="settings-tab" data-stab="mcp">MCP</div>
                         </div>
-                        <div class="setting-group">
-                            <div class="setting-label">API 密钥</div>
-                            <input type="password" id="setting-apikey" placeholder="sk-...">
+                        <div class="settings-panels">
+                            <div class="settings-panel active" id="stab-llm">
+                                <div class="setting-card">
+                                    <h3>模型配置</h3>
+                                    <div class="form-row"><label>Provider</label><select id="setting-provider"><option value="anthropic">Anthropic</option><option value="openai">OpenAI</option></select></div>
+                                    <div class="form-row"><label>API Key</label><input type="password" id="setting-apikey" placeholder="sk-..." /></div>
+                                    <div class="form-row"><label>Model</label><input type="text" id="setting-model" placeholder="claude-sonnet-4-6" /></div>
+                                </div>
+                            </div>
+                            <div class="settings-panel" id="stab-evolution">
+                                <div class="setting-card">
+                                    <h3>进化配置</h3>
+                                    <div class="form-row"><label>启用进化</label><input type="checkbox" id="evo-enabled" checked /></div>
+                                    <div class="form-row"><label>间隔(分钟)</label><input type="number" id="evo-interval" value="30" /></div>
+                                    <div class="form-row"><label>每日复盘时间</label><input type="number" id="evo-daily" value="22" /></div>
+                                    <div class="form-row"><label>VFM 阈值</label><input type="number" id="evo-vfm" value="20" /></div>
+                                </div>
+                            </div>
+                            <div class="settings-panel" id="stab-memory">
+                                <div class="setting-card">
+                                    <h3>记忆配置</h3>
+                                    <div class="form-row"><label>向量库路径</label><input type="text" id="mem-vector" /></div>
+                                    <div class="form-row"><label>会话保留天数</label><input type="number" id="mem-retention" value="7" /></div>
+                                    <div class="form-row"><label>最大上下文 tokens</label><input type="number" id="mem-tokens" value="120000" /></div>
+                                </div>
+                            </div>
+                            <div class="settings-panel" id="stab-tools">
+                                <div class="setting-card">
+                                    <h3>工具配置</h3>
+                                    <div class="form-row"><label>Bash 超时(秒)</label><input type="number" id="tool-bash" value="300" /></div>
+                                    <div class="form-row"><label>沙盒超时(秒)</label><input type="number" id="tool-sandbox" value="30" /></div>
+                                    <div class="form-row"><label>浏览器无头模式</label><input type="checkbox" id="tool-headless" /></div>
+                                </div>
+                            </div>
+                            <div class="settings-panel" id="stab-gateway">
+                                <div class="setting-card">
+                                    <h3>网关配置</h3>
+                                    <div class="form-row"><label>WebSocket 端口</label><input type="number" id="gw-ws" value="8765" /></div>
+                                    <div class="form-row"><label>HTTP 端口</label><input type="number" id="gw-http" value="8080" /></div>
+                                </div>
+                            </div>
+                            <div class="settings-panel" id="stab-mcp">
+                                <div class="setting-card">
+                                    <h3>MCP 服务器</h3>
+                                    <div id="mcp-list"></div>
+                                    <button class="btn-secondary" id="mcp-add">添加服务器</button>
+                                </div>
+                            </div>
                         </div>
-                        <div class="setting-group">
-                            <div class="setting-label">模型</div>
-                            <input type="text" id="setting-model" placeholder="例如 claude-3-5-sonnet-20241022">
-                        </div>
-                        <div class="setting-group">
-                            <div class="setting-label">Base URL（可选）</div>
-                            <input type="text" id="setting-baseurl" placeholder="https://api.anthropic.com">
-                        </div>
-                        <button class="btn-primary" id="save-settings">保存设置</button>
                     </div>
                 </div>
             </div>
