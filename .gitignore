@@ -58,7 +58,7 @@ daemon/config.json
 agents/*/agent.json
 
 # Test artifacts
-test_*.py
+/test_*.py
 test_*.txt
 test_*.json
 test_*.png
