@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QIcon, QAction
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWebEngineCore import QWebEngineSettings
+from PySide6.QtWebEngineCore import QWebEngineSettings, QWebEnginePage
 
 DAEMON_MODULE = "xmclaw.daemon.server"  # Python module path for daemon
 WEB_URL = "http://127.0.0.1:8765"
@@ -24,6 +24,14 @@ WEB_URL = "http://127.0.0.1:8765"
 # Compute log path relative to project root (parent of xmclaw/)
 _XMCLAW_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DAEMON_LOG = os.path.join(_XMCLAW_ROOT, "logs", "daemon_desktop.log")
+
+
+class _DebugWebEnginePage(QWebEnginePage):
+    """Capture JS console messages for debugging."""
+    def javaScriptConsoleMessage(self, level, message, line, source):
+        import sys
+        prefix = {0: "[JS ERROR]", 1: "[JS WARN]", 2: "[JS INFO]"}.get(level, "[JS]")
+        print(f"{prefix} {source}:{line} {message}", file=sys.stderr)
 
 
 def wait_for_daemon(timeout=15, interval=0.5):
@@ -87,6 +95,10 @@ class MainWindow(QMainWindow):
         self.web_view = QWebEngineView()
         self.web_view.settings().setAttribute(QWebEngineSettings.LocalStorageEnabled, True)
         self.web_view.settings().setAttribute(QWebEngineSettings.JavascriptEnabled, True)
+        self.web_view.settings().setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
+        self.web_view.settings().setAttribute(QWebEngineSettings.WebSocketEnabled, True)  # enable WS in QtWebEngine
+        self.web_view.page().setBackgroundColor(Qt.white)
+        self.web_view.setPage(_DebugWebEnginePage(self.web_view.page()))
         self.web_view.loadFinished.connect(self._on_load_finished)
         self.web_view.load(QUrl(WEB_URL))
         layout.addWidget(self.web_view)
@@ -137,6 +149,14 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         event.ignore()
         self.hide()
+
+
+class _DebugWebEnginePage(QWebEnginePage):
+    """Capture JS console messages for debugging."""
+    def javaScriptConsoleMessage(self, level, message, line, source):
+        import sys
+        prefix = {0: "[JS ERROR]", 1: "[JS WARN]", 2: "[JS INFO]"}.get(level, "[JS]")
+        print(f"{prefix} {source}:{line} {message}", file=sys.stderr)
 
 
 def main():
