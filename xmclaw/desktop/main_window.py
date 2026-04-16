@@ -104,10 +104,11 @@ class MainWindow(QMainWindow):
             debug_page = _DebugWebEnginePage(self.web_view.page())
             self.web_view.setPage(debug_page)
             self.web_view.loadFinished.connect(self._on_load_finished)
-            print("[Desktop] WebView configured, loading URL...", file=sys.stderr)
-            self.web_view.load(QUrl(WEB_URL))
+            print("[Desktop] WebView configured, adding to layout...", file=sys.stderr)
             layout.addWidget(self.web_view)
-            print("[Desktop] WebView added to layout, setting up tray...", file=sys.stderr)
+            # NOTE: do NOT call load() here — QWebEngine crashes if load() is called
+            # inside __init__ before the event loop starts. Load it after window is shown.
+            print("[Desktop] WebView added to layout (load deferred until shown)", file=sys.stderr)
 
             # System tray
             self.tray_icon = QSystemTrayIcon(self)
@@ -130,10 +131,17 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
             raise
 
+    def _load_url(self):
+        """Deferred URL load — must be called AFTER event loop starts."""
+        print("[Desktop] Loading WebView URL: " + WEB_URL, file=sys.stderr)
+        self.web_view.load(QUrl(WEB_URL))
+
     def _ensure_visible(self):
         self.showNormal()
         self.raise_()
         self.activateWindow()
+        # Defer load until after event loop is running
+        QTimer.singleShot(100, self._load_url)
 
     def _on_load_finished(self, ok: bool):
         if not ok:

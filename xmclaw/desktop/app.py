@@ -4,8 +4,8 @@ import sys
 
 # Force software rendering before any Qt imports
 # These MUST be set before QApplication is created
-os.environ.setdefault("QT_QPA_PLATFORM", "windows:software")
-os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --no-sandbox")
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --no-sandbox --use-gl=swiftshader")
 os.environ.setdefault("QTWEBENGINE_DISABLE_GPU", "1")
 
 from PySide6.QtWidgets import QApplication
