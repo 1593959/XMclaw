@@ -96,7 +96,6 @@ class MainWindow(QMainWindow):
         self.web_view.settings().setAttribute(QWebEngineSettings.LocalStorageEnabled, True)
         self.web_view.settings().setAttribute(QWebEngineSettings.JavascriptEnabled, True)
         self.web_view.settings().setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
-        self.web_view.settings().setAttribute(QWebEngineSettings.WebSocketEnabled, True)  # enable WS in QtWebEngine
         self.web_view.page().setBackgroundColor(Qt.white)
         self.web_view.setPage(_DebugWebEnginePage(self.web_view.page()))
         self.web_view.loadFinished.connect(self._on_load_finished)
