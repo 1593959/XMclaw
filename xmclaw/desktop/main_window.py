@@ -1,5 +1,10 @@
 import sys
 import os
+
+# Bypass system proxy for localhost connections (e.g. Clash proxy can't reach 127.0.0.1)
+os.environ.setdefault("NO_PROXY", "127.0.0.1,localhost")
+os.environ.setdefault("no_proxy", "127.0.0.1,localhost")
+
 import subprocess
 import time
 import urllib.request
@@ -43,23 +48,27 @@ def is_daemon_running():
 
 
 def start_daemon():
-    """Start daemon via python -m to work regardless of install location."""
+    """Start daemon as detached process with log file."""
     log_dir = os.path.dirname(DAEMON_LOG)
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
-    log_file = open(DAEMON_LOG, "w")
+    open(DAEMON_LOG, "w").close()
+    log_file = open(DAEMON_LOG, "a")
 
     startup_info = None
+    creation_flags = 0
     if sys.platform == "win32":
         startup_info = subprocess.STARTUPINFO()
-        startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startup_info.wShowWindow = 1  # SW_SHOWNORMAL — show console for debugging
+        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP
 
     process = subprocess.Popen(
         [sys.executable, "-m", DAEMON_MODULE],
         stdout=log_file,
         stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        cwd=str(_XMCLAW_ROOT),  # ensure daemon finds config relative to project root
         startupinfo=startup_info,
+        creationflags=creation_flags,
     )
     return process
 
@@ -104,8 +113,16 @@ class MainWindow(QMainWindow):
 
     def _on_load_finished(self, ok: bool):
         if not ok:
-            print(f"[XMclaw] WebView failed to load {WEB_URL}")
-            print(f"[XMclaw] Check daemon log: {DAEMON_LOG}")
+            try:
+                log = open(DAEMON_LOG).read()
+            except Exception:
+                log = "(no log)"
+            QMessageBox.warning(
+                self,
+                "XMclaw - Web UI Error",
+                f"WebView failed to load {WEB_URL}\n\n"
+                f"Recent daemon log:\n{log[-300:]}"
+            )
 
     def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.DoubleClick:
@@ -130,13 +147,24 @@ def main():
     if not is_daemon_running():
         print("[XMclaw Desktop] Daemon not running. Starting daemon...")
         proc = start_daemon()
+        time.sleep(1)  # give daemon a moment to start or crash
+        if proc.poll() is not None:
+            # Daemon exited immediately — read log for error
+            try:
+                log = open(DAEMON_LOG).read()
+            except Exception:
+                log = "(no log)"
+            msg = f"Daemon exited immediately (code {proc.returncode}).\n\nLog:\n{log[-500:]}"
+            QMessageBox.critical(None, "XMclaw - Daemon Error", msg)
+            sys.exit(1)
         print("[XMclaw Desktop] Waiting for daemon (up to 15s)...")
         if not wait_for_daemon(timeout=15):
-            print("[XMclaw Desktop] ERROR: Daemon failed to start!")
-            print(f"[XMclaw Desktop] See log: {DAEMON_LOG}")
-            print("[XMclaw Desktop] Note: A debug console window should have opened.")
-            print("[XMclaw Desktop] Press Enter to exit...")
-            input()
+            try:
+                log = open(DAEMON_LOG).read()
+            except Exception:
+                log = "(no log)"
+            msg = f"Daemon did not respond within 15s.\n\nRecent log:\n{log[-500:]}"
+            QMessageBox.critical(None, "XMclaw - Daemon Timeout", msg)
             sys.exit(1)
         print("[XMclaw Desktop] Daemon is ready!")
 
