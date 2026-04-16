@@ -83,42 +83,52 @@ def start_daemon():
 
 class MainWindow(QMainWindow):
     def __init__(self):
-        super().__init__()
-        self.setWindowTitle("XMclaw")
-        self.setMinimumSize(1400, 900)
+        import traceback
+        try:
+            super().__init__()
+            self.setWindowTitle("XMclaw")
+            self.setMinimumSize(1400, 900)
 
-        central = QWidget()
-        self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
-        layout.setContentsMargins(0, 0, 0, 0)
+            central = QWidget()
+            self.setCentralWidget(central)
+            layout = QVBoxLayout(central)
+            layout.setContentsMargins(0, 0, 0, 0)
 
-        self.web_view = QWebEngineView()
-        self.web_view.settings().setAttribute(QWebEngineSettings.LocalStorageEnabled, True)
-        self.web_view.settings().setAttribute(QWebEngineSettings.JavascriptEnabled, True)
-        self.web_view.settings().setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
-        self.web_view.page().setBackgroundColor(Qt.white)
-        # Replace page with debug version that captures JS console
-        debug_page = _DebugWebEnginePage(self.web_view.page())
-        self.web_view.setPage(debug_page)
-        self.web_view.loadFinished.connect(self._on_load_finished)
-        print("[Desktop] WebView configured with JS console capture", file=sys.stderr)
-        self.web_view.load(QUrl(WEB_URL))
-        layout.addWidget(self.web_view)
+            print("[Desktop] Creating QWebEngineView...", file=sys.stderr)
+            self.web_view = QWebEngineView()
+            print("[Desktop] QWebEngineView created, configuring settings...", file=sys.stderr)
+            self.web_view.settings().setAttribute(QWebEngineSettings.LocalStorageEnabled, True)
+            self.web_view.settings().setAttribute(QWebEngineSettings.JavascriptEnabled, True)
+            self.web_view.settings().setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
+            self.web_view.page().setBackgroundColor(Qt.white)
+            debug_page = _DebugWebEnginePage(self.web_view.page())
+            self.web_view.setPage(debug_page)
+            self.web_view.loadFinished.connect(self._on_load_finished)
+            print("[Desktop] WebView configured, loading URL...", file=sys.stderr)
+            self.web_view.load(QUrl(WEB_URL))
+            layout.addWidget(self.web_view)
+            print("[Desktop] WebView added to layout, setting up tray...", file=sys.stderr)
 
-        # System tray
-        self.tray_icon = QSystemTrayIcon(self)
-        tray_menu = QMenu()
-        show_action = QAction("显示", self)
-        show_action.triggered.connect(self.showNormal)
-        quit_action = QAction("退出", self)
-        quit_action.triggered.connect(self._on_quit)
-        tray_menu.addAction(show_action)
-        tray_menu.addAction(quit_action)
-        self.tray_icon.setContextMenu(tray_menu)
-        self.tray_icon.activated.connect(self._on_tray_activated)
-        self.tray_icon.show()
+            # System tray
+            self.tray_icon = QSystemTrayIcon(self)
+            tray_menu = QMenu()
+            show_action = QAction("显示", self)
+            show_action.triggered.connect(self.showNormal)
+            quit_action = QAction("退出", self)
+            quit_action.triggered.connect(self._on_quit)
+            tray_menu.addAction(show_action)
+            tray_menu.addAction(quit_action)
+            self.tray_icon.setContextMenu(tray_menu)
+            self.tray_icon.activated.connect(self._on_tray_activated)
+            self.tray_icon.show()
 
-        QTimer.singleShot(500, self._ensure_visible)
+            print("[Desktop] Tray icon set up, calling _ensure_visible...", file=sys.stderr)
+            QTimer.singleShot(500, self._ensure_visible)
+            print("[Desktop] MainWindow.__init__ complete", file=sys.stderr)
+        except Exception as e:
+            print(f"[MainWindow FATAL] __init__ crashed: {e}", file=sys.stderr)
+            traceback.print_exc()
+            raise
 
     def _ensure_visible(self):
         self.showNormal()
