@@ -497,6 +497,31 @@ class MainWindow(QMainWindow):
         desc.setStyleSheet("color: #888;")
         layout.addWidget(desc)
 
+        # Test panel
+        test_group = QGroupBox("自动测试")
+        test_layout = QVBoxLayout()
+        test_input_row = QHBoxLayout()
+        self.test_target_input = QLineEdit()
+        self.test_target_input.setPlaceholderText("目标文件路径 (如 xmclaw/tools/computer_use.py)")
+        test_input_row.addWidget(self.test_target_input)
+        gen_btn = QPushButton("生成测试")
+        gen_btn.clicked.connect(self._run_test_generate)
+        test_input_row.addWidget(gen_btn)
+        run_btn = QPushButton("运行测试")
+        run_btn.clicked.connect(self._run_test_run)
+        test_input_row.addWidget(run_btn)
+        runall_btn = QPushButton("运行全部")
+        runall_btn.clicked.connect(self._run_test_runall)
+        test_input_row.addWidget(runall_btn)
+        test_layout.addLayout(test_input_row)
+        self.test_output_box = QTextEdit()
+        self.test_output_box.setReadOnly(True)
+        self.test_output_box.setPlaceholderText("测试输出...")
+        self.test_output_box.setMaximumHeight(200)
+        test_layout.addWidget(self.test_output_box)
+        test_group.setLayout(test_layout)
+        layout.addWidget(test_group)
+
         self.tool_log_list = QListWidget()
         layout.addWidget(self.tool_log_list)
         clear_btn = QPushButton("清空日志")
@@ -637,6 +662,45 @@ class MainWindow(QMainWindow):
             self.screenshot_label.setText("")
         except Exception as e:
             self.screenshot_label.setText(f"截图加载失败: {e}")
+
+    def _run_test_generate(self):
+        target = self.test_target_input.text().strip()
+        if not target:
+            self.test_output_box.setText("请输入目标文件路径")
+            return
+        self._run_test_action("generate", target)
+
+    def _run_test_run(self):
+        target = self.test_target_input.text().strip()
+        if not target:
+            self.test_output_box.setText("请输入测试文件路径")
+            return
+        self._run_test_action("run", target)
+
+    def _run_test_runall(self):
+        self._run_test_action("run_all", "")
+
+    def _run_test_action(self, action: str, target: str):
+        self.test_output_box.setText("执行中...")
+
+        async def do():
+            from xmclaw.tools.registry import ToolRegistry
+            reg = ToolRegistry()
+            await reg.load_all()
+            args = {"action": action}
+            if target:
+                args["target"] = target
+            return await reg.execute("test", args)
+
+        worker = HttpWorker(do)
+        worker.result.connect(self._on_test_result)
+        worker.start()
+
+    def _on_test_result(self, payload: dict):
+        if payload.get("ok"):
+            self.test_output_box.setText(str(payload.get("data", "")))
+        else:
+            self.test_output_box.setText(f"错误: {payload.get('error', '未知错误')}")
 
     def _build_settings(self):
         page = QWidget()

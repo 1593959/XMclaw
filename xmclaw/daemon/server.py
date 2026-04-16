@@ -199,6 +199,18 @@ async def update_tasks(agent_id: str, request: Request):
     return {"status": "ok"}
 
 
+# Tool Execution API (for direct tool calls from UI)
+@app.post("/api/agent/{agent_id}/tools/{tool_name}")
+async def execute_tool(agent_id: str, tool_name: str, request: Request):
+    data = await request.json()
+    try:
+        result = await orchestrator.tools.execute(tool_name, data)
+        return {"result": result}
+    except Exception as e:
+        logger.error("tool_execution_api_failed", tool=tool_name, error=str(e))
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # Evolution Status API
 @app.get("/api/evolution/status")
 async def evolution_status():

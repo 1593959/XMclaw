@@ -221,6 +221,16 @@
 
                 <!-- 工具日志 -->
                 <div class="view" id="view-tools">
+                    <div class="test-panel" style="margin-bottom: 16px; padding: 14px; background: var(--panel-bg); border-radius: var(--radius); border: 1px solid var(--border);">
+                        <h3 style="font-size: 13px; margin-bottom: 10px; color: var(--accent);">自动测试</h3>
+                        <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+                            <input type="text" id="test-target" placeholder="目标文件路径 (如 xmclaw/tools/computer_use.py)" style="flex: 1; min-width: 220px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                            <button class="btn-primary" id="btn-test-generate" style="padding: 8px 14px; font-size: 12px;">生成测试</button>
+                            <button class="btn-primary" id="btn-test-run" style="padding: 8px 14px; font-size: 12px;">运行测试</button>
+                            <button class="btn-primary" id="btn-test-runall" style="padding: 8px 14px; font-size: 12px;">运行全部</button>
+                        </div>
+                        <pre id="test-output" style="margin-top: 12px; background: #0a0a0a; padding: 10px; border-radius: 6px; font-size: 11px; max-height: 260px; overflow: auto; display: none; border: 1px solid var(--border);"></pre>
+                    </div>
                     <div class="tools-log" id="tools-log">
                         <div class="empty-state">暂无工具调用记录</div>
                     </div>

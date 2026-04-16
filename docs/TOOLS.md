@@ -59,6 +59,20 @@ XMclaw 的工具系统采用 **注册表 + 热重载** 架构。所有工具都�
 | `test` | Test generation and execution | Auto-generate pytest suites |
 | `mcp` | MCP server calls | Connect to external tool ecosystems |
 
+### Test tool UI integration
+
+Both Web UI and Desktop app provide a dedicated test panel under **工具日志**:
+
+- **生成测试**: Given a target file path, auto-generates a pytest suite via LLM.
+- **运行测试**: Runs a specific test file.
+- **运行全部**: Runs the full test suite (`pytest tests/`).
+
+Backend API:
+```
+POST /api/agent/{agent_id}/tools/{tool_name}
+```
+This generic tool execution endpoint allows the UI to directly invoke any tool without going through the chat loop.
+
 ---
 
 ## Tool call format

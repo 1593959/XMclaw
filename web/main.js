@@ -17,6 +17,11 @@ const activeFile = document.getElementById('active-file');
 const recentTools = document.getElementById('recent-tools');
 const selfModLog = document.getElementById('self-mod-log');
 const clearToolsBtn = document.getElementById('clear-tools');
+const testTarget = document.getElementById('test-target');
+const btnTestGenerate = document.getElementById('btn-test-generate');
+const btnTestRun = document.getElementById('btn-test-run');
+const btnTestRunAll = document.getElementById('btn-test-runall');
+const testOutput = document.getElementById('test-output');
 
 const navItems = document.querySelectorAll('.nav-item');
 const views = document.querySelectorAll('.view');
@@ -210,6 +215,28 @@ clearToolsBtn.addEventListener('click', () => {
     renderRecentTools();
     renderToolLog();
 });
+
+async function runTestAction(action, target = '') {
+    testOutput.style.display = 'block';
+    testOutput.textContent = '执行中...';
+    try {
+        const payload = { action };
+        if (target) payload.target = target;
+        const res = await fetch('/api/agent/default/tools/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        testOutput.textContent = data.result || data.error || '无输出';
+    } catch (e) {
+        testOutput.textContent = '请求失败: ' + e.message;
+    }
+}
+
+btnTestGenerate.addEventListener('click', () => runTestAction('generate', testTarget.value.trim()));
+btnTestRun.addEventListener('click', () => runTestAction('run', testTarget.value.trim()));
+btnTestRunAll.addEventListener('click', () => runTestAction('run_all'));
 
 // Todos
 const todoList = document.getElementById('todo-list');

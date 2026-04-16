@@ -7,13 +7,14 @@ from typing import Any
 from xmclaw.tools.base import Tool
 from xmclaw.llm.router import LLMRouter
 from xmclaw.utils.log import logger
+from xmclaw.utils.paths import BASE_DIR
 
 
 class TestTool(Tool):
     name = "test"
     description = (
         "Generate and run tests. Actions: generate (auto-create pytest for a file), "
-        "run (run a test file or directory), run_all (run all tests)."
+        "run (run a test file or directory), run_all (run all tests in tests/)."
     )
 
     def __init__(self, llm_router: LLMRouter | None = None):
@@ -58,7 +59,10 @@ class TestTool(Tool):
     async def _generate_tests(self, target: str) -> str:
         path = Path(target)
         if not path.exists():
-            return f"[Error: File not found: {target}]"
+            # Try relative to BASE_DIR
+            path = BASE_DIR / target
+            if not path.exists():
+                return f"[Error: File not found: {target}]"
 
         try:
             source = path.read_text(encoding="utf-8")
@@ -92,11 +96,8 @@ class TestTool(Tool):
             else:
                 test_code = response.strip()
 
-            tests_dir = path.parent / "tests"
-            if path.parent.name == "tests":
-                tests_dir = path.parent
-            else:
-                tests_dir.mkdir(exist_ok=True)
+            tests_dir = BASE_DIR / "tests"
+            tests_dir.mkdir(exist_ok=True)
 
             test_file = tests_dir / f"test_{path.stem}.py"
             test_file.write_text(test_code, encoding="utf-8")
@@ -111,7 +112,7 @@ class TestTool(Tool):
         if target:
             cmd.append(target)
         else:
-            cmd.append(".")
+            cmd.append("tests/")
 
         try:
             result = subprocess.run(
@@ -121,6 +122,7 @@ class TestTool(Tool):
                 encoding="utf-8",
                 errors="replace",
                 timeout=120,
+                cwd=str(BASE_DIR),
             )
             output = result.stdout + "\n" + result.stderr
             logger.info("tests_executed", target=target or "all", returncode=result.returncode)
