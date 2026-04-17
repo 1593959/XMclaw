@@ -30,6 +30,7 @@ ENV/
 .idea/
 *.swp
 *.swo
+*.swn
 
 # Project specific
 *.log
@@ -44,6 +45,9 @@ build/
 .tracker/latest.json
 .tracker/progress.log
 daemon/pid
+logs/
+browser/user_data/
+playwright/
 
 # PyInstaller
 *.manifest
@@ -53,16 +57,19 @@ daemon/pid
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Config files with secrets
+# Config files with secrets (keep examples)
 daemon/config.json
 agents/*/agent.json
+!.gitkeep
 
 # Test artifacts
 /test_*.py
 test_*.txt
 test_*.json
 test_*.png
+test_results/
 screenshot.png
 hello_world.py
 find_*.py
@@ -74,9 +81,27 @@ gen_*.py
 # Backups
 xmclaw/desktop/main_window_*.py
 xmclaw/desktop/main_window_backup.py
+*.bak
+*.backup
+*~
 
 # Tool result temp files
 tool_result/
 
-# Claude worktree config
-.claude/worktrees/
+# Claude / Copilot worktree config
+.claude/
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Coverage reports
+*.coverage
+coverage.xml
+*.cover
+
+# Environment
+.env
+.env.local
+.env.*.local
