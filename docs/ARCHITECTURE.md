@@ -30,7 +30,7 @@ title: "Architecture"
 - One WS connection per client session.
 - Send user messages as JSON frames.
 - Subscribe to streaming events and render them in real time.
-- The desktop app uses PySide6; the CLI uses `prompt_toolkit` + `rich`; the web UI uses vanilla JS.
+- The desktop app uses **Browser + System Tray** (opens default browser + pystray icon); the CLI uses `prompt_toolkit` + `rich`; the web UI uses vanilla JS.
 
 ### AgentLoop (core runtime)
 - Receives user input and assembles the full message context.
@@ -171,5 +171,5 @@ flowchart TD
 
 - [Tools](./TOOLS.md) — Tool registry, built-in tools, and skill generation
 - [Evolution](./EVOLUTION.md) — Gene/Skill generation, VFM scoring, and hot reload
-- [Desktop](./DESKTOP.md) — Native PySide6 app usage
+- [Desktop](./DESKTOP.md) — Browser + System Tray app usage
 - [CLI](./CLI.md) — Terminal client and commands
