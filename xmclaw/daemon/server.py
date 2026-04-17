@@ -309,6 +309,23 @@ async def update_daemon_config(data: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+
+    # Hot-reload: update in-memory config and rebuild LLM clients
+    for key in ("llm", "evolution", "memory", "tools", "gateway", "mcp_servers", "integrations"):
+        if key in data:
+            setattr(config, key, data[key])
+    # Rebuild LLM clients so new api_key / model / base_url take effect immediately
+    try:
+        from xmclaw.llm.openai_client import OpenAIClient
+        from xmclaw.llm.anthropic_client import AnthropicClient
+        llm = data.get("llm", config.llm)
+        orchestrator.llm.config = config
+        orchestrator.llm.clients["openai"] = OpenAIClient(llm.get("openai", {}))
+        orchestrator.llm.clients["anthropic"] = AnthropicClient(llm.get("anthropic", {}))
+        logger.info("llm_clients_reloaded")
+    except Exception as e:
+        logger.error("llm_reload_failed", error=str(e))
+
     return {"status": "ok"}
 
 
@@ -719,7 +736,9 @@ async def agent_websocket(websocket: WebSocket, agent_id: str):
             # Handle special message types from the frontend
             if msg_type == "file_upload":
                 # Save the uploaded file and turn it into a user message
-                file_name = message.get("name", "upload")
+                raw_name = message.get("name", "upload")
+                # Sanitize filename: strip path separators to prevent traversal
+                file_name = raw_name.replace("/", "_").replace("\\", "_").replace("..", "_")
                 file_data = message.get("data", "")  # base64 data URI
                 if file_data:
                     try:

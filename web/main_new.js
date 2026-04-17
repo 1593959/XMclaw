@@ -1123,6 +1123,7 @@ input.addEventListener('input', () => {
 
 document.getElementById('workspace-refresh')?.addEventListener('click', loadWorkspaceFiles);
 
+loadSessions();
 loadSettings();
 connect();
 
@@ -1473,10 +1474,14 @@ async function delegateToTeam(teamName) {
 }
 
 // ===== WEBSOCKET =====
+let _reconnectDelay = 2000;
+const _MAX_RECONNECT_DELAY = 30000;
+
 function connect() {
     ws = new WebSocket(WS_URL);
 
     ws.onopen = () => {
+        _reconnectDelay = 2000; // reset on success
         statusDot.classList.add('connected');
         statusText.textContent = 'Connected';
         statusText.style.color = 'var(--accent)';
@@ -1487,9 +1492,11 @@ function connect() {
 
     ws.onclose = () => {
         statusDot.classList.remove('connected');
-        statusText.textContent = 'Reconnecting...';
+        const delaySec = Math.round(_reconnectDelay / 1000);
+        statusText.textContent = `Reconnecting in ${delaySec}s...`;
         statusText.style.color = 'var(--text-dim)';
-        setTimeout(connect, 2000);
+        setTimeout(connect, _reconnectDelay);
+        _reconnectDelay = Math.min(_reconnectDelay * 1.5, _MAX_RECONNECT_DELAY);
     };
 
     ws.onmessage = (event) => {

@@ -97,7 +97,6 @@ class AgentLoop:
             self.pending_answer = user_input.replace("[RESUME]", "").strip()
             user_input = self.pending_answer
             self.pending_question = None
-            was_plan = False  # Will be set if we were in plan mode
         else:
             # Normal message: clear any pending question state
             self.pending_question = None
@@ -221,6 +220,11 @@ class AgentLoop:
                 observations.append({"tool": tool_name, "result": result})
                 yield json.dumps({"type": "tool_result", "tool": tool_name, "result": result})
 
+                # Detect self-modification (file ops) and emit to UI
+                file_event = await self._detect_self_mod(call, result)
+                if file_event:
+                    yield json.dumps(file_event)
+
                 await self._event_bus.publish(Event(
                     event_type=EventType.TOOL_RESULT,
                     source=self.agent_id,
@@ -260,7 +264,9 @@ class AgentLoop:
         """Build a formatted string of all available tools and their parameters."""
         lines = []
         for tool in self.tools._tools.values():
-            params = ", ".join([f"{k}: {v.get('type', 'any')}" for k, v in tool.parameters.get("properties", {}).items()])
+            raw = tool.parameters
+            props = raw.get("properties", raw) if isinstance(raw, dict) else {}
+            params = ", ".join(f"{k}: {v.get('type', 'any')}" for k, v in props.items() if isinstance(v, dict))
             lines.append(f"- {tool.name}: {tool.description} Parameters: ({params})")
         return "\n".join(lines)
 
