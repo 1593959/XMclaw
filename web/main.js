@@ -30,6 +30,7 @@ const WS_URL = 'ws://127.0.0.1:8765/agent/default';
 let ws = null;
 let currentMessageEl = null;
 let currentView = 'dashboard';
+let _rawTextMap = new Map();
 
 let totalCost = 0;
 let totalTokens = 0;
@@ -40,6 +41,33 @@ let selfModHistory = [];
 let todos = [];
 let planMode = false;
 let isStreaming = false;
+// 会话持久化到 localStorage
+const SESSIONS_KEY = 'xmclaw_sessions';
+const CURRENT_SESSION_KEY = 'xmclaw_current_session';
+
+function loadSessions() {
+    try {
+        const data = localStorage.getItem(SESSIONS_KEY);
+        if (data) {
+            sessions = JSON.parse(data);
+            currentSessionId = localStorage.getItem(CURRENT_SESSION_KEY) || sessions[0]?.id || null;
+        }
+    } catch (e) {
+        console.error('loadSessions error', e);
+    }
+}
+
+function persistSessions() {
+    try {
+        localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+        if (currentSessionId) {
+            localStorage.setItem(CURRENT_SESSION_KEY, currentSessionId);
+        }
+    } catch (e) {
+        console.error('persistSessions error', e);
+    }
+}
+
 let sessions = [];
 let currentSessionId = null;
 
@@ -818,97 +846,6 @@ async function loadEntity(type, name) {
     }
 }
 
-// WebSocket
-function connect() {
-    console.log('[DEBUG] connect() called, WS_URL =', WS_URL);
-    ws = new WebSocket(WS_URL);
-    console.log('[DEBUG] WebSocket created, readyState =', ws.readyState);
-
-    ws.onopen = () => {
-        statusDot.classList.add('connected');
-        statusText.textContent = '已连接';
-        statusText.style.color = 'var(--accent)';
-        loadTodos();
-        loadTasks();
-        loadEvolutionStatus();
-    };
-
-    ws.onclose = () => {
-        statusDot.classList.remove('connected');
-        statusText.textContent = '重新连接中...';
-        statusText.style.color = 'var(--text-dim)';
-        setTimeout(connect, 2000);
-    };
-
-    ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-
-        if (data.type === 'chunk') {
-            removeTyping();
-            hideWelcome();
-            if (!currentMessageEl) {
-                currentMessageEl = addMessage('', 'agent');
-            }
-            appendChunk(currentMessageEl, data.content);
-            scrollToBottom();
-        } else if (data.type === 'tool_call') {
-            removeTyping();
-            setAgentState('TOOL_CALL', `Using ${data.tool}...`);
-            activeTool.textContent = `${data.tool}(${formatArgs(data.args)})`;
-            addToolCall(data.tool, data.args, data.result);
-            addToolMessage(data.tool, data.args);
-            scrollToBottom();
-        } else if (data.type === 'tool_result') {
-            if (toolHistory.length > 0) {
-                toolHistory[0].result = data.result;
-                renderRecentTools();
-                renderToolLog();
-            }
-            addToolResultMessage(toolHistory[0]?.tool || 'tool', data.result);
-            activeTool.textContent = '—';
-            setAgentState('THINKING', '处理结果中...');
-        } else if (data.type === 'file_op') {
-            setAgentState('SELF_MOD', `Modified ${data.file || 'file'}`);
-            activeFile.textContent = `${data.action || 'write'}: ${data.file || '-'}`;
-            addSelfMod(data.file, data.action);
-            if (currentView !== 'dashboard') {
-                showToast(`Self-mod: ${data.action} ${data.file}`);
-            }
-        } else if (data.type === 'state') {
-            setAgentState(data.state, data.thought);
-        } else if (data.type === 'done') {
-            removeTyping();
-            if (currentMessageEl) flushChunk(currentMessageEl);
-            currentMessageEl = null;
-            isStreaming = false;
-            setAgentState('IDLE', '等待输入...');
-            activeTool.textContent = '—';
-            activeFile.textContent = '—';
-            saveCurrentSession();
-        } else if (data.type === 'error') {
-            removeTyping();
-            addMessage(data.content, 'error');
-            currentMessageEl = null;
-            setAgentState('IDLE', '发生错误');
-        } else if (data.type === 'cost') {
-            totalTokens += data.tokens || 0;
-            totalCost += data.cost || 0;
-            tokenDisplay.textContent = `${totalTokens.toLocaleString()} tokens`;
-            costDisplay.textContent = `$${totalCost.toFixed(4)}`;
-        } else if (data.type === 'evolution') {
-            if (data.gene) geneCount++;
-            if (data.skill) skillCount++;
-            evolutionCount.textContent = `${geneCount} Genes · ${skillCount} Skills`;
-            addTimelineEvent(data.subtype || 'gene', data.title, data.desc);
-        } else if (data.type === 'reflection') {
-            addReflectionMessage(data.data || {}, data.improvement || {});
-        } else if (data.type === 'ask_user') {
-            showAskUserDialog(data.question);
-        } else if (data.type === 'event') {
-            handleBusEvent(data.event);
-        }
-    };
-}
 
 function handleBusEvent(evt) {
     if (!evt) return;
@@ -924,67 +861,6 @@ function handleBusEvent(evt) {
         addTimelineEvent('skill', `Skill 生成: ${payload.name || payload.skill_id || ''}`, `Score: ${payload.score || '?'}`);
     }
 }
-
-function showAskUserDialog(question) {
-    removeTyping();
-    setAgentState('WAITING', '等待用户回复...');
-
-    const overlay = document.createElement('div');
-    overlay.id = 'ask-user-overlay';
-    overlay.style.cssText = `
-        position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-        background: rgba(0,0,0,0.7); z-index: 2000;
-        display: flex; align-items: center; justify-content: center;
-    `;
-
-    const box = document.createElement('div');
-    box.style.cssText = `
-        background: var(--surface); border: 1px solid var(--border);
-        border-radius: 12px; padding: 24px; width: 90%; max-width: 480px;
-        box-shadow: 0 20px 60px rgba(0,0,0,0.5);
-    `;
-
-    box.innerHTML = `
-        <div style="font-size: 14px; font-weight: 600; margin-bottom: 12px; color: var(--accent)">XMclaw is asking...</div>
-        <div style="font-size: 13px; margin-bottom: 16px; line-height: 1.5">${escapeHtml(question)}</div>
-        <textarea id="ask-user-input" rows="3" style="width: 100%; resize: vertical; margin-bottom: 12px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-size: 13px"></textarea>
-        <div style="display: flex; gap: 10px; justify-content: flex-end">
-            <button id="ask-user-cancel" style="padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--text); font-size: 12px; cursor: pointer">Cancel</button>
-            <button id="ask-user-submit" style="padding: 8px 16px; border-radius: 6px; border: none; background: var(--accent); color: #000; font-size: 12px; font-weight: 600; cursor: pointer">Reply</button>
-        </div>
-    `;
-
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-
-    const answerInput = document.getElementById('ask-user-input');
-    answerInput.focus();
-
-    document.getElementById('ask-user-cancel').addEventListener('click', () => {
-        overlay.remove();
-        setAgentState('IDLE', '等待输入...');
-    });
-
-    document.getElementById('ask-user-submit').addEventListener('click', () => {
-        const answer = answerInput.value.trim();
-        if (!answer) return;
-        overlay.remove();
-        addMessage(answer, 'user');
-        showTyping();
-        setAgentState('THINKING', '继续处理中...');
-        ws.send(JSON.stringify({ role: 'user', content: `[RESUME] ${answer}` }));
-    });
-
-    answerInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            document.getElementById('ask-user-submit').click();
-        }
-    });
-}
-
-// Track raw text per message element for proper Markdown re-rendering
-const _rawTextMap = new WeakMap();
 
 function flushChunk(el) {
     // Final highlight pass after streaming ends
@@ -1067,25 +943,7 @@ function addMessage(text, role) {
     return el;
 }
 
-function addToolMessage(tool, args) {
-    const row = document.createElement('div');
-    row.className = 'message-row tool';
-
-    const el = document.createElement('div');
-    el.className = 'message tool';
-    const argsText = args ? JSON.stringify(args, null, 2) : '{}';
-    el.innerHTML = `
-        <div class="tool-header">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-            <span class="tool-name">${escapeHtml(tool)}</span>
-        </div>
-        <pre style="margin:0;background:transparent;padding:0;font-size:11px;border:none">${escapeHtml(argsText)}</pre>
-    `;
-
-    row.appendChild(el);
-    chat.appendChild(row);
-    scrollToBottom();
-}
+// 旧版本已删除，保留末尾新版本
 
 function addToolResultMessage(tool, result) {
     const row = document.createElement('div');
@@ -1320,6 +1178,7 @@ function saveCurrentSession() {
         sessions.unshift({ id: currentSessionId, title: getSessionTitle(), html: html, updated: Date.now() });
     }
     renderSessionList();
+    persistSessions();
 }
 
 function renderSessionList() {
@@ -1343,6 +1202,7 @@ function switchSession(id) {
     currentSessionId = id;
     chat.innerHTML = s.html || '';
     renderSessionList();
+    persistSessions();
     if (chat.children.length === 0) showWelcome(); else hideWelcome();
 }
 
@@ -1352,6 +1212,7 @@ function newSession() {
     chat.innerHTML = '';
     showWelcome();
     renderSessionList();
+    persistSessions();
     input.focus();
 }
 
@@ -1576,5 +1437,330 @@ async function delegateToTeam(teamName) {
     }
 }
 
+// ===== WEBSOCKET =====
+function connect() {
+    ws = new WebSocket(WS_URL);
+
+    ws.onopen = () => {
+        statusDot.classList.add('connected');
+        statusText.textContent = 'Connected';
+        statusText.style.color = 'var(--accent)';
+        loadTodos();
+        loadTasks();
+        loadEvolutionStatus();
+    };
+
+    ws.onclose = () => {
+        statusDot.classList.remove('connected');
+        statusText.textContent = 'Reconnecting...';
+        statusText.style.color = 'var(--text-dim)';
+        setTimeout(connect, 2000);
+    };
+
+    ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+
+        if (data.type === 'chunk') {
+            removeTyping();
+            if (!currentMessageEl) {
+                currentMessageEl = addMessage('', 'agent');
+            }
+            appendChunk(currentMessageEl, data.content);
+            scrollToBottom();
+        } else if (data.type === 'tool_call') {
+            removeTyping();
+            setAgentState('TOOL_CALL', `Using ${data.tool}...`);
+            // 隐藏 JSON 参数，只显示工具名称
+            activeTool.textContent = data.tool;
+            addToolCall(data.tool, data.args, data.result);
+            addToolMessage(data.tool);
+            scrollToBottom();
+        } else if (data.type === 'tool_result') {
+            if (toolHistory.length > 0) {
+                toolHistory[0].result = data.result;
+                renderRecentTools();
+                renderToolLog();
+            }
+            // 在聊天区域显示工具执行结果
+            addToolResultMessage(data.tool, data.result);
+            activeTool.textContent = '—';
+            setAgentState('THINKING', 'Processing result...');
+        } else if (data.type === 'file_op') {
+            setAgentState('SELF_MOD', `Modified ${data.file || 'file'}`);
+            activeFile.textContent = `${data.action || 'write'}: ${data.file || '-'}`;
+            addSelfMod(data.file, data.action);
+            if (currentView !== 'dashboard') {
+                showToast(`Self-mod: ${data.action} ${data.file}`);
+            }
+        } else if (data.type === 'state') {
+            setAgentState(data.state, data.thought);
+        } else if (data.type === 'done') {
+            removeTyping();
+            currentMessageEl = null;
+            setAgentState('IDLE', 'Waiting for input...');
+            activeTool.textContent = '—';
+            activeFile.textContent = '—';
+        } else if (data.type === 'error') {
+            removeTyping();
+            addMessage(data.content, 'error');
+            currentMessageEl = null;
+            setAgentState('IDLE', 'Error occurred');
+        } else if (data.type === 'cost') {
+            totalTokens += data.tokens || 0;
+            totalCost += data.cost || 0;
+            tokenDisplay.textContent = `${totalTokens.toLocaleString()} tokens`;
+            costDisplay.textContent = `$${totalCost.toFixed(4)}`;
+        } else if (data.type === 'evolution') {
+            if (data.gene) geneCount++;
+            if (data.skill) skillCount++;
+            evolutionCount.textContent = `${geneCount} Genes · ${skillCount} Skills`;
+            addTimelineEvent(data.subtype || 'gene', data.title, data.desc);
+        } else if (data.type === 'reflection') {
+            // 反思结果：显示在进化时间线，而不是聊天区域
+            addReflectionMessage(data.data || {}, data.improvement || {});
+            addTimelineEvent('reflection', '反思完成', data.data?.summary || '');
+        } else if (data.type === 'ask_user') {
+            showAskUserDialog(data.question);
+        }
+    };
+}
+
+// 修复：addToolMessage 只显示工具名称，不显示 JSON 参数
+function addToolMessage(tool) {
+    const row = document.createElement('div');
+    row.className = 'message-row tool';
+
+    const el = document.createElement('div');
+    el.className = 'message tool';
+    el.innerHTML = `
+        <div class="tool-header">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+            <span class="tool-name">${escapeHtml(tool)}</span>
+        </div>
+        <div class="tool-status">执行中...</div>
+    `;
+
+    row.appendChild(el);
+    chat.appendChild(row);
+    scrollToBottom();
+}
+
+function showAskUserDialog(question) {
+    removeTyping();
+    setAgentState('WAITING', 'Waiting for user answer...');
+
+    const overlay = document.createElement('div');
+    overlay.id = 'ask-user-overlay';
+    overlay.style.cssText = `
+        position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0,0,0,0.7); z-index: 2000;
+        display: flex; align-items: center; justify-content: center;
+    `;
+
+    const box = document.createElement('div');
+    box.style.cssText = `
+        background: var(--surface); border: 1px solid var(--border);
+        border-radius: 12px; padding: 24px; width: 90%; max-width: 480px;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    `;
+
+    box.innerHTML = `
+        <h3 style="margin:0 0 16px;font-size:16px;color:var(--text)">需要您的输入</h3>
+        <p style="margin:0 0 16px;font-size:14px;color:var(--text-dim)">${escapeHtml(question)}</p>
+        <textarea id="ask-user-input" rows="3" style="
+            width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);
+            border-radius:8px;padding:10px;font-size:14px;resize:vertical;box-sizing:border-box;
+        "></textarea>
+        <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end">
+            <button id="ask-user-cancel" style="
+                padding:8px 16px;background:var(--bg);color:var(--text);
+                border:1px solid var(--border);border-radius:6px;cursor:pointer;
+            ">取消</button>
+            <button id="ask-user-submit" style="
+                padding:8px 16px;background:var(--accent);color:#000;
+                border:none;border-radius:6px;cursor:pointer;font-weight:600;
+            ">确认</button>
+        </div>
+    `;
+
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    const input = document.getElementById('ask-user-input');
+    input.focus();
+
+    document.getElementById('ask-user-cancel').onclick = () => {
+        overlay.remove();
+        setAgentState('IDLE', 'Waiting for input...');
+    };
+
+    document.getElementById('ask-user-submit').onclick = () => {
+        const answer = input.value;
+        overlay.remove();
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'ask_user_answer', answer }));
+        }
+    };
+
+    input.onkeydown = (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            document.getElementById('ask-user-submit').click();
+        }
+    };
+}
+
+// ===== FILE UPLOAD =====
+const fileUpload = document.getElementById('file-upload');
+if (fileUpload) {
+    fileUpload.addEventListener('change', async (e) => {
+        const files = Array.from(e.target.files);
+        if (files.length === 0) return;
+        
+        for (const file of files) {
+            const reader = new FileReader();
+            reader.onload = (evt) => {
+                const dataUrl = evt.target.result;
+                // 显示上传的文件消息
+                const row = document.createElement('div');
+                row.className = 'message-row user';
+                row.innerHTML = `
+                    <div class="message user">
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                            <span style="font-size:11px;color:var(--text-dim)">上传文件</span>
+                        </div>
+                        ${file.type.startsWith('image/') 
+                            ? `<img src="${dataUrl}" style="max-width:200px;border-radius:6px;border:1px solid var(--border)" alt="${escapeHtml(file.name)}">`
+                            : `<div style="padding:8px 12px;background:var(--surface);border-radius:6px;font-size:12px"><strong>${escapeHtml(file.name)}</strong> (${(file.size/1024).toFixed(1)} KB)</div>`
+                        }
+                    </div>
+                `;
+                chat.appendChild(row);
+                scrollToBottom();
+                
+                // 发送到服务器
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'file_upload',
+                        name: file.name,
+                        type: file.type,
+                        data: dataUrl
+                    }));
+                }
+            };
+            reader.readAsDataURL(file);
+        }
+        // 清空 input 以便再次选择同一文件
+        fileUpload.value = '';
+    });
+}
+
+// ===== VOICE INPUT =====
+const voiceBtn = document.getElementById('voice-btn');
+let mediaRecorder = null;
+let audioChunks = [];
+let voiceMode = 'send'; // 'send' = 直接发送, 'asr' = 转文字
+
+if (voiceBtn) {
+    voiceBtn.addEventListener('click', async () => {
+        if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+            // 录音中...显示模式选择
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+                
+                mediaRecorder.ondataavailable = (e) => {
+                    audioChunks.push(e.data);
+                };
+                
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    const reader = new FileReader();
+                    reader.onload = async (e) => {
+                        if (voiceMode === 'send') {
+                            // 模式1: 直接发送语音
+                            if (ws && ws.readyState === WebSocket.OPEN) {
+                                // 显示语音消息
+                                const row = document.createElement('div');
+                                row.className = 'message-row user';
+                                row.innerHTML = `
+                                    <div class="message user">
+                                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>
+                                            <span style="font-size:11px;color:var(--text-dim)">语音消息</span>
+                                        </div>
+                                        <audio controls src="${e.target.result}" style="max-width:200px"></audio>
+                                    </div>
+                                `;
+                                chat.appendChild(row);
+                                scrollToBottom();
+                                
+                                ws.send(JSON.stringify({
+                                    type: 'voice_input',
+                                    data: e.target.result,
+                                    format: 'webm'
+                                }));
+                                showToast('语音已发送');
+                            }
+                        } else {
+                            // 模式2: 语音转文字
+                            showToast('正在识别语音...');
+                            try {
+                                const response = await fetch('http://127.0.0.1:8765/asr', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ audio: e.target.result })
+                                });
+                                const result = await response.json();
+                                if (result.text) {
+                                    input.value = result.text;
+                                    input.focus();
+                                    showToast('已转换为文字，可编辑后发送');
+                                } else {
+                                    showToast('语音识别失败');
+                                }
+                            } catch (err) {
+                                showToast('语音识别失败: ' + err.message);
+                            }
+                        }
+                    };
+                    reader.readAsDataURL(audioBlob);
+                    
+                    // 停止所有轨道
+                    stream.getTracks().forEach(track => track.stop());
+                };
+                
+                mediaRecorder.start();
+                voiceBtn.style.color = 'var(--error)';
+                voiceBtn.title = '点击切换模式: 当前=直接发送 | 右击=转文字';
+                
+                // 显示当前模式
+                const modeText = voiceMode === 'send' ? '直接发送' : '转文字';
+                showToast(`录音中 (${modeText}模式) - 点击停止`);
+            } catch (err) {
+                showToast('无法访问麦克风: ' + err.message);
+            }
+        } else {
+            // 停止录音
+            mediaRecorder.stop();
+            voiceBtn.style.color = '';
+            voiceBtn.title = '语音输入';
+        }
+    });
+    
+    // 右键切换模式
+    voiceBtn.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        voiceMode = voiceMode === 'send' ? 'asr' : 'send';
+        const modeText = voiceMode === 'send' ? '直接发送' : '转文字';
+        showToast(`语音模式切换为: ${modeText}`);
+    });
+}
+
 // ===== INIT =====
+loadSessions();
 newSession();
+renderSessionList();
+connect();

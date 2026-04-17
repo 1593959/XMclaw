@@ -614,5 +614,56 @@ def main():
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 
+# ASR (语音转文字) 端点
+@app.post("/asr")
+async def asr(request: Request):
+    try:
+        body = await request.json()
+        audio_data = body.get("audio", "")
+        
+        # 使用 SpeechRecognition 库
+        import speech_recognition as sr
+        import base64
+        import tempfile
+        import os
+        
+        r = sr.Recognizer()
+        
+        # 解码 base64 音频并保存为临时文件
+        if "," in audio_data:
+            audio_data = audio_data.split(",")[1]
+        audio_bytes = base64.b64decode(audio_data)
+        
+        with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
+            f.write(audio_bytes)
+            temp_path = f.name
+        
+        try:
+            with sr.AudioFile(temp_path) as source:
+                audio = r.record(source)
+            
+            # 尝试 Google 在线识别（需要网络）
+            try:
+                text = r.recognize_google(audio, language="zh-CN")
+                return {"text": text, "success": True}
+            except Exception:
+                pass
+            
+            # 尝试 Sphinx 离线识别（需要安装 PocketSphinx）
+            try:
+                text = r.recognize_sphinx(audio, language="zh-CN")
+                return {"text": text, "success": True}
+            except Exception:
+                pass
+            
+            return {"text": "", "success": False, "error": "无法识别语音，请安装 PocketSphinx 或检查网络连接"}
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+    except Exception as e:
+        logger.error("asr_error", error=str(e))
+        return {"text": "", "success": False, "error": str(e)}
+
+
 if __name__ == "__main__":
     main()

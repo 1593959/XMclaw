@@ -54,7 +54,16 @@ def stop_daemon() -> int:
         return 1
     try:
         pid = int(PID_FILE.read_text().strip())
-        os.kill(pid, 9)
+        if sys.platform == "win32":
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            PROCESS_TERMINATE = 1
+            handle = kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
+            if handle:
+                kernel32.TerminateProcess(handle, 0)
+                kernel32.CloseHandle(handle)
+        else:
+            os.kill(pid, 9)
         PID_FILE.unlink()
         print(f"Daemon stopped (PID {pid})")
         return 0
