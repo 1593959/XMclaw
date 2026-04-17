@@ -1,6 +1,5 @@
 """Core agent loop: think -> act -> observe -> repeat."""
 import json
-import re
 from typing import AsyncIterator
 
 from xmclaw.llm.router import LLMRouter
@@ -56,6 +55,17 @@ class AgentLoop:
         except Exception:
             pass
 
+    def _get_tools_for_llm(self) -> list[dict]:
+        """Build tool list for LLM in provider-specific format."""
+        tools = []
+        for tool in self.tools._tools.values():
+            tools.append({
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters
+            })
+        return tools
+
     async def run(self, user_input: str) -> AsyncIterator[str]:
         """Run the agent loop, yielding JSON-encoded events."""
         logger.info("agent_loop_start", agent_id=self.agent_id, input=user_input[:200])
@@ -70,17 +80,7 @@ class AgentLoop:
             self.pending_answer = user_input.replace("[RESUME]", "").strip()
             user_input = self.pending_answer
             self.pending_question = None
-            # If resuming from plan mode, disable it so we execute the plan
-            was_plan_mode = self.plan_mode
-            self.plan_mode = False
-            yield json.dumps({"type": "state", "state": "THINKING", "thought": "继续处理用户回复..."})
-            # For plan mode resume, append the plan context to messages so the agent knows what to execute
-            if was_plan_mode:
-                # Rebuild context with the original plan from the last turn
-                last_turn = self._turn_history[-1] if self._turn_history else None
-                if last_turn:
-                    plan_text = last_turn.get("assistant", "")
-                    user_input = f"[继续执行以下计划]\n{plan_text}\n\n用户确认：{user_input}"
+            was_plan = False  # Will be set if we were in plan mode
         else:
             # Normal message: clear any pending question state
             self.pending_question = None
@@ -103,14 +103,57 @@ class AgentLoop:
         while turn_count < self.max_turns:
             turn_count += 1
 
-            # Stream thinking
+            # Stream thinking with tool calling support
             full_response = ""
-            async for chunk in self.llm.stream(messages):
-                full_response += chunk
-                yield json.dumps({"type": "chunk", "content": chunk})
+            tool_calls = []
+            current_tool = None
+            current_tool_input = ""
+            in_tool_call = False
 
-            # Parse tool calls
-            tool_calls = self._extract_tool_calls(full_response)
+            async for event_str in self.llm.stream(messages, tools=self._get_tools_for_llm()):
+                # Parse the event
+                try:
+                    event = json.loads(event_str)
+                except json.JSONDecodeError:
+                    # Plain text chunk
+                    full_response += event_str
+                    yield json.dumps({"type": "chunk", "content": event_str})
+                    continue
+
+                event_type = event.get("type", "")
+
+                if event_type == "text":
+                    # Text chunk
+                    content = event.get("content", "")
+                    full_response += content
+                    yield json.dumps({"type": "chunk", "content": content})
+
+                elif event_type == "tool_call_start":
+                    # Start of a tool call
+                    current_tool = {
+                        "id": event.get("id"),
+                        "name": event.get("name"),
+                        "input": {}
+                    }
+                    in_tool_call = True
+                    current_tool_input = ""
+
+                elif event_type == "tool_call_input":
+                    # Tool input delta
+                    if current_tool:
+                        current_tool_input += event.get("input_delta", "")
+                        # Try to parse as JSON
+                        try:
+                            current_tool["input"] = json.loads(current_tool_input)
+                        except json.JSONDecodeError:
+                            pass  # Keep accumulating
+
+                elif event_type == "tool_call_end":
+                    # End of tool call
+                    if current_tool:
+                        tool_calls.append(current_tool)
+                        current_tool = None
+                        in_tool_call = False
 
             turn_data = {"user": user_input, "assistant": full_response, "tool_calls": tool_calls}
             self._turn_history.append(turn_data)
@@ -137,7 +180,7 @@ class AgentLoop:
             observations = []
             for call in tool_calls:
                 tool_name = call["name"]
-                args = call.get("arguments", {})
+                args = call.get("input", {})
 
                 yield json.dumps({"type": "state", "state": "TOOL_CALL", "thought": f"Using {tool_name}..."})
                 yield json.dumps({"type": "tool_call", "tool": tool_name, "args": args})
@@ -151,8 +194,8 @@ class AgentLoop:
                 result = await self.tools.execute(tool_name, args)
 
                 # Handle ask_user special pause
-                if tool_name == "ask_user" and result.startswith("[ASK_USER]"):
-                    question = result.replace("[ASK_USER]", "").strip()
+                if tool_name == "ask_user" and str(result).startswith("[ASK_USER]"):
+                    question = str(result).replace("[ASK_USER]", "").strip()
                     self.pending_question = question
                     yield json.dumps({"type": "ask_user", "question": question})
                     yield json.dumps({"type": "state", "state": "WAITING", "thought": "等待用户回复..."})
@@ -164,70 +207,32 @@ class AgentLoop:
                 await self._event_bus.publish(Event(
                     event_type=EventType.TOOL_RESULT,
                     source=self.agent_id,
-                    payload={"tool": tool_name, "result": str(result)[:500]},
+                    payload={"tool": tool_name, "result": str(result)[:200]},
                 ))
 
-                # Detect self-modification and yield file_op event
-                file_event = await self._detect_self_mod(call, result)
-                if file_event:
-                    yield json.dumps(file_event)
-
-            # Append to messages for next turn
+            # Add assistant response + observations to messages
             messages.append({"role": "assistant", "content": full_response})
-            messages.append({"role": "user", "content": self._format_observations(observations)})
+            for obs in observations:
+                tool_result = f"Tool {obs['tool']} returned: {obs['result']}"
+                messages.append({"role": "user", "content": tool_result})
 
-        # Cost summary
-        cost_info = self.cost_tracker.estimate(messages)
-        yield json.dumps({"type": "cost", "tokens": cost_info.get("tokens", 0), "cost": cost_info.get("cost", 0)})
+            # Check if we should continue
+            yield json.dumps({"type": "state", "state": "THINKING", "thought": "处理工具结果中..."})
 
-        # Reflection + Auto-improvement
-        try:
-            reflection_result = await self.reflection.reflect(self.agent_id, self._turn_history)
-            if reflection_result:
-                yield json.dumps({
-                    "type": "reflection",
-                    "data": reflection_result.get("reflection", {}),
-                    "improvement": reflection_result.get("improvement", {}),
-                })
-        except Exception as e:
-            logger.error("reflection_failed", agent_id=self.agent_id, error=str(e))
-
-        self._turn_history.clear()
         yield json.dumps({"type": "done"})
-        logger.info("agent_loop_end", agent_id=self.agent_id, turns=turn_count)
-
-    def _extract_tool_calls(self, text: str) -> list[dict]:
-        """Extract tool calls from LLM response."""
-        calls = []
-        pattern = r"<function>(.*?)</function>\s*<arguments>(.*?)</arguments>"
-        for match in re.finditer(pattern, text, re.DOTALL):
-            name = match.group(1).strip()
-            args_raw = match.group(2).strip()
-            try:
-                args = json.loads(args_raw)
-            except json.JSONDecodeError:
-                args = {"raw": args_raw}
-            calls.append({"name": name, "arguments": args})
-        return calls
-
-    def _format_observations(self, observations: list[dict]) -> str:
-        lines = ["工具执行结果："]
-        for obs in observations:
-            lines.append(f"- {obs['tool']}: {obs['result']}")
-        return "\n".join(lines)
 
     def _build_tool_descriptions(self) -> str:
         """Build a formatted string of all available tools and their parameters."""
         lines = []
         for tool in self.tools._tools.values():
-            params = ", ".join([f"{k}: {v.get('type', 'any')}" for k, v in tool.parameters.items()])
+            params = ", ".join([f"{k}: {v.get('type', 'any')}" for k, v in tool.parameters.get("properties", {}).items()])
             lines.append(f"- {tool.name}: {tool.description} Parameters: ({params})")
         return "\n".join(lines)
 
     async def _detect_self_mod(self, call: dict, result: any) -> dict | None:
         """Detect if the agent is modifying files. Returns file_op event dict or None."""
         name = call.get("name", "")
-        args = call.get("arguments", {})
+        args = call.get("input", {})
 
         if name in ("file_write", "file_edit", "file_read"):
             path = args.get("file_path", args.get("path", ""))

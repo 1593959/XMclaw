@@ -553,6 +553,142 @@ async def list_sessions(agent_id: str):
     return {"sessions": sessions}
 
 
+# ── Multimodal / Media APIs ────────────────────────────────────────────────
+
+@app.post("/asr")
+async def asr_endpoint(request: Request):
+    """Transcribe audio to text using the ASR tool.
+
+    Accepts JSON: {"audio": "<base64 data URI or file path>", "language": "zh"}
+    Returns: {"text": "..."}
+    """
+    data = await request.json()
+    audio = data.get("audio", "")
+    language = data.get("language", "")
+    prompt = data.get("prompt", "")
+    if not audio:
+        return JSONResponse({"error": "audio field required"}, status_code=400)
+    try:
+        from xmclaw.tools.asr import ASRTool
+        result = await ASRTool().execute(audio=audio, language=language, prompt=prompt)
+        return {"text": result}
+    except Exception as e:
+        logger.error("asr_endpoint_error", error=str(e))
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/tts")
+async def tts_endpoint(request: Request):
+    """Convert text to speech.
+
+    Accepts JSON: {"text": "...", "voice": "alloy", "speed": 1.0}
+    Returns: {"audio_uri": "data:audio/mp3;base64,...", "file": "/tmp/..."}
+    """
+    data = await request.json()
+    text = data.get("text", "")
+    voice = data.get("voice", "alloy")
+    speed = float(data.get("speed", 1.0))
+    if not text:
+        return JSONResponse({"error": "text field required"}, status_code=400)
+    try:
+        from xmclaw.tools.tts import TTSTool
+        result = await TTSTool().execute(text=text, voice=voice, speed=speed)
+        # Parse result: "[TTS OK] File: /tmp/xxx\ndata:audio/mp3;base64,..."
+        lines = result.split("\n", 2)
+        file_path = ""
+        audio_uri = ""
+        for line in lines:
+            if line.startswith("[TTS OK] File:"):
+                file_path = line.replace("[TTS OK] File:", "").strip()
+            elif line.startswith("data:audio"):
+                audio_uri = line.strip()
+        return {"audio_uri": audio_uri, "file": file_path, "raw": result}
+    except Exception as e:
+        logger.error("tts_endpoint_error", error=str(e))
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/vision")
+async def vision_endpoint(request: Request):
+    """Analyze an image with a multimodal LLM.
+
+    Accepts JSON: {"image": "<path|URL|data URI>", "prompt": "..."}
+    Returns: {"result": "..."}
+    """
+    data = await request.json()
+    image = data.get("image", "")
+    prompt = data.get("prompt", "Please describe this image.")
+    if not image:
+        return JSONResponse({"error": "image field required"}, status_code=400)
+    try:
+        from xmclaw.tools.vision import VisionTool
+        result = await VisionTool().execute(image=image, prompt=prompt)
+        return {"result": result}
+    except Exception as e:
+        logger.error("vision_endpoint_error", error=str(e))
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/media/upload")
+async def upload_media(request: Request):
+    """Upload a media file (base64 data URI) and return a server-side path.
+
+    Accepts JSON: {"name": "file.png", "data": "data:image/png;base64,..."}
+    Returns: {"path": "/media/xxx.png", "url": "/media/xxx.png"}
+    """
+    import base64 as _b64
+    import uuid as _uuid
+    data = await request.json()
+    name = data.get("name", "upload")
+    raw = data.get("data", "")
+    if not raw:
+        return JSONResponse({"error": "data field required"}, status_code=400)
+    try:
+        if "," in raw:
+            header, b64 = raw.split(",", 1)
+        else:
+            header, b64 = "", raw
+        ext = "bin"
+        for fmt in ["png", "jpg", "jpeg", "gif", "webp", "mp3", "wav", "webm", "mp4", "pdf"]:
+            if fmt in header or name.lower().endswith(f".{fmt}"):
+                ext = fmt
+                break
+        media_dir = BASE_DIR / "web" / "media"
+        media_dir.mkdir(parents=True, exist_ok=True)
+        uid = _uuid.uuid4().hex[:10]
+        fname = f"{uid}_{name}"
+        fpath = media_dir / fname
+        fpath.write_bytes(_b64.b64decode(b64))
+        url = f"/media/{fname}"
+        return {"path": str(fpath), "url": url}
+    except Exception as e:
+        logger.error("media_upload_error", error=str(e))
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/code_exec")
+async def code_exec_endpoint(request: Request):
+    """Execute code safely in the sandbox.
+
+    Accepts JSON: {"code": "...", "language": "python", "stdin": "", "timeout": 30}
+    Returns: {"result": "..."}
+    """
+    data = await request.json()
+    code = data.get("code", "")
+    language = data.get("language", "python")
+    stdin = data.get("stdin", "")
+    timeout = int(data.get("timeout", 30))
+    if not code:
+        return JSONResponse({"error": "code field required"}, status_code=400)
+    try:
+        from xmclaw.tools.code_exec import CodeExecTool
+        result = await CodeExecTool().execute(code=code, language=language, stdin=stdin, timeout=timeout)
+        return {"result": result}
+    except Exception as e:
+        logger.error("code_exec_endpoint_error", error=str(e))
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.websocket("/agent/{agent_id}")
 async def agent_websocket(websocket: WebSocket, agent_id: str):
     await websocket.accept()

@@ -208,6 +208,18 @@
                         </div>
 
                         <div class="panel">
+                            <div class="panel-header">
+                                <span>实时日志</span>
+                                <button class="panel-action" id="toggle-console" onclick="toggleConsolePanel()">显示/隐藏</button>
+                            </div>
+                            <div class="panel-body compact" id="console-panel" style="display:none;max-height:200px;overflow-y:auto;background:#111">
+                                <div id="console-logs">
+                                    <div class="empty-state">等待消息...</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="panel">
                             <div class="panel-header"><span>自修改记录</span></div>
                             <div class="panel-body compact" id="self-mod-log">
                                 <div class="empty-state">暂无自修改</div>

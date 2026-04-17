@@ -12,6 +12,11 @@ def mount_static_files(app: FastAPI) -> None:
     if WEB_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 
+    # Media uploads directory (created on demand)
+    media_dir = WEB_DIR / "media"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/media", StaticFiles(directory=str(media_dir)), name="media")
+
     @app.get("/")
     async def serve_index():
         return FileResponse(str(WEB_DIR / "index.html"))

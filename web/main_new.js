@@ -41,6 +41,39 @@ let selfModHistory = [];
 let todos = [];
 let planMode = false;
 let isStreaming = false;
+
+// 控制台日志
+let consoleLogs = [];
+const MAX_LOGS = 100;
+
+function logConsole(type, msg, data) {
+    const time = new Date().toLocaleTimeString();
+    const entry = { time, type, msg, data };
+    consoleLogs.unshift(entry);
+    if (consoleLogs.length > MAX_LOGS) consoleLogs.pop();
+    updateConsolePanel();
+}
+
+function updateConsolePanel() {
+    const panel = document.getElementById('console-logs');
+    if (!panel) return;
+    panel.innerHTML = consoleLogs.slice(0, 50).map(log => {
+        const color = log.type === 'error' ? '#ff6b6b' : 
+                      log.type === 'tool' ? '#ffc107' : 
+                      log.type === 'state' ? '#4caf50' : '#9ca3af';
+        return `<div style="font-size:11px;color:${color};padding:2px 0;border-bottom:1px solid #222">
+            <span style="color:#666">${log.time}</span> 
+            <strong>[${log.type}]</strong> ${escapeHtml(log.msg || '')}
+            ${log.data ? `<span style="color:#666;margin-left:8px">${escapeHtml(JSON.stringify(log.data).substring(0,100))}</span>` : ''}
+        </div>`;
+    }).join('');
+}
+
+function toggleConsolePanel() {
+    const panel = document.getElementById('console-panel');
+    if (!panel) return;
+    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+}
 // 会话持久化到 localStorage
 const SESSIONS_KEY = 'xmclaw_sessions';
 const CURRENT_SESSION_KEY = 'xmclaw_current_session';
@@ -1459,6 +1492,7 @@ function connect() {
 
     ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
+        logConsole('ws', `收到消息: ${data.type}`, data);
 
         if (data.type === 'chunk') {
             removeTyping();
@@ -1469,12 +1503,11 @@ function connect() {
             scrollToBottom();
         } else if (data.type === 'tool_call') {
             removeTyping();
-            setAgentState('TOOL_CALL', `Using ${data.tool}...`);
-            activeTool.textContent = data.tool;
-            // 只显示工具名称，不显示参数
-            addToolMessage(data.tool);
-            // 记录到历史（但不显示参数）
-            addToolCall(data.tool, null, null);
+            const toolName = data.tool || 'tool';
+            // 聊天区域只显示友好提示，不显示JSON参数
+            setAgentState('TOOL_CALL', `正在使用 ${toolName}...`);
+            activeTool.textContent = toolName;
+            // 不在聊天区域显示参数
             scrollToBottom();
         } else if (data.type === 'tool_result') {
             if (toolHistory.length > 0) {

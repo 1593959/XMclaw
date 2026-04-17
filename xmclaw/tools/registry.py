@@ -28,6 +28,10 @@ except ImportError:
     _has_test_tool = False
 from xmclaw.tools.mcp_tool import MCPTool
 from xmclaw.tools.github_tool import GitHubTool
+from xmclaw.tools.vision import VisionTool
+from xmclaw.tools.asr import ASRTool
+from xmclaw.tools.tts import TTSTool
+from xmclaw.tools.code_exec import CodeExecTool
 from xmclaw.llm.router import LLMRouter
 from xmclaw.utils.log import logger
 from xmclaw.utils.paths import BASE_DIR
@@ -60,6 +64,10 @@ class ToolRegistry:
             ComputerUseTool(),
             MCPTool(),
             GitHubTool(),
+            VisionTool(),
+            ASRTool(),
+            TTSTool(),
+            CodeExecTool(),
         ]
         if _has_test_tool:
             tools.append(TestTool(llm_router=self.llm))

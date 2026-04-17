@@ -14,14 +14,14 @@ class LLMRouter:
             "anthropic": AnthropicClient(self.config.llm["anthropic"]),
         }
 
-    async def stream(self, messages: list[dict]) -> AsyncIterator[str]:
+    async def stream(self, messages: list[dict], tools: list[dict] | None = None) -> AsyncIterator[str]:
         provider = self.config.llm.get("default_provider", "anthropic")
         client = self.clients.get(provider)
         if not client:
             logger.error("unknown_llm_provider", provider=provider)
             yield f"[Error: Unknown provider {provider}]"
             return
-        async for chunk in client.stream(messages):
+        async for chunk in client.stream(messages, tools=tools):
             yield chunk
 
     async def complete(self, messages: list[dict]) -> str:
