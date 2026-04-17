@@ -5,25 +5,16 @@ __pycache__/
 *.so
 .Python
 build/
-develop-eggs/
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
 *.egg
+*.whl
 
 # Virtual environments
 venv/
 env/
 ENV/
+.venv/
 
 # IDE
 .vscode/
@@ -32,43 +23,28 @@ ENV/
 *.swo
 *.swn
 
-# Project specific
+# Project build & cache
 *.log
 *.db
+*.db-journal
 *.jsonl
 *.lock
 tmp/
 cache/
 python/
-build/
-.tracker/record_*.json
-.tracker/latest.json
-.tracker/progress.log
-daemon/pid
 logs/
 browser/user_data/
 playwright/
+.pytest_cache/
+.coverage
+htmlcov/
 
-# PyInstaller
-*.manifest
-*.spec
-!build.spec
-
-# OS
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# Config files with secrets (keep examples)
+# Config files with secrets
 daemon/config.json
 agents/*/agent.json
-!.gitkeep
 
 # Test artifacts
 /test_*.py
-test_*.txt
-test_*.json
-test_*.png
 test_results/
 screenshot.png
 hello_world.py
@@ -79,29 +55,43 @@ rewrite_*.py
 gen_*.py
 
 # Backups
-xmclaw/desktop/main_window_*.py
-xmclaw/desktop/main_window_backup.py
 *.bak
 *.backup
 *~
+xmclaw/desktop/main_window_*.py
+xmclaw/desktop/main_window_backup.py
 
 # Tool result temp files
 tool_result/
 
-# Claude / Copilot worktree config
+# Claude / Copilot
 .claude/
 
-# Pytest
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Coverage reports
-*.coverage
-coverage.xml
-*.cover
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
 
 # Environment
 .env
 .env.local
 .env.*.local
+
+# Coverage
+coverage.xml
+*.cover
+
+# Project specific
+.tracker/
+daemon/pid
+*.spec
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+.installed.cfg
