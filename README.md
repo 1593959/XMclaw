@@ -18,7 +18,7 @@
 | **💾 Memory** | Session logs, SQLite metadata, Vector memory (sqlite-vec) |
 | **🔧 Tools** | 20+ built-in tools: file, bash, browser, git, mcp, test... |
 | **🔄 Self-Evolving** | GeneForge, SkillForge, VFM scoring, Hot reload |
-| **🛡️ Security** | Docker sandbox, Git rollback, Code quality gates |
+| **🛡️ Security** | Bash guards, Dangerous pattern blocking, Git rollback |
 | **🖥️ Interfaces** | Desktop app (Browser + System Tray), Web UI, Rich CLI |
 
 ---
@@ -44,10 +44,10 @@
               │               │               │
               ▼               ▼               ▼
         ┌───────────┐   ┌───────────┐   ┌───────────┐
-        │  Memory   │   │ Evolution │   │  Sandbox  │
-        │  Session  │   │ GeneForge │   │  Docker   │
-        │  SQLite   │   │ SkillForge│   │  Git Roll│
-        │  Vector   │   │ Validator │   │  ruff     │
+        │  Memory   │   │ Evolution │   │  Security │
+        │  Session  │   │ GeneForge │   │ Bash guards│
+        │  SQLite   │   │ SkillForge│   │ Git rollback│
+        │  Vector   │   │ Validator │   │ ruff lint │
         └───────────┘   └───────────┘   └───────────┘
                               ▲
                               │
@@ -138,9 +138,8 @@ XMclaw/
 │   ├── genes/           # Gene implementations
 │   ├── llm/             # LLM routers (OpenAI, Anthropic)
 │   ├── memory/          # Memory managers
-│   ├── sandbox/         # Docker isolation
 │   ├── tools/           # Tool registry & implementations
-│   └── utils/           # Utilities
+│   └── utils/           # Utilities (paths, log, security)
 ├── web/                 # Web UI assets
 ├── shared/              # Shared resources (genes, skills)
 ├── agents/              # Agent configurations
@@ -155,10 +154,10 @@ XMclaw/
 
 XMclaw implements multiple security layers:
 
-- **Docker Sandbox** - Execute untrusted code in isolation
+- **Bash Guards** - Blocks dangerous commands (rm -rf /, mkfs, dd...)
+- **Dangerous Pattern Blocking** - Warns on suspicious patterns (curl | bash, git push --force...)
 - **Git Rollback** - Auto-commit before changes, rollback on failure
 - **Code Quality Gates** - ruff linting enforced before commits
-- **Dangerous Pattern Guards** - Blocks destructive bash commands
 
 ---
 
