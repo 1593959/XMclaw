@@ -1,150 +1,113 @@
----
-summary: "Native PySide6 desktop app usage guide"
-read_when:
-- Launching or using the desktop app
-- Understanding the 6 main views
-- Troubleshooting connection or UI issues
-title: "Desktop App"
----
+# Desktop Application
 
-# Desktop App
+XMclaw uses a **Browser + System Tray** architecture for its desktop experience.
 
-XMclaw's desktop app is a native **PySide6** application. It is not a web page in a frame — it is a real desktop application with system tray support.
+## Architecture
 
----
+```
+┌─────────────────────────────────────────┐
+│           Desktop Entry                  │
+│         (python -m xmclaw.desktop.app)  │
+└─────────────────┬───────────────────────┘
+                  │
+        ┌─────────▼─────────┐
+        │   TrayApp         │
+        │   (pystray)       │
+        │   - System tray    │
+        │   - Menu actions   │
+        └─────────┬─────────┘
+                  │
+        ┌─────────▼─────────┐
+        │   Browser         │
+        │   (default)       │
+        │   → Web UI        │
+        └───────────────────┘
+                  │
+        ┌─────────▼─────────┐
+        │   Daemon          │
+        │   (FastAPI)       │
+        │   WebSocket/HTTP  │
+        └───────────────────┘
+```
 
-## Launch
+## Why Browser + System Tray?
+
+| PySide6 WebView | Browser + System Tray |
+|-----------------|----------------------|
+| ❌ Heavy dependencies | ✅ Lightweight |
+| ❌ Complex packaging | ✅ No special packaging |
+| ❌ Crashes on some systems | ✅ Stable |
+| ❌ Limited browser features | ✅ Full browser capabilities |
+| ✅ Native look | ✅ Web UI consistency |
+
+## Requirements
+
+```bash
+pip install pystray Pillow
+```
+
+## Usage
+
+### Start Desktop App
 
 ```bash
 python -m xmclaw.desktop.app
 ```
 
-On startup, the app:
-1. Checks whether the Daemon is running; starts it if not.
-2. Opens a WebSocket connection to `ws://127.0.0.1:8765/agent/default`.
-3. Loads agent data: todos, tasks, workspace files, evolution state, and settings.
+### System Tray Menu
 
----
+- **Open Browser** - Open the web UI in your default browser
+- **Check Status** - Check if daemon is running
+- **Start Daemon** - Start the daemon if not running
+- **Stop Daemon** - Stop the daemon
+- **Exit** - Exit the desktop app
 
-## Layout
+## Files
 
+| File | Description |
+|------|-------------|
+| `xmclaw/desktop/app.py` | Entry point, daemon lifecycle management |
+| `xmclaw/desktop/tray.py` | System tray with pystray |
+| `xmclaw/desktop/ws_client.py` | WebSocket client (optional) |
+| `xmclaw/desktop/http_client.py` | HTTP client for daemon communication |
+
+## Configuration
+
+The desktop app reads from `daemon/config.json`:
+
+```json
+{
+  "gateway": {
+    "host": "127.0.0.1",
+    "port": 8765
+  }
+}
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  XMclaw              ● connected                             │
-├───────┬─────────────────────────────────────────────────────┤
-│       │  Dashboard                                         │
-│  Nav  │  ┌────────────────────────┬─────────────────────┐  │
-│       │  │                        │   Agent State       │  │
-│  ─────│  │      Chat area          │   Current thought   │  │
-│  Dash │  │                        │   Active tool       │  │
-│  WS   │  │                        │   File operation    │  │
-│  Evo  │  │                        ├─────────────────────┤  │
-│  Mem  │  │                        │   Todos             │  │
-│  Logs │  │                        │   Tasks             │  │
-│  Comp │  │                        ├─────────────────────┤  │
-│  Set  │  │                        │   File operation    │  │
-│       │  └────────────────────────┴─────────────────────┘  │
-└───────┴─────────────────────────────────────────────────────┘
-```
 
----
+## Flow
 
-## Views
+1. Desktop app starts
+2. Checks if daemon is running (via `/health` endpoint)
+3. If not running, starts daemon automatically
+4. Opens default browser to web UI
+5. Shows system tray icon
+6. User interacts via browser
+7. Exit via tray menu or window close
 
-### Dashboard
-- **Chat area**: Streaming conversation with user and agent bubbles.
-- **Plan mode**: Toggle the "Plan" button to make the agent think before acting.
-- **Right panel**: Live agent state, current thought, active tool, file operation, todos, and tasks.
+## Troubleshooting
 
-#### Plan mode
-1. Click the **Plan** button (it highlights when active).
-2. Type a complex request.
-3. The agent generates a step-by-step plan and pauses.
-4. Reply with confirmation or edits.
-5. The agent executes the approved plan.
+### Browser doesn't open
 
-#### ask_user popup
-When the agent needs confirmation, a modal dialog appears:
-- Enter your response and click **OK** to proceed.
-- Click **Cancel** to abort; the agent receives a cancellation message.
+- Check if daemon is accessible: `curl http://127.0.0.1:8765/health`
+- Check logs: `logs/daemon_desktop.log`
 
-### Workspace
-- **File tree**: Browse the agent's working directory.
-- **Editor**: Click a file to edit it inline.
-- **Save**: Persist changes back to disk.
-- **Import**: Copy external files into the workspace.
-- **Git toolbar**:
-  - `Git Status` — run `git status`
-  - `Git Pull` — run `git pull`
-  - `Git Commit` — enter a message and commit
-  - `Git Push` — run `git push`
+### Tray icon not visible
 
-### Evolution
-Inspect the agent's self-improvement output:
-- **Genes**: Active behavioral Genes.
-- **Skills**: Auto-generated Skills.
-- **Insights**: Extracted lessons and patterns.
+- On Linux, may need `sudo` for system tray
+- Check if pystray dependencies installed: `pip install pystray Pillow`
 
-Click **Refresh** to update the lists.
+### Daemon fails to start
 
-### Memory
-- **Search box**: Enter keywords to search long-term memory.
-- **Results**: Matching file paths and text snippets.
-
-Searched sources:
-- `MEMORY.md`
-- `PROFILE.md`
-- Session logs (`.jsonl`)
-- Any other `.md` files in the agent directory
-
-### Tool Logs
-- A running list of every tool call the agent has executed.
-- Shows tool name, arguments, and result summary.
-- **Test panel**: Generate tests for a target file, run a specific test file, or run the full suite (`pytest tests/`).
-- Click **Clear logs** to reset the view.
-
-### Computer Use
-Remote control your computer directly from the desktop app:
-- **Screenshot**: Capture the full desktop and display it in the app.
-- **Click / Move**: Set X/Y coordinates and click or move the mouse.
-- **Type / Keypress**: Send text or key combinations (e.g., `Ctrl+C`).
-- **Scroll**: Scroll the mouse wheel at a given position.
-- **Drag**: Drag from start coordinates to end coordinates.
-
-> Safety: `pyautogui.FAILSAFE` is enabled. Move the mouse to a screen corner to abort any ongoing action.
-
-### Settings
-| Setting | Description |
-|---------|-------------|
-| Default LLM provider | `anthropic` or `openai` |
-| Model name | e.g. `claude-3-5-sonnet-20241022` |
-| API Key | Provider API key |
-| Base URL | Custom endpoint (optional) |
-| Enable evolution | Toggle autonomous evolution |
-| Evolution interval | Minimum minutes between cycles |
-
-Click **Save settings** to persist. Some changes require a Daemon restart.
-
----
-
-## System tray
-
-- Closing the window minimizes to the system tray instead of quitting.
-- Double-click the tray icon to restore the window.
-- Right-click the tray icon for **Show** and **Quit** options.
-
----
-
-## Shortcuts
-
-| Shortcut | Action |
-|----------|--------|
-| `Enter` (in input) | Send message |
-| `Ctrl + Enter` | Insert newline in input |
-
----
-
-## Related
-
-- [CLI](./CLI.md) — Terminal alternative to the desktop app
-- [Architecture](./ARCHITECTURE.md) — How the desktop client connects to the Daemon
+- Check port availability: port 8765
+- Check logs: `logs/daemon_desktop.log`
+- Verify Python path: `python -c "import xmclaw.daemon.server"`

@@ -19,7 +19,7 @@
 | **🔧 Tools** | 20+ built-in tools: file, bash, browser, git, mcp, test... |
 | **🔄 Self-Evolving** | GeneForge, SkillForge, VFM scoring, Hot reload |
 | **🛡️ Security** | Docker sandbox, Git rollback, Code quality gates |
-| **🖥️ Interfaces** | Desktop app (PySide6), Web UI, Rich CLI |
+| **🖥️ Interfaces** | Desktop app (Browser + System Tray), Web UI, Rich CLI |
 
 ---
 
@@ -71,42 +71,54 @@ cd XMclaw
 # Install dependencies
 pip install -e .
 
+# Or with all extras
+pip install -e ".[all]"
+
+# Install desktop dependencies
+pip install pystray Pillow
+
 # Optional extras
-pip install pyautogui mss Pillow     # computer_use support
-pip install mcp                       # MCP integration
-pip install playwright && playwright install chromium  # browser automation
+pip install pyautogui mss          # computer_use support
+pip install mcp                     # MCP integration
+pip install playwright              # browser automation
+playwright install chromium
 ```
 
 ### Configuration
 
-Edit `agents/default/agent.json`:
+Copy and edit the configuration:
 
-```json
-{
-  "llm": {
-    "provider": "openai",
-    "model": "gpt-4",
-    "api_key": "your-api-key"
-  }
-}
+```bash
+cp daemon/config.example.json daemon/config.json
+# Edit daemon/config.json with your API keys
 ```
 
 ### Run
 
 ```bash
-# Start the daemon
-xmclaw start
-
-# Open desktop app
+# Option 1: Desktop app (Browser + System Tray)
 python -m xmclaw.desktop.app
 
-# Or use CLI
+# Option 2: Start daemon + open web UI
+xmclaw start
+# Then open http://127.0.0.1:8765 in browser
+
+# Option 3: CLI chat
 xmclaw chat
 xmclaw chat --plan   # plan mode
 
 # Stop daemon
 xmclaw stop
 ```
+
+### Desktop App Features
+
+The desktop app uses **browser + system tray** architecture:
+
+- 🌐 Opens your default browser to the web interface
+- 📌 System tray icon with quick actions
+- 🔄 Auto-starts daemon if not running
+- ⏹️ Exit cleanly via tray menu
 
 ---
 
@@ -117,20 +129,23 @@ XMclaw/
 ├── xmclaw/              # Core runtime
 │   ├── core/            # AgentLoop, Orchestrator, PromptBuilder
 │   ├── daemon/          # FastAPI server, WebSocket gateway
-│   ├── desktop/         # PySide6 desktop app
+│   ├── desktop/         # Browser + System Tray desktop app
+│   │   ├── app.py      # Desktop entry point
+│   │   ├── tray.py     # System tray with pystray
+│   │   └── ws_client.py # WebSocket client
 │   ├── evolution/       # GeneForge, SkillForge, Validator
 │   ├── gateway/         # HTTP/WebSocket handlers
 │   ├── genes/           # Gene implementations
 │   ├── llm/             # LLM routers (OpenAI, Anthropic)
-│   ├── memory/           # Memory managers
-│   ├── sandbox/          # Docker isolation
-│   ├── tools/            # Tool registry & implementations
-│   └── utils/            # Utilities
+│   ├── memory/          # Memory managers
+│   ├── sandbox/         # Docker isolation
+│   ├── tools/           # Tool registry & implementations
+│   └── utils/           # Utilities
 ├── web/                 # Web UI assets
 ├── shared/              # Shared resources (genes, skills)
 ├── agents/              # Agent configurations
 ├── docs/                # Documentation
-├── scripts/              # Build & utility scripts
+├── scripts/             # Build & utility scripts
 └── tests/               # Test suites
 ```
 
