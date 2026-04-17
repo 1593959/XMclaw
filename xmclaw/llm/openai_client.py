@@ -11,12 +11,16 @@ class OpenAIClient:
             api_key=self.api_key,
             base_url=config.get("base_url", "https://api.openai.com/v1"),
         )
-        self.model = config.get("default_model", "gpt-4.1")
+        self.model = config.get("default_model", "")
 
     async def stream(self, messages: list[dict]) -> AsyncIterator[str]:
         if not self.api_key:
             logger.error("openai_api_key_missing")
-            yield "[Error: OpenAI API key is not configured. Please add it in Settings.]"
+            yield "[错误：未配置 OpenAI API Key，请前往「设置 → LLM」填写。]"
+            return
+        if not self.model:
+            logger.error("openai_model_missing")
+            yield "[错误：未配置 OpenAI 模型名称，请前往「设置 → LLM」填写，例如 gpt-4o 或 gpt-4.1。]"
             return
         try:
             response = await self.client.chat.completions.create(
@@ -34,7 +38,10 @@ class OpenAIClient:
     async def complete(self, messages: list[dict]) -> str:
         if not self.api_key:
             logger.error("openai_api_key_missing")
-            return "[Error: OpenAI API key is not configured. Please add it in Settings.]"
+            return "[错误：未配置 OpenAI API Key，请前往「设置 → LLM」填写。]"
+        if not self.model:
+            logger.error("openai_model_missing")
+            return "[错误：未配置 OpenAI 模型名称，请前往「设置 → LLM」填写。]"
         response = await self.client.chat.completions.create(
             model=self.model,
             messages=messages,

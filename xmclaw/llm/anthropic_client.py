@@ -11,12 +11,16 @@ class AnthropicClient:
             api_key=self.api_key,
             base_url=config.get("base_url", "https://api.anthropic.com"),
         )
-        self.model = config.get("default_model", "claude-sonnet-4-6")
+        self.model = config.get("default_model", "")
 
     async def stream(self, messages: list[dict]) -> AsyncIterator[str]:
         if not self.api_key:
             logger.error("anthropic_api_key_missing")
-            yield "[Error: Anthropic API key is not configured. Please add it in Settings.]"
+            yield "[错误：未配置 Anthropic API Key，请前往「设置 → LLM」填写。]"
+            return
+        if not self.model:
+            logger.error("anthropic_model_missing")
+            yield "[错误：未配置 Anthropic 模型名称，请前往「设置 → LLM」填写，例如 claude-opus-4-5 或 claude-sonnet-4-5。]"
             return
         try:
             # Convert OpenAI format to Anthropic format
@@ -43,7 +47,10 @@ class AnthropicClient:
     async def complete(self, messages: list[dict]) -> str:
         if not self.api_key:
             logger.error("anthropic_api_key_missing")
-            return "[Error: Anthropic API key is not configured. Please add it in Settings.]"
+            return "[错误：未配置 Anthropic API Key，请前往「设置 → LLM」填写。]"
+        if not self.model:
+            logger.error("anthropic_model_missing")
+            return "[错误：未配置 Anthropic 模型名称，请前往「设置 → LLM」填写。]"
         system = ""
         anthropic_messages = []
         for msg in messages:

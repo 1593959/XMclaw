@@ -1209,6 +1209,54 @@ html, body {
   background: rgba(255,255,255,0.15);
 }
 
+/* ===== MODEL INPUT GROUP ===== */
+.model-input-group {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+.model-input-group input[type="text"] {
+    flex: 1;
+    min-width: 0;
+}
+.model-input-group select {
+    flex-shrink: 0;
+    width: 160px;
+    background: var(--surface-2);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xs);
+    padding: 8px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    outline: none;
+}
+.model-input-group select:hover,
+.model-input-group select:focus {
+    border-color: var(--accent);
+    color: var(--text);
+}
+
+/* ===== LLM PROVIDER CARDS ===== */
+.llm-provider-card {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 14px;
+    margin-top: 12px;
+}
+.llm-provider-card h4 {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
 /* ===== RESPONSIVE ===== */
 @media (max-width: 960px) { .dashboard-right { display: none; } }
 @media (max-width: 680px) { .sidebar { display: none; } }

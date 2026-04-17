@@ -40,12 +40,12 @@ class DaemonConfig:
                 "openai": {
                     "api_key": "",
                     "base_url": "https://api.openai.com/v1",
-                    "default_model": "gpt-4o",
+                    "default_model": "",
                 },
                 "anthropic": {
                     "api_key": "",
                     "base_url": "https://api.anthropic.com",
-                    "default_model": "claude-sonnet-4-6",
+                    "default_model": "",
                 },
             },
             evolution={

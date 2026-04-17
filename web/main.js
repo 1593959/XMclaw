@@ -39,6 +39,9 @@ let toolHistory = [];
 let selfModHistory = [];
 let todos = [];
 let planMode = false;
+let isStreaming = false;
+let sessions = [];
+let currentSessionId = null;
 
 const AGENT_ID = 'default';
 
@@ -73,15 +76,34 @@ function switchView(view) {
 
 // Settings
 const settingProvider = document.getElementById('setting-provider');
-const settingApiKey = document.getElementById('setting-apikey');
-const settingModel = document.getElementById('setting-model');
 const settingTemp = document.getElementById('setting-temp');
 const tempValue = document.getElementById('temp-value');
 const saveSettingsBtn = document.getElementById('save-settings');
 
-settingTemp.addEventListener('input', () => {
-    tempValue.textContent = settingTemp.value;
+// Per-provider input references
+function getProviderEls(p) {
+    return {
+        apiKey:  document.getElementById(`${p}-apikey`),
+        baseUrl: document.getElementById(`${p}-baseurl`),
+        model:   document.getElementById(`${p}-model`),
+        preset:  document.getElementById(`${p}-model-preset`),
+    };
+}
+
+settingTemp?.addEventListener('input', () => {
+    if (tempValue) tempValue.textContent = settingTemp.value;
 });
+
+// Apply preset → free-text input
+window.applyModelPreset = function(provider) {
+    const els = getProviderEls(provider);
+    if (!els.preset || !els.model) return;
+    const val = els.preset.value;
+    if (val) {
+        els.model.value = val;
+        els.preset.value = ''; // reset to placeholder after copy
+    }
+};
 
 async function loadDaemonConfig() {
     try {
@@ -89,54 +111,65 @@ async function loadDaemonConfig() {
         const cfg = await res.json();
         const llm = cfg.llm || {};
         const provider = llm.default_provider || 'anthropic';
-        settingProvider.value = provider;
-        if (provider === 'anthropic') {
-            settingApiKey.value = (llm.anthropic || {}).api_key || '';
-            settingModel.value = (llm.anthropic || {}).default_model || '';
-        } else {
-            settingApiKey.value = (llm.openai || {}).api_key || '';
-            settingModel.value = (llm.openai || {}).default_model || '';
+        if (settingProvider) settingProvider.value = provider;
+
+        // Populate both provider cards
+        for (const p of ['anthropic', 'openai']) {
+            const src = llm[p] || {};
+            const els = getProviderEls(p);
+            if (els.apiKey)  els.apiKey.value  = src.api_key      || '';
+            if (els.baseUrl) els.baseUrl.value = src.base_url     || '';
+            if (els.model)   els.model.value   = src.default_model || '';
         }
-        modelBadge.textContent = settingModel.value || provider;
+
+        // Update model badge
+        const activeModel = (llm[provider] || {}).default_model || '';
+        modelBadge.textContent = activeModel || provider;
 
         // MCP config
         renderMCPList(cfg.mcp_servers || {});
 
-        localStorage.setItem('xmclaw_settings', JSON.stringify({
-            provider,
-            apiKey: settingApiKey.value,
-            model: settingModel.value
-        }));
+        // Persist trimmed snapshot (no secrets) for WS payload
+        _syncSettingsCache(provider, llm);
     } catch {}
 }
 
-saveSettingsBtn.addEventListener('click', async () => {
-    const provider = settingProvider.value;
-    const apiKey = settingApiKey.value;
-    const model = settingModel.value;
+function _syncSettingsCache(provider, llm) {
+    const activeModel = (llm[provider] || {}).default_model || '';
+    localStorage.setItem('xmclaw_settings', JSON.stringify({
+        provider,
+        model: activeModel,
+        // Do NOT store API keys in localStorage
+    }));
+}
+
+saveSettingsBtn?.addEventListener('click', async () => {
+    const provider = settingProvider?.value || 'anthropic';
     try {
         const res = await fetch('/api/config');
         const cfg = await res.json();
         cfg.llm = cfg.llm || {};
         cfg.llm.default_provider = provider;
-        if (provider === 'anthropic') {
-            cfg.llm.anthropic = cfg.llm.anthropic || {};
-            cfg.llm.anthropic.api_key = apiKey;
-            cfg.llm.anthropic.default_model = model;
-        } else {
-            cfg.llm.openai = cfg.llm.openai || {};
-            cfg.llm.openai.api_key = apiKey;
-            cfg.llm.openai.default_model = model;
+
+        for (const p of ['anthropic', 'openai']) {
+            const els = getProviderEls(p);
+            cfg.llm[p] = cfg.llm[p] || {};
+            if (els.apiKey)  cfg.llm[p].api_key       = els.apiKey.value.trim();
+            if (els.baseUrl) cfg.llm[p].base_url       = els.baseUrl.value.trim() || (p === 'anthropic' ? 'https://api.anthropic.com' : 'https://api.openai.com/v1');
+            if (els.model)   cfg.llm[p].default_model  = els.model.value.trim();
         }
+
         cfg.mcp_servers = collectMCPConfig();
         await fetch('/api/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(cfg)
         });
-        localStorage.setItem('xmclaw_settings', JSON.stringify({ provider, apiKey, model }));
-        showToast('设置已保存到 Daemon');
-        modelBadge.textContent = model || provider;
+
+        const activeModel = cfg.llm[provider]?.default_model || '';
+        modelBadge.textContent = activeModel || provider;
+        _syncSettingsCache(provider, cfg.llm);
+        showToast('设置已保存');
     } catch (e) {
         showToast('保存失败: ' + e.message);
     }
@@ -861,6 +894,25 @@ function showAskUserDialog(question) {
 
 // Track raw text per message element for proper Markdown re-rendering
 const _rawTextMap = new WeakMap();
+
+function flushChunk(el) {
+    // Final highlight pass after streaming ends
+    if (typeof hljs !== 'undefined') {
+        el.querySelectorAll('pre code:not([data-highlighted])').forEach(block => {
+            try { hljs.highlightElement(block); } catch {}
+        });
+    }
+}
+
+function showWelcome() {
+    const w = document.getElementById('welcome');
+    if (w) w.style.display = '';
+}
+
+function hideWelcome() {
+    const w = document.getElementById('welcome');
+    if (w) w.style.display = 'none';
+}
 
 function appendChunk(el, text) {
     const prev = _rawTextMap.get(el) || '';
