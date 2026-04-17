@@ -55,14 +55,31 @@ class AgentLoop:
         except Exception:
             pass
 
+    @staticmethod
+    def _wrap_parameters(raw: dict) -> dict:
+        """Wrap a flat property dict into a valid JSON Schema object.
+
+        Tool definitions store parameters as ``{prop_name: {type, description}}``.
+        LLM APIs require ``{type: 'object', properties: {...}, required: [...]}``.
+        """
+        if not raw:
+            return {"type": "object", "properties": {}}
+        if "type" in raw and raw["type"] == "object":
+            return raw  # already wrapped
+        required = [
+            k for k, v in raw.items()
+            if not str(v.get("description", "")).lower().startswith("optional")
+        ]
+        return {"type": "object", "properties": raw, "required": required}
+
     def _get_tools_for_llm(self) -> list[dict]:
-        """Build tool list for LLM in provider-specific format."""
+        """Build tool list for LLM in standard JSON Schema format."""
         tools = []
         for tool in self.tools._tools.values():
             tools.append({
                 "name": tool.name,
                 "description": tool.description,
-                "parameters": tool.parameters
+                "parameters": self._wrap_parameters(tool.parameters),
             })
         return tools
 

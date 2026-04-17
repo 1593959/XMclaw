@@ -46,14 +46,11 @@ class AnthropicClient:
             if tools:
                 for tool in tools:
                     if "name" in tool and "description" in tool:
-                        claude_tool = {
+                        claude_tools.append({
                             "name": tool["name"],
                             "description": tool.get("description", ""),
-                        }
-                        # Add input schema if present
-                        if "parameters" in tool:
-                            claude_tool["input_schema"] = tool["parameters"]
-                        claude_tools.append(claude_tool)
+                            "input_schema": tool.get("parameters", {"type": "object", "properties": {}}),
+                        })
 
             async with self.client.messages.stream(
                 model=self.model,
@@ -117,18 +114,15 @@ class AnthropicClient:
             else:
                 anthropic_messages.append({"role": msg["role"], "content": msg["content"]})
 
-        # Build tool list for Claude
         claude_tools = []
         if tools:
             for tool in tools:
                 if "name" in tool and "description" in tool:
-                    claude_tool = {
+                    claude_tools.append({
                         "name": tool["name"],
                         "description": tool.get("description", ""),
-                    }
-                    if "parameters" in tool:
-                        claude_tool["input_schema"] = tool["parameters"]
-                    claude_tools.append(claude_tool)
+                        "input_schema": tool.get("parameters", {"type": "object", "properties": {}}),
+                    })
 
         try:
             response = await self.client.messages.create(
