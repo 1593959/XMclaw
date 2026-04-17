@@ -13,6 +13,7 @@ class DaemonConfig:
     tools: dict
     gateway: dict
     mcp_servers: dict
+    integrations: dict
 
     @classmethod
     def load(cls, path: Path | None = None) -> "DaemonConfig":
@@ -71,4 +72,11 @@ class DaemonConfig:
                 "port": 8765,
             },
             mcp_servers={},
+            integrations={
+                "slack":    {"enabled": False, "bot_token": "", "app_token": "", "channel": ""},
+                "discord":  {"enabled": False, "bot_token": "", "channel_id": ""},
+                "telegram": {"enabled": False, "bot_token": "", "chat_id": ""},
+                "github":   {"enabled": False, "token": "", "repo": "", "poll_interval": 60},
+                "notion":   {"enabled": False, "api_key": "", "database_id": ""},
+            },
         )

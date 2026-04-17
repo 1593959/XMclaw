@@ -11,6 +11,7 @@ from xmclaw.daemon.config import DaemonConfig
 from xmclaw.core.orchestrator import AgentOrchestrator
 from xmclaw.core.event_bus import Event, get_event_bus
 from xmclaw.evolution.scheduler import EvolutionScheduler
+from xmclaw.integrations.manager import IntegrationManager
 from xmclaw.daemon.static import mount_static_files
 from xmclaw.utils.log import logger
 from xmclaw.utils.paths import BASE_DIR
@@ -18,6 +19,7 @@ from xmclaw.utils.paths import BASE_DIR
 config = DaemonConfig.load()
 orchestrator = AgentOrchestrator()
 evo_scheduler = EvolutionScheduler()
+integration_manager = IntegrationManager(config.integrations)
 
 AGENTS_DIR = BASE_DIR / "agents"
 
@@ -28,8 +30,12 @@ async def lifespan(app: FastAPI):
     await orchestrator.initialize()
     if config.evolution.get("enabled", True):
         await evo_scheduler.start()
+    # Wire orchestrator into integration manager and start enabled integrations
+    integration_manager._orchestrator = orchestrator
+    await integration_manager.start()
     yield
     logger.info("daemon_stopping")
+    await integration_manager.stop()
     if config.evolution.get("enabled", True):
         evo_scheduler.stop()
     await orchestrator.shutdown()
@@ -293,6 +299,7 @@ async def get_daemon_config():
         "tools": config.tools,
         "gateway": config.gateway,
         "mcp_servers": config.mcp_servers,
+        "integrations": config.integrations,
     }
 
 
@@ -422,6 +429,87 @@ async def delegate_to_team(team_name: str, request: Request):
         except Exception as e:
             results[agent_id] = {"error": str(e)}
     return {"status": "ok", "team": team_name, "results": results}
+
+
+# ── Integrations APIs ──────────────────────────────────────────────────────
+
+@app.get("/api/integrations")
+async def list_integrations():
+    """Return status of all integrations."""
+    return {"integrations": integration_manager.status}
+
+
+@app.get("/api/integrations/{name}")
+async def get_integration(name: str):
+    """Get config + status for a single integration."""
+    status = integration_manager.status
+    if name not in status:
+        return JSONResponse({"error": "Unknown integration"}, status_code=404)
+    cfg = config.integrations.get(name, {})
+    # Strip secrets from response
+    safe_cfg = {k: ("***" if "token" in k or "key" in k else v) for k, v in cfg.items()}
+    return {"name": name, "config": safe_cfg, "status": status[name]}
+
+
+@app.post("/api/integrations/{name}")
+async def update_integration(name: str, request: Request):
+    """Update integration config and optionally restart it."""
+    data = await request.json()
+    if name not in IntegrationManager.available_integrations():
+        return JSONResponse({"error": "Unknown integration"}, status_code=404)
+    # Persist to daemon config
+    config.integrations[name] = data
+    path = BASE_DIR / "daemon" / "config.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    full = {
+        "llm": config.llm,
+        "evolution": config.evolution,
+        "memory": config.memory,
+        "tools": config.tools,
+        "gateway": config.gateway,
+        "mcp_servers": config.mcp_servers,
+        "integrations": config.integrations,
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        import json as _json
+        _json.dump(full, f, indent=2, ensure_ascii=False)
+    # Hot-restart: stop old instance, create + start new one
+    old = integration_manager.get(name)
+    if old:
+        try:
+            await old.disconnect()
+        except Exception:
+            pass
+    integration_manager._config[name] = data
+    integration_manager._integrations.pop(name, None)
+    if data.get("enabled", False):
+        from xmclaw.integrations import manager as _mgr
+        cls = _mgr._REGISTRY.get(name)
+        if cls:
+            inst = cls(data)
+            inst.on_message(integration_manager._make_handler(name, data.get("agent_id", "default")))
+            integration_manager._integrations[name] = inst
+            try:
+                await inst.connect()
+            except Exception as e:
+                logger.error("integration_restart_failed", name=name, error=str(e))
+    return {"status": "ok", "name": name}
+
+
+@app.post("/api/integrations/{name}/send")
+async def send_via_integration(name: str, request: Request):
+    """Send a message via a named integration (for testing)."""
+    data = await request.json()
+    text = data.get("text", "")
+    target = data.get("target")
+    inst = integration_manager.get(name)
+    if not inst:
+        return JSONResponse({"error": f"Integration '{name}' not running"}, status_code=404)
+    try:
+        await inst.send(text, target=target)
+        return {"status": "ok"}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.get("/api/events")

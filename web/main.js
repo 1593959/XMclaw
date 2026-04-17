@@ -129,6 +129,9 @@ async function loadDaemonConfig() {
         // MCP config
         renderMCPList(cfg.mcp_servers || {});
 
+        // Integration config
+        populateIntegrationFields(cfg.integrations || {});
+
         // Persist trimmed snapshot (no secrets) for WS payload
         _syncSettingsCache(provider, llm);
     } catch {}
@@ -160,6 +163,21 @@ saveSettingsBtn?.addEventListener('click', async () => {
         }
 
         cfg.mcp_servers = collectMCPConfig();
+
+        // Collect integration settings
+        cfg.integrations = cfg.integrations || {};
+        for (const [name, fields] of Object.entries(INTEG_FIELDS)) {
+            const obj = {};
+            for (const [elId, key, type] of fields) {
+                const el = document.getElementById(elId);
+                if (!el) continue;
+                if (type === 'bool') obj[key] = el.checked;
+                else if (type === 'int') obj[key] = parseInt(el.value) || 0;
+                else obj[key] = el.value.trim();
+            }
+            cfg.integrations[name] = obj;
+        }
+
         await fetch('/api/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -183,10 +201,83 @@ function loadSettings() {
             document.querySelectorAll('.settings-panel').forEach(p => p.classList.remove('active'));
             tab.classList.add('active');
             document.getElementById('stab-' + tab.dataset.stab).classList.add('active');
+            if (tab.dataset.stab === 'integrations') loadIntegrationStatus();
         });
     });
     // memory search listeners are set up globally
     initMCPUI();
+}
+
+// ===== INTEGRATIONS =====
+
+// Map: integrationName → [ [fieldId, configKey], ... ]
+const INTEG_FIELDS = {
+    slack:    [['integ-slack-enabled','enabled','bool'],['integ-slack-bot-token','bot_token'],['integ-slack-app-token','app_token'],['integ-slack-channel','channel']],
+    discord:  [['integ-discord-enabled','enabled','bool'],['integ-discord-bot-token','bot_token'],['integ-discord-channel-id','channel_id']],
+    telegram: [['integ-telegram-enabled','enabled','bool'],['integ-telegram-bot-token','bot_token'],['integ-telegram-chat-id','chat_id']],
+    github:   [['integ-github-enabled','enabled','bool'],['integ-github-token','token'],['integ-github-repo','repo'],['integ-github-poll','poll_interval','int']],
+    notion:   [['integ-notion-enabled','enabled','bool'],['integ-notion-api-key','api_key'],['integ-notion-database-id','database_id']],
+};
+
+async function loadIntegrationStatus() {
+    try {
+        const res = await fetch('/api/integrations');
+        const data = await res.json();
+        renderIntegrationStatusBar(data.integrations || {});
+    } catch {}
+}
+
+function renderIntegrationStatusBar(statuses) {
+    const bar = document.getElementById('integration-status-bar');
+    if (!bar) return;
+    const icons = { slack: '💬', discord: '🎮', telegram: '✈️', github: '🐙', notion: '📝' };
+    bar.innerHTML = Object.entries(statuses).map(([name, s]) => {
+        const dot = s.running ? 'integ-dot-on' : s.enabled ? 'integ-dot-warn' : 'integ-dot-off';
+        const label = s.running ? '运行中' : s.enabled ? '未连接' : '未启用';
+        return `<div class="integ-status-chip">
+            <span>${icons[name] || '🔌'}</span>
+            <span>${name}</span>
+            <span class="integ-dot ${dot}" title="${label}"></span>
+        </div>`;
+    }).join('');
+}
+
+async function saveIntegrations() {
+    try {
+        const cfgRes = await fetch('/api/config');
+        const cfg = await cfgRes.json();
+        cfg.integrations = cfg.integrations || {};
+        for (const [name, fields] of Object.entries(INTEG_FIELDS)) {
+            const obj = {};
+            for (const [elId, key, type] of fields) {
+                const el = document.getElementById(elId);
+                if (!el) continue;
+                if (type === 'bool') obj[key] = el.checked;
+                else if (type === 'int') obj[key] = parseInt(el.value) || 0;
+                else obj[key] = el.value.trim();
+            }
+            cfg.integrations[name] = obj;
+        }
+        await fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(cfg),
+        });
+    } catch (e) {
+        showToast('集成配置保存失败: ' + e.message);
+    }
+}
+
+function populateIntegrationFields(integrations) {
+    for (const [name, fields] of Object.entries(INTEG_FIELDS)) {
+        const cfg = integrations[name] || {};
+        for (const [elId, key, type] of fields) {
+            const el = document.getElementById(elId);
+            if (!el) continue;
+            if (type === 'bool') el.checked = !!cfg[key];
+            else el.value = cfg[key] ?? '';
+        }
+    }
 }
 
 // ===== MCP CONFIG UI =====

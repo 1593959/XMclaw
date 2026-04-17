@@ -325,6 +325,7 @@
                         <div class="settings-tab" data-stab="tools">工具</div>
                         <div class="settings-tab" data-stab="gateway">网关</div>
                         <div class="settings-tab" data-stab="mcp">MCP</div>
+                        <div class="settings-tab" data-stab="integrations">集成</div>
                     </div>
                     <div class="settings-panels">
                         <div class="settings-panel active" id="stab-llm">
@@ -439,6 +440,84 @@
                                 <h3>MCP 服务器</h3>
                                 <div id="mcp-list"></div>
                                 <button class="btn-secondary" id="mcp-add">+ 添加服务器</button>
+                            </div>
+                        </div>
+                        <!-- ===== 集成 ===== -->
+                        <div class="settings-panel" id="stab-integrations">
+                            <div class="integration-status-bar" id="integration-status-bar">
+                                <!-- populated by JS -->
+                            </div>
+
+                            <!-- Slack -->
+                            <div class="setting-card integration-card" id="integ-card-slack">
+                                <div class="integration-card-header">
+                                    <span class="integration-icon">💬</span>
+                                    <span class="integration-name">Slack</span>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="integ-slack-enabled">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="form-row"><label>Bot Token</label><input type="password" id="integ-slack-bot-token" placeholder="xoxb-..."></div>
+                                <div class="form-row"><label>App Token</label><input type="password" id="integ-slack-app-token" placeholder="xapp-..."></div>
+                                <div class="form-row"><label>默认频道</label><input type="text" id="integ-slack-channel" placeholder="#general"></div>
+                            </div>
+
+                            <!-- Discord -->
+                            <div class="setting-card integration-card" id="integ-card-discord">
+                                <div class="integration-card-header">
+                                    <span class="integration-icon">🎮</span>
+                                    <span class="integration-name">Discord</span>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="integ-discord-enabled">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="form-row"><label>Bot Token</label><input type="password" id="integ-discord-bot-token" placeholder="MTxx..."></div>
+                                <div class="form-row"><label>频道 ID</label><input type="text" id="integ-discord-channel-id" placeholder="123456789"></div>
+                            </div>
+
+                            <!-- Telegram -->
+                            <div class="setting-card integration-card" id="integ-card-telegram">
+                                <div class="integration-card-header">
+                                    <span class="integration-icon">✈️</span>
+                                    <span class="integration-name">Telegram</span>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="integ-telegram-enabled">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="form-row"><label>Bot Token</label><input type="password" id="integ-telegram-bot-token" placeholder="123456:ABC-..."></div>
+                                <div class="form-row"><label>Chat ID</label><input type="text" id="integ-telegram-chat-id" placeholder="-100123456"></div>
+                            </div>
+
+                            <!-- GitHub -->
+                            <div class="setting-card integration-card" id="integ-card-github">
+                                <div class="integration-card-header">
+                                    <span class="integration-icon">🐙</span>
+                                    <span class="integration-name">GitHub</span>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="integ-github-enabled">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="form-row"><label>Personal Token</label><input type="password" id="integ-github-token" placeholder="ghp_..."></div>
+                                <div class="form-row"><label>Repo (owner/repo)</label><input type="text" id="integ-github-repo" placeholder="owner/repo"></div>
+                                <div class="form-row"><label>轮询间隔(秒)</label><input type="number" id="integ-github-poll" value="60"></div>
+                            </div>
+
+                            <!-- Notion -->
+                            <div class="setting-card integration-card" id="integ-card-notion">
+                                <div class="integration-card-header">
+                                    <span class="integration-icon">📝</span>
+                                    <span class="integration-name">Notion</span>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="integ-notion-enabled">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="form-row"><label>API Key</label><input type="password" id="integ-notion-api-key" placeholder="secret_..."></div>
+                                <div class="form-row"><label>Database ID</label><input type="text" id="integ-notion-database-id" placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"></div>
                             </div>
                         </div>
                     </div>
