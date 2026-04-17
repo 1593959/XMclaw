@@ -16,6 +16,7 @@ from xmclaw.memory.sqlite_store import SQLiteStore
 from xmclaw.memory.session_manager import SessionManager
 from xmclaw.memory.vector_store import VectorStore
 from xmclaw.llm.router import LLMRouter
+from xmclaw.core.event_bus import Event, EventType, get_event_bus
 from xmclaw.utils.paths import BASE_DIR, get_agent_dir
 from xmclaw.utils.log import logger
 
@@ -26,6 +27,7 @@ class MemoryManager:
         self.sessions: SessionManager | None = None
         self.vectors: VectorStore | None = None
         self.llm = llm_router
+        self._event_bus = get_event_bus()
         self._initialized = False
 
     async def initialize(self) -> None:
@@ -67,6 +69,12 @@ class MemoryManager:
             })
         if self.vectors:
             await self.vectors.add(agent_id, f"User: {user_input}\nAgent: {response}", source="turn")
+
+        await self._event_bus.publish(Event(
+            event_type=EventType.MEMORY_UPDATED,
+            source=agent_id,
+            payload={"action": "save_turn", "preview": user_input[:200]},
+        ))
 
     async def search(self, query: str, agent_id: str | None = None, top_k: int = 5) -> list[dict]:
         """Search long-term memory via vector store."""

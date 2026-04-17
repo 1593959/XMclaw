@@ -40,7 +40,7 @@ class DaemonConfig:
                 "openai": {
                     "api_key": "",
                     "base_url": "https://api.openai.com/v1",
-                    "default_model": "gpt-4.1",
+                    "default_model": "gpt-4o",
                 },
                 "anthropic": {
                     "api_key": "",

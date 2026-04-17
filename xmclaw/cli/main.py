@@ -246,7 +246,7 @@ def agent_create(name: str = typer.Argument(..., help="New agent name")):
             "max_tokens": 4096,
         }
         config_path.write_text(json.dumps(default_config, indent=2, ensure_ascii=False), encoding="utf-8")
-    typer.echo(f"Agent '{name}' created at {agent_dir.relative_to(BASE)}")
+    typer.echo(f"Agent '{name}' created at {agent_dir.relative_to(BASE_DIR)}")
 
 
 @sub_agent.command("info")
@@ -302,9 +302,9 @@ def test(module: str = typer.Option("all", "--module", "-m", help="Module to tes
     """Run tests."""
     import subprocess
     if module == "all":
-        result = subprocess.run(["python", "-m", "pytest", "tests/", "-v"], cwd=BASE)
+        result = subprocess.run(["python", "-m", "pytest", "tests/", "-v"], cwd=BASE_DIR)
     else:
-        result = subprocess.run(["python", "-m", "pytest", f"tests/test_{module}.py", "-v"], cwd=BASE)
+        result = subprocess.run(["python", "-m", "pytest", f"tests/test_{module}.py", "-v"], cwd=BASE_DIR)
     raise typer.Exit(code=result.returncode)
 
 

@@ -780,8 +780,25 @@ function connect() {
             addReflectionMessage(data.data || {}, data.improvement || {});
         } else if (data.type === 'ask_user') {
             showAskUserDialog(data.question);
+        } else if (data.type === 'event') {
+            handleBusEvent(data.event);
         }
     };
+}
+
+function handleBusEvent(evt) {
+    if (!evt) return;
+    const etype = evt.event_type || '';
+    const payload = evt.payload || {};
+    if (etype === 'gene:activated') {
+        geneCount++;
+        evolutionCount.textContent = `${geneCount} Genes · ${skillCount} Skills`;
+        addTimelineEvent('gene', `Gene 生成: ${payload.name || payload.gene_id || ''}`, `Score: ${payload.score || '?'}`);
+    } else if (etype === 'skill:executed') {
+        skillCount++;
+        evolutionCount.textContent = `${geneCount} Genes · ${skillCount} Skills`;
+        addTimelineEvent('skill', `Skill 生成: ${payload.name || payload.skill_id || ''}`, `Score: ${payload.score || '?'}`);
+    }
 }
 
 function showAskUserDialog(question) {
@@ -842,35 +859,66 @@ function showAskUserDialog(question) {
     });
 }
 
+// Track raw text per message element for proper Markdown re-rendering
+const _rawTextMap = new WeakMap();
+
 function appendChunk(el, text) {
-    let html = el.innerHTML;
-    const escaped = text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
-    html += escaped;
-    el.innerHTML = formatMessage(html);
+    const prev = _rawTextMap.get(el) || '';
+    const updated = prev + text;
+    _rawTextMap.set(el, updated);
+    el.innerHTML = formatMessage(updated);
+    // Re-highlight new code blocks
+    if (typeof hljs !== 'undefined') {
+        el.querySelectorAll('pre code:not([data-highlighted])').forEach(block => {
+            try { hljs.highlightElement(block); } catch {}
+        });
+    }
 }
 
-function formatMessage(html) {
-    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+function formatMessage(text) {
+    if (typeof marked !== 'undefined') {
+        try { return marked.parse(text); } catch {}
+    }
+    // Fallback
+    let html = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
     return html;
 }
 
 function addMessage(text, role) {
+    // Hide welcome screen on first message
+    const welcome = document.getElementById('welcome');
+    if (welcome) welcome.style.display = 'none';
+
     const row = document.createElement('div');
     row.className = `message-row ${role}`;
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'message-wrapper';
 
     const el = document.createElement('div');
     el.className = `message ${role}`;
     if (role !== 'user') {
-        el.innerHTML = formatMessage(text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'));
+        _rawTextMap.set(el, text);
+        el.innerHTML = formatMessage(text);
+        if (typeof hljs !== 'undefined') {
+            el.querySelectorAll('pre code').forEach(block => {
+                try { hljs.highlightElement(block); } catch {}
+            });
+        }
     } else {
         el.textContent = text;
     }
 
-    row.appendChild(el);
+    // Message timestamp
+    const ts = document.createElement('div');
+    ts.className = 'message-time';
+    ts.textContent = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+
+    wrapper.appendChild(el);
+    wrapper.appendChild(ts);
+    row.appendChild(wrapper);
     chat.appendChild(row);
     scrollToBottom();
     return el;

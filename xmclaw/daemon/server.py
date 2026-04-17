@@ -9,6 +9,7 @@ from fastapi import FastAPI, WebSocket, Request
 from fastapi.responses import JSONResponse
 from xmclaw.daemon.config import DaemonConfig
 from xmclaw.core.orchestrator import AgentOrchestrator
+from xmclaw.core.event_bus import Event, get_event_bus
 from xmclaw.evolution.scheduler import EvolutionScheduler
 from xmclaw.daemon.static import mount_static_files
 from xmclaw.utils.log import logger
@@ -423,10 +424,66 @@ async def delegate_to_team(team_name: str, request: Request):
     return {"status": "ok", "team": team_name, "results": results}
 
 
+@app.get("/api/events")
+async def get_events(event_type: str | None = None, source: str | None = None, limit: int = 50):
+    """Get recent events from the EventBus history."""
+    bus = get_event_bus()
+    events = bus.get_history(event_type=event_type, source=source, limit=limit)
+    return {"events": [e.to_dict() for e in events]}
+
+
+@app.get("/api/agent/{agent_id}/sessions")
+async def list_sessions(agent_id: str):
+    """List conversation sessions for an agent."""
+    from xmclaw.utils.paths import get_agent_dir
+    agent_dir = get_agent_dir(agent_id)
+    if agent_dir is None:
+        return {"sessions": []}
+    sessions_dir = agent_dir / "memory" / "sessions"
+    sessions = []
+    if sessions_dir.exists():
+        for f in sorted(sessions_dir.glob("*.jsonl"), reverse=True)[:50]:
+            try:
+                lines = f.read_text(encoding="utf-8").strip().splitlines()
+                turns = []
+                for line in lines[-10:]:
+                    try:
+                        turns.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+                first_msg = turns[0].get("user", "")[:100] if turns else ""
+                sessions.append({
+                    "id": f.stem,
+                    "file": f.name,
+                    "turn_count": len(lines),
+                    "preview": first_msg,
+                    "modified": f.stat().st_mtime,
+                    "recent_turns": turns,
+                })
+            except Exception:
+                pass
+    return {"sessions": sessions}
+
+
 @app.websocket("/agent/{agent_id}")
 async def agent_websocket(websocket: WebSocket, agent_id: str):
     await websocket.accept()
     logger.info("websocket_connected", agent_id=agent_id)
+
+    # EventBus → WebSocket bridge: forward all events to this client
+    bus = get_event_bus()
+    sub_id: str | None = None
+
+    async def _forward_event(event: Event):
+        try:
+            await websocket.send_text(json.dumps({
+                "type": "event",
+                "event": event.to_dict(),
+            }, ensure_ascii=False))
+        except Exception:
+            pass
+
+    sub_id = bus.subscribe_wildcard(_forward_event)
 
     try:
         while True:
@@ -438,9 +495,7 @@ async def agent_websocket(websocket: WebSocket, agent_id: str):
                 try:
                     parsed = json.loads(chunk)
                     await websocket.send_text(chunk)
-                    # If ask_user event, pause and wait for next client message
                     if parsed.get("type") == "ask_user":
-                        # The loop has already returned; next client message will be the answer
                         pass
                 except json.JSONDecodeError:
                     await websocket.send_text(json.dumps({"type": "chunk", "content": chunk}))
@@ -448,7 +503,6 @@ async def agent_websocket(websocket: WebSocket, agent_id: str):
             # Only send done if the loop actually finished (not ask_user pause)
             agent = orchestrator.agents.get(agent_id)
             if agent and agent.pending_question:
-                # Waiting for user answer; don't send done yet
                 continue
             await websocket.send_text(json.dumps({"type": "done"}))
     except Exception as e:
@@ -460,6 +514,8 @@ async def agent_websocket(websocket: WebSocket, agent_id: str):
         except Exception:
             pass
     finally:
+        if sub_id:
+            bus.unsubscribe(sub_id)
         logger.info("websocket_disconnected", agent_id=agent_id)
 
 

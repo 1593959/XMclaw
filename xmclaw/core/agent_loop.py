@@ -10,6 +10,7 @@ from xmclaw.core.prompt_builder import PromptBuilder
 from xmclaw.core.cost_tracker import CostTracker
 from xmclaw.core.reflection import ReflectionEngine
 from xmclaw.genes.manager import GeneManager
+from xmclaw.core.event_bus import Event, EventType, get_event_bus
 from xmclaw.utils.log import logger
 
 
@@ -27,6 +28,7 @@ class AgentLoop:
         self.pending_question: str | None = None
         self.pending_answer: str | None = None
         self.reflection = ReflectionEngine(llm_router, memory)
+        self._event_bus = get_event_bus()
         self._turn_history: list[dict] = []
         self._load_markdown_configs()
 
@@ -85,6 +87,13 @@ class AgentLoop:
             self.pending_answer = None
             yield json.dumps({"type": "state", "state": "THINKING", "thought": "分析请求中..."})
 
+        # Publish user message event
+        await self._event_bus.publish(Event(
+            event_type=EventType.USER_MESSAGE,
+            source=self.agent_id,
+            payload={"content": user_input[:500]},
+        ))
+
         context = await self.memory.load_context(self.agent_id, user_input)
         context["tool_descriptions"] = self._build_tool_descriptions()
         context["matched_genes"] = self.gene_manager.match(user_input)
@@ -107,6 +116,13 @@ class AgentLoop:
             self._turn_history.append(turn_data)
             await self.memory.save_turn(self.agent_id, user_input, full_response, tool_calls)
 
+            # Publish agent message event
+            await self._event_bus.publish(Event(
+                event_type=EventType.AGENT_MESSAGE,
+                source=self.agent_id,
+                payload={"content": full_response[:500], "tool_calls": len(tool_calls)},
+            ))
+
             if not tool_calls:
                 break
 
@@ -126,6 +142,12 @@ class AgentLoop:
                 yield json.dumps({"type": "state", "state": "TOOL_CALL", "thought": f"Using {tool_name}..."})
                 yield json.dumps({"type": "tool_call", "tool": tool_name, "args": args})
 
+                await self._event_bus.publish(Event(
+                    event_type=EventType.TOOL_CALLED,
+                    source=self.agent_id,
+                    payload={"tool": tool_name, "args": args},
+                ))
+
                 result = await self.tools.execute(tool_name, args)
 
                 # Handle ask_user special pause
@@ -139,8 +161,16 @@ class AgentLoop:
                 observations.append({"tool": tool_name, "result": result})
                 yield json.dumps({"type": "tool_result", "tool": tool_name, "result": result})
 
-                # Detect self-modification
-                await self._detect_self_mod(call, result)
+                await self._event_bus.publish(Event(
+                    event_type=EventType.TOOL_RESULT,
+                    source=self.agent_id,
+                    payload={"tool": tool_name, "result": str(result)[:500]},
+                ))
+
+                # Detect self-modification and yield file_op event
+                file_event = await self._detect_self_mod(call, result)
+                if file_event:
+                    yield json.dumps(file_event)
 
             # Append to messages for next turn
             messages.append({"role": "assistant", "content": full_response})
