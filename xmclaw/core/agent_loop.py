@@ -210,11 +210,29 @@ class AgentLoop:
                     payload={"tool": tool_name, "result": str(result)[:200]},
                 ))
 
-            # Add assistant response + observations to messages
-            messages.append({"role": "assistant", "content": full_response})
-            for obs in observations:
-                tool_result = f"Tool {obs['tool']} returned: {obs['result']}"
-                messages.append({"role": "user", "content": tool_result})
+            # Add assistant message with tool_use blocks (Anthropic native format;
+            # openai_client normalises these into the OpenAI wire format automatically)
+            assistant_content: list[dict] = []
+            if full_response:
+                assistant_content.append({"type": "text", "text": full_response})
+            for call in tool_calls:
+                assistant_content.append({
+                    "type": "tool_use",
+                    "id": call.get("id") or f"toolu_{call['name']}",
+                    "name": call["name"],
+                    "input": call.get("input", {}),
+                })
+            messages.append({"role": "assistant", "content": assistant_content or full_response})
+
+            # Tool results as user message with tool_result blocks
+            tool_result_content: list[dict] = []
+            for call, obs in zip(tool_calls, observations):
+                tool_result_content.append({
+                    "type": "tool_result",
+                    "tool_use_id": call.get("id") or f"toolu_{call['name']}",
+                    "content": str(obs["result"]),
+                })
+            messages.append({"role": "user", "content": tool_result_content})
 
             # Check if we should continue
             yield json.dumps({"type": "state", "state": "THINKING", "thought": "处理工具结果中..."})

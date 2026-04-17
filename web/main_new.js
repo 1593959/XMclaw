@@ -1088,11 +1088,13 @@ function sendMessage() {
         finalText = `[PLAN MODE] ${text}`;
     }
 
+    hideWelcome();
     addMessage(text, 'user');
     input.value = '';
     input.style.height = 'auto';
     showTyping();
     currentMessageEl = null;
+    isStreaming = false;
     setAgentState('THINKING', '分析请求中...');
 
     const settings = localStorage.getItem('xmclaw_settings');
@@ -1496,6 +1498,7 @@ function connect() {
 
         if (data.type === 'chunk') {
             removeTyping();
+            isStreaming = true;
             if (!currentMessageEl) {
                 currentMessageEl = addMessage('', 'agent');
             }
@@ -1504,10 +1507,15 @@ function connect() {
         } else if (data.type === 'tool_call') {
             removeTyping();
             const toolName = data.tool || 'tool';
-            // 聊天区域只显示友好提示，不显示JSON参数
             setAgentState('TOOL_CALL', `正在使用 ${toolName}...`);
             activeTool.textContent = toolName;
-            // 不在聊天区域显示参数
+            // Track in toolHistory for the Tools panel
+            toolHistory.unshift({ tool: toolName, args: data.args, result: null, time: Date.now() });
+            if (toolHistory.length > 50) toolHistory.pop();
+            renderRecentTools();
+            renderToolLog();
+            // Show a lightweight inline tool indicator in the chat
+            addToolMessage(toolName);
             scrollToBottom();
         } else if (data.type === 'tool_result') {
             if (toolHistory.length > 0) {
@@ -1530,10 +1538,16 @@ function connect() {
             setAgentState(data.state, data.thought);
         } else if (data.type === 'done') {
             removeTyping();
+            if (currentMessageEl) {
+                flushChunk(currentMessageEl);
+            }
             currentMessageEl = null;
+            isStreaming = false;
             setAgentState('IDLE', 'Waiting for input...');
             activeTool.textContent = '—';
             activeFile.textContent = '—';
+            saveCurrentSession();
+            persistSessions();
         } else if (data.type === 'error') {
             removeTyping();
             addMessage(data.content, 'error');
@@ -1555,6 +1569,13 @@ function connect() {
             addTimelineEvent('reflection', '反思完成', data.data?.summary || '');
         } else if (data.type === 'ask_user') {
             showAskUserDialog(data.question);
+        } else if (data.type === 'event') {
+            handleBusEvent(data.event);
+        } else if (data.type === 'transcription') {
+            // Voice input echo — show in input box so user can review before sending
+            input.value = data.text || '';
+            input.style.height = 'auto';
+            input.style.height = Math.min(input.scrollHeight, 120) + 'px';
         }
     };
 }

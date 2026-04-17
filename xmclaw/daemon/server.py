@@ -713,7 +713,68 @@ async def agent_websocket(websocket: WebSocket, agent_id: str):
         while True:
             data = await websocket.receive_text()
             message = json.loads(data)
+            msg_type = message.get("type", "")
             user_input = message.get("content", "")
+
+            # Handle special message types from the frontend
+            if msg_type == "file_upload":
+                # Save the uploaded file and turn it into a user message
+                file_name = message.get("name", "upload")
+                file_data = message.get("data", "")  # base64 data URI
+                if file_data:
+                    try:
+                        import base64 as _b64, uuid as _uuid
+                        if "," in file_data:
+                            header, b64 = file_data.split(",", 1)
+                        else:
+                            header, b64 = "", file_data
+                        ext = "bin"
+                        for fmt in ["png", "jpg", "jpeg", "gif", "webp", "mp3", "wav", "webm", "mp4", "pdf"]:
+                            if fmt in header or file_name.lower().endswith(f".{fmt}"):
+                                ext = fmt
+                                break
+                        media_dir = BASE_DIR / "web" / "media"
+                        media_dir.mkdir(parents=True, exist_ok=True)
+                        uid = _uuid.uuid4().hex[:10]
+                        fname = f"{uid}_{file_name}"
+                        fpath = media_dir / fname
+                        fpath.write_bytes(_b64.b64decode(b64))
+                        file_url = f"/media/{fname}"
+                        # Treat as a user message referencing the file
+                        if ext in ("png", "jpg", "jpeg", "gif", "webp"):
+                            user_input = f"[图片] {file_url}"
+                        else:
+                            user_input = f"[文件] {file_url}"
+                    except Exception as upload_err:
+                        logger.error("ws_file_upload_error", error=str(upload_err))
+                        user_input = f"[文件上传失败: {upload_err}]"
+                else:
+                    continue
+
+            elif msg_type == "voice_input":
+                # Transcribe audio using ASRTool and use the text as user input
+                audio_data = message.get("audio", "")
+                if audio_data:
+                    try:
+                        from xmclaw.tools.asr import ASRTool
+                        transcribed = await ASRTool().execute(audio=audio_data)
+                        user_input = transcribed.strip()
+                        if not user_input:
+                            await websocket.send_text(json.dumps({"type": "error", "content": "语音识别失败，请重试"}))
+                            continue
+                        # Echo the transcription back so the user can see what was heard
+                        await websocket.send_text(json.dumps({"type": "transcription", "text": user_input}))
+                    except Exception as asr_err:
+                        logger.error("ws_voice_input_error", error=str(asr_err))
+                        await websocket.send_text(json.dumps({"type": "error", "content": f"语音识别错误: {asr_err}"}))
+                        continue
+                else:
+                    continue
+
+            elif msg_type == "ask_user_answer":
+                # User replied to an ask_user prompt — resume the agent
+                answer = message.get("answer", "")
+                user_input = f"[RESUME]{answer}"
 
             async for chunk in orchestrator.run_agent(agent_id, user_input):
                 try:
@@ -748,57 +809,6 @@ def main():
     host = config.gateway["host"]
     port = config.gateway["port"]
     uvicorn.run(app, host=host, port=port, log_level="info")
-
-
-# ASR (语音转文字) 端点
-@app.post("/asr")
-async def asr(request: Request):
-    try:
-        body = await request.json()
-        audio_data = body.get("audio", "")
-        
-        # 使用 SpeechRecognition 库
-        import speech_recognition as sr
-        import base64
-        import tempfile
-        import os
-        
-        r = sr.Recognizer()
-        
-        # 解码 base64 音频并保存为临时文件
-        if "," in audio_data:
-            audio_data = audio_data.split(",")[1]
-        audio_bytes = base64.b64decode(audio_data)
-        
-        with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
-            f.write(audio_bytes)
-            temp_path = f.name
-        
-        try:
-            with sr.AudioFile(temp_path) as source:
-                audio = r.record(source)
-            
-            # 尝试 Google 在线识别（需要网络）
-            try:
-                text = r.recognize_google(audio, language="zh-CN")
-                return {"text": text, "success": True}
-            except Exception:
-                pass
-            
-            # 尝试 Sphinx 离线识别（需要安装 PocketSphinx）
-            try:
-                text = r.recognize_sphinx(audio, language="zh-CN")
-                return {"text": text, "success": True}
-            except Exception:
-                pass
-            
-            return {"text": "", "success": False, "error": "无法识别语音，请安装 PocketSphinx 或检查网络连接"}
-        finally:
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
-    except Exception as e:
-        logger.error("asr_error", error=str(e))
-        return {"text": "", "success": False, "error": str(e)}
 
 
 if __name__ == "__main__":

@@ -62,20 +62,22 @@ class AnthropicClient:
                 messages=anthropic_messages,
                 tools=claude_tools if claude_tools else None,
             ) as stream:
-                # Track tool calls for later use
-                tool_calls = []
-                
+                _in_tool_block = False
+
                 async for event in stream:
                     etype = event.type
 
                     if etype == "content_block_start":
                         cb = getattr(event, "content_block", None)
                         if cb and cb.type == "tool_use":
+                            _in_tool_block = True
                             yield json.dumps({
                                 "type": "tool_call_start",
                                 "id": cb.id,
                                 "name": cb.name,
                             })
+                        else:
+                            _in_tool_block = False
 
                     elif etype == "content_block_delta":
                         delta = getattr(event, "delta", None)
@@ -89,8 +91,10 @@ class AnthropicClient:
                                 })
 
                     elif etype == "content_block_stop":
-                        # Signal end of current content block (text or tool call)
-                        yield json.dumps({"type": "tool_call_end"})
+                        # Only emit tool_call_end when a tool_use block ended, not text blocks
+                        if _in_tool_block:
+                            yield json.dumps({"type": "tool_call_end"})
+                            _in_tool_block = False
 
         except Exception as e:
             logger.error("anthropic_stream_error", error=str(e))

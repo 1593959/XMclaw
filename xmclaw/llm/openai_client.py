@@ -5,6 +5,61 @@ from openai import AsyncOpenAI
 from xmclaw.utils.log import logger
 
 
+def _normalise_messages(messages: list[dict]) -> list[dict]:
+    """Convert Anthropic-style tool_use/tool_result content blocks to OpenAI format.
+
+    agent_loop uses Anthropic's native content-block format for multi-turn tool
+    conversations.  OpenAI requires a different wire format:
+      - assistant turn: {role:'assistant', tool_calls:[{id, type:'function', function:{name,arguments}}]}
+      - tool result: {role:'tool', tool_call_id:..., content:...}
+    """
+    out: list[dict] = []
+    for msg in messages:
+        content = msg.get("content")
+        role = msg.get("role", "")
+
+        if not isinstance(content, list):
+            out.append(msg)
+            continue
+
+        # Detect block types
+        tool_use_blocks = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_use"]
+        tool_result_blocks = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"]
+        text_blocks = [b for b in content if isinstance(b, dict) and b.get("type") == "text"]
+
+        if role == "assistant" and tool_use_blocks:
+            text_content = " ".join(b.get("text", "") for b in text_blocks).strip() or None
+            oai_msg: dict = {"role": "assistant", "content": text_content}
+            oai_msg["tool_calls"] = [
+                {
+                    "id": b.get("id", f"call_{b.get('name','')}"),
+                    "type": "function",
+                    "function": {
+                        "name": b.get("name", ""),
+                        "arguments": json.dumps(b.get("input", {})),
+                    },
+                }
+                for b in tool_use_blocks
+            ]
+            out.append(oai_msg)
+        elif role == "user" and tool_result_blocks:
+            # Expand each tool result into a separate 'tool' role message
+            for b in tool_result_blocks:
+                out.append({
+                    "role": "tool",
+                    "tool_call_id": b.get("tool_use_id", ""),
+                    "content": b.get("content", ""),
+                })
+            # Append any plain-text blocks as a follow-up user message
+            if text_blocks:
+                out.append({"role": "user", "content": " ".join(b.get("text", "") for b in text_blocks)})
+        else:
+            # Plain list of text blocks — join into a single string
+            out.append({"role": role, "content": " ".join(b.get("text", str(b)) for b in content)})
+
+    return out
+
+
 class OpenAIClient:
     def __init__(self, config: dict):
         self.api_key = config.get("api_key", "")
@@ -50,7 +105,7 @@ class OpenAIClient:
         try:
             response = await self.client.chat.completions.create(
                 model=self.model,
-                messages=messages,
+                messages=_normalise_messages(messages),
                 tools=oai_tools if oai_tools else None,
                 tool_choice="auto" if oai_tools else None,
                 stream=True,
@@ -127,7 +182,7 @@ class OpenAIClient:
         try:
             response = await self.client.chat.completions.create(
                 model=self.model,
-                messages=messages,
+                messages=_normalise_messages(messages),
                 tools=oai_tools if oai_tools else None,
                 tool_choice="auto" if oai_tools else None,
                 stream=False,
