@@ -1,8 +1,12 @@
 # XMclaw
 
+[![GitHub stars](https://img.shields.io/github/stars/1593959/XMclaw?style=flat-square)](https://github.com/1593959/XMclaw/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/1593959/XMclaw?style=flat-square)](https://github.com/1593959/XMclaw/network/members)
+[![License](https://img.shields.io/github/license/1593959/XMclaw?style=flat-square)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10+-blue?style=flat-square)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue?style=flat-square)]()
+
 **Local-first, self-evolving AI Agent runtime.**
-
-
 
 [Website](#) · [Docs](./docs) · [Architecture](./docs/ARCHITECTURE.md) · [Evolution](./docs/EVOLUTION.md) · [Tools](./docs/TOOLS.md)
 
@@ -17,6 +21,94 @@ XMclaw is a **personal AI agent operating system** that runs entirely on your ma
 - **Self-evolving**: Automatically generates Genes and Skills from conversation patterns.
 - **Agent OS dashboard**: A native desktop app built with PySide6.
 - **CLI-first**: Powerful terminal interface with streaming, plan mode, and tool visibility.
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           XMclaw Architecture                           │
+└─────────────────────────────────────────────────────────────────────────┘
+
+                              ┌─────────────┐
+                              │   User      │
+                              │  Interface  │
+                              └──────┬──────┘
+                                     │
+              ┌──────────────────────┼──────────────────────┐
+              │                      │                      │
+              ▼                      ▼                      ▼
+     ┌─────────────┐        ┌─────────────┐        ┌─────────────┐
+     │   Desktop   │        │    Web     │        │     CLI     │
+     │   (PySide6) │        │   Browser  │        │  (Rich)     │
+     └──────┬──────┘        └──────┬──────┘        └──────┬──────┘
+            │                      │                      │
+            └──────────────────────┼──────────────────────┘
+                                   │
+                            WebSocket Gateway
+                                   │
+                    ┌───────────────┴───────────────┐
+                    │                               │
+                    ▼                               ▼
+           ┌─────────────────┐             ┌─────────────────┐
+           │   HTTP/REST     │             │  WebSocket/WS   │
+           │   (config, mcp) │             │  (streaming)    │
+           └─────────────────┘             └────────┬────────┘
+                                                   │
+                                                   ▼
+                    ┌────────────────────────────────────────────────┐
+                    │              AgentLoop                        │
+                    │  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
+                    │  │  Prompt  │→ │   LLM    │→ │  Tools   │  │
+                    │  │ Builder  │  │  Router  │  │ Registry │  │
+                    │  └──────────┘  └──────────┘  └────┬─────┘  │
+                    │       ↑              │            │        │
+                    │       └──────────────┴────────────┘        │
+                    │              Think → Act → Observe          │
+                    └─────────────────────┬──────────────────────┘
+                                          │
+           ┌──────────────────────────────┼──────────────────────────────┐
+           │                              │                              │
+           ▼                              ▼                              ▼
+  ┌─────────────────┐          ┌─────────────────┐          ┌─────────────────┐
+  │     Memory       │          │    Evolution     │          │    Sandbox      │
+  │  ┌───────────┐  │          │  ┌───────────┐  │          │  ┌───────────┐  │
+  │  │  Session  │  │          │  │   Gene    │  │          │  │  Docker   │  │
+  │  │   Logs    │  │          │  │   Forge   │  │          │  │  (secure) │  │
+  │  ├───────────┤  │          │  ├───────────┤  │          │  ├───────────┤  │
+  │  │   SQLite  │  │          │  │   Skill   │  │          │  │  Git Roll │  │
+  │  │ (metadata)│  │          │  │   Forge   │  │          │  │   Back    │  │
+  │  ├───────────┤  │          │  ├───────────┤  │          │  ├───────────┤  │
+  │  │  Vector   │  │          │  │ Validator │  │          │  │  Code     │  │
+  │  │ (sqlite-  │  │          │  │  + VFM    │  │          │  │  Quality  │  │
+  │  │   vec)    │  │          │  │           │  │          │  │  (ruff)   │  │
+  │  └───────────┘  │          │  └───────────┘  │          │  └───────────┘  │
+  └─────────────────┘          └─────────────────┘          └─────────────────┘
+                                   ▲                              ▲
+                                   │         ┌──────────┐       │
+                                   └────────►│ Reflection│◄──────┘
+                                             │  Engine  │
+                                             └──────────┘
+```
+
+### Data Flow
+
+```
+1. User sends message via WebSocket
+         ↓
+2. AgentLoop assembles context + injects matched Genes
+         ↓
+3. LLM processes + streams response
+         ↓
+4. ToolRegistry executes tool calls (with Sandbox protection)
+         ↓
+5. Loop continues until no more tools
+         ↓
+6. ReflectionEngine reviews + saves lessons
+         ↓
+7. EvolutionEngine generates new Genes/Skills (periodic)
+```
 
 ---
 
@@ -52,6 +144,12 @@ XMclaw is a **personal AI agent operating system** that runs entirely on your ma
 - [x] `test` — auto-generate and run pytest suites
 - [x] `mcp` — Model Context Protocol integration
 
+### Security & Safety
+- [x] **Docker sandbox** — Isolated execution environment for untrusted code
+- [x] **Git rollback** — Auto-commit before changes, rollback on critical failures
+- [x] **Code quality gates** — ruff linting before commit
+- [x] **Dangerous pattern guards** — Blocks destructive bash commands
+
 ### Autonomous evolution
 - [x] **Pattern detection** — Intent and trend analysis from conversation logs
 - [x] **Insight extraction** — Structured lessons and improvement opportunities
@@ -59,107 +157,3 @@ XMclaw is a **personal AI agent operating system** that runs entirely on your ma
 - [x] **SkillForge** — Auto-generate executable Skill tools
 - [x] **EvolutionValidator** — Real execution validation (compile + import + instantiate + run)
 - [x] **VFM scoring** — Value Function Model decides whether to solidify
-- [x] **Hot reload** — New Skills are available immediately without restart
-- [x] **ReflectionEngine** — Post-conversation self-review and lesson extraction
-
-### Interfaces
-- [x] **Desktop app** — PySide6 Agent OS dashboard with 6 views (chat, workspace, evolution, memory, tools, settings)
-- [x] **Web UI** — Agent OS dashboard in the browser
-- [x] **CLI** — Rich-based terminal client with full protocol support
-
-### Plan mode & task system
-- [x] **Plan mode** — Agent thinks before acting; plans are user-editable
-- [x] **Task system** — Track long-running tasks across sessions
-- [x] **ask_user pause** — Agent state becomes WAITING until human responds
-
----
-
-## How it works (short)
-
-```
-User (Desktop / Web / CLI)
-           │
-           ▼
-    WebSocket Gateway
-           │
-           ▼
-    ┌──────────────┐
-    │ AgentLoop    │
-    │  - Prompt    │
-    │  - LLM       │
-    │  - Tools     │
-    │  - Memory    │
-    │  - Reflect   │
-    └──────────────┘
-           │
-     ┌─────┴─────┐
-     ▼           ▼
-  Genes      Skills
-     │           │
-     └─────┬─────┘
-           ▼
-    Evolution Engine
-```
-
-1. The user sends a message over WebSocket.
-2. `AgentLoop` assembles context, injects matched **Genes**, and streams the LLM response.
-3. If the model emits tool calls, `ToolRegistry` executes them and returns observations.
-4. The loop continues until the model has no more tools to call.
-5. `ReflectionEngine` reviews the conversation and saves lessons.
-6. The `EvolutionEngine` periodically analyzes logs and generates new **Genes** and **Skills**.
-
----
-
-## Quick start
-
-```bash
-# Install
-pip install -e .
-
-# Optional extras
-pip install pyautogui mss Pillow   # computer_use
-pip install mcp                     # MCP integration
-
-# Start the daemon
-xmclaw start
-
-# Open the desktop app
-python -m xmclaw.desktop.app
-
-# Or use the CLI
-xmclaw chat
-xmclaw chat --plan
-
-# Stop the daemon
-xmclaw stop
-```
-
-Configure your LLM in `agents/default/agent.json`.
-
----
-
-## Key subsystems
-
-| Subsystem | Docs | Description |
-|-----------|------|-------------|
-| Architecture | [ARCHITECTURE.md](./docs/ARCHITECTURE.md) | Gateway, agent loop, wire protocol, data flow |
-| Tools | [TOOLS.md](./docs/TOOLS.md) | Built-in tools, skill generation, security model |
-| Evolution | [EVOLUTION.md](./docs/EVOLUTION.md) | Gene/Skill generation, VFM, hot reload |
-| Desktop | [DESKTOP.md](./docs/DESKTOP.md) | Native app usage guide |
-| CLI | [CLI.md](./docs/CLI.md) | Terminal commands and chat protocol |
-
----
-
-## Development principles
-
-1. **Never slow, never forget** — Performance and memory are non-negotiable.
-2. **Commit after every change** — Git is our safety net.
-3. **CLI first, then GUI, then voice** — Progressive interaction expansion.
-4. **Connections must be explicit** — Every module's inputs and outputs are traceable.
-5. **Verify, reflect, evolve** — Closed-loop self-improvement.
-
----
-
-## License
-
-MIT
