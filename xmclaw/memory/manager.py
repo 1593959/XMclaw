@@ -52,9 +52,12 @@ class MemoryManager:
         """Load context for prompt building."""
         history = await self.sessions.get_recent(agent_id, limit=10) if self.sessions else []
         memories = await self.search(user_input, agent_id=agent_id, top_k=5) if self.vectors else []
+        # Load recent reflection insights so the agent can act on past lessons immediately
+        insights = self.get_insights(agent_id, limit=10) if self.sqlite else []
         return {
             "history": history,
             "memories": memories,
+            "insights": insights,
             "tool_descriptions": "",  # Filled by orchestrator
         }
 

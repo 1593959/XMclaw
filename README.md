@@ -78,20 +78,31 @@ pip install -e ".[all]"
 pip install pystray Pillow
 
 # Optional extras
+pip install -e ".[dev]"           # development tools (pytest, ruff, mypy)
 pip install pyautogui mss          # computer_use support
-pip install mcp                     # MCP integration
 pip install playwright              # browser automation
 playwright install chromium
 ```
 
 ### Configuration
 
-Copy and edit the configuration:
+On first run, `xmclaw start` automatically creates `daemon/config.json` with defaults.
+
+To configure API keys interactively:
 
 ```bash
-cp daemon/config.example.json daemon/config.json
-# Edit daemon/config.json with your API keys
+xmclaw config init
 ```
+
+Or edit `daemon/config.json` directly.
+
+Environment variables can override config values:
+
+```bash
+export XMC__llm__anthropic__api_key="sk-ant-..."
+```
+
+Run `xmclaw doctor` to verify your setup.
 
 ### Run
 
@@ -189,14 +200,18 @@ XMclaw continuously improves itself:
 ## 🧪 Development
 
 ```bash
-# Run tests
-pytest tests/ -v
+# Verify setup
+xmclaw doctor
+
+# Run tests (requires pip install -e ".[dev]")
+python -m pytest tests/ -v
 
 # Run with coverage
-pytest tests/ --cov=xmclaw --cov-report=html
+python -m pytest tests/ --cov=xmclaw --cov-report=html
 
-# Lint
-ruff check xmclaw/
+# Lint & type check
+ruff check xmclaw/ --fix
+mypy xmclaw/
 
 # Build distribution
 python -m build

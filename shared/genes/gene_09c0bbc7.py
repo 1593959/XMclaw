@@ -1,5 +1,5 @@
 """
-Skill that automatically diagnoses and resolves error 2 when a user reports 'this is broken, please fix error 2'.
+Skill that automatically diagnoses and resolves error 2 when a user reports 'this is broken, please fix error 2'.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class Fixerror2skill(GeneBase):
     gene_id = "gene_09c0bbc7"
     name = "FixError2Skill"
-    description = """Skill that automatically diagnoses and resolves error 2 when a user reports 'this is broken, please fix error 2'."""
+    description = """Skill that automatically diagnoses and resolves error 2 when a user reports 'this is broken, please fix error 2'."""
     trigger = "User message contains 'fix error 2' or 'this is broken'"
 
     async def evaluate(self, context: dict) -> bool:

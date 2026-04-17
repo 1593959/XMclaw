@@ -19,7 +19,7 @@ class Fixerror2skill(GeneBase):
         """Execute the gene's action."""
         self.log_info('Received request to fix error 2')
         try:
-            # --- Placeholder for error‑2 specific remediation logic ---
+            # --- Placeholder for error-2 specific remediation logic ---
             # Example actions:
             #   - Reset the relevant configuration
             #   - Restart the affected service

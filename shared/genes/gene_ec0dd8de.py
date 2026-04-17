@@ -1,5 +1,5 @@
 """
-Skill to automatically handle user reports of error 1 by logging the issue, retrieving a known fix from the knowledge base, applying it if possible, and notifying the user.
+Skill to automatically handle user reports of error 1 by logging the issue, retrieving a known fix from the knowledge base, applying it if possible, and notifying the user.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class Fixerroroneskill(GeneBase):
     gene_id = "gene_ec0dd8de"
     name = "FixErrorOneSkill"
-    description = """Skill to automatically handle user reports of error 1 by logging the issue, retrieving a known fix from the knowledge base, applying it if possible, and notifying the user."""
+    description = """Skill to automatically handle user reports of error 1 by logging the issue, retrieving a known fix from the knowledge base, applying it if possible, and notifying the user."""
     trigger = "this is broken, please fix error 1"
 
     async def evaluate(self, context: dict) -> bool:

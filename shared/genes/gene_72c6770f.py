@@ -1,5 +1,5 @@
 """
-Automatically resolves error 1 when a user reports that something is broken.
+Automatically resolves error 1 when a user reports that something is broken. Auto-generated Gene for XMclaw.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase

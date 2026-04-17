@@ -8,7 +8,7 @@ class Fixuserreportederror(GeneBase):
     gene_id = "gene_a217eb4e"
     name = "FixUserReportedError"
     description = """When a user reports that something is broken and mentions an error, this skill extracts the error identifier, looks up a known fix, and replies with instructions."""
-    trigger = "The skill is triggered when the user's message contains the words 'broken' and 'error' (case‑insensitive)."
+    trigger = "The skill is triggered when the user's message contains the words 'broken' and 'error' (case-insensitive)."
 
     async def evaluate(self, context: dict) -> bool:
         """Return True if this gene should activate."""

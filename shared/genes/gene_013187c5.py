@@ -1,5 +1,5 @@
 """
-Detects when a user submits a bug report that indicates a previously‑fixed bug has re‑occurred (e.g., the user says "fix the bug again") and automatically routes the issue for quick resolution, assigns it to the original developer, tags it as a repeat‑bug, alerts the team, and creates a high‑priority investigation sub‑task.
+Detects when a user submits a bug report that indicates a previously-fixed bug has re-occurred (e.g., the user says "fix the bug again") and automatically routes the issue for quick resolution, assigns it to the original developer, tags it as a repeat-bug, alerts the team, and creates a high-priority investigation sub-task.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class HandleRepeatedBugReports(GeneBase):
     gene_id = "gene_013187c5"
     name = "Handle Repeated Bug Reports"
-    description = """Detects when a user submits a bug report that indicates a previously‑fixed bug has re‑occurred (e.g., the user says "fix the bug again") and automatically routes the issue for quick resolution, assigns it to the original developer, tags it as a repeat‑bug, alerts the team, and creates a high‑priority investigation sub‑task."""
+    description = """Detects when a user submits a bug report that indicates a previously-fixed bug has re-occurred (e.g., the user says "fix the bug again") and automatically routes the issue for quick resolution, assigns it to the original developer, tags it as a repeat-bug, alerts the team, and creates a high-priority investigation sub-task."""
     trigger = "{'type': 'event', 'source': 'issue_tracker', 'eventName': 'issue.created', 'filter': {'and': [{'field': 'type', 'operator': 'equals', 'value': 'bug'}, {'field': 'body', 'operator': 'contains', 'value': 'fix the bug again'}]}}"
 
     async def evaluate(self, context: dict) -> bool:

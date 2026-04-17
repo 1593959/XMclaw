@@ -1,5 +1,5 @@
 """
-A skill that detects when a user reports that something is broken or mentions error 4 and provides a known fix.
+A skill that detects when a user reports that something is broken or mentions error 4 and provides a known fix.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class Fixerror4skill(GeneBase):
     gene_id = "gene_592a2c5f"
     name = "FixError4Skill"
-    description = """A skill that detects when a user reports that something is broken or mentions error 4 and provides a known fix."""
+    description = """A skill that detects when a user reports that something is broken or mentions error 4 and provides a known fix."""
     trigger = "User message containing the words 'broken' or 'error 4'"
 
     async def evaluate(self, context: dict) -> bool:

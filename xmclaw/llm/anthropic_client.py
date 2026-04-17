@@ -24,11 +24,15 @@ class AnthropicClient:
         """
         if not self.api_key:
             logger.error("anthropic_api_key_missing")
-            yield json.dumps({"type": "error", "content": "[错误：未配置 Anthropic API Key]"})
+            yield json.dumps({"type": "error", "content": "[错误：未配置 Anthropic API Key\n"
+                "请运行 `xmclaw config init` 或编辑 daemon/config.json → llm.anthropic.api_key\n"
+                "获取 Key: https://console.anthropic.com/settings/keys]"})
             return
         if not self.model:
             logger.error("anthropic_model_missing")
-            yield json.dumps({"type": "error", "content": "[错误：未配置 Anthropic 模型]"})
+            yield json.dumps({"type": "error", "content": "[错误：未配置 Anthropic 模型\n"
+                "请编辑 daemon/config.json → llm.anthropic.default_model，例如 claude-sonnet-4-20250514 或 claude-3-5-sonnet-latest]"})
+            return
             return
         
         try:

@@ -1,5 +1,5 @@
 """
-A skill that automatically detects user reports of a broken state or error 0 and attempts to resolve the issue.
+A skill that automatically detects user reports of a broken state or error 0 and attempts to resolve the issue.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class Fixerrorzeroskill(GeneBase):
     gene_id = "gene_309db83b"
     name = "FixErrorZeroSkill"
-    description = """A skill that automatically detects user reports of a broken state or error 0 and attempts to resolve the issue."""
+    description = """A skill that automatically detects user reports of a broken state or error 0 and attempts to resolve the issue."""
     trigger = "error.?0|broken|fix"
 
     async def evaluate(self, context: dict) -> bool:

@@ -1,13 +1,13 @@
 """
-When a user reports the same bug again after it has already been fixed (e.g., the user says 'fix the bug once more'), this Gene automatically retrieves the most recent fix, re‑applies it, runs regression tests, and informs the user of the result.
+When a user reports the same bug again after it has already been fixed (e.g., the user says 'fix the bug once more'), this Gene automatically retrieves the most recent fix, re-applies it, runs regression tests, and informs the user of the result.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
 
-class Re‑fixBugAssistant(GeneBase):
+class Re_fixBugAssistant(GeneBase):
     gene_id = "gene_02b40b3b"
-    name = "Re‑fix Bug Assistant"
-    description = """When a user reports the same bug again after it has already been fixed (e.g., the user says 'fix the bug once more'), this Gene automatically retrieves the most recent fix, re‑applies it, runs regression tests, and informs the user of the result."""
+    name = "Re-fix Bug Assistant"
+    description = """When a user reports the same bug again after it has already been fixed (e.g., the user says 'fix the bug once more'), this Gene automatically retrieves the most recent fix, re-applies it, runs regression tests, and informs the user of the result."""
     trigger = "User submits a bug report that contains the phrase 'fix the bug once more'"
 
     async def evaluate(self, context: dict) -> bool:
@@ -19,9 +19,9 @@ class Re‑fixBugAssistant(GeneBase):
         """Execute the gene's action."""
         user_input = context.get("user_input", "")
         if "fix the bug once more" not in user_input.lower():
-            return "Trigger phrase not detected. No re‑fix action taken."
+            return "Trigger phrase not detected. No re-fix action taken."
         
-        # Try to extract a bug identifier from the user input (e.g., "Bug #123" or "BUG‑123")
+        # Try to extract a bug identifier from the user input (e.g., "Bug #123" or "BUG-123")
         bug_id = None
         match = re.search(r'(?:bug\s?#?\s*(\d+)|BUG[-\s]?(\d+))', user_input, re.IGNORECASE)
         if match:
@@ -44,7 +44,7 @@ class Re‑fixBugAssistant(GeneBase):
                 )
                 return f"No fix found for bug {bug_id}. Issue has been escalated to the development team."
         
-            # 2. Re‑apply the fix to the codebase
+            # 2. Re-apply the fix to the codebase
             applied = await self.patch_applier.apply_fix(fix)
             if not applied:
                 await self.team_notifier.escalate_to_team(
@@ -57,32 +57,32 @@ class Re‑fixBugAssistant(GeneBase):
             tests_passed = await self.test_runner.run_regression_tests()
         
             if tests_passed:
-                # 4. Tests passed – mark the bug as resolved and notify the user
+                # 4. Tests passed - mark the bug as resolved and notify the user
                 await self.bug_tracker.resolve_bug(bug_id)
                 user_id = context.get("user_id", "user")
                 await self.user_notifier.notify_user(
                     user_id,
-                    f"Bug {bug_id} has been re‑fixed and all regression tests passed. The bug is now marked as resolved."
+                    f"Bug {bug_id} has been re-fixed and all regression tests passed. The bug is now marked as resolved."
                 )
-                return f"Bug {bug_id} re‑fixed successfully. Regression tests passed. Bug marked as resolved."
+                return f"Bug {bug_id} re-fixed successfully. Regression tests passed. Bug marked as resolved."
             else:
-                # 5. Tests failed – escalate to the development team
+                # 5. Tests failed - escalate to the development team
                 await self.team_notifier.escalate_to_team(
                     bug_id,
-                    f"Regression tests failed after re‑applying fix for bug {bug_id}."
+                    f"Regression tests failed after re-applying fix for bug {bug_id}."
                 )
                 user_id = context.get("user_id", "user")
                 await self.user_notifier.notify_user(
                     user_id,
-                    f"Bug {bug_id} was re‑fixed but regression tests failed. The issue has been escalated to the development team."
+                    f"Bug {bug_id} was re-fixed but regression tests failed. The issue has been escalated to the development team."
                 )
-                return f"Bug {bug_id} re‑fixed but regression tests failed. Issue escalated to the development team."
+                return f"Bug {bug_id} re-fixed but regression tests failed. Issue escalated to the development team."
         
         except Exception as e:
-            # Unexpected error – escalate and report
+            # Unexpected error - escalate and report
             await self.team_notifier.escalate_to_team(
                 bug_id,
-                f"Unexpected error while re‑fixing bug {bug_id}: {e}"
+                f"Unexpected error while re-fixing bug {bug_id}: {e}"
             )
-            return f"An unexpected error occurred while re‑fixing bug {bug_id}. The issue has been escalated."
-        return "Gene Re‑fix Bug Assistant activated."
+            return f"An unexpected error occurred while re-fixing bug {bug_id}. The issue has been escalated."
+        return "Gene Re-fix Bug Assistant activated."

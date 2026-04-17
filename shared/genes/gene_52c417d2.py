@@ -1,5 +1,5 @@
 """
-A skill that automatically attempts to resolve error 2 when a user reports a broken state with that error.
+A skill that automatically attempts to resolve error 2 when a user reports a broken state with that error.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,8 +7,8 @@ from xmclaw.genes.base import GeneBase
 class Fixerror2skill(GeneBase):
     gene_id = "gene_52c417d2"
     name = "FixError2Skill"
-    description = """A skill that automatically attempts to resolve error 2 when a user reports a broken state with that error."""
-    trigger = "User reports an issue such as 'this is broken, please fix error 2'."
+    description = """A skill that automatically attempts to resolve error 2 when a user reports a broken state with that error."""
+    trigger = "User reports an issue such as 'this is broken, please fix error 2'."
 
     async def evaluate(self, context: dict) -> bool:
         """Return True if this gene should activate."""

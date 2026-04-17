@@ -17,10 +17,10 @@ class AutoFrequentBashUsage(Tool):
     async def execute(self, **kwargs) -> str:
         """Execute the skill."""
         import subprocess
-            result = subprocess.run(
-                context.get('command', ''),
-                shell=True,
-                capture_output=True,
-                text=True
-            )
-            return result.stdout
+    result = subprocess.run(
+    context.get('command', ''),
+    shell=True,
+    capture_output=True,
+    text=True
+    )
+    return result.stdout

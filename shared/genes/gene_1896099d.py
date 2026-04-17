@@ -1,13 +1,13 @@
 """
-Detects when a user reports a bug that was previously marked as fixed and triggers remediation steps to ensure the bug is properly re‑evaluated and resolved.
+Detects when a user reports a bug that was previously marked as fixed and triggers remediation steps to ensure the bug is properly re-evaluated and resolved.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
 
-class BugRecurrenceAuto‑handler(GeneBase):
+class BugRecurrenceAuto_handler(GeneBase):
     gene_id = "gene_1896099d"
-    name = "Bug Recurrence Auto‑Handler"
-    description = """Detects when a user reports a bug that was previously marked as fixed and triggers remediation steps to ensure the bug is properly re‑evaluated and resolved."""
+    name = "Bug Recurrence Auto-Handler"
+    description = """Detects when a user reports a bug that was previously marked as fixed and triggers remediation steps to ensure the bug is properly re-evaluated and resolved."""
     trigger = "{'type': 'bug_recurrence', 'condition': 'user_submitted_new_report_matching_existing_fixed_bug', 'context': {'issue_type': 'bug', 'previous_status': 'fixed', 'match_criteria': ['title', 'component', 'severity']}}"
 
     async def evaluate(self, context: dict) -> bool:
@@ -32,11 +32,11 @@ class BugRecurrenceAuto‑handler(GeneBase):
         for role in notify_roles:
             await self.send_notification(role, message)
         
-        # Reopen the bug so it re‑enters the workflow
+        # Reopen the bug so it re-enters the workflow
         await self.reopen_bug(bug_id)
         
-        # Create a subtask for the re‑evaluation work
-        subtask_title = f"Re‑evaluate bug {bug_id}: {title}"
+        # Create a subtask for the re-evaluation work
+        subtask_title = f"Re-evaluate bug {bug_id}: {title}"
         subtask_id = await self.create_subtask(bug_id, subtask_title)
         
         # Assign the bug back to its previous owner if that information is available
@@ -44,4 +44,4 @@ class BugRecurrenceAuto‑handler(GeneBase):
             await self.assign_bug(bug_id, previous_owner)
         
         return f"Bug {bug_id} recurrence handled: notified {', '.join(notify_roles)}, reopened bug, created subtask {subtask_id}, assigned to {previous_owner}."
-        return "Gene Bug Recurrence Auto‑Handler activated."
+        return "Gene Bug Recurrence Auto-Handler activated."

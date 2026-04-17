@@ -19,20 +19,20 @@ class Errordetectorandfixer(GeneBase):
         """Execute the gene's action."""
         error_code = 2
         error_registry = {
-            2: {
-                'label': 'Error 2: Resource Not Found or Invalid State',
-                'possible_causes': [
-                    'Missing required resource or dependency',
-                    'Invalid input parameter passed to the system',
-                    'Corrupted or missing configuration entry'
-                ],
-                'fix_steps': [
-                    'Validate all input parameters for completeness and correct types',
-                    'Check that required resources or dependencies are available and accessible',
-                    'Reload or reset the relevant configuration to default state',
-                    'Retry the failed operation after applying fixes'
-                ]
-            }
+    2: {
+    'label': 'Error 2: Resource Not Found or Invalid State',
+    'possible_causes': [
+    'Missing required resource or dependency',
+    'Invalid input parameter passed to the system',
+    'Corrupted or missing configuration entry'
+    ],
+    'fix_steps': [
+    'Validate all input parameters for completeness and correct types',
+    'Check that required resources or dependencies are available and accessible',
+    'Reload or reset the relevant configuration to default state',
+    'Retry the failed operation after applying fixes'
+    ]
+    }
         }
         
         error_info = error_registry.get(error_code, None)

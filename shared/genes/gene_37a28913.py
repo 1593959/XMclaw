@@ -1,5 +1,5 @@
 """
-Skill that automatically addresses the user‑reported error 3 and attempts to resolve it.
+Skill that automatically addresses the user-reported error 3 and attempts to resolve it.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class Fixerror3(GeneBase):
     gene_id = "gene_37a28913"
     name = "FixError3"
-    description = """Skill that automatically addresses the user‑reported error 3 and attempts to resolve it."""
+    description = """Skill that automatically addresses the user-reported error 3 and attempts to resolve it."""
     trigger = "error 3"
 
     async def evaluate(self, context: dict) -> bool:

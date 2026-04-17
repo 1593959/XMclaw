@@ -1,5 +1,5 @@
 """
-Automatically handles user reports of a broken state that mention error 3 by diagnosing the issue, applying a known fix, and confirming the resolution.
+Automatically handles user reports of a broken state that mention error 3 by diagnosing the issue, applying a known fix, and confirming the resolution. Auto-generated Gene for XMclaw.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase

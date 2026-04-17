@@ -1,5 +1,5 @@
 """
-Skill that reacts to user reports of 'this is broken, please fix error 0' by logging the issue and responding with an acknowledgement.
+Skill that reacts to user reports of 'this is broken, please fix error 0' by logging the issue and responding with an acknowledgement. Auto-generated Gene for XMclaw.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase

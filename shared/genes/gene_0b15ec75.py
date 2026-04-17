@@ -28,6 +28,6 @@ class Fixerror3skill(GeneBase):
                 log_error('Failed to fix error 3: ' + result.message)
                 return {'status': 'failed', 'message': result.message}
         else:
-            log_warning('Received request for non‑error‑3, ignoring.')
+            log_warning('Received request for non-error-3, ignoring.')
             return {'status': 'ignored', 'message': 'Not error 3.'}
         return "Gene FixError3Skill activated."

@@ -1,5 +1,5 @@
 """
-Skill that automatically addresses user reports of a broken feature accompanied by error 4. It detects the issue in the user message, diagnoses the likely cause, and returns step‑by‑step fix instructions.
+Skill that automatically addresses user reports of a broken feature accompanied by error 4. It detects the issue in the user message, diagnoses the likely cause, and returns step-by-step fix instructions.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,8 +7,8 @@ from xmclaw.genes.base import GeneBase
 class Fixerror4skill(GeneBase):
     gene_id = "gene_f4418df4"
     name = "FixError4Skill"
-    description = """Skill that automatically addresses user reports of a broken feature accompanied by error 4. It detects the issue in the user message, diagnoses the likely cause, and returns step‑by‑step fix instructions."""
-    trigger = "User message matches pattern: contains the word 'broken' (case‑insensitive) AND the phrase 'error 4' (case‑insensitive)."
+    description = """Skill that automatically addresses user reports of a broken feature accompanied by error 4. It detects the issue in the user message, diagnoses the likely cause, and returns step-by-step fix instructions."""
+    trigger = "User message matches pattern: contains the word 'broken' (case-insensitive) AND the phrase 'error 4' (case-insensitive)."
 
     async def evaluate(self, context: dict) -> bool:
         """Return True if this gene should activate."""

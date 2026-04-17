@@ -1,5 +1,5 @@
 """
-Skill that automatically fixes the reported error 2 when the user asks to fix it.
+Skill that automatically fixes the reported error 2 when the user asks to fix it. Auto-generated Gene for XMclaw.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase

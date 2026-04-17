@@ -9,6 +9,12 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <!-- Core modules (loaded before main_new.js) -->
+    <script type="module" src="/src/modules/notifications.js"></script>
+    <script type="module" src="/src/modules/websocket.js"></script>
+    <script type="module" src="/src/modules/router.js"></script>
+    <script type="module" src="/src/modules/state.js"></script>
+    <script type="module" src="/src/modules/devpanel.js"></script>
 </head>
 <body>
 <div class="app">
@@ -102,6 +108,80 @@
             <!-- ===== DASHBOARD ===== -->
             <div class="view active" id="view-dashboard">
                 <div class="dashboard">
+                    <!-- Floating shortcuts bar -->
+                    <div class="shortcuts-bar" id="shortcuts-bar">
+                        <!-- Plan mode -->
+                        <button class="sc-btn" id="sc-plan-btn" onclick="togglePlanMode()" title="计划模式">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+                            计划
+                        </button>
+
+                        <div class="sc-sep"></div>
+
+                        <!-- LLM quick config -->
+                        <div style="position:relative">
+                            <button class="sc-btn" id="sc-llm-btn" onclick="toggleLLMTooltip()" title="LLM 快速配置">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                                <span id="sc-model-label">LLM</span>
+                            </button>
+                            <div class="quick-llm-tooltip" id="quick-llm-tooltip">
+                                <h4>LLM 快速配置</h4>
+                                <div class="ql-row">
+                                    <label>Provider</label>
+                                    <select id="ql-provider">
+                                        <option value="anthropic">Anthropic</option>
+                                        <option value="openai">OpenAI</option>
+                                    </select>
+                                </div>
+                                <div class="ql-row">
+                                    <label>模型</label>
+                                    <input type="text" id="ql-model" placeholder="claude-opus-4-5">
+                                </div>
+                                <div class="ql-row">
+                                    <label>Temperature</label>
+                                    <input type="range" id="ql-temp" min="0" max="2" step="0.1" value="0.7" style="flex:1">
+                                    <span id="ql-temp-val" style="font-size:11px;color:var(--text-dim);width:28px;text-align:right">0.7</span>
+                                </div>
+                                <div class="ql-actions">
+                                    <button class="cancel" onclick="closeLLMTooltip()">取消</button>
+                                    <button class="primary" onclick="applyLLMQuickConfig()">应用</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Evolution toggle -->
+                        <button class="sc-btn green" id="sc-evo-btn" onclick="toggleEvolution()" title="进化开关">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/><path d="M18 12h4"/><path d="m16.2 16.2 2.9 2.9"/><path d="M12 18v4"/><path d="m4.9 19.1 2.9-2.9"/><path d="M2 12h4"/><path d="m4.9 4.9 2.9 2.9"/></svg>
+                            进化
+                        </button>
+
+                        <!-- Skills -->
+                        <button class="sc-btn" id="sc-skills-btn" onclick="switchView('skills')" title="技能管理">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+                            技能
+                        </button>
+
+                        <!-- Channel integrations -->
+                        <button class="sc-btn" id="sc-channel-btn" onclick="toggleChannelPanel()" title="频道集成">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                            频道
+                        </button>
+
+                        <div class="sc-sep"></div>
+
+                        <!-- Dev panel toggle -->
+                        <button class="sc-btn" id="sc-dev-btn" onclick="window._devPanel?.toggle()" title="开发视图">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                            开发
+                        </button>
+
+                        <!-- View toggle -->
+                        <button class="sc-btn" id="sc-view-btn" onclick="toggleChatLayout()" title="切换布局">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+                            布局
+                        </button>
+                    </div>
+
                     <!-- Chat area -->
                     <div class="dashboard-left">
                         <div class="plan-mode-bar" id="plan-mode-bar" style="display:none">
@@ -112,7 +192,10 @@
                             <button id="cancel-plan">取消</button>
                         </div>
                         <div class="chat" id="chat">
-                <div class="welcome-overlay" id="welcome-overlay">
+                            <button class="scroll-bottom-btn" id="scroll-bottom-btn" title="滚动到底部" onclick="scrollToBottom()">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                            </button>
+                <div class="welcome-overlay" id="welcome">
                     <div class="welcome-icon">
                         <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
                     </div>
@@ -256,6 +339,8 @@
             <!-- ===== EVOLUTION ===== -->
             <div class="view" id="view-evolution">
                 <div class="evolution-page">
+                    <!-- Live notifications injected here by handleEvolutionNotify -->
+                    <div id="evo-notify-container"></div>
                     <div class="evo-stats">
                         <div class="evo-stat-card">
                             <div class="evo-number" id="evo-genes">0</div>
@@ -430,7 +515,7 @@
                                 <div class="form-row"><label>启用进化</label><input type="checkbox" id="evo-enabled" checked></div>
                                 <div class="form-row"><label>间隔(分钟)</label><input type="number" id="evo-interval" value="30"></div>
                                 <div class="form-row"><label>每日复盘时间</label><input type="number" id="evo-daily" value="22"></div>
-                                <div class="form-row"><label>VFM 阈值</label><input type="number" id="evo-vfm" value="20"></div>
+                                <div class="form-row"><label>VFM 阈值</label><input type="number" id="evo-vfm" value="5" step="0.5" min="0" max="10" title="质量阈值，0-10，默认5"></div>
                             </div>
                         </div>
                         <div class="settings-panel" id="stab-memory">
@@ -548,6 +633,34 @@
         </div><!-- .content -->
     </main>
 </div><!-- .app -->
+
+<!-- Dev panel overlay -->
+<div class="dev-overlay" id="dev-overlay"></div>
+
+<!-- Dev Panel -->
+<div class="dev-panel" id="dev-panel">
+    <div class="dev-panel-header">
+        <span class="dev-panel-title">开发视图</span>
+        <button class="dev-panel-close" onclick="window._devPanel?.close()">×</button>
+    </div>
+    <div class="dev-panel-tabs">
+        <div class="dev-tab active" data-tab="plan" onclick="window._devPanel?.switchTab('plan')">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+            计划
+        </div>
+        <div class="dev-tab" data-tab="files" onclick="window._devPanel?.switchTab('files')">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            文件
+        </div>
+        <div class="dev-tab" data-tab="diff" onclick="window._devPanel?.switchTab('diff')">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+            Diff
+        </div>
+    </div>
+    <div class="dev-panel-body" id="dev-panel-body">
+        <!-- Populated by devpanel.js -->
+    </div>
+</div>
 
 <!-- ===== MODAL: ask_user ===== -->
 <div class="modal" id="ask-modal" style="display:none">

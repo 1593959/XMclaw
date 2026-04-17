@@ -1,10 +1,14 @@
 """Gene manager: load and match behavior genes."""
+import json
 import re
 from xmclaw.memory.sqlite_store import SQLiteStore
 from xmclaw.utils.paths import BASE_DIR
 
 
 class GeneManager:
+    # Known trigger types and their matching strategies
+    TRIGGER_TYPES = frozenset({"keyword", "event", "regex", "intent"})
+
     def __init__(self, agent_id: str = "default"):
         self.agent_id = agent_id
         self.db = SQLiteStore(BASE_DIR / "shared" / "memory.db")
@@ -16,19 +20,15 @@ class GeneManager:
 
     def match(self, user_input: str, intents: list[str] | None = None) -> list[dict]:
         """
-        Match genes against user input using multiple strategies.
-        
-        Strategies (all checked, union of matches):
-        1. Keyword match: gene.trigger appears in user_input
-        2. Intent match: gene.intents overlaps with provided intents
-        3. Regex match: gene.regex_pattern matches user_input
-        
-        Args:
-            user_input: The user's message
-            intents: Optional list of detected intents (e.g. ["repair", "code", "file"])
-        
-        Returns:
-            List of matched genes, sorted by priority (highest first).
+        Match genes against user input using strategy inferred from trigger_type.
+
+        trigger_type → strategy:
+          keyword  gene.trigger (plaintext keyword) must appear in user_input
+          regex    gene.trigger (regex pattern) must match user_input
+          intent   gene.intents (JSON list) must overlap with provided intents
+          event    gene.trigger is an event-type string, matched against intents
+                   (kept for backward compat; treated like keyword if no intents)
+          (none)   legacy fallback: try keyword first, then regex
         """
         genes = self.get_all()
         matched = []
@@ -38,24 +38,57 @@ class GeneManager:
             if not gene.get("enabled", True):
                 continue
 
-            # Strategy 1: keyword trigger
-            trigger = gene.get("trigger", "").lower()
-            keyword_hit = trigger and trigger in input_lower
+            trigger_type = gene.get("trigger_type", "").lower() or "keyword"
+            trigger = gene.get("trigger", "")
 
-            # Strategy 2: intent overlap
-            gene_intents = gene.get("intents", [])
-            intent_hit = intents and any(i in gene_intents for i in intents)
+            hit = False
 
-            # Strategy 3: regex pattern
-            regex_pattern = gene.get("regex_pattern", "")
-            regex_hit = False
-            if regex_pattern:
-                try:
-                    regex_hit = bool(re.search(regex_pattern, user_input, re.IGNORECASE))
-                except re.error:
-                    pass
+            if trigger_type == "keyword":
+                hit = bool(trigger and trigger.lower() in input_lower)
 
-            if keyword_hit or intent_hit or regex_hit:
+            elif trigger_type == "regex":
+                if trigger:
+                    try:
+                        hit = bool(re.search(trigger, user_input, re.IGNORECASE))
+                    except re.error:
+                        pass
+
+            elif trigger_type == "intent":
+                # intents stored as JSON list in DB
+                raw_intents = gene.get("intents", "[]")
+                if isinstance(raw_intents, str):
+                    try:
+                        gene_intents: list[str] = json.loads(raw_intents)
+                    except json.JSONDecodeError:
+                        gene_intents = []
+                else:
+                    gene_intents = list(raw_intents) if raw_intents else []
+                hit = bool(intents) and any(i in gene_intents for i in intents)
+
+            elif trigger_type == "event":
+                # An "event" trigger fires when the provided intents list contains
+                # the trigger value — used for programmatic event-driven activation.
+                hit = bool(intents) and trigger in intents
+
+            else:
+                # Legacy fallback: try keyword, then regex, then intent
+                if trigger and trigger.lower() in input_lower:
+                    hit = True
+                elif trigger:
+                    try:
+                        hit = bool(re.search(trigger, user_input, re.IGNORECASE))
+                    except re.error:
+                        pass
+                # Intent check as last resort
+                if not hit and intents:
+                    raw_intents = gene.get("intents", "[]")
+                    try:
+                        gene_intents = json.loads(raw_intents) if isinstance(raw_intents, str) else list(raw_intents)
+                    except (json.JSONDecodeError, TypeError):
+                        gene_intents = []
+                    hit = bool(any(i in gene_intents for i in intents))
+
+            if hit:
                 matched.append(gene)
 
         return matched
@@ -63,7 +96,7 @@ class GeneManager:
     def get_gene(self, gene_id: str) -> dict | None:
         """Get a specific gene by ID."""
         for gene in self.get_all():
-            if gene.get("gene_id") == gene_id:
+            if gene.get("id") == gene_id:
                 return gene
         return None
 

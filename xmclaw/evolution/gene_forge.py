@@ -21,9 +21,10 @@ class {class_name}(GeneBase):
     name = "{name}"
     description = """{description}"""
     trigger = "{trigger}"
+    trigger_type = "{trigger_type}"
 
     async def evaluate(self, context: dict) -> bool:
-        """Return True if this gene should activate."""
+        """Return True if this gene should activate (keyword match)."""
         user_input = context.get("user_input", "")
         return self.trigger.lower() in user_input.lower()
 
@@ -70,6 +71,7 @@ class GeneForge:
             name=concept.get("name", "AutoGene"),
             description=concept.get("description", ""),
             trigger=concept.get("trigger", ""),
+            trigger_type=concept.get("trigger_type", "keyword"),
             action_body=action_body,
         )
 
@@ -81,7 +83,12 @@ class GeneForge:
             "name": concept.get("name", "AutoGene"),
             "description": concept.get("description", ""),
             "trigger": concept.get("trigger", ""),
+            "trigger_type": concept.get("trigger_type", "keyword"),
             "action": concept.get("action", ""),
+            "priority": concept.get("priority", 5),
+            "enabled": concept.get("enabled", True),
+            "intents": concept.get("intents", []),
+            "regex_pattern": concept.get("regex_pattern", ""),
             "path": str(file_path),
             "class_name": class_name,
         }

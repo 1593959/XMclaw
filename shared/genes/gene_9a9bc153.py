@@ -1,5 +1,5 @@
 """
-A skill that automatically resolves error code 3 reported by users.
+A skill that automatically resolves error code 3 reported by users.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class Fixerror3(GeneBase):
     gene_id = "gene_9a9bc153"
     name = "FixError3"
-    description = """A skill that automatically resolves error code 3 reported by users."""
+    description = """A skill that automatically resolves error code 3 reported by users."""
     trigger = "User says 'this is broken, please fix error 3'"
 
     async def evaluate(self, context: dict) -> bool:

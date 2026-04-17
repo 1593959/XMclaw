@@ -1,5 +1,5 @@
 """
-Handles user reports about error 4 by acknowledging the issue, logging it, and attempting to automatically resolve the error using the known fix registry.
+Handles user reports about error 4 by acknowledging the issue, logging it, and attempting to automatically resolve the error using the known fix registry.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class Fixerror4skill(GeneBase):
     gene_id = "gene_bdb3769c"
     name = "FixError4Skill"
-    description = """Handles user reports about error 4 by acknowledging the issue, logging it, and attempting to automatically resolve the error using the known fix registry."""
+    description = """Handles user reports about error 4 by acknowledging the issue, logging it, and attempting to automatically resolve the error using the known fix registry."""
     trigger = "User message contains 'error 4', 'this is broken', or 'please fix error 4'"
 
     async def evaluate(self, context: dict) -> bool:

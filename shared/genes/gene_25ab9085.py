@@ -1,5 +1,5 @@
 """
-Monitors user messages for reports of broken functionality that reference ‘error 2’ and automatically attempts to resolve it.
+Monitors user messages for reports of broken functionality that reference ‘error 2' and automatically attempts to resolve it.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class Fixerror2skill(GeneBase):
     gene_id = "gene_25ab9085"
     name = "FixError2Skill"
-    description = """Monitors user messages for reports of broken functionality that reference ‘error 2’ and automatically attempts to resolve it."""
+    description = """Monitors user messages for reports of broken functionality that reference ‘error 2' and automatically attempts to resolve it."""
     trigger = "error 2|broken|please fix"
 
     async def evaluate(self, context: dict) -> bool:

@@ -4,7 +4,7 @@ Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
 
-class RepeatedErrorDetection&Response(GeneBase):
+class RepeatedErrorDetection_Response(GeneBase):
     gene_id = "gene_1681691e"
     name = "Repeated Error Detection & Response"
     description = """Detects when a user encounters the same error more than once within a short time window and automatically triggers a supportive action to reduce frustration (e.g., creating a support ticket and surfacing a relevant help article)."""
@@ -40,7 +40,7 @@ class RepeatedErrorDetection&Response(GeneBase):
         
         # Detect repeated error (count >= 2 within the window)
         if len(recent) >= 2:
-            # Create high‑priority support ticket
+            # Create high-priority support ticket
             ticket = await self.support_service.create_ticket(
                 user_id=user_id,
                 session_id=session_id,
@@ -63,6 +63,6 @@ class RepeatedErrorDetection&Response(GeneBase):
                 f"support team notified, and help article shown."
             )
         
-        # No repeat detected – log the error and exit quietly
+        # No repeat detected - log the error and exit quietly
         return "Error logged."
         return "Gene Repeated Error Detection & Response activated."

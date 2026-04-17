@@ -1,5 +1,5 @@
 """
-Automatically creates a bug ticket, assigns it to the relevant team, and initiates a fix workflow whenever a user reports a bug.
+Automatically creates a bug ticket, assigns it to the relevant team, and initiates a fix workflow whenever a user reports a bug. Auto-generated Gene for XMclaw.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -22,39 +22,39 @@ class Autobugfix(GeneBase):
         priority = "high"
         labels = ["bug", "user-reported"]
         
-        # Step 1 – create the bug ticket
-        ticket = await ticket_service.create_ticket(
-            title="Bug reported by user",
-            description=user_input,
-            priority=priority,
-            labels=labels
+        # Step 1 - create the bug ticket
+        ticket = ticket_service.create_ticket(
+    title="Bug reported by user",
+    description=user_input,
+    priority=priority,
+    labels=labels
         )
         
-        # Step 2 – determine the responsible team based on the affected component
+        # Step 2 - determine the responsible team based on the affected component
         team_map = {
-            "frontend": "Frontend Team",
-            "backend": "Backend Team",
-            "database": "Database Team",
-            "general": "General Team"
+    "frontend": "Frontend Team",
+    "backend": "Backend Team",
+    "database": "Database Team",
+    "general": "General Team"
         }
         team = team_map.get(component, "General Team")
         
-        # Auto‑select an assignee with matching expertise
-        assignee = await team_assignment_engine.get_assignee(team=team, expertise=component)
+        # Auto-select an assignee with matching expertise
+        assignee = team_assignment_engine.get_assignee(team=team, expertise=component)
         
-        # Step 3 – assign the ticket to the selected team and assignee
-        await team_assignment_engine.assign_ticket(team=team, assignee=assignee)
+        # Step 3 - assign the ticket to the selected team and assignee
+        team_assignment_engine.assign_ticket(team=team, assignee=assignee)
         
-        # Step 4 – notify the developer (Slack) about the new bug
-        await notification_service.notify_developer(
-            channel="slack",
-            message=f"New bug reported – please start investigation. Ticket ID: {ticket.id}"
+        # Step 4 - notify the developer (Slack) about the new bug
+        notification_service.notify_developer(
+    channel="slack",
+    message=f"New bug reported - please start investigation. Ticket ID: {ticket.id}"
         )
         
-        # Step 5 – trigger the bug‑fix CI pipeline workflow
-        await ci_pipeline.start_fix_workflow(
-            workflow="bug_fix",
-            trigger="on_assigned"
+        # Step 5 - trigger the bug-fix CI pipeline workflow
+        ci_pipeline.start_fix_workflow(
+    workflow="bug_fix",
+    trigger="on_assigned"
         )
         
         return f"Bug ticket {ticket.id} created, assigned to {assignee} on {team}, and fix workflow initiated."

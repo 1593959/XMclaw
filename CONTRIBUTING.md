@@ -27,6 +27,11 @@ python -m venv .venv
 # 安装依赖
 pip install -e .
 
+# 首次运行：daemon/config.json 会自动生成（包含默认配置）
+# 编辑 daemon/config.json 填入你的 LLM API Key，例如：
+#   llm.anthropic.api_key = "sk-ant-..."
+#   llm.openai.api_key = "sk-..."
+
 # 验证安装
 xmclaw status
 ```
@@ -88,8 +93,8 @@ xmclaw/
 
 ### Python
 
-- 使用 **Black** 格式化代码：`black xmclaw/`
-- 使用 **Ruff** 做 linting：`ruff check xmclaw/`
+- 使用 **Ruff** 检查和格式化代码：`ruff check xmclaw/ --fix`（需要 `pip install -e ".[dev]"`）
+- 使用 **MyPy** 做类型检查：`mypy xmclaw/`（需要 `pip install -e ".[dev]"`）
 - 类型注解：所有公共函数必须标注返回类型
 - Docstring：公共函数和方法必须有 docstring
 

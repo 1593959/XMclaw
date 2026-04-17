@@ -6,9 +6,16 @@ from xmclaw.utils.log import logger
 
 
 class EvolutionScheduler:
-    def __init__(self, agent_id: str = "default"):
+    def __init__(self, agent_id: str = "default", memory=None):
+        """Create scheduler.
+
+        Args:
+            agent_id: Agent to evolve for.
+            memory: Optional shared MemoryManager. If not provided, EvolutionEngine
+                    creates its own (for backwards compatibility).
+        """
         self.agent_id = agent_id
-        self.engine = EvolutionEngine(agent_id)
+        self.engine = EvolutionEngine(agent_id, memory=memory)
         self.scheduler = AsyncIOScheduler()
         self.config = DaemonConfig.load()
         self.running = False

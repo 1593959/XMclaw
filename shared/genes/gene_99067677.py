@@ -1,5 +1,5 @@
 """
-Skill to handle user reports of error 0 and attempt to fix it.
+Skill to handle user reports of error 0 and attempt to fix it.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class Fixerror0(GeneBase):
     gene_id = "gene_99067677"
     name = "FixError0"
-    description = """Skill to handle user reports of error 0 and attempt to fix it."""
+    description = """Skill to handle user reports of error 0 and attempt to fix it."""
     trigger = "User says 'this is broken, please fix error 0'"
 
     async def evaluate(self, context: dict) -> bool:

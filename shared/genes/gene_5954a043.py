@@ -8,7 +8,7 @@ class Fixerror2skill(GeneBase):
     gene_id = "gene_5954a043"
     name = "FixError2Skill"
     description = """Skill that automatically attempts to fix error 2 when a user reports a broken state and asks for a fix."""
-    trigger = "User input contains the words 'broken' and 'error 2' (case‑insensitive)."
+    trigger = "User input contains the words 'broken' and 'error 2' (case-insensitive)."
 
     async def evaluate(self, context: dict) -> bool:
         """Return True if this gene should activate."""

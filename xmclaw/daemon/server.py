@@ -18,7 +18,9 @@ from xmclaw.utils.paths import BASE_DIR
 
 config = DaemonConfig.load()
 orchestrator = AgentOrchestrator()
-evo_scheduler = EvolutionScheduler()
+# Pass the shared MemoryManager so evolution reads the same sessions as the orchestrator.
+# Initialized lazily in lifespan() after orchestrator.initialize().
+evo_scheduler = EvolutionScheduler(memory=orchestrator.memory)
 integration_manager = IntegrationManager(config.integrations)
 
 AGENTS_DIR = BASE_DIR / "agents"
@@ -28,12 +30,20 @@ AGENTS_DIR = BASE_DIR / "agents"
 async def lifespan(app: FastAPI):
     logger.info("daemon_starting")
     await orchestrator.initialize()
+
+    # Install built-in event handlers (audit log, tool analytics)
+    from xmclaw.core.event_bus import install_event_handlers
+    install_event_handlers()
+
     if config.evolution.get("enabled", True):
         await evo_scheduler.start()
+
     # Wire orchestrator into integration manager and start enabled integrations
     integration_manager._orchestrator = orchestrator
     await integration_manager.start()
+
     yield
+
     logger.info("daemon_stopping")
     await integration_manager.stop()
     if config.evolution.get("enabled", True):
@@ -314,15 +324,10 @@ async def update_daemon_config(data: dict):
     for key in ("llm", "evolution", "memory", "tools", "gateway", "mcp_servers", "integrations"):
         if key in data:
             setattr(config, key, data[key])
-    # Rebuild LLM clients so new api_key / model / base_url take effect immediately
+    # Rebuild all LLM clients (including plugins) from new config
     try:
-        from xmclaw.llm.openai_client import OpenAIClient
-        from xmclaw.llm.anthropic_client import AnthropicClient
-        llm = data.get("llm", config.llm)
-        orchestrator.llm.config = config
-        orchestrator.llm.clients["openai"] = OpenAIClient(llm.get("openai", {}))
-        orchestrator.llm.clients["anthropic"] = AnthropicClient(llm.get("anthropic", {}))
-        logger.info("llm_clients_reloaded")
+        orchestrator.llm.rebuild_clients()
+        logger.info("llm_clients_reloaded", providers=list(orchestrator.llm.clients.keys()))
     except Exception as e:
         logger.error("llm_reload_failed", error=str(e))
 
@@ -429,23 +434,22 @@ async def delegate_to_agent(agent_id: str, request: Request):
 
 @app.post("/api/teams/{team_name}/delegate")
 async def delegate_to_team(team_name: str, request: Request):
-    """Delegate a task to all agents in a team."""
+    """Delegate a task to all agents in a team, running in parallel."""
     data = await request.json()
     task = data.get("task", "")
+    parallel = data.get("parallel", True)
+    merge_strategy = data.get("merge", "concat")
     if not task:
         return JSONResponse({"error": "Task is required"}, status_code=400)
     if team_name not in orchestrator._teams:
         return JSONResponse({"error": "Team not found"}, status_code=404)
-    agents = orchestrator._teams[team_name]
-    if not agents:
-        return JSONResponse({"error": "Team has no agents"}, status_code=400)
-    results = {}
-    for agent_id in agents:
-        try:
-            results[agent_id] = await orchestrator.delegate(agent_id, task)
-        except Exception as e:
-            results[agent_id] = {"error": str(e)}
-    return {"status": "ok", "team": team_name, "results": results}
+    try:
+        results = await orchestrator.run_team(team_name, task, parallel=parallel)
+        merged = await orchestrator.merge_results(results, strategy=merge_strategy)
+        return {"status": "ok", "team": team_name, "results": results, "merged": merged}
+    except Exception as e:
+        logger.error("team_delegate_failed", team=team_name, error=str(e))
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 # ── Integrations APIs ──────────────────────────────────────────────────────
@@ -535,6 +539,13 @@ async def get_events(event_type: str | None = None, source: str | None = None, l
     bus = get_event_bus()
     events = bus.get_history(event_type=event_type, source=source, limit=limit)
     return {"events": [e.to_dict() for e in events]}
+
+
+@app.get("/api/events/stats")
+async def get_event_stats():
+    """Get event bus statistics."""
+    bus = get_event_bus()
+    return bus.get_stats()
 
 
 @app.get("/api/agent/{agent_id}/sessions")
@@ -715,6 +726,10 @@ async def agent_websocket(websocket: WebSocket, agent_id: str):
     bus = get_event_bus()
     sub_id: str | None = None
 
+    # Track pending async generator so ask_user tool calls can be resumed via .asend()
+    from typing import Any
+    _pending_agent: Any = None
+
     async def _forward_event(event: Event):
         try:
             await websocket.send_text(json.dumps({
@@ -791,24 +806,65 @@ async def agent_websocket(websocket: WebSocket, agent_id: str):
                     continue
 
             elif msg_type == "ask_user_answer":
-                # User replied to an ask_user prompt — resume the agent
+                # User replied to an ask_user prompt — resume the pending generator via .asend()
                 answer = message.get("answer", "")
-                user_input = f"[RESUME]{answer}"
-
-            async for chunk in orchestrator.run_agent(agent_id, user_input):
-                try:
-                    parsed = json.loads(chunk)
-                    await websocket.send_text(chunk)
-                    if parsed.get("type") == "ask_user":
-                        pass
-                except json.JSONDecodeError:
-                    await websocket.send_text(json.dumps({"type": "chunk", "content": chunk}))
-
-            # Only send done if the loop actually finished (not ask_user pause)
-            agent = orchestrator.agents.get(agent_id)
-            if agent and agent.pending_question:
+                if _pending_agent is not None:
+                    try:
+                        # Inject the answer into the generator (the pending yield receives it)
+                        async for chunk in _pending_agent.asend(answer):
+                            await websocket.send_text(chunk)
+                            # Check if the generator is asking another question (nested ask_user)
+                            try:
+                                parsed = json.loads(chunk)
+                                if parsed.get("type") == "ask_user":
+                                    _pending_agent = None
+                                    break
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+                        # Generator finished normally
+                        _pending_agent = None
+                        await websocket.send_text(json.dumps({"type": "done"}))
+                    except StopAsyncIteration:
+                        _pending_agent = None
+                        await websocket.send_text(json.dumps({"type": "done"}))
+                    except Exception as e:
+                        _pending_agent = None
+                        logger.error("asend_error", error=str(e))
+                        await websocket.send_text(json.dumps({"type": "error", "content": str(e)}))
+                else:
+                    # No pending generator — treat as a fresh message
+                    user_input = f"[RESUME]{answer}"
                 continue
-            await websocket.send_text(json.dumps({"type": "done"}))
+
+            # Normal message: run the agent and stream chunks
+            agen = orchestrator.run_agent(agent_id, user_input)
+            try:
+                async for chunk in agen:
+                    await websocket.send_text(chunk)
+                    # Detect ask_user pause: if the chunk is ask_user, the generator
+                    # is now waiting for .asend(answer). Keep agen alive as _pending_agent.
+                    try:
+                        parsed = json.loads(chunk)
+                        if parsed.get("type") == "ask_user":
+                            _pending_agent = agen
+                            break  # exit async for; agen is paused, waiting for .asend()
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+                # Generator finished normally (did not hit ask_user)
+                if _pending_agent is None:
+                    await websocket.send_text(json.dumps({"type": "done"}))
+                # else: ask_user paused — _pending_agent keeps agen alive
+
+            except StopAsyncIteration:
+                # Generator exhausted
+                _pending_agent = None
+                await websocket.send_text(json.dumps({"type": "done"}))
+            except Exception as e:
+                _pending_agent = None
+                import traceback
+                logger.error("agent_run_error", agent_id=agent_id, error=str(e), tb=traceback.format_exc())
+                await websocket.send_text(json.dumps({"type": "error", "content": str(e)}))
     except Exception as e:
         import traceback
         logger.error("websocket_error", agent_id=agent_id, error=str(e), traceback=traceback.format_exc())

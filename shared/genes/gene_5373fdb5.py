@@ -1,5 +1,5 @@
 """
-Skill that automatically diagnoses and corrects error 3 reported by users.
+Skill that automatically diagnoses and corrects error 3 reported by users.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class Fixerror3skill(GeneBase):
     gene_id = "gene_5373fdb5"
     name = "FixError3Skill"
-    description = """Skill that automatically diagnoses and corrects error 3 reported by users."""
+    description = """Skill that automatically diagnoses and corrects error 3 reported by users."""
     trigger = "error_3_reported"
 
     async def evaluate(self, context: dict) -> bool:
@@ -24,7 +24,7 @@ class Fixerror3skill(GeneBase):
         error_context = context.get('error')
         if error_context and error_context.get('code') == 3:
             try:
-                # Example remediation steps for error 3
+                # Example remediation steps for error 3
                 # (replace with actual fix logic as needed)
                 resource_id = error_context.get('resource_id')
                 service_name = error_context.get('service_name')
@@ -35,7 +35,7 @@ class Fixerror3skill(GeneBase):
                 # Step 2: Clear any cached state related to the resource
                 clear_cache(resource_id)
         
-                # Step 3: Re‑initialize the affected service
+                # Step 3: Re-initialize the affected service
                 reinitialize_service(service_name)
         
                 logger.info("Error 3 fixed successfully.")

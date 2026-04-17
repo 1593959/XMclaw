@@ -1,5 +1,5 @@
 """
-Skill that automatically addresses user reports of a broken feature labelled as error 1 by diagnosing the issue and applying the known fix.
+Skill that automatically addresses user reports of a broken feature labelled as error 1 by diagnosing the issue and applying the known fix.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,8 +7,8 @@ from xmclaw.genes.base import GeneBase
 class Error1fixskill(GeneBase):
     gene_id = "gene_b3378656"
     name = "Error1FixSkill"
-    description = """Skill that automatically addresses user reports of a broken feature labelled as error 1 by diagnosing the issue and applying the known fix."""
-    trigger = "User report containing the words 'broken' and 'error 1'"
+    description = """Skill that automatically addresses user reports of a broken feature labelled as error 1 by diagnosing the issue and applying the known fix."""
+    trigger = "User report containing the words 'broken' and 'error 1'"
 
     async def evaluate(self, context: dict) -> bool:
         """Return True if this gene should activate."""

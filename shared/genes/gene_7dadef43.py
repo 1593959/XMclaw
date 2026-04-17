@@ -1,5 +1,5 @@
 """
-Handles user reports of error 4 by logging the issue, extracting context, attempting a fix, and responding with the result.
+Handles user reports of error 4 by logging the issue, extracting context, attempting a fix, and responding with the result. Auto-generated Gene for XMclaw.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,8 +7,8 @@ from xmclaw.genes.base import GeneBase
 class Fixerror4(GeneBase):
     gene_id = "gene_7dadef43"
     name = "FixError4"
-    description = """Handles user reports of error 4 by logging the issue, extracting context, attempting a fix, and responding with the result."""
-    trigger = "User mentions ‘error 4’ or says ‘broken’"
+    description = """Handles user reports of error 4 by logging the issue, extracting context, attempting a fix, and responding with the result."""
+    trigger = "User mentions ‘error 4' or says ‘broken'"
 
     async def evaluate(self, context: dict) -> bool:
         """Return True if this gene should activate."""

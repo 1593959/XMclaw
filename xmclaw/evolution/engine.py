@@ -9,8 +9,10 @@ from xmclaw.memory.manager import MemoryManager
 from xmclaw.memory.sqlite_store import SQLiteStore
 from xmclaw.llm.router import LLMRouter
 from xmclaw.core.prompt_builder import PromptBuilder
+from xmclaw.core.event_bus import Event, EventType, get_event_bus
 from xmclaw.evolution.vfm import VFMScorer
 from xmclaw.evolution.gene_forge import GeneForge
+from xmclaw.genes.manager import GeneManager
 from xmclaw.evolution.skill_forge import SkillForge
 from xmclaw.evolution.validator import EvolutionValidator
 from xmclaw.daemon.config import DaemonConfig
@@ -19,22 +21,34 @@ from xmclaw.utils.paths import BASE_DIR
 
 
 async def _reload_tool_registry() -> None:
-    """Reload generated skills into the global tool registry."""
+    """Reload generated skills into the shared tool registry (the orchestrator's one)."""
     try:
         from xmclaw.tools.registry import ToolRegistry
-        registry = ToolRegistry()
+        registry = ToolRegistry.get_shared()
+        if registry is None:
+            logger.warning("tool_registry_reload_skipped_no_shared_instance")
+            return
+        # Only reload generated skills, not built-in tools
         await registry._load_generated_skills()
-        logger.info("tool_registry_reloaded_after_skill")
+        logger.info("tool_registry_reloaded_after_skill", tool_count=len(registry._tools))
     except Exception as e:
         logger.warning("tool_registry_reload_failed", error=str(e))
 
 
 class EvolutionEngine:
-    def __init__(self, agent_id: str = "default"):
+    def __init__(self, agent_id: str = "default", memory=None):
+        """Create evolution engine.
+
+        Args:
+            agent_id: Agent to evolve for.
+            memory: Optional shared MemoryManager. If provided, the engine reads
+                    sessions from this shared instance instead of creating its own.
+                    This ensures evolution sees the same session data as the orchestrator.
+        """
         self.agent_id = agent_id
         self.llm = LLMRouter()
         self.builder = PromptBuilder()
-        self.memory = MemoryManager()
+        self.memory = memory if memory is not None else MemoryManager()
         self.db_path = BASE_DIR / "shared" / "memory.db"
         self.vfm = VFMScorer()
         self.gene_forge = GeneForge()
@@ -48,6 +62,17 @@ class EvolutionEngine:
     async def run_cycle(self) -> dict[str, Any]:
         """Run one full evolution cycle."""
         logger.info("evolution_cycle_start", agent_id=self.agent_id)
+
+        # Publish cycle start event
+        try:
+            bus = get_event_bus()
+            await bus.publish(Event(
+                event_type=EventType.EVOLUTION_CYCLE,
+                source=self.agent_id,
+                payload={"phase": "start"},
+            ))
+        except Exception:
+            pass
 
         # 1. Observe: get recent sessions and insights
         sessions = await self._get_recent_sessions()
@@ -87,6 +112,17 @@ class EvolutionEngine:
         await self._record_results(results)
         if results["actions"]:
             await self._notify_user(results)
+
+        # Publish cycle end event
+        try:
+            bus = get_event_bus()
+            await bus.publish(Event(
+                event_type=EventType.EVOLUTION_CYCLE,
+                source=self.agent_id,
+                payload={"phase": "end", "results": results},
+            ))
+        except Exception:
+            pass
 
         logger.info("evolution_cycle_end", agent_id=self.agent_id, results=results)
         return results
@@ -132,49 +168,102 @@ class EvolutionEngine:
             logger.warning("evolution_daily_log_write_failed", error=str(e))
 
     async def _notify_user(self, results: dict[str, Any]) -> None:
-        """Proactively notify user of evolution results via desktop/web if available."""
+        """Publish evolution results as an EventBus event — all WebSocket clients receive it."""
         try:
-            from xmclaw.daemon.server import app
-            # For now, just log. In the future, push via WebSocket or desktop notification.
+            from xmclaw.core.event_bus import Event, EventType, get_event_bus
             actions = results.get("actions", [])
-            summary = ", ".join(f"{a['type']} {a['id']}" for a in actions)
-            logger.info("evolution_notify", summary=summary)
-        except Exception:
-            pass
+            summary = ", ".join(f"{a['type']} {a['id']}" for a in actions) or "Evolution cycle completed"
+            genes = [a for a in actions if a["type"] == "gene"]
+            skills = [a for a in actions if a["type"] == "skill"]
+            await get_event_bus().publish(Event(
+                event_type=EventType.EVOLUTION_NOTIFY,
+                source=f"evolution:{self.agent_id}",
+                payload={
+                    "summary": summary,
+                    "gene_count": len(genes),
+                    "skill_count": len(skills),
+                    "actions": actions,
+                },
+            ))
+            logger.info("evolution_notify_published", summary=summary, genes=len(genes), skills=len(skills))
+        except Exception as e:
+            logger.warning("evolution_notify_failed", error=str(e))
 
     async def _get_recent_sessions(self) -> list[dict]:
         if not self.memory.sessions:
             return []
-        return await self.memory.sessions.get_recent(self.agent_id, limit=20)
+        # Look at ALL historical sessions — recent ones often have empty tool_calls
+        return await self.memory.sessions.get_recent(self.agent_id, limit=200)
 
     def _extract_insights(self, sessions: list[dict]) -> list[dict]:
-        """Extract patterns from sessions."""
-        insights = []
+        """Extract patterns from sessions.
 
-        # Count tool usage
+        Looks across all available sessions (up to 200) since recent sessions
+        often have empty tool_calls. Generates insights when:
+        - A tool is used >= 2 times across the window
+        - A user message pattern repeats >= 2 times
+        - A user mentions a problem keyword
+        """
+        insights = []
+        seen_titles: set[str] = set()  # deduplicate
+
+        def add(title: str, insight: dict) -> None:
+            if title not in seen_titles:
+                seen_titles.add(title)
+                insights.append(insight)
+
+        # Count tool usage across all sessions
         tool_counts: dict[str, int] = {}
+        tool_sessions: dict[str, list[dict]] = {}
         for session in sessions:
             for call in session.get("tool_calls", []):
                 name = call.get("name", "unknown")
                 tool_counts[name] = tool_counts.get(name, 0) + 1
+                tool_sessions.setdefault(name, []).append(call)
 
         for tool, count in tool_counts.items():
-            if count >= 3:
-                insights.append({
+            if count >= 2:
+                title = f"Frequent {tool} usage"
+                add(title, {
                     "type": "pattern",
-                    "title": f"Frequent {tool} usage",
-                    "description": f"Tool '{tool}' was used {count} times recently.",
+                    "title": title,
+                    "description": f"Tool '{tool}' was used {count} times across recent sessions.",
                     "source": "tool_usage_analysis",
                 })
 
-        # Detect negative feedback
+        # Detect repeated user message patterns
+        user_msg_counts: dict[str, int] = {}
+        for session in sessions:
+            msg = session.get("user", "").strip()
+            if msg:
+                # Normalise: collapse whitespace, strip function-call wrappers
+                normalized = " ".join(msg.split()).replace("<function>", "").replace("</function>", "").strip()
+                if len(normalized) >= 3:
+                    user_msg_counts[normalized] = user_msg_counts.get(normalized, 0) + 1
+
+        for msg, count in user_msg_counts.items():
+            if count >= 2:
+                # Use content prefix as key so each distinct repeated topic gets its own insight
+                key = f"repeat:{msg[:60]}"
+                add(key, {
+                    "type": "pattern",
+                    "title": f"Repeated: {msg[:60]}",
+                    "description": f"Same request repeated {count} times: {msg[:150]}",
+                    "source": "repeated_request",
+                })
+
+        # Detect negative feedback / problem keywords
+        problem_keywords = ["wrong", "error", "fix", "broken", "not working", "bug", "failed", "issue", "doesn't work", "dont work"]
         for session in sessions:
             user_msg = session.get("user", "").lower()
-            if any(w in user_msg for w in ["wrong", "error", "fix", "broken", "not working"]):
-                insights.append({
+            if any(w in user_msg for w in problem_keywords):
+                raw_msg = session.get("user", "")[:200]
+                # Key by content so each distinct problem gets its own insight
+                key = f"problem:{raw_msg[:60]}"
+                add(key, {
                     "type": "problem",
                     "title": "User reported issue",
-                    "description": user_msg[:200],
+                    "description": raw_msg,
                     "source": "negative_feedback",
                 })
 
@@ -205,11 +294,20 @@ class EvolutionEngine:
             text = await self.llm.complete([{"role": "user", "content": prompt}])
             text = text.strip().strip("`").replace("json", "").strip()
             gene_data = json.loads(text)
+            trigger_type = str(gene_data.get("trigger_type", "keyword")).lower()
+            # Guard against garbage values from LLM
+            if trigger_type not in GeneManager.TRIGGER_TYPES:
+                trigger_type = "keyword"
             concept = {
                 "name": str(gene_data.get("name", "Unnamed Gene")),
                 "description": str(gene_data.get("description", "")),
                 "trigger": str(gene_data.get("trigger", "")),
+                "trigger_type": trigger_type,
                 "action": str(gene_data.get("action", "")),
+                "priority": int(gene_data.get("priority", 5)),
+                "enabled": bool(gene_data.get("enabled", True)),
+                "intents": gene_data.get("intents", []),
+                "regex_pattern": str(gene_data.get("regex_pattern", "")),
                 "source": str(decision["insight"].get("source", "")),
             }
             action_body = gene_data.get("action_body")
@@ -236,6 +334,17 @@ class EvolutionEngine:
             # Save to DB
             db = SQLiteStore(self.db_path)
             db.insert_gene(self.agent_id, gene)
+
+            # Publish event for monitoring / WebSocket forwarding
+            try:
+                bus = get_event_bus()
+                await bus.publish(Event(
+                    event_type=EventType.GENE_GENERATED,
+                    source=self.agent_id,
+                    payload={"gene_id": gene["id"], "name": gene["name"], "score": scores["total"]},
+                ))
+            except Exception:
+                pass
 
             # Auto-rollback on failure is handled by validation gate above
             logger.info("gene_generated_and_validated", gene_id=gene["id"], name=gene["name"], score=scores["total"])
@@ -288,6 +397,17 @@ class EvolutionEngine:
         # Register in DB
         db = SQLiteStore(self.db_path)
         db.insert_skill(self.agent_id, skill)
+
+        # Publish event for monitoring / WebSocket forwarding
+        try:
+            bus = get_event_bus()
+            await bus.publish(Event(
+                event_type=EventType.SKILL_GENERATED,
+                source=self.agent_id,
+                payload={"skill_id": skill["id"], "name": skill["name"], "score": scores["total"]},
+            ))
+        except Exception:
+            pass
 
         # Trigger tool registry reload so the new skill is immediately available
         await _reload_tool_registry()

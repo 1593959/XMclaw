@@ -81,11 +81,15 @@ class OpenAIClient:
         """
         if not self.api_key:
             logger.error("openai_api_key_missing")
-            yield json.dumps({"type": "error", "content": "[错误：未配置 OpenAI API Key，请前往「设置 → LLM」填写。]"})
+            yield json.dumps({"type": "error", "content": "[错误：未配置 OpenAI API Key\n"
+                "请运行 `xmclaw config init` 或编辑 daemon/config.json → llm.openai.api_key\n"
+                "获取 Key: https://platform.openai.com/api-keys]"})
             return
         if not self.model:
             logger.error("openai_model_missing")
-            yield json.dumps({"type": "error", "content": "[错误：未配置 OpenAI 模型名称，请前往「设置 → LLM」填写，例如 gpt-4o 或 gpt-4.1。]"})
+            yield json.dumps({"type": "error", "content": "[错误：未配置 OpenAI 模型\n"
+                "请编辑 daemon/config.json → llm.openai.default_model，例如 gpt-4o 或 gpt-4o-mini]"})
+            return
             return
 
         # Build OpenAI tool schemas

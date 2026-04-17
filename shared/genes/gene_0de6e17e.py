@@ -1,5 +1,5 @@
 """
-Skill to automatically handle user reports of 'error 2' by logging the issue, retrieving known fix steps, and presenting the solution to the user.
+Skill to automatically handle user reports of 'error 2' by logging the issue, retrieving known fix steps, and presenting the solution to the user. Auto-generated Gene for XMclaw.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase

@@ -1,5 +1,5 @@
 """
-Skill that automatically addresses error 1 when a user reports 'this is broken, please fix error 1'.
+Skill that automatically addresses error 1 when a user reports 'this is broken, please fix error 1'.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class Fixerror1skill(GeneBase):
     gene_id = "gene_eaf7512e"
     name = "FixError1Skill"
-    description = """Skill that automatically addresses error 1 when a user reports 'this is broken, please fix error 1'."""
+    description = """Skill that automatically addresses error 1 when a user reports 'this is broken, please fix error 1'."""
     trigger = "User message contains 'broken' and 'error 1'"
 
     async def evaluate(self, context: dict) -> bool:

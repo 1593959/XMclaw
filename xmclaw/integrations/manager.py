@@ -53,7 +53,11 @@ class IntegrationManager:
                 agent = await self._orchestrator.get_or_create_agent(agent_id)
                 # Prepend context so the agent knows the message origin
                 prefixed = f"[来自 {integration_name.upper()} / {source_id}] {text}"
-                result = await agent.run(prefixed)
+                # Run agent and collect results
+                result_chunks = []
+                async for chunk in agent.run(prefixed):
+                    result_chunks.append(chunk)
+                result = "".join(result_chunks)
                 # Route reply back
                 integration = self._integrations.get(integration_name)
                 if integration and result:

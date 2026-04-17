@@ -1,4 +1,5 @@
 """Core agent loop: think -> act -> observe -> repeat."""
+import asyncio
 import json
 from typing import AsyncIterator
 
@@ -24,6 +25,7 @@ class AgentLoop:
         self.gene_manager = GeneManager(agent_id)
         self.max_turns = 50
         self.plan_mode = False
+        self._plan_approved = False  # set to True after user approves a plan
         self.pending_question: str | None = None
         self.pending_answer: str | None = None
         self.reflection = ReflectionEngine(llm_router, memory)
@@ -87,15 +89,23 @@ class AgentLoop:
         """Run the agent loop, yielding JSON-encoded events."""
         logger.info("agent_loop_start", agent_id=self.agent_id, input=user_input[:200])
 
+        # Reset turn history for this session (previous session's history must not leak)
+        self._turn_history.clear()
+
         # Handle plan mode toggle from input
         if user_input.startswith("[PLAN MODE]"):
             self.plan_mode = True
             user_input = user_input.replace("[PLAN MODE]", "").strip()
             yield json.dumps({"type": "state", "state": "PLANNING", "thought": "计划模式已开启，正在构建执行计划..."})
         elif user_input.startswith("[RESUME]"):
-            # Resume from ask_user with answer
+            # Resume from ask_user tool with answer (via asend mechanism)
             self.pending_answer = user_input.replace("[RESUME]", "").strip()
             user_input = self.pending_answer
+            self.pending_question = None
+        elif user_input.startswith("[PLAN APPROVE]"):
+            # User approved the plan — skip the plan-ask step and execute tools
+            self._plan_approved = True
+            user_input = user_input.replace("[PLAN APPROVE]", "").strip()
             self.pending_question = None
         else:
             # Normal message: clear any pending question state
@@ -165,11 +175,24 @@ class AgentLoop:
                             pass  # Keep accumulating
 
                 elif event_type == "tool_call_end":
-                    # End of tool call
                     if current_tool:
+                        # Final attempt to parse accumulated JSON if not yet parsed
+                        if current_tool_input and not current_tool.get("input"):
+                            try:
+                                current_tool["input"] = json.loads(current_tool_input)
+                            except json.JSONDecodeError:
+                                logger.warning("tool_call_input_parse_failed",
+                                               tool=current_tool.get("name"),
+                                               raw=current_tool_input[:200])
+                                current_tool["input"] = {}
                         tool_calls.append(current_tool)
                         current_tool = None
                         in_tool_call = False
+
+                elif event_type == "error":
+                    error_msg = event.get("content", "Unknown error")
+                    yield json.dumps({"type": "error", "content": error_msg})
+                    break
 
             turn_data = {"user": user_input, "assistant": full_response, "tool_calls": tool_calls}
             self._turn_history.append(turn_data)
@@ -186,7 +209,8 @@ class AgentLoop:
                 break
 
             # Plan mode: pause before executing tools, wait for user confirmation
-            if self.plan_mode and turn_count == 1:
+            # Skip this check if user already approved the plan via [PLAN APPROVE]
+            if self.plan_mode and turn_count == 1 and not self._plan_approved:
                 self.pending_question = f"计划已生成，是否执行？\n\n计划内容：\n{full_response}"
                 yield json.dumps({"type": "ask_user", "question": self.pending_question})
                 yield json.dumps({"type": "state", "state": "WAITING", "thought": "等待用户确认计划..."})
@@ -194,11 +218,21 @@ class AgentLoop:
 
             # Execute tools
             observations = []
+            import time as _time
             for call in tool_calls:
                 tool_name = call["name"]
                 args = call.get("input", {})
 
-                yield json.dumps({"type": "state", "state": "TOOL_CALL", "thought": f"Using {tool_name}..."})
+                # Emit enhanced tool call event with metadata
+                tool_start_time = _time.time()
+                import json as _json
+                yield _json.dumps({
+                    "type": "tool_start",
+                    "tool": tool_name,
+                    "args": args,
+                    "call_id": call.get("id", f"call_{tool_name}_{tool_start_time}"),
+                })
+                yield json.dumps({"type": "state", "state": "TOOL_CALL", "thought": f"Using {tool_name}...", "tool": tool_name})
                 yield json.dumps({"type": "tool_call", "tool": tool_name, "args": args})
 
                 await self._event_bus.publish(Event(
@@ -208,6 +242,7 @@ class AgentLoop:
                 ))
 
                 result = await self.tools.execute(tool_name, args)
+                tool_duration = round(_time.time() - tool_start_time, 2)
 
                 # Handle ask_user special pause
                 if tool_name == "ask_user" and str(result).startswith("[ASK_USER]"):
@@ -215,10 +250,42 @@ class AgentLoop:
                     self.pending_question = question
                     yield json.dumps({"type": "ask_user", "question": question})
                     yield json.dumps({"type": "state", "state": "WAITING", "thought": "等待用户回复..."})
-                    return
+                    # Use asend() to receive the user's answer without re-executing turns.
+                    # server.py calls generator.asend(answer) after user responds.
+                    # The result of yield becomes the sent value, so:
+                    sent = yield  # receives the user's answer string
+                    self.pending_answer = sent if sent else ""
+                    self.pending_question = None
+                    # Continue to next iteration with the user's answer as the tool result
+                    observations.append({
+                        "tool": tool_name,
+                        "result": sent or "[no answer]",
+                        "duration": 0.0,
+                    })
+                    yield json.dumps({
+                        "type": "tool_result",
+                        "tool": tool_name,
+                        "result": sent or "[no answer]",
+                        "duration": 0.0,
+                        "call_id": call.get("id", ""),
+                    })
+                    # Don't append to messages here — the user answer is the tool result
+                    tool_result_content = [{
+                        "type": "tool_result",
+                        "tool_use_id": call.get("id") or f"toolu_{tool_name}",
+                        "content": sent or "[no answer]",
+                    }]
+                    messages.append({"role": "user", "content": tool_result_content})
+                    continue  # ← do NOT fall through to normal tool_result handling
 
-                observations.append({"tool": tool_name, "result": result})
-                yield json.dumps({"type": "tool_result", "tool": tool_name, "result": result})
+                observations.append({"tool": tool_name, "result": result, "duration": tool_duration})
+                yield json.dumps({
+                    "type": "tool_result",
+                    "tool": tool_name,
+                    "result": result,
+                    "duration": tool_duration,
+                    "call_id": call.get("id", ""),
+                })
 
                 # Detect self-modification (file ops) and emit to UI
                 file_event = await self._detect_self_mod(call, result)
@@ -259,6 +326,39 @@ class AgentLoop:
             yield json.dumps({"type": "state", "state": "THINKING", "thought": "处理工具结果中..."})
 
         yield json.dumps({"type": "done"})
+
+        # ── Reflection: non-blocking background task ──────────────────────────────
+        # Yield 'done' FIRST so the client can immediately send the next message.
+        # Reflection runs in the background; when it finishes it publishes a
+        # 'reflection' event via EventBus (all WS clients receive it).
+        self._schedule_reflection()
+
+    def _schedule_reflection(self) -> None:
+        """Fire-and-forget: run reflection as a background asyncio task."""
+        import json as _json
+        history = list(self._turn_history)  # snapshot current session
+        if not history:
+            return
+
+        async def _bg() -> None:
+            try:
+                result = await self.reflection.reflect(self.agent_id, history)
+                if result and result.get("reflection"):
+                    await self._event_bus.publish(Event(
+                        event_type=EventType.REFLECTION_COMPLETE,
+                        source=self.agent_id,
+                        payload={
+                            "reflection": result["reflection"],
+                            "improvement": result.get("improvement", {}),
+                        },
+                    ))
+            except Exception as e:
+                logger.warning("background_reflection_failed", agent_id=self.agent_id, error=str(e))
+
+        try:
+            asyncio.create_task(_bg())
+        except Exception as e:
+            logger.warning("reflection_task_create_failed", error=str(e))
 
     def _build_tool_descriptions(self) -> str:
         """Build a formatted string of all available tools and their parameters."""

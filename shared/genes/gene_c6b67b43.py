@@ -1,5 +1,5 @@
 """
-Skill to automatically handle user reports of 'this is broken, please fix error 4'. It extracts the error identifier, fetches related error details, proposes a fix, and replies to the user.
+Skill to automatically handle user reports of 'this is broken, please fix error 4'. It extracts the error identifier, fetches related error details, proposes a fix, and replies to the user. Auto-generated Gene for XMclaw.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase

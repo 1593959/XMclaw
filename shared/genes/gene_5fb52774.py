@@ -1,5 +1,5 @@
 """
-Handles user reports of error 0, logs the issue, attempts to fix it, and returns the result.
+Handles user reports of error 0, logs the issue, attempts to fix it, and returns the result.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class Fixerrorzeroskill(GeneBase):
     gene_id = "gene_5fb52774"
     name = "FixErrorZeroSkill"
-    description = """Handles user reports of error 0, logs the issue, attempts to fix it, and returns the result."""
+    description = """Handles user reports of error 0, logs the issue, attempts to fix it, and returns the result."""
     trigger = "user_reported_error_0"
 
     async def evaluate(self, context: dict) -> bool:

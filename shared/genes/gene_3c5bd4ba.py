@@ -1,5 +1,5 @@
 """
-Handles user reports of a broken system with error 0 by logging the issue and providing troubleshooting steps.
+Handles user reports of a broken system with error 0 by logging the issue and providing troubleshooting steps. Auto-generated Gene for XMclaw.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase

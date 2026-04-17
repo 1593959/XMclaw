@@ -1,5 +1,5 @@
 """
-Skill that automatically addresses the user-reported issue regarding error 3, logs the problem, and attempts to fix it.
+Skill that automatically addresses the user-reported issue regarding error 3, logs the problem, and attempts to fix it. Auto-generated Gene for XMclaw.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -8,7 +8,7 @@ class Fixerror3skill(GeneBase):
     gene_id = "gene_d18b9331"
     name = "FixError3Skill"
     description = """Skill that automatically addresses the user-reported issue regarding error 3, logs the problem, and attempts to fix it."""
-    trigger = "User says: "this is broken, please fix error 3""
+    trigger = "User says: \"this is broken, please fix error 3\""
 
     async def evaluate(self, context: dict) -> bool:
         """Return True if this gene should activate."""

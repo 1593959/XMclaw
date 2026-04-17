@@ -157,6 +157,96 @@ flowchart TD
 8. `ToolRegistry` hot-reloads new Skills on the next tool lookup.
 9. Results are written to `shared/memory.db` and `MEMORY.md`.
 
+## Plugin System
+
+XMclaw supports a drop-in plugin architecture for both tools and LLM providers. Plugins are auto-discovered at startup — no config changes or restarts required.
+
+### Tool plugins (`plugins/tools/`)
+
+Drop a Python file into `plugins/tools/` and it is loaded automatically on the next tool lookup.
+
+The file must export a `Tool` instance (from `xmclaw.tools.base` or `xmclaw.core.base`) with at minimum a `name` attribute. Multi-inheritance from both `Tool` and `BaseTool` is handled transparently.
+
+```python
+# plugins/tools/my_custom_tool.py
+from xmclaw.tools.base import Tool
+
+class MyTool(Tool):
+    name = "my_custom_tool"
+    description = "Does something useful"
+    parameters = {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs) -> str:
+        return "result"
+```
+
+### LLM provider plugins (`plugins/llm/`)
+
+Drop a Python file into `plugins/llm/` to register a new LLM provider. The file must export a class subclassing `LLMProviderPlugin` (from `xmclaw.llm.router`).
+
+```python
+# plugins/llm/my_provider.py
+from xmclaw.llm.router import LLMProviderPlugin
+
+class MyLLMProvider(LLMProviderPlugin):
+    name = "myllm"
+    supports_streaming = True
+    supports_embeddings = False
+
+    async def stream(self, messages, tools=None):
+        # yield text chunks
+        for chunk in response.text_iterator():
+            yield chunk
+
+    async def complete(self, messages, tools=None):
+        return response.text
+```
+
+After registration, set it as the active provider:
+```bash
+xmclaw config set llm.default_provider myllm
+```
+
+### MCP multi-transport
+
+MCP server configurations in `config.json` accept a `transport` field:
+
+| Transport | Config field | Description |
+|-----------|-------------|-------------|
+| `stdio` | `command`, `args` | Subprocess stdin/stdout (default) |
+| `sse` | `url` | HTTP Server-Sent Events |
+| `ws` | `url` | WebSocket bidirectional |
+
+```json
+{
+  "tools": {
+    "mcp_servers": {
+      "my-server": {
+        "transport": "ws",
+        "url": "ws://localhost:8080/mcp"
+      }
+    }
+  }
+}
+```
+
+### EventBus integration
+
+The `EventBus` (`xmclaw.core.event_bus`) is the central pub/sub hub. All core components publish events to it. Clients can subscribe via the CLI (`xmclaw events`) or the `/api/events/stats` HTTP endpoint.
+
+Key event types published by the system:
+
+| Event type | Published by |
+|-----------|-------------|
+| `EVOLUTION_CYCLE` | `EvolutionEngine` — start/end of each evolution cycle |
+| `GENE_GENERATED` | `EvolutionEngine` — after a new Gene is validated |
+| `SKILL_GENERATED` | `EvolutionEngine` — after a new Skill is validated |
+| `TOOL_CALLED` | `AgentLoop` — before each tool execution |
+| `SESSION_SAVED` | `MemoryManager` — after each conversation turn |
+| `INSIGHT_EXTRACTED` | `EvolutionEngine` — after insight generation |
+
+Rate limiting is applied per event type: 200 events per 60-second window. Overflow is logged and dropped, never blocking the publisher.
+
 ## Invariants
 
 - **One Daemon per host**: There is never more than one XMclaw Daemon process running on a single machine.
@@ -173,3 +263,5 @@ flowchart TD
 - [Evolution](./EVOLUTION.md) — Gene/Skill generation, VFM scoring, and hot reload
 - [Desktop](./DESKTOP.md) — Browser + System Tray app usage
 - [CLI](./CLI.md) — Terminal client and commands
+- [Events](./EVENTS.md) — EventBus reference, all event types, and usage examples
+- [Troubleshooting](./TROUBLESHOOTING.md) — Common setup and runtime issues

@@ -1,5 +1,5 @@
 """
-Triggers a new bug‑fix workflow when a user explicitly requests to fix the bug again.
+Triggers a new bug-fix workflow when a user explicitly requests to fix the bug again.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class FixBugAgain(GeneBase):
     gene_id = "gene_3c4e5adb"
     name = "Fix Bug Again"
-    description = """Triggers a new bug‑fix workflow when a user explicitly requests to fix the bug again."""
+    description = """Triggers a new bug-fix workflow when a user explicitly requests to fix the bug again."""
     trigger = "{'type': 'user_action', 'event': 'click', 'element': 'fix_again_button'}"
 
     async def evaluate(self, context: dict) -> bool:

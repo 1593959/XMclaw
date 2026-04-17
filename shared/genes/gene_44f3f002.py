@@ -1,5 +1,5 @@
 """
-Skill to acknowledge and log user reports about error 2.
+Skill to acknowledge and log user reports about error 2. Auto-generated Gene for XMclaw.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -19,6 +19,6 @@ class Handleerror2report(GeneBase):
         """Execute the gene's action."""
         user_message = context.user_message
         logger.info("User reported issue: %s", user_message)
-        response = "I’m sorry to hear that. I’m looking into error 2 now. Could you please provide more details (e.g., steps to reproduce)?"
+        response = "I'm sorry to hear that. I'm looking into error 2 now. Could you please provide more details (e.g., steps to reproduce)?"
         context.send_message(response)
         return "Gene HandleError2Report activated."

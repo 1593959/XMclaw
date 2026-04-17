@@ -1,5 +1,5 @@
 """
-Skill to automatically detect and resolve error code 2 reported by users
+Skill to automatically detect and resolve error code 2 reported by users
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,8 +7,8 @@ from xmclaw.genes.base import GeneBase
 class Fixerror2(GeneBase):
     gene_id = "gene_8f536c5d"
     name = "FixError2"
-    description = """Skill to automatically detect and resolve error code 2 reported by users"""
-    trigger = "User reports error 2 or system logs contain error code 2"
+    description = """Skill to automatically detect and resolve error code 2 reported by users"""
+    trigger = "User reports error 2 or system logs contain error code 2"
 
     async def evaluate(self, context: dict) -> bool:
         """Return True if this gene should activate."""

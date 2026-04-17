@@ -8,7 +8,7 @@ class ErrorReporterBehavior(GeneBase):
     gene_id = "gene_e69bad23"
     name = "Error Reporter Behavior"
     description = """This gene detects when a user repeatedly reports errors (e.g., 'this is broken, please fix error') and triggers a proactive response to address the issue and improve user satisfaction."""
-    trigger = "The user sends messages containing error‑related keywords (e.g., 'broken', 'fix error') more than a defined threshold (e.g., 3 times) within a short time window (e.g., 10 minutes)."
+    trigger = "The user sends messages containing error-related keywords (e.g., 'broken', 'fix error') more than a defined threshold (e.g., 3 times) within a short time window (e.g., 10 minutes)."
 
     async def evaluate(self, context: dict) -> bool:
         """Return True if this gene should activate."""
@@ -35,14 +35,14 @@ class ErrorReporterBehavior(GeneBase):
         # Record the current user message
         self.error_history.append({"timestamp": now, "text": user_input})
         
-        # Count how many error‑related messages are in the current window
+        # Count how many error-related messages are in the current window
         error_count = sum(
             1 for entry in self.error_history
             if any(kw in entry["text"].lower() for kw in self.error_keywords)
         )
         
         if error_count > self.threshold:
-            # Build a high‑priority support ticket
+            # Build a high-priority support ticket
             ticket_payload = {
                 "priority": "high",
                 "user_id": context.get("user_id"),
@@ -55,10 +55,10 @@ class ErrorReporterBehavior(GeneBase):
             # Alert the support team
             await self.notify_support_team(ticket["id"])
         
-            # Offer self‑service troubleshooting steps
+            # Offer self-service troubleshooting steps
             response = (
                 "It looks like you're encountering some issues. "
-                "I've created a high‑priority support ticket for you and notified the support team. "
+                "I've created a high-priority support ticket for you and notified the support team. "
                 "While you wait, you might try these steps:\n"
                 "1. Refresh the page.\n"
                 "2. Clear your browser cache and cookies.\n"

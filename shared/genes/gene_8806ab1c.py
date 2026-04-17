@@ -1,5 +1,5 @@
 """
-A skill that automatically detects and resolves the specific error reported by the user (error 2). It extracts the error number, retrieves error logs, runs a root‑cause analysis, attempts to apply a known fix, and reports back to the user.
+A skill that automatically detects and resolves the specific error reported by the user (error 2). It extracts the error number, retrieves error logs, runs a root-cause analysis, attempts to apply a known fix, and reports back to the user.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class Errorfixer(GeneBase):
     gene_id = "gene_8806ab1c"
     name = "ErrorFixer"
-    description = """A skill that automatically detects and resolves the specific error reported by the user (error 2). It extracts the error number, retrieves error logs, runs a root‑cause analysis, attempts to apply a known fix, and reports back to the user."""
+    description = """A skill that automatically detects and resolves the specific error reported by the user (error 2). It extracts the error number, retrieves error logs, runs a root-cause analysis, attempts to apply a known fix, and reports back to the user."""
     trigger = "User says something like 'this is broken, please fix error 2' or any phrase that indicates a specific error needs fixing."
 
     async def evaluate(self, context: dict) -> bool:
@@ -22,7 +22,7 @@ class Errorfixer(GeneBase):
         # Retrieve the error log for the reported error
         error_log = logging_service.get_error_log(error_num)
         
-        # Perform root‑cause analysis
+        # Perform root-cause analysis
         analysis = analyzer.analyze(error_log)
         
         # If a fix is known, apply it; otherwise, alert the user

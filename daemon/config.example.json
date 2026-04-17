@@ -1,22 +1,23 @@
 {
+  "_comment": "XMclaw Daemon Configuration — copy to config.json and fill in your API keys",
   "llm": {
     "default_provider": "anthropic",
     "openai": {
       "api_key": "",
       "base_url": "https://api.openai.com/v1",
-      "default_model": "gpt-4.1"
+      "default_model": ""
     },
     "anthropic": {
       "api_key": "",
-      "base_url": "https://api.anthropic.com/v1",
-      "default_model": "claude-3-5-sonnet-20241022"
+      "base_url": "https://api.anthropic.com",
+      "default_model": ""
     }
   },
   "evolution": {
     "enabled": true,
     "interval_minutes": 30,
     "daily_review_hour": 22,
-    "vfm_threshold": 20,
+    "vfm_threshold": 5.0,
     "max_genes_per_day": 10,
     "auto_rollback": true
   },
@@ -33,5 +34,13 @@
   "gateway": {
     "host": "127.0.0.1",
     "port": 8765
+  },
+  "mcp_servers": {},
+  "integrations": {
+    "slack":    { "enabled": false, "bot_token": "", "app_token": "", "channel": "" },
+    "discord":  { "enabled": false, "bot_token": "", "channel_id": "" },
+    "telegram": { "enabled": false, "bot_token": "", "chat_id": "" },
+    "github":   { "enabled": false, "token": "", "repo": "", "poll_interval": 60 },
+    "notion":   { "enabled": false, "api_key": "", "database_id": "" }
   }
 }

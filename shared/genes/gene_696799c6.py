@@ -1,5 +1,5 @@
 """
-Handles user reports about broken functionality and attempts to resolve error 0.
+Handles user reports about broken functionality and attempts to resolve error 0. Auto-generated Gene for XMclaw.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase

@@ -1,5 +1,5 @@
 """
-Skill that detects when a user reports 'this is broken, please fix error 3', logs the issue, attempts to resolve error 3, and replies to the user with the outcome.
+Skill that detects when a user reports 'this is broken, please fix error 3', logs the issue, attempts to resolve error 3, and replies to the user with the outcome.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class Fixerror3skill(GeneBase):
     gene_id = "gene_9213730a"
     name = "FixError3Skill"
-    description = """Skill that detects when a user reports 'this is broken, please fix error 3', logs the issue, attempts to resolve error 3, and replies to the user with the outcome."""
+    description = """Skill that detects when a user reports 'this is broken, please fix error 3', logs the issue, attempts to resolve error 3, and replies to the user with the outcome."""
     trigger = "User says 'this is broken, please fix error 3'"
 
     async def evaluate(self, context: dict) -> bool:

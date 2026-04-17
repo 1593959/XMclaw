@@ -22,7 +22,7 @@ class Fixerror2skill(GeneBase):
         if not error_info:
             raise ValueError('No error information provided')
         logger.info(f'Attempting to fix error 2: {error_info}')
-        # Call the error‑fixing routine
+        # Call the error-fixing routine
         result = fix_error_2(error_info)
         # Return success message
         return {'status': 'fixed', 'details': result}

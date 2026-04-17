@@ -8,7 +8,7 @@ class Fixerrorzero(GeneBase):
     gene_id = "gene_9153bfb9"
     name = "FixErrorZero"
     description = """Detects when a user reports a broken state and mentions error 0, logs the issue, attempts to fix it, and responds to the user."""
-    trigger = "User message contains the words 'broken' and 'error 0' (case‑insensitive)."
+    trigger = "User message contains the words 'broken' and 'error 0' (case-insensitive)."
 
     async def evaluate(self, context: dict) -> bool:
         """Return True if this gene should activate."""

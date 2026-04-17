@@ -1,5 +1,5 @@
 """
-Skill that automatically resolves error code 0 reported by users, performing a service reset and cache clear.
+Skill that automatically resolves error code 0 reported by users, performing a service reset and cache clear.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,8 +7,8 @@ from xmclaw.genes.base import GeneBase
 class Fixerror0skill(GeneBase):
     gene_id = "gene_8e347fbf"
     name = "FixError0Skill"
-    description = """Skill that automatically resolves error code 0 reported by users, performing a service reset and cache clear."""
-    trigger = "User says 'this is broken, please fix error 0' or error code 0 is detected."
+    description = """Skill that automatically resolves error code 0 reported by users, performing a service reset and cache clear."""
+    trigger = "User says 'this is broken, please fix error 0' or error code 0 is detected."
 
     async def evaluate(self, context: dict) -> bool:
         """Return True if this gene should activate."""

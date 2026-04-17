@@ -1,5 +1,5 @@
 """
-Skill that captures user reports of broken functionality (e.g., "this is broken, please fix error 1") and automatically logs the issue, creates a high‑priority tracking ticket, and notifies the development team.
+Skill that captures user reports of broken functionality (e.g., "this is broken, please fix error 1") and automatically logs the issue, creates a high-priority tracking ticket, and notifies the development team. Auto-generated Gene for XMclaw.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,8 +7,8 @@ from xmclaw.genes.base import GeneBase
 class Brokenissuehandler(GeneBase):
     gene_id = "gene_b920e3d1"
     name = "BrokenIssueHandler"
-    description = """Skill that captures user reports of broken functionality (e.g., "this is broken, please fix error 1") and automatically logs the issue, creates a high‑priority tracking ticket, and notifies the development team."""
-    trigger = "User message contains the word "broken" or mentions "error 1"."
+    description = """Skill that captures user reports of broken functionality (e.g., "this is broken, please fix error 1") and automatically logs the issue, creates a high-priority tracking ticket, and notifies the development team."""
+    trigger = "User message contains the word \"broken\" or mentions \"error 1\"."
 
     async def evaluate(self, context: dict) -> bool:
         """Return True if this gene should activate."""

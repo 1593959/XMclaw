@@ -1,5 +1,5 @@
 """
-A skill that automatically addresses user‑reported error code 0 by diagnosing the failing component and attempting a reset or patch.
+A skill that automatically addresses user-reported error code 0 by diagnosing the failing component and attempting a reset or patch.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class Errorzerofixer(GeneBase):
     gene_id = "gene_8cd81714"
     name = "ErrorZeroFixer"
-    description = """A skill that automatically addresses user‑reported error code 0 by diagnosing the failing component and attempting a reset or patch."""
+    description = """A skill that automatically addresses user-reported error code 0 by diagnosing the failing component and attempting a reset or patch."""
     trigger = "{'type': 'user_report', 'pattern': 'broken, please fix error 0'}"
 
     async def evaluate(self, context: dict) -> bool:

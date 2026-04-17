@@ -1,5 +1,5 @@
 """
-Skill that automatically resolves error 1 reported by users, resetting the relevant component and notifying the user.
+Skill that automatically resolves error 1 reported by users, resetting the relevant component and notifying the user. Auto-generated Gene for XMclaw.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase

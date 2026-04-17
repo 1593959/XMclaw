@@ -1,5 +1,5 @@
 """
-Skill that automatically handles user reports about a broken system referencing error 4. It logs a high‑priority support ticket, notifies the engineering team in the #engineering channel, and attempts to apply the known fix for error 4.
+Skill that automatically handles user reports about a broken system referencing error 4. It logs a high-priority support ticket, notifies the engineering team in the #engineering channel, and attempts to apply the known fix for error 4.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,8 +7,8 @@ from xmclaw.genes.base import GeneBase
 class Fixerror4(GeneBase):
     gene_id = "gene_eb7555ea"
     name = "FixError4"
-    description = """Skill that automatically handles user reports about a broken system referencing error 4. It logs a high‑priority support ticket, notifies the engineering team in the #engineering channel, and attempts to apply the known fix for error 4."""
-    trigger = "User message contains the words 'broken' and 'error 4' (case‑insensitive)"
+    description = """Skill that automatically handles user reports about a broken system referencing error 4. It logs a high-priority support ticket, notifies the engineering team in the #engineering channel, and attempts to apply the known fix for error 4."""
+    trigger = "User message contains the words 'broken' and 'error 4' (case-insensitive)"
 
     async def evaluate(self, context: dict) -> bool:
         """Return True if this gene should activate."""
@@ -25,7 +25,7 @@ class Fixerror4(GeneBase):
         )
         chat_api.send_message(
             channel="#engineering",
-            text=f"New high‑priority ticket created: {support_ticket.id} - {user_message}"
+            text=f"New high-priority ticket created: {support_ticket.id} - {user_message}"
         )
         fix_result = diagnostics.apply_fix("error_4")
         if fix_result.success:

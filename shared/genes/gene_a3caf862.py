@@ -1,5 +1,5 @@
 """
-This gene activates when a user reports a bug and explicitly asks for it to be fixed again. It automatically re‑opens the corresponding bug ticket, escalates its priority, and alerts the responsible development team.
+This gene activates when a user reports a bug and explicitly asks for it to be fixed again. It automatically re-opens the corresponding bug ticket, escalates its priority, and alerts the responsible development team.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class FixBugOnceMore(GeneBase):
     gene_id = "gene_a3caf862"
     name = "Fix Bug Once More"
-    description = """This gene activates when a user reports a bug and explicitly asks for it to be fixed again. It automatically re‑opens the corresponding bug ticket, escalates its priority, and alerts the responsible development team."""
+    description = """This gene activates when a user reports a bug and explicitly asks for it to be fixed again. It automatically re-opens the corresponding bug ticket, escalates its priority, and alerts the responsible development team."""
     trigger = "{'type': 'user_report', 'pattern': 'fix the bug once more'}"
 
     async def evaluate(self, context: dict) -> bool:

@@ -1,5 +1,5 @@
 """
-Detects when a user reports a broken functionality referencing 'error 4' and automatically creates a high‑priority support ticket to track and resolve the issue.
+Detects when a user reports a broken functionality referencing 'error 4' and automatically creates a high-priority support ticket to track and resolve the issue.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class HandleUserReportedError4(GeneBase):
     gene_id = "gene_c2032b84"
     name = "Handle User Reported Error 4"
-    description = """Detects when a user reports a broken functionality referencing 'error 4' and automatically creates a high‑priority support ticket to track and resolve the issue."""
+    description = """Detects when a user reports a broken functionality referencing 'error 4' and automatically creates a high-priority support ticket to track and resolve the issue."""
     trigger = "{'type': 'feedback', 'pattern': 'this is broken, please fix error 4'}"
 
     async def evaluate(self, context: dict) -> bool:
@@ -27,6 +27,6 @@ class HandleUserReportedError4(GeneBase):
                 "sendNotification": True
             }
             await self.create_ticket(ticket_details)
-            return "High‑priority support ticket created for error 4."
+            return "High-priority support ticket created for error 4."
         return "No relevant error reported; no action taken."
         return "Gene Handle User Reported Error 4 activated."

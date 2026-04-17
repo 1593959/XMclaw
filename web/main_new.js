@@ -32,6 +32,9 @@ let currentMessageEl = null;
 let currentView = 'dashboard';
 let _rawTextMap = new Map();
 
+// Tool card tracking: call_id -> { el, tool, startTime }
+const _toolCards = new Map();
+
 let totalCost = 0;
 let totalTokens = 0;
 let geneCount = 0;
@@ -74,6 +77,107 @@ function toggleConsolePanel() {
     if (!panel) return;
     panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
 }
+
+// ── Tool Card Builder ─────────────────────────────────────────────────────────
+// Creates a rich tool call card with status animation, args display, and
+// execution-time tracking, all driven by backend events (tool_start / tool_result).
+
+function _makeToolCard(toolName, callId, args) {
+    const id = callId || `call_${toolName}_${Date.now()}`;
+    const argsStr = args && Object.keys(args).length
+        ? JSON.stringify(args, null, 2)
+        : '';
+    const toolIcon = _getToolIcon(toolName);
+
+    const el = document.createElement('div');
+    el.className = 'tool-call-card';
+    el.id = `tcard-${id}`;
+    el.innerHTML = `
+        <div class="tool-call-header">
+            <span class="tool-icon">${toolIcon}</span>
+            <span class="tool-name">${escapeHtml(toolName)}</span>
+            <span class="tool-status-dot" id="tdot-${id}"></span>
+            <span class="tool-duration" id="tdur-${id}"></span>
+            <button class="tool-expand-btn" onclick="_toggleToolCard('${id}')">
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                    <path d="M2 4L6 8L10 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+            </button>
+        </div>
+        <div class="tool-call-body" id="tbody-${id}" style="display:none">
+            ${argsStr ? `<div class="tool-args-label">参数</div><pre class="tool-args">${escapeHtml(argsStr)}</pre>` : ''}
+            <div class="tool-result-label" style="display:none" id="trl-${id}">结果</div>
+            <div class="tool-result" id="tres-${id}"></div>
+        </div>
+    `;
+    return { el, id };
+}
+
+function _getToolIcon(toolName) {
+    const icons = {
+        file_write: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4fc3f7" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
+        file_read: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#81c784" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
+        file_edit: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff176" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>',
+        bash: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#b39ddb" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>',
+        web_search: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ffb74d" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>',
+        memory_search: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ce93d8" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>',
+        ask_user: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ef9a9a" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+        default: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#90caf9" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6M9 13h6M9 17h4"/></svg>',
+    };
+    return icons[toolName] || icons['default'];
+}
+
+function _toggleToolCard(id) {
+    const body = document.getElementById(`tbody-${id}`);
+    if (!body) return;
+    body.style.display = body.style.display === 'none' ? 'block' : 'none';
+}
+
+function _updateToolCard(id, eventType, data) {
+    const dot = document.getElementById(`tdot-${id}`);
+    const dur = document.getElementById(`tdur-${id}`);
+    const resLabel = document.getElementById(`trl-${id}`);
+    const res = document.getElementById(`tres-${id}`);
+    const card = document.getElementById(`tcard-${id}`);
+    if (!card) return;
+
+    if (eventType === 'start') {
+        if (dot) {
+            dot.className = 'tool-status-dot running';
+            dot.style.animation = 'pulse 1s infinite';
+        }
+    } else if (eventType === 'result') {
+        if (dot) {
+            dot.className = 'tool-status-dot done';
+            dot.style.animation = '';
+        }
+        if (dur) {
+            const d = data.duration;
+            dur.textContent = d != null ? `${d}s` : '';
+            dur.style.color = d != null && d > 5 ? '#ef9a9a' : '#4caf50';
+        }
+        if (res) {
+            resLabel.style.display = 'block';
+            const text = typeof data.result === 'string'
+                ? data.result
+                : JSON.stringify(data.result, null, 2);
+            res.innerHTML = `<pre class="tool-result-text">${escapeHtml(text.substring(0, 2000))}</pre>`;
+        }
+        card.classList.add('tool-done');
+    } else if (eventType === 'error') {
+        if (dot) {
+            dot.className = 'tool-status-dot error';
+            dot.style.animation = '';
+        }
+        if (dur) dur.textContent = 'ERROR';
+        if (res) {
+            resLabel.style.display = 'block';
+            res.innerHTML = `<pre class="tool-result-text" style="color:#ef9a9a">${escapeHtml(String(data))}</pre>`;
+        }
+        card.classList.add('tool-error');
+    }
+}
+
 // 会话持久化到 localStorage
 const SESSIONS_KEY = 'xmclaw_sessions';
 const CURRENT_SESSION_KEY = 'xmclaw_current_session';
@@ -106,34 +210,9 @@ let currentSessionId = null;
 
 const AGENT_ID = 'default';
 
-// View switching
-navItems.forEach(item => {
-    item.addEventListener('click', (e) => {
-        e.preventDefault();
-        switchView(item.dataset.view);
-    });
-});
-
-function switchView(view) {
-    currentView = view;
-    navItems.forEach(n => n.classList.toggle('active', n.dataset.view === view));
-    views.forEach(v => v.classList.toggle('active', v.id === `view-${view}`));
-    const viewNames = {
-        dashboard: '仪表盘',
-        workspace: '工作区',
-        evolution: '进化',
-        memory: '记忆',
-        tools: '工具日志',
-        agents: '多代理',
-        settings: '设置'
-    };
-    topbarTitle.textContent = viewNames[view] || view;
-    if (view === 'workspace') loadWorkspaceFiles();
-    if (view === 'evolution') loadEvolutionStatus();
-    if (view === 'memory') loadMemorySearch();
-    if (view === 'tools') loadToolsLogs();
-    if (view === 'agents') loadAgentsView();
-}
+// ===== URL ROUTING (delegated to /src/modules/router.js) =====
+// Navigation, view switching, and hash routing are handled by the router module.
+// Nav item clicks are wired there; keep only non-routing init below.
 
 // Settings
 const settingProvider = document.getElementById('setting-provider');
@@ -193,6 +272,42 @@ async function loadDaemonConfig() {
         // Integration config
         populateIntegrationFields(cfg.integrations || {});
 
+        // ── Evolution tab ────────────────────────────────────────────
+        const evo = cfg.evolution || {};
+        const evoEnabled = document.getElementById('evo-enabled');
+        const evoInterval = document.getElementById('evo-interval');
+        const evoDaily = document.getElementById('evo-daily');
+        const evoVfm = document.getElementById('evo-vfm');
+        if (evoEnabled)  evoEnabled.checked  = evo.enabled    ?? true;
+        if (evoInterval) evoInterval.value    = evo.interval   ?? 30;
+        if (evoDaily)   evoDaily.value      = evo.daily      ?? 22;
+        if (evoVfm)     evoVfm.value        = evo.vfm_threshold ?? 5;
+
+        // ── Memory tab ──────────────────────────────────────────────
+        const mem = cfg.memory || {};
+        const memVector = document.getElementById('mem-vector');
+        const memRetention = document.getElementById('mem-retention');
+        const memTokens = document.getElementById('mem-tokens');
+        if (memVector)   memVector.value   = mem.vector_path    || '';
+        if (memRetention) memRetention.value = mem.retention_days ?? 7;
+        if (memTokens)   memTokens.value     = mem.max_tokens     ?? 120000;
+
+        // ── Tools tab ────────────────────────────────────────────────
+        const tools = cfg.tools || {};
+        const toolBash = document.getElementById('tool-bash');
+        const toolSandbox = document.getElementById('tool-sandbox');
+        const toolHeadless = document.getElementById('tool-headless');
+        if (toolBash)    toolBash.value    = tools.bash_timeout   ?? 300;
+        if (toolSandbox) toolSandbox.value = tools.sandbox_timeout ?? 30;
+        if (toolHeadless) toolHeadless.checked = tools.headless ?? false;
+
+        // ── Gateway tab ─────────────────────────────────────────────
+        const gw = cfg.gateway || {};
+        const gwWs = document.getElementById('gw-ws');
+        const gwHttp = document.getElementById('gw-http');
+        if (gwWs)  gwWs.value  = gw.port ?? 8765;
+        if (gwHttp) gwHttp.value = gw.http_port ?? 8080;
+
         // Persist trimmed snapshot (no secrets) for WS payload
         _syncSettingsCache(provider, llm);
     } catch {}
@@ -239,6 +354,30 @@ saveSettingsBtn?.addEventListener('click', async () => {
             cfg.integrations[name] = obj;
         }
 
+        // ── Evolution tab ─────────────────────────────────────────
+        cfg.evolution = cfg.evolution || {};
+        cfg.evolution.enabled         = document.getElementById('evo-enabled')?.checked    ?? true;
+        cfg.evolution.interval        = parseInt(document.getElementById('evo-interval')?.value) || 30;
+        cfg.evolution.daily           = parseInt(document.getElementById('evo-daily')?.value)   || 22;
+        cfg.evolution.vfm_threshold  = parseFloat(document.getElementById('evo-vfm')?.value)   || 5;
+
+        // ── Memory tab ────────────────────────────────────────────
+        cfg.memory = cfg.memory || {};
+        cfg.memory.vector_path    = document.getElementById('mem-vector')?.value   || '';
+        cfg.memory.retention_days = parseInt(document.getElementById('mem-retention')?.value) || 7;
+        cfg.memory.max_tokens    = parseInt(document.getElementById('mem-tokens')?.value)   || 120000;
+
+        // ── Tools tab ───────────────────────────────────────────
+        cfg.tools = cfg.tools || {};
+        cfg.tools.bash_timeout     = parseInt(document.getElementById('tool-bash')?.value)    || 300;
+        cfg.tools.sandbox_timeout  = parseInt(document.getElementById('tool-sandbox')?.value) || 30;
+        cfg.tools.headless         = document.getElementById('tool-headless')?.checked        ?? false;
+
+        // ── Gateway tab ─────────────────────────────────────────
+        cfg.gateway = cfg.gateway || {};
+        cfg.gateway.port     = parseInt(document.getElementById('gw-ws')?.value)   || 8765;
+        cfg.gateway.http_port = parseInt(document.getElementById('gw-http')?.value) || 8080;
+
         await fetch('/api/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -254,17 +393,33 @@ saveSettingsBtn?.addEventListener('click', async () => {
     }
 });
 
+function _switchSettingsTab(stab, opts = {}) {
+    document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.settings-panel').forEach(p => p.classList.remove('active'));
+    const tabEl = document.querySelector(`.settings-tab[data-stab="${stab}"]`);
+    const panelEl = document.getElementById('stab-' + stab);
+    if (tabEl) tabEl.classList.add('active');
+    if (panelEl) panelEl.classList.add('active');
+    if (stab === 'integrations') loadIntegrationStatus();
+    // Sync URL hash
+    if (!opts.fromRouter) {
+        history.replaceState(null, '', `#/settings/${stab}`);
+    }
+}
+
 function loadSettings() {
     loadDaemonConfig();
+
+    // Bind tab clicks
     document.querySelectorAll('.settings-tab').forEach(tab => {
         tab.addEventListener('click', () => {
-            document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.settings-panel').forEach(p => p.classList.remove('active'));
-            tab.classList.add('active');
-            document.getElementById('stab-' + tab.dataset.stab).classList.add('active');
-            if (tab.dataset.stab === 'integrations') loadIntegrationStatus();
+            _switchSettingsTab(tab.dataset.stab);
         });
     });
+
+    // Expose for external use
+    window._switchSettingsTab = _switchSettingsTab;
+
     // memory search listeners are set up globally
     initMCPUI();
 }
@@ -395,14 +550,10 @@ function collectMCPConfig() {
 
 function showToast(msg) {
     const el = document.createElement('div');
+    el.className = 'toast';
     el.textContent = msg;
-    el.style.cssText = `
-        position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
-        background: var(--accent); color: #000; padding: 10px 18px;
-        border-radius: 8px; font-size: 12px; font-weight: 600; z-index: 1000;
-    `;
     document.body.appendChild(el);
-    setTimeout(() => el.remove(), 1800);
+    setTimeout(() => el.remove(), 2200);
 }
 
 // Plan Mode
@@ -424,19 +575,23 @@ cancelPlanBtn.addEventListener('click', () => {
 
 // Agent state updates
 function setAgentState(state, thought) {
-    stateBadge.textContent = state;
+    const labels = { IDLE: '空闲', THINKING: '思考中', PLANNING: '规划中', TOOL_CALL: '工具调用', SELF_MOD: '自修改', WAITING: '等待中' };
+    stateBadge.textContent = labels[state] || state;
     if (thought) currentThought.textContent = thought;
-    if (state === 'THINKING') {
-        stateBadge.style.background = 'var(--info-bg)';
-        stateBadge.style.color = '#2196f3';
+    if (state === 'THINKING' || state === 'PLANNING') {
+        stateBadge.style.background = 'var(--blue-bg)';
+        stateBadge.style.color = 'var(--blue)';
     } else if (state === 'TOOL_CALL') {
-        stateBadge.style.background = 'var(--warn-bg)';
-        stateBadge.style.color = '#ffc107';
+        stateBadge.style.background = 'var(--yellow-bg)';
+        stateBadge.style.color = 'var(--yellow)';
     } else if (state === 'SELF_MOD') {
-        stateBadge.style.background = 'var(--accent-weak)';
-        stateBadge.style.color = 'var(--accent)';
+        stateBadge.style.background = 'var(--purple-bg)';
+        stateBadge.style.color = 'var(--purple)';
+    } else if (state === 'WAITING') {
+        stateBadge.style.background = 'var(--red-bg)';
+        stateBadge.style.color = 'var(--red)';
     } else {
-        stateBadge.style.background = 'var(--accent-weak)';
+        stateBadge.style.background = 'var(--accent-subtle)';
         stateBadge.style.color = 'var(--accent)';
     }
 }
@@ -591,10 +746,12 @@ let tasks = [];
 async function loadTasks() {
     try {
         const res = await fetch(`/api/agent/${AGENT_ID}/tasks`);
-        tasks = await res.json();
+        const data = await res.json();
+        tasks = Array.isArray(data) ? data : [];
         renderTasks();
     } catch {
-        taskList.innerHTML = '<div class="empty-state">Failed to load tasks</div>';
+        tasks = [];
+        renderTasks();
     }
 }
 
@@ -790,21 +947,44 @@ async function doMemorySearch() {
     try {
         const res = await fetch(`/api/agent/${AGENT_ID}/memory/search?q=${encodeURIComponent(q)}`);
         const data = await res.json();
-        const results = data.results || [];
-        if (results.length === 0) {
-            memoryResults.innerHTML = '<div class="empty-state">No results found.</div>';
-            return;
+
+        // Build enhanced HTML with vector + file sections
+        let html = '';
+
+        // Vector results (with relevance scores)
+        const vectorResults = data.vector_results || data.results || [];
+        if (vectorResults.length) {
+            html += '<div class="memory-section-label">向量记忆</div>';
+            for (const r of vectorResults) {
+                const score = r.score != null ? (r.score * 100).toFixed(0) + '%' : '';
+                html += `<div class="memory-card">
+                    <div class="memory-card-header">
+                        <span class="memory-card-type">${escapeHtml(r.source || r.file || 'memory')}</span>
+                        ${score ? `<span class="memory-score">相关度 ${score}</span>` : ''}
+                    </div>
+                    <div class="memory-card-body"><pre style="background:#0a0a0a;padding:10px;border-radius:6px;font-size:12px">${escapeHtml(r.content || r.snippet || '')}</pre></div>
+                </div>`;
+            }
         }
-        memoryResults.innerHTML = results.map(r => `
-            <div class="memory-card">
-                <div class="memory-card-header">
-                    <span class="memory-card-type">${escapeHtml(r.file)}</span>
-                </div>
-                <div class="memory-card-body"><pre style="background:#0a0a0a;padding:10px;border-radius:6px;font-size:12px">${escapeHtml(r.snippet)}</pre></div>
-            </div>
-        `).join('');
+
+        // File results
+        const fileResults = data.file_results || [];
+        if (fileResults.length) {
+            html += '<div class="memory-section-label" style="margin-top:16px">文件匹配</div>';
+            for (const r of fileResults) {
+                html += `<div class="memory-card">
+                    <div class="memory-card-header">
+                        <span class="memory-card-type">${escapeHtml(r.file || '')}</span>
+                    </div>
+                    <div class="memory-card-body"><pre style="background:#0a0a0a;padding:10px;border-radius:6px;font-size:12px">${escapeHtml(r.snippet || '')}</pre></div>
+                </div>`;
+            }
+        }
+
+        if (!html) html = '<div class="empty-state">未找到匹配结果</div>';
+        memoryResults.innerHTML = html;
     } catch {
-        memoryResults.innerHTML = '<div class="empty-state">Search failed.</div>';
+        memoryResults.innerHTML = '<div class="empty-state">搜索失败</div>';
     }
 }
 
@@ -816,6 +996,15 @@ async function loadEvolutionStatus() {
         geneCount = data.gene_count || 0;
         skillCount = data.skill_count || 0;
         evolutionCount.textContent = `${geneCount} Genes · ${skillCount} Skills`;
+
+        // Update dedicated stat elements on the Evolution page
+        const evoGenesEl = document.getElementById('evo-genes');
+        const evoSkillsEl = document.getElementById('evo-skills');
+        const evoCyclesEl = document.getElementById('evo-cycles');
+        if (evoGenesEl) evoGenesEl.textContent = geneCount;
+        if (evoSkillsEl) evoSkillsEl.textContent = skillCount;
+        if (evoCyclesEl) evoCyclesEl.textContent = data.cycle_count || data.cycles || 0;
+
         const evoContent = document.getElementById('evolution-content');
         if (evoContent) {
             let html = `<div class="evo-cards">
@@ -896,12 +1085,27 @@ function handleBusEvent(evt) {
 }
 
 function flushChunk(el) {
-    // Final highlight pass after streaming ends
     if (typeof hljs !== 'undefined') {
         el.querySelectorAll('pre code:not([data-highlighted])').forEach(block => {
             try { hljs.highlightElement(block); } catch {}
         });
     }
+    // Add copy buttons to code blocks
+    el.querySelectorAll('pre:not(.has-copy-btn)').forEach(pre => {
+        pre.classList.add('has-copy-btn');
+        const btn = document.createElement('button');
+        btn.className = 'code-copy-btn';
+        btn.textContent = '复制';
+        btn.onclick = () => {
+            const code = pre.querySelector('code')?.textContent || pre.textContent;
+            navigator.clipboard.writeText(code).then(() => {
+                btn.textContent = '已复制';
+                setTimeout(() => btn.textContent = '复制', 1200);
+            });
+        };
+        pre.style.position = 'relative';
+        pre.appendChild(btn);
+    });
 }
 
 function showWelcome() {
@@ -949,6 +1153,20 @@ function addMessage(text, role) {
     const wrapper = document.createElement('div');
     wrapper.className = 'message-wrapper';
 
+    // Action buttons (copy for agent, edit for user)
+    const actions = document.createElement('div');
+    actions.className = 'message-actions';
+    if (role === 'agent') {
+        actions.innerHTML = `
+            <button class="msg-action-btn" title="复制回复 (Ctrl+Shift+C)" onclick="_copyMessage(this)">📋</button>
+        `;
+    } else if (role === 'user') {
+        actions.innerHTML = `
+            <button class="msg-action-btn" title="编辑 (Ctrl+E)" onclick="_editMessage(this)">✏️</button>
+            <button class="msg-action-btn" title="复制 (Ctrl+Shift+C)" onclick="_copyMessage(this)">📋</button>
+        `;
+    }
+
     const el = document.createElement('div');
     el.className = `message ${role}`;
     if (role !== 'user') {
@@ -961,6 +1179,7 @@ function addMessage(text, role) {
         }
     } else {
         el.textContent = text;
+        el.dataset.original = text;
     }
 
     // Message timestamp
@@ -968,6 +1187,7 @@ function addMessage(text, role) {
     ts.className = 'message-time';
     ts.textContent = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 
+    wrapper.appendChild(actions);
     wrapper.appendChild(el);
     wrapper.appendChild(ts);
     row.appendChild(wrapper);
@@ -976,7 +1196,18 @@ function addMessage(text, role) {
     return el;
 }
 
-// 旧版本已删除，保留末尾新版本
+// Copy message content
+window._copyMessage = function(btn) {
+    const row = btn.closest('.message-row');
+    const msgEl = row.querySelector('.message');
+    const text = _rawTextMap.get(msgEl) || msgEl.textContent;
+    navigator.clipboard.writeText(text).then(() => {
+        btn.textContent = '✅';
+        setTimeout(() => btn.textContent = '📋', 1500);
+    }).catch(() => showToast('复制失败'));
+};
+
+// _editMessage is redefined in the Shortcuts Bar section below with inline overlay UI
 
 function addToolResultMessage(tool, result) {
     const row = document.createElement('div');
@@ -985,27 +1216,52 @@ function addToolResultMessage(tool, result) {
     const el = document.createElement('div');
     el.className = 'message tool-result';
 
+    const resultStr = String(result);
+
     if (typeof result === 'string' && result.startsWith('data:image/')) {
         el.innerHTML = `
-            <div class="tool-header">
-                <span class="tool-name">${escapeHtml(tool)} result</span>
+            <div class="tool-result-header">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                <span class="tool-name">${escapeHtml(tool)}</span>
             </div>
             <img src="${result}" style="max-width:100%;border-radius:8px;margin-top:6px;border:1px solid var(--border)" alt="screenshot">
         `;
     } else {
-        const text = String(result).slice(0, 800);
+        const isLong = resultStr.length > 400;
+        const preview = escapeHtml(resultStr.slice(0, 400));
+        const full = escapeHtml(resultStr);
+        const uid = 'tr_' + Date.now();
         el.innerHTML = `
-            <div class="tool-header">
-                <span class="tool-name">${escapeHtml(tool)} result</span>
+            <div class="tool-result-header">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                <span class="tool-name">${escapeHtml(tool)}</span>
+                ${isLong ? `<button class="tool-expand-btn" onclick="toggleToolResult('${uid}')">展开</button>` : ''}
             </div>
-            <pre style="margin:0;background:transparent;padding:0;font-size:11px;border:none;white-space:pre-wrap">${escapeHtml(text)}${String(result).length > 800 ? '...' : ''}</pre>
+            <pre class="tool-result-pre" id="${uid}">${isLong ? preview + '...' : full}</pre>
         `;
+        if (isLong) el._fullResult = full;
     }
 
     row.appendChild(el);
     chat.appendChild(row);
     scrollToBottom();
 }
+
+window.toggleToolResult = function(uid) {
+    const pre = document.getElementById(uid);
+    if (!pre) return;
+    const el = pre.closest('.message.tool-result');
+    const btn = el?.querySelector('.tool-expand-btn');
+    if (pre.dataset.expanded === 'true') {
+        pre.textContent = el._fullResult?.slice(0, 400) + '...';
+        pre.dataset.expanded = 'false';
+        if (btn) btn.textContent = '展开';
+    } else {
+        pre.textContent = el._fullResult || pre.textContent;
+        pre.dataset.expanded = 'true';
+        if (btn) btn.textContent = '收起';
+    }
+};
 
 function addReflectionMessage(data, improvement) {
     const summary = data.summary || 'Reflection';
@@ -1019,15 +1275,25 @@ function addReflectionMessage(data, improvement) {
     const el = document.createElement('div');
     el.className = 'message reflection';
 
-    let body = `<div style="font-weight:600;margin-bottom:4px">🧠 ${escapeHtml(summary)}</div>`;
+    let body = `<div class="reflection-summary">🧠 ${escapeHtml(summary)}</div>`;
+
     if (problems.length) {
-        body += `<div style="color:#ff6b6b;font-size:11px;margin-top:4px">问题: ${escapeHtml(problems.join('; '))}</div>`;
+        body += `<div class="reflection-section reflection-problems">
+            <div class="reflection-section-title">❌ 问题</div>
+            ${problems.map(p => `<div class="reflection-item">${escapeHtml(p)}</div>`).join('')}
+        </div>`;
     }
     if (lessons.length) {
-        body += `<div style="color:#ffc107;font-size:11px;margin-top:4px">教训: ${escapeHtml(lessons.join('; '))}</div>`;
+        body += `<div class="reflection-section reflection-lessons">
+            <div class="reflection-section-title">💡 教训</div>
+            ${lessons.map(l => `<div class="reflection-item">${escapeHtml(l)}</div>`).join('')}
+        </div>`;
     }
     if (improvements.length) {
-        body += `<div style="color:#00d4aa;font-size:11px;margin-top:4px">改进: ${escapeHtml(improvements.join('; '))}</div>`;
+        body += `<div class="reflection-section reflection-improvements">
+            <div class="reflection-section-title">✅ 改进</div>
+            ${improvements.map(i => `<div class="reflection-item">${escapeHtml(i)}</div>`).join('')}
+        </div>`;
     }
 
     if (improvement && improvement.status !== 'nothing_to_improve') {
@@ -1077,16 +1343,38 @@ function removeTyping() {
 
 function scrollToBottom() {
     chat.scrollTop = chat.scrollHeight;
+    const btn = document.getElementById('scroll-bottom-btn');
+    if (btn) {
+        const atBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 60;
+        btn.classList.toggle('visible', !atBottom && chat.scrollHeight > chat.clientHeight + 100);
+    }
 }
+
+window.setInput = function(text) {
+    hideWelcome();
+    input.value = text;
+    input.focus();
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+};
 
 function sendMessage() {
     const text = input.value.trim();
-    if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!text) return;
 
     let finalText = text;
     if (planMode) {
         finalText = `[PLAN MODE] ${text}`;
     }
+
+    // Save to message history for Up/Down navigation
+    _userHistory.push(text);
+    if (_userHistory.length > 100) _userHistory = _userHistory.slice(-100);
+    localStorage.setItem('xmclaw_history', JSON.stringify(_userHistory));
+    _historyIndex = -1;
+
+    // Clear draft
+    localStorage.removeItem('xmclaw_draft');
 
     hideWelcome();
     addMessage(text, 'user');
@@ -1105,7 +1393,12 @@ function sendMessage() {
         } catch {}
     }
 
-    ws.send(JSON.stringify(payload));
+    const sent = window.wsSend ? window.wsSend(payload) : _sendSafe(payload);
+    if (!sent) {
+        removeTyping();
+        setAgentState('IDLE', '');
+        showToast('⚠️ 已离线，消息已加入发送队列');
+    }
 }
 
 sendBtn.addEventListener('click', sendMessage);
@@ -1123,16 +1416,14 @@ input.addEventListener('input', () => {
 
 document.getElementById('workspace-refresh')?.addEventListener('click', loadWorkspaceFiles);
 
-loadSessions();
-loadSettings();
-connect();
+// (init happens at end of file)
 
 // Global error handler
 window.addEventListener('error', (e) => {
     console.error('[ERROR]', e.message, 'at', e.filename, ':', e.lineno);
 });
 
-// Memory search
+// Memory search (tab panel version with relevance scores)
 async function loadMemorySearch() {
     const q = document.getElementById('memory-query')?.value?.trim();
     const resultsEl = document.getElementById('memory-results');
@@ -1145,16 +1436,24 @@ async function loadMemorySearch() {
         const res = await fetch(`/api/agent/${AGENT_ID}/memory/search?q=` + encodeURIComponent(q));
         const data = await res.json();
         let html = '';
+
         if (data.vector_results && data.vector_results.length) {
-            html += '<h4>向量记忆</h4>';
+            html += '<div class="memory-section-label">向量记忆</div>';
             for (const r of data.vector_results) {
-                html += `<div class="memory-item"><div class="memory-source">${escapeHtml(r.source)}</div><div class="memory-content">${escapeHtml(r.content)}</div></div>`;
+                const score = r.score != null ? (r.score * 100).toFixed(0) + '%' : '';
+                html += `<div class="memory-item">
+                    <div class="memory-source">${escapeHtml(r.source || 'memory')}${score ? ` <span class="memory-score">相关度 ${score}</span>` : ''}</div>
+                    <div class="memory-content">${escapeHtml(r.content || '')}</div>
+                </div>`;
             }
         }
         if (data.file_results && data.file_results.length) {
-            html += '<h4>文件匹配</h4>';
+            html += '<div class="memory-section-label" style="margin-top:14px">文件匹配</div>';
             for (const r of data.file_results) {
-                html += `<div class="memory-item"><div class="memory-source">${escapeHtml(r.file)}</div><pre>${escapeHtml(r.snippet)}</pre></div>`;
+                html += `<div class="memory-item">
+                    <div class="memory-source">${escapeHtml(r.file || '')}</div>
+                    <pre style="font-size:12px;color:var(--text-dim);background:#0a0a0a;padding:6px;border-radius:4px;margin-top:4px">${escapeHtml(r.snippet || '')}</pre>
+                </div>`;
             }
         }
         if (!html) html = '<div class="empty-state">未找到匹配结果</div>';
@@ -1282,21 +1581,138 @@ document.getElementById('viewer-copy')?.addEventListener('click', () => {
 });
 
 // ===== SHORTCUTS =====
+// ── Global keyboard shortcuts ──────────────────────────────────────────────
+
+// User message history for Up/Down navigation
+let _userHistory = JSON.parse(localStorage.getItem('xmclaw_history') || '[]');
+let _historyIndex = -1;
+
 document.addEventListener('keydown', (e) => {
+    // Ctrl+Enter: send
     if (e.ctrlKey && e.key === 'Enter') {
         e.preventDefault();
         sendMessage();
-    } else if (e.ctrlKey && (e.key === 'l' || e.key === 'L')) {
+    }
+    // Ctrl+L: clear chat
+    else if (e.ctrlKey && (e.key === 'l' || e.key === 'L')) {
         e.preventDefault();
         clearChat();
-    } else if (e.ctrlKey && (e.key === 'n' || e.key === 'N')) {
+    }
+    // Ctrl+N: new session
+    else if (e.ctrlKey && (e.key === 'n' || e.key === 'N')) {
         e.preventDefault();
         newSession();
-    } else if (e.key === '/' && document.activeElement !== input) {
+    }
+    // Ctrl+Shift+C: copy last agent reply
+    else if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
+        e.preventDefault();
+        const agentMsgs = document.querySelectorAll('.message-row.agent .message');
+        if (agentMsgs.length > 0) {
+            const last = agentMsgs[agentMsgs.length - 1];
+            const text = _rawTextMap.get(last) || last.textContent;
+            navigator.clipboard.writeText(text).then(() => showToast('已复制到剪贴板')).catch(() => showToast('复制失败'));
+        }
+    }
+    // Ctrl+E: edit last user message
+    else if (e.ctrlKey && (e.key === 'e' || e.key === 'E')) {
+        if (document.activeElement === input) return; // don't fire when typing
+        const userMsgs = document.querySelectorAll('.message-row.user .message');
+        if (userMsgs.length > 0) {
+            const last = userMsgs[userMsgs.length - 1];
+            last.closest('.message-row').querySelector('.msg-action-btn')?.click();
+        }
+    }
+    // Ctrl+F: search in conversation
+    else if (e.ctrlKey && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault();
+        const term = prompt('搜索对话内容:');
+        if (term) highlightSearch(term);
+    }
+    // Ctrl+S: save draft
+    else if (e.ctrlKey && (e.key === 's' || e.key === 'S')) {
+        if (document.activeElement === input) {
+            e.preventDefault();
+            saveDraft();
+            showToast('草稿已保存');
+        }
+    }
+    // Up/Down in input: navigate message history
+    else if (e.key === 'ArrowUp' && document.activeElement === input && input.value === '') {
+        e.preventDefault();
+        if (_historyIndex < _userHistory.length - 1) {
+            _historyIndex++;
+            input.value = _userHistory[_userHistory.length - 1 - _historyIndex];
+        }
+    } else if (e.key === 'ArrowDown' && document.activeElement === input && input.value === '') {
+        e.preventDefault();
+        if (_historyIndex > 0) {
+            _historyIndex--;
+            input.value = _userHistory[_userHistory.length - 1 - _historyIndex];
+        } else {
+            _historyIndex = -1;
+            input.value = '';
+        }
+    }
+    // Escape: cancel current operation or close overlays
+    else if (e.key === 'Escape') {
+        const overlay = document.querySelector('.ask-user-overlay');
+        if (overlay) overlay.remove();
+    }
+    // /: focus input
+    else if (e.key === '/' && document.activeElement !== input &&
+             !e.target.matches('input, textarea, [contenteditable]')) {
         e.preventDefault();
         input.focus();
     }
 });
+
+function saveDraft() {
+    const text = input.value.trim();
+    if (!text) return;
+    localStorage.setItem('xmclaw_draft', text);
+}
+
+function loadDraft() {
+    const draft = localStorage.getItem('xmclaw_draft');
+    if (draft) {
+        input.value = draft;
+        input.dispatchEvent(new Event('input'));
+    }
+}
+
+function highlightSearch(term) {
+    // Remove previous highlights
+    document.querySelectorAll('.search-highlight').forEach(el => {
+        el.outerHTML = el.textContent;
+    });
+    if (!term) return;
+    const chatEl = document.getElementById('chat');
+    const walker = document.createTreeWalker(chatEl, NodeFilter.SHOW_TEXT, null, false);
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    for (const node of nodes) {
+        if (!node.textContent.includes(term)) continue;
+        const regex = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+        const parent = node.parentNode;
+        if (!parent || parent.classList.contains('message-actions') || parent.classList.contains('msg-action-btn')) continue;
+        const fragment = document.createDocumentFragment();
+        let last = 0;
+        for (const match of [...node.textContent.matchAll(regex)]) {
+            if (match.index > last) fragment.appendChild(document.createTextNode(node.textContent.slice(last, match.index)));
+            const span = document.createElement('mark');
+            span.className = 'search-highlight';
+            span.style.cssText = 'background:#fbbf24;color:#000;padding:0 2px;border-radius:2px;';
+            span.textContent = match[0];
+            fragment.appendChild(span);
+            last = match.index + match[0].length;
+        }
+        if (last < node.textContent.length) fragment.appendChild(document.createTextNode(node.textContent.slice(last)));
+        if (fragment.childNodes.length > 0) parent.replaceChild(fragment, node);
+    }
+    // Scroll first match into view
+    const first = document.querySelector('.search-highlight');
+    first?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
 
 document.getElementById('btn-new-chat')?.addEventListener('click', newSession);
 
@@ -1473,121 +1889,8 @@ async function delegateToTeam(teamName) {
     }
 }
 
-// ===== WEBSOCKET =====
-let _reconnectDelay = 2000;
-const _MAX_RECONNECT_DELAY = 30000;
+// (WebSocket delegation is handled at the bottom of the file — see _wsRenderer / window.wsSetGlobalHandler)
 
-function connect() {
-    ws = new WebSocket(WS_URL);
-
-    ws.onopen = () => {
-        _reconnectDelay = 2000; // reset on success
-        statusDot.classList.add('connected');
-        statusText.textContent = 'Connected';
-        statusText.style.color = 'var(--accent)';
-        loadTodos();
-        loadTasks();
-        loadEvolutionStatus();
-    };
-
-    ws.onclose = () => {
-        statusDot.classList.remove('connected');
-        const delaySec = Math.round(_reconnectDelay / 1000);
-        statusText.textContent = `Reconnecting in ${delaySec}s...`;
-        statusText.style.color = 'var(--text-dim)';
-        setTimeout(connect, _reconnectDelay);
-        _reconnectDelay = Math.min(_reconnectDelay * 1.5, _MAX_RECONNECT_DELAY);
-    };
-
-    ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        logConsole('ws', `收到消息: ${data.type}`, data);
-
-        if (data.type === 'chunk') {
-            removeTyping();
-            isStreaming = true;
-            if (!currentMessageEl) {
-                currentMessageEl = addMessage('', 'agent');
-            }
-            appendChunk(currentMessageEl, data.content);
-            scrollToBottom();
-        } else if (data.type === 'tool_call') {
-            removeTyping();
-            const toolName = data.tool || 'tool';
-            setAgentState('TOOL_CALL', `正在使用 ${toolName}...`);
-            activeTool.textContent = toolName;
-            // Track in toolHistory for the Tools panel
-            toolHistory.unshift({ tool: toolName, args: data.args, result: null, time: Date.now() });
-            if (toolHistory.length > 50) toolHistory.pop();
-            renderRecentTools();
-            renderToolLog();
-            // Show a lightweight inline tool indicator in the chat
-            addToolMessage(toolName);
-            scrollToBottom();
-        } else if (data.type === 'tool_result') {
-            if (toolHistory.length > 0) {
-                toolHistory[0].result = data.result;
-                renderRecentTools();
-                renderToolLog();
-            }
-            // 在聊天区域显示工具执行结果
-            addToolResultMessage(data.tool, data.result);
-            activeTool.textContent = '—';
-            setAgentState('THINKING', 'Processing result...');
-        } else if (data.type === 'file_op') {
-            setAgentState('SELF_MOD', `Modified ${data.file || 'file'}`);
-            activeFile.textContent = `${data.action || 'write'}: ${data.file || '-'}`;
-            addSelfMod(data.file, data.action);
-            if (currentView !== 'dashboard') {
-                showToast(`Self-mod: ${data.action} ${data.file}`);
-            }
-        } else if (data.type === 'state') {
-            setAgentState(data.state, data.thought);
-        } else if (data.type === 'done') {
-            removeTyping();
-            if (currentMessageEl) {
-                flushChunk(currentMessageEl);
-            }
-            currentMessageEl = null;
-            isStreaming = false;
-            setAgentState('IDLE', 'Waiting for input...');
-            activeTool.textContent = '—';
-            activeFile.textContent = '—';
-            saveCurrentSession();
-            persistSessions();
-        } else if (data.type === 'error') {
-            removeTyping();
-            addMessage(data.content, 'error');
-            currentMessageEl = null;
-            setAgentState('IDLE', 'Error occurred');
-        } else if (data.type === 'cost') {
-            totalTokens += data.tokens || 0;
-            totalCost += data.cost || 0;
-            tokenDisplay.textContent = `${totalTokens.toLocaleString()} tokens`;
-            costDisplay.textContent = `$${totalCost.toFixed(4)}`;
-        } else if (data.type === 'evolution') {
-            if (data.gene) geneCount++;
-            if (data.skill) skillCount++;
-            evolutionCount.textContent = `${geneCount} Genes · ${skillCount} Skills`;
-            addTimelineEvent(data.subtype || 'gene', data.title, data.desc);
-        } else if (data.type === 'reflection') {
-            // 反思结果：显示在进化时间线，而不是聊天区域
-            addReflectionMessage(data.data || {}, data.improvement || {});
-            addTimelineEvent('reflection', '反思完成', data.data?.summary || '');
-        } else if (data.type === 'ask_user') {
-            showAskUserDialog(data.question);
-        } else if (data.type === 'event') {
-            handleBusEvent(data.event);
-        } else if (data.type === 'transcription') {
-            // Voice input echo — show in input box so user can review before sending
-            input.value = data.text || '';
-            input.style.height = 'auto';
-            input.style.height = Math.min(input.scrollHeight, 120) + 'px';
-        }
-    };
-}
-
-// 修复：addToolMessage 只显示工具名称，不显示 JSON 参数
 function addToolMessage(tool) {
     const row = document.createElement('div');
     row.className = 'message-row tool';
@@ -1598,13 +1901,16 @@ function addToolMessage(tool) {
         <div class="tool-header">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
             <span class="tool-name">${escapeHtml(tool)}</span>
+            <span class="tool-status-dot"></span>
+            <span style="color:var(--text-faint);font-size:10px">执行中</span>
         </div>
-        <div class="tool-status">执行中...</div>
     `;
+    el._toolRow = row;
 
     row.appendChild(el);
     chat.appendChild(row);
     scrollToBottom();
+    return el;
 }
 
 function showAskUserDialog(question) {
@@ -1626,8 +1932,12 @@ function showAskUserDialog(question) {
         box-shadow: 0 20px 60px rgba(0,0,0,0.5);
     `;
 
+    // Detect plan-mode confirmation vs. normal ask_user
+    const isPlanQuestion = question.includes('计划已生成') || question.includes('是否执行');
+    const title = isPlanQuestion ? '计划确认' : '需要您的输入';
+
     box.innerHTML = `
-        <h3 style="margin:0 0 16px;font-size:16px;color:var(--text)">需要您的输入</h3>
+        <h3 style="margin:0 0 16px;font-size:16px;color:var(--text)">${title}</h3>
         <p style="margin:0 0 16px;font-size:14px;color:var(--text-dim)">${escapeHtml(question)}</p>
         <textarea id="ask-user-input" rows="3" style="
             width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);
@@ -1657,11 +1967,14 @@ function showAskUserDialog(question) {
     };
 
     document.getElementById('ask-user-submit').onclick = () => {
-        const answer = input.value;
+        let answer = input.value;
         overlay.remove();
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'ask_user_answer', answer }));
+        // For plan-mode confirmation, inject [PLAN APPROVE] so the agent loop
+        // skips the re-ask step and proceeds directly to tool execution.
+        if (isPlanQuestion && answer.trim()) {
+            answer = `[PLAN APPROVE] ${answer}`;
         }
+        (window.wsSend || _sendSafe)({ type: 'ask_user_answer', answer });
     };
 
     input.onkeydown = (e) => {
@@ -1702,14 +2015,12 @@ if (fileUpload) {
                 scrollToBottom();
                 
                 // 发送到服务器
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({
-                        type: 'file_upload',
-                        name: file.name,
-                        type: file.type,
-                        data: dataUrl
-                    }));
-                }
+                _sendSafe({
+                    type: 'file_upload',
+                    name: file.name,
+                    mime: file.type,
+                    data: dataUrl
+                });
             };
             reader.readAsDataURL(file);
         }
@@ -1761,7 +2072,7 @@ if (voiceBtn) {
                                 
                                 ws.send(JSON.stringify({
                                     type: 'voice_input',
-                                    data: e.target.result,
+                                    audio: e.target.result,
                                     format: 'webm'
                                 }));
                                 showToast('语音已发送');
@@ -1823,7 +2134,354 @@ if (voiceBtn) {
 
 // ===== INIT =====
 loadSessions();
-newSession();
+loadSettings();
 renderSessionList();
-switchView('dashboard');  // 默认显示 dashboard 视图
-connect();
+if (!currentSessionId || sessions.length === 0) newSession();
+loadDraft();  // restore saved draft on refresh
+
+// ── Wire up core modules ──────────────────────────────────────────────────────
+// Router: nav clicks, popstate, URL hash sync
+if (window.initRouter) window.initRouter();
+
+// WebSocket: inject the main_new.js message renderer as the global handler
+// so all WS messages are processed by the existing switch statement below.
+if (window.wsSetGlobalHandler) {
+    window.wsSetGlobalHandler(_wsRenderer);
+    window.wsOnConnect(_wsOnConnect);
+    window.wsOnDisconnect(_wsOnDisconnect);
+    window.wsOnError(_wsOnError);
+    window.wsConnect();
+}
+
+// Placeholder so existing callers (e.g. voice input) don't break.
+function connect() { if (window.wsConnect) window.wsConnect(); }
+
+// ── Shortcuts Bar ──────────────────────────────────────────────────────────────
+window.togglePlanMode = function() {
+    planMode = !planMode;
+    const btn = document.getElementById('sc-plan-btn');
+    const bar = document.getElementById('plan-mode-bar');
+    const toggleBtn = document.getElementById('toggle-plan');
+    if (btn) btn.classList.toggle('active', planMode);
+    if (bar) bar.style.display = planMode ? 'flex' : 'none';
+    if (toggleBtn) toggleBtn.classList.toggle('active', planMode);
+};
+
+window.toggleLLMTooltip = function() {
+    const tip = document.getElementById('quick-llm-tooltip');
+    if (!tip) return;
+    const isOpen = tip.classList.toggle('open');
+    if (isOpen) {
+        // Pre-fill from current settings
+        const provEl = document.getElementById('ql-provider');
+        const modelEl = document.getElementById('ql-model');
+        const tempEl = document.getElementById('ql-temp');
+        const tempVal = document.getElementById('ql-temp-val');
+        if (provEl) provEl.value = settingProvider?.value || 'anthropic';
+        if (modelEl) modelEl.value = modelBadge?.textContent || '';
+        if (tempEl) {
+            tempEl.value = settingTemp?.value || '0.7';
+            if (tempVal) tempVal.textContent = tempEl.value;
+        }
+        // Close on outside click
+        const closeHandler = (e) => {
+            if (!tip.contains(e.target) && e.target.id !== 'sc-llm-btn') {
+                tip.classList.remove('open');
+                document.removeEventListener('click', closeHandler);
+            }
+        };
+        setTimeout(() => document.addEventListener('click', closeHandler), 0);
+    }
+};
+
+window.closeLLMTooltip = function() {
+    document.getElementById('quick-llm-tooltip')?.classList.remove('open');
+};
+
+window.applyLLMQuickConfig = async function() {
+    const provider = document.getElementById('ql-provider')?.value || 'anthropic';
+    const model = document.getElementById('ql-model')?.value || '';
+    const temp = document.getElementById('ql-temp')?.value || '0.7';
+    closeLLMTooltip();
+
+    // Update model badge
+    if (modelBadge) modelBadge.textContent = model || provider;
+    // Update shortcuts label
+    const label = document.getElementById('sc-model-label');
+    if (label) label.textContent = model ? model.slice(0, 8) : provider;
+
+    // Persist to localStorage for next session
+    localStorage.setItem('xmclaw_quick_llm', JSON.stringify({ provider, model, temp }));
+
+    // Trigger settings save in background (non-blocking)
+    try {
+        const res = await fetch('/api/config');
+        const cfg = await res.json();
+        cfg.llm = cfg.llm || {};
+        cfg.llm.default_provider = provider;
+        cfg.llm[provider] = cfg.llm[provider] || {};
+        if (model) cfg.llm[provider].default_model = model;
+        if (settingTemp) settingTemp.value = temp;
+        await fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(cfg),
+        });
+        showToast('LLM 配置已应用');
+    } catch (e) {
+        showToast('配置应用失败: ' + e.message);
+    }
+};
+
+window.toggleEvolution = async function() {
+    const btn = document.getElementById('sc-evo-btn');
+    const enabled = !btn?.classList.contains('active');
+    btn?.classList.toggle('active', enabled);
+    try {
+        const res = await fetch('/api/config');
+        const cfg = await res.json();
+        cfg.evolution = cfg.evolution || {};
+        cfg.evolution.enabled = enabled;
+        await fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(cfg),
+        });
+        showToast(`进化功能已${enabled ? '开启' : '关闭'}`);
+    } catch {}
+};
+
+window.toggleChannelPanel = function() {
+    switchView('settings');
+    // Auto-switch to integrations tab
+    setTimeout(() => _switchSettingsTab('integrations'), 50);
+};
+
+// Track whether chat is in wide (full-width) or split layout
+let _chatLayoutWide = false;
+window.toggleChatLayout = function() {
+    const left = document.querySelector('.dashboard-left');
+    const right = document.querySelector('.dashboard-right');
+    _chatLayoutWide = !_chatLayoutWide;
+    if (left) {
+        if (_chatLayoutWide) {
+            left.style.flex = '1';
+            if (right) right.style.display = 'none';
+        } else {
+            left.style.flex = '';
+            if (right) right.style.display = '';
+        }
+    }
+    const btn = document.getElementById('sc-view-btn');
+    if (btn) {
+        btn.classList.toggle('active', _chatLayoutWide);
+        btn.title = _chatLayoutWide ? '切换到分栏布局' : '切换到全宽布局';
+    }
+};
+
+// Load quick LLM from localStorage on init
+(function loadQuickLLM() {
+    try {
+        const saved = JSON.parse(localStorage.getItem('xmclaw_quick_llm') || '{}');
+        if (saved.model) {
+            const label = document.getElementById('sc-model-label');
+            if (label) label.textContent = saved.model.slice(0, 8);
+        }
+    } catch {}
+})();
+
+// ── Enhanced inline edit overlay ─────────────────────────────────────────────
+window._editMessage = function(btn) {
+    const row = btn.closest('.message-row');
+    const msgEl = row?.querySelector('.message');
+    if (!msgEl) return;
+    const original = msgEl.dataset.original || msgEl.textContent;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'msg-edit-overlay';
+    overlay.innerHTML = `
+        <div class="msg-edit-box">
+            <div class="msg-edit-header">编辑消息</div>
+            <textarea class="msg-edit-textarea" id="edit-textarea">${escapeHtml(original)}</textarea>
+            <div class="msg-edit-footer">
+                <button class="cancel" id="edit-cancel">取消</button>
+                <button class="submit" id="edit-submit">发送修改</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+    const ta = document.getElementById('edit-textarea');
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+
+    document.getElementById('edit-cancel').onclick = () => overlay.remove();
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+    document.getElementById('edit-submit').onclick = () => {
+        const newText = ta.value.trim();
+        overlay.remove();
+        if (!newText || newText === original.trim()) return;
+        // Mark old row as superseded
+        row.style.opacity = '0.4';
+        // Send edited message
+        input.value = newText;
+        sendMessage();
+    };
+
+    ta.onkeydown = (e) => {
+        if (e.key === 'Escape') overlay.remove();
+        if (e.key === 'Enter' && e.ctrlKey) document.getElementById('edit-submit').click();
+    };
+};
+
+// ── WS message renderer (registered as global handler above) ───────────────────
+/**
+ * Single-entry WS message renderer. Dispatches to typed handlers using
+ * the same logic as the original ws.onmessage switch statement.
+ * Registered via window.wsSetGlobalHandler so ws.js calls this for
+ * every non-built-in WS message.
+ */
+function _wsRenderer(data) {
+    // pong: no-op (already filtered in ws.js)
+    if (data.type === 'pong') return;
+    logConsole('ws', `收到消息: ${data.type}`, data);
+
+    if (data.type === 'chunk') {
+        removeTyping();
+        isStreaming = true;
+        if (!currentMessageEl) currentMessageEl = addMessage('', 'agent');
+        appendChunk(currentMessageEl, data.content);
+        // Live plan detection: accumulate in dev panel
+        if (window._devPanel) {
+            const rawText = _rawTextMap.get(currentMessageEl) || '';
+            if (rawText.includes('计划') || rawText.includes('步骤') || /\d+[.)：、]/.test(rawText)) {
+                window._devPanel.setPlan(rawText);
+            }
+        }
+        scrollToBottom();
+    } else if (data.type === 'tool_start') {
+        removeTyping();
+        const toolName = data.tool || 'tool';
+        const callId = data.call_id || `call_${toolName}_${Date.now()}`;
+        setAgentState('TOOL_CALL', `正在使用 ${toolName}...`);
+        activeTool.textContent = toolName;
+        const { el, id } = _makeToolCard(toolName, callId, data.args || {});
+        const row = document.createElement('div');
+        row.className = 'message-row tool';
+        row.appendChild(el);
+        chat.appendChild(row);
+        scrollToBottom();
+        toolHistory.unshift({ tool: toolName, args: data.args, result: null, time: Date.now(), call_id: callId });
+        if (toolHistory.length > 50) toolHistory.pop();
+        renderRecentTools();
+        renderToolLog();
+        _toolCards.set(callId, { el, tool: toolName });
+        _updateToolCard(id, 'start', {});
+    } else if (data.type === 'tool_call') {
+        removeTyping();
+        const toolName = data.tool || 'tool';
+        setAgentState('TOOL_CALL', `正在使用 ${toolName}...`);
+        activeTool.textContent = toolName;
+        toolHistory.unshift({ tool: toolName, args: data.args, result: null, time: Date.now() });
+        if (toolHistory.length > 50) toolHistory.pop();
+        renderRecentTools();
+        renderToolLog();
+        addToolMessage(toolName);
+        scrollToBottom();
+    } else if (data.type === 'tool_result') {
+        if (toolHistory.length > 0) {
+            toolHistory[0].result = data.result;
+            renderRecentTools();
+            renderToolLog();
+        }
+        const callId = data.call_id || '';
+        if (callId && _toolCards.has(callId)) {
+            _updateToolCard(callId, 'result', data);
+            activeTool.textContent = '—';
+            setAgentState('THINKING', '处理结果中...');
+        } else {
+            addToolResultMessage(data.tool, data.result);
+            activeTool.textContent = '—';
+            setAgentState('THINKING', 'Processing result...');
+        }
+    } else if (data.type === 'file_op') {
+        setAgentState('SELF_MOD', `Modified ${data.file || 'file'}`);
+        activeFile.textContent = `${data.action || 'write'}: ${data.file || '-'}`;
+        addSelfMod(data.file, data.action);
+        // Forward to dev panel file diff tracker
+        if (window._devPanel) {
+            window._devPanel.addFileChange(data.file || '', data.action || 'write');
+        }
+        if (currentView !== 'dashboard') showToast(`Self-mod: ${data.action} ${data.file}`);
+    } else if (data.type === 'state') {
+        setAgentState(data.state, data.thought);
+        // When entering PLANNING state, open the dev panel to plan tab
+        if (data.state === 'PLANNING' && window._devPanel) {
+            window._devPanel.switchTab('plan');
+            window._devPanel.open();
+        }
+    } else if (data.type === 'done') {
+        removeTyping();
+        if (currentMessageEl) flushChunk(currentMessageEl);
+        currentMessageEl = null;
+        isStreaming = false;
+        setAgentState('IDLE', 'Waiting for input...');
+        activeTool.textContent = '—';
+        activeFile.textContent = '—';
+        saveCurrentSession();
+        persistSessions();
+    } else if (data.type === 'error') {
+        removeTyping();
+        addMessage(data.content, 'error');
+        currentMessageEl = null;
+        setAgentState('IDLE', 'Error occurred');
+    } else if (data.type === 'cost') {
+        totalTokens += data.tokens || 0;
+        totalCost += data.cost || 0;
+        tokenDisplay.textContent = `${totalTokens.toLocaleString()} tokens`;
+        costDisplay.textContent = `$${totalCost.toFixed(4)}`;
+    } else if (data.type === 'evolution') {
+        if (data.gene) geneCount++;
+        if (data.skill) skillCount++;
+        evolutionCount.textContent = `${geneCount} Genes · ${skillCount} Skills`;
+        addTimelineEvent(data.subtype || 'gene', data.title, data.desc);
+    } else if (data.type === 'reflection') {
+        addReflectionMessage(data.data || {}, data.improvement || {});
+        addTimelineEvent('reflection', '反思完成', data.data?.summary || '');
+    } else if (data.type === 'ask_user') {
+        showAskUserDialog(data.question);
+    } else if (data.type === 'event') {
+        handleBusEvent(data.event);
+    } else if (data.type === 'transcription') {
+        input.value = data.text || '';
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+    }
+}
+
+// ── WS lifecycle hooks (registered above) ──────────────────────────────────────
+function _wsOnConnect() {
+    statusDot.classList.add('connected');
+    statusText.textContent = 'Connected';
+    statusText.style.color = 'var(--accent)';
+    loadTodos();
+    loadTasks();
+    loadEvolutionStatus();
+    if (window.wsQueuedCount && window.wsQueuedCount() > 0) {
+        showToast(`⚠️ ${window.wsQueuedCount()} 条消息因离线未能发送`);
+    }
+}
+
+function _wsOnDisconnect(delay) {
+    statusDot.classList.remove('connected');
+    const delaySec = Math.round(delay / 1000);
+    statusText.textContent = `Reconnecting in ${delaySec}s...`;
+    statusText.style.color = 'var(--text-dim)';
+}
+
+function _wsOnError(e) {
+    console.error('ws_error', e);
+    logConsole('ws_error', 'WebSocket error', {});
+    statusText.textContent = 'Connection error';
+    statusText.style.color = '#ef9a9a';
+}

@@ -1,5 +1,5 @@
 """
-Skill that automatically resolves user‑reported error 2 by diagnosing the issue, retrying the failed operation, logging steps, and confirming the fix to the user.
+Skill that automatically resolves user-reported error 2 by diagnosing the issue, retrying the failed operation, logging steps, and confirming the fix to the user.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class Fixerror2skill(GeneBase):
     gene_id = "gene_f2f98614"
     name = "FixError2Skill"
-    description = """Skill that automatically resolves user‑reported error 2 by diagnosing the issue, retrying the failed operation, logging steps, and confirming the fix to the user."""
+    description = """Skill that automatically resolves user-reported error 2 by diagnosing the issue, retrying the failed operation, logging steps, and confirming the fix to the user."""
     trigger = "User message contains 'fix error 2' or system detects error code 2."
 
     async def evaluate(self, context: dict) -> bool:

@@ -1,5 +1,5 @@
 """
-A skill that logs user‑reported errors and attempts to apply a known fix. Triggered when the user mentions a broken state or an error number (e.g., 'error 2').
+A skill that logs user-reported errors and attempts to apply a known fix. Triggered when the user mentions a broken state or an error number (e.g., 'error 2').
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class Errorfixskill(GeneBase):
     gene_id = "gene_5330ba74"
     name = "ErrorFixSkill"
-    description = """A skill that logs user‑reported errors and attempts to apply a known fix. Triggered when the user mentions a broken state or an error number (e.g., 'error 2')."""
+    description = """A skill that logs user-reported errors and attempts to apply a known fix. Triggered when the user mentions a broken state or an error number (e.g., 'error 2')."""
     trigger = "User message contains 'error' or 'broken'"
 
     async def evaluate(self, context: dict) -> bool:

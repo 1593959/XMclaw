@@ -1,5 +1,5 @@
 """
-A skill that listens for user reports of a broken feature involving error 3, locates the error in the system logs, attempts to apply a fix, and confirms resolution to the user.
+A skill that listens for user reports of a broken feature involving error 3, locates the error in the system logs, attempts to apply a fix, and confirms resolution to the user.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class Fixerror3skill(GeneBase):
     gene_id = "gene_4171e741"
     name = "FixError3Skill"
-    description = """A skill that listens for user reports of a broken feature involving error 3, locates the error in the system logs, attempts to apply a fix, and confirms resolution to the user."""
+    description = """A skill that listens for user reports of a broken feature involving error 3, locates the error in the system logs, attempts to apply a fix, and confirms resolution to the user."""
     trigger = "User reports a broken issue and mentions 'error 3' in the same message"
 
     async def evaluate(self, context: dict) -> bool:

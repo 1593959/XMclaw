@@ -34,7 +34,7 @@ python -m xmclaw.cli.main --help
 ### Daemon management
 
 ```bash
-# Start the Daemon
+# Start the Daemon (first run triggers setup wizard if no config)
 xmclaw start
 
 # Stop the Daemon
@@ -42,6 +42,9 @@ xmclaw stop
 
 # Check Daemon status
 xmclaw status
+
+# Diagnose setup issues (API keys, ports, dependencies)
+xmclaw doctor
 ```
 
 ### Chat
@@ -82,7 +85,7 @@ xmclaw evolution-status
 ### Memory
 
 ```bash
-# Search memory files
+# Search agent memory files
 xmclaw memory-search "database config"
 
 # Search a specific agent's memory
@@ -92,43 +95,64 @@ xmclaw memory-search "project progress" --agent default
 ### Configuration
 
 ```bash
-# Display current agent config
-xmclaw config-show
+# Show current daemon config (secrets are masked as ***)
+xmclaw config show
+
+# Set a config value — supports dot-notation for nested keys
+xmclaw config set evolution.interval_minutes 15
+xmclaw config set evolution.enabled false
+xmclaw config set llm.default_provider openai
+xmclaw config set tools.browser_headless true
+
+# Reset a key to its default value
+xmclaw config reset evolution.interval_minutes
+
+# Reset entire config to defaults
+xmclaw config reset all
+
+# Run the interactive first-run setup wizard
+xmclaw config init
 ```
+
+#### Environment variable overrides
+
+Config values can be overridden via environment variables (useful for containers/CI):
+
+```bash
+# Format: XMC__{section}__{nested_key}
+export XMC__llm__anthropic__api_key="sk-ant-..."
+export XMC__llm__openai__api_key="sk-..."
+export XMC__evolution__enabled="false"
+export XMC__gateway__port="8765"
+```
+
+Environment variables take precedence over `daemon/config.json`.
 
 ### Testing
 
 ```bash
-# Run the full test suite
-xmclaw test --action run_all
+# Run all tests
+xmclaw test
 
-# Generate tests for a specific module
-xmclaw test --action generate --target xmclaw/tools/bash.py
-
-# Run a specific test file
-xmclaw test --action run --target tests/test_bash.py
+# Run tests for a specific module
+xmclaw test --module bash
 ```
 
-### Computer Use
+### Utilities
 
 ```bash
-# Take a screenshot
-xmclaw computer-use screenshot
+# Print shell completion setup instructions
+xmclaw completion
 
-# Click at coordinates
-xmclaw computer-use click --x 500 --y 300
+# Print environment variable override reference
+xmclaw config env
 
-# Type text
-xmclaw computer-use type --text "hello world"
+# Diagnose common setup issues
+xmclaw doctor
 
-# Press a key combo
-xmclaw computer-use keypress --key ctrl+c
-
-# Scroll
-xmclaw computer-use scroll --x 500 --y 300 --scroll-y -200
-
-# Drag
-xmclaw computer-use drag --x 100 --y 100 --end-x 300 --end-y 300
+# View recent event bus activity
+xmclaw events --limit 50
+xmclaw events --type tool:called
 ```
 
 ---
@@ -173,6 +197,8 @@ You: Yes, but skip step 3 for now
 python -m xmclaw.cli.main start
 python -m xmclaw.cli.main chat --plan
 python -m xmclaw.cli.main evolution-status
+python -m xmclaw.cli.main config show
+python -m xmclaw.cli.main doctor
 ```
 
 ---

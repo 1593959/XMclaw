@@ -1,5 +1,5 @@
 """
-Detects when the same error occurs repeatedly within a short time window and automatically triggers a mitigation action to reduce user impact.
+Detects when the same error occurs repeatedly within a short time window and automatically triggers a mitigation action to reduce user impact. Auto-generated Gene for XMclaw.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase

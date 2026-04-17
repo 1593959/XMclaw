@@ -1,5 +1,5 @@
 """
-Skill that handles user reports of broken functionality and attempts to fix error 3.
+Skill that handles user reports of broken functionality and attempts to fix error 3. Auto-generated Gene for XMclaw.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class Fixerror3skill(GeneBase):
     gene_id = "gene_07204cbe"
     name = "FixError3Skill"
-    description = """Skill that handles user reports of broken functionality and attempts to fix error 3."""
+    description = """Skill that handles user reports of broken functionality and attempts to fix error 3."""
     trigger = "user_message contains 'broken' and contains 'error 3'"
 
     async def evaluate(self, context: dict) -> bool:

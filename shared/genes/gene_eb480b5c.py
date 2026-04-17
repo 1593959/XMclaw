@@ -1,5 +1,5 @@
 """
-Automatically re‑fixes a bug that is reported again after it has already been fixed once. This gene triggers when a previously resolved bug is reopened, runs the same fix steps that were used before, notifies the team, and updates the issue status.
+Automatically re-fixes a bug that is reported again after it has already been fixed once. This gene triggers when a previously resolved bug is reopened, runs the same fix steps that were used before, notifies the team, and updates the issue status.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class FixBugReOccurrence(GeneBase):
     gene_id = "gene_eb480b5c"
     name = "Fix Bug Re-occurrence"
-    description = """Automatically re‑fixes a bug that is reported again after it has already been fixed once. This gene triggers when a previously resolved bug is reopened, runs the same fix steps that were used before, notifies the team, and updates the issue status."""
+    description = """Automatically re-fixes a bug that is reported again after it has already been fixed once. This gene triggers when a previously resolved bug is reopened, runs the same fix steps that were used before, notifies the team, and updates the issue status."""
     trigger = "{'type': 'issue_reopened', 'conditions': {'label': 'bug', 'previous_fix_applied': True}}"
 
     async def evaluate(self, context: dict) -> bool:
@@ -39,7 +39,7 @@ class FixBugReOccurrence(GeneBase):
         patch = fix_data.get("patch")
         regression_tests = fix_data.get("regression_tests")
         
-        # Step 1: Re‑run diagnostic scripts that identified the original bug
+        # Step 1: Re-run diagnostic scripts that identified the original bug
         diagnostic_results = []
         if diagnostic_scripts:
             try:
@@ -69,10 +69,10 @@ class FixBugReOccurrence(GeneBase):
         else:
             regression_result = "No regression tests recorded."
         
-        # Step 4: Notify the development team of the re‑fix
+        # Step 4: Notify the development team of the re-fix
         notification_message = (
-            f"Bug '{issue.get('title')}' (ID: {issue['id']}) has been automatically re‑fixed "
-            "after being reopened. Previous fix steps were re‑applied."
+            f"Bug '{issue.get('title')}' (ID: {issue['id']}) has been automatically re-fixed "
+            "after being reopened. Previous fix steps were re-applied."
         )
         try:
             notification = await notify_team(channel="dev-team", message=notification_message)
@@ -81,7 +81,7 @@ class FixBugReOccurrence(GeneBase):
         
         # Step 5: Update the issue status to "resolved" and add a comment noting the repeat fix
         comment = (
-            "This issue was automatically re‑fixed using the same fix steps that resolved it previously. "
+            "This issue was automatically re-fixed using the same fix steps that resolved it previously. "
             f"Diagnostic scripts: {diagnostic_results}. "
             f"Patch application: {apply_result}. "
             f"Regression tests: {regression_result}."
@@ -97,7 +97,7 @@ class FixBugReOccurrence(GeneBase):
         
         # Compose final result summary
         return (
-            f"Bug re‑fix completed successfully. "
+            f"Bug re-fix completed successfully. "
             f"Diagnostic results: {diagnostic_results}. "
             f"Patch applied: {apply_result}. "
             f"Regression tests: {regression_result}. "

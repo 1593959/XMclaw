@@ -1,5 +1,5 @@
 """
-Automatically detects and resolves error 3 reported by users, diagnosing the broken component and applying a fix.
+Automatically detects and resolves error 3 reported by users, diagnosing the broken component and applying a fix. Auto-generated Gene for XMclaw.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -8,7 +8,7 @@ class Fixerror3skill(GeneBase):
     gene_id = "gene_61bb7397"
     name = "FixError3Skill"
     description = """Automatically detects and resolves error 3 reported by users, diagnosing the broken component and applying a fix."""
-    trigger = "User input contains 'broken' and 'error 3' (case‑insensitive), e.g., 'this is broken, please fix error 3'."
+    trigger = "User input contains 'broken' and 'error 3' (case-insensitive), e.g., 'this is broken, please fix error 3'."
 
     async def evaluate(self, context: dict) -> bool:
         """Return True if this gene should activate."""

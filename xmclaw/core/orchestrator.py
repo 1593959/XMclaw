@@ -25,6 +25,10 @@ class AgentOrchestrator:
         await self.tools.load_all()
         await self.memory.initialize()
         AgentOrchestrator._tool_memory = self.memory
+        # Share the tool registry with the evolution engine so skill reloads
+        # update the same live registry that agents use.
+        from xmclaw.tools.registry import ToolRegistry
+        ToolRegistry.set_shared(self.tools)
         logger.info("orchestrator_ready")
 
     async def shutdown(self) -> None:
@@ -40,6 +44,17 @@ class AgentOrchestrator:
 
     # ── Single agent ──────────────────────────────────────────────────────────
 
+    async def get_or_create_agent(self, agent_id: str) -> AgentLoop:
+        """Get or create an agent instance. Used by integrations."""
+        if agent_id not in self.agents:
+            self.agents[agent_id] = AgentLoop(
+                agent_id=agent_id,
+                llm_router=self.llm,
+                tools=self.tools,
+                memory=self.memory,
+            )
+        return self.agents[agent_id]
+
     async def run_agent(self, agent_id: str, user_input: str):
         """Run a single agent and yield response chunks."""
         await self._event_bus.publish(Event(
@@ -49,6 +64,7 @@ class AgentOrchestrator:
             payload={"agent_id": agent_id, "input_preview": user_input[:100]},
         ))
 
+        # Ensure agent exists
         if agent_id not in self.agents:
             self.agents[agent_id] = AgentLoop(
                 agent_id=agent_id,
@@ -179,6 +195,93 @@ class AgentOrchestrator:
             agent_id: "running" if agent_id in self.agents else "unknown"
             for agent_id in agent_ids
         }
+
+    async def run_team(
+        self,
+        team_name: str,
+        task: str,
+        parallel: bool = True,
+    ) -> dict[str, str]:
+        """
+        Run a task across all agents in a team.
+
+        Args:
+            team_name: Name of the team
+            task: Task description (broadcast to all agents)
+            parallel: If True, run all agents simultaneously. If False, run sequentially.
+
+        Returns:
+            Dict of agent_id -> result string
+        """
+        agent_ids = self._teams.get(team_name, [])
+        if not agent_ids:
+            return {}
+
+        results: dict[str, str] = {}
+
+        if parallel:
+            import asyncio
+            async def run_one(aid: str) -> tuple[str, str]:
+                try:
+                    chunks = []
+                    async for chunk in self.agents[aid].run(task):
+                        chunks.append(chunk)
+                    return aid, "".join(chunks)
+                except Exception as e:
+                    return aid, f"[Error: {e}]"
+            gathered = await asyncio.gather(*[run_one(aid) for aid in agent_ids], return_exceptions=True)
+            for item in gathered:
+                if isinstance(item, Exception):
+                    continue
+                aid, result = item
+                results[aid] = result
+        else:
+            for aid in agent_ids:
+                try:
+                    chunks = []
+                    async for chunk in self.agents[aid].run(task):
+                        chunks.append(chunk)
+                    results[aid] = "".join(chunks)
+                except Exception as e:
+                    results[aid] = f"[Error: {e}]"
+
+        return results
+
+    async def merge_results(self, results: dict[str, str], strategy: str = "concat") -> str:
+        """
+        Merge results from multiple agents into a single response.
+
+        Args:
+            results: Dict of agent_id -> result string
+            strategy: Merge strategy — 'concat' (newline separated), 'first' (return first non-empty), 'vote' (majority)
+
+        Returns:
+            Merged result string
+        """
+        non_empty = {k: v for k, v in results.items() if v and not v.startswith("[Error")}
+        if not non_empty:
+            return "No successful results."
+
+        if strategy == "first":
+            return next(iter(non_empty.values()))
+
+        if strategy == "concat":
+            lines = []
+            for aid, result in non_empty.items():
+                lines.append(f"--- {aid} ---")
+                lines.append(result.strip())
+            return "\n".join(lines)
+
+        if strategy == "vote":
+            # Simple majority: count identical answers
+            from collections import Counter
+            answers = [r.strip() for r in non_empty.values() if len(r.strip()) < 500]
+            if not answers:
+                return next(iter(non_empty.values()))
+            counted = Counter(answers)
+            return counted.most_common(1)[0][0]
+
+        return "\n".join(non_empty.values())
 
     # ── Event bus access ───────────────────────────────────────────────────────
 

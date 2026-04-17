@@ -1,5 +1,5 @@
 """
-Skill that automatically resolves error 4 reported by users
+Skill that automatically resolves error 4 reported by users Auto-generated Gene for XMclaw.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase

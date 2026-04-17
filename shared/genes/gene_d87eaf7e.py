@@ -1,5 +1,5 @@
 """
-Skill to resolve user‑reported error 4 by diagnosing the issue, resetting the relevant service, retrying the operation, and confirming the fix.
+Skill to resolve user-reported error 4 by diagnosing the issue, resetting the relevant service, retrying the operation, and confirming the fix.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,8 +7,8 @@ from xmclaw.genes.base import GeneBase
 class Fixerror4(GeneBase):
     gene_id = "gene_d87eaf7e"
     name = "FixError4"
-    description = """Skill to resolve user‑reported error 4 by diagnosing the issue, resetting the relevant service, retrying the operation, and confirming the fix."""
-    trigger = "User reports 'this is broken, please fix error 4' or the system detects error code 4 in logs."
+    description = """Skill to resolve user-reported error 4 by diagnosing the issue, resetting the relevant service, retrying the operation, and confirming the fix."""
+    trigger = "User reports 'this is broken, please fix error 4' or the system detects error code 4 in logs."
 
     async def evaluate(self, context: dict) -> bool:
         """Return True if this gene should activate."""

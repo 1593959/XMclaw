@@ -1,5 +1,5 @@
 """
-Automatically processes user‑reported bug issues by creating a bug ticket, assigning the development team, notifying the user, and setting the ticket status to Open.
+Automatically processes user-reported bug issues by creating a bug ticket, assigning the development team, notifying the user, and setting the ticket status to Open.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class Bugreporthandler(GeneBase):
     gene_id = "gene_dcc67cc1"
     name = "BugReportHandler"
-    description = """Automatically processes user‑reported bug issues by creating a bug ticket, assigning the development team, notifying the user, and setting the ticket status to Open."""
+    description = """Automatically processes user-reported bug issues by creating a bug ticket, assigning the development team, notifying the user, and setting the ticket status to Open."""
     trigger = "{'type': 'event', 'event': 'user.reported_issue', 'filters': {'issue_type': 'bug'}}"
 
     async def evaluate(self, context: dict) -> bool:

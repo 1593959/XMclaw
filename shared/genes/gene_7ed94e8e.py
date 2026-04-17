@@ -1,5 +1,5 @@
 """
-Skill that attempts to resolve error 4 when a user reports it as broken.
+Skill that attempts to resolve error 4 when a user reports it as broken.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -7,7 +7,7 @@ from xmclaw.genes.base import GeneBase
 class Fixerror4skill(GeneBase):
     gene_id = "gene_7ed94e8e"
     name = "FixError4Skill"
-    description = """Skill that attempts to resolve error 4 when a user reports it as broken."""
+    description = """Skill that attempts to resolve error 4 when a user reports it as broken."""
     trigger = "error 4"
 
     async def evaluate(self, context: dict) -> bool:

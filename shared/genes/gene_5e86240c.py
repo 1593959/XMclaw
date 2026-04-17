@@ -1,5 +1,5 @@
 """
-A skill that automatically handles user reports of broken functionality and resolves error 3 by diagnosing the issue, applying a fix, and notifying the user.
+A skill that automatically handles user reports of broken functionality and resolves error 3 by diagnosing the issue, applying a fix, and notifying the user. Auto-generated Gene for XMclaw.
 Auto-generated Gene for XMclaw.
 """
 from xmclaw.genes.base import GeneBase
@@ -23,8 +23,8 @@ class Fixerror3skill(GeneBase):
         resolved = fix_error_three(error_context)
         # Build user-facing response
         response = {
-            'status': 'resolved',
-            'message': f'Error 3 has been fixed. Details: {resolved}'
+    'status': 'resolved',
+    'message': f'Error 3 has been fixed. Details: {resolved}'
         }
         return response
         return "Gene FixError3Skill activated."

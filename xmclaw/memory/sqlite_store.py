@@ -9,7 +9,7 @@ from typing import Any
 class SQLiteStore:
     def __init__(self, db_path: Path):
         self.db_path = db_path
-        self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        self.conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=30)
         self.conn.row_factory = sqlite3.Row
         self._init_tables()
 
@@ -30,7 +30,12 @@ class SQLiteStore:
                 name TEXT,
                 description TEXT,
                 trigger TEXT,
+                trigger_type TEXT DEFAULT 'keyword',
                 action TEXT,
+                priority INTEGER DEFAULT 5,
+                enabled INTEGER DEFAULT 1,
+                intents TEXT DEFAULT '[]',
+                regex_pattern TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS skills (
@@ -50,6 +55,8 @@ class SQLiteStore:
             );
         """)
         self.conn.commit()
+        # Migrate existing genes table: add missing columns if absent
+        self._migrate_genes_schema()
 
     def insert_insight(self, agent_id: str, insight: dict) -> None:
         self.conn.execute(
@@ -71,16 +78,43 @@ class SQLiteStore:
         )
         return [dict(row) for row in cursor.fetchall()]
 
+    def _migrate_genes_schema(self) -> None:
+        """Add missing columns to an existing genes table (no-op if already present)."""
+        cols_to_add = [
+            ("trigger_type", "TEXT DEFAULT 'keyword'"),
+            ("priority", "INTEGER DEFAULT 5"),
+            ("enabled", "INTEGER DEFAULT 1"),
+            ("intents", "TEXT DEFAULT '[]'"),
+            ("regex_pattern", "TEXT DEFAULT ''"),
+        ]
+        try:
+            for col_name, col_def in cols_to_add:
+                self.conn.execute(f"ALTER TABLE genes ADD COLUMN {col_name} {col_def}")
+            self.conn.commit()
+        except Exception:
+            pass  # Column already exists or table has no rows
+
     def insert_gene(self, agent_id: str, gene: dict) -> None:
+        import json
+        intents_val = gene.get("intents")
+        if isinstance(intents_val, list):
+            intents_val = json.dumps(intents_val)
         self.conn.execute(
-            "INSERT OR REPLACE INTO genes (id, agent_id, name, description, trigger, action) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO genes "
+            "(id, agent_id, name, description, trigger, trigger_type, action, priority, enabled, intents, regex_pattern) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 gene["id"],
                 agent_id,
                 gene.get("name"),
                 gene.get("description"),
                 gene.get("trigger"),
+                gene.get("trigger_type", "keyword"),
                 gene.get("action"),
+                gene.get("priority", 5),
+                1 if gene.get("enabled", True) else 0,
+                intents_val or "[]",
+                gene.get("regex_pattern", ""),
             ),
         )
         self.conn.commit()
