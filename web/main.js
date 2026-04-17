@@ -1763,4 +1763,5 @@ if (voiceBtn) {
 loadSessions();
 newSession();
 renderSessionList();
+switchView('dashboard');  // 默认显示 dashboard 视图
 connect();

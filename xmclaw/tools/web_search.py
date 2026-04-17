@@ -1,6 +1,4 @@
-"""Web search tool using Tavily or browser fallback."""
-import os
-import httpx
+"""Web search tool using browser automation."""
 from xmclaw.tools.base import Tool
 
 
@@ -19,56 +17,50 @@ class WebSearchTool(Tool):
     }
 
     async def execute(self, query: str, max_results: int = 5) -> str:
-        api_key = os.getenv("TAVILY_API_KEY", "")
+        """Use 360 search to find information."""
+        from playwright.async_api import async_playwright
+        import urllib.parse
         
-        # Try Tavily first if API key is available
-        if api_key:
-            try:
-                async with httpx.AsyncClient(timeout=30) as client:
-                    resp = await client.post(
-                        "https://api.tavily.com/search",
-                        json={
-                            "api_key": api_key,
-                            "query": query,
-                            "max_results": max_results,
-                            "search_depth": "basic",
-                        },
-                    )
-                    data = resp.json()
-                    results = data.get("results", [])
-                    if results:
-                        lines = []
-                        for r in results:
-                            lines.append(f"- {r.get('title')}: {r.get('url')}")
-                            lines.append(f"  {r.get('content', '')[:200]}")
-                        return "\n".join(lines)
-            except Exception as e:
-                pass  # Fall through to browser fallback
+        encoded_query = urllib.parse.quote(query)
+        search_url = f"https://www.so.com/s?q={encoded_query}"
         
-        # Fallback: use browser to search via Bing/Google
-        try:
-            from playwright.async_api import async_playwright
-            search_url = f"https://www.bing.com/search?q={query.replace(' ', '+')}"
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
             
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                page = await browser.new_page()
-                await page.goto(search_url, timeout=15000)
+            try:
+                await page.goto(search_url, timeout=15000, wait_until="domcontentloaded")
+                await page.wait_for_timeout(3000)
                 
-                # Wait for search results
-                await page.wait_for_selector('li.b_algo', timeout=8000)
-                
-                results = await page.query_selector_all('li.b_algo')
                 lines = []
+                
+                # 360 search result selectors
+                results = await page.query_selector_all('li.res-list')
+                
                 for i, r in enumerate(results[:max_results]):
-                    title_el = await r.query_selector('h2')
-                    snippet_el = await r.query_selector('div.b_caption p')
-                    if title_el:
-                        title = await title_el.inner_text()
-                        lines.append(f"- {title}")
-                    if snippet_el:
-                        snippet = await snippet_el.inner_text()
-                        lines.append(f"  {snippet[:200]}")
+                    try:
+                        # Get title
+                        title_el = await r.query_selector('h3 a, h3')
+                        title = await title_el.inner_text() if title_el else ""
+                        
+                        # Get link
+                        link = ""
+                        link_el = await r.query_selector('h3 a')
+                        if link_el:
+                            link = await link_el.get_attribute('href') or ""
+                        
+                        # Get snippet
+                        snippet_el = await r.query_selector('p.res-desc, p')
+                        snippet = await snippet_el.inner_text() if snippet_el else ""
+                        
+                        if title:
+                            lines.append(f"- {title[:100]}")
+                        if link:
+                            lines.append(f"  {link[:150]}")
+                        if snippet:
+                            lines.append(f"  {snippet[:200]}")
+                    except:
+                        pass
                 
                 await browser.close()
                 
@@ -76,5 +68,7 @@ class WebSearchTool(Tool):
                     return "\n".join(lines)
                 else:
                     return "No search results found."
-        except Exception as e:
-            return f"[Search Error: {e}]"
+                    
+            except Exception as e:
+                await browser.close()
+                return f"[Search Error: {e}]"
