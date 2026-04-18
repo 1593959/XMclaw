@@ -25,9 +25,6 @@ const testOutput = document.getElementById('test-output');
 
 const navItems = document.querySelectorAll('.nav-item');
 const views = document.querySelectorAll('.view');
-
-const WS_URL = 'ws://127.0.0.1:8765/agent/default';
-let ws = null;
 let currentMessageEl = null;
 let currentView = 'dashboard';
 let _rawTextMap = new Map();
@@ -1367,6 +1364,21 @@ function sendMessage() {
         finalText = `[PLAN MODE] ${text}`;
     }
 
+    // ── Fallback send (used only when websocket.js fails to load) ─────────────
+    function _sendSafe(payload) {
+        // Open a fresh WebSocket and send; used as last resort
+        try {
+            const s = new WebSocket('ws://127.0.0.1:8765/agent/default');
+            s.onopen = () => {
+                s.send(JSON.stringify(payload));
+                s.close();
+            };
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
     // Save to message history for Up/Down navigation
     _userHistory.push(text);
     if (_userHistory.length > 100) _userHistory = _userHistory.slice(-100);
@@ -2054,7 +2066,7 @@ if (voiceBtn) {
                     reader.onload = async (e) => {
                         if (voiceMode === 'send') {
                             // 模式1: 直接发送语音
-                            if (ws && ws.readyState === WebSocket.OPEN) {
+                            if (window.wsSend && window.wsIsConnected()) {
                                 // 显示语音消息
                                 const row = document.createElement('div');
                                 row.className = 'message-row user';
@@ -2069,13 +2081,15 @@ if (voiceBtn) {
                                 `;
                                 chat.appendChild(row);
                                 scrollToBottom();
-                                
-                                ws.send(JSON.stringify({
+
+                                window.wsSend({
                                     type: 'voice_input',
                                     audio: e.target.result,
                                     format: 'webm'
-                                }));
+                                });
                                 showToast('语音已发送');
+                            } else {
+                                showToast('⚠️ 未连接，请先建立连接');
                             }
                         } else {
                             // 模式2: 语音转文字
