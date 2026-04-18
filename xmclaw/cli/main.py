@@ -36,9 +36,9 @@ app.add_typer(sub_config, name="config")
 # ── Daemon ──────────────────────────────────────────────────────────────────
 
 @app.command()
-def start():
-    """Start the XMclaw daemon."""
-    start_daemon()
+def start(no_browser: bool = False):
+    """Start the XMclaw daemon (auto-opens browser by default)."""
+    start_daemon(open_browser=not no_browser)
 
 
 @app.command()

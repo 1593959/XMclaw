@@ -62,6 +62,30 @@ def _prompt_api_key(provider: str, default_url: str) -> tuple[str, str]:
         return (api_key, base_url)
 
 
+def _get_daemon_url() -> str:
+    """Get the daemon HTTP URL from config."""
+    try:
+        config_path = BASE_DIR / "daemon" / "config.json"
+        if config_path.exists():
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+            gw = data.get("gateway", {})
+            host = gw.get("host", "127.0.0.1")
+            port = gw.get("port", 8765)
+            return f"http://{host}:{port}"
+    except Exception:
+        pass
+    return "http://127.0.0.1:8765"
+
+
+def _open_browser(url: str) -> None:
+    """Open browser with the given URL."""
+    try:
+        import webbrowser
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+
 def run_setup_wizard() -> None:
     """Interactive first-run setup: collect API keys and write config."""
     try:
@@ -158,10 +182,13 @@ def run_setup_wizard() -> None:
         print(f"   OpenAI: {'已配置' if openai_key else '未配置'}")
 
 
-def start_daemon() -> int:
+def start_daemon(open_browser: bool = True) -> int:
     if is_running():
-        print("Daemon already running.")
-        return 1
+        url = _get_daemon_url()
+        print(f"Daemon already running at {url}")
+        if open_browser:
+            _open_browser(url)
+        return 0
 
     config_path = BASE_DIR / "daemon" / "config.json"
     if not config_path.exists():
@@ -169,7 +196,6 @@ def start_daemon() -> int:
             print("\n⚠️  配置文件不存在，将进入首次运行配置向导...")
             run_setup_wizard()
         else:
-            # Non-interactive: auto-create config with empty keys
             print("⚠️  config.json not found, creating with defaults (no API keys).")
             try:
                 from xmclaw.daemon.config import DaemonConfig
@@ -182,7 +208,6 @@ def start_daemon() -> int:
 
     if sys.platform == "win32":
         # Use the project's own .venv, not any external Python installation.
-        # BASE_DIR is C:\Users\15978\Desktop\XMclaw, so .venv is always alongside it.
         venv_python = BASE_DIR / ".venv" / "Scripts" / "python.exe"
         if venv_python.exists():
             python_exe = str(venv_python)
@@ -196,6 +221,10 @@ def start_daemon() -> int:
         )
         PID_FILE.write_text(str(proc.pid))
         print(f"Daemon started with PID {proc.pid}")
+        url = _get_daemon_url()
+        print(f"Open {url} in your browser")
+        if open_browser:
+            _open_browser(url)
         return 0
     else:
         print("Daemon start on non-Windows not yet implemented.")
