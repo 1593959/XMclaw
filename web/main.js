@@ -1798,4 +1798,4 @@ loadSessions();
 newSession();
 renderSessionList();
 switchView('dashboard');  // 默认显示 dashboard 视图
-connect();
+// connect() 已在 loadSettings() 之后调用，避免 WebSocket 重复连接
