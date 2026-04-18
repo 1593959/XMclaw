@@ -232,36 +232,73 @@
                         </div>
                     </div>
 
-                    <!-- Right panel: 实时操作展示 + 智能体状态 -->
+                    <!-- Right panel: 操作记录 + 状态 -->
                     <div class="dashboard-right" id="dashboard-right">
-                        <!-- 上方：实时操作展示（占位） -->
-                        <div class="right-top-panel" id="realtime-panel">
-                            <div class="realtime-placeholder">
-                                <span class="realtime-icon">⚡</span>
-                                <span class="realtime-title">实时操作展示</span>
-                                <span class="realtime-hint">（以后加功能）</span>
-                            </div>
-                        </div>
-                        <!-- 下方：智能体状态 -->
-                        <div class="panel" id="status-panel">
+                        <!-- 最近工具调用 -->
+                        <div class="panel">
                             <div class="panel-header">
-                                <span>智能体状态</span>
+                                <span>最近工具</span>
+                                <button class="panel-action-btn" id="clear-tools" title="清空">×</button>
+                            </div>
+                            <div class="panel-body" id="recent-tools"><div class="empty-state">No tools used yet</div></div>
+                        </div>
+                        <!-- 智能体状态 -->
+                        <div class="panel">
+                            <div class="panel-header">
+                                <span>状态</span>
                                 <span class="panel-badge" id="state-badge">空闲</span>
                             </div>
                             <div class="panel-body">
                                 <div class="state-item">
-                                    <div class="state-label">当前思考</div>
+                                    <div class="state-label">思考</div>
                                     <div class="state-value" id="current-thought">等待输入...</div>
                                 </div>
                                 <div class="state-item">
-                                    <div class="state-label">活跃工具</div>
+                                    <div class="state-label">工具</div>
                                     <div class="state-value" id="active-tool">—</div>
                                 </div>
                                 <div class="state-item">
-                                    <div class="state-label">文件操作</div>
+                                    <div class="state-label">文件</div>
                                     <div class="state-value" id="active-file">—</div>
                                 </div>
                             </div>
+                        </div>
+                        <!-- 待办事项 -->
+                        <div class="panel">
+                            <div class="panel-header">
+                                <span>待办</span>
+                                <button class="panel-action-btn" id="add-todo" title="添加">+</button>
+                            </div>
+                            <div class="panel-body" id="todo-list"><div class="empty-state">No todos</div></div>
+                        </div>
+                        <!-- 任务 -->
+                        <div class="panel">
+                            <div class="panel-header">
+                                <span>任务</span>
+                                <button class="panel-action-btn" id="add-task" title="添加">+</button>
+                            </div>
+                            <div class="panel-body" id="task-list"><div class="empty-state">No tasks</div></div>
+                        </div>
+                        <!-- Self-mod 历史 -->
+                        <div class="panel">
+                            <div class="panel-header"><span>Self-mod</span></div>
+                            <div class="panel-body" id="self-mod-log"><div class="empty-state">No self-modifications yet</div></div>
+                        </div>
+                        <!-- 会话列表 -->
+                        <div class="panel">
+                            <div class="panel-header">
+                                <span>会话</span>
+                                <button class="panel-action-btn" id="btn-new-chat" title="新会话">+</button>
+                            </div>
+                            <div class="panel-body" id="session-list"></div>
+                        </div>
+                        <!-- 控制台日志 -->
+                        <div class="panel">
+                            <div class="panel-header">
+                                <span>控制台</span>
+                                <button class="panel-action-btn" id="toggle-console-panel" title="切换">☰</button>
+                            </div>
+                            <div class="panel-body" id="console-logs"></div>
                         </div>
                     </div>
                 </div>

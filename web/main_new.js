@@ -70,7 +70,7 @@ function updateConsolePanel() {
 }
 
 function toggleConsolePanel() {
-    const panel = document.getElementById('console-panel');
+    const panel = document.getElementById('console-logs');
     if (!panel) return;
     panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
 }
@@ -1858,6 +1858,7 @@ function highlightSearch(term) {
 }
 
 document.getElementById('btn-new-chat')?.addEventListener('click', newSession);
+document.getElementById('toggle-console-panel')?.addEventListener('click', toggleConsolePanel);
 
 // ===== MULTI-AGENT =====
 async function loadAgentsView() {

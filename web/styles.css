@@ -488,6 +488,7 @@ html, body {
   flex-direction: column;
   background: var(--surface);
   border-left: 1px solid var(--border);
+  overflow-y: auto;
 }
 
 /* 上方：实时操作展示占位区 */
@@ -577,7 +578,23 @@ html, body {
 
 .panel-action:hover { background: var(--surface-2); color: var(--text); }
 
-.panel-body { padding: 10px 12px; }
+/* Action buttons in panel headers */
+.panel-action-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0 6px;
+  border-radius: 4px;
+  line-height: 1;
+  transition: all 0.12s;
+  flex-shrink: 0;
+}
+.panel-action-btn:hover { background: var(--surface-2); color: var(--text); }
+
+.panel-body { padding: 10px 12px; overflow-y: auto; max-height: 220px; }
 .panel-body.compact { padding: 6px 12px; }
 
 .state-item { margin-bottom: 10px; }
