@@ -181,9 +181,14 @@ def start_daemon() -> int:
                 pass
 
     if sys.platform == "win32":
-        # Use the same Python executable that is currently running.
-        # When .venv is activated, sys.executable points to .venv\Scripts\python.exe.
-        python_exe = sys.executable
+        # When .venv is activated: sys.prefix points to the venv root.
+        # Construct the venv's own python.exe rather than relying on sys.executable
+        # (which may still be the parent/interpreter path even after activation).
+        venv_python = Path(sys.prefix) / "Scripts" / "python.exe"
+        if venv_python.exists():
+            python_exe = str(venv_python)
+        else:
+            python_exe = sys.executable
         proc = subprocess.Popen(
             [python_exe, "-m", "xmclaw.daemon.server"],
             creationflags=subprocess.CREATE_NO_WINDOW,

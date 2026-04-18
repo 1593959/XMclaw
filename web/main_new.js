@@ -2290,16 +2290,6 @@ loadDraft();  // restore saved draft on refresh
 // Router: nav clicks, popstate, URL hash sync
 if (window.initRouter) window.initRouter();
 
-// WebSocket: inject the main_new.js message renderer as the global handler
-// so all WS messages are processed by the existing switch statement below.
-if (window.wsSetGlobalHandler) {
-    window.wsSetGlobalHandler(_wsRenderer);
-    window.wsOnConnect(_wsOnConnect);
-    window.wsOnDisconnect(_wsOnDisconnect);
-    window.wsOnError(_wsOnError);
-    window.wsConnect();
-}
-
 // Placeholder so existing callers (e.g. voice input) don't break.
 function connect() { if (window.wsConnect) window.wsConnect(); }
 
@@ -2734,6 +2724,14 @@ window.wsSetGlobalHandler = wsSetGlobalHandler;
 window.wsOnConnect = wsOnConnect;
 window.wsOnDisconnect = wsOnDisconnect;
 window.wsOnError = wsOnError;
+
+// ── WebSocket: register renderer and connect ──────────────────────────────────
+// (Moved here from the INIT section above so it runs AFTER window.ws* are set)
+window.wsSetGlobalHandler(_wsRenderer);
+window.wsOnConnect(_wsOnConnect);
+window.wsOnDisconnect(_wsOnDisconnect);
+window.wsOnError(_wsOnError);
+window.wsConnect();
 
 // ===== DEV PANEL: Operation Visualization =====
 class DevPanel {
