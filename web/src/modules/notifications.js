@@ -88,8 +88,10 @@ function handleReflectionComplete(payload) {
     }
 
     // If main_new.js addReflectionMessage exists, call it directly
-    if (typeof window._addReflectionMessage === 'function') {
-        window._addReflectionMessage(reflection, improvement);
+    if (typeof window.addReflectionMessage === 'function') {
+        window.addReflectionMessage(reflection, improvement);
+    } else if (typeof addReflectionMessage === 'function') {
+        addReflectionMessage(reflection, improvement);
     }
 }
 

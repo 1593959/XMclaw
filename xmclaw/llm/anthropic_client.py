@@ -43,7 +43,35 @@ class AnthropicClient:
                 if msg["role"] == "system":
                     system = msg["content"]
                 else:
-                    anthropic_messages.append({"role": msg["role"], "content": msg["content"]})
+                    content = msg.get("content", "")
+                    # Handle list-of-blocks content (tool_use, tool_result, text blocks)
+                    if isinstance(content, list):
+                        blocks = []
+                        for block in content:
+                            if isinstance(block, dict):
+                                if block.get("type") == "text":
+                                    text = block.get("text", "")
+                                    if text:
+                                        blocks.append({"type": "text", "text": text})
+                                elif block.get("type") == "tool_use":
+                                    blocks.append({
+                                        "type": "tool_use",
+                                        "id": block.get("id", ""),
+                                        "name": block.get("name", ""),
+                                        "input": block.get("input", {}),
+                                    })
+                                elif block.get("type") == "tool_result":
+                                    blocks.append({
+                                        "type": "tool_result",
+                                        "tool_use_id": block.get("tool_use_id", ""),
+                                        "content": str(block.get("content", "")),
+                                    })
+                            elif isinstance(block, str) and block.strip():
+                                blocks.append({"type": "text", "text": block})
+                        content = blocks
+                    elif not isinstance(content, str):
+                        content = str(content)
+                    anthropic_messages.append({"role": msg["role"], "content": content})
 
             # Build tool list for Claude
             claude_tools = []
