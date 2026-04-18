@@ -62,8 +62,11 @@ def _start_daemon_subprocess() -> subprocess.Popen:
         startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP
 
+    # Use the project's own .venv Python to ensure correct environment.
+    venv_python = _PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+    python_exe = str(venv_python) if venv_python.exists() else sys.executable
     process = subprocess.Popen(
-        [sys.executable, "-m", DAEMON_MODULE],
+        [python_exe, "-m", DAEMON_MODULE],
         stdout=log_file,
         stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,

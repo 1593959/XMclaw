@@ -181,10 +181,9 @@ def start_daemon() -> int:
                 pass
 
     if sys.platform == "win32":
-        # When .venv is activated: sys.prefix points to the venv root.
-        # Construct the venv's own python.exe rather than relying on sys.executable
-        # (which may still be the parent/interpreter path even after activation).
-        venv_python = Path(sys.prefix) / "Scripts" / "python.exe"
+        # Use the project's own .venv, not any external Python installation.
+        # BASE_DIR is C:\Users\15978\Desktop\XMclaw, so .venv is always alongside it.
+        venv_python = BASE_DIR / ".venv" / "Scripts" / "python.exe"
         if venv_python.exists():
             python_exe = str(venv_python)
         else:
