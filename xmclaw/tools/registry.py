@@ -17,7 +17,6 @@ from xmclaw.tools.glob_tool import GlobTool
 from xmclaw.tools.grep_tool import GrepTool
 from xmclaw.tools.ask_user import AskUserTool
 from xmclaw.tools.agent_tool import AgentTool
-from xmclaw.tools.skill_tool import SkillTool
 from xmclaw.tools.memory_search import MemorySearchTool
 from xmclaw.tools.git import GitTool
 from xmclaw.tools.computer_use import ComputerUseTool
@@ -52,7 +51,6 @@ _BUILTIN_TOOLS: list[type[Tool]] = [
     GrepTool,
     AskUserTool,
     AgentTool,
-    SkillTool,
     MemorySearchTool,
     GitTool,
     ComputerUseTool,
@@ -109,6 +107,14 @@ class ToolRegistry:
                 self._tools["test"] = TestTool(llm_router=self.llm)
             except Exception:
                 pass
+
+        # Lazy-load SkillTool to avoid circular import
+        # (skill_tool.py imports ToolRegistry; we avoid the module-level cycle here)
+        try:
+            from xmclaw.tools.skill_tool import SkillTool as _ST
+            self._tools["skill"] = _ST()
+        except Exception as e:
+            logger.warning("skill_tool_load_failed", error=str(e))
 
         # Generated skills
         await self._load_generated_skills()
