@@ -1,26 +1,27 @@
 :root {
-  --bg: #0D0D12;
-  --surface: #13131C;
-  --surface-2: #1A1A26;
-  --border: rgba(255,255,255,0.06);
-  --border-strong: rgba(255,255,255,0.12);
-  --text: #E2E2F0;
-  --text-dim: #64647A;
-  --text-faint: #32324A;
-  --accent: #6366F1;
-  --accent-dark: #4F46E5;
-  --accent-glow: rgba(99,102,241,0.2);
-  --accent-subtle: rgba(99,102,241,0.08);
-  --green: #10B981;
-  --green-bg: rgba(16,185,129,0.08);
-  --red: #F43F5E;
-  --red-bg: rgba(244,63,94,0.08);
-  --yellow: #F59E0B;
-  --yellow-bg: rgba(245,158,11,0.08);
-  --blue: #3B82F6;
-  --blue-bg: rgba(59,130,246,0.08);
-  --purple: #8B5CF6;
-  --purple-bg: rgba(139,92,246,0.08);
+  --bg: #FAF8F5;
+  --surface: #FFFFFF;
+  --surface-2: #F5F0EB;
+  --surface-3: #F0EBE3;
+  --border: #E8E0D8;
+  --border-strong: #D4C9BE;
+  --text: #3D405B;
+  --text-dim: #9A8F85;
+  --text-faint: #C4B8AD;
+  --accent: #E07A5F;
+  --accent-dark: #C96A52;
+  --accent-glow: rgba(224,122,95,0.2);
+  --accent-subtle: rgba(224,122,95,0.08);
+  --green: #81B29A;
+  --green-bg: rgba(129,178,154,0.1);
+  --red: #E07A5F;
+  --red-bg: rgba(224,122,95,0.08);
+  --yellow: #F2CC8F;
+  --yellow-bg: rgba(242,204,143,0.08);
+  --blue: #3D405B;
+  --blue-bg: rgba(61,64,91,0.08);
+  --purple: #9A8F85;
+  --purple-bg: rgba(154,143,133,0.08);
   --radius: 12px;
   --radius-sm: 8px;
   --radius-xs: 6px;
@@ -40,8 +41,8 @@ html, body {
 
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.07); border-radius: 2px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.14); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
 
 /* ===== APP LAYOUT ===== */
 .app { display: flex; height: 100vh; overflow: hidden; }
@@ -117,12 +118,12 @@ html, body {
   user-select: none;
 }
 
-.nav-item:hover { background: rgba(255,255,255,0.04); color: var(--text); }
+.nav-item:hover { background: var(--surface-2); color: var(--text); }
 
 .nav-item.active {
-  background: var(--accent-subtle);
+  background: var(--surface-3);
   color: var(--accent);
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .nav-item svg { flex-shrink: 0; }
@@ -481,19 +482,58 @@ html, body {
 
 /* ===== DASHBOARD RIGHT PANEL ===== */
 .dashboard-right {
-  width: 310px;
+  width: 300px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px;
   background: var(--surface);
-  overflow-y: auto;
+  border-left: 1px solid var(--border);
+}
+
+/* 上方：实时操作展示占位区 */
+.right-top-panel {
+  height: 300px;
+  flex-shrink: 0;
+  background: var(--surface-3);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.realtime-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+}
+
+.realtime-icon {
+  font-size: 28px;
+  opacity: 0.4;
+}
+
+.realtime-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.realtime-hint {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* 下方：智能体状态面板 */
+#status-panel {
+  flex: 1;
+  margin: 10px;
+  border-radius: var(--radius-sm);
 }
 
 /* ===== PANELS ===== */
 .panel {
-  background: var(--bg);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   overflow: hidden;
@@ -505,21 +545,21 @@ html, body {
   justify-content: space-between;
   padding: 9px 12px;
   border-bottom: 1px solid var(--border);
-  font-size: 10px;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 600;
   color: var(--text-dim);
   text-transform: uppercase;
-  letter-spacing: 0.6px;
-  background: var(--surface);
+  letter-spacing: 0.5px;
+  background: var(--surface-2);
 }
 
 .panel-badge {
-  padding: 2px 8px;
-  border-radius: 10px;
-  background: var(--accent-subtle);
-  color: var(--accent);
+  padding: 3px 10px;
+  border-radius: 12px;
+  background: var(--green-bg);
+  color: var(--green);
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
   text-transform: none;
   letter-spacing: 0;
 }

@@ -101,9 +101,8 @@
 
             <!-- ===== DASHBOARD ===== -->
             <div class="view active" id="view-dashboard">
-                <div class="dashboard">
-                    <!-- Floating shortcuts bar -->
-                    <div class="shortcuts-bar" id="shortcuts-bar">
+                <!-- Shortcuts bar (移到 dashboard 外面) -->
+                <div class="shortcuts-bar" id="shortcuts-bar">
                         <!-- Plan mode -->
                         <button class="sc-btn" id="sc-plan-btn" onclick="togglePlanMode()" title="计划模式">
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
@@ -176,8 +175,10 @@
                         </button>
                     </div>
 
-                    <!-- Chat area -->
-                    <div class="dashboard-left">
+                    <!-- Dashboard main area -->
+                    <div class="dashboard">
+                        <!-- Chat area -->
+                        <div class="dashboard-left">
                         <div class="plan-mode-bar" id="plan-mode-bar" style="display:none">
                             <span style="display:flex;align-items:center;gap:7px">
                                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
@@ -231,9 +232,18 @@
                         </div>
                     </div>
 
-                    <!-- Right panels -->
-                    <div class="dashboard-right">
-                        <div class="panel">
+                    <!-- Right panel: 实时操作展示 + 智能体状态 -->
+                    <div class="dashboard-right" id="dashboard-right">
+                        <!-- 上方：实时操作展示（占位） -->
+                        <div class="right-top-panel" id="realtime-panel">
+                            <div class="realtime-placeholder">
+                                <span class="realtime-icon">⚡</span>
+                                <span class="realtime-title">实时操作展示</span>
+                                <span class="realtime-hint">（以后加功能）</span>
+                            </div>
+                        </div>
+                        <!-- 下方：智能体状态 -->
+                        <div class="panel" id="status-panel">
                             <div class="panel-header">
                                 <span>智能体状态</span>
                                 <span class="panel-badge" id="state-badge">空闲</span>
@@ -251,55 +261,6 @@
                                     <div class="state-label">文件操作</div>
                                     <div class="state-value" id="active-file">—</div>
                                 </div>
-                            </div>
-                        </div>
-
-                        <div class="panel">
-                            <div class="panel-header">
-                                <span>待办事项</span>
-                                <button class="panel-action" id="add-todo">+ 添加</button>
-                            </div>
-                            <div class="panel-body compact" id="todo-list">
-                                <div class="empty-state">暂无待办</div>
-                            </div>
-                        </div>
-
-                        <div class="panel">
-                            <div class="panel-header">
-                                <span>任务列表</span>
-                                <button class="panel-action" id="add-task">+ 添加</button>
-                            </div>
-                            <div class="panel-body compact" id="task-list">
-                                <div class="empty-state">暂无任务</div>
-                            </div>
-                        </div>
-
-                        <div class="panel">
-                            <div class="panel-header">
-                                <span>最近工具调用</span>
-                                <button class="panel-action" id="clear-tools">清空</button>
-                            </div>
-                            <div class="panel-body compact" id="recent-tools">
-                                <div class="empty-state">尚未使用工具</div>
-                            </div>
-                        </div>
-
-                        <div class="panel">
-                            <div class="panel-header">
-                                <span>实时日志</span>
-                                <button class="panel-action" id="toggle-console" onclick="toggleConsolePanel()">显示/隐藏</button>
-                            </div>
-                            <div class="panel-body compact" id="console-panel" style="display:none;max-height:200px;overflow-y:auto;background:#111">
-                                <div id="console-logs">
-                                    <div class="empty-state">等待消息...</div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="panel">
-                            <div class="panel-header"><span>自修改记录</span></div>
-                            <div class="panel-body compact" id="self-mod-log">
-                                <div class="empty-state">暂无自修改</div>
                             </div>
                         </div>
                     </div>

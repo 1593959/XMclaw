@@ -178,6 +178,7 @@ function _updateToolCard(id, eventType, data) {
 // 会话持久化到 localStorage
 const SESSIONS_KEY = 'xmclaw_sessions';
 const CURRENT_SESSION_KEY = 'xmclaw_current_session';
+const STATE_KEY = 'xmclaw_state';
 
 function loadSessions() {
     try {
@@ -200,6 +201,59 @@ function persistSessions() {
     } catch (e) {
         console.error('persistSessions error', e);
     }
+}
+
+// ── State persistence ────────────────────────────────────────────────────────────
+function loadState() {
+    try {
+        const raw = localStorage.getItem(STATE_KEY);
+        if (!raw) return;
+        const s = JSON.parse(raw);
+        if (s.toolHistory)  toolHistory    = s.toolHistory;
+        if (s.selfModHistory) selfModHistory = s.selfModHistory;
+        if (s.geneCount)   geneCount     = s.geneCount;
+        if (s.skillCount)  skillCount    = s.skillCount;
+        if (s.totalTokens) totalTokens   = s.totalTokens;
+        if (s.totalCost)  totalCost     = s.totalCost;
+        if (s.todos)       todos         = s.todos;
+        if (s.tasks)       tasks         = s.tasks;
+        // Restore UI displays
+        if (geneCount !== undefined || skillCount !== undefined) {
+            evolutionCount.textContent = `${geneCount} Genes · ${skillCount} Skills`;
+        }
+        tokenDisplay.textContent = `${totalTokens.toLocaleString()} tokens`;
+        costDisplay.textContent  = `$${totalCost.toFixed(4)}`;
+        renderRecentTools();
+        renderSelfModLog();
+        renderToolLog();
+        renderTodos();
+        renderTasks();
+    } catch (e) {
+        console.error('loadState error', e);
+    }
+}
+
+function persistState() {
+    try {
+        localStorage.setItem(STATE_KEY, JSON.stringify({
+            toolHistory, selfModHistory,
+            geneCount, skillCount,
+            totalTokens, totalCost,
+            todos, tasks,
+        }));
+    } catch (e) {
+        console.error('persistState error', e);
+    }
+}
+
+// Rebuild _rawTextMap from DOM after restoring a session's HTML.
+// This allows copy/re-edit to work after page refresh.
+function _rebuildRawTextMap() {
+    _rawTextMap.clear();
+    document.querySelectorAll('.message-row.agent .message').forEach(el => {
+        // Use the textContent as the best available raw representation
+        _rawTextMap.set(el, el.textContent || '');
+    });
 }
 
 let sessions = [];
@@ -599,6 +653,7 @@ function addToolCall(tool, args, result) {
     if (toolHistory.length > 20) toolHistory.pop();
     renderRecentTools();
     renderToolLog();
+    persistState();
 }
 
 function addSelfMod(file, action) {
@@ -607,6 +662,7 @@ function addSelfMod(file, action) {
     if (selfModHistory.length > 20) selfModHistory.pop();
     renderSelfModLog();
     addTimelineEvent('self_mod', `Self-modification: ${action}`, file);
+    persistState();
 }
 
 function renderRecentTools() {
@@ -652,6 +708,7 @@ clearToolsBtn.addEventListener('click', () => {
     toolHistory = [];
     renderRecentTools();
     renderToolLog();
+    persistState();
 });
 
 async function runTestAction(action, target = '') {
@@ -725,6 +782,7 @@ async function saveTodos() {
             body: JSON.stringify(todos)
         });
     } catch {}
+    persistState();
 }
 
 addTodoBtn.addEventListener('click', async () => {
@@ -788,6 +846,7 @@ window.deleteTask = async function(idx) {
             body: JSON.stringify(tasks)
         });
     } catch {}
+    persistState();
 };
 
 addTaskBtn.addEventListener('click', async () => {
@@ -802,6 +861,7 @@ addTaskBtn.addEventListener('click', async () => {
             body: JSON.stringify(tasks)
         });
     } catch {}
+    persistState();
 });
 
 // Timeline
@@ -1070,14 +1130,35 @@ function handleBusEvent(evt) {
     if (!evt) return;
     const etype = evt.event_type || '';
     const payload = evt.payload || {};
+    
     if (etype === 'gene:activated') {
         geneCount++;
         evolutionCount.textContent = `${geneCount} Genes · ${skillCount} Skills`;
         addTimelineEvent('gene', `Gene 生成: ${payload.name || payload.gene_id || ''}`, `Score: ${payload.score || '?'}`);
+        if (window._devPanel) window._devPanel.addThought(`Gene 生成: ${payload.name || payload.gene_id}`);
     } else if (etype === 'skill:executed') {
         skillCount++;
         evolutionCount.textContent = `${geneCount} Genes · ${skillCount} Skills`;
         addTimelineEvent('skill', `Skill 生成: ${payload.name || payload.skill_id || ''}`, `Score: ${payload.score || '?'}`);
+        if (window._devPanel) window._devPanel.addThought(`Skill 生成: ${payload.name || payload.skill_id}`);
+    } else if (etype === 'plan:step') {
+        // Plan step event
+        if (window._devPanel) {
+            window._devPanel.addThought(`步骤 ${payload.step || '?'}: ${payload.action || ''}`);
+        }
+    } else if (etype === 'file:modified') {
+        // File modification event
+        if (window._devPanel) {
+            window._devPanel.addFileChange(payload.file || '', payload.action || 'modify');
+            if (payload.diff) {
+                window._devPanel.addDiff(payload.file || '', payload.diff);
+            }
+        }
+    } else if (etype === 'thought') {
+        // Thinking event
+        if (window._devPanel) {
+            window._devPanel.addThought(payload.text || '');
+        }
     }
 }
 
@@ -1146,6 +1227,54 @@ function addMessage(text, role) {
 
     const row = document.createElement('div');
     row.className = `message-row ${role}`;
+
+    // Left side: Visual status indicator with mini dev panel trigger
+    const statusIndicator = document.createElement('div');
+    statusIndicator.className = 'message-status-indicator';
+    
+    // Role-based icon
+    if (role === 'agent') {
+        statusIndicator.innerHTML = `
+            <div class="status-icon agent-icon" title="AI 助手 - 点击查看详情" onclick="_devPanel && _devPanel.open()">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2a10 10 0 1 0 10 10H12V2z"/>
+                    <circle cx="12" cy="10" r="3"/>
+                </svg>
+            </div>
+            <div class="tool-progress-line"></div>
+        `;
+        row.classList.add('has-dev-info');
+    } else if (role === 'user') {
+        statusIndicator.innerHTML = `
+            <div class="status-icon user-icon" title="用户">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                    <circle cx="12" cy="7" r="4"/>
+                </svg>
+            </div>
+        `;
+    } else if (role === 'tool') {
+        statusIndicator.innerHTML = `
+            <div class="status-icon tool-icon" title="工具调用">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                </svg>
+            </div>
+            <div class="tool-progress-line"></div>
+        `;
+        row.classList.add('has-dev-info');
+    }
+    
+    // Mini dev panel indicator for agent messages
+    if (role === 'agent') {
+        const miniIndicator = document.createElement('div');
+        miniIndicator.className = 'dev-mini-panel';
+        miniIndicator.title = '查看开发详情';
+        miniIndicator.onclick = () => { if (window._devPanel) window._devPanel.open(); };
+        row.appendChild(miniIndicator);
+    }
+    
+    row.appendChild(statusIndicator);
 
     const wrapper = document.createElement('div');
     wrapper.className = 'message-wrapper';
@@ -1526,6 +1655,7 @@ function saveCurrentSession() {
     }
     renderSessionList();
     persistSessions();
+    persistState();
 }
 
 function renderSessionList() {
@@ -1548,6 +1678,7 @@ function switchSession(id) {
     if (!s) return;
     currentSessionId = id;
     chat.innerHTML = s.html || '';
+    _rebuildRawTextMap();
     renderSessionList();
     persistSessions();
     if (chat.children.length === 0) showWelcome(); else hideWelcome();
@@ -2149,8 +2280,10 @@ if (voiceBtn) {
 // ===== INIT =====
 loadSessions();
 loadSettings();
+loadState();
 renderSessionList();
 if (!currentSessionId || sessions.length === 0) newSession();
+else _rebuildRawTextMap();  // restore raw text map for copy/re-edit
 loadDraft();  // restore saved draft on refresh
 
 // ── Wire up core modules ──────────────────────────────────────────────────────
@@ -2365,11 +2498,17 @@ function _wsRenderer(data) {
         isStreaming = true;
         if (!currentMessageEl) currentMessageEl = addMessage('', 'agent');
         appendChunk(currentMessageEl, data.content);
-        // Live plan detection: accumulate in dev panel
+        
+        // Live plan detection: update dev panel with current text
         if (window._devPanel) {
             const rawText = _rawTextMap.get(currentMessageEl) || '';
-            if (rawText.includes('计划') || rawText.includes('步骤') || /\d+[.)：、]/.test(rawText)) {
+            // Detect plan patterns
+            if (rawText.includes('计划') || rawText.includes('步骤') || rawText.includes('要做') || /\d+[.)：、]/.test(rawText)) {
                 window._devPanel.setPlan(rawText);
+                // Also add as thought
+                if (rawText.length > 20) {
+                    window._devPanel.addThought(rawText.slice(-200));
+                }
             }
         }
         scrollToBottom();
@@ -2454,11 +2593,13 @@ function _wsRenderer(data) {
         totalCost += data.cost || 0;
         tokenDisplay.textContent = `${totalTokens.toLocaleString()} tokens`;
         costDisplay.textContent = `$${totalCost.toFixed(4)}`;
+        persistState();
     } else if (data.type === 'evolution') {
         if (data.gene) geneCount++;
         if (data.skill) skillCount++;
         evolutionCount.textContent = `${geneCount} Genes · ${skillCount} Skills`;
         addTimelineEvent(data.subtype || 'gene', data.title, data.desc);
+        persistState();
     } else if (data.type === 'reflection') {
         addReflectionMessage(data.data || {}, data.improvement || {});
         addTimelineEvent('reflection', '反思完成', data.data?.summary || '');
@@ -2498,4 +2639,318 @@ function _wsOnError(e) {
     logConsole('ws_error', 'WebSocket error', {});
     statusText.textContent = 'Connection error';
     statusText.style.color = '#ef9a9a';
+}
+
+// ===== WEBSOCKET CORE (inline) =====
+const WS_URL = 'ws://127.0.0.1:8765/agent/default';
+var _ws = null;
+var _wsReconnectDelay = 1000;
+var _wsMaxReconnectDelay = 5000;  // Max 5 seconds
+var _wsIntentionalClose = false;
+var _wsQueued = [];
+var _wsReconnectTimer = null;
+
+function _wsCreate() {
+    if (_ws && _ws.readyState === WebSocket.OPEN) return;
+    if (_ws && _ws.readyState === WebSocket.CONNECTING) return;
+    _wsIntentionalClose = false;
+    
+    try {
+        _ws = new WebSocket(WS_URL);
+    } catch(e) {
+        console.error('[WS] Create failed:', e);
+        _scheduleReconnect();
+        return;
+    }
+    
+    _ws.onopen = () => {
+        console.log('[WS] Connected');
+        _wsReconnectDelay = 1000;  // Reset delay on success
+        if (_onConnect) _onConnect();
+        // Flush queued messages
+        while (_wsQueued.length > 0) {
+            _ws.send(_wsQueued.shift());
+        }
+    };
+    
+    _ws.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'pong') return;
+            if (_globalHandler) _globalHandler(data);
+        } catch(e) {
+            console.error('[WS] Parse error:', e);
+        }
+    };
+    
+    _ws.onclose = () => {
+        console.log('[WS] Disconnected');
+        if (!_wsIntentionalClose) {
+            if (_onDisconnect) _onDisconnect(_wsReconnectDelay);
+            _scheduleReconnect();
+        }
+    };
+    
+    _ws.onerror = (error) => {
+        console.error('[WS] Error:', error);
+        if (_onError) _onError(error);
+    };
+}
+
+function _scheduleReconnect() {
+    if (_wsReconnectTimer) clearTimeout(_wsReconnectTimer);
+    _wsReconnectTimer = setTimeout(() => {
+        console.log(`[WS] Reconnecting in ${_wsReconnectDelay}ms...`);
+        _wsCreate();
+        _wsReconnectDelay = Math.min(_wsReconnectDelay * 1.5, _wsMaxReconnectDelay);
+    }, _wsReconnectDelay);
+}
+
+// Global functions
+function wsConnect() { _wsCreate(); }
+
+function wsSend(payload) {
+    const msg = JSON.stringify(payload);
+    if (_ws && _ws.readyState === WebSocket.OPEN) {
+        _ws.send(msg);
+        return true;
+    }
+    _wsQueued.push(msg);
+    return false;
+}
+
+function wsQueuedCount() { return _wsQueued.length; }
+
+function wsSetGlobalHandler(handler) { _globalHandler = handler; }
+function wsOnConnect(cb) { _onConnect = cb; }
+function wsOnDisconnect(cb) { _onDisconnect = cb; }
+function wsOnError(cb) { _onError = cb; }
+
+// Export
+window.wsConnect = wsConnect;
+window.wsSend = wsSend;
+window.wsQueuedCount = wsQueuedCount;
+window.wsSetGlobalHandler = wsSetGlobalHandler;
+window.wsOnConnect = wsOnConnect;
+window.wsOnDisconnect = wsOnDisconnect;
+window.wsOnError = wsOnError;
+
+// ===== DEV PANEL: Operation Visualization =====
+class DevPanel {
+    constructor() {
+        this.panel = document.getElementById('dev-panel');
+        this.planContent = document.getElementById('dev-plan-content');
+        this.filesList = document.getElementById('dev-files-list');
+        this.diffContent = document.getElementById('dev-diff-content');
+        this.thoughtsContent = document.getElementById('dev-thoughts-content');
+        
+        this.fileChanges = [];
+        this.diffs = [];
+        this.thoughts = [];
+        
+        this.init();
+    }
+    
+    init() {
+        // Tab switching
+        document.querySelectorAll('.dev-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                const tabName = tab.dataset.tab;
+                this.switchTab(tabName);
+            });
+        });
+        
+        // Close button
+        document.getElementById('dev-panel-close')?.addEventListener('click', () => {
+            this.close();
+        });
+    }
+    
+    open() {
+        if (this.panel) {
+            this.panel.style.display = 'flex';
+        }
+    }
+    
+    close() {
+        if (this.panel) {
+            this.panel.style.display = 'none';
+        }
+    }
+    
+    switchTab(tabName) {
+        // Update tab buttons
+        document.querySelectorAll('.dev-tab').forEach(tab => {
+            tab.classList.toggle('active', tab.dataset.tab === tabName);
+        });
+        
+        // Update tab content
+        document.querySelectorAll('.dev-tab-content').forEach(content => {
+            content.classList.toggle('active', content.id === `dev-tab-${tabName}`);
+        });
+    }
+    
+    setPlan(planText) {
+        if (!this.planContent) return;
+        
+        // Parse plan into steps
+        const steps = this.parsePlan(planText);
+        
+        if (steps.length > 0) {
+            this.planContent.innerHTML = steps.map((step, i) => `
+                <div class="dev-plan-item">
+                    <div class="dev-plan-step ${i === 0 ? 'current' : ''}">${i + 1}</div>
+                    <div class="dev-plan-text">
+                        ${this.escapeHtml(step)}
+                        <div class="dev-plan-status">${i === 0 ? '执行中...' : '待执行'}</div>
+                    </div>
+                </div>
+            `).join('');
+        }
+    }
+    
+    parsePlan(text) {
+        if (!text) return [];
+        
+        // Try to extract numbered steps
+        const lines = text.split('\n');
+        const steps = [];
+        
+        for (const line of lines) {
+            const trimmed = line.trim();
+            // Match patterns like "1. xxx", "1) xxx", "步骤1: xxx", "Step 1: xxx"
+            const match = trimmed.match(/^[\d一二三四五六七八九十]+[.、:：)）]\s*(.+)/);
+            if (match) {
+                steps.push(match[1]);
+            } else if (trimmed.length > 10 && trimmed.length < 200 && !trimmed.startsWith('#')) {
+                // Heuristic: long lines without numbering could be plan items
+                if (steps.length > 0 || trimmed.includes('计划') || trimmed.includes('步骤')) {
+                    steps.push(trimmed);
+                }
+            }
+        }
+        
+        // If no structured steps found, use the whole text
+        if (steps.length === 0 && text.length > 50) {
+            return [text];
+        }
+        
+        return steps.slice(0, 10); // Max 10 steps
+    }
+    
+    addFileChange(file, action) {
+        if (!this.filesList) return;
+        
+        this.fileChanges.push({
+            file,
+            action,
+            time: new Date().toLocaleTimeString()
+        });
+        
+        this.renderFiles();
+    }
+    
+    renderFiles() {
+        if (this.fileChanges.length === 0) {
+            this.filesList.innerHTML = '<div class="dev-empty">暂无文件变化...</div>';
+            return;
+        }
+        
+        this.filesList.innerHTML = this.fileChanges.map(change => `
+            <div class="dev-file-item">
+                <span class="dev-file-action ${change.action === 'create' ? 'create' : change.action === 'delete' ? 'delete' : 'modify'}">${change.action}</span>
+                <span class="dev-file-path">${this.escapeHtml(change.file)}</span>
+                <span class="dev-file-time">${change.time}</span>
+            </div>
+        `).join('');
+    }
+    
+    addDiff(file, diffText) {
+        if (!this.diffContent) return;
+        
+        this.diffs.push({
+            file,
+            diff: diffText,
+            time: new Date().toLocaleTimeString()
+        });
+        
+        this.renderDiffs();
+    }
+    
+    renderDiffs() {
+        if (this.diffs.length === 0) {
+            this.diffContent.innerHTML = '<div class="dev-empty">暂无代码变更...</div>';
+            return;
+        }
+        
+        this.diffContent.innerHTML = this.diffs.map(d => `
+            <div class="dev-diff-file">
+                <div class="dev-diff-header">${this.escapeHtml(d.file)}</div>
+                <div class="dev-diff-body">
+                    ${this.renderDiffLines(d.diff)}
+                </div>
+            </div>
+        `).join('');
+    }
+    
+    renderDiffLines(diff) {
+        if (!diff) return '<div class="dev-diff-line context"><span class="dev-diff-line-code">No diff available</span></div>';
+        
+        const lines = diff.split('\n');
+        let lineNum = 1;
+        
+        return lines.map(line => {
+            let cls = 'context';
+            if (line.startsWith('+')) cls = 'add';
+            else if (line.startsWith('-')) cls = 'remove';
+            
+            return `
+                <div class="dev-diff-line ${cls}">
+                    <span class="dev-diff-line-num">${lineNum++}</span>
+                    <span class="dev-diff-line-code">${this.escapeHtml(line)}</span>
+                </div>
+            `;
+        }).join('');
+    }
+    
+    addThought(thought) {
+        if (!this.thoughtsContent) return;
+        
+        this.thoughts.push({
+            thought,
+            time: new Date().toLocaleTimeString()
+        });
+        
+        this.renderThoughts();
+    }
+    
+    renderThoughts() {
+        if (this.thoughts.length === 0) {
+            this.thoughtsContent.innerHTML = '<div class="dev-empty">暂无思考记录...</div>';
+            return;
+        }
+        
+        this.thoughtsContent.innerHTML = this.thoughts.map(t => `
+            <div class="dev-thought-item">
+                <div class="dev-thought-time">${t.time}</div>
+                <div class="dev-thought-text">${this.escapeHtml(t.thought)}</div>
+            </div>
+        `).join('');
+    }
+    
+    escapeHtml(text) {
+        if (!text) return '';
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+}
+
+// Initialize DevPanel when DOM is ready
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+        window._devPanel = new DevPanel();
+    });
+} else {
+    window._devPanel = new DevPanel();
 }
