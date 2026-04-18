@@ -27,7 +27,7 @@ Unlike a stateless chat interface, XMclaw maintains memory across sessions, exec
 | **💾 Local-First Memory** | All sessions, metadata, and vectors live in SQLite + sqlite-vec on your machine. Nothing leaves your disk unless you explicitly push it. |
 | **🔧 Hot-Reload Skills** | Generated skills are compiled, validated, and registered without restart. Next message already uses the new capability. |
 | **🛡️ Built-In Security** | Bash guard rails, dangerous pattern blocking, Git auto-rollback before file changes, and encrypted API key storage. |
-| **🌐 Multi-Interface** | Desktop app (Browser + System Tray), Web UI, or Rich CLI — all sharing the same running daemon. |
+| **🌐 Multi-Interface** | Web UI and Rich CLI — both share the same running daemon. |
 | **🔌 MCP & Integrations** | MCP protocol support, plus Slack / Discord / Telegram / GitHub / Notion integrations ready to connect. |
 
 ---
@@ -69,9 +69,6 @@ xmclaw doctor
 ## Quick Start
 
 ```bash
-# Desktop app (opens browser + system tray)
-python -m xmclaw.desktop.app
-
 # Start daemon + web UI
 xmclaw start
 # → open http://127.0.0.1:8765
@@ -168,7 +165,6 @@ xmclaw --help             # Full command reference
 xmclaw/
 ├── core/           AgentLoop, Orchestrator, PromptBuilder, Reflection
 ├── daemon/         FastAPI server, WebSocket gateway, lifecycle
-├── desktop/        Browser + System Tray app
 ├── evolution/      GeneForge, SkillForge, VFM, Validator, Scheduler
 ├── genes/          Gene matching and registry
 ├── gateway/        HTTP/WebSocket handlers
