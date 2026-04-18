@@ -1,14 +1,25 @@
 """Rich-based UI components."""
+import sys
 from rich.console import Console
 from rich.panel import Panel
 from rich.live import Live
 from rich.spinner import Spinner
 
-console = Console()
+# Windows GBK 环境需要安全模式
+_console = Console(safe_box=True)
+
+def _safe_print(text: str, **kwargs):
+    """安全打印，处理 Windows GBK 编码问题"""
+    try:
+        _console.print(text, **kwargs)
+    except Exception:
+        # 回退：移除无法显示的字符
+        safe_text = text.encode('gbk', errors='replace').decode('gbk', errors='replace')
+        _console.print(safe_text, **kwargs)
 
 
 def print_banner():
-    console.print(
+    _console.print(
         Panel.fit(
             "[bold cyan]XMclaw[/bold cyan] - Local-first AI Agent\n"
             "Type your message and press Enter. Use /quit to exit.",
@@ -19,15 +30,20 @@ def print_banner():
 
 
 def print_user(text: str):
-    console.print(f"[bold green]You:[/bold green] {text}")
+    _console.print(f"[bold green]You:[/bold green] {text}")
 
 
 def print_agent(text: str, end: str = "\n", flush: bool = False):
-    console.print(text, end=end)
+    try:
+        _console.print(text, end=end)
+    except Exception:
+        # 回退：移除 emoji 等无法显示的字符
+        safe_text = text.encode('gbk', errors='replace').decode('gbk', errors='replace')
+        _console.print(safe_text, end=end)
 
 
 def print_tool(name: str, result: str):
-    console.print(
+    _console.print(
         Panel(
             f"[dim]{result[:500]}[/dim]",
             title=f"[yellow]Tool: {name}[/yellow]",
@@ -37,14 +53,14 @@ def print_tool(name: str, result: str):
 
 
 def print_state(state: str, thought: str):
-    console.print(
+    _safe_print(
         f"[dim italic]State: {state} | {thought[:100]}...[/dim italic]",
         highlight=False,
     )
 
 
 def print_ask_user(question: str):
-    console.print(
+    _safe_print(
         Panel(
             f"[bold magenta]{question}[/bold magenta]",
             title="[magenta]XMclaw 询问[/magenta]",
@@ -65,7 +81,7 @@ def print_reflection(data: dict):
         content += "[yellow]教训:[/yellow]\n" + "\n".join(f"  - {l}" for l in lessons) + "\n\n"
     if improvements:
         content += "[green]改进:[/green]\n" + "\n".join(f"  - {i}" for i in improvements) + "\n\n"
-    console.print(
+    _safe_print(
         Panel(content.strip(), title="[cyan]Reflection[/cyan]", border_style="cyan")
     )
 
