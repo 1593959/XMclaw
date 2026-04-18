@@ -463,7 +463,7 @@ function loadSettings() {
 
     // Bind tab clicks
     document.querySelectorAll('.settings-tab').forEach(tab => {
-        tab.addEventListener('click', () => {
+        tab?.addEventListener('click', () => {
             _switchSettingsTab(tab.dataset.stab);
         });
     });
@@ -579,7 +579,7 @@ function addMCPEntry(name = '', cfg = { command: 'npx', args: [], env: {} }) {
         </div>
         <button class="mcp-del" style="background:transparent;border:none;color:#ff6b6b;cursor:pointer;font-size:14px">×</button>
     `;
-    div.querySelector('.mcp-del').addEventListener('click', () => div.remove());
+    div.querySelector('.mcp-del')?.addEventListener('click', () => div.remove());
     list.appendChild(div);
 }
 
@@ -612,13 +612,13 @@ const togglePlanBtn = document.getElementById('toggle-plan');
 const planModeBar = document.getElementById('plan-mode-bar');
 const cancelPlanBtn = document.getElementById('cancel-plan');
 
-togglePlanBtn.addEventListener('click', () => {
+togglePlanBtn?.addEventListener('click', () => {
     planMode = !planMode;
     togglePlanBtn.classList.toggle('active', planMode);
     planModeBar.style.display = planMode ? 'flex' : 'none';
 });
 
-cancelPlanBtn.addEventListener('click', () => {
+cancelPlanBtn?.addEventListener('click', () => {
     planMode = false;
     togglePlanBtn.classList.remove('active');
     planModeBar.style.display = 'none';
@@ -704,7 +704,7 @@ function formatArgs(args) {
     }
 }
 
-clearToolsBtn.addEventListener('click', () => {
+clearToolsBtn?.addEventListener('click', () => {
     toolHistory = [];
     renderRecentTools();
     renderToolLog();
@@ -729,9 +729,9 @@ async function runTestAction(action, target = '') {
     }
 }
 
-btnTestGenerate.addEventListener('click', () => runTestAction('generate', testTarget.value.trim()));
-btnTestRun.addEventListener('click', () => runTestAction('run', testTarget.value.trim()));
-btnTestRunAll.addEventListener('click', () => runTestAction('run_all'));
+btnTestGenerate?.addEventListener('click', () => runTestAction('generate', testTarget.value.trim()));
+btnTestRun?.addEventListener('click', () => runTestAction('run', testTarget.value.trim()));
+btnTestRunAll?.addEventListener('click', () => runTestAction('run_all'));
 
 // Todos
 const todoList = document.getElementById('todo-list');
@@ -785,7 +785,7 @@ async function saveTodos() {
     persistState();
 }
 
-addTodoBtn.addEventListener('click', async () => {
+addTodoBtn?.addEventListener('click', async () => {
     const text = prompt('新待办事项：');
     if (!text) return;
     todos.push({ id: Date.now(), text, done: false });
@@ -849,7 +849,7 @@ window.deleteTask = async function(idx) {
     persistState();
 };
 
-addTaskBtn.addEventListener('click', async () => {
+addTaskBtn?.addEventListener('click', async () => {
     const text = prompt('新任务标题：');
     if (!text) return;
     tasks.push({ id: Date.now().toString(), title: text, description: '', status: 'pending', created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
@@ -973,7 +973,7 @@ window.openWorkspaceFile = async function(path) {
     }
 };
 
-saveFileBtn.addEventListener('click', async () => {
+saveFileBtn?.addEventListener('click', async () => {
     if (!currentFilePath) return;
     try {
         await fetch(`/api/agent/${AGENT_ID}/file?path=${encodeURIComponent(currentFilePath)}`, {
@@ -1497,7 +1497,7 @@ function sendMessage() {
     function _sendSafe(payload) {
         // Open a fresh WebSocket and send; used as last resort
         try {
-            const s = new WebSocket('ws://127.0.0.1:8765/agent/default');
+            const s = new WebSocket('ws://127.0.0.1:8766/agent/default');
             s.onopen = () => {
                 s.send(JSON.stringify(payload));
                 s.close();
@@ -1542,15 +1542,15 @@ function sendMessage() {
     }
 }
 
-sendBtn.addEventListener('click', sendMessage);
-input.addEventListener('keydown', (e) => {
+sendBtn?.addEventListener('click', sendMessage);
+input?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         sendMessage();
     }
 });
 
-input.addEventListener('input', () => {
+input?.addEventListener('input', () => {
     input.style.height = 'auto';
     input.style.height = Math.min(input.scrollHeight, 120) + 'px';
 });
@@ -1668,7 +1668,7 @@ function renderSessionList() {
         </div>
     `).join('');
     list.querySelectorAll('.session-item').forEach(item => {
-        item.addEventListener('click', () => switchSession(item.dataset.id));
+        item?.addEventListener('click', () => switchSession(item.dataset.id));
     });
 }
 
@@ -2131,7 +2131,7 @@ function showAskUserDialog(question) {
 // ===== FILE UPLOAD =====
 const fileUpload = document.getElementById('file-upload');
 if (fileUpload) {
-    fileUpload.addEventListener('change', async (e) => {
+    fileUpload?.addEventListener('change', async (e) => {
         const files = Array.from(e.target.files);
         if (files.length === 0) return;
         
@@ -2179,7 +2179,7 @@ let audioChunks = [];
 let voiceMode = 'send'; // 'send' = 直接发送, 'asr' = 转文字
 
 if (voiceBtn) {
-    voiceBtn.addEventListener('click', async () => {
+    voiceBtn?.addEventListener('click', async () => {
         if (!mediaRecorder || mediaRecorder.state === 'inactive') {
             // 录音中...显示模式选择
             try {
@@ -2269,7 +2269,7 @@ if (voiceBtn) {
     });
     
     // 右键切换模式
-    voiceBtn.addEventListener('contextmenu', (e) => {
+    voiceBtn?.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         voiceMode = voiceMode === 'send' ? 'asr' : 'send';
         const modeText = voiceMode === 'send' ? '直接发送' : '转文字';
@@ -2287,8 +2287,82 @@ else _rebuildRawTextMap();  // restore raw text map for copy/re-edit
 loadDraft();  // restore saved draft on refresh
 
 // ── Wire up core modules ──────────────────────────────────────────────────────
-// Router: nav clicks, popstate, URL hash sync
-if (window.initRouter) window.initRouter();
+// ── Router: nav clicks, popstate, URL hash sync ─────────────────────────────────
+(function initRouter() {
+    const VALID_VIEWS = new Set(['dashboard','workspace','evolution','memory','tools','agents','settings']);
+    const SETTINGS_TABS = new Set(['llm','evolution','memory','tools','gateway','mcp','integrations']);
+    let _currentView = 'dashboard';
+
+    function getViewFromHash() {
+        const hash = window.location.hash.replace(/^#\/?/, '') || 'dashboard';
+        return hash.split('/')[0];
+    }
+    function navigate(view) {
+        history.pushState(null, '', `#/${view}`);
+        _setView(view);
+    }
+    function switchView(view) {
+        if (!VALID_VIEWS.has(view)) view = 'dashboard';
+        _setView(view);
+    }
+    function _setView(view) {
+        _currentView = view;
+        document.querySelectorAll('.nav-item').forEach(n =>
+            n.classList.toggle('active', n.dataset.view === view));
+        document.querySelectorAll('.view').forEach(v =>
+            v.classList.toggle('active', v.id === `view-${view}`));
+        const titles = { dashboard:'仪表盘', workspace:'工作区', evolution:'进化', memory:'记忆', tools:'工具日志', agents:'多代理', settings:'设置' };
+        const tb = document.getElementById('topbar-title');
+        if (tb) tb.textContent = titles[view] || view;
+        if (view === 'workspace')    typeof loadWorkspaceFiles === 'function' && loadWorkspaceFiles();
+        if (view === 'evolution')   typeof loadEvolutionStatus === 'function' && loadEvolutionStatus();
+        if (view === 'memory')      typeof loadMemorySearch === 'function' && loadMemorySearch();
+        if (view === 'tools')       typeof loadToolsLogs === 'function' && loadToolsLogs();
+        if (view === 'agents')      typeof loadAgentsView === 'function' && loadAgentsView();
+        history.replaceState(null, '', `#/${view}`);
+    }
+    function switchSettingsTab(tab) {
+        document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.settings-panel').forEach(p => p.classList.remove('active'));
+        const tabEl = document.querySelector(`.settings-tab[data-stab="${tab}"]`);
+        const panelEl = document.getElementById('stab-' + tab);
+        if (tabEl) tabEl.classList.add('active');
+        if (panelEl) panelEl.classList.add('active');
+        if (tab === 'integrations' && typeof loadIntegrationStatus === 'function') loadIntegrationStatus();
+        history.replaceState(null, '', `#/settings/${tab}`);
+    }
+    // Wire nav-item clicks
+    document.querySelectorAll('.nav-item').forEach(item => {
+        item.addEventListener('click', e => {
+            e.preventDefault();
+            navigate(item.dataset.view);
+        });
+    });
+    // Browser back/forward
+    window.addEventListener('popstate', () => {
+        const hash = window.location.hash.replace(/^#\/?/, '') || 'dashboard';
+        const parts = hash.split('/');
+        if (parts[0] === 'settings' && parts[1] && SETTINGS_TABS.has(parts[1])) {
+            switchSettingsTab(parts[1]);
+        } else {
+            _setView(parts[0] || 'dashboard');
+        }
+    });
+    // Initial route
+    const init = getViewFromHash();
+    if (init === 'settings' && window.location.hash.includes('/settings/')) {
+        const tab = window.location.hash.split('/')[2];
+        if (tab && SETTINGS_TABS.has(tab)) switchSettingsTab(tab);
+        else _setView('settings');
+    } else {
+        _setView(init);
+    }
+    // Expose globally
+    window._navigate = navigate;
+    window.switchView = switchView;
+    window._switchSettingsTab = switchSettingsTab;
+    window.initRouter = initRouter;  // keep for compat
+})();
 
 // Placeholder so existing callers (e.g. voice input) don't break.
 function connect() { if (window.wsConnect) window.wsConnect(); }
@@ -2632,7 +2706,7 @@ function _wsOnError(e) {
 }
 
 // ===== WEBSOCKET CORE (inline) =====
-const WS_URL = 'ws://127.0.0.1:8765/agent/default';
+const WS_URL = 'ws://127.0.0.1:8766/agent/default';
 var _ws = null;
 var _wsReconnectDelay = 1000;
 var _wsMaxReconnectDelay = 5000;  // Max 5 seconds
@@ -2752,7 +2826,7 @@ class DevPanel {
     init() {
         // Tab switching
         document.querySelectorAll('.dev-tab').forEach(tab => {
-            tab.addEventListener('click', () => {
+            tab?.addEventListener('click', () => {
                 const tabName = tab.dataset.tab;
                 this.switchTab(tabName);
             });
