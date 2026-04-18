@@ -2282,8 +2282,17 @@ loadSessions();
 loadSettings();
 loadState();
 renderSessionList();
-if (!currentSessionId || sessions.length === 0) newSession();
-else _rebuildRawTextMap();  // restore raw text map for copy/re-edit
+if (!currentSessionId || sessions.length === 0) {
+    newSession();
+} else {
+    // Restore chat window HTML for the current session
+    const saved = sessions.find(s => s.id === currentSessionId);
+    if (saved && saved.html) {
+        chat.innerHTML = saved.html;
+        hideWelcome();
+    }
+    _rebuildRawTextMap();  // restore raw text map for copy/re-edit
+}
 loadDraft();  // restore saved draft on refresh
 
 // ── Wire up core modules ──────────────────────────────────────────────────────
