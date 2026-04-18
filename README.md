@@ -1,212 +1,213 @@
-# XMclaw
+# 🦞 XMclaw — Local-First, Self-Evolving AI Agent Runtime
 
-> 🤖 A local-first, self-evolving AI Agent runtime that runs entirely on your machine.
+<p align="center">
+  <strong>Your AI agent that runs on your machine. Thinks. Acts. Remembers. Improves itself.</strong>
+</p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue.svg)]()
+<p align="center">
+  <a href="https://github.com/1593959/XMclaw/actions"><img src="https://img.shields.io/github/actions/workflow/status/1593959/XMclaw/python-package-conda.yml?branch=main&style=for-the-badge" alt="CI"></a>
+  <a href="https://github.com/1593959/XMclaw/releases"><img src="https://img.shields.io/github/v/release/1593959/XMclaw?include_prereleases&style=for-the-badge" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT"></a>
+  <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.10+-blue.svg?style=for-the-badge" alt="Python"></a>
+</p>
 
-**XMclaw is not a chatbot.** It's a runtime that can think, act, remember, reflect, and continuously improve itself.
+**XMclaw** is a personal AI agent that runs entirely on your machine. It is not a chatbot — it is a runtime that can think, act, remember, and continuously improve itself over time.
 
----
+Unlike a stateless chat interface, XMclaw maintains memory across sessions, executes real tools on your filesystem and system, and automatically evolves its own gene pool and skill library based on your usage patterns.
 
-## ✨ Features
-
-| Category | Features |
-|----------|----------|
-| **🧠 Core Runtime** | AgentLoop, Orchestrator, LLMRouter, CostTracker |
-| **💾 Memory** | Session logs, SQLite metadata, Vector memory (sqlite-vec) |
-| **🔧 Tools** | 20+ built-in tools: file, bash, browser, git, mcp, test... |
-| **🔄 Self-Evolving** | GeneForge, SkillForge, VFM scoring, Hot reload |
-| **🛡️ Security** | Bash guards, Dangerous pattern blocking, Git rollback |
-| **🖥️ Interfaces** | Desktop app (Browser + System Tray), Web UI, Rich CLI |
+[Website](#) · [Docs](./docs) · [Architecture](./docs/ARCHITECTURE.md) · [Evolution](./docs/EVOLUTION.md) · [CLI](./docs/CLI.md) · [Tools](./docs/TOOLS.md)
 
 ---
 
-## 🏗️ Architecture
+## ✨ What makes XMclaw different
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     XMclaw Architecture                      │
-└─────────────────────────────────────────────────────────────┘
-
-                     ┌─────────────────┐
-                     │  User Interface  │
-                     │  Desktop/Web/CLI │
-                     └────────┬────────┘
-                              │
-                     ┌────────▼────────┐
-                     │   Gateway        │
-                     │  WebSocket/HTTP  │
-                     └────────┬────────┘
-                              │
-              ┌───────────────┼───────────────┐
-              │               │               │
-              ▼               ▼               ▼
-        ┌───────────┐   ┌───────────┐   ┌───────────┐
-        │  Memory   │   │ Evolution │   │  Security │
-        │  Session  │   │ GeneForge │   │ Bash guards│
-        │  SQLite   │   │ SkillForge│   │ Git rollback│
-        │  Vector   │   │ Validator │   │ ruff lint │
-        └───────────┘   └───────────┘   └───────────┘
-                              ▲
-                              │
-              ┌───────────────▼───────────────┐
-              │         AgentLoop             │
-              │  Prompt → LLM → Tools → Reflect│
-              └───────────────────────────────┘
-```
+| | |
+|---|---|
+| **🧠 Self-Evolving** | XMclaw watches its own performance. The EvolutionEngine detects patterns, scores insights with VFM (Value · Faithfulness · Measurability), and auto-generates new Genes and Skills — no manual curation needed. |
+| **💾 Local-First Memory** | All sessions, metadata, and vectors live in SQLite + sqlite-vec on your machine. Nothing leaves your disk unless you explicitly push it. |
+| **🔧 Hot-Reload Skills** | Generated skills are compiled, validated, and registered without restart. Next message already uses the new capability. |
+| **🛡️ Built-In Security** | Bash guard rails, dangerous pattern blocking, Git auto-rollback before file changes, and encrypted API key storage. |
+| **🌐 Multi-Interface** | Desktop app (Browser + System Tray), Web UI, or Rich CLI — all sharing the same running daemon. |
+| **🔌 MCP & Integrations** | MCP protocol support, plus Slack / Discord / Telegram / GitHub / Notion integrations ready to connect. |
 
 ---
 
-## 🚀 Quick Start
-
-### Installation
+## Install
 
 ```bash
-# Clone the repository
+# Clone
 git clone https://github.com/1593959/XMclaw.git
 cd XMclaw
 
-# Install dependencies
+# Install
 pip install -e .
 
-# Or with all extras
-pip install -e ".[all]"
+# With dev extras (pytest, ruff, mypy)
+pip install -e ".[dev]"
 
-# Install desktop dependencies
-pip install pystray Pillow
-
-# Optional extras
-pip install -e ".[dev]"           # development tools (pytest, ruff, mypy)
-pip install pyautogui mss          # computer_use support
-pip install playwright              # browser automation
-playwright install chromium
+# Optional: computer-use support
+pip install pyautogui mss
+pip install playwright && playwright install chromium
 ```
 
-### Configuration
-
-On first run, `xmclaw start` automatically creates `daemon/config.json` with defaults.
-
-To configure API keys interactively:
+First run creates `daemon/config.json` automatically. Configure your API keys:
 
 ```bash
 xmclaw config init
+# or edit daemon/config.json directly
+# or set env: XMC__llm__anthropic__api_key="sk-ant-..."
 ```
 
-Or edit `daemon/config.json` directly.
-
-Environment variables can override config values:
+Verify your setup:
 
 ```bash
-export XMC__llm__anthropic__api_key="sk-ant-..."
+xmclaw doctor
 ```
 
-Run `xmclaw doctor` to verify your setup.
+---
 
-### Run
+## Quick Start
 
 ```bash
-# Option 1: Desktop app (Browser + System Tray)
+# Desktop app (opens browser + system tray)
 python -m xmclaw.desktop.app
 
-# Option 2: Start daemon + open web UI
+# Start daemon + web UI
 xmclaw start
-# Then open http://127.0.0.1:8765 in browser
+# → open http://127.0.0.1:8765
 
-# Option 3: CLI chat
+# Rich CLI
 xmclaw chat
-xmclaw chat --plan   # plan mode
+xmclaw chat --plan    # plan mode: see the execution plan before it runs
 
 # Stop daemon
 xmclaw stop
 ```
 
-### Desktop App Features
+---
 
-The desktop app uses **browser + system tray** architecture:
+## 🗂️ Architecture
 
-- 🌐 Opens your default browser to the web interface
-- 📌 System tray icon with quick actions
-- 🔄 Auto-starts daemon if not running
-- ⏹️ Exit cleanly via tray menu
+```
+Clients (Desktop / Web / CLI)
+         ↕ WebSocket
+┌──────────────────────────────────┐
+│  Daemon (FastAPI + Uvicorn)      │
+│  ├── AgentLoop                    │
+│  │   ├── think → act → observe   │
+│  │   ├── PromptBuilder + Genes   │
+│  │   └── ReflectionEngine        │
+│  ├── ToolRegistry  ← 20+ tools   │
+│  │   ├── file / bash / browser   │
+│  │   ├── git / mcp / skill       │
+│  │   └── web_search / memory…    │
+│  ├── LLMRouter  ← Anthropic/OpenAI│
+│  ├── MemoryManager               │
+│  │   ├── SessionManager (JSONL)  │
+│  │   ├── SQLiteStore             │
+│  │   └── VectorStore (sqlite-vec)│
+│  ├── EvolutionEngine             │
+│  │   ├── GeneForge               │
+│  │   ├── SkillForge              │
+│  │   └── VFM Scoring             │
+│  └── EventBus  ← pub/sub         │
+└──────────────────────────────────┘
+         ↕ REST / WebSocket
+Third-party: Slack · Discord · Telegram · GitHub · Notion
+```
+
+---
+
+## 🔄 How Evolution Works
+
+XMclaw continuously gets better without you lifting a finger:
+
+1. **Pattern Detection** — analyzes session logs after each conversation
+2. **Insight Extraction** — identifies behavioral patterns and useful tool sequences
+3. **Gene Generation** — creates lightweight behavioral prompts (GeneForge)
+4. **Skill Generation** — builds executable Python skills from proven patterns (SkillForge)
+5. **Validation** — compiles, runs, and scores new code before registration (VFM scoring)
+6. **Hot Reload** — new skills are immediately available in the next turn
+
+Genes are injected into the system prompt at runtime. Skills become real tools. Over time, XMclaw accumulates a personal knowledge base tailored to exactly how *you* work.
+
+---
+
+## 🛡️ Security
+
+XMclaw treats your system as a production environment:
+
+- **Bash Guard Rails** — blocks `rm -rf /`, `mkfs`, `dd`, and other destructive patterns
+- **Dangerous Pattern Blocking** — warns on `curl | bash`, `git push --force`, and similar
+- **Git Auto-Rollback** — commits state before file changes, rolls back on failure
+- **Encrypted Secrets** — API keys stored with Fernet encryption + PBKDF2 key derivation
+- **Sandbox Ready** — Docker/process sandboxing available for untrusted skills
+
+Run `xmclaw doctor` to audit your security posture.
+
+---
+
+## 🔧 CLI Reference
+
+```bash
+xmclaw start              # Start daemon + web UI
+xmclaw stop               # Stop daemon
+xmclaw chat               # Interactive CLI chat
+xmclaw chat --plan        # Plan mode (approve steps before execution)
+xmclaw config init        # Interactively configure API keys
+xmclaw config set <key> <value>   # e.g. xmclaw config set llm.anthropic.model claude-sonnet-4-20250514
+xmclaw doctor             # Run diagnostics
+xmclaw --help             # Full command reference
+```
 
 ---
 
 ## 📁 Project Structure
 
 ```
-XMclaw/
-├── xmclaw/              # Core runtime
-│   ├── core/            # AgentLoop, Orchestrator, PromptBuilder
-│   ├── daemon/          # FastAPI server, WebSocket gateway
-│   ├── desktop/         # Browser + System Tray desktop app
-│   │   ├── app.py      # Desktop entry point
-│   │   ├── tray.py     # System tray with pystray
-│   │   └── ws_client.py # WebSocket client
-│   ├── evolution/       # GeneForge, SkillForge, Validator
-│   ├── gateway/         # HTTP/WebSocket handlers
-│   ├── genes/           # Gene implementations
-│   ├── llm/             # LLM routers (OpenAI, Anthropic)
-│   ├── memory/          # Memory managers
-│   ├── tools/           # Tool registry & implementations
-│   └── utils/           # Utilities (paths, log, security)
-├── web/                 # Web UI assets
-├── shared/              # Shared resources (genes, skills)
-├── agents/              # Agent configurations
-├── docs/                # Documentation
-├── scripts/             # Build & utility scripts
-└── tests/               # Test suites
+xmclaw/
+├── core/           AgentLoop, Orchestrator, PromptBuilder, Reflection
+├── daemon/         FastAPI server, WebSocket gateway, lifecycle
+├── desktop/        Browser + System Tray app
+├── evolution/      GeneForge, SkillForge, VFM, Validator, Scheduler
+├── genes/          Gene matching and registry
+├── gateway/        HTTP/WebSocket handlers
+├── integrations/   Slack, Discord, Telegram, GitHub, Notion
+├── llm/            Anthropic + OpenAI router
+├── memory/         SQLite, VectorStore, SessionManager
+├── sandbox/        Docker + process sandboxing
+├── tools/          20+ built-in tools + MCP
+└── utils/          Logging, paths, security
+web/                Web UI assets
+shared/
+├── genes/          Auto-generated gene pool (~200 genes)
+└── skills/        Auto-generated skill library (~100 skills)
+agents/             Agent profiles and configuration
+docs/               Architecture, CLI, Tools, Evolution, Desktop
+tests/              pytest test suites
 ```
-
----
-
-## 🛡️ Security
-
-XMclaw implements multiple security layers:
-
-- **Bash Guards** - Blocks dangerous commands (rm -rf /, mkfs, dd...)
-- **Dangerous Pattern Blocking** - Warns on suspicious patterns (curl | bash, git push --force...)
-- **Git Rollback** - Auto-commit before changes, rollback on failure
-- **Code Quality Gates** - ruff linting enforced before commits
-
----
-
-## 🔄 Evolution System
-
-XMclaw continuously improves itself:
-
-1. **Pattern Detection** - Analyzes conversation logs for patterns
-2. **Insight Extraction** - Generates structured lessons
-3. **Gene Generation** - Creates behavioral prompts (GeneForge)
-4. **Skill Generation** - Builds executable tools (SkillForge)
-5. **Validation** - Real execution testing + VFM scoring
-6. **Hot Reload** - New skills available immediately
 
 ---
 
 ## 📚 Documentation
 
-| Document | Description |
-|----------|-------------|
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design & data flow |
-| [TOOLS.md](docs/TOOLS.md) | Built-in tools reference |
-| [EVOLUTION.md](docs/EVOLUTION.md) | Self-evolution system |
-| [DESKTOP.md](docs/DESKTOP.md) | Desktop app guide |
-| [CLI.md](docs/CLI.md) | Terminal commands |
+| | |
+|---|---|
+| [Architecture](./docs/ARCHITECTURE.md) | System design, data flows, wire protocol |
+| [Tools](./docs/TOOLS.md) | Built-in tools reference (file, bash, git, browser, mcp…) |
+| [Evolution](./docs/EVOLUTION.md) | Self-evolution system, GeneForge, SkillForge, VFM |
+| [CLI](./docs/CLI.md) | All terminal commands |
+| [Desktop](./docs/DESKTOP.md) | Desktop app guide |
 
 ---
 
 ## 🧪 Development
 
 ```bash
-# Verify setup
-xmclaw doctor
-
-# Run tests (requires pip install -e ".[dev]")
+# Run tests
 python -m pytest tests/ -v
 
-# Run with coverage
+# With coverage
 python -m pytest tests/ --cov=xmclaw --cov-report=html
 
 # Lint & type check
@@ -221,14 +222,14 @@ python -m build
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ---
 
 ## 📄 License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License — see [LICENSE](LICENSE).
 
 ---
 
-**Built with ❤️ for developers who want a truly personal AI agent.**
+Built with ❤️ for developers who want a truly personal, self-improving AI agent.
