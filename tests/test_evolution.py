@@ -63,7 +63,7 @@ class TestInsightExtraction:
         insights = engine._extract_insights(sessions)
         problem_insights = [i for i in insights if i["type"] == "problem"]
         assert len(problem_insights) == 2, f"Expected 2 problems, got: {insights}"
-        assert all(i["source"] == "negative_feedback" for i in problem_insights)
+        assert all(i["source"] == "negative_feedback_user" for i in problem_insights)
 
     def test_distinct_problems_each_get_insight(self):
         """Different problem messages should each get their own insight."""

@@ -1,12 +1,15 @@
-"""Configuration loading with environment variable override and secret encryption."""
+"""Configuration loading with environment variable override, secret encryption, and hot-reload."""
+import asyncio
 import base64
 import hashlib
 import json
 import os
 import platform
 import secrets
+import time
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any, Callable
 from xmclaw.utils.paths import BASE_DIR
 
 # Environment variable prefix for config overrides
@@ -20,6 +23,9 @@ _SECRET_KEYS = frozenset({
 
 # Encryption marker in config values
 _ENC_PREFIX = "ENC:"
+
+# Hot-reload debounce: ignore chganges within this window (seconds)
+_RELOAD_DEBOUNCE = 2.0
 
 
 # ── Secret encryption (Fernet symmetric) ──────────────────────────────────────
@@ -168,6 +174,7 @@ class DaemonConfig:
     gateway: dict
     mcp_servers: dict
     integrations: dict
+    security: dict = field(default_factory=dict)  # Hot-reload & permissions config
 
     @classmethod
     def load(cls, path: Path | None = None) -> "DaemonConfig":
@@ -189,7 +196,9 @@ class DaemonConfig:
         data = _decrypt_secrets(data)
         # Apply environment variable overrides (env vars take final say)
         data = _apply_env_override(data)
-        return cls(**data)
+        instance = cls(**data)
+        instance._file_path = path
+        return instance
 
     def mask_secrets(self) -> dict:
         """Return a copy with secret values replaced by '***'."""
@@ -201,6 +210,84 @@ class DaemonConfig:
                 return [_mask_obj(i) for i in obj]
             return obj
         return _mask_obj(self.__dict__)
+
+    # ── Hot-reload support ─────────────────────────────────────────────────────
+
+    _file_path: Path = field(default=None, repr=False)
+    _last_mtime: float = field(default=0.0, repr=False)
+    _watch_task: asyncio.Task | None = field(default=None, repr=False)
+    _on_change_callbacks: list[Callable[["DaemonConfig"], None]] = field(
+        default_factory=list, repr=False
+    )
+
+    async def start_watching(self, on_change: Callable[["DaemonConfig"], None] | None = None) -> None:
+        """Start watching the config file for changes and reload on modify.
+
+        Args:
+            on_change: Optional callback called after each reload with the new config.
+        """
+        if self._file_path is None:
+            return
+        if on_change:
+            self._on_change_callbacks.append(on_change)
+
+        if self._watch_task is not None:
+            return  # Already watching
+
+        sec = self.security or {}
+        if not sec.get("hot_reload", True):
+            return
+
+        self._last_mtime = self._file_path.stat().st_mtime if self._file_path.exists() else 0.0
+        self._watch_task = asyncio.create_task(self._watch_loop())
+        import structlog
+        logger = structlog.get_logger()
+        logger.info("config_hot_reload_started", path=str(self._file_path))
+
+    async def _watch_loop(self) -> None:
+        """Poll loop: re-check mtime every 5 seconds."""
+        import structlog
+        logger = structlog.get_logger()
+        while True:
+            await asyncio.sleep(5)
+            try:
+                if not self._file_path.exists():
+                    continue
+                mtime = self._file_path.stat().st_mtime
+                if mtime != self._last_mtime:
+                    # Debounce: wait a bit to catch rapid saves
+                    await asyncio.sleep(_RELOAD_DEBOUNCE)
+                    if self._file_path.stat().st_mtime != self._last_mtime:
+                        self._last_mtime = self._file_path.stat().st_mtime
+                        new_config = DaemonConfig.load(self._file_path)
+                        # Copy fields over
+                        self.llm = new_config.llm
+                        self.evolution = new_config.evolution
+                        self.memory = new_config.memory
+                        self.tools = new_config.tools
+                        self.security = new_config.security
+                        self.gateway = new_config.gateway
+                        self.mcp_servers = new_config.mcp_servers
+                        self.integrations = new_config.integrations
+                        logger.info("config_hot_reloaded", path=str(self._file_path))
+                        for cb in self._on_change_callbacks:
+                            try:
+                                cb(self)
+                            except Exception as e:
+                                logger.warning("config_change_callback_failed", error=str(e))
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning("config_watch_error", error=str(e))
+
+    def stop_watching(self) -> None:
+        """Stop the hot-reload watcher."""
+        if self._watch_task:
+            self._watch_task.cancel()
+            self._watch_task = None
+            import structlog
+            logger = structlog.get_logger()
+            logger.info("config_hot_reload_stopped")
 
     @classmethod
     def default(cls) -> "DaemonConfig":
@@ -250,6 +337,16 @@ class DaemonConfig:
                 "bash_timeout": 300,
                 "sandbox_timeout": 30,
                 "browser_headless": False,
+            },
+            security={
+                "enabled": True,
+                "hot_reload": True,
+                "tool_permissions": {},  # tool_name -> "allow"|"ask"|"block"
+                "network_allowed_patterns": [
+                    r"^https?://",
+                    r"^ws[s]?://",
+                ],
+                "allowed_paths": [],  # empty = BASE_DIR only
             },
             gateway={
                 "host": "127.0.0.1",

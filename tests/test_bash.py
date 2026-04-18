@@ -178,7 +178,7 @@ class TestBashToolExecute:
 
         with patch("xmclaw.tools.bash.is_path_safe", return_value=False):
             result = await tool.execute("echo hello", cwd="/etc")
-            assert "[Error:" in result
+            assert "[Blocked:" in result  # Security denial
             assert "outside of allowed workspace" in result
 
     @pytest.mark.asyncio
@@ -249,12 +249,25 @@ class TestBashToolExecute:
         mock_proc.communicate = AsyncMock(return_value=(b"done\n", b""))
         mock_proc.returncode = 0
 
+        # Mock check_tool to return ALLOW (avoids confirmation gate / async issues)
+        import importlib
+        _bash_mod = importlib.import_module("xmclaw.tools.bash")
+        from xmclaw.utils.security import SecurityDecision, PermissionLevel
+        allow_decision = SecurityDecision(
+            allowed=True, level=PermissionLevel.ALLOW,
+            reason="allowed", requires_confirmation=False
+        )
+
         with patch("asyncio.create_subprocess_shell", return_value=mock_proc):
             with patch("xmclaw.tools.bash.BASE_DIR", Path("/fake/base")):
                 with patch("xmclaw.tools.bash.is_path_safe", return_value=True):
-                    result = await tool.execute("rm -rf temp")
-                    assert "[Warning:" in result
-                    assert "Recursive delete" in result
+                    with patch.object(
+                        _bash_mod, "get_permission_manager",
+                        return_value=MagicMock(check_tool=MagicMock(return_value=allow_decision))
+                    ):
+                        result = await tool.execute("rm -rf temp")
+                        assert "[Warning:" in result
+                        assert "Recursive delete" in result
 
     @pytest.mark.asyncio
     async def test_execute_no_output(self):

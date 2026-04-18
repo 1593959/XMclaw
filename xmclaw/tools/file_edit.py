@@ -1,7 +1,11 @@
-"""File edit tool (find and replace)."""
+"""File edit tool (find and replace) with permission and audit integration."""
+import asyncio
+from datetime import datetime
 from pathlib import Path
 from xmclaw.tools.base import Tool
-from xmclaw.utils.security import is_path_safe
+from xmclaw.utils.security import (
+    is_path_safe, get_permission_manager, ToolCategory, AuditEntry,
+)
 from xmclaw.utils.paths import BASE_DIR
 
 
@@ -28,8 +32,22 @@ class FileEditTool(Tool):
         if not target.is_absolute():
             target = BASE_DIR / target
 
+        path_str = str(target)
+
         if not is_path_safe(target, BASE_DIR):
-            return "[Error: Path is outside of allowed workspace]"
+            await self._log_security_event("BLOCKED", f"Path outside workspace: {path_str}")
+            return "[Blocked: Path is outside of allowed workspace]"
+
+        # Check permission manager
+        pm = get_permission_manager()
+        decision = pm.check_tool(self.name, context={"path": path_str})
+        if not decision.allowed:
+            if decision.requires_confirmation:
+                confirmed = await pm.request_confirmation(self.name, decision.reason)
+                if not confirmed:
+                    return f"[Blocked: {decision.reason}]"
+            else:
+                return f"[Blocked: {decision.reason}]"
 
         if not target.exists():
             return f"[Error: File not found: {file_path}]"
@@ -41,3 +59,18 @@ class FileEditTool(Tool):
         content = content.replace(old_text, new_text)
         target.write_text(content, encoding="utf-8")
         return f"File edited: {target}"
+
+    async def _log_security_event(self, event: str, detail: str) -> None:
+        try:
+            pm = get_permission_manager()
+            asyncio.create_task(pm._audit_log_entry(AuditEntry(
+                timestamp=datetime.now().isoformat(),
+                event=event,
+                tool=self.name,
+                user="default",
+                detail=detail,
+                tool_category=ToolCategory.MODERATE.value,
+                risk_score=40 if event == "BLOCKED" else 20,
+            )))
+        except Exception:
+            pass
