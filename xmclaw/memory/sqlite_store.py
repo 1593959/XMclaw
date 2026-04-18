@@ -53,6 +53,13 @@ class SQLiteStore:
                 session_data TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS skill_stats (
+                name TEXT PRIMARY KEY,
+                usage_count INTEGER DEFAULT 0,
+                success_rate REAL DEFAULT 0.8,
+                last_used TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
         """)
         self.conn.commit()
         # Migrate existing genes table: add missing columns if absent
