@@ -1,8 +1,16 @@
-"""Tool registry and execution dispatcher with plugin support."""
+"""Tool registry and execution dispatcher with plugin support.
+
+Thread Safety:
+- Uses asyncio.Lock to protect concurrent access to _tools dict
+- Prevents race conditions during hot reload and concurrent execution
+"""
+import asyncio
 import importlib.util
+import threading
 from pathlib import Path
 from typing import Any
 
+from xmclaw.core.error_recovery import get_error_recovery, CircuitBreaker
 from xmclaw.tools.base import Tool
 from xmclaw.tools.file_read import FileReadTool
 from xmclaw.tools.file_write import FileWriteTool
@@ -71,12 +79,19 @@ class ToolRegistry:
     - Generated skills (shared/skills/*.py)
     - Plugin tools (plugins/tools/*.py — drop-in discovery)
     - Shared singleton (for evolution engine hot-reload)
+
+    Thread Safety:
+    - Uses asyncio.Lock to protect concurrent access
+    - Safe for concurrent tool execution and hot reload
     """
     _shared: "ToolRegistry | None" = None
 
     def __init__(self, llm_router: LLMRouter | None = None):
         self._tools: dict[str, Tool] = {}
         self._plugin_errors: dict[str, str] = {}
+        self._lock = asyncio.Lock()  # For async operations (load_all, hot_reload, execute)
+        self._sync_lock = threading.Lock()  # For sync operations (register, unregister)
+        self._tool_breakers: dict[str, CircuitBreaker] = {}
         self.llm = llm_router
 
     @classmethod
@@ -90,37 +105,41 @@ class ToolRegistry:
         return cls._shared
 
     async def load_all(self) -> None:
-        """Load built-in tools, generated skills, and plugin tools."""
-        self._tools.clear()
-        self._plugin_errors.clear()
+        """Load built-in tools, generated skills, and plugin tools.
 
-        # Built-in tools
-        for cls in _BUILTIN_TOOLS:
+        Thread-safe: uses lock to prevent concurrent modification during load.
+        """
+        async with self._lock:
+            self._tools.clear()
+            self._plugin_errors.clear()
+
+            # Built-in tools
+            for cls in _BUILTIN_TOOLS:
+                try:
+                    tool = cls() if not _needs_llm_router(cls) else cls(llm_router=self.llm)
+                    self._tools[tool.name] = tool
+                except Exception as e:
+                    logger.warning("builtin_tool_load_failed", tool=cls.__name__, error=str(e))
+
+            if _has_test_tool:
+                try:
+                    self._tools["test"] = TestTool(llm_router=self.llm)
+                except Exception:
+                    pass
+
+            # Lazy-load SkillTool to avoid circular import
+            # (skill_tool.py imports ToolRegistry; we avoid the module-level cycle here)
             try:
-                tool = cls() if not _needs_llm_router(cls) else cls(llm_router=self.llm)
-                self._tools[tool.name] = tool
+                from xmclaw.tools.skill_tool import SkillTool as _ST
+                self._tools["skill"] = _ST()
             except Exception as e:
-                logger.warning("builtin_tool_load_failed", tool=cls.__name__, error=str(e))
+                logger.warning("skill_tool_load_failed", error=str(e))
 
-        if _has_test_tool:
-            try:
-                self._tools["test"] = TestTool(llm_router=self.llm)
-            except Exception:
-                pass
+            # Generated skills
+            await self._load_generated_skills()
 
-        # Lazy-load SkillTool to avoid circular import
-        # (skill_tool.py imports ToolRegistry; we avoid the module-level cycle here)
-        try:
-            from xmclaw.tools.skill_tool import SkillTool as _ST
-            self._tools["skill"] = _ST()
-        except Exception as e:
-            logger.warning("skill_tool_load_failed", error=str(e))
-
-        # Generated skills
-        await self._load_generated_skills()
-
-        # Plugin tools (drop-in directory)
-        await self._load_plugin_tools()
+            # Plugin tools (drop-in directory)
+            await self._load_plugin_tools()
 
         logger.info("tools_loaded",
                     builtin=sum(1 for t in _BUILTIN_TOOLS),
@@ -204,19 +223,31 @@ class ToolRegistry:
     def register(self, tool: Tool) -> None:
         """Manually register a tool instance.
 
+        Thread-safe: uses synchronous lock to prevent concurrent modification.
         Usage:
             registry = ToolRegistry.get_shared()
             registry.register(MyCustomTool())
         """
-        self._tools[tool.name] = tool
+        with self._sync_lock:
+            self._tools[tool.name] = tool
+            # Initialize circuit breaker for new tool
+            if tool.name not in self._tool_breakers:
+                self._tool_breakers[tool.name] = CircuitBreaker(failure_threshold=5, recovery_timeout=30.0)
         logger.info("tool_registered", name=tool.name)
 
     def unregister(self, name: str) -> bool:
-        """Remove a tool by name. Returns True if removed."""
-        if name in self._tools:
-            del self._tools[name]
-            logger.info("tool_unregistered", name=name)
-            return True
+        """Remove a tool by name. Returns True if removed.
+
+        Thread-safe: uses synchronous lock to prevent concurrent modification.
+        """
+        with self._sync_lock:
+            if name in self._tools:
+                del self._tools[name]
+                # Remove circuit breaker
+                if name in self._tool_breakers:
+                    del self._tool_breakers[name]
+                logger.info("tool_unregistered", name=name)
+                return True
         return False
 
     def list_tools(self) -> list[dict[str, str]]:
@@ -234,19 +265,61 @@ class ToolRegistry:
         return "\n".join(lines)
 
     async def execute(self, name: str, arguments: dict[str, Any]) -> str:
-        tool = self._tools.get(name)
-        if not tool:
-            available = ", ".join(sorted(self._tools.keys()))
-            return f"[Error: Tool '{name}' not found]\nAvailable: {available}"
-        try:
-            return await tool.execute(**arguments)
-        except Exception as e:
-            logger.error("tool_execution_error", tool=name, error=str(e))
-            return f"[Error executing {name}: {e}]"
+        """Execute a tool with error recovery and circuit breaker protection.
+
+        Thread-safe: uses lock for reading tool from registry.
+        Each tool has its own circuit breaker to prevent cascading failures.
+        Transient failures (timeouts, network) are retried automatically.
+        """
+        # Get tool reference under lock (lock is released after lookup)
+        async with self._lock:
+            tool = self._tools.get(name)
+            if not tool:
+                available = ", ".join(sorted(self._tools.keys()))
+                return f"[Error: Tool '{name}' not found]\nAvailable: {available}"
+
+        # Get or create circuit breaker for this tool
+        if name not in self._tool_breakers:
+            self._tool_breakers[name] = CircuitBreaker(failure_threshold=5, recovery_timeout=30.0)
+
+        breaker = self._tool_breakers[name]
+
+        # Check circuit breaker
+        if not await breaker.can_execute():
+            logger.warning("tool_circuit_breaker_open", tool=name)
+            return f"[Error: Tool '{name}' temporarily unavailable due to repeated failures. Please try again later.]"
+
+        # Execute with retry logic (outside lock for better concurrency)
+        max_retries = 2
+        last_error: Exception | None = None
+
+        for attempt in range(max_retries + 1):
+            try:
+                result = await tool.execute(**arguments)
+                await breaker.record_success()
+                return result
+            except Exception as e:
+                last_error = e
+                logger.warning("tool_execution_error",
+                             tool=name, attempt=attempt + 1, error=str(e)[:80])
+
+                # Record failure for circuit breaker
+                await breaker.record_failure()
+
+                # Only retry on first attempts
+                if attempt < max_retries:
+                    # Brief backoff
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
+
+        # All retries exhausted
+        logger.error("tool_execution_failed_all_retries", tool=name, error=str(last_error))
+        return f"[Error executing {name}: {last_error}]"
 
     async def hot_reload(self, name: str) -> bool:
         """Hot-reload a single skill by name (from shared/skills/ or plugins/).
 
+        Thread-safe: uses lock to prevent concurrent modification.
         Returns True if reload succeeded, False otherwise.
         """
         # Search generated skills
@@ -286,7 +359,13 @@ class ToolRegistry:
             else:
                 return False
 
-        self._tools[name] = target
+        # Update registry under lock
+        async with self._lock:
+            self._tools[name] = target
+            # Reset circuit breaker for reloaded tool
+            if name in self._tool_breakers:
+                self._tool_breakers[name] = CircuitBreaker(failure_threshold=5, recovery_timeout=30.0)
+
         logger.info("tool_hot_reloaded", name=name)
         return True
 

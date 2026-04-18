@@ -225,6 +225,21 @@ class DaemonConfig:
                 "vfm_threshold": 5.0,
                 "max_genes_per_day": 10,
                 "auto_rollback": True,
+                # Pattern detection thresholds
+                "pattern_thresholds": {
+                    "tool_usage_min_count": 2,    # 工具使用次数阈值 (达到此次数触发模式检测)
+                    "repeated_request_min_count": 2,  # 重复请求次数阈值
+                    "insight_tool_usage_count": 2,    # 洞察提取的最小工具使用次数
+                    "insight_repeated_count": 2,      # 洞察提取的最小重复次数
+                },
+                # 工具特定阈值 (可针对不同工具设置不同阈值)
+                "tool_specific_thresholds": {
+                    "web_search": 3,     # 搜索频繁，允许更高阈值
+                    "file_write": 2,     # 文件操作应更敏感
+                    "bash": 2,           # 命令执行应更敏感
+                    "web_fetch": 3,      # 网页获取可稍高
+                    "code_exec": 2,      # 代码执行应敏感
+                },
             },
             memory={
                 "vector_db_path": str(BASE_DIR / "shared" / "vector_db"),

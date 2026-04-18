@@ -1,11 +1,4 @@
-"""Prompt builder for LLM interactions."""
-import os
 from typing import Any
-
-
-def _get_source_dir() -> str:
-    """Return the host OS-appropriate path to the project source directory."""
-    return os.environ.get("XMCLAW_SOURCE_DIR", str(__import__("pathlib").Path(__file__).resolve().parent.parent.parent))
 
 
 class PromptBuilder:
@@ -15,11 +8,25 @@ You have access to the following tools — call them directly via the tool-calli
 {tools}
 
 Self-awareness:
-- Your own source code lives at {source_dir}\\
+- Your own source code lives at {source_dir}\
 - You can read, edit, and write your own files using file_read/file_edit/file_write
 - You can run your own tests with bash: "python tmp\\run_tests.py"
 - You can restart your daemon with bash: "xmclaw stop && xmclaw start"
 - You evolve by generating new Genes and Skills based on observed patterns
+
+Task Analysis:
+- Type: {task_type}
+- Complexity: {task_complexity}
+- Reasoning: {task_reasoning}
+
+Gathered Information:
+{gathered_info}
+
+Execution Plan:
+{execution_plan}
+
+Skill Execution Results:
+{skill_results}
 
 Active Genes:
 {genes}
@@ -36,19 +43,6 @@ Rules:
 3. Be concise but complete.
 4. If no tool is needed, just answer directly.
 5. When asked to improve yourself, use file tools to modify your own code.
-"""
-
-    PLAN_MODE_PROMPT = """You are in PLAN MODE. Do not execute tools yet.
-Instead, analyze the request and produce a step-by-step execution plan.
-
-Your plan should include:
-1. What information you need to gather
-2. What tools you will use and in what order
-3. What files you might need to read or modify
-4. Any potential risks or edge cases
-
-After producing the plan, ask the user if they want you to proceed with execution.
-Use the ask_user tool to confirm before taking action.
 """
 
     def build(self, user_input: str, context: dict[str, Any], plan_mode: bool = False) -> list[dict[str, str]]:
@@ -86,6 +80,12 @@ Use the ask_user tool to confirm before taking action.
             memories=memories_text,
             insights=insights_text,
             source_dir=_get_source_dir(),
+            task_type=context.get("task_profile", {}).get("type", "general"),
+            task_complexity=context.get("task_profile", {}).get("complexity", "low"),
+            task_reasoning=context.get("task_profile", {}).get("reasoning", "N/A"),
+            gathered_info=context.get("gathered_info", "None"),
+            execution_plan=context.get("execution_plan", ""),
+            skill_results=context.get("skill_results", ""),
         )
         if plan_mode:
             system += "\n\n" + self.PLAN_MODE_PROMPT

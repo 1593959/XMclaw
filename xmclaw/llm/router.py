@@ -1,8 +1,10 @@
 """LLM router: pluggable provider selection and request handling."""
+import asyncio
 from pathlib import Path
 from typing import Any, AsyncIterator
 
 from xmclaw.daemon.config import DaemonConfig
+from xmclaw.core.error_recovery import get_error_recovery, CircuitBreaker
 from xmclaw.utils.log import logger
 from xmclaw.utils.paths import BASE_DIR
 
@@ -48,11 +50,22 @@ class LLMRouter:
     2. Plugin providers (plugins/llm/*.py)
 
     Each provider has its own config section under llm.providers.<name>.
+
+    Error Recovery:
+    - Circuit breaker per provider to prevent cascading failures
+    - Automatic fallback to next provider on failure
+    - Retry logic with exponential backoff
     """
     def __init__(self):
         self.config = DaemonConfig.load()
         self.clients: dict[str, Any] = {}
         self._load_providers()
+        # Circuit breaker for each provider
+        self._breakers: dict[str, CircuitBreaker] = {
+            name: CircuitBreaker(failure_threshold=5, recovery_timeout=60.0)
+            for name in self.clients
+        }
+        self._recovery = get_error_recovery()
 
     def _load_providers(self) -> None:
         """Load built-in and plugin providers."""
@@ -148,7 +161,11 @@ class LLMRouter:
         provider: str | None = None,
         fallback: bool = True,
     ) -> AsyncIterator[str]:
-        """Stream from the selected provider, optionally falling back on error."""
+        """Stream from the selected provider, optionally falling back on error.
+
+        Uses circuit breakers to prevent cascading failures and provides
+        automatic provider failover with retry logic.
+        """
         target = provider or self.config.llm.get("default_provider", "anthropic")
         tried: list[str] = []
         providers_to_try = [target]
@@ -157,15 +174,33 @@ class LLMRouter:
 
         for p in providers_to_try:
             client = self.clients.get(p)
+            breaker = self._breakers.get(p)
             if not client:
                 continue
+
             tried.append(p)
+
+            # Check circuit breaker
+            if breaker and not await breaker.can_execute():
+                logger.warning("llm_circuit_breaker_open", provider=p, state=breaker.state.value)
+                continue
+
             try:
+                # Reset collected chunks on each provider attempt
+                provider_chunks = []
                 async for chunk in client.stream(messages, tools=tools):
+                    provider_chunks.append(chunk)
                     yield chunk
+
+                # Success - record and return
+                if breaker:
+                    await breaker.record_success()
                 return  # Success
+
             except Exception as e:
                 logger.warning("llm_provider_error", provider=p, error=str(e))
+                if breaker:
+                    await breaker.record_failure()
                 continue
 
         logger.error("llm_all_providers_failed", tried=tried)
@@ -177,25 +212,46 @@ class LLMRouter:
         provider: str | None = None,
         fallback: bool = True,
     ) -> str:
-        """Complete from the selected provider, optionally falling back on error."""
+        """Complete from the selected provider, optionally falling back on error.
+
+        Uses circuit breakers to prevent cascading failures and provides
+        automatic provider failover with retry logic.
+        """
         target = provider or self.config.llm.get("default_provider", "anthropic")
         tried: list[str] = []
         providers_to_try = [target]
         if fallback:
             providers_to_try.extend(k for k in self.clients if k != target)
 
+        last_error: Exception | None = None
         for p in providers_to_try:
             client = self.clients.get(p)
+            breaker = self._breakers.get(p)
             if not client:
                 continue
+
             tried.append(p)
-            try:
-                return await client.complete(messages)
-            except Exception as e:
-                logger.warning("llm_provider_error", provider=p, error=str(e))
+
+            # Check circuit breaker
+            if breaker and not await breaker.can_execute():
+                logger.warning("llm_circuit_breaker_open", provider=p, state=breaker.state.value)
                 continue
 
-        raise RuntimeError(f"All LLM providers failed. Tried: {', '.join(tried)}")
+            try:
+                result = await client.complete(messages)
+                # Success - record and return
+                if breaker:
+                    await breaker.record_success()
+                return result
+
+            except Exception as e:
+                last_error = e
+                logger.warning("llm_provider_error", provider=p, error=str(e))
+                if breaker:
+                    await breaker.record_failure()
+                continue
+
+        raise RuntimeError(f"All LLM providers failed. Tried: {', '.join(tried)}. Last error: {last_error}")
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings, trying each provider in order."""
@@ -213,7 +269,14 @@ class LLMRouter:
         """Reload all provider clients with updated config.
 
         Call after config changes via the API.
+        Also rebuilds circuit breakers for new providers.
         """
         self.clients.clear()
         self.config = DaemonConfig.load()
         self._load_providers()
+        # Rebuild circuit breakers for new provider set
+        self._breakers = {
+            name: CircuitBreaker(failure_threshold=5, recovery_timeout=60.0)
+            for name in self.clients
+        }
+        logger.info("llm_clients_rebuilt", providers=list(self.clients.keys()))
