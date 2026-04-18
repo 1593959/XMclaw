@@ -1,6 +1,5 @@
 """Skill invocation tool - call registered skills dynamically."""
 from xmclaw.tools.base import Tool
-from xmclaw.tools.registry import ToolRegistry
 from xmclaw.utils.log import logger
 
 
@@ -19,6 +18,7 @@ class SkillTool(Tool):
     }
 
     async def execute(self, skill_name: str, arguments: dict | None = None) -> str:
+        from xmclaw.tools.registry import ToolRegistry  # 延迟导入避免循环依赖
         args = arguments or {}
         logger.info("skill_tool_invoke", skill_name=skill_name, args=args)
         try:
