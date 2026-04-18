@@ -213,16 +213,37 @@ def start_daemon(open_browser: bool = True) -> int:
             python_exe = str(venv_python)
         else:
             python_exe = sys.executable
+
+        # Log to daemon.log so we can see startup errors
+        log_file = BASE_DIR / "logs" / "daemon.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        # Append new startup marker
+        with open(log_file, "a", encoding="utf-8") as lf:
+            import datetime
+            lf.write(f"\n--- xmclaw start at {datetime.datetime.now().isoformat()} ---\n")
+
         proc = subprocess.Popen(
             [python_exe, "-m", "xmclaw.daemon.server"],
             creationflags=subprocess.CREATE_NO_WINDOW,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=open(log_file, "a"),
+            stderr=subprocess.STDOUT,
         )
         PID_FILE.write_text(str(proc.pid))
-        print(f"Daemon started with PID {proc.pid}")
+
+        # Give it 2 seconds to start, then check if it died immediately
+        import time
+        time.sleep(2)
+        if proc.poll() is not None:
+            # Daemon crashed - show last lines of log
+            print(f"[ERROR] Daemon crashed immediately. Check:")
+            print(f"  xmclaw logs")
+            print(f"  type: {proc.returncode}")
+            PID_FILE.unlink(missing_ok=True)
+            return 1
+
+        print(f"Daemon started (PID {proc.pid})")
         url = _get_daemon_url()
-        print(f"Open {url} in your browser")
+        print(f"Open: {url}")
         if open_browser:
             _open_browser(url)
         return 0
@@ -233,6 +254,9 @@ def start_daemon(open_browser: bool = True) -> int:
 
 def stop_daemon() -> int:
     if not is_running():
+        # PID file exists but process is dead - clean it up
+        if PID_FILE.exists():
+            PID_FILE.unlink()
         print("Daemon not running.")
         return 1
     try:
@@ -252,6 +276,7 @@ def stop_daemon() -> int:
         return 0
     except Exception as e:
         print(f"Failed to stop daemon: {e}")
+        PID_FILE.unlink(missing_ok=True)
         return 1
 
 

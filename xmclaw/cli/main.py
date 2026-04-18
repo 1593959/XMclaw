@@ -44,34 +44,74 @@ def start(no_browser: bool = False):
 @app.command()
 def stop():
     """Stop the XMclaw daemon."""
+    from xmclaw.daemon.lifecycle import is_running
+    running = is_running()
     stop_daemon()
+    if _RICH:
+        console = Console()
+        if running:
+            console.print("[green]Daemon stopped[/green]")
+        else:
+            console.print("[yellow]Daemon was not running[/yellow]")
+    else:
+        print("Daemon stopped" if running else "Daemon was not running")
+
+
+@app.command()
+def restart():
+    """Restart the daemon (stop then start)."""
+    stop()
+    start_daemon(open_browser=False)
 
 
 @app.command()
 def status():
-    """Check daemon status."""
-    running = _is_daemon_running()
+    """Show daemon status, PID, URL and recent errors."""
+    from xmclaw.daemon.lifecycle import is_running, PID_FILE, _get_daemon_url
+    running = is_running()
+    url = _get_daemon_url()
+
     if _RICH:
         console = Console()
         if running:
-            from xmclaw.daemon.lifecycle import PID_FILE
             pid = PID_FILE.read_text().strip() if PID_FILE.exists() else "?"
             console.print(Panel(
-                f"[green]🟢 运行中[/green]  PID [bold]{pid}[/bold]",
+                f"[green]🟢 运行中[/green]  [bold]PID {pid}[/bold]\n"
+                f"[cyan]{url}[/cyan]",
                 title="XMclaw Daemon",
                 border_style="green",
             ))
-            _show_quick_status(console)
         else:
             console.print(Panel(
-                "[yellow]🟡 未运行[/yellow]\n\n"
-                "运行 [cyan]xmclaw start[/cyan] 启动守护进程\n"
-                "首次运行会自动引导配置 API Key",
+                "[yellow]🟡 未运行[/yellow]",
                 title="XMclaw Daemon",
                 border_style="yellow",
             ))
     else:
-        daemon_status()
+        if running:
+            pid = PID_FILE.read_text().strip() if PID_FILE.exists() else "?"
+            print(f"Running  PID={pid}  {url}")
+        else:
+            print(f"Not running  {url}")
+
+
+@app.command()
+def logs(lines: int = typer.Option(50, "--lines", "-n", help="Number of lines to show")):
+    """Show daemon log (last N lines)."""
+    from xmclaw.daemon.lifecycle import BASE_DIR
+    log_path = BASE_DIR / "logs" / "daemon.log"
+    if not log_path.exists():
+        print("No daemon log found.")
+        return
+    content = log_path.read_text(encoding="utf-8", errors="replace")
+    all_lines = content.splitlines()
+    tail = all_lines[-lines:]
+    for line in tail:
+        # Highlight errors in red
+        if "error" in line.lower() or "traceback" in line.lower():
+            print(f"[ERROR] {line}" if not _RICH else f"[red]ERROR[/red] {line}")
+        else:
+            print(line)
 
 
 def _is_daemon_running() -> bool:
