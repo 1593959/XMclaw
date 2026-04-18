@@ -83,6 +83,12 @@ xmclaw stop
 
 ---
 
+## 📸 UI Preview
+
+![XMclaw Warm Theme Dashboard](design-draft-v4.png)
+
+*Warm cream-toned Dashboard with coral accents — designed for extended use*
+
 ## 🗂️ Architecture
 
 ```
