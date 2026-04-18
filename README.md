@@ -23,12 +23,14 @@ Unlike a stateless chat interface, XMclaw maintains memory across sessions, exec
 
 | | |
 |---|---|
-| **🧠 Self-Evolving** | XMclaw watches its own performance. The EvolutionEngine detects patterns, scores insights with VFM (Value · Faithfulness · Measurability), and auto-generates new Genes and Skills — no manual curation needed. |
-| **💾 Local-First Memory** | All sessions, metadata, and vectors live in SQLite + sqlite-vec on your machine. Nothing leaves your disk unless you explicitly push it. |
+| **🧠 Self-Evolving** | XMclaw watches its own performance. The EvolutionEngine detects 5 pattern types, scores insights with VFM, and auto-generates Genes and Skills — no manual curation needed. |
+| **💾 Local-First Memory** | All sessions, metadata, and vectors live in SQLite + sqlite-vec on your machine. Import/Export in JSONL, JSON, or ZIP. Nothing leaves your disk unless you explicitly push it. |
 | **🔧 Hot-Reload Skills** | Generated skills are compiled, validated, and registered without restart. Next message already uses the new capability. |
-| **🛡️ Built-In Security** | Bash guard rails, dangerous pattern blocking, Git auto-rollback before file changes, and encrypted API key storage. |
+| **🛡️ Built-In Security** | Unified Permission Manager (ALLOW/ASK/BLOCK), 23-tool categorization, path sandbox, URL whitelist, audit logging, encrypted secrets. |
 | **🌐 Multi-Interface** | Web UI and Rich CLI — both share the same running daemon. |
 | **🔌 MCP & Integrations** | MCP protocol support, plus Slack / Discord / Telegram / GitHub / Notion integrations ready to connect. |
+| **📊 Performance Monitoring** | Per-session LLM token counts, tool call stats, skill success rates, and cost estimation. |
+| **🔁 Multi-Trigger Reflection** | Auto-reflection on errors, conversation end, periodic intervals, or on demand. Insights feed back into the evolution pipeline. |
 
 ---
 
@@ -100,10 +102,11 @@ Clients (Desktop / Web / CLI)
 │  │   ├── think → act → observe   │
 │  │   ├── PromptBuilder + Genes   │
 │  │   └── ReflectionEngine        │
-│  ├── ToolRegistry  ← 20+ tools   │
+│  ├── ToolRegistry  ← 23 tools   │
 │  │   ├── file / bash / browser   │
 │  │   ├── git / mcp / skill       │
 │  │   └── web_search / memory…    │
+│  ├── SkillMatcher ← 5-dim scoring│
 │  ├── LLMRouter  ← Anthropic/OpenAI│
 │  ├── MemoryManager               │
 │  │   ├── SessionManager (JSONL)  │
@@ -125,12 +128,13 @@ Third-party: Slack · Discord · Telegram · GitHub · Notion
 
 XMclaw continuously gets better without you lifting a finger:
 
-1. **Pattern Detection** — analyzes session logs after each conversation
+1. **Pattern Detection** — analyzes session logs after each conversation (5 pattern types)
 2. **Insight Extraction** — identifies behavioral patterns and useful tool sequences
 3. **Gene Generation** — creates lightweight behavioral prompts (GeneForge)
 4. **Skill Generation** — builds executable Python skills from proven patterns (SkillForge)
 5. **Validation** — compiles, runs, and scores new code before registration (VFM scoring)
 6. **Hot Reload** — new skills are immediately available in the next turn
+7. **Multi-Trigger Reflection** — auto-reflects after errors, on conversation end, periodically, or on demand
 
 Genes are injected into the system prompt at runtime. Skills become real tools. Over time, XMclaw accumulates a personal knowledge base tailored to exactly how *you* work.
 
@@ -145,8 +149,44 @@ XMclaw treats your system as a production environment:
 - **Git Auto-Rollback** — commits state before file changes, rolls back on failure
 - **Encrypted Secrets** — API keys stored with Fernet encryption + PBKDF2 key derivation
 - **Sandbox Ready** — Docker/process sandboxing available for untrusted skills
+- **Unified Permission Manager** — 3-level (ALLOW/ASK/BLOCK), 23-tool categorization, path sandbox, URL whitelist, audit logging
+- **Hot-Reload Config** — `daemon/config.json` changes take effect without restart
 
 Run `xmclaw doctor` to audit your security posture.
+
+---
+
+## 📊 Session Import/Export
+
+Sessions can be exported and imported for backup, migration, or sharing:
+
+- **Formats**: JSONL (line-by-line), JSON (array), ZIP (with metadata)
+- **Import modes**: Replace, Append, Merge (deduplication)
+- **Audit trail**: All exports listed with size and timestamp
+
+---
+
+## 📈 Performance Monitoring
+
+Built-in performance tracking for every session:
+
+- **LLM calls**: count, token usage (input/output), estimated cost
+- **Tool calls**: per-tool call counts and success rates
+- **Agent turns**: conversation depth and statistics
+- **Skill stats**: usage frequency and success rate per skill
+
+---
+
+## 🔁 Multi-Trigger Reflection
+
+XMclaw reflects on its own behavior at key moments:
+
+- **ERROR_OCCURRED** — auto-triggered after failures; analyzes root cause and prevention
+- **CONVERSATION_END** — summarizes the session, extracts lessons
+- **PERIODIC** — regular checkpoint reflections during long conversations
+- **USER_REQUEST** — on-demand reflection when user asks for it
+
+Reflection insights are stored in memory and fed back into the evolution pipeline.
 
 ---
 

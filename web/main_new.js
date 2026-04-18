@@ -57,14 +57,18 @@ function logConsole(type, msg, data) {
 function updateConsolePanel() {
     const panel = document.getElementById('console-logs');
     if (!panel) return;
-    panel.innerHTML = consoleLogs.slice(0, 50).map(log => {
-        const color = log.type === 'error' ? '#ff6b6b' : 
-                      log.type === 'tool' ? '#ffc107' : 
+    panel.innerHTML = consoleLogs.slice(0, 80).map(log => {
+        const color = log.type === 'error' ? '#ff6b6b' :
+                      log.type === 'ws'    ? '#60a5fa' :
+                      log.type === 'tool' ? '#ffc107' :
                       log.type === 'state' ? '#4caf50' : '#9ca3af';
-        return `<div style="font-size:11px;color:${color};padding:2px 0;border-bottom:1px solid #222">
-            <span style="color:#666">${log.time}</span> 
-            <strong>[${log.type}]</strong> ${escapeHtml(log.msg || '')}
-            ${log.data ? `<span style="color:#666;margin-left:8px">${escapeHtml(JSON.stringify(log.data).substring(0,100))}</span>` : ''}
+        const dataStr = log.data ? JSON.stringify(log.data, null, 0) : '';
+        const truncated = dataStr.length > 300 ? dataStr.substring(0, 300) + '…' : dataStr;
+        return `<div class="console-entry">
+            <span class="console-time">${log.time}</span>
+            <span class="console-tag" style="color:${color}">[${log.type}]</span>
+            <span class="console-msg">${escapeHtml(log.msg || '')}</span>
+            ${truncated ? `<pre class="console-data">${escapeHtml(truncated)}</pre>` : ''}
         </div>`;
     }).join('');
 }
@@ -864,6 +868,47 @@ addTaskBtn?.addEventListener('click', async () => {
     persistState();
 });
 
+// ── Real-time Tool Pattern Tracking (Evolution Observation) ────────────────────
+const _toolPatterns = {};  // { toolName: { count, threshold } }
+
+function updateToolPatternDisplay(tool, count, threshold) {
+    _toolPatterns[tool] = { count, threshold };
+
+    // Update the dedicated observation panel if it exists
+    const panel = document.getElementById('evo-pattern-panel');
+    if (!panel) return;
+
+    const sortedTools = Object.entries(_toolPatterns)
+        .sort((a, b) => b[1].count - a[1].count);
+
+    let html = '<div class="pattern-list">';
+    for (const [name, data] of sortedTools) {
+        const pct = Math.min(100, Math.round((data.count / data.threshold) * 100));
+        const barColor = pct >= 100 ? '#10b981' : pct >= 60 ? '#f59e0b' : '#6366f1';
+        const firing = pct >= 100 ? '🔥' : '○';
+        html += `<div class="pattern-item">
+            <div class="pattern-row">
+                <span class="pattern-firing">${firing}</span>
+                <span class="pattern-name">${escapeHtml(name)}</span>
+                <span class="pattern-count">${data.count}/${data.threshold}</span>
+            </div>
+            <div class="pattern-bar-bg">
+                <div class="pattern-bar-fill" style="width:${pct}%;background:${barColor}"></div>
+            </div>
+        </div>`;
+    }
+    if (sortedTools.length === 0) {
+        html += '<div class="empty-state" style="padding:12px;text-align:center">工具调用将实时显示在此</div>';
+    }
+    html += '</div>';
+    panel.innerHTML = html;
+}
+
+function clearToolPatterns() {
+    Object.keys(_toolPatterns).forEach(k => delete _toolPatterns[k]);
+    updateToolPatternDisplay('', 0, 3);
+}
+
 // Timeline
 function addTimelineEvent(type, title, desc) {
     const timeline = document.getElementById('evolution-timeline');
@@ -1158,6 +1203,78 @@ function handleBusEvent(evt) {
         // Thinking event
         if (window._devPanel) {
             window._devPanel.addThought(payload.text || '');
+        }
+    } else if (etype === 'reflection:complete') {
+        // Reflection completed — add reflection card to chat and timeline
+        addReflectionMessage(payload.reflection || {}, payload.improvement || {});
+        addTimelineEvent('reflection', '反思完成', payload.reflection?.summary || '');
+
+    } else if (etype === 'tool:called') {
+        // Real-time tool pattern tracking — update the evolution observation panel
+        if (payload.count !== undefined) {
+            updateToolPatternDisplay(payload.tool || '', payload.count, payload.threshold);
+        }
+        if (payload.action === 'pattern_threshold_reached') {
+            showToast(`⚡ 模式触发：${payload.tool} 使用 ≥${payload.count} 次，即将生成技能！`);
+            addTimelineEvent('pattern', `模式触发: ${payload.tool}`, `${payload.count}次调用`);
+        }
+
+    } else if (etype === 'pattern:threshold_reached') {
+        // Tool pattern threshold reached — real-time evolution trigger
+        showToast(`🔥 进化触发：${payload.tool} 模式已达到阈值！`);
+        addTimelineEvent('evolution', `模式触发进化`, `${payload.tool} × ${payload.count}次`);
+
+    } else if (etype === 'evolution:trigger') {
+        // Evolution engine just started running
+        const trigger = payload.trigger || 'manual';
+        showToast(`🔄 进化引擎启动（触发：${trigger}）`);
+        addTimelineEvent('evolution', '进化引擎启动', `触发: ${trigger}`);
+        // Update evolution view if visible
+        if (currentView === 'evolution') typeof loadEvolutionStatus === 'function' && loadEvolutionStatus();
+
+    } else if (etype === 'evolution:notify') {
+        // Evolution cycle completed with results
+        const actions = payload.actions || [];
+        const status = payload.status || 'done';
+        if (actions.length > 0) {
+            for (const action of actions) {
+                const typeLabel = action.type === 'gene' ? 'Gene' : action.type === 'skill' ? 'Skill' : action.type;
+                showToast(`✨ ${typeLabel} 已生成：${action.name || action.id}`);
+                addTimelineEvent(action.type || 'evolution', `${typeLabel} 生成`, action.name || action.id);
+            }
+            geneCount += actions.filter(a => a.type === 'gene').length;
+            skillCount += actions.filter(a => a.type === 'skill').length;
+            evolutionCount.textContent = `${geneCount} Genes · ${skillCount} Skills`;
+            persistState();
+        } else if (status === 'no_insights') {
+            addTimelineEvent('evolution', '进化无洞察', '暂无待学习模式');
+        }
+
+    } else if (etype === 'gene:generated') {
+        geneCount++;
+        evolutionCount.textContent = `${geneCount} Genes · ${skillCount} Skills`;
+        showToast(`🧬 Gene 已生成：${payload.name || payload.gene_id}`);
+        addTimelineEvent('gene', 'Gene 生成', payload.name || payload.gene_id);
+        persistState();
+
+    } else if (etype === 'skill:generated' || etype === 'skill:executed') {
+        // skill:executed also fires when a new skill is hot-reloaded
+        const isHotReload = payload.action === 'hot_reloaded';
+        if (!isHotReload) {
+            skillCount++;
+            evolutionCount.textContent = `${geneCount} Genes · ${skillCount} Skills`;
+            persistState();
+        }
+        showToast(`${isHotReload ? '🔄' : '⚡'} Skill ${isHotReload ? '热加载' : '已生成'}：${payload.skill_name || payload.skill_id || payload.name}`);
+        addTimelineEvent('skill', `Skill ${isHotReload ? '热加载' : '生成'}`, payload.skill_name || payload.skill_id || payload.name || '');
+        if (currentView === 'evolution') typeof loadEvolutionStatus === 'function' && loadEvolutionStatus();
+
+    } else if (etype === 'memory:updated') {
+        // Real-time memory update — refresh memory panel if visible
+        const preview = payload.preview || '';
+        addTimelineEvent('memory', '记忆已保存', preview.substring(0, 60));
+        if (currentView === 'evolution' || currentView === 'memory') {
+            typeof loadEvolutionStatus === 'function' && loadEvolutionStatus();
         }
     }
 }
@@ -1857,8 +1974,295 @@ function highlightSearch(term) {
     first?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
-document.getElementById('btn-new-chat')?.addEventListener('click', newSession);
+document.getElementById('btn-new-chat')?.addEventListener('click', function() {
+    console.log('[XMclaw] newSession clicked, currentSessionId:', currentSessionId);
+    try { newSession(); }
+    catch(e) { console.error('[XMclaw] newSession error:', e); }
+});
 document.getElementById('toggle-console-panel')?.addEventListener('click', toggleConsolePanel);
+document.getElementById('clear-patterns')?.addEventListener('click', clearToolPatterns);
+
+// ===== ARCHITECTURE & FLOWS =====
+async function loadArchitectureFlows() {
+    const tabs = document.getElementById('arch-flow-tabs');
+    const content = document.getElementById('arch-content');
+    if (!tabs || !content) return;
+
+    const flows = [
+        {
+            id: 'startup',
+            label: '🚀 启动',
+            icon: '⚡',
+            desc: 'Daemon 启动流程：配置检查 → 组件初始化 → 服务就绪',
+            color: '#f59e0b',
+            steps: [
+                { node: 'xmclaw start', type: 'entry', desc: 'CLI 命令入口', color: '#6366f1' },
+                { node: 'lifecycle.py', type: 'process', desc: '检查 PID / 启动子进程', color: '#3b82f6' },
+                { node: 'config.json', type: 'data', desc: '首次运行：运行配置向导', color: '#10b981' },
+                { node: 'python -m xmclaw.daemon.server', type: 'process', desc: '启动 Python 进程', color: '#3b82f6' },
+                { node: 'lifespan()', type: 'process', desc: 'FastAPI 生命周期', color: '#8b5cf6' },
+                { node: 'orchestrator.initialize()', type: 'process', desc: '初始化编排器', color: '#ec4899' },
+                { node: 'tools.load_all()', type: 'process', desc: '加载工具注册表', color: '#f97316' },
+                { node: 'memory.initialize()', type: 'process', desc: '初始化记忆层', color: '#06b6d4' },
+                { node: 'install_event_handlers()', type: 'process', desc: '安装事件总线处理器', color: '#84cc16' },
+                { node: 'evo_scheduler.start()', type: 'process', desc: '启动进化调度器', color: '#14b8a6' },
+                { node: 'integration_manager.start()', type: 'process', desc: '启动外部集成', color: '#a855f7' },
+                { node: 'uvicorn.run()', type: 'terminal', desc: '监听 8766 端口', color: '#ef4444' },
+                { node: '前端 WebSocket 连接', type: 'exit', desc: 'ws://127.0.0.1:8766/agent/default', color: '#6366f1' },
+            ]
+        },
+        {
+            id: 'conversation',
+            label: '💬 对话',
+            icon: '💬',
+            desc: '用户发送消息 → Agent 思考 → 工具调用 → 流式响应 → 记忆保存',
+            color: '#6366f1',
+            steps: [
+                { node: '用户输入 → 发送', type: 'entry', desc: 'input.value → wsSend()', color: '#6366f1' },
+                { node: 'WebSocket.send()', type: 'process', desc: 'JSON: {type:"message",content:"..."}', color: '#3b82f6' },
+                { node: 'server.py: agent_websocket()', type: 'process', desc: '接收消息 → orchestrator.run_agent()', color: '#8b5cf6' },
+                { node: 'AgentLoop.run()', type: 'process', desc: '构建 Prompt → LLM.stream()', color: '#ec4899' },
+                { node: 'LLMRouter', type: 'decision', desc: '路由到 Anthropic/OpenAI/插件', color: '#f59e0b' },
+                { node: 'streaming chunks', type: 'process', desc: 'yield chunk → ws.send_text()', color: '#06b6d4' },
+                { node: 'tool_call detected', type: 'decision', desc: '是工具调用?', color: '#f97316' },
+                { node: 'tools.execute()', type: 'process', desc: '执行 Bash / File / Web 等工具', color: '#f97316' },
+                { node: 'tool_result', type: 'process', desc: '结果注入 messages → 继续 LLM', color: '#84cc16' },
+                { node: 'EventBus 通知', type: 'process', desc: '发布 tool:called / agent:message 等事件', color: '#14b8a6' },
+                { node: 'yield done', type: 'process', desc: '对话结束', color: '#a855f7' },
+                { node: 'memory.save_turn()', type: 'process', desc: '保存到 SQLite + JSONL + VectorDB', color: '#06b6d4' },
+                { node: '前端渲染消息', type: 'exit', desc: '_wsRenderer() → addMessage()', color: '#6366f1' },
+            ]
+        },
+        {
+            id: 'reflection',
+            label: '🧠 反思',
+            icon: '🧠',
+            desc: '对话结束后自动分析：问题识别 → 教训总结 → 自动改进 → Gene/Skill 生成',
+            color: '#8b5cf6',
+            steps: [
+                { node: 'yield done', type: 'entry', desc: '对话轮次结束', color: '#8b5cf6' },
+                { node: '_schedule_reflection()', type: 'process', desc: 'asyncio.create_task(_bg()) 后台执行', color: '#6366f1' },
+                { node: 'ReflectionEngine.reflect()', type: 'process', desc: '分析 _turn_history 历史', color: '#ec4899' },
+                { node: 'LLM 生成反思', type: 'process', desc: 'prompt → 问题/教训/改进建议', color: '#f59e0b' },
+                { node: 'EventBus.publish()', type: 'process', desc: 'REFLECTION_COMPLETE 事件', color: '#14b8a6' },
+                { node: 'WebSocket 广播', type: 'process', desc: '{type:"event",event:{...}} → 所有客户端', color: '#06b6d4' },
+                { node: 'handleBusEvent()', type: 'process', desc: 'etype === reflection:complete', color: '#84cc16' },
+                { node: 'addReflectionMessage()', type: 'exit', desc: '渲染反思卡片到对话区', color: '#10b981' },
+                { node: 'addTimelineEvent()', type: 'exit', desc: '时间线记录反思完成', color: '#10b981' },
+            ]
+        },
+        {
+            id: 'evolution',
+            label: '🔄 进化',
+            icon: '🔄',
+            desc: 'APScheduler 定时触发：观察 → 学习 → 生成 Gene/Skill → VFM 评分 → 热加载',
+            color: '#ec4899',
+            steps: [
+                { node: 'APScheduler interval', type: 'entry', desc: '默认每 30 分钟触发一次', color: '#ec4899' },
+                { node: 'EvolutionEngine.run_cycle()', type: 'process', desc: '执行完整进化周期', color: '#6366f1' },
+                { node: 'Observe: _get_recent_sessions()', type: 'process', desc: '获取最近 200 个会话', color: '#3b82f6' },
+                { node: 'Learn: _extract_insights()', type: 'process', desc: '工具使用频率 / 重复请求 / 问题检测', color: '#8b5cf6' },
+                { node: 'Decide: _decide_evolution()', type: 'decision', desc: 'pattern→Skill / problem→Gene', color: '#f59e0b' },
+                { node: 'GeneForge.forge()', type: 'process', desc: 'LLM 生成 Gene JSON + 代码', color: '#f97316' },
+                { node: 'SkillForge.forge()', type: 'process', desc: 'LLM 生成 Skill JSON + 代码', color: '#f97316' },
+                { node: 'VFMScorer.score()', type: 'decision', desc: 'VFM 评分 ≥ 阈值才保留', color: '#14b8a6' },
+                { node: 'EvolutionValidator.validate()', type: 'decision', desc: '语法检查 / 测试验证', color: '#14b8a6' },
+                { node: 'ToolRegistry._load_generated_skills()', type: 'process', desc: '热加载：新 Skill 立即可用', color: '#06b6d4' },
+                { node: 'EventBus.publish()', type: 'process', desc: 'gene:generated / skill:generated', color: '#84cc16' },
+                { node: '前端更新计数', type: 'exit', desc: 'geneCount++ / skillCount++', color: '#10b981' },
+            ]
+        },
+        {
+            id: 'memory',
+            label: '🧩 记忆',
+            icon: '🧩',
+            desc: '三层记忆架构：会话层(JSONL) + 向量层(ChromaDB) + 结构层(SQLite)',
+            color: '#06b6d4',
+            steps: [
+                { node: 'SQLiteStore', type: 'data', desc: 'agent 配置 / insights / 进化记录', color: '#6366f1' },
+                { node: 'SessionManager', type: 'data', desc: 'JSONL: 会话历史 / 工具调用记录', color: '#3b82f6' },
+                { node: 'VectorStore', type: 'data', desc: 'ChromaDB: 向量嵌入 / 语义搜索', color: '#8b5cf6' },
+                { node: 'load_context()', type: 'process', desc: '对话前：加载历史 + 搜索记忆', color: '#14b8a6' },
+                { node: 'save_turn()', type: 'process', desc: '对话后：写入三层存储', color: '#14b8a6' },
+                { node: 'vector.add()', type: 'process', desc: 'turn 内容 → 向量嵌入', color: '#06b6d4' },
+                { node: 'search()', type: 'process', desc: 'top_k 相关记忆 → Prompt 上下文', color: '#06b6d4' },
+            ]
+        },
+        {
+            id: 'eventbus',
+            label: '📡 事件总线',
+            icon: '📡',
+            desc: '全系统异步发布订阅：所有组件通过事件总线解耦通信',
+            color: '#14b8a6',
+            steps: [
+                { node: 'EventBus 单例', type: 'data', desc: '全局事件总线 / 历史 500 条', color: '#6366f1' },
+                { node: 'bus.subscribe("*")', type: 'process', desc: '所有 WS 客户端注册 wildcard', color: '#3b82f6' },
+                { node: 'bus.publish(Event)', type: 'process', desc: 'agent / tools / evolution 发布事件', color: '#8b5cf6' },
+                { node: 'rate_limit', type: 'process', desc: '单类型每秒 ≤200 条防护', color: '#f59e0b' },
+                { node: 'handlers 异步执行', type: 'process', desc: '同步/异步 handler 全部 await', color: '#ec4899' },
+                { node: 'EventType 枚举', type: 'data', desc: '20+ 种事件类型', color: '#14b8a6' },
+                { node: 'WS 广播: _forward_event()', type: 'process', desc: '所有事件 → 所有 WebSocket 客户端', color: '#06b6d4' },
+                { node: '前端 handleBusEvent()', type: 'exit', desc: '路由到对应 UI 更新逻辑', color: '#10b981' },
+            ]
+        },
+        {
+            id: 'multiagent',
+            label: '🤖 多代理',
+            icon: '🤖',
+            desc: '多 Agent 协作：团队创建 → 并行/串行执行 → 结果合并',
+            color: '#f97316',
+            steps: [
+                { node: 'AgentOrchestrator', type: 'process', desc: '管理所有 Agent 实例', color: '#6366f1' },
+                { node: 'create_team()', type: 'process', desc: '创建 Agent 团队 / 共享/独立记忆', color: '#3b82f6' },
+                { node: 'run_agent()', type: 'process', desc: '运行单个 Agent → yield chunks', color: '#8b5cf6' },
+                { node: 'delegate()', type: 'process', desc: '父 Agent 委派任务给子 Agent', color: '#ec4899' },
+                { node: 'run_team()', type: 'process', desc: 'parallel=True → asyncio.gather()', color: '#f97316' },
+                { node: 'merge_results()', type: 'process', desc: 'concat / first / vote 策略', color: '#f59e0b' },
+                { node: 'EventBus 事件', type: 'process', desc: 'agent:start / task:assigned 等', color: '#14b8a6' },
+            ]
+        },
+        {
+            id: 'integrations',
+            label: '🔌 集成',
+            icon: '🔌',
+            desc: '外部平台集成：Telegram / Discord / Slack / GitHub / Notion',
+            color: '#a855f7',
+            steps: [
+                { node: 'IntegrationManager', type: 'process', desc: '管理所有外部集成实例', color: '#6366f1' },
+                { node: 'config.json', type: 'data', desc: '各平台 token / channel 等配置', color: '#3b82f6' },
+                { node: 'integ.connect()', type: 'process', desc: '建立 WebSocket / Webhook 连接', color: '#8b5cf6' },
+                { node: 'on_message()', type: 'process', desc: '接收外部消息 → orchestrator.run_agent()', color: '#ec4899' },
+                { node: 'AgentLoop.run()', type: 'process', desc: '处理外部平台消息', color: '#f97316' },
+                { node: 'yield chunk', type: 'process', desc: '生成响应流', color: '#f59e0b' },
+                { node: 'integ.send()', type: 'process', desc: '响应发回外部平台', color: '#14b8a6' },
+            ]
+        },
+        {
+            id: 'tools',
+            label: '🔧 工具',
+            icon: '🔧',
+            desc: '工具注册 → 参数解析 → 执行 → 结果返回 → LLM 继续',
+            color: '#f97316',
+            steps: [
+                { node: 'ToolRegistry', type: 'data', desc: '所有工具的注册表', color: '#6366f1' },
+                { node: 'load_all()', type: 'process', desc: '加载内置 + MCP + generated 工具', color: '#3b82f6' },
+                { node: '_get_tools_for_llm()', type: 'process', desc: '构建 JSON Schema 工具定义', color: '#8b5cf6' },
+                { node: 'LLM tool_call', type: 'decision', desc: '返回 tool_use 块?', color: '#f59e0b' },
+                { node: 'tools.execute(name, args)', type: 'process', desc: '路由到具体工具类执行', color: '#f97316' },
+                { node: 'Bash / File / Web 等', type: 'process', desc: '具体工具执行', color: '#ec4899' },
+                { node: 'result → messages', type: 'process', desc: '结果作为 user 消息注入', color: '#14b8a6' },
+                { node: 'LLM 继续生成', type: 'process', desc: '基于工具结果继续响应', color: '#06b6d4' },
+            ]
+        },
+        {
+            id: 'cognition',
+            label: '🧠 认知推理',
+            icon: '🧠',
+            desc: '五阶段认知流水线：分析→收集→规划→技能→反思（实时可见）',
+            color: '#8b5cf6',
+            steps: [
+                { node: '用户输入', type: 'entry', desc: '进入 AgentLoop.run()', color: '#6366f1' },
+                { node: 'Stage 1: 任务分类', type: 'process', desc: 'TaskClassifier.classify() → LLM 判断类型/复杂度', color: '#ec4899' },
+                { node: 'Stage 2: 信息收集', type: 'process', desc: 'InfoGatherer.gather() → 记忆/经验/网络 并行搜索', color: '#f59e0b' },
+                { node: 'Stage 3: 任务规划', type: 'decision', desc: 'complexity=high → TaskPlanner 生成步骤', color: '#14b8a6' },
+                { node: 'Stage 4: 技能匹配', type: 'process', desc: 'SkillMatcher → 评分 → 高置信度自动执行', color: '#f97316' },
+                { node: 'Stage 5: 构建 Prompt', type: 'process', desc: '注入分类/记忆/计划/技能结果 → messages[]', color: '#3b82f6' },
+                { node: 'Main Loop: Think-Act', type: 'process', desc: 'LLM stream → tool_call → execute → result', color: '#8b5cf6' },
+                { node: 'Stage 5: 反思总结', type: 'process', desc: '同步可见 ReflectionEngine.reflect() → 渲染到前端', color: '#06b6d4' },
+                { node: 'yield done → 前端', type: 'exit', desc: '返回给用户', color: '#10b981' },
+                { node: 'Background Evolution', type: 'process', desc: '_schedule_evolution_only() → 模式触发进化', color: '#84cc16' },
+            ]
+        },
+    ];
+
+    const nodeColors = {
+        entry:  { bg: '#6366f1', border: '#818cf8', text: '#fff' },
+        exit:   { bg: '#10b981', border: '#34d399', text: '#fff' },
+        data:   { bg: '#0f172a', border: '#334155', text: '#94a3b8' },
+        process:{ bg: '#1e1b4b', border: '#4c1d95', text: '#c4b5fd' },
+        decision:{ bg: '#78350f', border: '#92400e', text: '#fde68a' },
+        terminal:{ bg: '#450a0a', border: '#7f1d1d', text: '#fca5a5' },
+    };
+
+    let activeFlow = 'startup';
+
+    function renderFlow(flow) {
+        const colors = nodeColors;
+        const steps = flow.steps;
+        const cols = 3;
+        const rows = Math.ceil(steps.length / cols);
+
+        let html = `<div class="arch-flow-header">
+            <div class="arch-flow-icon" style="background:${flow.color}22;border-color:${flow.color}44">
+                <span style="font-size:28px">${flow.icon}</span>
+            </div>
+            <div>
+                <h3 class="arch-flow-title">${flow.label.replace(/^.+\s/, '')}</h3>
+                <p class="arch-flow-desc">${flow.desc}</p>
+            </div>
+        </div>
+        <div class="arch-flow-grid" style="--cols:${cols}">`;
+
+        steps.forEach((step, i) => {
+            const c = colors[step.type] || colors.process;
+            const isLast = i === steps.length - 1;
+            const isFirst = i === 0;
+            const col = (i % cols) + 1;
+            const row = Math.floor(i / cols) + 1;
+            const isRowEnd = (i % cols) === cols - 1 || i === steps.length - 1;
+
+            html += `<div class="arch-node" style="
+                --node-bg:${c.bg};--node-border:${c.border};--node-text:${c.text};
+                grid-column:${col};grid-row:${row};
+            ">
+                <div class="arch-node-badge">${isFirst ? '▶' : isLast ? '■' : step.type === 'decision' ? '◇' : '●'}</div>
+                <div class="arch-node-name">${escapeHtml(step.node)}</div>
+                <div class="arch-node-desc">${escapeHtml(step.desc)}</div>
+                ${!isRowEnd && !isLast ? `<div class="arch-arrow">→</div>` : ''}
+            </div>`;
+        });
+
+        html += '</div>';
+
+        // Detail panel
+        html += `<div class="arch-detail">
+            <div class="arch-detail-header">📋 详细说明</div>
+            <div class="arch-steps-list">`;
+        steps.forEach((step, i) => {
+            const num = String(i + 1).padStart(2, '0');
+            html += `<div class="arch-step-item">
+                <div class="arch-step-num">${num}</div>
+                <div>
+                    <div class="arch-step-node">${escapeHtml(step.node)}</div>
+                    <div class="arch-step-desc">${escapeHtml(step.desc)}</div>
+                </div>
+            </div>`;
+        });
+        html += '</div></div>';
+
+        content.innerHTML = html;
+    }
+
+    // Render tabs
+    tabs.innerHTML = flows.map(f =>
+        `<button class="arch-tab-btn ${f.id === activeFlow ? 'active' : ''}"
+            data-flow="${f.id}" style="--tab-color:${f.color}">${f.icon} ${f.label}</button>`
+    ).join('');
+
+    tabs.querySelectorAll('.arch-tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            activeFlow = btn.dataset.flow;
+            tabs.querySelectorAll('.arch-tab-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            const flow = flows.find(f => f.id === activeFlow);
+            if (flow) renderFlow(flow);
+        });
+    });
+
+    // Render initial flow
+    const initFlow = flows.find(f => f.id === activeFlow);
+    if (initFlow) renderFlow(initFlow);
+}
 
 // ===== MULTI-AGENT =====
 async function loadAgentsView() {
@@ -2299,7 +2703,7 @@ loadDraft();  // restore saved draft on refresh
 // ── Wire up core modules ──────────────────────────────────────────────────────
 // ── Router: nav clicks, popstate, URL hash sync ─────────────────────────────────
 (function initRouter() {
-    const VALID_VIEWS = new Set(['dashboard','workspace','evolution','memory','tools','agents','settings']);
+    const VALID_VIEWS = new Set(['dashboard','workspace','evolution','memory','tools','agents','architecture','settings']);
     const SETTINGS_TABS = new Set(['llm','evolution','memory','tools','gateway','mcp','integrations']);
     let _currentView = 'dashboard';
 
@@ -2321,7 +2725,7 @@ loadDraft();  // restore saved draft on refresh
             n.classList.toggle('active', n.dataset.view === view));
         document.querySelectorAll('.view').forEach(v =>
             v.classList.toggle('active', v.id === `view-${view}`));
-        const titles = { dashboard:'仪表盘', workspace:'工作区', evolution:'进化', memory:'记忆', tools:'工具日志', agents:'多代理', settings:'设置' };
+        const titles = { dashboard:'仪表盘', workspace:'工作区', evolution:'进化', memory:'记忆', tools:'工具日志', agents:'多代理', architecture:'架构', settings:'设置' };
         const tb = document.getElementById('topbar-title');
         if (tb) tb.textContent = titles[view] || view;
         if (view === 'workspace')    typeof loadWorkspaceFiles === 'function' && loadWorkspaceFiles();
@@ -2329,6 +2733,7 @@ loadDraft();  // restore saved draft on refresh
         if (view === 'memory')      typeof loadMemorySearch === 'function' && loadMemorySearch();
         if (view === 'tools')       typeof loadToolsLogs === 'function' && loadToolsLogs();
         if (view === 'agents')      typeof loadAgentsView === 'function' && loadAgentsView();
+        if (view === 'architecture') typeof loadArchitectureFlows === 'function' && loadArchitectureFlows();
         history.replaceState(null, '', `#/${view}`);
     }
     function switchSettingsTab(tab) {
@@ -2562,6 +2967,50 @@ window._editMessage = function(btn) {
  * Registered via window.wsSetGlobalHandler so ws.js calls this for
  * every non-built-in WS message.
  */
+
+// ── Five-Stage Pipeline helper ──────────────────────────────────────────────
+function _renderStageData(data) {
+    if (!data) return '';
+    const parts = [];
+
+    if (data.type) {
+        const typeMap = { qa:'问答', code:'代码', search:'搜索', plan:'规划',
+            creative:'创意', learning:'学习', file_op:'文件操作',
+            system:'系统', general:'通用' };
+        parts.push(`<span class="sdata-tag type">${typeMap[data.type] || data.type}</span>`);
+    }
+    if (data.complexity) {
+        const color = { low:'#10b981', medium:'#f59e0b', high:'#ef4444' }[data.complexity] || '#9ca3af';
+        parts.push(`<span class="sdata-tag" style="background:${color}33;color:${color}">${data.complexity}</span>`);
+    }
+    if (data.capabilities && data.capabilities.length) {
+        parts.push(...data.capabilities.map(c => `<span class="sdata-tag cap">${c}</span>`));
+    }
+    if (data.memories && data.memories.length) {
+        parts.push(`<div class="sdata-section">相关记忆 (${data.memories.length})</div>`);
+    }
+    if (data.insights && data.insights.length) {
+        parts.push(`<div class="sdata-section">经验 (${data.insights.length})</div>`);
+    }
+    if (data.web_results && data.web_results.length) {
+        parts.push(`<div class="sdata-section">网页结果 (${data.web_results.length})</div>`);
+    }
+    if (data.steps && data.steps.length) {
+        const ol = document.createElement('ol');
+        ol.className = 'sdata-steps';
+        data.steps.slice(0, 8).forEach(s => {
+            const li = document.createElement('li');
+            li.textContent = `${s.step}. ${s.action}${s.tool ? ` → ${s.tool}` : ''}`;
+            ol.appendChild(li);
+        });
+        return parts.join('') + ol.outerHTML;
+    }
+    if (data.summary) {
+        parts.push(`<div class="sdata-summary">${data.summary}</div>`);
+    }
+    return parts.join('');
+}
+
 function _wsRenderer(data) {
     // pong: no-op (already filtered in ws.js)
     if (data.type === 'pong') return;
@@ -2646,6 +3095,48 @@ function _wsRenderer(data) {
         if (data.state === 'PLANNING' && window._devPanel) {
             window._devPanel.switchTab('plan');
             window._devPanel.open();
+        }
+    } else if (data.type === 'stage') {
+        // ── Five-Stage Cognition Pipeline events ───────────────────────────────
+        const stage = data.stage || '';
+        const label = data.label || stage;
+        const desc = data.desc || '';
+
+        // Update agent state strip
+        setAgentState(stage.toUpperCase(), desc);
+
+        // Remove typing indicator when entering a new stage
+        removeTyping();
+
+        if (stage.endsWith('_done')) {
+            // Render a stage completion card
+            const stageCard = document.createElement('div');
+            stageCard.className = 'stage-card';
+            stageCard.innerHTML = `
+                <div class="stage-card-header">
+                    <span class="stage-icon">${label.split(' ')[0] || '✅'}</span>
+                    <span class="stage-label">${label.split(' ').slice(1).join(' ')}</span>
+                </div>
+                <div class="stage-card-desc">${desc}</div>
+                ${data.data ? `<div class="stage-card-data">${_renderStageData(data.data)}</div>` : ''}
+            `;
+            chat.appendChild(stageCard);
+            chat.scrollTop = chat.scrollHeight;
+
+            // Add to timeline
+            addTimelineEvent('pipeline', label, desc);
+
+            // Special handling for specific stages
+            if (stage === 'reflect_done') {
+                addReflectionMessage(data.data || {}, {});
+            }
+        } else {
+            // Active stage: show indicator at top
+            const indicator = document.getElementById('stage-indicator');
+            if (indicator) {
+                indicator.textContent = label;
+                indicator.style.display = 'flex';
+            }
         }
     } else if (data.type === 'done') {
         removeTyping();

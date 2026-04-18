@@ -6,6 +6,7 @@ Layers:
 - ChromaDB: vector embeddings for insights and skills
 - Markdown: core long-term memory (MEMORY.md, PROFILE.md, etc.)
 """
+import asyncio
 import json
 import sqlite3
 from datetime import datetime
@@ -70,8 +71,12 @@ class MemoryManager:
                 "assistant": response,
                 "tool_calls": tool_calls,
             })
+        # Fire-and-forget vector indexing — do NOT await so the embedding HTTP
+        # call does not block MEMORY_UPDATED from reaching the frontend immediately.
         if self.vectors:
-            await self.vectors.add(agent_id, f"User: {user_input}\nAgent: {response}", source="turn")
+            asyncio.create_task(self.vectors.add(
+                agent_id, f"User: {user_input}\nAgent: {response}", source="turn"
+            ))
 
         await self._event_bus.publish(Event(
             event_type=EventType.MEMORY_UPDATED,
@@ -86,10 +91,11 @@ class MemoryManager:
         return await self.vectors.search(query, agent_id=agent_id, top_k=top_k)
 
     async def add_memory(self, agent_id: str, content: str, source: str = "manual", metadata: dict | None = None) -> int:
-        """Explicitly add a memory entry."""
+        """Explicitly add a memory entry (fire-and-forget vector indexing)."""
         if not self.vectors:
             return -1
-        return await self.vectors.add(agent_id, content, source=source, metadata=metadata)
+        asyncio.create_task(self.vectors.add(agent_id, content, source=source, metadata=metadata))
+        return 0
 
     def save_insight(self, agent_id: str, insight: dict) -> None:
         """Save an insight to SQLite."""

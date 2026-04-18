@@ -31,6 +31,8 @@ class EventType(str, Enum):
     GENE_GENERATED = "gene:generated"
     SKILL_GENERATED = "skill:generated"
     REFLECTION_COMPLETE = "reflection:complete"
+    PATTERN_THRESHOLD = "pattern:threshold_reached"
+    EVOLUTION_TRIGGER = "evolution:trigger"
 
 
 @dataclass

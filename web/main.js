@@ -1121,8 +1121,7 @@ input.addEventListener('input', () => {
 
 document.getElementById('workspace-refresh')?.addEventListener('click', loadWorkspaceFiles);
 
-loadSettings();
-connect();
+// loadSettings() 和 connect() 现在在 window.addEventListener('load') 中调用
 
 // Global error handler
 window.addEventListener('error', (e) => {
@@ -1794,8 +1793,10 @@ if (voiceBtn) {
 }
 
 // ===== INIT =====
+// 直接调用初始化，避免 load 事件已触发的问题
+loadSettings();
+connect();
 loadSessions();
 newSession();
 renderSessionList();
 switchView('dashboard');  // 默认显示 dashboard 视图
-// connect() 已在 loadSettings() 之后调用，避免 WebSocket 重复连接

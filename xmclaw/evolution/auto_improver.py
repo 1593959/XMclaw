@@ -158,11 +158,30 @@ class AutoImprover:
             db = SQLiteStore(BASE_DIR / "shared" / "memory.db")
             db.insert_skill("default", skill)
 
-            # Reload tool registry
+            # Hot-reload: register the new skill into the shared live tool registry
+            # so it becomes immediately available for the next LLM tool-calling decision.
             try:
                 from xmclaw.tools.registry import ToolRegistry
-                registry = ToolRegistry()
-                await registry._load_generated_skills()
+                from xmclaw.core.event_bus import Event, EventType, get_event_bus
+                shared = ToolRegistry.get_shared()
+                if shared is not None:
+                    # Load just the new skill file into the live registry
+                    await shared._load_generated_skills()
+                    # Also publish event so frontend can show real-time feedback
+                    bus = get_event_bus()
+                    await bus.publish(Event(
+                        event_type=EventType.SKILL_EXECUTED,
+                        source=self.__class__.__name__,
+                        payload={
+                            "skill_id": skill["id"],
+                            "skill_name": skill.get("name"),
+                            "action": "hot_reloaded",
+                        },
+                    ))
+                    logger.info("auto_improver_skill_hot_reloaded",
+                                skill_id=skill["id"], tool_count=len(shared._tools))
+                else:
+                    logger.warning("auto_improver_tool_reload_skipped_no_shared")
             except Exception as e:
                 logger.warning("auto_improver_tool_reload_failed", error=str(e))
 
