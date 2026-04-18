@@ -83,6 +83,11 @@ coverage.xml
 
 # Project specific
 .tracker/
+claude_main.js
+main_main.js
+main_main_new.js
+readme_origin.txt
+readme_remote.md
 daemon/pid
 *.spec
 downloads/
