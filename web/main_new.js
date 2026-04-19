@@ -1962,6 +1962,7 @@ function sendMessage() {
     }
 
     const sent = window.wsSend ? window.wsSend(payload) : _sendSafe(payload);
+    saveCurrentSession();  // save immediately so refresh doesn't lose the message
     if (!sent) {
         removeTyping();
         setAgentState('IDLE', '');
@@ -2993,6 +2994,12 @@ if (voiceBtn) {
 }
 
 // ===== INIT =====
+// Save session before page unloads (refresh/close)
+window.addEventListener('beforeunload', () => {
+    saveCurrentSession();
+    persistSessions();
+});
+
 loadSessions();
 loadSettings();
 loadState();
@@ -3005,6 +3012,21 @@ if (!currentSessionId || sessions.length === 0) {
     if (saved && saved.html) {
         chat.innerHTML = saved.html;
         hideWelcome();
+    } else {
+        // current session ID not found in sessions (stale ID) — fall back to first session
+        const fallback = sessions[0];
+        if (fallback) {
+            currentSessionId = fallback.id;
+            localStorage.setItem('xmclaw_current_session', currentSessionId);
+            if (fallback.html) {
+                chat.innerHTML = fallback.html;
+                hideWelcome();
+            } else {
+                showWelcome();
+            }
+        } else {
+            newSession();
+        }
     }
     _rebuildRawTextMap();  // restore raw text map for copy/re-edit
 }
