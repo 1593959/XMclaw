@@ -9,6 +9,9 @@ from .discord import DiscordIntegration
 from .telegram import TelegramIntegration
 from .github import GitHubIntegration
 from .notion import NotionIntegration
+from .feishu import FeishuIntegration
+from .qq import QQIntegration
+from .wechat import WeChatIntegration
 
 if TYPE_CHECKING:
     from xmclaw.core.orchestrator import AgentOrchestrator
@@ -19,6 +22,9 @@ _REGISTRY: dict[str, type[Integration]] = {
     "telegram": TelegramIntegration,
     "github": GitHubIntegration,
     "notion": NotionIntegration,
+    "feishu": FeishuIntegration,
+    "qq": QQIntegration,
+    "wechat": WeChatIntegration,
 }
 
 

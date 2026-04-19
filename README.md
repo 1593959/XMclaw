@@ -28,7 +28,7 @@ Unlike a stateless chat interface, XMclaw maintains memory across sessions, exec
 | **🔧 Hot-Reload Skills** | Generated skills are compiled, validated, and registered without restart. Next message already uses the new capability. |
 | **🛡️ Built-In Security** | Unified Permission Manager (ALLOW/ASK/BLOCK), 23-tool categorization, path sandbox, URL whitelist, audit logging, encrypted secrets. |
 | **🌐 Multi-Interface** | Web UI and Rich CLI — both share the same running daemon. |
-| **🔌 MCP & Integrations** | MCP protocol support, plus Slack / Discord / Telegram / GitHub / Notion integrations ready to connect. |
+| **🔌 MCP & Integrations** | MCP protocol support, plus Slack / Discord / Telegram / GitHub / Notion / 飞书 / QQ频道 / 企业微信 integrations ready to connect. |
 | **📊 Performance Monitoring** | Per-session LLM token counts, tool call stats, skill success rates, and cost estimation. |
 | **🔁 Multi-Trigger Reflection** | Auto-reflection on errors, conversation end, periodic intervals, or on demand. Insights feed back into the evolution pipeline. |
 
@@ -119,7 +119,7 @@ Clients (Desktop / Web / CLI)
 │  └── EventBus  ← pub/sub         │
 └──────────────────────────────────┘
          ↕ REST / WebSocket
-Third-party: Slack · Discord · Telegram · GitHub · Notion
+Third-party: Slack · Discord · Telegram · GitHub · Notion · 飞书 · QQ频道 · 企业微信
 ```
 
 ---
@@ -214,7 +214,7 @@ xmclaw/
 ├── evolution/      GeneForge, SkillForge, VFM, Validator, Scheduler
 ├── genes/          Gene matching and registry
 ├── gateway/        HTTP/WebSocket handlers
-├── integrations/   Slack, Discord, Telegram, GitHub, Notion
+├── integrations/   Slack, Discord, Telegram, GitHub, Notion, 飞书, QQ, 企业微信
 ├── llm/            Anthropic + OpenAI router
 ├── memory/         SQLite, VectorStore, SessionManager
 ├── sandbox/        Docker + process sandboxing
@@ -225,7 +225,7 @@ shared/
 ├── genes/          Auto-generated gene pool (~200 genes)
 └── skills/        Auto-generated skill library (~100 skills)
 agents/             Agent profiles and configuration
-docs/               Architecture, CLI, Tools, Evolution, Desktop
+docs/               Architecture, CLI, Tools, Evolution, Integrations, Desktop
 tests/              pytest test suites
 ```
 
@@ -238,6 +238,7 @@ tests/              pytest test suites
 | [Architecture](./docs/ARCHITECTURE.md) | System design, data flows, wire protocol |
 | [Tools](./docs/TOOLS.md) | Built-in tools reference (file, bash, git, browser, mcp…) |
 | [Evolution](./docs/EVOLUTION.md) | Self-evolution system, GeneForge, SkillForge, VFM |
+| [Integrations](./docs/INTEGRATIONS.md) | Slack, Discord, Telegram, 飞书, QQ, 企业微信, GitHub, Notion |
 | [CLI](./docs/CLI.md) | All terminal commands |
 | [Desktop](./docs/DESKTOP.md) | Desktop app guide |
 

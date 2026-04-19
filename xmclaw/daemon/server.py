@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from xmclaw.daemon.config import DaemonConfig
 from xmclaw.core.orchestrator import AgentOrchestrator
 from xmclaw.core.event_bus import Event, get_event_bus
@@ -396,6 +396,92 @@ async def delete_team(team_name: str):
     del orchestrator._teams[team_name]
     return {"status": "ok"}
 
+
+# ── Integration Webhook Endpoints ──────────────────────────────────────────────
+
+@app.post("/api/integrations/feishu/webhook")
+async def feishu_webhook(request: Request):
+    """Receive events from Feishu Open Platform (HTTPS callback).
+
+    Configure this URL in Feishu app settings as the callback URL.
+    Example: https://your-domain.com/api/integrations/feishu/webhook
+    """
+    try:
+        body = await request.json()
+        feishu = integration_manager.get("feishu")
+        if feishu and feishu.is_running:
+            # Forward to Feishu SDK's WebSocket handler if using HTTP callback mode
+            logger.info("feishu_webhook_received", event=body.get("header", {}).get("event_type", ""))
+        return JSONResponse({"code": 0})
+    except Exception as e:
+        logger.error("feishu_webhook_error", error=str(e))
+        return JSONResponse({"code": 1, "msg": str(e)}, status_code=500)
+
+
+@app.post("/api/integrations/qq/webhook")
+async def qq_webhook(request: Request):
+    """Receive events from QQ Guild (QQ频道) via webhook mode.
+
+    Configure this URL in QQ Open Platform as the event callback URL.
+    Example: https://your-domain.com/api/integrations/qq/webhook
+    """
+    try:
+        body = await request.json()
+        qq = integration_manager.get("qq")
+        if qq and qq.is_running:
+            headers = dict(request.headers)
+            await qq.handle_webhook(body, headers)
+        return JSONResponse({"code": 0})
+    except Exception as e:
+        logger.error("qq_webhook_error", error=str(e))
+        return JSONResponse({"code": 1, "msg": str(e)}, status_code=500)
+
+
+@app.get("/api/integrations/wechat/webhook")
+async def wechat_webhook_verify(request: Request):
+    """Handle WeChat Work URL verification GET challenge."""
+    try:
+        qq = integration_manager.get("wechat")
+        if not (qq and qq.is_running):
+            return PlainTextResponse("not enabled", status_code=503)
+
+        params = dict(request.query_params)
+        # WeChat Work verification: return echostr decoded
+        result = await qq.handle_webhook(b"", {}, params)
+        if result.get("status") == 200 and "body" in result:
+            return PlainTextResponse(result["body"])
+        return PlainTextResponse("verify failed", status_code=400)
+    except Exception as e:
+        logger.error("wechat_verify_error", error=str(e))
+        return PlainTextResponse("error", status_code=500)
+
+
+@app.post("/api/integrations/wechat/webhook")
+async def wechat_webhook(request: Request):
+    """Receive events from WeChat Work application (HTTPS callback).
+
+    Configure this URL in WeChat Work app settings as the callback URL.
+    Example: https://your-domain.com/api/integrations/wechat/webhook
+    """
+    try:
+        body = await request.body()
+        params = dict(request.query_params)
+        wechat = integration_manager.get("wechat")
+        if wechat and wechat.is_running:
+            result = await wechat.handle_webhook(body, dict(request.headers), params)
+            if result.get("status") == 200:
+                return PlainTextResponse(result.get("body", "success"))
+            return PlainTextResponse(result.get("body", "error"), status_code=result.get("status", 500))
+        return PlainTextResponse("not enabled", status_code=503)
+    except Exception as e:
+        logger.error("wechat_webhook_error", error=str(e))
+        return PlainTextResponse("error", status_code=500)
+
+
+@app.get("/api/integrations/status")
+async def integrations_status():
+    """Return status of all integrations."""
+    return JSONResponse(integration_manager.status)
 
 @app.post("/api/teams/{team_name}/agents/{agent_id}")
 async def add_agent_to_team(team_name: str, agent_id: str):

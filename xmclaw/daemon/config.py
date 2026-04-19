@@ -359,5 +359,34 @@ class DaemonConfig:
                 "telegram": {"enabled": False, "bot_token": "", "chat_id": ""},
                 "github":   {"enabled": False, "token": "", "repo": "", "poll_interval": 60},
                 "notion":   {"enabled": False, "api_key": "", "database_id": ""},
+                "feishu": {
+                    "enabled": False,
+                    "app_id": "",
+                    "app_secret": "",
+                    "bot_name": "XMclaw",
+                    "default_chat_id": "",
+                },
+                "qq": {
+                    "enabled": False,
+                    "mode": "websocket",   # "websocket" or "webhook"
+                    "app_id": "",
+                    "app_token": "",
+                    "secret": "",
+                    "webhook_url": "",
+                    "webhook_token": "",
+                    "guild_id": "",
+                    "channel_id": "",
+                },
+                "wechat": {
+                    "enabled": False,
+                    "mode": "group_bot",   # "group_bot" or "application"
+                    "webhook_url": "",
+                    "corp_id": "",
+                    "agent_id": "",
+                    "app_secret": "",
+                    "callback_token": "",
+                    "callback_aes_key": "",
+                    "default_to_user": "",
+                },
             },
         )
