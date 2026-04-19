@@ -1,4 +1,10 @@
 from typing import Any
+import os
+
+
+def _get_source_dir() -> str:
+    """Return the host OS-appropriate path to the project source directory."""
+    return os.environ.get("XMCLAW_SOURCE_DIR", str(__import__("pathlib").Path(__file__).resolve().parent.parent.parent))
 
 
 class PromptBuilder:
