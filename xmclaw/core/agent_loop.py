@@ -260,6 +260,7 @@ class AgentLoop:
             self._stages_done.add("stage2")
 
         # ── Stage 3: Task Planning (medium or high complexity) ──────────────────
+        plan_text = ""   # defined here so it's always in scope for Stage 5
         planning = task_profile["complexity"] in (Complexity.MEDIUM, Complexity.HIGH)
         if planning and "stage3" not in self._stages_done:
             yield json.dumps({"type": "stage", "stage": "plan",
