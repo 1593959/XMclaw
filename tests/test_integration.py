@@ -69,6 +69,11 @@ def test_workspace_files_api():
 @pytest.mark.asyncio
 async def test_tool_registry_executes_file_write_and_read():
     """ToolRegistry can write and read a file."""
+    # Allow file_write in tests (PermissionManager default is ASK → blocked)
+    from xmclaw.utils.security import get_permission_manager, PermissionLevel
+    pm = get_permission_manager()
+    pm.set_tool_permission("file_write", PermissionLevel.ALLOW)
+
     reg = ToolRegistry()
     await reg.load_all()
     test_path = BASE_DIR / "integration_test_file.txt"
@@ -85,6 +90,7 @@ async def test_tool_registry_executes_file_write_and_read():
     finally:
         if test_path.exists():
             test_path.unlink()
+        pm.set_tool_permission("file_write", PermissionLevel.ASK)  # restore
 
 
 @pytest.mark.asyncio
