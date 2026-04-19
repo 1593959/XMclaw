@@ -239,17 +239,45 @@
                     <!-- Right panel: 操作记录 + 状态 -->
                     <div class="dashboard-right" id="dashboard-right">
                         <!-- 最近工具调用 -->
-                        <div class="panel">
-                            <div class="panel-header">
-                                <span>最近工具</span>
-                                <button class="panel-action-btn" id="clear-tools" title="清空">×</button>
+                        <div class="panel" id="panel-tools">
+                            <div class="panel-header" onclick="togglePanel(this)">
+                                <div class="panel-header-left">
+                                    <span class="panel-collapse-icon">▾</span>
+                                    <span>最近工具</span>
+                                </div>
+                                <button class="panel-action-btn" id="clear-tools" title="清空" onclick="event.stopPropagation();clearRecentTools()">×</button>
                             </div>
                             <div class="panel-body" id="recent-tools"><div class="empty-state">No tools used yet</div></div>
                         </div>
+                        <!-- 待办事项 -->
+                        <div class="panel collapsed" id="panel-todos">
+                            <div class="panel-header" onclick="togglePanel(this)">
+                                <div class="panel-header-left">
+                                    <span class="panel-collapse-icon">▾</span>
+                                    <span>待办</span>
+                                </div>
+                                <button class="panel-action-btn" id="add-todo" title="添加" onclick="event.stopPropagation()">+</button>
+                            </div>
+                            <div class="panel-body" id="todo-list"><div class="empty-state">No todos</div></div>
+                        </div>
+                        <!-- 任务 -->
+                        <div class="panel collapsed" id="panel-tasks">
+                            <div class="panel-header" onclick="togglePanel(this)">
+                                <div class="panel-header-left">
+                                    <span class="panel-collapse-icon">▾</span>
+                                    <span>任务</span>
+                                </div>
+                                <button class="panel-action-btn" id="add-task" title="添加" onclick="event.stopPropagation()">+</button>
+                            </div>
+                            <div class="panel-body" id="task-list"><div class="empty-state">No tasks</div></div>
+                        </div>
                         <!-- 智能体状态 -->
-                        <div class="panel">
-                            <div class="panel-header">
-                                <span>状态</span>
+                        <div class="panel collapsed" id="panel-state">
+                            <div class="panel-header" onclick="togglePanel(this)">
+                                <div class="panel-header-left">
+                                    <span class="panel-collapse-icon">▾</span>
+                                    <span>状态</span>
+                                </div>
                                 <span class="panel-badge" id="state-badge">空闲</span>
                             </div>
                             <div class="panel-body">
@@ -271,36 +299,26 @@
                                 </div>
                             </div>
                         </div>
-                        <!-- 待办事项 -->
-                        <div class="panel">
-                            <div class="panel-header">
-                                <span>待办</span>
-                                <button class="panel-action-btn" id="add-todo" title="添加">+</button>
-                            </div>
-                            <div class="panel-body" id="todo-list"><div class="empty-state">No todos</div></div>
-                        </div>
-                        <!-- 任务 -->
-                        <div class="panel">
-                            <div class="panel-header">
-                                <span>任务</span>
-                                <button class="panel-action-btn" id="add-task" title="添加">+</button>
-                            </div>
-                            <div class="panel-body" id="task-list"><div class="empty-state">No tasks</div></div>
-                        </div>
-                        <!-- Self-mod 历史 -->
-                        <div class="panel">
-                            <div class="panel-header"><span>Self-mod</span></div>
-                            <div class="panel-body" id="self-mod-log"><div class="empty-state">No self-modifications yet</div></div>
-                        </div>
-                        <!-- 会话列表（使用侧边栏已有的 session-list） -->
-                        <!-- kept in sidebar -->
                         <!-- 控制台日志 -->
-                        <div class="panel">
-                            <div class="panel-header">
-                                <span>控制台</span>
-                                <button class="panel-action-btn" id="toggle-console-panel" title="切换">☰</button>
+                        <div class="panel collapsed" id="panel-console">
+                            <div class="panel-header" onclick="togglePanel(this)">
+                                <div class="panel-header-left">
+                                    <span class="panel-collapse-icon">▾</span>
+                                    <span>控制台</span>
+                                </div>
+                                <button class="panel-action-btn" id="toggle-console-panel" title="清空" onclick="event.stopPropagation();document.getElementById('console-logs').innerHTML=''">×</button>
                             </div>
                             <div class="panel-body" id="console-logs"></div>
+                        </div>
+                        <!-- Self-mod 历史 -->
+                        <div class="panel collapsed" id="panel-selfmod">
+                            <div class="panel-header" onclick="togglePanel(this)">
+                                <div class="panel-header-left">
+                                    <span class="panel-collapse-icon">▾</span>
+                                    <span>Self-mod</span>
+                                </div>
+                            </div>
+                            <div class="panel-body" id="self-mod-log"><div class="empty-state">No self-modifications yet</div></div>
                         </div>
                     </div>
                 </div>
@@ -311,11 +329,13 @@
                 <div class="workspace">
                     <div class="workspace-sidebar">
                         <div class="workspace-header">
-                            <span>文件</span>
+                            <span class="workspace-header-title">文件</span>
+                            <input type="text" id="workspace-search" placeholder="搜索文件..." autocomplete="off">
                             <button class="workspace-refresh-btn" id="workspace-refresh" title="刷新">
                                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"/></svg>
                             </button>
                         </div>
+                        <div id="workspace-summary" style="display:none"></div>
                         <div class="file-tree" id="file-tree">
                             <div class="empty-state">加载中...</div>
                         </div>
@@ -641,6 +661,71 @@
                                 </div>
                                 <div class="form-row"><label>API Key</label><input type="password" id="integ-notion-api-key" placeholder="secret_..."></div>
                                 <div class="form-row"><label>Database ID</label><input type="text" id="integ-notion-database-id" placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"></div>
+                            </div>
+
+                            <!-- 飞书 -->
+                            <div class="setting-card integration-card" id="integ-card-feishu">
+                                <div class="integration-card-header">
+                                    <span class="integration-icon">🪁</span>
+                                    <span class="integration-name">飞书</span>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="integ-feishu-enabled">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="form-row"><label>App ID</label><input type="text" id="integ-feishu-app-id" placeholder="cli_xxxxxxxx"></div>
+                                <div class="form-row"><label>App Secret</label><input type="password" id="integ-feishu-app-secret" placeholder="App Secret"></div>
+                                <div class="form-row"><label>机器人名称</label><input type="text" id="integ-feishu-bot-name" placeholder="XMclaw"></div>
+                                <div class="form-row"><label>默认 Chat ID</label><input type="text" id="integ-feishu-default-chat-id" placeholder="oc_xxxx"></div>
+                            </div>
+
+                            <!-- QQ频道 -->
+                            <div class="setting-card integration-card" id="integ-card-qq">
+                                <div class="integration-card-header">
+                                    <span class="integration-icon">🐧</span>
+                                    <span class="integration-name">QQ频道</span>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="integ-qq-enabled">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="form-row">
+                                    <label>模式</label>
+                                    <select id="integ-qq-mode" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--surface)">
+                                        <option value="websocket">WebSocket（推荐）</option>
+                                        <option value="webhook">Webhook</option>
+                                    </select>
+                                </div>
+                                <div class="form-row"><label>App ID</label><input type="text" id="integ-qq-app-id" placeholder="1234567890"></div>
+                                <div class="form-row"><label>App Token</label><input type="password" id="integ-qq-app-token" placeholder="App Token"></div>
+                                <div class="form-row"><label>Secret</label><input type="password" id="integ-qq-secret" placeholder="Secret"></div>
+                                <div class="form-row"><label>WebSocket 网关</label><input type="text" id="integ-qq-ws-url" placeholder="wss://api.sgroup.qq.com/..."></div>
+                                <div class="form-row"><label>频道 ID</label><input type="text" id="integ-qq-channel-id" placeholder="123456789"></div>
+                            </div>
+
+                            <!-- 企业微信 -->
+                            <div class="setting-card integration-card" id="integ-card-wechat">
+                                <div class="integration-card-header">
+                                    <span class="integration-icon">💼</span>
+                                    <span class="integration-name">企业微信</span>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="integ-wechat-enabled">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="form-row">
+                                    <label>模式</label>
+                                    <select id="integ-wechat-mode" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--surface)">
+                                        <option value="group_bot">群机器人（Webhook）</option>
+                                        <option value="application">应用消息</option>
+                                    </select>
+                                </div>
+                                <div class="form-row"><label>Webhook URL</label><input type="text" id="integ-wechat-webhook-url" placeholder="https://qyapi.weixin.qq.com/..."></div>
+                                <div class="form-row"><label>Corp ID</label><input type="text" id="integ-wechat-corp-id" placeholder="wwxxxxx"></div>
+                                <div class="form-row"><label>Agent ID</label><input type="text" id="integ-wechat-agent-id" placeholder="1000001"></div>
+                                <div class="form-row"><label>App Secret</label><input type="password" id="integ-wechat-app-secret" placeholder="App Secret"></div>
+                                <div class="form-row"><label>回调 Token</label><input type="text" id="integ-wechat-callback-token" placeholder="Token"></div>
+                                <div class="form-row"><label>回调 AES Key</label><input type="text" id="integ-wechat-callback-aes-key" placeholder="AES Key (43字符)"></div>
                             </div>
                         </div>
                     </div>

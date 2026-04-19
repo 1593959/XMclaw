@@ -488,6 +488,9 @@ const INTEG_FIELDS = {
     telegram: [['integ-telegram-enabled','enabled','bool'],['integ-telegram-bot-token','bot_token'],['integ-telegram-chat-id','chat_id']],
     github:   [['integ-github-enabled','enabled','bool'],['integ-github-token','token'],['integ-github-repo','repo'],['integ-github-poll','poll_interval','int']],
     notion:   [['integ-notion-enabled','enabled','bool'],['integ-notion-api-key','api_key'],['integ-notion-database-id','database_id']],
+    feishu:   [['integ-feishu-enabled','enabled','bool'],['integ-feishu-app-id','app_id'],['integ-feishu-app-secret','app_secret'],['integ-feishu-bot-name','bot_name'],['integ-feishu-default-chat-id','default_chat_id']],
+    qq:       [['integ-qq-enabled','enabled','bool'],['integ-qq-mode','mode'],['integ-qq-app-id','app_id'],['integ-qq-app-token','app_token'],['integ-qq-secret','secret'],['integ-qq-ws-url','ws_url'],['integ-qq-channel-id','channel_id']],
+    wechat:   [['integ-wechat-enabled','enabled','bool'],['integ-wechat-mode','mode'],['integ-wechat-webhook-url','webhook_url'],['integ-wechat-corp-id','corp_id'],['integ-wechat-agent-id','agent_id'],['integ-wechat-app-secret','app_secret'],['integ-wechat-callback-token','callback_token'],['integ-wechat-callback-aes-key','callback_aes_key']],
 };
 
 async function loadIntegrationStatus() {
@@ -501,7 +504,7 @@ async function loadIntegrationStatus() {
 function renderIntegrationStatusBar(statuses) {
     const bar = document.getElementById('integration-status-bar');
     if (!bar) return;
-    const icons = { slack: '💬', discord: '🎮', telegram: '✈️', github: '🐙', notion: '📝' };
+    const icons = { slack: '💬', discord: '🎮', telegram: '✈️', github: '🐙', notion: '📝', feishu: '🪁', qq: '🐧', wechat: '💼' };
     bar.innerHTML = Object.entries(statuses).map(([name, s]) => {
         const dot = s.running ? 'integ-dot-on' : s.enabled ? 'integ-dot-warn' : 'integ-dot-off';
         const label = s.running ? '运行中' : s.enabled ? '未连接' : '未启用';
@@ -709,11 +712,21 @@ function formatArgs(args) {
 }
 
 clearToolsBtn?.addEventListener('click', () => {
+    clearRecentTools();
+});
+
+function togglePanel(headerEl) {
+    const panel = headerEl.closest('.panel');
+    if (!panel) return;
+    panel.classList.toggle('collapsed');
+}
+
+function clearRecentTools() {
     toolHistory = [];
     renderRecentTools();
     renderToolLog();
     persistState();
-});
+}
 
 async function runTestAction(action, target = '') {
     testOutput.style.display = 'block';
@@ -967,42 +980,327 @@ window.toggleToolLog = function(idx) {
     if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
 };
 
-// Workspace
+// ── Workspace File Tree ──────────────────────────────────────────────────────────
 const fileTree = document.getElementById('file-tree');
 const workspaceEditor = document.getElementById('workspace-editor');
 const editorPath = document.getElementById('editor-path');
 const saveFileBtn = document.getElementById('save-file-btn');
+const workspaceSearchInput = document.getElementById('workspace-search');
+const workspaceSummary = document.getElementById('workspace-summary');
+
 let currentFilePath = null;
-let workspaceFiles = [];
+let allWorkspaceFiles = [];     // full list from API
+let visibleWorkspaceFiles = []; // filtered for search
+let expandedDirs = new Set();  // tracks which dirs are open
+let contextMenuTarget = null; // file/dir the user right-clicked
+
+// File type icons and colors
+const FILE_TYPE_STYLE = {
+    python:     { icon: '🐍', color: '#4FC3F7', bg: 'rgba(79,195,247,0.1)' },
+    javascript: { icon: '📜', color: '#FFD54F', bg: 'rgba(255,213,79,0.1)' },
+    typescript: { icon: '📘', color: '#90CAF9', bg: 'rgba(144,202,249,0.1)' },
+    json:       { icon: '📋', color: '#A5D6A7', bg: 'rgba(165,214,167,0.1)' },
+    markdown:   { icon: '📝', color: '#CE93D8', bg: 'rgba(206,147,216,0.1)' },
+    yaml:       { icon: '⚙️',  color: '#80CBC4', bg: 'rgba(128,203,196,0.1)' },
+    config:     { icon: '⚙️',  color: '#BCAAA4', bg: 'rgba(188,170,164,0.1)' },
+    shell:      { icon: '💻', color: '#B0BEC5', bg: 'rgba(176,190,197,0.1)' },
+    html:       { icon: '🌐', color: '#FFAB91', bg: 'rgba(255,171,145,0.1)' },
+    css:        { icon: '🎨', color: '#F48FB1', bg: 'rgba(244,143,177,0.1)' },
+    image:      { icon: '🖼️', color: '#81C784', bg: 'rgba(129,199,132,0.1)' },
+    pdf:        { icon: '📄', color: '#EF9A9A', bg: 'rgba(239,154,154,0.1)' },
+    data:       { icon: '📊', color: '#FFF59D', bg: 'rgba(255,245,157,0.1)' },
+    database:   { icon: '🗄️', color: '#B39DDB', bg: 'rgba(179,157,219,0.1)' },
+    xml:        { icon: '📐', color: '#FFCC80', bg: 'rgba(255,204,128,0.1)' },
+    log:        { icon: '📜', color: '#90A4AE', bg: 'rgba(144,164,174,0.1)' },
+    env:        { icon: '🔑', color: '#EF5350', bg: 'rgba(239,83,80,0.1)' },
+    text:       { icon: '📃', color: '#CFD8DC', bg: 'rgba(207,216,220,0.1)' },
+    folder:     { icon: '📁', color: '#FFB74D', bg: 'rgba(255,183,77,0.1)' },
+    file:       { icon: '📄', color: '#B0BEC5', bg: 'rgba(176,190,197,0.1)' },
+};
+
+function _getStyle(ft) {
+    return FILE_TYPE_STYLE[ft] || FILE_TYPE_STYLE.file;
+}
+
+// Build a directory tree from flat file list
+// Returns: { dirs: [...], files: [...], children: { 'dir/path': { dirs, files } } }
+function _buildTree(flatFiles) {
+    const rootDirs = [];
+    const rootFiles = [];
+    const children = {}; // parentPath -> { dirs, files }
+
+    for (const f of flatFiles) {
+        const parts = f.path.split('/');
+        if (f.type === 'dir') {
+            if (parts.length === 1) {
+                rootDirs.push(f);
+            } else {
+                const parent = parts.slice(0, -1).join('/');
+                if (!children[parent]) children[parent] = { dirs: [], files: [] };
+                children[parent].dirs.push(f);
+            }
+        } else {
+            if (parts.length === 1) {
+                rootFiles.push(f);
+            } else {
+                const parent = parts.slice(0, -1).join('/');
+                if (!children[parent]) children[parent] = { dirs: [], files: [] };
+                children[parent].files.push(f);
+            }
+        }
+    }
+    rootDirs.sort((a, b) => a.name.localeCompare(b.name));
+    rootFiles.sort((a, b) => a.name.localeCompare(b.name));
+    for (const key of Object.keys(children)) {
+        children[key].dirs.sort((a, b) => a.name.localeCompare(b.name));
+        children[key].files.sort((a, b) => a.name.localeCompare(b.name));
+    }
+    return { dirs: rootDirs, files: rootFiles, children };
+}
 
 async function loadWorkspaceFiles() {
     fileTree.innerHTML = '<div class="empty-state">Loading...</div>';
     try {
         const res = await fetch(`/api/agent/${AGENT_ID}/files`);
         const data = await res.json();
-        workspaceFiles = data.files || [];
-        renderFileTree();
+        allWorkspaceFiles = data.files || [];
+        if (workspaceSummary) {
+            const s = data.summary || {};
+            workspaceSummary.textContent = `${s.files || 0} 文件 · ${s.dirs || 0} 文件夹`;
+        }
+        applyWorkspaceSearch();
     } catch {
-        fileTree.innerHTML = '<div class="empty-state">Failed to load files</div>';
+        fileTree.innerHTML = '<div class="empty-state">加载失败</div>';
     }
 }
 
+function applyWorkspaceSearch() {
+    const q = (workspaceSearchInput?.value || '').toLowerCase().trim();
+    if (!q) {
+        visibleWorkspaceFiles = [...allWorkspaceFiles];
+    } else {
+        visibleWorkspaceFiles = allWorkspaceFiles.filter(f =>
+            f.name.toLowerCase().includes(q) || f.path.toLowerCase().includes(q)
+        );
+        // When searching, expand all matching parent dirs
+        const matchPaths = new Set(visibleWorkspaceFiles.map(f => f.path));
+        for (const f of visibleWorkspaceFiles) {
+            if (f.type === 'dir') continue;
+            const parts = f.path.split('/');
+            for (let i = 1; i < parts.length; i++) {
+                expandedDirs.add(parts.slice(0, i).join('/'));
+            }
+        }
+    }
+    renderFileTree();
+}
+
 function renderFileTree() {
-    if (workspaceFiles.length === 0) {
-        fileTree.innerHTML = '<div class="empty-state">No files</div>';
+    if (allWorkspaceFiles.length === 0) {
+        fileTree.innerHTML = '<div class="empty-state">工作区为空</div>';
         return;
     }
-    fileTree.innerHTML = workspaceFiles.map(f => `
-        <div class="file-tree-item ${f.path === currentFilePath ? 'active' : ''}" onclick="openWorkspaceFile('${f.path}')">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-            <span style="overflow:hidden;text-overflow:ellipsis">${escapeHtml(f.path)}</span>
-        </div>
-    `).join('');
+    if (visibleWorkspaceFiles.length === 0) {
+        fileTree.innerHTML = '<div class="empty-state">没有匹配的文件</div>';
+        return;
+    }
+
+    const tree = _buildTree(visibleWorkspaceFiles);
+    const html = _renderNode('', tree, 0);
+    fileTree.innerHTML = html;
+}
+
+function _renderNode(parentKey, node, depth) {
+    let html = '';
+    const indentPx = depth * 14;
+
+    // Directories first
+    for (const d of node.dirs) {
+        const key = d.path;
+        const isOpen = expandedDirs.has(key);
+        const childData = node.children[key] || { dirs: [], files: [] };
+        const subCount = childData.dirs.length + childData.files.length;
+
+        html += `<div class="ft-entry ft-dir ${isOpen ? 'ft-open' : ''}"
+                     data-path="${escapeHtml(key)}" data-type="dir"
+                     style="padding-left:${indentPx}px"
+                     onclick="toggleDir('${escapeHtml(key)}', event)"
+                     oncontextmenu="showContextMenu(event, '${escapeHtml(key)}', 'dir')">
+                    <span class="ft-arrow">${isOpen ? '▼' : '▶'}</span>
+                    <span class="ft-icon">📁</span>
+                    <span class="ft-name">${escapeHtml(d.name)}</span>
+                    <span class="ft-count">${subCount > 0 ? subCount : ''}</span>
+                </div>`;
+
+        if (isOpen) {
+            html += `<div class="ft-children" id="ftc-${key.replace(/\//g, '__')}">`;
+            html += _renderNode(key, childData, depth + 1);
+            html += `</div>`;
+        }
+    }
+
+    // Files
+    for (const f of node.files) {
+        const style = _getStyle(f.fileType);
+        const isActive = f.path === currentFilePath;
+        html += `<div class="ft-entry ft-file ${isActive ? 'ft-active' : ''}"
+                     data-path="${escapeHtml(f.path)}" data-type="file"
+                     style="padding-left:${indentPx + 14}px"
+                     onclick="openWorkspaceFile('${escapeHtml(f.path)}')"
+                     oncontextmenu="showContextMenu(event, '${escapeHtml(f.path)}', 'file')">
+                    <span class="ft-icon" style="color:${style.color}">${style.icon}</span>
+                    <span class="ft-name" title="${escapeHtml(f.path)}">${escapeHtml(f.name)}</span>
+                    ${f.sizeLabel ? `<span class="ft-size">${f.sizeLabel}</span>` : ''}
+                </div>`;
+    }
+
+    return html;
+}
+
+window.toggleDir = function(path, event) {
+    event.stopPropagation();
+    if (expandedDirs.has(path)) {
+        expandedDirs.delete(path);
+    } else {
+        expandedDirs.add(path);
+    }
+    renderFileTree();
+};
+
+window.showContextMenu = function(event, path, type) {
+    event.preventDefault();
+    event.stopPropagation();
+    closeContextMenu();
+    contextMenuTarget = { path, type };
+
+    const menu = document.createElement('div');
+    menu.id = 'ctx-menu';
+    menu.className = 'ctx-menu';
+
+    const isDir = type === 'dir';
+
+    menu.innerHTML = `
+        ${!isDir ? `<div class="ctx-item ctx-delete" onclick="ctxDelete()">🗑️ 删除</div>` : ''}
+        ${isDir ? `<div class="ctx-item" onclick="ctxNewFile()">📄 新建文件</div>` : ''}
+        ${isDir ? `<div class="ctx-item" onclick="ctxNewDir()">📁 新建文件夹</div>` : ''}
+        <div class="ctx-item" onclick="ctxRename()">✏️ 重命名</div>
+        ${!isDir ? `<div class="ctx-item" onclick="ctxCopyPath()">📋 复制路径</div>` : ''}
+    `;
+
+    document.body.appendChild(menu);
+
+    // Position near cursor, clamp to viewport
+    let x = event.clientX;
+    let y = event.clientY;
+    const rect = menu.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    if (x + rect.width > vw) x = vw - rect.width - 8;
+    if (y + rect.height > vh) y = vh - rect.height - 8;
+    menu.style.left = x + 'px';
+    menu.style.top  = y + 'px';
+};
+
+function closeContextMenu() {
+    document.getElementById('ctx-menu')?.remove();
+    contextMenuTarget = null;
+}
+document.addEventListener('click', closeContextMenu);
+
+window.ctxDelete = async function() {
+    closeContextMenu();
+    if (!contextMenuTarget) return;
+    const { path, type } = contextMenuTarget;
+    if (!confirm(`确定删除${type === 'dir' ? '文件夹' : '文件'} "${path}" 吗？`)) return;
+    try {
+        const res = await fetch(`/api/agent/${AGENT_ID}/file?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error(await res.text());
+        if (currentFilePath === path) {
+            currentFilePath = null;
+            workspaceEditor.value = '';
+            editorPath.textContent = '未选择文件';
+            saveFileBtn.style.display = 'none';
+        }
+        await loadWorkspaceFiles();
+        showToast('已删除');
+    } catch (e) {
+        showToast('删除失败: ' + e.message);
+    }
+};
+
+window.ctxNewFile = function() {
+    closeContextMenu();
+    const name = prompt('文件名:', 'untitled.py');
+    if (!name || !name.trim()) return;
+    const parent = contextMenuTarget?.path || '';
+    const relPath = parent ? `${parent}/${name}` : name;
+    createWorkspaceEntry(relPath, false);
+};
+
+window.ctxNewDir = function() {
+    closeContextMenu();
+    const name = prompt('文件夹名:', 'new_folder');
+    if (!name || !name.trim()) return;
+    const parent = contextMenuTarget?.path || '';
+    const relPath = parent ? `${parent}/${name}` : name;
+    createWorkspaceEntry(relPath, true);
+};
+
+window.ctxRename = function() {
+    closeContextMenu();
+    if (!contextMenuTarget) return;
+    const { path } = contextMenuTarget;
+    const newName = prompt('新名称:', path.split('/').pop());
+    if (!newName || !newName.trim() || newName === path.split('/').pop()) return;
+    renameWorkspaceEntry(path, newName);
+};
+
+window.ctxCopyPath = function() {
+    closeContextMenu();
+    if (!contextMenuTarget) return;
+    navigator.clipboard.writeText(contextMenuTarget.path).then(() => showToast('路径已复制'));
+};
+
+async function createWorkspaceEntry(relPath, isDir) {
+    try {
+        const res = await fetch(`/api/agent/${AGENT_ID}/file/create`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: relPath, is_dir: isDir }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        if (!isDir) {
+            openWorkspaceFile(relPath);
+        } else {
+            expandedDirs.add(relPath);
+        }
+        await loadWorkspaceFiles();
+        showToast(isDir ? '文件夹已创建' : '文件已创建');
+    } catch (e) {
+        showToast('创建失败: ' + e.message);
+    }
+}
+
+async function renameWorkspaceEntry(oldPath, newName) {
+    try {
+        const res = await fetch(`/api/agent/${AGENT_ID}/file/rename`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: oldPath, new_name: newName }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        if (currentFilePath === oldPath) {
+            currentFilePath = oldPath.split('/').slice(0, -1).concat([newName]).join('/');
+        }
+        await loadWorkspaceFiles();
+        showToast('已重命名');
+    } catch (e) {
+        showToast('重命名失败: ' + e.message);
+    }
 }
 
 window.openWorkspaceFile = async function(path) {
     currentFilePath = path;
-    renderFileTree();
     editorPath.textContent = path;
     workspaceEditor.value = '加载中...';
     workspaceEditor.readOnly = true;
@@ -1010,11 +1308,13 @@ window.openWorkspaceFile = async function(path) {
     try {
         const res = await fetch(`/api/agent/${AGENT_ID}/file?path=${encodeURIComponent(path)}`);
         const data = await res.json();
+        if (data.error) throw new Error(data.error);
         workspaceEditor.value = data.content || '';
         workspaceEditor.readOnly = false;
         saveFileBtn.style.display = 'inline-block';
-    } catch {
-        workspaceEditor.value = '加载文件失败';
+        renderFileTree(); // update active highlight
+    } catch (e) {
+        workspaceEditor.value = '加载失败: ' + e.message;
     }
 };
 
@@ -1024,13 +1324,16 @@ saveFileBtn?.addEventListener('click', async () => {
         await fetch(`/api/agent/${AGENT_ID}/file?path=${encodeURIComponent(currentFilePath)}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content: workspaceEditor.value })
+            body: JSON.stringify({ content: workspaceEditor.value }),
         });
         showToast('文件已保存');
     } catch {
-        showToast('保存文件失败');
+        showToast('保存失败');
     }
 });
+
+workspaceSearchInput?.addEventListener('input', applyWorkspaceSearch);
+document.getElementById('workspace-refresh')?.addEventListener('click', loadWorkspaceFiles);
 
 // Memory search
 const memorySearch = document.getElementById('memory-query');

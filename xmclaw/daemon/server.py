@@ -102,29 +102,124 @@ async def update_todos(agent_id: str, request: Request):
 
 
 # Workspace Files API
+FILE_TYPE_MAP = {
+    ".py":    "python",
+    ".js":    "javascript",
+    ".ts":    "typescript",
+    ".json":  "json",
+    ".md":    "markdown",
+    ".txt":   "text",
+    ".yml":   "yaml",
+    ".yaml":  "yaml",
+    ".toml":  "config",
+    ".ini":   "config",
+    ".cfg":   "config",
+    ".conf":  "config",
+    ".sh":    "shell",
+    ".bash":  "shell",
+    ".zsh":   "shell",
+    ".bat":   "batch",
+    ".ps1":   "powershell",
+    ".html":  "html",
+    ".css":   "css",
+    ".svg":   "image",
+    ".png":   "image",
+    ".jpg":   "image",
+    ".jpeg":  "image",
+    ".gif":   "image",
+    ".ico":   "image",
+    ".pdf":   "pdf",
+    ".csv":   "data",
+    ".sql":   "database",
+    ".xml":   "xml",
+    ".log":   "log",
+    ".env":   "env",
+    ".gitignore": "config",
+    ".dockerignore": "config",
+    ".editorconfig": "config",
+}
+
+
+def _file_type(path: str) -> str:
+    name = path.lower()
+    for ext, ft in FILE_TYPE_MAP.items():
+        if name.endswith(ext):
+            return ft
+    return "file"
+
+
+def _format_size(size: int) -> str:
+    if size < 1024:
+        return f"{size}B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f}KB"
+    return f"{size / (1024 * 1024):.1f}MB"
+
+
+def _build_tree(agent_dir: Path) -> list[dict]:
+    """Build a nested directory tree from agent_dir.
+
+    Returns a flat list of entries with: path, type (dir|file),
+    fileType (python/json/markdown/etc.), size, name, children (for dirs).
+    """
+    entries = []
+
+    for root, dirs, files in os.walk(agent_dir):
+        root_path = Path(root)
+        rel_root = root_path.relative_to(agent_dir)
+
+        # Directories
+        for dname in sorted(dirs):
+            if dname.startswith("."):
+                continue
+            entries.append({
+                "path": str(rel_root / dname) if str(rel_root) != "." else dname,
+                "name": dname,
+                "type": "dir",
+                "fileType": "folder",
+            })
+
+        # Files
+        for fname in sorted(files):
+            if fname.startswith("."):
+                continue
+            fpath = root_path / fname
+            entries.append({
+                "path": str(rel_root / fname) if str(rel_root) != "." else fname,
+                "name": fname,
+                "type": "file",
+                "fileType": _file_type(fname),
+                "size": fpath.stat().st_size,
+                "sizeLabel": _format_size(fpath.stat().st_size),
+            })
+
+    # Sort: dirs first, then files, both alphabetically
+    def sort_key(e):
+        if e["type"] == "dir":
+            return (0, e["name"].lower())
+        return (1, e["name"].lower())
+    return sorted(entries, key=sort_key)
+
+
 @app.get("/api/agent/{agent_id}/files")
 async def list_files(agent_id: str):
+    """Return workspace file tree with type information."""
     agent_dir = AGENTS_DIR / agent_id
     if not agent_dir.exists():
         return JSONResponse({"error": "Agent not found"}, status_code=404)
-
-    files = []
-    for root, _, filenames in os.walk(agent_dir):
-        for fname in filenames:
-            fpath = Path(root) / fname
-            rel = fpath.relative_to(agent_dir).as_posix()
-            files.append({
-                "path": rel,
-                "size": fpath.stat().st_size,
-            })
-    return {"files": sorted(files, key=lambda x: x["path"])}
+    tree = _build_tree(agent_dir)
+    total_files = sum(1 for e in tree if e["type"] == "file")
+    total_dirs  = sum(1 for e in tree if e["type"] == "dir")
+    return {
+        "files": tree,
+        "summary": {"files": total_files, "dirs": total_dirs},
+    }
 
 
 @app.get("/api/agent/{agent_id}/file")
 async def read_file(agent_id: str, path: str):
     agent_dir = AGENTS_DIR / agent_id
     target = (agent_dir / path).resolve()
-    # Security: prevent path traversal
     if not str(target).startswith(str(agent_dir.resolve())):
         return JSONResponse({"error": "Invalid path"}, status_code=403)
     if not target.exists():
@@ -146,6 +241,86 @@ async def write_file(agent_id: str, path: str, data: dict):
     target.parent.mkdir(parents=True, exist_ok=True)
     with open(target, "w", encoding="utf-8") as f:
         f.write(data.get("content", ""))
+    return {"status": "ok"}
+
+
+@app.post("/api/agent/{agent_id}/file/create")
+async def create_file(agent_id: str, data: dict):
+    """Create a new file or directory."""
+    agent_dir = AGENTS_DIR / agent_id
+    if not agent_dir.exists():
+        return JSONResponse({"error": "Agent not found"}, status_code=404)
+
+    rel_path = data.get("path", "").strip()
+    is_dir = data.get("is_dir", False)
+
+    if not rel_path or ".." in rel_path or rel_path.startswith("/"):
+        return JSONResponse({"error": "Invalid path"}, status_code=400)
+
+    target = (agent_dir / rel_path).resolve()
+    if not str(target).startswith(str(agent_dir.resolve())):
+        return JSONResponse({"error": "Path outside workspace"}, status_code=403)
+
+    if target.exists():
+        return JSONResponse({"error": "Already exists"}, status_code=409)
+
+    if is_dir:
+        target.mkdir(parents=True, exist_ok=True)
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("", encoding="utf-8")
+
+    return {"status": "ok", "path": rel_path, "type": "dir" if is_dir else "file"}
+
+
+@app.delete("/api/agent/{agent_id}/file")
+async def delete_file(agent_id: str, path: str):
+    """Delete a file or directory."""
+    agent_dir = AGENTS_DIR / agent_id
+    if not agent_dir.exists():
+        return JSONResponse({"error": "Agent not found"}, status_code=404)
+
+    if not path or ".." in path or path.startswith("/"):
+        return JSONResponse({"error": "Invalid path"}, status_code=400)
+
+    target = (agent_dir / path).resolve()
+    if not str(target).startswith(str(agent_dir.resolve())):
+        return JSONResponse({"error": "Path outside workspace"}, status_code=403)
+    if not target.exists():
+        return JSONResponse({"error": "Not found"}, status_code=404)
+
+    if target.is_dir():
+        import shutil
+        shutil.rmtree(target)
+    else:
+        target.unlink()
+    return {"status": "ok"}
+
+
+@app.post("/api/agent/{agent_id}/file/rename")
+async def rename_file(agent_id: str, data: dict):
+    """Rename a file or directory."""
+    agent_dir = AGENTS_DIR / agent_id
+    if not agent_dir.exists():
+        return JSONResponse({"error": "Agent not found"}, status_code=404)
+
+    old_path = data.get("path", "").strip()
+    new_name = data.get("new_name", "").strip()
+
+    if not old_path or not new_name or ".." in old_path or ".." in new_name:
+        return JSONResponse({"error": "Invalid path"}, status_code=400)
+
+    old_target = (agent_dir / old_path).resolve()
+    if not str(old_target).startswith(str(agent_dir.resolve())):
+        return JSONResponse({"error": "Path outside workspace"}, status_code=403)
+    if not old_target.exists():
+        return JSONResponse({"error": "Not found"}, status_code=404)
+
+    new_target = old_target.parent / new_name
+    if new_target.exists():
+        return JSONResponse({"error": "Target already exists"}, status_code=409)
+
+    old_target.rename(new_target)
     return {"status": "ok"}
 
 
