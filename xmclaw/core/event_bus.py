@@ -15,6 +15,7 @@ class EventType(str, Enum):
     AGENT_START = "agent:start"
     AGENT_STOP = "agent:stop"
     AGENT_ERROR = "agent:error"
+    AGENT_THINKING = "agent:thinking"
     TASK_ASSIGNED = "task:assigned"
     TASK_COMPLETED = "task:completed"
     TASK_FAILED = "task:failed"

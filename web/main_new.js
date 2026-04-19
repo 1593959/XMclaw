@@ -1924,7 +1924,7 @@ function sendMessage() {
     function _sendSafe(payload) {
         // Open a fresh WebSocket and send; used as last resort
         try {
-            const s = new WebSocket('ws://127.0.0.1:8765/agent/default');
+            const s = new WebSocket('ws://127.0.0.1:8766/agent/default');
             s.onopen = () => {
                 s.send(JSON.stringify(payload));
                 s.close();
@@ -2317,8 +2317,8 @@ async function loadArchitectureFlows() {
                 { node: 'install_event_handlers()', type: 'process', desc: '安装事件总线处理器', color: '#84cc16' },
                 { node: 'evo_scheduler.start()', type: 'process', desc: '启动进化调度器', color: '#14b8a6' },
                 { node: 'integration_manager.start()', type: 'process', desc: '启动外部集成', color: '#a855f7' },
-                { node: 'uvicorn.run()', type: 'terminal', desc: '监听 8765 端口', color: '#ef4444' },
-                { node: '前端 WebSocket 连接', type: 'exit', desc: 'ws://127.0.0.1:8765/agent/default', color: '#6366f1' },
+                { node: 'uvicorn.run()', type: 'terminal', desc: '监听 8766 端口', color: '#ef4444' },
+                { node: '前端 WebSocket 连接', type: 'exit', desc: 'ws://127.0.0.1:8766/agent/default', color: '#6366f1' },
             ]
         },
         {
@@ -3517,7 +3517,7 @@ function _wsOnError(e) {
 }
 
 // ===== WEBSOCKET CORE (inline) =====
-const WS_URL = 'ws://127.0.0.1:8765/agent/default';
+const WS_URL = 'ws://127.0.0.1:8766/agent/default';
 var _ws = null;
 var _wsReconnectDelay = 1000;
 var _wsMaxReconnectDelay = 5000;  // Max 5 seconds
