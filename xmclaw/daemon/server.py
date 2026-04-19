@@ -193,12 +193,10 @@ def _build_tree(agent_dir: Path) -> list[dict]:
                 "sizeLabel": _format_size(fpath.stat().st_size),
             })
 
-    # Sort: dirs first, then files, both alphabetically
-    def sort_key(e):
-        if e["type"] == "dir":
-            return (0, e["name"].lower())
-        return (1, e["name"].lower())
-    return sorted(entries, key=sort_key)
+    # No global sort — os.walk already traverses depth-first in tree order.
+    # The frontend rebuilds the hierarchy from flat paths, so we preserve
+    # the walk order so parent dirs appear before their children.
+    return entries
 
 
 @app.get("/api/agent/{agent_id}/files")

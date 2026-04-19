@@ -1067,6 +1067,13 @@ async function loadWorkspaceFiles() {
         if (workspaceSummary) {
             const s = data.summary || {};
             workspaceSummary.textContent = `${s.files || 0} 文件 · ${s.dirs || 0} 文件夹`;
+            workspaceSummary.style.display = '';
+        }
+        // Auto-expand root-level directories so the tree isn't empty on first load
+        for (const f of allWorkspaceFiles) {
+            if (f.type === 'dir' && !f.path.includes('/')) {
+                expandedDirs.add(f.path);
+            }
         }
         applyWorkspaceSearch();
     } catch {
@@ -1145,7 +1152,7 @@ function _renderNode(parentKey, node, depth) {
         const isActive = f.path === currentFilePath;
         html += `<div class="ft-entry ft-file ${isActive ? 'ft-active' : ''}"
                      data-path="${escapeHtml(f.path)}" data-type="file"
-                     style="padding-left:${indentPx + 14}px"
+                     style="padding-left:${indentPx}px"
                      onclick="openWorkspaceFile('${escapeHtml(f.path)}')"
                      oncontextmenu="showContextMenu(event, '${escapeHtml(f.path)}', 'file')">
                     <span class="ft-icon" style="color:${style.color}">${style.icon}</span>
