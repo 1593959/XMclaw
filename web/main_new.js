@@ -3754,7 +3754,9 @@ window.toggleChatLayout = function() {
     const btn = document.getElementById('sc-view-btn');
     if (btn) {
         btn.classList.toggle('active', _chatLayoutWide);
-        btn.title = _chatLayoutWide ? '切换到分栏布局' : '切换到全宽布局';
+        btn.title = _chatLayoutWide
+            ? '切换布局 — 当前为全宽对话，点击回到分栏（对话+侧栏）'
+            : '切换布局 — 当前为分栏（对话+侧栏），点击切换到全宽对话';
     }
 };
 

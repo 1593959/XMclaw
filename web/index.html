@@ -108,7 +108,7 @@
                 <!-- Shortcuts bar (移到 dashboard 外面) -->
                 <div class="shortcuts-bar" id="shortcuts-bar">
                         <!-- Plan mode -->
-                        <button class="sc-btn" id="sc-plan-btn" onclick="togglePlanMode()" title="计划模式">
+                        <button class="sc-btn" id="sc-plan-btn" onclick="togglePlanMode()" title="计划模式 — 开启后先生成执行计划，再逐步执行，适合复杂任务">
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
                             计划
                         </button>
@@ -117,7 +117,7 @@
 
                         <!-- LLM quick config -->
                         <div style="position:relative">
-                            <button class="sc-btn" id="sc-llm-btn" onclick="toggleLLMTooltip()" title="LLM 快速配置">
+                            <button class="sc-btn" id="sc-llm-btn" onclick="toggleLLMTooltip()" title="LLM 快速配置 — 快速切换 Provider / 模型 / Temperature，无需打开设置页">
                                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                                 <span id="sc-model-label">LLM</span>
                             </button>
@@ -147,19 +147,19 @@
                         </div>
 
                         <!-- Evolution toggle -->
-                        <button class="sc-btn green" id="sc-evo-btn" onclick="toggleEvolution()" title="进化开关">
+                        <button class="sc-btn green" id="sc-evo-btn" onclick="toggleEvolution()" title="进化开关 — 启用后代理会从对话中学习并自动生成/沉淀新技能">
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/><path d="M18 12h4"/><path d="m16.2 16.2 2.9 2.9"/><path d="M12 18v4"/><path d="m4.9 19.1 2.9-2.9"/><path d="M2 12h4"/><path d="m4.9 4.9 2.9 2.9"/></svg>
                             进化
                         </button>
 
                         <!-- Skills -->
-                        <button class="sc-btn" id="sc-skills-btn" onclick="switchView('skills')" title="技能管理">
+                        <button class="sc-btn" id="sc-skills-btn" onclick="switchView('tools')" title="技能管理 — 查看已注册的工具/技能，以及调用日志和性能数据">
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
                             技能
                         </button>
 
                         <!-- Channel integrations -->
-                        <button class="sc-btn" id="sc-channel-btn" onclick="toggleChannelPanel()" title="频道集成">
+                        <button class="sc-btn" id="sc-channel-btn" onclick="toggleChannelPanel()" title="频道集成 — 打开设置→集成，配置 Slack / Telegram / Email 等接入渠道">
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
                             频道
                         </button>
@@ -167,13 +167,13 @@
                         <div class="sc-sep"></div>
 
                         <!-- Dev panel toggle -->
-                        <button class="sc-btn" id="sc-dev-btn" onclick="window._devPanel?.toggle()" title="开发视图">
+                        <button class="sc-btn" id="sc-dev-btn" onclick="window._devPanel?.toggle()" title="开发视图 — 侧边展开开发者面板：当前计划 / 文件变更 / 实时 Diff">
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
                             开发
                         </button>
 
                         <!-- View toggle -->
-                        <button class="sc-btn" id="sc-view-btn" onclick="toggleChatLayout()" title="切换布局">
+                        <button class="sc-btn" id="sc-view-btn" onclick="toggleChatLayout()" title="切换布局 — 在分栏（对话+侧栏）和全宽对话之间切换">
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
                             布局
                         </button>
