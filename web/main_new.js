@@ -965,7 +965,9 @@ function renderToolLog() {
     const log = document.getElementById('tool-log');
     if (!log) return;
     if (toolHistory.length === 0) {
-        log.innerHTML = '<div class="empty-state">No tool executions yet.</div>';
+        log.innerHTML = (typeof TOOL_LOG_EMPTY_HTML !== 'undefined')
+            ? TOOL_LOG_EMPTY_HTML
+            : '<div class="empty-state">No tool executions yet.</div>';
         return;
     }
     log.innerHTML = toolHistory.map((t, i) => `
@@ -2570,25 +2572,17 @@ async function loadMemorySearch() {
     }
 }
 
-// Tools logs
+// Render the 工具 view from the *current session's* in-memory tool history.
+//
+// This used to fetch /api/tools/logs (the daemon's cross-session log file)
+// and paint it into #tool-log, which meant opening the 工具 tab clobbered
+// the per-session log with every tool call ever made on this machine —
+// i.e. a brand-new conversation would show web_fetch/bash calls from
+// sessions the user had deleted hours ago. Render from toolHistory
+// (populated by tool_call / tool_result WebSocket events) instead so
+// the view is scoped to the conversation the user is actually looking at.
 async function loadToolsLogs() {
-    const el = document.getElementById('tool-log');
-    if (!el) return;
-    try {
-        const res = await fetch('/api/tools/logs');
-        const data = await res.json();
-        if (!data.logs || !data.logs.length) {
-            el.innerHTML = TOOL_LOG_EMPTY_HTML;
-            return;
-        }
-        let html = '';
-        for (const log of data.logs) {
-            html += `<div class="tool-log-item"><strong>${escapeHtml(log.name)}</strong><pre>${escapeHtml(log.content)}</pre></div>`;
-        }
-        el.innerHTML = html;
-    } catch (e) {
-        el.innerHTML = '<div class="empty-state">加载失败</div>';
-    }
+    renderToolLog();
 }
 
 
@@ -2611,13 +2605,17 @@ function saveCurrentSession() {
         currentSessionId = generateSessionId();
     }
     const html = chat.innerHTML;
+    // Snapshot the in-memory tool log so switching back later restores the
+    // exact tool calls the agent made in *this* session (see Bug E fix).
+    const toolSnapshot = toolHistory.slice(0, 50);
     const existing = sessions.find(s => s.id === currentSessionId);
     if (existing) {
         existing.html = html;
         existing.title = getSessionTitle();
         existing.updated = Date.now();
+        existing.toolHistory = toolSnapshot;
     } else {
-        sessions.unshift({ id: currentSessionId, title: getSessionTitle(), html: html, updated: Date.now() });
+        sessions.unshift({ id: currentSessionId, title: getSessionTitle(), html: html, updated: Date.now(), toolHistory: toolSnapshot });
     }
     renderSessionList();
     persistSessions();
@@ -2679,6 +2677,11 @@ function switchSession(id) {
     currentSessionId = id;
     chat.innerHTML = s.html || '';
     _rebuildRawTextMap();
+    // Each session owns its own tool history so the 工具 view never leaks
+    // calls from one conversation into another. Restore (or reset) here.
+    toolHistory = Array.isArray(s.toolHistory) ? s.toolHistory.slice() : [];
+    renderRecentTools();
+    renderToolLog();
     renderSessionList();
     persistSessions();
     if (chat.children.length === 0) showWelcome(); else hideWelcome();
@@ -2688,6 +2691,11 @@ function newSession() {
     saveCurrentSession();
     currentSessionId = generateSessionId();
     chat.innerHTML = '';
+    // A fresh session must start with a clean tool log — otherwise the
+    // previous session's bash/web_fetch calls appear to belong to this one.
+    toolHistory = [];
+    renderRecentTools();
+    renderToolLog();
     showWelcome();
     renderSessionList();
     persistSessions();
@@ -3615,6 +3623,16 @@ if (!currentSessionId || sessions.length === 0) {
             newSession();
         }
     }
+    // Scope toolHistory to the *current* session, not the global state blob.
+    // Without this, a page reload leaves whatever session happened to save
+    // STATE_KEY last as the tool log for every session — i.e. the exact
+    // cross-session leak Bug E is about.
+    const activeSession = sessions.find(s => s.id === currentSessionId);
+    toolHistory = (activeSession && Array.isArray(activeSession.toolHistory))
+        ? activeSession.toolHistory.slice()
+        : [];
+    renderRecentTools();
+    renderToolLog();
     _rebuildRawTextMap();  // restore raw text map for copy/re-edit
 }
 loadDraft();  // restore saved draft on refresh
