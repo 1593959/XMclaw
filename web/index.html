@@ -406,18 +406,54 @@
             <!-- ===== MEMORY ===== -->
             <div class="view" id="view-memory">
                 <div class="memory-page">
-                    <div class="memory-search-row">
-                        <input type="text" id="memory-query" placeholder="搜索长期记忆...">
-                        <button id="memory-search-btn">搜索</button>
+                    <div class="memory-tabs">
+                        <button class="mtab active" data-mtab="sessions">会话</button>
+                        <button class="mtab" data-mtab="insights">洞察</button>
+                        <button class="mtab" data-mtab="search">搜索</button>
+                        <button class="mtab-refresh" id="memory-refresh-btn" title="刷新">↻</button>
                     </div>
-                    <div id="memory-results">
-                        <div class="empty-state-rich">
-                            <span class="es-icon">🧠</span>
-                            <div class="es-title">长期记忆检索</div>
-                            <div class="es-body">
-                                代理每轮对话后会把关键结论、反思结果、事实性知识写入向量记忆。
-                                在上方输入关键词就能按语义搜索历史记忆；刚装好时还没有内容，
-                                聊几轮之后再回来试试。
+
+                    <!-- Sessions: list of JSONL session files + paged detail -->
+                    <div class="memory-panel active" id="mpanel-sessions">
+                        <div class="memory-list" id="memory-sessions-list">
+                            <div class="empty-state">加载中…</div>
+                        </div>
+                        <div class="memory-detail" id="memory-session-detail">
+                            <div class="empty-state-rich">
+                                <span class="es-icon">💬</span>
+                                <div class="es-title">会话记录</div>
+                                <div class="es-body">左侧选择一个会话文件，这里会显示每一轮的用户输入、代理回复与工具调用。</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Insights: structured reflection rows -->
+                    <div class="memory-panel" id="mpanel-insights">
+                        <div class="memory-list" id="memory-insights-list">
+                            <div class="empty-state">加载中…</div>
+                        </div>
+                        <div class="memory-detail" id="memory-insight-detail">
+                            <div class="empty-state-rich">
+                                <span class="es-icon">💡</span>
+                                <div class="es-title">反思洞察</div>
+                                <div class="es-body">ReflectionEngine 从每次会话中提炼经验教训并写入数据库。左侧选择一条查看详情。</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Search: existing semantic search -->
+                    <div class="memory-panel" id="mpanel-search">
+                        <div class="memory-search-row">
+                            <input type="text" id="memory-query" placeholder="搜索长期记忆...">
+                            <button id="memory-search-btn">搜索</button>
+                        </div>
+                        <div id="memory-results">
+                            <div class="empty-state-rich">
+                                <span class="es-icon">🧠</span>
+                                <div class="es-title">语义搜索</div>
+                                <div class="es-body">
+                                    向量记忆在每轮对话后写入关键结论与反思。输入关键词按语义检索历史。
+                                </div>
                             </div>
                         </div>
                     </div>

@@ -2619,6 +2619,227 @@ async function loadMemorySearch() {
     }
 }
 
+// ===== Memory view: sessions + insights tabs =====
+//
+// The memory page is a 3-tab panel: sessions / insights / search.  Sessions
+// shows the raw JSONL turn files that SessionManager writes after every
+// chat turn (useful for "what did I actually say three days ago" queries
+// that semantic search blurs).  Insights shows the structured reflection
+// rows ReflectionEngine distills out of those sessions.  Search is the
+// pre-existing semantic search over the vector store.
+
+let _currentMemoryTab = 'sessions';
+let _selectedSessionName = null;
+let _sessionPage = { offset: 0, limit: 50, total: 0 };
+
+function switchMemoryTab(tab) {
+    _currentMemoryTab = tab;
+    document.querySelectorAll('.mtab').forEach(b =>
+        b.classList.toggle('active', b.dataset.mtab === tab));
+    document.querySelectorAll('.memory-panel').forEach(p =>
+        p.classList.toggle('active', p.id === `mpanel-${tab}`));
+    if (tab === 'sessions') loadMemorySessions();
+    else if (tab === 'insights') loadMemoryInsights();
+    else if (tab === 'search') loadMemorySearch();
+}
+
+function _fmtTime(ts) {
+    // JSONL records use ISO strings; session.modified is an epoch-seconds float.
+    try {
+        const d = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts);
+        if (isNaN(d)) return String(ts);
+        return d.toLocaleString();
+    } catch { return String(ts); }
+}
+
+function _fmtSize(bytes) {
+    if (bytes == null) return '';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
+
+async function loadMemorySessions() {
+    const listEl = document.getElementById('memory-sessions-list');
+    if (!listEl) return;
+    listEl.innerHTML = '<div class="empty-state">加载中…</div>';
+    try {
+        const res = await fetch(`/api/agent/${AGENT_ID}/sessions`);
+        const data = await res.json();
+        const sessions = data.sessions || [];
+        if (!sessions.length) {
+            listEl.innerHTML = '<div class="empty-state">暂无会话文件。开始一次对话后这里会出现 JSONL 记录。</div>';
+            return;
+        }
+        listEl.innerHTML = sessions.map(s => {
+            const preview = s.preview ? escapeHtml(s.preview).slice(0, 120) : '(空)';
+            const modified = _fmtTime(s.modified);
+            const size = _fmtSize(s.size);
+            const isSelected = s.name === _selectedSessionName ? ' selected' : '';
+            return `<div class="mlist-item${isSelected}" data-session="${escapeHtml(s.name)}">
+                <div class="mlist-title">${escapeHtml(s.name)}</div>
+                <div class="mlist-preview">${preview}</div>
+                <div class="mlist-meta">${s.turn_count} 轮 · ${size} · ${modified}</div>
+            </div>`;
+        }).join('');
+        listEl.querySelectorAll('.mlist-item').forEach(el => {
+            el.addEventListener('click', () => {
+                const name = el.dataset.session;
+                _selectedSessionName = name;
+                _sessionPage = { offset: 0, limit: 50, total: 0 };
+                listEl.querySelectorAll('.mlist-item').forEach(n => n.classList.toggle('selected', n === el));
+                loadSessionDetail(name);
+            });
+        });
+    } catch (e) {
+        listEl.innerHTML = '<div class="empty-state">加载失败</div>';
+    }
+}
+
+async function loadSessionDetail(name) {
+    const detailEl = document.getElementById('memory-session-detail');
+    if (!detailEl) return;
+    detailEl.innerHTML = '<div class="empty-state">加载中…</div>';
+    try {
+        const { offset, limit } = _sessionPage;
+        const url = `/api/agent/${AGENT_ID}/session?name=${encodeURIComponent(name)}&offset=${offset}&limit=${limit}`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data.error) { detailEl.innerHTML = `<div class="empty-state">${escapeHtml(data.error)}</div>`; return; }
+        _sessionPage.total = data.total || 0;
+        const records = data.records || [];
+        const from = _sessionPage.offset + 1;
+        const to = Math.min(_sessionPage.offset + records.length, _sessionPage.total);
+
+        const prevDisabled = _sessionPage.offset <= 0 ? 'disabled' : '';
+        const nextDisabled = _sessionPage.offset + _sessionPage.limit >= _sessionPage.total ? 'disabled' : '';
+
+        let html = `<div class="memory-detail-header">
+            <div class="memory-detail-title">${escapeHtml(name)}</div>
+            <div class="memory-detail-meta">${from}–${to} / ${_sessionPage.total}</div>
+            <div class="memory-pager">
+                <button id="session-prev" ${prevDisabled}>上一页</button>
+                <button id="session-next" ${nextDisabled}>下一页</button>
+            </div>
+        </div>`;
+
+        if (!records.length) {
+            html += '<div class="empty-state">该会话文件为空</div>';
+        } else {
+            for (const r of records) {
+                html += _renderTurnCard(r);
+            }
+        }
+        detailEl.innerHTML = html;
+        document.getElementById('session-prev')?.addEventListener('click', () => {
+            _sessionPage.offset = Math.max(0, _sessionPage.offset - _sessionPage.limit);
+            loadSessionDetail(name);
+        });
+        document.getElementById('session-next')?.addEventListener('click', () => {
+            _sessionPage.offset += _sessionPage.limit;
+            loadSessionDetail(name);
+        });
+    } catch (e) {
+        detailEl.innerHTML = '<div class="empty-state">加载失败</div>';
+    }
+}
+
+function _renderTurnCard(r) {
+    // JSONL records have varying shapes; be lenient.  SessionManager writes
+    // {timestamp, user, assistant, tools, ...} but older entries might just
+    // be role/content pairs.
+    const ts = r.timestamp || r.ts || '';
+    const user = r.user ?? r.user_input ?? (r.role === 'user' ? r.content : '');
+    const assistant = r.assistant ?? r.response ?? (r.role === 'assistant' ? r.content : '');
+    const tools = Array.isArray(r.tools) ? r.tools : (Array.isArray(r.tool_calls) ? r.tool_calls : []);
+    let block = `<div class="turn-card">
+        <div class="turn-role">${ts ? _fmtTime(ts) : 'turn'}</div>`;
+    if (user) block += `<div class="turn-user">👤 ${escapeHtml(String(user)).slice(0, 1200)}</div>`;
+    if (assistant) block += `<div class="turn-assistant">🤖 ${escapeHtml(String(assistant)).slice(0, 2000)}</div>`;
+    if (tools.length) {
+        const names = tools.map(t => t.name || t.tool || t).join(', ');
+        block += `<div class="turn-tools">🔧 ${escapeHtml(names)}</div>`;
+    }
+    block += '</div>';
+    return block;
+}
+
+async function loadMemoryInsights() {
+    const listEl = document.getElementById('memory-insights-list');
+    const detailEl = document.getElementById('memory-insight-detail');
+    if (!listEl) return;
+    listEl.innerHTML = '<div class="empty-state">加载中…</div>';
+    try {
+        const res = await fetch(`/api/agent/${AGENT_ID}/insights?limit=100`);
+        const data = await res.json();
+        const insights = data.insights || [];
+        if (!insights.length) {
+            listEl.innerHTML = '<div class="empty-state">暂无反思洞察。反思引擎在会话结束后定期运行。</div>';
+            return;
+        }
+        listEl.innerHTML = insights.map((it, i) => {
+            const title = it.title || it.type || '(untitled)';
+            const meta = it.created_at || '';
+            let preview = '';
+            try {
+                const parsed = JSON.parse(it.description || '{}');
+                preview = parsed.summary || '';
+            } catch { preview = (it.description || '').slice(0, 200); }
+            return `<div class="mlist-item" data-idx="${i}">
+                <div class="mlist-title">${escapeHtml(title)}</div>
+                <div class="mlist-preview">${escapeHtml(preview)}</div>
+                <div class="mlist-meta">${escapeHtml(it.type || '')} · ${escapeHtml(meta)}</div>
+            </div>`;
+        }).join('');
+        listEl.querySelectorAll('.mlist-item').forEach(el => {
+            el.addEventListener('click', () => {
+                const idx = parseInt(el.dataset.idx, 10);
+                listEl.querySelectorAll('.mlist-item').forEach(n => n.classList.toggle('selected', n === el));
+                _renderInsightDetail(insights[idx]);
+            });
+        });
+    } catch (e) {
+        listEl.innerHTML = '<div class="empty-state">加载失败</div>';
+    }
+}
+
+function _renderInsightDetail(ins) {
+    const el = document.getElementById('memory-insight-detail');
+    if (!el) return;
+    let parsed = null;
+    try { parsed = JSON.parse(ins.description || '{}'); } catch { /* leave null */ }
+    let html = `<div class="memory-detail-header">
+        <div class="memory-detail-title">${escapeHtml(ins.title || ins.type || '(untitled)')}</div>
+        <div class="memory-detail-meta">${escapeHtml(ins.created_at || '')}</div>
+    </div>`;
+    if (parsed && (parsed.summary || parsed.lessons)) {
+        if (parsed.summary) html += `<div class="turn-card"><div class="turn-role">摘要</div><div class="turn-assistant">${escapeHtml(parsed.summary)}</div></div>`;
+        if (Array.isArray(parsed.lessons) && parsed.lessons.length) {
+            html += '<div class="turn-card"><div class="turn-role">经验教训</div><ul class="insight-lessons">';
+            html += parsed.lessons.map(l => `<li>${escapeHtml(String(l))}</li>`).join('');
+            html += '</ul></div>';
+        }
+        if (parsed.raw || parsed.evidence) {
+            html += `<div class="turn-card"><div class="turn-role">原始</div><div class="turn-assistant">${escapeHtml(parsed.raw || parsed.evidence)}</div></div>`;
+        }
+    } else {
+        html += `<div class="turn-card"><div class="turn-role">内容</div><div class="turn-assistant">${escapeHtml(ins.description || '')}</div></div>`;
+    }
+    if (ins.source) html += `<div class="turn-card"><div class="turn-role">来源</div><div class="turn-assistant">${escapeHtml(ins.source)}</div></div>`;
+    el.innerHTML = html;
+}
+
+// Wire tab + refresh clicks once (idempotent: these IDs exist in static
+// HTML, so we bind on module load and the handlers survive tab switching).
+document.querySelectorAll('.mtab').forEach(b => {
+    b.addEventListener('click', () => switchMemoryTab(b.dataset.mtab));
+});
+document.getElementById('memory-refresh-btn')?.addEventListener('click', () => {
+    if (_currentMemoryTab === 'sessions') loadMemorySessions();
+    else if (_currentMemoryTab === 'insights') loadMemoryInsights();
+    else if (_currentMemoryTab === 'search') loadMemorySearch();
+});
+
 // Render the 工具 view from the *current session's* in-memory tool history.
 //
 // This used to fetch /api/tools/logs (the daemon's cross-session log file)
@@ -3714,7 +3935,7 @@ loadDraft();  // restore saved draft on refresh
         if (tb) tb.textContent = titles[view] || view;
         if (view === 'workspace')    typeof loadWorkspaceFiles === 'function' && loadWorkspaceFiles();
         if (view === 'evolution')   typeof loadEvolutionStatus === 'function' && loadEvolutionStatus();
-        if (view === 'memory')      typeof loadMemorySearch === 'function' && loadMemorySearch();
+        if (view === 'memory')      typeof switchMemoryTab === 'function' && switchMemoryTab(_currentMemoryTab || 'sessions');
         if (view === 'tools')       typeof loadToolsLogs === 'function' && loadToolsLogs();
         if (view === 'agents')      typeof loadAgentsView === 'function' && loadAgentsView();
         if (view === 'architecture') typeof loadArchitectureFlows === 'function' && loadArchitectureFlows();

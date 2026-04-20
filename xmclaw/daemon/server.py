@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -1186,17 +1187,42 @@ async def get_event_stats():
     return bus.get_stats()
 
 
+# Whitelist for session filenames reachable through the memory API. We
+# never take a raw ``path`` from the client — only a bare filename like
+# ``default.jsonl`` that has to match this pattern, which makes
+# ``..\agent.json`` etc. syntactically unreachable.
+_SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9_\-.]+\.jsonl$")
+
+
+def _sessions_dir(agent_id: str) -> Path:
+    """Where session JSONL files actually live.
+
+    MemoryManager currently wraps SessionManager at ``agents/default/
+    memory/sessions`` and encodes per-agent identity into the filename
+    (see the hard-coded ``default`` on memory/manager.py:40).  We follow
+    that layout here so the sessions API returns what's really on disk —
+    once that bug is fixed, this helper flips to ``get_agent_dir(agent_id)``
+    in one place.
+    """
+    from xmclaw.utils.paths import get_agent_dir
+    return get_agent_dir("default") / "memory" / "sessions"
+
+
 @app.get("/api/agent/{agent_id}/sessions")
 async def list_sessions(agent_id: str):
-    """List conversation sessions for an agent."""
-    from xmclaw.utils.paths import get_agent_dir
-    agent_dir = get_agent_dir(agent_id)
-    if agent_dir is None:
-        return {"sessions": []}
-    sessions_dir = agent_dir / "memory" / "sessions"
+    """List conversation sessions for an agent, newest-modified first."""
+    sessions_dir = _sessions_dir(agent_id)
     sessions = []
     if sessions_dir.exists():
-        for f in sorted(sessions_dir.glob("*.jsonl"), reverse=True)[:50]:
+        # Order by mtime so "most recent" is actually most recent — the
+        # previous filename-sorted order put ``test_vec.jsonl`` above
+        # ``default.jsonl`` even when default was active today.
+        files = sorted(
+            sessions_dir.glob("*.jsonl"),
+            key=lambda f: f.stat().st_mtime,
+            reverse=True,
+        )[:50]
+        for f in files:
             try:
                 lines = f.read_text(encoding="utf-8").strip().splitlines()
                 turns = []
@@ -1207,16 +1233,76 @@ async def list_sessions(agent_id: str):
                         pass
                 first_msg = turns[0].get("user", "")[:100] if turns else ""
                 sessions.append({
+                    # ``name`` is the canonical key for the new memory view
+                    # (matches the `name` query param on /session).  ``file``
+                    # / ``id`` are kept for backwards compatibility with
+                    # older clients.
+                    "name": f.name,
                     "id": f.stem,
                     "file": f.name,
                     "turn_count": len(lines),
                     "preview": first_msg,
                     "modified": f.stat().st_mtime,
+                    "size": f.stat().st_size,
                     "recent_turns": turns,
                 })
             except Exception:
                 pass
     return {"sessions": sessions}
+
+
+@app.get("/api/agent/{agent_id}/session")
+async def read_session(agent_id: str, name: str, limit: int = 200, offset: int = 0):
+    """Read a single session JSONL end-to-end (paged).
+
+    Returns ``{records, total, offset, limit}``.  ``records`` is a list of
+    parsed turn dicts; malformed lines are skipped silently so one bad
+    record doesn't take out the view.
+    """
+    if not _SESSION_NAME_RE.match(name):
+        return JSONResponse({"error": "invalid session name"}, status_code=400)
+    target = _sessions_dir(agent_id) / name
+    if not target.exists():
+        return JSONResponse({"error": "session not found"}, status_code=404)
+    try:
+        lines = target.read_text(encoding="utf-8").splitlines()
+    except Exception as e:
+        return JSONResponse({"error": f"read failed: {e}"}, status_code=500)
+    # Clamp paging within bounds so the client never sees negative slices.
+    total = len(lines)
+    start = max(0, min(offset, total))
+    end = max(start, min(start + max(1, limit), total))
+    records = []
+    for line in lines[start:end]:
+        if not line.strip():
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass
+    return {
+        "name": name,
+        "total": total,
+        "offset": start,
+        "limit": limit,
+        "records": records,
+    }
+
+
+@app.get("/api/agent/{agent_id}/insights")
+async def list_insights(agent_id: str, limit: int = 100):
+    """List reflection insights for an agent (newest first).
+
+    Insights are the structured output of ``ReflectionEngine`` —
+    title / description / type / source / created_at rows in SQLite.
+    ``description`` is often a JSON blob (summary + lessons); the frontend
+    formats it — we return it as-is here.
+    """
+    limit = max(1, min(limit, 500))
+    if orchestrator.memory is None or orchestrator.memory.sqlite is None:
+        return {"insights": [], "total": 0}
+    rows = orchestrator.memory.get_insights(agent_id, limit=limit)
+    return {"insights": rows, "total": len(rows)}
 
 
 # ── Multimodal / Media APIs ────────────────────────────────────────────────

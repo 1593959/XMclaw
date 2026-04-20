@@ -1159,6 +1159,213 @@ html, body {
   overflow: hidden;
 }
 
+/* Tabs sit above the panels; one mtab is active at a time. */
+.memory-tabs {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0;
+}
+
+.mtab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  margin-bottom: -1px;
+}
+
+.mtab:hover { color: var(--text); }
+
+.mtab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.mtab-refresh {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  padding: 4px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  align-self: center;
+  margin-bottom: 4px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.mtab-refresh:hover { color: var(--accent); border-color: var(--accent); }
+
+/* Panels are stacked; only .active is shown. Sessions + insights use a
+   list/detail grid; search uses a single column. */
+.memory-panel {
+  display: none;
+  flex: 1;
+  min-height: 0;
+  gap: 12px;
+}
+
+.memory-panel.active { display: flex; }
+
+#mpanel-sessions, #mpanel-insights {
+  display: none;
+}
+#mpanel-sessions.active, #mpanel-insights.active {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) 1fr;
+}
+
+#mpanel-search.active { flex-direction: column; }
+
+.memory-list {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-right: 4px;
+}
+
+.mlist-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.mlist-item:hover { border-color: var(--accent); }
+
+.mlist-item.selected {
+  border-color: var(--accent);
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.mlist-title {
+  font-size: 12px;
+  font-family: "SF Mono", monospace;
+  color: var(--accent);
+  font-weight: 500;
+  margin-bottom: 4px;
+  word-break: break-all;
+}
+
+.mlist-preview {
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.4;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  margin-bottom: 4px;
+}
+
+.mlist-meta {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-family: "SF Mono", monospace;
+}
+
+.memory-detail {
+  overflow-y: auto;
+  padding: 4px 8px 4px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.memory-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.memory-detail-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  font-family: "SF Mono", monospace;
+  flex: 1;
+  word-break: break-all;
+}
+
+.memory-detail-meta {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-family: "SF Mono", monospace;
+}
+
+.memory-pager {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.memory-pager button {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.memory-pager button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.turn-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.turn-card .turn-role {
+  font-size: 11px;
+  font-family: "SF Mono", monospace;
+  color: var(--accent);
+  font-weight: 500;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.turn-card .turn-user { color: var(--text); margin-bottom: 6px; }
+.turn-card .turn-assistant { color: var(--text-dim); white-space: pre-wrap; }
+
+.turn-card .turn-tools {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+  font-size: 11px;
+  color: var(--text-faint);
+  font-family: "SF Mono", monospace;
+}
+
+.insight-lessons {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.55;
+}
+
+.insight-lessons li { margin-bottom: 3px; }
+
 .memory-search-row { display: flex; gap: 10px; flex-shrink: 0; }
 
 .memory-search-row input {
