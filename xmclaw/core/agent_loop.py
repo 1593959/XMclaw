@@ -206,15 +206,17 @@ class AgentLoop:
                                "desc": "正在分析任务类型与复杂度..."})
             task_profile = await self.classifier.classify(user_input)
             self._task_profile = task_profile   # cache for resume
+            _src = _pv(task_profile, "source") if "source" in task_profile else "unknown"
             yield json.dumps({
                 "type": "stage", "stage": "analyze_done",
                 "label": "✅ 任务分析完成",
-                "desc": f"类型: {_pv(task_profile, 'type')} | 复杂度: {_pv(task_profile, 'complexity')}",
+                "desc": f"类型: {_pv(task_profile, 'type')} | 复杂度: {_pv(task_profile, 'complexity')} | 来源: {_src}",
                 "data": {
                     "type": _pv(task_profile, "type"),
                     "complexity": _pv(task_profile, "complexity"),
                     "capabilities": task_profile["capabilities_needed"],
                     "reasoning": task_profile["reasoning"],
+                    "source": _src,
                 }
             })
             await self._event_bus.publish(Event(
@@ -225,6 +227,7 @@ class AgentLoop:
                     "complexity": _pv(task_profile, "complexity"),
                     "capabilities_needed": task_profile["capabilities_needed"],
                     "reasoning": task_profile["reasoning"],
+                    "source": _src,
                 }},
             ))
             logger.info("stage1_analyze_complete",
@@ -394,7 +397,11 @@ class AgentLoop:
             # Stream thinking with tool calling support
             full_response = ""
             tool_calls = []
-            observations = []   # must be defined before turn_data dict below
+            # Single observations list for the whole turn. Reflection + journaling
+            # read `turn_data["tool_observations"]`, so this must NOT be rebound
+            # later — rebinding orphans the reference we stored in turn_data and
+            # reflection silently saw an empty list (bug M01).
+            observations: list[dict] = []
             current_tool = None
             current_tool_input = ""
             in_tool_call = False
@@ -457,16 +464,6 @@ class AgentLoop:
                     yield json.dumps({"type": "error", "content": error_msg})
                     break
 
-            turn_data = {
-                "user": user_input,
-                "assistant": full_response,
-                "tool_calls": tool_calls,
-                "tool_observations": observations,
-                "turn": turn_count,
-            }
-            self._turn_history.append(turn_data)
-            await self.memory.save_turn(self.agent_id, user_input, full_response, tool_calls)
-
             # Publish agent message event
             await self._event_bus.publish(Event(
                 event_type=EventType.AGENT_MESSAGE,
@@ -475,10 +472,19 @@ class AgentLoop:
             ))
 
             if not tool_calls:
+                # No tools this turn — record an empty observation turn and stop.
+                self._turn_history.append({
+                    "user": user_input,
+                    "assistant": full_response,
+                    "tool_calls": tool_calls,
+                    "tool_observations": observations,  # still []
+                    "turn": turn_count,
+                })
+                await self.memory.save_turn(self.agent_id, user_input, full_response, tool_calls)
                 break
 
-            # Execute tools
-            observations = []
+            # Execute tools (appends to `observations` in place so turn_data, built
+            # after the loop, sees the final list)
             for call in tool_calls:
                 tool_name = call["name"]
                 args = call.get("input", {})
@@ -495,7 +501,7 @@ class AgentLoop:
                 yield json.dumps({"type": "state", "state": "TOOL_CALL", "thought": f"Using {tool_name}...", "tool": tool_name})
                 yield json.dumps({"type": "tool_call", "tool": tool_name, "args": args})
 
-                result = await self.tools.execute(tool_name, args)
+                result = await self.tools.execute(tool_name, args, agent_id=self.agent_id)
                 tool_duration = round(_time.time() - tool_start_time, 2)
 
                 # ── Real-time pattern tracking ────────────────────────────────────
@@ -609,6 +615,18 @@ class AgentLoop:
                 })
             messages.append({"role": "user", "content": tool_result_content})
 
+            # Record the turn AFTER tool execution so reflection sees the real
+            # observations list (fixes bug M01 — turn_data used to be built before
+            # the loop populated observations).
+            self._turn_history.append({
+                "user": user_input,
+                "assistant": full_response,
+                "tool_calls": tool_calls,
+                "tool_observations": observations,
+                "turn": turn_count,
+            })
+            await self.memory.save_turn(self.agent_id, user_input, full_response, tool_calls)
+
             # Check if we should continue
             yield json.dumps({"type": "state", "state": "THINKING", "thought": "处理工具结果中..."})
 
@@ -618,8 +636,23 @@ class AgentLoop:
         # inline we ensure 'done' arrives last.
         if self._turn_history:
             try:
-                reflection_result = await self.reflection.reflect(self.agent_id, self._turn_history)
-                if reflection_result and reflection_result.get("reflection"):
+                # Phase E4: feed the meta-evaluation snapshot into reflection so
+                # the LLM's next insight is informed by how earlier cycles are
+                # performing. Telemetry is best-effort — if the journal is
+                # offline we just skip the snapshot, not the reflection.
+                artifact_health: list[dict] = []
+                try:
+                    from xmclaw.evolution.journal import get_journal
+                    artifact_health = await get_journal(self.agent_id).snapshot_active_artifacts()
+                except Exception as _e:
+                    artifact_health = []
+                reflection_result = await self.reflection.reflect(
+                    self.agent_id,
+                    self._turn_history,
+                    artifact_health=artifact_health,
+                )
+                status = (reflection_result or {}).get("status", "")
+                if status == "ok" and reflection_result.get("reflection"):
                     yield json.dumps({
                         "type": "stage", "stage": "reflect_done",
                         "label": "反思完成",
@@ -633,6 +666,17 @@ class AgentLoop:
                             "improvement": reflection_result.get("improvement", {}),
                         },
                     ))
+                elif status in ("skipped_no_history", "skipped_empty_signal",
+                                 "parse_failed", "error"):
+                    # Surface the skip/failure — the evolution layer needs to see
+                    # that reflection ran-but-produced-nothing (bug M73/M74).
+                    logger.info("reflection_non_ok", agent_id=self.agent_id, status=status)
+                    yield json.dumps({
+                        "type": "stage", "stage": "reflect_done",
+                        "label": "反思跳过" if status.startswith("skipped") else "反思失败",
+                        "desc": status,
+                        "data": {"status": status},
+                    })
                 await self._trigger_immediate_evolution(dict(self._tool_patterns))
             except Exception as e:
                 logger.warning("inline_reflection_failed", error=str(e))

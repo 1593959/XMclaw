@@ -36,10 +36,16 @@ class {class_name}(GeneBase):
 
 
 class GeneForge:
+    """Writes forged genes to a quarantine dir (shadow/), mirroring SkillForge.
+    The evolution engine promotes or retires artifacts based on validation."""
+
     def __init__(self):
         self.llm = LLMRouter()
-        self.output_dir = BASE_DIR / "shared" / "genes"
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.active_dir = BASE_DIR / "shared" / "genes"
+        self.shadow_dir = self.active_dir / "shadow"
+        self.active_dir.mkdir(parents=True, exist_ok=True)
+        self.shadow_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir = self.shadow_dir  # backwards-compat alias
 
     async def forge(self, concept: dict[str, Any], action_body: str | None = None) -> dict[str, Any] | None:
         """Turn a gene concept into executable Python code."""
@@ -75,7 +81,7 @@ class GeneForge:
             action_body=action_body,
         )
 
-        file_path = self.output_dir / f"{gene_id}.py"
+        file_path = self.shadow_dir / f"{gene_id}.py"
         file_path.write_text(code, encoding="utf-8")
 
         gene = {
@@ -91,8 +97,9 @@ class GeneForge:
             "regex_pattern": concept.get("regex_pattern", ""),
             "path": str(file_path),
             "class_name": class_name,
+            "status": "shadow",
         }
-        logger.info("gene_forged", gene_id=gene_id, path=str(file_path))
+        logger.info("gene_forged_shadow", gene_id=gene_id, path=str(file_path))
         return gene
 
     def _to_class_name(self, name: str) -> str:

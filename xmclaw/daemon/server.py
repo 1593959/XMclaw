@@ -395,7 +395,7 @@ async def update_tasks(agent_id: str, request: Request):
 async def execute_tool(agent_id: str, tool_name: str, request: Request):
     data = await request.json()
     try:
-        result = await orchestrator.tools.execute(tool_name, data)
+        result = await orchestrator.tools.execute(tool_name, data, agent_id=agent_id)
         return {"result": result}
     except Exception as e:
         logger.error("tool_execution_api_failed", tool=tool_name, error=str(e))
@@ -469,6 +469,130 @@ async def get_evolution_entity(entity_type: str, name: str):
         content = target_file.read_text(encoding="utf-8")
         return {"name": name, "type": entity_type, "content": content}
     except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ── Phase E9: retrospective + approval API ──────────────────────────────────
+# Thin HTTP adapters over EvolutionJournal (retrospective queries) and
+# EvolutionEngine.approve_artifact (human-in-the-loop gate). The journal
+# handle is a per-agent singleton keyed by agent_id so dashboards that poll
+# these endpoints share the same SQLite connection with the rest of the
+# evolution subsystem.
+
+def _evolution_engine_for(agent_id: str):
+    """Resolve the engine for this agent_id.
+
+    Today the daemon wires a single scheduler with one engine bound to the
+    ``default`` agent. Other agent_ids fall through to a lazily-created
+    engine so the approval flow can still act on journal rows the caller
+    knows about, even if that agent wasn't the one running the scheduler.
+    """
+    if evo_scheduler.engine.agent_id == agent_id:
+        return evo_scheduler.engine
+    from xmclaw.evolution.engine import EvolutionEngine
+    return EvolutionEngine(agent_id=agent_id, memory=orchestrator.memory)
+
+
+@app.get("/api/agent/{agent_id}/evolution/summary")
+async def evolution_cycle_summary(agent_id: str, window_seconds: int | None = None):
+    """Aggregate recent cycles. Optional ``window_seconds`` bounds the view
+    to the last N seconds; omit for the most recent 500 cycles regardless."""
+    from xmclaw.evolution.journal import get_journal
+    try:
+        summary = await get_journal(agent_id).cycle_summary(
+            window_seconds=window_seconds,
+        )
+        return summary
+    except Exception as e:
+        logger.warning("evolution_summary_failed", agent_id=agent_id, error=str(e))
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/agent/{agent_id}/evolution/funnel")
+async def evolution_artifact_funnel(agent_id: str, kind: str | None = None):
+    """Status + kind breakdown of every lineage row for this agent."""
+    from xmclaw.evolution.journal import get_journal, KIND_GENE, KIND_SKILL
+    if kind is not None and kind not in (KIND_GENE, KIND_SKILL):
+        return JSONResponse(
+            {"error": f"kind must be '{KIND_SKILL}' or '{KIND_GENE}'"},
+            status_code=400,
+        )
+    try:
+        return await get_journal(agent_id).artifact_funnel(kind=kind)
+    except Exception as e:
+        logger.warning("evolution_funnel_failed", agent_id=agent_id, error=str(e))
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/agent/{agent_id}/evolution/rejects")
+async def evolution_reject_histogram(
+    agent_id: str, limit: int = 10, window_seconds: int | None = None,
+):
+    """Top reject reasons, ranked by count."""
+    from xmclaw.evolution.journal import get_journal
+    try:
+        return await get_journal(agent_id).reject_reason_histogram(
+            limit=limit, window_seconds=window_seconds,
+        )
+    except Exception as e:
+        logger.warning("evolution_rejects_failed", agent_id=agent_id, error=str(e))
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/agent/{agent_id}/evolution/rollbacks")
+async def evolution_rollback_history(agent_id: str, limit: int = 20):
+    """Most-recent rolled-back artifacts for the agent."""
+    from xmclaw.evolution.journal import get_journal
+    try:
+        return await get_journal(agent_id).rollback_history(limit=limit)
+    except Exception as e:
+        logger.warning("evolution_rollbacks_failed", agent_id=agent_id, error=str(e))
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/agent/{agent_id}/evolution/pending_approvals")
+async def evolution_pending_approvals(agent_id: str):
+    """Every artifact parked at ``needs_approval`` waiting for a human."""
+    from xmclaw.evolution.journal import get_journal, STATUS_NEEDS_APPROVAL
+    try:
+        rows = await get_journal(agent_id).get_active_artifacts(
+            statuses=(STATUS_NEEDS_APPROVAL,),
+        )
+        return {"pending": rows}
+    except Exception as e:
+        logger.warning("pending_approvals_failed", agent_id=agent_id, error=str(e))
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/agent/{agent_id}/evolution/artifacts/{artifact_id}/approve")
+async def evolution_approve_artifact(agent_id: str, artifact_id: str):
+    """Approve a parked artifact: move shadow → active, flip to promoted."""
+    try:
+        result = await _evolution_engine_for(agent_id).approve_artifact(
+            artifact_id, approved=True,
+        )
+        if result.get("status") == "not_found":
+            return JSONResponse(result, status_code=404)
+        return result
+    except Exception as e:
+        logger.warning("approve_failed", agent_id=agent_id,
+                      artifact_id=artifact_id, error=str(e))
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/agent/{agent_id}/evolution/artifacts/{artifact_id}/decline")
+async def evolution_decline_artifact(agent_id: str, artifact_id: str):
+    """Decline a parked artifact: delete shadow, flip to retired."""
+    try:
+        result = await _evolution_engine_for(agent_id).approve_artifact(
+            artifact_id, approved=False,
+        )
+        if result.get("status") == "not_found":
+            return JSONResponse(result, status_code=404)
+        return result
+    except Exception as e:
+        logger.warning("decline_failed", agent_id=agent_id,
+                      artifact_id=artifact_id, error=str(e))
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
@@ -1018,11 +1142,27 @@ async def agent_websocket(websocket: WebSocket, agent_id: str):
     _pending_agent: Any = None
 
     async def _forward_event(event: Event):
+        # PR-E0-3 / fixes M52: events in WS_EVENT_MAP are forwarded as clean
+        # per-type frames the frontend can route deterministically. Events not
+        # in the map keep the legacy `{"type":"event", "event": {...}}` envelope
+        # so existing handlers (and third-party consumers) stay working.
         try:
-            await websocket.send_text(json.dumps({
-                "type": "event",
-                "event": event.to_dict(),
-            }, ensure_ascii=False))
+            from xmclaw.core.event_bus import WS_EVENT_MAP
+            wire_type = WS_EVENT_MAP.get(event.event_type)
+            if wire_type is not None:
+                frame = {
+                    "type": wire_type,
+                    "payload": event.payload,
+                    "source": event.source,
+                    "event_id": event.event_id,
+                    "ts": event.timestamp,
+                }
+            else:
+                frame = {
+                    "type": "event",
+                    "event": event.to_dict(),
+                }
+            await websocket.send_text(json.dumps(frame, ensure_ascii=False))
         except Exception:
             pass
 

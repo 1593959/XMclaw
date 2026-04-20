@@ -11,6 +11,12 @@ class SQLiteStore:
         self.db_path = db_path
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=30)
         self.conn.row_factory = sqlite3.Row
+        # WAL: concurrent reader/writer safety for the evolution pipeline.
+        try:
+            self.conn.execute("PRAGMA journal_mode=WAL;")
+            self.conn.execute("PRAGMA synchronous=NORMAL;")
+        except sqlite3.OperationalError:
+            pass
         self._init_tables()
 
     def _init_tables(self) -> None:
@@ -60,6 +66,43 @@ class SQLiteStore:
                 last_used TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+            -- Evolution journal: every cycle is a first-class record with
+            -- full lineage so meta-evaluation can close the loop.
+            CREATE TABLE IF NOT EXISTS evolution_journal (
+                cycle_id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                trigger TEXT,
+                started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                ended_at TIMESTAMP,
+                inputs_json TEXT DEFAULT '{}',
+                decisions_json TEXT DEFAULT '{}',
+                artifacts_json TEXT DEFAULT '[]',
+                verdict TEXT DEFAULT 'pending',
+                reject_reason TEXT,
+                metrics_json TEXT DEFAULT '{}'
+            );
+            CREATE INDEX IF NOT EXISTS idx_journal_agent
+                ON evolution_journal(agent_id, started_at DESC);
+            -- One row per artifact per cycle. status drives whether skill_match
+            -- or gene_match will see the artifact at runtime.
+            CREATE TABLE IF NOT EXISTS evolution_artifact_lineage (
+                artifact_id TEXT NOT NULL,
+                cycle_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                parent_artifact_id TEXT,
+                status TEXT NOT NULL DEFAULT 'shadow',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                matched_count INTEGER DEFAULT 0,
+                helpful_count INTEGER DEFAULT 0,
+                harmful_count INTEGER DEFAULT 0,
+                PRIMARY KEY (artifact_id, cycle_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_lineage_cycle
+                ON evolution_artifact_lineage(cycle_id);
+            CREATE INDEX IF NOT EXISTS idx_lineage_status
+                ON evolution_artifact_lineage(agent_id, kind, status);
         """)
         self.conn.commit()
         # Migrate existing genes table: add missing columns if absent
@@ -146,6 +189,228 @@ class SQLiteStore:
             ),
         )
         self.conn.commit()
+
+    def get_skills(self, agent_id: str) -> list[dict[str, Any]]:
+        """Return every skill row registered for this agent.
+
+        Coherence checks (Phase E6) need the full live set, not a single
+        lookup, so they can compare the proposed concept against every
+        installed skill. The skills table only holds promoted artifacts —
+        shadow/retired rows live in evolution_journal_artifacts — so the
+        returned list IS the live set by construction.
+        """
+        cursor = self.conn.execute(
+            "SELECT * FROM skills WHERE agent_id = ? ORDER BY created_at DESC",
+            (agent_id,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_skill_by_concept_name(
+        self, agent_id: str, concept_name: str,
+    ) -> dict[str, Any] | None:
+        """Look up a registered skill by its human-readable concept name.
+
+        Used by the evolution engine's dedup guard: if the same insight has
+        already produced a skill, don't forge a duplicate on the next cycle.
+        Returns the full skill row (including `id`) or None.
+        """
+        cur = self.conn.execute(
+            "SELECT * FROM skills WHERE agent_id = ? AND name = ? LIMIT 1",
+            (agent_id, concept_name),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+    # ── Evolution journal DAO ────────────────────────────────────────────────
+    # All journal writes go through these methods so EvolutionJournal (see
+    # xmclaw/evolution/journal.py) stays thin and infra-agnostic.
+
+    def journal_insert_cycle(
+        self, cycle_id: str, agent_id: str, trigger: str,
+        inputs_json: str = "{}",
+    ) -> None:
+        self.conn.execute(
+            "INSERT INTO evolution_journal "
+            "(cycle_id, agent_id, trigger, inputs_json) VALUES (?, ?, ?, ?)",
+            (cycle_id, agent_id, trigger, inputs_json),
+        )
+        self.conn.commit()
+
+    def journal_update_cycle(self, cycle_id: str, **fields: Any) -> None:
+        """Partial update. Accepts: inputs_json, decisions_json, artifacts_json,
+        verdict, reject_reason, metrics_json, ended_at."""
+        allowed = {
+            "inputs_json", "decisions_json", "artifacts_json",
+            "verdict", "reject_reason", "metrics_json", "ended_at",
+        }
+        cols = [k for k in fields if k in allowed]
+        if not cols:
+            return
+        set_clause = ", ".join(f"{c} = ?" for c in cols)
+        params = tuple(fields[c] for c in cols) + (cycle_id,)
+        self.conn.execute(
+            f"UPDATE evolution_journal SET {set_clause} WHERE cycle_id = ?",
+            params,
+        )
+        self.conn.commit()
+
+    def journal_get_cycle(self, cycle_id: str) -> dict[str, Any] | None:
+        cur = self.conn.execute(
+            "SELECT * FROM evolution_journal WHERE cycle_id = ?", (cycle_id,)
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+    def journal_list_cycles(
+        self, agent_id: str, limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        # rowid is monotonic and unique — reliable tiebreaker when multiple
+        # cycles open within the same second (CURRENT_TIMESTAMP is sec-precision).
+        cur = self.conn.execute(
+            "SELECT * FROM evolution_journal WHERE agent_id = ? "
+            "ORDER BY started_at DESC, rowid DESC LIMIT ?",
+            (agent_id, limit),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+    def journal_list_cycles_since(
+        self, agent_id: str, window_seconds: int, limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """Return cycle rows whose started_at falls within the last
+        ``window_seconds``. Used by retrospective.cycle_summary (Phase E8)
+        to bound the dashboard view to a useful time slice.
+
+        ``window_seconds <= 0`` returns ``[]`` — a zero-or-negative window
+        is vacuously empty and would otherwise collide with the fact that
+        SQLite's ``datetime('now')`` has second precision, making
+        `>= datetime('now', '-0 seconds')` match rows inserted the same
+        second with CURRENT_TIMESTAMP.
+
+        Uses SQLite's ``datetime('now', '-<n> seconds')`` so the filter
+        stays correct whether started_at was inserted as CURRENT_TIMESTAMP
+        or an explicit string — both compare lexicographically under ISO-8601.
+        """
+        if window_seconds <= 0:
+            return []
+        cur = self.conn.execute(
+            "SELECT * FROM evolution_journal "
+            "WHERE agent_id = ? "
+            "AND started_at >= datetime('now', '-' || ? || ' seconds') "
+            "ORDER BY started_at DESC, rowid DESC LIMIT ?",
+            (agent_id, int(window_seconds), limit),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+    def lineage_all(
+        self, agent_id: str, kind: str | None = None, limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Every lineage row for this agent, regardless of status.
+
+        Retrospective queries (Phase E8) aggregate across ALL statuses —
+        ``lineage_active`` skips retired/rolled-back rows, which is the
+        wrong default for a dashboard showing totals over time.
+        """
+        sql = (
+            "SELECT * FROM evolution_artifact_lineage WHERE agent_id = ?"
+        )
+        params: list[Any] = [agent_id]
+        if kind:
+            sql += " AND kind = ?"
+            params.append(kind)
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(limit)
+        cur = self.conn.execute(sql, tuple(params))
+        return [dict(r) for r in cur.fetchall()]
+
+    def lineage_by_status(
+        self, agent_id: str, status: str, limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Lineage rows filtered to a single status, newest first.
+
+        Used by retrospective.rollback_history to pull the last N
+        rolled-back artifacts without loading the whole table.
+        """
+        cur = self.conn.execute(
+            "SELECT * FROM evolution_artifact_lineage "
+            "WHERE agent_id = ? AND status = ? "
+            "ORDER BY updated_at DESC, rowid DESC LIMIT ?",
+            (agent_id, status, int(limit)),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+    def lineage_insert(
+        self, artifact_id: str, cycle_id: str, agent_id: str, kind: str,
+        parent_artifact_id: str | None = None, status: str = "shadow",
+    ) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO evolution_artifact_lineage "
+            "(artifact_id, cycle_id, agent_id, kind, parent_artifact_id, status) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (artifact_id, cycle_id, agent_id, kind, parent_artifact_id, status),
+        )
+        self.conn.commit()
+
+    def lineage_update_status(self, artifact_id: str, status: str) -> int:
+        cur = self.conn.execute(
+            "UPDATE evolution_artifact_lineage "
+            "SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE artifact_id = ?",
+            (status, artifact_id),
+        )
+        self.conn.commit()
+        return cur.rowcount
+
+    def lineage_increment(
+        self, artifact_id: str, metric: str, delta: int = 1,
+    ) -> int:
+        # Whitelist to prevent SQL injection via metric name.
+        if metric not in ("matched_count", "helpful_count", "harmful_count"):
+            raise ValueError(f"unknown metric: {metric}")
+        cur = self.conn.execute(
+            f"UPDATE evolution_artifact_lineage "
+            f"SET {metric} = {metric} + ?, updated_at = CURRENT_TIMESTAMP "
+            f"WHERE artifact_id = ?",
+            (delta, artifact_id),
+        )
+        self.conn.commit()
+        return cur.rowcount
+
+    def lineage_for_cycle(self, cycle_id: str) -> list[dict[str, Any]]:
+        cur = self.conn.execute(
+            "SELECT * FROM evolution_artifact_lineage WHERE cycle_id = ? "
+            "ORDER BY created_at",
+            (cycle_id,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+    def lineage_for_artifact(self, artifact_id: str) -> dict[str, Any] | None:
+        cur = self.conn.execute(
+            "SELECT * FROM evolution_artifact_lineage WHERE artifact_id = ? "
+            "ORDER BY updated_at DESC LIMIT 1",
+            (artifact_id,),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+    def lineage_active(
+        self, agent_id: str, kind: str | None = None,
+        statuses: tuple[str, ...] = ("promoted", "shadow"),
+    ) -> list[dict[str, Any]]:
+        """Artifacts currently 'visible' to the runtime. Defaults to
+        promoted+shadow; skill_match can filter further to promoted-only for
+        auto-exec and include shadow for suggestions."""
+        placeholders = ",".join("?" * len(statuses))
+        params: list[Any] = [agent_id]
+        sql = (
+            f"SELECT * FROM evolution_artifact_lineage "
+            f"WHERE agent_id = ? AND status IN ({placeholders})"
+        )
+        params.extend(statuses)
+        if kind:
+            sql += " AND kind = ?"
+            params.append(kind)
+        sql += " ORDER BY updated_at DESC"
+        cur = self.conn.execute(sql, tuple(params))
+        return [dict(r) for r in cur.fetchall()]
 
     def close(self) -> None:
         self.conn.close()

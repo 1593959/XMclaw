@@ -91,7 +91,35 @@ class GeneManager:
             if hit:
                 matched.append(gene)
 
+        # Phase E5 gene canary: every gene that actually matches this turn
+        # gets its lineage.matched_count bumped. Genes with zero matches
+        # surface as `dead` in artifact-health snapshots, which is the
+        # signal reflection uses to recommend retiring them.
+        #
+        # Helpful/harmful for genes is harder to derive cleanly (genes are
+        # prompt decorators, not tools) so we only track matched here.
+        # Telemetry is best-effort — a broken journal row must never break
+        # the match() path that drives every agent turn.
+        if matched:
+            self._bump_gene_matched(matched)
+
         return matched
+
+    def _bump_gene_matched(self, genes: list[dict]) -> None:
+        """Increment matched_count on lineage rows for freshly-matched genes.
+
+        No-op for genes that predate the journal (no lineage row exists —
+        SQLite returns rowcount=0 silently). All exceptions are swallowed
+        because match() is on the hot path for every turn.
+        """
+        for gene in genes:
+            gene_id = gene.get("id")
+            if not gene_id:
+                continue
+            try:
+                self.db.lineage_increment(gene_id, "matched_count", 1)
+            except Exception:
+                pass
 
     def get_gene(self, gene_id: str) -> dict | None:
         """Get a specific gene by ID."""

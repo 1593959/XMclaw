@@ -34,6 +34,64 @@ class EventType(str, Enum):
     REFLECTION_COMPLETE = "reflection:complete"
     PATTERN_THRESHOLD = "pattern:threshold_reached"
     EVOLUTION_TRIGGER = "evolution:trigger"
+    # ── Evolution journal state machine (Phase E0) ──────────────────────────
+    # Fine-grained progress events emitted from EvolutionEngine.run_cycle().
+    # Each maps 1:1 to a wire name via WS_EVENT_MAP below so the frontend can
+    # render the Evolution Live panel deterministically.
+    EVOLUTION_CYCLE_STARTED    = "evolution:cycle_started"
+    EVOLUTION_REFLECTING       = "evolution:reflecting"
+    EVOLUTION_FORGING          = "evolution:forging"
+    EVOLUTION_VALIDATING       = "evolution:validating"
+    EVOLUTION_ARTIFACT_SHADOW  = "evolution:artifact_shadow"
+    EVOLUTION_ARTIFACT_PROMOTED = "evolution:artifact_promoted"
+    EVOLUTION_ARTIFACT_RETIRED = "evolution:artifact_retired"
+    EVOLUTION_ROLLBACK         = "evolution:rollback"
+    EVOLUTION_REJECTED         = "evolution:rejected"
+    # Phase E7: high-risk artifact parked in shadow pending human approval.
+    # Payload includes artifact_id, kind, risk reasons, and the shadow path
+    # so the UI can render a decision prompt without another round trip.
+    EVOLUTION_APPROVAL_REQUESTED = "evolution:approval_requested"
+    # Follow-up emitted after approve_artifact runs — lets dashboards mark
+    # the prompt as resolved without tailing artifact_promoted / retired.
+    EVOLUTION_APPROVAL_DECIDED   = "evolution:approval_decided"
+    EVOLUTION_CYCLE_ENDED      = "evolution:cycle_ended"
+
+
+# ── Frontend wire contract (Phase E0, PR-E0-3) ──────────────────────────────
+# Explicit map from EventType → wire `type` name. The daemon WS forwarder
+# uses this to emit clean, per-type events to the frontend:
+#     {"type": "<wire_name>", "payload": {...}, "source": ..., "ts": ...}
+# Events NOT in this map keep the legacy `{"type":"event", "event": {...}}`
+# envelope so the migration stays additive.
+WS_EVENT_MAP: dict[str, str] = {
+    # Conversation-facing events the chat panel cares about
+    EventType.REFLECTION_COMPLETE.value:        "reflection_complete",
+    EventType.AGENT_THINKING.value:             "agent_thinking",
+    EventType.AGENT_MESSAGE.value:              "agent_message",
+    EventType.USER_MESSAGE.value:               "user_message_event",
+    EventType.TOOL_CALLED.value:                "tool_called",
+    EventType.TOOL_RESULT.value:                "tool_result_event",
+    # Legacy evolution events kept for the current dashboard UI
+    EventType.EVOLUTION_TRIGGER.value:          "evolution_trigger",
+    EventType.EVOLUTION_NOTIFY.value:           "evolution_notify",
+    EventType.EVOLUTION_CYCLE.value:            "evolution_cycle",
+    EventType.PATTERN_THRESHOLD.value:          "pattern_threshold",
+    EventType.GENE_GENERATED.value:             "gene_generated",
+    EventType.SKILL_GENERATED.value:            "skill_generated",
+    # Phase E0 journal state-machine events (Evolution Live panel feed)
+    EventType.EVOLUTION_CYCLE_STARTED.value:    "evolution_cycle_started",
+    EventType.EVOLUTION_REFLECTING.value:       "evolution_reflecting",
+    EventType.EVOLUTION_FORGING.value:          "evolution_forging",
+    EventType.EVOLUTION_VALIDATING.value:       "evolution_validating",
+    EventType.EVOLUTION_ARTIFACT_SHADOW.value:  "evolution_artifact_shadow",
+    EventType.EVOLUTION_ARTIFACT_PROMOTED.value: "evolution_artifact_promoted",
+    EventType.EVOLUTION_ARTIFACT_RETIRED.value: "evolution_artifact_retired",
+    EventType.EVOLUTION_ROLLBACK.value:         "evolution_rollback",
+    EventType.EVOLUTION_REJECTED.value:         "evolution_rejected",
+    EventType.EVOLUTION_APPROVAL_REQUESTED.value: "evolution_approval_requested",
+    EventType.EVOLUTION_APPROVAL_DECIDED.value:   "evolution_approval_decided",
+    EventType.EVOLUTION_CYCLE_ENDED.value:      "evolution_cycle_ended",
+}
 
 
 @dataclass

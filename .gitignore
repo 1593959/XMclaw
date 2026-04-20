@@ -27,10 +27,15 @@ ENV/
 *.log
 *.db
 *.db-journal
+*.db-shm
+*.db-wal
 *.jsonl
 *.lock
 tmp/
+tmp_*.py
 cache/
+shared/genes/
+shared/proposals/
 python/
 logs/
 browser/user_data/

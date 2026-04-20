@@ -32,6 +32,11 @@ let _rawTextMap = new Map();
 // Tool card tracking: call_id -> { el, tool, startTime }
 const _toolCards = new Map();
 
+// Evolution Live (Phase E0): cycle_id -> { state, startedAt, endedAt, verdict, artifacts[], rejectReason }
+const _journalCycles = new Map();
+// Order cycles appear on screen — newest first. IDs appended as they're opened.
+const _journalOrder = [];
+
 let totalCost = 0;
 let totalTokens = 0;
 let geneCount = 0;
@@ -1480,6 +1485,159 @@ async function loadEntity(type, name) {
     }
 }
 
+
+// ── Evolution Live journal panel (Phase E0 / PR-E0-4) ───────────────────────
+// The daemon emits per-type wire events (see WS_EVENT_MAP in event_bus.py).
+// We collect them into _journalCycles keyed by payload.cycle_id and render a
+// deterministic timeline so the user can watch a cycle flow through states.
+
+const _JOURNAL_STATE_ORDER = [
+    'cycle_started', 'reflecting', 'forging', 'validating', 'cycle_ended',
+];
+const _JOURNAL_STATE_LABEL = {
+    cycle_started: '已开始',
+    reflecting:    '反思中',
+    forging:       '合成中',
+    validating:    '校验中',
+    cycle_ended:   '已结束',
+};
+const _JOURNAL_VERDICT_LABEL = {
+    passed:   '✅ 通过',
+    rejected: '⛔ 拒绝',
+    skipped:  '⏭ 跳过',
+    pending:  '… 进行中',
+};
+
+function _ensureJournalCycle(cycleId) {
+    if (!cycleId) return null;
+    let cycle = _journalCycles.get(cycleId);
+    if (!cycle) {
+        cycle = {
+            cycleId,
+            state: 'cycle_started',
+            verdict: 'pending',
+            startedAt: Date.now(),
+            endedAt: null,
+            trigger: null,
+            artifacts: [],
+            rejectReason: null,
+        };
+        _journalCycles.set(cycleId, cycle);
+        _journalOrder.unshift(cycleId);
+        // Cap rendered cycles to keep DOM light
+        while (_journalOrder.length > 20) {
+            const stale = _journalOrder.pop();
+            _journalCycles.delete(stale);
+        }
+    }
+    return cycle;
+}
+
+function handleJournalEvent(wireType, payload) {
+    payload = payload || {};
+    const cycleId = payload.cycle_id;
+    if (!cycleId) return;
+    const cycle = _ensureJournalCycle(cycleId);
+
+    switch (wireType) {
+        case 'evolution_cycle_started':
+            cycle.state = 'cycle_started';
+            cycle.trigger = payload.trigger || cycle.trigger;
+            break;
+        case 'evolution_reflecting':
+            cycle.state = 'reflecting';
+            break;
+        case 'evolution_forging':
+            cycle.state = 'forging';
+            break;
+        case 'evolution_validating':
+            cycle.state = 'validating';
+            break;
+        case 'evolution_artifact_shadow':
+            cycle.artifacts.push({ id: payload.artifact_id, kind: payload.kind, status: 'shadow' });
+            break;
+        case 'evolution_artifact_promoted':
+            _markArtifactStatus(cycle, payload.artifact_id, 'promoted');
+            break;
+        case 'evolution_artifact_retired':
+            _markArtifactStatus(cycle, payload.artifact_id, 'retired');
+            break;
+        case 'evolution_rollback':
+            cycle.rejectReason = payload.reason || 'rollback';
+            break;
+        case 'evolution_rejected':
+            cycle.verdict = 'rejected';
+            cycle.rejectReason = payload.reason || cycle.rejectReason;
+            break;
+        case 'evolution_cycle_ended':
+            cycle.state = 'cycle_ended';
+            cycle.verdict = payload.verdict || cycle.verdict || 'passed';
+            cycle.endedAt = Date.now();
+            break;
+        default:
+            return;
+    }
+    renderJournalPanel();
+}
+
+function _markArtifactStatus(cycle, artifactId, status) {
+    if (!artifactId) return;
+    const existing = cycle.artifacts.find(a => a.id === artifactId);
+    if (existing) {
+        existing.status = status;
+    } else {
+        cycle.artifacts.push({ id: artifactId, kind: null, status });
+    }
+}
+
+function renderJournalPanel() {
+    const body = document.getElementById('evo-journal-body');
+    if (!body) return;
+    if (_journalOrder.length === 0) {
+        body.innerHTML = '<div class="empty-state" style="padding:12px;text-align:center">暂无进化周期</div>';
+        return;
+    }
+    const html = _journalOrder.map(cid => {
+        const c = _journalCycles.get(cid);
+        if (!c) return '';
+        const steps = _JOURNAL_STATE_ORDER.map(s => {
+            const reached = _JOURNAL_STATE_ORDER.indexOf(s) <= _JOURNAL_STATE_ORDER.indexOf(c.state);
+            const isCurrent = s === c.state && c.verdict === 'pending';
+            const cls = reached ? (isCurrent ? 'step active' : 'step done') : 'step';
+            return `<span class="${cls}">${_JOURNAL_STATE_LABEL[s]}</span>`;
+        }).join('<span class="sep">›</span>');
+
+        const verdictLabel = _JOURNAL_VERDICT_LABEL[c.verdict] || c.verdict;
+        const verdictClass = `verdict verdict-${c.verdict}`;
+        const artifactsHtml = c.artifacts.length
+            ? c.artifacts.map(a => `<span class="artifact artifact-${a.status}" title="${a.kind || ''}">${_escapeHtml(a.id || '')} · ${a.status}</span>`).join('')
+            : '<span class="artifact-empty">无产物</span>';
+        const rejectHtml = c.rejectReason
+            ? `<div class="reject-reason">原因：${_escapeHtml(c.rejectReason)}</div>`
+            : '';
+        const triggerHtml = c.trigger ? `<span class="trigger">触发：${_escapeHtml(c.trigger)}</span>` : '';
+
+        return `
+            <div class="journal-cycle">
+                <div class="journal-head">
+                    <span class="cycle-id" title="${_escapeHtml(c.cycleId)}">${_escapeHtml(c.cycleId.slice(0, 12))}</span>
+                    ${triggerHtml}
+                    <span class="${verdictClass}">${verdictLabel}</span>
+                </div>
+                <div class="journal-steps">${steps}</div>
+                <div class="journal-artifacts">${artifactsHtml}</div>
+                ${rejectHtml}
+            </div>
+        `;
+    }).join('');
+    body.innerHTML = html;
+}
+
+function _escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, ch => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+    ));
+}
 
 function handleBusEvent(evt) {
     if (!evt) return;
@@ -3502,6 +3660,9 @@ function _wsRenderer(data) {
         addTimelineEvent('reflection', '反思完成', data.data?.summary || '');
     } else if (data.type === 'ask_user') {
         showAskUserDialog(data.question);
+    } else if (typeof data.type === 'string' && data.type.startsWith('evolution_')) {
+        // Phase E0: journal state-machine + legacy evolution wire events
+        handleJournalEvent(data.type, data.payload || {});
     } else if (data.type === 'event') {
         handleBusEvent(data.event);
     } else if (data.type === 'transcription') {

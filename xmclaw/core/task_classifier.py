@@ -30,6 +30,20 @@ class Complexity(str, Enum):
     HIGH = "high"    # 复杂，需拆解、规划、多次迭代
 
 
+class ClassifierSource(str, Enum):
+    """Which path produced a TaskProfile.
+
+    Downstream code (reflection, gatherer, skill_matcher) can branch on this
+    to know whether the classification is trustworthy — a "fallback" profile
+    is structurally valid but semantically meaningless (classifier broke),
+    so adaptive behavior should be disabled (bug M29).
+    """
+    FAST = "fast"          # heuristic shortcut matched
+    LLM = "llm"            # LLM-assisted classification succeeded
+    FALLBACK = "fallback"  # LLM failed / empty input — default applied
+    EMPTY = "empty"        # blank input
+
+
 class TaskProfile(TypedDict):
     type: TaskType
     complexity: Complexity
@@ -37,6 +51,7 @@ class TaskProfile(TypedDict):
     recommended_actions: list[str]     # ["search_web", "load_examples", "plan_steps", ...]
     reasoning: str                     # 为什么判定为这个类型
     subtasks: list[str]                # 分解出的子任务（如果复杂）
+    source: ClassifierSource           # provenance — see ClassifierSource docstring
 
 
 CLASSIFY_PROMPT = """\
@@ -77,6 +92,7 @@ class TaskClassifier:
                 recommended_actions=["end_response"],
                 reasoning="空输入",
                 subtasks=[],
+                source=ClassifierSource.EMPTY,
             )
 
         # Fast-path: heuristic shortcuts for obvious patterns
@@ -86,6 +102,7 @@ class TaskClassifier:
             # Ensure type/complexity are proper enums, not plain strings
             fast["type"] = TaskType(fast.get("type", "general"))
             fast["complexity"] = Complexity(fast.get("complexity", "low"))
+            fast["source"] = ClassifierSource.FAST
             return TaskProfile(**fast)
 
         # Slow-path: LLM-assisted classification for ambiguous inputs
@@ -109,14 +126,17 @@ class TaskClassifier:
                     recommended_actions=data.get("recommended_actions", []),
                     reasoning=data.get("reasoning", ""),
                     subtasks=data.get("subtasks", []),
+                    source=ClassifierSource.LLM,
                 )
                 logger.info("task_classified", type=profile["type"],
                              complexity=profile["complexity"], reasoning=profile["reasoning"])
                 return profile
+            logger.warning("task_classify_empty_response", raw=response[:200])
         except Exception as e:
             logger.warning("task_classify_failed", error=str(e))
 
-        # Fallback: treat as general low complexity
+        # Fallback: treat as general low complexity — source=FALLBACK marks
+        # this as untrusted so the gatherer/skill_matcher can degrade safely.
         return TaskProfile(
             type=TaskType.GENERAL,
             complexity=Complexity.LOW,
@@ -124,6 +144,7 @@ class TaskClassifier:
             recommended_actions=["end_response"],
             reasoning="分类失败，使用默认分类",
             subtasks=[],
+            source=ClassifierSource.FALLBACK,
         )
 
     def _fast_classify(self, user_input: str) -> dict | None:

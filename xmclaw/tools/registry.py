@@ -71,6 +71,158 @@ _BUILTIN_TOOLS: list[type[Tool]] = [
 ]
 
 
+async def _record_skill_telemetry(
+    tool_name: str,
+    agent_id: str | None,
+    outcome: str,
+    result: str | None = None,
+) -> None:
+    """Increment lineage metrics for a generated skill after it runs.
+
+    Telemetry is a side channel — it must NEVER raise back into the tool
+    execution path. Any storage error is swallowed so a broken journal can't
+    break the agent loop.
+
+    Outcome semantics:
+      * matched_count  — always incremented for skill invocations (the skill
+                         was selected and executed at all).
+      * helpful_count  — tool returned without raising. Note: the Tool base
+                         may still return a string that *starts with*
+                         `[Error ...]`; we treat that as harmful because the
+                         agent sees failure downstream even if Python didn't.
+      * harmful_count  — tool raised, OR returned an `[Error` sentinel.
+
+    After a harmful outcome we poll `_maybe_rollback_skill`, which consults
+    the configured thresholds (PR-E3-2). If it decides to roll back the
+    skill, it deletes the active artifact, marks lineage rolled_back, and
+    emits EVOLUTION_ROLLBACK so the Live panel updates.
+    """
+    if not tool_name.startswith("skill_"):
+        return
+    if not agent_id:
+        return
+    try:
+        from xmclaw.evolution.journal import get_journal
+        journal = get_journal(agent_id)
+        await journal.increment_metric(tool_name, "matched_count", 1)
+        effective = outcome
+        if outcome == "helpful" and isinstance(result, str) and result.lstrip().startswith("[Error"):
+            effective = "harmful"
+        if effective == "helpful":
+            await journal.increment_metric(tool_name, "helpful_count", 1)
+        elif effective == "harmful":
+            await journal.increment_metric(tool_name, "harmful_count", 1)
+            await _maybe_rollback_skill(tool_name, agent_id, journal)
+    except Exception as e:
+        logger.debug("skill_telemetry_record_failed", tool=tool_name, error=str(e))
+
+
+async def _maybe_rollback_skill(
+    tool_name: str,
+    agent_id: str,
+    journal,
+) -> None:
+    """Retire a promoted skill if its harm metrics cross the configured
+    threshold. The caller has already incremented harmful_count for this
+    invocation, so we read the post-increment lineage row.
+
+    Rollback conditions (either is sufficient; both require min_matches):
+      1. absolute: harmful_count ≥ harmful_count_threshold
+         AND     harmful_count > helpful_count
+      2. ratio:   harmful_count / matched_count ≥ harmful_ratio_threshold
+         AND     matched_count ≥ min_matches
+
+    The lineage row flips to `rolled_back` (not `retired`) so audit can
+    distinguish "rejected by validator before promotion" from
+    "promoted, then failed in production". The active-dir file is deleted
+    so the registry no longer exposes it on next reload.
+    """
+    try:
+        from xmclaw.daemon.config import DaemonConfig
+        from xmclaw.evolution.journal import STATUS_ROLLED_BACK
+        from xmclaw.core.event_bus import Event, EventType, get_event_bus
+
+        try:
+            cfg = DaemonConfig.load()
+            evo = cfg.evolution or {}
+        except Exception:
+            evo = {}
+        if not evo.get("auto_rollback", True):
+            return
+        abs_threshold = int(evo.get("rollback_harmful_count_threshold", 3))
+        ratio_threshold = float(evo.get("rollback_harmful_ratio_threshold", 0.5))
+        min_matches = int(evo.get("rollback_min_matches", 4))
+
+        row = await journal.get_artifact(tool_name)
+        if not row:
+            return
+        # Only roll back skills that were actually promoted. Shadow / already-
+        # retired / already-rolled-back rows are no-ops.
+        if row.get("status") != "promoted":
+            return
+
+        harmful = int(row.get("harmful_count", 0) or 0)
+        helpful = int(row.get("helpful_count", 0) or 0)
+        matched = int(row.get("matched_count", 0) or 0)
+
+        tripped_reason: str | None = None
+        if harmful >= abs_threshold and harmful > helpful:
+            tripped_reason = "harmful_count_threshold"
+        elif matched >= min_matches and matched > 0 and (harmful / matched) >= ratio_threshold:
+            tripped_reason = "harmful_ratio_threshold"
+        if not tripped_reason:
+            return
+
+        # Perform the rollback: delete active artifact + flip lineage status.
+        active_py = BASE_DIR / "shared" / "skills" / f"{tool_name}.py"
+        active_meta = BASE_DIR / "shared" / "skills" / f"{tool_name}.json"
+        for p in (active_py, active_meta):
+            try:
+                if p.exists():
+                    p.unlink()
+            except Exception as e:
+                logger.warning("rollback_unlink_failed", path=str(p), error=str(e))
+        await journal.update_artifact_status(tool_name, STATUS_ROLLED_BACK)
+
+        # Drop the tool from the shared registry so it stops being invokable
+        # without waiting for the next full reload.
+        shared = ToolRegistry.get_shared()
+        if shared is not None:
+            try:
+                async with shared._lock:
+                    shared._tools.pop(tool_name, None)
+            except Exception as e:
+                logger.warning("rollback_registry_evict_failed", tool=tool_name, error=str(e))
+
+        logger.warning(
+            "skill_auto_rolled_back",
+            tool=tool_name,
+            reason=tripped_reason,
+            harmful=harmful,
+            helpful=helpful,
+            matched=matched,
+        )
+        try:
+            await get_event_bus().publish(Event(
+                event_type=EventType.EVOLUTION_ROLLBACK,
+                source=agent_id,
+                payload={
+                    "artifact_id": tool_name,
+                    "kind": "skill",
+                    "reason": tripped_reason,
+                    "metrics": {
+                        "matched": matched,
+                        "helpful": helpful,
+                        "harmful": harmful,
+                    },
+                },
+            ))
+        except Exception as e:
+            logger.debug("rollback_event_publish_failed", error=str(e))
+    except Exception as e:
+        logger.debug("rollback_check_failed", tool=tool_name, error=str(e))
+
+
 class ToolRegistry:
     """Tool registry and execution dispatcher with hot-pluggable support.
 
@@ -178,10 +330,18 @@ class ToolRegistry:
                 logger.warning("plugin_tool_load_failed", path=str(py_file), error=str(e))
 
     async def _load_generated_skills(self) -> None:
+        """Load only PROMOTED skills. Shadow/retired subdirs are NEVER loaded —
+        broken artifacts under validation quarantine must stay invisible to
+        the agent (fail-closed guard for bug M22)."""
         skills_dir = BASE_DIR / "shared" / "skills"
         if not skills_dir.exists():
             return
         for py_file in skills_dir.glob("skill_*.py"):
+            # glob() is non-recursive so shadow/skill_*.py is already excluded,
+            # but check is_file() explicitly to guard against any future
+            # refactor that switches to rglob.
+            if not py_file.is_file() or py_file.parent != skills_dir:
+                continue
             try:
                 tool = self._load_tool_module(py_file)
                 if tool and tool.name:
@@ -264,12 +424,24 @@ class ToolRegistry:
             lines.append(f"- {schema['name']}: {schema['description']}")
         return "\n".join(lines)
 
-    async def execute(self, name: str, arguments: dict[str, Any]) -> str:
+    async def execute(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        agent_id: str | None = None,
+    ) -> str:
         """Execute a tool with error recovery and circuit breaker protection.
 
         Thread-safe: uses lock for reading tool from registry.
         Each tool has its own circuit breaker to prevent cascading failures.
         Transient failures (timeouts, network) are retried automatically.
+
+        When `agent_id` is provided AND the tool is a generated skill (name
+        starts with `skill_`), lineage telemetry is recorded so the evolution
+        meta-evaluator can decide whether the skill is paying off (helpful),
+        mute (never matched), or actively harming turns (harmful). See
+        PR-E3-1 / Phase E3 — this is the canary signal that drives auto
+        rollback.
         """
         # Get tool reference under lock (lock is released after lookup)
         async with self._lock:
@@ -287,7 +459,13 @@ class ToolRegistry:
         # Check circuit breaker
         if not await breaker.can_execute():
             logger.warning("tool_circuit_breaker_open", tool=name)
-            return f"[Error: Tool '{name}' temporarily unavailable due to repeated failures. Please try again later.]"
+            msg = f"[Error: Tool '{name}' temporarily unavailable due to repeated failures. Please try again later.]"
+            # A tripped breaker is itself a harmful signal — the skill has
+            # failed enough times to warrant protection, which is exactly
+            # what auto-rollback should react to. Record telemetry here or
+            # the rollback threshold can never trip once the breaker opens.
+            await _record_skill_telemetry(name, agent_id, outcome="harmful", result=msg)
+            return msg
 
         # Execute with retry logic (outside lock for better concurrency)
         max_retries = 2
@@ -297,6 +475,7 @@ class ToolRegistry:
             try:
                 result = await tool.execute(**arguments)
                 await breaker.record_success()
+                await _record_skill_telemetry(name, agent_id, outcome="helpful", result=result)
                 return result
             except Exception as e:
                 last_error = e
@@ -314,6 +493,7 @@ class ToolRegistry:
 
         # All retries exhausted
         logger.error("tool_execution_failed_all_retries", tool=name, error=str(last_error))
+        await _record_skill_telemetry(name, agent_id, outcome="harmful", result=str(last_error))
         return f"[Error executing {name}: {last_error}]"
 
     async def hot_reload(self, name: str) -> bool:

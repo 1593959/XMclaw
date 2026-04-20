@@ -322,6 +322,17 @@ class DaemonConfig:
                 "vfm_threshold": 5.0,
                 "max_genes_per_day": 10,
                 "auto_rollback": True,
+                # Auto-rollback thresholds (Phase E3):
+                #   harmful_count_threshold — a promoted skill is retired once
+                #     harmful_count reaches this value AND strictly exceeds
+                #     helpful_count. Set ≥2 to tolerate transient tool errors.
+                #   harmful_ratio_threshold — additional guard: harmful_count /
+                #     max(matched_count,1) above this ratio also trips rollback,
+                #     catching slow-burn regressions where a skill is wrong
+                #     more often than right but never hits the absolute count.
+                "rollback_harmful_count_threshold": 3,
+                "rollback_harmful_ratio_threshold": 0.5,
+                "rollback_min_matches": 4,
                 # Pattern detection thresholds
                 "pattern_thresholds": {
                     "tool_usage_min_count": 2,    # 工具使用次数阈值 (达到此次数触发模式检测)
