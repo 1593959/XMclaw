@@ -26,6 +26,17 @@ integration_manager = IntegrationManager(config.integrations)
 AGENTS_DIR = BASE_DIR / "agents"
 
 
+def _workspace_root(agent_id: str) -> Path:
+    """Return the workspace-view root for ``agent_id``.
+
+    The frontend's 工作区 (workspace) view and its file-CRUD endpoints all
+    operate on this root. Rooting here — instead of the agent directory —
+    keeps daemon plumbing (`memory/`, `memory/sessions/`, identity files
+    like `agent.json` / `SOUL.md`) out of the file tree the user sees.
+    """
+    return AGENTS_DIR / agent_id / "workspace"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("daemon_starting")
@@ -201,11 +212,16 @@ def _build_tree(agent_dir: Path) -> list[dict]:
 
 @app.get("/api/agent/{agent_id}/files")
 async def list_files(agent_id: str):
-    """Return workspace file tree with type information."""
-    agent_dir = AGENTS_DIR / agent_id
-    if not agent_dir.exists():
+    """Return workspace file tree with type information.
+
+    Rooted at ``_workspace_root(agent_id)`` so the tree shows only real
+    workspace files, not daemon internals (``memory/``, config files).
+    """
+    if not (AGENTS_DIR / agent_id).exists():
         return JSONResponse({"error": "Agent not found"}, status_code=404)
-    tree = _build_tree(agent_dir)
+    ws_root = _workspace_root(agent_id)
+    ws_root.mkdir(parents=True, exist_ok=True)
+    tree = _build_tree(ws_root)
     total_files = sum(1 for e in tree if e["type"] == "file")
     total_dirs  = sum(1 for e in tree if e["type"] == "dir")
     return {
@@ -216,9 +232,9 @@ async def list_files(agent_id: str):
 
 @app.get("/api/agent/{agent_id}/file")
 async def read_file(agent_id: str, path: str):
-    agent_dir = AGENTS_DIR / agent_id
-    target = (agent_dir / path).resolve()
-    if not str(target).startswith(str(agent_dir.resolve())):
+    ws_root = _workspace_root(agent_id)
+    target = (ws_root / path).resolve()
+    if not str(target).startswith(str(ws_root.resolve())):
         return JSONResponse({"error": "Invalid path"}, status_code=403)
     if not target.exists():
         return JSONResponse({"error": "File not found"}, status_code=404)
@@ -232,9 +248,9 @@ async def read_file(agent_id: str, path: str):
 
 @app.post("/api/agent/{agent_id}/file")
 async def write_file(agent_id: str, path: str, data: dict):
-    agent_dir = AGENTS_DIR / agent_id
-    target = (agent_dir / path).resolve()
-    if not str(target).startswith(str(agent_dir.resolve())):
+    ws_root = _workspace_root(agent_id)
+    target = (ws_root / path).resolve()
+    if not str(target).startswith(str(ws_root.resolve())):
         return JSONResponse({"error": "Invalid path"}, status_code=403)
     target.parent.mkdir(parents=True, exist_ok=True)
     with open(target, "w", encoding="utf-8") as f:
@@ -245,8 +261,7 @@ async def write_file(agent_id: str, path: str, data: dict):
 @app.post("/api/agent/{agent_id}/file/create")
 async def create_file(agent_id: str, data: dict):
     """Create a new file or directory."""
-    agent_dir = AGENTS_DIR / agent_id
-    if not agent_dir.exists():
+    if not (AGENTS_DIR / agent_id).exists():
         return JSONResponse({"error": "Agent not found"}, status_code=404)
 
     rel_path = data.get("path", "").strip()
@@ -255,8 +270,10 @@ async def create_file(agent_id: str, data: dict):
     if not rel_path or ".." in rel_path or rel_path.startswith("/"):
         return JSONResponse({"error": "Invalid path"}, status_code=400)
 
-    target = (agent_dir / rel_path).resolve()
-    if not str(target).startswith(str(agent_dir.resolve())):
+    ws_root = _workspace_root(agent_id)
+    ws_root.mkdir(parents=True, exist_ok=True)
+    target = (ws_root / rel_path).resolve()
+    if not str(target).startswith(str(ws_root.resolve())):
         return JSONResponse({"error": "Path outside workspace"}, status_code=403)
 
     if target.exists():
@@ -274,15 +291,15 @@ async def create_file(agent_id: str, data: dict):
 @app.delete("/api/agent/{agent_id}/file")
 async def delete_file(agent_id: str, path: str):
     """Delete a file or directory."""
-    agent_dir = AGENTS_DIR / agent_id
-    if not agent_dir.exists():
+    if not (AGENTS_DIR / agent_id).exists():
         return JSONResponse({"error": "Agent not found"}, status_code=404)
 
     if not path or ".." in path or path.startswith("/"):
         return JSONResponse({"error": "Invalid path"}, status_code=400)
 
-    target = (agent_dir / path).resolve()
-    if not str(target).startswith(str(agent_dir.resolve())):
+    ws_root = _workspace_root(agent_id)
+    target = (ws_root / path).resolve()
+    if not str(target).startswith(str(ws_root.resolve())):
         return JSONResponse({"error": "Path outside workspace"}, status_code=403)
     if not target.exists():
         return JSONResponse({"error": "Not found"}, status_code=404)
@@ -298,8 +315,7 @@ async def delete_file(agent_id: str, path: str):
 @app.post("/api/agent/{agent_id}/file/rename")
 async def rename_file(agent_id: str, data: dict):
     """Rename a file or directory."""
-    agent_dir = AGENTS_DIR / agent_id
-    if not agent_dir.exists():
+    if not (AGENTS_DIR / agent_id).exists():
         return JSONResponse({"error": "Agent not found"}, status_code=404)
 
     old_path = data.get("path", "").strip()
@@ -308,8 +324,9 @@ async def rename_file(agent_id: str, data: dict):
     if not old_path or not new_name or ".." in old_path or ".." in new_name:
         return JSONResponse({"error": "Invalid path"}, status_code=400)
 
-    old_target = (agent_dir / old_path).resolve()
-    if not str(old_target).startswith(str(agent_dir.resolve())):
+    ws_root = _workspace_root(agent_id)
+    old_target = (ws_root / old_path).resolve()
+    if not str(old_target).startswith(str(ws_root.resolve())):
         return JSONResponse({"error": "Path outside workspace"}, status_code=403)
     if not old_target.exists():
         return JSONResponse({"error": "Not found"}, status_code=404)

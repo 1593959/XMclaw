@@ -64,6 +64,38 @@ def test_workspace_files_api():
         assert resp.status_code in (200, 404)
 
 
+def test_workspace_files_api_excludes_daemon_internals(tmp_path, monkeypatch):
+    """The 工作区 view must be rooted at ``agents/<id>/workspace/`` —
+    not at the agent dir — so daemon internals (``memory/``, ``memory/sessions/``,
+    identity files like ``agent.json``) never appear in the tree the user sees.
+
+    Regression guard for the "工作区太乱了，那三个文件夹根本没用" bug.
+    """
+    import xmclaw.daemon.server as srv
+
+    agents_root = tmp_path / "agents"
+    agent_dir = agents_root / "iso"
+    (agent_dir / "memory" / "sessions").mkdir(parents=True)
+    (agent_dir / "workspace").mkdir(parents=True)
+    (agent_dir / "agent.json").write_text("{}", encoding="utf-8")
+    (agent_dir / "SOUL.md").write_text("soul", encoding="utf-8")
+    (agent_dir / "workspace" / "notes.md").write_text("real", encoding="utf-8")
+
+    monkeypatch.setattr(srv, "AGENTS_DIR", agents_root)
+
+    with TestClient(app) as client:
+        resp = client.get("/api/agent/iso/files")
+        assert resp.status_code == 200
+        entries = resp.json()["files"]
+        names = {e["path"] for e in entries}
+        # Real workspace file must be listed…
+        assert "notes.md" in names
+        # …but daemon internals must NOT leak in.
+        assert not any("memory" in p for p in names), names
+        assert "agent.json" not in names
+        assert "SOUL.md" not in names
+
+
 # Async tool tests
 
 @pytest.mark.asyncio
