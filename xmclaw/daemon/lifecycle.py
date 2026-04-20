@@ -217,6 +217,8 @@ def start_daemon(open_browser: bool = True) -> int:
         # Log to daemon.log so we can see startup errors
         log_file = BASE_DIR / "logs" / "daemon.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
+        from xmclaw.utils.log import rotate_if_large
+        rotate_if_large(log_file)
         # Append new startup marker
         with open(log_file, "a", encoding="utf-8") as lf:
             import datetime
