@@ -2672,12 +2672,16 @@ async function loadMemorySessions() {
             return;
         }
         listEl.innerHTML = sessions.map(s => {
+            // Older daemons (before the sessions view landed) returned
+            // only `id` + `file` — fall back through both so the list
+            // still renders when the Python process is stale-pulled.
+            const name = s.name || s.file || (s.id ? `${s.id}.jsonl` : '');
             const preview = s.preview ? escapeHtml(s.preview).slice(0, 120) : '(空)';
             const modified = _fmtTime(s.modified);
             const size = _fmtSize(s.size);
-            const isSelected = s.name === _selectedSessionName ? ' selected' : '';
-            return `<div class="mlist-item${isSelected}" data-session="${escapeHtml(s.name)}">
-                <div class="mlist-title">${escapeHtml(s.name)}</div>
+            const isSelected = name === _selectedSessionName ? ' selected' : '';
+            return `<div class="mlist-item${isSelected}" data-session="${escapeHtml(name)}">
+                <div class="mlist-title">${escapeHtml(name || '(unnamed)')}</div>
                 <div class="mlist-preview">${preview}</div>
                 <div class="mlist-meta">${s.turn_count} 轮 · ${size} · ${modified}</div>
             </div>`;
@@ -2704,6 +2708,12 @@ async function loadSessionDetail(name) {
         const { offset, limit } = _sessionPage;
         const url = `/api/agent/${AGENT_ID}/session?name=${encodeURIComponent(name)}&offset=${offset}&limit=${limit}`;
         const res = await fetch(url);
+        if (res.status === 404 && !name.endsWith('.jsonl')) {
+            // Route exists but the request was nonsense — fall through to data.error.
+        } else if (res.status === 404) {
+            detailEl.innerHTML = '<div class="empty-state">后端没有 /session 端点，daemon 可能没重启加载新代码。运行 <code>xmclaw restart</code> 再试。</div>';
+            return;
+        }
         const data = await res.json();
         if (data.error) { detailEl.innerHTML = `<div class="empty-state">${escapeHtml(data.error)}</div>`; return; }
         _sessionPage.total = data.total || 0;
