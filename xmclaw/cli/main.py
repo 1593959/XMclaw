@@ -322,11 +322,15 @@ def chat(
 
 # ── Tasks ──────────────────────────────────────────────────────────────────
 
+def _tasks_path(agent_id: str) -> Path:
+    """Canonical tasks.json path. Lives under ``workspace/`` per docs/WORKSPACE.md."""
+    return get_agent_dir(agent_id) / "workspace" / "tasks.json"
+
+
 @app.command()
 def task_list(agent_id: str = typer.Option("default", "--agent", "-a")):
     """List active tasks for an agent."""
-    agent_dir = get_agent_dir(agent_id)
-    path = agent_dir / "tasks.json"
+    path = _tasks_path(agent_id)
     if not path.exists():
         typer.echo("No tasks found.")
         return
@@ -345,8 +349,8 @@ def task_create(
     agent_id: str = typer.Option("default", "--agent", "-a"),
 ):
     """Create a new task."""
-    agent_dir = get_agent_dir(agent_id)
-    path = agent_dir / "tasks.json"
+    path = _tasks_path(agent_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
     tasks = []
     if path.exists():
         tasks = json.loads(path.read_text(encoding="utf-8"))

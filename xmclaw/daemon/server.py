@@ -213,10 +213,14 @@ def _build_tree(agent_dir: Path) -> list[dict]:
         # Prune excluded subtrees in-place so os.walk won't recurse into them.
         dirs[:] = [d for d in dirs if not (d in _WORKSPACE_EXCLUDE_NAMES or d.startswith("."))]
 
-        # Directories
+        # Directories.  ``.as_posix()`` forces forward-slash separators
+        # so the frontend's ``path.split('/')`` sees real hierarchy on
+        # Windows too — otherwise nested entries come back as
+        # ``workspace\tasks.json`` and get rendered at the tree root.
         for dname in sorted(dirs):
+            rel = rel_root / dname
             entries.append({
-                "path": str(rel_root / dname) if str(rel_root) != "." else dname,
+                "path": rel.as_posix() if str(rel_root) != "." else dname,
                 "name": dname,
                 "type": "dir",
                 "fileType": "folder",
@@ -227,8 +231,9 @@ def _build_tree(agent_dir: Path) -> list[dict]:
             if fname in _WORKSPACE_EXCLUDE_NAMES or fname.startswith("."):
                 continue
             fpath = root_path / fname
+            rel = rel_root / fname
             entries.append({
-                "path": str(rel_root / fname) if str(rel_root) != "." else fname,
+                "path": rel.as_posix() if str(rel_root) != "." else fname,
                 "name": fname,
                 "type": "file",
                 "fileType": _file_type(fname),

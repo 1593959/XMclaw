@@ -6,6 +6,7 @@ Thread Safety:
 """
 import asyncio
 import importlib.util
+import inspect
 import threading
 from pathlib import Path
 from typing import Any
@@ -487,9 +488,22 @@ class ToolRegistry:
         max_retries = 2
         last_error: Exception | None = None
 
+        # Inject agent_id into kwargs only if the tool's ``execute``
+        # signature accepts it. Per-agent tools (task, todo, file_*)
+        # need this so they don't hard-code "default"; other tools don't
+        # have to care.
+        call_args = arguments
+        if agent_id is not None:
+            try:
+                sig = inspect.signature(tool.execute)
+                if "agent_id" in sig.parameters and "agent_id" not in arguments:
+                    call_args = {**arguments, "agent_id": agent_id}
+            except (TypeError, ValueError):
+                pass
+
         for attempt in range(max_retries + 1):
             try:
-                result = await tool.execute(**arguments)
+                result = await tool.execute(**call_args)
                 await breaker.record_success()
                 await _record_skill_telemetry(name, agent_id, outcome="helpful", result=result)
                 return result

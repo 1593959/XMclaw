@@ -174,6 +174,38 @@ def test_workspace_files_api_shows_identity_hides_secrets(tmp_path, monkeypatch)
         assert good.json()["content"] == "soul"
 
 
+def test_workspace_files_api_returns_posix_paths(tmp_path, monkeypatch):
+    """Nested entries must come back with forward-slash separators.
+
+    Regression guard: on Windows ``str(Path('workspace') / 'notes.md')``
+    yields ``workspace\\notes.md``. The web UI splits on ``/`` to
+    reconstruct hierarchy — with backslashes every nested file was
+    rendered at the tree root and ``workspace/`` looked empty. The
+    symptom the user reported as "文件夹是无效的".
+    """
+    import xmclaw.daemon.server as srv
+
+    agents_root = tmp_path / "agents"
+    agent_dir = agents_root / "isoposix"
+    (agent_dir / "workspace").mkdir(parents=True)
+    (agent_dir / "SOUL.md").write_text("s", encoding="utf-8")
+    (agent_dir / "workspace" / "notes.md").write_text("n", encoding="utf-8")
+    (agent_dir / "workspace" / "tasks.json").write_text("[]", encoding="utf-8")
+
+    monkeypatch.setattr(srv, "AGENTS_DIR", agents_root)
+
+    with TestClient(app) as client:
+        resp = client.get("/api/agent/isoposix/files")
+        assert resp.status_code == 200
+        paths = [e["path"] for e in resp.json()["files"]]
+
+        # Every nested path uses forward slashes — no literal backslash
+        # anywhere, on any platform.
+        assert not any("\\" in p for p in paths), paths
+        assert "workspace/notes.md" in paths
+        assert "workspace/tasks.json" in paths
+
+
 # Async tool tests
 
 @pytest.mark.asyncio
@@ -226,6 +258,48 @@ async def test_todo_tool_crud():
     finally:
         if todo_path.exists():
             todo_path.unlink()
+
+
+@pytest.mark.asyncio
+async def test_task_and_todo_tools_honor_agent_id(tmp_path, monkeypatch):
+    """Tasks/todos for agent ``a`` must not leak into agent ``b``.
+
+    Regression guard: both tools previously hard-coded
+    ``BASE_DIR/agents/default/workspace/...``, so in a multi-agent setup
+    every write landed in the default agent's workspace silently. After
+    this fix the registry forwards ``agent_id`` into the tools and each
+    agent owns its own tasks.json / todos.json.
+    """
+    import xmclaw.tools.task_tool as task_mod
+    import xmclaw.tools.todo as todo_mod
+    import xmclaw.utils.paths as paths_mod
+
+    fake_base = tmp_path / "repo"
+    monkeypatch.setattr(paths_mod, "BASE_DIR", fake_base)
+    # get_agent_dir reads BASE_DIR at call time via module-level access
+    # in the tools, so the patch is sufficient.
+
+    reg = ToolRegistry()
+    await reg.load_all()
+
+    await reg.execute("task", {"action": "create", "title": "A-only"}, agent_id="a")
+    await reg.execute("todo", {"action": "add", "text": "todo-a"}, agent_id="a")
+
+    list_b_tasks = await reg.execute("task", {"action": "list"}, agent_id="b")
+    list_b_todos = await reg.execute("todo", {"action": "list"}, agent_id="b")
+    assert "A-only" not in list_b_tasks
+    assert "todo-a" not in list_b_todos
+
+    list_a_tasks = await reg.execute("task", {"action": "list"}, agent_id="a")
+    list_a_todos = await reg.execute("todo", {"action": "list"}, agent_id="a")
+    assert "A-only" in list_a_tasks
+    assert "todo-a" in list_a_todos
+
+    # And the files live in agent_a's workspace, not anywhere under agent_b.
+    assert (fake_base / "agents" / "a" / "workspace" / "tasks.json").exists()
+    assert (fake_base / "agents" / "a" / "workspace" / "todos.json").exists()
+    assert not (fake_base / "agents" / "b" / "workspace" / "tasks.json").exists()
+    assert not (fake_base / "agents" / "b" / "workspace" / "todos.json").exists()
 
 
 @pytest.mark.asyncio
