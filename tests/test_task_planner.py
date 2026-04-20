@@ -31,13 +31,22 @@ from xmclaw.core.task_planner import TaskPlanner
 
 
 class _NoopLLM:
-    """Minimal LLMRouter stub — LOW-complexity tests never call ``.stream``.
+    """Minimal LLMRouter stub — LOW-complexity tests never call the LLM.
 
-    Any test that exercises the medium/high path must patch this with a
-    real async generator; we fail loudly if a test unexpectedly reaches it.
+    The planner must use ``.complete()`` (not ``.stream()``) because
+    ``stream()`` yields JSON event envelopes, not raw text — see
+    reflection.py for the full story. Both methods are stubbed to fail
+    loudly so any test that unexpectedly hits the LLM path blows up
+    instead of silently falling back to the hand-rolled plan.
     """
-    async def stream(self, messages):  # pragma: no cover - guard
+    async def complete(self, messages):  # pragma: no cover - guard
         raise AssertionError("planner should not call LLM for LOW complexity")
+
+    async def stream(self, messages):  # pragma: no cover - guard
+        raise AssertionError(
+            "planner must use .complete() — .stream() yields JSON event envelopes, "
+            "not raw text, and concatenating them produces an unparseable blob"
+        )
 
 
 def _enum_profile() -> TaskProfile:
@@ -96,14 +105,20 @@ async def test_plan_medium_complexity_string_profile_reaches_llm():
     captured_prompts: list[str] = []
 
     class _CaptureLLM:
-        async def stream(self, messages):
+        async def complete(self, messages):
             captured_prompts.append(messages[-1]["content"])
-            yield (
+            return (
                 '{"steps": [{"step": 1, "action": "a", "tool": "", '
                 '"reasoning": "r", "depends_on": []}], '
                 '"estimated_steps": 1, "needs_confirmation": false, '
                 '"reasoning": "test"}'
             )
+
+        async def stream(self, messages):  # pragma: no cover
+            raise AssertionError(
+                "planner must use .complete() — see test_task_planner.py docstring"
+            )
+            yield ""  # unreachable; keeps this a valid async generator
 
     profile: TaskProfile = {  # type: ignore[assignment]
         "type": "plan",

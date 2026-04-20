@@ -113,9 +113,12 @@ class TaskClassifier:
                  "content": "你是一个严格的任务分类引擎。只输出纯 JSON，不要任何额外文字。"},
                 {"role": "user", "content": prompt},
             ]
-            response = ""
-            async for chunk in self.llm.stream(messages):
-                response += chunk
+            # NOTE: llm.stream() yields JSON event envelopes (see reflection.py
+            # for the full story); use .complete() so we get the raw text the
+            # model actually produced, otherwise _extract_json always fails
+            # and every medium-ambiguity input silently falls through to the
+            # FALLBACK TaskProfile.
+            response = await self.llm.complete(messages)
 
             data = self._extract_json(response)
             if data:

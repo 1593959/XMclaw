@@ -116,10 +116,11 @@ async def test_reflection_injects_health_into_prompt(monkeypatch):
     captured: dict = {}
 
     class _FakeLLM:
-        async def stream(self, messages, **kwargs):
+        # Reflection consumes raw text via .complete() (not stream() — that
+        # yields JSON event envelopes, see xmclaw.core.reflection).
+        async def complete(self, messages, **kwargs):
             captured["messages"] = messages
-            # Return a valid JSON reflection so the path doesn't error out.
-            yield '{"success": true, "summary": "ok", "problems": [], "lessons": [], "improvements": []}'
+            return '{"success": true, "summary": "ok", "problems": [], "lessons": [], "improvements": []}'
 
     class _FakeMem:
         sessions = None
@@ -168,9 +169,10 @@ async def test_reflection_without_health_produces_classic_prompt(monkeypatch):
     captured: dict = {}
 
     class _FakeLLM:
-        async def stream(self, messages, **kwargs):
+        # Reflection uses .complete() (stream() yields JSON event envelopes).
+        async def complete(self, messages, **kwargs):
             captured["messages"] = messages
-            yield '{"success": true, "summary": "ok"}'
+            return '{"success": true, "summary": "ok"}'
 
     class _FakeMem:
         sessions = None

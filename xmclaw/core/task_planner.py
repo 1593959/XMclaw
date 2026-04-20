@@ -133,9 +133,12 @@ class TaskPlanner:
         ]
 
         try:
-            response = ""
-            async for chunk in self.llm.stream(messages):
-                response += chunk
+            # NOTE: llm.stream() yields JSON event envelopes (see reflection.py
+            # for the full story); use .complete() so _extract_json gets the
+            # raw model text. Otherwise medium/high-complexity tasks silently
+            # fall through to the hand-rolled fallback plan and the LLM
+            # branch is effectively dead code.
+            response = await self.llm.complete(messages)
 
             data = self._extract_json(response)
             if data:

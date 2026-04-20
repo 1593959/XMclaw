@@ -179,9 +179,13 @@ class ReflectionEngine:
         ]
 
         try:
-            response = ""
-            async for chunk in self.llm.stream(messages):
-                response += chunk
+            # NOTE: we deliberately use .complete() instead of .stream() here.
+            # llm.stream() yields JSON event envelopes (`{"type":"text","content":"…"}`),
+            # not raw text — concatenating the chunks produced a non-JSON blob
+            # that _extract_json could never parse, so reflection was silently
+            # returning PARSE_FAILED on every call. See regression test
+            # tests/test_reflection.py::test_reflect_uses_completion_not_event_stream.
+            response = await self.llm.complete(messages)
 
             # Try to extract JSON
             result = self._extract_json(response)
