@@ -1,98 +1,86 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (and other AI coding assistants) when working in this repository.
 
-## Project Overview
+## Project
 
-Antigravity Kit is an AI-powered design intelligence toolkit providing searchable databases of UI styles, color palettes, font pairings, chart types, and UX guidelines. It works as a skill/workflow for AI coding assistants (Claude Code, Windsurf, Cursor, etc.).
+**XMclaw** is a local-first, self-evolving AI agent runtime written in Python. A single FastAPI daemon hosts the AgentLoop, ToolRegistry, MemoryManager, and EvolutionEngine; clients (Web UI, CLI, desktop tray) connect to it over WebSocket. See [README.md](README.md) for the user-facing overview and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the definitive system design.
 
-## Search Command
+## Repository Layout
+
+```
+xmclaw/              Python package (the actual runtime)
+├── core/            AgentLoop, Orchestrator, PromptBuilder, Reflection
+├── daemon/          FastAPI + WebSocket server, lifecycle
+├── gateway/         HTTP / WS request handlers
+├── evolution/       GeneForge, SkillForge, VFM, Validator, Scheduler
+├── genes/           Gene matching and registry
+├── llm/             Anthropic + OpenAI router
+├── memory/          SQLite, VectorStore (sqlite-vec), SessionManager
+├── tools/           Built-in tools + MCP bridge
+├── integrations/    Slack, Discord, Telegram, GitHub, Notion, 飞书, QQ, 企业微信
+├── sandbox/         Docker + process sandboxing
+├── desktop/         Desktop tray + browser launcher
+├── cli/             `xmclaw` CLI entry points
+└── utils/           Logging, paths, security helpers
+
+web/                 Vite-based web UI (vanilla JS + CSS)
+daemon/              Daemon runtime config (config.json — gitignored, config.example.json is the template)
+agents/              Agent profiles (agent.json is gitignored; PROFILE.md / SOUL.md are committed)
+shared/              Auto-generated genes/ and skills/ (populated at runtime)
+plugins/             LLM and tool plugins
+docs/                Architecture, CLI, Tools, Evolution, Integrations, Testing, Troubleshooting
+tests/               pytest suites (test_bash.py, test_config.py, test_evolution.py, …)
+scripts/             Build & installer scripts (build_exe_fast.py, xmclaw_setup.iss, …)
+.github/workflows/   CI (python-package-conda.yml, python-publish.yml)
+```
+
+Anything not in that tree is either generated at runtime, gitignored dev scratch, or a legacy artifact — check `.gitignore` before assuming a root-level file belongs in git.
+
+## Common Commands
 
 ```bash
-python3 src/ui-ux-pro-max/scripts/search.py "<query>" --domain <domain> [-n <max_results>]
+# Install
+pip install -e .                 # runtime
+pip install -e ".[dev]"          # + pytest, ruff, mypy
+
+# Run
+xmclaw start                     # launch daemon + open web UI (http://127.0.0.1:8765)
+xmclaw stop
+xmclaw chat                      # interactive CLI
+xmclaw chat --plan               # plan mode (approve steps first)
+xmclaw config init               # interactive config
+xmclaw doctor                    # diagnostics
+
+# Test & lint
+python -m pytest tests/ -v
+python -m pytest tests/ --cov=xmclaw --cov-report=html
+ruff check xmclaw/ --fix
+mypy xmclaw/
+
+# Build desktop installer (Windows)
+python scripts/build_exe_fast.py
+# then scripts/xmclaw_setup.iss produces the installer via InnoSetup
 ```
 
-**Domain search:**
-- `product` - Product type recommendations (SaaS, e-commerce, portfolio)
-- `style` - UI styles (glassmorphism, minimalism, brutalism) + AI prompts and CSS keywords
-- `typography` - Font pairings with Google Fonts imports
-- `color` - Color palettes by product type
-- `landing` - Page structure and CTA strategies
-- `chart` - Chart types and library recommendations
-- `ux` - Best practices and anti-patterns
+Dev env is Windows-first; scripts use `.bat` / `.ps1`. Use `bash` syntax on Git Bash / WSL — forward-slash paths work.
 
-**Stack search:**
-```bash
-python3 src/ui-ux-pro-max/scripts/search.py "<query>" --stack <stack>
-```
-Available stacks: `html-tailwind` (default), `react`, `nextjs`, `astro`, `vue`, `nuxtjs`, `nuxt-ui`, `svelte`, `swiftui`, `react-native`, `flutter`, `shadcn`, `jetpack-compose`
+## Key Conventions
 
-## Architecture
-
-```
-src/ui-ux-pro-max/                # Source of Truth
-├── data/                         # Canonical CSV databases
-│   ├── products.csv, styles.csv, colors.csv, typography.csv, ...
-│   └── stacks/                   # Stack-specific guidelines
-├── scripts/
-│   ├── search.py                 # CLI entry point
-│   ├── core.py                   # BM25 + regex hybrid search engine
-│   └── design_system.py          # Design system generation
-└── templates/
-    ├── base/                     # Base templates (skill-content.md, quick-reference.md)
-    └── platforms/                # Platform configs (claude.json, cursor.json, ...)
-
-cli/                              # CLI installer (uipro-cli on npm)
-├── src/
-│   ├── commands/init.ts          # Install command with template generation
-│   └── utils/template.ts         # Template rendering engine
-└── assets/                       # Bundled assets (~564KB)
-    ├── data/                     # Copy of src/ui-ux-pro-max/data/
-    ├── scripts/                  # Copy of src/ui-ux-pro-max/scripts/
-    └── templates/                # Copy of src/ui-ux-pro-max/templates/
-
-.claude/skills/ui-ux-pro-max/     # Claude Code skill (symlinks to src/)
-.factory/skills/ui-ux-pro-max/   # Droid (Factory) skill (symlinks to src/)
-.shared/ui-ux-pro-max/            # Symlink to src/ui-ux-pro-max/
-.claude-plugin/                   # Claude Marketplace publishing
-```
-
-The search engine uses BM25 ranking combined with regex matching. Domain auto-detection is available when `--domain` is omitted.
-
-## Sync Rules
-
-**Source of Truth:** `src/ui-ux-pro-max/`
-
-When modifying files:
-
-1. **Data & Scripts** - Edit in `src/ui-ux-pro-max/`:
-   - `data/*.csv` and `data/stacks/*.csv`
-   - `scripts/*.py`
-   - Changes automatically available via symlinks in `.claude/`, `.factory/`, `.shared/`
-
-2. **Templates** - Edit in `src/ui-ux-pro-max/templates/`:
-   - `base/skill-content.md` - Common SKILL.md content
-   - `base/quick-reference.md` - Quick reference section (Claude only)
-   - `platforms/*.json` - Platform-specific configs
-
-3. **CLI Assets** - Run sync before publishing:
-   ```bash
-   cp -r src/ui-ux-pro-max/data/* cli/assets/data/
-   cp -r src/ui-ux-pro-max/scripts/* cli/assets/scripts/
-   cp -r src/ui-ux-pro-max/templates/* cli/assets/templates/
-   ```
-
-4. **Reference Folders** - No manual sync needed. The CLI generates these from templates during `uipro init`.
-
-## Prerequisites
-
-Python 3.x (no external dependencies required)
+- **Config with secrets is gitignored.** `daemon/config.json` and `agents/*/agent.json` hold API keys — never commit. Use `daemon/config.example.json` or env vars prefixed with `XMC__` (e.g. `XMC__llm__anthropic__api_key`).
+- **Generated code lives under `shared/`.** Genes and skills produced by the EvolutionEngine are written there at runtime; do not hand-edit committed ones without understanding the evolution pipeline in [docs/EVOLUTION.md](docs/EVOLUTION.md).
+- **Tool additions are registered, not imported.** New tools go in `xmclaw/tools/` and are picked up by `ToolRegistry`. Update [docs/TOOLS.md](docs/TOOLS.md) when adding one.
+- **Events are the contract.** The daemon emits a typed event stream (`chunk`, `state`, `tool_call`, `tool_result`, `ask_user`, `reflection`, `cost`, `done`, `error`) — see [docs/EVENTS.md](docs/EVENTS.md). Clients must not assume fields outside that schema.
 
 ## Git Workflow
 
-Never push directly to `main`. Always:
+- Main branch is `main`. Do not push directly to it.
+- Create a feature branch: `git checkout -b feat/...` / `fix/...` / `docs/...`.
+- Open a PR: `gh pr create`.
+- Keep commit messages in English. Conventional Commits encouraged (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`).
 
-1. Create a new branch: `git checkout -b feat/...` or `fix/...`
-2. Commit changes
-3. Push branch: `git push -u origin <branch>`
-4. Create PR: `gh pr create`
+## Prerequisites
+
+- Python 3.10+ (see `pyproject.toml`).
+- Optional: `playwright install chromium` for browser tools; `pyautogui` + `mss` for computer-use.
+- No Node.js required for runtime — only for working on `web/` (Vite dev server).
