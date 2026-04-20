@@ -387,6 +387,7 @@ class AgentLoop:
             # Stream thinking with tool calling support
             full_response = ""
             tool_calls = []
+            observations = []   # must be defined before turn_data dict below
             current_tool = None
             current_tool_input = ""
             in_tool_call = False
@@ -453,7 +454,7 @@ class AgentLoop:
                 "user": user_input,
                 "assistant": full_response,
                 "tool_calls": tool_calls,
-                "tool_observations": observations,  # per-tool results
+                "tool_observations": observations,
                 "turn": turn_count,
             }
             self._turn_history.append(turn_data)
