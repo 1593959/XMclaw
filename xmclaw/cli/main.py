@@ -27,10 +27,12 @@ sub_gene = typer.Typer(help="Gene management", rich_markup_mode="rich")
 sub_skill = typer.Typer(help="Skill management", rich_markup_mode="rich")
 sub_agent = typer.Typer(help="Agent management", rich_markup_mode="rich")
 sub_config = typer.Typer(help="Configuration management", rich_markup_mode="rich")
+sub_evo = typer.Typer(help="Evolution audit & replay", rich_markup_mode="rich")
 app.add_typer(sub_gene, name="gene")
 app.add_typer(sub_skill, name="skill")
 app.add_typer(sub_agent, name="agent")
 app.add_typer(sub_config, name="config")
+app.add_typer(sub_evo, name="evo")
 
 
 # ── Daemon ──────────────────────────────────────────────────────────────────
@@ -683,6 +685,150 @@ def config_reset(
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(cfg_dict, f, indent=2, ensure_ascii=False)
     typer.echo(f"✅ Reset {key} to default: {default_val!r}")
+
+
+# ── Evolution audit & replay ───────────────────────────────────────────────
+
+@sub_evo.command("replay")
+def evo_replay(
+    cycle_id: str = typer.Argument(..., help="Evolution cycle id (e.g. cycle_abc123)"),
+    agent_id: str = typer.Option(
+        "default", "--agent", "-a",
+        help="Agent id whose journal to read from",
+    ),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit the full cycle record as JSON",
+    ),
+) -> None:
+    """Replay an evolution cycle — shows inputs, decisions, artifacts, verdict.
+
+    The cycle must already be recorded in the journal (``shared/memory.db``);
+    this command is read-only and does not re-run the cycle. Use it for
+    post-mortems, regression debugging, and correlating promote/rollback
+    git commits back to the reflection that produced them.
+    """
+    async def _run() -> int:
+        from xmclaw.evolution.journal import get_journal
+        journal = get_journal(agent_id)
+        cycle = await journal.get_cycle(cycle_id)
+        if not cycle:
+            typer.echo(f"cycle '{cycle_id}' not found for agent '{agent_id}'")
+            return 1
+        lineage = await journal.get_lineage(cycle_id)
+
+        if as_json:
+            payload = {"cycle": cycle, "lineage": lineage}
+            typer.echo(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
+            return 0
+
+        # Human-readable rendering. Prefer rich when available; fall back to
+        # plain text so the command still works in minimal environments.
+        if _RICH:
+            console = Console()
+            header = (
+                f"[bold]{cycle_id}[/bold]  "
+                f"trigger=[cyan]{cycle.get('trigger') or '?'}[/cyan]  "
+                f"verdict=[green]{cycle.get('verdict') or 'pending'}[/green]"
+            )
+            if cycle.get("reject_reason"):
+                header += f"  reason=[yellow]{cycle['reject_reason']}[/yellow]"
+            console.print(Panel(header, title="Cycle"))
+            # Inputs / decisions are free-form dicts; json dumps keeps them
+            # legible without hand-rolling a pretty printer per shape.
+            if cycle.get("inputs"):
+                console.print(Panel(
+                    json.dumps(cycle["inputs"], indent=2, ensure_ascii=False),
+                    title="Inputs", border_style="cyan",
+                ))
+            if cycle.get("decisions"):
+                console.print(Panel(
+                    json.dumps(cycle["decisions"], indent=2, ensure_ascii=False),
+                    title="Decisions", border_style="magenta",
+                ))
+            if cycle.get("metrics"):
+                console.print(Panel(
+                    json.dumps(cycle["metrics"], indent=2, ensure_ascii=False),
+                    title="Metrics", border_style="blue",
+                ))
+            if lineage:
+                t = Table(title="Artifacts", show_lines=False)
+                t.add_column("artifact_id"); t.add_column("kind")
+                t.add_column("status"); t.add_column("m/he/ha")
+                t.add_column("promote_sha"); t.add_column("rollback_sha")
+                for row in lineage:
+                    t.add_row(
+                        str(row.get("artifact_id") or "?"),
+                        str(row.get("kind") or "?"),
+                        str(row.get("status") or "?"),
+                        f"{row.get('matched_count', 0)}/"
+                        f"{row.get('helpful_count', 0)}/"
+                        f"{row.get('harmful_count', 0)}",
+                        (row.get("promote_commit_sha") or "")[:10] or "-",
+                        (row.get("rollback_commit_sha") or "")[:10] or "-",
+                    )
+                console.print(t)
+            else:
+                console.print("[dim]no lineage rows[/dim]")
+        else:
+            typer.echo(f"cycle: {cycle_id}")
+            typer.echo(f"  trigger: {cycle.get('trigger')}")
+            typer.echo(f"  verdict: {cycle.get('verdict')}")
+            if cycle.get("reject_reason"):
+                typer.echo(f"  reject_reason: {cycle['reject_reason']}")
+            typer.echo(f"  inputs: {cycle.get('inputs')}")
+            typer.echo(f"  decisions: {cycle.get('decisions')}")
+            typer.echo(f"  metrics: {cycle.get('metrics')}")
+            typer.echo(f"  artifacts: {len(lineage)}")
+            for row in lineage:
+                typer.echo(
+                    f"    - {row.get('artifact_id')} "
+                    f"({row.get('kind')}, {row.get('status')}) "
+                    f"m={row.get('matched_count', 0)} "
+                    f"he={row.get('helpful_count', 0)} "
+                    f"ha={row.get('harmful_count', 0)} "
+                    f"promote={row.get('promote_commit_sha') or '-'} "
+                    f"rollback={row.get('rollback_commit_sha') or '-'}"
+                )
+        return 0
+
+    raise typer.Exit(code=asyncio.run(_run()))
+
+
+@sub_evo.command("cycles")
+def evo_cycles(
+    agent_id: str = typer.Option(
+        "default", "--agent", "-a", help="Agent id",
+    ),
+    limit: int = typer.Option(20, "--limit", "-n", help="Max cycles to list"),
+) -> None:
+    """List recent evolution cycles (newest first)."""
+    async def _run() -> None:
+        from xmclaw.evolution.journal import get_journal
+        journal = get_journal(agent_id)
+        cycles = await journal.list_cycles(limit=limit)
+        if not cycles:
+            typer.echo("no cycles recorded")
+            return
+        if _RICH:
+            console = Console()
+            t = Table(show_lines=False)
+            t.add_column("cycle_id"); t.add_column("trigger")
+            t.add_column("verdict"); t.add_column("started_at")
+            for c in cycles:
+                t.add_row(
+                    str(c.get("cycle_id")),
+                    str(c.get("trigger") or "?"),
+                    str(c.get("verdict") or "pending"),
+                    str(c.get("started_at") or "?"),
+                )
+            console.print(t)
+        else:
+            for c in cycles:
+                typer.echo(
+                    f"{c.get('cycle_id')}  {c.get('trigger')}  "
+                    f"{c.get('verdict')}  {c.get('started_at')}"
+                )
+    asyncio.run(_run())
 
 
 # ── Test ───────────────────────────────────────────────────────────────────

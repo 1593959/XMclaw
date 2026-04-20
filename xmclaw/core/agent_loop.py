@@ -2,6 +2,7 @@
 import asyncio
 import json
 import time as _time
+import uuid
 from typing import AsyncIterator
 
 from xmclaw.llm.router import LLMRouter
@@ -618,14 +619,24 @@ class AgentLoop:
             # Record the turn AFTER tool execution so reflection sees the real
             # observations list (fixes bug M01 — turn_data used to be built before
             # the loop populated observations).
+            # turn_id is the stable handle the frontend uses to attach 👍/👎
+            # feedback (Plan v2 E6). It is threaded into session storage and
+            # surfaced on the done event so clients can reference exactly the
+            # turn they are reacting to.
+            turn_id = f"{self.agent_id}:{turn_count}:{uuid.uuid4().hex[:8]}"
             self._turn_history.append({
                 "user": user_input,
                 "assistant": full_response,
                 "tool_calls": tool_calls,
                 "tool_observations": observations,
                 "turn": turn_count,
+                "turn_id": turn_id,
             })
-            await self.memory.save_turn(self.agent_id, user_input, full_response, tool_calls)
+            await self.memory.save_turn(
+                self.agent_id, user_input, full_response, tool_calls,
+                turn_id=turn_id,
+            )
+            yield json.dumps({"type": "turn_committed", "turn_id": turn_id})
 
             # Check if we should continue
             yield json.dumps({"type": "state", "state": "THINKING", "thought": "处理工具结果中..."})

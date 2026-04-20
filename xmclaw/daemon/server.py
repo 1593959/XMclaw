@@ -9,7 +9,7 @@ from fastapi import FastAPI, WebSocket, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from xmclaw.daemon.config import DaemonConfig
 from xmclaw.core.orchestrator import AgentOrchestrator
-from xmclaw.core.event_bus import Event, get_event_bus
+from xmclaw.core.event_bus import Event, EventType, get_event_bus
 from xmclaw.evolution.scheduler import EvolutionScheduler
 from xmclaw.integrations.manager import IntegrationManager
 from xmclaw.daemon.static import mount_static_files
@@ -594,6 +594,129 @@ async def evolution_decline_artifact(agent_id: str, artifact_id: str):
         logger.warning("decline_failed", agent_id=agent_id,
                       artifact_id=artifact_id, error=str(e))
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ── Phase E6: message-level human feedback ─────────────────────────────────
+# The frontend attaches 👍/👎 to a specific turn; the write path here upserts
+# into user_feedback and emits a USER_FEEDBACK_RECORDED event so dashboards
+# and the reflection engine can pick it up. Reflection reads the same rows
+# back at the start of its next cycle (see reflection.py _format_history).
+
+@app.post("/api/agent/{agent_id}/turns/{turn_id}/feedback")
+async def record_user_feedback(agent_id: str, turn_id: str, data: dict):
+    thumb = data.get("thumb")
+    note = data.get("note")
+    if thumb not in ("up", "down"):
+        return JSONResponse(
+            {"error": "thumb must be 'up' or 'down'"}, status_code=400,
+        )
+    if note is not None and not isinstance(note, str):
+        return JSONResponse(
+            {"error": "note must be a string when provided"}, status_code=400,
+        )
+    try:
+        orchestrator.memory.sqlite.upsert_user_feedback(
+            agent_id, turn_id, thumb, note=note,
+        )
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        logger.warning("user_feedback_write_failed",
+                      agent_id=agent_id, turn_id=turn_id, error=str(e))
+        return JSONResponse({"error": str(e)}, status_code=500)
+    try:
+        await get_event_bus().publish(Event(
+            event_type=EventType.USER_FEEDBACK_RECORDED,
+            source=agent_id,
+            payload={"turn_id": turn_id, "thumb": thumb, "note": note},
+        ))
+    except Exception as e:
+        logger.warning("user_feedback_event_failed", error=str(e))
+    return {"ok": True, "turn_id": turn_id, "thumb": thumb}
+
+
+@app.get("/api/agent/{agent_id}/feedback/recent")
+async def list_recent_feedback(agent_id: str, limit: int = 50):
+    try:
+        rows = orchestrator.memory.sqlite.get_recent_user_feedback(
+            agent_id, limit=limit,
+        )
+        return {"feedback": rows}
+    except Exception as e:
+        logger.warning("feedback_list_failed", agent_id=agent_id, error=str(e))
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ── Plan v2 E6 PR-E6-3: SOUL/PROFILE/AGENTS markdown editor override ────────
+# Lets the UI read and overwrite the three identity md files. Edits must
+# be bounded (100KB cap) and whitelisted by kind, and the agent_dir check
+# prevents path traversal — ``get_agent_dir`` returns ``agents/<id>`` only
+# for agents that exist under AGENTS_DIR.
+_MD_KIND_MAP = {"soul": "SOUL.md", "profile": "PROFILE.md", "agents": "AGENTS.md"}
+_MD_MAX_BYTES = 100 * 1024
+
+
+def _resolve_md_path(agent_id: str, kind: str) -> Path | None:
+    fname = _MD_KIND_MAP.get(kind)
+    if not fname:
+        return None
+    from xmclaw.utils.paths import get_agent_dir
+    agent_dir = get_agent_dir(agent_id)
+    # Reject ids whose dir doesn't already exist — editing an md file should
+    # never implicitly create a brand-new agent via path traversal tricks.
+    if not agent_dir.is_dir():
+        return None
+    try:
+        resolved = (agent_dir / fname).resolve()
+        if AGENTS_DIR.resolve() not in resolved.parents:
+            return None
+        return resolved
+    except Exception:
+        return None
+
+
+@app.get("/api/agent/{agent_id}/md/{kind}")
+async def read_agent_md(agent_id: str, kind: str):
+    path = _resolve_md_path(agent_id, kind)
+    if path is None:
+        return JSONResponse({"error": "invalid kind or agent"}, status_code=400)
+    try:
+        content = path.read_text(encoding="utf-8") if path.exists() else ""
+        return {"kind": kind, "content": content, "exists": path.exists()}
+    except Exception as e:
+        logger.warning("md_read_failed", agent_id=agent_id, kind=kind, error=str(e))
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.put("/api/agent/{agent_id}/md/{kind}")
+async def write_agent_md(agent_id: str, kind: str, request: Request):
+    path = _resolve_md_path(agent_id, kind)
+    if path is None:
+        return JSONResponse({"error": "invalid kind or agent"}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "malformed JSON body"}, status_code=400)
+    content = body.get("content", "")
+    if not isinstance(content, str):
+        return JSONResponse({"error": "content must be a string"}, status_code=400)
+    if len(content.encode("utf-8")) > _MD_MAX_BYTES:
+        return JSONResponse({"error": f"content exceeds {_MD_MAX_BYTES} bytes"}, status_code=400)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    except Exception as e:
+        logger.warning("md_write_failed", agent_id=agent_id, kind=kind, error=str(e))
+        return JSONResponse({"error": str(e)}, status_code=500)
+    # Hot-reload the live agent's cached markdown so the new content is
+    # in effect on the next turn without a daemon restart.
+    agent = orchestrator.agents.get(agent_id) if hasattr(orchestrator, "agents") else None
+    if agent is not None and hasattr(agent, "_load_markdown_configs"):
+        try:
+            agent._load_markdown_configs()
+        except Exception as e:
+            logger.warning("md_reload_failed", agent_id=agent_id, error=str(e))
+    return {"ok": True, "kind": kind, "bytes": len(content.encode("utf-8"))}
 
 
 # Daemon Config API

@@ -184,6 +184,22 @@ async def _maybe_rollback_skill(
                 logger.warning("rollback_unlink_failed", path=str(p), error=str(e))
         await journal.update_artifact_status(tool_name, STATUS_ROLLED_BACK)
 
+        # E7: if the promote was recorded as a git commit, produce a matching
+        # revert commit so ``git log`` carries the full promote→rollback trail.
+        # No-op when git tracking is disabled or the original sha is missing.
+        try:
+            from xmclaw.evolution.git_ops import revert_commit
+            promote_sha = row.get("promote_commit_sha") or ""
+            if promote_sha:
+                revert_sha = revert_commit(promote_sha, reason=tripped_reason)
+                if revert_sha:
+                    await journal.set_commit_sha(
+                        tool_name, "rollback_commit_sha", revert_sha,
+                    )
+        except Exception as e:
+            logger.warning("rollback_commit_record_failed",
+                           tool=tool_name, error=str(e))
+
         # Drop the tool from the shared registry so it stops being invokable
         # without waiting for the next full reload.
         shared = ToolRegistry.get_shared()

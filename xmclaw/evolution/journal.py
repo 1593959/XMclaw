@@ -168,6 +168,18 @@ class EvolutionJournal:
         # metric must be one of matched_count | helpful_count | harmful_count
         self._store.lineage_increment(artifact_id, metric, delta)
 
+    async def set_commit_sha(
+        self, artifact_id: str, column: str, sha: str,
+    ) -> None:
+        """Record a git SHA tied to a promote/rollback transition (Plan v2 E7).
+
+        ``column`` must be ``promote_commit_sha`` or ``rollback_commit_sha``.
+        Separate from ``update_artifact_status`` so callers can record the
+        SHA even if the status change already happened (e.g. a retroactive
+        audit backfill).
+        """
+        self._store.lineage_set_commit_sha(artifact_id, column, sha)
+
     # ── Queries ──────────────────────────────────────────────────────────────
 
     async def get_cycle(self, cycle_id: str) -> dict | None:

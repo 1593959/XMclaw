@@ -150,10 +150,18 @@ class ReflectionEngine:
         self._reflection_count += 1
         prompt_template = REFLECTION_PROMPTS.get(trigger, REFLECTION_PROMPTS[ReflectionTrigger.CONVERSATION_END])
 
+        # Phase E6: enrich each turn with any 👍/👎 the user left on it so
+        # the reflection prompt can account for human verdicts, not just
+        # the LLM's self-assessment of its own work.
+        history = self._annotate_with_user_feedback(agent_id, history)
+        feedback_summary = self._summarize_user_feedback(history)
+
         history_text = self._format_history(history)
 
         # Prepare context for different triggers
         context = {"history": history_text}
+        if feedback_summary:
+            context["history"] = feedback_summary + "\n\n" + context["history"]
         if trigger == ReflectionTrigger.ERROR_OCCURRED:
             context["error_context"] = kwargs.get("error_context", "未知错误")
 
@@ -284,10 +292,91 @@ class ReflectionEngine:
             assistant = turn.get("assistant", "")
             tools = turn.get("tool_calls", [])
             lines.append(f"User: {user}")
-            lines.append(f"Agent: {assistant[:500]}")
+            # Phase E6: surface any human feedback attached to this turn so
+            # the reflection LLM sees it next to the agent's reply.
+            feedback = turn.get("user_feedback")
+            marker = ""
+            if feedback:
+                thumb = feedback.get("thumb")
+                note = feedback.get("note") or ""
+                if thumb == "up":
+                    marker = " [👍 human approved]"
+                elif thumb == "down":
+                    marker = " [👎 human disapproved]"
+                if note:
+                    marker += f' — "{note[:200]}"'
+            lines.append(f"Agent: {assistant[:500]}{marker}")
             if tools:
                 for t in tools:
                     lines.append(f"Tool: {t.get('name', '')} -> {str(t.get('result', ''))[:200]}")
+        return "\n".join(lines)
+
+    def _annotate_with_user_feedback(
+        self, agent_id: str, history: list[dict],
+    ) -> list[dict]:
+        """Join recent user_feedback rows onto the in-memory history so the
+        reflection prompt can see 👍/👎 per turn. Best-effort: if the store is
+        unavailable, returns history untouched so reflection still runs."""
+        store = getattr(self.memory, "sqlite", None)
+        if store is None:
+            return history
+        turn_ids = [t.get("turn_id") for t in history if t.get("turn_id")]
+        if not turn_ids:
+            return history
+        try:
+            fb_map = store.get_user_feedback_by_turns(agent_id, turn_ids)
+        except Exception as e:
+            logger.warning("reflection_feedback_join_failed",
+                          agent_id=agent_id, error=str(e))
+            return history
+        if not fb_map:
+            return history
+        annotated: list[dict] = []
+        for turn in history:
+            tid = turn.get("turn_id")
+            row = fb_map.get(tid) if tid else None
+            if row is None:
+                annotated.append(turn)
+                continue
+            # Copy so we don't mutate the caller's in-memory state.
+            annotated.append({**turn, "user_feedback": {
+                "thumb": row.get("thumb"),
+                "note": row.get("note"),
+            }})
+        return annotated
+
+    @staticmethod
+    def _summarize_user_feedback(history: list[dict]) -> str:
+        """Top-of-prompt summary so the LLM notices the aggregate human
+        verdict before reading the turn-by-turn detail. Empty when no
+        feedback is attached."""
+        up = 0
+        down = 0
+        notes: list[str] = []
+        for turn in history[-10:]:
+            fb = turn.get("user_feedback") or {}
+            thumb = fb.get("thumb")
+            if thumb == "up":
+                up += 1
+            elif thumb == "down":
+                down += 1
+            note = fb.get("note")
+            if note:
+                notes.append(note[:200])
+        if up == 0 and down == 0:
+            return ""
+        lines = [
+            "## 人类反馈摘要（Plan v2 E6）",
+            f"过去 10 轮中用户留下了 {up} 个 👍 / {down} 个 👎。",
+        ]
+        if down > up:
+            lines.append("下行反馈居多 —— 优先分析 **哪个工具/技能正在拖累** 而不是新建能力。")
+        elif up > down:
+            lines.append("上行反馈居多 —— 保留并强化已经在用的产物，不要贸然退役。")
+        if notes:
+            lines.append("用户备注：")
+            for n in notes:
+                lines.append(f"- {n}")
         return "\n".join(lines)
 
     def _extract_json(self, text: str) -> dict | None:

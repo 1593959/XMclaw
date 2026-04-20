@@ -62,15 +62,23 @@ class MemoryManager:
             "tool_descriptions": "",  # Filled by orchestrator
         }
 
-    async def save_turn(self, agent_id: str, user_input: str, response: str, tool_calls: list[dict]) -> None:
-        """Save a conversation turn."""
+    async def save_turn(
+        self, agent_id: str, user_input: str, response: str,
+        tool_calls: list[dict], turn_id: str | None = None,
+    ) -> None:
+        """Save a conversation turn. ``turn_id`` is the stable handle that
+        Plan v2 E6 frontends attach 👍/👎 feedback to; it is persisted on the
+        session record so later runs can join feedback back onto the turn."""
         if self.sessions:
-            await self.sessions.append(agent_id, {
+            record = {
                 "timestamp": datetime.now().isoformat(),
                 "user": user_input,
                 "assistant": response,
                 "tool_calls": tool_calls,
-            })
+            }
+            if turn_id:
+                record["turn_id"] = turn_id
+            await self.sessions.append(agent_id, record)
         # Fire-and-forget vector indexing — do NOT await so the embedding HTTP
         # call does not block MEMORY_UPDATED from reaching the frontend immediately.
         if self.vectors:

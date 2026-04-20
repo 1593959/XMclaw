@@ -55,6 +55,10 @@ class EventType(str, Enum):
     # the prompt as resolved without tailing artifact_promoted / retired.
     EVOLUTION_APPROVAL_DECIDED   = "evolution:approval_decided"
     EVOLUTION_CYCLE_ENDED      = "evolution:cycle_ended"
+    # Phase E6: message-level human feedback. Published when a user presses
+    # 👍/👎 on a turn so dashboards can render live counters and reflection
+    # can notice the signal without re-querying SQLite.
+    USER_FEEDBACK_RECORDED     = "user:feedback_recorded"
 
 
 # ── Frontend wire contract (Phase E0, PR-E0-3) ──────────────────────────────
@@ -91,6 +95,8 @@ WS_EVENT_MAP: dict[str, str] = {
     EventType.EVOLUTION_APPROVAL_REQUESTED.value: "evolution_approval_requested",
     EventType.EVOLUTION_APPROVAL_DECIDED.value:   "evolution_approval_decided",
     EventType.EVOLUTION_CYCLE_ENDED.value:      "evolution_cycle_ended",
+    # Phase E6 human feedback
+    EventType.USER_FEEDBACK_RECORDED.value:     "user_feedback_recorded",
 }
 
 

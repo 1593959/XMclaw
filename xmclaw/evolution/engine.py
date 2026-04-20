@@ -75,6 +75,33 @@ def _promote_shadow_artifact(shadow_path: Path, active_dir: Path) -> Path:
     return new_path
 
 
+async def _record_promote_commit(
+    journal, artifact_id: str, kind: str, active_path: Path,
+) -> None:
+    """Plan v2 E7: create a git commit for a freshly promoted artifact and
+    stash the SHA on the lineage row.
+
+    The commit is optional — ``commit_artifact_change`` returns None when
+    git tracking is disabled or the commit otherwise no-ops. In that case
+    we skip the journal write so the column stays NULL rather than carrying
+    a stale or fake sha.
+    """
+    try:
+        from xmclaw.evolution.git_ops import commit_artifact_change
+        paths = [active_path]
+        meta = active_path.with_suffix(".json")
+        if meta.exists():
+            paths.append(meta)
+        sha = commit_artifact_change(artifact_id, kind, paths, action="promote")
+        if sha:
+            await journal.set_commit_sha(
+                artifact_id, "promote_commit_sha", sha,
+            )
+    except Exception as e:
+        logger.warning("promote_commit_record_failed",
+                       artifact_id=artifact_id, error=str(e))
+
+
 async def _reload_tool_registry(skill_name: str = "") -> None:
     """Reload generated skills into the shared tool registry (the orchestrator's one).
 
@@ -292,6 +319,11 @@ class EvolutionEngine:
                             artifact_id=artifact_id, error=str(e))
                 return {"status": "promote_failed", "error": str(e)}
             await journal.update_artifact_status(artifact_id, STATUS_PROMOTED)
+            # Plan v2 E7: record a git commit so the artifact promotion is
+            # reversible at the source level, not just the DB level.
+            await _record_promote_commit(
+                journal, artifact_id, kind, active_path,
+            )
 
             # Persist to DB so the registry loader sees the artifact.
             try:
@@ -956,6 +988,9 @@ class EvolutionEngine:
             gene["type"] = "gene"
             if journal:
                 await journal.update_artifact_status(gene["id"], STATUS_PROMOTED)
+                await _record_promote_commit(
+                    journal, gene["id"], "gene", active_path,
+                )
             await self._emit(EventType.EVOLUTION_ARTIFACT_PROMOTED,
                              {"cycle_id": cycle_id, "artifact_id": gene["id"],
                               "kind": "gene"})
@@ -1137,6 +1172,9 @@ class EvolutionEngine:
         skill["type"] = "skill"
         if journal:
             await journal.update_artifact_status(skill["id"], STATUS_PROMOTED)
+            await _record_promote_commit(
+                journal, skill["id"], "skill", active_path,
+            )
         await self._emit(EventType.EVOLUTION_ARTIFACT_PROMOTED,
                          {"cycle_id": cycle_id, "artifact_id": skill["id"],
                           "kind": "skill"})

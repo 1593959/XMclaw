@@ -29,6 +29,11 @@ let currentMessageEl = null;
 let currentView = 'dashboard';
 let _rawTextMap = new Map();
 
+// Plan v2 E6: log of turns committed in this session. The annotation
+// sidebar (Shift+R) rehydrates this list and merges with existing
+// feedback rows from GET /feedback/recent.
+const _turnLog = [];
+
 // Tool card tracking: call_id -> { el, tool, startTime }
 const _toolCards = new Map();
 
@@ -1918,6 +1923,315 @@ window._copyMessage = function(btn) {
     }).catch(() => showToast('复制失败'));
 };
 
+// ── Plan v2 E6: message-level 👍/👎 feedback ───────────────────────────────
+// Buttons render inline with the copy action and POST to the feedback API,
+// which upserts into user_feedback and publishes USER_FEEDBACK_RECORDED so
+// reflection sees the verdict on the next cycle.
+function _attachFeedbackButtons(msgEl, turnId) {
+    if (!msgEl || !turnId) return;
+    const row = msgEl.closest('.message-row');
+    if (!row) return;
+    const actions = row.querySelector('.message-actions');
+    if (!actions || actions.querySelector('.fb-btn')) return; // idempotent
+    msgEl.dataset.turnId = turnId;
+    const up = document.createElement('button');
+    up.className = 'msg-action-btn fb-btn fb-up';
+    up.title = '这个回复有帮助 (👍)';
+    up.textContent = '👍';
+    up.onclick = () => _submitFeedback(turnId, 'up', up);
+    const down = document.createElement('button');
+    down.className = 'msg-action-btn fb-btn fb-down';
+    down.title = '这个回复不对 (👎)，可附一句备注';
+    down.textContent = '👎';
+    down.onclick = () => _submitFeedback(turnId, 'down', down);
+    actions.appendChild(up);
+    actions.appendChild(down);
+}
+
+// ── Plan v2 E6 PR-E6-2: Turn annotation sidebar ──────────────────────────
+// Shift+R opens a right-side drawer listing every turn the client has seen
+// this session, with inline thumb + note editors. Existing feedback is
+// pulled from /api/agent/{id}/feedback/recent and merged in.
+async function _openAnnotationSidebar() {
+    // Build or focus existing drawer
+    let drawer = document.getElementById('turn-annotation-drawer');
+    if (drawer) { drawer.classList.add('open'); return; }
+
+    drawer = document.createElement('aside');
+    drawer.id = 'turn-annotation-drawer';
+    drawer.className = 'turn-annotation-drawer open';
+    drawer.innerHTML = `
+        <div class="tad-header">
+            <span class="tad-title">📝 批注本轮会话 (Shift+R)</span>
+            <button class="tad-close" title="关闭 (Esc)">✕</button>
+        </div>
+        <div class="tad-hint">给每轮加一条备注，反思会在下轮读到它们。</div>
+        <div class="tad-list" id="tad-list">
+            <div class="tad-empty">加载中…</div>
+        </div>
+    `;
+    document.body.appendChild(drawer);
+    drawer.querySelector('.tad-close').onclick = _closeAnnotationSidebar;
+    document.addEventListener('keydown', _annotationSidebarEscHandler);
+    await _renderAnnotationList();
+}
+
+function _closeAnnotationSidebar() {
+    const drawer = document.getElementById('turn-annotation-drawer');
+    if (drawer) drawer.remove();
+    document.removeEventListener('keydown', _annotationSidebarEscHandler);
+}
+
+function _annotationSidebarEscHandler(e) {
+    if (e.key === 'Escape') _closeAnnotationSidebar();
+}
+
+async function _renderAnnotationList() {
+    const list = document.getElementById('tad-list');
+    if (!list) return;
+    // Pull persisted feedback so reloaded sessions still see their votes.
+    let existing = {};
+    try {
+        const r = await fetch(`/api/agent/${encodeURIComponent(AGENT_ID)}/feedback/recent?limit=200`);
+        if (r.ok) {
+            const body = await r.json();
+            for (const row of (body.feedback || [])) existing[row.turn_id] = row;
+        }
+    } catch {}
+    // Merge _turnLog entries + any feedback rows that aren't in the log
+    // (e.g. restored from a prior session). Newest first.
+    const seen = new Set();
+    const items = [];
+    for (let i = _turnLog.length - 1; i >= 0; i--) {
+        const t = _turnLog[i];
+        seen.add(t.turn_id);
+        items.push({...t, feedback: existing[t.turn_id] || null});
+    }
+    for (const tid of Object.keys(existing)) {
+        if (seen.has(tid)) continue;
+        items.push({turn_id: tid, user: '', assistant: '(旧会话)', ts: 0, feedback: existing[tid]});
+    }
+    if (items.length === 0) {
+        list.innerHTML = '<div class="tad-empty">本会话还没有已提交的轮次。先聊两句再回来～</div>';
+        return;
+    }
+    list.innerHTML = items.map((it, idx) => {
+        const thumb = it.feedback?.thumb || '';
+        const note = it.feedback?.note || '';
+        const safeUid = escapeHtml(it.turn_id);
+        return `
+            <div class="tad-item" data-turn-id="${safeUid}">
+                <div class="tad-item-head">
+                    <span class="tad-item-num">#${items.length - idx}</span>
+                    <span class="tad-thumb-group">
+                        <button class="tad-thumb ${thumb==='up'?'active':''}" data-val="up" title="👍">👍</button>
+                        <button class="tad-thumb ${thumb==='down'?'active down':''}" data-val="down" title="👎">👎</button>
+                    </span>
+                </div>
+                ${it.user ? `<div class="tad-preview tad-user">🧑 ${escapeHtml(it.user)}${it.user.length >= 80 ? '…' : ''}</div>` : ''}
+                ${it.assistant ? `<div class="tad-preview tad-asst">🤖 ${escapeHtml(it.assistant)}${it.assistant.length >= 120 ? '…' : ''}</div>` : ''}
+                <textarea class="tad-note" placeholder="批注（可选）…">${escapeHtml(note)}</textarea>
+                <div class="tad-item-actions">
+                    <button class="tad-save">保存</button>
+                </div>
+            </div>
+        `;
+    }).join('');
+    // Wire handlers
+    list.querySelectorAll('.tad-item').forEach(item => {
+        const tid = item.dataset.turnId;
+        item.querySelectorAll('.tad-thumb').forEach(btn => {
+            btn.onclick = () => {
+                item.querySelectorAll('.tad-thumb').forEach(b => b.classList.remove('active', 'down'));
+                btn.classList.add('active');
+                if (btn.dataset.val === 'down') btn.classList.add('down');
+            };
+        });
+        item.querySelector('.tad-save').onclick = () => _saveAnnotationRow(tid, item);
+    });
+}
+
+async function _saveAnnotationRow(turnId, itemEl) {
+    const activeThumb = itemEl.querySelector('.tad-thumb.active');
+    if (!activeThumb) {
+        showToast('先选一个 👍 或 👎');
+        return;
+    }
+    const thumb = activeThumb.dataset.val;
+    const note = itemEl.querySelector('.tad-note').value.trim();
+    try {
+        const body = {thumb};
+        if (note) body.note = note;
+        const r = await fetch(
+            `/api/agent/${encodeURIComponent(AGENT_ID)}/turns/${encodeURIComponent(turnId)}/feedback`,
+            {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}
+        );
+        if (!r.ok) {
+            const err = await r.json().catch(() => ({error: r.statusText}));
+            showToast(`保存失败: ${err.error || r.status}`);
+            return;
+        }
+        showToast('已保存批注');
+        // Also sync the inline bubble buttons so they reflect the new verdict.
+        const bubble = document.querySelector(`.message[data-turn-id="${turnId}"]`);
+        if (bubble) {
+            const row = bubble.closest('.message-row');
+            row?.querySelectorAll('.fb-btn').forEach(b => b.classList.remove('fb-active'));
+            row?.querySelector(thumb === 'up' ? '.fb-up' : '.fb-down')?.classList.add('fb-active');
+        }
+    } catch (e) {
+        console.error('saveAnnotationRow error', e);
+        showToast('请求失败');
+    }
+}
+
+// ── Plan v2 E6 PR-E6-3: SOUL/PROFILE/AGENTS md editor ────────────────────
+// Shift+M opens a drawer that lets the user overwrite the three identity
+// files — changes hot-reload on the daemon's live agent instance, so the
+// next reflection/turn reads the new content without a restart.
+const _MD_KINDS = [
+    {key: 'soul', label: 'SOUL.md', hint: '身份 / 立场 / 不变的准则'},
+    {key: 'profile', label: 'PROFILE.md', hint: '能力 / 风格 / 擅长什么'},
+    {key: 'agents', label: 'AGENTS.md', hint: '其他可协作 agent 的摘要'},
+];
+
+async function _openMdEditor(initialKind = 'soul') {
+    let drawer = document.getElementById('md-editor-drawer');
+    if (drawer) { drawer.remove(); }
+    drawer = document.createElement('aside');
+    drawer.id = 'md-editor-drawer';
+    drawer.className = 'md-editor-drawer open';
+    const tabsHtml = _MD_KINDS.map(k => `
+        <button class="mde-tab ${k.key===initialKind?'active':''}" data-kind="${k.key}">
+            ${k.label}
+        </button>
+    `).join('');
+    drawer.innerHTML = `
+        <div class="mde-header">
+            <span class="mde-title">🧬 编辑 Agent 身份 (Shift+M)</span>
+            <button class="mde-close" title="关闭 (Esc)">✕</button>
+        </div>
+        <div class="mde-tabs">${tabsHtml}</div>
+        <div class="mde-hint" id="mde-hint"></div>
+        <textarea class="mde-textarea" id="mde-textarea" placeholder="加载中…"></textarea>
+        <div class="mde-footer">
+            <span class="mde-status" id="mde-status"></span>
+            <button class="mde-save" id="mde-save">保存并热加载</button>
+        </div>
+    `;
+    document.body.appendChild(drawer);
+    drawer.querySelector('.mde-close').onclick = _closeMdEditor;
+    document.addEventListener('keydown', _mdEditorEscHandler);
+    drawer.querySelectorAll('.mde-tab').forEach(t => {
+        t.onclick = () => {
+            drawer.querySelectorAll('.mde-tab').forEach(b => b.classList.remove('active'));
+            t.classList.add('active');
+            _loadMdKind(t.dataset.kind);
+        };
+    });
+    document.getElementById('mde-save').onclick = _saveMdCurrent;
+    await _loadMdKind(initialKind);
+}
+
+function _closeMdEditor() {
+    const d = document.getElementById('md-editor-drawer');
+    if (d) d.remove();
+    document.removeEventListener('keydown', _mdEditorEscHandler);
+}
+
+function _mdEditorEscHandler(e) {
+    if (e.key === 'Escape' && document.activeElement?.tagName !== 'TEXTAREA') {
+        _closeMdEditor();
+    }
+}
+
+async function _loadMdKind(kind) {
+    const ta = document.getElementById('mde-textarea');
+    const hint = document.getElementById('mde-hint');
+    const status = document.getElementById('mde-status');
+    const info = _MD_KINDS.find(k => k.key === kind);
+    if (hint) hint.textContent = info ? info.hint : '';
+    if (status) status.textContent = '';
+    ta.dataset.kind = kind;
+    ta.value = '';
+    try {
+        const r = await fetch(`/api/agent/${encodeURIComponent(AGENT_ID)}/md/${kind}`);
+        if (!r.ok) {
+            ta.value = '';
+            status.textContent = `加载失败 (${r.status})`;
+            return;
+        }
+        const body = await r.json();
+        ta.value = body.content || '';
+        if (!body.exists) status.textContent = '（文件尚未存在，保存后会新建）';
+    } catch (e) {
+        status.textContent = '加载失败';
+    }
+}
+
+async function _saveMdCurrent() {
+    const ta = document.getElementById('mde-textarea');
+    const kind = ta?.dataset.kind;
+    if (!kind) return;
+    const status = document.getElementById('mde-status');
+    status.textContent = '保存中…';
+    try {
+        const r = await fetch(
+            `/api/agent/${encodeURIComponent(AGENT_ID)}/md/${kind}`,
+            {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({content: ta.value}),
+            }
+        );
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) {
+            status.textContent = `保存失败: ${body.error || r.status}`;
+            return;
+        }
+        status.textContent = `已保存 ${body.bytes || 0} 字节，已热加载到当前 agent`;
+        showToast(`已保存 ${kind}.md`);
+    } catch (e) {
+        status.textContent = '请求失败';
+    }
+}
+
+async function _submitFeedback(turnId, thumb, btn) {
+    let note = null;
+    if (thumb === 'down') {
+        note = window.prompt('（可选）告诉 Agent 哪里不对，帮助下一轮反思：', '');
+        if (note === null) return; // user cancelled
+        note = note.trim() || null;
+    }
+    try {
+        const body = { thumb };
+        if (note) body.note = note;
+        const r = await fetch(
+            `/api/agent/${encodeURIComponent(AGENT_ID)}/turns/${encodeURIComponent(turnId)}/feedback`,
+            {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body),
+            }
+        );
+        if (!r.ok) {
+            const err = await r.json().catch(() => ({error: r.statusText}));
+            showToast(`反馈失败: ${err.error || r.status}`);
+            return;
+        }
+        const row = btn.closest('.message-row');
+        if (row) {
+            // Highlight the chosen thumb; fade the other so the verdict is clear.
+            row.querySelectorAll('.fb-btn').forEach(b => b.classList.remove('fb-active'));
+            btn.classList.add('fb-active');
+        }
+        showToast(thumb === 'up' ? '已记录 👍' : '已记录 👎');
+    } catch (e) {
+        console.error('submitFeedback error', e);
+        showToast('反馈请求失败');
+    }
+}
+
 // _editMessage is redefined in the Shortcuts Bar section below with inline overlay UI
 
 function addToolResultMessage(tool, result) {
@@ -2364,6 +2678,21 @@ document.addEventListener('keydown', (e) => {
             saveDraft();
             showToast('草稿已保存');
         }
+    }
+    // Shift+R: open turn annotation sidebar (Plan v2 E6 PR-E6-2).
+    // Guard against typing in input/textarea so it doesn't hijack letters.
+    else if (e.shiftKey && (e.key === 'R' || e.key === 'r')
+             && !e.ctrlKey && !e.metaKey && !e.altKey
+             && !['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)) {
+        e.preventDefault();
+        _openAnnotationSidebar();
+    }
+    // Shift+M: open SOUL/PROFILE/AGENTS md editor (Plan v2 E6 PR-E6-3).
+    else if (e.shiftKey && (e.key === 'M' || e.key === 'm')
+             && !e.ctrlKey && !e.metaKey && !e.altKey
+             && !['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)) {
+        e.preventDefault();
+        _openMdEditor();
     }
     // Up/Down in input: navigate message history
     else if (e.key === 'ArrowUp' && document.activeElement === input && input.value === '') {
@@ -3627,6 +3956,25 @@ function _wsRenderer(data) {
                 indicator.textContent = label;
                 indicator.style.display = 'flex';
             }
+        }
+    } else if (data.type === 'turn_committed') {
+        // Plan v2 E6: tag the active assistant bubble with its turn_id so
+        // the user can attach 👍/👎 feedback. Arrives just before 'done'.
+        if (data.turn_id && currentMessageEl) {
+            _attachFeedbackButtons(currentMessageEl, data.turn_id);
+            // Log this turn so the annotation sidebar (Shift+R) can list it.
+            const row = currentMessageEl.closest('.message-row');
+            const prevUser = row ? row.previousElementSibling : null;
+            const userText = prevUser && prevUser.classList.contains('user')
+                ? (prevUser.querySelector('.message')?.textContent || '').slice(0, 80)
+                : '';
+            const asstText = (_rawTextMap.get(currentMessageEl) || '').slice(0, 120);
+            _turnLog.push({
+                turn_id: data.turn_id,
+                user: userText,
+                assistant: asstText,
+                ts: Date.now(),
+            });
         }
     } else if (data.type === 'done') {
         removeTyping();

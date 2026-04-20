@@ -133,6 +133,29 @@ async def test_increment_metric(journal):
 
 
 @pytest.mark.asyncio
+async def test_set_commit_sha_round_trip(journal):
+    """Plan v2 E7 — promote/rollback SHAs are persisted on the lineage row."""
+    cid = await journal.open_cycle(trigger="x")
+    await journal.record_artifact(cid, KIND_SKILL, "skill_sha")
+    await journal.set_commit_sha("skill_sha", "promote_commit_sha", "a" * 40)
+    await journal.set_commit_sha("skill_sha", "rollback_commit_sha", "b" * 40)
+    artifact = await journal.get_artifact("skill_sha")
+    assert artifact["promote_commit_sha"] == "a" * 40
+    assert artifact["rollback_commit_sha"] == "b" * 40
+
+
+@pytest.mark.asyncio
+async def test_set_commit_sha_rejects_unknown_column(journal):
+    """Guard against typos/injection — only the two whitelisted columns work."""
+    cid = await journal.open_cycle(trigger="x")
+    await journal.record_artifact(cid, KIND_SKILL, "skill_bad")
+    with pytest.raises(ValueError):
+        await journal.set_commit_sha(
+            "skill_bad", "other_col; DROP TABLE x;", "deadbeef",
+        )
+
+
+@pytest.mark.asyncio
 async def test_get_active_artifacts_filters_by_status(journal):
     cid = await journal.open_cycle(trigger="x")
     await journal.record_artifact(cid, KIND_SKILL, "skill_shadow")

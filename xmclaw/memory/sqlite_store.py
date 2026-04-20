@@ -103,10 +103,27 @@ class SQLiteStore:
                 ON evolution_artifact_lineage(cycle_id);
             CREATE INDEX IF NOT EXISTS idx_lineage_status
                 ON evolution_artifact_lineage(agent_id, kind, status);
+            -- Phase E6: message-level human feedback. One row per turn_id;
+            -- last write wins so users can flip 👍↔👎 without accumulating
+            -- conflicting signals. Reflection prompts join on this table so
+            -- the evolution loop is driven by real human verdicts, not only
+            -- LLM self-assessment.
+            CREATE TABLE IF NOT EXISTS user_feedback (
+                agent_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                thumb TEXT NOT NULL,
+                note TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (agent_id, turn_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_user_feedback_agent
+                ON user_feedback(agent_id, created_at DESC);
         """)
         self.conn.commit()
         # Migrate existing genes table: add missing columns if absent
         self._migrate_genes_schema()
+        # Phase E7: lineage rows need sha columns for git-level rollback.
+        self._migrate_lineage_schema()
 
     def insert_insight(self, agent_id: str, insight: dict) -> None:
         self.conn.execute(
@@ -143,6 +160,47 @@ class SQLiteStore:
             self.conn.commit()
         except Exception:
             pass  # Column already exists or table has no rows
+
+    def _migrate_lineage_schema(self) -> None:
+        """Phase E7: record git commit SHAs for promote/rollback transitions.
+
+        Each ALTER is run in its own savepoint so a pre-existing column
+        doesn't abort the rest of the migration. Safe on fresh DBs — the
+        table is created above without these columns and ALTER fills them in.
+        """
+        cols_to_add = [
+            ("promote_commit_sha", "TEXT"),
+            ("rollback_commit_sha", "TEXT"),
+        ]
+        for col_name, col_def in cols_to_add:
+            try:
+                self.conn.execute(
+                    f"ALTER TABLE evolution_artifact_lineage "
+                    f"ADD COLUMN {col_name} {col_def}"
+                )
+                self.conn.commit()
+            except Exception:
+                pass  # column already exists
+
+    def lineage_set_commit_sha(
+        self, artifact_id: str, column: str, sha: str,
+    ) -> int:
+        """Record a promote/rollback git SHA on the lineage row.
+
+        ``column`` is whitelisted so this cannot be used as a generic
+        arbitrary-column update. Returns rowcount so callers can detect
+        a typoed artifact_id.
+        """
+        if column not in ("promote_commit_sha", "rollback_commit_sha"):
+            raise ValueError(f"unknown column: {column}")
+        cur = self.conn.execute(
+            f"UPDATE evolution_artifact_lineage "
+            f"SET {column} = ?, updated_at = CURRENT_TIMESTAMP "
+            f"WHERE artifact_id = ?",
+            (sha, artifact_id),
+        )
+        self.conn.commit()
+        return cur.rowcount
 
     def insert_gene(self, agent_id: str, gene: dict) -> None:
         import json
@@ -410,6 +468,56 @@ class SQLiteStore:
             params.append(kind)
         sql += " ORDER BY updated_at DESC"
         cur = self.conn.execute(sql, tuple(params))
+        return [dict(r) for r in cur.fetchall()]
+
+    # ── Phase E6: message-level human feedback ──────────────────────────────
+
+    def upsert_user_feedback(
+        self, agent_id: str, turn_id: str, thumb: str,
+        note: str | None = None,
+    ) -> None:
+        """Record a 👍/👎 on a specific turn. Last write wins so a user
+        flipping their mind overwrites, rather than stacking, feedback."""
+        if thumb not in ("up", "down"):
+            raise ValueError(f"thumb must be 'up' or 'down', got {thumb!r}")
+        self.conn.execute(
+            "INSERT INTO user_feedback (agent_id, turn_id, thumb, note) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(agent_id, turn_id) DO UPDATE SET "
+            "thumb=excluded.thumb, note=excluded.note, "
+            "created_at=CURRENT_TIMESTAMP",
+            (agent_id, turn_id, thumb, note),
+        )
+        self.conn.commit()
+
+    def get_user_feedback_by_turns(
+        self, agent_id: str, turn_ids: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        """Return {turn_id → row} for the given turn ids. Missing keys mean
+        no feedback was recorded; callers should treat that as neutral."""
+        if not turn_ids:
+            return {}
+        placeholders = ",".join("?" * len(turn_ids))
+        cur = self.conn.execute(
+            f"SELECT agent_id, turn_id, thumb, note, created_at "
+            f"FROM user_feedback "
+            f"WHERE agent_id = ? AND turn_id IN ({placeholders})",
+            (agent_id, *turn_ids),
+        )
+        return {r["turn_id"]: dict(r) for r in cur.fetchall()}
+
+    def get_recent_user_feedback(
+        self, agent_id: str, limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Most-recent feedback rows for an agent, newest first. Used by
+        dashboards and reflection summaries that want an at-a-glance view
+        instead of turn-by-turn lookups."""
+        cur = self.conn.execute(
+            "SELECT agent_id, turn_id, thumb, note, created_at "
+            "FROM user_feedback WHERE agent_id = ? "
+            "ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (agent_id, limit),
+        )
         return [dict(r) for r in cur.fetchall()]
 
     def close(self) -> None:
