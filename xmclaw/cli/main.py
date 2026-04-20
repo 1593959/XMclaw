@@ -648,6 +648,8 @@ def config_reset(
     key: str = typer.Argument(..., help="Config key to reset to default (use 'all' to reset everything)"),
 ):
     """Reset a config key to its default value, or reset the entire config."""
+    from xmclaw.daemon.config import DaemonConfig
+
     if key == "all":
         cfg = DaemonConfig.default()
         config_path = BASE_DIR / "daemon" / "config.json"
@@ -656,7 +658,6 @@ def config_reset(
         typer.echo("✅ Config reset to defaults.")
         return
 
-    from xmclaw.daemon.config import DaemonConfig
     cfg = DaemonConfig.load()
     cfg_dict = cfg.__dict__
 
