@@ -41,8 +41,16 @@ Anything not in that tree is either generated at runtime, gitignored dev scratch
 
 ```bash
 # Install
-pip install -e .                 # runtime
-pip install -e ".[dev]"          # + pytest, ruff, mypy
+pip install -e .                 # runtime (resolves from pyproject.toml)
+pip install -e ".[dev]"          # + pytest, ruff, mypy, pip-tools
+
+# Reproducible installs (pin exact versions)
+pip install -r requirements-lock.txt          # prod
+pip install -r requirements-dev-lock.txt      # prod + dev
+
+# Regenerate lockfiles after editing pyproject.toml dependencies
+pip-compile pyproject.toml --output-file requirements-lock.txt --strip-extras
+pip-compile pyproject.toml --extra dev --output-file requirements-dev-lock.txt --strip-extras
 
 # Run
 xmclaw start                     # launch daemon + open web UI (http://127.0.0.1:8765)
