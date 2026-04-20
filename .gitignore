@@ -67,6 +67,10 @@ tool_result/
 # Claude / Copilot
 .claude/
 
+# Node / Frontend
+node_modules/
+.vite/
+
 # OS
 .DS_Store
 Thumbs.db
