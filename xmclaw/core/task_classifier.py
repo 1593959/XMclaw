@@ -83,6 +83,9 @@ class TaskClassifier:
         fast = self._fast_classify(user_input)
         if fast:
             logger.debug("task_classified_fast", type=fast["type"], input=user_input[:50])
+            # Ensure type/complexity are proper enums, not plain strings
+            fast["type"] = TaskType(fast.get("type", "general"))
+            fast["complexity"] = Complexity(fast.get("complexity", "low"))
             return TaskProfile(**fast)
 
         # Slow-path: LLM-assisted classification for ambiguous inputs

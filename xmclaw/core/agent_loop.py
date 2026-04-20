@@ -612,28 +612,19 @@ class AgentLoop:
             # Check if we should continue
             yield json.dumps({"type": "state", "state": "THINKING", "thought": "处理工具结果中..."})
 
-        # ── Reflection: SYNCHRONOUS + VISIBLE ────────────────────────────────────
-        # Unlike the old fire-and-forget background task, reflection now runs
-        # inline and yields its result to the frontend so the user can see it.
+        # ── Reflection: await inline so 'done' is sent only after all events ─────────
+        # Sending 'done' before reflection completes causes clients to close the
+        # WebSocket, losing late-arriving agent:message events. By awaiting reflection
+        # inline we ensure 'done' arrives last.
         if self._turn_history:
-            yield json.dumps({"type": "stage", "stage": "reflect",
-                              "label": "🧠 反思总结",
-                              "desc": "正在分析本次对话..."})
             try:
                 reflection_result = await self.reflection.reflect(self.agent_id, self._turn_history)
                 if reflection_result and reflection_result.get("reflection"):
                     yield json.dumps({
                         "type": "stage", "stage": "reflect_done",
-                        "label": "✅ 反思完成",
+                        "label": "反思完成",
                         "desc": reflection_result["reflection"].get("summary", "反思已完成"),
-                        "data": {
-                            "summary": reflection_result["reflection"].get("summary", ""),
-                            "problems": reflection_result["reflection"].get("problems", []),
-                            "lessons": reflection_result["reflection"].get("lessons", []),
-                            "improvements": reflection_result["reflection"].get("improvements", []),
-                        }
                     })
-                    # Publish to EventBus for other subscribers
                     await self._event_bus.publish(Event(
                         event_type=EventType.REFLECTION_COMPLETE,
                         source=self.agent_id,
@@ -642,8 +633,7 @@ class AgentLoop:
                             "improvement": reflection_result.get("improvement", {}),
                         },
                     ))
-                    # Trigger immediate evolution after reflection
-                    await self._trigger_immediate_evolution(dict(self._tool_patterns))
+                await self._trigger_immediate_evolution(dict(self._tool_patterns))
             except Exception as e:
                 logger.warning("inline_reflection_failed", error=str(e))
 

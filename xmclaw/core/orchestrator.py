@@ -64,24 +64,28 @@ class AgentOrchestrator:
             payload={"agent_id": agent_id, "input_preview": user_input[:100]},
         ))
 
-        # Ensure agent exists
-        if agent_id not in self.agents:
-            self.agents[agent_id] = AgentLoop(
-                agent_id=agent_id,
-                llm_router=self.llm,
-                tools=self.tools,
-                memory=self.memory,
-            )
+        # Always create a fresh agent for each run — AgentLoop.run() is an async
+        # generator that can only be iterated once. Caching the same agent instance
+        # across multiple run() calls would cause the second call to yield nothing.
+        self.agents[agent_id] = AgentLoop(
+            agent_id=agent_id,
+            llm_router=self.llm,
+            tools=self.tools,
+            memory=self.memory,
+        )
+
+        import structlog
+        logger = structlog.get_logger()
+        logger.info("orchestrator_run_agent_start", agent_id=agent_id, input_preview=user_input[:50])
 
         try:
+            chunk_count = 0
             async for chunk in self.agents[agent_id].run(user_input):
+                chunk_count += 1
                 yield chunk
-            await self._event_bus.publish(Event(
-                event_type=EventType.AGENT_STOP,
-                source="orchestrator",
-                target=agent_id,
-                payload={"agent_id": agent_id},
-            ))
+            logger.info("orchestrator_run_agent_complete", agent_id=agent_id, chunks=chunk_count)
+            # AGENT_STOP is published by the server (server.py) so it arrives
+            # before the 'done' message, avoiding event ordering issues.
         except Exception as e:
             await self._event_bus.publish(Event(
                 event_type=EventType.AGENT_ERROR,

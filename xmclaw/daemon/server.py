@@ -507,6 +507,34 @@ async def update_daemon_config(data: dict):
     return {"status": "ok"}
 
 
+# Security / Permission API
+@app.get("/api/security/permissions")
+async def get_permissions():
+    from xmclaw.utils.security import get_permission_manager, TOOL_CATEGORIES, ToolCategory
+    pm = get_permission_manager()
+    result = {}
+    for tool in TOOL_CATEGORIES:
+        result[tool] = {
+            "category": TOOL_CATEGORIES[tool].value,
+            "level": pm.get_tool_permission(tool).value,
+        }
+    return result
+
+
+@app.put("/api/security/permissions/{tool_name}")
+async def set_tool_permission(tool_name: str, request: Request):
+    from xmclaw.utils.security import get_permission_manager, PermissionLevel
+    body = await request.json()
+    level_str = body.get("level", "allow")
+    try:
+        level = PermissionLevel(level_str)
+    except ValueError:
+        return JSONResponse({"error": f"Invalid level: {level_str}"}, status_code=400)
+    pm = get_permission_manager()
+    pm.set_tool_permission(tool_name, level)
+    return {"tool": tool_name, "level": level.value}
+
+
 # Tools log API
 @app.get("/api/tools/logs")
 async def get_tools_logs():
@@ -1112,12 +1140,25 @@ async def agent_websocket(websocket: WebSocket, agent_id: str):
 
                 # Generator finished normally (did not hit ask_user)
                 if _pending_agent is None:
+                    # Publish agent:stop BEFORE sending done so event arrives first
+                    await bus.publish(Event(
+                        event_type="agent:stop",
+                        source="orchestrator",
+                        target=agent_id,
+                        payload={"agent_id": agent_id},
+                    ))
                     await websocket.send_text(json.dumps({"type": "done"}))
                 # else: ask_user paused — _pending_agent keeps agen alive
 
             except StopAsyncIteration:
-                # Generator exhausted
+                # Generator exhausted — publish agent:stop before done
                 _pending_agent = None
+                await bus.publish(Event(
+                    event_type="agent:stop",
+                    source="orchestrator",
+                    target=agent_id,
+                    payload={"agent_id": agent_id},
+                ))
                 await websocket.send_text(json.dumps({"type": "done"}))
             except Exception as e:
                 _pending_agent = None

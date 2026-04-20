@@ -70,7 +70,7 @@ TOOL_CATEGORIES: dict[str, ToolCategory] = {
 
 DEFAULT_PERMISSIONS: dict[ToolCategory, PermissionLevel] = {
     ToolCategory.SAFE:      PermissionLevel.ALLOW,
-    ToolCategory.MODERATE:  PermissionLevel.ASK,
+    ToolCategory.MODERATE:  PermissionLevel.ALLOW,  # ASK requires user confirmation; ALLOW for interactive use
     ToolCategory.DANGEROUS: PermissionLevel.BLOCK,
 }
 
