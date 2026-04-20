@@ -327,3 +327,57 @@ async def test_test_tool_run_specific():
     await reg.load_all()
     result = await reg.execute("test", {"action": "run", "target": "tests/test_security.py"})
     assert "passed" in result
+
+
+@pytest.mark.asyncio
+async def test_file_edit_append_mode_creates_and_extends():
+    """file_edit with mode='append' creates missing files and appends to existing.
+
+    The system prompt tells the agent to append to ``decisions.md`` via
+    ``file_edit``. Before this fix file_edit only did find-and-replace,
+    so the instruction was a no-op — the agent had to read/concat/write
+    itself. Now append is a real mode.
+    """
+    from xmclaw.utils.security import get_permission_manager, PermissionLevel
+    pm = get_permission_manager()
+    pm.set_tool_permission("file_edit", PermissionLevel.ALLOW)
+
+    reg = ToolRegistry()
+    await reg.load_all()
+    target = BASE_DIR / "integration_append_test.md"
+    try:
+        r1 = await reg.execute("file_edit", {
+            "file_path": str(target),
+            "new_text": "first line\n",
+            "mode": "append",
+        })
+        assert "appended" in r1.lower()
+        assert target.read_text(encoding="utf-8") == "first line\n"
+
+        r2 = await reg.execute("file_edit", {
+            "file_path": str(target),
+            "new_text": "second line\n",
+            "mode": "append",
+        })
+        assert "appended" in r2.lower()
+        assert target.read_text(encoding="utf-8") == "first line\nsecond line\n"
+
+        # Replace mode still works and still needs old_text
+        r3 = await reg.execute("file_edit", {
+            "file_path": str(target),
+            "old_text": "second",
+            "new_text": "SECOND",
+        })
+        assert "edited" in r3.lower()
+        assert "SECOND line" in target.read_text(encoding="utf-8")
+
+        # Missing old_text in replace mode is a user-visible error, not a crash
+        r4 = await reg.execute("file_edit", {
+            "file_path": str(target),
+            "new_text": "x",
+        })
+        assert "old_text is required" in r4
+    finally:
+        if target.exists():
+            target.unlink()
+        pm.set_tool_permission("file_edit", PermissionLevel.ASK)

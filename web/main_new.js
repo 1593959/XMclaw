@@ -2483,9 +2483,8 @@ function sendMessage() {
         finalText = `[PLAN MODE] ${text}`;
     }
 
-    // ── Fallback send (used only when websocket.js fails to load) ─────────────
+    // ── Fallback send (one-shot socket, used only if the long-lived _ws isn't open) ──
     function _sendSafe(payload) {
-        // Open a fresh WebSocket and send; used as last resort
         try {
             const s = new WebSocket('ws://127.0.0.1:8766/agent/default');
             s.onopen = () => {

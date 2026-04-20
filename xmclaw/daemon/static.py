@@ -10,12 +10,10 @@ WEB_DIR = BASE_DIR / "web"
 def mount_static_files(app: FastAPI) -> None:
     """Mount web UI static files."""
     if WEB_DIR.exists():
-        # Mount /static for CSS and main JS files
+        # Mount /static for CSS and the single main JS bundle (main_new.js).
+        # A sibling /src mount used to exist for a module layout we never
+        # finished migrating to — removed along with web/src/.
         app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
-        # Mount /src for module JS files
-        src_dir = WEB_DIR / "src"
-        if src_dir.exists():
-            app.mount("/src", StaticFiles(directory=str(src_dir)), name="src")
 
     # Media uploads directory (created on demand)
     media_dir = WEB_DIR / "media"

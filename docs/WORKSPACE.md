@@ -62,7 +62,7 @@ prompt (see `prompt_builder.py`):
 | `AGENTS.md` | User | Multi-agent team roster + delegation rules. |
 | `workspace/plan.md` | Agent | Current multi-step plan. Agent writes this *before* executing a medium/high-complexity task so the user can redirect before work starts. Overwritten per task. |
 | `workspace/notes.md` | Agent | Freeform scratchpad for cross-turn thinking that shouldn't pollute the chat. |
-| `workspace/decisions.md` | Agent | Append-only log of non-obvious choices ("picked X over Y because Z"). Breadcrumbs for future sessions. |
+| `workspace/decisions.md` | Agent | Append-only log of non-obvious choices ("picked X over Y because Z"). Breadcrumbs for future sessions.  Use `file_edit` with `mode="append"`. |
 | `workspace/todos.json` | `todo` tool | Checklist. |
 | `workspace/tasks.json` | `task` tool | Longer-running task tracker. |
 

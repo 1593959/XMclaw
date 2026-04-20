@@ -11,7 +11,11 @@ from xmclaw.utils.paths import BASE_DIR
 
 class FileEditTool(Tool):
     name = "file_edit"
-    description = "Find and replace text in a file."
+    description = (
+        "Edit a file.  mode='replace' (default) does exact find-and-replace; "
+        "mode='append' appends text to the end (creates the file if missing). "
+        "Use append for append-only logs like workspace/decisions.md."
+    )
     parameters = {
         "file_path": {
             "type": "string",
@@ -19,15 +23,25 @@ class FileEditTool(Tool):
         },
         "old_text": {
             "type": "string",
-            "description": "Exact text to find.",
+            "description": "Exact text to find.  Required for replace mode, ignored for append.",
         },
         "new_text": {
             "type": "string",
-            "description": "Text to replace with.",
+            "description": "Text to insert.  In replace mode replaces old_text; in append mode is written at end of file.",
+        },
+        "mode": {
+            "type": "string",
+            "description": "'replace' (default) or 'append'.",
         },
     }
 
-    async def execute(self, file_path: str, old_text: str, new_text: str) -> str:
+    async def execute(
+        self,
+        file_path: str,
+        new_text: str,
+        old_text: str | None = None,
+        mode: str = "replace",
+    ) -> str:
         target = Path(file_path)
         if not target.is_absolute():
             target = BASE_DIR / target
@@ -48,6 +62,20 @@ class FileEditTool(Tool):
                     return f"[Blocked: {decision.reason}]"
             else:
                 return f"[Blocked: {decision.reason}]"
+
+        if mode == "append":
+            # Append creates the file if missing — callers shouldn't have
+            # to initialize decisions.md / notes.md before the first entry.
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "a", encoding="utf-8") as f:
+                f.write(new_text)
+            return f"File appended: {target}"
+
+        if mode != "replace":
+            return f"[Error: Unknown mode '{mode}'.  Use 'replace' or 'append'.]"
+
+        if old_text is None:
+            return "[Error: old_text is required for replace mode]"
 
         if not target.exists():
             return f"[Error: File not found: {file_path}]"
