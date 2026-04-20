@@ -209,7 +209,7 @@ class AgentLoop:
             yield json.dumps({
                 "type": "stage", "stage": "analyze_done",
                 "label": "✅ 任务分析完成",
-                "desc": f"类型: {_pv(task_profile, "type")} | 复杂度: {_pv(task_profile, "complexity")}",
+                "desc": f"类型: {_pv(task_profile, 'type')} | 复杂度: {_pv(task_profile, 'complexity')}",
                 "data": {
                     "type": _pv(task_profile, "type"),
                     "complexity": _pv(task_profile, "complexity"),
@@ -385,7 +385,7 @@ class AgentLoop:
         #  MAIN EXECUTION LOOP  (think → act → observe → repeat)
         # ══════════════════════════════════════════════════════════════════════════
         yield json.dumps({"type": "state", "state": "THINKING",
-                           "thought": f"执行中（类型:{_pv(task_profile, "type")}）..."})
+                           "thought": f"执行中（类型:{_pv(task_profile, 'type')}）..."})
 
         turn_count = 0
         while turn_count < self.max_turns:
