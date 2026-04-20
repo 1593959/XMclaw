@@ -43,7 +43,11 @@
             </a>
             <a href="#" class="nav-item" data-view="tools">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-                <span>工具日志</span>
+                <span>工具</span>
+            </a>
+            <a href="#" class="nav-item" data-view="skills">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                <span>技能</span>
             </a>
             <a href="#" class="nav-item" data-view="agents">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
@@ -460,29 +464,39 @@
                 </div>
             </div>
 
-            <!-- ===== TOOLS LOG ===== -->
+            <!-- ===== TOOLS ===== -->
             <div class="view" id="view-tools">
-                <div class="tools-page">
-                    <div class="test-panel">
-                        <h3>自动测试</h3>
-                        <div class="test-row">
-                            <input type="text" id="test-target" placeholder="目标文件路径 (如 xmclaw/tools/computer_use.py)">
-                            <button class="btn-primary" id="btn-test-generate" style="font-size:12px;padding:7px 13px">生成测试</button>
-                            <button class="btn-primary" id="btn-test-run" style="font-size:12px;padding:7px 13px">运行</button>
-                            <button class="btn-primary" id="btn-test-runall" style="font-size:12px;padding:7px 13px">全部运行</button>
-                        </div>
-                        <pre id="test-output"></pre>
-                    </div>
-                    <div id="tool-log">
-                        <div class="empty-state-rich">
-                            <span class="es-icon">🔧</span>
-                            <div class="es-title">工具调用日志</div>
-                            <div class="es-body">
-                                这里会实时记录代理调用每个工具的输入、输出、耗时和成功/失败。
-                                上方"自动测试"面板可以给工具生成单元测试；
-                                开一轮对话让代理用几个工具，日志就会出现。
+                <div class="catalog-page">
+                    <div class="catalog-header">
+                        <div class="catalog-search-row">
+                            <input type="text" id="tools-search" placeholder="搜索工具名或描述...">
+                            <div class="catalog-filter" id="tools-filter">
+                                <button class="cfilter active" data-src="all">全部 <span class="cfcount" id="tools-count-all">0</span></button>
+                                <button class="cfilter" data-src="builtin">内置 <span class="cfcount" id="tools-count-builtin">0</span></button>
+                                <button class="cfilter" data-src="skill">技能 <span class="cfcount" id="tools-count-skill">0</span></button>
+                                <button class="cfilter" data-src="plugin">插件 <span class="cfcount" id="tools-count-plugin">0</span></button>
                             </div>
+                            <button class="mtab-refresh" id="tools-refresh-btn" title="刷新">↻</button>
                         </div>
+                    </div>
+                    <div class="catalog-grid" id="tools-grid">
+                        <div class="empty-state">加载中…</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ===== SKILLS ===== -->
+            <div class="view" id="view-skills">
+                <div class="catalog-page">
+                    <div class="catalog-header">
+                        <div class="catalog-search-row">
+                            <input type="text" id="skills-search" placeholder="搜索技能...">
+                            <div class="catalog-summary" id="skills-summary"></div>
+                            <button class="mtab-refresh" id="skills-refresh-btn" title="刷新">↻</button>
+                        </div>
+                    </div>
+                    <div class="catalog-grid" id="skills-grid">
+                        <div class="empty-state">加载中…</div>
                     </div>
                 </div>
             </div>

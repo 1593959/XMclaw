@@ -2850,18 +2850,153 @@ document.getElementById('memory-refresh-btn')?.addEventListener('click', () => {
     else if (_currentMemoryTab === 'search') loadMemorySearch();
 });
 
-// Render the 工具 view from the *current session's* in-memory tool history.
+// ===== Tools + Skills catalog =====
 //
-// This used to fetch /api/tools/logs (the daemon's cross-session log file)
-// and paint it into #tool-log, which meant opening the 工具 tab clobbered
-// the per-session log with every tool call ever made on this machine —
-// i.e. a brand-new conversation would show web_fetch/bash calls from
-// sessions the user had deleted hours ago. Render from toolHistory
-// (populated by tool_call / tool_result WebSocket events) instead so
-// the view is scoped to the conversation the user is actually looking at.
-async function loadToolsLogs() {
-    renderToolLog();
+// The 工具 and 技能 views are both card grids with a search box and
+// filter chips.  Tools come from /api/tools (everything the agent can
+// currently invoke — built-in, generated skill, plugin).  Skills come
+// from /api/evolution/status (the evolution engine's curated list, with
+// metadata like version and category — a superset filtered to source
+// files, whereas /api/tools only shows artifacts that actually loaded
+// into the registry).
+
+let _toolsCache = null;
+let _toolsFilter = 'all';
+
+async function loadTools() {
+    const grid = document.getElementById('tools-grid');
+    if (!grid) return;
+    grid.innerHTML = '<div class="empty-state">加载中…</div>';
+    try {
+        const res = await fetch('/api/tools');
+        const data = await res.json();
+        if (res.status === 404) {
+            grid.innerHTML = '<div class="empty-state">后端没有 /api/tools 端点，daemon 可能没重启加载新代码。运行 <code>xmclaw restart</code> 再试。</div>';
+            return;
+        }
+        _toolsCache = data.tools || [];
+        _updateToolCounts();
+        _renderToolsGrid();
+    } catch (e) {
+        grid.innerHTML = '<div class="empty-state">加载失败</div>';
+    }
 }
+
+function _updateToolCounts() {
+    if (!_toolsCache) return;
+    const counts = { all: _toolsCache.length, builtin: 0, skill: 0, plugin: 0 };
+    for (const t of _toolsCache) counts[t.source] = (counts[t.source] || 0) + 1;
+    for (const k of Object.keys(counts)) {
+        const el = document.getElementById(`tools-count-${k}`);
+        if (el) el.textContent = counts[k];
+    }
+}
+
+function _renderToolsGrid() {
+    const grid = document.getElementById('tools-grid');
+    const q = (document.getElementById('tools-search')?.value || '').trim().toLowerCase();
+    if (!_toolsCache) { grid.innerHTML = '<div class="empty-state">加载中…</div>'; return; }
+    const filtered = _toolsCache.filter(t => {
+        if (_toolsFilter !== 'all' && t.source !== _toolsFilter) return false;
+        if (!q) return true;
+        return t.name.toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q);
+    });
+    if (!filtered.length) {
+        grid.innerHTML = '<div class="catalog-empty-result">没有匹配的工具</div>';
+        return;
+    }
+    grid.innerHTML = filtered.map(t => _renderToolCard(t)).join('');
+    grid.querySelectorAll('.catalog-card').forEach(el => {
+        el.addEventListener('click', () => el.classList.toggle('expanded'));
+    });
+}
+
+function _renderToolCard(t) {
+    const badge = `<span class="catalog-badge ${t.source}">${t.source}</span>`;
+    const params = t.parameters && Object.keys(t.parameters).length
+        ? `<div class="catalog-params">${Object.entries(t.parameters).map(([name, p]) => `
+            <div class="catalog-param">
+                <span class="pname">${escapeHtml(name)}</span><span class="ptype">${escapeHtml(p.type || 'any')}</span>
+                <span class="pdesc">${escapeHtml(p.description || '')}</span>
+            </div>`).join('')}</div>`
+        : '<div class="catalog-params"><div class="catalog-param" style="color:var(--text-faint)">无参数</div></div>';
+    return `<div class="catalog-card" data-name="${escapeHtml(t.name)}">
+        <div class="catalog-card-head">
+            <div class="catalog-card-name">${escapeHtml(t.name)}</div>
+            ${badge}
+        </div>
+        <div class="catalog-card-desc">${escapeHtml(t.description || '(no description)')}</div>
+        ${params}
+    </div>`;
+}
+
+// Skills view reads from /api/evolution/status which already aggregates
+// the evolved-artifact metadata (name, category, version, filename).
+let _skillsCache = null;
+
+async function loadSkills() {
+    const grid = document.getElementById('skills-grid');
+    const summary = document.getElementById('skills-summary');
+    if (!grid) return;
+    grid.innerHTML = '<div class="empty-state">加载中…</div>';
+    try {
+        const res = await fetch('/api/evolution/status');
+        const data = await res.json();
+        _skillsCache = data.skills || [];
+        if (summary) summary.textContent = `共 ${_skillsCache.length} 个技能`;
+        _renderSkillsGrid();
+    } catch (e) {
+        grid.innerHTML = '<div class="empty-state">加载失败</div>';
+    }
+}
+
+function _renderSkillsGrid() {
+    const grid = document.getElementById('skills-grid');
+    const q = (document.getElementById('skills-search')?.value || '').trim().toLowerCase();
+    if (!_skillsCache) { grid.innerHTML = '<div class="empty-state">加载中…</div>'; return; }
+    if (!_skillsCache.length) {
+        grid.innerHTML = '<div class="catalog-empty-result">暂无进化技能。SkillForge 在满足触发条件时会写入 shared/skills/。</div>';
+        return;
+    }
+    const filtered = _skillsCache.filter(s => {
+        if (!q) return true;
+        return (s.name || '').toLowerCase().includes(q) ||
+               (s.description || '').toLowerCase().includes(q) ||
+               (s.category || '').toLowerCase().includes(q);
+    });
+    if (!filtered.length) {
+        grid.innerHTML = '<div class="catalog-empty-result">没有匹配的技能</div>';
+        return;
+    }
+    grid.innerHTML = filtered.map(s => {
+        const meta = [];
+        if (s.category) meta.push(`分类 ${escapeHtml(s.category)}`);
+        if (s.version) meta.push(`v${escapeHtml(s.version)}`);
+        if (s.filename) meta.push(escapeHtml(s.filename));
+        return `<div class="catalog-card">
+            <div class="catalog-card-head">
+                <div class="catalog-card-name">${escapeHtml(s.name || s.id)}</div>
+                <span class="catalog-badge skill">skill</span>
+            </div>
+            <div class="catalog-card-desc">${escapeHtml(s.description || '(no description)')}</div>
+            ${meta.length ? `<div class="catalog-card-meta">${meta.join(' · ')}</div>` : ''}
+        </div>`;
+    }).join('');
+}
+
+// Wire tool catalog interactions once (idempotent — elements are static).
+document.getElementById('tools-search')?.addEventListener('input', _renderToolsGrid);
+document.getElementById('tools-refresh-btn')?.addEventListener('click', loadTools);
+document.querySelectorAll('#tools-filter .cfilter').forEach(btn => {
+    btn.addEventListener('click', () => {
+        _toolsFilter = btn.dataset.src;
+        document.querySelectorAll('#tools-filter .cfilter').forEach(b =>
+            b.classList.toggle('active', b === btn));
+        _renderToolsGrid();
+    });
+});
+document.getElementById('skills-search')?.addEventListener('input', _renderSkillsGrid);
+document.getElementById('skills-refresh-btn')?.addEventListener('click', loadSkills);
 
 
 // ===== SESSION MANAGEMENT =====
@@ -3918,7 +4053,7 @@ loadDraft();  // restore saved draft on refresh
 // ── Wire up core modules ──────────────────────────────────────────────────────
 // ── Router: nav clicks, popstate, URL hash sync ─────────────────────────────────
 (function initRouter() {
-    const VALID_VIEWS = new Set(['dashboard','workspace','evolution','memory','tools','agents','architecture','settings']);
+    const VALID_VIEWS = new Set(['dashboard','workspace','evolution','memory','tools','skills','agents','architecture','settings']);
     const SETTINGS_TABS = new Set(['llm','evolution','memory','tools','gateway','mcp','integrations']);
     let _currentView = 'dashboard';
 
@@ -3940,13 +4075,14 @@ loadDraft();  // restore saved draft on refresh
             n.classList.toggle('active', n.dataset.view === view));
         document.querySelectorAll('.view').forEach(v =>
             v.classList.toggle('active', v.id === `view-${view}`));
-        const titles = { dashboard:'仪表盘', workspace:'工作区', evolution:'进化', memory:'记忆', tools:'工具日志', agents:'多代理', architecture:'架构', settings:'设置' };
+        const titles = { dashboard:'仪表盘', workspace:'工作区', evolution:'进化', memory:'记忆', tools:'工具', skills:'技能', agents:'多代理', architecture:'架构', settings:'设置' };
         const tb = document.getElementById('topbar-title');
         if (tb) tb.textContent = titles[view] || view;
         if (view === 'workspace')    typeof loadWorkspaceFiles === 'function' && loadWorkspaceFiles();
         if (view === 'evolution')   typeof loadEvolutionStatus === 'function' && loadEvolutionStatus();
         if (view === 'memory')      typeof switchMemoryTab === 'function' && switchMemoryTab(_currentMemoryTab || 'sessions');
-        if (view === 'tools')       typeof loadToolsLogs === 'function' && loadToolsLogs();
+        if (view === 'tools')       typeof loadTools === 'function' && loadTools();
+        if (view === 'skills')      typeof loadSkills === 'function' && loadSkills();
         if (view === 'agents')      typeof loadAgentsView === 'function' && loadAgentsView();
         if (view === 'architecture') typeof loadArchitectureFlows === 'function' && loadArchitectureFlows();
         history.replaceState(null, '', `#/${view}`);

@@ -455,6 +455,76 @@ async def update_tasks(agent_id: str, request: Request):
     return {"status": "ok"}
 
 
+# Tool Browser API — read-only listing for the UI's Tools tab.
+#
+# We tag each tool with a `source` so the UI can group them:
+#   * ``builtin`` — hard-coded classes imported by ToolRegistry
+#   * ``skill``   — generated artifact under shared/skills/ (name starts
+#                   with "skill_", loaded dynamically)
+#   * ``plugin``  — drop-in file under plugins/tools/ (everything else)
+# Parameters come straight from ``Tool.get_schema()``.
+_BUILTIN_TOOL_NAMES: set[str] | None = None
+
+
+def _get_builtin_tool_names() -> set[str]:
+    """Instantiate each builtin class once to learn its `.name` attribute.
+    Cached because the class list never changes at runtime."""
+    global _BUILTIN_TOOL_NAMES
+    if _BUILTIN_TOOL_NAMES is not None:
+        return _BUILTIN_TOOL_NAMES
+    names: set[str] = {"skill"}  # SkillTool is also builtin but lazily loaded
+    try:
+        from xmclaw.tools.registry import _BUILTIN_TOOLS
+        for cls in _BUILTIN_TOOLS:
+            try:
+                names.add(cls().name)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    _BUILTIN_TOOL_NAMES = names
+    return names
+
+
+@app.get("/api/tools")
+async def list_all_tools():
+    """List every tool the agent can currently invoke.
+
+    Returns ``{tools: [...], total: N}``. Each tool is
+    ``{name, description, parameters, source}``. Source distinguishes
+    built-in classes from evolution-generated skills and drop-in plugins —
+    mainly so the UI can show a little badge and group them.
+    """
+    if orchestrator.tools is None:
+        return {"tools": [], "total": 0}
+    try:
+        tools = []
+        builtin_names = _get_builtin_tool_names()
+        for t in orchestrator.tools._tools.values():
+            try:
+                schema = t.get_schema()
+            except Exception:
+                schema = {"name": getattr(t, "name", ""), "description": getattr(t, "description", ""), "parameters": {}}
+            name = schema.get("name") or ""
+            if name.startswith("skill_"):
+                source = "skill"
+            elif name in builtin_names:
+                source = "builtin"
+            else:
+                source = "plugin"
+            tools.append({
+                "name": name,
+                "description": schema.get("description") or "",
+                "parameters": schema.get("parameters") or {},
+                "source": source,
+            })
+        tools.sort(key=lambda x: (x["source"] != "builtin", x["name"]))
+        return {"tools": tools, "total": len(tools)}
+    except Exception as e:
+        logger.error("tools_list_failed", error=str(e))
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # Tool Execution API (for direct tool calls from UI)
 @app.post("/api/agent/{agent_id}/tools/{tool_name}")
 async def execute_tool(agent_id: str, tool_name: str, request: Request):
