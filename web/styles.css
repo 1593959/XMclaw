@@ -1000,6 +1000,20 @@ html, body {
 .entity-desc { font-size: 11.5px; color: var(--text-dim); margin-top: 4px; line-height: 1.4; }
 .entity-id { font-size: 10px; color: var(--text-faint); font-family: monospace; margin-top: 2px; opacity: 0.7; }
 
+/* Gene/Skill viewer modal meta pills — without these, adjacent <span>s
+   render as one concatenated blob ("skillskill_01ae10a3"). */
+.viewer-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.viewer-meta-pill {
+  display: inline-block;
+  font-size: 11px;
+  font-family: monospace;
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
 /* Rich empty-state card — used for workspace/memory/tools views where
    a single gray line wasn't enough to tell the user what the page does
    or what to do to fill it. */

@@ -2704,7 +2704,7 @@ function clearChat() {
 function openViewer(title, meta, code) {
     const modal = document.getElementById('viewer-modal');
     document.getElementById('viewer-title').textContent = title;
-    document.getElementById('viewer-meta').innerHTML = meta.map(m => `<span>${escapeHtml(m)}</span>`).join('');
+    document.getElementById('viewer-meta').innerHTML = meta.map(m => `<span class="viewer-meta-pill">${escapeHtml(m)}</span>`).join('');
     const codeEl = document.querySelector('#viewer-code code');
     codeEl.textContent = code;
     codeEl.className = '';
