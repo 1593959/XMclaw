@@ -1,8 +1,0 @@
-name: xmclaw
-channels:
-  - defaults
-dependencies:
-  - python=3.10
-  - pytest
-  - flake8
-  - pip

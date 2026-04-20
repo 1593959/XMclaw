@@ -46,6 +46,16 @@ xmclaw-desktop = "xmclaw.desktop.app:main"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+extend-exclude = [
+    # Runtime-generated evolution artifacts — templates with injected names
+    # (context, asyncio, subprocess, …) that ruff can't statically resolve.
+    # See docs/EVOLUTION.md.
+    "shared/",
+    # Build outputs, virtualenvs, caches.
+    "dist/",
+    "build/",
+    ".venv/",
+]
 
 [tool.mypy]
 python_version = "3.12"

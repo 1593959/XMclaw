@@ -1,0 +1,60 @@
+name: Python — lint & test
+
+# Replaces the old conda-based workflow. Uses the project's own lockfile
+# (requirements-dev-lock.txt) so CI is reproducible and matches what
+# `pip install -e ".[dev]"` would give a contributor. Runs on push to main
+# and on every PR.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.py'
+      - 'pyproject.toml'
+      - 'requirements-lock.txt'
+      - 'requirements-dev-lock.txt'
+      - '.github/workflows/python-ci.yml'
+  pull_request:
+    paths:
+      - '**.py'
+      - 'pyproject.toml'
+      - 'requirements-lock.txt'
+      - 'requirements-dev-lock.txt'
+      - '.github/workflows/python-ci.yml'
+  workflow_dispatch:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          cache-dependency-path: requirements-dev-lock.txt
+
+      - name: Install dev dependencies (pinned)
+        run: |
+          pip install -r requirements-dev-lock.txt
+          pip install -e . --no-deps
+
+      # Hard-fail set: syntax errors and undefined names only. Mirrors the old
+      # conda workflow's `flake8 --select=E9,F63,F7,F82` gate — these are
+      # "your code is broken" errors, not style.
+      - name: Lint (blocking — syntax & undefined names)
+        run: ruff check --select E9,F63,F7,F82 .
+
+      # Full ruff pass is informational for now. Flip off `|| true` once the
+      # accumulated warnings (currently ~119, mostly unused imports) are
+      # cleaned up in a dedicated PR.
+      - name: Lint (warnings — full ruleset)
+        run: ruff check . || true
+
+      - name: Test
+        run: pytest tests/ -v
