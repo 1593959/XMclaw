@@ -411,7 +411,15 @@
                         <button id="memory-search-btn">搜索</button>
                     </div>
                     <div id="memory-results">
-                        <div class="empty-state">输入关键词搜索记忆</div>
+                        <div class="empty-state-rich">
+                            <span class="es-icon">🧠</span>
+                            <div class="es-title">长期记忆检索</div>
+                            <div class="es-body">
+                                代理每轮对话后会把关键结论、反思结果、事实性知识写入向量记忆。
+                                在上方输入关键词就能按语义搜索历史记忆；刚装好时还没有内容，
+                                聊几轮之后再回来试试。
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -430,7 +438,15 @@
                         <pre id="test-output"></pre>
                     </div>
                     <div id="tool-log">
-                        <div class="empty-state">暂无工具调用记录</div>
+                        <div class="empty-state-rich">
+                            <span class="es-icon">🔧</span>
+                            <div class="es-title">工具调用日志</div>
+                            <div class="es-body">
+                                这里会实时记录代理调用每个工具的输入、输出、耗时和成功/失败。
+                                上方"自动测试"面板可以给工具生成单元测试；
+                                开一轮对话让代理用几个工具，日志就会出现。
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>

@@ -973,6 +973,50 @@ html, body {
 .evo-card { flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px; text-align: center; }
 .evo-num { font-size: 22px; font-weight: 700; color: var(--accent); font-family: monospace; }
 
+/* Entity list on Evolution page — genes + skills. Prior to the metadata
+   enrichment fix, this rendered as a wall of raw hex IDs because the
+   backend returned ``f.stem`` as the display name. Now we show the
+   human-readable name, category/version badges, and the description. */
+.entity-list { display: flex; flex-direction: column; gap: 4px; }
+.entity-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.entity-item:hover { background: var(--surface-2); border-color: var(--accent); }
+.entity-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.entity-name { font-size: 12.5px; font-weight: 600; color: var(--text); flex: 1; min-width: 0; word-break: break-all; }
+.entity-type { font-size: 10px; color: var(--text-faint); font-family: monospace; text-transform: uppercase; letter-spacing: 0.4px; }
+.entity-badge {
+  font-size: 10px; font-weight: 500;
+  color: var(--accent);
+  background: rgba(94, 129, 244, 0.12);
+  padding: 1px 6px; border-radius: 4px;
+}
+.entity-version { font-size: 10px; color: var(--text-dim); font-family: monospace; }
+.entity-desc { font-size: 11.5px; color: var(--text-dim); margin-top: 4px; line-height: 1.4; }
+.entity-id { font-size: 10px; color: var(--text-faint); font-family: monospace; margin-top: 2px; opacity: 0.7; }
+
+/* Rich empty-state card — used for workspace/memory/tools views where
+   a single gray line wasn't enough to tell the user what the page does
+   or what to do to fill it. */
+.empty-state-rich {
+  padding: 28px 20px;
+  text-align: center;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  margin: 8px 0;
+}
+.empty-state-rich .es-icon { font-size: 26px; margin-bottom: 8px; display: block; line-height: 1; }
+.empty-state-rich .es-title { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+.empty-state-rich .es-body { font-size: 12px; line-height: 1.55; color: var(--text-dim); max-width: 380px; margin: 0 auto; }
+.empty-state-rich .es-body code { background: rgba(0,0,0,0.25); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+
 .evo-logs h4 { font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 8px; }
 .evo-log-item { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px; margin-bottom: 8px; font-size: 12px; }
 .evo-log-item pre { font-size: 11px; color: var(--text-dim); white-space: pre-wrap; margin-top: 6px; background: rgba(0,0,0,0.3); padding: 8px; border-radius: 5px; }

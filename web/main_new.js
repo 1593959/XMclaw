@@ -1114,7 +1114,20 @@ function applyWorkspaceSearch() {
 
 function renderFileTree() {
     if (allWorkspaceFiles.length === 0) {
-        fileTree.innerHTML = '<div class="empty-state">工作区为空</div>';
+        // A single-line "工作区为空" was too terse — after the workspace
+        // was re-rooted at agents/<id>/workspace/ (PR #17) the folder is
+        // legitimately empty on fresh installs, and the UI gave no hint
+        // about why or what to do. This card explains both.
+        fileTree.innerHTML = `
+            <div class="empty-state-rich">
+                <span class="es-icon">📂</span>
+                <div class="es-title">工作区为空</div>
+                <div class="es-body">
+                    代理还没有在这里创建任何文件。
+                    让它执行"把 XX 写到 <code>notes.md</code>"之类的任务，
+                    文件就会出现在这里；也可以用工具栏的刷新按钮重新加载。
+                </div>
+            </div>`;
         return;
     }
     if (visibleWorkspaceFiles.length === 0) {
@@ -1435,27 +1448,55 @@ async function loadEvolutionStatus() {
                 <div class="evo-card"><div class="evo-num">${data.scheduler_running ? '运行中' : '已停止'}</div><div class="evo-label">调度器</div></div>
             </div>`;
 
-            // Genes list
+            // Genes list — prefer human-readable .name (from sidecar JSON);
+            // fall back to the hex ID when metadata is missing, but still show
+            // the ID as a subtitle so operators can grep logs.
             if (data.genes && data.genes.length) {
                 html += '<h4 style="margin:14px 0 6px;font-size:13px;color:var(--text-dim)">Genes</h4>';
                 html += '<div class="entity-list">';
                 for (const g of data.genes) {
-                    html += `<div class="entity-item" onclick="loadEntity('gene','${g.name}')">
-                        <span class="entity-name">${escapeHtml(g.name)}</span>
-                        <span class="entity-type">Gene</span>
+                    const entityId = g.id || g.name;
+                    const display = g.name && g.name !== entityId ? g.name : entityId;
+                    const badge = g.category ? `<span class="entity-badge">${escapeHtml(g.category)}</span>` : '';
+                    const version = g.version ? `<span class="entity-version">${escapeHtml(g.version)}</span>` : '';
+                    const desc = g.description && g.description !== 'Gene'
+                        ? `<div class="entity-desc">${escapeHtml(g.description)}</div>` : '';
+                    const subId = display !== entityId
+                        ? `<div class="entity-id">${escapeHtml(entityId)}</div>` : '';
+                    html += `<div class="entity-item" onclick="loadEntity('gene','${escapeHtml(entityId)}')">
+                        <div class="entity-row">
+                            <span class="entity-name">${escapeHtml(display)}</span>
+                            ${badge}${version}
+                            <span class="entity-type">Gene</span>
+                        </div>
+                        ${desc}${subId}
                     </div>`;
                 }
                 html += '</div>';
             }
 
-            // Skills list
+            // Skills list — same treatment as genes. Without this the page
+            // was a wall of 60+ raw hex IDs like ``skill_01ae10a3`` with no
+            // way to tell them apart at a glance.
             if (data.skills && data.skills.length) {
                 html += '<h4 style="margin:14px 0 6px;font-size:13px;color:var(--text-dim)">Skills</h4>';
                 html += '<div class="entity-list">';
                 for (const s of data.skills) {
-                    html += `<div class="entity-item" onclick="loadEntity('skill','${s.name}')">
-                        <span class="entity-name">${escapeHtml(s.name)}</span>
-                        <span class="entity-type">Skill</span>
+                    const entityId = s.id || s.name;
+                    const display = s.name && s.name !== entityId ? s.name : entityId;
+                    const badge = s.category ? `<span class="entity-badge">${escapeHtml(s.category)}</span>` : '';
+                    const version = s.version ? `<span class="entity-version">${escapeHtml(s.version)}</span>` : '';
+                    const desc = s.description && s.description !== 'Skill'
+                        ? `<div class="entity-desc">${escapeHtml(s.description)}</div>` : '';
+                    const subId = display !== entityId
+                        ? `<div class="entity-id">${escapeHtml(entityId)}</div>` : '';
+                    html += `<div class="entity-item" onclick="loadEntity('skill','${escapeHtml(entityId)}')">
+                        <div class="entity-row">
+                            <span class="entity-name">${escapeHtml(display)}</span>
+                            ${badge}${version}
+                            <span class="entity-type">Skill</span>
+                        </div>
+                        ${desc}${subId}
                     </div>`;
                 }
                 html += '</div>';
@@ -2464,13 +2505,38 @@ window.addEventListener('error', (e) => {
     console.error('[ERROR]', e.message, 'at', e.filename, ':', e.lineno);
 });
 
+// Rich empty-state HTML for views that otherwise render as "blank with one
+// gray line" — same copy as index.html's initial state so the view looks
+// identical before first search and after clearing a query.
+const MEMORY_EMPTY_HTML = `
+    <div class="empty-state-rich">
+        <span class="es-icon">🧠</span>
+        <div class="es-title">长期记忆检索</div>
+        <div class="es-body">
+            代理每轮对话后会把关键结论、反思结果、事实性知识写入向量记忆。
+            在上方输入关键词就能按语义搜索历史记忆；刚装好时还没有内容，
+            聊几轮之后再回来试试。
+        </div>
+    </div>`;
+
+const TOOL_LOG_EMPTY_HTML = `
+    <div class="empty-state-rich">
+        <span class="es-icon">🔧</span>
+        <div class="es-title">工具调用日志</div>
+        <div class="es-body">
+            这里会实时记录代理调用每个工具的输入、输出、耗时和成功/失败。
+            上方"自动测试"面板可以给工具生成单元测试；
+            开一轮对话让代理用几个工具,日志就会出现。
+        </div>
+    </div>`;
+
 // Memory search (tab panel version with relevance scores)
 async function loadMemorySearch() {
     const q = document.getElementById('memory-query')?.value?.trim();
     const resultsEl = document.getElementById('memory-results');
     if (!resultsEl) return;
     if (!q) {
-        resultsEl.innerHTML = '<div class="empty-state">输入关键词搜索记忆</div>';
+        resultsEl.innerHTML = MEMORY_EMPTY_HTML;
         return;
     }
     try {
@@ -2512,7 +2578,7 @@ async function loadToolsLogs() {
         const res = await fetch('/api/tools/logs');
         const data = await res.json();
         if (!data.logs || !data.logs.length) {
-            el.innerHTML = '<div class="empty-state">暂无工具日志</div>';
+            el.innerHTML = TOOL_LOG_EMPTY_HTML;
             return;
         }
         let html = '';

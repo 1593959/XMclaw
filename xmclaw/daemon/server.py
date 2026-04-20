@@ -429,29 +429,69 @@ async def evolution_status():
     if genes_dir.exists():
         for f in sorted(genes_dir.glob("gene_*.py")):
             try:
-                content = f.read_text(encoding="utf-8")
-                name = f.stem
-                desc = ""
-                for line in content.splitlines()[:10]:
-                    if line.strip().startswith('"""') and len(line.strip()) > 3:
-                        desc = line.strip().strip('"').strip()
-                        break
-                genes.append({"name": name, "description": desc or "Gene", "filename": f.name})
+                # Prefer sidecar JSON metadata (written by GeneForge on creation)
+                # over regex-parsing the source file; fall back to filename stem
+                # if neither is available. Previously the dashboard listed raw
+                # stems like ``gene_01ae10a3`` because the docstring parser
+                # missed most files.
+                sidecar = f.with_suffix(".json")
+                meta: dict = {}
+                if sidecar.exists():
+                    try:
+                        meta = json.loads(sidecar.read_text(encoding="utf-8")) or {}
+                    except Exception:
+                        meta = {}
+                name = meta.get("name") or f.stem
+                desc = meta.get("description") or ""
+                if not desc:
+                    content = f.read_text(encoding="utf-8")
+                    for line in content.splitlines()[:10]:
+                        if line.strip().startswith('"""') and len(line.strip()) > 3:
+                            desc = line.strip().strip('"').strip()
+                            break
+                genes.append({
+                    "id": f.stem,
+                    "name": name,
+                    "description": desc or "Gene",
+                    "category": meta.get("category", ""),
+                    "version": meta.get("version", ""),
+                    "filename": f.name,
+                })
             except Exception:
                 pass
     if skills_dir.exists():
         for f in sorted(skills_dir.glob("skill_*.py")):
             try:
-                content = f.read_text(encoding="utf-8")
-                name = f.stem
-                desc = ""
-                for line in content.splitlines()[:10]:
-                    if '"description"' in line or "'description'" in line:
-                        parts = line.split(':', 1)
-                        if len(parts) == 2:
-                            desc = parts[1].strip().strip('",\'').strip('"').strip("'")
-                            break
-                skills.append({"name": name, "description": desc or "Skill", "filename": f.name})
+                # Sidecar JSON (written by SkillForge) has the curated human-
+                # readable name, category, version, description. Fall back to
+                # regex-parsing the .py only if it's missing. This is what
+                # makes the Evolution page readable — without it the list is
+                # just 69 rows of hex IDs.
+                sidecar = f.with_suffix(".json")
+                meta: dict = {}
+                if sidecar.exists():
+                    try:
+                        meta = json.loads(sidecar.read_text(encoding="utf-8")) or {}
+                    except Exception:
+                        meta = {}
+                name = meta.get("name") or f.stem
+                desc = meta.get("description") or ""
+                if not desc:
+                    content = f.read_text(encoding="utf-8")
+                    for line in content.splitlines()[:10]:
+                        if '"description"' in line or "'description'" in line:
+                            parts = line.split(':', 1)
+                            if len(parts) == 2:
+                                desc = parts[1].strip().strip('",\'').strip('"').strip("'")
+                                break
+                skills.append({
+                    "id": f.stem,
+                    "name": name,
+                    "description": desc or "Skill",
+                    "category": meta.get("category", ""),
+                    "version": meta.get("version", ""),
+                    "filename": f.name,
+                })
             except Exception:
                 pass
     logs = []

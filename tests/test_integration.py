@@ -49,6 +49,58 @@ def test_evolution_status_api():
         assert "skill_count" in data
 
 
+def test_evolution_status_enriches_skill_metadata_from_sidecar(tmp_path, monkeypatch):
+    """``/api/evolution/status`` must read human-readable metadata (name,
+    category, version, description) from the ``skill_*.json`` sidecar
+    written by SkillForge. Without this the Evolution page renders a wall
+    of raw hex IDs like ``skill_01ae10a3`` and operators can't tell the
+    skills apart — the exact bug that made the 进化 page "太乱".
+
+    Each row must expose both ``id`` (filename stem for URLs) and ``name``
+    (human-readable) so the frontend can show the name while routing
+    ``/api/evolution/entity/skill/<id>`` lookups to the right file.
+    """
+    import xmclaw.daemon.server as srv
+
+    fake_base = tmp_path / "repo"
+    skills_dir = fake_base / "shared" / "skills"
+    skills_dir.mkdir(parents=True)
+    # Sidecar-present skill — backend should prefer JSON over parsing .py
+    (skills_dir / "skill_abc123ef.py").write_text(
+        'class Frequent:\n    name = "skill_abc123ef"\n', encoding="utf-8"
+    )
+    (skills_dir / "skill_abc123ef.json").write_text(json.dumps({
+        "id": "skill_abc123ef",
+        "name": "auto_frequent_bash_usage",
+        "category": "auto",
+        "version": "v1",
+        "description": "Tool 'bash' was used 10 times recently.",
+    }), encoding="utf-8")
+    # No-sidecar skill — backend should still surface *something*, not crash
+    (skills_dir / "skill_deadbeef.py").write_text(
+        '"""legacy skill without sidecar"""\n', encoding="utf-8"
+    )
+
+    monkeypatch.setattr(srv, "BASE_DIR", fake_base)
+
+    with TestClient(app) as client:
+        resp = client.get("/api/evolution/status")
+        assert resp.status_code == 200
+        skills = {s["id"]: s for s in resp.json().get("skills", [])}
+
+        enriched = skills.get("skill_abc123ef")
+        assert enriched is not None, "skill with sidecar must be listed"
+        assert enriched["name"] == "auto_frequent_bash_usage"
+        assert enriched["category"] == "auto"
+        assert enriched["version"] == "v1"
+        assert "bash" in enriched["description"]
+
+        legacy = skills.get("skill_deadbeef")
+        assert legacy is not None, "skill without sidecar must still be listed"
+        # No sidecar → name falls back to stem; frontend then shows the ID.
+        assert legacy["name"] == "skill_deadbeef"
+
+
 def test_tool_execution_api():
     """Generic tool execution API works for bash."""
     with TestClient(app) as client:
