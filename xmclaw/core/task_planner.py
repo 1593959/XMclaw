@@ -11,6 +11,23 @@ from xmclaw.core.task_classifier import TaskType, Complexity, TaskProfile
 from xmclaw.utils.log import logger
 
 
+def _field(profile, key: str) -> str:
+    """Read a task_profile field as a plain string.
+
+    TaskProfile is a TypedDict (i.e. a real dict at runtime); earlier code
+    used attribute access which raised ``'dict' object has no attribute
+    'complexity'`` as soon as a medium/high-complexity task hit the planner.
+
+    The value at a key may be a ``str, Enum`` instance (fresh from
+    ``TaskClassifier``) or a plain ``str`` (after a round-trip through JSON
+    persistence or the resume cache). Because ``TaskType`` / ``Complexity``
+    inherit from ``str``, comparing the returned string to ``Complexity.LOW``
+    etc. still works either way.
+    """
+    v = profile[key]
+    return v.value if hasattr(v, "value") else str(v)
+
+
 class PlanStep(TypedDict):
     step: int
     action: str          # what to do
@@ -73,8 +90,10 @@ class TaskPlanner:
         Generate an execution plan. Returns immediately for low complexity
         (returns a single-step implicit plan), or calls LLM for high complexity.
         """
+        complexity = _field(profile, "complexity")
+
         # Low complexity: no planning needed, return implicit single step
-        if profile.complexity == Complexity.LOW:
+        if complexity == Complexity.LOW:
             return ExecutionPlan(
                 steps=[PlanStep(
                     step=1,
@@ -89,7 +108,7 @@ class TaskPlanner:
             )
 
         # Medium complexity: generate lightweight plan
-        if profile.complexity == Complexity.MEDIUM:
+        if complexity == Complexity.MEDIUM:
             return await self._llm_plan(user_input, profile, context_info,
                                          lightweight=True)
 
@@ -102,8 +121,8 @@ class TaskPlanner:
         """Call LLM to generate an execution plan."""
         prompt = PLAN_PROMPT.format(
             task=user_input,
-            task_type=profile.type.value,
-            complexity=profile.complexity.value,
+            task_type=_field(profile, "type"),
+            complexity=_field(profile, "complexity"),
             context=context_info or "无可用背景信息",
         )
 
