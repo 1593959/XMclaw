@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from xmclaw.daemon.config import _infer_type
 
 
 class TestDaemonConfigDefault:
@@ -113,24 +114,23 @@ class TestMaskSecrets:
 
 class TestTypeInference:
     """Tests for _infer_type()."""
-    from xmclaw.daemon.config import _infer_type
 
     def test_bool_true(self):
         for val in ("true", "True", "TRUE", "yes", "1", "on"):
-            assert self._infer_type(val) is True, f"Failed for {val}"
+            assert _infer_type(val) is True, f"Failed for {val}"
 
     def test_bool_false(self):
         for val in ("false", "False", "FALSE", "no", "0", "off"):
-            assert self._infer_type(val) is False, f"Failed for {val}"
+            assert _infer_type(val) is False, f"Failed for {val}"
 
     def test_int(self):
-        assert self._infer_type("42") == 42
-        assert self._infer_type("0") == 0
+        assert _infer_type("42") == 42
+        assert _infer_type("0") == 0
 
     def test_float(self):
-        assert self._infer_type("3.14") == 3.14
-        assert self._infer_type("0.5") == 0.5
+        assert _infer_type("3.14") == 3.14
+        assert _infer_type("0.5") == 0.5
 
     def test_string_fallback(self):
-        assert self._infer_type("hello world") == "hello world"
-        assert self._infer_type("sk-ant-abc123") == "sk-ant-abc123"
+        assert _infer_type("hello world") == "hello world"
+        assert _infer_type("sk-ant-abc123") == "sk-ant-abc123"

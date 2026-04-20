@@ -114,14 +114,16 @@ def decrypt_value(value: str) -> str:
 # ── Env override helpers ───────────────────────────────────────────────────────
 
 def _env_to_nested_key(env_name: str) -> tuple[str, str] | None:
-    """Convert XMC_llm__openai__api_key → ('llm', 'openai.api_key')."""
+    """Convert XMC_llm__openai__api_key → ('llm', 'openai.api_key').
+    Also handles double-underscore: XMC__evolution__enabled → ('evolution', 'enabled').
+    """
     if not env_name.startswith(ENV_PREFIX):
         return None
     rest = env_name[len(ENV_PREFIX):].lower()
     parts = rest.split("__")
     if len(parts) < 2:
         return None
-    section = parts[0]
+    section = parts[0].lstrip("_")  # strip leading underscore from XMC__ → section case
     nested = ".".join(parts[1:])
     return (section, nested)
 
@@ -142,7 +144,14 @@ def _apply_env_override(data: dict) -> dict:
         if not isinstance(section_data, dict):
             continue
         typed_val = _infer_type(env_val)
-        section_data[key] = typed_val
+        # Support nested dot-notation: key="openai.api_key" → data[section][openai][api_key]
+        parts = key.split(".")
+        target = section_data
+        for p in parts[:-1]:
+            if p not in target:
+                target[p] = {}
+            target = target[p]
+        target[parts[-1]] = typed_val
         overridden.append(f"{section}.{key}")
     if overridden:
         import structlog
@@ -200,16 +209,17 @@ class DaemonConfig:
         instance._file_path = path
         return instance
 
-    def mask_secrets(self) -> dict:
-        """Return a copy with secret values replaced by '***'."""
+    def mask_secrets(self) -> "DaemonConfig":
+        """Return a DaemonConfig copy with secret values replaced by '***'."""
         def _mask_obj(obj):
             if isinstance(obj, dict):
-                return {k: ("***" if k.lower() in _SECRET_KEYS else _mask_obj(v))
+                return {k: ("***" if k.lower() in _SECRET_KEYS and isinstance(v, str) else _mask_obj(v))
                         for k, v in obj.items()}
             if isinstance(obj, list):
                 return [_mask_obj(i) for i in obj]
             return obj
-        return _mask_obj(self.__dict__)
+        masked_data = _mask_obj(self.__dict__)
+        return DaemonConfig(**masked_data)
 
     # ── Hot-reload support ─────────────────────────────────────────────────────
 

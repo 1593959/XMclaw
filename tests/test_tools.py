@@ -6,6 +6,7 @@ from xmclaw.tools.file_read import FileReadTool
 from xmclaw.tools.file_write import FileWriteTool
 from xmclaw.tools.bash import BashTool
 from xmclaw.utils.paths import BASE_DIR
+from xmclaw.utils.security import get_permission_manager, PermissionLevel
 
 
 @pytest.mark.asyncio
@@ -35,6 +36,8 @@ async def test_file_read_tool():
 
 @pytest.mark.asyncio
 async def test_file_write_tool():
+    pm = get_permission_manager()
+    pm.set_tool_permission("file_write", PermissionLevel.ALLOW)
     tool = FileWriteTool()
     target = BASE_DIR / "test_output.txt"
     try:
@@ -44,6 +47,7 @@ async def test_file_write_tool():
     finally:
         if target.exists():
             target.unlink()
+        pm.set_tool_permission("file_write", PermissionLevel.ASK)
 
 
 @pytest.mark.asyncio
