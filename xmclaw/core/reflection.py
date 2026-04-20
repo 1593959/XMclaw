@@ -24,6 +24,20 @@ class ReflectionTrigger(Enum):
     PERIODIC = "periodic"
 
 
+class ReflectionStatus(str, Enum):
+    """Outcome of a reflect() call.
+
+    Empty-signal skips used to collapse into `{}`, making them indistinguishable
+    from parse failures (bug M73/M74). Both were swallowed silently, which
+    blinded the evolution layer — a "nothing to learn" turn is itself a signal.
+    """
+    OK = "ok"                          # reflection produced
+    SKIPPED_NO_HISTORY = "skipped_no_history"
+    SKIPPED_EMPTY_SIGNAL = "skipped_empty_signal"
+    PARSE_FAILED = "parse_failed"
+    ERROR = "error"
+
+
 REFLECTION_PROMPTS = {
     ReflectionTrigger.CONVERSATION_END: """\
 你是一位严格的 AI 工程师评审员。请回顾刚才的对话和工具调用历史，进行深度反思。
@@ -118,10 +132,20 @@ class ReflectionEngine:
             agent_id: Agent identifier
             history: Conversation history
             trigger: Type of reflection trigger
-            **kwargs: Additional context (e.g., error_context for ERROR_OCCURRED)
+            **kwargs: Additional context (e.g., error_context for ERROR_OCCURRED,
+                      artifact_health for the evolution feedback loop — a list of
+                      snapshots from EvolutionJournal.snapshot_active_artifacts).
         """
         if not history:
-            return {}
+            logger.info("reflection_skipped", agent_id=agent_id, reason="no_history")
+            return {"status": ReflectionStatus.SKIPPED_NO_HISTORY.value}
+
+        if self._is_empty_signal(history):
+            # Every assistant turn is empty AND no tools ran — LLM would just
+            # hallucinate. Log as a first-class signal for the journal.
+            logger.info("reflection_skipped", agent_id=agent_id,
+                        reason="empty_signal", turns=len(history))
+            return {"status": ReflectionStatus.SKIPPED_EMPTY_SIGNAL.value}
 
         self._reflection_count += 1
         prompt_template = REFLECTION_PROMPTS.get(trigger, REFLECTION_PROMPTS[ReflectionTrigger.CONVERSATION_END])
@@ -134,6 +158,13 @@ class ReflectionEngine:
             context["error_context"] = kwargs.get("error_context", "未知错误")
 
         prompt = prompt_template.format(**context)
+        # Phase E4 feedback loop: if the caller passes artifact_health, prepend
+        # a section so the LLM knows which evolution products already exist and
+        # how they're doing. This biases the next insight toward fixing
+        # suspects / deleting dead code instead of forging a near-duplicate.
+        health_block = self._format_artifact_health(kwargs.get("artifact_health") or [])
+        if health_block:
+            prompt = health_block + "\n\n" + prompt
         messages = [
             {"role": "system", "content": "你是一个专业的 AI 行为反思引擎。"},
             {"role": "user", "content": prompt}
@@ -154,16 +185,17 @@ class ReflectionEngine:
                           summary=result.get("summary", ""))
                 improvement = await self._save_reflection(agent_id, result, trigger)
                 return {
+                    "status": ReflectionStatus.OK.value,
                     "reflection": result,
                     "improvement": improvement,
                     "trigger": trigger.value,
                 }
             else:
                 logger.warning("reflection_parse_failed", agent_id=agent_id, raw=response[:500])
-                return {}
+                return {"status": ReflectionStatus.PARSE_FAILED.value, "raw": response[:500]}
         except Exception as e:
             logger.error("reflection_error", agent_id=agent_id, trigger=trigger.value, error=str(e))
-            return {}
+            return {"status": ReflectionStatus.ERROR.value, "error": str(e)}
 
     async def reflect_on_error(
         self,
@@ -202,6 +234,48 @@ class ReflectionEngine:
             self._last_reflection_turn = current_turn
             return True
         return False
+
+    def _is_empty_signal(self, history: list[dict]) -> bool:
+        """Return True if the history has nothing meaningful to reflect on.
+
+        An 'empty signal' turn has (a) no assistant text AND (b) no tool_calls
+        AND (c) no tool_observations. If EVERY turn looks like that, reflecting
+        would just hallucinate — we'd rather log a skipped signal and let the
+        evolution layer know 'nothing to learn here'.
+        """
+        for turn in history:
+            if (turn.get("assistant") or "").strip():
+                return False
+            if turn.get("tool_calls"):
+                return False
+            if turn.get("tool_observations"):
+                return False
+        return True
+
+    def _format_artifact_health(self, snapshots: list[dict]) -> str:
+        """Render a compact view of active evolution artifacts for the
+        reflection prompt. Empty list → empty string, so trigger templates
+        that run without health context get the same prompt as before."""
+        if not snapshots:
+            return ""
+        lines = ["## 当前活跃的进化产物（由元评估注入）"]
+        lines.append("下面是已经生成并仍处于运行中的技能/基因，以及它们最近的使用情况。")
+        lines.append("如果某个产物已经在解决这次的问题，请在反思中推荐 **修改** 而不是新建；")
+        lines.append("如果某个产物是 `dead`（没人用）或 `suspect`（多次失败），也请指出。")
+        lines.append("")
+        for s in snapshots:
+            aid = s.get("artifact_id", "?")
+            kind = s.get("kind", "?")
+            status = s.get("status", "?")
+            verdict = s.get("verdict", "?")
+            matched = s.get("matched", 0)
+            helpful = s.get("helpful", 0)
+            harmful = s.get("harmful", 0)
+            lines.append(
+                f"- [{verdict}] {aid} (kind={kind}, status={status}) "
+                f"— matched={matched}, helpful={helpful}, harmful={harmful}"
+            )
+        return "\n".join(lines)
 
     def _format_history(self, history: list[dict]) -> str:
         lines = []

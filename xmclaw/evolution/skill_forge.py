@@ -28,10 +28,20 @@ class {class_name}(Tool):
 
 
 class SkillForge:
+    """Writes forged skills to a quarantine dir (shadow/), NEVER the active
+    loader path. The evolution engine is responsible for promoting passing
+    artifacts to the active dir and retiring failing ones (bug M22: forge
+    used to write straight to the active dir, so a skill with a SyntaxError
+    was picked up on the next registry reload and broke the whole daemon)."""
+
     def __init__(self):
         self.llm = LLMRouter()
-        self.output_dir = BASE_DIR / "shared" / "skills"
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.active_dir = BASE_DIR / "shared" / "skills"
+        self.shadow_dir = self.active_dir / "shadow"
+        self.active_dir.mkdir(parents=True, exist_ok=True)
+        self.shadow_dir.mkdir(parents=True, exist_ok=True)
+        # Kept for backwards compat with callers that still read output_dir.
+        self.output_dir = self.shadow_dir
 
     async def forge(self, concept: dict[str, Any], action_body: str | None = None) -> dict[str, Any] | None:
         """Turn a skill concept into executable Python code."""
@@ -72,10 +82,9 @@ class SkillForge:
             action_body=code_body,
         )
 
-        file_path = self.output_dir / f"{skill_id}.py"
+        file_path = self.shadow_dir / f"{skill_id}.py"
         file_path.write_text(code, encoding="utf-8")
 
-        # Also write JSON metadata
         meta = {
             "id": skill_id,
             "name": concept.get("name", "AutoSkill"),
@@ -83,11 +92,12 @@ class SkillForge:
             "version": "v1",
             "description": concept.get("description", ""),
             "path": str(file_path),
+            "status": "shadow",
         }
-        meta_path = self.output_dir / f"{skill_id}.json"
+        meta_path = self.shadow_dir / f"{skill_id}.json"
         meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
 
-        logger.info("skill_forged", skill_id=skill_id, path=str(file_path))
+        logger.info("skill_forged_shadow", skill_id=skill_id, path=str(file_path))
         return meta
 
     def _to_class_name(self, name: str) -> str:

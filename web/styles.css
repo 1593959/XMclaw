@@ -1006,6 +1006,53 @@ html, body {
 }
 .evo-obs-sub { font-weight: 400; font-size: 10px; color: var(--text-faint); margin-left: auto; }
 
+/* Evolution Live journal panel (Phase E0) */
+#evo-journal-body { padding: 4px 0; }
+.journal-cycle {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.journal-cycle:last-child { border-bottom: 0; }
+.journal-head {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 11px; margin-bottom: 6px;
+}
+.journal-head .cycle-id {
+  font-family: var(--mono, ui-monospace, monospace);
+  color: var(--text-dim);
+  background: var(--surface-2);
+  padding: 2px 6px; border-radius: 4px;
+}
+.journal-head .trigger { color: var(--text-faint); font-size: 10px; }
+.journal-head .verdict { margin-left: auto; font-weight: 600; }
+.verdict-passed   { color: #3ddc84; }
+.verdict-rejected { color: #ff5b5b; }
+.verdict-skipped  { color: var(--text-faint); }
+.verdict-pending  { color: #f5a623; }
+
+.journal-steps { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; font-size: 10px; margin-bottom: 6px; }
+.journal-steps .step {
+  padding: 2px 8px; border-radius: 10px;
+  background: var(--surface-2); color: var(--text-faint);
+  border: 1px solid var(--border);
+}
+.journal-steps .step.done   { background: rgba(61,220,132,0.12); color: #3ddc84; border-color: rgba(61,220,132,0.3); }
+.journal-steps .step.active { background: rgba(245,166,35,0.15); color: #f5a623; border-color: rgba(245,166,35,0.4); animation: journal-pulse 1.4s ease-in-out infinite; }
+.journal-steps .sep { color: var(--text-faint); font-size: 10px; }
+@keyframes journal-pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.55 } }
+
+.journal-artifacts { display: flex; flex-wrap: wrap; gap: 4px; font-size: 10px; }
+.journal-artifacts .artifact {
+  padding: 2px 6px; border-radius: 4px;
+  background: var(--surface-2); color: var(--text-dim);
+  font-family: var(--mono, ui-monospace, monospace);
+}
+.artifact-shadow   { border-left: 2px solid #f5a623; }
+.artifact-promoted { border-left: 2px solid #3ddc84; }
+.artifact-retired  { border-left: 2px solid #6b6b6b; opacity: 0.65; }
+.artifact-empty    { color: var(--text-faint); font-style: italic; }
+.reject-reason { margin-top: 6px; font-size: 10px; color: #ff8a8a; }
+
 .evo-timeline-section h3 {
   font-size: 11px;
   font-weight: 700;
