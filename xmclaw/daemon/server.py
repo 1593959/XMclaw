@@ -29,12 +29,40 @@ AGENTS_DIR = BASE_DIR / "agents"
 def _workspace_root(agent_id: str) -> Path:
     """Return the workspace-view root for ``agent_id``.
 
-    The frontend's 工作区 (workspace) view and its file-CRUD endpoints all
-    operate on this root. Rooting here — instead of the agent directory —
-    keeps daemon plumbing (`memory/`, `memory/sessions/`, identity files
-    like `agent.json` / `SOUL.md`) out of the file tree the user sees.
+    The 工作区 view is the user's window onto *who this agent is*, so it
+    spans the whole agent directory (SOUL.md, PROFILE.md, AGENTS.md,
+    plus the workspace/ subfolder where the agent keeps task-level
+    files like plan.md / notes.md / decisions.md). The exclude list in
+    ``_WORKSPACE_EXCLUDE`` keeps API keys (agent.json), the template
+    (agent.example.json), and daemon internals (memory/, __pycache__)
+    out of the tree *and* out of file-CRUD endpoints.
     """
-    return AGENTS_DIR / agent_id / "workspace"
+    return AGENTS_DIR / agent_id
+
+
+# Names that must never appear in the workspace tree or be reachable via
+# the file-CRUD endpoints. `agent.json` carries API keys — leaking or
+# letting the frontend overwrite it would be a security incident.
+_WORKSPACE_EXCLUDE_NAMES = {
+    "agent.json",
+    "agent.example.json",
+    "memory",
+    "__pycache__",
+}
+
+
+def _is_excluded(rel_path: Path) -> bool:
+    """True if any segment of ``rel_path`` is in the exclude list or starts with '.'.
+
+    Handles both files (agent.json) and whole subtrees (memory/...).
+    """
+    parts = rel_path.parts
+    if not parts:
+        return False
+    for p in parts:
+        if p in _WORKSPACE_EXCLUDE_NAMES or p.startswith("."):
+            return True
+    return False
 
 
 @asynccontextmanager
@@ -168,10 +196,13 @@ def _format_size(size: int) -> str:
 
 
 def _build_tree(agent_dir: Path) -> list[dict]:
-    """Build a nested directory tree from agent_dir.
+    """Build a nested directory tree from ``agent_dir``.
+
+    Applies ``_WORKSPACE_EXCLUDE_NAMES`` so API-key files and daemon
+    internals never appear in the tree the user sees.
 
     Returns a flat list of entries with: path, type (dir|file),
-    fileType (python/json/markdown/etc.), size, name, children (for dirs).
+    fileType (python/json/markdown/etc.), size, name.
     """
     entries = []
 
@@ -179,10 +210,11 @@ def _build_tree(agent_dir: Path) -> list[dict]:
         root_path = Path(root)
         rel_root = root_path.relative_to(agent_dir)
 
+        # Prune excluded subtrees in-place so os.walk won't recurse into them.
+        dirs[:] = [d for d in dirs if not (d in _WORKSPACE_EXCLUDE_NAMES or d.startswith("."))]
+
         # Directories
         for dname in sorted(dirs):
-            if dname.startswith("."):
-                continue
             entries.append({
                 "path": str(rel_root / dname) if str(rel_root) != "." else dname,
                 "name": dname,
@@ -192,7 +224,7 @@ def _build_tree(agent_dir: Path) -> list[dict]:
 
         # Files
         for fname in sorted(files):
-            if fname.startswith("."):
+            if fname in _WORKSPACE_EXCLUDE_NAMES or fname.startswith("."):
                 continue
             fpath = root_path / fname
             entries.append({
@@ -233,6 +265,8 @@ async def list_files(agent_id: str):
 @app.get("/api/agent/{agent_id}/file")
 async def read_file(agent_id: str, path: str):
     ws_root = _workspace_root(agent_id)
+    if _is_excluded(Path(path)):
+        return JSONResponse({"error": "Path not readable"}, status_code=403)
     target = (ws_root / path).resolve()
     if not str(target).startswith(str(ws_root.resolve())):
         return JSONResponse({"error": "Invalid path"}, status_code=403)
@@ -249,6 +283,8 @@ async def read_file(agent_id: str, path: str):
 @app.post("/api/agent/{agent_id}/file")
 async def write_file(agent_id: str, path: str, data: dict):
     ws_root = _workspace_root(agent_id)
+    if _is_excluded(Path(path)):
+        return JSONResponse({"error": "Path not writable"}, status_code=403)
     target = (ws_root / path).resolve()
     if not str(target).startswith(str(ws_root.resolve())):
         return JSONResponse({"error": "Invalid path"}, status_code=403)
@@ -269,6 +305,8 @@ async def create_file(agent_id: str, data: dict):
 
     if not rel_path or ".." in rel_path or rel_path.startswith("/"):
         return JSONResponse({"error": "Invalid path"}, status_code=400)
+    if _is_excluded(Path(rel_path)):
+        return JSONResponse({"error": "Path not allowed"}, status_code=403)
 
     ws_root = _workspace_root(agent_id)
     ws_root.mkdir(parents=True, exist_ok=True)
@@ -296,6 +334,8 @@ async def delete_file(agent_id: str, path: str):
 
     if not path or ".." in path or path.startswith("/"):
         return JSONResponse({"error": "Invalid path"}, status_code=400)
+    if _is_excluded(Path(path)):
+        return JSONResponse({"error": "Path not deletable"}, status_code=403)
 
     ws_root = _workspace_root(agent_id)
     target = (ws_root / path).resolve()
@@ -323,6 +363,8 @@ async def rename_file(agent_id: str, data: dict):
 
     if not old_path or not new_name or ".." in old_path or ".." in new_name:
         return JSONResponse({"error": "Invalid path"}, status_code=400)
+    if _is_excluded(Path(old_path)) or new_name in _WORKSPACE_EXCLUDE_NAMES or new_name.startswith("."):
+        return JSONResponse({"error": "Path not renamable"}, status_code=403)
 
     ws_root = _workspace_root(agent_id)
     old_target = (ws_root / old_path).resolve()

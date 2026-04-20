@@ -1,71 +1,83 @@
 # Workspace
 
-The agent's **workspace** is a per-agent directory where the agent keeps
-user-visible working files — plans, notes, decision logs, todo lists.
-It is *not* where the agent stores identity, daemon config, session
-history, or evolution artifacts; those live elsewhere (see
-[ARCHITECTURE.md](ARCHITECTURE.md)).
+The **workspace** is the user's window onto *who this agent is* and
+what it's working on. It spans the entire agent directory — identity
+files (SOUL.md, PROFILE.md, AGENTS.md), agent-level state
+(tasks.json), and the `workspace/` subfolder where the agent keeps
+task-level scratch (plan.md, notes.md, decisions.md).
 
-## Location
+Files that would leak secrets or expose daemon internals are hidden
+by a hard exclude list on the daemon — the frontend can neither list
+nor read them.
+
+## Layout
 
 ```
-agents/<agent_id>/workspace/
+agents/<agent_id>/
+├── SOUL.md            ← visible · personality / character
+├── PROFILE.md         ← visible · who the user is
+├── AGENTS.md          ← visible · multi-agent team config
+├── tasks.json         ← visible · managed by `task` tool
+├── agent.json         ← hidden  · carries API keys
+├── agent.example.json ← hidden  · template, noise
+├── memory/            ← hidden  · SQLite DB + session logs
+├── __pycache__/       ← hidden  · python bytecode
+└── workspace/
+    ├── plan.md        ← current multi-step plan
+    ├── notes.md       ← freeform scratchpad
+    ├── decisions.md   ← append-only log of non-obvious choices
+    ├── tasks.json     ← task-tool managed
+    └── todos.json     ← todo-tool managed
 ```
 
-For the default single-agent install, that's
-`agents/default/workspace/`. The Web UI's 工作区 view is rooted here so
-daemon internals never leak into the user's view (regression test in
-`tests/test_integration.py::test_workspace_files_api_excludes_daemon_internals`).
+Only `workspace/tasks.json` and `workspace/todos.json` are
+pre-created by the agent tooling. The rest appear on demand — an
+empty `workspace/` on a fresh agent is correct.
 
-## Canonical files
+## Exclude list
 
-These are the files the agent is instructed to create on demand. None
-of them are pre-created — an empty workspace is the correct default for
-a fresh agent, and the UI shows a rich empty-state card explaining
-this.
+Defined in [`xmclaw/daemon/server.py`](../xmclaw/daemon/server.py)
+as `_WORKSPACE_EXCLUDE_NAMES`. Any name in the list, anywhere in the
+path, is dropped from the tree *and* rejected by the file-CRUD
+endpoints (`read_file`, `write_file`, `create_file`, `delete_file`,
+`rename_file`). Dotfiles are excluded by the same mechanism.
 
-| File | Purpose | Writer | Lifetime |
-|---|---|---|---|
-| `plan.md` | Current multi-step plan. The agent writes this *before* executing a medium/high-complexity task so the user can redirect before work starts. | `file_write` | Overwritten per task |
-| `notes.md` | Freeform scratchpad. Open-ended thinking the agent wants to hold across turns without polluting the chat. | `file_write` / `file_edit` | Append-only; user may prune |
-| `todos.json` | Checklist. Managed by the built-in `todo` tool, not hand-written. | `todo` tool | Persistent |
-| `tasks.json` | Longer-running task tracker. Managed by the built-in `task` tool. | `task` tool | Persistent |
-| `decisions.md` | Append-only log of non-obvious choices ("chose X over Y because Z"). Leaves breadcrumbs for future sessions so they don't re-litigate the same call. | `file_write` / `file_edit` | Append-only |
+| Name | Why hidden |
+|---|---|
+| `agent.json` | Carries the LLM API key. Leaking it via the web UI would be a credential disclosure. |
+| `agent.example.json` | Template file, adds noise with no user value. |
+| `memory/` | SQLite + vector store + session transcripts. Owned by the daemon; manual edits corrupt the DB. |
+| `__pycache__/` | Python bytecode. |
+| `.*` | Dotfiles (`.git`, `.venv`, `.DS_Store`). |
 
-Anything else the user creates is also fine — the workspace is theirs.
-The canonical list is what the agent is *taught* to use, not a
-whitelist.
+## File semantics
 
-## What does NOT go in workspace
+Files the agent is instructed to create and maintain, in its system
+prompt (see `prompt_builder.py`):
 
-- `agent.json` — identity + API keys. Lives one level up at
-  `agents/<id>/agent.json`. Gitignored.
-- `memory/` — SQLite + vector store + session transcripts. Owned by the
-  daemon; never hand-edit.
-- `SOUL.md` / `PROFILE.md` — agent's persistent self-description.
-  Committed to git; edited out-of-band by the user, not by the agent
-  mid-conversation.
-- Generated genes / skills — live under `shared/` at the repo root, not
-  under any agent's workspace.
+| File | Owner | Purpose |
+|---|---|---|
+| `SOUL.md` | User + Agent | Personality, values, voice. Agent reads this every turn; user edits out-of-band to shape behavior. |
+| `PROFILE.md` | User + Agent | User's context: name, preferences, domain knowledge. Edits are collaborative. |
+| `AGENTS.md` | User | Multi-agent team roster + delegation rules. |
+| `workspace/plan.md` | Agent | Current multi-step plan. Agent writes this *before* executing a medium/high-complexity task so the user can redirect before work starts. Overwritten per task. |
+| `workspace/notes.md` | Agent | Freeform scratchpad for cross-turn thinking that shouldn't pollute the chat. |
+| `workspace/decisions.md` | Agent | Append-only log of non-obvious choices ("picked X over Y because Z"). Breadcrumbs for future sessions. |
+| `workspace/todos.json` | `todo` tool | Checklist. |
+| `workspace/tasks.json` | `task` tool | Longer-running task tracker. |
 
-## Agent-facing contract
+## Frontend
 
-The system prompt (see [`xmclaw/core/prompt_builder.py`](../xmclaw/core/prompt_builder.py))
-includes a workspace section that tells the agent:
+The 工作区 view in the Web UI reads / writes via:
 
-1. Where the workspace is.
-2. What the canonical files are for.
-3. **When** to write to each (on plan creation, on non-obvious
-   decision, etc.).
+- `GET  /api/agent/<id>/files` — flat list, already filtered through the exclude list
+- `GET  /api/agent/<id>/file?path=...` — read one file (rejected if excluded)
+- `POST /api/agent/<id>/file?path=...` — write one file (rejected if excluded)
+- `POST /api/agent/<id>/file/create`, `DELETE /api/agent/<id>/file`, `POST /api/agent/<id>/file/rename`
 
-Editing the prompt's workspace section is the correct way to change
-agent behavior around persistence — do not add ad-hoc file-writing
-hints elsewhere.
+All endpoints apply the same `_is_excluded` check *before* the
+path-traversal guard, so even a valid in-tree path to `agent.json`
+or `memory/sessions/*.json` returns 403.
 
-## Frontend editing
-
-The Web UI lets the user read every file in the workspace. Write-back
-from the frontend is gated by a save action; the endpoint is
-`POST /api/agent/<id>/file` (body: `{path, content}`). See
-[EVENTS.md](EVENTS.md) for the file-mutation event stream that the
-daemon emits when either the agent or the frontend writes.
+Regression tested in
+[`tests/test_integration.py::test_workspace_files_api_shows_identity_hides_secrets`](../tests/test_integration.py).
