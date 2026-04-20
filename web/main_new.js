@@ -2564,13 +2564,47 @@ function renderSessionList() {
     list.innerHTML = sessions.map(s => `
         <div class="session-item ${s.id === currentSessionId ? 'active' : ''}" data-id="${s.id}">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-            <span style="overflow:hidden;text-overflow:ellipsis">${escapeHtml(s.title)}</span>
+            <span class="session-title">${escapeHtml(s.title)}</span>
+            <button class="session-delete" data-del-id="${s.id}" title="删除此会话" aria-label="删除此会话">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>
+            </button>
         </div>
     `).join('');
     list.querySelectorAll('.session-item').forEach(item => {
-        item?.addEventListener('click', () => switchSession(item.dataset.id));
+        item?.addEventListener('click', (e) => {
+            // Ignore clicks on the delete button — it has its own handler.
+            if (e.target.closest('.session-delete')) return;
+            switchSession(item.dataset.id);
+        });
+    });
+    list.querySelectorAll('.session-delete').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            deleteSession(btn.dataset.delId);
+        });
     });
 }
+
+function deleteSession(id) {
+    const s = sessions.find(x => x.id === id);
+    if (!s) return;
+    if (!confirm(`确定删除会话「${s.title}」？\n此操作无法撤销。`)) return;
+    sessions = sessions.filter(x => x.id !== id);
+    // If we deleted the active session, fall back to the newest remaining
+    // one (or a fresh empty session if the list is now empty).
+    if (id === currentSessionId) {
+        if (sessions.length > 0) {
+            switchSession(sessions[0].id);
+        } else {
+            currentSessionId = generateSessionId();
+            chat.innerHTML = '';
+            showWelcome();
+        }
+    }
+    renderSessionList();
+    persistSessions();
+}
+window.deleteSession = deleteSession;
 
 function switchSession(id) {
     saveCurrentSession();
