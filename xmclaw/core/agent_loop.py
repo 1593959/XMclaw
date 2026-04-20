@@ -14,6 +14,13 @@ from xmclaw.genes.manager import GeneManager
 from xmclaw.core.event_bus import Event, EventType, get_event_bus
 from xmclaw.utils.log import logger
 
+
+def _pv(profile, key):
+    """Safely get a string value from a task_profile dict field.
+    Handles both plain strings and enum instances (which have .value)."""
+    v = profile[key]
+    return v.value if hasattr(v, "value") else str(v)
+
 # ── Five-Stage Cognition Pipeline ────────────────────────────────────────────
 from xmclaw.core.task_classifier import TaskClassifier, TaskType, Complexity
 from xmclaw.core.info_gather import InfoGatherer
@@ -202,10 +209,10 @@ class AgentLoop:
             yield json.dumps({
                 "type": "stage", "stage": "analyze_done",
                 "label": "✅ 任务分析完成",
-                "desc": f"类型: {task_profile['type'].value} | 复杂度: {task_profile['complexity'].value}",
+                "desc": f"类型: {_pv(task_profile, "type")} | 复杂度: {_pv(task_profile, "complexity")}",
                 "data": {
-                    "type": task_profile["type"].value,
-                    "complexity": task_profile["complexity"].value,
+                    "type": _pv(task_profile, "type"),
+                    "complexity": _pv(task_profile, "complexity"),
                     "capabilities": task_profile["capabilities_needed"],
                     "reasoning": task_profile["reasoning"],
                 }
@@ -214,14 +221,14 @@ class AgentLoop:
                 event_type=EventType.AGENT_THINKING,
                 source=self.agent_id,
                 payload={"stage": "analyze", "profile": {
-                    "type": task_profile["type"].value,
-                    "complexity": task_profile["complexity"].value,
+                    "type": _pv(task_profile, "type"),
+                    "complexity": _pv(task_profile, "complexity"),
                     "capabilities_needed": task_profile["capabilities_needed"],
                     "reasoning": task_profile["reasoning"],
                 }},
             ))
             logger.info("stage1_analyze_complete",
-                         type=task_profile["type"].value, complexity=task_profile["complexity"].value)
+                         type=_pv(task_profile, "type"), complexity=_pv(task_profile, "complexity"))
             self._stages_done.add("stage1")
 
         # ── Stage 2: Information Gathering ──────────────────────────────────────
@@ -261,7 +268,7 @@ class AgentLoop:
 
         # ── Stage 3: Task Planning (medium or high complexity) ──────────────────
         plan_text = ""   # defined here so it's always in scope for Stage 5
-        planning = task_profile["complexity"] in (Complexity.MEDIUM, Complexity.HIGH)
+        planning = _pv(task_profile, "complexity") in ("medium", "high")
         if planning and "stage3" not in self._stages_done:
             yield json.dumps({"type": "stage", "stage": "plan",
                                "label": "🗺 任务规划",
@@ -302,7 +309,7 @@ class AgentLoop:
         elif not planning:
             self._execution_plan = None
             self._plan_text = ""
-            logger.info("stage3_plan_skipped", complexity=task_profile["complexity"].value)
+            logger.info("stage3_plan_skipped", complexity=_pv(task_profile, "complexity"))
         elif "stage3" in self._stages_done:
             # Resume path: restore cached plan results
             execution_plan = self._execution_plan
@@ -363,8 +370,8 @@ class AgentLoop:
                 "execution_plan": plan_text,
                 "skill_results": skill_text,
                 "task_profile": {
-                    "type": task_profile["type"].value,
-                    "complexity": task_profile["complexity"].value,
+                    "type": _pv(task_profile, "type"),
+                    "complexity": _pv(task_profile, "complexity"),
                     "reasoning": task_profile["reasoning"],
                 },
             }
@@ -378,7 +385,7 @@ class AgentLoop:
         #  MAIN EXECUTION LOOP  (think → act → observe → repeat)
         # ══════════════════════════════════════════════════════════════════════════
         yield json.dumps({"type": "state", "state": "THINKING",
-                           "thought": f"执行中（类型:{task_profile['type'].value}）..."})
+                           "thought": f"执行中（类型:{_pv(task_profile, "type")}）..."})
 
         turn_count = 0
         while turn_count < self.max_turns:
