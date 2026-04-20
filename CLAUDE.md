@@ -87,6 +87,21 @@ Dev env is Windows-first; scripts use `.bat` / `.ps1`. Use `bash` syntax on Git 
 - Open a PR: `gh pr create`.
 - Keep commit messages in English. Conventional Commits encouraged (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`).
 
+## Releasing
+
+Releases are fully driven by semver tags. To cut a release:
+
+1. Bump `version = "..."` in `pyproject.toml` on `main` (via PR).
+2. After the bump lands, tag and push:
+   ```bash
+   git tag v0.2.0
+   git push origin v0.2.0
+   ```
+3. `.github/workflows/release.yml` fires on the tag, builds the Windows `XMclaw.exe` + InnoSetup installer, verifies the tag matches `pyproject.toml`, and opens a **draft** GitHub release with both artifacts attached.
+4. Review the draft on GitHub, edit the notes, then click **Publish** — this triggers `python-publish.yml` to upload to PyPI.
+
+The workflow also accepts `workflow_dispatch` for re-builds against an existing tag.
+
 ## Prerequisites
 
 - Python 3.10+ (see `pyproject.toml`).
