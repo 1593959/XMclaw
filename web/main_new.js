@@ -1001,10 +1001,21 @@ const workspaceSearchInput = document.getElementById('workspace-search');
 const workspaceSummary = document.getElementById('workspace-summary');
 
 let currentFilePath = null;
+let currentFileBaseline = '';   // last-saved content for dirty detection
 let allWorkspaceFiles = [];     // full list from API
 let visibleWorkspaceFiles = []; // filtered for search
 let expandedDirs = new Set();  // tracks which dirs are open
 let contextMenuTarget = null; // file/dir the user right-clicked
+
+function _editorIsDirty() {
+    return currentFilePath && workspaceEditor && workspaceEditor.value !== currentFileBaseline;
+}
+
+function _updateEditorDirtyBadge() {
+    if (!editorPath || !currentFilePath) return;
+    const prefix = _editorIsDirty() ? '● ' : '';
+    editorPath.textContent = prefix + currentFilePath;
+}
 
 // File type icons and colors
 const FILE_TYPE_STYLE = {
@@ -1332,6 +1343,10 @@ async function renameWorkspaceEntry(oldPath, newName) {
 }
 
 window.openWorkspaceFile = async function(path) {
+    // Guard: if the current file has unsaved edits, confirm before discarding.
+    if (_editorIsDirty() && !confirm(`「${currentFilePath}」有未保存的修改，确定要切换吗？`)) {
+        return;
+    }
     currentFilePath = path;
     editorPath.textContent = path;
     workspaceEditor.value = '加载中...';
@@ -1341,26 +1356,59 @@ window.openWorkspaceFile = async function(path) {
         const res = await fetch(`/api/agent/${AGENT_ID}/file?path=${encodeURIComponent(path)}`);
         const data = await res.json();
         if (data.error) throw new Error(data.error);
-        workspaceEditor.value = data.content || '';
+        const content = data.content || '';
+        workspaceEditor.value = content;
+        currentFileBaseline = content;
         workspaceEditor.readOnly = false;
         saveFileBtn.style.display = 'inline-block';
+        _updateEditorDirtyBadge();
         renderFileTree(); // update active highlight
     } catch (e) {
         workspaceEditor.value = '加载失败: ' + e.message;
     }
 };
 
-saveFileBtn?.addEventListener('click', async () => {
+async function _saveCurrentWorkspaceFile() {
     if (!currentFilePath) return;
+    if (workspaceEditor.readOnly) return; // nothing loaded
+    const content = workspaceEditor.value;
     try {
-        await fetch(`/api/agent/${AGENT_ID}/file?path=${encodeURIComponent(currentFilePath)}`, {
+        const res = await fetch(`/api/agent/${AGENT_ID}/file?path=${encodeURIComponent(currentFilePath)}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content: workspaceEditor.value }),
+            body: JSON.stringify({ content }),
         });
+        if (!res.ok) {
+            const body = await res.text().catch(() => '');
+            throw new Error(`HTTP ${res.status}${body ? ': ' + body.slice(0, 120) : ''}`);
+        }
+        currentFileBaseline = content;
+        _updateEditorDirtyBadge();
         showToast('文件已保存');
-    } catch {
-        showToast('保存失败');
+    } catch (e) {
+        showToast('保存失败: ' + (e.message || e));
+    }
+}
+
+saveFileBtn?.addEventListener('click', _saveCurrentWorkspaceFile);
+
+// Live dirty indicator — update on every keystroke so the ● disappears
+// after a save and reappears as soon as the user types again.
+workspaceEditor?.addEventListener('input', _updateEditorDirtyBadge);
+
+// Ctrl+S / Cmd+S to save when the editor has focus.
+workspaceEditor?.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault();
+        _saveCurrentWorkspaceFile();
+    }
+});
+
+// Warn before the user closes the tab with unsaved workspace edits.
+window.addEventListener('beforeunload', (e) => {
+    if (_editorIsDirty()) {
+        e.preventDefault();
+        e.returnValue = ''; // required by some browsers to trigger the prompt
     }
 });
 
