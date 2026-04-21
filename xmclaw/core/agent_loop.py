@@ -131,6 +131,41 @@ class AgentLoop:
         except Exception:
             pass
 
+    def _load_workspace_breadcrumbs(self) -> str:
+        """Read plan.md / notes.md / decisions.md back into context on every turn.
+
+        The system prompt instructs the agent to write breadcrumbs to these
+        files across turns, but nothing read them back — so the next turn
+        started blind. Per-file cap at 2k chars; if all files are empty the
+        result is '' and the identity block omits the workspace section.
+        """
+        try:
+            from xmclaw.utils.paths import get_agent_dir
+            agent_dir = get_agent_dir(self.agent_id)
+            if agent_dir is None:
+                return ""
+            ws = agent_dir / "workspace"
+            if not ws.exists():
+                return ""
+            CAP = 2000
+            chunks: list[str] = []
+            for fname in ("plan.md", "notes.md", "decisions.md"):
+                p = ws / fname
+                if not p.exists():
+                    continue
+                try:
+                    body = p.read_text(encoding="utf-8").strip()
+                except Exception:
+                    continue
+                if not body:
+                    continue
+                if len(body) > CAP:
+                    body = body[:CAP] + "\n…(truncated)"
+                chunks.append(f"[workspace/{fname}]\n{body}")
+            return "\n\n".join(chunks)
+        except Exception:
+            return ""
+
     @staticmethod
     def _wrap_parameters(raw: dict) -> dict:
         """Wrap a flat property dict into a valid JSON Schema object.
@@ -375,6 +410,8 @@ class AgentLoop:
                 "skill_results": skill_text,
                 "soul": self._soul,
                 "profile": self._profile,
+                "agents": self._agents,
+                "workspace_breadcrumbs": self._load_workspace_breadcrumbs(),
                 "task_profile": {
                     "type": _pv(task_profile, "type"),
                     "complexity": _pv(task_profile, "complexity"),

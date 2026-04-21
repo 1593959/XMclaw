@@ -103,16 +103,19 @@ class InfoGatherer:
             return {"memories": []}
 
     async def _search_insights(self, query: str, agent_id: str = "default") -> dict:
-        """Search past reflection insights for relevant lessons."""
+        """Surface recent reflection insights for the prompt.
+
+        Previously filtered via whitespace-split keyword substring match.
+        That filter silently dropped everything for Chinese queries (no word
+        splitting) and for short queries — so the prompt's {insights}
+        slot was almost always "None" even when the agent had dozens of
+        stored lessons. The LLM is a better relevance filter than
+        substring-contains; just hand it the top-N most recent insights
+        and let it decide what matters.
+        """
         try:
-            insights = self.memory.get_insights(agent_id=agent_id, limit=10)
-            # Simple keyword filter
-            filtered = [
-                i for i in insights
-                if any(kw in (i.get("title", "") + i.get("description", ""))
-                       for kw in query.split()[:5])
-            ]
-            return {"insights": filtered[:5]}
+            insights = self.memory.get_insights(agent_id=agent_id, limit=5)
+            return {"insights": insights}
         except Exception as e:
             logger.warning("insight_search_failed", error=str(e))
             return {"insights": []}

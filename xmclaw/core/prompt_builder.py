@@ -100,19 +100,21 @@ CRITICAL — never fabricate tool output:
 """
 
     @staticmethod
-    def _format_identity(soul: str, profile: str) -> str:
-        """Render SOUL.md + PROFILE.md into the system prompt.
+    def _format_identity(soul: str, profile: str, agents: str = "", workspace: str = "") -> str:
+        """Render SOUL.md + PROFILE.md + AGENTS.md + workspace breadcrumbs into the system prompt.
 
-        These files are the agent's persona and the user's context. They
+        These files are the agent's persona, the user's context, the
+        multi-agent roster, and the agent's own cross-turn scratch. They
         used to be loaded into memory but never passed to the LLM — the
-        LLM had no idea who it was or who the user was. Now they ride at
-        the top of the system prompt, right after "You are XMclaw".
-        A 4k-char cap per file keeps worst-case token cost bounded on
-        users with very long profiles.
+        LLM had no idea who it was, who the user was, what teammates
+        existed, or what it wrote to plan.md on the previous turn.
+        A 4k-char cap per file keeps worst-case token cost bounded.
         """
         soul = (soul or "").strip()
         profile = (profile or "").strip()
-        if not soul and not profile:
+        agents = (agents or "").strip()
+        workspace = (workspace or "").strip()
+        if not any([soul, profile, agents, workspace]):
             return ""
         CAP = 4000
         blocks = ["\n"]
@@ -122,6 +124,16 @@ CRITICAL — never fabricate tool output:
         if profile:
             blocks.append("── The user you are talking to (from PROFILE.md) ──")
             blocks.append(profile[:CAP] + ("\n…(truncated)" if len(profile) > CAP else ""))
+        if agents:
+            blocks.append("── Your multi-agent team (from AGENTS.md) ──")
+            blocks.append(agents[:CAP] + ("\n…(truncated)" if len(agents) > CAP else ""))
+        if workspace:
+            blocks.append("── Your cross-turn scratch (from workspace/) ──")
+            blocks.append(workspace[:CAP] + ("\n…(truncated)" if len(workspace) > CAP else ""))
+            blocks.append(
+                "These are breadcrumbs YOU wrote in previous turns. Consult them before "
+                "asking the user to repeat themselves; update them when the plan shifts."
+            )
         blocks.append("Honor SOUL.md in voice and values. Use PROFILE.md to tailor answers to this specific user.\n")
         return "\n".join(blocks)
 
@@ -157,6 +169,8 @@ CRITICAL — never fabricate tool output:
         identity_text = self._format_identity(
             context.get("soul", ""),
             context.get("profile", ""),
+            context.get("agents", ""),
+            context.get("workspace_breadcrumbs", ""),
         )
         system = self.SYSTEM_PROMPT.format(
             identity=identity_text,
