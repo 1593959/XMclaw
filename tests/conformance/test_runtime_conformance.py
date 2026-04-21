@@ -25,38 +25,30 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
-from xmclaw.providers.runtime import LocalSkillRuntime, SkillRuntime, SkillStatus
-from xmclaw.skills.base import Skill, SkillInput, SkillOutput
+from xmclaw.providers.runtime import (
+    LocalSkillRuntime,
+    ProcessSkillRuntime,
+    SkillRuntime,
+    SkillStatus,
+)
+from xmclaw.skills.demo.picklable_demo import PickleEcho, PickleSlow
 from xmclaw.skills.manifest import SkillManifest
 
 
 # ── test-support skills ──────────────────────────────────────────────────
+#
+# These live at ``xmclaw/skills/demo/picklable_demo.py`` because
+# ProcessSkillRuntime must be able to pickle them across a ``spawn``
+# boundary — nested/test-file-local classes do NOT survive pickle.
+# Both runtimes (Local and Process) accept them.
 
 
-class _QuickSkill(Skill):
-    id = "quick"
-    version = 1
-
-    async def run(self, inp: SkillInput) -> SkillOutput:
-        return SkillOutput(ok=True, result={"args": inp.args}, side_effects=[])
+def _m_echo(*, max_cpu: float = 15.0) -> SkillManifest:
+    return SkillManifest(id=PickleEcho.id, version=1, max_cpu_seconds=max_cpu)
 
 
-class _SlowSkill(Skill):
-    id = "slow"
-    version = 1
-
-    def __init__(self, duration: float) -> None:
-        self._duration = duration
-
-    async def run(self, inp: SkillInput) -> SkillOutput:  # noqa: ARG002
-        await asyncio.sleep(self._duration)
-        return SkillOutput(
-            ok=True, result={"slept": self._duration}, side_effects=[],
-        )
-
-
-def _m(id_: str, v: int = 1, *, max_cpu: float = 5.0) -> SkillManifest:
-    return SkillManifest(id=id_, version=v, max_cpu_seconds=max_cpu)
+def _m_slow(*, max_cpu: float = 15.0) -> SkillManifest:
+    return SkillManifest(id=PickleSlow.id, version=1, max_cpu_seconds=max_cpu)
 
 
 # ── runtime fixture registry ─────────────────────────────────────────────
@@ -72,8 +64,13 @@ async def _build_local() -> _RuntimeFixture:
     return _RuntimeFixture(runtime=LocalSkillRuntime(), name="local")
 
 
+async def _build_process() -> _RuntimeFixture:
+    return _RuntimeFixture(runtime=ProcessSkillRuntime(), name="process")
+
+
 _RUNTIME_BUILDERS: list[tuple[str, Callable[[], Any]]] = [
     ("local", _build_local),
+    ("process", _build_process),
 ]
 
 
@@ -84,7 +81,12 @@ _RUNTIME_BUILDERS: list[tuple[str, Callable[[], Any]]] = [
 async def runtime(request: Any) -> AsyncIterator[_RuntimeFixture]:
     builder = request.param
     f = await builder()
-    yield f
+    try:
+        yield f
+    finally:
+        shutdown = getattr(f.runtime, "shutdown", None)
+        if shutdown is not None:
+            shutdown()
 
 
 # ── conformance tests ────────────────────────────────────────────────────
@@ -92,24 +94,28 @@ async def runtime(request: Any) -> AsyncIterator[_RuntimeFixture]:
 
 @pytest.mark.asyncio
 async def test_fork_returns_before_skill_finishes(runtime: _RuntimeFixture) -> None:
+    # 2-second sleep is long enough to still be running after spawn overhead
+    # (Windows spawn can take ~300-500ms for a fresh Python interpreter).
     handle = await runtime.runtime.fork(
-        _SlowSkill(duration=0.2), _m("slow"), args={},
+        PickleSlow(duration=2.0), _m_slow(max_cpu=15.0), args={},
     )
-    # Status must be RUNNING immediately after fork.
+    # Let the child actually start (Windows spawn overhead).
+    await asyncio.sleep(0.5)
     s = await runtime.runtime.status(handle)
     assert s == SkillStatus.RUNNING
-    # Cleanup: wait so the asyncio loop has nothing leftover.
-    await runtime.runtime.wait(handle)
+    # Cleanup: drain the pending execution.
+    await runtime.runtime.kill(handle)
 
 
 @pytest.mark.asyncio
 async def test_wait_returns_skill_output_with_args(runtime: _RuntimeFixture) -> None:
     handle = await runtime.runtime.fork(
-        _QuickSkill(), _m("quick"), args={"x": 1},
+        PickleEcho(), _m_echo(), args={"x": 1},
     )
     out = await runtime.runtime.wait(handle)
     assert out.ok is True
-    assert out.result == {"args": {"x": 1}}
+    # PickleEcho returns {"echoed": inp.args}
+    assert out.result == {"echoed": {"x": 1}}
     assert await runtime.runtime.status(handle) == SkillStatus.SUCCEEDED
 
 
@@ -117,8 +123,10 @@ async def test_wait_returns_skill_output_with_args(runtime: _RuntimeFixture) -> 
 async def test_timeout_produces_ok_false_not_exception(runtime: _RuntimeFixture) -> None:
     """The runtime must NEVER propagate asyncio.TimeoutError to the caller.
     A timeout MUST surface as ``SkillOutput(ok=False, ...)``."""
+    # Cap at 1.0s so subprocess spawn can complete before the deadline;
+    # child sleeps 10s so the timeout definitely fires.
     handle = await runtime.runtime.fork(
-        _SlowSkill(duration=5.0), _m("slow", max_cpu=0.1), args={},
+        PickleSlow(duration=10.0), _m_slow(max_cpu=1.0), args={},
     )
     out = await runtime.runtime.wait(handle)
     assert out.ok is False
@@ -129,16 +137,19 @@ async def test_timeout_produces_ok_false_not_exception(runtime: _RuntimeFixture)
 @pytest.mark.asyncio
 async def test_kill_transitions_status_to_killed(runtime: _RuntimeFixture) -> None:
     handle = await runtime.runtime.fork(
-        _SlowSkill(duration=5.0), _m("slow", max_cpu=10.0), args={},
+        PickleSlow(duration=10.0), _m_slow(max_cpu=30.0), args={},
     )
-    await asyncio.sleep(0.05)
+    # Subprocess needs time to actually start before kill is meaningful.
+    await asyncio.sleep(0.5)
     await runtime.runtime.kill(handle)
     assert await runtime.runtime.status(handle) == SkillStatus.KILLED
 
 
 @pytest.mark.asyncio
 async def test_kill_is_idempotent(runtime: _RuntimeFixture) -> None:
-    handle = await runtime.runtime.fork(_QuickSkill(), _m("quick"), args={})
+    handle = await runtime.runtime.fork(
+        PickleEcho(), _m_echo(), args={},
+    )
     await runtime.runtime.wait(handle)
     await runtime.runtime.kill(handle)   # on finished handle — no raise
     await runtime.runtime.kill(handle)   # twice in a row — no raise
@@ -156,5 +167,7 @@ async def test_enforce_manifest_rejects_negative_cpu(runtime: _RuntimeFixture) -
 async def test_manifest_skill_identity_mismatch_rejected(runtime: _RuntimeFixture) -> None:
     with pytest.raises(ValueError):
         await runtime.runtime.fork(
-            _QuickSkill(), _m("wrong_id"), args={},
+            PickleEcho(),
+            SkillManifest(id="wrong_id", version=1, max_cpu_seconds=5.0),
+            args={},
         )
