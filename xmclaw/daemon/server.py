@@ -1738,26 +1738,40 @@ async def agent_websocket(websocket: WebSocket, agent_id: str):
 
                 # Generator finished normally (did not hit ask_user)
                 if _pending_agent is None:
-                    # Publish agent:stop BEFORE sending done so event arrives first
-                    await bus.publish(Event(
+                    # Frame-alignment fix: `done` must carry agent_id itself so
+                    # the frontend can attribute it without racing against a
+                    # separately-dispatched agent:stop event. The previous
+                    # ``await bus.publish(agent:stop)`` only waited for event
+                    # dispatch, not for subscriber handlers — on even-numbered
+                    # turns the stale handler was still processing while
+                    # ``done`` fired, corrupting the next turn's frame window.
+                    # Now: send done (with agent_id) first, fire-and-forget
+                    # the bus event second.
+                    await websocket.send_text(json.dumps({
+                        "type": "done",
+                        "agent_id": agent_id,
+                    }))
+                    asyncio.create_task(bus.publish(Event(
                         event_type="agent:stop",
                         source="orchestrator",
                         target=agent_id,
                         payload={"agent_id": agent_id},
-                    ))
-                    await websocket.send_text(json.dumps({"type": "done"}))
+                    )))
                 # else: ask_user paused — _pending_agent keeps agen alive
 
             except StopAsyncIteration:
-                # Generator exhausted — publish agent:stop before done
+                # Generator exhausted — same frame-alignment treatment as above.
                 _pending_agent = None
-                await bus.publish(Event(
+                await websocket.send_text(json.dumps({
+                    "type": "done",
+                    "agent_id": agent_id,
+                }))
+                asyncio.create_task(bus.publish(Event(
                     event_type="agent:stop",
                     source="orchestrator",
                     target=agent_id,
                     payload={"agent_id": agent_id},
-                ))
-                await websocket.send_text(json.dumps({"type": "done"}))
+                )))
             except Exception as e:
                 _pending_agent = None
                 import traceback

@@ -429,14 +429,33 @@ class SkillMatcher:
             return f"[执行失败] {e}"
 
     def format_skill_results(self, result: SkillMatchResult) -> str:
-        """Format auto-executed skill results for prompt injection."""
-        if not result["auto_executed"]:
-            return ""
-        lines = ["【技能执行结果】"]
-        for item in result["auto_executed"]:
-            lines.append(f"  [{item['name']}] {item['result'][:200]}")
+        """Format skill match output for prompt injection.
+
+        Previously this returned "" whenever ``auto_executed`` was empty, so
+        matched-but-not-executed skills (confidence below the auto-exec
+        threshold) were completely invisible to the LLM — the agent had no
+        idea the user had a nearby skill that *could* solve the task, and
+        kept rebuilding the answer from scratch. Now we always emit the
+        top matches so the LLM can decide whether to invoke a skill
+        manually via tools.
+        """
+        lines: list[str] = []
+        if result["auto_executed"]:
+            lines.append("【技能执行结果】")
+            for item in result["auto_executed"]:
+                lines.append(f"  [{item['name']}] {str(item['result'])[:200]}")
         if result["failed"]:
             lines.append("【技能执行失败】")
             for item in result["failed"]:
                 lines.append(f"  [{item['name']}] {item['error']}")
+        auto_names = {s.get("name") for s in result["auto_executed"]} | {s.get("name") for s in result["failed"]}
+        candidates = [s for s in result["matched"] if s.get("name") not in auto_names]
+        if candidates:
+            lines.append("【可用技能(置信度不足以自动执行,需要时请手动调用)】")
+            for s in candidates[:5]:
+                name = s.get("name", "?")
+                desc = (s.get("description") or "")[:120]
+                score = s.get("score")
+                score_txt = f" score={score:.2f}" if isinstance(score, (int, float)) else ""
+                lines.append(f"  - {name}{score_txt}: {desc}")
         return "\n".join(lines)

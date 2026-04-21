@@ -270,6 +270,38 @@ class AgentLoop:
                          type=_pv(task_profile, "type"), complexity=_pv(task_profile, "complexity"))
             self._stages_done.add("stage1")
 
+        # ── Trivial-chat fast path ──────────────────────────────────────────────
+        # For a "你好"-class greeting (type=chat, complexity=low) we spent ~3–5s
+        # running InfoGatherer + SkillMatcher that always returned empty, just
+        # so the LLM could say "hi" back. Short-circuit stages 2/3/4 by seeding
+        # empty results and marking them done; Stage 5 still builds a prompt,
+        # but without the pointless round-trips. Planning is already skipped
+        # for low complexity, so we only need to elide gather + skill match.
+        _t_type = _pv(task_profile, "type")
+        _t_cx = _pv(task_profile, "complexity")
+        if (
+            _t_type == "chat"
+            and _t_cx == "low"
+            and "stage2" not in self._stages_done
+            and "stage4" not in self._stages_done
+        ):
+            logger.info("trivial_chat_fast_path", type=_t_type, complexity=_t_cx)
+            empty_gathered = {
+                "memories": [], "insights": [], "web_results": [],
+                "reasoning": "skipped (trivial chat fast path)",
+            }
+            self._gathered = empty_gathered
+            self._gathered_text = ""
+            self._skill_result = {"matched": [], "auto_executed": [], "failed": []}
+            self._skill_text = ""
+            self._stages_done.add("stage2")
+            self._stages_done.add("stage4")
+            yield json.dumps({
+                "type": "stage", "stage": "fast_path",
+                "label": "⚡ 快速通道",
+                "desc": "简单对话，跳过信息收集与技能匹配",
+            })
+
         # ── Stage 2: Information Gathering ──────────────────────────────────────
         if "stage2" in self._stages_done:
             gathered = self._gathered
@@ -499,6 +531,27 @@ class AgentLoop:
                         current_tool = None
                         in_tool_call = False
 
+                elif event_type == "usage":
+                    # LLM client's synthetic usage event (anthropic_client /
+                    # openai_client emit this at end-of-stream). Book it into
+                    # the cost tracker and forward to the UI so the cost bar
+                    # updates in real time. Previously cost_tracker was
+                    # wired up but never received a single record() call,
+                    # so summary() always reported zero.
+                    try:
+                        self.cost_tracker.record(
+                            provider=event.get("provider", "unknown"),
+                            model=event.get("model", "unknown"),
+                            prompt_tokens=int(event.get("prompt_tokens", 0) or 0),
+                            completion_tokens=int(event.get("completion_tokens", 0) or 0),
+                        )
+                        yield json.dumps({
+                            "type": "cost",
+                            "summary": self.cost_tracker.summary(),
+                        })
+                    except Exception as e:
+                        logger.warning("cost_record_failed", error=str(e))
+
                 elif event_type == "error":
                     error_msg = event.get("content", "Unknown error")
                     yield json.dumps({"type": "error", "content": error_msg})
@@ -550,14 +603,19 @@ class AgentLoop:
                 self._tool_patterns[tool_name] = self._tool_patterns.get(tool_name, 0) + 1
                 # Use tool-specific threshold if configured, otherwise use default
                 effective_threshold = self._tool_thresholds.get(tool_name, self._pattern_threshold)
+                # Emit only the *effective* threshold — previously we also sent
+                # ``threshold=self._pattern_threshold`` which is the global
+                # default (always 2) regardless of per-tool overrides, so
+                # telemetry consumers reading the `threshold` field showed a
+                # dead constant that didn't match the actual trigger point.
                 await self._event_bus.publish(Event(
                     event_type=EventType.TOOL_CALLED,
                     source=self.agent_id,
                     payload={
                         "tool": tool_name,
                         "count": self._tool_patterns[tool_name],
-                        "threshold": self._pattern_threshold,
-                        "effective_threshold": effective_threshold,
+                        "threshold": effective_threshold,
+                        "default_threshold": self._pattern_threshold,
                         "is_tool_specific": tool_name in self._tool_thresholds,
                         "args": args,
                     },
@@ -735,7 +793,12 @@ class AgentLoop:
             except Exception as e:
                 logger.warning("inline_reflection_failed", error=str(e))
 
-        yield json.dumps({"type": "done"})
+        # NOTE: do NOT yield {"type": "done"} here. The daemon's websocket
+        # handler (xmclaw/daemon/server.py) sends the authoritative done
+        # frame *with* agent_id once the generator exits. Yielding a bare
+        # done from here caused frontends to receive two done frames per
+        # turn, the first without agent_id — which misattributed completion
+        # back to whichever agent was previously active.
 
     def _schedule_evolution_only(self) -> None:
         """Fire-and-forget: trigger evolution (pattern-based) in background.

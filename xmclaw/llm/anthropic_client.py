@@ -125,6 +125,25 @@ class AnthropicClient:
                             yield json.dumps({"type": "tool_call_end"})
                             _in_tool_block = False
 
+                # After the stream exits, Anthropic gives us the final message
+                # with a `usage` block. We forward it as a synthetic `usage`
+                # event so cost_tracker.record() can be called from the agent
+                # loop without reaching back into SDK internals. Silent failure
+                # here must not break the turn — pricing is telemetry.
+                try:
+                    final_msg = await stream.get_final_message()
+                    usage = getattr(final_msg, "usage", None)
+                    if usage is not None:
+                        yield json.dumps({
+                            "type": "usage",
+                            "provider": "anthropic",
+                            "model": self.model,
+                            "prompt_tokens": getattr(usage, "input_tokens", 0) or 0,
+                            "completion_tokens": getattr(usage, "output_tokens", 0) or 0,
+                        })
+                except Exception as e:
+                    logger.warning("anthropic_usage_capture_failed", error=str(e))
+
         except Exception as e:
             logger.error("anthropic_stream_error", error=str(e))
             yield json.dumps({"type": "error", "content": f"[Anthropic Error: {e}]"})

@@ -113,12 +113,29 @@ class OpenAIClient:
                 tools=oai_tools if oai_tools else None,
                 tool_choice="auto" if oai_tools else None,
                 stream=True,
+                # Ask OpenAI to include a final chunk with `usage`. Without
+                # this flag the SDK streams deltas only and we have no way
+                # to bill the turn — cost_tracker.record() stays at zero.
+                stream_options={"include_usage": True},
             )
 
             # Track per-index tool call accumulation
             active_tools: dict[int, dict] = {}
 
             async for chunk in response:
+                # The final "usage" chunk arrives AFTER all choices; it has
+                # no `choices` array but carries the token counts.
+                chunk_usage = getattr(chunk, "usage", None)
+                if chunk_usage is not None and not chunk.choices:
+                    yield json.dumps({
+                        "type": "usage",
+                        "provider": "openai",
+                        "model": self.model,
+                        "prompt_tokens": getattr(chunk_usage, "prompt_tokens", 0) or 0,
+                        "completion_tokens": getattr(chunk_usage, "completion_tokens", 0) or 0,
+                    })
+                    continue
+
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if delta is None:
                     continue

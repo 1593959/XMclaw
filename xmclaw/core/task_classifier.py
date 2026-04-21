@@ -13,6 +13,7 @@ from xmclaw.utils.log import logger
 
 
 class TaskType(str, Enum):
+    CHAT = "chat"                # 寒暄/打招呼 — trivial-chat fast path in agent_loop
     QA = "qa"                    # 问答/解释
     CODE = "code"                # 写代码/调试/重构
     SEARCH = "search"            # 网络搜索/信息查找
@@ -61,7 +62,7 @@ CLASSIFY_PROMPT = """\
 
 请用 JSON 格式输出分析结果（不要 markdown 代码块）:
 {{
-  "type": "code|search|plan|creative|learning|file_op|system|qa|general",
+  "type": "chat|code|search|plan|creative|learning|file_op|system|qa|general",
   "complexity": "low|medium|high",
   "capabilities_needed": ["web_search", "file_read", ...],
   "recommended_actions": ["search_web", "load_examples", "plan_steps", ...],
@@ -153,6 +154,24 @@ class TaskClassifier:
     def _fast_classify(self, user_input: str) -> dict | None:
         """Heuristic fast-path for obvious patterns. Returns dict or None."""
         text = user_input.strip().lower()
+
+        # Greeting / trivial-chat patterns — route to chat+low so the
+        # agent loop's trivial-chat fast path can skip gather + skill
+        # match. Without this heuristic, "你好" falls through to the LLM
+        # classifier, and when upstream 529s it lands in the FALLBACK
+        # branch as type=general, which doesn't match the chat gate.
+        _GREETING_TOKENS = (
+            "你好", "您好", "哈喽", "嗨",
+            "hi", "hello", "hey", "yo",
+            "早上好", "晚上好", "晚安", "谢谢", "thanks", "thank you",
+        )
+        if len(text) <= 10 and any(text == tok or text.startswith(tok) for tok in _GREETING_TOKENS):
+            return {
+                "type": "chat", "complexity": "low",
+                "capabilities_needed": [],
+                "recommended_actions": ["end_response"],
+                "reasoning": "检测到打招呼/简短对话", "subtasks": [],
+            }
 
         # Coding patterns
         if any(kw in text for kw in ["写代码", "写个", "代码", "debug", "fix", "bug", "function", "def ", "class ", "import ", "=>", "->", "fn ", "//"]):
