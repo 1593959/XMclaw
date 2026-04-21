@@ -37,6 +37,7 @@ def create_app(
     bus: InProcessEventBus | None = None,
     auth_check: Callable[[dict[str, str]], Awaitable[bool]] | None = None,
     agent: AgentLoop | None = None,
+    config: dict[str, Any] | None = None,
 ) -> FastAPI:
     """Build the v2 FastAPI app.
 
@@ -52,13 +53,27 @@ def create_app(
     agent : AgentLoop | None
         Optional agent turn orchestrator. When provided, user messages
         trigger ``agent.run_turn`` (LLM ↔ tool loop); events flow back
-        via the bus subscription. When absent (Phase 4.0 default), user
-        messages are just bus-echoed — useful for WS-plumbing tests
-        and clients that manage their own reasoning upstream.
+        via the bus subscription.
+    config : dict | None
+        Optional config dict (``daemon/config.json`` shape). If
+        ``agent`` is not provided but ``config`` is, the factory tries
+        to build an AgentLoop from the config's LLM section. This is
+        the usable-out-of-the-box path for ``xmclaw v2 serve``.
+
+    Precedence: explicit ``agent=`` wins over ``config=``. If neither
+    is given, the daemon runs in Phase 4.0 echo mode — useful for
+    WS-plumbing tests and clients that manage their own reasoning
+    upstream.
     """
     app = FastAPI(title="XMclaw v2 daemon", version=__version__)
     bus = bus or InProcessEventBus()
     app.state.bus = bus
+
+    if agent is None and config is not None:
+        # Local import avoids a circular dep (factory imports from this
+        # module's sibling packages).
+        from xmclaw.daemon.factory import build_agent_from_config
+        agent = build_agent_from_config(config, bus)
     app.state.agent = agent
 
     @app.get("/health")
