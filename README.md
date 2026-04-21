@@ -11,6 +11,12 @@
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.10+-blue.svg?style=for-the-badge" alt="Python"></a>
 </p>
 
+> ⚠️ **This branch is `v2-rewrite`.** A ground-up rewrite is in progress. See
+> [docs/REWRITE_PLAN.md](docs/REWRITE_PLAN.md) for the strategic plan and
+> [docs/V2_DEVELOPMENT.md](docs/V2_DEVELOPMENT.md) for the technical design.
+> v1 modules still live alongside the v2 skeleton during the strangler-fig
+> transition — try the v2 smoke test with `xmclaw v2 ping`.
+
 **XMclaw** is a personal AI agent that runs entirely on your machine. It is not a chatbot — it is a runtime that can think, act, remember, and continuously improve itself over time.
 
 Unlike a stateless chat interface, XMclaw maintains memory across sessions, executes real tools on your filesystem and system, and automatically evolves its own gene pool and skill library based on your usage patterns.

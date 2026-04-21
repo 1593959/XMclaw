@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xmclaw"
-version = "0.1.0"
-description = "XMclaw - A local-first, self-evolving AI Agent runtime"
+version = "2.0.0.dev0"
+description = "XMclaw - A local-first, self-evolving AI Agent runtime (v2-rewrite in progress)"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.115.0",
@@ -60,3 +60,6 @@ extend-exclude = [
 [tool.mypy]
 python_version = "3.12"
 strict = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
