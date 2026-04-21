@@ -54,10 +54,18 @@ from xmclaw.utils.cost import BudgetExceeded, CostTracker
 
 
 _DEFAULT_SYSTEM = (
-    "You are a helpful assistant. You have access to tools when they are "
-    "provided. Use tools for any task that requires reading, writing, or "
-    "acting on the user's system; don't guess at file contents. Respond "
-    "with plain text when no tool is needed."
+    "You are XMclaw, a local-first AI agent running on the user's machine. "
+    "\n\n"
+    "You remember earlier turns in this conversation. When the user asks "
+    "about something established earlier (their name, a file they mentioned, "
+    "a decision you made together), answer from that history -- don't act "
+    "like the conversation just started. "
+    "\n\n"
+    "When tools are available, use them for any task requiring real file, "
+    "system, or network access. Don't guess at file contents or invent facts "
+    "you can verify. Say \"I don't know\" when you genuinely don't. "
+    "\n\n"
+    "Respond in the language the user is writing in."
 )
 
 
@@ -95,6 +103,7 @@ class AgentLoop:
         max_hops: int = 5,
         agent_id: str = "agent",
         cost_tracker: CostTracker | None = None,
+        history_cap: int = 40,
     ) -> None:
         self._llm = llm
         self._bus = bus
@@ -103,6 +112,42 @@ class AgentLoop:
         self._max_hops = max_hops
         self._agent_id = agent_id
         self._cost_tracker = cost_tracker
+        # Per-session conversation history. Keyed by session_id; each value
+        # is the running list of Messages EXCLUDING the system prompt
+        # (which is re-prepended on every run_turn so operator changes to
+        # _system_prompt take effect immediately, not after the next restart).
+        self._histories: dict[str, list[Message]] = {}
+        self._history_cap = history_cap
+
+    def clear_session(self, session_id: str) -> None:
+        """Drop a session's conversation history. Called by the WS gateway
+        on SESSION_LIFECYCLE destroy, or by a ``/reset`` user intent."""
+        self._histories.pop(session_id, None)
+
+    def _persist_history(
+        self, session_id: str, messages: list[Message],
+    ) -> None:
+        """Save conversation history (system prompt excluded) with a size cap.
+
+        Trims from the front to keep the most recent ``_history_cap``
+        messages. Because Anthropic / OpenAI require assistant messages
+        with tool_calls to be immediately followed by their tool results,
+        we round the cut point up to the next "clean" boundary -- i.e.
+        skip forward past any trailing tool-result orphans until we
+        land on a user message or the end.
+        """
+        # Drop the system message we prepended for this turn.
+        history = [m for m in messages if m.role != "system"]
+        if len(history) <= self._history_cap:
+            self._histories[session_id] = history
+            return
+        start = len(history) - self._history_cap
+        # Advance past partial tool blocks: if the first kept message is a
+        # tool result or an assistant message that references tools, skip
+        # forward to the next user turn.
+        while start < len(history) and history[start].role in ("tool", "assistant"):
+            start += 1
+        self._histories[session_id] = history[start:]
 
     async def run_turn(
         self, session_id: str, user_message: str,
@@ -128,8 +173,13 @@ class AgentLoop:
             {"content": user_message, "channel": "agent_loop"},
         )
 
+        # Resume prior history for this session; the first turn starts empty.
+        # Note: system prompt is prepended fresh each turn (not stored in
+        # history) so reprovisioning the agent picks up the new prompt.
+        prior = self._histories.get(session_id, [])
         messages: list[Message] = [
             Message(role="system", content=self._system_prompt),
+            *prior,
             Message(role="user", content=user_message),
         ]
         tool_specs = self._tools.list_tools() if self._tools else None
@@ -283,7 +333,13 @@ class AgentLoop:
                 # Next hop: send tool results back to the LLM.
                 continue
 
-            # 4. No tool calls — terminal assistant text.
+            # 4. No tool calls -- terminal assistant text.
+            # Append the assistant turn to messages so it becomes part of
+            # the saved history for the next turn.
+            messages.append(Message(
+                role="assistant", content=response.content,
+            ))
+            self._persist_history(session_id, messages)
             return AgentTurnResult(
                 ok=True, text=response.content, hops=hop + 1,
                 tool_calls=tool_calls_made,

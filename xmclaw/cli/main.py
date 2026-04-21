@@ -80,7 +80,7 @@ def ping() -> None:
 @app.command()
 def serve(
     host: str = typer.Option("127.0.0.1", help="Bind address."),
-    port: int = typer.Option(8766, help="Port to bind."),
+    port: int = typer.Option(8765, help="Port to bind."),
     config: str = typer.Option(
         "daemon/config.json",
         help=("Path to config JSON (read for LLM provider key). "
@@ -174,7 +174,7 @@ def serve(
 @app.command()
 def start(
     host: str = typer.Option("127.0.0.1", help="Bind address."),
-    port: int = typer.Option(8766, help="Port to bind."),
+    port: int = typer.Option(8765, help="Port to bind."),
     config: str = typer.Option(
         "daemon/config.json", help="Path to config JSON.",
     ),
@@ -233,7 +233,7 @@ def stop(
 @app.command()
 def restart(
     host: str = typer.Option("127.0.0.1", help="Bind address."),
-    port: int = typer.Option(8766, help="Port to bind."),
+    port: int = typer.Option(8765, help="Port to bind."),
     config: str = typer.Option(
         "daemon/config.json", help="Path to config JSON.",
     ),
@@ -287,7 +287,7 @@ def status() -> None:
 @app.command()
 def chat(
     url: str = typer.Option(
-        "ws://127.0.0.1:8766/agent/v2/{session_id}",
+        "ws://127.0.0.1:8765/agent/v2/{session_id}",
         help=(
             "Daemon WS URL. ``{session_id}`` in the URL is substituted "
             "by the chosen / generated session id."
@@ -355,7 +355,7 @@ def doctor(
         "daemon/config.json", help="Path to config JSON.",
     ),
     host: str = typer.Option("127.0.0.1", help="Daemon host to probe."),
-    port: int = typer.Option(8766, help="Daemon port to probe."),
+    port: int = typer.Option(8765, help="Daemon port to probe."),
     no_daemon_probe: bool = typer.Option(
         False, "--no-daemon-probe",
         help="Skip the HTTP health probe (offline mode).",

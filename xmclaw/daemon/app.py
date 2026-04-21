@@ -118,7 +118,7 @@ def create_app(
 
     # ── /ui/ static files + root redirect ──
     # Phase 4.6: serve a single-page UI bundled with the package, so
-    # users can open `http://127.0.0.1:8766/` in a browser and get a
+    # users can open `http://127.0.0.1:8765/` in a browser and get a
     # working chat interface. The UI files live in
     # xmclaw/daemon/static and are not auth-gated — the WebSocket
     # the UI connects to still requires the pairing token.
@@ -249,6 +249,11 @@ def create_app(
             pass
         finally:
             sub.cancel()
+            # Drop the session's in-memory conversation history so the
+            # next WS connection with the same session_id starts clean.
+            # (Cross-process persistence is a later phase.)
+            if agent is not None:
+                agent.clear_session(session_id)
             await bus.publish(make_event(
                 session_id=session_id, agent_id="daemon",
                 type=EventType.SESSION_LIFECYCLE,

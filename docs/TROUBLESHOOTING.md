@@ -47,7 +47,7 @@ kill -9 <进程ID>
 
 或者修改端口：
 ```bash
-xmclaw config set gateway.port 8766
+xmclaw config set gateway.port 8765
 xmclaw start
 ```
 
@@ -346,7 +346,7 @@ xmclaw start
 | `XMC__llm__anthropic__api_key` | Anthropic Key | `sk-ant-...` |
 | `XMC__llm__openai__api_key` | OpenAI Key | `sk-...` |
 | `XMC__evolution__enabled` | 禁用进化 | `false` |
-| `XMC__gateway__port` | 改端口 | `8766` |
+| `XMC__gateway__port` | 改端口 | `8765` |
 | `XMC_SECRET_KEY` | 加密密钥（可选） | 任意字符串 |
 | `HTTP_PROXY` / `HTTPS_PROXY` | 网络代理 | `http://...` |
 
