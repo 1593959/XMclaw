@@ -11,11 +11,27 @@
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.10+-blue.svg?style=for-the-badge" alt="Python"></a>
 </p>
 
-> ⚠️ **This branch is `v2-rewrite`.** A ground-up rewrite is in progress. See
-> [docs/REWRITE_PLAN.md](docs/REWRITE_PLAN.md) for the strategic plan and
-> [docs/V2_DEVELOPMENT.md](docs/V2_DEVELOPMENT.md) for the technical design.
-> v1 modules still live alongside the v2 skeleton during the strangler-fig
-> transition — try the v2 smoke test with `xmclaw v2 ping`.
+> ### 🚀 v2 delivery status (2026-04-21)
+>
+> A ground-up v2 rewrite is live in this branch. The self-evolution spine —
+> streaming observer bus + honest grader + online scheduler + versioned skill
+> registry + autonomous evolution controller — is **validated on a real LLM
+> with no human in the loop**:
+>
+> | Live bench | On | Result | Gate |
+> |---|---|---|---|
+> | [Learning curve](tests/bench/phase1_live_learning_curve.py) | MiniMax | **1.12× over uniform baseline** | ≥ 1.05× |
+> | [Tool-aware loop](tests/bench/phase2_tool_aware_live.py) | MiniMax | **100% real tool-firing** on every scored turn | ≥ 80% |
+> | [Autonomous evolution](tests/bench/phase3_autonomous_evolution_live.py) | MiniMax | **1.18× session-over-session** after auto-promote | ≥ 1.05× |
+>
+> **322 v2 tests pass.** Try the skeleton: `xmclaw v2 ping`. Start the daemon:
+> `xmclaw v2 serve`. Full details: [docs/V2_STATUS.md](docs/V2_STATUS.md) ·
+> [docs/REWRITE_PLAN.md](docs/REWRITE_PLAN.md) ·
+> [docs/V2_DEVELOPMENT.md](docs/V2_DEVELOPMENT.md).
+>
+> v1 modules still live alongside v2 during strangler-fig transition — the
+> shipping installer continues to use v1 until Phase 4 (daemon integration +
+> release pipeline rewrite) completes.
 
 **XMclaw** is a personal AI agent that runs entirely on your machine. It is not a chatbot — it is a runtime that can think, act, remember, and continuously improve itself over time.
 
