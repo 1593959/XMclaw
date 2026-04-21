@@ -63,6 +63,7 @@ V2_MODULES = [
     "xmclaw.plugins",
     "xmclaw.plugins.loader",
     "xmclaw.cli.v2",
+    "xmclaw.daemon.app_v2",
 ]
 
 

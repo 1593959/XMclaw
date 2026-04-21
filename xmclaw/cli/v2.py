@@ -65,3 +65,28 @@ def ping() -> None:
         return 0
 
     raise typer.Exit(code=asyncio.run(_run()))
+
+
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", help="Bind address (keep loopback until anti-req #8 auth lands)."),
+    port: int = typer.Option(8766, help="Port to bind."),
+    reload: bool = typer.Option(False, help="Uvicorn auto-reload (dev only)."),
+) -> None:
+    """Start the v2 daemon (FastAPI + WebSocket).
+
+    Connect a client to ``ws://{host}:{port}/agent/v2/{session_id}``.
+    Send frames like ``{"type": "user", "content": "hello"}`` and
+    receive BehavioralEvent frames back. Phase 4.1 will layer scheduler
+    + skill execution on top.
+    """
+    import uvicorn
+
+    typer.echo(f"xmclaw v{__version__} — binding ws://{host}:{port}")
+    typer.echo(f"  health:  http://{host}:{port}/health")
+    typer.echo(f"  session: ws://{host}:{port}/agent/v2/<session_id>")
+    uvicorn.run(
+        "xmclaw.daemon.app_v2:app",
+        host=host, port=port, reload=reload,
+        log_level="info",
+    )
