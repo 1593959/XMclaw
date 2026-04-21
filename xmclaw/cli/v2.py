@@ -69,12 +69,20 @@ def ping() -> None:
 
 @app.command()
 def serve(
-    host: str = typer.Option("127.0.0.1", help="Bind address (keep loopback until anti-req #8 auth lands)."),
+    host: str = typer.Option("127.0.0.1", help="Bind address."),
     port: int = typer.Option(8766, help="Port to bind."),
     config: str = typer.Option(
         "daemon/config.json",
         help=("Path to config JSON (read for LLM provider key). "
               "Falls back to echo-mode if absent or empty."),
+    ),
+    no_auth: bool = typer.Option(
+        False,
+        "--no-auth",
+        help=(
+            "DANGEROUS: skip pairing-token validation. Only safe on a "
+            "strictly trusted local machine with no browser usage."
+        ),
     ),
     reload: bool = typer.Option(False, help="Uvicorn auto-reload (dev only)."),
 ) -> None:
@@ -93,8 +101,25 @@ def serve(
     from xmclaw.core.bus import InProcessEventBus
     from xmclaw.daemon.app_v2 import create_app as _create_app
     from xmclaw.daemon.factory import ConfigError, build_agent_from_config, load_config
+    from xmclaw.daemon.pairing import (
+        default_token_path, load_or_create_token, validate_token,
+    )
 
     bus = InProcessEventBus()
+
+    # ── Anti-req #8 pairing setup ──
+    auth_check = None
+    if not no_auth:
+        token_path = default_token_path()
+        token = load_or_create_token(token_path)
+
+        async def _auth(presented: str | None) -> bool:
+            return validate_token(token, presented)
+        auth_check = _auth
+        typer.echo(f"  ✓ pairing token: {token_path}")
+    else:
+        typer.echo(f"  ⚠ --no-auth: anyone on this machine can connect")
+
     cfg_path = _Path(config)
     agent = None
     if cfg_path.exists():
@@ -131,7 +156,7 @@ def serve(
     typer.echo(f"  session: ws://{host}:{port}/agent/v2/<session_id>")
 
     # Build the app locally so the agent (if any) is wired in.
-    app_instance = _create_app(bus=bus, agent=agent)
+    app_instance = _create_app(bus=bus, agent=agent, auth_check=auth_check)
     uvicorn.run(app_instance, host=host, port=port, log_level="info")
 
 
@@ -147,12 +172,21 @@ def chat(
     session_id: str = typer.Option(
         "", help="Session id (auto-generated if empty).",
     ),
+    token: str = typer.Option(
+        "",
+        help=(
+            "Pairing token. Empty = read from the default pairing file "
+            "(same location xmclaw v2 serve writes)."
+        ),
+    ),
+    no_auth: bool = typer.Option(
+        False, "--no-auth", help="Skip pairing token (daemon must also be --no-auth).",
+    ),
 ) -> None:
     """Interactive REPL that talks to a running v2 daemon.
 
     Connects to the daemon's WebSocket, prompts for user input, and
-    renders the event stream back as a readable conversation (LLM
-    thinking, tool calls, tool results, violations).
+    renders the event stream back as a readable conversation.
 
     Start a daemon in another terminal first:
 
@@ -163,8 +197,29 @@ def chat(
         xmclaw v2 chat
     """
     from xmclaw.cli.v2_chat import run_chat
+    from xmclaw.daemon.pairing import default_token_path
+
+    effective_token: str | None
+    if no_auth:
+        effective_token = None
+    elif token:
+        effective_token = token
+    else:
+        p = default_token_path()
+        if p.exists():
+            effective_token = p.read_text(encoding="utf-8").strip()
+        else:
+            typer.echo(
+                f"  ⚠ no pairing token at {p} — start the daemon first "
+                f"(`xmclaw v2 serve` creates one), or pass --no-auth "
+                f"if the daemon is running with --no-auth.",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+
     exit_code = run_chat(
         url=url,
         session_id=session_id or None,
+        token=effective_token,
     )
     raise typer.Exit(code=exit_code)

@@ -35,7 +35,7 @@ from xmclaw.core.bus import (
 def create_app(
     *,
     bus: InProcessEventBus | None = None,
-    auth_check: Callable[[dict[str, str]], Awaitable[bool]] | None = None,
+    auth_check: Callable[[str | None], Awaitable[bool]] | None = None,
     agent: AgentLoop | None = None,
     config: dict[str, Any] | None = None,
 ) -> FastAPI:
@@ -48,8 +48,12 @@ def create_app(
         each ``create_app`` call gets an isolated bus — useful for
         tests. Production callers should pass a shared bus.
     auth_check : callable | None
-        Async ``(headers: dict) -> bool`` for anti-req #8 device auth.
-        Default accepts all (loopback-only).
+        Async ``(token: str | None) -> bool`` for anti-req #8 pairing.
+        The server extracts the token from either the ``token`` query
+        parameter or an ``Authorization: Bearer <token>`` header. When
+        ``auth_check`` is set, a missing or failed token closes the WS
+        with code 4401. Default (``None``) accepts all connections —
+        safe only on loopback.
     agent : AgentLoop | None
         Optional agent turn orchestrator. When provided, user messages
         trigger ``agent.run_turn`` (LLM ↔ tool loop); events flow back
@@ -87,15 +91,26 @@ def create_app(
 
     @app.websocket("/agent/v2/{session_id}")
     async def agent_ws(ws: WebSocket, session_id: str) -> None:
-        # Auth gate (anti-req #8 stub — Phase 4.x puts ed25519 here).
+        # Anti-req #8 gate. Token arrives either as a query param
+        # (browsers can't set WS headers) or an Authorization: Bearer
+        # header (CLIs / SDKs). We check both so we don't force one
+        # choice on every kind of client.
         if auth_check is not None:
-            headers = dict(ws.headers)
+            token: str | None = ws.query_params.get("token")
+            if not token:
+                auth_header = ws.headers.get("authorization", "") or ""
+                if auth_header.lower().startswith("bearer "):
+                    token = auth_header[len("bearer "):].strip() or None
             ok = False
             try:
-                ok = await auth_check(headers)
+                ok = await auth_check(token)
             except Exception:  # noqa: BLE001 — auth must never crash daemon
                 ok = False
             if not ok:
+                # WebSocket protocol needs accept() before close(), or the
+                # client gets a bare TCP reset with no close code. We want
+                # 4401 visible to the client, so accept then close.
+                await ws.accept()
                 await ws.close(code=4401, reason="unauthorized")
                 return
 
