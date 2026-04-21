@@ -7,11 +7,36 @@ stores and retrieves — caller controls prompt stitching).
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 
 import pytest
 
 from xmclaw.providers.memory.base import MemoryItem
 from xmclaw.providers.memory.sqlite_vec import SqliteVecMemory
+
+
+def _sqlite_extension_supported() -> bool:
+    """Whether this Python build's sqlite3 can load extensions.
+
+    macOS system Python and some Homebrew/pyenv builds disable it;
+    all Windows builds and most Linux distros enable it.
+    """
+    try:
+        conn = sqlite3.connect(":memory:")
+        has_attr = hasattr(conn, "enable_load_extension")
+        conn.close()
+        return has_attr
+    except Exception:  # noqa: BLE001
+        return False
+
+
+requires_vec = pytest.mark.skipif(
+    not _sqlite_extension_supported(),
+    reason=(
+        "sqlite3 extension loading not available on this Python build — "
+        "vector retrieval skipped; non-vector paths still tested"
+    ),
+)
 
 
 def _item(
@@ -116,6 +141,7 @@ async def test_text_substring_fallback() -> None:
 
 # ── semantic (anti-req #2 core) ───────────────────────────────────────────
 
+@requires_vec
 @pytest.mark.asyncio
 async def test_vector_retrieval_returns_nearest_first() -> None:
     """Vector query: caller supplies embeddings, provider returns by distance.
@@ -137,6 +163,7 @@ async def test_vector_retrieval_returns_nearest_first() -> None:
     mem.close()
 
 
+@requires_vec
 @pytest.mark.asyncio
 async def test_embedding_dim_frozen_after_first_put() -> None:
     """Lazy vec-table creation freezes dim on the first put with embedding."""
