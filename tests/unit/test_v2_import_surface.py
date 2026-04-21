@@ -28,6 +28,8 @@ V2_MODULES = [
     "xmclaw.core.scheduler.policy",
     "xmclaw.core.session",
     "xmclaw.core.session.lifecycle",
+    "xmclaw.core.evolution",
+    "xmclaw.core.evolution.controller",
     "xmclaw.providers",
     "xmclaw.providers.llm",
     "xmclaw.providers.llm.base",
