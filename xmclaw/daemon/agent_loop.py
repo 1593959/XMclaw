@@ -50,6 +50,7 @@ from xmclaw.core.bus import (
 from xmclaw.core.ir import ToolCall, ToolResult
 from xmclaw.providers.llm.base import LLMProvider, Message
 from xmclaw.providers.tool.base import ToolProvider
+from xmclaw.utils.cost import BudgetExceeded, CostTracker
 
 
 _DEFAULT_SYSTEM = (
@@ -93,6 +94,7 @@ class AgentLoop:
         system_prompt: str = _DEFAULT_SYSTEM,
         max_hops: int = 5,
         agent_id: str = "agent",
+        cost_tracker: CostTracker | None = None,
     ) -> None:
         self._llm = llm
         self._bus = bus
@@ -100,6 +102,7 @@ class AgentLoop:
         self._system_prompt = system_prompt
         self._max_hops = max_hops
         self._agent_id = agent_id
+        self._cost_tracker = cost_tracker
 
     async def run_turn(
         self, session_id: str, user_message: str,
@@ -132,6 +135,27 @@ class AgentLoop:
         tool_specs = self._tools.list_tools() if self._tools else None
 
         for hop in range(self._max_hops):
+            # Anti-req #6: check the hard budget cap BEFORE the LLM call.
+            # If we've already exceeded, abort with an
+            # ANTI_REQ_VIOLATION event — never swallow, never partial.
+            if self._cost_tracker is not None:
+                try:
+                    self._cost_tracker.check_budget()
+                except BudgetExceeded as exc:
+                    await publish(EventType.ANTI_REQ_VIOLATION, {
+                        "message": f"budget exceeded: {exc}",
+                        "kind": "budget_exceeded",
+                        "spent_usd": self._cost_tracker.spent_usd,
+                        "budget_usd": self._cost_tracker.budget_usd,
+                        "hop": hop,
+                    })
+                    return AgentTurnResult(
+                        ok=False, text="", hops=hop,
+                        tool_calls=tool_calls_made,
+                        events=events,
+                        error=f"budget_exceeded: {exc}",
+                    )
+
             # 2. LLM request event (messages_hash is a cheap fingerprint
             # so the bus consumer can distinguish different hops).
             await publish(EventType.LLM_REQUEST, {
@@ -178,6 +202,24 @@ class AgentLoop:
                 "completion_tokens": response.completion_tokens,
                 "latency_ms": latency_ms,
             })
+
+            # Anti-req #6 cont'd: record the call's usage against the
+            # budget right after we see it. check_budget on the NEXT
+            # hop will block if we crossed the cap during this one.
+            if self._cost_tracker is not None:
+                cost = self._cost_tracker.record(
+                    provider=getattr(self._llm, "__class__", type(self._llm)).__name__,
+                    model=getattr(self._llm, "model", "") or "",
+                    prompt_tokens=response.prompt_tokens,
+                    completion_tokens=response.completion_tokens,
+                )
+                await publish(EventType.COST_TICK, {
+                    "hop": hop,
+                    "cost_usd": cost,
+                    "spent_usd": self._cost_tracker.spent_usd,
+                    "budget_usd": self._cost_tracker.budget_usd,
+                    "remaining_usd": self._cost_tracker.remaining_usd,
+                })
 
             # 3. If the model made tool calls, execute them and feed
             # results back into the conversation.
