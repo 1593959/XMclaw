@@ -47,6 +47,7 @@ V2_MODULES = [
     "xmclaw.providers.tool.mcp_bridge",
     "xmclaw.providers.runtime",
     "xmclaw.providers.runtime.base",
+    "xmclaw.providers.runtime.local",
     "xmclaw.skills",
     "xmclaw.skills.base",
     "xmclaw.skills.manifest",
