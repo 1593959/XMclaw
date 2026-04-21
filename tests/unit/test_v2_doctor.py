@@ -166,6 +166,13 @@ def test_pairing_empty_file_is_critical(tmp_path: Path) -> None:
 def test_pairing_happy_path(tmp_path: Path) -> None:
     p = tmp_path / "tok.txt"
     p.write_text("a" * 64, encoding="utf-8")
+    # On POSIX, Path.write_text respects umask (typically 0o644 on
+    # GitHub runners), which doctor correctly flags as loose. Tighten
+    # to 0600 so this test exercises the happy path, not the
+    # loose-perms path (which has its own dedicated test).
+    if sys.platform != "win32":
+        import os
+        os.chmod(p, 0o600)
     r = check_pairing_token(p)
     assert r.ok
     assert "64 chars" in r.detail
