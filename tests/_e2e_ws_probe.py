@@ -1,10 +1,10 @@
 """Ad-hoc end-to-end WebSocket probe for the live XMclaw daemon.
 
-Drives /agent/{agent_id} exactly like the web UI does, captures every
-frame with timing, and prints a compact per-turn report so we can see
-what the pipeline actually emits for each class of user input.
+Open a FRESH WebSocket per turn so frames can't bleed across scenarios,
+capture a byte-offset slice of logs/daemon.log bracketing each turn so
+backend errors are attributable, and print a compact per-turn report.
 
-Not a pytest — throw-away harness for the v2 conversation-loop audit.
+Throwaway harness for the v2 conversation-loop audit, not a pytest.
 """
 from __future__ import annotations
 
@@ -13,20 +13,38 @@ import io
 import json
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 import websockets
 
-# Force utf-8 stdout so emoji / CJK in assistant responses don't crash the harness.
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 URL = "ws://127.0.0.1:8766/agent/default"
-TURN_TIMEOUT = 60.0         # hard ceiling per turn
-IDLE_AFTER_REFLECT = 6.0    # if reflect_done fired and no frames in this window, call it done
+TURN_TIMEOUT = 180.0  # seconds — evolution can take >60s on simple turns
+DAEMON_LOG = Path(r"C:\Users\15978\Desktop\XMclaw\logs\daemon.log")
 
 
-async def run_turn(ws: Any, user_input: str, *, label: str) -> dict:
-    """Send one user message and collect frames until `done`/`error`/timeout."""
+def tail_log_slice(start_offset: int) -> str:
+    """Read daemon.log from start_offset to EOF."""
+    try:
+        with open(DAEMON_LOG, "rb") as f:
+            f.seek(start_offset)
+            return f.read().decode("utf-8", errors="replace")
+    except FileNotFoundError:
+        return ""
+
+
+def log_size() -> int:
+    try:
+        return DAEMON_LOG.stat().st_size
+    except FileNotFoundError:
+        return 0
+
+
+async def run_turn(user_input: str, *, label: str) -> dict:
+    """Open a fresh WS, send one user message, drain until done/error/timeout."""
+    pre_offset = log_size()
     t0 = time.monotonic()
     frames: list[dict] = []
     saw_done = False
@@ -35,149 +53,151 @@ async def run_turn(ws: Any, user_input: str, *, label: str) -> dict:
     reflect_done_at: float | None = None
     hang_reason: str | None = None
 
-    await ws.send(json.dumps({"type": "user", "content": user_input}))
+    async with websockets.connect(URL, max_size=2**24, open_timeout=10) as ws:
+        await ws.send(json.dumps({"type": "user", "content": user_input}))
 
-    while True:
-        now = time.monotonic()
-        # Global deadline
-        if now - t0 > TURN_TIMEOUT:
-            hang_reason = f"hit hard timeout {TURN_TIMEOUT}s"
-            break
-        # Idle-after-reflect deadline: symptom of the "never-send-done" bug
-        if reflect_done_at is not None and (now - reflect_done_at) > IDLE_AFTER_REFLECT:
-            hang_reason = f"reflect_done but no done frame after {IDLE_AFTER_REFLECT}s"
-            break
+        while True:
+            now = time.monotonic()
+            if now - t0 > TURN_TIMEOUT:
+                hang_reason = f"hit hard timeout {TURN_TIMEOUT}s"
+                break
 
-        # recv with a short tick so we can evaluate the idle deadline
-        tick = 1.0
-        try:
-            raw = await asyncio.wait_for(ws.recv(), timeout=tick)
-        except asyncio.TimeoutError:
-            continue
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
+            except asyncio.TimeoutError:
+                continue
+            except websockets.exceptions.ConnectionClosed:
+                hang_reason = "server closed WS"
+                break
 
-        try:
-            frame = json.loads(raw)
-        except json.JSONDecodeError:
-            frames.append({"type": "__malformed__", "raw": raw[:200]})
-            continue
+            try:
+                frame = json.loads(raw)
+            except json.JSONDecodeError:
+                frames.append({"type": "__malformed__", "raw": raw[:200]})
+                continue
 
-        frames.append(frame)
-        ftype = frame.get("type")
+            frames.append(frame)
+            ftype = frame.get("type")
 
-        if ftype == "chunk" and first_chunk_at is None:
-            first_chunk_at = now - t0
+            if ftype == "chunk" and first_chunk_at is None:
+                first_chunk_at = now - t0
 
-        # The backend emits a "stage" frame named "reflect_done" at end of turn.
-        if ftype == "stage":
-            name = frame.get("name") or frame.get("payload", {}).get("name")
-            if name == "reflect_done":
-                reflect_done_at = now
+            if ftype == "stage":
+                name = frame.get("name") or frame.get("payload", {}).get("name")
+                if name == "reflect_done":
+                    reflect_done_at = now
 
-        if ftype == "done":
-            saw_done = True
-            break
-        if ftype == "error":
-            saw_error = frame.get("content", "")
-            break
-        if ftype == "ask_user":
-            await ws.send(json.dumps({"type": "ask_user_answer", "answer": "skip"}))
+            if ftype == "done":
+                saw_done = True
+                break
+            if ftype == "error":
+                saw_error = frame.get("content", "")
+                break
+            if ftype == "ask_user":
+                await ws.send(json.dumps({"type": "ask_user_answer", "answer": "skip"}))
 
-    elapsed = time.monotonic() - t0
+    log_slice = tail_log_slice(pre_offset)
     return {
         "label": label,
         "input": user_input,
-        "elapsed_s": round(elapsed, 2),
+        "elapsed_s": round(time.monotonic() - t0, 2),
         "first_chunk_s": round(first_chunk_at, 2) if first_chunk_at else None,
+        "reflect_done_s": round(reflect_done_at - t0, 2) if reflect_done_at else None,
         "saw_done": saw_done,
         "saw_error": saw_error,
         "hang_reason": hang_reason,
         "frames": frames,
+        "log_slice": log_slice,
     }
 
 
-def summarize(report: dict) -> None:
-    """Print a per-turn digest."""
-    print(f"\n=== [{report['label']}] ===")
-    print(f"  input      : {report['input']!r}")
-    print(f"  elapsed    : {report['elapsed_s']}s  (first chunk @ {report['first_chunk_s']}s)")
-    print(f"  done/error : done={report['saw_done']} error={report['saw_error']!r} hang={report.get('hang_reason')!r}")
+def summarize(r: dict) -> None:
+    print(f"\n=== [{r['label']}] ===")
+    print(f"  input      : {r['input']!r}")
+    print(f"  elapsed    : {r['elapsed_s']}s  first_chunk={r['first_chunk_s']}  reflect_done={r['reflect_done_s']}")
+    print(f"  result     : done={r['saw_done']} error={r['saw_error']!r} hang={r['hang_reason']!r}")
 
-    # Roll up frame types
     counts: dict[str, int] = {}
-    for f in report["frames"]:
-        t = f.get("type", "?")
-        counts[t] = counts.get(t, 0) + 1
+    for f in r["frames"]:
+        counts[f.get("type", "?")] = counts.get(f.get("type", "?"), 0) + 1
     print(f"  frame types: {counts}")
 
-    # Pull out the interesting stuff
-    stages = [f for f in report["frames"] if f.get("type") == "stage"]
+    stages = [f for f in r["frames"] if f.get("type") == "stage"]
     if stages:
         print("  stages:")
         for s in stages:
-            name = s.get("name") or s.get("payload", {}).get("name") or s.get("stage") or s
-            status = s.get("status") or s.get("payload", {}).get("status")
-            print(f"    - {name!s:<30} {status or ''}")
+            name = s.get("name") or s.get("payload", {}).get("name")
+            print(f"    - {name}")
 
-    # Assistant text — concat chunks, trim
     text = "".join(f.get("content", "") or f.get("text", "")
-                   for f in report["frames"] if f.get("type") == "chunk")
+                   for f in r["frames"] if f.get("type") == "chunk")
     if text:
-        clipped = text if len(text) < 300 else text[:300] + "…"
-        print(f"  assistant  : {clipped!r}")
+        print(f"  chunks text: {(text if len(text) < 200 else text[:200] + '...')!r}")
     else:
-        print("  assistant  : <empty>")
+        print("  chunks text: <none>")
 
-    # Tool calls / results
-    tstarts = [f for f in report["frames"] if f.get("type") in ("tool_start", "tool_call")]
-    tresults = [f for f in report["frames"] if f.get("type") == "tool_result"]
-    if tstarts or tresults:
-        print(f"  tools      : starts={len(tstarts)} results={len(tresults)}")
-        for f in tstarts:
-            print(f"    start : {f.get('name') or f.get('tool')} args={str(f.get('arguments') or f.get('args') or f.get('payload',{}).get('arguments'))[:120]}")
-        for f in tresults:
-            print(f"    result: {f.get('name') or f.get('tool')} ok={f.get('ok')} content_len={len(str(f.get('content') or f.get('result') or ''))}")
+    # agent_message frames carry the whole assistant turn text too
+    agent_msgs = [f for f in r["frames"] if f.get("type") == "agent_message"]
+    for m in agent_msgs[:2]:
+        p = m.get("payload") or {}
+        msg = p.get("message") or p.get("text") or m.get("content")
+        if msg:
+            print(f"  agent_msg  : {(msg if len(msg) < 200 else msg[:200] + '...')!r}")
 
-    # Reflection
-    refls = [f for f in report["frames"] if f.get("type") in ("reflection", "reflection_complete")]
-    for r in refls:
-        p = r.get("payload") or r
-        print(f"  reflection : status={p.get('status') or r.get('status')}  summary={str(p.get('summary') or r.get('summary'))[:120]!r}")
+    starts = [f for f in r["frames"] if f.get("type") in ("tool_start", "tool_call")]
+    results = [f for f in r["frames"] if f.get("type") == "tool_result"]
+    if starts or results:
+        print(f"  tools      : starts={len(starts)} results={len(results)}")
+        for f in starts:
+            p = f.get("payload") or {}
+            name = f.get("name") or p.get("name") or f.get("tool")
+            args = f.get("arguments") or p.get("arguments") or f.get("args")
+            print(f"    start : {name} args={str(args)[:120]}")
+        for f in results:
+            p = f.get("payload") or {}
+            name = f.get("name") or p.get("name") or f.get("tool")
+            content = f.get("content") or p.get("content") or f.get("result")
+            print(f"    result: {name} content_len={len(str(content or ''))}")
 
-    # Any errors in non-done frames?
-    errs = [f for f in report["frames"] if f.get("type") == "error"]
-    for e in errs:
-        print(f"  ERROR      : {e.get('content')!r}")
+    refls = [f for f in r["frames"] if f.get("type") in ("reflection", "reflection_complete")]
+    for rf in refls:
+        p = rf.get("payload") or rf
+        print(f"  reflection : status={p.get('status')} summary={str(p.get('summary'))[:140]!r}")
+
+    # Highlight any traceback in the daemon-log slice captured around this turn
+    log = r.get("log_slice", "")
+    for keyword in ("AttributeError", "PLAN_MODE_PROMPT", "Traceback", "agent_run_error", "agent_loop_error"):
+        if keyword in log:
+            # Pull a small snippet around the first hit
+            idx = log.find(keyword)
+            start = max(0, idx - 100)
+            end = min(len(log), idx + 400)
+            snippet = log[start:end].replace("\n", " | ")
+            print(f"  ⚠ LOG[{keyword}]: ...{snippet}...")
+            break
 
 
 SCENARIOS = [
-    ("chat:hello",      "你好"),
-    ("chat:identity",   "你是谁"),
-    ("chat:capabilities","你都能干什么"),
-    ("qa:date",         "今天几号"),
-    ("qa:math",         "1+1等于几"),
-    ("task:read_file",  "读一下 README.md 的前 10 行"),
-    ("task:write_run",  "写个 python hello world 到当前目录的 hi.py 并运行"),
-    ("plan_mode",       "[PLAN MODE]帮我列出 xmclaw/core 目录下的所有 .py 文件"),
-    ("memory:followup", "刚才那个 hi.py 文件再给我看一遍"),
+    ("chat:hello",         "你好"),
+    ("chat:identity",      "你是谁"),
+    ("task:read_readme",   "读一下 README.md 的前 10 行"),
+    ("plan_mode:list_py",  "[PLAN MODE]帮我列出 xmclaw/core 目录下的所有 .py 文件"),
+    ("task:multi_tool",    "写个 python hello world 到当前目录的 hi.py 并运行"),
 ]
 
 
 async def main() -> int:
     results: list[dict] = []
-    print(f"connecting to {URL} ...")
-    async with websockets.connect(URL, max_size=2**24, open_timeout=10) as ws:
-        print("connected.")
-        for label, msg in SCENARIOS:
-            report = await run_turn(ws, msg, label=label)
-            summarize(report)
-            results.append(report)
-            # small gap between turns so the server can quiesce
-            await asyncio.sleep(0.5)
+    for label, msg in SCENARIOS:
+        print(f"\n>>> Running {label}: {msg!r}")
+        r = await run_turn(msg, label=label)
+        summarize(r)
+        results.append(r)
+        # Brief pause so eventbus can quiesce between clean WS sessions
+        await asyncio.sleep(1.0)
 
-    # Dump full frames to a file for offline inspection
-    out = r"C:\Users\15978\Desktop\XMclaw\tests\_e2e_ws_probe_frames.json"
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(results, f, ensure_ascii=False, indent=2, default=str)
+    out = Path(r"C:\Users\15978\Desktop\XMclaw\tests\_e2e_ws_probe_frames.json")
+    out.write_text(json.dumps(results, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     print(f"\nfull frames written to {out}")
     return 0
 

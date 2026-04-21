@@ -2,8 +2,8 @@
   {
     "label": "chat:hello",
     "input": "你好",
-    "elapsed_s": 60.66,
-    "first_chunk_s": 32.84,
+    "elapsed_s": 60.17,
+    "first_chunk_s": 21.2,
     "saw_done": false,
     "saw_error": null,
     "hang_reason": "hit hard timeout 60.0s",
@@ -18,8 +18,8 @@
             "agent_id": "default",
             "input_preview": "你好"
           },
-          "event_id": "27efe75c",
-          "timestamp": "2026-04-21T13:08:27.459154"
+          "event_id": "d9af9e79",
+          "timestamp": "2026-04-21T13:10:40.107787"
         }
       },
       {
@@ -28,8 +28,8 @@
           "content": "你好"
         },
         "source": "default",
-        "event_id": "aa600aef",
-        "ts": "2026-04-21T13:08:27.464153"
+        "event_id": "2e774bf9",
+        "ts": "2026-04-21T13:10:40.114830"
       },
       {
         "type": "stage",
@@ -46,7 +46,7 @@
           "type": "general",
           "complexity": "low",
           "capabilities": [],
-          "reasoning": "用户输入为简单问候语'你好'，属于通用闲聊类型，无需任何特殊能力或复杂处理，复杂度极低。",
+          "reasoning": "用户输入为简单的问候语'你好'，不包含任何具体任务请求、信息查询或操作指令，仅需礼貌性回应即可。",
           "source": "llm"
         }
       },
@@ -58,13 +58,13 @@
             "type": "general",
             "complexity": "low",
             "capabilities_needed": [],
-            "reasoning": "用户输入为简单问候语'你好'，属于通用闲聊类型，无需任何特殊能力或复杂处理，复杂度极低。",
+            "reasoning": "用户输入为简单的问候语'你好'，不包含任何具体任务请求、信息查询或操作指令，仅需礼貌性回应即可。",
             "source": "llm"
           }
         },
         "source": "default",
-        "event_id": "a1eb5ae2",
-        "ts": "2026-04-21T13:08:33.826877"
+        "event_id": "cc9b8c8a",
+        "ts": "2026-04-21T13:10:50.931765"
       },
       {
         "type": "stage",
@@ -136,8 +136,8 @@
           "summary": "记忆: 5条"
         },
         "source": "default",
-        "event_id": "c4dd3f20",
-        "ts": "2026-04-21T13:08:35.099316"
+        "event_id": "e1808009",
+        "ts": "2026-04-21T13:10:51.147038"
       },
       {
         "type": "stage",
@@ -163,203 +163,7 @@
       },
       {
         "type": "chunk",
-        "content": "\n\n你好！😄\n\n我们"
-      },
-      {
-        "type": "chunk",
-        "content": "好像见过好几次了～有什么需要帮忙的吗？"
-      },
-      {
-        "type": "agent_message",
-        "payload": {
-          "content": "\n\n你好！😄\n\n我们好像见过好几次了～有什么需要帮忙的吗？",
-          "tool_calls": 0
-        },
-        "source": "default",
-        "event_id": "530448b8",
-        "ts": "2026-04-21T13:09:00.891277"
-      },
-      {
-        "type": "event",
-        "event": {
-          "event_type": "memory:updated",
-          "source": "default",
-          "target": "",
-          "payload": {
-            "action": "save_turn",
-            "preview": "你好"
-          },
-          "event_id": "e8a8dd02",
-          "timestamp": "2026-04-21T13:09:00.892291"
-        }
-      }
-    ]
-  },
-  {
-    "label": "chat:identity",
-    "input": "你是谁",
-    "elapsed_s": 60.38,
-    "first_chunk_s": null,
-    "saw_done": false,
-    "saw_error": null,
-    "hang_reason": "hit hard timeout 60.0s",
-    "frames": [
-      {
-        "type": "stage",
-        "stage": "reflect_done",
-        "label": "反思完成",
-        "desc": "用户发送简单问候，Agent回应友好问候并询问需求，这是一个标准的初始对话交互。"
-      },
-      {
-        "type": "reflection_complete",
-        "payload": {
-          "reflection": {
-            "success": true,
-            "summary": "用户发送简单问候，Agent回应友好问候并询问需求，这是一个标准的初始对话交互。",
-            "problems": [
-              "Agent提到'我们好像见过好几次了'，这可能暗示有记忆功能，但如果实际系统没有持久化记忆机制，这种表述会造成误导或幻觉",
-              "缺少工具调用记录，无法验证Agent在当前会话中是否正确使用了可用工具",
-              "对话过于简短，未能展示Agent在复杂任务处理、工具调用、错误恢复等方面的实际能力"
-            ],
-            "lessons": [
-              "在没有任何记忆系统确认的情况下，不应暗示与用户有历史关系",
-              "即使面对简单问候，也应保持专业一致性，避免过度口语化或可能误导的表述",
-              "评价一个Agent的真实能力需要更丰富的交互场景，而非单个问候-回应"
-            ],
-            "improvements": [
-              "去掉'我们好像见过好几次了'这类可能不准确的暗示性表述，改为中性的'您好，有什么可以帮您的吗？'",
-              "在简单交互场景中，仍应保持评估标准的一致性，关注响应的准确性而非仅关注友好度",
-              "建议在后续对话中引入需要工具调用或复杂推理的任务场景，以全面评估Agent表现"
-            ],
-            "trigger": "conversation_end"
-          },
-          "improvement": {
-            "status": "processing",
-            "actions": [
-              {
-                "type": "gene",
-                "status": "created",
-                "gene_id": "gene_913bffe8",
-                "name": "会话独立性声明基因"
-              }
-            ]
-          }
-        },
-        "source": "default",
-        "event_id": "5b627c27",
-        "ts": "2026-04-21T13:09:49.529310"
-      },
-      {
-        "type": "evolution_trigger",
-        "payload": {
-          "trigger": "conversation_end",
-          "patterns": {},
-          "tool_counts": {}
-        },
-        "source": "default",
-        "event_id": "ce42c768",
-        "ts": "2026-04-21T13:09:49.530449"
-      },
-      {
-        "type": "evolution_cycle_started",
-        "payload": {
-          "cycle_id": "cycle_4b92fc542872",
-          "trigger": "manual"
-        },
-        "source": "default",
-        "event_id": "4676c77c",
-        "ts": "2026-04-21T13:09:49.693018"
-      },
-      {
-        "type": "evolution_cycle",
-        "payload": {
-          "phase": "start",
-          "cycle_id": "cycle_4b92fc542872"
-        },
-        "source": "default",
-        "event_id": "f5b81167",
-        "ts": "2026-04-21T13:09:49.694039"
-      },
-      {
-        "type": "evolution_reflecting",
-        "payload": {
-          "cycle_id": "cycle_4b92fc542872"
-        },
-        "source": "default",
-        "event_id": "4bbd382c",
-        "ts": "2026-04-21T13:09:49.694039"
-      },
-      {
-        "type": "evolution_rejected",
-        "payload": {
-          "cycle_id": "cycle_4b92fc542872",
-          "reason": "duplicate_concept",
-          "concept": "auto_frequent_bash_usage",
-          "existing_artifact_id": "skill_28a491c7"
-        },
-        "source": "default",
-        "event_id": "9fdba799",
-        "ts": "2026-04-21T13:09:49.741856"
-      }
-    ]
-  },
-  {
-    "label": "chat:capabilities",
-    "input": "你都能干什么",
-    "elapsed_s": 48.22,
-    "first_chunk_s": null,
-    "saw_done": true,
-    "saw_error": null,
-    "hang_reason": null,
-    "frames": [
-      {
-        "type": "event",
-        "event": {
-          "event_type": "agent:start",
-          "source": "orchestrator",
-          "target": "default",
-          "payload": {
-            "agent_id": "default",
-            "input_preview": "你好"
-          },
-          "event_id": "d9af9e79",
-          "timestamp": "2026-04-21T13:10:40.107787"
-        }
-      },
-      {
-        "type": "user_message_event",
-        "payload": {
-          "content": "你好"
-        },
-        "source": "default",
-        "event_id": "2e774bf9",
-        "ts": "2026-04-21T13:10:40.114830"
-      },
-      {
-        "type": "agent_thinking",
-        "payload": {
-          "stage": "analyze",
-          "profile": {
-            "type": "general",
-            "complexity": "low",
-            "capabilities_needed": [],
-            "reasoning": "用户输入为简单的问候语'你好'，不包含任何具体任务请求、信息查询或操作指令，仅需礼貌性回应即可。",
-            "source": "llm"
-          }
-        },
-        "source": "default",
-        "event_id": "cc9b8c8a",
-        "ts": "2026-04-21T13:10:50.931765"
-      },
-      {
-        "type": "agent_thinking",
-        "payload": {
-          "stage": "gather",
-          "summary": "记忆: 5条"
-        },
-        "source": "default",
-        "event_id": "e1808009",
-        "ts": "2026-04-21T13:10:51.147038"
+        "content": "\n\n嗨！👋 还是老样子打招呼吗？需要我帮忙就说～"
       },
       {
         "type": "agent_message",
@@ -424,20 +228,6 @@
         "ts": "2026-04-21T13:11:17.715311"
       },
       {
-        "type": "done"
-      }
-    ]
-  },
-  {
-    "label": "qa:date",
-    "input": "今天几号",
-    "elapsed_s": 0.0,
-    "first_chunk_s": null,
-    "saw_done": true,
-    "saw_error": null,
-    "hang_reason": null,
-    "frames": [
-      {
         "type": "event",
         "event": {
           "event_type": "agent:stop",
@@ -450,20 +240,6 @@
           "timestamp": "2026-04-21T13:11:17.716775"
         }
       },
-      {
-        "type": "done"
-      }
-    ]
-  },
-  {
-    "label": "qa:math",
-    "input": "1+1等于几",
-    "elapsed_s": 60.86,
-    "first_chunk_s": 15.36,
-    "saw_done": false,
-    "saw_error": null,
-    "hang_reason": "hit hard timeout 60.0s",
-    "frames": [
       {
         "type": "event",
         "event": {
@@ -488,25 +264,6 @@
         "ts": "2026-04-21T13:11:17.721401"
       },
       {
-        "type": "stage",
-        "stage": "analyze",
-        "label": "🔍 任务分析",
-        "desc": "正在分析任务类型与复杂度..."
-      },
-      {
-        "type": "stage",
-        "stage": "analyze_done",
-        "label": "✅ 任务分析完成",
-        "desc": "类型: qa | 复杂度: low | 来源: llm",
-        "data": {
-          "type": "qa",
-          "complexity": "low",
-          "capabilities": [],
-          "reasoning": "用户询问AI身份，这是最基本的问答类型问题，无需任何特殊能力或复杂处理，可直接回答",
-          "source": "llm"
-        }
-      },
-      {
         "type": "agent_thinking",
         "payload": {
           "stage": "analyze",
@@ -523,69 +280,6 @@
         "ts": "2026-04-21T13:11:29.645600"
       },
       {
-        "type": "stage",
-        "stage": "gather",
-        "label": "📡 信息收集",
-        "desc": "搜索记忆、经验、网络..."
-      },
-      {
-        "type": "stage",
-        "stage": "gather_done",
-        "label": "✅ 信息收集完成",
-        "desc": "记忆:5 | 经验:0 | 网页:0",
-        "data": {
-          "memories": [
-            {
-              "id": 124,
-              "agent_id": "default",
-              "source": "turn",
-              "content": "User: 你是谁\nAgent: 我是 XMclaw，一个本地优先、自我进化的 AI Agent。我可以帮助你完成各种任务，比如：\n\n- 读取、编辑和编写文件\n- 执行命令行操作\n- 浏览网页\n- 搜索信息\n- 运行测试\n- 等等...\n\n有什么我可以帮你的吗？",
-              "metadata": {},
-              "created_at": "2026-04-16 20:37:33",
-              "distance": 0.34756162762641907
-            },
-            {
-              "id": 306,
-              "agent_id": "default",
-              "source": "turn",
-              "content": "User: 你是谁\nAgent: 你好！我是 **XMclaw**，一个本地优先、自我进化的 AI Agent。\n\n我可以帮你完成各种任务：\n\n- 📁 文件操作（读写、编辑、搜索）\n- 💻 执行命令行操作\n- 🧪 运行测试和代码\n- 🌐 浏览网页、搜索信息\n- 🔧 优化和改进我自己\n\n有什么需要帮忙的吗？",
-              "metadata": {},
-              "created_at": "2026-04-18 10:21:55",
-              "distance": 0.35094669461250305
-            },
-            {
-              "id": 178,
-              "agent_id": "default",
-              "source": "turn",
-              "content": "User: 你好，你是谁\nAgent: \n\n你好！我是 **XMclaw**，一个本地优先、自我进化的 AI Agent。\n\n我可以帮你完成各种任务：\n\n- 📁 文件操作（读写、编辑、搜索）\n- 💻 执行命令行操作\n- 🌐 浏览网页、搜索信息\n- 🧪 运行测试和代码\n- 🔧 优化和改进我自己\n\n有什么需要帮忙的吗？",
-              "metadata": {},
-              "created_at": "2026-04-17 03:20:32",
-              "distance": 0.35337644815444946
-            },
-            {
-              "id": 332,
-              "agent_id": "default",
-              "source": "turn",
-              "content": "User: 你是谁\nAgent: 我是 **XMclaw**，一个本地优先、自我进化的 AI Agent。\n\n我可以帮你：\n\n- 📁 文件操作（读写、编辑、搜索）\n- 💻 执行命令行操作\n- 🌐 浏览网页、搜索信息\n- 🧪 运行测试和代码\n- 🔧 优化和改进我自己\n\n有什么需要帮忙的吗？",
-              "metadata": {},
-              "created_at": "2026-04-18 11:26:08",
-              "distance": 0.3556969463825226
-            },
-            {
-              "id": 396,
-              "agent_id": "default",
-              "source": "turn",
-              "content": "User: 你是谁，你不知道吗\nAgent: \n\n我是 **XMclaw**，一个本地优先、自我进化的 AI Agent 👋\n\n你可以让我帮你：\n- 📁 读写文件\n- 💻 执行命令\n- 🧪 写代码/运行测试\n- 🌐 浏览网页\n- 🔧 优化我自己\n\n需要帮什么？",
-              "metadata": {},
-              "created_at": "2026-04-21 03:28:21",
-              "distance": 0.3757374882698059
-            }
-          ],
-          "insights": [],
-          "web_results": []
-        }
-      },
-      {
         "type": "agent_thinking",
         "payload": {
           "stage": "gather",
@@ -594,44 +288,6 @@
         "source": "default",
         "event_id": "a994eee5",
         "ts": "2026-04-21T13:11:29.988588"
-      },
-      {
-        "type": "stage",
-        "stage": "skill_match",
-        "label": "⚡ 技能匹配",
-        "desc": "搜索相关技能并执行..."
-      },
-      {
-        "type": "stage",
-        "stage": "skill_match_done",
-        "label": "⚖ 技能匹配完成",
-        "desc": "匹配到 0 个相关技能（无可自动执行）",
-        "data": {
-          "matched": [],
-          "auto_executed": [],
-          "failed": []
-        }
-      },
-      {
-        "type": "state",
-        "state": "THINKING",
-        "thought": "执行中（类型:qa）..."
-      },
-      {
-        "type": "chunk",
-        "content": "\n\n我是 **XMclaw** 🤖\n\n本地优先、自我进"
-      },
-      {
-        "type": "chunk",
-        "content": "化的 AI Agent，专门帮你：\n\n- 💻 写代码、跑命令\n- 📁 管"
-      },
-      {
-        "type": "chunk",
-        "content": "文件\n- 🔍 搜索信息\n- 🧪 自动化任务\n\n**一句话：我"
-      },
-      {
-        "type": "chunk",
-        "content": "就是你的 AI 助手。**"
       },
       {
         "type": "agent_message",
@@ -660,20 +316,14 @@
     ]
   },
   {
-    "label": "task:read_file",
-    "input": "读一下 README.md 的前 10 行",
-    "elapsed_s": 60.16,
+    "label": "chat:identity",
+    "input": "你是谁",
+    "elapsed_s": 60.77,
     "first_chunk_s": null,
     "saw_done": false,
     "saw_error": null,
     "hang_reason": "hit hard timeout 60.0s",
     "frames": [
-      {
-        "type": "stage",
-        "stage": "reflect_done",
-        "label": "反思完成",
-        "desc": "Agent对用户身份询问给出了流畅但偏营销化的回答，未主动了解用户需求或建立明确的工作关系"
-      },
       {
         "type": "reflection_complete",
         "payload": {
@@ -767,6 +417,23 @@
         "source": "default",
         "event_id": "17ae719e",
         "ts": "2026-04-21T13:12:20.399144"
+      }
+    ]
+  },
+  {
+    "label": "chat:capabilities",
+    "input": "你都能干什么",
+    "elapsed_s": 60.94,
+    "first_chunk_s": null,
+    "saw_done": false,
+    "saw_error": null,
+    "hang_reason": "hit hard timeout 60.0s",
+    "frames": [
+      {
+        "type": "stage",
+        "stage": "reflect_done",
+        "label": "反思完成",
+        "desc": "Agent 以过于随意的闲聊式回复回应用户的简单问候，回复中包含上下文幻觉和不必要的信息。"
       },
       {
         "type": "reflection_complete",
@@ -900,18 +567,7 @@
         "source": "default",
         "event_id": "99ff105b",
         "ts": "2026-04-21T13:13:00.118177"
-      }
-    ]
-  },
-  {
-    "label": "task:write_run",
-    "input": "写个 python hello world 到当前目录的 hi.py 并运行",
-    "elapsed_s": 8.48,
-    "first_chunk_s": null,
-    "saw_done": true,
-    "saw_error": null,
-    "hang_reason": null,
-    "frames": [
+      },
       {
         "type": "evolution_rejected",
         "payload": {
@@ -951,20 +607,6 @@
         "ts": "2026-04-21T13:13:29.247401"
       },
       {
-        "type": "done"
-      }
-    ]
-  },
-  {
-    "label": "plan_mode",
-    "input": "[PLAN MODE]帮我列出 xmclaw/core 目录下的所有 .py 文件",
-    "elapsed_s": 0.0,
-    "first_chunk_s": null,
-    "saw_done": true,
-    "saw_error": null,
-    "hang_reason": null,
-    "frames": [
-      {
         "type": "event",
         "event": {
           "event_type": "agent:stop",
@@ -977,20 +619,6 @@
           "timestamp": "2026-04-21T13:13:29.249396"
         }
       },
-      {
-        "type": "done"
-      }
-    ]
-  },
-  {
-    "label": "memory:followup",
-    "input": "刚才那个 hi.py 文件再给我看一遍",
-    "elapsed_s": 60.64,
-    "first_chunk_s": 10.8,
-    "saw_done": false,
-    "saw_error": null,
-    "hang_reason": "hit hard timeout 60.0s",
-    "frames": [
       {
         "type": "event",
         "event": {
@@ -1015,25 +643,6 @@
         "ts": "2026-04-21T13:13:29.254028"
       },
       {
-        "type": "stage",
-        "stage": "analyze",
-        "label": "🔍 任务分析",
-        "desc": "正在分析任务类型与复杂度..."
-      },
-      {
-        "type": "stage",
-        "stage": "analyze_done",
-        "label": "✅ 任务分析完成",
-        "desc": "类型: general | 复杂度: low | 来源: llm",
-        "data": {
-          "type": "general",
-          "complexity": "low",
-          "capabilities": [],
-          "reasoning": "这是一个关于系统能力的一般性查询，询问AI可以提供哪些服务和功能，属于信息获取类任务，无需复杂处理",
-          "source": "llm"
-        }
-      },
-      {
         "type": "agent_thinking",
         "payload": {
           "stage": "analyze",
@@ -1050,69 +659,6 @@
         "ts": "2026-04-21T13:13:36.765233"
       },
       {
-        "type": "stage",
-        "stage": "gather",
-        "label": "📡 信息收集",
-        "desc": "搜索记忆、经验、网络..."
-      },
-      {
-        "type": "stage",
-        "stage": "gather_done",
-        "label": "✅ 信息收集完成",
-        "desc": "记忆:5 | 经验:0 | 网页:0",
-        "data": {
-          "memories": [
-            {
-              "id": 130,
-              "agent_id": "default",
-              "source": "turn",
-              "content": "User: 怎么回事\nAgent: <function>mcp</function>\n<arguments>\n{\"action\": \"list_tools\"}\n</function>",
-              "metadata": {},
-              "created_at": "2026-04-16 20:41:28",
-              "distance": 0.4482247531414032
-            },
-            {
-              "id": 150,
-              "agent_id": "default",
-              "source": "turn",
-              "content": "User: 你好\nAgent: 你好！有什么我可以帮你的吗？",
-              "metadata": {},
-              "created_at": "2026-04-16 23:16:26",
-              "distance": 0.4801653325557709
-            },
-            {
-              "id": 122,
-              "agent_id": "default",
-              "source": "turn",
-              "content": "User: 你好\nAgent: 你好！有什么我可以帮你的吗？",
-              "metadata": {},
-              "created_at": "2026-04-16 20:37:16",
-              "distance": 0.4801653325557709
-            },
-            {
-              "id": 317,
-              "agent_id": "default",
-              "source": "turn",
-              "content": "User: 不用\nAgent: 好的，有其他需要随时说 😊",
-              "metadata": {},
-              "created_at": "2026-04-18 10:54:22",
-              "distance": 0.48403844237327576
-            },
-            {
-              "id": 389,
-              "agent_id": "default",
-              "source": "turn",
-              "content": "User:     \n\t  \nAgent: \n\n你好！有什么我可以帮忙的吗？ 😊",
-              "metadata": {},
-              "created_at": "2026-04-20 06:22:27",
-              "distance": 0.4882930815219879
-            }
-          ],
-          "insights": [],
-          "web_results": []
-        }
-      },
-      {
         "type": "agent_thinking",
         "payload": {
           "stage": "gather",
@@ -1121,45 +667,18 @@
         "source": "default",
         "event_id": "478b7b5a",
         "ts": "2026-04-21T13:13:36.959542"
-      },
-      {
-        "type": "stage",
-        "stage": "skill_match",
-        "label": "⚡ 技能匹配",
-        "desc": "搜索相关技能并执行..."
-      },
-      {
-        "type": "stage",
-        "stage": "skill_match_done",
-        "label": "⚖ 技能匹配完成",
-        "desc": "匹配到 0 个相关技能（无可自动执行）",
-        "data": {
-          "matched": [],
-          "auto_executed": [],
-          "failed": []
-        }
-      },
-      {
-        "type": "state",
-        "state": "THINKING",
-        "thought": "执行中（类型:general）..."
-      },
-      {
-        "type": "chunk",
-        "content": "\n\n我能帮你做这些：\n\n### 🛠️ 核心能力\n\n| 类型 | 能做什么 |\n|------|----------|\n| **文件** | 读、写、编辑、搜索文件 |\n| **代码** | 写代码、调试、执行测试 |\n| **终端** | 运行 shell"
-      },
-      {
-        "type": "chunk",
-        "content": " 命令 |\n| **网页** | 搜索、抓取、浏览网页 |\n| **Git** | 查看状态、提交、分支等 |\n| **AI** | 图像分析、语音合成/识别 |\n| **浏览器"
-      },
-      {
-        "type": "chunk",
-        "content": "** | 控制浏览器操作 |\n\n### ⚡ 实用场景\n\n- 写文档、生成代码\n- 帮你调试错误\n- 搜索最新信息\n- 管理项目文件\n- 自动化重复任务\n\n---\n\n有"
-      },
-      {
-        "type": "chunk",
-        "content": "具体想做的事吗？直接说就行 😄"
-      },
+      }
+    ]
+  },
+  {
+    "label": "qa:date",
+    "input": "今天几号",
+    "elapsed_s": 14.38,
+    "first_chunk_s": null,
+    "saw_done": true,
+    "saw_error": null,
+    "hang_reason": null,
+    "frames": [
       {
         "type": "agent_message",
         "payload": {
@@ -1223,6 +742,20 @@
         "ts": "2026-04-21T13:13:57.863096"
       },
       {
+        "type": "done"
+      }
+    ]
+  },
+  {
+    "label": "qa:math",
+    "input": "1+1等于几",
+    "elapsed_s": 0.0,
+    "first_chunk_s": null,
+    "saw_done": true,
+    "saw_error": null,
+    "hang_reason": null,
+    "frames": [
+      {
         "type": "event",
         "event": {
           "event_type": "agent:stop",
@@ -1235,6 +768,20 @@
           "timestamp": "2026-04-21T13:13:57.865664"
         }
       },
+      {
+        "type": "done"
+      }
+    ]
+  },
+  {
+    "label": "task:read_file",
+    "input": "读一下 README.md 的前 10 行",
+    "elapsed_s": 60.84,
+    "first_chunk_s": 8.75,
+    "saw_done": false,
+    "saw_error": null,
+    "hang_reason": "hit hard timeout 60.0s",
+    "frames": [
       {
         "type": "event",
         "event": {
@@ -1259,6 +806,25 @@
         "ts": "2026-04-21T13:13:57.872403"
       },
       {
+        "type": "stage",
+        "stage": "analyze",
+        "label": "🔍 任务分析",
+        "desc": "正在分析任务类型与复杂度..."
+      },
+      {
+        "type": "stage",
+        "stage": "analyze_done",
+        "label": "✅ 任务分析完成",
+        "desc": "类型: qa | 复杂度: low | 来源: llm",
+        "data": {
+          "type": "qa",
+          "complexity": "low",
+          "capabilities": [],
+          "reasoning": "用户询问AI身份，这是一个简单的基础问答任务，不需要任何特殊技能或工具，可以直接根据系统提示词中的身份设定进行回答",
+          "source": "llm"
+        }
+      },
+      {
         "type": "agent_thinking",
         "payload": {
           "stage": "analyze",
@@ -1275,6 +841,69 @@
         "ts": "2026-04-21T13:14:03.373453"
       },
       {
+        "type": "stage",
+        "stage": "gather",
+        "label": "📡 信息收集",
+        "desc": "搜索记忆、经验、网络..."
+      },
+      {
+        "type": "stage",
+        "stage": "gather_done",
+        "label": "✅ 信息收集完成",
+        "desc": "记忆:5 | 经验:0 | 网页:0",
+        "data": {
+          "memories": [
+            {
+              "id": 124,
+              "agent_id": "default",
+              "source": "turn",
+              "content": "User: 你是谁\nAgent: 我是 XMclaw，一个本地优先、自我进化的 AI Agent。我可以帮助你完成各种任务，比如：\n\n- 读取、编辑和编写文件\n- 执行命令行操作\n- 浏览网页\n- 搜索信息\n- 运行测试\n- 等等...\n\n有什么我可以帮你的吗？",
+              "metadata": {},
+              "created_at": "2026-04-16 20:37:33",
+              "distance": 0.34756162762641907
+            },
+            {
+              "id": 306,
+              "agent_id": "default",
+              "source": "turn",
+              "content": "User: 你是谁\nAgent: 你好！我是 **XMclaw**，一个本地优先、自我进化的 AI Agent。\n\n我可以帮你完成各种任务：\n\n- 📁 文件操作（读写、编辑、搜索）\n- 💻 执行命令行操作\n- 🧪 运行测试和代码\n- 🌐 浏览网页、搜索信息\n- 🔧 优化和改进我自己\n\n有什么需要帮忙的吗？",
+              "metadata": {},
+              "created_at": "2026-04-18 10:21:55",
+              "distance": 0.35094669461250305
+            },
+            {
+              "id": 178,
+              "agent_id": "default",
+              "source": "turn",
+              "content": "User: 你好，你是谁\nAgent: \n\n你好！我是 **XMclaw**，一个本地优先、自我进化的 AI Agent。\n\n我可以帮你完成各种任务：\n\n- 📁 文件操作（读写、编辑、搜索）\n- 💻 执行命令行操作\n- 🌐 浏览网页、搜索信息\n- 🧪 运行测试和代码\n- 🔧 优化和改进我自己\n\n有什么需要帮忙的吗？",
+              "metadata": {},
+              "created_at": "2026-04-17 03:20:32",
+              "distance": 0.35337644815444946
+            },
+            {
+              "id": 332,
+              "agent_id": "default",
+              "source": "turn",
+              "content": "User: 你是谁\nAgent: 我是 **XMclaw**，一个本地优先、自我进化的 AI Agent。\n\n我可以帮你：\n\n- 📁 文件操作（读写、编辑、搜索）\n- 💻 执行命令行操作\n- 🌐 浏览网页、搜索信息\n- 🧪 运行测试和代码\n- 🔧 优化和改进我自己\n\n有什么需要帮忙的吗？",
+              "metadata": {},
+              "created_at": "2026-04-18 11:26:08",
+              "distance": 0.3556969463825226
+            },
+            {
+              "id": 409,
+              "agent_id": "default",
+              "source": "turn",
+              "content": "User: 你是谁\nAgent: \n\n我是 **XMclaw** 🤖\n\n本地优先、自我进化的 AI Agent，专门帮你：\n\n- 💻 写代码、跑命令\n- 📁 管文件\n- 🔍 搜索信息\n- 🧪 自动化任务\n\n**一句话：我就是你的 AI 助手。**",
+              "metadata": {},
+              "created_at": "2026-04-21 05:11:36",
+              "distance": 0.37000906467437744
+            }
+          ],
+          "insights": [],
+          "web_results": []
+        }
+      },
+      {
         "type": "agent_thinking",
         "payload": {
           "stage": "gather",
@@ -1283,6 +912,40 @@
         "source": "default",
         "event_id": "6cd2164a",
         "ts": "2026-04-21T13:14:03.552683"
+      },
+      {
+        "type": "stage",
+        "stage": "skill_match",
+        "label": "⚡ 技能匹配",
+        "desc": "搜索相关技能并执行..."
+      },
+      {
+        "type": "stage",
+        "stage": "skill_match_done",
+        "label": "⚖ 技能匹配完成",
+        "desc": "匹配到 0 个相关技能（无可自动执行）",
+        "data": {
+          "matched": [],
+          "auto_executed": [],
+          "failed": []
+        }
+      },
+      {
+        "type": "state",
+        "state": "THINKING",
+        "thought": "执行中（类型:qa）..."
+      },
+      {
+        "type": "chunk",
+        "content": "\n\n**"
+      },
+      {
+        "type": "chunk",
+        "content": "我是 XMclaw** 🤖\n\n你的本地 AI 助手，随时候命～\n\n需要帮什么"
+      },
+      {
+        "type": "chunk",
+        "content": "？"
       },
       {
         "type": "agent_message",
@@ -1345,6 +1008,367 @@
         "source": "default",
         "event_id": "b44356a0",
         "ts": "2026-04-21T13:14:07.745613"
+      },
+      {
+        "type": "stage",
+        "stage": "reflect_done",
+        "label": "反思完成",
+        "desc": "Agent 仅以简短身份声明回应，未能展示专业能力或启动规范化交互流程"
+      },
+      {
+        "type": "reflection_complete",
+        "payload": {
+          "reflection": {
+            "success": false,
+            "summary": "Agent 仅以简短身份声明回应，未能展示专业能力或启动规范化交互流程",
+            "problems": [
+              "缺少系统化的启动流程，直接给出身份而非建立专业评审员角色定位",
+              "未利用可用工具进行上下文初始化或环境检查",
+              "回复过于简单，未展示 AI 工程师评审员应具备的专业性",
+              "没有主动说明自己的职责范围和能力边界",
+              "用户请求 JSON 格式输出时未直接执行，而是先给出回复"
+            ],
+            "lessons": [
+              "身份确认应结合角色定位和专业能力说明",
+              "面对评审任务应先初始化工具环境和加载历史上下文",
+              "简短交互也需要保持专业规范，不能因问题简单就降低标准",
+              "用户的格式要求应被直接响应而非被前置回复打断"
+            ],
+            "improvements": [
+              "建立标准化的系统启动流程：角色确认 → 工具初始化 → 历史加载 → 任务接受",
+              "在首次交互时应主动展示可调用工具列表和可用能力",
+              "设计角色检测机制，识别用户是以什么身份在与我交互",
+              "保持回复的专业性和完整性，即使面对简单问题也要遵循规范流程",
+              "确保对用户明确指令（如 JSON 格式）的即时响应"
+            ],
+            "trigger": "conversation_end"
+          },
+          "improvement": {
+            "status": "processing",
+            "actions": [
+              {
+                "type": "gene",
+                "status": "created",
+                "gene_id": "gene_afe0f541",
+                "name": "AI工程师评审员启动协议"
+              }
+            ]
+          }
+        },
+        "source": "default",
+        "event_id": "d90037cd",
+        "ts": "2026-04-21T13:14:45.379274"
+      },
+      {
+        "type": "evolution_trigger",
+        "payload": {
+          "trigger": "conversation_end",
+          "patterns": {},
+          "tool_counts": {}
+        },
+        "source": "default",
+        "event_id": "867278ec",
+        "ts": "2026-04-21T13:14:45.380754"
+      },
+      {
+        "type": "evolution_cycle_started",
+        "payload": {
+          "cycle_id": "cycle_072993744679",
+          "trigger": "manual"
+        },
+        "source": "default",
+        "event_id": "0a9d1517",
+        "ts": "2026-04-21T13:14:45.564849"
+      },
+      {
+        "type": "evolution_cycle",
+        "payload": {
+          "phase": "start",
+          "cycle_id": "cycle_072993744679"
+        },
+        "source": "default",
+        "event_id": "15d9eecb",
+        "ts": "2026-04-21T13:14:45.565887"
+      },
+      {
+        "type": "evolution_reflecting",
+        "payload": {
+          "cycle_id": "cycle_072993744679"
+        },
+        "source": "default",
+        "event_id": "f98fa00f",
+        "ts": "2026-04-21T13:14:45.565887"
+      },
+      {
+        "type": "evolution_rejected",
+        "payload": {
+          "cycle_id": "cycle_072993744679",
+          "reason": "duplicate_concept",
+          "concept": "auto_frequent_bash_usage",
+          "existing_artifact_id": "skill_28a491c7"
+        },
+        "source": "default",
+        "event_id": "8f6db422",
+        "ts": "2026-04-21T13:14:45.631136"
+      }
+    ]
+  },
+  {
+    "label": "task:write_run",
+    "input": "写个 python hello world 到当前目录的 hi.py 并运行",
+    "elapsed_s": 31.02,
+    "first_chunk_s": null,
+    "saw_done": true,
+    "saw_error": null,
+    "hang_reason": null,
+    "frames": [
+      {
+        "type": "evolution_rejected",
+        "payload": {
+          "cycle_id": "cycle_072993744679",
+          "reason": "coherence:gene_keyword_duplicate",
+          "concept": "FixErrorGene",
+          "kind": "gene"
+        },
+        "source": "default",
+        "event_id": "c916e144",
+        "ts": "2026-04-21T13:15:18.851462"
+      },
+      {
+        "type": "evolution_rejected",
+        "payload": {
+          "cycle_id": "cycle_072993744679",
+          "reason": "all_candidates_failed"
+        },
+        "source": "default",
+        "event_id": "8ab063d8",
+        "ts": "2026-04-21T13:15:31.272182"
+      },
+      {
+        "type": "evolution_cycle_ended",
+        "payload": {
+          "cycle_id": "cycle_072993744679",
+          "verdict": "rejected",
+          "actions": 0
+        },
+        "source": "default",
+        "event_id": "790b8b5b",
+        "ts": "2026-04-21T13:15:31.273501"
+      },
+      {
+        "type": "evolution_cycle",
+        "payload": {
+          "phase": "end",
+          "cycle_id": "cycle_072993744679",
+          "results": {
+            "status": "running",
+            "insights": 54,
+            "decisions": 6,
+            "actions": [],
+            "cycle_id": "cycle_072993744679"
+          }
+        },
+        "source": "default",
+        "event_id": "b80a9c74",
+        "ts": "2026-04-21T13:15:31.273501"
+      },
+      {
+        "type": "done"
+      }
+    ]
+  },
+  {
+    "label": "plan_mode",
+    "input": "[PLAN MODE]帮我列出 xmclaw/core 目录下的所有 .py 文件",
+    "elapsed_s": 0.0,
+    "first_chunk_s": null,
+    "saw_done": true,
+    "saw_error": null,
+    "hang_reason": null,
+    "frames": [
+      {
+        "type": "event",
+        "event": {
+          "event_type": "agent:stop",
+          "source": "orchestrator",
+          "target": "default",
+          "payload": {
+            "agent_id": "default"
+          },
+          "event_id": "b40b82a1",
+          "timestamp": "2026-04-21T13:15:31.275779"
+        }
+      },
+      {
+        "type": "done"
+      }
+    ]
+  },
+  {
+    "label": "memory:followup",
+    "input": "刚才那个 hi.py 文件再给我看一遍",
+    "elapsed_s": 60.66,
+    "first_chunk_s": null,
+    "saw_done": false,
+    "saw_error": null,
+    "hang_reason": "hit hard timeout 60.0s",
+    "frames": [
+      {
+        "type": "event",
+        "event": {
+          "event_type": "agent:start",
+          "source": "orchestrator",
+          "target": "default",
+          "payload": {
+            "agent_id": "default",
+            "input_preview": "你都能干什么"
+          },
+          "event_id": "44dcb108",
+          "timestamp": "2026-04-21T13:15:31.275779"
+        }
+      },
+      {
+        "type": "user_message_event",
+        "payload": {
+          "content": "你都能干什么"
+        },
+        "source": "default",
+        "event_id": "47dba57d",
+        "ts": "2026-04-21T13:15:31.280730"
+      },
+      {
+        "type": "stage",
+        "stage": "analyze",
+        "label": "🔍 任务分析",
+        "desc": "正在分析任务类型与复杂度..."
+      },
+      {
+        "type": "stage",
+        "stage": "analyze_done",
+        "label": "✅ 任务分析完成",
+        "desc": "类型: general | 复杂度: low | 来源: llm",
+        "data": {
+          "type": "general",
+          "complexity": "low",
+          "capabilities": [
+            "memory_search"
+          ],
+          "reasoning": "用户询问AI的功能和能力范围，这是一个通用的信息咨询问题，不涉及具体的代码、文件操作、搜索或复杂任务。只需要简单说明AI具备的主要能力即可。",
+          "source": "llm"
+        }
+      },
+      {
+        "type": "agent_thinking",
+        "payload": {
+          "stage": "analyze",
+          "profile": {
+            "type": "general",
+            "complexity": "low",
+            "capabilities_needed": [
+              "memory_search"
+            ],
+            "reasoning": "用户询问AI的功能和能力范围，这是一个通用的信息咨询问题，不涉及具体的代码、文件操作、搜索或复杂任务。只需要简单说明AI具备的主要能力即可。",
+            "source": "llm"
+          }
+        },
+        "source": "default",
+        "event_id": "1ff43325",
+        "ts": "2026-04-21T13:15:42.205785"
+      },
+      {
+        "type": "stage",
+        "stage": "gather",
+        "label": "📡 信息收集",
+        "desc": "搜索记忆、经验、网络..."
+      },
+      {
+        "type": "stage",
+        "stage": "gather_done",
+        "label": "✅ 信息收集完成",
+        "desc": "记忆:5 | 经验:0 | 网页:0",
+        "data": {
+          "memories": [
+            {
+              "id": 411,
+              "agent_id": "default",
+              "source": "turn",
+              "content": "User: 你都能干什么\nAgent: \n\n我能帮你做这些：\n\n### 🛠️ 核心能力\n\n| 类型 | 能做什么 |\n|------|----------|\n| **文件** | 读、写、编辑、搜索文件 |\n| **代码** | 写代码、调试、执行测试 |\n| **终端** | 运行 shell 命令 |\n| **网页** | 搜索、抓取、浏览网页 |\n| **Git** | 查看状态、提交、分支等 |\n| **AI** | 图像分析、语音合成/识别 |\n| **浏览器** | 控制浏览器操作 |\n\n### ⚡ 实用场景\n\n- 写文档、生成代码\n- 帮你调试错误\n- 搜索最新信息\n- 管理项目文件\n- 自动化重复任务\n\n---\n\n有具体想做的事吗？直接说就行 😄",
+              "metadata": {},
+              "created_at": "2026-04-21 05:13:45",
+              "distance": 0.4134206175804138
+            },
+            {
+              "id": 130,
+              "agent_id": "default",
+              "source": "turn",
+              "content": "User: 怎么回事\nAgent: <function>mcp</function>\n<arguments>\n{\"action\": \"list_tools\"}\n</function>",
+              "metadata": {},
+              "created_at": "2026-04-16 20:41:28",
+              "distance": 0.4482247531414032
+            },
+            {
+              "id": 150,
+              "agent_id": "default",
+              "source": "turn",
+              "content": "User: 你好\nAgent: 你好！有什么我可以帮你的吗？",
+              "metadata": {},
+              "created_at": "2026-04-16 23:16:26",
+              "distance": 0.4801653325557709
+            },
+            {
+              "id": 122,
+              "agent_id": "default",
+              "source": "turn",
+              "content": "User: 你好\nAgent: 你好！有什么我可以帮你的吗？",
+              "metadata": {},
+              "created_at": "2026-04-16 20:37:16",
+              "distance": 0.4801653325557709
+            },
+            {
+              "id": 317,
+              "agent_id": "default",
+              "source": "turn",
+              "content": "User: 不用\nAgent: 好的，有其他需要随时说 😊",
+              "metadata": {},
+              "created_at": "2026-04-18 10:54:22",
+              "distance": 0.48403844237327576
+            }
+          ],
+          "insights": [],
+          "web_results": []
+        }
+      },
+      {
+        "type": "agent_thinking",
+        "payload": {
+          "stage": "gather",
+          "summary": "记忆: 5条"
+        },
+        "source": "default",
+        "event_id": "19dd5329",
+        "ts": "2026-04-21T13:15:42.519088"
+      },
+      {
+        "type": "stage",
+        "stage": "skill_match",
+        "label": "⚡ 技能匹配",
+        "desc": "搜索相关技能并执行..."
+      },
+      {
+        "type": "stage",
+        "stage": "skill_match_done",
+        "label": "⚖ 技能匹配完成",
+        "desc": "匹配到 0 个相关技能（无可自动执行）",
+        "data": {
+          "matched": [],
+          "auto_executed": [],
+          "failed": []
+        }
+      },
+      {
+        "type": "state",
+        "state": "THINKING",
+        "thought": "执行中（类型:general）..."
       }
     ]
   }
