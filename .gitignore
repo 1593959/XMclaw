@@ -58,6 +58,11 @@ inspect_*.py
 print_*.py
 rewrite_*.py
 gen_*.py
+tests/_e2e_*_frames.json
+_probe*.txt
+_fix*.txt
+_chain*.txt
+_pow*.txt
 
 # Backups
 *.bak
