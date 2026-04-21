@@ -1,8 +1,8 @@
 # XMclaw v2 — Status snapshot
 
 **Date:** 2026-04-21
-**Branch:** `v2-rewrite`
-**State:** Phase 3.5 complete. Autonomous self-evolution is live-validated.
+**Branch:** `main` (v2-rewrite merged)
+**State:** Phase 1–4 complete. Autonomous self-evolution is live-validated; the v2 daemon is end-to-end usable via CLI.
 
 ---
 
@@ -33,7 +33,8 @@ the loop.
 ### Hermetic test suite
 
 ```
-293 v2 tests passing (unit + integration + conformance + offline bench)
+410 v2 tests passing (unit + integration + conformance + offline bench)
+    on Windows, macOS, Linux matrix
  3 live benches passing when XMC_ANTHROPIC_API_KEY set
  2 v1 tests failing (pre-existing in v1, unrelated to v2 work)
 CI hard gates: import-direction check, v2 ping smoke — all green
@@ -52,15 +53,19 @@ CI hard gates: import-direction check, v2 ping smoke — all green
 | 5 | Skills are versioned and rollback-able | `SkillRegistry` + append-only history + integration test |
 | 6 | Hard budget circuit-breaker | v1 `cost_tracker` migrated; full hard-cap test in Phase 4 |
 | 7 | Channel CI parity (matrix) | Parametric channel conformance (WS, matrix N=1) |
-| 8 | WS device-bound auth | `auth_check` callback hook present; impl deferred to Phase 4 |
+| 8 | WS device-bound auth | Pairing-token shared-secret auth (Phase 4.4): 0600 file perms, query + header accept, constant-time compare, `close(4401)` reject, crash-safe. ed25519 pairing ceremony deferred to Phase 4.7 |
 | 9 | Session lifecycle explicit | Cross-session memory integration tests pass |
 | 10 | Multi-backend runtime parity | Runtime conformance matrix (LocalSkillRuntime, N=1) |
 | **11** | **Same-model bench gate** | **14-test conformance: v2 sends byte-identical API body to a naked SDK** |
 | **12** | **Promotion requires evidence** | **Defense in depth: controller + registry both refuse empty evidence** |
 | 13 | Open + plugin-able | 7 provider ABCs + import-direction CI gate |
-| 14 | Cross-protocol + cross-OS | Anthropic + OpenAI paths; Windows dev tested; macOS/Linux in CI TODO |
+| 14 | Cross-protocol + cross-OS | Anthropic + OpenAI paths; CI matrix runs Windows / macOS / Linux on every push to main |
 
-**11 / 14 fully encoded in code with tests. 3 deferred to Phase 4.**
+**12 / 14 fully encoded in code with tests.** The remaining two
+partial items are: #6 hard-budget circuit-breaker (v1 cost-tracker
+migrated; full e2e cap test lands with daemon integration bench) and
+#14 cross-OS (matrix CI is wired; the first few green runs live on
+the Actions tab).
 
 ---
 

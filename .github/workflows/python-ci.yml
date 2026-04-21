@@ -25,17 +25,28 @@ on:
 
 jobs:
   lint-and-test:
-    runs-on: ubuntu-latest
+    # Anti-req #14: the v2 runtime must work on Windows / macOS / Linux.
+    # Matrix makes "cross-platform" a CI claim, not just a docstring
+    # promise. Windows was the dev environment the project was born on;
+    # macOS is added so POSIX-specific code paths (chmod 0o600 on the
+    # pairing file, fork/spawn semantics in ProcessSkillRuntime) stay
+    # tested against a second POSIX flavour.
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    strategy:
+      fail-fast: false    # one OS failure doesn't hide the others' results
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.10']
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.10
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: ${{ matrix.python-version }}
           cache: 'pip'
           cache-dependency-path: requirements-dev-lock.txt
 
@@ -44,17 +55,18 @@ jobs:
           pip install -r requirements-dev-lock.txt
           pip install -e . --no-deps
 
-      # Hard-fail set: syntax errors and undefined names only. Mirrors the old
-      # conda workflow's `flake8 --select=E9,F63,F7,F82` gate — these are
-      # "your code is broken" errors, not style.
+      # Hard-fail set: syntax errors and undefined names only. Mirrors the
+      # old conda workflow's `flake8 --select=E9,F63,F7,F82` gate — these
+      # are "your code is broken" errors, not style.
       - name: Lint (blocking — syntax & undefined names)
         run: ruff check --select E9,F63,F7,F82 .
 
-      # Full ruff pass is informational for now. Flip off `|| true` once the
+      # Full ruff pass is informational. Flip off the `|| exit 0` once the
       # accumulated warnings (currently ~119, mostly unused imports) are
-      # cleaned up in a dedicated PR.
+      # cleaned up in a dedicated PR. Using `|| exit 0` instead of
+      # `|| true` so the form is identical across bash and pwsh.
       - name: Lint (warnings — full ruleset)
-        run: ruff check . || true
+        run: ruff check . || exit 0
 
       - name: Test
         run: pytest tests/ -v

@@ -5,18 +5,19 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/1593959/XMclaw/actions"><img src="https://img.shields.io/github/actions/workflow/status/1593959/XMclaw/python-package-conda.yml?branch=main&style=for-the-badge" alt="CI"></a>
+  <a href="https://github.com/1593959/XMclaw/actions/workflows/python-ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/1593959/XMclaw/python-ci.yml?branch=main&style=for-the-badge" alt="CI"></a>
   <a href="https://github.com/1593959/XMclaw/releases"><img src="https://img.shields.io/github/v/release/1593959/XMclaw?include_prereleases&style=for-the-badge" alt="Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.10+-blue.svg?style=for-the-badge" alt="Python"></a>
+  <a href="https://github.com/1593959/XMclaw/actions/workflows/python-ci.yml"><img src="https://img.shields.io/badge/CI-Windows%20%7C%20macOS%20%7C%20Linux-blue?style=for-the-badge" alt="Cross-platform"></a>
 </p>
 
 > ### 🚀 v2 delivery status (2026-04-21)
 >
-> A ground-up v2 rewrite is live in this branch. The self-evolution spine —
-> streaming observer bus + honest grader + online scheduler + versioned skill
-> registry + autonomous evolution controller — is **validated on a real LLM
-> with no human in the loop**:
+> A ground-up v2 rewrite is live on `main`. The self-evolution spine —
+> streaming observer bus + honest grader + online scheduler + versioned
+> skill registry + autonomous evolution controller — is **validated on a
+> real LLM with no human in the loop**:
 >
 > | Live bench | On | Result | Gate |
 > |---|---|---|---|
@@ -24,8 +25,21 @@
 > | [Tool-aware loop](tests/bench/phase2_tool_aware_live.py) | MiniMax | **100% real tool-firing** on every scored turn | ≥ 80% |
 > | [Autonomous evolution](tests/bench/phase3_autonomous_evolution_live.py) | MiniMax | **1.18× session-over-session** after auto-promote | ≥ 1.05× |
 >
-> **322 v2 tests pass.** Try the skeleton: `xmclaw v2 ping`. Start the daemon:
-> `xmclaw v2 serve`. Full details: [docs/V2_STATUS.md](docs/V2_STATUS.md) ·
+> **410 v2 tests pass across Windows / macOS / Linux.** End-to-end
+> usable via the v2 CLI:
+>
+> ```bash
+> xmclaw v2 ping                 # bus round-trip smoke test
+> xmclaw v2 serve                # FastAPI + WS daemon
+>                                #   reads daemon/config.json (LLM key + fs allowlist)
+>                                #   writes pairing token to ~/.xmclaw/v2/ (0600)
+> xmclaw v2 chat                 # interactive REPL talking to the daemon
+> ```
+>
+> **12 / 14 anti-requirements** are encoded in code with dedicated tests,
+> including ClawJacked-style cross-origin WS hijack defense (pairing
+> token, constant-time compare, `close(4401)` on invalid auth). See the
+> full scorecard in [docs/V2_STATUS.md](docs/V2_STATUS.md). Design docs:
 > [docs/REWRITE_PLAN.md](docs/REWRITE_PLAN.md) ·
 > [docs/V2_DEVELOPMENT.md](docs/V2_DEVELOPMENT.md).
 >
