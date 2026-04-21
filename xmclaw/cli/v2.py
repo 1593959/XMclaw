@@ -223,3 +223,37 @@ def chat(
         token=effective_token,
     )
     raise typer.Exit(code=exit_code)
+
+
+@app.command()
+def doctor(
+    config: str = typer.Option(
+        "daemon/config.json", help="Path to config JSON.",
+    ),
+    host: str = typer.Option("127.0.0.1", help="Daemon host to probe."),
+    port: int = typer.Option(8766, help="Daemon port to probe."),
+    no_daemon_probe: bool = typer.Option(
+        False, "--no-daemon-probe",
+        help="Skip the HTTP health probe (offline mode).",
+    ),
+) -> None:
+    """Diagnose a v2 setup: config, LLM key, tools, pairing, port, daemon.
+
+    Runs a sequence of checks without starting the daemon. Each check
+    prints one line with a verdict. Exits 0 if every check passes, 1
+    if any critical check fails (so CI or shell scripts can use
+    ``xmclaw v2 doctor && xmclaw v2 serve``).
+    """
+    from xmclaw.cli.v2_doctor import run_doctor
+    from pathlib import Path as _Path
+
+    results = run_doctor(
+        _Path(config),
+        host=host, port=port,
+        probe_daemon=not no_daemon_probe,
+    )
+    typer.echo("xmclaw v2 doctor --")
+    for r in results:
+        typer.echo(r.render())
+    critical_fail = any(not r.ok for r in results)
+    raise typer.Exit(code=1 if critical_fail else 0)
