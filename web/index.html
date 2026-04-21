@@ -470,12 +470,7 @@
                     <div class="catalog-header">
                         <div class="catalog-search-row">
                             <input type="text" id="tools-search" placeholder="搜索工具名或描述...">
-                            <div class="catalog-filter" id="tools-filter">
-                                <button class="cfilter active" data-src="all">全部 <span class="cfcount" id="tools-count-all">0</span></button>
-                                <button class="cfilter" data-src="builtin">内置 <span class="cfcount" id="tools-count-builtin">0</span></button>
-                                <button class="cfilter" data-src="skill">技能 <span class="cfcount" id="tools-count-skill">0</span></button>
-                                <button class="cfilter" data-src="plugin">插件 <span class="cfcount" id="tools-count-plugin">0</span></button>
-                            </div>
+                            <div class="catalog-summary" id="tools-summary"></div>
                             <button class="mtab-refresh" id="tools-refresh-btn" title="刷新">↻</button>
                         </div>
                     </div>
@@ -491,7 +486,12 @@
                     <div class="catalog-header">
                         <div class="catalog-search-row">
                             <input type="text" id="skills-search" placeholder="搜索技能...">
-                            <div class="catalog-summary" id="skills-summary"></div>
+                            <div class="catalog-filter" id="skills-filter">
+                                <button class="cfilter active" data-src="all">全部 <span class="cfcount" id="skills-count-all">0</span></button>
+                                <button class="cfilter" data-src="builtin">内置 <span class="cfcount" id="skills-count-builtin">0</span></button>
+                                <button class="cfilter" data-src="generated">生成 <span class="cfcount" id="skills-count-generated">0</span></button>
+                                <button class="cfilter" data-src="downloaded">下载 <span class="cfcount" id="skills-count-downloaded">0</span></button>
+                            </div>
                             <button class="mtab-refresh" id="skills-refresh-btn" title="刷新">↻</button>
                         </div>
                     </div>

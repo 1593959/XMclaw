@@ -2852,43 +2852,59 @@ document.getElementById('memory-refresh-btn')?.addEventListener('click', () => {
 
 // ===== Tools + Skills catalog =====
 //
-// The 工具 and 技能 views are both card grids with a search box and
-// filter chips.  Tools come from /api/tools (everything the agent can
-// currently invoke — built-in, generated skill, plugin).  Skills come
-// from /api/evolution/status (the evolution engine's curated list, with
-// metadata like version and category — a superset filtered to source
-// files, whereas /api/tools only shows artifacts that actually loaded
-// into the registry).
+// 工具 shows only built-in tools (the fixed set that ships with
+// XMclaw), rendered in Chinese. 技能 aggregates every skill source the
+// agent can grow into — built-in seeds (xmclaw/skills/), SkillForge
+// output (shared/skills/), and user-downloaded skills (plugins/skills/).
+
+// Chinese labels for built-in tools. Missing entries fall back to the
+// raw English name/description so a new built-in still renders while
+// waiting for its translation.
+const TOOL_I18N = {
+    file_read:      { name_zh: '读取文件',    desc_zh: '读取本地文件内容，支持按行范围截取。' },
+    file_write:     { name_zh: '写入文件',    desc_zh: '创建新文件或整体覆盖写入文件。' },
+    file_edit:      { name_zh: '编辑文件',    desc_zh: '对现有文件进行字符串替换或追加。' },
+    bash:           { name_zh: '执行命令',    desc_zh: '在本机 Shell 中运行命令并返回输出。' },
+    web_search:     { name_zh: '网络搜索',    desc_zh: '通过搜索引擎查询最新资料。' },
+    web_fetch:      { name_zh: '抓取网页',    desc_zh: '下载指定 URL 并提取正文内容。' },
+    browser:        { name_zh: '浏览器操作',  desc_zh: '驱动 Playwright 浏览器打开、点击、填写表单。' },
+    todo:           { name_zh: '任务清单',    desc_zh: '维护当前会话的待办事项列表。' },
+    task:           { name_zh: '子任务代理',  desc_zh: '派发子代理去完成独立的探索或执行任务。' },
+    glob:           { name_zh: '文件查找',    desc_zh: '用通配符匹配目录中的文件。' },
+    grep:           { name_zh: '内容检索',    desc_zh: '基于 ripgrep 在代码中搜索正则表达式。' },
+    ask_user:       { name_zh: '向用户提问',  desc_zh: '遇到歧义时中断并向用户发问。' },
+    agent:          { name_zh: '启动代理',    desc_zh: '调用指定子代理并行处理复杂任务。' },
+    memory_search:  { name_zh: '搜索记忆',    desc_zh: '在向量记忆库中检索过往会话。' },
+    git:            { name_zh: 'Git 操作',    desc_zh: '执行 git 常用命令(状态、差异、提交等)。' },
+    computer_use:   { name_zh: '操控电脑',    desc_zh: '截屏、移动鼠标、键盘输入,控制桌面应用。' },
+    mcp:            { name_zh: 'MCP 桥接',    desc_zh: '调用挂载的 MCP 服务器暴露的工具。' },
+    github:         { name_zh: 'GitHub 操作', desc_zh: '通过 GitHub API 管理仓库、issue 与 PR。' },
+    vision:         { name_zh: '图像理解',    desc_zh: '让多模态模型解读图片内容。' },
+    asr:            { name_zh: '语音识别',    desc_zh: '把音频文件转写为文本。' },
+    tts:            { name_zh: '语音合成',    desc_zh: '把文本合成为语音音频。' },
+    code_exec:      { name_zh: '执行代码',    desc_zh: '在沙箱里运行 Python 代码并捕获输出。' },
+};
 
 let _toolsCache = null;
-let _toolsFilter = 'all';
 
 async function loadTools() {
     const grid = document.getElementById('tools-grid');
+    const summary = document.getElementById('tools-summary');
     if (!grid) return;
     grid.innerHTML = '<div class="empty-state">加载中…</div>';
     try {
         const res = await fetch('/api/tools');
-        const data = await res.json();
         if (res.status === 404) {
             grid.innerHTML = '<div class="empty-state">后端没有 /api/tools 端点，daemon 可能没重启加载新代码。运行 <code>xmclaw restart</code> 再试。</div>';
             return;
         }
-        _toolsCache = data.tools || [];
-        _updateToolCounts();
+        const data = await res.json();
+        const all = data.tools || [];
+        _toolsCache = all.filter(t => t.source === 'builtin');
+        if (summary) summary.textContent = `共 ${_toolsCache.length} 个内置工具`;
         _renderToolsGrid();
     } catch (e) {
         grid.innerHTML = '<div class="empty-state">加载失败</div>';
-    }
-}
-
-function _updateToolCounts() {
-    if (!_toolsCache) return;
-    const counts = { all: _toolsCache.length, builtin: 0, skill: 0, plugin: 0 };
-    for (const t of _toolsCache) counts[t.source] = (counts[t.source] || 0) + 1;
-    for (const k of Object.keys(counts)) {
-        const el = document.getElementById(`tools-count-${k}`);
-        if (el) el.textContent = counts[k];
     }
 }
 
@@ -2897,9 +2913,12 @@ function _renderToolsGrid() {
     const q = (document.getElementById('tools-search')?.value || '').trim().toLowerCase();
     if (!_toolsCache) { grid.innerHTML = '<div class="empty-state">加载中…</div>'; return; }
     const filtered = _toolsCache.filter(t => {
-        if (_toolsFilter !== 'all' && t.source !== _toolsFilter) return false;
         if (!q) return true;
-        return t.name.toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q);
+        const i18n = TOOL_I18N[t.name] || {};
+        return t.name.toLowerCase().includes(q)
+            || (t.description || '').toLowerCase().includes(q)
+            || (i18n.name_zh || '').toLowerCase().includes(q)
+            || (i18n.desc_zh || '').toLowerCase().includes(q);
     });
     if (!filtered.length) {
         grid.innerHTML = '<div class="catalog-empty-result">没有匹配的工具</div>';
@@ -2912,7 +2931,9 @@ function _renderToolsGrid() {
 }
 
 function _renderToolCard(t) {
-    const badge = `<span class="catalog-badge ${t.source}">${t.source}</span>`;
+    const i18n = TOOL_I18N[t.name] || {};
+    const displayName = i18n.name_zh || t.name;
+    const displayDesc = i18n.desc_zh || t.description || '(no description)';
     const params = t.parameters && Object.keys(t.parameters).length
         ? `<div class="catalog-params">${Object.entries(t.parameters).map(([name, p]) => `
             <div class="catalog-param">
@@ -2922,31 +2943,47 @@ function _renderToolCard(t) {
         : '<div class="catalog-params"><div class="catalog-param" style="color:var(--text-faint)">无参数</div></div>';
     return `<div class="catalog-card" data-name="${escapeHtml(t.name)}">
         <div class="catalog-card-head">
-            <div class="catalog-card-name">${escapeHtml(t.name)}</div>
-            ${badge}
+            <div class="catalog-card-name">${escapeHtml(displayName)}</div>
+            <span class="catalog-badge builtin">${escapeHtml(t.name)}</span>
         </div>
-        <div class="catalog-card-desc">${escapeHtml(t.description || '(no description)')}</div>
+        <div class="catalog-card-desc">${escapeHtml(displayDesc)}</div>
         ${params}
     </div>`;
 }
 
-// Skills view reads from /api/evolution/status which already aggregates
-// the evolved-artifact metadata (name, category, version, filename).
+// Skills view reads /api/skills which aggregates three dirs:
+// xmclaw/skills/ → builtin, shared/skills/ → generated (SkillForge
+// output), plugins/skills/ → downloaded (user-installed).
+const SKILL_SOURCE_LABEL = { builtin: '内置', generated: '生成', downloaded: '下载' };
 let _skillsCache = null;
+let _skillsFilter = 'all';
 
 async function loadSkills() {
     const grid = document.getElementById('skills-grid');
-    const summary = document.getElementById('skills-summary');
     if (!grid) return;
     grid.innerHTML = '<div class="empty-state">加载中…</div>';
     try {
-        const res = await fetch('/api/evolution/status');
+        const res = await fetch('/api/skills');
+        if (res.status === 404) {
+            grid.innerHTML = '<div class="empty-state">后端没有 /api/skills 端点，daemon 可能没重启加载新代码。运行 <code>xmclaw restart</code> 再试。</div>';
+            return;
+        }
         const data = await res.json();
         _skillsCache = data.skills || [];
-        if (summary) summary.textContent = `共 ${_skillsCache.length} 个技能`;
+        _updateSkillCounts();
         _renderSkillsGrid();
     } catch (e) {
         grid.innerHTML = '<div class="empty-state">加载失败</div>';
+    }
+}
+
+function _updateSkillCounts() {
+    if (!_skillsCache) return;
+    const counts = { all: _skillsCache.length, builtin: 0, generated: 0, downloaded: 0 };
+    for (const s of _skillsCache) counts[s.source] = (counts[s.source] || 0) + 1;
+    for (const k of Object.keys(counts)) {
+        const el = document.getElementById(`skills-count-${k}`);
+        if (el) el.textContent = counts[k];
     }
 }
 
@@ -2955,10 +2992,11 @@ function _renderSkillsGrid() {
     const q = (document.getElementById('skills-search')?.value || '').trim().toLowerCase();
     if (!_skillsCache) { grid.innerHTML = '<div class="empty-state">加载中…</div>'; return; }
     if (!_skillsCache.length) {
-        grid.innerHTML = '<div class="catalog-empty-result">暂无进化技能。SkillForge 在满足触发条件时会写入 shared/skills/。</div>';
+        grid.innerHTML = '<div class="catalog-empty-result">暂无技能。SkillForge 在满足触发条件时会写入 shared/skills/。</div>';
         return;
     }
     const filtered = _skillsCache.filter(s => {
+        if (_skillsFilter !== 'all' && s.source !== _skillsFilter) return false;
         if (!q) return true;
         return (s.name || '').toLowerCase().includes(q) ||
                (s.description || '').toLowerCase().includes(q) ||
@@ -2973,10 +3011,11 @@ function _renderSkillsGrid() {
         if (s.category) meta.push(`分类 ${escapeHtml(s.category)}`);
         if (s.version) meta.push(`v${escapeHtml(s.version)}`);
         if (s.filename) meta.push(escapeHtml(s.filename));
+        const srcLabel = SKILL_SOURCE_LABEL[s.source] || s.source;
         return `<div class="catalog-card">
             <div class="catalog-card-head">
                 <div class="catalog-card-name">${escapeHtml(s.name || s.id)}</div>
-                <span class="catalog-badge skill">skill</span>
+                <span class="catalog-badge ${escapeHtml(s.source)}">${escapeHtml(srcLabel)}</span>
             </div>
             <div class="catalog-card-desc">${escapeHtml(s.description || '(no description)')}</div>
             ${meta.length ? `<div class="catalog-card-meta">${meta.join(' · ')}</div>` : ''}
@@ -2984,19 +3023,19 @@ function _renderSkillsGrid() {
     }).join('');
 }
 
-// Wire tool catalog interactions once (idempotent — elements are static).
+// Wire catalog interactions once (idempotent — elements are static).
 document.getElementById('tools-search')?.addEventListener('input', _renderToolsGrid);
 document.getElementById('tools-refresh-btn')?.addEventListener('click', loadTools);
-document.querySelectorAll('#tools-filter .cfilter').forEach(btn => {
-    btn.addEventListener('click', () => {
-        _toolsFilter = btn.dataset.src;
-        document.querySelectorAll('#tools-filter .cfilter').forEach(b =>
-            b.classList.toggle('active', b === btn));
-        _renderToolsGrid();
-    });
-});
 document.getElementById('skills-search')?.addEventListener('input', _renderSkillsGrid);
 document.getElementById('skills-refresh-btn')?.addEventListener('click', loadSkills);
+document.querySelectorAll('#skills-filter .cfilter').forEach(btn => {
+    btn.addEventListener('click', () => {
+        _skillsFilter = btn.dataset.src;
+        document.querySelectorAll('#skills-filter .cfilter').forEach(b =>
+            b.classList.toggle('active', b === btn));
+        _renderSkillsGrid();
+    });
+});
 
 
 // ===== SESSION MANAGEMENT =====

@@ -525,6 +525,72 @@ async def list_all_tools():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+def _read_skill_dir(d: Path, source: str) -> list[dict]:
+    """Read every skill_*.py + sidecar .json in a directory.
+
+    Used by both /api/skills and /api/evolution/status so the two views
+    don't drift.  ``source`` is stamped on each row for UI grouping —
+    ``builtin`` (ships with XMclaw), ``generated`` (written by
+    SkillForge), or ``downloaded`` (user-installed from a registry).
+    """
+    out: list[dict] = []
+    if not d.exists():
+        return out
+    for f in sorted(d.glob("skill_*.py")):
+        try:
+            sidecar = f.with_suffix(".json")
+            meta: dict = {}
+            if sidecar.exists():
+                try:
+                    meta = json.loads(sidecar.read_text(encoding="utf-8")) or {}
+                except Exception:
+                    meta = {}
+            desc = meta.get("description") or ""
+            if not desc:
+                content = f.read_text(encoding="utf-8")
+                for line in content.splitlines()[:10]:
+                    if '"description"' in line or "'description'" in line:
+                        parts = line.split(":", 1)
+                        if len(parts) == 2:
+                            desc = parts[1].strip().strip('",\'').strip('"').strip("'")
+                            break
+            out.append({
+                "id": f.stem,
+                "name": meta.get("name") or f.stem,
+                "description": desc or "Skill",
+                "category": meta.get("category", ""),
+                "version": meta.get("version", ""),
+                "filename": f.name,
+                "source": source,
+            })
+        except Exception:
+            pass
+    return out
+
+
+@app.get("/api/skills")
+async def list_all_skills():
+    """Aggregate every skill source the UI cares about.
+
+    * ``xmclaw/skills/``    → ``source=builtin`` (ships with the product,
+      not currently populated but scaffolded for future seed skills).
+    * ``shared/skills/``    → ``source=generated`` (SkillForge output).
+    * ``plugins/skills/``   → ``source=downloaded`` (user-installed from
+      a registry; directory is created on demand, empty until then).
+
+    Returns ``{skills, total}``.  The three directories are read
+    independently so a missing one doesn't block the others.
+    """
+    builtin_dir = BASE_DIR / "xmclaw" / "skills"
+    generated_dir = BASE_DIR / "shared" / "skills"
+    downloaded_dir = BASE_DIR / "plugins" / "skills"
+    skills: list[dict] = []
+    skills.extend(_read_skill_dir(builtin_dir, "builtin"))
+    skills.extend(_read_skill_dir(generated_dir, "generated"))
+    skills.extend(_read_skill_dir(downloaded_dir, "downloaded"))
+    return {"skills": skills, "total": len(skills)}
+
+
 # Tool Execution API (for direct tool calls from UI)
 @app.post("/api/agent/{agent_id}/tools/{tool_name}")
 async def execute_tool(agent_id: str, tool_name: str, request: Request):

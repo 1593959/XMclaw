@@ -1540,9 +1540,11 @@ html, body {
   letter-spacing: 0.02em;
   border: 1px solid var(--border);
 }
-.catalog-badge.builtin { color: #7aa; border-color: rgba(120, 170, 170, 0.35); background: rgba(120, 170, 170, 0.08); }
-.catalog-badge.skill   { color: #c9a55c; border-color: rgba(201, 165, 92, 0.35); background: rgba(201, 165, 92, 0.08); }
-.catalog-badge.plugin  { color: #9b7fb8; border-color: rgba(155, 127, 184, 0.35); background: rgba(155, 127, 184, 0.08); }
+.catalog-badge.builtin    { color: #7aa; border-color: rgba(120, 170, 170, 0.35); background: rgba(120, 170, 170, 0.08); }
+.catalog-badge.skill      { color: #c9a55c; border-color: rgba(201, 165, 92, 0.35); background: rgba(201, 165, 92, 0.08); }
+.catalog-badge.plugin     { color: #9b7fb8; border-color: rgba(155, 127, 184, 0.35); background: rgba(155, 127, 184, 0.08); }
+.catalog-badge.generated  { color: #c9a55c; border-color: rgba(201, 165, 92, 0.35); background: rgba(201, 165, 92, 0.08); }
+.catalog-badge.downloaded { color: #9b7fb8; border-color: rgba(155, 127, 184, 0.35); background: rgba(155, 127, 184, 0.08); }
 
 .catalog-card-desc {
   font-size: 12px;
