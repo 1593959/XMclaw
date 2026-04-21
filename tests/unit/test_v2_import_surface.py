@@ -40,6 +40,7 @@ V2_MODULES = [
     "xmclaw.providers.memory.sqlite_vec",
     "xmclaw.providers.channel",
     "xmclaw.providers.channel.base",
+    "xmclaw.providers.channel.ws",
     "xmclaw.providers.tool",
     "xmclaw.providers.tool.base",
     "xmclaw.providers.tool.builtin",

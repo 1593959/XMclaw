@@ -243,7 +243,7 @@ class ChannelAdapter(abc.ABC):
     def subscribe(self, handler: Callable[[InboundMessage], Awaitable[None]]) -> None: ...
 ```
 
-每个 ChannelAdapter **必须**通过 `tests/conformance/channel_test_suite.py` 的 13 项 test（收发、重连、丢帧、多账号、限流、并发、空消息、超大消息、表情、引用、撤回、分片、顺序）。 CI 里矩阵跑——**anti-req #7** 的代码化。
+每个 ChannelAdapter **必须**通过 `tests/conformance/test_channel_conformance.py` 的 13 项 test（收发、重连、丢帧、多账号、限流、并发、空消息、超大消息、表情、引用、撤回、分片、顺序）。 CI 里矩阵跑——**anti-req #7** 的代码化。
 
 ### 3.4 `ToolProvider`
 
@@ -482,7 +482,7 @@ python -m xmclaw.demo.phase1 --skill read_and_summarize --turns 50
 | 4 | 不让 LLM 自评 | `HonestGrader` 里 `llm_judge_opinion` 权重 ≤ 0.2；CI-5 覆盖 |
 | 5 | 技能可回滚 | `SkillManifest.version` + `skills/versioning.py`；promote 事件必带 rollback 指针 |
 | 6 | 成本硬熔断 | `utils/cost.py` 触发 `BudgetExceeded` 异常，scheduler 捕获后 abort；CI-9 |
-| 7 | Channel CI parity | `conformance/channel_test_suite.py` + 矩阵；CI-3 |
+| 7 | Channel CI parity | `conformance/test_channel_conformance.py` + 矩阵；CI-3 |
 | 8 | 设备绑定 | `daemon/auth.py` 配对时交换 ed25519 公钥；未配对连接 WS 直接断 |
 | 9 | Session lifecycle | `core/session/lifecycle.py`，状态机 create→active→checkpoint→destroy；泄漏 CI-10 告警 |
 | 10 | 多后端同构 | `conformance/runtime_suite.py` 跨 `local/docker/ssh/...` 跑同任务 |
