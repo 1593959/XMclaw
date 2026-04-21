@@ -50,11 +50,20 @@ class ToolCall:
 
 @dataclass(frozen=True, slots=True)
 class ToolResult:
-    """A tool's response after invocation."""
+    """A tool's response after invocation.
+
+    ``side_effects`` is the list of paths / URIs the tool has materially
+    written to during this invocation. The Honest Grader's
+    ``check_side_effect_observable`` verifies each entry is observable
+    post-hoc (anti-req #4). Tools with no mutating behavior return
+    an empty tuple — the grader treats that as "not applicable" rather
+    than "failed to produce a side effect".
+    """
 
     call_id: str
     ok: bool
     content: Any
     error: str | None = None
     latency_ms: float = 0.0
+    side_effects: tuple[str, ...] = ()
     schema_version: int = 1
