@@ -2885,11 +2885,12 @@ const TOOL_I18N = {
     code_exec:      { name_zh: '执行代码',    desc_zh: '在沙箱里运行 Python 代码并捕获输出。' },
 };
 
+const TOOL_SOURCE_LABEL = { builtin: '内置', skill: '技能', plugin: '插件' };
 let _toolsCache = null;
+let _toolsFilter = 'all';
 
 async function loadTools() {
     const grid = document.getElementById('tools-grid');
-    const summary = document.getElementById('tools-summary');
     if (!grid) return;
     grid.innerHTML = '<div class="empty-state">加载中…</div>';
     try {
@@ -2899,12 +2900,21 @@ async function loadTools() {
             return;
         }
         const data = await res.json();
-        const all = data.tools || [];
-        _toolsCache = all.filter(t => t.source === 'builtin');
-        if (summary) summary.textContent = `共 ${_toolsCache.length} 个内置工具`;
+        _toolsCache = data.tools || [];
+        _updateToolCounts();
         _renderToolsGrid();
     } catch (e) {
         grid.innerHTML = '<div class="empty-state">加载失败</div>';
+    }
+}
+
+function _updateToolCounts() {
+    if (!_toolsCache) return;
+    const counts = { all: _toolsCache.length, builtin: 0, skill: 0, plugin: 0 };
+    for (const t of _toolsCache) counts[t.source] = (counts[t.source] || 0) + 1;
+    for (const k of Object.keys(counts)) {
+        const el = document.getElementById(`tools-count-${k}`);
+        if (el) el.textContent = counts[k];
     }
 }
 
@@ -2913,6 +2923,7 @@ function _renderToolsGrid() {
     const q = (document.getElementById('tools-search')?.value || '').trim().toLowerCase();
     if (!_toolsCache) { grid.innerHTML = '<div class="empty-state">加载中…</div>'; return; }
     const filtered = _toolsCache.filter(t => {
+        if (_toolsFilter !== 'all' && t.source !== _toolsFilter) return false;
         if (!q) return true;
         const i18n = TOOL_I18N[t.name] || {};
         return t.name.toLowerCase().includes(q)
@@ -2934,6 +2945,7 @@ function _renderToolCard(t) {
     const i18n = TOOL_I18N[t.name] || {};
     const displayName = i18n.name_zh || t.name;
     const displayDesc = i18n.desc_zh || t.description || '(no description)';
+    const srcLabel = TOOL_SOURCE_LABEL[t.source] || t.source;
     const params = t.parameters && Object.keys(t.parameters).length
         ? `<div class="catalog-params">${Object.entries(t.parameters).map(([name, p]) => `
             <div class="catalog-param">
@@ -2944,7 +2956,7 @@ function _renderToolCard(t) {
     return `<div class="catalog-card" data-name="${escapeHtml(t.name)}">
         <div class="catalog-card-head">
             <div class="catalog-card-name">${escapeHtml(displayName)}</div>
-            <span class="catalog-badge builtin">${escapeHtml(t.name)}</span>
+            <span class="catalog-badge ${escapeHtml(t.source)}">${escapeHtml(srcLabel)}</span>
         </div>
         <div class="catalog-card-desc">${escapeHtml(displayDesc)}</div>
         ${params}
@@ -3026,6 +3038,14 @@ function _renderSkillsGrid() {
 // Wire catalog interactions once (idempotent — elements are static).
 document.getElementById('tools-search')?.addEventListener('input', _renderToolsGrid);
 document.getElementById('tools-refresh-btn')?.addEventListener('click', loadTools);
+document.querySelectorAll('#tools-filter .cfilter').forEach(btn => {
+    btn.addEventListener('click', () => {
+        _toolsFilter = btn.dataset.src;
+        document.querySelectorAll('#tools-filter .cfilter').forEach(b =>
+            b.classList.toggle('active', b === btn));
+        _renderToolsGrid();
+    });
+});
 document.getElementById('skills-search')?.addEventListener('input', _renderSkillsGrid);
 document.getElementById('skills-refresh-btn')?.addEventListener('click', loadSkills);
 document.querySelectorAll('#skills-filter .cfilter').forEach(btn => {
