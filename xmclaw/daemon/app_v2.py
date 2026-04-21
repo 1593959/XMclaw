@@ -23,6 +23,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from starlette.responses import JSONResponse
 
 from xmclaw import __version__
+from xmclaw.daemon.agent_loop import AgentLoop
 from xmclaw.core.bus import (
     BehavioralEvent,
     EventType,
@@ -35,6 +36,7 @@ def create_app(
     *,
     bus: InProcessEventBus | None = None,
     auth_check: Callable[[dict[str, str]], Awaitable[bool]] | None = None,
+    agent: AgentLoop | None = None,
 ) -> FastAPI:
     """Build the v2 FastAPI app.
 
@@ -47,10 +49,17 @@ def create_app(
     auth_check : callable | None
         Async ``(headers: dict) -> bool`` for anti-req #8 device auth.
         Default accepts all (loopback-only).
+    agent : AgentLoop | None
+        Optional agent turn orchestrator. When provided, user messages
+        trigger ``agent.run_turn`` (LLM ↔ tool loop); events flow back
+        via the bus subscription. When absent (Phase 4.0 default), user
+        messages are just bus-echoed — useful for WS-plumbing tests
+        and clients that manage their own reasoning upstream.
     """
     app = FastAPI(title="XMclaw v2 daemon", version=__version__)
     bus = bus or InProcessEventBus()
     app.state.bus = bus
+    app.state.agent = agent
 
     @app.get("/health")
     async def health() -> JSONResponse:
@@ -127,18 +136,40 @@ def create_app(
                     continue
                 # Frame shape: {"type": "user", "content": "..."}
                 if frame.get("type") == "user":
-                    await bus.publish(make_event(
-                        session_id=session_id, agent_id="daemon",
-                        type=EventType.USER_MESSAGE,
-                        payload={
-                            "content": str(frame.get("content", "")),
-                            "channel": "ws",
-                        },
-                    ))
-                    await bus.drain()
-                # Other frame types will be handled by Phase 4.1 (scheduler
-                # + grader + skill invocation). For now we only accept
-                # ``user`` and bus-publish it so subscribers can see.
+                    content = str(frame.get("content", ""))
+                    if agent is not None:
+                        # Phase 4.1: run the full LLM ↔ tool loop. The
+                        # AgentLoop publishes USER_MESSAGE + every LLM /
+                        # tool event onto the bus; our subscription
+                        # forwards them to this WS.
+                        try:
+                            await agent.run_turn(session_id, content)
+                        except Exception as exc:  # noqa: BLE001
+                            # Surface a structured error frame so the
+                            # client sees the failure instead of a
+                            # silent socket stall.
+                            await bus.publish(make_event(
+                                session_id=session_id, agent_id="daemon",
+                                type=EventType.ANTI_REQ_VIOLATION,
+                                payload={
+                                    "message": f"agent loop crashed: {type(exc).__name__}: {exc}",
+                                },
+                            ))
+                            await bus.drain()
+                    else:
+                        # Phase 4.0 fallback: plain bus-echo for tests
+                        # and for clients that do their own reasoning.
+                        await bus.publish(make_event(
+                            session_id=session_id, agent_id="daemon",
+                            type=EventType.USER_MESSAGE,
+                            payload={
+                                "content": content,
+                                "channel": "ws",
+                            },
+                        ))
+                        await bus.drain()
+                # Other frame types are silently ignored for now.
+                # Phase 4.2+ will add cancel / ask_user_answer / etc.
         except WebSocketDisconnect:
             pass
         finally:
