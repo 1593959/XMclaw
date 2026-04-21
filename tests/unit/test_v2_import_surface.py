@@ -65,6 +65,7 @@ V2_MODULES = [
     "xmclaw.cli.v2",
     "xmclaw.daemon.app_v2",
     "xmclaw.daemon.agent_loop",
+    "xmclaw.daemon.factory",
 ]
 
 
