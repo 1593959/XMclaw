@@ -154,3 +154,137 @@ class LiveReadAndSummarize(Skill):
             },
             side_effects=[],
         )
+
+
+# ── tool-aware variant: model calls file_read, then writes the summary ──
+
+
+_TOOL_AWARE_SYSTEM_PROMPT = (
+    "You are a precise summarization assistant. You have a `file_read` "
+    "tool available. For every request, ALWAYS call `file_read` with "
+    "the given path first — do not summarize from memory or guess at "
+    "the file's contents. Once the tool returns, produce the summary "
+    "following the user's formatting instruction. Make the summary "
+    "accurate and concise; no commentary beyond the summary itself."
+)
+
+
+class ToolAwareReadAndSummarize(Skill):
+    """LLM-backed skill that invokes ``file_read`` rather than receiving
+    the document in the prompt.
+
+    Phase 2.6: proves anti-req #1 in the authentic agent loop — the
+    grader sees a real ``tool_invocation_finished`` event with real
+    ``side_effects`` stemming from the actual file read (none, since
+    read is pure) plus a final text summary. Compared to
+    ``LiveReadAndSummarize``, this skill goes through the full
+    request → tool_use → tool_result → final-text handshake.
+
+    The loop is bounded by ``max_hops`` to guard against the pathological
+    case where the model keeps asking for more tool calls forever. At
+    the hop limit we return ``ok=False`` — the scheduler will see this
+    as a low-reward turn and down-weight the offending variant.
+
+    ``SkillInput.args`` expected keys:
+      * ``file_path: str`` — absolute path the model must read (required)
+      * ``file_id: str``   — identifier for logging (optional)
+    """
+
+    id = "demo.tool_aware_read_and_summarize"
+    version = 1
+
+    def __init__(
+        self,
+        variant: Variant,
+        llm: LLMProvider,
+        tools: Any,  # ToolProvider — typed loosely to avoid a core import
+        *,
+        max_hops: int = 3,
+    ) -> None:
+        self._variant = variant
+        self._llm = llm
+        self._tools = tools
+        self._max_hops = max_hops
+
+    async def run(self, inp: SkillInput) -> SkillOutput:
+        file_path = inp.args.get("file_path", "")
+        if not file_path:
+            return SkillOutput(
+                ok=False,
+                result={"error": "missing file_path", "variant": self._variant.id},
+                side_effects=[],
+            )
+
+        user_msg = (
+            f"Read the file at `{file_path}` and summarize it. "
+            f"{self._variant.prompt_suffix}"
+        )
+        messages: list[Message] = [
+            Message(role="system", content=_TOOL_AWARE_SYSTEM_PROMPT),
+            Message(role="user", content=user_msg),
+        ]
+        tool_specs = self._tools.list_tools()
+        invocations: list[dict[str, Any]] = []
+
+        for _hop in range(self._max_hops):
+            try:
+                resp = await self._llm.complete(messages, tools=tool_specs)
+            except Exception as exc:  # noqa: BLE001 — surface as ok=False
+                return SkillOutput(
+                    ok=False,
+                    result={"error": str(exc), "variant": self._variant.id,
+                            "tool_calls": len(invocations)},
+                    side_effects=[],
+                )
+
+            if resp.tool_calls:
+                # Record this assistant turn (text + tool_calls together).
+                messages.append(Message(
+                    role="assistant",
+                    content=resp.content,
+                    tool_calls=resp.tool_calls,
+                ))
+                # Execute every tool call the model requested; append
+                # tool-role messages back into the transcript.
+                for tc in resp.tool_calls:
+                    tr = await self._tools.invoke(tc)
+                    invocations.append({
+                        "name": tc.name,
+                        "args": tc.args,
+                        "ok": tr.ok,
+                        "error": tr.error,
+                        "side_effects": list(tr.side_effects),
+                    })
+                    messages.append(Message(
+                        role="tool",
+                        content=(tr.content if isinstance(tr.content, str)
+                                 else str(tr.content)),
+                        tool_call_id=tc.id,
+                    ))
+                continue
+
+            # No tool calls — treat as the final summary.
+            return SkillOutput(
+                ok=True,
+                result={
+                    "summary": resp.content,
+                    "variant": self._variant.id,
+                    "tool_calls": invocations,
+                    "prompt_tokens": resp.prompt_tokens,
+                    "completion_tokens": resp.completion_tokens,
+                    "latency_ms": resp.latency_ms,
+                },
+                side_effects=[],
+            )
+
+        # Hit the hop limit without a terminal text response. This scores
+        # as a failure; scheduler will down-weight this variant.
+        return SkillOutput(
+            ok=False,
+            result={
+                "error": f"hit max_hops={self._max_hops} without final summary",
+                "variant": self._variant.id,
+                "tool_calls": invocations,
+            },
+            side_effects=[],
+        )
