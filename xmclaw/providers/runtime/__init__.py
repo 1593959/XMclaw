@@ -20,9 +20,11 @@ from xmclaw.providers.runtime.base import (
     SkillStatus,
 )
 from xmclaw.providers.runtime.local import LocalSkillRuntime
+from xmclaw.providers.runtime.process import ProcessSkillRuntime
 
 __all__ = [
     "LocalSkillRuntime",
+    "ProcessSkillRuntime",
     "SkillHandle",
     "SkillRuntime",
     "SkillStatus",
