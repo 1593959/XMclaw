@@ -1,6 +1,16 @@
-# XMclaw v2 — 开发与 Plan（2026-04-21 draft）
+# XMclaw v2 — 开发与 Plan（2026-04-21）
 
-状态：草稿，尚未与用户最终对齐。对齐后再拆分为 issues / milestones。
+> **Status snapshot, 2026-04-21 end of day** (see §11 for the full scorecard):
+>
+> The v2 spine — streaming observer + honest grader + unified IR + online
+> scheduler + versioned skill registry + autonomous evolution controller —
+> is **live-validated on real LLM**. Session-level self-evolution lifts mean
+> reward by **18%** on MiniMax end-to-end (Phase 3.5, commit `3f44d6d`).
+>
+> **293 unit/integration tests pass. Three live benches pass** (Phase 1.3,
+> 2.6, 3.5). The 14 anti-requirements have 11 proven in code, 3 deferred.
+> The v2-rewrite branch carries the full implementation; it has NOT been
+> merged to main (see §12).
 
 ---
 
@@ -311,3 +321,102 @@ Copy / adapt 自 peers，但每个都内置 anti-requirement guard。
 5. 同模型对照 bench（anti-req #11）作为 release gate —— 接受？
 6. "进化必须带可验证分数提升证据"（anti-req #12）作为 CI 硬门 —— 接受？
 7. 前端从零重构、老 `web/` 完全弃 —— 确认？
+
+---
+
+## 11. 交付现状（2026-04-21）
+
+### 11.1 阶段完成度
+
+| Phase | 目标 | 状态 | 佐证 commit |
+|---|---|---|---|
+| 1.1 | 事件总线 + IR + 模拟 bandit | ✅ | `418a230` |
+| 1.2 | 真 Anthropic provider + domain grader | ✅ | `13d7338` |
+| 1.3 | 离线学习曲线 + 真 LLM live bench | ✅ **1.12× on MiniMax** | 同 1.2 |
+| 2.0 | OpenAI provider + 跨 provider 翻译器一致性 | ✅ | `a7d34e2` |
+| 2.1 | SqliteVecMemory (分层 + 语义) | ✅ | `815162a` |
+| 2.2 | Anti-req #11 provider non-interference 门 | ✅ | `5527866` |
+| 2.3 | WS ChannelAdapter + 参数化 conformance | ✅ | `158c1e3` |
+| 2.4 | 跨 session 记忆（seed 加速下一 session 收敛）| ✅ | `93b1cbb` |
+| 2.5 | BuiltinTools + anti-req #1 端到端证据 | ✅ | `3c588c1` |
+| 2.6 | 真 LLM tool-aware agent loop | ✅ **100% tool-firing on MiniMax** | `426f994` |
+| 3.1 | SkillRegistry + promote/rollback + 审计 | ✅ | `a698d8e` |
+| 3.2 | LocalSkillRuntime + CPU timeout + 矩阵 | ✅ | `6c9f346` |
+| 3.3 | EvolutionController（mock 1.22×）| ✅ | `22ce315` |
+| 3.4 | 进程隔离 runtime（subprocess / docker） | ⬜ 延后 |  |
+| 3.5 | 真 LLM 自治演化循环 | ✅ **1.18× on MiniMax** | `3f44d6d` |
+| 4–6 | 生态 / 热重载 / 发布 | ⬜ 未开工 |  |
+
+### 11.2 Anti-requirement 记分卡
+
+| # | Anti-req | 代码证据 | 测试类型 |
+|---|---|---|---|
+| 1 | 不信任文本 tool call | 翻译器层 ✅ + grader 层 ✅ + live agent loop ✅ (100% 真调用) | 三层 |
+| 2 | 非 FTS5-only 记忆 | SqliteVecMemory 分层 + 语义 + surface scan 禁止 auto-inject | Unit + test_memory_provider_has_no_auto_inject |
+| 3 | 翻译器不易碎 | Anthropic + OpenAI 各 18/11 个拒绝路径；跨 provider 矩阵 | Conformance matrix |
+| 4 | 不让 LLM 自评 | HonestGrader LLM 权重硬卡 0.20，weight sum assert at import | Unit + integration |
+| 5 | 技能可回滚 | SkillRegistry 版本化 + append-only 历史 | Unit + integration |
+| 6 | 成本硬熔断 | cost_tracker (v1 迁移) + BudgetExceeded | Unit（v1 遗产，待 Phase 4 补强）|
+| 7 | Channel CI parity | WS adapter + 参数化 conformance matrix (N=1) | Conformance |
+| 8 | 设备绑定 | WSChannelAdapter auth_check 回调预留 | 🚧 Phase 4 落真实现 |
+| 9 | Session lifecycle | Session lifecycle stub + 跨 session 测试 | Integration |
+| 10 | 多后端同构 | Runtime conformance matrix (N=1) | Conformance |
+| **11** | **同模型 bench gate** | **provider_noninterference conformance (14 tests)** | **Conformance** |
+| **12** | **进化带证据** | **Registry + Controller 双层 "no evidence no promote"** | **Unit + integration + live** |
+| **13** | **接口化 + plugin** | 7 个 provider ABC + import-direction CI 门 | **CI + import surface** |
+| **14** | **跨协议 + 跨平台** | Anthropic-native + OpenAI-tool 双路；Windows 开发验过；macOS/Linux 待 CI | 🚧 部分 |
+
+### 11.3 测试计数
+
+```
+总 v2 测试数量:     293 passing (unit + integration + conformance + bench)
+Live bench runs 通过:  3 / 3
+  ├─ Phase 1.3 learning curve:          1.119× (gate ≥ 1.05×)
+  ├─ Phase 2.6 tool-aware learning:     1.099× + tool-firing 100%
+  └─ Phase 3.5 autonomous evolution:    1.183× (session 1 vs session 2)
+CI 门:                全绿
+  ├─ import-direction check
+  └─ v2 ping smoke
+```
+
+### 11.4 v2-rewrite 分支 commit 弧
+
+```
+418a230  Phase 1.1 HonestGrader + OnlineScheduler
+13d7338  Phase 1.2 Anthropic provider + domain grader
+5527866  Phase 2.2 anti-req #11 release gate
+815162a  Phase 2.1 sqlite-vec memory
+a7d34e2  Phase 2.0 OpenAI provider + cross-provider conformance
+158c1e3  Phase 2.3 WS channel + conformance
+93b1cbb  Phase 2.4 cross-session memory integration
+3c588c1  Phase 2.5 BuiltinTools + anti-req #1 e2e
+426f994  Phase 2.6 tool-aware live bench  (100% tool-firing on MiniMax)
+a698d8e  Phase 3.1 SkillRegistry + versioning
+6c9f346  Phase 3.2 LocalSkillRuntime + conformance matrix
+22ce315  Phase 3.3 EvolutionController (mock 1.22×)
+3f44d6d  Phase 3.5 autonomous evolution LIVE  (1.18× on MiniMax)
+```
+
+---
+
+## 12. 合并回 main 的决策点
+
+**目前位置：** `v2-rewrite` 分支携带完整实现，从 `main` 分出未合回。
+
+**合回的利弊：**
+
+| 合回 | 不合回 |
+|---|---|
+| v2 成为事实，不再是"实验分支" | `main` 继续是稳定 v1，不受 v2 未完成部分（Phase 3.4 sandbox、Phase 4 daemon 集成）干扰 |
+| 公开 repo 访客直接看到"agent 自进化可度量"的故事 | v2 可以继续独立推进到更完整，合一次性合满 |
+| CI 默认跑 v2 测试 | v1 的 9 个 integration 工程继续依赖 v1 模块，合回需要同步删减或保留 |
+
+**推荐做法：**
+
+1. **不直接 merge to main**。现在 v1 仍然是对外交付版本（`xmclaw.exe` 安装器、PyPI `xmclaw` 包），v2 还没做 daemon 集成 / 发布流水线改造。直接 merge 会打破 v1 用户的使用路径。
+
+2. **走 PR 路线**：在 GitHub 开一个 `v2-rewrite → main` 的 PR，显性化所有改动，等 Phase 4（daemon 集成 + 发布流水线）完成后再 merge。
+
+3. **短期：** 把 v2-rewrite push 到 `origin`（如果还没），让 CI 可见、让 reviewer 能看；main 保持不动。
+
+最终决定权在用户。本文档只是把决策要素罗列清楚。
