@@ -34,6 +34,10 @@ app.add_typer(sub_agent, name="agent")
 app.add_typer(sub_config, name="config")
 app.add_typer(sub_evo, name="evo")
 
+# v2-rewrite: isolated namespace for v2 commands during transition.
+from xmclaw.cli import v2 as _v2_cli  # noqa: E402 — must register after app
+app.add_typer(_v2_cli.app, name="v2")
+
 
 # ── Daemon ──────────────────────────────────────────────────────────────────
 

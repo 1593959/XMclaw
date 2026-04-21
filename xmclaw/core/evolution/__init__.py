@@ -1,0 +1,21 @@
+"""Evolution — streaming observer-driven promotion/rollback loop.
+
+Phase 3.3 ships ``EvolutionController``: the glue between scheduler
+arm stats and ``SkillRegistry`` promotion. It decides WHEN a candidate
+has earned a promotion based on grader evidence, and refuses to
+promote without it (anti-req #12 at the autonomous-loop layer).
+
+Phase 4+ extends this with cross-session signal aggregation and
+online hot-reload of promoted skill versions.
+"""
+from xmclaw.core.evolution.controller import (
+    EvolutionController,
+    EvolutionDecision,
+    PromotionThresholds,
+)
+
+__all__ = [
+    "EvolutionController",
+    "EvolutionDecision",
+    "PromotionThresholds",
+]
