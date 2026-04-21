@@ -9,6 +9,7 @@ Not a pytest — throw-away harness for the v2 conversation-loop audit.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import sys
 import time
@@ -16,8 +17,12 @@ from typing import Any
 
 import websockets
 
+# Force utf-8 stdout so emoji / CJK in assistant responses don't crash the harness.
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+
 URL = "ws://127.0.0.1:8766/agent/default"
-TURN_TIMEOUT = 90.0  # seconds; generous so slow LLM turns still finish
+TURN_TIMEOUT = 60.0         # hard ceiling per turn
+IDLE_AFTER_REFLECT = 6.0    # if reflect_done fired and no frames in this window, call it done
 
 
 async def run_turn(ws: Any, user_input: str, *, label: str) -> dict:
@@ -27,19 +32,28 @@ async def run_turn(ws: Any, user_input: str, *, label: str) -> dict:
     saw_done = False
     saw_error: str | None = None
     first_chunk_at: float | None = None
+    reflect_done_at: float | None = None
+    hang_reason: str | None = None
 
     await ws.send(json.dumps({"type": "user", "content": user_input}))
 
     while True:
-        try:
-            remaining = TURN_TIMEOUT - (time.monotonic() - t0)
-            if remaining <= 0:
-                print(f"  ! TIMEOUT after {TURN_TIMEOUT}s")
-                break
-            raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
-        except asyncio.TimeoutError:
-            print(f"  ! TIMEOUT after {TURN_TIMEOUT}s")
+        now = time.monotonic()
+        # Global deadline
+        if now - t0 > TURN_TIMEOUT:
+            hang_reason = f"hit hard timeout {TURN_TIMEOUT}s"
             break
+        # Idle-after-reflect deadline: symptom of the "never-send-done" bug
+        if reflect_done_at is not None and (now - reflect_done_at) > IDLE_AFTER_REFLECT:
+            hang_reason = f"reflect_done but no done frame after {IDLE_AFTER_REFLECT}s"
+            break
+
+        # recv with a short tick so we can evaluate the idle deadline
+        tick = 1.0
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=tick)
+        except asyncio.TimeoutError:
+            continue
 
         try:
             frame = json.loads(raw)
@@ -51,7 +65,13 @@ async def run_turn(ws: Any, user_input: str, *, label: str) -> dict:
         ftype = frame.get("type")
 
         if ftype == "chunk" and first_chunk_at is None:
-            first_chunk_at = time.monotonic() - t0
+            first_chunk_at = now - t0
+
+        # The backend emits a "stage" frame named "reflect_done" at end of turn.
+        if ftype == "stage":
+            name = frame.get("name") or frame.get("payload", {}).get("name")
+            if name == "reflect_done":
+                reflect_done_at = now
 
         if ftype == "done":
             saw_done = True
@@ -60,7 +80,6 @@ async def run_turn(ws: Any, user_input: str, *, label: str) -> dict:
             saw_error = frame.get("content", "")
             break
         if ftype == "ask_user":
-            # Don't get stuck — send a canned answer so the harness keeps moving
             await ws.send(json.dumps({"type": "ask_user_answer", "answer": "skip"}))
 
     elapsed = time.monotonic() - t0
@@ -71,6 +90,7 @@ async def run_turn(ws: Any, user_input: str, *, label: str) -> dict:
         "first_chunk_s": round(first_chunk_at, 2) if first_chunk_at else None,
         "saw_done": saw_done,
         "saw_error": saw_error,
+        "hang_reason": hang_reason,
         "frames": frames,
     }
 
@@ -80,7 +100,7 @@ def summarize(report: dict) -> None:
     print(f"\n=== [{report['label']}] ===")
     print(f"  input      : {report['input']!r}")
     print(f"  elapsed    : {report['elapsed_s']}s  (first chunk @ {report['first_chunk_s']}s)")
-    print(f"  done/error : done={report['saw_done']} error={report['saw_error']!r}")
+    print(f"  done/error : done={report['saw_done']} error={report['saw_error']!r} hang={report.get('hang_reason')!r}")
 
     # Roll up frame types
     counts: dict[str, int] = {}
