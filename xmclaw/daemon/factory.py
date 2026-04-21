@@ -160,7 +160,7 @@ def build_tools_from_config(cfg: dict[str, Any]) -> ToolProvider | None:
     if allowed_dirs is None:
         raise ConfigError(
             "'tools.allowed_dirs' is required when the tools section is "
-            "present — set it to a non-empty list of paths the tools "
+            "present -- set it to a non-empty list of paths the tools "
             "are allowed to read/write, or remove the tools section "
             "entirely to disable tools"
         )
@@ -171,7 +171,7 @@ def build_tools_from_config(cfg: dict[str, Any]) -> ToolProvider | None:
         )
     if len(allowed_dirs) == 0:
         raise ConfigError(
-            "'tools.allowed_dirs' must be non-empty — an empty list "
+            "'tools.allowed_dirs' must be non-empty -- an empty list "
             "would deny every path, which means tools are enabled but "
             "unusable. Remove the 'tools' section instead."
         )

@@ -69,6 +69,7 @@ V2_MODULES = [
     "xmclaw.daemon.agent_loop",
     "xmclaw.daemon.factory",
     "xmclaw.daemon.pairing",
+    "xmclaw.daemon.lifecycle",
 ]
 
 

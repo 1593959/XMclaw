@@ -1,10 +1,14 @@
-"""XMclaw CLI — top-level entry point.
+"""XMclaw CLI -- top-level entry point.
 
 Subcommands:
 
     xmclaw version   Print the runtime version.
     xmclaw ping      Bus round-trip smoke test.
-    xmclaw serve     Start the daemon (FastAPI + WS + optional web UI).
+    xmclaw serve     Foreground daemon (blocks; uvicorn.run).
+    xmclaw start     Spawn the daemon detached; returns once healthy.
+    xmclaw stop      Stop a running daemon (via PID file).
+    xmclaw restart   Stop then start.
+    xmclaw status    Report daemon state (running / stale / dead).
     xmclaw chat      Interactive REPL that talks to a running daemon.
     xmclaw doctor    Diagnose a local setup without running anything.
 
@@ -168,6 +172,119 @@ def serve(
 
 
 @app.command()
+def start(
+    host: str = typer.Option("127.0.0.1", help="Bind address."),
+    port: int = typer.Option(8766, help="Port to bind."),
+    config: str = typer.Option(
+        "daemon/config.json", help="Path to config JSON.",
+    ),
+    no_auth: bool = typer.Option(
+        False, "--no-auth",
+        help="DANGEROUS: skip pairing-token validation.",
+    ),
+    wait: float = typer.Option(
+        10.0, help="Seconds to wait for /health before giving up.",
+    ),
+) -> None:
+    """Spawn the daemon in the background, return once /health answers.
+
+    Writes a PID file at ``~/.xmclaw/v2/daemon.pid`` and a log at
+    ``~/.xmclaw/v2/daemon.log``. Use ``xmclaw stop`` to kill it, or
+    ``xmclaw status`` to check on it.
+    """
+    from xmclaw.daemon.lifecycle import start_daemon
+    try:
+        status = start_daemon(
+            host=host, port=port, config=config,
+            no_auth=no_auth, wait_seconds=wait,
+        )
+    except RuntimeError as exc:
+        typer.echo(f"  [x]  {exc}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(
+        f"  [ok]  daemon started pid={status.pid} "
+        f"http://{status.host}:{status.port}"
+    )
+
+
+@app.command()
+def stop(
+    grace: float = typer.Option(
+        5.0, help="Seconds to wait for graceful shutdown before SIGKILL.",
+    ),
+) -> None:
+    """Stop the daemon referenced by the PID file."""
+    from xmclaw.daemon.lifecycle import read_status, stop_daemon
+    before = read_status()
+    if before.state == "dead":
+        typer.echo("  [!]   no daemon recorded -- nothing to stop")
+        raise typer.Exit(code=0)
+    after = stop_daemon(grace_seconds=grace)
+    if after.state == "dead":
+        typer.echo(f"  [ok]  daemon stopped (was pid={before.pid})")
+    else:
+        typer.echo(
+            f"  [!]   daemon state after stop: {after.state} pid={after.pid}",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def restart(
+    host: str = typer.Option("127.0.0.1", help="Bind address."),
+    port: int = typer.Option(8766, help="Port to bind."),
+    config: str = typer.Option(
+        "daemon/config.json", help="Path to config JSON.",
+    ),
+    no_auth: bool = typer.Option(False, "--no-auth"),
+    grace: float = typer.Option(5.0),
+    wait: float = typer.Option(10.0),
+) -> None:
+    """Stop (if running) then start. Idempotent."""
+    from xmclaw.daemon.lifecycle import read_status, start_daemon, stop_daemon
+    before = read_status()
+    if before.state != "dead":
+        stop_daemon(grace_seconds=grace)
+        typer.echo(f"  [ok]  stopped previous daemon (was pid={before.pid})")
+    try:
+        status = start_daemon(
+            host=host, port=port, config=config,
+            no_auth=no_auth, wait_seconds=wait,
+        )
+    except RuntimeError as exc:
+        typer.echo(f"  [x]  {exc}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(
+        f"  [ok]  daemon restarted pid={status.pid} "
+        f"http://{status.host}:{status.port}"
+    )
+
+
+@app.command()
+def status() -> None:
+    """Report whether a daemon is running, stale, or absent."""
+    from xmclaw.daemon.lifecycle import read_status
+    s = read_status()
+    if s.state == "running":
+        health = "healthy" if s.healthy else "not answering /health"
+        typer.echo(
+            f"  [ok]  running  pid={s.pid}  "
+            f"http://{s.host}:{s.port}  ({health})"
+        )
+    elif s.state == "stale":
+        typer.echo(
+            f"  [!]   stale  pid={s.pid} recorded but process is gone "
+            f"-- run `xmclaw start` to relaunch",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    else:
+        typer.echo("  [x]  no daemon running")
+        raise typer.Exit(code=1)
+
+
+@app.command()
 def chat(
     url: str = typer.Option(
         "ws://127.0.0.1:8766/agent/v2/{session_id}",
@@ -264,3 +381,7 @@ def doctor(
         typer.echo(r.render())
     critical_fail = any(not r.ok for r in results)
     raise typer.Exit(code=1 if critical_fail else 0)
+
+
+if __name__ == "__main__":
+    app()
