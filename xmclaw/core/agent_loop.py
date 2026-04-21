@@ -373,6 +373,8 @@ class AgentLoop:
                 "gathered_info": gathered_text,
                 "execution_plan": plan_text,
                 "skill_results": skill_text,
+                "soul": self._soul,
+                "profile": self._profile,
                 "task_profile": {
                     "type": _pv(task_profile, "type"),
                     "complexity": _pv(task_profile, "complexity"),
@@ -688,7 +690,11 @@ class AgentLoop:
                         "desc": status,
                         "data": {"status": status},
                     })
-                await self._trigger_immediate_evolution(dict(self._tool_patterns))
+                # Evolution runs in background — it's a multi-step LLM cycle
+                # (reflect→forge→validate) that used to block 'done' for 60-190s
+                # even on trivial turns like "你好". Reflection stays inline because
+                # it shapes the very next turn's context; evolution doesn't.
+                self._schedule_evolution_only()
             except Exception as e:
                 logger.warning("inline_reflection_failed", error=str(e))
 

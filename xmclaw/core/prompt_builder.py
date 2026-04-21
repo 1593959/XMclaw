@@ -8,8 +8,15 @@ def _get_source_dir() -> str:
 
 
 class PromptBuilder:
-    SYSTEM_PROMPT = """You are XMclaw, a local-first, self-evolving AI Agent.
+    PLAN_MODE_PROMPT = """[PLAN MODE is ON]
+The user wants to see the plan before you execute.
+- Do NOT call side-effect tools (file_write, file_edit, bash, code_exec, git, github).
+- Read-only tools (file_read, grep, glob, web_fetch, web_search, memory_search) are fine for gathering info.
+- End your response with a numbered plan and ask the user to approve before you act.
+- Once the user approves in a later turn, execute normally."""
 
+    SYSTEM_PROMPT = """You are XMclaw, a local-first, self-evolving AI Agent.
+{identity}
 You have access to the following tools — call them directly via the tool-calling interface (do NOT output XML, JSON, or any text-based tool invocation format):
 {tools}
 
@@ -76,7 +83,47 @@ Rules:
 3. Be concise but complete.
 4. If no tool is needed, just answer directly.
 5. When asked to improve yourself, use file tools to modify your own code.
+
+CRITICAL — never fabricate tool output:
+- Side-effect tools (file_write, file_edit, bash, code_exec, git, github) MUST
+  be actually invoked. Do NOT claim "✅ 已写入" or "**输出:** X" unless you
+  have a real tool_result in context — the user's filesystem is the source of
+  truth, and a hallucinated "success" is worse than asking.
+- Read tools (file_read, grep, glob, web_fetch, web_search, memory_search):
+  if the user asks you to look something up in the repo or on the web, INVOKE
+  the tool even when you think you already know the answer. Your training
+  data is stale; the repo may have changed since.
+- Quoting a file's contents or a command's stdout without a preceding
+  tool_call for that content is a bug, not a shortcut. If the tool fails or
+  is unavailable, say so explicitly — don't paper over it with plausible-
+  looking fake output.
 """
+
+    @staticmethod
+    def _format_identity(soul: str, profile: str) -> str:
+        """Render SOUL.md + PROFILE.md into the system prompt.
+
+        These files are the agent's persona and the user's context. They
+        used to be loaded into memory but never passed to the LLM — the
+        LLM had no idea who it was or who the user was. Now they ride at
+        the top of the system prompt, right after "You are XMclaw".
+        A 4k-char cap per file keeps worst-case token cost bounded on
+        users with very long profiles.
+        """
+        soul = (soul or "").strip()
+        profile = (profile or "").strip()
+        if not soul and not profile:
+            return ""
+        CAP = 4000
+        blocks = ["\n"]
+        if soul:
+            blocks.append("── Your identity (from SOUL.md) ──")
+            blocks.append(soul[:CAP] + ("\n…(truncated)" if len(soul) > CAP else ""))
+        if profile:
+            blocks.append("── The user you are talking to (from PROFILE.md) ──")
+            blocks.append(profile[:CAP] + ("\n…(truncated)" if len(profile) > CAP else ""))
+        blocks.append("Honor SOUL.md in voice and values. Use PROFILE.md to tailor answers to this specific user.\n")
+        return "\n".join(blocks)
 
     def build(self, user_input: str, context: dict[str, Any], plan_mode: bool = False) -> list[dict[str, str]]:
         messages = []
@@ -107,7 +154,12 @@ Rules:
             insights_text = "\n".join(lines)
         else:
             insights_text = "None"
+        identity_text = self._format_identity(
+            context.get("soul", ""),
+            context.get("profile", ""),
+        )
         system = self.SYSTEM_PROMPT.format(
+            identity=identity_text,
             tools=tool_descriptions,
             genes=genes_text,
             memories=memories_text,
