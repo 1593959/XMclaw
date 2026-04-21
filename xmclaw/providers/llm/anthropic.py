@@ -104,6 +104,14 @@ class AnthropicLLM(LLMProvider):
                     }],
                 })
                 continue
+            # Prefer the naked-SDK convention: plain string content when
+            # there are no tool_calls. Only emit block-shaped content
+            # when we actually need tool_use blocks alongside text.
+            # (Anti-req #11 non-interference: match what a naked caller
+            # would have sent.)
+            if not m.tool_calls:
+                converted.append({"role": m.role, "content": m.content})
+                continue
             blocks: list[dict[str, Any]] = []
             if m.content:
                 blocks.append({"type": "text", "text": m.content})
@@ -114,10 +122,7 @@ class AnthropicLLM(LLMProvider):
                     "name": tc.name,
                     "input": tc.args,
                 })
-            converted.append({
-                "role": m.role,
-                "content": blocks if blocks else m.content,
-            })
+            converted.append({"role": m.role, "content": blocks})
         return "\n\n".join(system_parts), converted
 
     @staticmethod
