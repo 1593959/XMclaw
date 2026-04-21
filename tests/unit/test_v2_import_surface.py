@@ -64,6 +64,7 @@ V2_MODULES = [
     "xmclaw.plugins.loader",
     "xmclaw.cli.v2",
     "xmclaw.cli.v2_chat",
+    "xmclaw.cli.v2_doctor",
     "xmclaw.daemon.app_v2",
     "xmclaw.daemon.agent_loop",
     "xmclaw.daemon.factory",
