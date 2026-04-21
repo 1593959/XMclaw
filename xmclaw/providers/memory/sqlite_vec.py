@@ -83,13 +83,29 @@ class SqliteVecMemory(MemoryProvider):
 
     # ── setup ──
 
+    _vec_supported: bool = False
+
     def _open_conn(self) -> sqlite3.Connection:
-        import sqlite_vec
         conn = sqlite3.connect(self.db_path)
-        conn.enable_load_extension(True)
-        sqlite_vec.load(conn)
-        conn.enable_load_extension(False)
         conn.row_factory = sqlite3.Row
+        # Extension loading is a compile-time option in CPython's
+        # sqlite3 module. Distributions ship varying levels of support:
+        #   * Linux (Ubuntu GitHub runners, most distros): enabled
+        #   * macOS (system Python / Homebrew / pyenv builds): often disabled
+        #   * Windows: depends on the Python build
+        # When the extension can't load, the non-vector paths
+        # (timestamp-ordered retrieval, LIKE substring match, metadata
+        # filters) still work. The vector-query path raises a clear
+        # error at call time, which the conformance / unit tests skip
+        # via ``skipif_no_vec``.
+        try:
+            import sqlite_vec
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
+            self._vec_supported = True
+        except (AttributeError, ImportError, sqlite3.OperationalError):
+            self._vec_supported = False
         return conn
 
     def _ensure_schema(self) -> None:
@@ -115,7 +131,17 @@ class SqliteVecMemory(MemoryProvider):
 
         sqlite-vec requires dimension in the DDL. If the table already
         exists at a different dim, that's a caller error — we raise.
+
+        Raises ``RuntimeError`` when the sqlite-vec extension wasn't
+        loadable (see ``_open_conn``'s docstring for why that happens).
         """
+        if not self._vec_supported:
+            raise RuntimeError(
+                "sqlite-vec extension is not loadable on this Python "
+                "build — vector retrieval is unavailable. Install a "
+                "Python distribution with sqlite3 extension support, or "
+                "skip vector queries and use text/timestamp retrieval."
+            )
         cur = self._conn.cursor()
         # Check existing dim if table exists
         existing = cur.execute(
