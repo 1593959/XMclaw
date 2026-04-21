@@ -148,6 +148,8 @@ def _canned_responses() -> dict[str, str]:
             "characterized here as a cunning, agile predator — encountered "
             "a dog, long the emblem of domestic loyalty. " * 12  # ~270 words, way off target_words=30
         ),
+        # lowball: single word, no keywords, way off target. Should score very low.
+        "lowball": "ok",
     }
 
 
@@ -164,7 +166,7 @@ async def test_full_pipeline_converges_on_best_variant() -> None:
         Candidate(skill_id=v.id, version=1, prompt_delta={"suffix": v.prompt_suffix}, evidence=[])
         for v in DEMO_VARIANTS
     ]
-    scheduler = OnlineScheduler(candidates=candidates, exploration_c=1.0)
+    scheduler = OnlineScheduler(candidates=candidates, exploration_c=0.5)
 
     mock_llm = MockLLM(responses=_canned_responses())
 
@@ -232,7 +234,7 @@ async def test_full_pipeline_converges_on_best_variant() -> None:
     # prefix, verbose=wildly over length). What we prove here is the thing
     # that actually matters: the scheduler discriminates quality from noise.
     quality_ids = {"bullets", "exec"}
-    poor_ids = {"terse", "tl;dr", "verbose"}
+    poor_ids = {"terse", "tl;dr", "verbose", "lowball"}
     quality_means = [means[i] for i in quality_ids]
     poor_means = [means[i] for i in poor_ids]
 

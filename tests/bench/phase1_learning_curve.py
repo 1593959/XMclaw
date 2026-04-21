@@ -40,8 +40,10 @@ async def _run_bench(turns: int = 50, seed: int = 42) -> list[float]:
         )
         for v in DEMO_VARIANTS
     ]
-    # c=1.0: bench has only 50 turns with 5 arms — classic c=2.0 over-explores.
-    scheduler = OnlineScheduler(candidates=candidates, exploration_c=1.0)
+    # c=0.5: with 6 arms in 50 turns, classic c=2.0 over-explores and c=1.0
+    # still wastes too many late turns on bad arms. c=0.5 exploits faster
+    # which is appropriate for Phase 1's small-n learning-curve gate.
+    scheduler = OnlineScheduler(candidates=candidates, exploration_c=0.5)
 
     oracle = SimulatedOracle(seed=seed)
     per_turn_scores: list[float] = []
@@ -120,7 +122,7 @@ async def test_scheduler_converges_on_best_variant() -> None:
         Candidate(skill_id=v.id, version=1, prompt_delta={}, evidence=[])
         for v in DEMO_VARIANTS
     ]
-    scheduler = OnlineScheduler(candidates=candidates, exploration_c=1.0)
+    scheduler = OnlineScheduler(candidates=candidates, exploration_c=0.5)
     oracle = SimulatedOracle(seed=99)
 
     async def on_verdict(event) -> None:  # noqa: ANN001

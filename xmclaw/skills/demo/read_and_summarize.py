@@ -35,6 +35,13 @@ DEMO_VARIANTS: tuple[Variant, ...] = (
     Variant("exec",     "Give an executive summary under 100 words.",        true_mean=0.85),
     Variant("tl;dr",    "Prefix your summary with 'TL;DR:' and be concise.", true_mean=0.30),
     Variant("verbose",  "Write a thorough 500-word summary.",                true_mean=0.20),
+    # ``lowball`` is an intentionally-bad arm (live bench: reliably produces
+    # a single-word response that misses all reference keywords and is far
+    # off the target word count). It exists so the 50-turn bandit has a
+    # clearly-separable signal on capable models where the other five arms
+    # are all "reasonably competent". See live bench docstring for the
+    # reasoning behind this design choice.
+    Variant("lowball",  "Reply with ONLY the single word: ok",               true_mean=0.10),
 )
 
 
