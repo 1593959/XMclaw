@@ -61,12 +61,14 @@ jobs:
       - name: Lint (blocking — syntax & undefined names)
         run: ruff check --select E9,F63,F7,F82 .
 
-      # Full ruff pass is informational. Flip off the `|| exit 0` once the
-      # accumulated warnings (currently ~119, mostly unused imports) are
-      # cleaned up in a dedicated PR. Using `|| exit 0` instead of
-      # `|| true` so the form is identical across bash and pwsh.
+      # Full ruff pass is informational. continue-on-error lets the
+      # step report its findings without failing the job — works
+      # uniformly across bash (Linux/macOS) and pwsh (Windows) without
+      # per-shell ``||`` syntax gymnastics. Flip off once the ~150
+      # accumulated warnings are cleaned up in a dedicated PR.
       - name: Lint (warnings — full ruleset)
-        run: ruff check . || exit 0
+        continue-on-error: true
+        run: ruff check .
 
       - name: Test
         run: pytest tests/ -v
