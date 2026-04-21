@@ -1595,6 +1595,15 @@ async def agent_websocket(websocket: WebSocket, agent_id: str):
         # per-type frames the frontend can route deterministically. Events not
         # in the map keep the legacy `{"type":"event", "event": {...}}` envelope
         # so existing handlers (and third-party consumers) stay working.
+        # agent:start / agent:stop are backend-only lifecycle markers — they
+        # used to be forwarded too, but agent:stop routinely arrived AFTER the
+        # 'done' frame (rate-limit drop on the first publish, fire-and-forget
+        # forwarding on later turns) and the leftover frame landed at the head
+        # of the NEXT turn, knocking the client one turn out of sync for the
+        # rest of the conversation. The 'done' frame is the authoritative
+        # turn-over signal; we stop forwarding agent:stop to the WS here.
+        if event.event_type in ("agent:stop", "agent:start"):
+            return
         try:
             from xmclaw.core.event_bus import WS_EVENT_MAP
             wire_type = WS_EVENT_MAP.get(event.event_type)
