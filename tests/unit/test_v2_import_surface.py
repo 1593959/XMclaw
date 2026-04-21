@@ -21,6 +21,8 @@ V2_MODULES = [
     "xmclaw.core.grader",
     "xmclaw.core.grader.verdict",
     "xmclaw.core.grader.checks",
+    "xmclaw.core.grader.domain",
+    "xmclaw.core.grader.domain.summary",
     "xmclaw.core.scheduler",
     "xmclaw.core.scheduler.online",
     "xmclaw.core.scheduler.policy",
