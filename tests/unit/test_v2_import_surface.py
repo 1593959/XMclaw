@@ -51,6 +51,7 @@ V2_MODULES = [
     "xmclaw.skills.base",
     "xmclaw.skills.manifest",
     "xmclaw.skills.versioning",
+    "xmclaw.skills.registry",
     "xmclaw.skills.demo.read_and_summarize",
     "xmclaw.utils.cost",
     "xmclaw.utils.redact",
