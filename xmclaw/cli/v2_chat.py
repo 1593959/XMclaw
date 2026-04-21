@@ -233,11 +233,25 @@ async def _chat_loop(url: str, session_id: str) -> int:
             pass
 
 
-def run_chat(*, url: str | None = None, session_id: str | None = None) -> int:
-    """Entry point called by the CLI command. Returns a process exit code."""
+def run_chat(
+    *,
+    url: str | None = None,
+    session_id: str | None = None,
+    token: str | None = None,
+) -> int:
+    """Entry point called by the CLI command. Returns a process exit code.
+
+    ``token`` is the pairing secret that the daemon's auth_check
+    compares against. We attach it as a ``?token=<value>`` query
+    parameter; see xmclaw/daemon/app_v2.py for extraction.
+    """
     effective_url = url or "ws://127.0.0.1:8766/agent/v2/{session_id}"
     sid = session_id or f"chat-{uuid.uuid4().hex[:8]}"
     effective_url = effective_url.replace("{session_id}", sid)
+    if token:
+        import urllib.parse as _up
+        sep = "&" if "?" in effective_url else "?"
+        effective_url = f"{effective_url}{sep}token={_up.quote(token)}"
     try:
         return asyncio.run(_chat_loop(effective_url, sid))
     except KeyboardInterrupt:
