@@ -165,6 +165,13 @@ class AgentLoop:
             await publish(EventType.LLM_RESPONSE, {
                 "hop": hop,
                 "ok": True,
+                # ``content`` carries the model's actual text. Emitted in
+                # every LLM_RESPONSE so the WS client (e.g. the chat
+                # REPL) can render the assistant text without a second
+                # round-trip. Intermediate-hop content (before a tool
+                # call) is usually short or empty; terminal hops carry
+                # the full answer.
+                "content": response.content,
                 "content_length": len(response.content),
                 "tool_calls_count": len(response.tool_calls),
                 "prompt_tokens": response.prompt_tokens,

@@ -133,3 +133,38 @@ def serve(
     # Build the app locally so the agent (if any) is wired in.
     app_instance = _create_app(bus=bus, agent=agent)
     uvicorn.run(app_instance, host=host, port=port, log_level="info")
+
+
+@app.command()
+def chat(
+    url: str = typer.Option(
+        "ws://127.0.0.1:8766/agent/v2/{session_id}",
+        help=(
+            "Daemon WS URL. ``{session_id}`` in the URL is substituted "
+            "by the chosen / generated session id."
+        ),
+    ),
+    session_id: str = typer.Option(
+        "", help="Session id (auto-generated if empty).",
+    ),
+) -> None:
+    """Interactive REPL that talks to a running v2 daemon.
+
+    Connects to the daemon's WebSocket, prompts for user input, and
+    renders the event stream back as a readable conversation (LLM
+    thinking, tool calls, tool results, violations).
+
+    Start a daemon in another terminal first:
+
+        xmclaw v2 serve
+
+    Then in this terminal:
+
+        xmclaw v2 chat
+    """
+    from xmclaw.cli.v2_chat import run_chat
+    exit_code = run_chat(
+        url=url,
+        session_id=session_id or None,
+    )
+    raise typer.Exit(code=exit_code)
