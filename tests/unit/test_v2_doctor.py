@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from xmclaw.cli.v2_doctor import (
+from xmclaw.cli.doctor import (
     CheckResult,
     check_config_file,
     check_daemon_health,

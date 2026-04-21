@@ -6,7 +6,7 @@ of event that flows out of the daemon.
 """
 from __future__ import annotations
 
-from xmclaw.cli.v2_chat import RenderedLine, format_event
+from xmclaw.cli.chat import RenderedLine, format_event
 
 
 def _event(type_: str, payload: dict | None = None) -> dict:
