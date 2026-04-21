@@ -108,6 +108,19 @@ def serve(
             else:
                 model = getattr(agent._llm, "model", "?")
                 typer.echo(f"  ✓ loaded config: agent LLM = {model}")
+                # Surface the tools posture so the admin can see it.
+                if agent._tools is not None:
+                    specs = agent._tools.list_tools()
+                    tool_names = ", ".join(s.name for s in specs)
+                    allowlist = cfg.get("tools", {}).get("allowed_dirs", [])
+                    typer.echo(
+                        f"  ✓ tools enabled: {tool_names}"
+                    )
+                    typer.echo(
+                        f"    allowed dirs: {allowlist}"
+                    )
+                else:
+                    typer.echo(f"  ⚠ tools disabled (no 'tools' section in config)")
         except ConfigError as exc:
             typer.echo(f"  ⚠ config error — running in echo mode: {exc}", err=True)
     else:

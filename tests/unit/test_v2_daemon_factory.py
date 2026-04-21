@@ -16,10 +16,12 @@ from xmclaw.daemon.factory import (
     ConfigError,
     build_agent_from_config,
     build_llm_from_config,
+    build_tools_from_config,
     load_config,
 )
 from xmclaw.providers.llm.anthropic import AnthropicLLM
 from xmclaw.providers.llm.openai import OpenAILLM
+from xmclaw.providers.tool.builtin import BuiltinTools
 
 
 # ── build_llm_from_config ────────────────────────────────────────────────
@@ -119,15 +121,27 @@ def test_build_agent_returns_none_when_no_llm() -> None:
     assert agent is None
 
 
-def test_build_agent_with_llm_has_no_tools_in_phase_4_2() -> None:
-    """Phase 4.2 keeps tools out of the factory — explicit decision noted
-    in the factory module docstring. Phase 4.3 adds a tools section."""
+def test_build_agent_without_tools_section_yields_toolless_agent() -> None:
+    """No tools section → AgentLoop with tools=None (pure-chat mode)."""
     bus = InProcessEventBus()
     agent = build_agent_from_config({
         "llm": {"anthropic": {"api_key": "k"}},
     }, bus)
     assert agent is not None
     assert agent._tools is None
+
+
+def test_build_agent_with_tools_section_wires_builtin_tools(tmp_path: Path) -> None:
+    """Phase 4.3: tools section present → AgentLoop carries BuiltinTools."""
+    bus = InProcessEventBus()
+    agent = build_agent_from_config({
+        "llm": {"anthropic": {"api_key": "k"}},
+        "tools": {"allowed_dirs": [str(tmp_path)]},
+    }, bus)
+    assert agent is not None
+    assert agent._tools is not None
+    tool_names = {s.name for s in agent._tools.list_tools()}
+    assert tool_names == {"file_read", "file_write"}
 
 
 def test_build_agent_uses_configured_agent_id() -> None:
@@ -138,6 +152,78 @@ def test_build_agent_uses_configured_agent_id() -> None:
     }, bus)
     assert agent is not None
     assert agent._agent_id == "my-custom-agent"
+
+
+# ── build_tools_from_config ──────────────────────────────────────────────
+
+
+def test_build_tools_returns_none_when_no_tools_section() -> None:
+    assert build_tools_from_config({}) is None
+    assert build_tools_from_config({"llm": {}}) is None
+
+
+def test_build_tools_structural_error_when_not_a_dict() -> None:
+    with pytest.raises(ConfigError, match="'tools' must be an object"):
+        build_tools_from_config({"tools": "not a dict"})
+
+
+def test_build_tools_refuses_missing_allowed_dirs() -> None:
+    """Section present without allowed_dirs → explicit error. Tools must
+    say where they can touch — no implicit 'trust the caller' via config."""
+    with pytest.raises(ConfigError, match="allowed_dirs.*required"):
+        build_tools_from_config({"tools": {}})
+
+
+def test_build_tools_refuses_empty_allowed_dirs() -> None:
+    """Empty list means 'deny everything' which makes tools enabled but
+    unusable — a clear admin mistake. Refused."""
+    with pytest.raises(ConfigError, match="must be non-empty"):
+        build_tools_from_config({"tools": {"allowed_dirs": []}})
+
+
+def test_build_tools_refuses_non_list_allowed_dirs() -> None:
+    with pytest.raises(ConfigError, match="must be a list"):
+        build_tools_from_config({"tools": {"allowed_dirs": "/path"}})
+
+
+def test_build_tools_refuses_non_string_entry() -> None:
+    with pytest.raises(ConfigError, match="entries must be strings"):
+        build_tools_from_config({"tools": {"allowed_dirs": ["/ok", 42]}})
+
+
+def test_build_tools_happy_path(tmp_path: Path) -> None:
+    tools = build_tools_from_config({
+        "tools": {"allowed_dirs": [str(tmp_path)]},
+    })
+    assert isinstance(tools, BuiltinTools)
+    tool_names = {s.name for s in tools.list_tools()}
+    assert tool_names == {"file_read", "file_write"}
+
+
+@pytest.mark.asyncio
+async def test_tools_enforce_configured_allowlist(tmp_path: Path) -> None:
+    """End-to-end: config-built tools actually reject paths outside the
+    allowlist at invocation time — the security posture is real, not
+    just a config acknowledgment."""
+    tools = build_tools_from_config({
+        "tools": {"allowed_dirs": [str(tmp_path)]},
+    })
+    assert tools is not None
+
+    outside = tmp_path.parent / "_outside_factory_test.txt"
+    from xmclaw.core.ir import ToolCall
+    result = await tools.invoke(ToolCall(
+        name="file_write",
+        args={"path": str(outside), "content": "should be blocked"},
+        provenance="synthetic",
+    ))
+    try:
+        assert result.ok is False
+        assert "permission" in result.error.lower()
+        assert not outside.exists()
+    finally:
+        if outside.exists():
+            outside.unlink()
 
 
 # ── load_config ──────────────────────────────────────────────────────────
