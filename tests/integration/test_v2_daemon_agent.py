@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from xmclaw.daemon.agent_loop import AgentLoop
 from xmclaw.core.bus import EventType, InProcessEventBus
 from xmclaw.core.ir import ToolCall, ToolCallShape, ToolResult, ToolSpec
-from xmclaw.daemon.app_v2 import create_app
+from xmclaw.daemon.app import create_app
 from xmclaw.providers.llm.base import (
     LLMChunk,
     LLMProvider,

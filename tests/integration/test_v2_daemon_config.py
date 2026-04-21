@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from xmclaw.core.bus import InProcessEventBus
 from xmclaw.daemon.agent_loop import AgentLoop
-from xmclaw.daemon.app_v2 import create_app
+from xmclaw.daemon.app import create_app
 
 
 def test_create_app_with_config_wires_agent_automatically() -> None:

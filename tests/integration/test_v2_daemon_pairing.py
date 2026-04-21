@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from xmclaw.daemon.app_v2 import create_app
+from xmclaw.daemon.app import create_app
 from xmclaw.daemon.pairing import validate_token
 
 

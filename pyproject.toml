@@ -5,29 +5,24 @@ build-backend = "hatchling.build"
 [project]
 name = "xmclaw"
 version = "2.0.0.dev0"
-description = "XMclaw - A local-first, self-evolving AI Agent runtime (v2-rewrite in progress)"
+description = "XMclaw — local-first, self-evolving AI agent runtime"
 requires-python = ">=3.10"
+# Phase 4.10 trimmed dependency list: removed rich / prompt-toolkit /
+# pystray / Pillow (desktop tray deleted), playwright (v1 browser-tool),
+# apscheduler (v1 evolution scheduler), slack-sdk / discord.py /
+# python-telegram-bot (v1 integrations — v2 adds these back via the
+# plugin SDK when needed), cryptography (v1 config encryption).
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
     "websockets>=14.0",
-    "pystray>=0.19.0",
-    "Pillow>=10.0.0",
-    "rich>=13.9.0",
-    "prompt-toolkit>=3.0.50",
     "typer>=0.15.0",
     "openai>=1.60.0",
     "anthropic>=0.49.0",
-    "playwright>=1.50.0",
     "sqlite-vec>=0.1.0",
-    "apscheduler>=3.11.0",
-    "structlog>=25.1.0",
     "pydantic>=2.10.0",
     "httpx>=0.28.0",
-    "cryptography>=43.0.0",
-    "slack-sdk>=3.0.0",
-    "discord.py>=2.4.0",
-    "python-telegram-bot>=21.0",
+    "structlog>=25.1.0",
 ]
 
 [project.optional-dependencies]
@@ -41,16 +36,11 @@ dev = [
 
 [project.scripts]
 xmclaw = "xmclaw.cli.main:app"
-xmclaw-desktop = "xmclaw.desktop.app:main"
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 extend-exclude = [
-    # Runtime-generated evolution artifacts — templates with injected names
-    # (context, asyncio, subprocess, …) that ruff can't statically resolve.
-    # See docs/EVOLUTION.md.
-    "shared/",
     # Build outputs, virtualenvs, caches.
     "dist/",
     "build/",

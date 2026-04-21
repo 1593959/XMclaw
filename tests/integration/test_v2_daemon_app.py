@@ -16,7 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from xmclaw.core.bus import EventType, InProcessEventBus, make_event
-from xmclaw.daemon.app_v2 import create_app
+from xmclaw.daemon.app import create_app
 
 
 @pytest.fixture

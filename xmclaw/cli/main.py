@@ -1,858 +1,266 @@
-"""CLI entry point for XMclaw."""
-import asyncio
-import json
-import os
-import typer
-from pathlib import Path
-from xmclaw.daemon.lifecycle import start_daemon, stop_daemon, daemon_status
-from xmclaw.cli.client import run_cli_client
-from xmclaw.utils.paths import BASE_DIR, get_agent_dir
-from xmclaw.tools.registry import ToolRegistry
-from xmclaw.genes.manager import GeneManager
+"""XMclaw CLI — top-level entry point.
 
-# Rich formatting for CLI output
-try:
-    from rich.console import Console
-    from rich.table import Table
-    from rich.panel import Panel
-    _RICH = True
-except ImportError:
-    _RICH = False
+Subcommands:
 
-app = typer.Typer(
-    help="XMclaw - Local-first AI Agent runtime",
-    rich_markup_mode="rich",
-)
-sub_gene = typer.Typer(help="Gene management", rich_markup_mode="rich")
-sub_skill = typer.Typer(help="Skill management", rich_markup_mode="rich")
-sub_agent = typer.Typer(help="Agent management", rich_markup_mode="rich")
-sub_config = typer.Typer(help="Configuration management", rich_markup_mode="rich")
-sub_evo = typer.Typer(help="Evolution audit & replay", rich_markup_mode="rich")
-app.add_typer(sub_gene, name="gene")
-app.add_typer(sub_skill, name="skill")
-app.add_typer(sub_agent, name="agent")
-app.add_typer(sub_config, name="config")
-app.add_typer(sub_evo, name="evo")
+    xmclaw version   Print the runtime version.
+    xmclaw ping      Bus round-trip smoke test.
+    xmclaw serve     Start the daemon (FastAPI + WS + optional web UI).
+    xmclaw chat      Interactive REPL that talks to a running daemon.
+    xmclaw doctor    Diagnose a local setup without running anything.
 
-# v2-rewrite: isolated namespace for v2 commands during transition.
-from xmclaw.cli import v2 as _v2_cli  # noqa: E402 — must register after app
-app.add_typer(_v2_cli.app, name="v2")
-
-
-# ── Daemon ──────────────────────────────────────────────────────────────────
-
-@app.command()
-def start(no_browser: bool = False):
-    """Start the XMclaw daemon (auto-opens browser by default)."""
-    start_daemon(open_browser=not no_browser)
-
-
-@app.command()
-def stop():
-    """Stop the XMclaw daemon."""
-    from xmclaw.daemon.lifecycle import is_running
-    running = is_running()
-    stop_daemon()
-    if _RICH:
-        console = Console()
-        if running:
-            console.print("[green]Daemon stopped[/green]")
-        else:
-            console.print("[yellow]Daemon was not running[/yellow]")
-    else:
-        print("Daemon stopped" if running else "Daemon was not running")
-
-
-@app.command()
-def restart():
-    """Restart the daemon (stop then start)."""
-    stop()
-    start_daemon(open_browser=False)
-
-
-@app.command()
-def status():
-    """Show daemon status, PID, URL and recent errors."""
-    from xmclaw.daemon.lifecycle import is_running, PID_FILE, _get_daemon_url
-    running = is_running()
-    url = _get_daemon_url()
-
-    if _RICH:
-        console = Console()
-        if running:
-            pid = PID_FILE.read_text().strip() if PID_FILE.exists() else "?"
-            console.print(Panel(
-                f"[green]🟢 运行中[/green]  [bold]PID {pid}[/bold]\n"
-                f"[cyan]{url}[/cyan]",
-                title="XMclaw Daemon",
-                border_style="green",
-            ))
-        else:
-            console.print(Panel(
-                "[yellow]🟡 未运行[/yellow]",
-                title="XMclaw Daemon",
-                border_style="yellow",
-            ))
-    else:
-        if running:
-            pid = PID_FILE.read_text().strip() if PID_FILE.exists() else "?"
-            print(f"Running  PID={pid}  {url}")
-        else:
-            print(f"Not running  {url}")
-
-
-@app.command()
-def logs(lines: int = typer.Option(50, "--lines", "-n", help="Number of lines to show")):
-    """Show daemon log (last N lines)."""
-    from xmclaw.daemon.lifecycle import BASE_DIR
-    log_path = BASE_DIR / "logs" / "daemon.log"
-    if not log_path.exists():
-        print("No daemon log found.")
-        return
-    content = log_path.read_text(encoding="utf-8", errors="replace")
-    all_lines = content.splitlines()
-    tail = all_lines[-lines:]
-    for line in tail:
-        # Highlight errors in red
-        if "error" in line.lower() or "traceback" in line.lower():
-            print(f"[ERROR] {line}" if not _RICH else f"[red]ERROR[/red] {line}")
-        else:
-            print(line)
-
-
-def _is_daemon_running() -> bool:
-    from xmclaw.daemon.lifecycle import is_running
-    return is_running()
-
-
-def _show_quick_status(console) -> None:
-    """Show gene/skill counts and config summary."""
-    from xmclaw.utils.paths import BASE_DIR
-
-    genes_dir = BASE_DIR / "shared" / "genes"
-    skills_dir = BASE_DIR / "shared" / "skills"
-    gene_count = len(list(genes_dir.glob("gene_*.py"))) if genes_dir.exists() else 0
-    skill_count = len(list(skills_dir.glob("skill_*.py"))) if skills_dir.exists() else 0
-
-    # Check API key presence
-    try:
-        from xmclaw.daemon.config import DaemonConfig
-        cfg = DaemonConfig.load()
-        anthropic_ok = bool(cfg.llm.get("anthropic", {}).get("api_key"))
-        openai_ok = bool(cfg.llm.get("openai", {}).get("api_key"))
-    except Exception:
-        anthropic_ok = openai_ok = False
-
-    table = Table(show_header=True, header_style="bold", box=None)
-    table.add_column("项目", style="cyan")
-    table.add_column("状态", style="green")
-    table.add_row("基因 (Genes)", str(gene_count))
-    table.add_row("技能 (Skills)", str(skill_count))
-    table.add_row("Anthropic API Key", "[green]✓ 已配置[/green]" if anthropic_ok else "[yellow]✗ 未配置[/yellow]")
-    table.add_row("OpenAI API Key", "[green]✓ 已配置[/green]" if openai_ok else "[dim]✗ 未配置[/dim]")
-    console.print(table)
-
-
-@app.command()
-def events(
-    limit: int = typer.Option(20, "--limit", "-n", help="Number of recent events to show"),
-    etype: str = typer.Option(None, "--type", "-t", help="Filter by event type"),
-):
-    """Show recent events from the event bus."""
-    try:
-        from xmclaw.core.event_bus import get_event_bus
-        bus = get_event_bus()
-        events = bus.get_history(event_type=etype, limit=limit)
-        stats = bus.get_stats()
-
-        if _RICH:
-            from rich.console import Console
-            from rich.table import Table
-            console = Console()
-            console.print(f"[dim]Total: {stats['total_events']} events, "
-                          f"{stats['subscriber_count']} subscribers[/dim]")
-            table = Table(show_header=True, header_style="bold", box=None)
-            table.add_column("Type", style="cyan", width=30)
-            table.add_column("Source", width=20)
-            table.add_column("Time", width=22)
-            table.add_column("Payload", width=40)
-            for e in reversed(events):
-                ts = e.timestamp[:19] if e.timestamp else ""
-                payload = str(e.payload)[:40] if e.payload else ""
-                table.add_row(e.event_type, e.source, ts, payload)
-            console.print(table)
-        else:
-            for e in reversed(events):
-                print(f"[{e.event_type}] {e.source} | {e.timestamp[:19]} | {e.payload}")
-    except Exception as e:
-        typer.echo(f"Error: {e}")
-
-
-@app.command()
-def doctor():
-    """Run a quick diagnostic to identify setup issues.
-
-    Checks: config file, API keys, port availability, Playwright, disk space.
-    """
-    checks = []
-    errors = []
-    warnings = []
-
-    # 1. Config file
-    from xmclaw.utils.paths import BASE_DIR
-    config_path = BASE_DIR / "daemon" / "config.json"
-    if not config_path.exists():
-        errors.append("Config file not found. Run: xmclaw config init")
-    else:
-        checks.append(f"✅ Config: {config_path}")
-        try:
-            from xmclaw.daemon.config import DaemonConfig
-            cfg = DaemonConfig.load()
-            anthropic_key = cfg.llm.get("anthropic", {}).get("api_key", "")
-            openai_key = cfg.llm.get("openai", {}).get("api_key", "")
-            if anthropic_key:
-                checks.append("✅ Anthropic API Key: configured")
-            else:
-                warnings.append("⚠️  Anthropic API Key: empty — set with xmclaw config init")
-            if openai_key:
-                checks.append("✅ OpenAI API Key: configured")
-            else:
-                warnings.append("⚠️  OpenAI API Key: empty — set with xmclaw config init")
-        except Exception as e:
-            errors.append(f"❌ Config parse error: {e}")
-
-    # 2. Port availability
-    import socket
-    port = 8765
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        result = sock.connect_ex(("127.0.0.1", port))
-        if result == 0:
-            warnings.append(f"⚠️  Port {port} is already in use — daemon may already be running")
-        else:
-            checks.append(f"✅ Port {port}: available")
-        sock.close()
-    except Exception:
-        pass
-
-    # 3. Playwright
-    try:
-        from playwright.sync_api import sync_playwright
-        checks.append("✅ Playwright: installed")
-    except ImportError:
-        warnings.append("⚠️  Playwright: not installed — browser automation unavailable (pip install playwright && playwright install chromium)")
-
-    # 4. Shared directories
-    shared = BASE_DIR / "shared"
-    if shared.exists():
-        gene_count = len(list((shared / "genes").glob("gene_*.py"))) if (shared / "genes").exists() else 0
-        skill_count = len(list((shared / "skills").glob("skill_*.py"))) if (shared / "skills").exists() else 0
-        checks.append(f"✅ Shared dirs: {gene_count} genes, {skill_count} skills")
-    else:
-        warnings.append("⚠️  shared/ directory not created yet — will be created on first run")
-
-    # 5. Python version
-    import sys
-    if sys.version_info >= (3, 10):
-        checks.append(f"✅ Python: {sys.version_info.major}.{sys.version_info.minor}")
-    else:
-        errors.append(f"❌ Python {sys.version_info.major}.{sys.version_info.minor} — requires 3.10+")
-
-    # Output
-    all_items = checks + warnings + errors
-    try:
-        from rich.console import Console
-        from rich.table import Table
-        console = Console()
-        table = Table(show_header=True, header_style="bold", box=None, title="XMclaw Doctor")
-        table.add_column("Check", style="cyan", width=60)
-        for item in all_items:
-            style = "green" if item.startswith("✅") else ("yellow" if item.startswith("⚠️") else "red")
-            table.add_row(f"[{style}]{item}[/{style}]")
-        console.print(table)
-        if errors:
-            console.print(f"\n[red]❌ {len(errors)} error(s) found. Fix before running.[/red]")
-        elif warnings:
-            console.print(f"\n[yellow]🟡 {len(warnings)} warning(s). XMclaw may run but some features unavailable.[/yellow]")
-        else:
-            console.print("\n[green]✅ All checks passed. XMclaw is ready to run![/green]")
-    except Exception:
-        for item in all_items:
-            print(item)
-        if errors:
-            print(f"\nERRORS: {errors}")
-        elif warnings:
-            print(f"\nWARNINGS: {warnings}")
-
-
-@app.command()
-def completion():
-    """Print shell completion script instructions."""
-    try:
-        from rich.console import Console
-        console = Console()
-    except ImportError:
-        console = None
-
-    script = """
-# Bash — 添加到 ~/.bashrc:
-eval "$(_XMCLAW_COMPLETE=bash_source xmclaw)"
-
-# Zsh — 添加到 ~/.zshrc:
-eval "$(_XMCLAW_COMPLETE=zsh_source xmclaw)"
-
-# Fish — 添加到 ~/.config/fish/completions/xmclaw.fish:
-_XMCLAW_COMPLETE=fish_source xmclaw > ~/.config/fish/completions/xmclaw.fish
+v1 was deleted wholesale in Phase 4.10; there's now only one CLI.
 """
-    if console:
-        console.print(Panel(script, title="🖥️ Shell 自动补全", border_style="cyan"))
-    else:
-        print(script)
+from __future__ import annotations
 
+import asyncio
+import typer
 
-# ── Chat ───────────────────────────────────────────────────────────────────
+from xmclaw import __version__
+from xmclaw.core.bus import (
+    BehavioralEvent,
+    EventType,
+    InProcessEventBus,
+    make_event,
+)
+from xmclaw.core.bus.memory import accept_all
 
-@app.command()
-def chat(
-    agent_id: str = typer.Option("default", "--agent", "-a", help="Agent ID"),
-    plan: bool = typer.Option(False, "--plan", "-p", help="Enable plan mode"),
-):
-    """Start an interactive chat session."""
-    if plan:
-        asyncio.run(run_cli_client(agent_id, plan_mode=True))
-    else:
-        asyncio.run(run_cli_client(agent_id))
-
-
-# ── Tasks ──────────────────────────────────────────────────────────────────
-
-def _tasks_path(agent_id: str) -> Path:
-    """Canonical tasks.json path. Lives under ``workspace/`` per docs/WORKSPACE.md."""
-    return get_agent_dir(agent_id) / "workspace" / "tasks.json"
+app = typer.Typer(help="XMclaw — local-first, self-evolving AI agent runtime")
 
 
 @app.command()
-def task_list(agent_id: str = typer.Option("default", "--agent", "-a")):
-    """List active tasks for an agent."""
-    path = _tasks_path(agent_id)
-    if not path.exists():
-        typer.echo("No tasks found.")
-        return
-    data = json.loads(path.read_text(encoding="utf-8"))
-    for t in data:
-        flag = t.get("status", "pending")
-        title = t.get("title", "")
-        desc = t.get("description", "")
-        typer.echo(f"[{flag}] {title}" + (f": {desc}" if desc else ""))
+def version() -> None:
+    """Print the v2 runtime version."""
+    typer.echo(f"xmclaw v{__version__}")
 
 
 @app.command()
-def task_create(
-    title: str = typer.Argument(..., help="Task title"),
-    description: str = typer.Option("", "--desc", "-d", help="Task description"),
-    agent_id: str = typer.Option("default", "--agent", "-a"),
-):
-    """Create a new task."""
-    path = _tasks_path(agent_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tasks = []
-    if path.exists():
-        tasks = json.loads(path.read_text(encoding="utf-8"))
-    tasks.append({"title": title, "description": description, "status": "pending"})
-    path.write_text(json.dumps(tasks, indent=2, ensure_ascii=False), encoding="utf-8")
-    typer.echo(f"Task created: {title}")
+def ping() -> None:
+    """End-to-end smoke test — publish a BehavioralEvent, subscribe, observe.
 
-
-# ── Evolution ───────────────────────────────────────────────────────────────
-
-@app.command()
-def evolution_status():
-    """Show evolution system status."""
-    genes_dir = BASE_DIR / "shared" / "genes"
-    skills_dir = BASE_DIR / "shared" / "skills"
-    gene_count = len(list(genes_dir.glob("gene_*.py"))) if genes_dir.exists() else 0
-    skill_count = len(list(skills_dir.glob("skill_*.py"))) if skills_dir.exists() else 0
-    typer.echo(f"Genes: {gene_count}")
-    typer.echo(f"Skills: {skill_count}")
-
-
-# ── Memory ─────────────────────────────────────────────────────────────────
-
-@app.command()
-def memory_search(query: str, agent_id: str = typer.Option("default", "--agent", "-a")):
-    """Search agent memory files."""
-    agent_dir = get_agent_dir(agent_id)
-    results = []
-    for root, _, filenames in os.walk(agent_dir):
-        for fname in filenames:
-            if fname.endswith(".md") or fname.endswith(".jsonl"):
-                fpath = Path(root) / fname
-                try:
-                    text = fpath.read_text(encoding="utf-8")
-                    if query.lower() in text.lower():
-                        results.append(str(fpath.relative_to(agent_dir)))
-                except Exception:
-                    pass
-    if results:
-        typer.echo(f"Found in {len(results)} file(s):")
-        for r in results:
-            typer.echo(f"  - {r}")
-    else:
-        typer.echo("No results found.")
-
-
-# ── Gene ────────────────────────────────────────────────────────────────────
-
-@sub_gene.command("list")
-def gene_list(agent_id: str = typer.Option("default", "--agent", "-a")):
-    """List all genes for an agent."""
-    gm = GeneManager(agent_id)
-    genes = gm.get_all()
-    if not genes:
-        typer.echo("No genes found.")
-        return
-    for g in genes:
-        gene_id = g.get("gene_id", "?")
-        name = g.get("name", "?")
-        priority = g.get("priority", 0)
-        trigger = g.get("trigger", "")
-        enabled = "enabled" if g.get("enabled", True) else "DISABLED"
-        typer.echo(f"[{enabled}] {gene_id} | {name} | priority={priority} | trigger={trigger}")
-
-
-@sub_gene.command("show")
-def gene_show(gene_id: str = typer.Argument(..., help="Gene ID to show")):
-    """Show detailed info for a gene."""
-    gm = GeneManager()
-    gene = gm.get_gene(gene_id)
-    if not gene:
-        typer.echo(f"Gene '{gene_id}' not found.")
-        return
-    typer.echo(json.dumps(gene, indent=2, ensure_ascii=False))
-
-
-@sub_gene.command("match")
-def gene_match(
-    input_text: str = typer.Argument(..., help="Input text to match genes against"),
-    agent_id: str = typer.Option("default", "--agent", "-a"),
-    intents: str = typer.Option("", "--intents", help="Comma-separated intents"),
-):
-    """Simulate gene matching for a given input."""
-    gm = GeneManager(agent_id)
-    intent_list = [i.strip() for i in intents.split(",") if i.strip()] or None
-    matched = gm.match(input_text, intents=intent_list)
-    if not matched:
-        typer.echo("No genes matched.")
-        return
-    typer.echo(f"Matched {len(matched)} gene(s):")
-    for g in matched:
-        typer.echo(f"  - {g.get('gene_id')}: {g.get('name')}")
-
-
-# ── Skill ───────────────────────────────────────────────────────────────────
-
-@sub_skill.command("list")
-def skill_list():
-    """List all generated skills in shared/skills/."""
-    skills_dir = BASE_DIR / "shared" / "skills"
-    if not skills_dir.exists():
-        typer.echo("No skills directory found.")
-        return
-    files = sorted(skills_dir.glob("skill_*.py"))
-    if not files:
-        typer.echo("No skills found.")
-        return
-    typer.echo(f"Total: {len(files)} skill(s)")
-    for f in files:
-        typer.echo(f"  - {f.stem}")
-
-
-@sub_skill.command("show")
-def skill_show(skill_name: str = typer.Argument(..., help="Skill name to show")):
-    """Show skill source code."""
-    skills_dir = BASE_DIR / "shared" / "skills"
-    candidates = list(skills_dir.glob(f"*{skill_name}*.py"))
-    if not candidates:
-        candidates = list(skills_dir.glob("skill_*.py"))
-        candidates = [f for f in candidates if skill_name.lower() in f.stem.lower()]
-    if not candidates:
-        typer.echo(f"Skill '{skill_name}' not found.")
-        return
-    content = candidates[0].read_text(encoding="utf-8")
-    typer.echo(content)
-
-
-# ── Agent ───────────────────────────────────────────────────────────────────
-
-@sub_agent.command("list")
-def agent_list():
-    """List all agent directories."""
-    agents_dir = BASE_DIR / "agents"
-    if not agents_dir.exists():
-        typer.echo("No agents directory found.")
-        return
-    agents = [d.name for d in agents_dir.iterdir() if d.is_dir() and not d.name.startswith(".")]
-    if not agents:
-        typer.echo("No agents found.")
-        return
-    typer.echo(f"Agents: {', '.join(agents)}")
-
-
-@sub_agent.command("create")
-def agent_create(name: str = typer.Argument(..., help="New agent name")):
-    """Create a new agent directory with basic config files."""
-    agents_dir = BASE_DIR / "agents"
-    agent_dir = agents_dir / name
-    if agent_dir.exists():
-        typer.echo(f"Agent '{name}' already exists.")
-        return
-    agent_dir.mkdir(parents=True, exist_ok=True)
-    workspace = agent_dir / "workspace"
-    workspace.mkdir(exist_ok=True)
-    config_path = agent_dir / "agent.json"
-    if not config_path.exists():
-        default_config = {
-            "agent_id": name,
-            "model": "gpt-4o",
-            "fallback_model": "claude-sonnet-4-20250514",
-            "temperature": 0.7,
-            "max_tokens": 4096,
-        }
-        config_path.write_text(json.dumps(default_config, indent=2, ensure_ascii=False), encoding="utf-8")
-    typer.echo(f"Agent '{name}' created at {agent_dir.relative_to(BASE_DIR)}")
-
-
-@sub_agent.command("info")
-def agent_info(name: str = typer.Argument("default", help="Agent name")):
-    """Show agent info and its markdown configs."""
-    agent_dir = BASE_DIR / "agents" / name
-    if not agent_dir.exists():
-        typer.echo(f"Agent '{name}' not found.")
-        return
-    typer.echo(f"Agent: {name}")
-    typer.echo(f"Dir: {agent_dir}")
-    for fname in ["agent.json", "SOUL.md", "PROFILE.md", "AGENTS.md"]:
-        p = agent_dir / fname
-        exists = "存在" if p.exists() else "不存在"
-        typer.echo(f"  {fname}: {exists}")
-
-
-# ── Config ─────────────────────────────────────────────────────────────────
-
-@sub_config.command("init")
-def config_init():
-    """Run the interactive first-run setup wizard (API key configuration)."""
-    from xmclaw.daemon.lifecycle import run_setup_wizard
-    run_setup_wizard()
-
-
-@sub_config.command("show")
-def config_show():
-    """Show current configuration (reads daemon/config.json)."""
-    try:
-        from xmclaw.daemon.config import DaemonConfig
-        cfg = DaemonConfig.load()
-        # Mask secrets before displaying
-        safe = cfg.mask_secrets()
-        typer.echo(json.dumps(safe.__dict__, indent=2, ensure_ascii=False))
-    except Exception as e:
-        typer.echo(f"Error loading config: {e}")
-
-
-@sub_config.command("set")
-def config_set(
-    key: str = typer.Argument(..., help="Config key, use dot notation for nested (e.g. evolution.interval_minutes)"),
-    value: str = typer.Argument(..., help="Config value"),
-):
-    """Set a config value in daemon/config.json.
-
-    Supports dot-notation for nested keys:
-      xmclaw config set evolution.interval_minutes 15
-      xmclaw config set llm.default_provider openai
-      xmclaw config set tools.browser_headless true
+    Exits 0 if the bus wires up correctly, 1 otherwise. This is the minimum
+    signal that the v2 skeleton is intact; it's what CI runs before anything
+    else gets exercised.
     """
-    from xmclaw.daemon.config import DaemonConfig
-    try:
-        cfg = DaemonConfig.load()
-        cfg_dict = cfg.__dict__
+    received: list[BehavioralEvent] = []
 
-        # Parse dot-notation
-        parts = key.split(".")
-        target = cfg_dict
-        for part in parts[:-1]:
-            if part not in target or not isinstance(target[part], dict):
-                typer.echo(f"Error: '{key}' — section '{part}' not found or not a dict.")
-                return
-            target = target[part]
+    async def _subscriber(event: BehavioralEvent) -> None:
+        received.append(event)
 
-        leaf_key = parts[-1]
-        if leaf_key not in target:
-            typer.echo(f"Warning: key '{key}' not in default config, adding it.")
-
-        # Infer type
-        if value.lower() in ("true", "yes", "1"):
-            typed = True
-        elif value.lower() in ("false", "no", "0"):
-            typed = False
-        elif value.replace(".", "", 1).isdigit() and "." in value:
-            typed = float(value)
-        elif value.isdigit():
-            typed = int(value)
-        else:
-            typed = value
-
-        target[leaf_key] = typed
-
-        # Write back
-        config_path = BASE_DIR / "daemon" / "config.json"
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(cfg_dict, f, indent=2, ensure_ascii=False)
-        typer.echo(f"✅ Set {key} = {typed!r}")
-    except Exception as e:
-        typer.echo(f"Error: {e}")
-
-
-@sub_config.command("env")
-def config_env():
-    """Print useful environment variable overrides and how to set them.
-
-    Environment variables with prefix XMC__ override daemon/config.json values.
-    This is useful for container deployments or CI environments.
-    """
-    lines = [
-        "# XMclaw Environment Variable Overrides",
-        "# Prefix: XMC__  Separator between levels: __ (double underscore)",
-        "",
-        "# Example — set these in your shell or .env file:",
-        "",
-        "# LLM API Keys",
-        'export XMC__llm__anthropic__api_key="sk-ant-..."',
-        'export XMC__llm__openai__api_key="sk-..."',
-        "",
-        "# Evolution control",
-        'export XMC__evolution__enabled="false"',
-        'export XMC__evolution__interval_minutes="60"',
-        'export XMC__evolution__vfm_threshold="7.0"',
-        "",
-        "# Gateway",
-        'export XMC__gateway__port="8765"',
-        "",
-        "# Tools",
-        'export XMC__tools__bash_timeout="600"',
-        'export XMC__tools__browser_headless="true"',
-        "",
-        "# Memory",
-        'export XMC__memory__session_retention_days="30"',
-    ]
-    msg = "\n".join(lines)
-    try:
-        from rich.console import Console
-        console = Console()
-        console.print(Panel(msg, title="🌍 Environment Variables", border_style="green", expand=False))
-    except Exception:
-        print(msg)
-
-
-@sub_config.command("reset")
-def config_reset(
-    key: str = typer.Argument(..., help="Config key to reset to default (use 'all' to reset everything)"),
-):
-    """Reset a config key to its default value, or reset the entire config."""
-    from xmclaw.daemon.config import DaemonConfig
-
-    if key == "all":
-        cfg = DaemonConfig.default()
-        config_path = BASE_DIR / "daemon" / "config.json"
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(cfg.__dict__, f, indent=2, ensure_ascii=False)
-        typer.echo("✅ Config reset to defaults.")
-        return
-
-    cfg = DaemonConfig.load()
-    cfg_dict = cfg.__dict__
-
-    parts = key.split(".")
-    target = cfg_dict
-    for part in parts[:-1]:
-        if part not in target or not isinstance(target[part], dict):
-            typer.echo(f"Error: key '{key}' not found.")
-            return
-        target = target[part]
-
-    leaf_key = parts[-1]
-    if leaf_key not in target:
-        typer.echo(f"Key '{key}' not found.")
-        return
-    default_cfg = DaemonConfig.default().__dict__
-    for part in parts[:-1]:
-        default_cfg = default_cfg[part]
-    default_val = default_cfg.get(leaf_key, None)
-    target[leaf_key] = default_val
-
-    config_path = BASE_DIR / "daemon" / "config.json"
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(cfg_dict, f, indent=2, ensure_ascii=False)
-    typer.echo(f"✅ Reset {key} to default: {default_val!r}")
-
-
-# ── Evolution audit & replay ───────────────────────────────────────────────
-
-@sub_evo.command("replay")
-def evo_replay(
-    cycle_id: str = typer.Argument(..., help="Evolution cycle id (e.g. cycle_abc123)"),
-    agent_id: str = typer.Option(
-        "default", "--agent", "-a",
-        help="Agent id whose journal to read from",
-    ),
-    as_json: bool = typer.Option(
-        False, "--json", help="Emit the full cycle record as JSON",
-    ),
-) -> None:
-    """Replay an evolution cycle — shows inputs, decisions, artifacts, verdict.
-
-    The cycle must already be recorded in the journal (``shared/memory.db``);
-    this command is read-only and does not re-run the cycle. Use it for
-    post-mortems, regression debugging, and correlating promote/rollback
-    git commits back to the reflection that produced them.
-    """
     async def _run() -> int:
-        from xmclaw.evolution.journal import get_journal
-        journal = get_journal(agent_id)
-        cycle = await journal.get_cycle(cycle_id)
-        if not cycle:
-            typer.echo(f"cycle '{cycle_id}' not found for agent '{agent_id}'")
+        bus = InProcessEventBus()
+        bus.subscribe(accept_all, _subscriber)
+
+        event = make_event(
+            session_id="ping-session",
+            agent_id="ping-agent",
+            type=EventType.SESSION_LIFECYCLE,
+            payload={"phase": "create", "via": "xmclaw ping"},
+        )
+        await bus.publish(event)
+        await bus.drain()
+
+        if len(received) != 1:
+            typer.echo(f"FAIL: expected 1 event, got {len(received)}", err=True)
             return 1
-        lineage = await journal.get_lineage(cycle_id)
+        got = received[0]
+        if got.id != event.id or got.type != EventType.SESSION_LIFECYCLE:
+            typer.echo(f"FAIL: event round-trip mismatch: {got}", err=True)
+            return 1
 
-        if as_json:
-            payload = {"cycle": cycle, "lineage": lineage}
-            typer.echo(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
-            return 0
-
-        # Human-readable rendering. Prefer rich when available; fall back to
-        # plain text so the command still works in minimal environments.
-        if _RICH:
-            console = Console()
-            header = (
-                f"[bold]{cycle_id}[/bold]  "
-                f"trigger=[cyan]{cycle.get('trigger') or '?'}[/cyan]  "
-                f"verdict=[green]{cycle.get('verdict') or 'pending'}[/green]"
-            )
-            if cycle.get("reject_reason"):
-                header += f"  reason=[yellow]{cycle['reject_reason']}[/yellow]"
-            console.print(Panel(header, title="Cycle"))
-            # Inputs / decisions are free-form dicts; json dumps keeps them
-            # legible without hand-rolling a pretty printer per shape.
-            if cycle.get("inputs"):
-                console.print(Panel(
-                    json.dumps(cycle["inputs"], indent=2, ensure_ascii=False),
-                    title="Inputs", border_style="cyan",
-                ))
-            if cycle.get("decisions"):
-                console.print(Panel(
-                    json.dumps(cycle["decisions"], indent=2, ensure_ascii=False),
-                    title="Decisions", border_style="magenta",
-                ))
-            if cycle.get("metrics"):
-                console.print(Panel(
-                    json.dumps(cycle["metrics"], indent=2, ensure_ascii=False),
-                    title="Metrics", border_style="blue",
-                ))
-            if lineage:
-                t = Table(title="Artifacts", show_lines=False)
-                t.add_column("artifact_id"); t.add_column("kind")
-                t.add_column("status"); t.add_column("m/he/ha")
-                t.add_column("promote_sha"); t.add_column("rollback_sha")
-                for row in lineage:
-                    t.add_row(
-                        str(row.get("artifact_id") or "?"),
-                        str(row.get("kind") or "?"),
-                        str(row.get("status") or "?"),
-                        f"{row.get('matched_count', 0)}/"
-                        f"{row.get('helpful_count', 0)}/"
-                        f"{row.get('harmful_count', 0)}",
-                        (row.get("promote_commit_sha") or "")[:10] or "-",
-                        (row.get("rollback_commit_sha") or "")[:10] or "-",
-                    )
-                console.print(t)
-            else:
-                console.print("[dim]no lineage rows[/dim]")
-        else:
-            typer.echo(f"cycle: {cycle_id}")
-            typer.echo(f"  trigger: {cycle.get('trigger')}")
-            typer.echo(f"  verdict: {cycle.get('verdict')}")
-            if cycle.get("reject_reason"):
-                typer.echo(f"  reject_reason: {cycle['reject_reason']}")
-            typer.echo(f"  inputs: {cycle.get('inputs')}")
-            typer.echo(f"  decisions: {cycle.get('decisions')}")
-            typer.echo(f"  metrics: {cycle.get('metrics')}")
-            typer.echo(f"  artifacts: {len(lineage)}")
-            for row in lineage:
-                typer.echo(
-                    f"    - {row.get('artifact_id')} "
-                    f"({row.get('kind')}, {row.get('status')}) "
-                    f"m={row.get('matched_count', 0)} "
-                    f"he={row.get('helpful_count', 0)} "
-                    f"ha={row.get('harmful_count', 0)} "
-                    f"promote={row.get('promote_commit_sha') or '-'} "
-                    f"rollback={row.get('rollback_commit_sha') or '-'}"
-                )
+        typer.echo(f"OK — bus received event id={got.id} type={got.type.value}")
         return 0
 
     raise typer.Exit(code=asyncio.run(_run()))
 
 
-@sub_evo.command("cycles")
-def evo_cycles(
-    agent_id: str = typer.Option(
-        "default", "--agent", "-a", help="Agent id",
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", help="Bind address."),
+    port: int = typer.Option(8766, help="Port to bind."),
+    config: str = typer.Option(
+        "daemon/config.json",
+        help=("Path to config JSON (read for LLM provider key). "
+              "Falls back to echo-mode if absent or empty."),
     ),
-    limit: int = typer.Option(20, "--limit", "-n", help="Max cycles to list"),
+    no_auth: bool = typer.Option(
+        False,
+        "--no-auth",
+        help=(
+            "DANGEROUS: skip pairing-token validation. Only safe on a "
+            "strictly trusted local machine with no browser usage."
+        ),
+    ),
+    reload: bool = typer.Option(False, help="Uvicorn auto-reload (dev only)."),
 ) -> None:
-    """List recent evolution cycles (newest first)."""
-    async def _run() -> None:
-        from xmclaw.evolution.journal import get_journal
-        journal = get_journal(agent_id)
-        cycles = await journal.list_cycles(limit=limit)
-        if not cycles:
-            typer.echo("no cycles recorded")
-            return
-        if _RICH:
-            console = Console()
-            t = Table(show_lines=False)
-            t.add_column("cycle_id"); t.add_column("trigger")
-            t.add_column("verdict"); t.add_column("started_at")
-            for c in cycles:
-                t.add_row(
-                    str(c.get("cycle_id")),
-                    str(c.get("trigger") or "?"),
-                    str(c.get("verdict") or "pending"),
-                    str(c.get("started_at") or "?"),
-                )
-            console.print(t)
-        else:
-            for c in cycles:
+    """Start the v2 daemon (FastAPI + WebSocket).
+
+    Connect a client to ``ws://{host}:{port}/agent/v2/{session_id}``.
+    Send frames like ``{"type": "user", "content": "hello"}`` and
+    receive BehavioralEvent frames back.
+
+    If ``config`` points to a valid JSON file with an LLM ``api_key``
+    set, the daemon starts with a full AgentLoop (LLM ↔ tool). Missing
+    or key-less config starts the daemon in echo mode.
+    """
+    import uvicorn
+    from pathlib import Path as _Path
+    from xmclaw.core.bus import InProcessEventBus
+    from xmclaw.daemon.app import create_app as _create_app
+    from xmclaw.daemon.factory import ConfigError, build_agent_from_config, load_config
+    from xmclaw.daemon.pairing import (
+        default_token_path, load_or_create_token, validate_token,
+    )
+
+    bus = InProcessEventBus()
+
+    # ── Anti-req #8 pairing setup ──
+    auth_check = None
+    if not no_auth:
+        token_path = default_token_path()
+        token = load_or_create_token(token_path)
+
+        async def _auth(presented: str | None) -> bool:
+            return validate_token(token, presented)
+        auth_check = _auth
+        typer.echo(f"  [ok]  pairing token: {token_path}")
+    else:
+        typer.echo(f"  [!]   --no-auth: anyone on this machine can connect")
+
+    cfg_path = _Path(config)
+    agent = None
+    if cfg_path.exists():
+        try:
+            cfg = load_config(cfg_path)
+            agent = build_agent_from_config(cfg, bus)
+            if agent is None:
                 typer.echo(
-                    f"{c.get('cycle_id')}  {c.get('trigger')}  "
-                    f"{c.get('verdict')}  {c.get('started_at')}"
+                    f"  [!]   config has no LLM api_key set -- running in echo mode"
                 )
-    asyncio.run(_run())
+            else:
+                model = getattr(agent._llm, "model", "?")
+                typer.echo(f"  [ok]  loaded config: agent LLM = {model}")
+                # Surface the tools posture so the admin can see it.
+                if agent._tools is not None:
+                    specs = agent._tools.list_tools()
+                    tool_names = ", ".join(s.name for s in specs)
+                    allowlist = cfg.get("tools", {}).get("allowed_dirs", [])
+                    typer.echo(
+                        f"  [ok]  tools enabled: {tool_names}"
+                    )
+                    typer.echo(
+                        f"        allowed dirs: {allowlist}"
+                    )
+                else:
+                    typer.echo(f"  [!]   tools disabled (no 'tools' section in config)")
+        except ConfigError as exc:
+            typer.echo(f"  [!]   config error -- running in echo mode: {exc}", err=True)
+    else:
+        typer.echo(f"  [!]   config not found at {cfg_path} -- running in echo mode")
 
+    typer.echo(f"xmclaw v{__version__} -- binding ws://{host}:{port}")
+    typer.echo(f"  health:  http://{host}:{port}/health")
+    typer.echo(f"  session: ws://{host}:{port}/agent/v2/<session_id>")
+    typer.echo(f"  web ui:  http://{host}:{port}/")
 
-# ── Test ───────────────────────────────────────────────────────────────────
+    # Build the app locally so the agent (if any) is wired in.
+    app_instance = _create_app(bus=bus, agent=agent, auth_check=auth_check)
+    uvicorn.run(app_instance, host=host, port=port, log_level="info")
+
 
 @app.command()
-def test(module: str = typer.Option("all", "--module", "-m", help="Module to test")):
-    """Run tests."""
-    import subprocess
-    if module == "all":
-        result = subprocess.run(["python", "-m", "pytest", "tests/", "-v"], cwd=BASE_DIR)
+def chat(
+    url: str = typer.Option(
+        "ws://127.0.0.1:8766/agent/v2/{session_id}",
+        help=(
+            "Daemon WS URL. ``{session_id}`` in the URL is substituted "
+            "by the chosen / generated session id."
+        ),
+    ),
+    session_id: str = typer.Option(
+        "", help="Session id (auto-generated if empty).",
+    ),
+    token: str = typer.Option(
+        "",
+        help=(
+            "Pairing token. Empty = read from the default pairing file "
+            "(same location xmclaw serve writes)."
+        ),
+    ),
+    no_auth: bool = typer.Option(
+        False, "--no-auth", help="Skip pairing token (daemon must also be --no-auth).",
+    ),
+) -> None:
+    """Interactive REPL that talks to a running v2 daemon.
+
+    Connects to the daemon's WebSocket, prompts for user input, and
+    renders the event stream back as a readable conversation.
+
+    Start a daemon in another terminal first:
+
+        xmclaw serve
+
+    Then in this terminal:
+
+        xmclaw chat
+    """
+    from xmclaw.cli.chat import run_chat
+    from xmclaw.daemon.pairing import default_token_path
+
+    effective_token: str | None
+    if no_auth:
+        effective_token = None
+    elif token:
+        effective_token = token
     else:
-        result = subprocess.run(["python", "-m", "pytest", f"tests/test_{module}.py", "-v"], cwd=BASE_DIR)
-    raise typer.Exit(code=result.returncode)
+        p = default_token_path()
+        if p.exists():
+            effective_token = p.read_text(encoding="utf-8").strip()
+        else:
+            typer.echo(
+                f"  [!]   no pairing token at {p} -- start the daemon first "
+                f"(`xmclaw serve` creates one), or pass --no-auth "
+                f"if the daemon is running with --no-auth.",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+
+    exit_code = run_chat(
+        url=url,
+        session_id=session_id or None,
+        token=effective_token,
+    )
+    raise typer.Exit(code=exit_code)
 
 
-# ── Main ───────────────────────────────────────────────────────────────────
+@app.command()
+def doctor(
+    config: str = typer.Option(
+        "daemon/config.json", help="Path to config JSON.",
+    ),
+    host: str = typer.Option("127.0.0.1", help="Daemon host to probe."),
+    port: int = typer.Option(8766, help="Daemon port to probe."),
+    no_daemon_probe: bool = typer.Option(
+        False, "--no-daemon-probe",
+        help="Skip the HTTP health probe (offline mode).",
+    ),
+) -> None:
+    """Diagnose a v2 setup: config, LLM key, tools, pairing, port, daemon.
 
-if __name__ == "__main__":
-    app()
+    Runs a sequence of checks without starting the daemon. Each check
+    prints one line with a verdict. Exits 0 if every check passes, 1
+    if any critical check fails (so CI or shell scripts can use
+    ``xmclaw doctor && xmclaw serve``).
+    """
+    from xmclaw.cli.doctor import run_doctor
+    from pathlib import Path as _Path
+
+    results = run_doctor(
+        _Path(config),
+        host=host, port=port,
+        probe_daemon=not no_daemon_probe,
+    )
+    typer.echo("xmclaw doctor --")
+    for r in results:
+        typer.echo(r.render())
+    critical_fail = any(not r.ok for r in results)
+    raise typer.Exit(code=1 if critical_fail else 0)
