@@ -736,7 +736,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #12 · AGENTS.md 分层
 
-**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**状态**：✅ 完成 | **负责人**：Claude | **起始**：2026-04-23 | **完成**：2026-04-23
 **前置依赖**：无
 **关联 Milestone**：M1（Daemon 稳定性）
 
@@ -746,26 +746,28 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 2. **填 core/**（0.5 天）——依赖规则硬写死：不得 import `daemon/*` 或 `providers/*`
 3. **填 daemon/**（0.5 天）——职责：I/O 边界；依赖规则：不得出现业务逻辑
 4. **填 providers/\***（1 天）——每个子包一份（llm / tool / memory / runtime / channel）
-5. **填 plugin_sdk/**（0.5 天）——公开 API 冻结规则
+5. **填 plugin_sdk/**（0.5 天）——公开 API 冻结规则（留给 Epic #2 落地时补）
 6. **填 cli/ 和 utils/**（0.5 天）
 7. **CLAUDE.md 瘦身**（0.5 天）——把细节下放后，顶层 CLAUDE.md 只留导航
 
 **检查清单**：
 
-- [ ] `docs/AGENTS_TEMPLATE.md`
-- [ ] `xmclaw/core/AGENTS.md`
-- [ ] `xmclaw/daemon/AGENTS.md`
-- [ ] `xmclaw/providers/{llm,tool,memory,runtime,channel}/AGENTS.md`
-- [ ] `xmclaw/plugin_sdk/AGENTS.md`（Epic #2 产物）
-- [ ] `xmclaw/cli/AGENTS.md`
-- [ ] `xmclaw/utils/AGENTS.md`
-- [ ] CLAUDE.md 瘦身（仅顶层导航）
+- [x] `docs/AGENTS_TEMPLATE.md`
+- [x] `xmclaw/core/AGENTS.md`
+- [x] `xmclaw/daemon/AGENTS.md`
+- [x] `xmclaw/providers/AGENTS.md`（umbrella）+ `providers/{llm,tool,memory,runtime,channel}/AGENTS.md`
+- [ ] `xmclaw/plugin_sdk/AGENTS.md`（留给 Epic #2 — plugin_sdk 本身尚未建立）
+- [x] `xmclaw/cli/AGENTS.md`
+- [x] `xmclaw/utils/AGENTS.md`
+- [x] `xmclaw/security/AGENTS.md`（本 Epic 提出时尚未存在，合并补上）
+- [x] `xmclaw/skills/AGENTS.md`（同上）
+- [x] CLAUDE.md 瘦身（顶层仅导航 + 指向每子包 AGENTS.md）
 
 **退出标准**：新 AI 协作者开任何子目录能单独读懂契约 + 禁区。
 
 **进度日志**：
 
-- _（尚无）_
+- 2026-04-23: 模板 + 10 份子包 AGENTS.md（core / daemon / providers umbrella + llm/tool/memory/runtime/channel / cli / utils / security / skills）+ CLAUDE.md 瘦身。plugin_sdk AGENTS.md 挂单 Epic #2。(commit pending)
 
 ---
 
@@ -1145,7 +1147,7 @@ Hermes、OpenClaw 都给不出这种 demo——他们的"进步"要么是手动 
 - [x] SQLite event bus 落地（Epic #13，阶段 1：schema + WAL + FTS5 + /api/v2/events）
 - [x] ENV override 工作（Epic #6）
 - [x] smart-gate 测试 CI 跑 < 3 分钟（Epic #11，phase 1+2 落地 2026-04-23；实际 CI 运行时间待合入 main 后观测）
-- [ ] 所有子包 AGENTS.md 完成（Epic #12）
+- [x] 所有子包 AGENTS.md 完成（Epic #12，2026-04-23；plugin_sdk/ 的 AGENTS.md 挂单 Epic #2）
 
 **进度日志**：
 - _（尚无）_
