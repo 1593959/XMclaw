@@ -374,7 +374,7 @@ class BehavioralEvent:
 
 - 事件 schema 用 `pydantic.BaseModel` 声明在 `core/bus/events.py`，导出 JSON Schema 到 `docs/schemas/events.v1.json`
 - semver：字段加 = minor，删 = major；major 要迁移脚本
-- 发布前运行 `tools/check_event_schema.py`，检测是否破坏性
+- 发布前运行 `scripts/check_event_schema.py`，检测是否破坏性
 
 ---
 

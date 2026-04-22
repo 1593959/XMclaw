@@ -17,6 +17,13 @@ from xmclaw.cli.doctor import (
     check_tools_configured,
     run_doctor,
 )
+from xmclaw.cli.doctor_registry import (
+    CheckResult as RegistryCheckResult,
+    DoctorCheck,
+    DoctorContext,
+    DoctorRegistry,
+    build_default_registry,
+)
 
 
 # ── check_config_file ──────────────────────────────────────────────────
@@ -307,15 +314,6 @@ def test_render_uses_ascii_only_for_windows_gbk_locale() -> None:
 
 
 # ── Epic #10: pluggable registry ─────────────────────────────────────────
-
-
-from xmclaw.cli.doctor_registry import (
-    CheckResult as RegistryCheckResult,
-    DoctorCheck,
-    DoctorContext,
-    DoctorRegistry,
-    build_default_registry,
-)
 
 
 def _write_valid_cfg(tmp_path: Path) -> Path:

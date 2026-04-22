@@ -799,26 +799,6 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ---
 
-### Epic #11 · Smart-gate 测试
-
-- [ ] 写 `scripts/test_changed.py`：`git diff --name-only` → 推断测试 lane
-- [ ] lane 定义：
-  - `core/*` 改 → 跑 `tests/unit/core/` + `tests/conformance/`
-  - `providers/llm/*` 改 → 跑 `tests/unit/llm/` + `tests/integration/test_daemon_agent.py`
-  - `daemon/*` 改 → 跑 `tests/integration/`
-- [ ] pre-commit hook 默认调 `test_changed.py`
-
-### Epic #12 · AGENTS.md 分层
-
-- [ ] 每个 `xmclaw/*` 子包加 `AGENTS.md`：契约、依赖规则、测试入口、禁止事项
-- [ ] CLAUDE.md 只保留顶层视图，细节下放
-
-### Epic #13 · SQLite event bus
-
-- [ ] 落地 `core/bus/sqlite.py` schema（`events` 表 + `sessions` 表 + `fts` 虚拟表抄 Hermes `hermes_state.py`）
-- [ ] 接通 `agent_loop` publish
-- [ ] 事件重放 API：`GET /api/events?since=<ts>&session_id=<id>`
-
 ### Epic #14 · Prompt injection 防御
 
 **状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
@@ -945,32 +925,6 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 **进度日志**：
 
 - _（尚无）_
-
----
-
-### Epic #15 · 日志
-
-- [ ] `utils/logging.py`：`structlog` + `logging.handlers.TimedRotatingFileHandler`
-- [ ] JSON 行格式写入 `~/.xmclaw/logs/daemon-YYYY-MM-DD.jsonl`
-- [ ] 敏感字段自动脱敏（api_key / bearer token 正则）
-
-### Epic #16 · Secrets 加密
-
-- [ ] `utils/secrets.py`：优先读 keyring；fallback `.env`；最后才 `config.yaml`
-- [ ] `xmclaw config set-secret <key>` 交互式写入 keyring
-- [ ] `xmclaw config migrate-secrets` 把 config.json 里的 secrets 抽出来
-- [ ] 加密存储路径 `~/.xmclaw.secret/`（**sibling 目录**，参考 QwenPaw `SECRET_DIR = ~/.qwenpaw.secret`，`constant.py:102-111`）——与数据目录分开，防误删
-
-### Epic #17 · 多 Agent 架构（HTTP-to-self 模式）
-
-> QwenPaw 已证实这套模式足够好；我们的 EvolutionEngine peer 层可以直接用它。
-
-- [ ] `xmclaw/daemon/multi_agent_manager.py`：`Dict[str, Workspace]` 存多 agent，`asyncio.Lock` + `pending_starts: Dict[str, asyncio.Event]` 去抖（抄 QwenPaw `app/multi_agent_manager.py:76-94`）
-- [ ] `daemon/app.py`：`DynamicMultiAgentRunner` 按 `X-Agent-Id` header 路由（抄 QwenPaw `app/_app.py:71-80`）
-- [ ] Tool：`list_agents` / `chat_with_agent` / `submit_to_agent` / `check_agent_task`——agent 间通过本地 HTTP 对话，不走特殊 IPC
-- [ ] Session ID 命名：`{from_agent}:to:{to_agent}:{timestamp}:{uuid_short}`（防跨 agent session 泄漏，抄 QwenPaw `agents/tools/agent_management.py:74-78`）
-- [ ] Prompt 前缀 `[Agent X requesting]` 让被调 agent 知道是谁来的
-- [ ] 用同样模式把 EvolutionEngine 做成**独立 agent**（不是嵌入 AgentLoop）——进化 agent 观察主 agent 的事件流并输出 skill 改进
 
 ---
 

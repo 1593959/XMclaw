@@ -8,7 +8,7 @@ Exit 0 if clean, 1 if any violation found. Prints each violation so CI
 surfaces the file and line.
 
 Usage:
-  python tools/check_import_direction.py
+  python scripts/check_import_direction.py
 """
 from __future__ import annotations
 

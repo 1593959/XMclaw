@@ -45,7 +45,7 @@ shared/              Auto-generated genes/ and skills/ (populated at runtime)
 plugins/             LLM and tool plugins
 docs/                Architecture, CLI, Tools, Evolution, Integrations, Testing, Troubleshooting
 tests/               pytest suites (test_bash.py, test_config.py, test_evolution.py, …)
-scripts/             Build & installer scripts (build_exe_fast.py, xmclaw_setup.iss, …)
+scripts/             Dev/ops scripts — setup.ps1, setup.bat, startxmclaw.bat, CI lint helpers (check_event_schema.py, check_import_direction.py), build_exe_fast.py, xmclaw_setup.iss, …
 .github/workflows/   CI (python-package-conda.yml, python-publish.yml)
 ```
 
