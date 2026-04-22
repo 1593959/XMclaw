@@ -51,10 +51,10 @@ from xmclaw.core.bus import (
 from xmclaw.core.ir import ToolCall, ToolResult
 from xmclaw.providers.llm.base import LLMProvider, Message
 from xmclaw.providers.tool.base import ToolProvider
-from xmclaw.security.prompt_scanner import (
+from xmclaw.security import (
+    SOURCE_TOOL_RESULT,
     PolicyMode,
-    redact as _redact_injections,
-    scan_text,
+    apply_policy,
 )
 from xmclaw.utils.cost import BudgetExceeded, CostTracker
 
@@ -397,48 +397,34 @@ class AgentLoop:
                     # Epic #14: scan the tool output for prompt-injection
                     # attempts before it lands in the conversation history.
                     # Apply the configured policy (detect / redact / block).
-                    scan = scan_text(tool_msg_content)
-                    blocked = False
-                    if scan.any_findings:
-                        acted = self._injection_policy in (
-                            PolicyMode.REDACT, PolicyMode.BLOCK,
-                        )
-                        await publish(EventType.PROMPT_INJECTION_DETECTED, {
-                            "source": "tool_result",
-                            "policy": self._injection_policy.value,
+                    decision = apply_policy(
+                        tool_msg_content,
+                        policy=self._injection_policy,
+                        source=SOURCE_TOOL_RESULT,
+                        extra={
                             "tool_call_id": call.id,
                             "tool_name": call.name,
-                            "findings": [
-                                {
-                                    "pattern_id": f.pattern_id,
-                                    "severity": f.severity.value,
-                                    "category": f.category,
-                                    "match": f.match[:200],
-                                }
-                                for f in scan.findings
-                            ],
-                            "invisible_chars": scan.invisible_chars,
-                            "scanned_length": scan.scanned_length,
-                            "categories": scan.categories(),
-                            "acted": acted,
-                        })
-                        if self._injection_policy == PolicyMode.REDACT:
-                            tool_msg_content = _redact_injections(
-                                tool_msg_content, scan,
-                            )
-                        elif self._injection_policy == PolicyMode.BLOCK:
-                            blocked = True
-                            tool_msg_content = (
-                                "ERROR: tool output blocked by prompt-injection "
-                                "policy. Categories: "
-                                + ", ".join(scan.categories())
-                            )
+                        },
+                    )
+                    if decision.event is not None:
+                        await publish(
+                            EventType.PROMPT_INJECTION_DETECTED,
+                            decision.event,
+                        )
+                    if decision.blocked:
+                        tool_msg_content = (
+                            "ERROR: tool output blocked by prompt-injection "
+                            "policy. Categories: "
+                            + ", ".join(decision.scan.categories())
+                        )
+                    else:
+                        tool_msg_content = decision.content
                     messages.append(Message(
                         role="tool",
                         content=tool_msg_content,
                         tool_call_id=call.id,
                     ))
-                    if blocked:
+                    if decision.blocked:
                         await publish(EventType.ANTI_REQ_VIOLATION, {
                             "message": "tool output blocked by prompt-injection policy",
                             "kind": "prompt_injection_blocked",

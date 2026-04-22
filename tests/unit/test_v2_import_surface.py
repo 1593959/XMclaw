@@ -70,6 +70,9 @@ V2_MODULES = [
     "xmclaw.daemon.factory",
     "xmclaw.daemon.pairing",
     "xmclaw.daemon.lifecycle",
+    "xmclaw.security",
+    "xmclaw.security.prompt_scanner",
+    "xmclaw.security.policy",
 ]
 
 

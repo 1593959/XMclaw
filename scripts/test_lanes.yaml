@@ -135,12 +135,13 @@ lanes:
       - tests/integration/test_v2_autonomous_evolution.py
       - tests/integration/test_v2_tool_aware_skill.py
 
-  # Security: prompt scanner + any downstream integration.
+  # Security: prompt scanner + policy helper + any downstream integration.
   security:
     triggers:
       - "xmclaw/security/**"
     tests:
       - tests/unit/test_v2_prompt_scanner.py
+      - tests/unit/test_v2_security_policy.py
       - tests/unit/test_v2_redact.py
       - tests/integration/test_v2_prompt_injection.py
 
