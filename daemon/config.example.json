@@ -27,9 +27,10 @@
     "max_context_tokens": 120000
   },
   "tools": {
-    "bash_timeout": 300,
-    "sandbox_timeout": 30,
-    "browser_headless": false
+    "_comment": "Allowlist of directories the built-in tools (file_read, file_write) may touch. Remove the tools section entirely to run LLM-only with no filesystem access.",
+    "allowed_dirs": [
+      "."
+    ]
   },
   "gateway": {
     "host": "127.0.0.1",

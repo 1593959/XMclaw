@@ -9,6 +9,7 @@ Subcommands:
     xmclaw stop      Stop a running daemon (via PID file).
     xmclaw restart   Stop then start.
     xmclaw status    Report daemon state (running / stale / dead).
+    xmclaw tools     List the tools wired up from config.
     xmclaw chat      Interactive REPL that talks to a running daemon.
     xmclaw doctor    Diagnose a local setup without running anything.
 
@@ -282,6 +283,53 @@ def status() -> None:
     else:
         typer.echo("  [x]  no daemon running")
         raise typer.Exit(code=1)
+
+
+@app.command()
+def tools(
+    config: str = typer.Option(
+        "daemon/config.json", help="Path to config JSON.",
+    ),
+) -> None:
+    """List the tools the agent would be wired with for this config.
+
+    Reads the config exactly the way ``xmclaw serve`` / ``start`` would,
+    builds the same ToolProvider, and prints each tool. Useful for
+    catching "tools disabled, nothing happens" confusion before spending
+    model tokens on a task the agent can't actually perform.
+    """
+    from pathlib import Path as _Path
+    from xmclaw.daemon.factory import (
+        ConfigError, build_tools_from_config, load_config,
+    )
+
+    cfg_path = _Path(config)
+    if not cfg_path.exists():
+        typer.echo(f"  [x]  config not found at {cfg_path}", err=True)
+        raise typer.Exit(code=1)
+    try:
+        cfg = load_config(cfg_path)
+        provider = build_tools_from_config(cfg)
+    except ConfigError as exc:
+        typer.echo(f"  [x]  config error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    if provider is None:
+        typer.echo(
+            "  [!]   no 'tools' section in config -- agent runs LLM-only"
+        )
+        typer.echo(
+            "        add 'tools': {'allowed_dirs': ['.']} to enable file_read / file_write"
+        )
+        return
+    specs = provider.list_tools()
+    allowed = cfg.get("tools", {}).get("allowed_dirs", [])
+    typer.echo(f"  [ok]  {len(specs)} tool(s) configured, "
+               f"{len(allowed)} allowed dir(s)")
+    for spec in specs:
+        typer.echo(f"    - {spec.name}: {spec.description}")
+    typer.echo("  allowed dirs:")
+    for d in allowed:
+        typer.echo(f"    - {d}")
 
 
 @app.command()
