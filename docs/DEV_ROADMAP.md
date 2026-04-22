@@ -844,7 +844,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #15 · 日志
 
-**状态**：🟡 进行中 | **负责人**：Claude (AI pair) | **起始**：2026-04-23 | **完成**：-
+**状态**：✅ 完成 | **负责人**：Claude (AI pair) | **起始**：2026-04-23 | **完成**：2026-04-23
 **前置依赖**：无
 **关联 Milestone**：M8（可观测）
 
@@ -862,13 +862,14 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - [x] size-based rotate（5MiB × 3 份）；按天 rotate 非刚需，留到真需要再加
 - [x] 敏感字段脱敏（processor 层；复用 `redact.redact_string`）
 - [x] `session_id` / `agent_id` contextvar 绑定（`bind_log_context()` / `clear_log_context()`）
-- [ ] `print` / `logging` 迁移——有限迁移：CLI `print()` 是用户输出不迁；`core/bus/memory.py:1` + `core/performance_monitor.py` 已改用 `get_logger()`
+- [x] `print` / `logging` 迁移——有限迁移：CLI `print()` 是用户输出不迁；`core/bus/memory.py` + `core/performance_monitor.py` 已改用 `get_logger()`；`tests/unit/test_v2_print_audit.py` 用 AST walk 作回归守卫（core/providers/daemon/security/skills/utils/memory/runtime 子树再出现裸 `print(` 就红）
 
 **退出标准**：日志可被 `jq` / `grep` 解析；`grep "sk-ant-" logs/*.log` 返回 0 条真 key。
 
 **进度日志**：
 
 - 2026-04-23: 阶段 1 落地——重写 `xmclaw/utils/log.py`：去掉模块级 `logger = setup_logging()` 副作用（之前每次 import 都在用户 `logs/` 下创建文件，违反 utils AGENTS.md 的 import 纯净约束）；新增 `_scrub_secrets` structlog processor 复用 `redact.redact_string` 扫 msg + 所有字符串 kwargs，`sk-ant-xxx` / `sk-xxx` / `ghp_xxx` / `xox?-xxx` / `AIza***` 都命中；加 `structlog.contextvars.merge_contextvars` 处理器 + `bind_log_context()` / `clear_log_context()` 包装，turn 开始 bind 一次 `session_id` / `agent_id` 下游每条 log 自动带上；`setup_logging()` 幂等（二次调用不累加 handler）；新增 `get_logger(name)` 公开入口（不触发 setup，可安全 import）；`xmclaw/core/performance_monitor.py` 从 `from ... import logger` 改为 `get_logger(__name__)`；新增 `tests/unit/test_v2_logging.py` 9 测（import 无副作用 / 幂等 / file+stream handler 各一 / 两种 scrubber 路径 / JSON 可解析 / contextvars 注入 / clear 生效 / get_logger 无需 setup）；更新 `scripts/test_lanes.yaml` observability lane + `xmclaw/utils/AGENTS.md`；全套 737 passed (commit 5246726)
+- 2026-04-23: 阶段 2 收尾——`xmclaw/` 全树 `print(` 扫描只剩两处命中：`cli/chat.py`（交互式 CLI 用户输出，保留）+ `core/bus/memory.py:71`（带 `TODO(phase-1): route to structured logger` 注释，正是本阶段要修的）；`memory.py` 改用 `get_logger(__name__)` + `_log.warning("bus.subscriber_failed", event_type=, session_id=, event_id=, error=)`，结构化事件名 + 字段分离让 `jq` / `grep session_id=sess-xyz` 都能过滤；新增 `tests/unit/test_v2_print_audit.py` 用 ast walk 遍历 core/providers/daemon/security/skills/utils/memory/runtime 子树，发现裸 `print(` 就 fail（`# print-audit: allow` 同行注释作为 escape hatch）；`tests/unit/test_v2_bus_ping.py` 增 `test_subscriber_exception_is_logged_structurally` 断言结构化字段命中 + 老式 `[bus] subscriber failed` 字符串不再出现；Epic 状态 🟡→✅；全套 765 passed (commit &lt;pin&gt;)
 
 ---
 
@@ -1258,7 +1259,7 @@ Hermes、OpenClaw 都给不出这种 demo——他们的"进步"要么是手动 
 **包含 Epics**：#5 Memory eviction + #14 Prompt 注入 + #15 日志 + #16 Secrets + #20 备份恢复
 
 **退出标准**：
-- [ ] 结构化日志 + rotation（Epic #15）
+- [x] 结构化日志 + rotation（Epic #15）
 - [ ] Memory eviction（Epic #5）
 - [ ] Prompt 注入防御（Epic #14）
 - [ ] Secrets 加密（Epic #16）

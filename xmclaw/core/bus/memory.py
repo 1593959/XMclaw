@@ -13,9 +13,12 @@ from dataclasses import dataclass, field
 from typing import TypeAlias
 
 from xmclaw.core.bus.events import BehavioralEvent
+from xmclaw.utils.log import get_logger
 
 EventHandler: TypeAlias = Callable[[BehavioralEvent], Awaitable[None]]
 EventPredicate: TypeAlias = Callable[[BehavioralEvent], bool]
+
+_log = get_logger(__name__)
 
 
 @dataclass
@@ -66,9 +69,13 @@ class InProcessEventBus:
         try:
             await sub.handler(event)
         except Exception as exc:  # noqa: BLE001 — isolate subscriber failures
-            # TODO(phase-1): route to structured logger (utils/log.py)
-            # For now, print so Phase 1 demo still surfaces the error.
-            print(f"[bus] subscriber failed on {event.type}: {exc!r}")
+            _log.warning(
+                "bus.subscriber_failed",
+                event_type=str(event.type),
+                session_id=event.session_id,
+                event_id=event.id,
+                error=repr(exc),
+            )
 
     async def drain(self) -> None:
         """Wait for all in-flight handler tasks to complete. Demo-time only."""
