@@ -556,9 +556,9 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **进度日志**：
 
-- 2026-04-22: `_apply_env_overrides(cfg, env, prefix="XMC__")` 落地：双下划线切段、小写化、JSON 类型推断、空段过滤、标量 parent 覆盖为 dict。`load_config(path, *, env=None)` 在 json.loads 之后自动 overlay（传 `env={}` 单测静默） (commit pending)
-- 2026-04-22: `tests/unit/test_v2_daemon_factory.py` 新增 12 条 `test_env_override_*` 用例（覆盖已有 key / 创建深层 / 忽略非前缀 / bool+int+float+null+array 类型推断 / 裸 secret 保留 str / 标量 parent 覆盖 / 段大小写兼容 / 空段被忽略 / end-to-end `load_config`），40/40 passed (commit pending)
-- 2026-04-22: `docs/CONFIG.md` 新建，含命名规则表 / 类型推断 / 优先级 / Docker 纯 ENV 示例 (commit pending)
+- 2026-04-22: `_apply_env_overrides(cfg, env, prefix="XMC__")` 落地：双下划线切段、小写化、JSON 类型推断、空段过滤、标量 parent 覆盖为 dict。`load_config(path, *, env=None)` 在 json.loads 之后自动 overlay（传 `env={}` 单测静默） (commit 788e400)
+- 2026-04-22: `tests/unit/test_v2_daemon_factory.py` 新增 12 条 `test_env_override_*` 用例（覆盖已有 key / 创建深层 / 忽略非前缀 / bool+int+float+null+array 类型推断 / 裸 secret 保留 str / 标量 parent 覆盖 / 段大小写兼容 / 空段被忽略 / end-to-end `load_config`），40/40 passed (commit 788e400)
+- 2026-04-22: `docs/CONFIG.md` 新建，含命名规则表 / 类型推断 / 优先级 / Docker 纯 ENV 示例 (commit 788e400)
 
 ---
 
