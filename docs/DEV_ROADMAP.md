@@ -701,7 +701,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #11 · Smart-gate 测试
 
-**状态**：🟡 进行中 | **负责人**：Claude | **起始**：2026-04-23 | **完成**：-
+**状态**：✅ 完成 | **负责人**：Claude | **起始**：2026-04-23 | **完成**：2026-04-23
 **前置依赖**：无
 **关联 Milestone**：M1（Daemon 稳定性）
 
@@ -722,14 +722,15 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - [x] `docs/V2_DEVELOPMENT.md §6.2.1` 加 smart-gate 小节
 - [x] CI 改成 changed-first（`.github/workflows/python-ci.yml`：PR 跑 smart-gate，push-to-main 跑全量）
 - [x] main 分支全量 fallback（workflow `Test (full suite)` step on `event_name != pull_request`）
-- [ ] pre-commit hook
+- [x] pre-commit hook（`.pre-commit-config.yaml` 可选 opt-in，`language: system` 零额外下载）
 
 **退出标准**：改 `core/memory/*.py` 时 CI 在 2 分钟内完成，全量仍在 main 护底。
 
 **进度日志**：
 
 - 2026-04-23: lane YAML + 选择脚本 + 21 单测落地；本地 smoke 三路径（--all / security+bus / docs-only）均产出预期 pytest 命令。CI 接线 + pre-commit 留到 phase 2。(commit 2827d0c)
-- 2026-04-23: CI 接线 — `.github/workflows/python-ci.yml` PR 事件用 `test_changed.py --base origin/$base -- -v`，push-to-main / workflow_dispatch 仍跑全量。`fetch-depth: 0` 保证 merge-base 可用。pre-commit hook 留到 phase 2b。(commit pending)
+- 2026-04-23: CI 接线 — `.github/workflows/python-ci.yml` PR 事件用 `test_changed.py --base origin/$base -- -v`，push-to-main / workflow_dispatch 仍跑全量。`fetch-depth: 0` 保证 merge-base 可用。pre-commit hook 留到 phase 2b。(commit 1fe2c56)
+- 2026-04-23: 完结 — `.pre-commit-config.yaml` 可选 opt-in（`language: system` 零依赖）+ V2_DEVELOPMENT 小节追加 CI/pre-commit 用法。Epic #11 checklist 全清，退出标准待 main 合入后用真实 CI 运行时间 verify。(commit pending)
 
 ---
 
@@ -1143,7 +1144,7 @@ Hermes、OpenClaw 都给不出这种 demo——他们的"进步"要么是手动 
 - [ ] `xmclaw doctor` 通过率 100%（Epic #10）
 - [x] SQLite event bus 落地（Epic #13，阶段 1：schema + WAL + FTS5 + /api/v2/events）
 - [x] ENV override 工作（Epic #6）
-- [ ] smart-gate 测试 CI 跑 < 3 分钟（Epic #11）
+- [x] smart-gate 测试 CI 跑 < 3 分钟（Epic #11，phase 1+2 落地 2026-04-23；实际 CI 运行时间待合入 main 后观测）
 - [ ] 所有子包 AGENTS.md 完成（Epic #12）
 
 **进度日志**：

@@ -486,6 +486,10 @@ python scripts/test_changed.py -- -v -k "not slow"
 - ❌ 让 lane 间互相隐式依赖。每个 lane 都应该能独立跑过；跨 lane 的 setup 放 fixture，不放 lane 拓扑。
 - ❌ 忘记加新子系统的 lane。添 `xmclaw/foo/**` 就要同步加 `foo:` lane，否则 CI 看不到你的测试。
 
+**CI 接线**：`.github/workflows/python-ci.yml` 的 PR 事件走 `test_changed.py --base origin/$base -- -v`；push-to-main 和 workflow_dispatch 跑全量（ground truth）。`full_fallback` lane 捕获 pyproject / lockfile / workflow 变更 → 即使是 PR 也跑全套。
+
+**本地 pre-commit（可选）**：`.pre-commit-config.yaml` 已就位。启用方式：`pip install pre-commit && pre-commit install`。钩子用 `language: system` 调用仓内脚本，零额外下载。跳过：`SKIP=xmclaw-smart-gate git commit ...`。
+
 ### 6.3 CI 硬门（不过 = PR block）
 
 | # | 检查 | 对应 anti-req |
