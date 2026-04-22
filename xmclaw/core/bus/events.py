@@ -40,6 +40,18 @@ class EventType(str, Enum):
     # Emitted when the agent calls `todo_write` so the UI can live-render
     # the todo panel without polling. Payload: {"items": [...], "sid": ...}.
     TODO_UPDATED = "todo_updated"
+    # Epic #14: emitted when the prompt scanner detects injection attempts
+    # in untrusted context (tool output, web-fetched text, file loads).
+    # Payload: {
+    #     "source": "tool_result" | "web_fetch" | "file_read",
+    #     "policy": "detect_only" | "redact" | "block",
+    #     "findings": [{"pattern_id", "severity", "category", "match"}],
+    #     "invisible_chars": int,
+    #     "scanned_length": int,
+    #     "acted": bool,              # True when policy mutated / blocked content
+    #     "tool_call_id": str | None,  # set when source=="tool_result"
+    # }
+    PROMPT_INJECTION_DETECTED = "prompt_injection_detected"
 
 
 @dataclass(frozen=True, slots=True)

@@ -803,7 +803,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #14 · Prompt injection 防御
 
-**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**状态**：🟡 进行中 | **负责人**：Claude (AI pair) | **起始**：2026-04-23 | **完成**：-
 **前置依赖**：Epic #13（事件发出需要总线）
 **关联 Milestone**：M8（安全硬化）
 
@@ -818,17 +818,17 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **检查清单**：
 
-- [ ] `xmclaw/security/prompt_scanner.py` 移植 Hermes 规则
-- [ ] 在所有 prompt 注入点前扫（SOUL / PROFILE / AGENTS / memory / tool output）
-- [ ] `PROMPT_INJECTION_DETECTED` 事件
-- [ ] `security.prompt_injection` config 三档策略
-- [ ] 单测 ≥ 10 典型攻击样本
+- [x] `xmclaw/security/prompt_scanner.py` 移植 Hermes 规则（instruction_override / role_forgery / exfiltration + unicode invisibles）
+- [ ] 在所有 prompt 注入点前扫（**tool output 已接**；SOUL / PROFILE / AGENTS / memory 摘要待阶段 2 补）
+- [x] `PROMPT_INJECTION_DETECTED` 事件（payload 含 source/policy/findings/categories/acted/tool_call_id）
+- [x] `security.prompt_injection` config 三档策略（factory 接通，默认 `detect_only`）
+- [x] 单测 ≥ 10 典型攻击样本（26 scanner 单测 + 7 AgentLoop 集成测试）
 
 **退出标准**：攻击样本测试全过；`detect_only` 模式不破坏正常流程。
 
 **进度日志**：
 
-- _（尚无）_
+- 2026-04-23: 阶段 1 落地——新增 `xmclaw/security/prompt_scanner.py` 纯函数扫描器（三类共 11 条 regex：`ignore_previous` / `disregard_prior` / `forget_instructions` / `override_system` / `openai_im_start` / `anthropic_human_tag` / `inst_block` / `xml_system` / `new_instructions_header` / `reveal_secrets` / `send_to_url` + unicode invisibles 计数）；`PolicyMode` 枚举 + `redact()` 右到左 splice；新增 `EventType.PROMPT_INJECTION_DETECTED`；`AgentLoop` 在 tool_result 进入 messages 前扫一遍——`detect_only` 放行、`redact` 改写内容（LLM 只看到 `[redacted:<id>]`）、`block` 发 `ANTI_REQ_VIOLATION(kind=prompt_injection_blocked)` 终止 turn；`build_agent_from_config` 读 `security.prompt_injection`；`daemon/config.example.json` 加 `security` 段；26 scanner 单测 + 7 AgentLoop 集成测试（三档策略 × 敌方 payload / 干净 payload + factory 三路径），全套 692 passed
 
 ---
 

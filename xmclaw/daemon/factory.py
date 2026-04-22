@@ -31,6 +31,7 @@ from xmclaw.providers.llm.base import LLMProvider
 from xmclaw.providers.llm.openai import OpenAILLM
 from xmclaw.providers.tool.base import ToolProvider
 from xmclaw.providers.tool.builtin import BuiltinTools
+from xmclaw.security.prompt_scanner import PolicyMode
 
 
 # Recognised provider kinds in the config. Each maps to a constructor.
@@ -308,13 +309,25 @@ def build_agent_from_config(
     but no tools section produces a tool-less AgentLoop (still usable
     for pure-chat scenarios). A config with tools but no LLM still
     returns None — tools without an agent have no caller.
+
+    Epic #14: ``security.prompt_injection`` (string: ``detect_only`` /
+    ``redact`` / ``block``) is read here and handed to the loop. Missing
+    or unrecognised values fall back to ``detect_only``.
     """
     llm = build_llm_from_config(cfg)
     if llm is None:
         return None
     tools = build_tools_from_config(cfg)
+    security = cfg.get("security")
+    policy_raw = None
+    if isinstance(security, Mapping):
+        policy_raw = security.get("prompt_injection")
+        if not isinstance(policy_raw, str):
+            policy_raw = None
+    policy = PolicyMode.parse(policy_raw, default=PolicyMode.DETECT_ONLY)
     return AgentLoop(
         llm=llm, bus=bus, tools=tools,
         max_hops=max_hops,
         agent_id=cfg.get("agent_id", "agent"),
+        prompt_injection_policy=policy,
     )
