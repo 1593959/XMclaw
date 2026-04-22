@@ -447,6 +447,45 @@ python -m xmclaw.demo.phase1 --skill read_and_summarize --turns 50
 | Conformance | `tests/conformance/` | `pytest tests/conformance --matrix` | PR + nightly |
 | Bench | `tests/bench/` | `pytest tests/bench --slow` | release gate |
 
+### 6.2.1 Smart-gate：按 diff 选最小 pytest 子集（Epic #11）
+
+`scripts/test_lanes.yaml` 定义了 "哪些源文件变 → 跑哪些 pytest 文件" 的 lane 映射。
+`scripts/test_changed.py` 读 YAML + `git diff --name-only`，输出最小 pytest 命令。
+
+```bash
+# 本地：对工作区（staged+unstaged）vs HEAD 选子集
+python scripts/test_changed.py --dry-run        # 看计划，不跑
+python scripts/test_changed.py                   # 计划 + 直接跑
+
+# CI：对 origin/main...HEAD 三点 diff
+python scripts/test_changed.py --base origin/main
+
+# 从 stdin 喂路径（给 pre-commit 或自定义脚本用）
+git diff --name-only HEAD | python scripts/test_changed.py --from-stdin
+
+# 强制跑全套（兜底）
+python scripts/test_changed.py --all
+
+# 透传额外参数给 pytest
+python scripts/test_changed.py -- -v -k "not slow"
+```
+
+**Lane 语义**：
+
+- `triggers: [glob, ...]` — fnmatch 风格 glob；任一匹配则 lane 触发。
+- `tests: [path, ...]` — 触发后加入的 pytest 文件列表。
+- 触发 `__always__` → 只要有变更就跑（用于 import-surface、config-shape 等便宜 sanity）。
+- `tests` 里含 `__all__` → 短路走全套（pyproject / lockfile / CI 配置变化时）。
+- 多个 lane 命中取并集、去重；直接动 `tests/` 下的测试文件总会被直接跑（即使没 lane 匹配源路径）。
+
+**退出码**：`0`=pytest 成功或啥都不选（纯文档 PR），`1`=pytest 失败，`2`=参数/config 错。
+
+**反模式**（务必不要做）：
+
+- ❌ 教脚本 follow 传递依赖。成本（多跑一个 lane 几秒）远低于 "聪明启发式漏测后 main 炸" 的成本。显式优于 clever。
+- ❌ 让 lane 间互相隐式依赖。每个 lane 都应该能独立跑过；跨 lane 的 setup 放 fixture，不放 lane 拓扑。
+- ❌ 忘记加新子系统的 lane。添 `xmclaw/foo/**` 就要同步加 `foo:` lane，否则 CI 看不到你的测试。
+
 ### 6.3 CI 硬门（不过 = PR block）
 
 | # | 检查 | 对应 anti-req |

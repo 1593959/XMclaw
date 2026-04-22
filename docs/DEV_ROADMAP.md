@@ -701,7 +701,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #11 · Smart-gate 测试
 
-**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**状态**：🟡 进行中 | **负责人**：Claude | **起始**：2026-04-23 | **完成**：-
 **前置依赖**：无
 **关联 Milestone**：M1（Daemon 稳定性）
 
@@ -716,18 +716,19 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **检查清单**：
 
-- [ ] `scripts/test_lanes.yaml` lane 规则
-- [ ] `scripts/test_changed.py`
+- [x] `scripts/test_lanes.yaml` lane 规则（13 lanes：always / bus / llm / tools / agent_loop / daemon / cli / memory / evolution / security / observability / runtime / full_fallback）
+- [x] `scripts/test_changed.py`（手写 YAML 解析器零依赖，支持 `--base` / `--from-stdin` / `--all` / `--dry-run` / pytest args 透传）
+- [x] 单元测试（`tests/unit/test_v2_test_changed.py`，21 tests 覆盖解析器 + lane 选择 + pytest 命令渲染）
+- [x] `docs/V2_DEVELOPMENT.md §6.2.1` 加 smart-gate 小节
 - [ ] pre-commit hook
 - [ ] CI 改成 changed-first
 - [ ] main 分支全量 fallback
-- [ ] `docs/TESTING.md` 说明
 
 **退出标准**：改 `core/memory/*.py` 时 CI 在 2 分钟内完成，全量仍在 main 护底。
 
 **进度日志**：
 
-- _（尚无）_
+- 2026-04-23: lane YAML + 选择脚本 + 21 单测落地；本地 smoke 三路径（--all / security+bus / docs-only）均产出预期 pytest 命令。CI 接线 + pre-commit 留到 phase 2。(commit pending)
 
 ---
 

@@ -1,0 +1,176 @@
+# Smart-gate lane definitions (Epic #11).
+#
+# Each lane names a subset of pytest files that should run when matching
+# source paths change. scripts/test_changed.py reads this + `git diff
+# --name-only $BASE...HEAD` (or the working-tree diff if BASE is unset)
+# and emits a pytest invocation.
+#
+# Semantics:
+#   * `triggers` — glob patterns (fnmatch) compared against each changed
+#     path. If any trigger matches, the lane's tests run.
+#   * `tests` — explicit list of test files under tests/.
+#   * If a lane's trigger list includes `__always__`, it runs on every
+#     diff (keeps import-surface + config-shape guards always on).
+#
+# Lanes are additive: if three lanes match, the union of their tests runs.
+# Duplicate files are de-duplicated before invocation.
+#
+# Fallback: if NO file matches any lane (e.g. changes only under docs/),
+# test_changed.py exits 0 without running pytest — doc-only PRs shouldn't
+# burn CI minutes. To force full-suite locally use `--all`.
+#
+# Anti-goals: do NOT try to be clever about transitive imports. The cost
+# of running one extra lane (a few seconds) is much less than the cost of
+# a green PR that breaks main because a clever heuristic skipped the
+# downstream test.
+
+version: 1
+
+lanes:
+  # Always-on sanity. These are cheap and catch whole-repo breakage like
+  # "someone removed xmclaw/__init__.py's public export."
+  always:
+    triggers: ["__always__"]
+    tests:
+      - tests/unit/test_v2_import_surface.py
+      - tests/unit/test_v2_config_example.py
+
+  # Core bus + events — touched by almost every feature.
+  bus:
+    triggers:
+      - "xmclaw/core/bus/**"
+      - "xmclaw/core/ir/**"
+    tests:
+      - tests/unit/test_v2_bus_ping.py
+      - tests/unit/test_v2_bus_sqlite.py
+      - tests/unit/test_v2_ir_toolcall.py
+      - tests/integration/test_v2_events_api.py
+      - tests/integration/test_v2_daemon_replay.py
+
+  # LLM providers + translators.
+  llm:
+    triggers:
+      - "xmclaw/providers/llm/**"
+    tests:
+      - tests/unit/test_v2_anthropic_provider.py
+      - tests/unit/test_v2_anthropic_translator.py
+      - tests/unit/test_v2_openai_provider.py
+      - tests/unit/test_v2_openai_translator.py
+
+  # Tool providers: builtin + mcp + browser + lsp + composite.
+  tools:
+    triggers:
+      - "xmclaw/providers/tool/**"
+    tests:
+      - tests/unit/test_v2_builtin_tools.py
+      - tests/unit/test_v2_browser_tools.py
+      - tests/unit/test_v2_composite_tool.py
+      - tests/unit/test_v2_lsp_tools.py
+      - tests/unit/test_v2_todo_tools.py
+      - tests/integration/test_v2_mcp_bridge.py
+      - tests/integration/test_v2_tool_loop.py
+
+  # AgentLoop: the stitching layer. Any change here ripples through most
+  # integration tests, so lane it broadly.
+  agent_loop:
+    triggers:
+      - "xmclaw/daemon/agent_loop.py"
+    tests:
+      - tests/unit/test_v2_agent_loop.py
+      - tests/unit/test_v2_agent_memory.py
+      - tests/integration/test_v2_agent_loop_budget.py
+      - tests/integration/test_v2_prompt_injection.py
+      - tests/integration/test_v2_tool_loop.py
+      - tests/integration/test_v2_live_pipeline.py
+
+  # Daemon factory + app wiring.
+  daemon:
+    triggers:
+      - "xmclaw/daemon/factory.py"
+      - "xmclaw/daemon/app.py"
+      - "xmclaw/daemon/lifecycle.py"
+      - "xmclaw/daemon/pairing.py"
+    tests:
+      - tests/unit/test_v2_daemon_factory.py
+      - tests/unit/test_v2_daemon_lifecycle.py
+      - tests/unit/test_v2_pairing.py
+      - tests/integration/test_v2_daemon_app.py
+      - tests/integration/test_v2_daemon_agent.py
+      - tests/integration/test_v2_daemon_config.py
+      - tests/integration/test_v2_daemon_pairing.py
+
+  # CLI + doctor.
+  cli:
+    triggers:
+      - "xmclaw/cli/**"
+    tests:
+      - tests/unit/test_v2_doctor.py
+      - tests/unit/test_v2_chat_formatter.py
+
+  # Memory stack.
+  memory:
+    triggers:
+      - "xmclaw/memory/**"
+      - "xmclaw/daemon/agent_memory.py"
+    tests:
+      - tests/unit/test_v2_agent_memory.py
+      - tests/unit/test_v2_memory_sqlite_vec.py
+      - tests/integration/test_v2_daemon_memory.py
+      - tests/integration/test_v2_cross_session_memory.py
+
+  # Evolution controller + grader + scheduler.
+  evolution:
+    triggers:
+      - "xmclaw/core/evolution/**"
+      - "xmclaw/core/grader/**"
+      - "xmclaw/core/scheduler/**"
+      - "xmclaw/skills/**"
+    tests:
+      - tests/unit/test_v2_evolution_controller.py
+      - tests/unit/test_v2_grader.py
+      - tests/unit/test_v2_summary_grader.py
+      - tests/unit/test_v2_scheduler.py
+      - tests/unit/test_v2_scheduler_registry.py
+      - tests/unit/test_v2_skill_registry.py
+      - tests/integration/test_v2_autonomous_evolution.py
+      - tests/integration/test_v2_tool_aware_skill.py
+
+  # Security: prompt scanner + any downstream integration.
+  security:
+    triggers:
+      - "xmclaw/security/**"
+    tests:
+      - tests/unit/test_v2_prompt_scanner.py
+      - tests/unit/test_v2_redact.py
+      - tests/integration/test_v2_prompt_injection.py
+
+  # Cost tracker + performance monitor.
+  observability:
+    triggers:
+      - "xmclaw/utils/cost.py"
+      - "xmclaw/core/performance_monitor.py"
+    tests:
+      - tests/unit/test_v2_cost_tracker.py
+      - tests/unit/test_v2_performance_monitor.py
+
+  # Runtime (local / process).
+  runtime:
+    triggers:
+      - "xmclaw/runtime/**"
+    tests:
+      - tests/unit/test_v2_local_runtime.py
+      - tests/unit/test_v2_process_runtime.py
+
+  # Changes to tests themselves: run just the changed test files (handled
+  # separately in test_changed.py via direct path match) + the always-on
+  # lane.
+
+  # pyproject / lockfiles / CI config — full suite safety net.
+  full_fallback:
+    triggers:
+      - "pyproject.toml"
+      - "requirements-lock.txt"
+      - "requirements-dev-lock.txt"
+      - ".github/workflows/**"
+    tests:
+      - __all__
