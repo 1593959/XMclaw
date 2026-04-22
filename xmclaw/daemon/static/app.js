@@ -349,7 +349,7 @@ function appendToolCard(callId, name, args) {
   renderActivity();
 }
 
-function updateToolCard(callId, ok, resultText, errorText) {
+function updateToolCard(callId, ok, result, errorText, name) {
   const card = state.toolCards.get(callId);
   if (!card) return;
   const { status, body } = card;
@@ -363,10 +363,14 @@ function updateToolCard(callId, ok, resultText, errorText) {
   }
   body.appendChild(Object.assign(el("div", "block-label"),
     { textContent: ok ? "result" : "error" }));
-  body.appendChild(Object.assign(el("div", "block-body"),
-    { textContent: ok ? (resultText ?? "(no content)") : (errorText ?? "(no error)") }));
 
-  // Update the most recent matching activity item.
+  if (!ok) {
+    body.appendChild(Object.assign(el("div", "block-body"),
+      { textContent: errorText ?? "(no error)" }));
+  } else {
+    renderToolResult(body, name, result);
+  }
+
   for (let i = state.activity.length - 1; i >= 0; i--) {
     if (state.activity[i].ok === null) {
       state.activity[i].ok = ok;
@@ -375,6 +379,70 @@ function updateToolCard(callId, ok, resultText, errorText) {
     }
   }
   renderActivity();
+  // Auto-open the details for newly-finished tools so the rich
+  // content is immediately visible. User can collapse to tidy up.
+  card.details.open = true;
+}
+
+// Render a tool's structured result with tool-name-specific affordances:
+//   - browser_screenshot: inline <img> from the data_url
+//   - browser_snapshot:   title + link list + collapsed text body
+//   - everything else:    pretty-printed JSON (unchanged behavior)
+function renderToolResult(body, name, result) {
+  if (name === "browser_screenshot" && result && result.data_url) {
+    const caption = el("div", "tool-img-caption",
+      `${result.bytes ?? "?"} B · ${result.url || ""}`);
+    const img = document.createElement("img");
+    img.className = "tool-img";
+    img.alt = "browser screenshot";
+    img.loading = "lazy";
+    img.src = result.data_url;
+    body.appendChild(img);
+    body.appendChild(caption);
+    return;
+  }
+  if (name === "browser_snapshot" && result && typeof result === "object") {
+    const { title, url, text, links } = result;
+    if (title) {
+      body.appendChild(el("div", "tool-snap-title", title));
+    }
+    if (url) {
+      const link = document.createElement("a");
+      link.href = url; link.target = "_blank"; link.rel = "noopener";
+      link.className = "tool-snap-url";
+      link.textContent = url;
+      body.appendChild(link);
+    }
+    if (Array.isArray(links) && links.length) {
+      const label = el("div", "block-label", `links (${links.length})`);
+      body.appendChild(label);
+      const list = el("ul", "tool-snap-links");
+      links.slice(0, 20).forEach(l => {
+        const li = document.createElement("li");
+        const a = document.createElement("a");
+        a.href = l.href; a.target = "_blank"; a.rel = "noopener";
+        a.textContent = l.label || l.href;
+        li.appendChild(a);
+        list.appendChild(li);
+      });
+      body.appendChild(list);
+    }
+    if (text) {
+      body.appendChild(el("div", "block-label", "text"));
+      const pre = el("pre", "tool-snap-text");
+      pre.textContent = text;
+      body.appendChild(pre);
+    }
+    return;
+  }
+  // Fallback: pretty-printed JSON (or string pass-through).
+  const txt = typeof result === "string"
+    ? result
+    : (result === null || result === undefined)
+      ? "(no content)"
+      : JSON.stringify(result, null, 2);
+  body.appendChild(Object.assign(el("div", "block-body"),
+    { textContent: txt }));
 }
 
 // ── workspace (right pane) ───────────────────────────────────────
@@ -615,9 +683,10 @@ function renderEvent(evt) {
       return;
 
     case "tool_invocation_finished": {
-      const resultTxt = typeof p.result === "string" ?
-        p.result : JSON.stringify(p.result, null, 2);
-      updateToolCard(p.call_id, p.ok !== false, resultTxt, p.error);
+      // Pass the structured result through so updateToolCard can
+      // render rich views for known tool shapes (image screenshots,
+      // link lists, etc). Falls back to pretty-printed JSON otherwise.
+      updateToolCard(p.call_id, p.ok !== false, p.result, p.error, p.name);
       return;
     }
 

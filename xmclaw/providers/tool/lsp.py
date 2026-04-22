@@ -266,10 +266,14 @@ class LSPTools(ToolProvider):
             },
         }, expect_response=False)
         try:
+            # 15s timeout: pylsp's FIRST hover/definition on a new
+            # workspace takes a while (indexes site-packages / jedi),
+            # subsequent calls are snappy. 5s (our default) was enough
+            # for definition but flaky for hover in practice.
             result = await self._send_rpc(method, {
                 "textDocument": {"uri": uri},
                 "position": {"line": line, "character": col},
-            }, expect_response=True)
+            }, expect_response=True, timeout_s=15.0)
         finally:
             # didClose so pylsp doesn't accumulate open buffers.
             await self._send_rpc("textDocument/didClose", {
