@@ -260,11 +260,18 @@ def test_run_doctor_with_missing_config(tmp_path: Path) -> None:
     results = run_doctor(
         tmp_path / "nope.json", port=54330, probe_daemon=False,
     )
-    # Config failure → later config-dependent checks shouldn't fire.
+    # Since Epic #10 every built-in check always produces a result;
+    # config-dependent checks self-report "skipped" rather than being
+    # silently dropped — this keeps --json output's shape stable for
+    # downstream consumers.
     names = [r.name for r in results]
     assert "config" in names
-    assert "llm" not in names   # skipped when config fails
-    # Pairing + port still run (they don't depend on config).
+    llm_r = next(r for r in results if r.name == "llm")
+    tools_r = next(r for r in results if r.name == "tools")
+    assert not llm_r.ok
+    assert "skipped" in llm_r.detail
+    assert not tools_r.ok
+    assert "skipped" in tools_r.detail
 
 
 # ── render helper ──────────────────────────────────────────────────────
@@ -297,3 +304,179 @@ def test_render_uses_ascii_only_for_windows_gbk_locale() -> None:
     ).render()
     # Round-trips through ASCII — proves no non-ASCII chars leaked.
     line.encode("ascii")
+
+
+# ── Epic #10: pluggable registry ─────────────────────────────────────────
+
+
+from xmclaw.cli.doctor_registry import (
+    CheckResult as RegistryCheckResult,
+    DoctorCheck,
+    DoctorContext,
+    DoctorRegistry,
+    build_default_registry,
+)
+
+
+def _write_valid_cfg(tmp_path: Path) -> Path:
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({
+        "llm": {"anthropic": {"api_key": "k", "default_model": "m"}},
+    }), encoding="utf-8")
+    return p
+
+
+class _PassingCheck(DoctorCheck):
+    id = "test_pass"
+    name = "test_pass"
+
+    def run(self, ctx: DoctorContext) -> RegistryCheckResult:
+        return RegistryCheckResult(name=self.name, ok=True, detail="green")
+
+
+class _FailingCheck(DoctorCheck):
+    id = "test_fail"
+    name = "test_fail"
+
+    def run(self, ctx: DoctorContext) -> RegistryCheckResult:
+        return RegistryCheckResult(
+            name=self.name, ok=False, detail="red", advisory="fix me",
+        )
+
+
+class _CrashingCheck(DoctorCheck):
+    id = "test_crash"
+    name = "test_crash"
+
+    def run(self, ctx: DoctorContext) -> RegistryCheckResult:
+        raise RuntimeError("boom")
+
+
+def test_registry_preserves_registration_order() -> None:
+    reg = DoctorRegistry()
+    reg.register(_PassingCheck())
+    reg.register(_FailingCheck())
+    names = [c.name for c in reg.checks()]
+    assert names == ["test_pass", "test_fail"]
+
+
+def test_registry_run_all_returns_one_result_per_check(tmp_path: Path) -> None:
+    reg = DoctorRegistry()
+    reg.register(_PassingCheck())
+    reg.register(_FailingCheck())
+    ctx = DoctorContext(config_path=_write_valid_cfg(tmp_path))
+    results = reg.run_all(ctx)
+    assert [r.name for r in results] == ["test_pass", "test_fail"]
+    assert [r.ok for r in results] == [True, False]
+
+
+def test_registry_run_all_catches_crashing_check(tmp_path: Path) -> None:
+    """A broken check must not take down the whole diagnosis."""
+    reg = DoctorRegistry()
+    reg.register(_CrashingCheck())
+    reg.register(_PassingCheck())
+    ctx = DoctorContext(config_path=_write_valid_cfg(tmp_path))
+    results = reg.run_all(ctx)
+    assert len(results) == 2
+    assert not results[0].ok
+    assert "RuntimeError" in results[0].detail
+    assert results[1].ok  # the passing check still ran
+
+
+def test_default_registry_has_six_builtin_checks() -> None:
+    """The built-in set: config, llm, tools, pairing, port, daemon."""
+    reg = build_default_registry()
+    ids = [c.id for c in reg.checks()]
+    assert ids == ["config", "llm", "tools", "pairing", "port", "daemon"]
+
+
+def test_default_registry_config_check_populates_ctx_cfg(tmp_path: Path) -> None:
+    """ConfigCheck must cache the parsed dict so downstream checks use it."""
+    reg = build_default_registry()
+    ctx = DoctorContext(
+        config_path=_write_valid_cfg(tmp_path),
+        probe_daemon=False,
+    )
+    results = reg.run_all(ctx)
+    assert ctx.cfg is not None
+    assert ctx.cfg["llm"]["anthropic"]["api_key"] == "k"
+    llm_result = next(r for r in results if r.name == "llm")
+    assert llm_result.ok  # LLMCheck found the cached cfg
+
+
+def test_default_registry_llm_skips_when_config_failed(tmp_path: Path) -> None:
+    """If ConfigCheck fails, LLMCheck/ToolsCheck must not crash."""
+    reg = build_default_registry()
+    ctx = DoctorContext(
+        config_path=tmp_path / "does_not_exist.json",
+        probe_daemon=False,
+    )
+    results = reg.run_all(ctx)
+    config_r = next(r for r in results if r.name == "config")
+    llm_r = next(r for r in results if r.name == "llm")
+    tools_r = next(r for r in results if r.name == "tools")
+    assert not config_r.ok
+    assert not llm_r.ok
+    assert "skipped" in llm_r.detail
+    assert not tools_r.ok  # same handling for tools
+
+
+def test_daemon_check_respects_no_probe_flag(tmp_path: Path) -> None:
+    reg = build_default_registry()
+    ctx = DoctorContext(
+        config_path=_write_valid_cfg(tmp_path),
+        probe_daemon=False,
+    )
+    results = reg.run_all(ctx)
+    daemon_r = next(r for r in results if r.name == "daemon")
+    assert daemon_r.ok
+    assert "skipped" in daemon_r.detail
+
+
+def test_check_result_to_dict_is_json_serializable() -> None:
+    r = RegistryCheckResult(
+        name="x", ok=True, detail="d", advisory=None, fix_available=False,
+    )
+    payload = r.to_dict()
+    # Must round-trip through json.
+    assert json.loads(json.dumps(payload)) == payload
+
+
+def test_run_doctor_still_returns_old_check_result_type(tmp_path: Path) -> None:
+    """The legacy run_doctor() signature must stay source-compatible:
+    every element is a xmclaw.cli.doctor.CheckResult (not the registry
+    one). Callers that import from the old module keep working."""
+    results = run_doctor(
+        _write_valid_cfg(tmp_path),
+        probe_daemon=False,
+    )
+    assert all(isinstance(r, CheckResult) for r in results)
+    assert [r.name for r in results] == [
+        "config", "llm", "tools", "pairing", "port 8765", "daemon",
+    ]
+
+
+def test_fix_default_is_noop(tmp_path: Path) -> None:
+    """DoctorCheck.fix() default must return False (no auto-fix)."""
+    check = _PassingCheck()
+    ctx = DoctorContext(config_path=_write_valid_cfg(tmp_path))
+    assert check.fix(ctx) is False
+
+
+def test_discover_plugins_returns_empty_when_no_plugins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no entry points registered, discover returns an empty
+    error list and registry is unchanged."""
+    reg = DoctorRegistry()
+
+    class _Empty:
+        def __iter__(self):
+            return iter(())
+
+    import importlib.metadata as im
+
+    monkeypatch.setattr(im, "entry_points", lambda **_kw: _Empty())
+    errors = reg.discover_plugins()
+    assert errors == []
+    assert reg.checks() == []

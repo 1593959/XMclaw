@@ -408,26 +408,53 @@ def doctor(
         False, "--no-daemon-probe",
         help="Skip the HTTP health probe (offline mode).",
     ),
+    discover_plugins: bool = typer.Option(
+        False, "--discover-plugins",
+        help="Load third-party checks from the 'xmclaw.doctor' entry-point group.",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json",
+        help="Emit machine-readable JSON instead of the text report.",
+    ),
 ) -> None:
     """Diagnose a v2 setup: config, LLM key, tools, pairing, port, daemon.
 
     Runs a sequence of checks without starting the daemon. Each check
     prints one line with a verdict. Exits 0 if every check passes, 1
     if any critical check fails (so CI or shell scripts can use
-    ``xmclaw doctor && xmclaw serve``).
+    ``xmclaw doctor && xmclaw serve``). ``--json`` swaps the human
+    output for a single JSON document so the exit code isn't the only
+    machine-readable signal.
     """
-    from xmclaw.cli.doctor import run_doctor
+    import json as _json
     from pathlib import Path as _Path
+
+    from xmclaw.cli.doctor import run_doctor
 
     results = run_doctor(
         _Path(config),
         host=host, port=port,
         probe_daemon=not no_daemon_probe,
+        discover_plugins=discover_plugins,
     )
-    typer.echo("xmclaw doctor --")
-    for r in results:
-        typer.echo(r.render())
     critical_fail = any(not r.ok for r in results)
+    if json_output:
+        typer.echo(_json.dumps({
+            "ok": not critical_fail,
+            "checks": [
+                {
+                    "name": r.name,
+                    "ok": r.ok,
+                    "detail": r.detail,
+                    "advisory": r.advisory,
+                }
+                for r in results
+            ],
+        }, ensure_ascii=False, indent=2))
+    else:
+        typer.echo("xmclaw doctor --")
+        for r in results:
+            typer.echo(r.render())
     raise typer.Exit(code=1 if critical_fail else 0)
 
 

@@ -259,20 +259,39 @@ def run_doctor(
     port: int = 8765,
     token_path: Path | None = None,
     probe_daemon: bool = True,
+    discover_plugins: bool = False,
 ) -> list[CheckResult]:
     """Run every check and return the full list. Callers render to
     stdout however they want.
-    """
-    from xmclaw.daemon.pairing import default_token_path
 
+    Built atop :class:`xmclaw.cli.doctor_registry.DoctorRegistry` since
+    Epic #10 — passing ``discover_plugins=True`` loads third-party
+    checks from the ``xmclaw.doctor`` entry-point group. The returned
+    list items are :class:`CheckResult` instances (re-exported from
+    the registry so existing callers stay source-compatible).
+    """
+    from xmclaw.cli.doctor_registry import (
+        CheckResult as RegistryCheckResult,
+        DoctorContext,
+        build_default_registry,
+    )
+
+    registry = build_default_registry()
+    plugin_errors: list[RegistryCheckResult] = []
+    if discover_plugins:
+        plugin_errors = registry.discover_plugins()
+
+    ctx = DoctorContext(
+        config_path=Path(config_path),
+        host=host,
+        port=port,
+        probe_daemon=probe_daemon,
+        token_path=token_path,
+    )
+    registry_results = registry.run_all(ctx)
     results: list[CheckResult] = []
-    cfg_result, cfg = check_config_file(Path(config_path))
-    results.append(cfg_result)
-    if cfg is not None:
-        results.append(check_llm_configured(cfg))
-        results.append(check_tools_configured(cfg))
-    results.append(check_pairing_token(token_path or default_token_path()))
-    results.append(check_port_available(host, port))
-    if probe_daemon:
-        results.append(check_daemon_health(host, port))
+    for r in plugin_errors + registry_results:
+        results.append(CheckResult(
+            name=r.name, ok=r.ok, detail=r.detail, advisory=r.advisory,
+        ))
     return results

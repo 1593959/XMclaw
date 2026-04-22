@@ -662,7 +662,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #10 · Doctor 诊断（可插拔）
 
-**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**状态**：🟡 进行中 | **负责人**：Claude (AI pair) | **起始**：2026-04-22 | **完成**：-
 **前置依赖**：无
 **关联 Milestone**：M1（Daemon 稳定性）
 
@@ -679,20 +679,22 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **检查清单**：
 
-- [ ] `cli/doctor_registry.py` + `DoctorCheck` ABC
-- [ ] `doctor_checks.py` 核心检查 ≥ 8
+- [x] `cli/doctor_registry.py` + `DoctorCheck` ABC
+- [ ] `doctor_checks.py` 核心检查 ≥ 8（现 6 条 built-in，需补 workspace/memory db/sandbox 等）
 - [ ] `doctor_connectivity.py` 网络探测
 - [ ] `doctor_fix_runner.py` 自动修复
-- [ ] `[project.entry-points."xmclaw.doctor"]` 组
-- [ ] `xmclaw doctor [--fix] [--json]` CLI
+- [x] `[project.entry-points."xmclaw.doctor"]` 组（文档 + discover 已接）
+- [x] `xmclaw doctor [--json]` CLI（`--fix` 待阶段 2）
 - [ ] `scripts/lint_roadmap.py` + 对应 check
-- [ ] `docs/DOCTOR.md`
+- [x] `docs/DOCTOR.md`
 
 **退出标准**：`xmclaw doctor` 覆盖率 ≥ 10 项，`--fix` 能自动处理 ≥ 5 项；第三方 pilot 插件可注册自检。
 
 **进度日志**：
 
-- _（尚无）_
+- 2026-04-22: 阶段 1 落地——`xmclaw/cli/doctor_registry.py` 新建：`DoctorCheck` ABC + `DoctorContext` + `DoctorRegistry` + `build_default_registry()` 把原 6 条 pure-func check 裹成 ABC，`ctx.cfg` 共享避免重复 parse；`discover_plugins()` 走 `importlib.metadata.entry_points('xmclaw.doctor')`，plugin import 失败只产红线不会整体停机；`run_doctor()` 改走 registry 保向下兼容 (commit pending)
+- 2026-04-22: `xmclaw doctor` CLI 增 `--json` / `--discover-plugins` 旗标；`pyproject.toml` 加 `xmclaw.doctor` entry-point 组注释；`docs/DOCTOR.md` 落地（命名规则 / 写 plugin / ctx 共享 / 错误处理）；`tests/unit/test_v2_doctor.py` 增 11 条 registry 用例（顺序 / 捕获 crash / ctx.cfg 共享 / plugin discover 空路径），38/38 passed (commit pending)
+- 2026-04-22: **阶段 2 遗留项**：`--fix` runner、连通性 check（anthropic/openai/ollama）、workspace/memory-db/sandbox check、`scripts/lint_roadmap.py`。暂停在这不阻塞 Epic #10 整体——Epic #10 状态保持 🟡 直到阶段 2 收尾
 
 ---
 
