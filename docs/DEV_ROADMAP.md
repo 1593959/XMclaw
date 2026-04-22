@@ -806,7 +806,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 **进度日志**：
 
 - 2026-04-22: 落地 `SqliteEventBus`（WAL + FTS5 + 触发器自动维护 sessions 表）、`xmclaw serve` 默认启用、`GET /api/v2/events` 端点（SqliteEventBus → 走 query/search；InProcessEventBus → 走内存 session_logs fallback）、15 条单测 + 5 条集成测试、582/582 pytest 绿。`InProcessEventBus` 仍保留给 `xmclaw ping` 和 create_app 默认路径。(commit pending)
-- 2026-04-23: Epic 收尾——补齐退出标准的性能基准测试 `test_fts5_search_stays_fast_at_representative_scale`：500 事件代表性 24h 工作负载下 FTS5 关键字搜索 <500ms（退出标准 <100ms 的 5x 上限，吸收 CI 抖动同时兜住量级回归如线性扫描或索引缺失）；实测约 20ms；持久化已被 `test_events_survive_reopen` 覆盖（重启后 query 仍命中）；"迁移器" 未打勾项标记 deferred to Epic #20（Phase 4 之前无持久化事件需迁移）；Epic 状态 🟡→✅，M1 退出标准同步打勾。全套 763 passed (commit &lt;pin&gt;)
+- 2026-04-23: Epic 收尾——补齐退出标准的性能基准测试 `test_fts5_search_stays_fast_at_representative_scale`：500 事件代表性 24h 工作负载下 FTS5 关键字搜索 <500ms（退出标准 <100ms 的 5x 上限，吸收 CI 抖动同时兜住量级回归如线性扫描或索引缺失）；实测约 20ms；持久化已被 `test_events_survive_reopen` 覆盖（重启后 query 仍命中）；"迁移器" 未打勾项标记 deferred to Epic #20（Phase 4 之前无持久化事件需迁移）；Epic 状态 🟡→✅，M1 退出标准同步打勾。全套 763 passed (commit ebc4587)
 
 ---
 
