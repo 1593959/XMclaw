@@ -767,7 +767,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **进度日志**：
 
-- 2026-04-23: 模板 + 10 份子包 AGENTS.md（core / daemon / providers umbrella + llm/tool/memory/runtime/channel / cli / utils / security / skills）+ CLAUDE.md 瘦身。plugin_sdk AGENTS.md 挂单 Epic #2。(commit pending)
+- 2026-04-23: 模板 + 10 份子包 AGENTS.md（core / daemon / providers umbrella + llm/tool/memory/runtime/channel / cli / utils / security / skills）+ CLAUDE.md 瘦身。plugin_sdk AGENTS.md 挂单 Epic #2。(commit 8591f51)
 
 ---
 
