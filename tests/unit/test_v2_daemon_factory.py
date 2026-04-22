@@ -121,18 +121,25 @@ def test_build_agent_returns_none_when_no_llm() -> None:
     assert agent is None
 
 
-def test_build_agent_without_tools_section_yields_toolless_agent() -> None:
-    """No tools section → AgentLoop with tools=None (pure-chat mode)."""
+def test_build_agent_without_tools_section_still_gets_full_tools() -> None:
+    """Permissions default to MAXIMUM: no 'tools' section means the
+    agent gets the full BuiltinTools roster, NOT a tool-less shell.
+    Users who want a sandbox opt in explicitly."""
     bus = InProcessEventBus()
     agent = build_agent_from_config({
         "llm": {"anthropic": {"api_key": "k"}},
     }, bus)
     assert agent is not None
-    assert agent._tools is None
+    assert agent._tools is not None
+    names = {s.name for s in agent._tools.list_tools()}
+    assert {"file_read", "file_write", "list_dir",
+            "bash", "web_fetch", "web_search"} <= names
 
 
 def test_build_agent_with_tools_section_wires_builtin_tools(tmp_path: Path) -> None:
-    """Phase 4.3: tools section present → AgentLoop carries BuiltinTools."""
+    """With a tools section + allowlist, the agent still gets the full
+    roster -- the allowlist only restricts which PATHS the fs tools
+    accept, not which tools are available."""
     bus = InProcessEventBus()
     agent = build_agent_from_config({
         "llm": {"anthropic": {"api_key": "k"}},
@@ -140,8 +147,9 @@ def test_build_agent_with_tools_section_wires_builtin_tools(tmp_path: Path) -> N
     }, bus)
     assert agent is not None
     assert agent._tools is not None
-    tool_names = {s.name for s in agent._tools.list_tools()}
-    assert tool_names == {"file_read", "file_write"}
+    names = {s.name for s in agent._tools.list_tools()}
+    assert {"file_read", "file_write", "list_dir",
+            "bash", "web_fetch", "web_search"} <= names
 
 
 def test_build_agent_uses_configured_agent_id() -> None:
@@ -157,9 +165,20 @@ def test_build_agent_uses_configured_agent_id() -> None:
 # ── build_tools_from_config ──────────────────────────────────────────────
 
 
-def test_build_tools_returns_none_when_no_tools_section() -> None:
-    assert build_tools_from_config({}) is None
-    assert build_tools_from_config({"llm": {}}) is None
+def test_build_tools_defaults_to_full_access_when_no_tools_section() -> None:
+    """No 'tools' section => full BuiltinTools, NOT None. Permissions
+    default to MAXIMUM: a local agent the user installed is meant to
+    read their files, run shell commands, and hit the network. The
+    earlier 'deny everything by default' posture produced the
+    'list my Desktop -> permission denied' failure that prompted this
+    reversal."""
+    for cfg in ({}, {"llm": {}}):
+        tools = build_tools_from_config(cfg)
+        assert isinstance(tools, BuiltinTools)
+        names = {s.name for s in tools.list_tools()}
+        # All tool families on by default.
+        assert {"file_read", "file_write", "list_dir", "bash",
+                "web_fetch", "web_search"} <= names
 
 
 def test_build_tools_structural_error_when_not_a_dict() -> None:
@@ -167,18 +186,22 @@ def test_build_tools_structural_error_when_not_a_dict() -> None:
         build_tools_from_config({"tools": "not a dict"})
 
 
-def test_build_tools_refuses_missing_allowed_dirs() -> None:
-    """Section present without allowed_dirs → explicit error. Tools must
-    say where they can touch — no implicit 'trust the caller' via config."""
-    with pytest.raises(ConfigError, match="allowed_dirs.*required"):
-        build_tools_from_config({"tools": {}})
+def test_build_tools_empty_section_defaults_to_full_access() -> None:
+    """``tools: {}`` (no keys) also gives full access -- the user opted
+    in to a tools section but configured no restrictions, so nothing
+    is restricted. No ConfigError."""
+    tools = build_tools_from_config({"tools": {}})
+    assert isinstance(tools, BuiltinTools)
+    names = {s.name for s in tools.list_tools()}
+    assert "bash" in names and "web_fetch" in names
 
 
-def test_build_tools_refuses_empty_allowed_dirs() -> None:
-    """Empty list means 'deny everything' which makes tools enabled but
-    unusable — a clear admin mistake. Refused."""
-    with pytest.raises(ConfigError, match="must be non-empty"):
-        build_tools_from_config({"tools": {"allowed_dirs": []}})
+def test_build_tools_empty_allowed_dirs_collapses_to_no_sandbox() -> None:
+    """Empty list used to be an error; now it collapses to 'no sandbox'
+    (same as omitting the key) -- too easy to trip over by accident."""
+    tools = build_tools_from_config({"tools": {"allowed_dirs": []}})
+    assert isinstance(tools, BuiltinTools)
+    assert tools._allowed is None
 
 
 def test_build_tools_refuses_non_list_allowed_dirs() -> None:
@@ -191,13 +214,30 @@ def test_build_tools_refuses_non_string_entry() -> None:
         build_tools_from_config({"tools": {"allowed_dirs": ["/ok", 42]}})
 
 
-def test_build_tools_happy_path(tmp_path: Path) -> None:
+def test_build_tools_happy_path_with_allowlist(tmp_path: Path) -> None:
     tools = build_tools_from_config({
         "tools": {"allowed_dirs": [str(tmp_path)]},
     })
     assert isinstance(tools, BuiltinTools)
     tool_names = {s.name for s in tools.list_tools()}
-    assert tool_names == {"file_read", "file_write"}
+    # All six tools present (filesystem + bash + web).
+    assert {"file_read", "file_write", "list_dir", "bash",
+            "web_fetch", "web_search"} <= tool_names
+
+
+def test_build_tools_honors_kill_switches() -> None:
+    """``enable_bash: false`` and ``enable_web: false`` drop those tools
+    from list_tools() so the LLM never even sees them as options."""
+    tools = build_tools_from_config({
+        "tools": {"enable_bash": False, "enable_web": False},
+    })
+    assert isinstance(tools, BuiltinTools)
+    names = {s.name for s in tools.list_tools()}
+    assert "bash" not in names
+    assert "web_fetch" not in names
+    assert "web_search" not in names
+    # Filesystem tools still present.
+    assert {"file_read", "file_write", "list_dir"} <= names
 
 
 @pytest.mark.asyncio

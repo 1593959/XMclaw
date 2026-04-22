@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from xmclaw.core.bus import (
@@ -53,12 +54,52 @@ from xmclaw.providers.tool.base import ToolProvider
 from xmclaw.utils.cost import BudgetExceeded, CostTracker
 
 
-_DEFAULT_SYSTEM = (
-    "You are a helpful assistant. You have access to tools when they are "
-    "provided. Use tools for any task that requires reading, writing, or "
-    "acting on the user's system; don't guess at file contents. Respond "
-    "with plain text when no tool is needed."
-)
+def _default_system_prompt() -> str:
+    """Built at import time so the OS / user-home hints are concrete."""
+    import platform
+    os_name = platform.system()  # Windows / Linux / Darwin
+    home = str(Path.home())
+    desktop = str(Path.home() / "Desktop")
+    shell_hint = {
+        "Windows": (
+            "The shell is PowerShell. You can use Unix-style aliases "
+            "(ls, cat, pwd, rm) OR native Get-ChildItem / Get-Content. "
+            "Do NOT use bash-isms like `$(whoami)` or `&&` chaining -- "
+            "PowerShell uses `;` and `$env:USERNAME`."
+        ),
+        "Linux": "The shell is bash.",
+        "Darwin": "The shell is bash / zsh (macOS).",
+    }.get(os_name, f"The shell is whatever is on PATH.")
+    return (
+        "You are XMclaw, a local-first AI agent running on the user's own "
+        f"machine. OS: {os_name}. User home: {home}. Desktop: {desktop}. "
+        "You have real access to their filesystem, a shell, and the web.\n\n"
+        "Available tools -- use them aggressively rather than refusing:\n"
+        "  - file_read, file_write, list_dir: inspect and modify files\n"
+        f"  - bash: run shell commands. {shell_hint}\n"
+        "  - web_fetch: GET a URL and read its content\n"
+        "  - web_search: search the web when a fact needs looking up\n\n"
+        "Guidelines:\n"
+        "  - Never say 'I don't have that tool' without checking the list "
+        "above. 'List the Desktop' is `list_dir` on the Desktop path. "
+        "'Check weather' / 'check GitHub stars' is `web_search` or "
+        "`web_fetch`. 'Read this file' is `file_read`.\n"
+        "  - Paths on Windows can use either forward or backslashes. You "
+        "already know the user's home and Desktop; don't ask.\n"
+        "  - If a tool call fails, READ THE ERROR MESSAGE the tool "
+        "returned and tell the user the real reason -- do NOT hallucinate "
+        "that the file was empty or the result was 'None'. The error you "
+        "receive is the truth.\n"
+        "  - Don't loop more than 2-3 times on the same failing tool. If "
+        "web_search returns nothing useful, tell the user what you tried "
+        "rather than retrying indefinitely.\n"
+        "  - Remember earlier turns. When the user references a fact you "
+        "established before, answer from that history.\n"
+        "  - Respond in the language the user writes in."
+    )
+
+
+_DEFAULT_SYSTEM = _default_system_prompt()
 
 
 @dataclass
@@ -95,6 +136,7 @@ class AgentLoop:
         max_hops: int = 5,
         agent_id: str = "agent",
         cost_tracker: CostTracker | None = None,
+        history_cap: int = 40,
     ) -> None:
         self._llm = llm
         self._bus = bus
@@ -103,6 +145,42 @@ class AgentLoop:
         self._max_hops = max_hops
         self._agent_id = agent_id
         self._cost_tracker = cost_tracker
+        # Per-session conversation history. Keyed by session_id; each value
+        # is the running list of Messages EXCLUDING the system prompt
+        # (which is re-prepended on every run_turn so operator changes to
+        # _system_prompt take effect immediately, not after the next restart).
+        self._histories: dict[str, list[Message]] = {}
+        self._history_cap = history_cap
+
+    def clear_session(self, session_id: str) -> None:
+        """Drop a session's conversation history. Called by the WS gateway
+        on SESSION_LIFECYCLE destroy, or by a ``/reset`` user intent."""
+        self._histories.pop(session_id, None)
+
+    def _persist_history(
+        self, session_id: str, messages: list[Message],
+    ) -> None:
+        """Save conversation history (system prompt excluded) with a size cap.
+
+        Trims from the front to keep the most recent ``_history_cap``
+        messages. Because Anthropic / OpenAI require assistant messages
+        with tool_calls to be immediately followed by their tool results,
+        we round the cut point up to the next "clean" boundary -- i.e.
+        skip forward past any trailing tool-result orphans until we
+        land on a user message or the end.
+        """
+        # Drop the system message we prepended for this turn.
+        history = [m for m in messages if m.role != "system"]
+        if len(history) <= self._history_cap:
+            self._histories[session_id] = history
+            return
+        start = len(history) - self._history_cap
+        # Advance past partial tool blocks: if the first kept message is a
+        # tool result or an assistant message that references tools, skip
+        # forward to the next user turn.
+        while start < len(history) and history[start].role in ("tool", "assistant"):
+            start += 1
+        self._histories[session_id] = history[start:]
 
     async def run_turn(
         self, session_id: str, user_message: str,
@@ -128,8 +206,13 @@ class AgentLoop:
             {"content": user_message, "channel": "agent_loop"},
         )
 
+        # Resume prior history for this session; the first turn starts empty.
+        # Note: system prompt is prepended fresh each turn (not stored in
+        # history) so reprovisioning the agent picks up the new prompt.
+        prior = self._histories.get(session_id, [])
         messages: list[Message] = [
             Message(role="system", content=self._system_prompt),
+            *prior,
             Message(role="user", content=user_message),
         ]
         tool_specs = self._tools.list_tools() if self._tools else None
@@ -255,7 +338,22 @@ class AgentLoop:
                     await publish(EventType.TOOL_INVOCATION_STARTED, {
                         "call_id": call.id, "name": call.name,
                     })
-                    result = await self._tools.invoke(call)
+                    # Fill session_id so stateful tools (todo_write/read)
+                    # can key their per-session buckets. ToolCall is frozen
+                    # so we construct a copy via dataclasses.replace.
+                    import dataclasses as _dc
+                    call_with_sid = _dc.replace(call, session_id=session_id)
+                    result = await self._tools.invoke(call_with_sid)
+                    # After todo tool runs, surface TODO_UPDATED so the UI
+                    # can live-render the panel. We detect this here to
+                    # keep BuiltinTools decoupled from the bus.
+                    if call.name == "todo_write" and result.ok:
+                        items = call.args.get("items")
+                        if isinstance(items, list):
+                            await publish(EventType.TODO_UPDATED, {
+                                "items": items,
+                                "count": len(items),
+                            })
                     await publish(EventType.TOOL_INVOCATION_FINISHED, {
                         "call_id": result.call_id,
                         "name": call.name,
@@ -272,18 +370,37 @@ class AgentLoop:
                         "error": result.error,
                         "side_effects": list(result.side_effects),
                     })
-                    messages.append(Message(
-                        role="tool",
-                        content=(
+                    # Tool result message content: on success pass through
+                    # the content; on failure pass the structured error
+                    # string so the LLM can tell the user what actually
+                    # happened. Previously a failure landed as ``str(None)``
+                    # == "None" here, which made the model hallucinate
+                    # "the file is empty" or "got None back" instead of
+                    # surfacing the real reason (permission denied, file
+                    # not found, etc.).
+                    if result.ok:
+                        tool_msg_content = (
                             result.content if isinstance(result.content, str)
                             else str(result.content)
-                        ),
+                        )
+                    else:
+                        err = result.error or "tool failed without an error message"
+                        tool_msg_content = f"ERROR: {err}"
+                    messages.append(Message(
+                        role="tool",
+                        content=tool_msg_content,
                         tool_call_id=call.id,
                     ))
                 # Next hop: send tool results back to the LLM.
                 continue
 
-            # 4. No tool calls — terminal assistant text.
+            # 4. No tool calls -- terminal assistant text.
+            # Append the assistant turn to messages so it becomes part of
+            # the saved history for the next turn.
+            messages.append(Message(
+                role="assistant", content=response.content,
+            ))
+            self._persist_history(session_id, messages)
             return AgentTurnResult(
                 ok=True, text=response.content, hops=hop + 1,
                 tool_calls=tool_calls_made,

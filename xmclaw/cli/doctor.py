@@ -9,7 +9,7 @@ with a clear verdict:
     ✓ llm: anthropic provider configured (model=claude-haiku-4-5)
     ✓ tools: 1 allowed dir (/workspace)
     ✓ pairing: token at ~/.xmclaw/v2/pairing_token.txt (64 chars, mode 0600)
-    ✓ port 8766: available
+    ✓ port 8765: available
     ✓ optional: daemon /health reachable
 
 Every check is a PURE FUNCTION — easy to unit-test without running
@@ -256,7 +256,7 @@ def run_doctor(
     config_path: Path | str = "daemon/config.json",
     *,
     host: str = "127.0.0.1",
-    port: int = 8766,
+    port: int = 8765,
     token_path: Path | None = None,
     probe_daemon: bool = True,
 ) -> list[CheckResult]:

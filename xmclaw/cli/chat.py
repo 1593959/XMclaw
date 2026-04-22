@@ -245,7 +245,7 @@ def run_chat(
     compares against. We attach it as a ``?token=<value>`` query
     parameter; see xmclaw/daemon/app.py for extraction.
     """
-    effective_url = url or "ws://127.0.0.1:8766/agent/v2/{session_id}"
+    effective_url = url or "ws://127.0.0.1:8765/agent/v2/{session_id}"
     sid = session_id or f"chat-{uuid.uuid4().hex[:8]}"
     effective_url = effective_url.replace("{session_id}", sid)
     if token:

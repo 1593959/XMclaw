@@ -27,9 +27,10 @@
     "max_context_tokens": 120000
   },
   "tools": {
-    "bash_timeout": 300,
-    "sandbox_timeout": 30,
-    "browser_headless": false
+    "_comment": "Optional sandbox + per-family kill-switches. With NO tools section (or this empty shape), the agent gets full user-level filesystem, shell, and web access -- the default local-assistant posture. Add allowed_dirs to restrict filesystem tools to specific paths; set enable_bash / enable_web to false to disable those families.",
+    "allowed_dirs": [],
+    "enable_bash": true,
+    "enable_web": true
   },
   "gateway": {
     "host": "127.0.0.1",

@@ -34,6 +34,36 @@ from xmclaw.core.bus import (
 )
 
 
+_SECRET_KEYS = frozenset({
+    "api_key", "apikey", "bot_token", "app_token", "token",
+    "password", "secret", "authorization",
+})
+
+
+def _sanitize_config(cfg: Any) -> Any:
+    """Deep-copy ``cfg`` with secret-shaped values redacted.
+
+    Any dict key matching ``_SECRET_KEYS`` (case-insensitive) gets its
+    value replaced with a short fingerprint like ``"sk-***4chars"`` so
+    the UI can confirm a key is SET without leaking it.
+    """
+    if isinstance(cfg, dict):
+        out: dict[str, Any] = {}
+        for k, v in cfg.items():
+            if isinstance(k, str) and k.lower() in _SECRET_KEYS:
+                if isinstance(v, str) and v:
+                    tail = v[-4:] if len(v) > 4 else ""
+                    out[k] = f"<redacted …{tail}>"
+                else:
+                    out[k] = "<unset>"
+            else:
+                out[k] = _sanitize_config(v)
+        return out
+    if isinstance(cfg, list):
+        return [_sanitize_config(x) for x in cfg]
+    return cfg
+
+
 def create_app(
     *,
     bus: InProcessEventBus | None = None,
@@ -82,6 +112,26 @@ def create_app(
         agent = build_agent_from_config(config, bus)
     app.state.agent = agent
 
+    # ── per-session event log (for reconnect replay) ─────────────
+    # When a browser refresh disconnects and reconnects to the same
+    # session_id, the client has an empty chat div -- live events
+    # alone can't repopulate the transcript. So we tap the bus with a
+    # global subscriber and keep a bounded log per session_id. On WS
+    # connect, we stream the log first, then go live.
+    _SESSION_LOG_CAP = 400  # events per session; ~20 turns of back-and-forth
+    session_logs: dict[str, list[BehavioralEvent]] = {}
+
+    async def _session_log_subscriber(event: BehavioralEvent) -> None:
+        buf = session_logs.setdefault(event.session_id, [])
+        buf.append(event)
+        if len(buf) > _SESSION_LOG_CAP:
+            # Drop oldest. Matches agent_loop history_cap trimming spirit:
+            # keep the recent transcript intact, sacrifice the archaeology.
+            del buf[:len(buf) - _SESSION_LOG_CAP]
+
+    bus.subscribe(lambda e: True, _session_log_subscriber)
+    app.state.session_logs = session_logs
+
     @app.get("/health")
     async def health() -> JSONResponse:
         """Cheap liveness probe — confirms the app is responsive."""
@@ -116,9 +166,49 @@ def create_app(
                 token = None
         return JSONResponse({"token": token})
 
+    # ── /api/v2/config ────────────────────────────────────────────
+    # Returns a sanitized view of the daemon's current config so the
+    # "Run config" panel in the UI can show what the daemon actually
+    # loaded. Redacts api_key / bot_token / password fields.
+    @app.get("/api/v2/config")
+    async def config_reflection() -> JSONResponse:
+        if config is None:
+            return JSONResponse({"config": None, "note": "running without a config file"})
+        return JSONResponse({"config": _sanitize_config(config)})
+
+    # ── /api/v2/status ────────────────────────────────────────────
+    # Richer status than /health: active model, tool roster, mcp state.
+    @app.get("/api/v2/status")
+    async def status() -> JSONResponse:
+        model_name = None
+        tool_names: list[str] = []
+        if agent is not None:
+            model_name = getattr(agent._llm, "model", None)
+            if agent._tools is not None:
+                tool_names = [s.name for s in agent._tools.list_tools()]
+        mcp_servers: list[str] = []
+        if config is not None:
+            mcp = config.get("mcp_servers") or {}
+            if isinstance(mcp, dict):
+                mcp_servers = list(mcp.keys())
+        return JSONResponse({
+            "version": __version__,
+            "agent_wired": agent is not None,
+            "auth_required": auth_check is not None,
+            "model": model_name,
+            "tools": tool_names,
+            "mcp_servers": mcp_servers,
+            "sandbox_allowed_dirs": (
+                [str(p) for p in (agent._tools._allowed or [])]
+                if agent is not None and agent._tools is not None
+                   and hasattr(agent._tools, "_allowed")
+                else []
+            ),
+        })
+
     # ── /ui/ static files + root redirect ──
     # Phase 4.6: serve a single-page UI bundled with the package, so
-    # users can open `http://127.0.0.1:8766/` in a browser and get a
+    # users can open `http://127.0.0.1:8765/` in a browser and get a
     # working chat interface. The UI files live in
     # xmclaw/daemon/static and are not auth-gated — the WebSocket
     # the UI connects to still requires the pairing token.
@@ -160,6 +250,42 @@ def create_app(
                 return
 
         await ws.accept()
+
+        # ── replay historical events for this session ─────────
+        # If the client is reconnecting to an existing session (browser
+        # refresh), feed the prior events first so the chat div
+        # repopulates. Each replayed frame carries ``replayed: true``
+        # so the UI can suppress the thinking spinner and avoid
+        # double-counting tokens.
+        prior_events = list(session_logs.get(session_id, []))
+        if prior_events:
+            # Bracket the replay with marker frames so the client knows
+            # when to enter / leave the "hydration" state.
+            try:
+                await ws.send_text(json.dumps({
+                    "type": "session_replay", "payload": {
+                        "phase": "start", "count": len(prior_events),
+                    }, "session_id": session_id, "replayed": True,
+                }))
+                for event in prior_events:
+                    await ws.send_text(json.dumps({
+                        "id": event.id,
+                        "ts": event.ts,
+                        "session_id": event.session_id,
+                        "agent_id": event.agent_id,
+                        "type": event.type.value,
+                        "payload": event.payload,
+                        "correlation_id": event.correlation_id,
+                        "parent_id": event.parent_id,
+                        "schema_version": event.schema_version,
+                        "replayed": True,
+                    }))
+                await ws.send_text(json.dumps({
+                    "type": "session_replay", "payload": {"phase": "end"},
+                    "session_id": session_id, "replayed": True,
+                }))
+            except Exception:  # noqa: BLE001
+                pass
 
         # Subscribe this connection to the bus BEFORE the lifecycle event
         # so the client sees its own session-create frame.
@@ -209,9 +335,23 @@ def create_app(
                     continue
                 if not isinstance(frame, dict):
                     continue
-                # Frame shape: {"type": "user", "content": "..."}
+                # Frame shape: {"type": "user", "content": "...",
+                #                "ultrathink": bool?}
                 if frame.get("type") == "user":
                     content = str(frame.get("content", ""))
+                    ultrathink = bool(frame.get("ultrathink", False))
+                    # Ultrathink (borrowed from the /ultrathink pattern):
+                    # when set, prepend a directive to make the model
+                    # slow down and think step-by-step before answering.
+                    # Works on any chat model -- we don't need provider
+                    # support for extended-thinking parameters.
+                    if ultrathink:
+                        content = (
+                            "Before answering, think step-by-step. "
+                            "Enumerate the subproblems, consider alternatives, "
+                            "and only then give your final answer.\n\n"
+                            f"User: {content}"
+                        )
                     if agent is not None:
                         # Phase 4.1: run the full LLM ↔ tool loop. The
                         # AgentLoop publishes USER_MESSAGE + every LLM /
@@ -249,6 +389,17 @@ def create_app(
             pass
         finally:
             sub.cancel()
+            # Do NOT wipe session history on disconnect -- browser refresh
+            # is a WS close, and the user's prior exchanges must survive
+            # it. History stays in the AgentLoop's in-memory dict keyed
+            # by session_id. Explicit reset is via agent.clear_session()
+            # which the UI triggers with a /reset intent (not on close).
+            #
+            # Bounded by AgentLoop.history_cap (default 40 messages per
+            # session). Sessions created and then never reconnected do
+            # leak until the daemon restarts -- acceptable for now since
+            # sessions are user-created and finite. Cross-process
+            # persistence (SQLite-backed session store) lands later.
             await bus.publish(make_event(
                 session_id=session_id, agent_id="daemon",
                 type=EventType.SESSION_LIFECYCLE,

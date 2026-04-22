@@ -37,6 +37,9 @@ class EventType(str, Enum):
     SKILL_PROMOTED = "skill_promoted"
     SKILL_ROLLED_BACK = "skill_rolled_back"
     ANTI_REQ_VIOLATION = "anti_req_violation"
+    # Emitted when the agent calls `todo_write` so the UI can live-render
+    # the todo panel without polling. Payload: {"items": [...], "sid": ...}.
+    TODO_UPDATED = "todo_updated"
 
 
 @dataclass(frozen=True, slots=True)

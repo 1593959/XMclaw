@@ -1,10 +1,15 @@
-"""XMclaw CLI — top-level entry point.
+"""XMclaw CLI -- top-level entry point.
 
 Subcommands:
 
     xmclaw version   Print the runtime version.
     xmclaw ping      Bus round-trip smoke test.
-    xmclaw serve     Start the daemon (FastAPI + WS + optional web UI).
+    xmclaw serve     Foreground daemon (blocks; uvicorn.run).
+    xmclaw start     Spawn the daemon detached; returns once healthy.
+    xmclaw stop      Stop a running daemon (via PID file).
+    xmclaw restart   Stop then start.
+    xmclaw status    Report daemon state (running / stale / dead).
+    xmclaw tools     List the tools wired up from config.
     xmclaw chat      Interactive REPL that talks to a running daemon.
     xmclaw doctor    Diagnose a local setup without running anything.
 
@@ -76,7 +81,7 @@ def ping() -> None:
 @app.command()
 def serve(
     host: str = typer.Option("127.0.0.1", help="Bind address."),
-    port: int = typer.Option(8766, help="Port to bind."),
+    port: int = typer.Option(8765, help="Port to bind."),
     config: str = typer.Option(
         "daemon/config.json",
         help=("Path to config JSON (read for LLM provider key). "
@@ -168,9 +173,169 @@ def serve(
 
 
 @app.command()
+def start(
+    host: str = typer.Option("127.0.0.1", help="Bind address."),
+    port: int = typer.Option(8765, help="Port to bind."),
+    config: str = typer.Option(
+        "daemon/config.json", help="Path to config JSON.",
+    ),
+    no_auth: bool = typer.Option(
+        False, "--no-auth",
+        help="DANGEROUS: skip pairing-token validation.",
+    ),
+    wait: float = typer.Option(
+        10.0, help="Seconds to wait for /health before giving up.",
+    ),
+) -> None:
+    """Spawn the daemon in the background, return once /health answers.
+
+    Writes a PID file at ``~/.xmclaw/v2/daemon.pid`` and a log at
+    ``~/.xmclaw/v2/daemon.log``. Use ``xmclaw stop`` to kill it, or
+    ``xmclaw status`` to check on it.
+    """
+    from xmclaw.daemon.lifecycle import start_daemon
+    try:
+        status = start_daemon(
+            host=host, port=port, config=config,
+            no_auth=no_auth, wait_seconds=wait,
+        )
+    except RuntimeError as exc:
+        typer.echo(f"  [x]  {exc}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(
+        f"  [ok]  daemon started pid={status.pid} "
+        f"http://{status.host}:{status.port}"
+    )
+
+
+@app.command()
+def stop(
+    grace: float = typer.Option(
+        5.0, help="Seconds to wait for graceful shutdown before SIGKILL.",
+    ),
+) -> None:
+    """Stop the daemon referenced by the PID file."""
+    from xmclaw.daemon.lifecycle import read_status, stop_daemon
+    before = read_status()
+    if before.state == "dead":
+        typer.echo("  [!]   no daemon recorded -- nothing to stop")
+        raise typer.Exit(code=0)
+    after = stop_daemon(grace_seconds=grace)
+    if after.state == "dead":
+        typer.echo(f"  [ok]  daemon stopped (was pid={before.pid})")
+    else:
+        typer.echo(
+            f"  [!]   daemon state after stop: {after.state} pid={after.pid}",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def restart(
+    host: str = typer.Option("127.0.0.1", help="Bind address."),
+    port: int = typer.Option(8765, help="Port to bind."),
+    config: str = typer.Option(
+        "daemon/config.json", help="Path to config JSON.",
+    ),
+    no_auth: bool = typer.Option(False, "--no-auth"),
+    grace: float = typer.Option(5.0),
+    wait: float = typer.Option(10.0),
+) -> None:
+    """Stop (if running) then start. Idempotent."""
+    from xmclaw.daemon.lifecycle import read_status, start_daemon, stop_daemon
+    before = read_status()
+    if before.state != "dead":
+        stop_daemon(grace_seconds=grace)
+        typer.echo(f"  [ok]  stopped previous daemon (was pid={before.pid})")
+    try:
+        status = start_daemon(
+            host=host, port=port, config=config,
+            no_auth=no_auth, wait_seconds=wait,
+        )
+    except RuntimeError as exc:
+        typer.echo(f"  [x]  {exc}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(
+        f"  [ok]  daemon restarted pid={status.pid} "
+        f"http://{status.host}:{status.port}"
+    )
+
+
+@app.command()
+def status() -> None:
+    """Report whether a daemon is running, stale, or absent."""
+    from xmclaw.daemon.lifecycle import read_status
+    s = read_status()
+    if s.state == "running":
+        health = "healthy" if s.healthy else "not answering /health"
+        typer.echo(
+            f"  [ok]  running  pid={s.pid}  "
+            f"http://{s.host}:{s.port}  ({health})"
+        )
+    elif s.state == "stale":
+        typer.echo(
+            f"  [!]   stale  pid={s.pid} recorded but process is gone "
+            f"-- run `xmclaw start` to relaunch",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    else:
+        typer.echo("  [x]  no daemon running")
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def tools(
+    config: str = typer.Option(
+        "daemon/config.json", help="Path to config JSON.",
+    ),
+) -> None:
+    """List the tools the agent would be wired with for this config.
+
+    Reads the config exactly the way ``xmclaw serve`` / ``start`` would,
+    builds the same ToolProvider, and prints each tool. Useful for
+    catching "tools disabled, nothing happens" confusion before spending
+    model tokens on a task the agent can't actually perform.
+    """
+    from pathlib import Path as _Path
+    from xmclaw.daemon.factory import (
+        ConfigError, build_tools_from_config, load_config,
+    )
+
+    cfg_path = _Path(config)
+    if not cfg_path.exists():
+        typer.echo(f"  [x]  config not found at {cfg_path}", err=True)
+        raise typer.Exit(code=1)
+    try:
+        cfg = load_config(cfg_path)
+        provider = build_tools_from_config(cfg)
+    except ConfigError as exc:
+        typer.echo(f"  [x]  config error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    if provider is None:
+        typer.echo(
+            "  [!]   no 'tools' section in config -- agent runs LLM-only"
+        )
+        typer.echo(
+            "        add 'tools': {'allowed_dirs': ['.']} to enable file_read / file_write"
+        )
+        return
+    specs = provider.list_tools()
+    allowed = cfg.get("tools", {}).get("allowed_dirs", [])
+    typer.echo(f"  [ok]  {len(specs)} tool(s) configured, "
+               f"{len(allowed)} allowed dir(s)")
+    for spec in specs:
+        typer.echo(f"    - {spec.name}: {spec.description}")
+    typer.echo("  allowed dirs:")
+    for d in allowed:
+        typer.echo(f"    - {d}")
+
+
+@app.command()
 def chat(
     url: str = typer.Option(
-        "ws://127.0.0.1:8766/agent/v2/{session_id}",
+        "ws://127.0.0.1:8765/agent/v2/{session_id}",
         help=(
             "Daemon WS URL. ``{session_id}`` in the URL is substituted "
             "by the chosen / generated session id."
@@ -238,7 +403,7 @@ def doctor(
         "daemon/config.json", help="Path to config JSON.",
     ),
     host: str = typer.Option("127.0.0.1", help="Daemon host to probe."),
-    port: int = typer.Option(8766, help="Daemon port to probe."),
+    port: int = typer.Option(8765, help="Daemon port to probe."),
     no_daemon_probe: bool = typer.Option(
         False, "--no-daemon-probe",
         help="Skip the HTTP health probe (offline mode).",
@@ -264,3 +429,7 @@ def doctor(
         typer.echo(r.render())
     critical_fail = any(not r.ok for r in results)
     raise typer.Exit(code=1 if critical_fail else 0)
+
+
+if __name__ == "__main__":
+    app()
