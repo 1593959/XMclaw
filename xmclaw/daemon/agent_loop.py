@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from xmclaw.core.bus import (
@@ -53,20 +54,52 @@ from xmclaw.providers.tool.base import ToolProvider
 from xmclaw.utils.cost import BudgetExceeded, CostTracker
 
 
-_DEFAULT_SYSTEM = (
-    "You are XMclaw, a local-first AI agent running on the user's machine. "
-    "\n\n"
-    "You remember earlier turns in this conversation. When the user asks "
-    "about something established earlier (their name, a file they mentioned, "
-    "a decision you made together), answer from that history -- don't act "
-    "like the conversation just started. "
-    "\n\n"
-    "When tools are available, use them for any task requiring real file, "
-    "system, or network access. Don't guess at file contents or invent facts "
-    "you can verify. Say \"I don't know\" when you genuinely don't. "
-    "\n\n"
-    "Respond in the language the user is writing in."
-)
+def _default_system_prompt() -> str:
+    """Built at import time so the OS / user-home hints are concrete."""
+    import platform
+    os_name = platform.system()  # Windows / Linux / Darwin
+    home = str(Path.home())
+    desktop = str(Path.home() / "Desktop")
+    shell_hint = {
+        "Windows": (
+            "The shell is PowerShell. You can use Unix-style aliases "
+            "(ls, cat, pwd, rm) OR native Get-ChildItem / Get-Content. "
+            "Do NOT use bash-isms like `$(whoami)` or `&&` chaining -- "
+            "PowerShell uses `;` and `$env:USERNAME`."
+        ),
+        "Linux": "The shell is bash.",
+        "Darwin": "The shell is bash / zsh (macOS).",
+    }.get(os_name, f"The shell is whatever is on PATH.")
+    return (
+        "You are XMclaw, a local-first AI agent running on the user's own "
+        f"machine. OS: {os_name}. User home: {home}. Desktop: {desktop}. "
+        "You have real access to their filesystem, a shell, and the web.\n\n"
+        "Available tools -- use them aggressively rather than refusing:\n"
+        "  - file_read, file_write, list_dir: inspect and modify files\n"
+        f"  - bash: run shell commands. {shell_hint}\n"
+        "  - web_fetch: GET a URL and read its content\n"
+        "  - web_search: search the web when a fact needs looking up\n\n"
+        "Guidelines:\n"
+        "  - Never say 'I don't have that tool' without checking the list "
+        "above. 'List the Desktop' is `list_dir` on the Desktop path. "
+        "'Check weather' / 'check GitHub stars' is `web_search` or "
+        "`web_fetch`. 'Read this file' is `file_read`.\n"
+        "  - Paths on Windows can use either forward or backslashes. You "
+        "already know the user's home and Desktop; don't ask.\n"
+        "  - If a tool call fails, READ THE ERROR MESSAGE the tool "
+        "returned and tell the user the real reason -- do NOT hallucinate "
+        "that the file was empty or the result was 'None'. The error you "
+        "receive is the truth.\n"
+        "  - Don't loop more than 2-3 times on the same failing tool. If "
+        "web_search returns nothing useful, tell the user what you tried "
+        "rather than retrying indefinitely.\n"
+        "  - Remember earlier turns. When the user references a fact you "
+        "established before, answer from that history.\n"
+        "  - Respond in the language the user writes in."
+    )
+
+
+_DEFAULT_SYSTEM = _default_system_prompt()
 
 
 @dataclass
@@ -322,12 +355,25 @@ class AgentLoop:
                         "error": result.error,
                         "side_effects": list(result.side_effects),
                     })
-                    messages.append(Message(
-                        role="tool",
-                        content=(
+                    # Tool result message content: on success pass through
+                    # the content; on failure pass the structured error
+                    # string so the LLM can tell the user what actually
+                    # happened. Previously a failure landed as ``str(None)``
+                    # == "None" here, which made the model hallucinate
+                    # "the file is empty" or "got None back" instead of
+                    # surfacing the real reason (permission denied, file
+                    # not found, etc.).
+                    if result.ok:
+                        tool_msg_content = (
                             result.content if isinstance(result.content, str)
                             else str(result.content)
-                        ),
+                        )
+                    else:
+                        err = result.error or "tool failed without an error message"
+                        tool_msg_content = f"ERROR: {err}"
+                    messages.append(Message(
+                        role="tool",
+                        content=tool_msg_content,
                         tool_call_id=call.id,
                     ))
                 # Next hop: send tool results back to the LLM.
