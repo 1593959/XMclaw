@@ -720,15 +720,16 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - [x] `scripts/test_changed.py`（手写 YAML 解析器零依赖，支持 `--base` / `--from-stdin` / `--all` / `--dry-run` / pytest args 透传）
 - [x] 单元测试（`tests/unit/test_v2_test_changed.py`，21 tests 覆盖解析器 + lane 选择 + pytest 命令渲染）
 - [x] `docs/V2_DEVELOPMENT.md §6.2.1` 加 smart-gate 小节
+- [x] CI 改成 changed-first（`.github/workflows/python-ci.yml`：PR 跑 smart-gate，push-to-main 跑全量）
+- [x] main 分支全量 fallback（workflow `Test (full suite)` step on `event_name != pull_request`）
 - [ ] pre-commit hook
-- [ ] CI 改成 changed-first
-- [ ] main 分支全量 fallback
 
 **退出标准**：改 `core/memory/*.py` 时 CI 在 2 分钟内完成，全量仍在 main 护底。
 
 **进度日志**：
 
 - 2026-04-23: lane YAML + 选择脚本 + 21 单测落地；本地 smoke 三路径（--all / security+bus / docs-only）均产出预期 pytest 命令。CI 接线 + pre-commit 留到 phase 2。(commit 2827d0c)
+- 2026-04-23: CI 接线 — `.github/workflows/python-ci.yml` PR 事件用 `test_changed.py --base origin/$base -- -v`，push-to-main / workflow_dispatch 仍跑全量。`fetch-depth: 0` 保证 merge-base 可用。pre-commit hook 留到 phase 2b。(commit pending)
 
 ---
 
