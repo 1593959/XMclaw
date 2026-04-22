@@ -107,7 +107,10 @@ html[data-theme="oled"] {
 * { box-sizing: border-box; }
 
 html, body {
-  margin: 0; padding: 0; height: 100%;
+  margin: 0; padding: 0;
+  height: 100vh;
+  height: 100dvh;   /* dynamic viewport for iOS/mobile URL-bar cases */
+  overflow: hidden; /* only inner panes scroll, never the page itself */
   font-family: var(--font-body);
   color: var(--fg);
   background: var(--bg);
@@ -119,34 +122,62 @@ html, body {
 button { font-family: inherit; color: inherit; cursor: pointer; }
 textarea { font-family: inherit; color: inherit; }
 
-/* ── layout ─────────────────────────────────────────────────────── */
+/* ── layout ─────────────────────────────────────────────────────
+ * Three-pane flex layout (sidebar | main | workspace).
+ *
+ * Flexbox (not grid) because the previous grid version collapsed to a
+ * vertical stack when child content overflowed -- one tall cell pushed
+ * the whole row out of the viewport and the layout broke. flexbox +
+ * flex-shrink:0 on the side panes + overflow:hidden on main is the
+ * reliable pattern (copied from nesquena/hermes-webui which has spent
+ * a lot of time getting this right). */
 
 .app {
-  display: grid;
-  grid-template-columns: 260px minmax(0, 1fr) 320px;
+  display: flex;
+  width: 100%;
   height: 100vh;
+  height: 100dvh;
   min-height: 0;
+  overflow: hidden;
 }
 
-.app.no-workspace {
-  grid-template-columns: 260px minmax(0, 1fr);
-}
-
-.sidebar, .workspace {
+.sidebar {
+  width: 260px;
+  flex-shrink: 0;
   background: var(--bg-2);
   border-right: 1px solid var(--border);
   display: flex; flex-direction: column;
   min-height: 0;
-}
-.workspace {
-  border-right: none;
-  border-left: 1px solid var(--border);
+  overflow: hidden;
 }
 
 .main {
-  display: flex; flex-direction: column;
+  flex: 1;
+  min-width: 0;
   min-height: 0;
+  display: flex; flex-direction: column;
+  overflow: hidden;
   background: var(--bg);
+}
+
+.workspace {
+  width: 320px;
+  flex-shrink: 0;
+  background: var(--bg-2);
+  border-left: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  min-height: 0; min-width: 0;
+  overflow: hidden;
+  transition: width .22s cubic-bezier(.22,1,.36,1),
+              opacity .18s ease,
+              border-left-color .22s ease;
+}
+
+.app.no-workspace .workspace {
+  width: 0;
+  opacity: 0;
+  border-left-color: transparent;
+  pointer-events: none;
 }
 
 /* ── sidebar ────────────────────────────────────────────────────── */
@@ -483,6 +514,16 @@ details[open] > summary::before { transform: rotate(90deg); }
   width: 34px; height: 34px; padding: 0;
   border-radius: var(--radius-sm);
 }
+/* Click-target fix: the icon span inside .send-btn was swallowing clicks
+ * when the cursor landed on the glyph rather than the button padding.
+ * Playwright's .send-btn click used to hit the span, bubble to form but
+ * occasionally miss due to test-tool focus behavior. pointer-events:none
+ * makes the span invisible to the pointer so clicks always land on the
+ * <button> itself. Same for the context-ring SVG which sits beside it. */
+.send-btn .icon { pointer-events: none; }
+.context-ring   { pointer-events: none; }
+.context-ring svg,
+.context-ring .ring-label { pointer-events: none; }
 
 .composer-hint {
   max-width: 880px; margin: 6px auto 0 auto;
@@ -621,16 +662,19 @@ details[open] > summary::before { transform: rotate(90deg); }
 
 /* ── responsive ─────────────────────────────────────────────────── */
 
+/* Tablet: auto-hide workspace; user can toggle it back with the ⌘ button. */
 @media (max-width: 1100px) {
-  .app { grid-template-columns: 240px minmax(0, 1fr); }
-  .app .workspace { display: none; }
+  .workspace { display: none; }
 }
+
+/* Mobile: sidebar becomes an overlay drawer. */
 @media (max-width: 720px) {
-  .app { grid-template-columns: minmax(0, 1fr); }
   .sidebar {
-    position: fixed; top: 0; left: -280px; width: 260px; height: 100vh;
-    z-index: 10; transition: left .2s;
+    position: fixed; top: 0; left: -280px;
+    width: 260px; height: 100vh; height: 100dvh;
+    z-index: 10; transition: left .22s;
   }
   .sidebar.open { left: 0; box-shadow: var(--shadow-2); }
   .mobile-only { display: inline-flex; }
+  .main { width: 100%; }
 }
