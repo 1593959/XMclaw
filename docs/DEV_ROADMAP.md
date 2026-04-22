@@ -840,31 +840,31 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #15 · 日志
 
-**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**状态**：🟡 进行中 | **负责人**：Claude (AI pair) | **起始**：2026-04-23 | **完成**：-
 **前置依赖**：无
 **关联 Milestone**：M8（可观测）
 
 **开发计划**：
 
-1. **structlog 配置**（0.5 天）——`utils/logging.py` 全局 processors（timestamp / level / json）
-2. **Rotation handler**（0.5 天）——`TimedRotatingFileHandler` 写 `~/.xmclaw/logs/daemon-YYYY-MM-DD.jsonl`，保留 14 天
-3. **脱敏**（1 天）——正则扫 `api_key` / `bearer` / `password` / JWT token，替换为 `***`
-4. **contextvar 绑定**（0.5 天）——每个请求绑定 `session_id` / `workspace_id`，日志自动带上
-5. **迁移**（1 天）——把现有 `print()` 和 `logging.info()` 替换为 `log.info()` / `log.warning()` / `log.error()`
+1. **structlog 配置**（0.5 天）——`utils/log.py` 全局 processors（timestamp / level / json）
+2. **Rotation handler**（0.5 天）——`RotatingFileHandler` (size-based) 写 `<BASE>/logs/xmclaw.log`，5MiB × 3 份。按日切换非刚需，重开容易撞 Windows file-lock
+3. **脱敏**（1 天）——复用 `utils/redact.py` 的 5 条 API-key 正则，作 structlog processor 扫每条 record 的 msg + kwargs
+4. **contextvar 绑定**（0.5 天）——每个 turn 绑定 `session_id` / `agent_id`，日志自动带上
+5. **迁移**（1 天）——有限迁移：CLI `print()` 是用户可见输出不是日志，不迁；仅迁移真正属于日志的 callsite
 
 **检查清单**：
 
-- [ ] `utils/logging.py` structlog 配置
-- [ ] 按天 rotate 日志文件
-- [ ] 敏感字段脱敏
-- [ ] `session_id` / `workspace_id` contextvar 绑定
-- [ ] 现有 `print` / `logging` 迁移完毕
+- [x] `utils/log.py` structlog 配置 + 幂等 `setup_logging()`
+- [x] size-based rotate（5MiB × 3 份）；按天 rotate 非刚需，留到真需要再加
+- [x] 敏感字段脱敏（processor 层；复用 `redact.redact_string`）
+- [x] `session_id` / `agent_id` contextvar 绑定（`bind_log_context()` / `clear_log_context()`）
+- [ ] `print` / `logging` 迁移——有限迁移：CLI `print()` 是用户输出不迁；`core/bus/memory.py:1` + `core/performance_monitor.py` 已改用 `get_logger()`
 
-**退出标准**：日志可被 `jq` / `grep` 解析；`grep "api_key" logs/*.jsonl` 返回 0 条真 key。
+**退出标准**：日志可被 `jq` / `grep` 解析；`grep "sk-ant-" logs/*.log` 返回 0 条真 key。
 
 **进度日志**：
 
-- _（尚无）_
+- 2026-04-23: 阶段 1 落地——重写 `xmclaw/utils/log.py`：去掉模块级 `logger = setup_logging()` 副作用（之前每次 import 都在用户 `logs/` 下创建文件，违反 utils AGENTS.md 的 import 纯净约束）；新增 `_scrub_secrets` structlog processor 复用 `redact.redact_string` 扫 msg + 所有字符串 kwargs，`sk-ant-xxx` / `sk-xxx` / `ghp_xxx` / `xox?-xxx` / `AIza***` 都命中；加 `structlog.contextvars.merge_contextvars` 处理器 + `bind_log_context()` / `clear_log_context()` 包装，turn 开始 bind 一次 `session_id` / `agent_id` 下游每条 log 自动带上；`setup_logging()` 幂等（二次调用不累加 handler）；新增 `get_logger(name)` 公开入口（不触发 setup，可安全 import）；`xmclaw/core/performance_monitor.py` 从 `from ... import logger` 改为 `get_logger(__name__)`；新增 `tests/unit/test_v2_logging.py` 9 测（import 无副作用 / 幂等 / file+stream handler 各一 / 两种 scrubber 路径 / JSON 可解析 / contextvars 注入 / clear 生效 / get_logger 无需 setup）；更新 `scripts/test_lanes.yaml` observability lane + `xmclaw/utils/AGENTS.md`；全套 737 passed
 
 ---
 

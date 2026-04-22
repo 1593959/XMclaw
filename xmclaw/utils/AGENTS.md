@@ -23,10 +23,10 @@ dependencies. Every reverse edge kills that property.
 ## 3. 测试入口
 
 - Unit: `tests/unit/test_v2_cost_tracker.py`,
-  `tests/unit/test_v2_redact.py`.
-- No dedicated smart-gate lane — `utils/` changes ripple into
-  many lanes via import fan-out; rely on always-lane + direct-test
-  triggers.
+  `tests/unit/test_v2_redact.py`,
+  `tests/unit/test_v2_logging.py` (9 tests: import purity,
+  idempotence, secret scrubber, contextvars merge, JSON shape).
+- Smart-gate lane: `observability` (cost + log + performance monitor).
 
 ## 4. 禁止事项
 
@@ -48,3 +48,14 @@ dependencies. Every reverse edge kills that property.
   middleware.
 - `cost.py` — token-based cost estimation used by the budget
   gate.
+- `log.py` — structlog configuration.
+  - `setup_logging()` — idempotent; call once at daemon start.
+    Does NOT run at module import time (utils import purity).
+  - `get_logger(name=None)` — public logger handle; safe to call
+    before setup (emits to default handler).
+  - `bind_log_context(**kw)` / `clear_log_context()` — contextvar
+    wrappers; pin `session_id` / `agent_id` at turn start and every
+    downstream log line carries them automatically.
+  - Processor chain scrubs secrets via `redact.redact_string` before
+    JSON render — no caller-side effort needed for the 5 patterns
+    `redact.py` knows.

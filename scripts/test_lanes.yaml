@@ -145,13 +145,15 @@ lanes:
       - tests/unit/test_v2_redact.py
       - tests/integration/test_v2_prompt_injection.py
 
-  # Cost tracker + performance monitor.
+  # Cost tracker + performance monitor + structured logging.
   observability:
     triggers:
       - "xmclaw/utils/cost.py"
+      - "xmclaw/utils/log.py"
       - "xmclaw/core/performance_monitor.py"
     tests:
       - tests/unit/test_v2_cost_tracker.py
+      - tests/unit/test_v2_logging.py
       - tests/unit/test_v2_performance_monitor.py
 
   # Runtime (local / process).
