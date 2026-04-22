@@ -24,12 +24,15 @@ def _call(name: str, args: dict) -> ToolCall:
 
 def test_list_tools_default_roster() -> None:
     """Default posture: all tool families on. Must include filesystem
-    + shell + web tools. Permissions default to MAXIMUM."""
+    + shell + web + todo tools. Permissions default to MAXIMUM."""
     tools = BuiltinTools().list_tools()
     names = {t.name for t in tools}
     assert {"file_read", "file_write", "list_dir"} <= names
     assert "bash" in names
     assert {"web_fetch", "web_search"} <= names
+    # Todo tools ship by default -- no kill-switch; they're pure
+    # in-memory state with no side effects.
+    assert {"todo_write", "todo_read"} <= names
 
 
 def test_list_tools_kill_switches() -> None:
@@ -49,11 +52,16 @@ def test_list_tools_kill_switches() -> None:
 
 
 def test_list_tools_schemas_well_formed() -> None:
-    """Every spec has an object parameters_schema with at least one required
-    field -- sanity check that nobody shipped a half-authored ToolSpec."""
+    """Every spec has an object parameters_schema. todo_read takes no
+    args (required=[]); everything else has at least one required field."""
     for spec in BuiltinTools().list_tools():
         assert spec.parameters_schema["type"] == "object"
-        assert len(spec.parameters_schema.get("required", [])) >= 1
+        if spec.name == "todo_read":
+            # Legitimately zero-arg -- just reads current state.
+            continue
+        assert len(spec.parameters_schema.get("required", [])) >= 1, (
+            f"{spec.name} has no required fields"
+        )
 
 
 # ── file_read happy path ──────────────────────────────────────────────────

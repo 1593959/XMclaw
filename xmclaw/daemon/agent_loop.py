@@ -338,7 +338,22 @@ class AgentLoop:
                     await publish(EventType.TOOL_INVOCATION_STARTED, {
                         "call_id": call.id, "name": call.name,
                     })
-                    result = await self._tools.invoke(call)
+                    # Fill session_id so stateful tools (todo_write/read)
+                    # can key their per-session buckets. ToolCall is frozen
+                    # so we construct a copy via dataclasses.replace.
+                    import dataclasses as _dc
+                    call_with_sid = _dc.replace(call, session_id=session_id)
+                    result = await self._tools.invoke(call_with_sid)
+                    # After todo tool runs, surface TODO_UPDATED so the UI
+                    # can live-render the panel. We detect this here to
+                    # keep BuiltinTools decoupled from the bus.
+                    if call.name == "todo_write" and result.ok:
+                        items = call.args.get("items")
+                        if isinstance(items, list):
+                            await publish(EventType.TODO_UPDATED, {
+                                "items": items,
+                                "count": len(items),
+                            })
                     await publish(EventType.TOOL_INVOCATION_FINISHED, {
                         "call_id": result.call_id,
                         "name": call.name,

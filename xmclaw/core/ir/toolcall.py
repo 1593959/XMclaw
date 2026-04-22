@@ -45,6 +45,10 @@ class ToolCall:
     provenance: Provenance
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     raw_snippet: str | None = None  # debug only — the wire bytes it came from
+    # Populated by AgentLoop before invoking stateful tools that need
+    # per-session bookkeeping (e.g. ``todo_write`` / ``todo_read``).
+    # None for provider-decoded calls; the agent loop fills this in.
+    session_id: str | None = None
     schema_version: int = 1
 
 

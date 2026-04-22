@@ -69,6 +69,23 @@ const tokPromptEl   = $("tok-prompt");
 const tokComplEl    = $("tok-completion");
 const tokTotalEl    = $("tok-total");
 const tokCostEl     = $("tok-cost");
+const ultrathinkBtn = $("ultrathink-btn");
+const ultrathinkChip = $("ultrathink-chip");
+const wsTodosEl     = $("ws-todos");
+const wsTimelineEl  = $("ws-timeline");
+const timelineClearBtn = $("timeline-clear");
+const navBadgeTodos = $("nav-badge-todos");
+const navBadgeActivity = $("nav-badge-activity");
+const navBadgeTimeline = $("nav-badge-timeline");
+const wsMcpEl       = $("ws-mcp");
+const wsSkillsEl    = $("ws-skills");
+const wsAgentsEl    = $("ws-agents");
+const wsFilesEl     = $("ws-files");
+const fbPathEl      = $("fb-path");
+const fbGoBtn       = $("fb-go");
+
+const ULTRATHINK_KEY = "xmclaw_v2_ultrathink";
+const TIMELINE_MAX = 300;
 
 // ── state ────────────────────────────────────────────────────────
 const state = {
@@ -83,6 +100,19 @@ const state = {
   // Recent activity items for the workspace pane.
   activity: [],
   totalTokens: 0,
+  // True while the server is streaming the hydration buffer after a
+  // reconnect. We suppress the thinking-dots animation during this
+  // window (otherwise a fresh ellipsis appears next to every replayed
+  // turn) and we don't touch per-session token counters.
+  replaying: false,
+  // Ultrathink toggle state. When true, every subsequent user frame
+  // carries ultrathink=true and the server prepends a step-by-step
+  // directive to the model's input.
+  ultrathink: false,
+  // Timeline panel state: bounded ring of events seen, newest last.
+  timeline: [],
+  // Todos panel state: last TODO_UPDATED payload for this session.
+  todos: [],
 };
 
 const CTX_WINDOW = 120_000;  // match config memory.max_context_tokens
@@ -133,7 +163,12 @@ function activateSession(sid) {
   state.totalTokens = 0;
   state.totalPrompt = 0;
   state.totalCompl  = 0;
+  state.timeline = [];
+  state.todos = [];
   renderActivity();
+  renderTodos();
+  renderTimeline();
+  updateNavBadges();
   renderSessionList();
   if (typeof renderSessionsPanel === "function") renderSessionsPanel();
   connect();
@@ -366,10 +401,11 @@ function renderActivity() {
 }
 
 const WS_TAB_TITLES = {
-  activity: "Activity", sessions: "Sessions", files: "Files",
-  skills: "Skills", tools: "Tools", mcp: "MCP", config: "Run config",
-  agents: "Agents", models: "Models", security: "Security",
-  tokens: "Token usage", about: "About",
+  activity: "工具活动", todos: "待办", timeline: "事件流",
+  sessions: "所有会话", files: "文件", skills: "技能", tools: "工具",
+  mcp: "MCP", config: "运行配置",
+  agents: "智能体", models: "模型", security: "安全",
+  tokens: "Token 消耗", about: "关于",
 };
 
 function switchWsTab(name) {
@@ -514,21 +550,49 @@ function updateCostTicker(p) {
 
 function renderEvent(evt) {
   const p = evt.payload || {};
+  const isReplay = evt.replayed === true;
+
+  // Timeline captures EVERY event regardless of type (including the
+  // session_replay markers) so the user can always inspect the raw stream.
+  pushTimeline(evt);
+
   switch (evt.type) {
+    case "session_replay": {
+      // Marker frames bracket the hydration stream.
+      if (p.phase === "start") {
+        state.replaying = true;
+        clearEvents();        // wipe the empty-state so replays can paint
+        showWelcome(false);
+      } else if (p.phase === "end") {
+        state.replaying = false;
+        // If after replay the events div is still empty, show welcome again.
+        if (eventsEl.children.length === 0) showWelcome(true);
+      }
+      return;
+    }
+
     case "user_message":
-      // Already echoed locally on send -- suppress to avoid double rendering.
+      // Normally suppressed -- sender echo-renders locally. But on a
+      // replay we didn't echo (the sender is long gone), so render it.
+      if (isReplay) {
+        const text = (p.content || "").toString();
+        if (text) appendUser(text);
+      }
       return;
 
     case "llm_request":
-      if ((p.hop ?? 0) === 0) appendThinking();
+      // Never show the thinking spinner for replayed events -- the
+      // response already exists in the buffer, we'd just flash dots.
+      if (!isReplay && (p.hop ?? 0) === 0) appendThinking();
       return;
 
     case "llm_response": {
       if (p.ok === false) {
-        appendViolation("llm error: " + (p.error || "?"));
+        if (!isReplay) appendViolation("llm error: " + (p.error || "?"));
         return;
       }
-      // Update context ring as tokens arrive.
+      // Update context ring (tokens). On replay we DO want the ring to
+      // reflect the full history's usage, so don't skip this.
       updateContextRing(
         (p.prompt_tokens || 0) + (p.completion_tokens || 0),
         { prompt: p.prompt_tokens || 0, completion: p.completion_tokens || 0 },
@@ -562,16 +626,132 @@ function renderEvent(evt) {
       return;
 
     case "anti_req_violation":
-      appendViolation(p.message || "anti-req violation");
+      if (!isReplay) appendViolation(p.message || "anti-req violation");
       return;
 
     case "session_lifecycle":
+      return;
+
+    case "todo_updated":
+      state.todos = Array.isArray(p.items) ? p.items : [];
+      renderTodos();
+      updateNavBadges();
       return;
 
     default:
       return;
   }
 }
+
+// ── Todos panel rendering ────────────────────────────────────────
+
+function renderTodos() {
+  if (!wsTodosEl) return;
+  wsTodosEl.textContent = "";
+  if (!state.todos.length) {
+    wsTodosEl.appendChild(el("div", "ws-empty", "还没有待办项。"));
+    return;
+  }
+  state.todos.forEach((t, i) => {
+    const status = t.status || "pending";
+    const row = el("div", "todo-item todo-" + status);
+    const glyph = {
+      pending: "○", in_progress: "◐", done: "●",
+    }[status] || "○";
+    row.appendChild(el("span", "todo-glyph", glyph));
+    row.appendChild(el("span", "todo-num", (i + 1).toString()));
+    row.appendChild(el("span", "todo-content", t.content || ""));
+    row.appendChild(el("span", "todo-status", {
+      pending: "待定", in_progress: "进行中", done: "完成",
+    }[status] || status));
+    wsTodosEl.appendChild(row);
+  });
+}
+
+// ── Timeline panel: bounded ring of every event seen ─────────────
+
+function pushTimeline(evt) {
+  state.timeline.push({
+    type: evt.type,
+    ts: evt.ts || (Date.now() / 1000),
+    payload: evt.payload || {},
+    replayed: evt.replayed === true,
+  });
+  if (state.timeline.length > TIMELINE_MAX) {
+    state.timeline.splice(0, state.timeline.length - TIMELINE_MAX);
+  }
+  renderTimeline();
+  updateNavBadges();
+}
+
+function renderTimeline() {
+  if (!wsTimelineEl) return;
+  wsTimelineEl.textContent = "";
+  if (!state.timeline.length) {
+    wsTimelineEl.appendChild(el("div", "ws-empty", "暂无事件。"));
+    return;
+  }
+  // newest first
+  const rows = state.timeline.slice().reverse();
+  rows.forEach(ev => {
+    const row = document.createElement("details");
+    row.className = "timeline-entry timeline-" + ev.type;
+    const summary = document.createElement("summary");
+    const t = new Date(ev.ts * 1000);
+    summary.appendChild(el("span", "tl-time",
+      t.toLocaleTimeString("zh-CN", { hour12: false })));
+    summary.appendChild(el("span", "tl-type", ev.type));
+    const previewKey = Object.keys(ev.payload)[0];
+    if (previewKey) {
+      const v = ev.payload[previewKey];
+      const s = typeof v === "string" ? v : JSON.stringify(v);
+      summary.appendChild(el("span", "tl-preview",
+        `${previewKey}=${s.slice(0, 60)}`));
+    }
+    if (ev.replayed) summary.appendChild(el("span", "tl-replay", "已重放"));
+    row.appendChild(summary);
+    const body = el("pre", "tl-body");
+    body.textContent = JSON.stringify(ev.payload, null, 2);
+    row.appendChild(body);
+    wsTimelineEl.appendChild(row);
+  });
+}
+
+function clearTimeline() {
+  state.timeline = [];
+  renderTimeline();
+  updateNavBadges();
+}
+
+function updateNavBadges() {
+  if (navBadgeActivity) {
+    const n = state.activity.length;
+    navBadgeActivity.textContent = n > 0 ? String(n) : "";
+  }
+  if (navBadgeTodos) {
+    const n = state.todos.length;
+    navBadgeTodos.textContent = n > 0 ? String(n) : "";
+  }
+  if (navBadgeTimeline) {
+    const n = state.timeline.length;
+    navBadgeTimeline.textContent = n > 0 ? (n > 99 ? "99+" : String(n)) : "";
+  }
+}
+
+// ── Ultrathink toggle ────────────────────────────────────────────
+
+function applyUltrathink(on) {
+  state.ultrathink = !!on;
+  localStorage.setItem(ULTRATHINK_KEY, on ? "1" : "0");
+  if (ultrathinkBtn) {
+    ultrathinkBtn.classList.toggle("active", state.ultrathink);
+  }
+  if (ultrathinkChip) {
+    ultrathinkChip.hidden = !state.ultrathink;
+  }
+}
+
+function toggleUltrathink() { applyUltrathink(!state.ultrathink); }
 
 // ── WS connection ────────────────────────────────────────────────
 
@@ -627,9 +807,12 @@ function sendUser() {
   const val = userInput.value.trim();
   if (!val || !state.ws || state.ws.readyState !== WebSocket.OPEN) return;
   appendUser(val);
-  state.ws.send(JSON.stringify({ type: "user", content: val }));
+  const payload = { type: "user", content: val };
+  if (state.ultrathink) payload.ultrathink = true;
+  state.ws.send(JSON.stringify(payload));
   userInput.value = "";
   userInput.style.height = "auto";
+  updateCharCounter();
 }
 
 // ── init ─────────────────────────────────────────────────────────
@@ -662,24 +845,119 @@ function renderSecurityPanel(health, hasAuth, tools) {
                                                 tools.includes("web_search")) ? "enabled" : "disabled";
 }
 
-function renderConfigPanel(health) {
+function renderConfigPanel(cfg) {
   if (!wsConfigEl) return;
   wsConfigEl.textContent = "";
+  if (!cfg) {
+    wsConfigEl.appendChild(el("div", "ws-empty",
+      "daemon 没有加载 config 文件,所有设定走默认。"));
+    return;
+  }
   const pre = el("pre");
-  pre.textContent = JSON.stringify(health || {}, null, 2);
+  pre.textContent = JSON.stringify(cfg, null, 2);
   wsConfigEl.appendChild(pre);
+}
+
+// ── /api/v2/status + config -> populate multiple panels ──────────
+
+async function fetchStatus() {
+  try {
+    const r = await fetch("/api/v2/status");
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (_) { return null; }
+}
+
+async function fetchConfigSnapshot() {
+  try {
+    const r = await fetch("/api/v2/config");
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (_) { return null; }
+}
+
+function renderMcpPanel(servers) {
+  if (!wsMcpEl) return;
+  wsMcpEl.textContent = "";
+  if (!servers || servers.length === 0) {
+    wsMcpEl.appendChild(el("div", "ws-empty",
+      "没有配置 MCP 服务器。在 daemon/config.json 的 mcp_servers 下加一个条目再重启。"));
+    return;
+  }
+  servers.forEach(name => {
+    const entry = el("div", "ws-tool-entry");
+    entry.appendChild(el("div", "name", name));
+    entry.appendChild(el("div", "desc",
+      "声明于 config.mcp_servers。(自动挂载到 agent 是后续任务。)"));
+    wsMcpEl.appendChild(entry);
+  });
+}
+
+function renderSkillsPanel() {
+  if (!wsSkillsEl) return;
+  wsSkillsEl.textContent = "";
+  // We don't have a /api/v2/skills yet; the SkillRegistry exists but
+  // no HTTP surface. Show a useful placeholder until the endpoint lands.
+  wsSkillsEl.appendChild(el("div", "ws-empty",
+    "SkillRegistry 里当前没有安装技能。EvolutionEngine 生成并 promote 后会出现在这里。"));
+}
+
+function renderAgentsPanel(status) {
+  if (!wsAgentsEl) return;
+  wsAgentsEl.textContent = "";
+  const entry = el("div", "ws-tool-entry");
+  entry.appendChild(el("div", "name", "agent"));
+  entry.appendChild(el("div", "desc",
+    `默认智能体,model=${status?.model || "—"}。` +
+    `多智能体隔离会在后续 worktree 隔离落地时一起上。`));
+  wsAgentsEl.appendChild(entry);
+}
+
+// ── File browser (uses /api/v2/status info + XHR list via bash) ──
+
+function renderFileBrowser(lines) {
+  if (!wsFilesEl) return;
+  wsFilesEl.textContent = "";
+  if (!lines || !lines.length) {
+    wsFilesEl.appendChild(el("div", "ws-empty", "该目录为空。"));
+    return;
+  }
+  lines.forEach(line => {
+    const row = el("div", "fb-row", line);
+    wsFilesEl.appendChild(row);
+  });
+}
+
+async function runFileBrowser() {
+  const path = (fbPathEl?.value || "").trim();
+  if (!path) return;
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+  // We ask the agent to list via its existing list_dir tool; simplest.
+  // This renders in the chat AND shows up in activity. A dedicated
+  // /api/v2/files endpoint is a follow-up if this feels too indirect.
+  userInput.value = `请用 list_dir 查看 ${path} 里的内容`;
+  document.getElementById("send-form").requestSubmit();
 }
 
 async function init() {
   applyTheme(localStorage.getItem(THEME_KEY) || "dark");
   setupNav();
   setupWelcomeCards();
+  applyUltrathink(localStorage.getItem(ULTRATHINK_KEY) === "1");
 
   themeBtn.addEventListener("click", cycleTheme);
   toggleWsBtn.addEventListener("click", toggleWorkspace);
   if (wsCloseBtn) wsCloseBtn.addEventListener("click", toggleWorkspace);
   if (toggleSbBtn) toggleSbBtn.addEventListener("click", toggleSidebar);
   newSessionBtn.addEventListener("click", createSession);
+  if (ultrathinkBtn) ultrathinkBtn.addEventListener("click", toggleUltrathink);
+  if (timelineClearBtn) timelineClearBtn.addEventListener("click", clearTimeline);
+  if (fbGoBtn) fbGoBtn.addEventListener("click", runFileBrowser);
+  if (fbPathEl) {
+    fbPathEl.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") { ev.preventDefault(); runFileBrowser(); }
+    });
+  }
 
   // Model picker: click toggles menu, outside click closes.
   if (modelBtn) modelBtn.addEventListener("click", (ev) => {
@@ -746,8 +1024,26 @@ async function init() {
   populateModelMenu(activeModel);
 
   // Security + config panels (populated from whatever we know).
-  renderSecurityPanel(health, !!state.token, known.map(k => k[0]));
-  renderConfigPanel(health);
+  const status = await fetchStatus();
+  const cfgResp = await fetchConfigSnapshot();
+  const tools = status && status.tools ? status.tools : known.map(k => k[0]);
+  renderSecurityPanel(health, !!state.token, tools);
+  renderConfigPanel(cfgResp && cfgResp.config);
+  renderMcpPanel(status ? status.mcp_servers : []);
+  renderSkillsPanel();
+  renderAgentsPanel(status);
+  if (status && status.model) setActiveModel(status.model, "active");
+  if (status && status.tools && wsToolsEl) {
+    const localDescs = Object.fromEntries(known);
+    wsToolsEl.textContent = "";
+    status.tools.forEach(name => {
+      const row = el("div", "ws-tool-entry");
+      row.appendChild(el("div", "name", name));
+      row.appendChild(el("div", "desc",
+        localDescs[name] || "(from daemon)"));
+      wsToolsEl.appendChild(row);
+    });
+  }
 
   // hash-state fallback -> localStorage -> new
   const hashSid = (window.location.hash.match(/s=([^&]+)/) || [])[1];

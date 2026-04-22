@@ -159,10 +159,52 @@ _WEB_SEARCH_SPEC = ToolSpec(
     },
 )
 
+_TODO_WRITE_SPEC = ToolSpec(
+    name="todo_write",
+    description=(
+        "Record the current plan for a multi-step task as a todo list. "
+        "Each item has a 'content' and 'status' (pending|in_progress|done). "
+        "Overwrites the full list; call again with updated statuses as "
+        "work progresses. The user sees a live 'Todos' panel that mirrors "
+        "this state."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "description": "Ordered list of todo items.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string"},
+                        "status": {
+                            "type": "string",
+                            "enum": ["pending", "in_progress", "done"],
+                        },
+                    },
+                    "required": ["content", "status"],
+                },
+            },
+        },
+        "required": ["items"],
+    },
+)
+
+_TODO_READ_SPEC = ToolSpec(
+    name="todo_read",
+    description=(
+        "Read back the current todo list for this session. Use this "
+        "before updating statuses to make sure nothing was missed."
+    ),
+    parameters_schema={"type": "object", "properties": {}},
+)
+
 
 _MAX_WEB_BYTES = 200_000
 _BASH_DEFAULT_TIMEOUT = 30.0
 _BASH_MAX_OUTPUT = 100_000
+_VALID_TODO_STATUSES = {"pending", "in_progress", "done"}
 
 
 class BuiltinTools(ToolProvider):
@@ -186,12 +228,21 @@ class BuiltinTools(ToolProvider):
         *,
         enable_bash: bool = True,
         enable_web: bool = True,
+        todo_listener: "object | None" = None,
     ) -> None:
         self._allowed = (
             [Path(d).resolve() for d in allowed_dirs] if allowed_dirs else None
         )
         self._enable_bash = enable_bash
         self._enable_web = enable_web
+        # Per-session todo lists. Key: session_id (falls back to "_default"
+        # when a caller doesn't fill in ToolCall.session_id).
+        self._todos: dict[str, list[dict[str, str]]] = {}
+        # Optional callback fired on every todo_write so the agent loop /
+        # daemon can emit a TODO_UPDATED event to the bus. Signature:
+        # ``def todo_listener(session_id, items) -> None``. Keeping it as
+        # a plain callable avoids coupling this module to the bus type.
+        self._todo_listener = todo_listener
 
     def list_tools(self) -> list[ToolSpec]:
         specs = [_FILE_READ_SPEC, _FILE_WRITE_SPEC, _LIST_DIR_SPEC]
@@ -199,6 +250,7 @@ class BuiltinTools(ToolProvider):
             specs.append(_BASH_SPEC)
         if self._enable_web:
             specs.extend([_WEB_FETCH_SPEC, _WEB_SEARCH_SPEC])
+        specs.extend([_TODO_WRITE_SPEC, _TODO_READ_SPEC])
         return specs
 
     async def invoke(self, call: ToolCall) -> ToolResult:
@@ -222,6 +274,10 @@ class BuiltinTools(ToolProvider):
                 if not self._enable_web:
                     return _fail(call, t0, "web tools are disabled in config")
                 return await self._web_search(call, t0)
+            if call.name == "todo_write":
+                return await self._todo_write(call, t0)
+            if call.name == "todo_read":
+                return await self._todo_read(call, t0)
             return _fail(call, t0, f"unknown tool: {call.name!r}")
         except PermissionError as exc:
             return _fail(call, t0, f"permission denied: {exc}")
@@ -445,6 +501,72 @@ class BuiltinTools(ToolProvider):
         return ToolResult(
             call_id=call.id, ok=True,
             content=f"{len(results)} results for {query!r}:\n\n" + "\n\n".join(blocks),
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    # ── todos (per-session plan tracker) ───────────────────────────────
+
+    def _todo_key(self, call: ToolCall) -> str:
+        # ToolCall.session_id is populated by AgentLoop. Anonymous callers
+        # (e.g. direct unit tests) share the "_default" bucket.
+        return call.session_id or "_default"
+
+    async def _todo_write(self, call: ToolCall, t0: float) -> ToolResult:
+        items = call.args.get("items")
+        if not isinstance(items, list):
+            return _fail(call, t0, "'items' must be a list")
+        cleaned: list[dict[str, str]] = []
+        for i, raw in enumerate(items):
+            if not isinstance(raw, dict):
+                return _fail(
+                    call, t0,
+                    f"item {i} must be an object with content + status",
+                )
+            content = raw.get("content")
+            status = raw.get("status", "pending")
+            if not isinstance(content, str) or not content.strip():
+                return _fail(call, t0, f"item {i}: content must be non-empty string")
+            if status not in _VALID_TODO_STATUSES:
+                return _fail(
+                    call, t0,
+                    f"item {i}: status {status!r} must be one of "
+                    f"{sorted(_VALID_TODO_STATUSES)}",
+                )
+            cleaned.append({"content": content.strip(), "status": status})
+
+        sid = self._todo_key(call)
+        self._todos[sid] = cleaned
+        if self._todo_listener is not None:
+            try:
+                self._todo_listener(sid, list(cleaned))
+            except Exception:  # noqa: BLE001 -- listener must never sink a tool call
+                pass
+
+        done = sum(1 for t in cleaned if t["status"] == "done")
+        prog = sum(1 for t in cleaned if t["status"] == "in_progress")
+        summary = f"saved {len(cleaned)} todos ({done} done, {prog} in progress)"
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content=summary,
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _todo_read(self, call: ToolCall, t0: float) -> ToolResult:
+        sid = self._todo_key(call)
+        items = self._todos.get(sid, [])
+        if not items:
+            body = "(no todos yet)"
+        else:
+            def _glyph(s: str) -> str:
+                return {"pending": "[ ]", "in_progress": "[~]", "done": "[x]"}.get(s, "[?]")
+            body = "\n".join(
+                f"{i+1}. {_glyph(t['status'])} {t['content']}"
+                for i, t in enumerate(items)
+            )
+        return ToolResult(
+            call_id=call.id, ok=True, content=body,
             side_effects=(),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
