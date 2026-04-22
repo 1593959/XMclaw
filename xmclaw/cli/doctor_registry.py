@@ -407,6 +407,92 @@ class WorkspaceCheck(DoctorCheck):
         return True
 
 
+class EventsDbCheck(DoctorCheck):
+    """Probe ``~/.xmclaw/v2/events.db`` health.
+
+    Covers the three practical failure modes:
+
+    1. File absent — OK, the daemon creates it on first start. We report
+       "not yet created" so the user understands there's nothing wrong.
+    2. File present but the SQLite header is garbage or the file is
+       locked — fail with the library error verbatim so the user can
+       stop the process holding it / restore from backup.
+    3. File present, opens, but ``PRAGMA user_version`` is newer than
+       the code we're running — flag as an advisory (downgrade path
+       isn't supported) rather than an outright fail, so a user who
+       pinned an older wheel after touching main gets a clear message.
+
+    Uses ``XMC_V2_EVENTS_DB_PATH`` when set (matches
+    :func:`xmclaw.core.bus.default_events_db_path`), so the check is
+    testable against a tmp file.
+    """
+
+    id = "events_db"
+    name = "events_db"
+
+    def _target(self, ctx: DoctorContext) -> Path:
+        override = ctx.extras.get("events_db_path")
+        if isinstance(override, (str, Path)):
+            return Path(override)
+        from xmclaw.core.bus import default_events_db_path
+
+        return default_events_db_path()
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        path = self._target(ctx)
+        if not path.exists():
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"not yet created (will be created on `xmclaw start`): {path}",
+            )
+        if not path.is_file():
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"path exists but is not a file: {path}",
+                advisory="remove or rename the conflicting entry",
+            )
+        import sqlite3
+
+        from xmclaw.core.bus.sqlite import SCHEMA_VERSION
+
+        try:
+            # read-only mode — we never want the doctor to migrate or lock.
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        except sqlite3.Error as exc:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"cannot open {path.name}: {exc}",
+                advisory="check that no other process has the DB locked; "
+                         "if the file is corrupt, back it up and let the "
+                         "daemon recreate it on next start",
+            )
+        try:
+            row = conn.execute("PRAGMA user_version").fetchone()
+            user_version = int(row[0]) if row else 0
+        except sqlite3.Error as exc:
+            conn.close()
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"events.db looks malformed: {exc}",
+                advisory="back up and remove the file; the daemon "
+                         "will recreate it on next start",
+            )
+        conn.close()
+        if user_version > SCHEMA_VERSION:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"events.db schema v{user_version} is newer than "
+                       f"code v{SCHEMA_VERSION}",
+                advisory="a newer xmclaw wrote this DB; upgrade the "
+                         "installed package or point XMC_V2_EVENTS_DB_PATH "
+                         "at a fresh file",
+            )
+        return CheckResult(
+            name=self.name, ok=True,
+            detail=f"events.db v{user_version} at {path}",
+        )
+
+
 class RoadmapLintCheck(DoctorCheck):
     """Run ``scripts/lint_roadmap.py`` against ``docs/DEV_ROADMAP.md``.
 
@@ -506,6 +592,7 @@ def build_default_registry() -> DoctorRegistry:
     reg.register(WorkspaceCheck())
     reg.register(PairingCheck())
     reg.register(PortCheck())
+    reg.register(EventsDbCheck())
     reg.register(RoadmapLintCheck())
     reg.register(DaemonHealthCheck())
     return reg

@@ -680,7 +680,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 **检查清单**：
 
 - [x] `cli/doctor_registry.py` + `DoctorCheck` ABC
-- [ ] `doctor_checks.py` 核心检查 ≥ 8（现 8 条 built-in：config/llm/tools/**workspace**/pairing/port/**roadmap_lint**/daemon，还需 memory-db/sandbox）
+- [x] `doctor_checks.py` 核心检查 ≥ 8（现 9 条 built-in：config/llm/tools/**workspace**/pairing/port/**events_db**/**roadmap_lint**/daemon；sandbox 待 Epic #3 落地）
 - [ ] `doctor_connectivity.py` 网络探测
 - [x] `doctor_fix_runner.py` 自动修复（`DoctorRegistry.run_fixes()`，WorkspaceCheck 首条可修复检查落地）
 - [x] `[project.entry-points."xmclaw.doctor"]` 组（文档 + discover 已接）
@@ -697,6 +697,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - 2026-04-22: **阶段 2 遗留项**：`--fix` runner、连通性 check（anthropic/openai/ollama）、workspace/memory-db/sandbox check、`scripts/lint_roadmap.py`。暂停在这不阻塞 Epic #10 整体——Epic #10 状态保持 🟡 直到阶段 2 收尾
 - 2026-04-23: 阶段 2 首批落地——`CheckResult` 新增 `fix_available` 字段；`DoctorRegistry.run_fixes()` + nested `FixAttempt` dataclass 按序对 `ok=False ∧ fix_available` 的 check 调 `fix(ctx)`、捕获异常到 `fix_raised`、重跑 check、返回 attempt 列表；新增 `WorkspaceCheck`（`~/.xmclaw/v2/` 检查 + `mkdir -p` 自动修复，支持 `ctx.extras["workspace_dir"]` override 方便单测）；`xmclaw doctor --fix` CLI 旗标接通，JSON 多出 `fix_attempts` 字段、text 多出 `fix attempts:` 汇总块；`tests/unit/test_v2_doctor.py` 增 13 条用例（workspace 四态 + run_fixes 四路径 + CLI 两端到端），51 passed + 1 skipped，全套 659 passed (commit edd7d55)
 - 2026-04-23: 阶段 2 续——新增 `scripts/lint_roadmap.py`（§3.6.5 drift 检测器，零依赖，状态机解析 markdown）：4 条规则（状态 ✅ 完成 → 完成日期非 `-`；状态 🟡 → 起始非 `-`；✅ Epic 的 checklist 不得留真 `[ ]`；§7 Milestone 条目引用的 Epic 全 ✅ 则自身也必须 `[x]`）；通过 `留给 Epic #N` / `挂单 Epic #N` / `deferred to Epic #N` 注释 opt-out 防止跨 Epic deferral 误报；新增 `RoadmapLintCheck` doctor check（运行期 importlib 加载脚本 + `sys.modules` 注册让 dataclass 解析 OK），非源码环境自动跳过（wheel 不含 script）；`tests/unit/test_v2_lint_roadmap.py` 12 测（4 规则 × 正反 + 重复 Epic 号 + 多 Epic 引用部分完成容忍 + shipped roadmap 干净 regression guard）；`test_v2_doctor.py` 更新 7→8 checks 断言；smart-gate cli lane 加 `lint_roadmap.py` + `DEV_ROADMAP.md` trigger 和对应测试；全套 749 passed (commit 0def6fe)
+- 2026-04-23: 阶段 2 续——新增 `EventsDbCheck` doctor check：用 `sqlite3.connect(file:...?mode=ro)` read-only 打开 `~/.xmclaw/v2/events.db`，检测 4 种状态（不存在 → OK "will be created"；目录而非文件 → 失败；SQLite 头部损坏或锁死 → 失败带库原始错误；`PRAGMA user_version` 超前于代码 SCHEMA_VERSION → 失败带降级不支持 advisory）；`ctx.extras["events_db_path"]` 支持单测 override；`tests/unit/test_v2_doctor.py` 增 5 条用例（missing / directory / garbage / healthy current / newer schema）；checks 数 8→9；全套 754 passed
 
 ---
 

@@ -22,6 +22,7 @@ from xmclaw.cli.doctor_registry import (
     DoctorCheck,
     DoctorContext,
     DoctorRegistry,
+    EventsDbCheck,
     WorkspaceCheck,
     build_default_registry,
 )
@@ -393,7 +394,7 @@ def test_default_registry_builtin_check_order() -> None:
     ids = [c.id for c in reg.checks()]
     assert ids == [
         "config", "llm", "tools", "workspace", "pairing", "port",
-        "roadmap_lint", "daemon",
+        "events_db", "roadmap_lint", "daemon",
     ]
 
 
@@ -460,7 +461,7 @@ def test_run_doctor_still_returns_old_check_result_type(tmp_path: Path) -> None:
     assert all(isinstance(r, CheckResult) for r in results)
     assert [r.name for r in results] == [
         "config", "llm", "tools", "workspace", "pairing", "port 8765",
-        "roadmap_lint", "daemon",
+        "events_db", "roadmap_lint", "daemon",
     ]
 
 
@@ -559,6 +560,73 @@ def test_workspace_fix_refuses_to_replace_a_file(tmp_path: Path) -> None:
     check = WorkspaceCheck()
     assert check.fix(_workspace_ctx(tmp_path, ws)) is False
     assert ws.is_file()  # untouched
+
+
+# ── EventsDbCheck ────────────────────────────────────────────────────────
+
+
+def _events_ctx(tmp_path: Path, db: Path) -> DoctorContext:
+    ctx = DoctorContext(config_path=tmp_path / "unused.json")
+    ctx.extras["events_db_path"] = db
+    return ctx
+
+
+def test_events_db_missing_file_is_ok(tmp_path: Path) -> None:
+    """Daemon hasn't run yet — that's not a failure, just a note."""
+    check = EventsDbCheck()
+    r = check.run(_events_ctx(tmp_path, tmp_path / "events.db"))
+    assert r.ok is True
+    assert "not yet created" in r.detail
+
+
+def test_events_db_path_is_a_directory_fails(tmp_path: Path) -> None:
+    db = tmp_path / "events.db"
+    db.mkdir()
+    check = EventsDbCheck()
+    r = check.run(_events_ctx(tmp_path, db))
+    assert r.ok is False
+    assert "not a file" in r.detail
+
+
+def test_events_db_garbage_file_reports_parse_error(tmp_path: Path) -> None:
+    """A non-SQLite file at the db path must fail parse — don't pretend."""
+    db = tmp_path / "events.db"
+    db.write_bytes(b"this is not a sqlite database, please fail me")
+    check = EventsDbCheck()
+    r = check.run(_events_ctx(tmp_path, db))
+    assert r.ok is False
+    assert "malformed" in r.detail or "cannot open" in r.detail
+
+
+def test_events_db_healthy_current_schema_returns_ok(tmp_path: Path) -> None:
+    """A DB at the current schema version should be green."""
+    from xmclaw.core.bus.sqlite import SCHEMA_VERSION
+    import sqlite3
+
+    db = tmp_path / "events.db"
+    conn = sqlite3.connect(db)
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    conn.close()
+    check = EventsDbCheck()
+    r = check.run(_events_ctx(tmp_path, db))
+    assert r.ok is True
+    assert f"v{SCHEMA_VERSION}" in r.detail
+
+
+def test_events_db_newer_schema_fails_with_advisory(tmp_path: Path) -> None:
+    """Downgrade isn't supported; surface it clearly rather than crash."""
+    from xmclaw.core.bus.sqlite import SCHEMA_VERSION
+    import sqlite3
+
+    db = tmp_path / "events.db"
+    conn = sqlite3.connect(db)
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 5}")
+    conn.close()
+    check = EventsDbCheck()
+    r = check.run(_events_ctx(tmp_path, db))
+    assert r.ok is False
+    assert "newer than code" in r.detail
+    assert r.advisory is not None
 
 
 # ── DoctorRegistry.run_fixes ─────────────────────────────────────────────
