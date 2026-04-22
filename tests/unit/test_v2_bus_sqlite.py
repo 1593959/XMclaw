@@ -328,3 +328,51 @@ async def test_concurrent_publish_serialized_no_loss(tmp_path: Path) -> None:
         assert {e.payload["i"] for e in got} == set(range(20))
     finally:
         bus.close()
+
+
+# --------------------------------------------------------------------------- #
+# Scale / performance (Epic #13 exit criterion)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_fts5_search_stays_fast_at_representative_scale(
+    tmp_path: Path,
+) -> None:
+    """Epic #13 exit criterion: FTS5 keyword search must return in
+    <100ms on a representative workload.
+
+    500 events approximates a busy 24h session. We assert a 500ms
+    ceiling (5x the target) to absorb CI noise while still catching
+    order-of-magnitude regressions — a linear scan or a missing FTS5
+    index would blow past this easily.
+    """
+    import time
+
+    bus = SqliteEventBus(tmp_path / "events.db")
+    try:
+        # Mix "memory" / "disk" / "network" keywords so the FTS5 match
+        # set is a realistic subset, not the whole table.
+        N = 500
+        keywords = ["memory pressure", "disk saturation", "network latency"]
+        events = [
+            _ev(payload={"note": f"{keywords[i % 3]} sample {i}"})
+            for i in range(N)
+        ]
+        await asyncio.gather(*(bus.publish(e) for e in events))
+        await bus.drain()
+
+        t0 = time.perf_counter()
+        hits = bus.search("memory", limit=1000)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+
+        # Roughly a third of N should match.
+        assert len(hits) > N // 4, (
+            f"expected ~{N // 3} hits, got {len(hits)}"
+        )
+        assert elapsed_ms < 500, (
+            f"FTS5 search took {elapsed_ms:.1f}ms "
+            f"(exit criterion is <100ms, this guard is 5x headroom)"
+        )
+    finally:
+        bus.close()

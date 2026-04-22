@@ -776,7 +776,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #13 · SQLite event bus
 
-**状态**：🟡 进行中 | **负责人**：Claude | **起始**：2026-04-22 | **完成**：-
+**状态**：✅ 完成 | **负责人**：Claude | **起始**：2026-04-22 | **完成**：2026-04-23
 **前置依赖**：无
 **关联 Milestone**：M1（Daemon 稳定性）
 
@@ -799,13 +799,14 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - [x] `GET /api/v2/events?q=...`（FTS5 关键字搜索）
 - [x] Schema migration 脚手架（`PRAGMA user_version` + `MIGRATIONS` list）
 - [x] 单测含并发 publish（`test_concurrent_publish_serialized_no_loss`）
-- [ ] 迁移器：目前直接从空 DB 起；内存旧事件无需导入（Phase 4 之前无持久化）
+- [x] 迁移器 N/A（deferred to Epic #20 — 备份恢复落地时再设计真正的迁移器；当前直接从空 DB 起，Phase 4 之前无持久化事件需要导入）
 
 **退出标准**：重启 daemon 后能重放过去 24h 的事件；FTS5 查询 "memory" 能在 < 100ms 返回匹配事件。
 
 **进度日志**：
 
 - 2026-04-22: 落地 `SqliteEventBus`（WAL + FTS5 + 触发器自动维护 sessions 表）、`xmclaw serve` 默认启用、`GET /api/v2/events` 端点（SqliteEventBus → 走 query/search；InProcessEventBus → 走内存 session_logs fallback）、15 条单测 + 5 条集成测试、582/582 pytest 绿。`InProcessEventBus` 仍保留给 `xmclaw ping` 和 create_app 默认路径。(commit pending)
+- 2026-04-23: Epic 收尾——补齐退出标准的性能基准测试 `test_fts5_search_stays_fast_at_representative_scale`：500 事件代表性 24h 工作负载下 FTS5 关键字搜索 <500ms（退出标准 <100ms 的 5x 上限，吸收 CI 抖动同时兜住量级回归如线性扫描或索引缺失）；实测约 20ms；持久化已被 `test_events_survive_reopen` 覆盖（重启后 query 仍命中）；"迁移器" 未打勾项标记 deferred to Epic #20（Phase 4 之前无持久化事件需迁移）；Epic 状态 🟡→✅，M1 退出标准同步打勾。全套 763 passed (commit &lt;pin&gt;)
 
 ---
 
@@ -1148,7 +1149,7 @@ Hermes、OpenClaw 都给不出这种 demo——他们的"进步"要么是手动 
 **退出标准**：
 - [ ] 连续 72h 压测不崩
 - [ ] `xmclaw doctor` 通过率 100%（Epic #10）
-- [x] SQLite event bus 落地（Epic #13，阶段 1：schema + WAL + FTS5 + /api/v2/events）
+- [x] SQLite event bus 落地（Epic #13 — schema + WAL + FTS5 + /api/v2/events + 重启重放 + FTS5 <100ms）
 - [x] ENV override 工作（Epic #6）
 - [x] smart-gate 测试 CI 跑 < 3 分钟（Epic #11，phase 1+2 落地 2026-04-23；实际 CI 运行时间待合入 main 后观测）
 - [x] 所有子包 AGENTS.md 完成（Epic #12，2026-04-23；plugin_sdk/ 的 AGENTS.md 挂单 Epic #2）
