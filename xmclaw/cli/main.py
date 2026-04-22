@@ -417,6 +417,10 @@ def doctor(
         False, "--discover-plugins",
         help="Load third-party checks from the 'xmclaw.doctor' entry-point group.",
     ),
+    fix: bool = typer.Option(
+        False, "--fix",
+        help="Attempt to auto-remediate failing checks that advertise a fix.",
+    ),
     json_output: bool = typer.Option(
         False, "--json",
         help="Emit machine-readable JSON instead of the text report.",
@@ -430,18 +434,44 @@ def doctor(
     ``xmclaw doctor && xmclaw serve``). ``--json`` swaps the human
     output for a single JSON document so the exit code isn't the only
     machine-readable signal.
+
+    ``--fix`` re-runs every red check that advertises ``fix_available``
+    through its ``DoctorCheck.fix()`` hook and verifies the outcome; the
+    final verdict reflects post-fix state.
     """
     import json as _json
     from pathlib import Path as _Path
 
-    from xmclaw.cli.doctor import run_doctor
+    from xmclaw.cli.doctor_registry import (
+        CheckResult as RegistryCheckResult,
+        DoctorContext,
+        build_default_registry,
+    )
 
-    results = run_doctor(
-        _Path(config),
+    registry = build_default_registry()
+    plugin_errors: list[RegistryCheckResult] = []
+    if discover_plugins:
+        plugin_errors = registry.discover_plugins()
+
+    ctx = DoctorContext(
+        config_path=_Path(config),
         host=host, port=port,
         probe_daemon=not no_daemon_probe,
-        discover_plugins=discover_plugins,
     )
+    check_results = registry.run_all(ctx)
+    results: list[RegistryCheckResult] = plugin_errors + check_results
+
+    fix_attempts: list = []
+    if fix:
+        fix_attempts = registry.run_fixes(ctx, results)
+        # Swap each fixed result in-place so the final report reflects the
+        # post-fix state. Attempts list keeps the before-view for the summary.
+        id_to_index = {r.name: i for i, r in enumerate(results)}
+        for att in fix_attempts:
+            i = id_to_index.get(att.before.name)
+            if i is not None:
+                results[i] = att.after
+
     critical_fail = any(not r.ok for r in results)
     if json_output:
         typer.echo(_json.dumps({
@@ -452,14 +482,31 @@ def doctor(
                     "ok": r.ok,
                     "detail": r.detail,
                     "advisory": r.advisory,
+                    "fix_available": r.fix_available,
                 }
                 for r in results
+            ],
+            "fix_attempts": [
+                {
+                    "check_id": a.check_id,
+                    "before_ok": a.before.ok,
+                    "after_ok": a.after.ok,
+                    "fix_raised": a.fix_raised,
+                }
+                for a in fix_attempts
             ],
         }, ensure_ascii=False, indent=2))
     else:
         typer.echo("xmclaw doctor --")
         for r in results:
             typer.echo(r.render())
+        if fix_attempts:
+            typer.echo("")
+            typer.echo("fix attempts:")
+            for a in fix_attempts:
+                status = "resolved" if a.after.ok else "still failing"
+                extra = f" (fix raised: {a.fix_raised})" if a.fix_raised else ""
+                typer.echo(f"  - {a.check_id}: {status}{extra}")
     raise typer.Exit(code=1 if critical_fail else 0)
 
 

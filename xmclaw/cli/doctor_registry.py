@@ -27,6 +27,7 @@ Design notes:
 """
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -132,17 +133,69 @@ class DoctorRegistry:
     def run_all(self, ctx: DoctorContext) -> list[CheckResult]:
         results: list[CheckResult] = []
         for check in self._checks:
-            try:
-                result = check.run(ctx)
-            except Exception as exc:  # noqa: BLE001
-                result = CheckResult(
-                    name=check.name or check.id or type(check).__name__,
-                    ok=False,
-                    detail=f"check raised {type(exc).__name__}: {exc}",
-                    advisory="this is a bug in the check itself",
-                )
-            results.append(result)
+            results.append(self._run_one(check, ctx))
         return results
+
+    def _run_one(self, check: DoctorCheck, ctx: DoctorContext) -> CheckResult:
+        try:
+            return check.run(ctx)
+        except Exception as exc:  # noqa: BLE001
+            return CheckResult(
+                name=check.name or check.id or type(check).__name__,
+                ok=False,
+                detail=f"check raised {type(exc).__name__}: {exc}",
+                advisory="this is a bug in the check itself",
+            )
+
+    @dataclass(frozen=True, slots=True)
+    class FixAttempt:
+        """Record of one fix attempt. ``before`` is the failing result that
+        triggered the fix, ``after`` is the re-run result (same check). A
+        successful fix is one where ``after.ok`` is True."""
+
+        check_id: str
+        before: "CheckResult"
+        after: "CheckResult"
+        fix_raised: str | None = None   # exception message if fix() threw
+
+    def run_fixes(
+        self, ctx: DoctorContext, results: list[CheckResult],
+    ) -> list["DoctorRegistry.FixAttempt"]:
+        """For every failing result whose check advertises ``fix_available``,
+        call :meth:`DoctorCheck.fix` and re-run the check. Returns the list
+        of attempts (one per fixable failing check) so callers can show a
+        summary and pick the new overall verdict.
+
+        Matches results back to checks by ``check.id`` — checks without an
+        ``id`` (unusual) are skipped to keep the mapping unambiguous.
+        """
+        attempts: list[DoctorRegistry.FixAttempt] = []
+        by_id = {c.id: c for c in self._checks if c.id}
+        name_to_id = {c.name: c.id for c in self._checks if c.id and c.name}
+        for before in results:
+            if before.ok or not before.fix_available:
+                continue
+            # The CLI re-exports ``CheckResult`` from ``cli.doctor`` so the
+            # ``name`` field is the only reliable handle back to the check.
+            cid = name_to_id.get(before.name)
+            if cid is None:
+                continue
+            check = by_id.get(cid)
+            if check is None:
+                continue
+            fix_raised: str | None = None
+            try:
+                check.fix(ctx)
+            except Exception as exc:  # noqa: BLE001
+                fix_raised = f"{type(exc).__name__}: {exc}"
+            after = self._run_one(check, ctx)
+            attempts.append(DoctorRegistry.FixAttempt(
+                check_id=cid,
+                before=before,
+                after=after,
+                fix_raised=fix_raised,
+            ))
+        return attempts
 
     def discover_plugins(self) -> list[CheckResult]:
         """Load third-party checks via the ``xmclaw.doctor`` entry-point
@@ -294,6 +347,66 @@ class PortCheck(DoctorCheck):
         )
 
 
+class WorkspaceCheck(DoctorCheck):
+    """Verify ``~/.xmclaw/v2/`` exists and is writable.
+
+    Most other components (pairing token file, events DB, daemon PID file)
+    live under this directory. A missing or read-only workspace is the root
+    cause behind several noisier failures, so we flag it first and offer a
+    one-shot ``fix()`` that creates it.
+    """
+
+    id = "workspace"
+    name = "workspace"
+
+    #: Honors the same env var as :func:`xmclaw.daemon.pairing.default_token_path`
+    #: when set — test harnesses set it to an isolated tmp dir.
+    def _target(self, ctx: DoctorContext) -> Path:
+        override = ctx.extras.get("workspace_dir")
+        if isinstance(override, (str, Path)):
+            return Path(override)
+        return Path.home() / ".xmclaw" / "v2"
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        target = self._target(ctx)
+        if not target.exists():
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"workspace not found: {target}",
+                advisory=f"run 'xmclaw doctor --fix' to create {target}",
+                fix_available=True,
+            )
+        if not target.is_dir():
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"workspace path exists but is not a directory: {target}",
+                advisory="remove or rename the conflicting file",
+                # Not auto-fixable — removing a file the user created is risky.
+                fix_available=False,
+            )
+        if not os.access(target, os.W_OK):
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"workspace not writable: {target}",
+                advisory="check directory permissions (chmod u+w)",
+                fix_available=False,
+            )
+        return CheckResult(
+            name=self.name, ok=True,
+            detail=f"workspace ready: {target}",
+        )
+
+    def fix(self, ctx: DoctorContext) -> bool:
+        target = self._target(ctx)
+        if target.exists():
+            return target.is_dir() and os.access(target, os.W_OK)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return False
+        return True
+
+
 class DaemonHealthCheck(DoctorCheck):
     id = "daemon"
     name = "daemon"
@@ -322,6 +435,7 @@ def build_default_registry() -> DoctorRegistry:
     reg.register(ConfigCheck())
     reg.register(LLMCheck())
     reg.register(ToolsCheck())
+    reg.register(WorkspaceCheck())
     reg.register(PairingCheck())
     reg.register(PortCheck())
     reg.register(DaemonHealthCheck())

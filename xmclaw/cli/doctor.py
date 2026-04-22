@@ -39,6 +39,7 @@ class CheckResult:
     ok: bool
     detail: str
     advisory: str | None = None   # printed in yellow when non-None
+    fix_available: bool = False    # set by checks that implement fix()
 
     def render(self) -> str:
         # ASCII icons only — the unicode check/cross (✓⚠✗) crash the
@@ -293,5 +294,6 @@ def run_doctor(
     for r in plugin_errors + registry_results:
         results.append(CheckResult(
             name=r.name, ok=r.ok, detail=r.detail, advisory=r.advisory,
+            fix_available=r.fix_available,
         ))
     return results
