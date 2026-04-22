@@ -8,10 +8,18 @@ from xmclaw.core.bus.events import (
     make_event,
 )
 from xmclaw.core.bus.memory import InProcessEventBus
+from xmclaw.core.bus.sqlite import (
+    SqliteEventBus,
+    default_events_db_path,
+    event_as_jsonable,
+)
 
 __all__ = [
     "BehavioralEvent",
     "EventType",
     "InProcessEventBus",
+    "SqliteEventBus",
+    "default_events_db_path",
+    "event_as_jsonable",
     "make_event",
 ]

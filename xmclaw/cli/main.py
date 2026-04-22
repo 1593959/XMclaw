@@ -109,14 +109,19 @@ def serve(
     """
     import uvicorn
     from pathlib import Path as _Path
-    from xmclaw.core.bus import InProcessEventBus
+    from xmclaw.core.bus import SqliteEventBus, default_events_db_path
     from xmclaw.daemon.app import create_app as _create_app
     from xmclaw.daemon.factory import ConfigError, build_agent_from_config, load_config
     from xmclaw.daemon.pairing import (
         default_token_path, load_or_create_token, validate_token,
     )
 
-    bus = InProcessEventBus()
+    # Epic #13: persistent event log. Subscribers only see events after
+    # the row is on disk, so a crash mid-publish can't silently desync the
+    # agent loop from what the UI replays on reconnect.
+    events_db = default_events_db_path()
+    bus = SqliteEventBus(events_db)
+    typer.echo(f"  [ok]  event log: {events_db}")
 
     # ── Anti-req #8 pairing setup ──
     auth_check = None

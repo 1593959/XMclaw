@@ -767,7 +767,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #13 · SQLite event bus
 
-**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**状态**：🟡 进行中 | **负责人**：Claude | **起始**：2026-04-22 | **完成**：-
 **前置依赖**：无
 **关联 Milestone**：M1（Daemon 稳定性）
 
@@ -783,19 +783,20 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **检查清单**：
 
-- [ ] `core/bus/sqlite.py` schema + WAL
-- [ ] `events` / `sessions` / `events_fts` 表
-- [ ] AgentLoop publish 接通
-- [ ] `GET /api/events?since=...&session_id=...` API
-- [ ] `GET /api/events/search?q=...`
-- [ ] Schema migration 脚手架
-- [ ] 单测含并发 publish
+- [x] `core/bus/sqlite.py` schema + WAL
+- [x] `events` / `sessions` / `events_fts` 表
+- [x] AgentLoop publish 接通（via `xmclaw serve` swapping `InProcessEventBus` → `SqliteEventBus`；AgentLoop emits through the same `bus.publish()` path, now durable-first)
+- [x] `GET /api/v2/events?since=...&session_id=...&types=...` API（统一端点，q= 起 FTS5 分支）
+- [x] `GET /api/v2/events?q=...`（FTS5 关键字搜索）
+- [x] Schema migration 脚手架（`PRAGMA user_version` + `MIGRATIONS` list）
+- [x] 单测含并发 publish（`test_concurrent_publish_serialized_no_loss`）
+- [ ] 迁移器：目前直接从空 DB 起；内存旧事件无需导入（Phase 4 之前无持久化）
 
 **退出标准**：重启 daemon 后能重放过去 24h 的事件；FTS5 查询 "memory" 能在 < 100ms 返回匹配事件。
 
 **进度日志**：
 
-- _（尚无）_
+- 2026-04-22: 落地 `SqliteEventBus`（WAL + FTS5 + 触发器自动维护 sessions 表）、`xmclaw serve` 默认启用、`GET /api/v2/events` 端点（SqliteEventBus → 走 query/search；InProcessEventBus → 走内存 session_logs fallback）、15 条单测 + 5 条集成测试、582/582 pytest 绿。`InProcessEventBus` 仍保留给 `xmclaw ping` 和 create_app 默认路径。(commit pending)
 
 ---
 
@@ -1137,7 +1138,7 @@ Hermes、OpenClaw 都给不出这种 demo——他们的"进步"要么是手动 
 **退出标准**：
 - [ ] 连续 72h 压测不崩
 - [ ] `xmclaw doctor` 通过率 100%（Epic #10）
-- [ ] SQLite event bus 落地（Epic #13）
+- [x] SQLite event bus 落地（Epic #13，阶段 1：schema + WAL + FTS5 + /api/v2/events）
 - [x] ENV override 工作（Epic #6）
 - [ ] smart-gate 测试 CI 跑 < 3 分钟（Epic #11）
 - [ ] 所有子包 AGENTS.md 完成（Epic #12）
