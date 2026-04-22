@@ -196,7 +196,7 @@ function renderSessionList() {
   sessionListEl.textContent = "";
   sessionCountEl.textContent = state.sessions.length.toString();
   if (state.sessions.length === 0) {
-    const e = el("div", "ws-empty", "No sessions yet.");
+    const e = el("div", "ws-empty", "还没有会话。");
     e.style.padding = "8px 10px";
     sessionListEl.appendChild(e);
     return;
@@ -205,7 +205,7 @@ function renderSessionList() {
     const item = el("div", "session-item" + (sid === state.sid ? " active" : ""));
     item.appendChild(el("span", "label", sid));
     const kill = el("button", "kill", "×");
-    kill.title = "Remove session";
+    kill.title = "删除会话";
     kill.addEventListener("click", (ev) => {
       ev.stopPropagation();
       removeSession(sid);
@@ -382,7 +382,7 @@ function updateToolCard(callId, ok, resultText, errorText) {
 function renderActivity() {
   wsActivityEl.textContent = "";
   if (state.activity.length === 0) {
-    wsActivityEl.appendChild(el("div", "ws-empty", "No tool calls yet."));
+    wsActivityEl.appendChild(el("div", "ws-empty", "暂无工具调用。"));
     return;
   }
   // newest first
@@ -794,13 +794,15 @@ function connect() {
 
 function setConn(status) {
   connEl.classList.remove("conn-up", "conn-down");
+  const labels = {
+    connected: "已连接", connecting: "连接中…", disconnected: "未连接",
+  };
   if (status === "connected") {
     connEl.classList.add("conn-up");
-    connTextEl.textContent = "connected";
   } else {
     connEl.classList.add("conn-down");
-    connTextEl.textContent = status;
   }
+  connTextEl.textContent = labels[status] || status;
 }
 
 function sendUser() {
