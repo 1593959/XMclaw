@@ -730,7 +730,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 - 2026-04-23: lane YAML + 选择脚本 + 21 单测落地；本地 smoke 三路径（--all / security+bus / docs-only）均产出预期 pytest 命令。CI 接线 + pre-commit 留到 phase 2。(commit 2827d0c)
 - 2026-04-23: CI 接线 — `.github/workflows/python-ci.yml` PR 事件用 `test_changed.py --base origin/$base -- -v`，push-to-main / workflow_dispatch 仍跑全量。`fetch-depth: 0` 保证 merge-base 可用。pre-commit hook 留到 phase 2b。(commit 1fe2c56)
-- 2026-04-23: 完结 — `.pre-commit-config.yaml` 可选 opt-in（`language: system` 零依赖）+ V2_DEVELOPMENT 小节追加 CI/pre-commit 用法。Epic #11 checklist 全清，退出标准待 main 合入后用真实 CI 运行时间 verify。(commit pending)
+- 2026-04-23: 完结 — `.pre-commit-config.yaml` 可选 opt-in（`language: system` 零依赖）+ V2_DEVELOPMENT 小节追加 CI/pre-commit 用法。Epic #11 checklist 全清，退出标准待 main 合入后用真实 CI 运行时间 verify。(commit 2aa3261)
 
 ---
 
