@@ -14,6 +14,7 @@ import pytest
 from xmclaw.core.bus import InProcessEventBus
 from xmclaw.daemon.factory import (
     ConfigError,
+    _apply_env_overrides,
     build_agent_from_config,
     build_llm_from_config,
     build_tools_from_config,
@@ -293,5 +294,124 @@ def test_load_config_happy_path(tmp_path: Path) -> None:
     p.write_text(json.dumps({
         "llm": {"anthropic": {"api_key": "k", "default_model": "m"}},
     }), encoding="utf-8")
-    data = load_config(p)
+    data = load_config(p, env={})
     assert data["llm"]["anthropic"]["default_model"] == "m"
+
+
+# ── _apply_env_overrides (Epic #6) ───────────────────────────────────────
+
+
+def test_env_override_replaces_existing_key() -> None:
+    cfg = {"llm": {"anthropic": {"api_key": "from-file"}}}
+    out = _apply_env_overrides(
+        cfg, env={"XMC__llm__anthropic__api_key": "from-env"},
+    )
+    assert out["llm"]["anthropic"]["api_key"] == "from-env"
+
+
+def test_env_override_creates_deep_nested_key() -> None:
+    cfg: dict = {}
+    _apply_env_overrides(
+        cfg, env={"XMC__llm__openai__default_model": "gpt-x"},
+    )
+    assert cfg["llm"]["openai"]["default_model"] == "gpt-x"
+
+
+def test_env_override_ignores_non_prefixed_vars() -> None:
+    cfg = {"existing": True}
+    _apply_env_overrides(
+        cfg,
+        env={"PATH": "/usr/bin", "HOME": "/home/x", "NOT_XMC": "keep"},
+    )
+    assert cfg == {"existing": True}
+
+
+def test_env_override_coerces_bools() -> None:
+    cfg: dict = {}
+    _apply_env_overrides(
+        cfg,
+        env={
+            "XMC__tools__enable_bash": "true",
+            "XMC__tools__enable_web": "false",
+        },
+    )
+    assert cfg["tools"]["enable_bash"] is True
+    assert cfg["tools"]["enable_web"] is False
+
+
+def test_env_override_coerces_numbers() -> None:
+    cfg: dict = {}
+    _apply_env_overrides(
+        cfg,
+        env={
+            "XMC__daemon__port": "8765",
+            "XMC__llm__temperature": "0.25",
+        },
+    )
+    assert cfg["daemon"]["port"] == 8765
+    assert cfg["llm"]["temperature"] == 0.25
+
+
+def test_env_override_coerces_null() -> None:
+    cfg: dict = {"llm": {"anthropic": {"base_url": "http://x"}}}
+    _apply_env_overrides(
+        cfg, env={"XMC__llm__anthropic__base_url": "null"},
+    )
+    assert cfg["llm"]["anthropic"]["base_url"] is None
+
+
+def test_env_override_keeps_unrecognised_strings_as_str() -> None:
+    """Secret-looking values that don't parse as JSON stay as strings."""
+    cfg: dict = {}
+    _apply_env_overrides(
+        cfg, env={"XMC__llm__anthropic__api_key": "sk-ant-abc123"},
+    )
+    assert cfg["llm"]["anthropic"]["api_key"] == "sk-ant-abc123"
+
+
+def test_env_override_parses_json_array() -> None:
+    cfg: dict = {}
+    _apply_env_overrides(
+        cfg,
+        env={"XMC__tools__allowed_dirs": '["/tmp", "/var/work"]'},
+    )
+    assert cfg["tools"]["allowed_dirs"] == ["/tmp", "/var/work"]
+
+
+def test_env_override_overwrites_scalar_parent_with_dict() -> None:
+    """If a parent path is a scalar (e.g. misconfig), ENV wins."""
+    cfg = {"llm": "was-a-string"}
+    _apply_env_overrides(
+        cfg, env={"XMC__llm__anthropic__api_key": "k"},
+    )
+    assert cfg["llm"] == {"anthropic": {"api_key": "k"}}
+
+
+def test_env_override_segments_are_lowercased() -> None:
+    """Shell convention is upper-case ENV; our keys are lower-case."""
+    cfg: dict = {}
+    _apply_env_overrides(cfg, env={"XMC__LLM__ANTHROPIC__API_KEY": "k"})
+    assert cfg["llm"]["anthropic"]["api_key"] == "k"
+
+
+def test_env_override_empty_path_ignored() -> None:
+    """Bare prefix or trailing __ must not crash."""
+    cfg: dict = {"keep": 1}
+    _apply_env_overrides(
+        cfg, env={"XMC__": "nope", "XMC__llm____key": "v"},
+    )
+    assert cfg["keep"] == 1
+    assert cfg["llm"]["key"] == "v"
+
+
+def test_load_config_applies_env_overrides(tmp_path: Path) -> None:
+    """End-to-end: file value is overridden by ENV at load time."""
+    p = tmp_path / "cfg.json"
+    p.write_text(json.dumps({
+        "llm": {"anthropic": {"api_key": "file-key", "default_model": "m"}},
+    }), encoding="utf-8")
+    data = load_config(
+        p, env={"XMC__llm__anthropic__api_key": "env-key"},
+    )
+    assert data["llm"]["anthropic"]["api_key"] == "env-key"
+    assert data["llm"]["anthropic"]["default_model"] == "m"  # untouched

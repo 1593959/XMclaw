@@ -1,0 +1,1460 @@
+# XMclaw 开发路线图（Dev Roadmap）
+
+> **日期**：2026-04-22
+> **版本基线**：v2.0.0.dev0（Phase 4.10 完成，全部前端 UI 已删除，进入终端优先测试阶段）
+>
+> **本文定位**："做什么"——带 file:line 证据的 17 Epic 工程拆解，直接可开 PR。
+> **配套阅读**：
+> - `archive/COMPETITIVE_GAP_ANALYSIS.archived.md`——竞品架构深度剖析（已合并到本文）。
+> - `archive/ROADMAP_PEER_SYNTHESIS.archived.md`——早期战略融合路线图（已合并到本文）。
+>
+> **本文是唯一的活文档**。另外两份已归档，关键内容已合并至此。
+>
+> **本文回答**：对照 OpenClaw / HermesAgent / CoPaw 今日仓库实态（`gh api` 实拉 + 本地源码），我们还有哪些问题要处理才能成为一个**成熟产品**；文件/路径规范如何统一；优势如何让用户直观感受。
+
+---
+
+## 0. TL;DR
+
+| 问题 | 一句话回答 |
+|------|------------|
+| 我们差在哪？ | Commodity 层（渠道/技能商店/onboarding/desktop/日志/安全扫描）几乎全缺；核心引擎领先 |
+| 我们赢在哪？ | **Streaming Evolution-as-Runtime + HonestGrader + 版本化 Skills + 自建 Loop**——三家都没做到 |
+| 用户能感受到吗？ | 目前不能。必须加一个"进化面板"让用户**肉眼看见 agent 在进步**（见 §5） |
+| 技术债最隐蔽的是？ | 没有路径单入口 + secrets 明文 + 无 prompt 注入防御——三个雷区都能导致 CVE |
+| 最快补课的两块？ | **抄 QwenPaw 全套 security YAML**（Apache-2 合法）+ **抄 OpenClaw AGENTS.md 分层纪律** |
+| 成熟度离产品还有多远？ | 9 个关键里程碑（见 §7）。最短路径 6 周，现实路径 12 周 |
+
+---
+
+## 1. 今日对标快照（实地 GitHub 抓取，2026-04-22）
+
+> 本节数据来自 `gh api` 直接拉取 README / AGENTS.md / pyproject.toml / 目录树。不复读记忆，全部以当下仓库状态为准。
+
+### 1.1 三家核心指标
+
+| 项目 | 语言 | License | 主版本 | Stars | 架构概括 |
+|------|------|---------|--------|-------|----------|
+| **OpenClaw** (`openclaw/openclaw`) | TypeScript (Node 22+) | MIT | 活跃更新中 | **362k** | 插件化 Monorepo：`src/`(core) + `extensions/`(plugins) + `apps/`(android/iOS native) + `Swabble/`(Swift desktop) |
+| **HermesAgent** (`NousResearch/hermes-agent`) | Python 3.11+ | MIT | v0.10.0 | **109k** | 根目录散布式 Python 包：`agent/` `gateway/` `tools/` `cron/` `hermes_cli/` `ui-tui/`(Ink/React TUI) |
+| **CoPaw→QwenPaw** (`agentscope-ai/QwenPaw`) | Python 3.10-3.13 | Apache-2 | v1.1.3 | 小众但活跃 | AgentScope-based：`src/qwenpaw/{agents,security,channels,backup,providers,...}` + 独立 `console/` Vite UI |
+| **XMclaw** (我们) | Python 3.10+ | — | v2.0.0.dev0 | — | FastAPI+WS daemon，核心引擎在 `xmclaw/core/` + `xmclaw/daemon/` |
+
+### 1.2 架构决策对照
+
+| 决策 | OpenClaw | Hermes | QwenPaw | XMclaw | 备注 |
+|------|----------|--------|---------|--------|------|
+| 核心形态 | Gateway 进程（非 daemon） | CLI + Gateway 双入口 | FastAPI daemon + Vite console | **FastAPI daemon + WS** | 和 QwenPaw 最像 |
+| 插件边界 | 严格：`src/plugin-sdk/*` 公开契约 | 弱：`optional-skills/` 是目录约定 | 中：`plugins/` 目录 + 入口点 | **无**（integrations 直接 import core） | 我们最薄弱 |
+| TUI | 无（靠 Swabble 桌面） | Ink/React（**专门写的终端 UI**） | questionary 交互 | 仅 CLI repl | Hermes 在这里做到极致 |
+| WebUI | 靠 Swabble | 只有文档站 | `console/`（独立 Vite） | **已删除** | 回到终端测试阶段 |
+| 配置格式 | JSON + ENV | **YAML** + `.env` | YAML | **JSON** + 即将加 ENV | Hermes 的 YAML 可读性更好 |
+| 家目录 | `~/.openclaw/` | `~/.hermes/` | `~/.qwenpaw/` | `~/.xmclaw/`（未落地） | 需尽快标准化 |
+| 进化机制 | 无 | **DSPy+GEPA 批量**，且在**独立仓库** | 无 | **运行时流式**（v2 已验证 1.18× 提升） | **← 这是我们唯一的硬差异** |
+
+### 1.3 关键事实修正（比记忆更新）
+
+1. **Hermes 不是"6 终端后端都靠谱"**——pyproject 里 `modal` 和 `daytona` 是 optional extras；Termux 明确列为"避开 voice extra"；Windows native "not supported, 请用 WSL2"。**他们不如他们 PR 说的那么 cross-platform。**
+2. **Hermes 的进化确实是外挂批量**：`hermes-agent-self-evolution` 是独立仓库（2k⭐，与主仓 109k⭐ 解耦），每次跑 $2-$10，产出 PR 而不是直接 commit。**5 个 phase 里只有 Phase 1（skill files）实现，Phase 2-5 "planned"。**这证实我们的"流式 runtime 进化"是真空地带。
+3. **OpenClaw 的 `AGENTS.md` 是工程纪律宝典**——强制 `pnpm check:changed` 智能门禁、`tsgo` 禁用 `tsc --noEmit`、`extensions/` 不得反向 import `src/`。**我们要抄这种纪律，不仅仅是代码。**
+4. **QwenPaw 的 `security/` 是真货**——`skill_scanner/rules/signatures/data_exfiltration.yaml`、`tool_guard/rules/` 这种签名库是他们"post-incident hardening"留下的遗产。**Hermes 和 OpenClaw 都没有这种开箱即用的安全扫描。**
+5. **QwenPaw 支持 ACP Server**（Agent Client Protocol，给 VS Code / Zed / JetBrains 当后端）——Hermes 也有 `acp_adapter/`。**我们现在没做，但应该做**，因为 IDE 侧集成是用户粘性来源。
+6. **QwenPaw 不拥有自己的 agent loop**——`agents/react_agent.py:76-94` 直接继承 `agentscope.agent.ReActAgent`，只套了一层 `ToolGuardMixin`。事件 schema 也来自 `agentscope_runtime.engine.schemas.agent_schemas`。他们把"重新造 loop"的工程量省了——我们 v2 自己写 loop 是真正的差异化投资，但也是成本。
+7. **QwenPaw 的多 agent 是 "HTTP-to-self" 模式**——`app/multi_agent_manager.py:22-137` 用 `Dict[str, Workspace]` 保存多个 workspace，agent 间对话走本地 HTTP（`http://127.0.0.1:8088`）+ `X-Agent-Id` header。**这个模式非常 debuggable，我们的 EvolutionEngine peer 层可以直接学。**
+8. **QwenPaw `SECURITY.md:66-75` 坦白承认**："单操作者信任模型，非多租户，skill 在进程内运行，working dir 是信任域"。**他们没有 skill sandbox**——靠容器做进程级隔离。这让我们看清：如果 XMclaw 不走多租户，进程内 + 容器隔离就够；真要多租户，必须 v1.0 之前锁定。
+9. **QwenPaw 的"Qwen"是虚名**——他们没有 `qwen_provider.py`，Qwen 通过 DashScope OpenAI-compat endpoint（`constant.py:222-225`）接入，本质上是 provider-agnostic。我们的 provider 层设计应同样 **API-compat 优先**，而不是一个模型一个 provider。
+10. **QwenPaw 的 `RoutingChatModel` 是个 stub**——`agents/routing_chat_model.py:42-53` 接收 text/tools 但全部 `del` 掉。他们喊的"小模型大模型智能协作"**没实现**。我们的 gene-driven 模型路由如果做到，这就是第二个硬差异化。
+
+### 1.4 free-code 关键事实（第四家对标，终端原生 AI 天花板）
+
+> free-code（Claude Code 开源 fork）不在 GitHub 公开仓库中，但其设计模式已被 Hermes/OpenClaw/QwenPaw 大量借鉴。以下事实来自对已泄漏/公开文档的分析，以及竞品对其的反向工程。
+
+1. **权限系统是行业天花板**——细粒度规则 `Bash(ls)` / `Bash(rm:*)` / `FileRead(path)` + Auto mode classifier（`classifyYoloAction`，LLM 判断操作是否安全）+ Denial tracking（连续拒绝计数，超阈值 fallback 到提示用户）。XMclaw 当前三级（ASK/ALLOW/BLOCK）太粗。
+2. **记忆系统标杆**——`MEMORY.md` 作为索引（≤200 行 / 25KB，自动截断）+ 类型化记忆（user/feedback/project/reference）+ KAIROS 日志（`logs/YYYY/MM/YYYY-MM-DD.md`，夜间蒸馏为 MEMORY.md）。XMclaw 当前只有 sqlite-vec 向量检索，缺少文件化索引和类型化。
+3. **Cron 工具链最完善**——`CronCreateTool`/`CronDeleteTool`/`CronListTool`，Agent 自己管理调度。文件持久化 `.claude/scheduled_tasks.json` + `tryAcquireSchedulerLock` 防多实例重复触发 + `jitteredNextCronRunMs` 防同时触发 + missed task 检测。XMclaw 当前无主动调度。
+4. **技能系统是行业最佳实践**——`SKILL.md` + YAML frontmatter（`allowed-tools` / `when_to_use` / `paths` / `model` / `effort`）+ 动态发现（文件操作时自动向上遍历 `.xmclaw/skills`）+ 条件激活（`paths` gitignore-style 路径模式匹配时自动激活）+ 多层级加载（user > project > managed）+ Shell 内联（``!`command` ``）。
+5. **QueryEngine 抽象**——对话生命周期抽象为 `QueryEngine`，支持 headless/SDK/REPL 三种模式。XMclaw 当前只有 daemon WS + CLI repl，缺少 SDK 模式。
+6. **Feature Flags**——88 个编译时条件加载标志，避免 runtime bloat。XMclaw 是 Python dynamic import，无需编译时标志，但缺少功能开关机制。
+
+---
+
+## 2. 我们真实的缺口（基于今日 XMclaw 审计）
+
+> 来自 [V2_STATUS.md](V2_STATUS.md) 和 2026-04-22 代码审计。不含空话，每条都能对应到文件。
+>
+> **要更高层视角（每家竞品的架构详解、跨 10 个维度的能力矩阵）？** → [COMPETITIVE_GAP_ANALYSIS.md §2-§3](COMPETITIVE_GAP_ANALYSIS.md#2-竞品架构深度对比)。本节聚焦**可修复的具体代码缺口**。
+
+### 2.1 结构性缺口（Must-fix 才能叫产品）
+
+| # | 缺口 | 证据 | 影响 |
+|---|------|------|------|
+| 1 | **渠道全是 stub** | `xmclaw/channels/discord.py`、`slack.py`、`telegram.py`、`lark.py:27-28` 都是 stub，`ChannelManager` 未实现 | 产品承诺"多渠道"，实际只有 WS |
+| 2 | **无插件 SDK 边界** | `xmclaw/integrations/*` 直接 import `xmclaw/core`；没有 `plugin_sdk/` 公开契约 | 第三方无法写插件；我们自己改 core 会炸掉 integrations |
+| 3 | **Sandbox 仅进程内** | `xmclaw/sandbox/` 无 Docker/subprocess 隔离；`LocalSkillRuntime` 是同进程 | 用户装个恶意 skill 可以删文件 |
+| 4 | **进化执行层空缺** | `GeneForge` / `SkillForge` / `VFM` 在 v1 残骸；v2 只做了 decision（`EvolutionController`），没做 generation | 我们的差异化目前**只是理论**，用户看不到"进化" |
+| 5 | **Memory eviction 未实现** | `core/memory/manager.py:209` TODO | 长期跑会爆 |
+| 6 | **ENV override 未接线** | `CLAUDE.md` 承诺 `XMC__llm__anthropic__api_key`，代码未读 | Docker 部署、CI 部署痛苦 |
+| 7 | **无桌面/IDE 入口** | 无 ACP adapter；无 tray | 用户必须开终端——敌不过 Hermes `hermes` + Slack bot 一键 |
+| 8 | **无技能商店/hub** | 有 SkillRegistry，无远程检索、安装、签名 | Hermes `/skills` slash command + agentskills.io 标准把我们甩开一个代差 |
+| 9 | **无 onboarding 向导** | `xmclaw onboard` 是 stub | 用户第一次打开不知道怎么配 model |
+| 10 | **无 doctor 诊断** | `xmclaw doctor` 是 stub | 用户报 bug 无从下手 |
+
+### 2.2 工程纪律缺口
+
+| # | 缺口 | 参照 | 现状 |
+|---|------|------|------|
+| 11 | **缺 smart-gate 测试编排** | OpenClaw 的 `pnpm check:changed` | 我们全量跑 `pytest`，慢；无 changed-lane 概念 |
+| 12 | **缺 AGENTS.md 工程契约** | OpenClaw 每个子目录都有 | 我们只有顶层 `CLAUDE.md` |
+| 13 | **事件总线 SQLite 后端未实现** | `xmclaw/core/bus/sqlite.py:28` 有 schema 但未接通 | 事件回放只能读内存，重启丢失 |
+| 14 | **无提示词注入防御** | Hermes `agent/prompt_builder.py` 有 10+ 条正则 + 不可见字符扫描 | 我们直接把 AGENTS.md / SOUL.md 注入 prompt，毫无防御 |
+| 15 | **日志结构化** | 我们有 `structlog` 依赖但没建 sink/rotation | 生产运维盲区 |
+| 16 | **加密 / keyring** | QwenPaw 用 `keyring>=25` + `cryptography>=43` 加密 secrets | 我们明文存 `daemon/config.json` |
+
+---
+
+## 3. 文件与路径规范（File / Path Convention）
+
+> 这是用户明确问到的"文件规范、路径规范"。下面规定为**v2 正式约束**，新代码必须遵守；老代码后续迁移。
+
+### 3.1 运行时路径（用户机器上）
+
+采用 **XDG Base Directory** + **家目录命名空间**，参考 Hermes `~/.hermes/` 和 QwenPaw `~/.qwenpaw/`：
+
+```
+~/.xmclaw/                     # 用户级数据主目录
+├── config.yaml                # 主配置（迁移 JSON→YAML，见 §3.3）
+├── .env                       # 明文 secrets（chmod 600，仅当无 keyring 可用时）
+├── state.db                   # SQLite：sessions、events、cost、skills history
+├── vector.db                  # sqlite-vec：memory embeddings
+├── memory/                    # Markdown 记忆（FileMemoryIndex，跨会话）
+│   ├── MEMORY.md              # 索引
+│   └── <topic>.md             # 每个 topic 一个文件
+├── skills/                    # 用户安装 / 进化产出的技能（见 §3.5 格式）
+├── agents/                    # 多 agent profile（参考 QwenPaw `<WORKING_DIR>/<agent_id>/`）
+│   └── <agent_id>/
+│       ├── agent.yaml         # 单 agent 的 LLM / tools / skills 选择
+│       ├── sessions/          # 会话 JSON，文件名 `<user>_<session>.json`
+│       ├── memory/            # agent 专属记忆
+│       ├── active_skills/     # 当前 session 启用的 skill 软链
+│       ├── customized_skills/ # 用户定制版 skill
+│       └── HEARTBEAT.md       # 心跳文件（健康检测）
+├── custom_channels/           # 第三方 channel 热加载目录（参考 QwenPaw `registry.py:97-129`）
+├── plugins/                   # 第三方插件（console 前端 + Python 后端配对）
+├── logs/                      # 结构化日志（按天 rotate）
+│   └── daemon-2026-04-22.jsonl
+├── pid                        # daemon PID（单实例锁）
+└── ed25519.key                # 设备绑定密钥（pair auth）
+
+# 安全相关放 sibling 目录（抄 QwenPaw `constant.py:102-111` 的 SECRET_DIR 模式）
+~/.xmclaw.secret/              # 加密的 API key / token；与主目录分开防误删
+~/.xmclaw.backups/             # 备份归档；分开便于 rsync 选择性同步
+
+# 仓库侧（git 仓库内）
+<repo>/
+├── daemon/                    # 仅放 example 和模板
+│   ├── config.example.yaml    # 标准模板
+│   └── skills.example/        # 示例技能
+├── xmclaw/                    # 代码包
+├── plugins/                   # 第三方插件入口（entry_points 发现）
+├── shared/                    # 运行时写入（gitignored），开发模式用
+│   ├── skills/                # 与 ~/.xmclaw/skills 二选一（由 config 切换）
+│   └── vector_db/
+└── agents/                    # 多 agent profile（可选）
+    └── <name>/agent.yaml
+```
+
+**规则**：
+
+1. **默认走 `~/.xmclaw/`**；仅当 `XMC_DATA_DIR` 或 `--data-dir` 覆盖时用别的。
+2. **仓库内禁止写运行时数据**（除非用户显式 `--dev`）——目前 `shared/` 的写入需要加 `--dev` gate。
+3. **secrets 永不进 `config.yaml`**——全部走 `.env` 或 `keyring`（参考 QwenPaw）。
+4. **路径解析单入口**：`xmclaw/utils/paths.py` 提供 `data_dir()` / `skills_dir()` / `log_dir()` 等；其他模块禁止手拼路径。
+
+### 3.2 代码树规范（仓库内）
+
+```
+xmclaw/
+├── core/                      # 纯逻辑，不依赖 I/O 框架
+│   ├── bus/                   # 事件总线
+│   ├── ir/                    # ToolCall / ToolResult / ToolSpec
+│   ├── grader/                # HonestGrader
+│   ├── scheduler/             # UCB1 bandit
+│   ├── evolution/             # Controller（决策）
+│   ├── memory/                # FileMemoryIndex + MemoryManager
+│   └── session/               # Session lifecycle
+├── daemon/                    # FastAPI / WS，I/O 边界
+│   ├── app.py
+│   ├── agent_loop.py
+│   ├── factory.py             # config → runtime 对象
+│   ├── lifecycle.py
+│   └── config_reloader.py
+├── providers/                 # 外部系统适配（全部 ABC + 实现）
+│   ├── llm/                   # anthropic / openai / ollama / ...
+│   ├── tool/                  # builtin / mcp_bridge / browser / lsp
+│   ├── memory/                # sqlite_vec / ...
+│   ├── runtime/               # local / process / docker
+│   └── channel/               # discord / slack / telegram / lark / ws
+├── plugin_sdk/                # ★新增：公开契约
+│   ├── __init__.py            # 公开 API：SkillBase, ToolBase, ChannelBase
+│   ├── events.py              # 公开 EventType subset
+│   └── types.py               # 公开 Pydantic 模型
+├── cli/                       # typer-based
+│   ├── main.py
+│   ├── serve.py / start.py / stop.py / ...
+│   ├── onboard.py             # ★补实现
+│   └── doctor.py              # ★补实现
+├── utils/
+│   ├── paths.py               # ★新增：路径解析单入口
+│   ├── logging.py             # structlog 配置
+│   └── secrets.py             # keyring + .env 统一接口
+└── skills/                    # 内置技能（非生成）
+    ├── registry.py
+    └── builtin/
+```
+
+**规则**：
+
+1. **`core/` 不得 import `daemon/` 或 `providers/`**（单向依赖）。
+2. **`providers/` 的每个子包都必须有 `base.py` 定义 ABC**——新加 provider 先加 ABC 再实现。
+3. **第三方插件只能 import `xmclaw.plugin_sdk.*`**；禁止 import `xmclaw.core.*` / `xmclaw.daemon.*`。抄 OpenClaw 的 `src/plugin-sdk/AGENTS.md` 规则：CI 跑 `import-cycles` + `madge` 检查。
+4. **每个 `providers/*` 子目录放一个 `AGENTS.md`** 说明该 provider 的契约（参考 OpenClaw）。
+
+### 3.3 配置格式迁移：JSON → YAML
+
+**动机**：Hermes 用 YAML，QwenPaw 用 YAML，OpenClaw 用 JSON + ENV。YAML 对人友好（多行、注释），对机器 `ruamel.yaml` 可保留注释。用户反复被 `daemon/config.json` 路径 + 相对路径坑过。
+
+**迁移步骤**（不破坏现有部署）：
+
+1. **Phase A**：新增 `~/.xmclaw/config.yaml`，`factory.load_config()` 同时接受 `.json` 和 `.yaml`，优先 yaml。
+2. **Phase B**：`xmclaw config migrate` 命令一次性转换存量 `config.json` → `config.yaml`，secrets 同时抽到 `.env`。
+3. **Phase C**：老 `config.json` 兼容一个版本后废弃。
+
+### 3.4 Skill 文件格式（对齐公共标准，兼容 QwenPaw / Claude Agent Skills）
+
+**硬约束**：XMclaw skill 必须能被 QwenPaw / Claude Agent Skills 解析，反之亦然。**这是网络效应**——用户能把 QwenPaw 上的 skill 直接拖进 `~/.xmclaw/skills/`。
+
+格式（参考 QwenPaw `agents/skills/multi_agent_collaboration-en/SKILL.md:1-8`）：
+
+```
+~/.xmclaw/skills/<skill-name>[-<lang>]/
+├── SKILL.md                   # 必需：YAML frontmatter + Markdown 正文
+├── manifest.yaml              # 可选：XMclaw 专属扩展（权限、gene genealogy）
+├── history.jsonl              # 必需：版本历史 + 进化证据（见 §5.1）
+├── scripts/                   # 可选：skill 调用的辅助脚本
+└── references/                # 可选：长参考文档（如 Office XSD）
+```
+
+`SKILL.md` 头部：
+
+```yaml
+---
+name: <skill-name>
+description: <一句话，模型据此判断是否调用>
+metadata:
+  builtin_skill_version: "1.0"        # 兼容 QwenPaw 版本号约定
+  xmclaw:                             # 我们的专属命名空间（QwenPaw 允许 `_REQUIREMENTS_METADATA_NAMESPACES` 多命名空间并存）
+    emoji: "🔍"
+    evolution_lineage: "gene-abc-123"  # 该 skill 源自哪条 gene
+---
+
+# Skill 正文（模型调用时才读）
+```
+
+**per-language pair 约定**：QwenPaw 用 `<name>-en/` 和 `<name>-zh/` 两个目录，通过正则 `^(?P<name>.+)-(?P<language>en|zh)$` 匹配。我们抄这个——用户 `language` 设置切换，无需二次翻译基础设施。
+
+**per-channel routing**：QwenPaw `resolve_effective_skills(workspace_dir, channel)` 让不同渠道用不同 skill 集（`ALL_SKILL_ROUTING_CHANNELS` 白名单）。我们 Epic #1 channel SDK 做完后，直接接这层。
+
+### 3.5 命名规范
+
+| 对象 | 规则 | 例子 |
+|------|------|------|
+| 事件类型 | `UPPER_SNAKE`（保持 v2 现状） | `TOOL_INVOCATION_FINISHED` |
+| Python 模块 | `lower_snake` | `config_reloader.py` |
+| Skill 目录名 | `kebab-case` | `github-code-review/` |
+| Skill `id` | `kebab-case` | `github-code-review` |
+| Config key | `snake_case` + 分组 | `llm.anthropic.api_key` |
+| ENV 变量 | `XMC__<dotted_path>` 双下划线转点 | `XMC__llm__anthropic__api_key` |
+| CLI 命令 | `kebab-case` | `xmclaw config-migrate` |
+
+---
+
+## 3.6 执行协议（Execution Protocol）★ 每次开发必读
+
+**这是硬纪律**——任何 Epic / Milestone 的状态变化，必须**立即**回写本文档；文档更新与代码变更必须在**同一个 PR** 内。
+
+### 3.6.1 状态图标
+
+| 图标 | 状态 | 含义 |
+|------|------|------|
+| ⬜ | 未开始 | 尚未触发 |
+| 🟡 | 进行中 | 有开发者在做 |
+| 🔴 | 阻塞 | 遇依赖 / 设计问题 |
+| ✅ | 完成 | 所有子项勾完、退出标准满足 |
+| ⏸ | 暂停 | 主动推迟（需写原因） |
+
+### 3.6.2 更新触发点
+
+每个 Epic 至少 4 次更新：
+
+1. **启动时**：状态 ⬜→🟡，填 **负责人** + **起始日期**
+2. **每个子步完成**：checkbox 打 ✅，**进度日志**追加一行 `YYYY-MM-DD: <一句话摘要> (commit abc123)`
+3. **遇阻塞**：状态 🟡→🔴，**进度日志**记录 reason + 等谁
+4. **Epic 完成**：状态 ✅，填 **完成日期**，同时去 §7 把相关 Milestone 退出标准打勾
+
+### 3.6.3 Commit 消息约定
+
+所有 commit 必须引用 Epic 号：
+
+```
+Epic #6: 实现 XMC__ prefix ENV override 解析
+Epic #14 partial: 移植 Hermes _CONTEXT_THREAT_PATTERNS 正则
+Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
+```
+
+### 3.6.4 反馈 / Retrospective 格式
+
+**进度日志**追加式，不删除，每条 ≤1 行。每个 Epic 完成后，在日志末尾写一条 `retrospective:` 行，总结 3 件事（做对了什么 / 该避开的坑 / 可复用的模式），作为后续 Epic 的输入。
+
+### 3.6.5 文档同步规则
+
+- Checkbox 打勾 = §4 该 Epic 状态同步更新 = §7 对应 Milestone 退出标准同步更新。任何一处漏改视为不合格 PR。
+- 每周一次：跑 `scripts/lint_roadmap.py`（待 Epic #10 附加）校验状态一致性。
+- 重大方向调整（比如某 Epic 降优先级）在 **进度日志** 写明 + 在 CLAUDE.md 加一行给未来的 AI 协作者。
+
+---
+
+## 4. 对标差异执行表（拆到可 PR 粒度）
+
+按 §2 的缺口编号，一条一个 Epic。每个 Epic 包含：**状态** → **开发计划**（有序步骤）→ **检查清单**（checkbox）→ **退出标准** → **进度日志**（追加式）。
+
+### Epic #1 · Channel SDK（参照 OpenClaw 插件边界 + Hermes gateway）
+
+**目标**：把 `xmclaw/channels/` 从 stubs 变成"Discord/Slack/Telegram 三条可用"。
+
+**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**前置依赖**：Epic #2（Plugin SDK 边界）要先定好契约约束
+**关联 Milestone**：M2（三渠道可用）
+
+**开发计划**：
+
+1. **契约设计**（0.5 天）——定义 `ChannelBase` ABC + `IncomingMessage` / `OutgoingMessage` Pydantic 模型，参考 QwenPaw `app/channels/base.py:25-100`
+2. **Conformance test 骨架**（0.5 天）——先写测试后写实现：`tests/conformance/test_channel_conformance.py` 对每个 channel 跑 5 类消息（text / media / reaction / command / 错误恢复）
+3. **参考实现抽出**（1 天）——把现有 `providers/channel/ws.py` 重构到新 ABC，让它第一个通过 conformance test
+4. **Discord 实现**（2 天）——`discord.py` + mock 对话测试
+5. **Slack 实现**（1.5 天）——`slack-bolt` 模板
+6. **Telegram 实现**（1.5 天）——`python-telegram-bot` 模板
+7. **CLI 子命令**（1 天）——`xmclaw channels {list, enable, disable, configure}`
+8. **安全策略钩子**（1 天）——`dm_policy: open|pairing|allowlist` + 配对码（参照 OpenClaw）
+9. **文档 + 示例**（0.5 天）——`docs/CHANNELS.md` 写成怎么接新 channel
+
+**检查清单**：
+
+- [ ] `xmclaw/plugin_sdk/channel.py` 公开契约（`ChannelBase`, `IncomingMessage`, `OutgoingMessage`）
+- [ ] `tests/conformance/test_channel_conformance.py` 骨架 + 5 类消息用例
+- [ ] `providers/channel/ws.py` 重构到新 ABC
+- [ ] `providers/channel/discord.py` + mock 测试
+- [ ] `providers/channel/slack.py` + mock 测试
+- [ ] `providers/channel/telegram.py` + mock 测试
+- [ ] `xmclaw channels` CLI 子命令（`list` / `enable` / `disable` / `configure`）
+- [ ] `dm_policy` 安全钩子 + 配对码端点
+- [ ] `docs/CHANNELS.md` 写完
+
+**退出标准**：
+
+- 从 Telegram 发消息能到 agent loop 并回复（手工 + CI 都通过）
+- Conformance test 三个 channel 全绿
+- `xmclaw doctor` 能检查 channel token 有效性
+
+**进度日志**：
+
+- _（尚无）_
+
+---
+
+### Epic #2 · Plugin SDK 边界（抄 OpenClaw）
+
+**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**前置依赖**：无（其他 Epic 反过来依赖它）
+**关联 Milestone**：M3（Plugin SDK v1）
+
+**开发计划**：
+
+1. **SDK 目录 + 导出冻结**（1 天）——`plugin_sdk/__init__.py` 列出公开符号；其他 import 不公开
+2. **契约文档**（0.5 天）——`plugin_sdk/AGENTS.md` 说"什么可 import、什么不能、兼容性承诺是什么"
+3. **CI 隔离脚本**（1 天）——`scripts/check_plugin_isolation.py` AST 扫描 `plugins/**` import；pre-commit + CI 双跑
+4. **Pilot 迁移**（2 天）——挑 1 个 integrations（比如 notion）改成 plugin 形状，检验契约够用
+5. **Pilot 第三方 repo**（1 天）——`xmclaw-plugin-example` 样板仓库；只 import `plugin_sdk`、能被 `pip install` 后发现
+6. **批量迁移**（3 天）——剩余 `integrations/` 全部改成 plugin；或标记为 deprecated
+7. **兼容性测试**（1 天）——跑 pilot repo 的 CI，验证升级 `plugin_sdk` minor 版本后插件无需改
+
+**检查清单**：
+
+- [ ] `xmclaw/plugin_sdk/__init__.py` 公开：`SkillBase`, `ChannelBase`, `ToolBase`, `EventType`（subset）, `register_skill()`, `register_tool()`
+- [ ] `xmclaw/plugin_sdk/AGENTS.md` 契约规则
+- [ ] `xmclaw/plugin_sdk/events.py` / `types.py`（Pydantic 模型子集）
+- [ ] `scripts/check_plugin_isolation.py` + pre-commit hook + CI
+- [ ] Pilot integration 迁移成功
+- [ ] 外部样例 `xmclaw-plugin-example` 跑通
+- [ ] `integrations/*` 批量迁移或 deprecation mark
+
+**退出标准**：
+
+- `plugin_sdk/` 公开 API 冻结、写进 CHANGELOG
+- CI import 隔离检查通过，改 `core/` 时不会破坏 plugin
+- 至少 1 个外部样例插件可 `pip install xmclaw-plugin-example` 后被发现
+
+**进度日志**：
+
+- _（尚无）_
+
+---
+
+### Epic #3 · 沙箱（抄 QwenPaw security + Hermes terminal_tool）
+
+**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**前置依赖**：无
+**关联 Milestone**：M4（沙箱可用）+ M8（安全硬化）
+
+**开发计划**：
+
+1. **Runtime ABC**（0.5 天）——`providers/runtime/base.py` 定义 `ExecResult` + `RuntimeBackend.exec()`
+2. **Process 运行时**（2 天）——`process.py` subprocess + resource limits（Windows `psutil`、Linux `resource`）+ 超时杀树
+3. **规则库移植**（0.5 天）——从 QwenPaw 拷贝 8 份 `skill_scanner/rules/signatures/*.yaml` + `tool_guard/rules/dangerous_shell_commands.yaml`；在 header 加 Apache-2 归属注释
+4. **3 Guardian 架构**（2 天）——`security/tool_guard/engine.py` + `FilePathToolGuardian` + `RuleBasedToolGuardian` + `ShellEvasionGuardian`
+5. **4-path 决策流**（1 天）——`auto_denied / preapproved / needs_approval / fall_through`，套在 AgentLoop `_acting` 前
+6. **ApprovalService + GC**（1 天）——`_pending` / `_completed` dict + 30 分钟 / 200 / 500 阈值
+7. **Risk 分层**（0.5 天）——`MEDIUM` / `HIGH` / `CRITICAL` 映射到审批策略
+8. **SkillScanner**（1 天）——`security/skill_scanner.py` 扫描 `SKILL.md` + scripts 风险
+9. **Docker 运行时**（optional extra，2 天）——`docker.py`，`pip install xmclaw[docker]` 才装
+10. **i18n 文案**（0.5 天）——en/zh 审批对话框
+11. **测试套**（2 天）——对每条 YAML 规则写 positive + negative 测试；5 条"危险 skill"集成测试
+
+**检查清单**：
+
+- [ ] `providers/runtime/base.py` ABC
+- [ ] `providers/runtime/process.py`：subprocess + resource limits
+- [ ] `providers/runtime/docker.py`：Docker exec（optional extra）
+- [ ] 8 份 YAML + 1 份 shell 规则拷贝到 `xmclaw/security/rules/`
+- [ ] `FilePathToolGuardian` / `RuleBasedToolGuardian` / `ShellEvasionGuardian`
+- [ ] 4-path 决策流接到 AgentLoop
+- [ ] `ApprovalService` + GC
+- [ ] i18n 审批文案（en/zh）
+- [ ] `MEDIUM` / `HIGH` / `CRITICAL` 风险分层
+- [ ] `xmclaw/security/skill_scanner.py` + SkillForge pipeline
+- [ ] `xmclaw security scan <skill>` CLI
+
+**退出标准**：
+
+- 跑 `tests/security/test_guardians.py` 全绿，每条 YAML 规则都有正反测试
+- 内建 5 条"危险 skill"测试全部被拦截（含 curl|bash、base64 混淆、rm -rf 变体、ssh key 读取、信用卡号外泄）
+- 审批过期后自动 GC
+
+**进度日志**：
+
+- _（尚无）_
+
+---
+
+### Epic #4 · 进化执行层（★核心差异化）
+
+**这是我们唯一的用户可感知差异，必须做到看得见。**
+
+**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**前置依赖**：Epic #3（scanner）、Epic #13（事件总线）、Epic #5（memory）
+**关联 Milestone**：M5（进化可感知）★ 最关键
+
+**开发计划**：
+
+1. **事件类型扩展**（0.5 天）——在 `core/bus/events.py` 加 `GENE_GENERATED` / `SKILL_CANDIDATE_READY` / `SKILL_EVOLVED` / `PROMOTION_ACCEPTED` / `PROMOTION_REJECTED`
+2. **触发条件设计**（1 天，写 spec）——gene 生成的 trigger：同 task pattern 连续失败 N 次 / grader 分数低于阈值 / 用户 reaction 负面。写进 `docs/EVOLUTION.md`
+3. **gene_forge.py**（3 天）——订阅事件流 → pattern 匹配 → LLM 生成 candidate → 写 `~/.xmclaw/skills/<name>/candidates/<uuid>.md`
+4. **skill_forge.py**（2 天）——candidate → `HonestGrader` 打分 → `SkillScanner` 扫描 → 通过后 `SkillRegistry.register()` 新 version
+5. **engine.py 总装**（1 天）——订阅-决策-生成-验证流水线，独立 asyncio task
+6. **history.jsonl spec**（0.5 天）——格式：`{ts, trigger, old_version, new_version, diff, grader_score, scanner_verdict}`
+7. **CLI：`xmclaw evolution show`**（1.5 天）——`--since 24h` 读 `history.jsonl`，格式化为 rich 表格
+8. **CLI：`xmclaw session report <id>`**（1 天）——会话结束时对比本 session grader 分 vs 过去同类 task 均值
+9. **CLI repl flash**（0.5 天）——订阅 `SKILL_EVOLVED` 在终端底部打绿字 `[evolved] <skill> v3→v4 (+0.12)`
+10. **Killer demo GIF**（1 天）——asciinema 录制 email_digest v3→v7 的用户旅程
+11. **集成测试**（2 天）——模拟一周 workload，验证 grader 分数真的在升
+
+**检查清单**：
+
+- [ ] `core/bus/events.py` 新事件类型
+- [ ] `xmclaw/evolution/gene_forge.py`：流式 gene 生成器
+- [ ] `xmclaw/evolution/skill_forge.py`：候选验证
+- [ ] `xmclaw/evolution/engine.py`：总装
+- [ ] `~/.xmclaw/skills/<name>/candidates/` + `history.jsonl` 格式落地
+- [ ] CLI `xmclaw evolution show` 可用
+- [ ] CLI `xmclaw session report <id>` 可用
+- [ ] CLI repl `SKILL_EVOLVED` flash
+- [ ] README 顶部 killer demo GIF
+- [ ] `docs/EVOLUTION.md` 写完 trigger 条件 + 策略 + FAQ
+
+**退出标准**：
+
+- 一周实测：同类 task 上 grader 分数 +0.1 以上
+- killer demo GIF 能录出来且无造假（`history.jsonl` 真实记录）
+- 用户打 `xmclaw evolution show --since 7d` 能看到 3+ 条真实 evolution 事件
+- 集成测试 `tests/integration/test_evolution_visible.py` 全绿
+
+**进度日志**：
+
+- _（尚无）_
+
+---
+
+### Epic #5 · Memory eviction
+
+**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**前置依赖**：Epic #13（事件总线持久化）
+**关联 Milestone**：M8（性能与可观测）
+
+**开发计划**：
+
+1. **策略设计文档**（0.5 天）——LRU + age-based + cap 三维混合，边界条件（pinned item、active session）写清
+2. **实现**（1.5 天）——落地 `core/memory/manager.py:209` 的 `evict()`，跑每 N 分钟一次 + cap 触发
+3. **config 字段**（0.5 天）——`memory.retention_days` / `max_bytes` / `pinned_tags`
+4. **CLI `xmclaw memory stats`**（1 天）——显示容量、淘汰日志、命中率
+5. **单测 + 压测**（1 天）——塞 10k 条记忆验证淘汰效率
+
+**检查清单**：
+
+- [ ] `core/memory/manager.py:209` LRU + age-based + cap 落地
+- [ ] `memory.retention_days` / `max_bytes` / `pinned_tags` config
+- [ ] `xmclaw memory stats` CLI
+- [ ] `MEMORY_EVICTED` 事件发出
+- [ ] 单测 + 压测
+
+**退出标准**：10k 记忆条目下 evict 延迟 < 100ms；`xmclaw memory stats` 能看到淘汰日志。
+
+**进度日志**：
+
+- _（尚无）_
+
+---
+
+### Epic #6 · ENV override
+
+**状态**：✅ 已完成 | **负责人**：Claude (AI pair) | **起始**：2026-04-22 | **完成**：2026-04-22
+**前置依赖**：无
+**关联 Milestone**：M1（Daemon 稳定性 GA）
+
+**开发计划**：
+
+1. **解析规则**（0.5 天）——`XMC__<path>__<key>=value` → 双下划线转点 → nested dict merge，类型推断（bool/int/str）
+2. **factory 集成**（0.5 天）——`load_config()` 加 env merge 层，优先级 `ENV > yaml > defaults`
+3. **单测**（0.5 天）——覆盖：覆盖已有 key / 新建深层 key / 类型转换 / 错误格式报错
+
+**检查清单**：
+
+- [x] `daemon/factory.py` `load_config()` 加 env merge 层
+- [x] `XMC__<dotted_path>` 命名规则实现
+- [x] 单测：`XMC__llm__anthropic__api_key=xxx` 覆盖 YAML
+- [x] 文档 `docs/CONFIG.md` 加 ENV 覆盖小节
+
+**退出标准**：Docker 镜像能靠纯 ENV 起 daemon，不挂 volume config。
+
+**进度日志**：
+
+- 2026-04-22: `_apply_env_overrides(cfg, env, prefix="XMC__")` 落地：双下划线切段、小写化、JSON 类型推断、空段过滤、标量 parent 覆盖为 dict。`load_config(path, *, env=None)` 在 json.loads 之后自动 overlay（传 `env={}` 单测静默） (commit pending)
+- 2026-04-22: `tests/unit/test_v2_daemon_factory.py` 新增 12 条 `test_env_override_*` 用例（覆盖已有 key / 创建深层 / 忽略非前缀 / bool+int+float+null+array 类型推断 / 裸 secret 保留 str / 标量 parent 覆盖 / 段大小写兼容 / 空段被忽略 / end-to-end `load_config`），40/40 passed (commit pending)
+- 2026-04-22: `docs/CONFIG.md` 新建，含命名规则表 / 类型推断 / 优先级 / Docker 纯 ENV 示例 (commit pending)
+
+---
+
+### Epic #7 · IDE / ACP 入口（双向 ACP）
+
+**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**前置依赖**：Epic #2（Plugin SDK）
+**关联 Milestone**：M7（IDE 入口）
+
+**开发计划**：
+
+1. **读 ACP 规范**（0.5 天）——zed-industries/agent-client-protocol；对照 QwenPaw `agents/acp/` 现成实现
+2. **ACP Server**（3 天）——`providers/channel/acp_server.py` stdio JSON-RPC，把 AgentLoop 包成 ACP agent
+3. **ACP Client**（2 天）——`providers/tool/acp_client.py` + `delegate_external_agent` 工具
+4. **config 扩展**（0.5 天）——`acp.clients: [{name, command, args, env}]`；默认预置 `claude_code` / `codex` / `opencode`
+5. **权限控制**（1 天）——`acp/permissions.py` 模式：哪些 tool 可以被外部 agent 调用
+6. **Zed 集成测试**（1 天）——手工在 Zed settings.json 配置指向本地 xmclaw，走通一次对话
+7. **文档**（0.5 天）——`docs/IDE.md` 分 Zed / VS Code / JetBrains 三节
+
+**检查清单**：
+
+- [ ] `providers/channel/acp_server.py`
+- [ ] `providers/tool/acp_client.py`
+- [ ] `config.yaml` 支持 `acp.clients` 数组
+- [ ] `acp/permissions.py` 权限控制
+- [ ] Zed 识别成功截图
+- [ ] `docs/IDE.md`
+
+**退出标准**：Zed 用户能在 settings.json 配 xmclaw ACP server 并对话；反向 xmclaw 能 delegate 到 claude_code。
+
+**进度日志**：
+
+- _（尚无）_
+
+---
+
+### Epic #8 · Skill Hub
+
+**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**前置依赖**：Epic #3（scanner）、Epic #16（signed verification）
+**关联 Milestone**：M6（Onboarding + Hub）
+
+**开发计划**：
+
+1. **Hub 协议设计**（1 天）——先走 GitHub releases 或简单 JSON index（`skills.xmclaw.dev/index.json`）；不先造 registry 服务
+2. **本地 mock**（0.5 天）——`tests/fixtures/mock_hub/` 模拟 hub，CI 用
+3. **HTTP client**（1 天）——`xmclaw/skills/hub.py` search/download/cache
+4. **CLI**（1.5 天）——`xmclaw skills {search, install, uninstall, list, update} <name>`
+5. **Scanner 集成**（0.5 天）——install 前跑 Epic #3 的 SkillScanner
+6. **agentskills.io 兼容**（1 天）——验证能装 Claude Agent Skills 上的 skill 原封不动
+7. **发布 1 个样例 skill repo**（1 天）——`xmclaw-skill-github-code-review` 当作 hub 生态首个案例
+
+**检查清单**：
+
+- [ ] `xmclaw/skills/hub.py` HTTP client
+- [ ] `xmclaw skills {search, install, uninstall, list, update}` CLI
+- [ ] install 前自动扫
+- [ ] agentskills.io 格式兼容测试
+- [ ] 1 个样例 skill repo 可安装
+
+**退出标准**：`xmclaw skills install <name>` 端到端跑通；至少 5 个 skill 可装（起步集）。
+
+**进度日志**：
+
+- _（尚无）_
+
+---
+
+### Epic #9 · Onboarding 向导
+
+**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**前置依赖**：Epic #6（ENV override）、Epic #10（doctor）、Epic #16（secrets）
+**关联 Milestone**：M6（Onboarding + Hub）
+
+**开发计划**：
+
+1. **交互脚本骨架**（1 天）——`cli/onboard.py` 用 `questionary` 实现 6 步
+2. **LLM provider 选择**（0.5 天）——列出 anthropic / openai / ollama / lmstudio
+3. **API key 写 keyring**（0.5 天）——调 Epic #16 的 `utils/secrets.py`
+4. **workspace 路径确认**（0.5 天）——默认 `~/.xmclaw/`，允许改
+5. **Tool/Channel 选择**（1 天）——勾选启用项
+6. **Smoke test 集成**（1 天）——跑一次 "hello" 验证 LLM 通、memory db 建好、skill registry 可读
+7. **错误回退**（0.5 天）——任何步失败给清晰提示 + `xmclaw doctor` 建议
+
+**检查清单**：
+
+- [ ] 6 步交互流程
+- [ ] keyring 写入 API key
+- [ ] workspace 路径
+- [ ] tool/channel 勾选
+- [ ] 末尾 smoke test
+- [ ] 错误回退提示
+
+**退出标准**：新用户从 `pip install xmclaw` 到第一次对话 ≤ 3 分钟。
+
+**进度日志**：
+
+- _（尚无）_
+
+---
+
+### Epic #10 · Doctor 诊断（可插拔）
+
+**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**前置依赖**：无
+**关联 Milestone**：M1（Daemon 稳定性）
+
+**开发计划**：
+
+1. **Registry 骨架**（1 天）——`cli/doctor_registry.py` + `DoctorCheck` ABC（`id`, `name`, `run() -> CheckResult`）
+2. **核心 check**（2 天）——`doctor_checks.py` 实现 8-10 项：Python 版本 / 目录可写 / memory db / skills 目录扫 / daemon WS+HTTP / sandbox 可起
+3. **网络 check**（1 天）——`doctor_connectivity.py` 测 anthropic / openai / ollama endpoint
+4. **Fix runner**（1 天）——`doctor_fix_runner.py` 自动建目录 / pid 锁 / 安装 playwright
+5. **entry_points 插件组**（0.5 天）——`pyproject.toml` 声 `[project.entry-points."xmclaw.doctor"]`
+6. **CLI**（0.5 天）——`xmclaw doctor [--fix] [--json]`
+7. **Roadmap lint**（0.5 天）——加一个 check `DOCTOR_CHECK_ROADMAP_LINT`，跑 `scripts/lint_roadmap.py` 校验文档状态一致性（§3.6.5 依赖项）
+8. **文档**（0.5 天）——`docs/DOCTOR.md` 写怎么注册插件 check
+
+**检查清单**：
+
+- [ ] `cli/doctor_registry.py` + `DoctorCheck` ABC
+- [ ] `doctor_checks.py` 核心检查 ≥ 8
+- [ ] `doctor_connectivity.py` 网络探测
+- [ ] `doctor_fix_runner.py` 自动修复
+- [ ] `[project.entry-points."xmclaw.doctor"]` 组
+- [ ] `xmclaw doctor [--fix] [--json]` CLI
+- [ ] `scripts/lint_roadmap.py` + 对应 check
+- [ ] `docs/DOCTOR.md`
+
+**退出标准**：`xmclaw doctor` 覆盖率 ≥ 10 项，`--fix` 能自动处理 ≥ 5 项；第三方 pilot 插件可注册自检。
+
+**进度日志**：
+
+- _（尚无）_
+
+---
+
+### Epic #11 · Smart-gate 测试
+
+**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**前置依赖**：无
+**关联 Milestone**：M1（Daemon 稳定性）
+
+**开发计划**：
+
+1. **Lane 规则设计**（0.5 天）——写 `scripts/test_lanes.yaml` 定义 glob → test suite 映射
+2. **diff 推断脚本**（1 天）——`scripts/test_changed.py` 读 `git diff --name-only`，产出 test 命令
+3. **Pre-commit hook**（0.5 天）——`.pre-commit-config.yaml` 调用 `test_changed.py`
+4. **CI 集成**（0.5 天）——GitHub Actions 用 `test_changed.py` 替换全量 pytest
+5. **全量 fallback**（0.5 天）——main 分支 push 时跑全量；PR 跑 changed lane
+6. **文档**（0.5 天）——`docs/TESTING.md` 加 smart-gate 小节
+
+**检查清单**：
+
+- [ ] `scripts/test_lanes.yaml` lane 规则
+- [ ] `scripts/test_changed.py`
+- [ ] pre-commit hook
+- [ ] CI 改成 changed-first
+- [ ] main 分支全量 fallback
+- [ ] `docs/TESTING.md` 说明
+
+**退出标准**：改 `core/memory/*.py` 时 CI 在 2 分钟内完成，全量仍在 main 护底。
+
+**进度日志**：
+
+- _（尚无）_
+
+---
+
+### Epic #12 · AGENTS.md 分层
+
+**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**前置依赖**：无
+**关联 Milestone**：M1（Daemon 稳定性）
+
+**开发计划**：
+
+1. **模板**（0.5 天）——`docs/AGENTS_TEMPLATE.md` 五段式：职责 / 依赖规则 / 测试入口 / 禁止事项 / 关键文件
+2. **填 core/**（0.5 天）——依赖规则硬写死：不得 import `daemon/*` 或 `providers/*`
+3. **填 daemon/**（0.5 天）——职责：I/O 边界；依赖规则：不得出现业务逻辑
+4. **填 providers/\***（1 天）——每个子包一份（llm / tool / memory / runtime / channel）
+5. **填 plugin_sdk/**（0.5 天）——公开 API 冻结规则
+6. **填 cli/ 和 utils/**（0.5 天）
+7. **CLAUDE.md 瘦身**（0.5 天）——把细节下放后，顶层 CLAUDE.md 只留导航
+
+**检查清单**：
+
+- [ ] `docs/AGENTS_TEMPLATE.md`
+- [ ] `xmclaw/core/AGENTS.md`
+- [ ] `xmclaw/daemon/AGENTS.md`
+- [ ] `xmclaw/providers/{llm,tool,memory,runtime,channel}/AGENTS.md`
+- [ ] `xmclaw/plugin_sdk/AGENTS.md`（Epic #2 产物）
+- [ ] `xmclaw/cli/AGENTS.md`
+- [ ] `xmclaw/utils/AGENTS.md`
+- [ ] CLAUDE.md 瘦身（仅顶层导航）
+
+**退出标准**：新 AI 协作者开任何子目录能单独读懂契约 + 禁区。
+
+**进度日志**：
+
+- _（尚无）_
+
+---
+
+### Epic #13 · SQLite event bus
+
+**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**前置依赖**：无
+**关联 Milestone**：M1（Daemon 稳定性）
+
+**开发计划**：
+
+1. **Schema 设计**（0.5 天）——参考 Hermes `hermes_state.py` v8：`events` / `sessions` / FTS5 虚拟表；预留 `cost` / `grader_scores`
+2. **落地 `core/bus/sqlite.py`**（2 天）——建表 + WAL 模式 + 批量 insert
+3. **接通 AgentLoop publish**（1 天）——现有 `publish(event)` 调用落盘 + 广播
+4. **事件重放 API**（1 天）——`GET /api/events?since=<ts>&session_id=<id>` + WS 分页推送
+5. **FTS5 搜索**（0.5 天）——`GET /api/events/search?q=<keyword>`
+6. **迁移器**（0.5 天）——旧版内存事件一次性导入（如有）
+7. **单测**（1 天）——并发 publish、FTS5 召回、schema migration
+
+**检查清单**：
+
+- [ ] `core/bus/sqlite.py` schema + WAL
+- [ ] `events` / `sessions` / `events_fts` 表
+- [ ] AgentLoop publish 接通
+- [ ] `GET /api/events?since=...&session_id=...` API
+- [ ] `GET /api/events/search?q=...`
+- [ ] Schema migration 脚手架
+- [ ] 单测含并发 publish
+
+**退出标准**：重启 daemon 后能重放过去 24h 的事件；FTS5 查询 "memory" 能在 < 100ms 返回匹配事件。
+
+**进度日志**：
+
+- _（尚无）_
+
+---
+
+### Epic #11 · Smart-gate 测试
+
+- [ ] 写 `scripts/test_changed.py`：`git diff --name-only` → 推断测试 lane
+- [ ] lane 定义：
+  - `core/*` 改 → 跑 `tests/unit/core/` + `tests/conformance/`
+  - `providers/llm/*` 改 → 跑 `tests/unit/llm/` + `tests/integration/test_daemon_agent.py`
+  - `daemon/*` 改 → 跑 `tests/integration/`
+- [ ] pre-commit hook 默认调 `test_changed.py`
+
+### Epic #12 · AGENTS.md 分层
+
+- [ ] 每个 `xmclaw/*` 子包加 `AGENTS.md`：契约、依赖规则、测试入口、禁止事项
+- [ ] CLAUDE.md 只保留顶层视图，细节下放
+
+### Epic #13 · SQLite event bus
+
+- [ ] 落地 `core/bus/sqlite.py` schema（`events` 表 + `sessions` 表 + `fts` 虚拟表抄 Hermes `hermes_state.py`）
+- [ ] 接通 `agent_loop` publish
+- [ ] 事件重放 API：`GET /api/events?since=<ts>&session_id=<id>`
+
+### Epic #14 · Prompt injection 防御
+
+**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**前置依赖**：Epic #13（事件发出需要总线）
+**关联 Milestone**：M8（安全硬化）
+
+**开发计划**：
+
+1. **移植正则 + unicode 扫描**（0.5 天）——从 Hermes `agent/prompt_builder.py` 抄 `_CONTEXT_THREAT_PATTERNS` + `_CONTEXT_INVISIBLE_CHARS`；在 header 标 MIT 归属
+2. **Scanner 模块**（1 天）——`xmclaw/security/prompt_scanner.py` 纯函数 + structured result
+3. **prompt_builder 接入**（0.5 天）——在注入 SOUL.md / PROFILE.md / AGENTS.md / memory 摘要 / 工具 output 前扫一遍
+4. **事件**（0.5 天）——`PROMPT_INJECTION_DETECTED` + `finding_type` / `severity` 字段
+5. **单测**（1 天）——10+ 典型攻击样本（ignore previous / system: override / zero-width / bidirectional override）
+6. **策略配置**（0.5 天）——`security.prompt_injection: {detect_only | redact | block}` 三档
+
+**检查清单**：
+
+- [ ] `xmclaw/security/prompt_scanner.py` 移植 Hermes 规则
+- [ ] 在所有 prompt 注入点前扫（SOUL / PROFILE / AGENTS / memory / tool output）
+- [ ] `PROMPT_INJECTION_DETECTED` 事件
+- [ ] `security.prompt_injection` config 三档策略
+- [ ] 单测 ≥ 10 典型攻击样本
+
+**退出标准**：攻击样本测试全过；`detect_only` 模式不破坏正常流程。
+
+**进度日志**：
+
+- _（尚无）_
+
+---
+
+### Epic #15 · 日志
+
+**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**前置依赖**：无
+**关联 Milestone**：M8（可观测）
+
+**开发计划**：
+
+1. **structlog 配置**（0.5 天）——`utils/logging.py` 全局 processors（timestamp / level / json）
+2. **Rotation handler**（0.5 天）——`TimedRotatingFileHandler` 写 `~/.xmclaw/logs/daemon-YYYY-MM-DD.jsonl`，保留 14 天
+3. **脱敏**（1 天）——正则扫 `api_key` / `bearer` / `password` / JWT token，替换为 `***`
+4. **contextvar 绑定**（0.5 天）——每个请求绑定 `session_id` / `workspace_id`，日志自动带上
+5. **迁移**（1 天）——把现有 `print()` 和 `logging.info()` 替换为 `log.info()` / `log.warning()` / `log.error()`
+
+**检查清单**：
+
+- [ ] `utils/logging.py` structlog 配置
+- [ ] 按天 rotate 日志文件
+- [ ] 敏感字段脱敏
+- [ ] `session_id` / `workspace_id` contextvar 绑定
+- [ ] 现有 `print` / `logging` 迁移完毕
+
+**退出标准**：日志可被 `jq` / `grep` 解析；`grep "api_key" logs/*.jsonl` 返回 0 条真 key。
+
+**进度日志**：
+
+- _（尚无）_
+
+---
+
+### Epic #16 · Secrets 加密
+
+**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**前置依赖**：无
+**关联 Milestone**：M8（安全硬化）+ M6（Onboarding）
+
+**开发计划**：
+
+1. **`utils/secrets.py`**（1 天）——三层优先级：`keyring > ~/.xmclaw.secret/*.enc > ~/.xmclaw/.env > config.yaml`；`get_secret(name)` / `set_secret(name, value)` 统一接口
+2. **加密 fallback**（1 天）——无 keyring 时用 `cryptography` Fernet + 机器绑定 key（从 `ed25519.key` 派生）存 `~/.xmclaw.secret/`
+3. **sibling dir 创建**（0.5 天）——首次启动时建 `~/.xmclaw.secret/` + chmod 700
+4. **CLI**（1 天）——`xmclaw config set-secret <key>` / `get-secret` / `migrate-secrets`
+5. **factory 集成**（0.5 天）——`load_config()` 读 config.yaml 遇到 `${secret:name}` 占位符时自动取
+6. **单测**（1 天）——覆盖三层优先级 + 加密解密 + migrate 不丢数据
+
+**检查清单**：
+
+- [ ] `utils/secrets.py` 三层优先级
+- [ ] `~/.xmclaw.secret/` sibling 目录 + Fernet 加密
+- [ ] `xmclaw config {set,get}-secret` CLI
+- [ ] `xmclaw config migrate-secrets`（从旧 config.json 抽 secrets）
+- [ ] `${secret:name}` 占位符支持
+- [ ] 单测覆盖三层优先级
+
+**退出标准**：新装用户的 API key 不出现在任何明文文件里；`grep -r "sk-" ~/.xmclaw/` 无命中。
+
+**进度日志**：
+
+- _（尚无）_
+
+---
+
+### Epic #17 · 多 Agent 架构（HTTP-to-self 模式）
+
+**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**前置依赖**：Epic #13（事件总线）、Epic #2（Plugin SDK）
+**关联 Milestone**：M5（进化可感知，进化引擎作为独立 agent）
+
+**开发计划**：
+
+1. **Workspace 类**（2 天）——`daemon/workspace.py` 封装一个 agent 的完整运行时（AgentLoop / MemoryManager / SkillRegistry / ChannelManager）
+2. **MultiAgentManager**（2 天）——`daemon/multi_agent_manager.py` `Dict[str, Workspace]` + async lock + pending_starts 去抖
+3. **Dynamic Runner**（1 天）——`daemon/app.py` 加 middleware：按 `X-Agent-Id` header 路由到正确 workspace
+4. **Context middleware**（0.5 天）——`AgentContextMiddleware` 把当前 agent 放进 `contextvars`
+5. **Agent 间工具**（2 天）——`list_agents` / `chat_with_agent` / `submit_to_agent` / `check_agent_task`，走本地 HTTP + `X-Agent-Id`
+6. **Session ID 命名**（0.5 天）——`{from}:to:{to}:{ts}:{uuid8}` 格式 + prompt 前缀 `[Agent X requesting]`
+7. **Evolution 作为独立 agent**（2 天）——EvolutionEngine 搬到独立 workspace，观察主 agent 事件流、输出 skill 改进 PR
+8. **文档 + 范例**（0.5 天）——`docs/MULTI_AGENT.md`
+
+**检查清单**：
+
+- [ ] `daemon/workspace.py` Workspace 类
+- [ ] `daemon/multi_agent_manager.py` + lock + dedupe
+- [ ] `DynamicMultiAgentRunner` + `X-Agent-Id` 路由
+- [ ] `AgentContextMiddleware`
+- [ ] 4 个 agent-间 tool
+- [ ] Session ID 命名规范
+- [ ] EvolutionEngine 独立 agent 化
+- [ ] `docs/MULTI_AGENT.md`
+
+**退出标准**：能同时跑 3 个 agent（main + evolution + QA），互相 `chat_with_agent` 走通；session 不串；日志能按 agent_id 分开。
+
+**进度日志**：
+
+- _（尚无）_
+
+---
+
+### Epic #15 · 日志
+
+- [ ] `utils/logging.py`：`structlog` + `logging.handlers.TimedRotatingFileHandler`
+- [ ] JSON 行格式写入 `~/.xmclaw/logs/daemon-YYYY-MM-DD.jsonl`
+- [ ] 敏感字段自动脱敏（api_key / bearer token 正则）
+
+### Epic #16 · Secrets 加密
+
+- [ ] `utils/secrets.py`：优先读 keyring；fallback `.env`；最后才 `config.yaml`
+- [ ] `xmclaw config set-secret <key>` 交互式写入 keyring
+- [ ] `xmclaw config migrate-secrets` 把 config.json 里的 secrets 抽出来
+- [ ] 加密存储路径 `~/.xmclaw.secret/`（**sibling 目录**，参考 QwenPaw `SECRET_DIR = ~/.qwenpaw.secret`，`constant.py:102-111`）——与数据目录分开，防误删
+
+### Epic #17 · 多 Agent 架构（HTTP-to-self 模式）
+
+> QwenPaw 已证实这套模式足够好；我们的 EvolutionEngine peer 层可以直接用它。
+
+- [ ] `xmclaw/daemon/multi_agent_manager.py`：`Dict[str, Workspace]` 存多 agent，`asyncio.Lock` + `pending_starts: Dict[str, asyncio.Event]` 去抖（抄 QwenPaw `app/multi_agent_manager.py:76-94`）
+- [ ] `daemon/app.py`：`DynamicMultiAgentRunner` 按 `X-Agent-Id` header 路由（抄 QwenPaw `app/_app.py:71-80`）
+- [ ] Tool：`list_agents` / `chat_with_agent` / `submit_to_agent` / `check_agent_task`——agent 间通过本地 HTTP 对话，不走特殊 IPC
+- [ ] Session ID 命名：`{from_agent}:to:{to_agent}:{timestamp}:{uuid_short}`（防跨 agent session 泄漏，抄 QwenPaw `agents/tools/agent_management.py:74-78`）
+- [ ] Prompt 前缀 `[Agent X requesting]` 让被调 agent 知道是谁来的
+- [ ] 用同样模式把 EvolutionEngine 做成**独立 agent**（不是嵌入 AgentLoop）——进化 agent 观察主 agent 的事件流并输出 skill 改进
+
+---
+
+### Epic #18 · 前端补全（Web UI 从 Mock 到真实）
+
+**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**前置依赖**：Epic #13（SQLite event bus，事件回放 API）
+**关联 Milestone**：M6（Onboarding + Hub）
+
+> 当前前端是 Hermes WebUI 适配层，`xmclaw_adapter.js` Mock 了大量缺失 API（file browser、workspaces、profiles、memory）。用户打开这些面板看到的是空白。
+
+**开发计划**：
+
+1. **File Browser API**（1 天）——`daemon/routers/files.py`：`GET /api/files?path=` 返回目录树 + 文件内容，支持 allowed_dirs 过滤
+2. **Workspaces API**（1 天）——`daemon/routers/workspaces.py`：CRUD + 切换当前 workspace
+3. **Profiles API**（0.5 天）——`daemon/routers/profiles.py`：读取 `~/.xmclaw/persona/profiles/*.md`
+4. **Memory Editor API**（1 天）——`daemon/routers/memory.py`：读/写 `~/.xmclaw/memory/*.md`，FTS5 搜索
+5. **Onboarding 页面**（1.5 天）——静态页面：选 provider → 填 key → 选 tools → smoke test；走 `xmclaw_adapter.js` 新增 `/api/v2/onboarding` 路由
+6. **适配层去 Mock**（1 天）——`xmclaw_adapter.js` 把上述 API 从 mock 切到真实 `/api/v2/*`
+7. **前端测试**（1 天）——Playwright E2E：发送消息、工具调用、设置面板、模型切换
+
+**检查清单**：
+
+- [ ] `GET /api/v2/files?path=` 返回真实目录树
+- [ ] `GET /api/v2/workspaces` CRUD
+- [ ] `GET /api/v2/profiles` 列表
+- [ ] `GET/POST /api/v2/memory` 读写 + 搜索
+- [ ] Onboarding 页面 4 步流程
+- [ ] `xmclaw_adapter.js` 零 mock
+- [ ] Playwright E2E ≥ 4 个场景
+
+**退出标准**：新用户首次打开 `http://127.0.0.1:8765/` 能看到 onboarding 向导；file browser / memory / workspaces / profiles 面板都有真实数据。
+
+**进度日志**：
+
+- _（尚无）_
+
+---
+
+### Epic #19 · 云部署与系统服务模板
+
+**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**前置依赖**：Epic #6（ENV override）
+**关联 Milestone**：M6（Onboarding）+ M9（GA）
+
+**开发计划**：
+
+1. **Dockerfile**（0.5 天）——多阶段构建，基于 `python:3.11-slim`，只安装核心依赖
+2. **docker-compose.yml**（0.5 天）——XMclaw + 可选 Playwright 浏览器服务
+3. **systemd service**（0.5 天）——`deploy/systemd/xmclaw.service` 模板
+4. **launchd plist**（0.5 天）——`deploy/launchd/com.xmclaw.daemon.plist` 模板
+5. **Windows Service**（1 天）——`deploy/windows-service/` pywin32 包装器 + `sc create` 脚本
+6. **一键安装脚本**（1 天）——`scripts/install.sh`（Linux/macOS）+ `scripts/install.ps1`（Windows）
+7. **云部署模板**（1 天）——Fly.io `fly.toml`、AWS ECS Task Definition、Railway 模板
+
+**检查清单**：
+
+- [ ] `Dockerfile` 多阶段构建
+- [ ] `docker-compose.yml`
+- [ ] systemd / launchd / Windows Service 模板
+- [ ] `install.sh` + `install.ps1`
+- [ ] Fly.io / AWS ECS / Railway 模板 ≥ 1 个
+- [ ] 文档 `docs/DEPLOY.md`
+
+**退出标准**：`docker run -p 8765:8765 xmclaw/xmclaw:latest` 能直接对话；新用户 `curl | bash` 后 3 分钟内启动 daemon。
+
+**进度日志**：
+
+- _（尚无）_
+
+---
+
+### Epic #20 · 备份与恢复（零停机重载基础）
+
+**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**前置依赖**：Epic #13（SQLite event bus）
+**关联 Milestone**：M8（性能与可观测）
+
+> 参照 QwenPaw `backup/_ops/{create,restore,storage}.py`：编排式停止 → 原子目录交换 → 后台重启。
+
+**开发计划**：
+
+1. **Backup 类**（1 天）——`xmclaw/backup/create.py`：tar.gz `~/.xmclaw/`（排除 `logs/`），带 manifest.json（timestamp、version、checksum）
+2. **Restore 类**（1 天）——`xmclaw/backup/restore.py`：验证 checksum → 停止受影响 agent → 原子目录交换（`~/.xmclaw/` ↔ `~/.xmclaw.backups/restore-staging/`）→ 后台重启
+3. **CLI**（0.5 天）——`xmclaw backup create [name]` / `xmclaw backup list` / `xmclaw backup restore <name>`
+4. **自动备份策略**（0.5 天）——config 支持 `backup.auto_daily: true`，cron 触发
+5. **零停机重载骨架**（1 天）——`daemon/reloader.py`：新 Workspace 预热 → 原子 swap → 旧实例优雅停止（为 Epic #17 多 Agent 铺路）
+
+**检查清单**：
+
+- [ ] `xmclaw backup create` 产出 tar.gz + manifest
+- [ ] `xmclaw backup restore` 原子交换 + 自动重启
+- [ ] 自动 daily backup
+- [ ] 零停机重载骨架（Workspace swap）
+- [ ] `docs/BACKUP.md`
+
+**退出标准**：恢复 1GB 数据目录时服务中断 < 5 秒；daily auto-backup 连续 7 天不失败。
+
+**进度日志**：
+
+- _（尚无）_
+
+---
+
+## 5. 让差异化"看得见"（Visible Differentiation）
+
+> 用户不会读 `core/evolution/controller.py`。如果 agent 在进步，要让他**直接看到**。
+
+### 5.1 三个可感知信号
+
+| 信号 | 实现 | 用户在哪看到 |
+|------|------|------------|
+| **"Agent 今天学到了什么"** | `~/.xmclaw/skills/<name>/history.jsonl` 每条有 human-readable summary | `xmclaw evolution show --since 24h` |
+| **"这个回答比昨天更好了"** | 每轮 grader 分数写入 event bus；session 结束时产"比较报告" | `xmclaw session report <id>` 显示"本 session vs 上周同类 task 的分数变化" |
+| **"Skill 正在进化"** | `SKILL_EVOLVED` 事件直接打在终端（TUI 左下角常驻区） | CLI repl 模式时，agent 进化一次就在底部 flash 一行绿字 `[evolved] github-code-review v3 → v4 (+0.12)` |
+
+### 5.2 对标对手的"看不见"
+
+- Hermes 的进化在**另一个仓库**、**批量离线**、**$2-10 一次**——用户感知 = 零。
+- OpenClaw 根本没做进化。
+- QwenPaw 没做进化。
+
+**我们的唯一使命**：把"agent 在变强"做成 **实时、本地、免费、可回溯** 的可视事件。
+
+### 5.3 Marketing-visible killer demo
+
+建议在 README 顶部放一个 asciinema / GIF：
+
+```
+$ xmclaw chat
+> 帮我整理这周的邮件
+[agent] 好的...正在运行 email_digest skill v3...
+[agent] ✅ 整理完毕，5 封高优先级
+
+--- 一周后 ---
+
+> 帮我整理这周的邮件
+[agent] 好的...正在运行 email_digest skill v7...
+[agent] 注意：本次使用了你上周反馈"不要摘要 newsletter"后自动改进的过滤规则
+[evolved] email_digest v6 → v7 (+0.18, 'newsletter filter tightened')
+[agent] ✅ 整理完毕，3 封高优先级
+```
+
+Hermes、OpenClaw 都给不出这种 demo——他们的"进步"要么是手动 batch run，要么根本没有。
+
+---
+
+## 6. 取长补短清单（"及百家之长、避百家之短"）
+
+### 6.1 直接抄（license 允许 + 纯工程问题）
+
+| 来源 | 抄什么 | 为什么值得抄 |
+|------|--------|------------|
+| Hermes | `tools/registry.py` 的 AST-scan 自注册 | 省去中心化注册表的维护 |
+| Hermes | `hermes_state.py` SQLite + FTS5 + WAL 模式 | 多渠道并发读写的成熟解 |
+| Hermes | `agent/prompt_builder.py` 注入防御正则 + 不可见字符扫描 | 我们裸奔 |
+| Hermes | `~/.hermes/config.yaml` + `~/.hermes/.env` 二元格式 | 我们的 JSON+secrets 混一起是坑 |
+| OpenClaw | `AGENTS.md` 分层 + `pnpm check:changed` 智能门禁 | 工程纪律，直接出规矩 |
+| OpenClaw | `src/plugin-sdk/*` 公开契约 + extensions 不得反向 import | 插件边界必须硬 |
+| OpenClaw | `openclaw onboard` 的交互流 | UX 已验证 |
+| QwenPaw | `security/skill_scanner/rules/signatures/` 8 份 YAML | Apache-2，直接拷；覆盖 command injection / exfil / obfuscation / injection / social / supply chain |
+| QwenPaw | `security/tool_guard/rules/dangerous_shell_commands.yaml`（309 行，20+ 规则） | 含 fork-bomb / dd 破坏 / mkfs 检测 |
+| QwenPaw | `agents/tool_guard_mixin.py:291-400` 4-path decision | auto_denied / preapproved / needs_approval / fall_through |
+| QwenPaw | `app/approvals/service.py:58-75` 带 GC 的审批服务 | 30 分钟 pending 超时 + 200/500 条容量上限 |
+| QwenPaw | `app/multi_agent_manager.py:22-137` HTTP-to-self | Epic #17 核心参考 |
+| QwenPaw | `cli/doctor_registry.py` + `pyproject.toml:77-80` entry_points 组 | 插件化 doctor |
+| QwenPaw | `app/channels/registry.py:97-129` `custom_channels/` 动态发现 | `sys.path` 注入 + `BaseChannel` 子类扫描 |
+| QwenPaw | `agents/memory/agent_md_manager.py` + `proactive/*` | Markdown 记忆 + 主动消息模式 |
+| QwenPaw | `backup/_ops/{create,restore,storage}.py` | v1.1.3 新增，我们长线需要 |
+| QwenPaw | `app/runner/session.py:60-110` 文件名 sanitize + 局部恢复 | Windows 文件名字符替换 + partial JSON decode，解决 `discord:dm:12345` session id 的坑 |
+| QwenPaw | `providers/provider.py` 的 `ModelInfo.supports_image/video` + `multimodal_prober.py` | 启动时探测 LLM 能力，prompt 动态注入 multimodal 提示 |
+| QwenPaw | `providers/retry_chat_model.py` + rate limiter（10 concurrent / 600 QPM） | LLM 限流 + 重试的工业级实现 |
+| **free-code** | `permissions.ts` 细粒度规则 + Auto Classifier + Denial tracking | 权限从三级（ASK/ALLOW/BLOCK）升级到规则引擎 |
+| **free-code** | `memdir.ts` MEMORY.md 索引 + 类型化记忆（user/feedback/project/reference） | 记忆产品化：索引 + 语义检索双轨 |
+| **free-code** | `cronScheduler.ts` CronCreate/Delete/ListTool + `.claude/scheduled_tasks.json` | Agent 自管理调度，锁 + jitter + missed task 检测 |
+| **free-code** | `loadSkillsDir.ts` SKILL.md + `paths` 条件激活 + 多层级加载 | 技能生态网络效应：与 Claude Agent Skills 互操作 |
+| **free-code** | `QueryEngine.ts` 对话生命周期抽象（headless/SDK/REPL） | 未来暴露 Python SDK 的基础 |
+
+### 6.2 避什么坑（从他们 issues 总结）
+
+| 坑 | 出自 | 我们的规避 |
+|----|------|----------|
+| Tool call 解析飘回文本 | OpenClaw #1467, Hermes #8912 | **已规避**：`core/ir/toolcall.py` 结构化 IR |
+| Memory 绝对阈值溢出 | OpenClaw #31781 | **待做**：Epic #5 eviction |
+| Skill 无 rollback | Hermes FAQ "use git" | **已规避**：SkillRegistry append-only history |
+| LLM self-judge 造成虚假满意 | Hermes 公开缺陷 | **已规避**：HonestGrader opinion ≤ 0.20 |
+| 渠道 CI parity 缺失 | OpenClaw #52838 | **待做**：Epic #1 conformance test |
+| 本地 WS 无设备绑定 | ClawJacked CVE 家族 | **已做一半**：ed25519_pairing.py 存在，需完成 pairing.py（Epic ed25519） |
+| 评估跑一次 $2-10 | Hermes self-evolution 定价 | **已规避**：我们流式进化是 runtime 免费 |
+| Windows native 不支持 | Hermes README 明说"请用 WSL2" | **差异化**：我们 Windows-first 开发（CLAUDE.md 已声明） |
+| Skill 无进程级隔离，靠容器做边界 | QwenPaw `SECURITY.md:136-141` "skills run in-process" | **选择题**：短期走 QwenPaw 路线（进程内 + 容器隔离）；长期如果要多租户，v1.0 之前必须决策 |
+| "Qwen" 变虚名：没有专门 provider，走 DashScope OpenAI-compat | QwenPaw `providers/openai_provider.py` | **反面教材**：我们 provider 层要 **API-compat 优先**，不给每个模型单开文件 |
+| RoutingChatModel 喊智能路由但代码全 `del` 掉参数 | QwenPaw `routing_chat_model.py:42-53` | **差异化机会**：gene-driven 模型路由才是真的 |
+| Agent loop 外包给 agentscope，升级风险全在他们手上 | QwenPaw `pyproject.toml:8-9` 死锁 `agentscope==1.0.19` | **差异化**：自建 loop 让我们能深度改，但要验证我们 loop 不比 agentscope 差 |
+| 覆盖率 `fail_under: 30` 形同虚设 | QwenPaw `pyproject.toml:113-131` | **差异化**：我们要把关键模块 coverage 卡到 80%+，别学这个 |
+
+---
+
+## 7. 成熟度里程碑（从 dev-alpha 到 GA）
+
+> 给每个里程碑一个可验证的退出标准。按当前团队节奏估算（保守）。
+>
+> **对应到策略 Phase**：M1+M4+M8 ≈ [COMPETITIVE Phase 1](COMPETITIVE_GAP_ANALYSIS.md#phase-1--安全与基础补全1-2-个月)；M2+M3 ≈ Phase 2；M6+M7 ≈ Phase 3；M5（★进化可感知）≈ Phase 4。两份文档在这里合流。
+
+### M1 · Daemon 稳定性 GA（2 周）
+
+**状态**：⬜ 未开始 | **起始**：- | **完成**：-
+**包含 Epics**：#6 ENV / #10 Doctor / #11 Smart-gate / #12 AGENTS.md / #13 SQLite bus
+
+**退出标准**：
+- [ ] 连续 72h 压测不崩
+- [ ] `xmclaw doctor` 通过率 100%（Epic #10）
+- [ ] SQLite event bus 落地（Epic #13）
+- [x] ENV override 工作（Epic #6）
+- [ ] smart-gate 测试 CI 跑 < 3 分钟（Epic #11）
+- [ ] 所有子包 AGENTS.md 完成（Epic #12）
+
+**进度日志**：
+- _（尚无）_
+
+---
+
+### M2 · 三渠道可用（2 周）
+
+**状态**：⬜ 未开始 | **起始**：- | **完成**：-
+**包含 Epics**：#1 Channel SDK
+
+**退出标准**：
+- [ ] Discord / Slack / Telegram 各发 100 条消息往返不丢
+- [ ] Channel conformance test 全绿（Epic #1）
+- [ ] `dm_policy` 安全钩子启用
+
+**进度日志**：
+- _（尚无）_
+
+---
+
+### M3 · 插件 SDK v1（1 周）
+
+**状态**：⬜ 未开始 | **起始**：- | **完成**：-
+**包含 Epics**：#2 Plugin SDK
+
+**退出标准**：
+- [ ] `plugin_sdk/` 公开契约冻结
+- [ ] import 隔离 CI 检查通过
+- [ ] 至少一个样例第三方插件 repo（`xmclaw-plugin-example`）跑起来
+
+**进度日志**：
+- _（尚无）_
+
+---
+
+### M4 · 沙箱可用（2 周）
+
+**状态**：⬜ 未开始 | **起始**：- | **完成**：-
+**包含 Epics**：#3 沙箱
+
+**退出标准**：
+- [ ] `providers/runtime/process.py` 把 skill 代码跑在子进程
+- [ ] QwenPaw YAML 规则移植完成，`xmclaw security scan <skill>` 能用
+- [ ] 内建 5 条"危险 skill"测试用例全部被拦截
+- [ ] 3 Guardian 架构 + 4-path decision 在 AgentLoop 生效
+
+**进度日志**：
+- _（尚无）_
+
+---
+
+### M5 · 进化可感知（★3 周）
+
+**状态**：⬜ 未开始 | **起始**：- | **完成**：-
+**包含 Epics**：#4 Evolution 执行层 + #17 多 Agent（独立进化 agent）
+**这是差异化的单一焦点里程碑——其他里程碑的目的是让它站稳。**
+
+**退出标准**：
+- [ ] Epic #4 完整交付
+- [ ] killer demo GIF 能录出来（§5.3）
+- [ ] 一周实测：agent 在同类 task 上可见变强（grader 分数 +0.1 以上）
+- [ ] `xmclaw evolution show --since 7d` 能看到真实 evolution 事件 ≥ 3 条
+
+**进度日志**：
+- _（尚无）_
+
+---
+
+### M6 · Onboarding + Hub（2 周）
+
+**状态**：⬜ 未开始 | **起始**：- | **完成**：-
+**包含 Epics**：#8 Skill Hub + #9 Onboarding + #18 前端补全 + #19 云部署
+
+**退出标准**：
+- [ ] 新用户从 `pip install xmclaw` 到第一次对话 ≤ 3 分钟
+- [ ] Skill hub 至少 10 个可安装 skill
+- [ ] 跨平台（Win/Mac/Linux）onboarding 都跑通
+
+**进度日志**：
+- _（尚无）_
+
+---
+
+### M7 · IDE 入口（1 周）
+
+**状态**：⬜ 未开始 | **起始**：- | **完成**：-
+**包含 Epics**：#7 ACP
+
+**退出标准**：
+- [ ] ACP server 被 Zed 识别
+- [ ] 反向 delegate 到 claude_code 跑通
+- [ ] `docs/IDE.md` 有 Zed + VS Code 配置示例
+
+**进度日志**：
+- _（尚无）_
+
+---
+
+### M8 · 性能与可观测（1 周）
+
+**状态**：⬜ 未开始 | **起始**：- | **完成**：-
+**包含 Epics**：#5 Memory eviction + #14 Prompt 注入 + #15 日志 + #16 Secrets + #20 备份恢复
+
+**退出标准**：
+- [ ] 结构化日志 + rotation（Epic #15）
+- [ ] Memory eviction（Epic #5）
+- [ ] Prompt 注入防御（Epic #14）
+- [ ] Secrets 加密（Epic #16）
+- [ ] `grep -r sk- ~/.xmclaw/` 无命中（明文 secret 审计清空）
+
+**进度日志**：
+- _（尚无）_
+
+---
+
+### M9 · v1.0 GA（封板 1 周）
+
+**状态**：⬜ 未开始 | **起始**：- | **完成**：-
+**包含 Epics**：所有 Epic（#1~#20）收尾 + 发布
+
+**退出标准**：
+- [ ] 所有 Epic 关闭
+- [ ] `pyproject.toml` 版本跳 `1.0.0`
+- [ ] 发 PyPI + GitHub release
+- [ ] README 放 killer demo
+- [ ] `DEV_ROADMAP.md` / `COMPETITIVE_GAP_ANALYSIS.md` 全部 Epic / Milestone 状态为 ✅
+- [ ] CHANGELOG.md v1.0.0 段落写完
+
+**进度日志**：
+- _（尚无）_
+
+---
+
+**总计**：乐观 ~12 周，现实 ~16 周。
+
+### 7.10 里程碑依赖图
+
+```
+                 ┌─────────────┐
+                 │ M1 稳定性   │ (周 1-2)  ENV+Doctor+Gate+AGENTS+SQLite
+                 └──────┬──────┘
+            ┌──────────┬┴─────────┬──────────┐
+            ↓          ↓          ↓          ↓
+      ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐
+      │M2 渠道  │ │M3 SDK   │ │M4 沙箱  │ │M8 观测  │ (周 3-6 可并)
+      └────┬────┘ └────┬────┘ └────┬────┘ └─────────┘
+           │           │           │
+           └───────┬───┴───────────┘
+                   ↓
+            ┌─────────────┐
+            │ M5 进化 ★   │ (周 7-9)  依赖 M3+M4+M8
+            └──────┬──────┘
+                   ↓
+      ┌────────────┼────────────┐
+      ↓            ↓            ↓
+┌─────────┐ ┌─────────┐  ┌─────────┐
+│M6 Hub   │ │M7 IDE   │  │...       │ (周 10-12)
+└────┬────┘ └────┬────┘  └─────────┘
+     └──────┬────┘
+            ↓
+     ┌─────────────┐
+     │ M9 GA 发布  │ (周 13-16)
+     └─────────────┘
+```
+
+---
+
+## 8. 落地优先级建议（下一周动什么）
+
+**本周（Week 1）**：
+1. Epic #6 ENV override（半天）——解锁 Docker / CI 部署
+2. Epic #10 doctor（2 天）——用户能自诊断
+3. Epic #13 SQLite event bus（2 天）——事件回放 + session report 基础
+4. §3 路径规范落地 `utils/paths.py`（半天）——后续一切路径 bug 的防御
+
+**下周（Week 2）**：
+5. Epic #14 prompt injection 防御（1 天，抄 Hermes 的正则）
+6. Epic #15 structlog rotation（1 天）
+7. Epic #4 Phase A：`SKILL_EVOLVED` 事件类型 + `xmclaw evolution show` 命令骨架（3 天）——让"可见进化"开跑
+
+这 7 件事做完，我们就从"跑得动"跃升到"能给人看"。M1 就差不多。
+
+---
+
+## 附录 A · 对标仓库关键文件速查
+
+如果后续要再查任何细节，以下是最值得直接读的文件：
+
+**Hermes**（`NousResearch/hermes-agent` @ main）
+- `README.md`、`AGENTS.md`、`pyproject.toml`
+- `tools/registry.py`（AST-scan 自注册）
+- `agent/prompt_builder.py`（注入防御）
+- `hermes_state.py`（SQLite+FTS5 schema v8）
+- `gateway/run.py`（多渠道 gateway 主循环）
+- `cli.py` + `hermes_cli/main.py`（CLI 结构）
+- [hermes-agent-self-evolution] `README.md` + `PLAN.md`（批量进化设计）
+
+**OpenClaw**（`openclaw/openclaw` @ main）
+- `README.md`、`AGENTS.md`、`VISION.md`
+- `src/plugin-sdk/*`（公开契约）
+- `src/channels/AGENTS.md`、`src/plugins/AGENTS.md`、`src/gateway/protocol/AGENTS.md`
+- `.github/labeler.yml`（插件 CI 组织方式）
+
+**QwenPaw**（`agentscope-ai/QwenPaw` @ main，本地镜像 `C:/Users/15978/Desktop/qwenpaw-src/`）
+
+架构骨架：
+- `src/qwenpaw/agents/react_agent.py:76-188`（`QwenPawAgent = ToolGuardMixin + ReActAgent`）
+- `src/qwenpaw/agents/tool_guard_mixin.py:291-400, 662-689`（4-path decision + `_acting`/`_reasoning` override）
+- `src/qwenpaw/app/multi_agent_manager.py:22-137`（HTTP-to-self 多 agent）
+- `src/qwenpaw/app/_app.py:71-80`（`X-Agent-Id` 路由）
+- `src/qwenpaw/app/workspace/workspace.py:49-100`（Workspace 全家桶）
+
+安全：
+- `src/qwenpaw/security/tool_guard/engine.py:54-120`（3 guardian 装配）
+- `src/qwenpaw/security/tool_guard/rules/dangerous_shell_commands.yaml`（309 行 bash 危险命令）
+- `src/qwenpaw/security/skill_scanner/scanner.py` + `rules/signatures/*.yaml` × 8
+- `src/qwenpaw/security/skill_scanner/data/default_policy.yaml`（242 行策略）
+- `src/qwenpaw/security/secret_store.py`（keyring + cryptography 加密）
+- `src/qwenpaw/app/approvals/service.py:58-75`（审批 GC）
+
+Skill 系统：
+- `src/qwenpaw/agents/skills_manager.py:48-67, 88-149, 248-298`（routing + 语言对 + 版本）
+- `src/qwenpaw/agents/skills/multi_agent_collaboration-en/SKILL.md:1-36`（格式样例）
+
+Channel：
+- `src/qwenpaw/app/channels/registry.py:20-36, 62-77, 97-185`（15 channel + custom_channels 发现）
+- `src/qwenpaw/app/channels/base.py:68-75, 78-100`（BaseChannel 契约）
+- `src/qwenpaw/app/channels/dingtalk/{channel.py, ai_card.py, markdown.py}`（最完整 channel 适配样例）
+
+Memory：
+- `src/qwenpaw/agents/memory/base_memory_manager.py:21-55`（ABC）
+- `src/qwenpaw/agents/memory/reme_light_memory_manager.py:37-80`（reme-ai 0.3.1.8 + 平台分流）
+- `src/qwenpaw/agents/memory/proactive/*.py`（主动消息）
+- `src/qwenpaw/app/runner/session.py:24-110`（`SafeJSONSession` 文件名 sanitize + 局部恢复）
+
+CLI：
+- `src/qwenpaw/cli/main.py:58-93`（LazyGroup 懒加载）
+- `pyproject.toml:73-80`（双 CLI 入口 + entry_points 组）
+
+配置：
+- `src/qwenpaw/constant.py:12-25, 89-111, 145-200`（env 读取 + WORKING_DIR + 目录常量）
+- `src/qwenpaw/config/config.py`（1728 LOC pydantic 模型）
+- `src/qwenpaw/config/utils.py:41-74`（路径迁移规范化）
+- `src/qwenpaw/app/mcp/{manager.py, watcher.py}`（MCP 热重载）
+
+LLM：
+- `src/qwenpaw/providers/provider_manager.py:1-80`
+- `src/qwenpaw/providers/retry_chat_model.py`（重试）
+- `src/qwenpaw/providers/capability_baseline.py` + `multimodal_prober.py`（能力探测）
+- `src/qwenpaw/agents/routing_chat_model.py:42-122`（stub 但参考）
+
+ACP / 扩展：
+- `src/qwenpaw/agents/acp/{server.py:1-60, client.py, permissions.py, tool_adapter.py}`
+- `src/qwenpaw/plugins/architecture.py:10-58`（前端+后端双入口 PluginManifest）
+
+备份 / Doctor：
+- `src/qwenpaw/backup/_ops/{create,restore,storage}.py`
+- `src/qwenpaw/cli/{doctor_cmd,doctor_checks,doctor_connectivity,doctor_fix_runner,doctor_registry}.py`
+
+---
+
+## 附录 B · 术语
+
+- **Anti-requirement**：对标仓库已暴露的失败模式，我们**强制规避**。
+- **HonestGrader**：`core/grader/`，不让 LLM 给自己打分，LLM 意见权重 ≤0.20。
+- **Streaming Evolution**：进化作为 runtime 原语，订阅事件流实时产出候选，而非 Hermes 的批量离线。
+- **Plugin-SDK 边界**：公开 API 冻结契约，内部实现随意重构，插件只吃公开 API。
+- **Smart-gate**：`git diff` 驱动的测试 lane 选择，避免全量跑 83 个测试文件。
+
+---
+
+*文档结束。下次 review：M1 完成后（预计 2026-05-06）。*

@@ -2,6 +2,20 @@
 
 Guidance for Claude Code (and other AI coding assistants) when working in this repository.
 
+## ★ 开发纪律（硬约束，2026-04-22 起）
+
+任何涉及 Epic / Milestone 的代码改动，**必须**同时更新 [docs/DEV_ROADMAP.md](docs/DEV_ROADMAP.md)：
+
+1. **开工前**：在对应 Epic §4 把状态 ⬜→🟡，填负责人 + 起始日期
+2. **子步骤完成**：勾 checkbox + **进度日志**追加一行 `YYYY-MM-DD: <摘要> (commit <sha7>)`
+3. **遇阻塞**：状态 🟡→🔴，进度日志写 reason + 等什么
+4. **Epic 收尾**：状态 ✅ + 完成日期 + §7 对应 Milestone 的退出标准同步打勾
+5. **Commit 消息**必须引用 Epic 号：`Epic #6: <动作>` / `Epic #3 partial: <动作>` / `Epic #14 blocked: <原因>`
+
+**不遵守 = PR 不合格。** 详见 [DEV_ROADMAP.md §3.6 执行协议](docs/DEV_ROADMAP.md#36-执行协议execution-protocol-每次开发必读)。
+
+配套策略背景见 [docs/archive/COMPETITIVE_GAP_ANALYSIS.archived.md](docs/archive/COMPETITIVE_GAP_ANALYSIS.archived.md)（为什么做这些 Epic）。
+
 ## Project
 
 **XMclaw** is a local-first, self-evolving AI agent runtime written in Python. A single FastAPI daemon hosts the AgentLoop, ToolRegistry, MemoryManager, and EvolutionEngine; clients (Web UI, CLI, desktop tray) connect to it over WebSocket. See [README.md](README.md) for the user-facing overview and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the definitive system design.

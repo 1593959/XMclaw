@@ -20,8 +20,9 @@ Non-goals (deferred):
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from xmclaw.core.bus import InProcessEventBus
 from xmclaw.daemon.agent_loop import AgentLoop
@@ -40,11 +41,83 @@ class ConfigError(ValueError):
     """Raised when the config is structurally invalid or incomplete."""
 
 
-def load_config(path: Path | str) -> dict[str, Any]:
-    """Read a JSON config from disk. Raises ConfigError if unreadable.
+ENV_PREFIX = "XMC__"
+_ENV_PATH_SEP = "__"
 
-    Kept as a standalone function so tests that want to exercise the
-    factory with a dict can skip the filesystem round-trip.
+
+def _coerce_scalar(raw: str) -> Any:
+    """Best-effort type inference for an ENV string.
+
+    Order: JSON (catches ints/floats/bools/null/arrays/objects), then
+    fall back to the literal string. Keeps ``"true"``, ``"false"``,
+    ``"null"``, ``"42"``, ``"3.14"``, and JSON literals typed, while
+    leaving bare tokens like ``"sk-xxx"`` untouched.
+    """
+    s = raw.strip()
+    if s == "":
+        return raw
+    try:
+        return json.loads(s)
+    except (json.JSONDecodeError, ValueError):
+        return raw
+
+
+def _apply_env_overrides(
+    cfg: dict[str, Any],
+    env: Mapping[str, str] | None = None,
+    *,
+    prefix: str = ENV_PREFIX,
+) -> dict[str, Any]:
+    """Merge ``XMC__<dotted_path>`` env vars into a config dict.
+
+    Rules:
+      * Key must start with ``prefix`` (default ``XMC__``).
+      * Remainder is split on ``__`` into a path; each segment is
+        lowercased and used as a nested dict key.
+      * Scalar values go through :func:`_coerce_scalar` so ``"42"`` /
+        ``"true"`` / JSON literals become proper typed values; plain
+        strings stay as-is.
+      * ENV wins over any existing value at the same path.
+      * If a parent path is currently a non-dict scalar, it is
+        overwritten by a new dict — ENV intent always wins, matching
+        Pydantic Settings semantics.
+      * Empty path segments are ignored (e.g. trailing ``__``), so
+        ``XMC__llm____api_key`` is treated as ``XMC__llm__api_key``.
+
+    Mutates and returns ``cfg``.
+    """
+    source = os.environ if env is None else env
+    for raw_key, raw_val in source.items():
+        if not raw_key.startswith(prefix):
+            continue
+        remainder = raw_key[len(prefix):]
+        if not remainder:
+            continue
+        segments = [s.lower() for s in remainder.split(_ENV_PATH_SEP) if s]
+        if not segments:
+            continue
+        cursor: dict[str, Any] = cfg
+        for seg in segments[:-1]:
+            nxt = cursor.get(seg)
+            if not isinstance(nxt, dict):
+                nxt = {}
+                cursor[seg] = nxt
+            cursor = nxt
+        cursor[segments[-1]] = _coerce_scalar(raw_val)
+    return cfg
+
+
+def load_config(
+    path: Path | str,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Read a JSON config from disk, then overlay ``XMC__*`` env vars.
+
+    Precedence (highest last): file → ENV. Kept as a standalone
+    function so tests that want to exercise the factory with a dict
+    can skip the filesystem round-trip; pass ``env={}`` to disable
+    overrides in tests.
     """
     p = Path(path)
     if not p.exists():
@@ -61,7 +134,7 @@ def load_config(path: Path | str) -> dict[str, Any]:
         raise ConfigError(
             f"config root must be an object, got {type(data).__name__}"
         )
-    return data
+    return _apply_env_overrides(data, env=env)
 
 
 def build_llm_from_config(cfg: dict[str, Any]) -> LLMProvider | None:
