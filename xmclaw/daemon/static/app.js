@@ -33,11 +33,13 @@ const eventsEl      = $("events");
 const sendForm      = $("send-form");
 const userInput     = $("user-input");
 const costTickerEl  = $("cost-ticker");
-const modelChipEl   = $("model-chip");
+const charCounterEl = $("char-counter");
 const themeBtn      = $("theme-btn");
 const themeIconEl   = $("theme-icon");
 const toggleWsBtn   = $("toggle-workspace");
 const toggleSbBtn   = $("toggle-sidebar");
+const wsCloseBtn    = $("ws-close");
+const wsTitleEl     = $("ws-title");
 const sidebarEl     = $("sidebar");
 const workspaceEl   = $("workspace");
 const appEl         = document.querySelector(".app");
@@ -46,9 +48,27 @@ const ringLabelEl   = $("ring-label");
 const contextRing   = $("context-ring");
 const wsActivityEl  = $("ws-activity");
 const wsToolsEl     = $("ws-tools");
+const wsModelsEl    = $("ws-models");
+const wsSessionsEl  = $("ws-sessions");
+const wsConfigEl    = $("ws-config");
 const aboutDaemonEl = $("about-daemon");
 const aboutModelEl  = $("about-model");
 const aboutToolsEl  = $("about-tools");
+const welcomeEl     = $("welcome");
+const chatTitleEl   = $("chat-title");
+const brandVerEl    = $("brand-version");
+const modelBtn      = $("model-btn");
+const modelMenu     = $("model-menu");
+const modelNameEl   = $("model-name");
+const modelListEl   = $("model-list");
+const secAuthEl     = $("sec-auth");
+const secSandboxEl  = $("sec-sandbox");
+const secBashEl     = $("sec-bash");
+const secWebEl      = $("sec-web");
+const tokPromptEl   = $("tok-prompt");
+const tokComplEl    = $("tok-completion");
+const tokTotalEl    = $("tok-total");
+const tokCostEl     = $("tok-cost");
 
 // ── state ────────────────────────────────────────────────────────
 const state = {
@@ -104,12 +124,18 @@ function activateSession(sid) {
   state.sid = sid;
   localStorage.setItem(ACTIVE_KEY, sid);
   sessionIdEl.textContent = sid;
+  if (chatTitleEl) chatTitleEl.textContent = sid;
   window.location.hash = "s=" + encodeURIComponent(sid);
   clearEvents();
   state.toolCards.clear();
   state.activity = [];
+  // Reset per-session token totals (but history lives server-side).
+  state.totalTokens = 0;
+  state.totalPrompt = 0;
+  state.totalCompl  = 0;
   renderActivity();
   renderSessionList();
+  if (typeof renderSessionsPanel === "function") renderSessionsPanel();
   connect();
 }
 
@@ -157,24 +183,20 @@ function renderSessionList() {
 
 // ── events rendering helpers ─────────────────────────────────────
 
-function clearEvents() { eventsEl.textContent = ""; }
+function clearEvents() {
+  eventsEl.textContent = "";
+  // Welcome is shown whenever the event list is empty.
+  showWelcome(true);
+}
 
-function renderEmptyState() {
-  const wrap = el("div", "msg system");
-  wrap.appendChild(el("div", "av", "ⓘ"));
-  const bubble = el("div", "bubble");
-  bubble.innerHTML =
-    "<strong>Hi. 👋</strong><br>" +
-    "I'm XMclaw -- a local agent with filesystem, shell, and web tools. " +
-    "Ask me to list your Desktop, summarize a file, run a quick " +
-    "<code>dir</code> / <code>git status</code>, or search something up.";
-  wrap.appendChild(bubble);
-  eventsEl.appendChild(wrap);
+function showWelcome(show) {
+  if (!welcomeEl) return;
+  welcomeEl.hidden = !show;
 }
 
 function removeEmptyState() {
-  const empty = eventsEl.querySelector(".msg.system");
-  if (empty) empty.remove();
+  // No longer an inline ".msg.system" row -- welcome is a sibling panel.
+  showWelcome(false);
 }
 
 function renderRow(kind, inner) {
@@ -343,15 +365,34 @@ function renderActivity() {
   });
 }
 
-function setupWsTabs() {
-  document.querySelectorAll(".ws-tab").forEach(tab => {
-    tab.addEventListener("click", () => {
-      document.querySelectorAll(".ws-tab").forEach(t => t.classList.remove("active"));
-      document.querySelectorAll(".ws-panel").forEach(p => p.classList.remove("active"));
-      tab.classList.add("active");
-      const panel = document.querySelector(`.ws-panel[data-panel="${tab.dataset.tab}"]`);
-      if (panel) panel.classList.add("active");
-    });
+const WS_TAB_TITLES = {
+  activity: "Activity", sessions: "Sessions", files: "Files",
+  skills: "Skills", tools: "Tools", mcp: "MCP", config: "Run config",
+  agents: "Agents", models: "Models", security: "Security",
+  tokens: "Token usage", about: "About",
+};
+
+function switchWsTab(name) {
+  if (!name) return;
+  document.querySelectorAll(".nav-item").forEach(n =>
+    n.classList.toggle("active", n.dataset.wsTab === name)
+  );
+  document.querySelectorAll(".ws-panel").forEach(p =>
+    p.classList.toggle("active", p.dataset.panel === name)
+  );
+  if (wsTitleEl) wsTitleEl.textContent = WS_TAB_TITLES[name] || name;
+  // Make sure the workspace is visible when a nav-item is clicked.
+  if (appEl && appEl.classList.contains("no-workspace")) {
+    appEl.classList.remove("no-workspace");
+  }
+}
+
+function setupNav() {
+  document.querySelectorAll(".nav-item").forEach(item => {
+    if (item.classList.contains("nav-disabled")) return;
+    const tab = item.dataset.wsTab;
+    if (!tab) return;
+    item.addEventListener("click", () => switchWsTab(tab));
   });
 }
 
@@ -365,9 +406,81 @@ function toggleSidebar() {
   sidebarEl.classList.toggle("open");
 }
 
+// ── welcome-card click-through populates the composer ─────────────
+
+function setupWelcomeCards() {
+  document.querySelectorAll(".welcome-card").forEach(card => {
+    card.addEventListener("click", () => {
+      const text = card.dataset.suggest || "";
+      if (!text) return;
+      userInput.value = text;
+      userInput.focus();
+      autoGrow();
+      updateCharCounter();
+    });
+  });
+}
+
+// ── character counter ──────────────────────────────────────────────
+
+function updateCharCounter() {
+  if (!charCounterEl || !userInput) return;
+  const len = (userInput.value || "").length;
+  const max = Number(userInput.getAttribute("maxlength") || 10000);
+  charCounterEl.textContent = `${len}/${max}`;
+  charCounterEl.classList.remove("warn", "err");
+  const pct = len / max;
+  if (pct > 0.95)      charCounterEl.classList.add("err");
+  else if (pct > 0.8)  charCounterEl.classList.add("warn");
+}
+
+// ── model picker ───────────────────────────────────────────────────
+
+function toggleModelMenu(forceShow) {
+  if (!modelMenu) return;
+  const hiddenNow = modelMenu.hasAttribute("hidden");
+  const show = forceShow === undefined ? hiddenNow : forceShow;
+  if (show) modelMenu.removeAttribute("hidden");
+  else      modelMenu.setAttribute("hidden", "");
+}
+
+function setActiveModel(name, provider) {
+  if (modelNameEl) modelNameEl.textContent = name || "—";
+  if (aboutModelEl) aboutModelEl.textContent = name
+    ? `${name}  (${provider || "?"})` : "—";
+}
+
+function populateModelMenu(active) {
+  if (!modelListEl) return;
+  // Static roster for now -- the daemon doesn't yet expose a
+  // /api/v2/models endpoint. Providers are what factory recognizes.
+  const known = [
+    { name: active || "—", provider: "active" },
+  ];
+  modelListEl.textContent = "";
+  known.forEach(m => {
+    const row = el("div", "model-entry" + (m.provider === "active" ? " active" : ""));
+    row.appendChild(el("span", "model-dot-small"));
+    row.appendChild(el("span", null, m.name));
+    row.appendChild(el("span", "model-provider", m.provider));
+    modelListEl.appendChild(row);
+  });
+  // Also render into the Models workspace panel.
+  if (wsModelsEl) {
+    wsModelsEl.textContent = "";
+    known.forEach(m => {
+      const entry = el("div", "ws-tool-entry");
+      entry.appendChild(el("div", "name", m.name));
+      entry.appendChild(el("div", "desc",
+        `provider: ${m.provider}. Change in daemon/config.json.`));
+      wsModelsEl.appendChild(entry);
+    });
+  }
+}
+
 // ── context ring ─────────────────────────────────────────────────
 
-function updateContextRing(tokens) {
+function updateContextRing(tokens, breakdown) {
   state.totalTokens = (state.totalTokens || 0) + (tokens || 0);
   const pct = Math.min(1, state.totalTokens / CTX_WINDOW);
   const circumference = 2 * Math.PI * 13;
@@ -379,6 +492,14 @@ function updateContextRing(tokens) {
     if (pct > 0.9) contextRing.classList.add("err");
     else if (pct > 0.7) contextRing.classList.add("warn");
   }
+  // Workspace > Tokens panel
+  if (breakdown) {
+    state.totalPrompt = (state.totalPrompt || 0) + (breakdown.prompt || 0);
+    state.totalCompl  = (state.totalCompl  || 0) + (breakdown.completion || 0);
+    if (tokPromptEl) tokPromptEl.textContent = state.totalPrompt.toLocaleString();
+    if (tokComplEl)  tokComplEl.textContent  = state.totalCompl.toLocaleString();
+    if (tokTotalEl)  tokTotalEl.textContent  = state.totalTokens.toLocaleString();
+  }
 }
 
 function updateCostTicker(p) {
@@ -386,6 +507,7 @@ function updateCostTicker(p) {
   const budget = p.budget_usd;
   costTickerEl.textContent =
     `cost $${spent}${budget ? " / $" + budget : ""}`;
+  if (tokCostEl) tokCostEl.textContent = "$" + spent;
 }
 
 // ── event dispatch ───────────────────────────────────────────────
@@ -407,7 +529,10 @@ function renderEvent(evt) {
         return;
       }
       // Update context ring as tokens arrive.
-      updateContextRing((p.prompt_tokens || 0) + (p.completion_tokens || 0));
+      updateContextRing(
+        (p.prompt_tokens || 0) + (p.completion_tokens || 0),
+        { prompt: p.prompt_tokens || 0, completion: p.completion_tokens || 0 },
+      );
       // Terminal hop: no tool calls AND has content -> show assistant text.
       if ((p.tool_calls_count || 0) === 0 && (p.content_length || 0) > 0) {
         appendAgent(p.content || "");
@@ -514,31 +639,115 @@ function autoGrow() {
   userInput.style.height = Math.min(userInput.scrollHeight, 180) + "px";
 }
 
+function renderSessionsPanel() {
+  if (!wsSessionsEl) return;
+  wsSessionsEl.textContent = "";
+  if (!state.sessions.length) {
+    wsSessionsEl.appendChild(el("div", "ws-empty",
+      "No sessions yet. Click + New chat to start one."));
+    return;
+  }
+  state.sessions.forEach(sid => {
+    const row = el("div", "ws-sess-row" + (sid === state.sid ? " active" : ""));
+    row.appendChild(el("span", null, sid));
+    wsSessionsEl.appendChild(row);
+  });
+}
+
+function renderSecurityPanel(health, hasAuth, tools) {
+  if (secAuthEl)    secAuthEl.textContent    = hasAuth ? "pairing token required" : "no auth (local only)";
+  if (secSandboxEl) secSandboxEl.textContent = "no allowed_dirs (full user access)";
+  if (secBashEl)    secBashEl.textContent    = tools.includes("bash") ? "enabled" : "disabled";
+  if (secWebEl)     secWebEl.textContent     = (tools.includes("web_fetch") ||
+                                                tools.includes("web_search")) ? "enabled" : "disabled";
+}
+
+function renderConfigPanel(health) {
+  if (!wsConfigEl) return;
+  wsConfigEl.textContent = "";
+  const pre = el("pre");
+  pre.textContent = JSON.stringify(health || {}, null, 2);
+  wsConfigEl.appendChild(pre);
+}
+
 async function init() {
   applyTheme(localStorage.getItem(THEME_KEY) || "dark");
-  setupWsTabs();
+  setupNav();
+  setupWelcomeCards();
 
   themeBtn.addEventListener("click", cycleTheme);
   toggleWsBtn.addEventListener("click", toggleWorkspace);
+  if (wsCloseBtn) wsCloseBtn.addEventListener("click", toggleWorkspace);
   if (toggleSbBtn) toggleSbBtn.addEventListener("click", toggleSidebar);
   newSessionBtn.addEventListener("click", createSession);
 
+  // Model picker: click toggles menu, outside click closes.
+  if (modelBtn) modelBtn.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    toggleModelMenu();
+  });
+  document.addEventListener("click", (ev) => {
+    if (modelMenu && !modelMenu.hidden &&
+        !modelMenu.contains(ev.target) &&
+        ev.target !== modelBtn && !modelBtn.contains(ev.target)) {
+      toggleModelMenu(false);
+    }
+  });
+
   sendForm.addEventListener("submit", (ev) => { ev.preventDefault(); sendUser(); });
-  userInput.addEventListener("input", autoGrow);
+  userInput.addEventListener("input", () => { autoGrow(); updateCharCounter(); });
   userInput.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
       ev.preventDefault(); sendUser();
     }
   });
+  updateCharCounter();
+
+  // Default to Activity tab selected.
+  switchWsTab("activity");
+  // But we opened the workspace only because switchWsTab un-collapses it.
+  // On first load we want the workspace visible by default on desktop.
 
   state.sessions = loadSessions();
   state.token = await fetchPairingToken();
   const health = await fetchHealth();
   if (health) {
     buildInfoEl.textContent = health.version || "—";
-    agentSubEl.textContent  = `v${health.version}  ·  ${health.bus || ""}`;
-    aboutDaemonEl.textContent = `${window.location.host} (v${health.version})`;
+    if (brandVerEl) brandVerEl.textContent = "v" + (health.version || "—");
+    agentSubEl.textContent    = `v${health.version}  ·  ${health.bus || ""}`;
+    aboutDaemonEl.textContent = `${window.location.host}  v${health.version}`;
   }
+
+  // Fetch active model + build the Tools / Models / Security panels.
+  const known = [
+    ["file_read",  "Read a UTF-8 text file."],
+    ["file_write", "Write text to a file (creates parent dirs)."],
+    ["list_dir",   "List directory entries (optional glob pattern)."],
+    ["bash",       "Run a shell command. PowerShell on Windows, bash on POSIX."],
+    ["web_fetch",  "GET a URL and return its body."],
+    ["web_search", "DuckDuckGo HTML search, no API key."],
+  ];
+  if (wsToolsEl) {
+    wsToolsEl.textContent = "";
+    known.forEach(([name, desc]) => {
+      const row = el("div", "ws-tool-entry");
+      row.appendChild(el("div", "name", name));
+      row.appendChild(el("div", "desc", desc));
+      wsToolsEl.appendChild(row);
+    });
+  }
+  if (aboutToolsEl) aboutToolsEl.textContent = known.map(k => k[0]).join(", ");
+
+  // Active model -- daemon doesn't expose it yet; probe would require a
+  // /api/v2/status endpoint. For now infer from config.json (can't read)
+  // or fall back to "default".
+  const activeModel = state.token ? "local-configured" : "no-auth mode";
+  setActiveModel(activeModel, "anthropic-compat");
+  populateModelMenu(activeModel);
+
+  // Security + config panels (populated from whatever we know).
+  renderSecurityPanel(health, !!state.token, known.map(k => k[0]));
+  renderConfigPanel(health);
 
   // hash-state fallback -> localStorage -> new
   const hashSid = (window.location.hash.match(/s=([^&]+)/) || [])[1];
@@ -554,29 +763,11 @@ async function init() {
   else if (state.sessions.length > 0) activateSession(state.sessions[0]);
   else createSession();
 
-  renderEmptyState();
+  // Welcome-panel visibility: true when the chat has no events, false
+  // as soon as the user sends the first message.
+  showWelcome(true);
 
-  // Populate the Tools + About panels once we know the daemon model.
-  try {
-    // The daemon currently doesn't expose /api/v2/tools; fall back to the
-    // static list we know the default BuiltinTools ships with.
-    const known = [
-      ["file_read",  "Read a UTF-8 text file."],
-      ["file_write", "Write text to a file (creates parent dirs)."],
-      ["list_dir",   "List directory entries (optional glob pattern)."],
-      ["bash",       "Run a shell command. PowerShell on Windows, bash on POSIX."],
-      ["web_fetch",  "GET a URL and return its body."],
-      ["web_search", "DuckDuckGo HTML search, no API key."],
-    ];
-    wsToolsEl.textContent = "";
-    known.forEach(([name, desc]) => {
-      const row = el("div", "ws-tool-entry");
-      row.appendChild(el("div", "name", name));
-      row.appendChild(el("div", "desc", desc));
-      wsToolsEl.appendChild(row);
-    });
-    aboutToolsEl.textContent = known.map(k => k[0]).join(", ");
-  } catch (_) { /* ignore */ }
+  renderSessionsPanel();
 }
 
 init();

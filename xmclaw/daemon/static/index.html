@@ -9,7 +9,7 @@
 <body>
   <div class="app">
 
-    <!-- ── LEFT: sidebar (sessions + settings) ─────────────────── -->
+    <!-- ── LEFT: sidebar (brand + nav sections + settings) ──────── -->
     <aside class="sidebar" id="sidebar">
       <div class="brand">
         <span class="lobster">🦞</span>
@@ -17,6 +17,7 @@
           <div class="brand-name">XMclaw</div>
           <div class="brand-sub">local-first agent</div>
         </div>
+        <span class="brand-version" id="brand-version">v—</span>
       </div>
 
       <button id="new-session" class="btn btn-primary btn-wide">
@@ -24,11 +25,75 @@
         <span>New chat</span>
       </button>
 
-      <div class="section-label">
-        <span>Sessions</span>
-        <span id="session-count" class="chip-tiny">0</span>
+      <!-- Nav sections modeled on CoPaw's left nav. Each <button.nav-item>
+           selects a workspace panel in the right pane; the chat stays
+           front-and-center. Active state highlighted with accent bar. -->
+
+      <div class="nav-group">
+        <div class="section-label">
+          <span>Chat</span>
+          <span id="session-count" class="chip-tiny">0</span>
+        </div>
+        <nav id="session-list" class="session-list"
+             aria-label="Chat sessions"></nav>
       </div>
-      <nav id="session-list" class="session-list" aria-label="Chat sessions"></nav>
+
+      <div class="nav-group">
+        <div class="section-label"><span>Control</span></div>
+        <button class="nav-item" data-ws-tab="activity">
+          <span class="nav-icon">◇</span><span>Activity</span>
+          <span class="nav-badge" id="nav-badge-activity"></span>
+        </button>
+        <button class="nav-item" data-ws-tab="sessions">
+          <span class="nav-icon">⋯</span><span>Sessions</span>
+        </button>
+        <button class="nav-item nav-disabled" title="Coming soon">
+          <span class="nav-icon">⏱</span><span>Scheduled</span>
+          <span class="chip-tiny">soon</span>
+        </button>
+        <button class="nav-item nav-disabled" title="Coming soon">
+          <span class="nav-icon">❤</span><span>Heartbeat</span>
+          <span class="chip-tiny">soon</span>
+        </button>
+      </div>
+
+      <div class="nav-group">
+        <div class="section-label"><span>Workspace</span></div>
+        <button class="nav-item" data-ws-tab="files">
+          <span class="nav-icon">▤</span><span>Files</span>
+        </button>
+        <button class="nav-item" data-ws-tab="skills">
+          <span class="nav-icon">✦</span><span>Skills</span>
+        </button>
+        <button class="nav-item" data-ws-tab="tools">
+          <span class="nav-icon">⚙</span><span>Tools</span>
+        </button>
+        <button class="nav-item" data-ws-tab="mcp">
+          <span class="nav-icon">◈</span><span>MCP</span>
+        </button>
+        <button class="nav-item" data-ws-tab="config">
+          <span class="nav-icon">◐</span><span>Config</span>
+        </button>
+      </div>
+
+      <div class="nav-group">
+        <div class="section-label"><span>Settings</span></div>
+        <button class="nav-item" data-ws-tab="agents">
+          <span class="nav-icon">☺</span><span>Agents</span>
+        </button>
+        <button class="nav-item" data-ws-tab="models">
+          <span class="nav-icon">◉</span><span>Models</span>
+        </button>
+        <button class="nav-item" data-ws-tab="security">
+          <span class="nav-icon">🛡</span><span>Security</span>
+        </button>
+        <button class="nav-item" data-ws-tab="tokens">
+          <span class="nav-icon">$</span><span>Token usage</span>
+        </button>
+        <button class="nav-item" data-ws-tab="about">
+          <span class="nav-icon">ⓘ</span><span>About</span>
+        </button>
+      </div>
 
       <div class="sidebar-footer">
         <div class="row-between">
@@ -36,8 +101,8 @@
             <span class="dot"></span>
             <span id="conn-text">disconnected</span>
           </div>
-          <button id="theme-btn" class="btn-ghost btn-icon" title="Cycle theme"
-                  aria-label="Cycle theme">
+          <button id="theme-btn" class="btn-ghost btn-icon"
+                  title="Cycle theme" aria-label="Cycle theme">
             <span id="theme-icon">◐</span>
           </button>
         </div>
@@ -53,32 +118,100 @@
                   aria-label="Toggle sessions">☰</button>
           <div class="agent-avatar">🦞</div>
           <div class="agent-meta">
-            <div class="agent-name">XMclaw</div>
+            <div class="agent-name" id="chat-title">New chat</div>
             <div class="agent-sub" id="agent-sub">—</div>
           </div>
         </div>
         <div class="topbar-right">
+          <!-- Model picker (dropdown). Clicking opens the menu; for now
+               it's a display-only chip showing the active model. -->
+          <div class="model-picker">
+            <button class="model-btn" id="model-btn" aria-haspopup="true">
+              <span class="model-dot"></span>
+              <span id="model-name">—</span>
+              <span class="model-caret">▾</span>
+            </button>
+            <div class="model-menu" id="model-menu" hidden>
+              <div class="model-menu-label">Available</div>
+              <div id="model-list" class="model-list">
+                <div class="ws-empty">loading…</div>
+              </div>
+            </div>
+          </div>
           <span class="session-id" id="session-id"></span>
           <button class="btn-ghost btn-icon" id="toggle-workspace"
-                  title="Toggle workspace" aria-label="Toggle workspace">⌘</button>
+                  title="Toggle workspace"
+                  aria-label="Toggle workspace">⌘</button>
         </div>
       </header>
 
       <section class="events-wrap">
         <div id="events" class="events"></div>
 
+        <!-- Welcome suggestion cards (shown when the session has no
+             messages yet). Click-through populates the composer with
+             the suggested prompt. CoPaw-inspired. -->
+        <div class="welcome" id="welcome" hidden>
+          <div class="welcome-brand">
+            <span class="welcome-lobster">🦞</span>
+          </div>
+          <h2 class="welcome-title">你好,我今天能帮你做什么?</h2>
+          <p class="welcome-sub">XMclaw 是本地优先的 AI 代理,能读写文件、跑 shell、查网络。</p>
+          <div class="welcome-cards">
+            <button class="welcome-card" data-suggest="列出我桌面上的所有文件,按类型分组">
+              <span class="welcome-card-icon">▤</span>
+              <div>
+                <div class="welcome-card-title">列出桌面文件</div>
+                <div class="welcome-card-sub">按类型分组展示</div>
+              </div>
+            </button>
+            <button class="welcome-card" data-suggest="告诉我你能做什么,有哪些工具">
+              <span class="welcome-card-icon">✦</span>
+              <div>
+                <div class="welcome-card-title">你能做什么?</div>
+                <div class="welcome-card-sub">看看可用的工具清单</div>
+              </div>
+            </button>
+            <button class="welcome-card" data-suggest="看一下当前这个项目(XMclaw)的 README,给我一个1分钟总结">
+              <span class="welcome-card-icon">◇</span>
+              <div>
+                <div class="welcome-card-title">项目速览</div>
+                <div class="welcome-card-sub">读 README + 给结论</div>
+              </div>
+            </button>
+            <button class="welcome-card" data-suggest="这台机器上装了什么版本的 Python?跑一下 python --version">
+              <span class="welcome-card-icon">⚙</span>
+              <div>
+                <div class="welcome-card-title">跑个 shell</div>
+                <div class="welcome-card-sub">环境信息取样</div>
+              </div>
+            </button>
+          </div>
+        </div>
+
         <div class="composer">
           <form id="send-form" class="composer-row">
             <div class="composer-grow">
-              <textarea id="user-input" rows="1"
-                placeholder="Ask XMclaw to read files, search the web, run shell, anything…"></textarea>
+              <textarea id="user-input" rows="1" maxlength="10000"
+                placeholder="让 XMclaw 读文件、搜网页、跑 shell… (Enter 发送, Shift+Enter 换行)"></textarea>
             </div>
             <div class="composer-actions">
-              <div class="context-ring" id="context-ring" title="Context usage">
+              <button type="button" class="btn-ghost btn-icon" id="attach-btn"
+                      title="Attach file (coming soon)"
+                      aria-label="Attach file" disabled>
+                <span class="icon">📎</span>
+              </button>
+              <button type="button" class="btn-ghost btn-icon" id="voice-btn"
+                      title="Voice input (coming soon)"
+                      aria-label="Voice input" disabled>
+                <span class="icon">🎤</span>
+              </button>
+              <div class="context-ring" id="context-ring"
+                   title="Context usage">
                 <svg viewBox="0 0 32 32" aria-hidden="true">
                   <circle class="ring-track" cx="16" cy="16" r="13"
                           fill="none" stroke-width="3"></circle>
-                  <circle class="ring-fill"  cx="16" cy="16" r="13"
+                  <circle class="ring-fill" cx="16" cy="16" r="13"
                           fill="none" stroke-width="3"
                           stroke-dasharray="81.68" stroke-dashoffset="81.68"
                           transform="rotate(-90 16 16)"></circle>
@@ -94,18 +227,19 @@
           <div class="composer-hint">
             <span id="cost-ticker" class="cost-ticker"></span>
             <span class="spacer"></span>
-            <span id="model-chip" class="chip">—</span>
+            <span id="char-counter" class="char-counter">0/10000</span>
           </div>
         </div>
       </section>
     </main>
 
-    <!-- ── RIGHT: workspace (tool activity + session facts) ───── -->
+    <!-- ── RIGHT: workspace (context-sensitive by sidebar selection) ── -->
     <aside class="workspace" id="workspace">
-      <div class="ws-tabs">
-        <button class="ws-tab active" data-tab="activity">Activity</button>
-        <button class="ws-tab" data-tab="tools">Tools</button>
-        <button class="ws-tab" data-tab="about">About</button>
+      <div class="ws-header">
+        <div class="ws-title" id="ws-title">Activity</div>
+        <button class="btn-ghost btn-icon" id="ws-close"
+                title="Close workspace"
+                aria-label="Close workspace">×</button>
       </div>
 
       <div class="ws-panel active" data-panel="activity">
@@ -115,27 +249,109 @@
         </div>
       </div>
 
+      <div class="ws-panel" data-panel="sessions">
+        <div class="ws-label">All sessions</div>
+        <div id="ws-sessions" class="ws-sessions">
+          <div class="ws-empty">Pulled from your browser storage.</div>
+        </div>
+      </div>
+
+      <div class="ws-panel" data-panel="files">
+        <div class="ws-label">Workspace files</div>
+        <div class="ws-empty">
+          File browser lands next. For now, ask the agent
+          <code>list_dir</code> to browse.
+        </div>
+      </div>
+
+      <div class="ws-panel" data-panel="skills">
+        <div class="ws-label">Skills</div>
+        <div class="ws-empty">
+          Evolved skills will appear here when the evolution engine
+          promotes them. Manual skill install is a follow-up.
+        </div>
+      </div>
+
       <div class="ws-panel" data-panel="tools">
         <div class="ws-label">Available tools</div>
         <div id="ws-tools" class="ws-tools">
-          <div class="ws-empty">Loading…</div>
+          <div class="ws-empty">loading…</div>
+        </div>
+      </div>
+
+      <div class="ws-panel" data-panel="mcp">
+        <div class="ws-label">MCP servers</div>
+        <div class="ws-empty">
+          MCP-bridge wiring from config is pending. Check
+          <code>daemon/config.json</code> for the
+          <code>mcp_servers</code> section.
+        </div>
+      </div>
+
+      <div class="ws-panel" data-panel="config">
+        <div class="ws-label">Run config</div>
+        <div class="ws-config" id="ws-config">
+          <div class="ws-empty">loading /health…</div>
+        </div>
+      </div>
+
+      <div class="ws-panel" data-panel="agents">
+        <div class="ws-label">Agents</div>
+        <div class="ws-empty">
+          Multi-agent support is a later phase. Today you have one
+          agent (<code>agent</code>) shared across all sessions.
+        </div>
+      </div>
+
+      <div class="ws-panel" data-panel="models">
+        <div class="ws-label">Configured models</div>
+        <div id="ws-models" class="ws-tools">
+          <div class="ws-empty">loading…</div>
+        </div>
+      </div>
+
+      <div class="ws-panel" data-panel="security">
+        <div class="ws-label">Security posture</div>
+        <div class="ws-security">
+          <ul class="kv">
+            <li><span>auth</span>     <span id="sec-auth">—</span></li>
+            <li><span>sandbox</span>  <span id="sec-sandbox">—</span></li>
+            <li><span>bash</span>     <span id="sec-bash">—</span></li>
+            <li><span>web</span>      <span id="sec-web">—</span></li>
+          </ul>
+          <p class="dim">Posture is inferred from the running daemon's
+             tool list and the pairing-token check.</p>
+        </div>
+      </div>
+
+      <div class="ws-panel" data-panel="tokens">
+        <div class="ws-label">Token usage</div>
+        <div class="ws-tokens">
+          <ul class="kv">
+            <li><span>prompt</span>     <span id="tok-prompt">0</span></li>
+            <li><span>completion</span> <span id="tok-completion">0</span></li>
+            <li><span>total</span>      <span id="tok-total">0</span></li>
+            <li><span>cost (est)</span> <span id="tok-cost">$0.0000</span></li>
+          </ul>
+          <p class="dim">Totals across this session. Resets when you
+             start a new chat.</p>
         </div>
       </div>
 
       <div class="ws-panel" data-panel="about">
         <div class="ws-label">This agent</div>
         <div class="ws-about">
-          <p><strong>XMclaw</strong> is a local-first AI agent.
-             It runs entirely on your machine; the only outbound network
-             calls are to your configured LLM provider and to whatever the
-             agent fetches on your behalf.</p>
-          <p class="dim">Session memory lives in this daemon. Closing
-             the tab wipes it.</p>
+          <p><strong>XMclaw</strong> is a local-first AI agent. It
+             runs on your machine; the only outbound calls are to your
+             configured LLM provider and to URLs the agent fetches on
+             your behalf.</p>
           <ul class="kv">
-            <li><span>daemon</span><span id="about-daemon">—</span></li>
-            <li><span>model</span> <span id="about-model">—</span></li>
-            <li><span>tools</span> <span id="about-tools">—</span></li>
+            <li><span>daemon</span> <span id="about-daemon">—</span></li>
+            <li><span>model</span>  <span id="about-model">—</span></li>
+            <li><span>tools</span>  <span id="about-tools">—</span></li>
           </ul>
+          <p class="dim">Session memory persists across browser
+             refreshes while the daemon is running.</p>
         </div>
       </div>
     </aside>

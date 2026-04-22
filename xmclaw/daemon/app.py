@@ -249,11 +249,17 @@ def create_app(
             pass
         finally:
             sub.cancel()
-            # Drop the session's in-memory conversation history so the
-            # next WS connection with the same session_id starts clean.
-            # (Cross-process persistence is a later phase.)
-            if agent is not None:
-                agent.clear_session(session_id)
+            # Do NOT wipe session history on disconnect -- browser refresh
+            # is a WS close, and the user's prior exchanges must survive
+            # it. History stays in the AgentLoop's in-memory dict keyed
+            # by session_id. Explicit reset is via agent.clear_session()
+            # which the UI triggers with a /reset intent (not on close).
+            #
+            # Bounded by AgentLoop.history_cap (default 40 messages per
+            # session). Sessions created and then never reconnected do
+            # leak until the daemon restarts -- acceptable for now since
+            # sessions are user-created and finite. Cross-process
+            # persistence (SQLite-backed session store) lands later.
             await bus.publish(make_event(
                 session_id=session_id, agent_id="daemon",
                 type=EventType.SESSION_LIFECYCLE,

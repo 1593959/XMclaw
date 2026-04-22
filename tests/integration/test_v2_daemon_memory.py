@@ -127,13 +127,17 @@ def test_ws_three_turn_reference_chain() -> None:
     assert any("What does Hermes do" in u for u in users)
 
 
-def test_ws_reconnect_wipes_session_history() -> None:
-    """Two separate WS connections to the same session_id start from
-    scratch each time -- clear_session fires on disconnect so anyone
-    reconnecting with the same id doesn't inherit a stranger's context.
+def test_ws_reconnect_preserves_session_history() -> None:
+    """Browser refresh is a WS close, and the user's prior exchanges
+    MUST survive it. The earlier auto-wipe-on-disconnect behavior meant
+    refreshing the tab turned a 20-turn conversation into a fresh
+    stranger, which the user rightly called a data-loss bug.
 
-    (Persistent cross-connection history is a future phase. For now,
-    every WS close flushes the in-memory buffer.)
+    Fix: history stays in the AgentLoop keyed by session_id. Re-opening
+    the same session from a new WS connection sees the full prior
+    transcript, so turn N+1 still references turn N even after a
+    refresh. Explicit ``clear_session`` is still available for a
+    /reset intent from the UI.
     """
     bus = InProcessEventBus()
     llm = _RecordingLLM(script=[
@@ -145,21 +149,47 @@ def test_ws_reconnect_wipes_session_history() -> None:
 
     with client.websocket_connect("/agent/v2/same-id") as ws:
         ws.receive_json()
-        ws.send_text(json.dumps({"type": "user", "content": "secret: hunter2"}))
+        ws.send_text(json.dumps({"type": "user", "content": "my secret is hunter2"}))
         _drain_until_llm_response(ws)
 
-    # Second connection reuses same session_id.
+    # Second connection reuses the same session_id (simulates refresh).
     with client.websocket_connect("/agent/v2/same-id") as ws:
         ws.receive_json()
-        ws.send_text(json.dumps({"type": "user", "content": "who am I?"}))
+        ws.send_text(json.dumps({"type": "user", "content": "what's my secret?"}))
         _drain_until_llm_response(ws)
 
     second = llm.seen_messages[1]
-    roles = [m.role for m in second]
-    # Only system + one user. History from first connection was cleared.
-    assert roles == ["system", "user"], (
-        f"history leaked across disconnect: {roles}"
+    user_text = " ".join(m.content or "" for m in second if m.role == "user")
+    assistant_text = " ".join(m.content or "" for m in second if m.role == "assistant")
+    # The prior user turn ("my secret is hunter2") must still be visible
+    # to the LLM on the second connection.
+    assert "hunter2" in user_text, (
+        f"refresh lost prior user history: {user_text!r}"
     )
-    # And definitely no "hunter2" visible.
-    combined = " ".join(m.content or "" for m in second)
-    assert "hunter2" not in combined
+    # And the prior assistant reply must be in the history too.
+    assert "first-connect reply" in assistant_text, (
+        f"refresh lost prior assistant history: {assistant_text!r}"
+    )
+
+
+def test_clear_session_still_available_for_explicit_reset() -> None:
+    """Even though disconnect no longer wipes, ``clear_session`` is the
+    explicit reset path used by a /reset intent from the UI."""
+    bus = InProcessEventBus()
+    llm = _RecordingLLM(script=[
+        LLMResponse(content="first"),
+        LLMResponse(content="second"),
+    ])
+    agent = AgentLoop(llm=llm, bus=bus)
+
+    import asyncio
+    asyncio.run(agent.run_turn("reset-me", "first user msg"))
+    agent.clear_session("reset-me")
+    asyncio.run(agent.run_turn("reset-me", "second user msg"))
+
+    second = llm.seen_messages[1]
+    roles = [m.role for m in second]
+    # After explicit clear, history is gone: only system + new user.
+    assert roles == ["system", "user"], (
+        f"clear_session didn't drop history: {roles}"
+    )
