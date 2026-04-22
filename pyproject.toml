@@ -33,6 +33,23 @@ dev = [
     "mypy>=1.14.0",
     "pip-tools>=7.5.0",
 ]
+# Optional extras for heavier capabilities. Installed only on demand so
+# the base `pip install xmclaw` stays small.
+#
+#   pip install 'xmclaw[browser]' && playwright install chromium
+#     -- lets the agent drive a headless Chromium (browser_open /
+#        click / fill / screenshot / snapshot / eval).
+#
+#   pip install 'xmclaw[lsp]'
+#     -- gives the agent code-navigation tools (lsp_hover /
+#        lsp_definition) over python-lsp-server. Language-specific
+#        servers for other languages land as separate extras.
+browser = ["playwright>=1.48.0"]
+lsp     = ["python-lsp-server>=1.12.0"]
+all     = [
+    "playwright>=1.48.0",
+    "python-lsp-server>=1.12.0",
+]
 
 [project.scripts]
 xmclaw = "xmclaw.cli.main:app"

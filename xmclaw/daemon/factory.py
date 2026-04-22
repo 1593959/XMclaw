@@ -180,11 +180,47 @@ def build_tools_from_config(cfg: dict[str, Any]) -> ToolProvider | None:
 
     enable_bash = tools_section.get("enable_bash", True)
     enable_web = tools_section.get("enable_web", True)
-    return BuiltinTools(
+    enable_browser = tools_section.get("enable_browser", False)
+    enable_lsp = tools_section.get("enable_lsp", False)
+
+    builtins = BuiltinTools(
         allowed_dirs=allowed_dirs,
         enable_bash=bool(enable_bash),
         enable_web=bool(enable_web),
     )
+    children: list[ToolProvider] = [builtins]
+
+    if enable_browser:
+        try:
+            from xmclaw.providers.tool.browser import BrowserTools
+            bcfg = tools_section.get("browser", {}) or {}
+            children.append(BrowserTools(
+                allowed_hosts=bcfg.get("allowed_hosts"),
+                headless=bool(bcfg.get("headless", True)),
+                timeout_ms=int(bcfg.get("timeout_ms", 15_000)),
+            ))
+        except ImportError:
+            # playwright optional-dep not installed -- log-skippable,
+            # don't crash the daemon over it. The admin gets a heads-up
+            # via the factory's build summary in serve().
+            pass
+
+    if enable_lsp:
+        try:
+            from xmclaw.providers.tool.lsp import LSPTools
+            lcfg = tools_section.get("lsp", {}) or {}
+            children.append(LSPTools(
+                root=lcfg.get("root") or ".",
+                startup_timeout_s=float(lcfg.get("startup_timeout_s", 10.0)),
+            ))
+        except ImportError:
+            pass
+
+    if len(children) == 1:
+        return builtins  # no extras wired -- skip the composite wrapper
+
+    from xmclaw.providers.tool.composite import CompositeToolProvider
+    return CompositeToolProvider(*children)
 
 
 def build_agent_from_config(
