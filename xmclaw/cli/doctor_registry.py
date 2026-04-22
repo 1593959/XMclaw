@@ -407,6 +407,74 @@ class WorkspaceCheck(DoctorCheck):
         return True
 
 
+class RoadmapLintCheck(DoctorCheck):
+    """Run ``scripts/lint_roadmap.py`` against ``docs/DEV_ROADMAP.md``.
+
+    Cheap drift-detector (§3.6.5): if an Epic is marked done but its
+    end-date is blank, or a Milestone's exit criterion is unchecked
+    despite its Epic being done, the linter returns a non-empty
+    violation list. Surfacing this as a doctor check means anyone
+    running ``xmclaw doctor`` before committing gets the same signal
+    CI would produce later.
+
+    Only runs when both the script and the roadmap exist in the
+    current checkout — a released wheel won't ship the script, so
+    the check quietly passes there.
+    """
+
+    id = "roadmap_lint"
+    name = "roadmap_lint"
+
+    def _paths(self) -> tuple[Path, Path] | None:
+        # Walk up from this file until we find either DEV_ROADMAP.md or
+        # run out of parents. Works from source checkout and from the
+        # worktree arrangement without hardcoding either layout.
+        here = Path(__file__).resolve()
+        for parent in [here, *here.parents]:
+            script = parent / "scripts" / "lint_roadmap.py"
+            roadmap = parent / "docs" / "DEV_ROADMAP.md"
+            if script.exists() and roadmap.exists():
+                return script, roadmap
+        return None
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        paths = self._paths()
+        if paths is None:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="skipped (script/roadmap not present — released wheel)",
+            )
+        script, roadmap = paths
+        import importlib.util
+        import sys as _sys
+
+        spec = importlib.util.spec_from_file_location("lint_roadmap", script)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        # Register before exec so ``@dataclass`` annotations can resolve
+        # the owning module (Python 3.10 looks up module globals via
+        # ``sys.modules`` during class body execution).
+        _sys.modules["lint_roadmap"] = module
+        spec.loader.exec_module(module)
+        violations = module.lint(roadmap)
+        if not violations:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"{roadmap.name} clean",
+            )
+        # Surface up to the first 3 violations in the advisory so the user
+        # can act without spelunking; the full list is available via
+        # ``python scripts/lint_roadmap.py``.
+        preview = "; ".join(violations[:3])
+        if len(violations) > 3:
+            preview += f" (+{len(violations) - 3} more)"
+        return CheckResult(
+            name=self.name, ok=False,
+            detail=f"{len(violations)} roadmap violation(s)",
+            advisory=f"run 'python scripts/lint_roadmap.py' — {preview}",
+        )
+
+
 class DaemonHealthCheck(DoctorCheck):
     id = "daemon"
     name = "daemon"
@@ -438,5 +506,6 @@ def build_default_registry() -> DoctorRegistry:
     reg.register(WorkspaceCheck())
     reg.register(PairingCheck())
     reg.register(PortCheck())
+    reg.register(RoadmapLintCheck())
     reg.register(DaemonHealthCheck())
     return reg

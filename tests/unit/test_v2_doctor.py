@@ -382,15 +382,18 @@ def test_registry_run_all_catches_crashing_check(tmp_path: Path) -> None:
     assert results[1].ok  # the passing check still ran
 
 
-def test_default_registry_has_seven_builtin_checks() -> None:
-    """The built-in set: config, llm, tools, workspace, pairing, port, daemon.
+def test_default_registry_builtin_check_order() -> None:
+    """Built-in set and their order.
 
-    WorkspaceCheck was added in Epic #10 phase 2 as the first fixable check
-    (``--fix`` creates ``~/.xmclaw/v2/`` when missing)."""
+    Order matters: ConfigCheck must run first so ctx.cfg is cached for
+    downstream checks. RoadmapLintCheck is late because it's a
+    doc-consistency guard, not a runtime blocker.
+    """
     reg = build_default_registry()
     ids = [c.id for c in reg.checks()]
     assert ids == [
-        "config", "llm", "tools", "workspace", "pairing", "port", "daemon",
+        "config", "llm", "tools", "workspace", "pairing", "port",
+        "roadmap_lint", "daemon",
     ]
 
 
@@ -456,7 +459,8 @@ def test_run_doctor_still_returns_old_check_result_type(tmp_path: Path) -> None:
     )
     assert all(isinstance(r, CheckResult) for r in results)
     assert [r.name for r in results] == [
-        "config", "llm", "tools", "workspace", "pairing", "port 8765", "daemon",
+        "config", "llm", "tools", "workspace", "pairing", "port 8765",
+        "roadmap_lint", "daemon",
     ]
 
 

@@ -99,13 +99,17 @@ lanes:
       - tests/integration/test_v2_daemon_config.py
       - tests/integration/test_v2_daemon_pairing.py
 
-  # CLI + doctor.
+  # CLI + doctor. RoadmapLintCheck wraps scripts/lint_roadmap.py, so
+  # treat the linter + its tests as part of this lane too.
   cli:
     triggers:
       - "xmclaw/cli/**"
+      - "scripts/lint_roadmap.py"
+      - "docs/DEV_ROADMAP.md"
     tests:
       - tests/unit/test_v2_doctor.py
       - tests/unit/test_v2_chat_formatter.py
+      - tests/unit/test_v2_lint_roadmap.py
 
   # Memory stack.
   memory:
