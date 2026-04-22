@@ -680,8 +680,8 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 **检查清单**：
 
 - [x] `cli/doctor_registry.py` + `DoctorCheck` ABC
-- [x] `doctor_checks.py` 核心检查 ≥ 8（现 9 条 built-in：config/llm/tools/**workspace**/pairing/port/**events_db**/**roadmap_lint**/daemon；sandbox 待 Epic #3 落地）
-- [ ] `doctor_connectivity.py` 网络探测
+- [x] `doctor_checks.py` 核心检查 ≥ 8（现 10 条 built-in：config/llm/tools/**workspace**/pairing/port/**events_db**/**connectivity**/**roadmap_lint**/daemon；sandbox 留给 Epic #3 — sandbox 运行时落地后再加）
+- [x] `doctor_connectivity.py` 网络探测（`ConnectivityCheck` 落地，opt-in `--network` 旗标，stdlib urllib HEAD 探测）
 - [x] `doctor_fix_runner.py` 自动修复（`DoctorRegistry.run_fixes()`，WorkspaceCheck 首条可修复检查落地）
 - [x] `[project.entry-points."xmclaw.doctor"]` 组（文档 + discover 已接）
 - [x] `xmclaw doctor [--json] [--fix]` CLI
@@ -698,6 +698,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - 2026-04-23: 阶段 2 首批落地——`CheckResult` 新增 `fix_available` 字段；`DoctorRegistry.run_fixes()` + nested `FixAttempt` dataclass 按序对 `ok=False ∧ fix_available` 的 check 调 `fix(ctx)`、捕获异常到 `fix_raised`、重跑 check、返回 attempt 列表；新增 `WorkspaceCheck`（`~/.xmclaw/v2/` 检查 + `mkdir -p` 自动修复，支持 `ctx.extras["workspace_dir"]` override 方便单测）；`xmclaw doctor --fix` CLI 旗标接通，JSON 多出 `fix_attempts` 字段、text 多出 `fix attempts:` 汇总块；`tests/unit/test_v2_doctor.py` 增 13 条用例（workspace 四态 + run_fixes 四路径 + CLI 两端到端），51 passed + 1 skipped，全套 659 passed (commit edd7d55)
 - 2026-04-23: 阶段 2 续——新增 `scripts/lint_roadmap.py`（§3.6.5 drift 检测器，零依赖，状态机解析 markdown）：4 条规则（状态 ✅ 完成 → 完成日期非 `-`；状态 🟡 → 起始非 `-`；✅ Epic 的 checklist 不得留真 `[ ]`；§7 Milestone 条目引用的 Epic 全 ✅ 则自身也必须 `[x]`）；通过 `留给 Epic #N` / `挂单 Epic #N` / `deferred to Epic #N` 注释 opt-out 防止跨 Epic deferral 误报；新增 `RoadmapLintCheck` doctor check（运行期 importlib 加载脚本 + `sys.modules` 注册让 dataclass 解析 OK），非源码环境自动跳过（wheel 不含 script）；`tests/unit/test_v2_lint_roadmap.py` 12 测（4 规则 × 正反 + 重复 Epic 号 + 多 Epic 引用部分完成容忍 + shipped roadmap 干净 regression guard）；`test_v2_doctor.py` 更新 7→8 checks 断言；smart-gate cli lane 加 `lint_roadmap.py` + `DEV_ROADMAP.md` trigger 和对应测试；全套 749 passed (commit 0def6fe)
 - 2026-04-23: 阶段 2 续——新增 `EventsDbCheck` doctor check：用 `sqlite3.connect(file:...?mode=ro)` read-only 打开 `~/.xmclaw/v2/events.db`，检测 4 种状态（不存在 → OK "will be created"；目录而非文件 → 失败；SQLite 头部损坏或锁死 → 失败带库原始错误；`PRAGMA user_version` 超前于代码 SCHEMA_VERSION → 失败带降级不支持 advisory）；`ctx.extras["events_db_path"]` 支持单测 override；`tests/unit/test_v2_doctor.py` 增 5 条用例（missing / directory / garbage / healthy current / newer schema）；checks 数 8→9；全套 754 passed (commit f00589c)
+- 2026-04-23: 阶段 2 续——新增 `ConnectivityCheck` doctor check：`DoctorContext.probe_network: bool = False` opt-in 字段（默认关闭以保持 doctor air-gap 可跑），`_DEFAULT_ENDPOINTS` 常量覆盖 anthropic/openai 基地址，honor `base_url` override（代理/自托管 compatible endpoint 正确对准）；`_probe()` 用 stdlib `urllib.request` HEAD 请求 + 5s timeout（零额外依赖），把 2xx/3xx/4xx 全都当 reachable（TLS 握手成功即可，auth 是 LLMCheck 的问题），URLError/socket.timeout/OSError 才是 unreachable；`xmclaw doctor --network` CLI 旗标接通；`tests/unit/test_v2_doctor.py` 增 8 条用例（默认关闭 / 无 cfg / 无 llm 节 / 无 api_key / 可达 200 / HTTP 401 当可达 / URLError 不可达 / base_url override 命中），mock `urllib.request.urlopen` 保持 CI 离线安全；checks 数 9→10，满足退出标准「覆盖 ≥ 10 项」的一半；`--fix` 自动修复仍只 1 条（workspace），auto-fix ≥ 5 的出口标准留给后续（sandbox / playwright install / pid 锁）；全套 762 passed (commit &lt;pin&gt;)
 
 ---
 

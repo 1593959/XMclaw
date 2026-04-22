@@ -19,6 +19,7 @@ from xmclaw.cli.doctor import (
 )
 from xmclaw.cli.doctor_registry import (
     CheckResult as RegistryCheckResult,
+    ConnectivityCheck,
     DoctorCheck,
     DoctorContext,
     DoctorRegistry,
@@ -394,7 +395,7 @@ def test_default_registry_builtin_check_order() -> None:
     ids = [c.id for c in reg.checks()]
     assert ids == [
         "config", "llm", "tools", "workspace", "pairing", "port",
-        "events_db", "roadmap_lint", "daemon",
+        "events_db", "connectivity", "roadmap_lint", "daemon",
     ]
 
 
@@ -461,7 +462,7 @@ def test_run_doctor_still_returns_old_check_result_type(tmp_path: Path) -> None:
     assert all(isinstance(r, CheckResult) for r in results)
     assert [r.name for r in results] == [
         "config", "llm", "tools", "workspace", "pairing", "port 8765",
-        "events_db", "roadmap_lint", "daemon",
+        "events_db", "connectivity", "roadmap_lint", "daemon",
     ]
 
 
@@ -627,6 +628,159 @@ def test_events_db_newer_schema_fails_with_advisory(tmp_path: Path) -> None:
     assert r.ok is False
     assert "newer than code" in r.detail
     assert r.advisory is not None
+
+
+# ── ConnectivityCheck ────────────────────────────────────────────────────
+
+
+def _connectivity_ctx(
+    tmp_path: Path, *, probe_network: bool, cfg: dict | None,
+) -> DoctorContext:
+    ctx = DoctorContext(
+        config_path=tmp_path / "unused.json",
+        probe_network=probe_network,
+    )
+    ctx.cfg = cfg
+    return ctx
+
+
+def test_connectivity_off_by_default_returns_ok(tmp_path: Path) -> None:
+    """With ``probe_network=False`` the check must return ok without
+    touching the network — the default doctor run has to stay offline-safe."""
+    check = ConnectivityCheck()
+    r = check.run(_connectivity_ctx(tmp_path, probe_network=False, cfg={
+        "llm": {"anthropic": {"api_key": "k"}},
+    }))
+    assert r.ok is True
+    assert "skipped" in r.detail.lower() or "--network" in r.detail
+
+
+def test_connectivity_no_cfg_fails_cleanly(tmp_path: Path) -> None:
+    """If ConfigCheck didn't populate ``ctx.cfg``, the connectivity check
+    must report that and bail — not crash with an AttributeError."""
+    check = ConnectivityCheck()
+    r = check.run(_connectivity_ctx(tmp_path, probe_network=True, cfg=None))
+    assert r.ok is False
+    assert "skipped" in r.detail
+
+
+def test_connectivity_no_llm_section_is_ok(tmp_path: Path) -> None:
+    """Probing something that isn't configured isn't a failure."""
+    check = ConnectivityCheck()
+    r = check.run(_connectivity_ctx(tmp_path, probe_network=True, cfg={}))
+    assert r.ok is True
+    assert "nothing to probe" in r.detail
+
+
+def test_connectivity_no_api_keys_is_ok(tmp_path: Path) -> None:
+    """An LLM section with provider blocks but no api_keys isn't
+    reachable-from-here — the user either forgot a key or this is a
+    partial config. Either way, nothing to probe."""
+    check = ConnectivityCheck()
+    r = check.run(_connectivity_ctx(tmp_path, probe_network=True, cfg={
+        "llm": {"anthropic": {"default_model": "m"}},
+    }))
+    assert r.ok is True
+    assert "nothing to probe" in r.detail
+
+
+def test_connectivity_reachable_returns_ok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mock urlopen to simulate a healthy TLS handshake."""
+    import urllib.request
+
+    class _FakeResponse:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *_a): return False
+
+    def _fake_urlopen(req, timeout):  # noqa: ARG001
+        return _FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    check = ConnectivityCheck()
+    r = check.run(_connectivity_ctx(tmp_path, probe_network=True, cfg={
+        "llm": {"anthropic": {"api_key": "k"}},
+    }))
+    assert r.ok is True
+    assert "reachable" in r.detail
+    assert "HTTP 200" in r.detail
+
+
+def test_connectivity_http_4xx_treated_as_reachable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 401/403 means the TLS handshake worked — we care about the
+    network path, not auth. That's the LLMCheck's job."""
+    import urllib.error
+    import urllib.request
+
+    def _fake_urlopen(req, timeout):  # noqa: ARG001
+        raise urllib.error.HTTPError(
+            url="https://api.anthropic.com", code=401, msg="Unauthorized",
+            hdrs=None, fp=None,
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    check = ConnectivityCheck()
+    r = check.run(_connectivity_ctx(tmp_path, probe_network=True, cfg={
+        "llm": {"anthropic": {"api_key": "k"}},
+    }))
+    assert r.ok is True
+    assert "HTTP 401" in r.detail
+
+
+def test_connectivity_unreachable_reports_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DNS / connect / TLS failures count as unreachable."""
+    import urllib.error
+    import urllib.request
+
+    def _fake_urlopen(req, timeout):  # noqa: ARG001
+        raise urllib.error.URLError("Name or service not known")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    check = ConnectivityCheck()
+    r = check.run(_connectivity_ctx(tmp_path, probe_network=True, cfg={
+        "llm": {"anthropic": {"api_key": "k"}},
+    }))
+    assert r.ok is False
+    assert "unreachable" in r.detail
+    assert r.advisory is not None
+
+
+def test_connectivity_honors_base_url_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the user points at a proxy or self-hosted endpoint via
+    ``base_url``, we probe *that* URL — not the upstream default."""
+    import urllib.request
+
+    probed_urls: list[str] = []
+
+    class _FakeResponse:
+        status = 204
+        def __enter__(self): return self
+        def __exit__(self, *_a): return False
+
+    def _fake_urlopen(req, timeout):  # noqa: ARG001
+        probed_urls.append(req.full_url)
+        return _FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    check = ConnectivityCheck()
+    r = check.run(_connectivity_ctx(tmp_path, probe_network=True, cfg={
+        "llm": {
+            "anthropic": {
+                "api_key": "k",
+                "base_url": "https://proxy.example.com",
+            },
+        },
+    }))
+    assert r.ok is True
+    assert probed_urls == ["https://proxy.example.com"]
 
 
 # ── DoctorRegistry.run_fixes ─────────────────────────────────────────────

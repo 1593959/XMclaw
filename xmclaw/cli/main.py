@@ -413,6 +413,11 @@ def doctor(
         False, "--no-daemon-probe",
         help="Skip the HTTP health probe (offline mode).",
     ),
+    network: bool = typer.Option(
+        False, "--network",
+        help="Probe reachability of configured LLM endpoints. Off by "
+             "default so the doctor stays runnable on air-gapped machines.",
+    ),
     discover_plugins: bool = typer.Option(
         False, "--discover-plugins",
         help="Load third-party checks from the 'xmclaw.doctor' entry-point group.",
@@ -457,6 +462,7 @@ def doctor(
         config_path=_Path(config),
         host=host, port=port,
         probe_daemon=not no_daemon_probe,
+        probe_network=network,
     )
     check_results = registry.run_all(ctx)
     results: list[RegistryCheckResult] = plugin_errors + check_results

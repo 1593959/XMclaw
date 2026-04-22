@@ -75,6 +75,10 @@ class DoctorContext:
     host: str = "127.0.0.1"
     port: int = 8765
     probe_daemon: bool = True
+    # Off by default — the doctor otherwise does no outbound HTTP, so
+    # it stays runnable on air-gapped machines and in CI without a
+    # surprise network dependency. The CLI opts in with ``--network``.
+    probe_network: bool = False
     cfg: dict[str, Any] | None = None          # filled by ConfigCheck
     token_path: Path | None = None              # override, else default
     extras: dict[str, Any] = field(default_factory=dict)
@@ -407,6 +411,119 @@ class WorkspaceCheck(DoctorCheck):
         return True
 
 
+class ConnectivityCheck(DoctorCheck):
+    """Probe reachability of configured LLM endpoints.
+
+    Skipped unless :pyattr:`DoctorContext.probe_network` is True (CLI
+    ``--network`` flag) — making HTTP calls from the doctor would
+    otherwise break CI and offline-dev setups by surprise.
+
+    Contract details worth pinning:
+
+    * **No credentials leave the box.** We issue an unauthenticated
+      ``HEAD`` request to the provider's base URL. A 2xx/3xx/4xx
+      response means "DNS + TCP + TLS all worked" — the API key is
+      still LLMCheck's problem, not ours. A 5xx or network error is
+      the actual failure signal.
+    * **Short timeout.** 5 s. A hung probe wastes more wall-time
+      than it's worth.
+    * **Uses stdlib ``urllib``**. Keeping the doctor free of an
+      ``httpx`` dependency means the check can run before the
+      installed extras are confirmed.
+    * **Honors ``base_url`` overrides.** A user pointing at a proxy or
+      self-hosted compatible endpoint should probe *that*, not the
+      upstream. Same resolution order as the provider classes.
+
+    Endpoints (fallbacks if ``base_url`` not set):
+    - ``anthropic``: ``https://api.anthropic.com``
+    - ``openai``: ``https://api.openai.com``
+    """
+
+    id = "connectivity"
+    name = "connectivity"
+
+    _DEFAULT_ENDPOINTS: ClassVar[dict[str, str]] = {
+        "anthropic": "https://api.anthropic.com",
+        "openai": "https://api.openai.com",
+    }
+
+    def _probe(self, url: str, timeout: float = 5.0) -> tuple[bool, str]:
+        """Return ``(reachable, detail)``.
+
+        Treats any HTTP status code as "reachable" — a 401/403 means
+        the TLS handshake + auth challenge both worked, which is
+        exactly what we're trying to verify. Only URLError (DNS /
+        connect / TLS failure) and socket timeout count as unreachable.
+        """
+        import socket
+        import urllib.request
+        import urllib.error
+
+        req = urllib.request.Request(url, method="HEAD")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return True, f"HTTP {resp.status}"
+        except urllib.error.HTTPError as e:
+            # Server spoke HTTP — that's reachable for our purposes.
+            return True, f"HTTP {e.code}"
+        except urllib.error.URLError as e:
+            return False, f"URLError: {e.reason}"
+        except socket.timeout:
+            return False, f"timeout after {timeout:.0f}s"
+        except OSError as e:
+            return False, f"OSError: {e}"
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        if not ctx.probe_network:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="skipped (pass --network to probe LLM endpoints)",
+            )
+        if ctx.cfg is None:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail="skipped: config not parsed",
+            )
+        llm = ctx.cfg.get("llm")
+        if not isinstance(llm, dict):
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="no 'llm' section — nothing to probe",
+            )
+
+        targets: list[tuple[str, str]] = []
+        for provider, default_url in self._DEFAULT_ENDPOINTS.items():
+            p = llm.get(provider)
+            if not isinstance(p, dict) or not p.get("api_key"):
+                continue
+            url = p.get("base_url") or default_url
+            targets.append((provider, url))
+
+        if not targets:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="no configured providers with api_key — nothing to probe",
+            )
+
+        results: list[tuple[str, bool, str]] = []
+        for provider, url in targets:
+            reachable, detail = self._probe(url)
+            results.append((provider, reachable, f"{url} -> {detail}"))
+
+        failures = [r for r in results if not r[1]]
+        summary = "; ".join(f"{p}: {d}" for p, _, d in results)
+        if failures:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"{len(failures)}/{len(results)} provider(s) unreachable",
+                advisory=f"check network + proxy settings. details: {summary}",
+            )
+        return CheckResult(
+            name=self.name, ok=True,
+            detail=f"{len(results)} provider(s) reachable ({summary})",
+        )
+
+
 class EventsDbCheck(DoctorCheck):
     """Probe ``~/.xmclaw/v2/events.db`` health.
 
@@ -593,6 +710,7 @@ def build_default_registry() -> DoctorRegistry:
     reg.register(PairingCheck())
     reg.register(PortCheck())
     reg.register(EventsDbCheck())
+    reg.register(ConnectivityCheck())
     reg.register(RoadmapLintCheck())
     reg.register(DaemonHealthCheck())
     return reg
