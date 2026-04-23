@@ -880,3 +880,82 @@ def test_cli_backup_info_human_readable_size(tmp_path: Path) -> None:
     assert r.exit_code == 0, r.stdout
     # Either "B", "KiB", "MiB" etc. should appear in the archive_bytes line.
     assert any(unit in r.stdout for unit in ("B)", "KiB)", "MiB)"))
+
+
+# ── CLI: --json output ──────────────────────────────────────────────────
+
+
+def test_cli_backup_list_json_empty_is_empty_array(tmp_path: Path) -> None:
+    dest = tmp_path / "backups"
+    dest.mkdir()
+    runner = CliRunner()
+    r = runner.invoke(app, ["backup", "list", "--dest", str(dest), "--json"])
+    assert r.exit_code == 0, r.stdout
+    assert json.loads(r.stdout) == []
+
+
+def test_cli_backup_list_json_returns_full_entries(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    _make_workspace(ws)
+    dest = tmp_path / "backups"
+    create_backup(ws, "one", backups_dir=dest)
+    create_backup(ws, "two", backups_dir=dest)
+    runner = CliRunner()
+    r = runner.invoke(app, ["backup", "list", "--dest", str(dest), "--json"])
+    assert r.exit_code == 0, r.stdout
+    payload = json.loads(r.stdout)
+    assert len(payload) == 2
+    names = {e["name"] for e in payload}
+    assert names == {"one", "two"}
+    sample = payload[0]
+    for key in (
+        "name", "path", "schema_version", "created_ts", "xmclaw_version",
+        "archive_sha256", "archive_bytes", "source_dir", "excluded", "entries",
+    ):
+        assert key in sample, f"missing key: {key}"
+    # path resolves to the on-disk backup dir.
+    assert Path(sample["path"]).is_dir()
+    # excluded is serialized as a list.
+    assert isinstance(sample["excluded"], list)
+
+
+def test_cli_backup_list_json_is_valid_jq_input(tmp_path: Path) -> None:
+    """Ensure output is strict JSON with no banner/log bleed-through."""
+    ws = tmp_path / "ws"
+    _make_workspace(ws)
+    dest = tmp_path / "backups"
+    create_backup(ws, "stable", backups_dir=dest)
+    runner = CliRunner()
+    r = runner.invoke(app, ["backup", "list", "--dest", str(dest), "--json"])
+    assert r.exit_code == 0
+    # stdout must parse cleanly; any stray prefix/suffix breaks pipelines.
+    json.loads(r.stdout)
+
+
+def test_cli_backup_info_json_emits_same_shape_as_list_element(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    _make_workspace(ws)
+    dest = tmp_path / "backups"
+    create_backup(ws, "aligned", backups_dir=dest)
+    runner = CliRunner()
+    info_r = runner.invoke(
+        app, ["backup", "info", "aligned", "--dest", str(dest), "--json"]
+    )
+    list_r = runner.invoke(
+        app, ["backup", "list", "--dest", str(dest), "--json"]
+    )
+    assert info_r.exit_code == 0 and list_r.exit_code == 0
+    info_payload = json.loads(info_r.stdout)
+    list_payload = json.loads(list_r.stdout)
+    assert isinstance(info_payload, dict)
+    assert info_payload == list_payload[0]
+
+
+def test_cli_backup_info_json_missing_exits_nonzero(tmp_path: Path) -> None:
+    dest = tmp_path / "backups"
+    dest.mkdir()
+    runner = CliRunner()
+    r = runner.invoke(
+        app, ["backup", "info", "ghost", "--dest", str(dest), "--json"]
+    )
+    assert r.exit_code == 1, r.stdout

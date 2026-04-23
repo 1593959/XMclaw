@@ -1113,17 +1113,55 @@ def backup_create(
                f"sha256={manifest.archive_sha256[:12]}...")
 
 
+def _manifest_to_dict(entry: Any) -> dict[str, Any]:
+    """Flatten a BackupEntry into a JSON-safe dict for `--json` output.
+
+    Includes the on-disk ``path`` next to the manifest fields so
+    scripts can pipe straight into restore / delete without re-
+    resolving the backups root.
+    """
+    m = entry.manifest
+    return {
+        "name": entry.name,
+        "path": str(entry.dir),
+        "schema_version": m.schema_version,
+        "created_ts": m.created_ts,
+        "xmclaw_version": m.xmclaw_version,
+        "archive_sha256": m.archive_sha256,
+        "archive_bytes": m.archive_bytes,
+        "source_dir": m.source_dir,
+        "excluded": list(m.excluded),
+        "entries": m.entries,
+    }
+
+
 @backup_app.command("list")
 def backup_list(
     dest: Path = typer.Option(
         None, "--dest",
         help="Backups directory. Defaults to ~/.xmclaw/backups.",
     ),
+    as_json: bool = typer.Option(
+        False, "--json",
+        help="Emit a JSON array for scripting (stable schema).",
+    ),
 ) -> None:
-    """Show every backup on disk."""
+    """Show every backup on disk.
+
+    Default text mode is columnar for eyeballing; ``--json`` emits a
+    stable array with one dict per backup (name / path / all manifest
+    fields) — pipe into ``jq`` to filter / sort / feed into another
+    ``xmclaw backup ...`` invocation.
+    """
+    import json as _json
+
     from xmclaw.backup import list_backups
 
     entries = list_backups(dest)
+    if as_json:
+        payload = [_manifest_to_dict(e) for e in entries]
+        typer.echo(_json.dumps(payload, indent=2))
+        return
     if not entries:
         typer.echo("no backups found.")
         return
@@ -1191,6 +1229,10 @@ def backup_info(
         False, "--show-excluded",
         help="Also print the list of glob patterns that were excluded.",
     ),
+    as_json: bool = typer.Option(
+        False, "--json",
+        help="Emit the full manifest as a JSON dict (implies --show-excluded).",
+    ),
 ) -> None:
     """Pretty-print a single backup's manifest without re-hashing.
 
@@ -1198,8 +1240,13 @@ def backup_info(
     echoes the metadata. Use when you want to know *what* a backup is
     (when it was taken, what version, how big) without paying the
     sha256 cost. Exits non-zero when the backup is missing or malformed.
+
+    ``--json`` emits the same dict shape as ``backup list --json``
+    produces for each element (always includes the full ``excluded``
+    list).
     """
     import datetime as _dt
+    import json as _json
 
     from xmclaw.backup import get_backup
     from xmclaw.backup.store import BackupNotFoundError
@@ -1209,6 +1256,10 @@ def backup_info(
     except (BackupNotFoundError, ValueError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
+
+    if as_json:
+        typer.echo(_json.dumps(_manifest_to_dict(entry), indent=2))
+        return
 
     m = entry.manifest
     created = _dt.datetime.fromtimestamp(
