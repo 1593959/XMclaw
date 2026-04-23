@@ -461,7 +461,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **这是我们唯一的用户可感知差异，必须做到看得见。**
 
-**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**状态**：🟡 进行中（Phase A 可见性落地） | **负责人**：Claude (AI pair) | **起始**：2026-04-24 | **完成**：-
 **前置依赖**：Epic #3（scanner）、Epic #13（事件总线）、Epic #5（memory）
 **关联 Milestone**：M5（进化可感知）★ 最关键
 
@@ -481,12 +481,12 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **检查清单**：
 
-- [ ] `core/bus/events.py` 新事件类型
+- [x] `core/bus/events.py` 新事件类型（`SKILL_PROMOTED` / `SKILL_ROLLED_BACK` 已存在，`SKILL_CANDIDATE_PROPOSED` 已存在；Phase B 再加 gene 相关事件）
 - [ ] `xmclaw/evolution/gene_forge.py`：流式 gene 生成器
 - [ ] `xmclaw/evolution/skill_forge.py`：候选验证
 - [ ] `xmclaw/evolution/engine.py`：总装
-- [ ] `~/.xmclaw/skills/<name>/candidates/` + `history.jsonl` 格式落地
-- [ ] CLI `xmclaw evolution show` 可用
+- [x] `~/.xmclaw/skills/<skill_id>.jsonl` 促发/回滚 append-only 历史（`SkillRegistry._persist`）；`candidates/` 子树留给 Phase B
+- [x] CLI `xmclaw evolution show` 可用（Phase A: `--since 24h/7d` 过滤、多技能按 ts 合并、空目录友好提示；`typer` 集成测试覆盖）
 - [ ] CLI `xmclaw session report <id>` 可用
 - [ ] CLI repl `SKILL_EVOLVED` flash
 - [ ] README 顶部 killer demo GIF
@@ -501,7 +501,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **进度日志**：
 
-- _（尚无）_
+- 2026-04-24: Phase A 可见性落地——`xmclaw evolution show [--since 24h|7d|Nh]` 读 `~/.xmclaw/skills/*.jsonl` 按 `ts` 合并打印。新增 `xmclaw.utils.paths.skills_dir()`（honors `XMC_V2_SKILLS_DIR`，peer of `v2/`，以便 workspace wipe 不清审计日志）+ `xmclaw.cli.evolution` 模块 + `xmclaw.cli.main` typer 注册。15 条 unit tests（`_parse_since` / `_fmt_record` / `run_evolution_show` 空目录/过滤/多技能合并 + 真 `SkillRegistry` round-trip + typer `CliRunner` 集成）。Phase B 仍待：`EvolutionOrchestrator` 把 registry.promote 转成 bus 事件、`session report` CLI、REPL flash。(branch feat/epic-4-evolution-visibility)
 
 ---
 
