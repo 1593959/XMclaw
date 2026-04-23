@@ -523,13 +523,13 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - [x] `prune()` / `evict()` 经 structlog 发 `memory.evicted` 结构化日志
 - [x] `pinned_tags` 构造参数：admin 可按 `metadata.tag` / `tags` / `category` 豁免
 - [x] `SqliteVecMemory.stats()` 数据面：三层 × `count` / `bytes` / `pinned_count` / `oldest_ts` / `newest_ts`（为 CLI 打底）
+- [x] `xmclaw memory stats` CLI 落地：`--db PATH`（默认 `~/.xmclaw/v2/memory.db`）/ `--json` / 文本表格 / 空 DB 静默报告（不偷偷建库）
 - [ ] `memory.retention_days` / `max_bytes` daemon 级 config 字段（等 daemon 的 memory factory 落地）
-- [ ] `xmclaw memory stats` CLI（phase 3，数据面已就位）
 - [ ] `MEMORY_EVICTED` 事件发出（phase 3，上 bus，随 scheduler 一起落）
 - [x] 单测覆盖 LRU / bytes / pinned / pinned_tags / 组合 cap / 恶意 metadata / layer 隔离
 - [x] 10k 压测（退出标准一半：延迟部分达标）
 
-**退出标准**：10k 记忆条目下 evict 延迟 < 100ms（**达标** — 本机 44ms）；`xmclaw memory stats` 能看到淘汰日志（phase 3 待 CLI 落地）。
+**退出标准**：10k 记忆条目下 evict 延迟 < 100ms（**达标** — 本机 44ms）；`xmclaw memory stats` 能显示 per-layer 占用（**达标** — `count` / `bytes` / `pinned` / `oldest` / `newest` 三层表输出）。淘汰日志上 bus 的部分挂到 phase 3 `MEMORY_EVICTED` 事件。
 
 **进度日志**：
 
@@ -537,6 +537,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - 2026-04-23: phase 2 — `pinned_tags` 构造参数：admin 传 `pinned_tags=["identity", "promise"]`，`_is_pinned` 除了 `metadata.pinned` 外还认 `metadata.tag`（标量）/ `metadata.tags`（列表）/ `metadata.category` 命中。用例目的：不需要改每条 row 就能保护"身份/承诺/系统"类记忆。加 4 条单测（scalar tag / tags list / category / pinned_tags 为空时保持原行为）。full suite 781 passed (commit 275d433)
 - 2026-04-23: phase 4 (part 1) — 退出标准延迟部分达标。新增 `test_evict_at_10k_items_is_fast`：on-disk DB + 10k 行 + `max_items=5_000` 一次 evict 5k 条，本机耗时 44ms，<100ms 退出标准；guard 设 500ms（5x 头部空间）吸收 CI 抖动。回归信号：O(n²) 实现或全表重写会被 5x 额度抓到。`xmclaw memory stats` CLI 仍未落（phase 3），退出标准另一半挂单 (commit 2a0fc69)
 - 2026-04-23: phase 3 数据面 — `SqliteVecMemory.stats()` 落地：三层固定返回 `count` / `bytes` (UTF-8) / `pinned_count` / `oldest_ts` / `newest_ts`；空库三层全零、`pinned_count` 复用 `_is_pinned` 规则（`metadata.pinned` / `tag` / `tags` / `category`）、不触库。加 6 条单测（空库 / 计数+字节+ts 范围 / UTF-8 多字节 / pinned 规则复用 / 幂等不突变 / evict 后读数正确）。memory suite 38 passed、smart-gate 106 passed。CLI `xmclaw memory stats` 只剩渲染层，解锁 phase 3 展示面 (commit 24c8177)
+- 2026-04-23: phase 3 CLI — `xmclaw memory stats` 落地：typer 子 app `memory` + 命令 `stats`。`--db PATH`（默认 `~/.xmclaw/v2/memory.db`，遵循 pid / events / token 同款 workspace 约定）/ `--json` / 三层固定表输出（layer / count / bytes / pinned / oldest / newest，UTC 时间戳+人类可读字节）。**不偷偷建库**：DB 不存在时打印提示+退出 0（`exists: false` JSON）。加 6 条 CLI 测试（JSON 读数正确 / 文本表格含三层 / 缺 DB 干净报告+不创建 / JSON 缺 DB `exists=false` / HOME 覆盖默认路径 / 空 DB 仍返回三层零行）。smart-gate 174 passed 1 skipped (commit PENDING)
 
 ---
 

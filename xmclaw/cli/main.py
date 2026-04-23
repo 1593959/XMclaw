@@ -31,6 +31,20 @@ from xmclaw.core.bus.memory import accept_all
 
 app = typer.Typer(help="XMclaw — local-first, self-evolving AI agent runtime")
 
+# ``xmclaw memory <subcommand>`` — grouped under a sub-typer so future
+# siblings (prune, forget, etc.) can land next to ``stats`` without
+# polluting the top-level help.
+memory_app = typer.Typer(
+    help="Inspect and maintain the agent's SQLite-vec memory store.",
+)
+app.add_typer(memory_app, name="memory")
+
+
+def _default_memory_db_path():
+    """Mirror the workspace convention used elsewhere (pid / events / token)."""
+    from pathlib import Path as _Path
+    return _Path.home() / ".xmclaw" / "v2" / "memory.db"
+
 
 @app.command()
 def version() -> None:
@@ -514,6 +528,91 @@ def doctor(
                 extra = f" (fix raised: {a.fix_raised})" if a.fix_raised else ""
                 typer.echo(f"  - {a.check_id}: {status}{extra}")
     raise typer.Exit(code=1 if critical_fail else 0)
+
+
+@memory_app.command("stats")
+def memory_stats(
+    db: str = typer.Option(
+        "",
+        help=(
+            "Path to the memory DB. Empty = ~/.xmclaw/v2/memory.db (the "
+            "daemon's default workspace location)."
+        ),
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit machine-readable JSON instead of a table.",
+    ),
+) -> None:
+    """Show per-layer memory occupancy: count, bytes, pinned, age range.
+
+    Non-mutating -- opens the DB, reads aggregates, exits. When the DB
+    doesn't exist yet (fresh install, no items ever stored), reports
+    that cleanly instead of silently creating an empty file.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+    from pathlib import Path as _Path
+
+    from xmclaw.providers.memory.sqlite_vec import SqliteVecMemory
+
+    db_path = _Path(db) if db else _default_memory_db_path()
+    if not db_path.exists():
+        if json_output:
+            typer.echo(_json.dumps({
+                "ok": True,
+                "db_path": str(db_path),
+                "exists": False,
+                "layers": {},
+            }, ensure_ascii=False, indent=2))
+            return
+        typer.echo(f"  [!]   no memory DB at {db_path}")
+        typer.echo(
+            "        nothing stored yet -- run the agent once, or pass "
+            "--db PATH to point at a different location"
+        )
+        return
+
+    mem = SqliteVecMemory(db_path)
+    try:
+        stats = asyncio.run(mem.stats())
+    finally:
+        mem.close()
+
+    if json_output:
+        typer.echo(_json.dumps({
+            "ok": True,
+            "db_path": str(db_path),
+            "exists": True,
+            "layers": stats,
+        }, ensure_ascii=False, indent=2))
+        return
+
+    def _fmt_ts(ts: float | None) -> str:
+        if ts is None:
+            return "-"
+        return datetime.fromtimestamp(ts, tz=timezone.utc).strftime(
+            "%Y-%m-%d %H:%M:%SZ"
+        )
+
+    def _fmt_bytes(n: int) -> str:
+        if n < 1024:
+            return f"{n}B"
+        if n < 1024 * 1024:
+            return f"{n / 1024:.1f}KB"
+        return f"{n / (1024 * 1024):.1f}MB"
+
+    typer.echo(f"xmclaw memory stats -- {db_path}")
+    typer.echo(
+        f"  {'layer':<8}  {'count':>7}  {'bytes':>10}  {'pinned':>6}  "
+        f"{'oldest':<21}  {'newest':<21}"
+    )
+    for layer in ("short", "working", "long"):
+        s = stats[layer]
+        typer.echo(
+            f"  {layer:<8}  {s['count']:>7}  {_fmt_bytes(s['bytes']):>10}  "
+            f"{s['pinned_count']:>6}  {_fmt_ts(s['oldest_ts']):<21}  "
+            f"{_fmt_ts(s['newest_ts']):<21}"
+        )
 
 
 if __name__ == "__main__":
