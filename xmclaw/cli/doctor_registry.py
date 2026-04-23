@@ -678,6 +678,83 @@ class RoadmapLintCheck(DoctorCheck):
         )
 
 
+class StalePidCheck(DoctorCheck):
+    """Detect and clean up an orphaned ``daemon.pid`` file.
+
+    If a previous daemon crashed without cleanup, ``~/.xmclaw/v2/daemon.pid``
+    points at a process that no longer exists. ``xmclaw start`` refuses
+    to spawn when that file is present, so users hit a confusing "daemon
+    already running" error. This check catches that state up front and
+    offers a one-shot ``fix()`` that deletes the stale ``daemon.pid`` +
+    ``daemon.meta`` pair.
+
+    States:
+      * No PID file       -> OK "no daemon tracked"
+      * PID file + alive  -> OK "daemon running (pid=N)"
+      * PID file + dead   -> FAIL + fixable "stale pid file"
+
+    Honors the ``XMC_V2_PID_PATH`` env var (same rule
+    :func:`xmclaw.daemon.lifecycle.default_pid_path` uses) and the
+    ``ctx.extras["pid_path"]`` override so tests can point it at a
+    tmp file.
+    """
+
+    id = "pid_lock"
+    name = "pid_lock"
+
+    def _target(self, ctx: DoctorContext) -> Path:
+        override = ctx.extras.get("pid_path")
+        if isinstance(override, (str, Path)):
+            return Path(override)
+        from xmclaw.daemon.lifecycle import default_pid_path
+
+        return default_pid_path()
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        pid_path = self._target(ctx)
+        if not pid_path.exists():
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="no daemon tracked",
+            )
+        try:
+            pid = int(pid_path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError) as exc:
+            # Malformed file counts as stale — remove it.
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"pid file malformed: {exc}",
+                advisory=f"run 'xmclaw doctor --fix' to clear {pid_path}",
+                fix_available=True,
+            )
+        from xmclaw.daemon.lifecycle import _process_alive
+
+        if _process_alive(pid):
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"daemon running (pid={pid})",
+            )
+        return CheckResult(
+            name=self.name, ok=False,
+            detail=f"stale pid file — pid {pid} is not running",
+            advisory=(
+                f"run 'xmclaw doctor --fix' to clear {pid_path}, "
+                "or 'xmclaw stop' then 'xmclaw start'"
+            ),
+            fix_available=True,
+        )
+
+    def fix(self, ctx: DoctorContext) -> bool:
+        pid_path = self._target(ctx)
+        meta_path = pid_path.with_name("daemon.meta")
+        try:
+            pid_path.unlink(missing_ok=True)
+            meta_path.unlink(missing_ok=True)
+        except OSError:
+            return False
+        return True
+
+
 class DaemonHealthCheck(DoctorCheck):
     id = "daemon"
     name = "daemon"
@@ -712,5 +789,6 @@ def build_default_registry() -> DoctorRegistry:
     reg.register(EventsDbCheck())
     reg.register(ConnectivityCheck())
     reg.register(RoadmapLintCheck())
+    reg.register(StalePidCheck())
     reg.register(DaemonHealthCheck())
     return reg

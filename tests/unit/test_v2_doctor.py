@@ -395,7 +395,7 @@ def test_default_registry_builtin_check_order() -> None:
     ids = [c.id for c in reg.checks()]
     assert ids == [
         "config", "llm", "tools", "workspace", "pairing", "port",
-        "events_db", "connectivity", "roadmap_lint", "daemon",
+        "events_db", "connectivity", "roadmap_lint", "pid_lock", "daemon",
     ]
 
 
@@ -462,7 +462,7 @@ def test_run_doctor_still_returns_old_check_result_type(tmp_path: Path) -> None:
     assert all(isinstance(r, CheckResult) for r in results)
     assert [r.name for r in results] == [
         "config", "llm", "tools", "workspace", "pairing", "port 8765",
-        "events_db", "connectivity", "roadmap_lint", "daemon",
+        "events_db", "connectivity", "roadmap_lint", "pid_lock", "daemon",
     ]
 
 
@@ -781,6 +781,104 @@ def test_connectivity_honors_base_url_override(
     }))
     assert r.ok is True
     assert probed_urls == ["https://proxy.example.com"]
+
+
+# ── StalePidCheck ────────────────────────────────────────────────────────
+
+def _pid_ctx(tmp_path: Path, pid_path: Path) -> DoctorContext:
+    ctx = DoctorContext(config_path=tmp_path / "unused.json")
+    ctx.extras["pid_path"] = pid_path
+    return ctx
+
+
+def test_pid_lock_no_file_is_ok(tmp_path: Path) -> None:
+    from xmclaw.cli.doctor_registry import StalePidCheck
+
+    check = StalePidCheck()
+    r = check.run(_pid_ctx(tmp_path, tmp_path / "daemon.pid"))
+    assert r.ok is True
+    assert "no daemon tracked" in r.detail
+    assert r.fix_available is False
+
+
+def test_pid_lock_malformed_file_is_fixable(tmp_path: Path) -> None:
+    from xmclaw.cli.doctor_registry import StalePidCheck
+
+    pid_path = tmp_path / "daemon.pid"
+    pid_path.write_text("not-an-int", encoding="utf-8")
+    check = StalePidCheck()
+    ctx = _pid_ctx(tmp_path, pid_path)
+    r = check.run(ctx)
+    assert r.ok is False
+    assert r.fix_available is True
+
+    # fix clears the file.
+    assert check.fix(ctx) is True
+    assert not pid_path.exists()
+    assert check.run(ctx).ok is True
+
+
+def test_pid_lock_alive_process_returns_ok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from xmclaw.cli.doctor_registry import StalePidCheck
+
+    pid_path = tmp_path / "daemon.pid"
+    pid_path.write_text("12345", encoding="utf-8")
+    monkeypatch.setattr(
+        "xmclaw.daemon.lifecycle._process_alive", lambda _pid: True,
+    )
+    check = StalePidCheck()
+    r = check.run(_pid_ctx(tmp_path, pid_path))
+    assert r.ok is True
+    assert "12345" in r.detail
+    assert r.fix_available is False
+
+
+def test_pid_lock_stale_file_is_fixable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from xmclaw.cli.doctor_registry import StalePidCheck
+
+    pid_path = tmp_path / "daemon.pid"
+    meta_path = tmp_path / "daemon.meta"
+    pid_path.write_text("99999", encoding="utf-8")
+    meta_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        "xmclaw.daemon.lifecycle._process_alive", lambda _pid: False,
+    )
+    check = StalePidCheck()
+    ctx = _pid_ctx(tmp_path, pid_path)
+    r = check.run(ctx)
+    assert r.ok is False
+    assert "stale" in r.detail
+    assert "99999" in r.detail
+    assert r.fix_available is True
+
+    # fix removes both pid + meta.
+    assert check.fix(ctx) is True
+    assert not pid_path.exists()
+    assert not meta_path.exists()
+    # Re-run now reports OK.
+    r2 = check.run(ctx)
+    assert r2.ok is True
+
+
+def test_pid_lock_fix_tolerates_missing_meta(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """meta file is optional — fix() must not fail when it's absent."""
+    from xmclaw.cli.doctor_registry import StalePidCheck
+
+    pid_path = tmp_path / "daemon.pid"
+    pid_path.write_text("42", encoding="utf-8")
+    monkeypatch.setattr(
+        "xmclaw.daemon.lifecycle._process_alive", lambda _pid: False,
+    )
+    check = StalePidCheck()
+    ctx = _pid_ctx(tmp_path, pid_path)
+    assert check.fix(ctx) is True
+    assert not pid_path.exists()
 
 
 # ── DoctorRegistry.run_fixes ─────────────────────────────────────────────
