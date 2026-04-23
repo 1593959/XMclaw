@@ -325,17 +325,89 @@ class ToolsCheck(DoctorCheck):
 
 
 class PairingCheck(DoctorCheck):
+    """Inspect ~/.xmclaw/v2/pairing_token.txt.
+
+    Two failure modes are safely auto-fixable:
+
+    * **Empty token file** -- unlink it so the next ``xmclaw serve`` can
+      regenerate a fresh token. Any paired clients were already broken
+      (an empty token matches nothing), so there's no regression risk.
+    * **Loose POSIX perms** (any of group/other bits set) -- ``chmod 600``
+      preserves the token itself while locking it down to the owning user.
+
+    Everything else (unreadable, path missing entirely) is either not a
+    failure or not safely remediable without user intent.
+    """
+
     id = "pairing"
     name = "pairing"
 
+    def _target(self, ctx: DoctorContext) -> Path:
+        if ctx.token_path is not None:
+            return ctx.token_path
+        from xmclaw.daemon.pairing import default_token_path
+        return default_token_path()
+
+    def _fixable_state(self, path: Path) -> str | None:
+        """Return ``"empty"``, ``"loose_perms"``, or ``None``.
+
+        Kept in one place so :meth:`run` and :meth:`fix` agree on which
+        failure modes are auto-remediable.
+        """
+        if not path.exists():
+            return None
+        try:
+            content = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        if content == "":
+            return "empty"
+        import sys
+        if sys.platform == "win32":
+            return None
+        try:
+            mode = os.stat(path).st_mode & 0o777
+        except OSError:
+            return None
+        if mode & 0o077:
+            return "loose_perms"
+        return None
+
     def run(self, ctx: DoctorContext) -> CheckResult:
         from xmclaw.cli.doctor import check_pairing_token
-        from xmclaw.daemon.pairing import default_token_path
 
-        r = check_pairing_token(ctx.token_path or default_token_path())
+        path = self._target(ctx)
+        r = check_pairing_token(path)
+        if r.ok:
+            return CheckResult(
+                name=r.name, ok=True, detail=r.detail, advisory=r.advisory,
+            )
+        fixable = self._fixable_state(path) is not None
+        advisory = r.advisory
+        if fixable:
+            extra = f"run 'xmclaw doctor --fix' to repair {path}"
+            advisory = f"{advisory}; {extra}" if advisory else extra
         return CheckResult(
-            name=r.name, ok=r.ok, detail=r.detail, advisory=r.advisory,
+            name=r.name, ok=False, detail=r.detail,
+            advisory=advisory, fix_available=fixable,
         )
+
+    def fix(self, ctx: DoctorContext) -> bool:
+        path = self._target(ctx)
+        state = self._fixable_state(path)
+        if state == "empty":
+            try:
+                path.unlink()
+            except OSError:
+                return False
+            return True
+        if state == "loose_perms":
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                return False
+            return True
+        return False
 
 
 class PortCheck(DoctorCheck):

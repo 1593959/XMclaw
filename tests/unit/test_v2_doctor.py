@@ -881,6 +881,91 @@ def test_pid_lock_fix_tolerates_missing_meta(
     assert not pid_path.exists()
 
 
+# ── PairingCheck (auto-fix) ─────────────────────────────────────────────
+
+def _pairing_ctx(tmp_path: Path, token_path: Path) -> DoctorContext:
+    ctx = DoctorContext(config_path=tmp_path / "unused.json")
+    ctx.token_path = token_path
+    return ctx
+
+
+def test_pairing_check_not_yet_created_is_ok(tmp_path: Path) -> None:
+    """Missing token file is expected — serve creates it. Not fixable."""
+    from xmclaw.cli.doctor_registry import PairingCheck
+
+    check = PairingCheck()
+    r = check.run(_pairing_ctx(tmp_path, tmp_path / "tok.txt"))
+    assert r.ok is True
+    assert r.fix_available is False
+
+
+def test_pairing_check_healthy_token_is_ok(tmp_path: Path) -> None:
+    from xmclaw.cli.doctor_registry import PairingCheck
+
+    p = tmp_path / "tok.txt"
+    p.write_text("a" * 64, encoding="utf-8")
+    if sys.platform != "win32":
+        import os as _os
+        _os.chmod(p, 0o600)
+    check = PairingCheck()
+    r = check.run(_pairing_ctx(tmp_path, p))
+    assert r.ok is True
+    assert r.fix_available is False
+
+
+def test_pairing_check_empty_file_is_fixable(tmp_path: Path) -> None:
+    """Empty token file => fix by unlinking so serve regenerates."""
+    from xmclaw.cli.doctor_registry import PairingCheck
+
+    p = tmp_path / "tok.txt"
+    p.write_text("", encoding="utf-8")
+    check = PairingCheck()
+    ctx = _pairing_ctx(tmp_path, p)
+    r = check.run(ctx)
+    assert r.ok is False
+    assert r.fix_available is True
+    assert "empty" in r.detail
+    assert r.advisory is not None and "--fix" in r.advisory
+
+    assert check.fix(ctx) is True
+    assert not p.exists()
+    # Post-fix the check reports the "not yet created" OK state.
+    assert check.run(ctx).ok is True
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX perm semantics")
+def test_pairing_check_loose_perms_is_fixable(tmp_path: Path) -> None:
+    """World-readable token => chmod 600 keeps the token, tightens perms."""
+    import os as _os
+    from xmclaw.cli.doctor_registry import PairingCheck
+
+    p = tmp_path / "tok.txt"
+    p.write_text("a" * 64, encoding="utf-8")
+    _os.chmod(p, 0o644)
+    check = PairingCheck()
+    ctx = _pairing_ctx(tmp_path, p)
+    r = check.run(ctx)
+    assert r.ok is False
+    assert r.fix_available is True
+    assert "loose perms" in r.detail
+
+    assert check.fix(ctx) is True
+    # The token itself must survive the fix.
+    assert p.read_text(encoding="utf-8") == "a" * 64
+    mode = _os.stat(p).st_mode & 0o777
+    assert mode == 0o600
+    assert check.run(ctx).ok is True
+
+
+def test_pairing_check_fix_noop_when_nothing_to_do(tmp_path: Path) -> None:
+    """fix() on a non-existent token file returns False (nothing to repair)."""
+    from xmclaw.cli.doctor_registry import PairingCheck
+
+    check = PairingCheck()
+    ctx = _pairing_ctx(tmp_path, tmp_path / "never_created.txt")
+    assert check.fix(ctx) is False
+
+
 # ── DoctorRegistry.run_fixes ─────────────────────────────────────────────
 
 
