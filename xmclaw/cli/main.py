@@ -71,8 +71,39 @@ def _default_memory_db_path():
 
 
 @app.command()
-def version() -> None:
-    """Print the v2 runtime version."""
+def version(
+    as_json: bool = typer.Option(
+        False, "--json",
+        help=(
+            "Emit `{name, version, python, platform}` as JSON. "
+            "Use in bug-reports and CI where a stable shape matters."
+        ),
+    ),
+) -> None:
+    """Print the v2 runtime version.
+
+    Default text is ``xmclaw v<version>`` — deliberately terse because
+    shell auto-completion, log banners, and README snippets all read it
+    by eyeball. ``--json`` carries three extra fields (python version,
+    platform) because a bug report is useless without those — folding
+    them into the human line would clutter every other caller.
+    """
+    if as_json:
+        import json as _json
+        import platform as _platform
+        import sys as _sys
+
+        typer.echo(
+            _json.dumps(
+                {
+                    "name": "xmclaw",
+                    "version": __version__,
+                    "python": _sys.version.split()[0],
+                    "platform": _platform.platform(),
+                }
+            )
+        )
+        return
     typer.echo(f"xmclaw v{__version__}")
 
 
