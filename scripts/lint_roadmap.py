@@ -24,6 +24,18 @@ rules:
      either the Epic isn't really done, or the Milestone forgot to
      sync — either way, surface it.
 4. **No duplicate Epic numbers**.
+5. **No sha TODO markers in progress logs** (Epic §4 only):
+   - Progress-log entries must not end the run with a ``(commit pending)``
+     or ``(commit 待落)`` sentinel. These mark "come back and fill in the
+     sha after the next commit" — leaving them indefinitely turns the
+     log into `git blame` but worse. A manual scan found six of these
+     lurking once; the lint rule replaces the scan.
+   - Scoped to ``**进度日志**`` blocks under Section 4 Epic headers so
+     the literal strings appearing in other prose (design discussion,
+     commit messages) stay untouched.
+   - Enforcement is mechanical: we look for the two literal substrings,
+     not whether a 7-char hex actually exists. Verifying real shas would
+     bitrot on branch renames / force-pushes — see anti-goals.
 
 Exit code ``0`` = clean, ``1`` = violations found (printed as
 ``file:line: message``), ``2`` = roadmap missing / unparseable.
@@ -33,7 +45,8 @@ Invocation:
 
 Anti-goals: this is a *drift detector*, not a project manager. It does
 not enforce that every Epic has a progress log, nor that commit SHAs
-in the log actually exist. Those heuristics lead to bitrot.
+in the log actually exist. Those heuristics lead to bitrot. Rule #5
+asserts only the *absence* of two literal placeholder strings.
 """
 from __future__ import annotations
 
@@ -62,6 +75,10 @@ _EPIC_REF = re.compile(r"Epic\s+#(\d+)")
 # signal that it is deferred, not forgotten.
 _DEFERRED = re.compile(r"(留给\s*Epic\s*#\d+|挂单\s*Epic\s*#\d+|deferred\s+to\s+Epic\s*#\d+)", re.IGNORECASE)
 _SECTION = re.compile(r"^##\s+(\d+)\.")
+# Rule #5: sentinel strings left in progress-log entries when the author
+# meant to come back and fill in the sha. Checked only inside the
+# **进度日志** block of each Epic; see parser for scoping.
+_SHA_TODO_MARKERS = ("(commit pending)", "(commit 待落)")
 
 
 @dataclass
@@ -77,6 +94,11 @@ class EpicBlock:
     # as violations when the Epic is marked done.
     checklist: list[tuple[int, bool, bool]] = field(default_factory=list)
     in_checklist: bool = False
+    # Line numbers inside the **进度日志** block that still carry a
+    # "(commit pending)" or "(commit 待落)" sentinel. Rule #5 emits a
+    # violation per line so each drifted entry shows up independently.
+    progress_log_sha_todos: list[int] = field(default_factory=list)
+    in_progress_log: bool = False
 
 
 @dataclass
@@ -137,15 +159,29 @@ def _parse(path: Path) -> tuple[list[EpicBlock], list[MilestoneCriterion]]:
 
             if line.strip().startswith("**检查清单**"):
                 in_checklist_block = True
+                current_epic.in_progress_log = False
                 continue
-            if line.strip().startswith("**退出标准**") or line.strip().startswith("**进度日志**"):
+            if line.strip().startswith("**退出标准**"):
                 in_checklist_block = False
+                current_epic.in_progress_log = False
+            if line.strip().startswith("**进度日志**"):
+                in_checklist_block = False
+                current_epic.in_progress_log = True
+                continue
             if in_checklist_block:
                 cb = _CHECKBOX.match(line)
                 if cb:
                     current_epic.checklist.append(
                         (i, cb.group(1) in "xX", bool(_DEFERRED.search(line)))
                     )
+            # Rule #5: look for sha TODO sentinels only inside the
+            # progress-log block. Scanning whole lines is fine — the
+            # markers are distinctive enough to not false-positive.
+            if current_epic.in_progress_log:
+                for marker in _SHA_TODO_MARKERS:
+                    if marker in line:
+                        current_epic.progress_log_sha_todos.append(i)
+                        break
 
         elif current_section == "7":
             m = _MILESTONE_HEADER.match(line)
@@ -208,6 +244,16 @@ def lint(path: Path) -> list[str]:
 
         if e.status == STATUS_WIP and (not e.start or e.start == "-"):
             violations.append(f"{prefix}: status WIP but 起始 date is '-'")
+
+        # Rule #5: every progress-log line with a sha TODO sentinel is a
+        # violation. Reported per-line so authors can grep the output
+        # into an edit list instead of hunting the markers themselves.
+        for ln in e.progress_log_sha_todos:
+            violations.append(
+                f"{path}:{ln}: Epic #{e.number}: progress log has a sha TODO "
+                f"sentinel (`(commit pending)` or `(commit 待落)`) — "
+                f"backfill the real sha once the commit lands"
+            )
 
     status_by_num = {e.number: e.status for e in epics}
     for c in criteria:

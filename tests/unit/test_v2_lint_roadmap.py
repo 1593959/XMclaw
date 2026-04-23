@@ -2,7 +2,7 @@
 
 The lint script is the mechanical backstop for §3.6.5 — it catches
 Epic / Milestone drift that humans reliably introduce. These tests
-pin the four rules the linter actually enforces (not a broader spec)
+pin the five rules the linter actually enforces (not a broader spec)
 so a future rule extension is an intentional change, not an accident.
 
 Covered:
@@ -17,6 +17,9 @@ Covered:
   * Duplicate Epic numbers → parse-level error.
   * Shipped roadmap file is always clean (regression guard — every
     roadmap change has to keep this passing).
+  * Rule #5: ``(commit pending)`` / ``(commit 待落)`` sentinels in
+    Epic progress logs are violations; same strings elsewhere (or
+    in the next Epic's checklist) must not false-positive.
 """
 from __future__ import annotations
 
@@ -229,3 +232,136 @@ def test_criterion_referencing_multiple_epics_partial_done(linter, tmp_path):
 """
     path = _write(tmp_path, body)
     assert linter.lint(path) == []
+
+
+# ---------------------------------------------------------------------------
+# Rule #5: `(commit pending)` / `(commit 待落)` sentinels in progress logs
+# ---------------------------------------------------------------------------
+# 背景：手工排查时发现有 6 条进度日志遗留了 `(commit 待落)` 占位符从未回填真实
+# sha。这些占位符的本意是"下次 commit 后回来补 sha"，但很容易在多轮切换中忘
+# 记，让日志变成比 `git blame` 更糟的历史记录。Rule #5 把这个扫描自动化。
+#
+# 作用域：仅在 Section 4 Epic 的 **进度日志** 块内检测——其他位置（设计讨论、
+# commit message 回显）即使字面出现该字符串也不应误报。
+
+_SENTINEL_BODY_TEMPLATE = """\
+## 4. Epics
+
+### Epic #1 · Thing
+
+**状态**：🟡 进行中 | **负责人**：me | **起始**：2026-04-01 | **完成**：-
+
+**检查清单**：
+
+- [ ] Work item
+
+**进度日志**：
+
+{log_lines}
+"""
+
+
+def test_commit_pending_sentinel_in_progress_log_flagged(linter, tmp_path):
+    body = _SENTINEL_BODY_TEMPLATE.format(
+        log_lines="- 2026-04-20: did a thing (commit pending)"
+    )
+    path = _write(tmp_path, body)
+    violations = linter.lint(path)
+    assert any("sha TODO sentinel" in v for v in violations)
+    assert any("commit pending" in v for v in violations)
+
+
+def test_commit_dailuo_sentinel_in_progress_log_flagged(linter, tmp_path):
+    """Chinese variant `(commit 待落)` must also be caught — the 6 drifted
+    entries found in practice all used this form."""
+    body = _SENTINEL_BODY_TEMPLATE.format(
+        log_lines="- 2026-04-20: 做了个东西 (commit 待落)"
+    )
+    path = _write(tmp_path, body)
+    violations = linter.lint(path)
+    assert any("sha TODO sentinel" in v for v in violations)
+
+
+def test_multiple_sentinels_each_reported_separately(linter, tmp_path):
+    """Per-line reporting: authors should be able to grep the lint output
+    into an edit list, not hunt the markers themselves."""
+    body = _SENTINEL_BODY_TEMPLATE.format(
+        log_lines=(
+            "- 2026-04-20: thing one (commit pending)\n"
+            "- 2026-04-21: thing two (commit 待落)\n"
+            "- 2026-04-22: thing three (commit abc1234)\n"
+            "- 2026-04-23: thing four (commit pending)"
+        )
+    )
+    path = _write(tmp_path, body)
+    violations = [v for v in linter.lint(path) if "sha TODO sentinel" in v]
+    assert len(violations) == 3  # three pending/待落 lines, one backfilled
+
+
+def test_sentinel_outside_progress_log_not_flagged(linter, tmp_path):
+    """Scoping guard: the literal string appearing in a checklist item or
+    description must NOT trigger — only progress-log drift matters."""
+    body = """\
+## 4. Epics
+
+### Epic #1 · Thing
+
+**状态**：🟡 进行中 | **负责人**：me | **起始**：2026-04-01 | **完成**：-
+
+**检查清单**：
+
+- [ ] Work item mentioning (commit pending) in passing discussion
+
+**退出标准**：
+
+- Something about (commit 待落) as a design note
+"""
+    path = _write(tmp_path, body)
+    violations = [v for v in linter.lint(path) if "sha TODO sentinel" in v]
+    assert violations == []
+
+
+def test_backfilled_sha_does_not_trigger(linter, tmp_path):
+    """Regression guard: a properly backfilled log entry is clean."""
+    body = _SENTINEL_BODY_TEMPLATE.format(
+        log_lines="- 2026-04-20: did a thing (commit abc1234)"
+    )
+    path = _write(tmp_path, body)
+    violations = [v for v in linter.lint(path) if "sha TODO sentinel" in v]
+    assert violations == []
+
+
+def test_progress_log_scope_resets_on_next_epic(linter, tmp_path):
+    """Scope hygiene: `in_progress_log` must reset when a new Epic header
+    starts. Otherwise a sentinel in Epic #2's checklist would be
+    mis-attributed to Epic #1's (still-open) progress-log state."""
+    body = """\
+## 4. Epics
+
+### Epic #1 · First
+
+**状态**：🟡 进行中 | **负责人**：me | **起始**：2026-04-01 | **完成**：-
+
+**检查清单**：
+
+- [ ] Work
+
+**进度日志**：
+
+- 2026-04-20: initial (commit abc1234)
+
+### Epic #2 · Second
+
+**状态**：🟡 进行中 | **负责人**：me | **起始**：2026-04-01 | **完成**：-
+
+**检查清单**：
+
+- [ ] Item mentioning (commit pending) only in the description
+
+**退出标准**：
+
+- ship it
+"""
+    path = _write(tmp_path, body)
+    violations = [v for v in linter.lint(path) if "sha TODO sentinel" in v]
+    assert violations == []
