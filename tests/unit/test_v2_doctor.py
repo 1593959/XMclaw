@@ -399,6 +399,7 @@ def test_default_registry_builtin_check_order() -> None:
         "config", "llm", "tools", "workspace", "pairing", "port",
         "events_db", "memory_db", "skill_runtime",
         "connectivity", "roadmap_lint", "pid_lock", "daemon",
+        "backups",
     ]
 
 
@@ -467,6 +468,7 @@ def test_run_doctor_still_returns_old_check_result_type(tmp_path: Path) -> None:
         "config", "llm", "tools", "workspace", "pairing", "port 8765",
         "events_db", "memory_db", "skill_runtime",
         "connectivity", "roadmap_lint", "pid_lock", "daemon",
+        "backups",
     ]
 
 
@@ -1451,3 +1453,122 @@ def test_skill_runtime_non_dict_section_fails(tmp_path: Path) -> None:
     r = check.run(_runtime_ctx(tmp_path, {"runtime": "local"}))
     assert r.ok is False
     assert "object" in r.detail or "dict" in r.detail.lower()
+
+
+# ── Epic #10 + #20: BackupsCheck ────────────────────────────────────────
+
+
+def _backups_ctx(tmp_path: Path, backups_dir: Path) -> DoctorContext:
+    ctx = DoctorContext(
+        config_path=_write_valid_cfg(tmp_path),
+        probe_daemon=False,
+    )
+    ctx.extras["backups_dir"] = backups_dir
+    return ctx
+
+
+def _seed_backup(backups_dir: Path, name: str, *, age_seconds: float) -> None:
+    """Plant a minimally-well-formed backup dir with a manifest dated
+    ``age_seconds`` in the past. The archive is a single-byte placeholder
+    since BackupsCheck doesn't touch it."""
+    import time as _time
+
+    from xmclaw.backup.manifest import (
+        MANIFEST_NAME,
+        MANIFEST_SCHEMA_VERSION,
+        Manifest,
+    )
+    from xmclaw.backup.store import ARCHIVE_NAME
+
+    bdir = backups_dir / name
+    bdir.mkdir(parents=True)
+    (bdir / ARCHIVE_NAME).write_bytes(b"x")
+    Manifest(
+        schema_version=MANIFEST_SCHEMA_VERSION,
+        name=name,
+        created_ts=_time.time() - age_seconds,
+        xmclaw_version="0.0.0-test",
+        archive_sha256="0" * 64,
+        archive_bytes=1,
+        source_dir=str(backups_dir),
+        excluded=(),
+        entries=0,
+    ).write(bdir / MANIFEST_NAME)
+
+
+def test_backups_empty_is_ok_with_create_hint(tmp_path: Path) -> None:
+    """No backups = ok + advisory nudging toward `xmclaw backup create`."""
+    from xmclaw.cli.doctor_registry import BackupsCheck
+
+    check = BackupsCheck()
+    r = check.run(_backups_ctx(tmp_path, tmp_path / "nobackups"))
+    assert r.ok is True
+    assert "no backups" in r.detail
+    assert r.advisory is not None
+    assert "xmclaw backup create" in r.advisory
+
+
+def test_backups_fresh_is_ok_without_advisory(tmp_path: Path) -> None:
+    """A single fresh backup is a happy steady-state — no nag."""
+    from xmclaw.cli.doctor_registry import BackupsCheck
+
+    bdir = tmp_path / "backups"
+    bdir.mkdir()
+    _seed_backup(bdir, "recent", age_seconds=3600)  # 1h old
+    r = BackupsCheck().run(_backups_ctx(tmp_path, bdir))
+    assert r.ok is True
+    assert "1 backup(s)" in r.detail
+    assert "recent" in r.detail
+    assert r.advisory is None
+
+
+def test_backups_stale_advises_refresh(tmp_path: Path) -> None:
+    """The newest backup being >30 days old triggers the stale advisory."""
+    from xmclaw.cli.doctor_registry import BackupsCheck
+
+    bdir = tmp_path / "backups"
+    bdir.mkdir()
+    _seed_backup(bdir, "old", age_seconds=45 * 86400)  # 45d old
+    r = BackupsCheck().run(_backups_ctx(tmp_path, bdir))
+    assert r.ok is True  # still informational, not a failure
+    assert "1 backup(s)" in r.detail
+    assert r.advisory is not None
+    assert "old" in r.advisory or "d old" in r.advisory
+    assert "xmclaw backup create" in r.advisory
+
+
+def test_backups_reports_newest_when_multiple(tmp_path: Path) -> None:
+    """Detail must name the newest backup and the correct count."""
+    from xmclaw.cli.doctor_registry import BackupsCheck
+
+    bdir = tmp_path / "backups"
+    bdir.mkdir()
+    _seed_backup(bdir, "old", age_seconds=10 * 86400)
+    _seed_backup(bdir, "newer", age_seconds=1 * 86400)
+    _seed_backup(bdir, "newest", age_seconds=3600)
+    r = BackupsCheck().run(_backups_ctx(tmp_path, bdir))
+    assert r.ok is True
+    assert "3 backup(s)" in r.detail
+    assert "newest" in r.detail  # picks the actually-newest
+    # When the newest is fresh, no advisory regardless of older siblings.
+    assert r.advisory is None
+
+
+def test_backups_honors_env_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without ctx override, BackupsCheck falls through to XMC_BACKUPS_DIR."""
+    from xmclaw.cli.doctor_registry import BackupsCheck
+
+    bdir = tmp_path / "envbackups"
+    bdir.mkdir()
+    _seed_backup(bdir, "env_one", age_seconds=60)
+    monkeypatch.setenv("XMC_BACKUPS_DIR", str(bdir))
+    ctx = DoctorContext(
+        config_path=_write_valid_cfg(tmp_path),
+        probe_daemon=False,
+    )
+    # no ctx.extras["backups_dir"] — must fall through to env.
+    r = BackupsCheck().run(ctx)
+    assert r.ok is True
+    assert "env_one" in r.detail

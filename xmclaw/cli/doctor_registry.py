@@ -1058,6 +1058,88 @@ class DaemonHealthCheck(DoctorCheck):
         )
 
 
+class BackupsCheck(DoctorCheck):
+    """Surface the backup inventory under ``~/.xmclaw/backups/``.
+
+    Epic #20 sibling of the observability checks — not a hard failure
+    gate (absence of a backup isn't broken config, it's a missed habit),
+    but a visible hint that ``xmclaw backup create`` is available and
+    how recently it was last used.
+
+    States (all ``ok=True``, this is informational):
+      * Backups dir missing or empty — detail ``"no backups yet"`` +
+        advisory pointing at ``xmclaw backup create``.
+      * One or more backups — detail ``"N backup(s), newest <age>"``;
+        when the newest is older than :attr:`STALE_AFTER_DAYS`, the
+        advisory nudges the user to run another create.
+
+    Honors ``ctx.extras["backups_dir"]`` so tests can redirect; falls
+    back to :func:`xmclaw.backup.store.default_backups_dir` (which
+    itself honors ``XMC_BACKUPS_DIR``).
+    """
+
+    id = "backups"
+    name = "backups"
+
+    #: Age at which the newest backup is considered stale. 30 days is
+    #: the "you should probably have run one this month" threshold —
+    #: below daily-cadence expectations, above weekly-cadence noise.
+    STALE_AFTER_DAYS = 30
+
+    def _target(self, ctx: DoctorContext) -> Path:
+        override = ctx.extras.get("backups_dir")
+        if isinstance(override, (str, Path)):
+            return Path(override)
+        from xmclaw.backup.store import default_backups_dir
+
+        return default_backups_dir()
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        import time as _time
+
+        from xmclaw.backup.store import list_backups
+
+        root = self._target(ctx)
+        entries = list_backups(root)
+        if not entries:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"no backups yet at {root}",
+                advisory="run 'xmclaw backup create' to capture a snapshot",
+            )
+        # list_backups() returns ascending by created_ts; newest is last.
+        newest = entries[-1]
+        age_s = max(0.0, _time.time() - newest.manifest.created_ts)
+        age_days = age_s / 86400.0
+        age_fmt = _format_age(age_s)
+        detail = (
+            f"{len(entries)} backup(s) at {root}, newest '{newest.name}' "
+            f"{age_fmt} old"
+        )
+        if age_days >= self.STALE_AFTER_DAYS:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=detail,
+                advisory=(
+                    f"newest backup is {int(age_days)}d old — consider "
+                    "'xmclaw backup create'"
+                ),
+            )
+        return CheckResult(name=self.name, ok=True, detail=detail)
+
+
+def _format_age(seconds: float) -> str:
+    """Human-readable age. Keeps units coarse — we're in the "is this
+    yesterday or last quarter" regime, not milliseconds."""
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h"
+    return f"{int(seconds // 86400)}d"
+
+
 def build_default_registry() -> DoctorRegistry:
     """Return a registry populated with the built-in checks.
 
@@ -1078,4 +1160,5 @@ def build_default_registry() -> DoctorRegistry:
     reg.register(RoadmapLintCheck())
     reg.register(StalePidCheck())
     reg.register(DaemonHealthCheck())
+    reg.register(BackupsCheck())
     return reg
