@@ -742,6 +742,82 @@ def test_cli_backup_verify_corrupted_exits_nonzero(tmp_path: Path) -> None:
     assert r.exit_code == 1, r.stdout
 
 
+def test_cli_backup_verify_json_happy_path(tmp_path: Path) -> None:
+    """--json emits a structured dict with stable keys; exit code stays 0.
+
+    CI / monitoring probes want a parseable shape, not 'sha256 verified'
+    prose. Lock the key set so future additions are a conscious break.
+    """
+    import json
+
+    ws = tmp_path / "ws"
+    _make_workspace(ws)
+    dest = tmp_path / "backups"
+    create_backup(ws, "ok_json", backups_dir=dest)
+    runner = CliRunner()
+    r = runner.invoke(
+        app,
+        ["backup", "verify", "ok_json", "--dest", str(dest), "--json"],
+    )
+    assert r.exit_code == 0, r.stdout
+    payload = json.loads(r.stdout)
+    assert payload["ok"] is True
+    assert payload["name"] == "ok_json"
+    assert payload["entries"] > 0
+    assert payload["archive_bytes"] > 0
+    # sha256 hex string: 64 chars.
+    assert isinstance(payload["archive_sha256"], str)
+    assert len(payload["archive_sha256"]) == 64
+
+
+def test_cli_backup_verify_json_corrupted_emits_error_dict(tmp_path: Path) -> None:
+    """--json on a corrupt archive: exit 1, but stdout still carries a
+    parseable `{ok: false, error: ...}` dict — so pipelines branching on
+    `jq .ok` can distinguish corruption from missing archive without
+    re-invoking.
+    """
+    import json
+
+    ws = tmp_path / "ws"
+    _make_workspace(ws)
+    dest = tmp_path / "backups"
+    create_backup(ws, "bad_json", backups_dir=dest)
+    archive = dest / "bad_json" / ARCHIVE_NAME
+    data = bytearray(archive.read_bytes())
+    data[-1] ^= 0x01
+    archive.write_bytes(bytes(data))
+    runner = CliRunner()
+    r = runner.invoke(
+        app,
+        ["backup", "verify", "bad_json", "--dest", str(dest), "--json"],
+    )
+    assert r.exit_code == 1
+    payload = json.loads(r.stdout)
+    assert payload["ok"] is False
+    assert payload["name"] == "bad_json"
+    assert payload["error"]  # any non-empty message
+
+
+def test_cli_backup_verify_json_missing_emits_error_dict(tmp_path: Path) -> None:
+    """Same structured failure shape for the 'backup doesn't exist' path —
+    a monitor probing a rotated-away backup gets the same dict form, not
+    a typer error string mixed with json."""
+    import json
+
+    dest = tmp_path / "backups"
+    dest.mkdir()
+    runner = CliRunner()
+    r = runner.invoke(
+        app,
+        ["backup", "verify", "ghost", "--dest", str(dest), "--json"],
+    )
+    assert r.exit_code == 1
+    payload = json.loads(r.stdout)
+    assert payload["ok"] is False
+    assert payload["name"] == "ghost"
+    assert "ghost" in payload["error"] or "not found" in payload["error"].lower()
+
+
 # ── get_backup ──────────────────────────────────────────────────────────
 
 

@@ -1374,6 +1374,15 @@ def backup_verify(
         None, "--dest",
         help="Backups directory. Defaults to ~/.xmclaw/backups.",
     ),
+    as_json: bool = typer.Option(
+        False, "--json",
+        help=(
+            "Emit a JSON object (`{ok, name, entries, archive_bytes, "
+            "archive_sha256}` on pass, `{ok: false, name, error}` on fail). "
+            "Exit code still mirrors success — JSON mode is for scripts that "
+            "want structured detail, not for suppressing failures."
+        ),
+    ),
 ) -> None:
     """Re-hash an existing backup and confirm it still matches its manifest.
 
@@ -1381,15 +1390,42 @@ def backup_verify(
     backup to slower storage, or to catch bit-rot on long-lived archives.
     Exits non-zero on any failure (missing, corrupt, schema too new,
     checksum drift).
+
+    ``--json`` lets CI / monitoring probes consume a stable dict shape
+    instead of parsing the human-readable text; exit code still tracks
+    success so `xmclaw backup verify … --json || page-oncall` keeps
+    working.
     """
+    import json as _json
+
     from xmclaw.backup import verify_backup
     from xmclaw.backup.restore import RestoreError
 
     try:
         manifest = verify_backup(name, backups_dir=dest)
     except RestoreError as exc:
-        typer.echo(f"error: {exc}", err=True)
+        if as_json:
+            # Emit the failure dict on stdout (not stderr) so the caller
+            # can `xmclaw ... --json | jq .error` uniformly — errors live
+            # on the same channel as the success payload, exit code is
+            # the tri-state carrier.
+            typer.echo(_json.dumps({"ok": False, "name": name, "error": str(exc)}))
+        else:
+            typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
+    if as_json:
+        typer.echo(
+            _json.dumps(
+                {
+                    "ok": True,
+                    "name": name,
+                    "entries": manifest.entries,
+                    "archive_bytes": manifest.archive_bytes,
+                    "archive_sha256": manifest.archive_sha256,
+                }
+            )
+        )
+        return
     typer.echo(
         f"  [ok]  {name}: sha256 verified "
         f"({manifest.entries} files, {manifest.archive_bytes} bytes)"
