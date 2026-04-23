@@ -49,7 +49,7 @@
 
 **XMclaw** is a personal AI agent that runs entirely on your machine. It is not a chatbot — it is a runtime that can think, act, remember, and continuously improve itself over time.
 
-Unlike a stateless chat interface, XMclaw maintains memory across sessions, executes real tools on your filesystem and system, and automatically evolves its own gene pool and skill library based on your usage patterns.
+Unlike a stateless chat interface, XMclaw keeps a durable memory across sessions, executes real tools on your filesystem, and runs an evidence-based evolution loop (Honest Grader → Online Scheduler → Skill Registry) that promotes new skill versions when the measured outcomes beat the incumbent — not when the model claims they do.
 
 [Docs](./docs) · [Architecture](./docs/ARCHITECTURE.md) · [Tools](./docs/TOOLS.md) · [Events](./docs/EVENTS.md) · [Doctor](./docs/DOCTOR.md) · [Config](./docs/CONFIG.md) · [Roadmap](./docs/DEV_ROADMAP.md)
 
@@ -59,14 +59,14 @@ Unlike a stateless chat interface, XMclaw maintains memory across sessions, exec
 
 | | |
 |---|---|
-| **🧠 Self-Evolving** | XMclaw watches its own performance. The EvolutionEngine detects 5 pattern types, scores insights with VFM, and auto-generates Genes and Skills — no manual curation needed. |
-| **💾 Local-First Memory** | All sessions, metadata, and vectors live in SQLite + sqlite-vec on your machine. Import/Export in JSONL, JSON, or ZIP. Nothing leaves your disk unless you explicitly push it. |
-| **🔧 Hot-Reload Skills** | Generated skills are compiled, validated, and registered without restart. Next message already uses the new capability. |
-| **🛡️ Built-In Security** | Unified Permission Manager (ALLOW/ASK/BLOCK), 23-tool categorization, path sandbox, URL whitelist, audit logging, encrypted secrets. |
-| **🌐 Multi-Interface** | Web UI and Rich CLI — both share the same running daemon. |
-| **🔌 MCP & Integrations** | MCP protocol support, plus Slack / Discord / Telegram / GitHub / Notion / 飞书 / QQ频道 / 企业微信 integrations ready to connect. |
-| **📊 Performance Monitoring** | Per-session LLM token counts, tool call stats, skill success rates, and cost estimation. |
-| **🔁 Multi-Trigger Reflection** | Auto-reflection on errors, conversation end, periodic intervals, or on demand. Insights feed back into the evolution pipeline. |
+| **🧠 Evolution-as-Runtime** | Every LLM call, tool invocation, and skill execution becomes a `BehavioralEvent`. An **Honest Grader** scores outcomes on hard evidence (did the tool actually run? was a real side effect produced?), the **Online Scheduler** treats skills as bandit arms, and the **EvolutionController** promotes or rolls back versions — no LLM self-assessment in the decision loop. |
+| **💾 Local-First State** | Events, memory, and pairing token all live in `~/.xmclaw/v2/` (SQLite + sqlite-vec). `XMC_DATA_DIR` moves the whole workspace in one lever. Nothing leaves your disk unless you explicitly opt in. |
+| **🔁 Event Replay** | Every WS reconnect replays the session's events so the UI hydrates without round-tripping the LLM. `/api/v2/events` supports `session_id` / `since` / `types` filters + FTS5 keyword search. |
+| **🛡️ Anti-Req Driven** | 14 explicit anti-requirements (e.g. "Scheduler must not trust text that describes a tool call", "no LLM self-grading", "WS auth via pairing token with `close(4401)`"). Each is encoded in the code path with a dedicated test; violations emit `ANTI_REQ_VIOLATION` events. |
+| **🔌 MCP + Provider Model** | Tools are composed from `ToolProvider` backends: `builtin`, `browser` (Playwright), `lsp`, `mcp_bridge` (stdio / SSE / WS). Add your own by implementing `list_tools()` + `invoke()`. |
+| **🩺 Doctor with Plugins** | `xmclaw doctor` runs 11 built-in checks + any third-party check registered on the `xmclaw.doctor` entry-point group. `--fix` auto-remediates 4 of them. |
+| **🛰️ Structured Events** | Typed `BehavioralEvent` stream over WebSocket at `/agent/v2/{session_id}`. No custom XML parsing — tool calls are decoded by per-provider translators into a structured `ToolCall` IR. |
+| **🧪 Smart-Gate CI** | `scripts/test_changed.py` maps edited paths to test lanes via `scripts/test_lanes.yaml` — PRs only run the tests they can actually break; main runs the full suite. |
 
 ---
 
@@ -130,99 +130,71 @@ xmclaw stop
 ## 🗂️ Architecture
 
 ```
-Clients (Desktop / Web / CLI)
-         ↕ WebSocket
-┌──────────────────────────────────┐
-│  Daemon (FastAPI + Uvicorn)      │
-│  ├── AgentLoop                    │
-│  │   ├── think → act → observe   │
-│  │   ├── PromptBuilder + Genes   │
-│  │   └── ReflectionEngine        │
-│  ├── ToolRegistry  ← 23 tools   │
-│  │   ├── file / bash / browser   │
-│  │   ├── git / mcp / skill       │
-│  │   └── web_search / memory…    │
-│  ├── SkillMatcher ← 5-dim scoring│
-│  ├── LLMRouter  ← Anthropic/OpenAI│
-│  ├── MemoryManager               │
-│  │   ├── SessionManager (JSONL)  │
-│  │   ├── SQLiteStore             │
-│  │   └── VectorStore (sqlite-vec)│
-│  ├── EvolutionEngine             │
-│  │   ├── GeneForge               │
-│  │   ├── SkillForge              │
-│  │   └── VFM Scoring             │
-│  └── EventBus  ← pub/sub         │
-└──────────────────────────────────┘
-         ↕ REST / WebSocket
-Third-party: Slack · Discord · Telegram · GitHub · Notion · 飞书 · QQ频道 · 企业微信
+Clients (Web UI / CLI / channel adapters)
+         ↕  WS /agent/v2/{session_id}   +   HTTP /api/v2/*
+┌──────────────────────────────────────┐
+│  Daemon  (FastAPI + Uvicorn)         │
+│  ├── AgentLoop  (per session)        │
+│  │    run_turn: user → LLM → tools → │
+│  │               tools → LLM → done  │
+│  │                                   │
+│  ├── LLMProvider   (anthropic / openai + translators)
+│  ├── ToolProvider  (builtin / browser / lsp / mcp / composite)
+│  ├── MemoryProvider (sqlite-vec)     │
+│  ├── Skills   (SkillBase + Registry) │
+│  ├── SkillScheduler  (bandit / promote / rollback)
+│  ├── HonestGrader    (ran / returned / type_matched / side_effect)
+│  ├── EvolutionController (candidate → grader → promote)
+│  │                                   │
+│  └── EventBus  (InProcess + SQLite WAL + FTS5)
+│        ↑ subscribers: grader, scheduler, memory, cost, WS forward
+└──────────────────────────────────────┘
+         Data:  ~/.xmclaw/v2/{events.db, memory.db, pairing_token.txt, daemon.pid}
 ```
+
+Authoritative design: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · Event contract: [docs/EVENTS.md](docs/EVENTS.md) · Tool contract: [docs/TOOLS.md](docs/TOOLS.md) · Data layout: [docs/WORKSPACE.md](docs/WORKSPACE.md).
 
 ---
 
-## 🔄 How Evolution Works
+## 🔄 How evolution works in v2
 
-XMclaw continuously gets better without you lifting a finger:
+Evolution is the runtime path, not a batch job:
 
-1. **Pattern Detection** — analyzes session logs after each conversation (5 pattern types)
-2. **Insight Extraction** — identifies behavioral patterns and useful tool sequences
-3. **Gene Generation** — creates lightweight behavioral prompts (GeneForge)
-4. **Skill Generation** — builds executable Python skills from proven patterns (SkillForge)
-5. **Validation** — compiles, runs, and scores new code before registration (VFM scoring)
-6. **Hot Reload** — new skills are immediately available in the next turn
-7. **Multi-Trigger Reflection** — auto-reflects after errors, on conversation end, periodically, or on demand
+1. **Propose** — the `EvolutionController` emits `skill_candidate_proposed` (could be a human-written skill or an LLM-proposed variant).
+2. **Exercise** — the `SkillScheduler` routes real turns to candidate versions as bandit arms; real `ToolCall` / `ToolResult` events are generated.
+3. **Grade on evidence** — the `HonestGrader` reads the event stream and decides `ran / returned / type_matched / side_effect_observable` per call. An LLM's opinion can contribute ≤ 0.2 weight; the hard signals dominate.
+4. **Promote or roll back** — the scheduler reads graded verdicts, emits `skill_promoted` or `skill_rolled_back` with `evidence: list[str]`. Promotion is a registry mutation; the next turn uses the new HEAD without restart.
+5. **Audit forever** — every step is a `BehavioralEvent` in `events.db` (SQLite WAL + FTS5) — any decision can be replayed end-to-end months later.
 
-Genes are injected into the system prompt at runtime. Skills become real tools. Over time, XMclaw accumulates a personal knowledge base tailored to exactly how *you* work.
+On MiniMax, the full autonomous cycle lifts session-level mean reward by **18%** session-over-session with no human in the loop (`tests/bench/phase3_autonomous_evolution_live.py`).
 
 ---
 
 ## 🛡️ Security
 
-XMclaw treats your system as a production environment:
+XMclaw treats anything it didn't generate as untrusted:
 
-- **Bash Guard Rails** — blocks `rm -rf /`, `mkfs`, `dd`, and other destructive patterns
-- **Dangerous Pattern Blocking** — warns on `curl | bash`, `git push --force`, and similar
-- **Git Auto-Rollback** — commits state before file changes, rolls back on failure
-- **Encrypted Secrets** — API keys stored with Fernet encryption + PBKDF2 key derivation
-- **Sandbox Ready** — Docker/process sandboxing available for untrusted skills
-- **Unified Permission Manager** — 3-level (ALLOW/ASK/BLOCK), 23-tool categorization, path sandbox, URL whitelist, audit logging
-- **Hot-Reload Config** — `daemon/config.json` changes take effect without restart
+- **WS pairing token** — the daemon writes a 0600 token to `~/.xmclaw/v2/pairing_token.txt` on start; WS connects without it get `close(4401)`. Constant-time compare (`xmclaw/daemon/auth.py`).
+- **Filesystem sandbox** — `tools.allowed_dirs` in `daemon/config.json` gates every `file_read` / `file_write` / `list_dir` argument; traversal attempts return `ToolResult(ok=False)`.
+- **No shell metacharacter parsing** — `bash` tool uses `subprocess.run(argv, shell=False)`. Nothing the model emits can be interpreted by a shell.
+- **Prompt-injection scanner** — every `ToolResult.content` passes `xmclaw.security.prompt_scanner.scan_text` before returning to the LLM; detections emit `PROMPT_INJECTION_DETECTED` (anti-req #14).
+- **Skill isolation** — `providers/runtime/process.py` runs untrusted skills in subprocesses with wall-clock + CPU caps; no module-level state leaks between runs.
+- **Secret redaction** — `api_key` / `token` / `password` fields go through `utils.redact` before events, logs, or UI rendering.
+- **MCP subprocess boundary** — each MCP server gets its own subprocess with JSON-RPC on stdin/stdout; no env-var inheritance unless the `mcp_servers.*` config declares it.
 
-Run `xmclaw doctor` to audit your security posture.
-
----
-
-## 📊 Session Import/Export
-
-Sessions can be exported and imported for backup, migration, or sharing:
-
-- **Formats**: JSONL (line-by-line), JSON (array), ZIP (with metadata)
-- **Import modes**: Replace, Append, Merge (deduplication)
-- **Audit trail**: All exports listed with size and timestamp
+Run `xmclaw doctor` to audit pairing, config, allowed_dirs, and workspace permissions.
 
 ---
 
-## 📈 Performance Monitoring
+## 📊 Event replay & observability
 
-Built-in performance tracking for every session:
+Every turn writes a `BehavioralEvent` stream to `~/.xmclaw/v2/events.db` (SQLite WAL + FTS5). Clients can:
 
-- **LLM calls**: count, token usage (input/output), estimated cost
-- **Tool calls**: per-tool call counts and success rates
-- **Agent turns**: conversation depth and statistics
-- **Skill stats**: usage frequency and success rate per skill
+- **Replay** — on WS reconnect, the daemon re-emits the session's events so the UI rehydrates without re-hitting the LLM.
+- **Query** — `GET /api/v2/events?session_id=&since=&types=&q=` supports type filter + FTS5 keyword search across payloads.
+- **Audit** — any grader verdict or skill promotion can be re-traced end-to-end months later. Events are frozen dataclasses — no in-place edits.
 
----
-
-## 🔁 Multi-Trigger Reflection
-
-XMclaw reflects on its own behavior at key moments:
-
-- **ERROR_OCCURRED** — auto-triggered after failures; analyzes root cause and prevention
-- **CONVERSATION_END** — summarizes the session, extracts lessons
-- **PERIODIC** — regular checkpoint reflections during long conversations
-- **USER_REQUEST** — on-demand reflection when user asks for it
-
-Reflection insights are stored in memory and fed back into the evolution pipeline.
+Cost tracking rides the same bus: each LLM call emits a `COST_TICK` event with input/output tokens + estimated cost; the daemon's `PerformanceMonitor` aggregates by provider / model / session for the Dashboard.
 
 ---
 
@@ -245,26 +217,22 @@ xmclaw --help             # Full command reference
 
 ```
 xmclaw/
-├── core/           Bus, IR, grader, evolution, scheduler
-├── daemon/         FastAPI server, WebSocket gateway, lifecycle, factory
-├── providers/      LLM / tool / memory / runtime / channel adapters
-│   ├── llm/        Anthropic + OpenAI + router
-│   ├── tool/       Built-in tools (file/bash/git/browser/…) + MCP
-│   ├── memory/     SQLite-vec memory store
-│   ├── runtime/    Sandbox / process runners
-│   └── channel/    Integration channels (Slack / Discord / Telegram / …)
-├── security/       Prompt-injection scanner + redactor + policy gate
-├── skills/         SkillBase + registry + demo skills
-├── cli/            `xmclaw` entry points + doctor + config / memory subcommands
-├── utils/          Paths, logging, redaction, cost helpers
+├── core/           Bus, IR, grader, evolution, scheduler          → core/AGENTS.md
+├── daemon/         FastAPI server, WebSocket gateway, AgentLoop   → daemon/AGENTS.md
+├── providers/      LLM / tool / memory / runtime / channel        → providers/AGENTS.md
+├── security/       Prompt-injection scanner + policy gate         → security/AGENTS.md
+├── skills/         SkillBase + registry + demo skills             → skills/AGENTS.md
+├── cli/            `xmclaw` entry points + doctor + config/memory → cli/AGENTS.md
+├── utils/          Paths, logging, redaction, cost helpers        → utils/AGENTS.md
 └── plugins/        Third-party plugin loader (Epic #2 WIP)
-web/                Vite-based Web UI (vanilla JS + CSS)
-shared/             Generated at runtime: genes/, skills/
-agents/             Agent profiles (PROFILE.md / SOUL.md committed; agent.json gitignored)
-daemon/             Runtime config (config.json gitignored; config.example.json is the template)
-docs/               ARCHITECTURE, DEV_ROADMAP, EVENTS, DOCTOR, TOOLS, …
-tests/              pytest suites
+daemon/             Runtime config — `config.json` gitignored; `config.example.json` is the template
+docs/               ARCHITECTURE, DEV_ROADMAP, EVENTS, DOCTOR, TOOLS, WORKSPACE, V2_DEVELOPMENT, …
+scripts/            Dev/ops — `setup.{ps1,bat}`, `test_changed.py`, `check_import_direction.py`, …
+tests/              `unit/` / `integration/` / `conformance/` / `bench/` — lane map in `scripts/test_lanes.yaml`
 ```
+
+Runtime data (`events.db`, `memory.db`, `daemon.pid`, `pairing_token.txt`) lives in `~/.xmclaw/v2/` —
+**not in the repo**. See [docs/WORKSPACE.md](docs/WORKSPACE.md).
 
 ---
 
