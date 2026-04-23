@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sqlite3
 import threading
 from collections.abc import Sequence
@@ -35,19 +34,18 @@ from typing import Any
 
 from xmclaw.core.bus.events import BehavioralEvent, EventType
 from xmclaw.core.bus.memory import InProcessEventBus
+from xmclaw.utils.paths import default_events_db_path as _central_default_events_db_path
 
 
 def default_events_db_path() -> Path:
     """Location of the default event-log database.
 
     Uses ``~/.xmclaw/v2/events.db``. Honors ``XMC_V2_EVENTS_DB_PATH`` for
-    testing and non-standard installs, matching the convention used by
-    :func:`xmclaw.daemon.pairing.default_token_path`.
+    narrow overrides, and ``XMC_DATA_DIR`` for moving the whole workspace.
+    Delegates to :func:`xmclaw.utils.paths.default_events_db_path` — the
+    central single source of truth for runtime paths (§3.1).
     """
-    override = os.environ.get("XMC_V2_EVENTS_DB_PATH")
-    if override:
-        return Path(override)
-    return Path.home() / ".xmclaw" / "v2" / "events.db"
+    return _central_default_events_db_path()
 
 # --------------------------------------------------------------------------- #
 # Schema

@@ -39,19 +39,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from xmclaw.utils.paths import default_pid_path as _central_default_pid_path
+
 
 def default_pid_path() -> Path:
-    override = os.environ.get("XMC_V2_PID_PATH")
-    if override:
-        return Path(override)
-    return Path.home() / ".xmclaw" / "v2" / "daemon.pid"
+    """Honors ``XMC_V2_PID_PATH`` and ``XMC_DATA_DIR``; delegates to
+    :func:`xmclaw.utils.paths.default_pid_path` (§3.1)."""
+    return _central_default_pid_path()
 
 
 def default_meta_path() -> Path:
+    # Tied to the PID-file location so a narrow override cascades: if a
+    # test reroutes pid to /tmp/foo.pid, meta lands at /tmp/foo.meta.
     return default_pid_path().with_name("daemon.meta")
 
 
 def default_log_path() -> Path:
+    # Sibling to the PID file for the same cascade reason as meta. The
+    # central ``default_daemon_log_path`` is the workspace default; this
+    # wrapper preserves the pid-override cascade contract.
     return default_pid_path().with_name("daemon.log")
 
 

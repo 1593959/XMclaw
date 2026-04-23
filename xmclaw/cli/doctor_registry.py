@@ -363,13 +363,16 @@ class WorkspaceCheck(DoctorCheck):
     id = "workspace"
     name = "workspace"
 
-    #: Honors the same env var as :func:`xmclaw.daemon.pairing.default_token_path`
-    #: when set — test harnesses set it to an isolated tmp dir.
+    #: Delegates to :func:`xmclaw.utils.paths.v2_workspace_dir` so
+    #: ``XMC_DATA_DIR`` (the §3.1 workspace-root lever) reroutes this
+    #: check alongside everything else. Test harnesses can still pin a
+    #: specific path via ``ctx.extras["workspace_dir"]``.
     def _target(self, ctx: DoctorContext) -> Path:
         override = ctx.extras.get("workspace_dir")
         if isinstance(override, (str, Path)):
             return Path(override)
-        return Path.home() / ".xmclaw" / "v2"
+        from xmclaw.utils.paths import v2_workspace_dir
+        return v2_workspace_dir()
 
     def run(self, ctx: DoctorContext) -> CheckResult:
         target = self._target(ctx)

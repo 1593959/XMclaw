@@ -1337,7 +1337,7 @@ Hermes、OpenClaw 都给不出这种 demo——他们的"进步"要么是手动 
 1. Epic #6 ENV override（半天）——解锁 Docker / CI 部署
 2. Epic #10 doctor（2 天）——用户能自诊断
 3. Epic #13 SQLite event bus（2 天）——事件回放 + session report 基础
-4. §3 路径规范落地 `utils/paths.py`（半天）——后续一切路径 bug 的防御
+4. §3 路径规范落地 `utils/paths.py`（半天）——后续一切路径 bug 的防御 ✅ 2026-04-23 落地：`xmclaw/utils/paths.py` v2 API（`data_dir()` / `v2_workspace_dir()` / `logs_dir()` / `default_{pid,meta,daemon_log,token,events_db,memory_db}_path()`），`XMC_DATA_DIR` workspace 总开关 + 既有窄 override 继续生效；`daemon/lifecycle.py` / `daemon/pairing.py` / `core/bus/sqlite.py` / `cli/main.py` 全部改为委托；`get_logs_dir()` 从 `<repo>/logs` 修正为 `~/.xmclaw/logs/`（对齐 log.py 文档字符串，修 §3.1 违规）
 
 **下周（Week 2）**：
 5. Epic #14 prompt injection 防御（1 天，抄 Hermes 的正则）

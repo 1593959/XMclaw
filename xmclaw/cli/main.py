@@ -41,9 +41,10 @@ app.add_typer(memory_app, name="memory")
 
 
 def _default_memory_db_path():
-    """Mirror the workspace convention used elsewhere (pid / events / token)."""
-    from pathlib import Path as _Path
-    return _Path.home() / ".xmclaw" / "v2" / "memory.db"
+    """Delegates to :func:`xmclaw.utils.paths.default_memory_db_path` so
+    ``XMC_DATA_DIR`` moves this file along with the rest of the workspace."""
+    from xmclaw.utils.paths import default_memory_db_path
+    return default_memory_db_path()
 
 
 @app.command()

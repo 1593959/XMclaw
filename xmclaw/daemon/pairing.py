@@ -24,18 +24,20 @@ import secrets
 import sys
 from pathlib import Path
 
+from xmclaw.utils.paths import default_token_path as _central_default_token_path
+
 
 def default_token_path() -> Path:
     """Location of the pairing token file.
 
     Uses ``~/.xmclaw/v2/pairing_token.txt`` by default. Honors the
     ``XMC_V2_PAIRING_TOKEN_PATH`` env var for testing and non-standard
-    installs.
+    installs, and ``XMC_DATA_DIR`` for moving the whole workspace.
+
+    Delegates to :func:`xmclaw.utils.paths.default_token_path` — that
+    module is the single source of truth for runtime paths (§3.1).
     """
-    override = os.environ.get("XMC_V2_PAIRING_TOKEN_PATH")
-    if override:
-        return Path(override)
-    return Path.home() / ".xmclaw" / "v2" / "pairing_token.txt"
+    return _central_default_token_path()
 
 
 def generate_token() -> str:
