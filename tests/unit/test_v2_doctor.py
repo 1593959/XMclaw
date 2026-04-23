@@ -499,6 +499,201 @@ def test_discover_plugins_returns_empty_when_no_plugins(
     assert reg.checks() == []
 
 
+# ── Epic #10 exit standard: 第三方 pilot 插件可注册自检 ───────────────────
+#
+# discover_plugins() 走 importlib.metadata entry_points。我们不去装真包，
+# 直接 monkeypatch entry_points 回一个合成的 FakeEP，验证端到端路径：
+#   1. class 形态 entry-point → registry 吸入 → run_all 出结果
+#   2. factory callable 形态 entry-point → 同样吸入
+#   3. 损坏 entry-point（import 炸 / 构造炸 / resolve 到非 DoctorCheck）
+#      不可让 doctor 整体停机，要返回 synthetic failure CheckResult
+#
+# 这组用例共同证明 doctor 对外是开放的插件面，而非仅内部 15 条硬编码。
+
+
+class _FakeEP:
+    """Mimics an importlib.metadata EntryPoint closely enough for
+    discover_plugins(): .name / .value attributes + .load() callable."""
+
+    def __init__(self, name: str, target, value: str = "<pilot>"):
+        self.name = name
+        self.value = value
+        self._target = target
+
+    def load(self):
+        if isinstance(self._target, Exception):
+            raise self._target
+        return self._target
+
+
+def _install_fake_entry_points(
+    monkeypatch: pytest.MonkeyPatch,
+    eps: list,
+) -> None:
+    """Force ``importlib.metadata.entry_points(group="xmclaw.doctor")`` to
+    return ``eps`` regardless of the host's installed packages."""
+    import importlib.metadata as im
+
+    def _fake(**kwargs):
+        # discover_plugins() calls entry_points(group=...) on py3.10+.
+        if kwargs.get("group") == "xmclaw.doctor":
+            return eps
+        return []
+
+    monkeypatch.setattr(im, "entry_points", _fake)
+
+
+class _PluginPassingCheck(DoctorCheck):
+    """Pilot plugin check — mirrors a minimal third-party impl."""
+    id = "pilot_green"
+    name = "pilot_green"
+
+    def run(self, ctx: DoctorContext) -> RegistryCheckResult:
+        return RegistryCheckResult(
+            name=self.name, ok=True, detail="pilot reporting green",
+        )
+
+
+def _pilot_factory() -> DoctorCheck:
+    """Factory variant — entry-point resolves to a callable that
+    returns a DoctorCheck instance. Plugin authors may prefer this
+    when they need to read config at construction time."""
+    return _PluginPassingCheck()
+
+
+def test_discover_plugins_registers_class_entry_point(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A third-party pilot registering a DoctorCheck subclass as its
+    entry-point target is loaded and runs alongside built-ins."""
+    reg = DoctorRegistry()
+    _install_fake_entry_points(monkeypatch, [
+        _FakeEP("pilot", _PluginPassingCheck),
+    ])
+
+    errors = reg.discover_plugins()
+    assert errors == []
+    # Plugin check now sits in the registry ready to run.
+    names = [c.name for c in reg.checks()]
+    assert "pilot_green" in names
+
+    # Full run: plugin check result appears with the others.
+    ctx = DoctorContext(config_path=_write_valid_cfg(tmp_path))
+    results = reg.run_all(ctx)
+    hit = [r for r in results if r.name == "pilot_green"]
+    assert len(hit) == 1
+    assert hit[0].ok is True
+    assert hit[0].detail == "pilot reporting green"
+
+
+def test_discover_plugins_registers_factory_entry_point(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A factory-shaped entry-point (callable returning a DoctorCheck
+    instance) is equally valid."""
+    reg = DoctorRegistry()
+    _install_fake_entry_points(monkeypatch, [
+        _FakeEP("pilot_factory", _pilot_factory),
+    ])
+
+    errors = reg.discover_plugins()
+    assert errors == []
+    assert [c.name for c in reg.checks()] == ["pilot_green"]
+
+
+def test_discover_plugins_surfaces_import_failure_without_crashing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plugin whose ``load()`` raises must NOT take the whole doctor
+    pass down — discover_plugins returns a synthetic failure entry so
+    the user sees which package is broken."""
+    reg = DoctorRegistry()
+    boom = ImportError("module 'badplugin' not found")
+    _install_fake_entry_points(monkeypatch, [
+        _FakeEP("badplugin", boom, value="badplugin.doctor:Check"),
+    ])
+
+    errors = reg.discover_plugins()
+    assert len(errors) == 1
+    assert errors[0].name == "plugin:badplugin"
+    assert errors[0].ok is False
+    assert "failed to import" in errors[0].detail
+    assert "ImportError" in errors[0].detail
+    # The broken plugin itself did NOT land in the registry.
+    assert reg.checks() == []
+
+
+def test_discover_plugins_surfaces_constructor_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A DoctorCheck subclass whose ``__init__`` raises lands as a
+    synthetic failure, not a hard crash."""
+
+    class _BadCtor(DoctorCheck):
+        id = "bad_ctor"
+        name = "bad_ctor"
+
+        def __init__(self) -> None:
+            raise RuntimeError("cannot construct")
+
+        def run(self, ctx: DoctorContext) -> RegistryCheckResult:  # noqa: ARG002
+            return RegistryCheckResult(name=self.name, ok=True)
+
+    reg = DoctorRegistry()
+    _install_fake_entry_points(monkeypatch, [
+        _FakeEP("bad_ctor", _BadCtor),
+    ])
+
+    errors = reg.discover_plugins()
+    assert len(errors) == 1
+    assert errors[0].name == "plugin:bad_ctor"
+    assert errors[0].ok is False
+    assert "constructor raised" in errors[0].detail
+    assert reg.checks() == []
+
+
+def test_discover_plugins_rejects_wrong_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An entry-point resolving to something that is neither a
+    DoctorCheck subclass nor a factory producing one is refused with
+    a clear diagnostic."""
+    reg = DoctorRegistry()
+    _install_fake_entry_points(monkeypatch, [
+        _FakeEP("wrong_type", "just a string", value="pkg:NOT_A_CHECK"),
+    ])
+
+    errors = reg.discover_plugins()
+    assert len(errors) == 1
+    assert errors[0].name == "plugin:wrong_type"
+    assert errors[0].ok is False
+    assert "did not resolve to a DoctorCheck" in errors[0].detail
+    assert reg.checks() == []
+
+
+def test_discover_plugins_isolates_failures_from_healthy_peers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken plugin does not prevent healthy plugins on the same
+    entry-point group from registering. One synthetic failure + one
+    real check should both land."""
+    reg = DoctorRegistry()
+    _install_fake_entry_points(monkeypatch, [
+        _FakeEP("bad", ImportError("no such module")),
+        _FakeEP("good", _PluginPassingCheck),
+    ])
+
+    errors = reg.discover_plugins()
+    assert len(errors) == 1
+    assert errors[0].name == "plugin:bad"
+    # Healthy sibling still registered.
+    assert [c.name for c in reg.checks()] == ["pilot_green"]
+
+    ctx = DoctorContext(config_path=_write_valid_cfg(tmp_path))
+    names = [r.name for r in reg.run_all(ctx)]
+    assert "pilot_green" in names
+
+
 # ── Epic #10 phase 2: WorkspaceCheck + run_fixes ─────────────────────────
 
 
