@@ -172,7 +172,7 @@ def serve(
         auth_check = _auth
         typer.echo(f"  [ok]  pairing token: {token_path}")
     else:
-        typer.echo(f"  [!]   --no-auth: anyone on this machine can connect")
+        typer.echo("  [!]   --no-auth: anyone on this machine can connect")
 
     cfg_path = _Path(config)
     agent = None
@@ -182,7 +182,7 @@ def serve(
             agent = build_agent_from_config(cfg, bus)
             if agent is None:
                 typer.echo(
-                    f"  [!]   config has no LLM api_key set -- running in echo mode"
+                    "  [!]   config has no LLM api_key set -- running in echo mode"
                 )
             else:
                 model = getattr(agent._llm, "model", "?")
@@ -199,7 +199,7 @@ def serve(
                         f"        allowed dirs: {allowlist}"
                     )
                 else:
-                    typer.echo(f"  [!]   tools disabled (no 'tools' section in config)")
+                    typer.echo("  [!]   tools disabled (no 'tools' section in config)")
         except ConfigError as exc:
             typer.echo(f"  [!]   config error -- running in echo mode: {exc}", err=True)
     else:
