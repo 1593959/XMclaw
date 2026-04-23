@@ -397,7 +397,8 @@ def test_default_registry_builtin_check_order() -> None:
     ids = [c.id for c in reg.checks()]
     assert ids == [
         "config", "llm", "tools", "workspace", "pairing", "port",
-        "events_db", "connectivity", "roadmap_lint", "pid_lock", "daemon",
+        "events_db", "memory_db", "skill_runtime",
+        "connectivity", "roadmap_lint", "pid_lock", "daemon",
     ]
 
 
@@ -464,7 +465,8 @@ def test_run_doctor_still_returns_old_check_result_type(tmp_path: Path) -> None:
     assert all(isinstance(r, CheckResult) for r in results)
     assert [r.name for r in results] == [
         "config", "llm", "tools", "workspace", "pairing", "port 8765",
-        "events_db", "connectivity", "roadmap_lint", "pid_lock", "daemon",
+        "events_db", "memory_db", "skill_runtime",
+        "connectivity", "roadmap_lint", "pid_lock", "daemon",
     ]
 
 
@@ -1264,3 +1266,188 @@ def test_cli_fix_text_output_includes_summary_block(tmp_path: Path) -> None:
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+
+# ── MemoryDbCheck ────────────────────────────────────────────────────────
+
+
+def _memory_ctx(
+    tmp_path: Path, db: Path | None, *, cfg: dict | None = None,
+) -> DoctorContext:
+    ctx = DoctorContext(config_path=tmp_path / "unused.json")
+    ctx.cfg = cfg
+    if db is not None:
+        ctx.extras["memory_db_path"] = db
+    return ctx
+
+
+def test_memory_db_disabled_is_ok_and_skips_probe(tmp_path: Path) -> None:
+    """memory.enabled=false means no daemon store — nothing to probe."""
+    from xmclaw.cli.doctor_registry import MemoryDbCheck
+
+    check = MemoryDbCheck()
+    ctx = DoctorContext(config_path=tmp_path / "unused.json")
+    ctx.cfg = {"memory": {"enabled": False}}
+    # Deliberately no override — disabled short-circuits before path resolution.
+    r = check.run(ctx)
+    assert r.ok is True
+    assert "disabled" in r.detail
+
+
+def test_memory_db_missing_file_is_ok(tmp_path: Path) -> None:
+    """No memory.db yet — SqliteVecMemory creates it lazily, not a failure."""
+    from xmclaw.cli.doctor_registry import MemoryDbCheck
+
+    check = MemoryDbCheck()
+    r = check.run(_memory_ctx(tmp_path, tmp_path / "memory.db"))
+    assert r.ok is True
+    assert "not yet created" in r.detail
+
+
+def test_memory_db_path_is_a_directory_fails(tmp_path: Path) -> None:
+    from xmclaw.cli.doctor_registry import MemoryDbCheck
+
+    db = tmp_path / "memory.db"
+    db.mkdir()
+    check = MemoryDbCheck()
+    r = check.run(_memory_ctx(tmp_path, db))
+    assert r.ok is False
+    assert "not a file" in r.detail
+
+
+def test_memory_db_garbage_file_reports_parse_error(tmp_path: Path) -> None:
+    """A non-SQLite file at the db path must fail parse."""
+    from xmclaw.cli.doctor_registry import MemoryDbCheck
+
+    db = tmp_path / "memory.db"
+    db.write_bytes(b"not a sqlite db")
+    check = MemoryDbCheck()
+    r = check.run(_memory_ctx(tmp_path, db))
+    assert r.ok is False
+    assert "malformed" in r.detail or "cannot open" in r.detail
+
+
+def test_memory_db_sqlite_without_memory_items_table_fails(tmp_path: Path) -> None:
+    """A foreign SQLite file at memory.db — don't mis-diagnose as healthy."""
+    import sqlite3
+
+    from xmclaw.cli.doctor_registry import MemoryDbCheck
+
+    db = tmp_path / "memory.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE other_table (x INTEGER)")
+    conn.close()
+    check = MemoryDbCheck()
+    r = check.run(_memory_ctx(tmp_path, db))
+    assert r.ok is False
+    assert "no memory_items table" in r.detail
+
+
+def test_memory_db_healthy_shows_item_count(tmp_path: Path) -> None:
+    """A real SqliteVecMemory file should report healthy + item count."""
+    import sqlite3
+
+    from xmclaw.cli.doctor_registry import MemoryDbCheck
+
+    db = tmp_path / "memory.db"
+    conn = sqlite3.connect(db)
+    conn.execute("""
+        CREATE TABLE memory_items (
+            id TEXT PRIMARY KEY, layer TEXT, text TEXT,
+            metadata TEXT, ts REAL, has_embedding INTEGER
+        )
+    """)
+    conn.execute(
+        "INSERT INTO memory_items VALUES ('a', 'short', 'x', '{}', 0.0, 0)"
+    )
+    conn.commit()
+    conn.close()
+    check = MemoryDbCheck()
+    r = check.run(_memory_ctx(tmp_path, db))
+    assert r.ok is True
+    assert "healthy" in r.detail
+    assert "1 item" in r.detail
+
+
+def test_memory_db_honors_cfg_db_path(tmp_path: Path) -> None:
+    """``cfg.memory.db_path`` should be probed when no extras override."""
+    from xmclaw.cli.doctor_registry import MemoryDbCheck
+
+    db = tmp_path / "custom.db"
+    cfg = {"memory": {"enabled": True, "db_path": str(db)}}
+    check = MemoryDbCheck()
+    # No extras override — fall through to cfg.memory.db_path.
+    r = check.run(_memory_ctx(tmp_path, None, cfg=cfg))
+    assert r.ok is True
+    assert "not yet created" in r.detail
+    assert str(db) in r.detail
+
+
+# ── SkillRuntimeCheck ───────────────────────────────────────────────────
+
+
+def _runtime_ctx(tmp_path: Path, cfg: dict | None) -> DoctorContext:
+    ctx = DoctorContext(config_path=tmp_path / "unused.json")
+    ctx.cfg = cfg
+    return ctx
+
+
+def test_skill_runtime_no_cfg_skips(tmp_path: Path) -> None:
+    """ConfigCheck failed — don't double-report."""
+    from xmclaw.cli.doctor_registry import SkillRuntimeCheck
+
+    check = SkillRuntimeCheck()
+    r = check.run(_runtime_ctx(tmp_path, None))
+    assert r.ok is True
+    assert "skipped" in r.detail
+
+
+def test_skill_runtime_section_absent_defaults_local(tmp_path: Path) -> None:
+    from xmclaw.cli.doctor_registry import SkillRuntimeCheck
+
+    check = SkillRuntimeCheck()
+    r = check.run(_runtime_ctx(tmp_path, {}))
+    assert r.ok is True
+    assert "local" in r.detail
+
+
+def test_skill_runtime_local_backend_is_ok(tmp_path: Path) -> None:
+    from xmclaw.cli.doctor_registry import SkillRuntimeCheck
+
+    check = SkillRuntimeCheck()
+    r = check.run(_runtime_ctx(tmp_path, {"runtime": {"backend": "local"}}))
+    assert r.ok is True
+    assert "local" in r.detail
+    assert "LocalSkillRuntime" in r.detail
+
+
+def test_skill_runtime_process_backend_is_ok(tmp_path: Path) -> None:
+    from xmclaw.cli.doctor_registry import SkillRuntimeCheck
+
+    check = SkillRuntimeCheck()
+    r = check.run(_runtime_ctx(tmp_path, {"runtime": {"backend": "process"}}))
+    assert r.ok is True
+    assert "process" in r.detail
+    assert "ProcessSkillRuntime" in r.detail
+
+
+def test_skill_runtime_unknown_backend_fails_with_known_set(tmp_path: Path) -> None:
+    """A typo should surface with the known-backend list so the user can fix it."""
+    from xmclaw.cli.doctor_registry import SkillRuntimeCheck
+
+    check = SkillRuntimeCheck()
+    r = check.run(_runtime_ctx(tmp_path, {"runtime": {"backend": "docker"}}))
+    assert r.ok is False
+    assert "docker" in r.detail
+    assert "local" in r.detail and "process" in r.detail
+    assert r.advisory is not None
+
+
+def test_skill_runtime_non_dict_section_fails(tmp_path: Path) -> None:
+    """A scalar at cfg['runtime'] is a clear config bug — surface it."""
+    from xmclaw.cli.doctor_registry import SkillRuntimeCheck
+
+    check = SkillRuntimeCheck()
+    r = check.run(_runtime_ctx(tmp_path, {"runtime": "local"}))
+    assert r.ok is False
+    assert "object" in r.detail or "dict" in r.detail.lower()

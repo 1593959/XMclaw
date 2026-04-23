@@ -721,6 +721,180 @@ class EventsDbCheck(DoctorCheck):
         )
 
 
+class MemoryDbCheck(DoctorCheck):
+    """Probe ``~/.xmclaw/v2/memory.db`` health (Epic #5 sibling of events.db).
+
+    Mirrors :class:`EventsDbCheck`'s verdict shape but for the sqlite-vec
+    memory store. Four practical states:
+
+    1. Memory layer disabled in config (``memory.enabled: false``) — OK,
+       nothing to probe.
+    2. File absent — OK, ``SqliteVecMemory`` creates it lazily on first
+       put. Report "not yet created" so the user isn't alarmed.
+    3. File present but not a file / unopenable / corrupt SQLite — fail
+       with the library error so the user knows what to clean up.
+    4. File opens but does not contain a ``memory_items`` table — fail
+       as "not a memory.db" so we don't mis-diagnose a foreign SQLite file.
+
+    The override path (``ctx.extras["memory_db_path"]``) mirrors
+    :class:`EventsDbCheck` so tests can redirect to a tmp file without
+    touching the real workspace.
+    """
+
+    id = "memory_db"
+    name = "memory_db"
+
+    def _target(self, ctx: DoctorContext) -> Path | None:
+        """Return the path to probe, or ``None`` if memory is disabled.
+
+        Precedence (highest first):
+          1. ``ctx.extras["memory_db_path"]`` — test override.
+          2. ``cfg["memory"]["db_path"]`` — user-configured absolute path.
+          3. :func:`xmclaw.utils.paths.default_memory_db_path`.
+        """
+        override = ctx.extras.get("memory_db_path")
+        if isinstance(override, (str, Path)):
+            return Path(override)
+        cfg = ctx.cfg or {}
+        mem_cfg = cfg.get("memory")
+        if isinstance(mem_cfg, dict):
+            if mem_cfg.get("enabled") is False:
+                return None
+            cfg_path = mem_cfg.get("db_path")
+            if isinstance(cfg_path, str) and cfg_path and cfg_path != ":memory:":
+                return Path(cfg_path)
+        from xmclaw.utils.paths import default_memory_db_path
+
+        return default_memory_db_path()
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        path = self._target(ctx)
+        if path is None:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="memory disabled in config (memory.enabled: false)",
+            )
+        if not path.exists():
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"not yet created (will be created on first put): {path}",
+            )
+        if not path.is_file():
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"path exists but is not a file: {path}",
+                advisory="remove or rename the conflicting entry",
+            )
+        import sqlite3
+
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        except sqlite3.Error as exc:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"cannot open {path.name}: {exc}",
+                advisory="check that no other process has the DB locked; "
+                         "if the file is corrupt, back it up and let the "
+                         "daemon recreate it on next start",
+            )
+        try:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='memory_items'"
+            ).fetchone()
+        except sqlite3.Error as exc:
+            conn.close()
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"memory.db looks malformed: {exc}",
+                advisory="back up and remove the file; the daemon "
+                         "will recreate it on next start",
+            )
+        if row is None:
+            # Count items if table exists; otherwise signal wrong file.
+            conn.close()
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"{path.name} exists but has no memory_items table",
+                advisory="this file isn't an xmclaw memory.db; back it up "
+                         "and remove it so the daemon can recreate it",
+            )
+        try:
+            count_row = conn.execute(
+                "SELECT COUNT(*) FROM memory_items"
+            ).fetchone()
+            count = int(count_row[0]) if count_row else 0
+        except sqlite3.Error:
+            count = -1
+        conn.close()
+        if count < 0:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"memory.db present at {path} (count unavailable)",
+            )
+        return CheckResult(
+            name=self.name, ok=True,
+            detail=f"memory.db healthy at {path} ({count} item(s))",
+        )
+
+
+class SkillRuntimeCheck(DoctorCheck):
+    """Validate the ``runtime`` config section picks a known backend.
+
+    ``runtime.backend`` drives which :class:`SkillRuntime` executes forked
+    skills (see Epic #3 and :func:`xmclaw.daemon.factory.build_skill_runtime_from_config`).
+    A typo here only explodes when the daemon tries to start, so this check
+    runs the same builder the daemon uses and surfaces a clean error up front.
+
+    States:
+      * Section absent / ``backend`` unset   -> OK "local (default)"
+      * Section present + known backend      -> OK "<backend>"
+      * Section shape wrong / unknown backend -> FAIL with the ConfigError
+        message verbatim — same wording the daemon would print.
+    """
+
+    id = "skill_runtime"
+    name = "skill_runtime"
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        cfg = ctx.cfg
+        if cfg is None:
+            # ConfigCheck already failed; don't double-fail.
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="skipped (config not loaded)",
+            )
+        from xmclaw.daemon.factory import (
+            ConfigError,
+            build_skill_runtime_from_config,
+        )
+
+        try:
+            runtime = build_skill_runtime_from_config(cfg)
+        except ConfigError as exc:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=str(exc),
+                advisory="fix daemon/config.json 'runtime' section "
+                         "(see docs/CONFIG.md §Runtime)",
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"unexpected error building runtime: {exc!r}",
+            )
+        backend = "local"
+        rt_section = cfg.get("runtime")
+        if isinstance(rt_section, dict):
+            cfg_backend = rt_section.get("backend")
+            if isinstance(cfg_backend, str):
+                backend = cfg_backend
+        return CheckResult(
+            name=self.name, ok=True,
+            detail=f"{backend} ({type(runtime).__name__})",
+        )
+
+
 class RoadmapLintCheck(DoctorCheck):
     """Run ``scripts/lint_roadmap.py`` against ``docs/DEV_ROADMAP.md``.
 
@@ -898,6 +1072,8 @@ def build_default_registry() -> DoctorRegistry:
     reg.register(PairingCheck())
     reg.register(PortCheck())
     reg.register(EventsDbCheck())
+    reg.register(MemoryDbCheck())
+    reg.register(SkillRuntimeCheck())
     reg.register(ConnectivityCheck())
     reg.register(RoadmapLintCheck())
     reg.register(StalePidCheck())
