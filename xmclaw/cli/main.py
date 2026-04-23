@@ -888,6 +888,35 @@ def backup_list(
         )
 
 
+@backup_app.command("verify")
+def backup_verify(
+    name: str = typer.Argument(..., help="Name of the backup to verify."),
+    dest: Path = typer.Option(
+        None, "--dest",
+        help="Backups directory. Defaults to ~/.xmclaw/backups.",
+    ),
+) -> None:
+    """Re-hash an existing backup and confirm it still matches its manifest.
+
+    Read-only — does not extract. Use before restoring, after moving a
+    backup to slower storage, or to catch bit-rot on long-lived archives.
+    Exits non-zero on any failure (missing, corrupt, schema too new,
+    checksum drift).
+    """
+    from xmclaw.backup import verify_backup
+    from xmclaw.backup.restore import RestoreError
+
+    try:
+        manifest = verify_backup(name, backups_dir=dest)
+    except RestoreError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        f"  [ok]  {name}: sha256 verified "
+        f"({manifest.entries} files, {manifest.archive_bytes} bytes)"
+    )
+
+
 @backup_app.command("delete")
 def backup_delete(
     name: str = typer.Argument(..., help="Name of the backup to delete."),

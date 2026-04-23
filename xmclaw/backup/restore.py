@@ -125,6 +125,53 @@ def restore_backup(
     return target_dir
 
 
+def verify_backup(
+    name: str,
+    *,
+    backups_dir: Path | None = None,
+) -> Manifest:
+    """Check that backup ``name``'s tarball hashes to ``manifest.archive_sha256``.
+
+    Same integrity gate :func:`restore_backup` runs, exposed as a
+    read-only operation so users can sanity-check a backup before
+    moving storage tiers, or catch bit-rot on long-lived archives.
+
+    Args:
+        name: Backup subdirectory name under ``backups_dir``.
+        backups_dir: Override for the backups root.
+
+    Returns:
+        The parsed :class:`Manifest` on success. Callers can inspect
+        it (entry count, creation time, etc) without re-parsing.
+
+    Raises:
+        RestoreError: Manifest missing / unparseable, archive missing,
+            schema newer than code can read, or sha256 drift.
+    """
+    root = backups_dir or default_backups_dir()
+    backup_dir = root / name
+    archive_path = backup_dir / ARCHIVE_NAME
+    manifest_path = backup_dir / MANIFEST_NAME
+
+    if not backup_dir.is_dir():
+        raise RestoreError(f"backup not found: {backup_dir}")
+    if not archive_path.is_file():
+        raise RestoreError(f"archive missing: {archive_path}")
+    if not manifest_path.is_file():
+        raise RestoreError(f"manifest missing: {manifest_path}")
+    try:
+        manifest = Manifest.load(manifest_path)
+    except (ValueError, OSError) as exc:
+        raise RestoreError(f"manifest parse failed: {exc}") from exc
+    if manifest.schema_version > MANIFEST_SCHEMA_VERSION:
+        raise RestoreError(
+            f"backup manifest schema v{manifest.schema_version} is newer "
+            f"than supported v{MANIFEST_SCHEMA_VERSION}; upgrade xmclaw"
+        )
+    _verify_checksum(archive_path, expected=manifest.archive_sha256)
+    return manifest
+
+
 def _verify_checksum(archive: Path, *, expected: str) -> None:
     hasher = hashlib.sha256()
     with archive.open("rb") as fh:

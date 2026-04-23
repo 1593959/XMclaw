@@ -633,3 +633,110 @@ def test_cli_backup_prune_noop_says_nothing_to_prune(tmp_path: Path) -> None:
     )
     assert r.exit_code == 0, r.stdout
     assert "nothing to prune" in r.stdout
+
+
+# ── verify ──────────────────────────────────────────────────────────────
+
+
+def test_verify_backup_returns_manifest_on_clean_archive(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    _make_workspace(ws)
+    dest = tmp_path / "backups"
+    created = create_backup(ws, "clean", backups_dir=dest)
+    from xmclaw.backup import verify_backup
+
+    got = verify_backup("clean", backups_dir=dest)
+    assert got.archive_sha256 == created.archive_sha256
+    assert got.entries == created.entries
+
+
+def test_verify_backup_detects_bit_flip(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    _make_workspace(ws)
+    dest = tmp_path / "backups"
+    create_backup(ws, "tocorrupt", backups_dir=dest)
+    archive = dest / "tocorrupt" / ARCHIVE_NAME
+    data = bytearray(archive.read_bytes())
+    data[-1] ^= 0x01
+    archive.write_bytes(bytes(data))
+    from xmclaw.backup import verify_backup
+
+    with pytest.raises(RestoreError, match="checksum mismatch"):
+        verify_backup("tocorrupt", backups_dir=dest)
+
+
+def test_verify_backup_missing_raises(tmp_path: Path) -> None:
+    from xmclaw.backup import verify_backup
+
+    with pytest.raises(RestoreError, match="not found"):
+        verify_backup("ghost", backups_dir=tmp_path / "nowhere")
+
+
+def test_verify_backup_missing_archive_raises(tmp_path: Path) -> None:
+    """Manifest present but archive gone should surface as RestoreError."""
+    ws = tmp_path / "ws"
+    _make_workspace(ws)
+    dest = tmp_path / "backups"
+    create_backup(ws, "half", backups_dir=dest)
+    (dest / "half" / ARCHIVE_NAME).unlink()
+    from xmclaw.backup import verify_backup
+
+    with pytest.raises(RestoreError, match="archive missing"):
+        verify_backup("half", backups_dir=dest)
+
+
+def test_verify_backup_newer_schema_raises(tmp_path: Path) -> None:
+    import time as _time
+
+    from xmclaw.backup import verify_backup
+
+    dest = tmp_path / "backups"
+    bdir = dest / "futuristic"
+    bdir.mkdir(parents=True)
+    (bdir / ARCHIVE_NAME).write_bytes(b"x")
+    # Hand-build a manifest with schema_version bumped into the future.
+    payload = {
+        "schema_version": MANIFEST_SCHEMA_VERSION + 1,
+        "name": "futuristic",
+        "created_ts": _time.time(),
+        "xmclaw_version": "99.0.0",
+        "archive_sha256": hashlib.sha256(b"x").hexdigest(),
+        "archive_bytes": 1,
+        "source_dir": str(tmp_path),
+        "excluded": [],
+        "entries": 0,
+    }
+    (bdir / MANIFEST_NAME).write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(RestoreError, match="schema"):
+        verify_backup("futuristic", backups_dir=dest)
+
+
+def test_cli_backup_verify_happy_path(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    _make_workspace(ws)
+    dest = tmp_path / "backups"
+    create_backup(ws, "ok1", backups_dir=dest)
+    runner = CliRunner()
+    r = runner.invoke(
+        app,
+        ["backup", "verify", "ok1", "--dest", str(dest)],
+    )
+    assert r.exit_code == 0, r.stdout
+    assert "verified" in r.stdout
+
+
+def test_cli_backup_verify_corrupted_exits_nonzero(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    _make_workspace(ws)
+    dest = tmp_path / "backups"
+    create_backup(ws, "bad", backups_dir=dest)
+    archive = dest / "bad" / ARCHIVE_NAME
+    data = bytearray(archive.read_bytes())
+    data[-1] ^= 0x01
+    archive.write_bytes(bytes(data))
+    runner = CliRunner()
+    r = runner.invoke(
+        app,
+        ["backup", "verify", "bad", "--dest", str(dest)],
+    )
+    assert r.exit_code == 1, r.stdout

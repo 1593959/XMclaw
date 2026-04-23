@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from xmclaw.backup.create import create_backup
 from xmclaw.backup.manifest import Manifest, MANIFEST_NAME, MANIFEST_SCHEMA_VERSION
-from xmclaw.backup.restore import RestoreError, restore_backup
+from xmclaw.backup.restore import RestoreError, restore_backup, verify_backup
 from xmclaw.backup.store import (
     BackupNotFoundError,
     default_backups_dir,
@@ -37,4 +37,5 @@ __all__ = [
     "list_backups",
     "prune_backups",
     "restore_backup",
+    "verify_backup",
 ]
