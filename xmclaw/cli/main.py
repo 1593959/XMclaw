@@ -888,6 +888,81 @@ def backup_list(
         )
 
 
+@backup_app.command("delete")
+def backup_delete(
+    name: str = typer.Argument(..., help="Name of the backup to delete."),
+    dest: Path = typer.Option(
+        None, "--dest",
+        help="Backups directory. Defaults to ~/.xmclaw/backups.",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="Skip the confirmation prompt.",
+    ),
+) -> None:
+    """Remove a single backup directory (archive + manifest)."""
+    from xmclaw.backup import delete_backup
+    from xmclaw.backup.store import BackupNotFoundError
+
+    if not yes:
+        confirm = typer.confirm(
+            f"delete backup {name!r}? this cannot be undone",
+            default=False,
+        )
+        if not confirm:
+            typer.echo("aborted.")
+            raise typer.Exit(code=1)
+    try:
+        path = delete_backup(name, backups_dir=dest)
+    except BackupNotFoundError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"  [ok]  deleted {path}")
+
+
+@backup_app.command("prune")
+def backup_prune(
+    keep: int = typer.Option(
+        5, "--keep",
+        help="Number of newest backups to retain. Older ones are deleted.",
+    ),
+    dest: Path = typer.Option(
+        None, "--dest",
+        help="Backups directory. Defaults to ~/.xmclaw/backups.",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="Skip the confirmation prompt.",
+    ),
+) -> None:
+    """Keep only the ``--keep`` newest backups; drop the rest."""
+    from xmclaw.backup import list_backups, prune_backups
+
+    entries = list_backups(dest)
+    if len(entries) <= keep:
+        typer.echo(
+            f"nothing to prune: {len(entries)} backup(s) <= keep={keep}."
+        )
+        return
+    will_remove = entries[: len(entries) - keep]
+    if not yes:
+        typer.echo(f"would remove {len(will_remove)} backup(s):")
+        for e in will_remove:
+            typer.echo(f"  - {e.name}")
+        if not typer.confirm("proceed?", default=False):
+            typer.echo("aborted.")
+            raise typer.Exit(code=1)
+    try:
+        removed = prune_backups(backups_dir=dest, keep=keep)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"  [ok]  removed {len(removed)} backup(s).")
+
+
 @backup_app.command("restore")
 def backup_restore(
     name: str = typer.Argument(..., help="Name of the backup to restore."),

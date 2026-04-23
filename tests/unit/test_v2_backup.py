@@ -478,3 +478,158 @@ def test_env_override_honored(
     from xmclaw.backup.store import default_backups_dir
 
     assert default_backups_dir() == tmp_path / "custom"
+
+
+# ── delete + prune ──────────────────────────────────────────────────────
+
+
+def test_delete_backup_removes_directory(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    _make_workspace(ws)
+    dest = tmp_path / "backups"
+    create_backup(ws, "b1", backups_dir=dest)
+    from xmclaw.backup import delete_backup
+
+    path = delete_backup("b1", backups_dir=dest)
+    assert not path.exists()
+    assert dest.exists()  # root not removed
+
+
+def test_delete_backup_raises_when_missing(tmp_path: Path) -> None:
+    from xmclaw.backup import BackupNotFoundError, delete_backup
+
+    with pytest.raises(BackupNotFoundError):
+        delete_backup("ghost", backups_dir=tmp_path / "empty")
+
+
+def test_delete_backup_rejects_path_separators(tmp_path: Path) -> None:
+    from xmclaw.backup import delete_backup
+
+    with pytest.raises(ValueError):
+        delete_backup("../etc/passwd", backups_dir=tmp_path / "backups")
+    with pytest.raises(ValueError):
+        delete_backup("", backups_dir=tmp_path / "backups")
+
+
+def test_prune_keeps_newest_and_drops_older(tmp_path: Path) -> None:
+    """prune(keep=2) on 5 backups drops 3 oldest."""
+    import time as _time
+
+    from xmclaw.backup import prune_backups
+    from xmclaw.backup.manifest import (
+        MANIFEST_NAME,
+        MANIFEST_SCHEMA_VERSION,
+        Manifest,
+    )
+
+    dest = tmp_path / "backups"
+    dest.mkdir()
+    for i, age in enumerate([500, 400, 300, 200, 100]):
+        bdir = dest / f"b{i}"
+        bdir.mkdir()
+        (bdir / ARCHIVE_NAME).write_bytes(b"x")
+        Manifest(
+            schema_version=MANIFEST_SCHEMA_VERSION,
+            name=f"b{i}",
+            created_ts=_time.time() - age,
+            xmclaw_version="0.0.0",
+            archive_sha256="0" * 64,
+            archive_bytes=1,
+            source_dir=str(tmp_path),
+            excluded=(),
+            entries=0,
+        ).write(bdir / MANIFEST_NAME)
+    removed = prune_backups(backups_dir=dest, keep=2)
+    assert removed == ["b0", "b1", "b2"]  # oldest three, in order
+    assert sorted(p.name for p in dest.iterdir()) == ["b3", "b4"]
+
+
+def test_prune_noop_when_under_keep(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    _make_workspace(ws)
+    dest = tmp_path / "backups"
+    create_backup(ws, "only", backups_dir=dest)
+    from xmclaw.backup import prune_backups
+
+    assert prune_backups(backups_dir=dest, keep=5) == []
+    assert (dest / "only").is_dir()
+
+
+def test_prune_rejects_negative_keep(tmp_path: Path) -> None:
+    from xmclaw.backup import prune_backups
+
+    with pytest.raises(ValueError):
+        prune_backups(backups_dir=tmp_path / "x", keep=-1)
+
+
+def test_cli_backup_delete_with_yes_removes_backup(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    _make_workspace(ws)
+    dest = tmp_path / "backups"
+    create_backup(ws, "doomed", backups_dir=dest)
+    runner = CliRunner()
+    r = runner.invoke(
+        app,
+        ["backup", "delete", "doomed", "--dest", str(dest), "--yes"],
+    )
+    assert r.exit_code == 0, r.stdout
+    assert not (dest / "doomed").exists()
+
+
+def test_cli_backup_delete_missing_exits_nonzero(tmp_path: Path) -> None:
+    runner = CliRunner()
+    r = runner.invoke(
+        app,
+        ["backup", "delete", "ghost", "--dest", str(tmp_path / "b"), "--yes"],
+    )
+    assert r.exit_code == 1
+
+
+def test_cli_backup_prune_keep_respected(tmp_path: Path) -> None:
+    import time as _time
+
+    from xmclaw.backup.manifest import (
+        MANIFEST_NAME,
+        MANIFEST_SCHEMA_VERSION,
+        Manifest,
+    )
+
+    dest = tmp_path / "backups"
+    dest.mkdir()
+    for i, age in enumerate([300, 200, 100]):
+        bdir = dest / f"b{i}"
+        bdir.mkdir()
+        (bdir / ARCHIVE_NAME).write_bytes(b"x")
+        Manifest(
+            schema_version=MANIFEST_SCHEMA_VERSION,
+            name=f"b{i}",
+            created_ts=_time.time() - age,
+            xmclaw_version="0.0.0",
+            archive_sha256="0" * 64,
+            archive_bytes=1,
+            source_dir=str(tmp_path),
+            excluded=(),
+            entries=0,
+        ).write(bdir / MANIFEST_NAME)
+    runner = CliRunner()
+    r = runner.invoke(
+        app,
+        ["backup", "prune", "--keep", "1", "--dest", str(dest), "--yes"],
+    )
+    assert r.exit_code == 0, r.stdout
+    assert sorted(p.name for p in dest.iterdir()) == ["b2"]
+    assert "removed 2" in r.stdout
+
+
+def test_cli_backup_prune_noop_says_nothing_to_prune(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    _make_workspace(ws)
+    dest = tmp_path / "backups"
+    create_backup(ws, "only", backups_dir=dest)
+    runner = CliRunner()
+    r = runner.invoke(
+        app,
+        ["backup", "prune", "--keep", "5", "--dest", str(dest)],
+    )
+    assert r.exit_code == 0, r.stdout
+    assert "nothing to prune" in r.stdout

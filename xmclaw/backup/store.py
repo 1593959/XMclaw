@@ -78,3 +78,89 @@ def list_backups(backups_dir: Path | None = None) -> list[BackupEntry]:
         entries.append(BackupEntry(name=child.name, dir=child, manifest=manifest))
     entries.sort(key=lambda e: e.manifest.created_ts)
     return entries
+
+
+class BackupNotFoundError(RuntimeError):
+    """Requested backup name does not resolve to a directory on disk."""
+
+
+def delete_backup(name: str, *, backups_dir: Path | None = None) -> Path:
+    """Remove the backup directory ``<backups_dir>/<name>`` in full.
+
+    Args:
+        name: Backup subdirectory name. Same validation as
+            :func:`xmclaw.backup.create.create_backup` — must be a plain
+            directory name, no separators.
+        backups_dir: Override for the backups root.
+
+    Returns:
+        The deleted path (for the CLI to echo).
+
+    Raises:
+        BackupNotFoundError: The name doesn't resolve to an existing
+            directory. We don't auto-create a "not found" success —
+            callers should see the name they typed was wrong.
+        ValueError: The name is structurally unsafe (path separator,
+            traversal).  Protects against ``delete_backup("../etc")``.
+    """
+    if "/" in name or "\\" in name or name in ("", ".", ".."):
+        raise ValueError(f"invalid backup name: {name!r}")
+    root = backups_dir or default_backups_dir()
+    target = root / name
+    # Refuse to follow any symlink that points outside ``root`` —
+    # defense in depth against a ~/.xmclaw/backups/evil symlink pointing
+    # at /. The normal happy path (plain subdirectory) passes this.
+    try:
+        target.resolve(strict=True).relative_to(root.resolve())
+    except (ValueError, OSError) as exc:
+        raise BackupNotFoundError(
+            f"backup not found or outside backups dir: {name}"
+        ) from exc
+    if not target.is_dir():
+        raise BackupNotFoundError(f"backup not found: {target}")
+    import shutil
+
+    shutil.rmtree(target)
+    return target
+
+
+def prune_backups(
+    *,
+    backups_dir: Path | None = None,
+    keep: int,
+) -> list[str]:
+    """Drop the oldest backups, keeping only the ``keep`` most recent.
+
+    Args:
+        backups_dir: Override for the backups root.
+        keep: How many of the newest backups to retain. Must be ``>= 0``.
+            ``keep=0`` deletes everything well-formed under the root;
+            ``keep=1`` keeps the newest alone, etc.
+
+    Returns:
+        Names of the backups that were deleted, oldest first. Empty
+        when nothing needed pruning.
+
+    Raises:
+        ValueError: ``keep`` is negative.
+
+    Malformed backup directories (no manifest, corrupt json) are NOT
+    touched — :func:`list_backups` never sees them, so neither does
+    prune. That matches the "leave what you don't understand" rule in
+    AGENTS.md hard no's.
+    """
+    if keep < 0:
+        raise ValueError(f"keep must be >= 0, got {keep}")
+    entries = list_backups(backups_dir)
+    if len(entries) <= keep:
+        return []
+    # list_backups returns oldest-first, so the slice-from-start is the
+    # batch to remove.
+    to_remove = entries[: len(entries) - keep]
+    removed: list[str] = []
+    for entry in to_remove:
+        import shutil
+
+        shutil.rmtree(entry.dir)
+        removed.append(entry.name)
+    return removed
