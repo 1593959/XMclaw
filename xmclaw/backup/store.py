@@ -84,6 +84,49 @@ class BackupNotFoundError(RuntimeError):
     """Requested backup name does not resolve to a directory on disk."""
 
 
+def get_backup(name: str, *, backups_dir: Path | None = None) -> BackupEntry:
+    """Return the :class:`BackupEntry` for ``name`` or raise.
+
+    Thin wrapper over :func:`list_backups` for the single-backup case —
+    CLI verbs like ``backup info`` and ``backup verify`` need to look
+    up by name and want a clear error when it's missing. Keeping the
+    name-validation + lookup + manifest-load logic here means the CLI
+    layer stays dumb.
+
+    Args:
+        name: Backup subdirectory name. Must be a plain directory
+            name — no separators, no traversal — same rules as the
+            create/delete codepaths.
+        backups_dir: Override for the backups root.
+
+    Raises:
+        ValueError: ``name`` is structurally unsafe.
+        BackupNotFoundError: No well-formed backup dir of that name
+            exists (missing dir, missing tarball, unreadable manifest).
+    """
+    if "/" in name or "\\" in name or name in ("", ".", ".."):
+        raise ValueError(f"invalid backup name: {name!r}")
+    root = backups_dir or default_backups_dir()
+    target = root / name
+    try:
+        target.resolve(strict=True).relative_to(root.resolve())
+    except (ValueError, OSError) as exc:
+        raise BackupNotFoundError(
+            f"backup not found or outside backups dir: {name}"
+        ) from exc
+    archive = target / ARCHIVE_NAME
+    manifest_path = target / MANIFEST_NAME
+    if not (target.is_dir() and archive.is_file() and manifest_path.is_file()):
+        raise BackupNotFoundError(f"backup not found or incomplete: {target}")
+    try:
+        manifest = Manifest.load(manifest_path)
+    except (ValueError, OSError) as exc:
+        raise BackupNotFoundError(
+            f"backup manifest unreadable: {manifest_path}"
+        ) from exc
+    return BackupEntry(name=name, dir=target, manifest=manifest)
+
+
 def delete_backup(name: str, *, backups_dir: Path | None = None) -> Path:
     """Remove the backup directory ``<backups_dir>/<name>`` in full.
 

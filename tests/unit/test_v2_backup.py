@@ -740,3 +740,143 @@ def test_cli_backup_verify_corrupted_exits_nonzero(tmp_path: Path) -> None:
         ["backup", "verify", "bad", "--dest", str(dest)],
     )
     assert r.exit_code == 1, r.stdout
+
+
+# ── get_backup ──────────────────────────────────────────────────────────
+
+
+def test_get_backup_returns_entry(tmp_path: Path) -> None:
+    from xmclaw.backup import get_backup
+
+    ws = tmp_path / "ws"
+    _make_workspace(ws)
+    dest = tmp_path / "backups"
+    create_backup(ws, "inspectme", backups_dir=dest)
+    entry = get_backup("inspectme", backups_dir=dest)
+    assert entry.name == "inspectme"
+    assert entry.dir == dest / "inspectme"
+    assert entry.manifest.entries > 0
+    assert entry.manifest.archive_sha256
+
+
+def test_get_backup_missing_raises(tmp_path: Path) -> None:
+    from xmclaw.backup import BackupNotFoundError, get_backup
+
+    dest = tmp_path / "backups"
+    dest.mkdir()
+    with pytest.raises(BackupNotFoundError):
+        get_backup("nope", backups_dir=dest)
+
+
+def test_get_backup_rejects_path_separator(tmp_path: Path) -> None:
+    from xmclaw.backup import get_backup
+
+    with pytest.raises(ValueError):
+        get_backup("a/b", backups_dir=tmp_path)
+    with pytest.raises(ValueError):
+        get_backup("a\\b", backups_dir=tmp_path)
+
+
+def test_get_backup_rejects_traversal(tmp_path: Path) -> None:
+    from xmclaw.backup import get_backup
+
+    for bad in ("", ".", ".."):
+        with pytest.raises(ValueError):
+            get_backup(bad, backups_dir=tmp_path)
+
+
+def test_get_backup_raises_on_incomplete_dir(tmp_path: Path) -> None:
+    """Directory exists but no archive+manifest -> treat as not found."""
+    from xmclaw.backup import BackupNotFoundError, get_backup
+
+    dest = tmp_path / "backups"
+    (dest / "half").mkdir(parents=True)
+    (dest / "half" / MANIFEST_NAME).write_text("{}", encoding="utf-8")  # no archive
+    with pytest.raises(BackupNotFoundError):
+        get_backup("half", backups_dir=dest)
+
+
+def test_get_backup_raises_on_unreadable_manifest(tmp_path: Path) -> None:
+    from xmclaw.backup import BackupNotFoundError, get_backup
+
+    dest = tmp_path / "backups"
+    (dest / "bad").mkdir(parents=True)
+    (dest / "bad" / ARCHIVE_NAME).write_bytes(b"")
+    (dest / "bad" / MANIFEST_NAME).write_text("{not json", encoding="utf-8")
+    with pytest.raises(BackupNotFoundError):
+        get_backup("bad", backups_dir=dest)
+
+
+# ── CLI: backup info ────────────────────────────────────────────────────
+
+
+def test_cli_backup_info_shows_manifest_fields(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    _make_workspace(ws)
+    dest = tmp_path / "backups"
+    create_backup(ws, "b1", backups_dir=dest)
+    runner = CliRunner()
+    r = runner.invoke(app, ["backup", "info", "b1", "--dest", str(dest)])
+    assert r.exit_code == 0, r.stdout
+    assert "name" in r.stdout and "b1" in r.stdout
+    assert "created" in r.stdout
+    assert "xmclaw_version" in r.stdout
+    assert "entries" in r.stdout
+    assert "archive_bytes" in r.stdout
+    assert "sha256" in r.stdout
+    assert "schema_version" in r.stdout
+
+
+def test_cli_backup_info_hides_excluded_by_default(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    _make_workspace(ws)
+    dest = tmp_path / "backups"
+    create_backup(ws, "b2", backups_dir=dest)
+    runner = CliRunner()
+    r = runner.invoke(app, ["backup", "info", "b2", "--dest", str(dest)])
+    assert r.exit_code == 0, r.stdout
+    assert "excluded" not in r.stdout
+
+
+def test_cli_backup_info_show_excluded_lists_patterns(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    _make_workspace(ws)
+    dest = tmp_path / "backups"
+    create_backup(ws, "b3", backups_dir=dest)
+    runner = CliRunner()
+    r = runner.invoke(
+        app, ["backup", "info", "b3", "--dest", str(dest), "--show-excluded"]
+    )
+    assert r.exit_code == 0, r.stdout
+    assert "excluded" in r.stdout
+    assert "logs" in r.stdout  # default excluded glob
+
+
+def test_cli_backup_info_missing_exits_nonzero(tmp_path: Path) -> None:
+    dest = tmp_path / "backups"
+    dest.mkdir()
+    runner = CliRunner()
+    r = runner.invoke(app, ["backup", "info", "ghost", "--dest", str(dest)])
+    assert r.exit_code == 1, r.stdout
+    assert "not found" in r.stdout.lower() or "not found" in (r.stderr or "").lower()
+
+
+def test_cli_backup_info_invalid_name_exits_nonzero(tmp_path: Path) -> None:
+    dest = tmp_path / "backups"
+    dest.mkdir()
+    runner = CliRunner()
+    r = runner.invoke(app, ["backup", "info", "a/b", "--dest", str(dest)])
+    assert r.exit_code == 1, r.stdout
+
+
+def test_cli_backup_info_human_readable_size(tmp_path: Path) -> None:
+    """archive_bytes line should include both raw and KiB/MiB render."""
+    ws = tmp_path / "ws"
+    _make_workspace(ws)
+    dest = tmp_path / "backups"
+    create_backup(ws, "sized", backups_dir=dest)
+    runner = CliRunner()
+    r = runner.invoke(app, ["backup", "info", "sized", "--dest", str(dest)])
+    assert r.exit_code == 0, r.stdout
+    # Either "B", "KiB", "MiB" etc. should appear in the archive_bytes line.
+    assert any(unit in r.stdout for unit in ("B)", "KiB)", "MiB)"))

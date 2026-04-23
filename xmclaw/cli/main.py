@@ -1166,6 +1166,72 @@ def backup_verify(
     )
 
 
+def _format_bytes(n: int) -> str:
+    """Render ``n`` bytes as KiB/MiB/GiB with one decimal (operator-friendly).
+
+    ``list`` shows raw bytes because the column needs to sort numerically.
+    ``info`` is a read-by-one inspector so we can afford to be readable.
+    """
+    step = 1024.0
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if abs(n) < step:
+            return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
+        n /= step
+    return f"{n:.1f} PiB"
+
+
+@backup_app.command("info")
+def backup_info(
+    name: str = typer.Argument(..., help="Name of the backup to inspect."),
+    dest: Path = typer.Option(
+        None, "--dest",
+        help="Backups directory. Defaults to ~/.xmclaw/backups.",
+    ),
+    show_excluded: bool = typer.Option(
+        False, "--show-excluded",
+        help="Also print the list of glob patterns that were excluded.",
+    ),
+) -> None:
+    """Pretty-print a single backup's manifest without re-hashing.
+
+    Cheaper than ``verify`` — this only reads ``manifest.json`` and
+    echoes the metadata. Use when you want to know *what* a backup is
+    (when it was taken, what version, how big) without paying the
+    sha256 cost. Exits non-zero when the backup is missing or malformed.
+    """
+    import datetime as _dt
+
+    from xmclaw.backup import get_backup
+    from xmclaw.backup.store import BackupNotFoundError
+
+    try:
+        entry = get_backup(name, backups_dir=dest)
+    except (BackupNotFoundError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    m = entry.manifest
+    created = _dt.datetime.fromtimestamp(
+        m.created_ts, tz=_dt.timezone.utc
+    ).isoformat(timespec="seconds")
+    typer.echo(f"  name           {entry.name}")
+    typer.echo(f"  path           {entry.dir}")
+    typer.echo(f"  created        {created}")
+    typer.echo(f"  xmclaw_version {m.xmclaw_version}")
+    typer.echo(f"  source_dir     {m.source_dir}")
+    typer.echo(f"  entries        {m.entries}")
+    typer.echo(f"  archive_bytes  {m.archive_bytes} ({_format_bytes(m.archive_bytes)})")
+    typer.echo(f"  sha256         {m.archive_sha256[:16]}…")
+    typer.echo(f"  schema_version {m.schema_version}")
+    if show_excluded:
+        if m.excluded:
+            typer.echo("  excluded:")
+            for pat in m.excluded:
+                typer.echo(f"    - {pat}")
+        else:
+            typer.echo("  excluded       (none)")
+
+
 @backup_app.command("delete")
 def backup_delete(
     name: str = typer.Argument(..., help="Name of the backup to delete."),

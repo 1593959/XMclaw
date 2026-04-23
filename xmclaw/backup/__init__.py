@@ -21,6 +21,7 @@ from xmclaw.backup.store import (
     BackupNotFoundError,
     default_backups_dir,
     delete_backup,
+    get_backup,
     list_backups,
     prune_backups,
 )
@@ -34,6 +35,7 @@ __all__ = [
     "create_backup",
     "default_backups_dir",
     "delete_backup",
+    "get_backup",
     "list_backups",
     "prune_backups",
     "restore_backup",
