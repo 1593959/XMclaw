@@ -1,0 +1,52 @@
+# Fly.io app template for XMclaw.
+#
+# Usage:
+#   1. flyctl apps create xmclaw-<yourname>           # app name must be unique
+#   2. edit `app = "..."` below to match
+#   3. flyctl volumes create xmclaw_data --region iad --size 1
+#   4. flyctl secrets set ANTHROPIC_API_KEY=sk-ant-...
+#   5. flyctl deploy
+#
+# This deploys the Dockerfile at the repo root. The volume holds the
+# entire XMC_DATA_DIR (events.db, memory.db, skills/, workspaces/, ...)
+# so a redeploy doesn't wipe memory.
+#
+# Warnings before you point DNS at this:
+#   * There is no built-in auth besides the pairing token. Fly routes
+#     this to the public internet by default — front it with Cloudflare
+#     Access, Tailscale serve, or a `flyctl proxy` tunnel until a proper
+#     auth layer lands.
+#   * A single machine means any deploy = cold restart. XMclaw has no
+#     multi-replica story yet (one daemon owns the SQLite event bus).
+#     Don't scale to N>1 — the second machine will fight for the volume.
+
+app = "xmclaw-example"
+primary_region = "iad"
+
+[build]
+  dockerfile = "../../Dockerfile"
+
+[env]
+  XMC_DATA_DIR = "/data"
+
+[mounts]
+  source = "xmclaw_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8765
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "30s"
+  method = "GET"
+  path = "/health"
+  timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

@@ -94,12 +94,14 @@ lanes:
       - "xmclaw/daemon/pairing.py"
       - "xmclaw/daemon/memory_sweep.py"
       - "xmclaw/daemon/workspace.py"
+      - "xmclaw/daemon/routers/**"
     tests:
       - tests/unit/test_v2_daemon_factory.py
       - tests/unit/test_v2_daemon_lifecycle.py
       - tests/unit/test_v2_memory_retention.py
       - tests/unit/test_v2_pairing.py
       - tests/unit/test_v2_workspace.py
+      - tests/unit/test_v2_web_ui_routers.py
       - tests/integration/test_v2_daemon_app.py
       - tests/integration/test_v2_daemon_agent.py
       - tests/integration/test_v2_daemon_config.py
@@ -119,6 +121,7 @@ lanes:
       - tests/unit/test_v2_cli_memory_stats.py
       - tests/unit/test_v2_cli_config.py
       - tests/unit/test_v2_cli_version.py
+      - tests/unit/test_v2_cli_evolution.py
 
   # Memory stack.
   memory:
@@ -212,6 +215,22 @@ lanes:
   # Changes to tests themselves: run just the changed test files (handled
   # separately in test_changed.py via direct path match) + the always-on
   # lane.
+
+  # Deployment templates (Epic #19). Cheap parse + drift checks on
+  # Dockerfile / compose / fly.toml / systemd unit / launchd plist /
+  # Windows service wrapper / install scripts. Runs whenever any of
+  # those files move — catches e.g. a port rename in compose that the
+  # Dockerfile's EXPOSE didn't follow.
+  deploy:
+    triggers:
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - ".env.example"
+      - "deploy/**"
+      - "scripts/install.sh"
+      - "scripts/install.ps1"
+    tests:
+      - tests/unit/test_v2_deploy_templates.py
 
   # pyproject / lockfiles / CI config — full suite safety net.
   full_fallback:

@@ -461,7 +461,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **这是我们唯一的用户可感知差异，必须做到看得见。**
 
-**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**状态**：🟡 进行中（Phase A 可见性落地） | **负责人**：Claude (AI pair) | **起始**：2026-04-24 | **完成**：-
 **前置依赖**：Epic #3（scanner）、Epic #13（事件总线）、Epic #5（memory）
 **关联 Milestone**：M5（进化可感知）★ 最关键
 
@@ -481,12 +481,12 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **检查清单**：
 
-- [ ] `core/bus/events.py` 新事件类型
+- [x] `core/bus/events.py` 新事件类型（`SKILL_PROMOTED` / `SKILL_ROLLED_BACK` 已存在，`SKILL_CANDIDATE_PROPOSED` 已存在；Phase B 再加 gene 相关事件）
 - [ ] `xmclaw/evolution/gene_forge.py`：流式 gene 生成器
 - [ ] `xmclaw/evolution/skill_forge.py`：候选验证
 - [ ] `xmclaw/evolution/engine.py`：总装
-- [ ] `~/.xmclaw/skills/<name>/candidates/` + `history.jsonl` 格式落地
-- [ ] CLI `xmclaw evolution show` 可用
+- [x] `~/.xmclaw/skills/<skill_id>.jsonl` 促发/回滚 append-only 历史（`SkillRegistry._persist`）；`candidates/` 子树留给 Phase B
+- [x] CLI `xmclaw evolution show` 可用（Phase A: `--since 24h/7d` 过滤、多技能按 ts 合并、空目录友好提示；`typer` 集成测试覆盖）
 - [ ] CLI `xmclaw session report <id>` 可用
 - [ ] CLI repl `SKILL_EVOLVED` flash
 - [ ] README 顶部 killer demo GIF
@@ -501,7 +501,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **进度日志**：
 
-- _（尚无）_
+- 2026-04-24: Phase A 可见性落地——`xmclaw evolution show [--since 24h|7d|Nh]` 读 `~/.xmclaw/skills/*.jsonl` 按 `ts` 合并打印。新增 `xmclaw.utils.paths.skills_dir()`（honors `XMC_V2_SKILLS_DIR`，peer of `v2/`，以便 workspace wipe 不清审计日志）+ `xmclaw.cli.evolution` 模块 + `xmclaw.cli.main` typer 注册。15 条 unit tests（`_parse_since` / `_fmt_record` / `run_evolution_show` 空目录/过滤/多技能合并 + 真 `SkillRegistry` round-trip + typer `CliRunner` 集成）。Phase B 仍待：`EvolutionOrchestrator` 把 registry.promote 转成 bus 事件、`session report` CLI、REPL flash。(branch feat/epic-4-evolution-visibility)
 
 ---
 
@@ -970,7 +970,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #18 · 前端补全（Web UI 从 Mock 到真实）
 
-**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**状态**：🟡 进行中 | **负责人**：XMclaw Bot | **起始**：2026-04-24 | **完成**：-
 **前置依赖**：Epic #13（SQLite event bus，事件回放 API）
 **关联 Milestone**：M6（Onboarding + Hub）
 
@@ -988,10 +988,10 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **检查清单**：
 
-- [ ] `GET /api/v2/files?path=` 返回真实目录树
-- [ ] `GET /api/v2/workspaces` CRUD
-- [ ] `GET /api/v2/profiles` 列表
-- [ ] `GET/POST /api/v2/memory` 读写 + 搜索
+- [x] `GET /api/v2/files?path=` 返回真实目录树
+- [x] `GET /api/v2/workspaces` CRUD
+- [x] `GET /api/v2/profiles` 列表
+- [x] `GET/POST /api/v2/memory` 读写 + 搜索
 - [ ] Onboarding 页面 4 步流程
 - [ ] `xmclaw_adapter.js` 零 mock
 - [ ] Playwright E2E ≥ 4 个场景
@@ -1000,13 +1000,13 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **进度日志**：
 
-- _（尚无）_
+- 2026-04-24: Phase A 后端 API 落地——新增 `xmclaw/daemon/routers/{files,workspaces,profiles,memory}.py` 四个 FastAPI 路由（mount 在 `/api/v2/{files,workspaces,profiles,memory}`），`xmclaw/daemon/app.py` 在 create_app 里 `include_router` + `app.state.config = config or {}` 让 file browser 能读 `tools.allowed_dirs` 白名单。`xmclaw/utils/paths.py` +3 helper：`persona_dir()` / `workspaces_dir()` / `file_memory_dir()`（都走 `XMC_DATA_DIR` 环境变量 override，test 端隔离依赖这个契约）。安全模型：files 用 `resolve().relative_to(root)` 做白名单 containment（越界 → 403 而非 404，防止指纹枚举），1 MiB 文件大小上限（413）；memory 用 `Path(filename).name` 吃掉 traversal，自动补 `.md`；workspaces `_sanitize_id` 只允 `[A-Za-z0-9_-]` + 回退 `"default"`；profiles 同 `_safe_name` 折叠 + 只取 `*.md`。Phase A 搜索刻意留 grep（case-insensitive substring + 80 char snippet），Phase B 再上 FTS5。Phase A **不动** `xmclaw_adapter.js`——先把后端 API 稳了，前端切换放进下一个 PR 独立评审。tests：`tests/unit/test_v2_web_ui_routers.py` 30 个（profiles 6 / workspaces 8 / memory 8 / files 7 / router registration 1），`scripts/test_lanes.yaml` `daemon` lane 扩 `xmclaw/daemon/routers/**` trigger + 把新 test 挂上；`always+daemon` smart-gate 全绿 (commit 0bed231)
 
 ---
 
 ### Epic #19 · 云部署与系统服务模板
 
-**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**状态**：🟡 进行中 | **负责人**：XMclaw Bot | **起始**：2026-04-24 | **完成**：-
 **前置依赖**：Epic #6（ENV override）
 **关联 Milestone**：M6（Onboarding）+ M9（GA）
 
@@ -1022,18 +1022,18 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **检查清单**：
 
-- [ ] `Dockerfile` 多阶段构建
-- [ ] `docker-compose.yml`
-- [ ] systemd / launchd / Windows Service 模板
-- [ ] `install.sh` + `install.ps1`
-- [ ] Fly.io / AWS ECS / Railway 模板 ≥ 1 个
-- [ ] 文档 `docs/DEPLOY.md`
+- [x] `Dockerfile` 多阶段构建
+- [x] `docker-compose.yml`
+- [x] systemd / launchd / Windows Service 模板
+- [x] `install.sh` + `install.ps1`
+- [x] Fly.io / AWS ECS / Railway 模板 ≥ 1 个（Fly.io 模板落地；ECS / Railway 留到需要时补）
+- [x] 文档 `docs/DEPLOY.md`
 
 **退出标准**：`docker run -p 8765:8765 xmclaw/xmclaw:latest` 能直接对话；新用户 `curl | bash` 后 3 分钟内启动 daemon。
 
 **进度日志**：
 
-- _（尚无）_
+- 2026-04-24: Phase 1 全量落地——7 个子步骤一次性交付。**Dockerfile**：两阶段 `python:3.11-slim`，builder 装 `build-essential` + `requirements-lock.txt` 到 `--prefix=/install`，runtime 只 copy site-packages + xmclaw 源；非 root UID 1000，`ENV XMC_DATA_DIR=/data` + `VOLUME ["/data"]`；ENTRYPOINT 绑 `0.0.0.0:8765`（容器 netns 已隔离，host 侧用 `-p 127.0.0.1:8765` 控暴露面）。**docker-compose.yml**：单 `xmclaw` service + named volume + healthcheck（`urllib.request /health` 200 判活）+ `${ANTHROPIC_API_KEY:-}` 从 host `.env` 注入；Playwright sidecar 注释掉按需开。**.env.example** 空值模板，`.env` 已 gitignore。**systemd unit** (`deploy/systemd/xmclaw.service`)：`Type=simple`、`User=xmclaw`（拒绝 root，测试 enforce）、`ProtectSystem=strict` + `ReadWritePaths=%h/.xmclaw` + `NoNewPrivileges=true` 一套沙箱；注释里讲了 browser-use 要松哪几条。**launchd plist** (`deploy/launchd/com.xmclaw.daemon.plist`)：per-user LaunchAgent，`KeepAlive.SuccessfulExit=false` + `ThrottleInterval=5` 防 crash-loop。**Windows service** 双路径（`deploy/windows-service/README.md` + `xmclaw_service.py`）：推荐 NSSM 外包装（不需 pywin32），pywin32 `ServiceFramework` 子类走 `uvicorn.Server.should_exit = True` 做优雅 stop。**install.sh**：`set -euo pipefail`，venv at `~/.xmclaw-venv`，`pip install --upgrade xmclaw`，在 `~/.local/bin/xmclaw` 生成 shim（sed 替换 `__VENV__` 占位），PATH 不在就 echo 提示；**install.ps1** 同形状 Windows 版，通过 `[Environment]::SetEnvironmentVariable("Path", ..., "User")` 持久化 `Scripts\` 目录。**fly.toml** (`deploy/fly/fly.toml`)：单机 `shared-cpu-1x`/512MB，`primary_region=iad`，1GB 持久卷挂 `/data`，`[http_service]` 带 `/health` 检查；注释明确**不要 scale>1**（SQLite event bus 不容并发 writer）。**docs/DEPLOY.md** 串起全部：警示 pairing token 不是互联网级鉴权 + 升级路径 + `xmclaw doctor` 排障。tests/unit/test_v2_deploy_templates.py 12 个（Dockerfile EXPOSE/host 绑定/不含 `sk-ant-` / compose `ports` 匹配 container 端口 / `.env.example` 所有 value 为空 / `fly.toml` TOML 可解析且 `internal_port==8765` 且 `mounts.source` 存在 / systemd 三 section + ExecStart + 非 root User= / launchd XML 合法含 `<key>Label</key>` / pywin32 wrapper AST 可 parse / install.{sh,ps1} 都存在非空 / install.sh shebang + `set -e`）。刻意**不**跑真实 docker / flyctl：那是集成测试，成本跟单元测不是一个量级，drift 检测交给 12 个纯 parse/grep 守门。新增 smart-gate lane `deploy` 触发 `Dockerfile` / `docker-compose.yml` / `deploy/**` / `scripts/install.*`。`xmclaw_service.py` 暂无集成测（Linux CI runner 装不上 pywin32），后续拿 Windows runner 上集成 smoke 再补
 
 ---
 
