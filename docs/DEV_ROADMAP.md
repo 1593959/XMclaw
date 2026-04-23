@@ -934,7 +934,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #17 · 多 Agent 架构（HTTP-to-self 模式）
 
-**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**状态**：🟡 进行中 | **负责人**：XMclaw Bot | **起始**：2026-04-24 | **完成**：-
 **前置依赖**：Epic #13（事件总线）、Epic #2（Plugin SDK）
 **关联 Milestone**：M5（进化可感知，进化引擎作为独立 agent）
 
@@ -951,7 +951,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **检查清单**：
 
-- [ ] `daemon/workspace.py` Workspace 类
+- [x] `daemon/workspace.py` Workspace 类（Phase 1）
 - [ ] `daemon/multi_agent_manager.py` + lock + dedupe
 - [ ] `DynamicMultiAgentRunner` + `X-Agent-Id` 路由
 - [ ] `AgentContextMiddleware`
