@@ -51,7 +51,7 @@
 
 Unlike a stateless chat interface, XMclaw maintains memory across sessions, executes real tools on your filesystem and system, and automatically evolves its own gene pool and skill library based on your usage patterns.
 
-[Website](#) · [Docs](./docs) · [Architecture](./docs/ARCHITECTURE.md) · [Evolution](./docs/EVOLUTION.md) · [CLI](./docs/CLI.md) · [Tools](./docs/TOOLS.md)
+[Docs](./docs) · [Architecture](./docs/ARCHITECTURE.md) · [Tools](./docs/TOOLS.md) · [Events](./docs/EVENTS.md) · [Doctor](./docs/DOCTOR.md) · [Config](./docs/CONFIG.md) · [Roadmap](./docs/DEV_ROADMAP.md)
 
 ---
 
@@ -245,24 +245,25 @@ xmclaw --help             # Full command reference
 
 ```
 xmclaw/
-├── core/           AgentLoop, Orchestrator, PromptBuilder, Reflection
-├── daemon/         FastAPI server, WebSocket gateway, lifecycle
-├── evolution/      GeneForge, SkillForge, VFM, Validator, Scheduler
-├── genes/          Gene matching and registry
-├── gateway/        HTTP/WebSocket handlers
-├── integrations/   Slack, Discord, Telegram, GitHub, Notion, 飞书, QQ, 企业微信
-├── llm/            Anthropic + OpenAI router
-├── memory/         SQLite, VectorStore, SessionManager
-├── sandbox/        Docker + process sandboxing
-├── tools/          20+ built-in tools + MCP
-└── utils/          Logging, paths, security
-web/                Web UI assets
-shared/
-├── genes/          Auto-generated gene pool (~200 genes)
-└── skills/        Auto-generated skill library (~100 skills)
-agents/             Agent profiles and configuration
-docs/               Architecture, CLI, Tools, Evolution, Integrations, Desktop
-tests/              pytest test suites
+├── core/           Bus, IR, grader, evolution, scheduler
+├── daemon/         FastAPI server, WebSocket gateway, lifecycle, factory
+├── providers/      LLM / tool / memory / runtime / channel adapters
+│   ├── llm/        Anthropic + OpenAI + router
+│   ├── tool/       Built-in tools (file/bash/git/browser/…) + MCP
+│   ├── memory/     SQLite-vec memory store
+│   ├── runtime/    Sandbox / process runners
+│   └── channel/    Integration channels (Slack / Discord / Telegram / …)
+├── security/       Prompt-injection scanner + redactor + policy gate
+├── skills/         SkillBase + registry + demo skills
+├── cli/            `xmclaw` entry points + doctor + config / memory subcommands
+├── utils/          Paths, logging, redaction, cost helpers
+└── plugins/        Third-party plugin loader (Epic #2 WIP)
+web/                Vite-based Web UI (vanilla JS + CSS)
+shared/             Generated at runtime: genes/, skills/
+agents/             Agent profiles (PROFILE.md / SOUL.md committed; agent.json gitignored)
+daemon/             Runtime config (config.json gitignored; config.example.json is the template)
+docs/               ARCHITECTURE, DEV_ROADMAP, EVENTS, DOCTOR, TOOLS, …
+tests/              pytest suites
 ```
 
 ---
@@ -273,10 +274,11 @@ tests/              pytest test suites
 |---|---|
 | [Architecture](./docs/ARCHITECTURE.md) | System design, data flows, wire protocol |
 | [Tools](./docs/TOOLS.md) | Built-in tools reference (file, bash, git, browser, mcp…) |
-| [Evolution](./docs/EVOLUTION.md) | Self-evolution system, GeneForge, SkillForge, VFM |
-| [Integrations](./docs/INTEGRATIONS.md) | Slack, Discord, Telegram, 飞书, QQ, 企业微信, GitHub, Notion |
-| [CLI](./docs/CLI.md) | All terminal commands |
-| [Desktop](./docs/DESKTOP.md) | Desktop app guide |
+| [Events](./docs/EVENTS.md) | Typed event stream contract |
+| [Config](./docs/CONFIG.md) | `daemon/config.json` fields + `XMC__` env overrides |
+| [Doctor](./docs/DOCTOR.md) | Diagnostic checks + `--fix` runner + plugin API |
+| [Workspace](./docs/WORKSPACE.md) | `~/.xmclaw/` layout + `XMC_DATA_DIR` |
+| [Dev Roadmap](./docs/DEV_ROADMAP.md) | Epics, milestones, execution protocol |
 
 ---
 
