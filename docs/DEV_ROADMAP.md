@@ -373,7 +373,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #2 · Plugin SDK 边界（抄 OpenClaw）
 
-**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**状态**：🟡 进行中（SDK 边界 + CI 隔离就绪，pilot 迁移 + 外部样例 pending） | **负责人**：Claude (AI pair) | **起始**：2026-04-23 | **完成**：-
 **前置依赖**：无（其他 Epic 反过来依赖它）
 **关联 Milestone**：M3（Plugin SDK v1）
 
@@ -389,13 +389,13 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **检查清单**：
 
-- [ ] `xmclaw/plugin_sdk/__init__.py` 公开：`SkillBase`, `ChannelBase`, `ToolBase`, `EventType`（subset）, `register_skill()`, `register_tool()`
-- [ ] `xmclaw/plugin_sdk/AGENTS.md` 契约规则
-- [ ] `xmclaw/plugin_sdk/events.py` / `types.py`（Pydantic 模型子集）
-- [ ] `scripts/check_plugin_isolation.py` + pre-commit hook + CI
-- [ ] Pilot integration 迁移成功
+- [x] `xmclaw/plugin_sdk/__init__.py` 公开面：22 个 re-export（`Skill`/`SkillInput`/`SkillOutput`、`ToolProvider`/`ToolCall`/`ToolCallShape`/`ToolResult`/`ToolSpec`、`LLMProvider`/`LLMChunk`/`LLMResponse`/`Message`/`Pricing`、`MemoryProvider`/`MemoryItem`、`ChannelAdapter`/`ChannelTarget`/`InboundMessage`/`OutboundMessage`、`SkillRuntime`、`EventType`/`BehavioralEvent`），`FROZEN_SURFACE` tuple 与 `__all__` 双向锁
+- [x] `xmclaw/plugin_sdk/AGENTS.md` 契约规则（responsibility / deps / 测试入口 / 硬禁 / 关键文件五段）
+- [ ] `xmclaw/plugin_sdk/events.py` / `types.py`（Pydantic 模型子集）— 暂不拆分，当前 22 个 re-export 都在 `__init__.py`；拆分的成本是多出两个 module 名字，收益是按领域分组，拖到有具体必要时再做
+- [x] `scripts/check_plugin_isolation.py` + CI（AST scan，MACHINERY_EXEMPT 豁免 `loader.py` / `__init__.py`；pre-commit hook 留给 Epic #11 smart-gate 覆盖）
+- [ ] Pilot integration 迁移成功（当前无 `xmclaw/integrations/` 目录 — 真正 plugin 形态的用户案例还没出现；等第一个第三方插件需求到再做）
 - [ ] 外部样例 `xmclaw-plugin-example` 跑通
-- [ ] `integrations/*` 批量迁移或 deprecation mark
+- [ ] `integrations/*` 批量迁移或 deprecation mark（见上）
 
 **退出标准**：
 
@@ -405,11 +405,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **进度日志**：
 
-- _（尚无）_
-
----
-
-### Epic #3 · 沙箱（抄 QwenPaw security + Hermes terminal_tool）
+- 2026-04-23: 阶段 1-3 落地——新建 `xmclaw/plugin_sdk/__init__.py` 作第三方 plugin 唯一合法 import 面：22 个 re-export 按领域分组（bus / IR / channel / llm / memory / runtime / tool / skill），**纯 re-export 无任何逻辑**（`tests/unit/test_v2_plugin_sdk.py::test_plugin_sdk_init_is_reexports_only` 用 AST 遍历顶层 node 强制这一条），`FROZEN_SURFACE: tuple[str, ...] = tuple(sorted(__all__))` 与 `__all__` 双向锁确保删名字时测试先红——改 `__all__` 没改 `FROZEN_SURFACE` 或反过来都会触发 CHANGELOG 提醒；`test_exports_are_canonical_identities` 用 `getattr(sdk, name) is canonical` 断言 plugin_sdk 不会意外 shadow 一份自己的 `ToolCall`（isinstance 会悄悄断）；`test_import_has_no_side_effects` 起新 subprocess `import xmclaw.plugin_sdk` 断言 stdout/stderr 都为空（SDK 不该在 import 时打日志或做 IO）。新建 `xmclaw/plugin_sdk/AGENTS.md` 五段契约（responsibility / dep rules "SDK 可深入 xmclaw 内部反向禁止 plugins 进内部" / 测试入口 / 硬禁 "never add logic here, never remove a name without a major bump, never shadow canonical definition" / 关键文件），follow `docs/AGENTS_TEMPLATE.md` 结构。新建 `scripts/check_plugin_isolation.py` AST 扫描（pattern 镜像 `check_import_direction.py`）：遍历 `xmclaw/plugins/**/*.py` — 豁免 `MACHINERY_EXEMPT = {"loader.py", "__init__.py"}`（loader 是 plugin 机制本身，要读 entry_points 和 bus，不是 plugin）— 对每个 Import / ImportFrom 节点检查 `_is_forbidden(mod)` 规则：`xmclaw.plugin_sdk.*` / `xmclaw.plugins.*` / 非 `xmclaw.` 起头都放行，其余 `xmclaw.*` 一律红；空目录场景打 "0 plugin file(s) scanned" 提示。`tests/unit/test_v2_plugin_sdk.py` 14 测（surface freeze 4 条 + isolation scanner 6 条合成 fake plugins 覆盖 sdk-only / 非法 core 引用 / 非法 providers 引用 / 允许同 plugins/ 下 sibling / loader.py 豁免 / 扫描数报告 + real tree 干净 regression guard + AGENTS.md 存在性 + importlib reload round-trip）。`scripts/test_lanes.yaml` 加 `plugin_sdk` lane（triggers: `xmclaw/plugin_sdk/**` / `xmclaw/plugins/**` / `scripts/check_plugin_isolation.py`）。阶段 4-7（pilot integration 迁移、外部样例仓、integrations 批量迁移）deferred 到 Epic #2 phase 2——仓库现无 `xmclaw/integrations/` 目录，真正 plugin 形态的用户案例还没出现，没 pilot 要迁（抄 QwenPaw security + Hermes terminal_tool）
 
 **状态**：🟡 进行中（runtime 层 + factory 就绪，AgentLoop 接线 + 8 条 Guardian 规则 + ApprovalService 待落）| **负责人**：Claude (AI pair) | **起始**：2026-04-23 | **完成**：-
 **前置依赖**：无

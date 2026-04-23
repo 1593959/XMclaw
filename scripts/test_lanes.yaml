@@ -176,6 +176,18 @@ lanes:
       - tests/unit/test_v2_local_runtime.py
       - tests/unit/test_v2_process_runtime.py
 
+  # Plugin SDK surface (Epic #2). Triggers on any change to the frozen
+  # re-export module, any code under xmclaw/plugins/, or the isolation
+  # scanner itself. Surface tests are cheap (<1s) so over-triggering
+  # costs nothing but catches API drift early.
+  plugin_sdk:
+    triggers:
+      - "xmclaw/plugin_sdk/**"
+      - "xmclaw/plugins/**"
+      - "scripts/check_plugin_isolation.py"
+    tests:
+      - tests/unit/test_v2_plugin_sdk.py
+
   # Changes to tests themselves: run just the changed test files (handled
   # separately in test_changed.py via direct path match) + the always-on
   # lane.
