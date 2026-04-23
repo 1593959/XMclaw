@@ -62,6 +62,36 @@ backup_app = typer.Typer(
 )
 app.add_typer(backup_app, name="backup")
 
+# ``xmclaw evolution <subcommand>`` — Epic #4 Phase A. Surfaces the
+# append-only promote/rollback log that ``SkillRegistry`` persists to
+# ``~/.xmclaw/skills/*.jsonl``. Read-only today; Phase B will add the
+# live SKILL_PROMOTED/SKILL_ROLLED_BACK event tap.
+evolution_app = typer.Typer(
+    help="Inspect the SkillRegistry promote/rollback history.",
+)
+app.add_typer(evolution_app, name="evolution")
+
+
+@evolution_app.command("show")
+def evolution_show(
+    since: str | None = typer.Option(
+        None, "--since",
+        help=(
+            "Filter to recent events only. Accepts '24h', '7d', or a bare "
+            "integer interpreted as hours. Default: all history."
+        ),
+    ),
+) -> None:
+    """Print the skill evolution log as a formatted table.
+
+    Reads every ``<skill_id>.jsonl`` under :func:`xmclaw.utils.paths.skills_dir`
+    and prints promotions / rollbacks chronologically. Empty workspace
+    prints a friendly notice rather than erroring — a freshly installed
+    daemon that hasn't promoted anything yet is a valid state.
+    """
+    from xmclaw.cli.evolution import run_evolution_show
+    raise typer.Exit(code=run_evolution_show(since))
+
 
 def _default_memory_db_path():
     """Delegates to :func:`xmclaw.utils.paths.default_memory_db_path` so
