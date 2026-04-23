@@ -40,6 +40,28 @@ class EventType(str, Enum):
     # Emitted when the agent calls `todo_write` so the UI can live-render
     # the todo panel without polling. Payload: {"items": [...], "sid": ...}.
     TODO_UPDATED = "todo_updated"
+    # Epic #14: emitted when the prompt scanner detects injection attempts
+    # in untrusted context (tool output, web-fetched text, file loads).
+    # Payload: {
+    #     "source": "tool_result" | "web_fetch" | "file_read",
+    #     "policy": "detect_only" | "redact" | "block",
+    #     "findings": [{"pattern_id", "severity", "category", "match"}],
+    #     "invisible_chars": int,
+    #     "scanned_length": int,
+    #     "acted": bool,              # True when policy mutated / blocked content
+    #     "tool_call_id": str | None,  # set when source=="tool_result"
+    # }
+    PROMPT_INJECTION_DETECTED = "prompt_injection_detected"
+    # Epic #5: emitted when the memory provider evicts items, either from
+    # periodic daemon maintenance or an explicit admin prune/evict call.
+    # Emitted with session_id="_system" / agent_id="daemon".
+    # Payload: {
+    #     "layer": "short" | "working" | "long",
+    #     "count": int,              # rows deleted
+    #     "reason": "age" | "cap_items" | "cap_bytes" | "cap",
+    #     "bytes_removed": int | None,  # only present for byte-cap evictions
+    # }
+    MEMORY_EVICTED = "memory_evicted"
 
 
 @dataclass(frozen=True, slots=True)

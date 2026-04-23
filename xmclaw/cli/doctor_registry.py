@@ -1,0 +1,1298 @@
+"""Plugin registry for ``xmclaw doctor`` (Epic #10).
+
+The doctor is a sequence of discrete *checks*. Originally each check
+was a pure function in :mod:`xmclaw.cli.doctor`; this registry layer
+makes the set extensible so third-party packages can ship their own
+checks via the ``xmclaw.doctor`` entry-point group.
+
+Design notes:
+
+* One :class:`DoctorCheck` = one inspection (no suite-of-checks class).
+  Checks are cheap, explicit, and produced top-down by the registry's
+  iteration order; bundling them hides dependencies.
+
+* Checks may share expensive work through the mutable
+  :class:`DoctorContext`: the first check to load the config caches it
+  on ``ctx.cfg`` so subsequent checks can read it without re-parsing.
+
+* Fixes are OPT-IN per check via :meth:`DoctorCheck.fix`. The default
+  is no-op / returns False. A fix runner lives in a follow-up phase
+  of this Epic; this module only exposes the API.
+
+* Discovery uses :func:`importlib.metadata.entry_points` under the
+  group ``xmclaw.doctor``. Each entry-point must resolve to a
+  :class:`DoctorCheck` subclass (or factory returning one). Failures
+  to load are caught and surfaced as a synthetic failing check — a
+  broken plugin must not take down the whole diagnosis.
+"""
+from __future__ import annotations
+
+import os
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, ClassVar
+
+
+@dataclass(frozen=True, slots=True)
+class CheckResult:
+    """One check's outcome.
+
+    ``ok=True`` => green; ``ok=False`` => red. A non-None ``advisory``
+    prints under the main line and is also how a check signals that
+    :meth:`DoctorCheck.fix` may have something useful to do.
+    """
+
+    name: str
+    ok: bool
+    detail: str
+    advisory: str | None = None
+    fix_available: bool = False
+
+    def render(self) -> str:
+        # ASCII icons only — the unicode check/cross crash GBK consoles.
+        icon = "[ok]" if self.ok else ("[!]" if self.advisory else "[x]")
+        line = f"  {icon} {self.name}: {self.detail}"
+        if self.advisory:
+            line += f"\n    -> {self.advisory}"
+        return line
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "ok": self.ok,
+            "detail": self.detail,
+            "advisory": self.advisory,
+            "fix_available": self.fix_available,
+        }
+
+
+@dataclass
+class DoctorContext:
+    """Inputs the checks need + a scratchpad for shared state."""
+
+    config_path: Path
+    host: str = "127.0.0.1"
+    port: int = 8765
+    probe_daemon: bool = True
+    # Off by default — the doctor otherwise does no outbound HTTP, so
+    # it stays runnable on air-gapped machines and in CI without a
+    # surprise network dependency. The CLI opts in with ``--network``.
+    probe_network: bool = False
+    cfg: dict[str, Any] | None = None          # filled by ConfigCheck
+    token_path: Path | None = None              # override, else default
+    extras: dict[str, Any] = field(default_factory=dict)
+
+
+class DoctorCheck(ABC):
+    """Base class for a doctor check.
+
+    Subclasses declare :pyattr:`id` and :pyattr:`name` and implement
+    :meth:`run`. :meth:`fix` defaults to a no-op so simple checks
+    without a remediation step don't have to override it.
+    """
+
+    #: Machine identifier (stable, unique). Used in ``--json`` output
+    #: and when another check wants to refer to this one.
+    id: ClassVar[str] = ""
+
+    #: Human-readable name shown in the terminal.
+    name: ClassVar[str] = ""
+
+    @abstractmethod
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        """Inspect ``ctx`` and return a verdict. Must not raise."""
+
+    def fix(self, ctx: DoctorContext) -> bool:  # noqa: ARG002
+        """Attempt to remediate a failed check. Return True on success.
+
+        Default: no-op. Only override for checks that can repair
+        themselves (e.g. ``mkdir`` a missing workspace).
+        """
+        return False
+
+
+class DoctorRegistry:
+    """Ordered set of checks. Built-in first, plugins appended.
+
+    The order matters: config-parsing checks must run before any check
+    that reads ``ctx.cfg``. The registry preserves insertion order so
+    callers can rely on it.
+    """
+
+    ENTRY_POINT_GROUP = "xmclaw.doctor"
+
+    def __init__(self) -> None:
+        self._checks: list[DoctorCheck] = []
+
+    def register(self, check: DoctorCheck) -> None:
+        self._checks.append(check)
+
+    def register_factory(self, factory: Callable[[], DoctorCheck]) -> None:
+        self._checks.append(factory())
+
+    def checks(self) -> list[DoctorCheck]:
+        return list(self._checks)
+
+    def run_all(self, ctx: DoctorContext) -> list[CheckResult]:
+        results: list[CheckResult] = []
+        for check in self._checks:
+            results.append(self._run_one(check, ctx))
+        return results
+
+    def _run_one(self, check: DoctorCheck, ctx: DoctorContext) -> CheckResult:
+        try:
+            return check.run(ctx)
+        except Exception as exc:  # noqa: BLE001
+            return CheckResult(
+                name=check.name or check.id or type(check).__name__,
+                ok=False,
+                detail=f"check raised {type(exc).__name__}: {exc}",
+                advisory="this is a bug in the check itself",
+            )
+
+    @dataclass(frozen=True, slots=True)
+    class FixAttempt:
+        """Record of one fix attempt. ``before`` is the failing result that
+        triggered the fix, ``after`` is the re-run result (same check). A
+        successful fix is one where ``after.ok`` is True."""
+
+        check_id: str
+        before: "CheckResult"
+        after: "CheckResult"
+        fix_raised: str | None = None   # exception message if fix() threw
+
+    def run_fixes(
+        self, ctx: DoctorContext, results: list[CheckResult],
+    ) -> list["DoctorRegistry.FixAttempt"]:
+        """For every failing result whose check advertises ``fix_available``,
+        call :meth:`DoctorCheck.fix` and re-run the check. Returns the list
+        of attempts (one per fixable failing check) so callers can show a
+        summary and pick the new overall verdict.
+
+        Matches results back to checks by ``check.id`` — checks without an
+        ``id`` (unusual) are skipped to keep the mapping unambiguous.
+        """
+        attempts: list[DoctorRegistry.FixAttempt] = []
+        by_id = {c.id: c for c in self._checks if c.id}
+        name_to_id = {c.name: c.id for c in self._checks if c.id and c.name}
+        for before in results:
+            if before.ok or not before.fix_available:
+                continue
+            # The CLI re-exports ``CheckResult`` from ``cli.doctor`` so the
+            # ``name`` field is the only reliable handle back to the check.
+            cid = name_to_id.get(before.name)
+            if cid is None:
+                continue
+            check = by_id.get(cid)
+            if check is None:
+                continue
+            fix_raised: str | None = None
+            try:
+                check.fix(ctx)
+            except Exception as exc:  # noqa: BLE001
+                fix_raised = f"{type(exc).__name__}: {exc}"
+            after = self._run_one(check, ctx)
+            attempts.append(DoctorRegistry.FixAttempt(
+                check_id=cid,
+                before=before,
+                after=after,
+                fix_raised=fix_raised,
+            ))
+        return attempts
+
+    def discover_plugins(self) -> list[CheckResult]:
+        """Load third-party checks via the ``xmclaw.doctor`` entry-point
+        group. Returns synthetic failure :class:`CheckResult` s for any
+        plugin that couldn't be imported — a broken plugin must not
+        kill the whole doctor pass.
+        """
+        errors: list[CheckResult] = []
+        from importlib.metadata import entry_points
+
+        try:
+            eps = entry_points(group=self.ENTRY_POINT_GROUP)
+        except TypeError:
+            # Python 3.9 fallback (we target 3.10+ but be defensive).
+            eps = entry_points().get(self.ENTRY_POINT_GROUP, [])  # type: ignore[assignment]
+
+        for ep in eps:
+            try:
+                obj = ep.load()
+            except Exception as exc:  # noqa: BLE001
+                errors.append(CheckResult(
+                    name=f"plugin:{ep.name}",
+                    ok=False,
+                    detail=f"failed to import: {type(exc).__name__}: {exc}",
+                    advisory=f"uninstall the broken package or fix entry point {ep.value}",
+                ))
+                continue
+            instance: DoctorCheck | None = None
+            if isinstance(obj, type) and issubclass(obj, DoctorCheck):
+                try:
+                    instance = obj()
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(CheckResult(
+                        name=f"plugin:{ep.name}",
+                        ok=False,
+                        detail=f"constructor raised: {exc}",
+                    ))
+                    continue
+            elif callable(obj):
+                try:
+                    candidate = obj()
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(CheckResult(
+                        name=f"plugin:{ep.name}",
+                        ok=False,
+                        detail=f"factory raised: {exc}",
+                    ))
+                    continue
+                if isinstance(candidate, DoctorCheck):
+                    instance = candidate
+            if instance is None:
+                errors.append(CheckResult(
+                    name=f"plugin:{ep.name}",
+                    ok=False,
+                    detail="entry point did not resolve to a DoctorCheck",
+                    advisory=f"got {type(obj).__name__} from {ep.value}",
+                ))
+                continue
+            self._checks.append(instance)
+        return errors
+
+
+# ── built-in checks (thin wrappers over the pure functions in cli.doctor) ──
+
+
+def _load_cfg_on_ctx(ctx: DoctorContext) -> CheckResult:
+    """Shared helper for :class:`ConfigCheck` — caches the parsed dict
+    on ``ctx.cfg`` for downstream checks."""
+    from xmclaw.cli.doctor import check_config_file
+
+    result_dataclass, cfg = check_config_file(ctx.config_path)
+    ctx.cfg = cfg
+    return CheckResult(
+        name=result_dataclass.name,
+        ok=result_dataclass.ok,
+        detail=result_dataclass.detail,
+        advisory=result_dataclass.advisory,
+    )
+
+
+class ConfigCheck(DoctorCheck):
+    """Parse ``daemon/config.json``; cache parsed dict on ``ctx.cfg``.
+
+    Only the "file doesn't exist" failure mode is auto-fixable. Invalid
+    JSON or a non-object root require user-visible inspection -- silently
+    overwriting a file the user just edited would destroy their work.
+    When missing, ``fix()`` writes the same minimum-viable skeleton that
+    ``xmclaw config init`` uses, so the two paths stay in lockstep.
+    """
+
+    id = "config"
+    name = "config"
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        result = _load_cfg_on_ctx(ctx)
+        if result.ok:
+            return result
+        fixable = not ctx.config_path.exists()
+        if not fixable:
+            return result
+        extra = f"or run 'xmclaw doctor --fix' to write a skeleton at {ctx.config_path}"
+        advisory = f"{result.advisory}; {extra}" if result.advisory else extra
+        return CheckResult(
+            name=result.name, ok=False, detail=result.detail,
+            advisory=advisory, fix_available=True,
+        )
+
+    def fix(self, ctx: DoctorContext) -> bool:
+        if ctx.config_path.exists():
+            # Never overwrite a user-created file from the doctor path.
+            return False
+        import json as _json
+        from xmclaw.cli.config_template import default_config_template
+        try:
+            ctx.config_path.parent.mkdir(parents=True, exist_ok=True)
+            ctx.config_path.write_text(
+                _json.dumps(default_config_template(), indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            return False
+        return True
+
+
+class LLMCheck(DoctorCheck):
+    id = "llm"
+    name = "llm"
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        if ctx.cfg is None:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail="skipped: config not parsed",
+            )
+        from xmclaw.cli.doctor import check_llm_configured
+
+        r = check_llm_configured(ctx.cfg)
+        return CheckResult(
+            name=r.name, ok=r.ok, detail=r.detail, advisory=r.advisory,
+        )
+
+
+class ToolsCheck(DoctorCheck):
+    id = "tools"
+    name = "tools"
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        if ctx.cfg is None:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail="skipped: config not parsed",
+            )
+        from xmclaw.cli.doctor import check_tools_configured
+
+        r = check_tools_configured(ctx.cfg)
+        return CheckResult(
+            name=r.name, ok=r.ok, detail=r.detail, advisory=r.advisory,
+        )
+
+
+class PairingCheck(DoctorCheck):
+    """Inspect ~/.xmclaw/v2/pairing_token.txt.
+
+    Two failure modes are safely auto-fixable:
+
+    * **Empty token file** -- unlink it so the next ``xmclaw serve`` can
+      regenerate a fresh token. Any paired clients were already broken
+      (an empty token matches nothing), so there's no regression risk.
+    * **Loose POSIX perms** (any of group/other bits set) -- ``chmod 600``
+      preserves the token itself while locking it down to the owning user.
+
+    Everything else (unreadable, path missing entirely) is either not a
+    failure or not safely remediable without user intent.
+    """
+
+    id = "pairing"
+    name = "pairing"
+
+    def _target(self, ctx: DoctorContext) -> Path:
+        if ctx.token_path is not None:
+            return ctx.token_path
+        from xmclaw.daemon.pairing import default_token_path
+        return default_token_path()
+
+    def _fixable_state(self, path: Path) -> str | None:
+        """Return ``"empty"``, ``"loose_perms"``, or ``None``.
+
+        Kept in one place so :meth:`run` and :meth:`fix` agree on which
+        failure modes are auto-remediable.
+        """
+        if not path.exists():
+            return None
+        try:
+            content = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        if content == "":
+            return "empty"
+        import sys
+        if sys.platform == "win32":
+            return None
+        try:
+            mode = os.stat(path).st_mode & 0o777
+        except OSError:
+            return None
+        if mode & 0o077:
+            return "loose_perms"
+        return None
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        from xmclaw.cli.doctor import check_pairing_token
+
+        path = self._target(ctx)
+        r = check_pairing_token(path)
+        if r.ok:
+            return CheckResult(
+                name=r.name, ok=True, detail=r.detail, advisory=r.advisory,
+            )
+        fixable = self._fixable_state(path) is not None
+        advisory = r.advisory
+        if fixable:
+            extra = f"run 'xmclaw doctor --fix' to repair {path}"
+            advisory = f"{advisory}; {extra}" if advisory else extra
+        return CheckResult(
+            name=r.name, ok=False, detail=r.detail,
+            advisory=advisory, fix_available=fixable,
+        )
+
+    def fix(self, ctx: DoctorContext) -> bool:
+        path = self._target(ctx)
+        state = self._fixable_state(path)
+        if state == "empty":
+            try:
+                path.unlink()
+            except OSError:
+                return False
+            return True
+        if state == "loose_perms":
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                return False
+            return True
+        return False
+
+
+class PortCheck(DoctorCheck):
+    id = "port"
+    name = "port"
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        from xmclaw.cli.doctor import check_port_available
+
+        r = check_port_available(ctx.host, ctx.port)
+        return CheckResult(
+            name=r.name, ok=r.ok, detail=r.detail, advisory=r.advisory,
+        )
+
+
+class WorkspaceCheck(DoctorCheck):
+    """Verify ``~/.xmclaw/v2/`` exists and is writable.
+
+    Most other components (pairing token file, events DB, daemon PID file)
+    live under this directory. A missing or read-only workspace is the root
+    cause behind several noisier failures, so we flag it first and offer a
+    one-shot ``fix()`` that creates it.
+    """
+
+    id = "workspace"
+    name = "workspace"
+
+    #: Delegates to :func:`xmclaw.utils.paths.v2_workspace_dir` so
+    #: ``XMC_DATA_DIR`` (the §3.1 workspace-root lever) reroutes this
+    #: check alongside everything else. Test harnesses can still pin a
+    #: specific path via ``ctx.extras["workspace_dir"]``.
+    def _target(self, ctx: DoctorContext) -> Path:
+        override = ctx.extras.get("workspace_dir")
+        if isinstance(override, (str, Path)):
+            return Path(override)
+        from xmclaw.utils.paths import v2_workspace_dir
+        return v2_workspace_dir()
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        target = self._target(ctx)
+        if not target.exists():
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"workspace not found: {target}",
+                advisory=f"run 'xmclaw doctor --fix' to create {target}",
+                fix_available=True,
+            )
+        if not target.is_dir():
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"workspace path exists but is not a directory: {target}",
+                advisory="remove or rename the conflicting file",
+                # Not auto-fixable — removing a file the user created is risky.
+                fix_available=False,
+            )
+        if not os.access(target, os.W_OK):
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"workspace not writable: {target}",
+                advisory="check directory permissions (chmod u+w)",
+                fix_available=False,
+            )
+        return CheckResult(
+            name=self.name, ok=True,
+            detail=f"workspace ready: {target}",
+        )
+
+    def fix(self, ctx: DoctorContext) -> bool:
+        target = self._target(ctx)
+        if target.exists():
+            return target.is_dir() and os.access(target, os.W_OK)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return False
+        return True
+
+
+class ConnectivityCheck(DoctorCheck):
+    """Probe reachability of configured LLM endpoints.
+
+    Skipped unless :pyattr:`DoctorContext.probe_network` is True (CLI
+    ``--network`` flag) — making HTTP calls from the doctor would
+    otherwise break CI and offline-dev setups by surprise.
+
+    Contract details worth pinning:
+
+    * **No credentials leave the box.** We issue an unauthenticated
+      ``HEAD`` request to the provider's base URL. A 2xx/3xx/4xx
+      response means "DNS + TCP + TLS all worked" — the API key is
+      still LLMCheck's problem, not ours. A 5xx or network error is
+      the actual failure signal.
+    * **Short timeout.** 5 s. A hung probe wastes more wall-time
+      than it's worth.
+    * **Uses stdlib ``urllib``**. Keeping the doctor free of an
+      ``httpx`` dependency means the check can run before the
+      installed extras are confirmed.
+    * **Honors ``base_url`` overrides.** A user pointing at a proxy or
+      self-hosted compatible endpoint should probe *that*, not the
+      upstream. Same resolution order as the provider classes.
+
+    Endpoints (fallbacks if ``base_url`` not set):
+    - ``anthropic``: ``https://api.anthropic.com``
+    - ``openai``: ``https://api.openai.com``
+    """
+
+    id = "connectivity"
+    name = "connectivity"
+
+    _DEFAULT_ENDPOINTS: ClassVar[dict[str, str]] = {
+        "anthropic": "https://api.anthropic.com",
+        "openai": "https://api.openai.com",
+    }
+
+    def _probe(self, url: str, timeout: float = 5.0) -> tuple[bool, str]:
+        """Return ``(reachable, detail)``.
+
+        Treats any HTTP status code as "reachable" — a 401/403 means
+        the TLS handshake + auth challenge both worked, which is
+        exactly what we're trying to verify. Only URLError (DNS /
+        connect / TLS failure) and socket timeout count as unreachable.
+        """
+        import socket
+        import urllib.request
+        import urllib.error
+
+        req = urllib.request.Request(url, method="HEAD")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return True, f"HTTP {resp.status}"
+        except urllib.error.HTTPError as e:
+            # Server spoke HTTP — that's reachable for our purposes.
+            return True, f"HTTP {e.code}"
+        except urllib.error.URLError as e:
+            return False, f"URLError: {e.reason}"
+        except socket.timeout:
+            return False, f"timeout after {timeout:.0f}s"
+        except OSError as e:
+            return False, f"OSError: {e}"
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        if not ctx.probe_network:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="skipped (pass --network to probe LLM endpoints)",
+            )
+        if ctx.cfg is None:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail="skipped: config not parsed",
+            )
+        llm = ctx.cfg.get("llm")
+        if not isinstance(llm, dict):
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="no 'llm' section — nothing to probe",
+            )
+
+        targets: list[tuple[str, str]] = []
+        for provider, default_url in self._DEFAULT_ENDPOINTS.items():
+            p = llm.get(provider)
+            if not isinstance(p, dict) or not p.get("api_key"):
+                continue
+            url = p.get("base_url") or default_url
+            targets.append((provider, url))
+
+        if not targets:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="no configured providers with api_key — nothing to probe",
+            )
+
+        results: list[tuple[str, bool, str]] = []
+        for provider, url in targets:
+            reachable, detail = self._probe(url)
+            results.append((provider, reachable, f"{url} -> {detail}"))
+
+        failures = [r for r in results if not r[1]]
+        summary = "; ".join(f"{p}: {d}" for p, _, d in results)
+        if failures:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"{len(failures)}/{len(results)} provider(s) unreachable",
+                advisory=f"check network + proxy settings. details: {summary}",
+            )
+        return CheckResult(
+            name=self.name, ok=True,
+            detail=f"{len(results)} provider(s) reachable ({summary})",
+        )
+
+
+class EventsDbCheck(DoctorCheck):
+    """Probe ``~/.xmclaw/v2/events.db`` health.
+
+    Covers the three practical failure modes:
+
+    1. File absent — OK, the daemon creates it on first start. We report
+       "not yet created" so the user understands there's nothing wrong.
+    2. File present but the SQLite header is garbage or the file is
+       locked — fail with the library error verbatim so the user can
+       stop the process holding it / restore from backup.
+    3. File present, opens, but ``PRAGMA user_version`` is newer than
+       the code we're running — flag as an advisory (downgrade path
+       isn't supported) rather than an outright fail, so a user who
+       pinned an older wheel after touching main gets a clear message.
+
+    Uses ``XMC_V2_EVENTS_DB_PATH`` when set (matches
+    :func:`xmclaw.core.bus.default_events_db_path`), so the check is
+    testable against a tmp file.
+    """
+
+    id = "events_db"
+    name = "events_db"
+
+    def _target(self, ctx: DoctorContext) -> Path:
+        override = ctx.extras.get("events_db_path")
+        if isinstance(override, (str, Path)):
+            return Path(override)
+        from xmclaw.core.bus import default_events_db_path
+
+        return default_events_db_path()
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        path = self._target(ctx)
+        if not path.exists():
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"not yet created (will be created on `xmclaw start`): {path}",
+            )
+        if not path.is_file():
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"path exists but is not a file: {path}",
+                advisory="remove or rename the conflicting entry",
+            )
+        import sqlite3
+
+        from xmclaw.core.bus.sqlite import SCHEMA_VERSION
+
+        try:
+            # read-only mode — we never want the doctor to migrate or lock.
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        except sqlite3.Error as exc:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"cannot open {path.name}: {exc}",
+                advisory="check that no other process has the DB locked; "
+                         "if the file is corrupt, back it up and let the "
+                         "daemon recreate it on next start",
+            )
+        try:
+            row = conn.execute("PRAGMA user_version").fetchone()
+            user_version = int(row[0]) if row else 0
+        except sqlite3.Error as exc:
+            conn.close()
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"events.db looks malformed: {exc}",
+                advisory="back up and remove the file; the daemon "
+                         "will recreate it on next start",
+            )
+        conn.close()
+        if user_version > SCHEMA_VERSION:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"events.db schema v{user_version} is newer than "
+                       f"code v{SCHEMA_VERSION}",
+                advisory="a newer xmclaw wrote this DB; upgrade the "
+                         "installed package or point XMC_V2_EVENTS_DB_PATH "
+                         "at a fresh file",
+            )
+        return CheckResult(
+            name=self.name, ok=True,
+            detail=f"events.db v{user_version} at {path}",
+        )
+
+
+class MemoryDbCheck(DoctorCheck):
+    """Probe ``~/.xmclaw/v2/memory.db`` health (Epic #5 sibling of events.db).
+
+    Mirrors :class:`EventsDbCheck`'s verdict shape but for the sqlite-vec
+    memory store. Four practical states:
+
+    1. Memory layer disabled in config (``memory.enabled: false``) — OK,
+       nothing to probe.
+    2. File absent — OK, ``SqliteVecMemory`` creates it lazily on first
+       put. Report "not yet created" so the user isn't alarmed.
+    3. File present but not a file / unopenable / corrupt SQLite — fail
+       with the library error so the user knows what to clean up.
+    4. File opens but does not contain a ``memory_items`` table — fail
+       as "not a memory.db" so we don't mis-diagnose a foreign SQLite file.
+
+    The override path (``ctx.extras["memory_db_path"]``) mirrors
+    :class:`EventsDbCheck` so tests can redirect to a tmp file without
+    touching the real workspace.
+    """
+
+    id = "memory_db"
+    name = "memory_db"
+
+    def _target(self, ctx: DoctorContext) -> Path | None:
+        """Return the path to probe, or ``None`` if memory is disabled.
+
+        Precedence (highest first):
+          1. ``ctx.extras["memory_db_path"]`` — test override.
+          2. ``cfg["memory"]["db_path"]`` — user-configured absolute path.
+          3. :func:`xmclaw.utils.paths.default_memory_db_path`.
+        """
+        override = ctx.extras.get("memory_db_path")
+        if isinstance(override, (str, Path)):
+            return Path(override)
+        cfg = ctx.cfg or {}
+        mem_cfg = cfg.get("memory")
+        if isinstance(mem_cfg, dict):
+            if mem_cfg.get("enabled") is False:
+                return None
+            cfg_path = mem_cfg.get("db_path")
+            if isinstance(cfg_path, str) and cfg_path and cfg_path != ":memory:":
+                return Path(cfg_path)
+        from xmclaw.utils.paths import default_memory_db_path
+
+        return default_memory_db_path()
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        path = self._target(ctx)
+        if path is None:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="memory disabled in config (memory.enabled: false)",
+            )
+        if not path.exists():
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"not yet created (will be created on first put): {path}",
+            )
+        if not path.is_file():
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"path exists but is not a file: {path}",
+                advisory="remove or rename the conflicting entry",
+            )
+        import sqlite3
+
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        except sqlite3.Error as exc:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"cannot open {path.name}: {exc}",
+                advisory="check that no other process has the DB locked; "
+                         "if the file is corrupt, back it up and let the "
+                         "daemon recreate it on next start",
+            )
+        try:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='memory_items'"
+            ).fetchone()
+        except sqlite3.Error as exc:
+            conn.close()
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"memory.db looks malformed: {exc}",
+                advisory="back up and remove the file; the daemon "
+                         "will recreate it on next start",
+            )
+        if row is None:
+            # Count items if table exists; otherwise signal wrong file.
+            conn.close()
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"{path.name} exists but has no memory_items table",
+                advisory="this file isn't an xmclaw memory.db; back it up "
+                         "and remove it so the daemon can recreate it",
+            )
+        try:
+            count_row = conn.execute(
+                "SELECT COUNT(*) FROM memory_items"
+            ).fetchone()
+            count = int(count_row[0]) if count_row else 0
+        except sqlite3.Error:
+            count = -1
+        conn.close()
+        if count < 0:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"memory.db present at {path} (count unavailable)",
+            )
+        return CheckResult(
+            name=self.name, ok=True,
+            detail=f"memory.db healthy at {path} ({count} item(s))",
+        )
+
+
+class SkillRuntimeCheck(DoctorCheck):
+    """Validate the ``runtime`` config section picks a known backend.
+
+    ``runtime.backend`` drives which :class:`SkillRuntime` executes forked
+    skills (see Epic #3 and :func:`xmclaw.daemon.factory.build_skill_runtime_from_config`).
+    A typo here only explodes when the daemon tries to start, so this check
+    runs the same builder the daemon uses and surfaces a clean error up front.
+
+    States:
+      * Section absent / ``backend`` unset   -> OK "local (default)"
+      * Section present + known backend      -> OK "<backend>"
+      * Section shape wrong / unknown backend -> FAIL with the ConfigError
+        message verbatim — same wording the daemon would print.
+    """
+
+    id = "skill_runtime"
+    name = "skill_runtime"
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        cfg = ctx.cfg
+        if cfg is None:
+            # ConfigCheck already failed; don't double-fail.
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="skipped (config not loaded)",
+            )
+        from xmclaw.daemon.factory import (
+            ConfigError,
+            build_skill_runtime_from_config,
+        )
+
+        try:
+            runtime = build_skill_runtime_from_config(cfg)
+        except ConfigError as exc:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=str(exc),
+                advisory="fix daemon/config.json 'runtime' section "
+                         "(see docs/CONFIG.md §Runtime)",
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"unexpected error building runtime: {exc!r}",
+            )
+        backend = "local"
+        rt_section = cfg.get("runtime")
+        if isinstance(rt_section, dict):
+            cfg_backend = rt_section.get("backend")
+            if isinstance(cfg_backend, str):
+                backend = cfg_backend
+        return CheckResult(
+            name=self.name, ok=True,
+            detail=f"{backend} ({type(runtime).__name__})",
+        )
+
+
+class RoadmapLintCheck(DoctorCheck):
+    """Run ``scripts/lint_roadmap.py`` against ``docs/DEV_ROADMAP.md``.
+
+    Cheap drift-detector (§3.6.5): if an Epic is marked done but its
+    end-date is blank, or a Milestone's exit criterion is unchecked
+    despite its Epic being done, the linter returns a non-empty
+    violation list. Surfacing this as a doctor check means anyone
+    running ``xmclaw doctor`` before committing gets the same signal
+    CI would produce later.
+
+    Only runs when both the script and the roadmap exist in the
+    current checkout — a released wheel won't ship the script, so
+    the check quietly passes there.
+    """
+
+    id = "roadmap_lint"
+    name = "roadmap_lint"
+
+    def _paths(self) -> tuple[Path, Path] | None:
+        # Walk up from this file until we find either DEV_ROADMAP.md or
+        # run out of parents. Works from source checkout and from the
+        # worktree arrangement without hardcoding either layout.
+        here = Path(__file__).resolve()
+        for parent in [here, *here.parents]:
+            script = parent / "scripts" / "lint_roadmap.py"
+            roadmap = parent / "docs" / "DEV_ROADMAP.md"
+            if script.exists() and roadmap.exists():
+                return script, roadmap
+        return None
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        paths = self._paths()
+        if paths is None:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="skipped (script/roadmap not present — released wheel)",
+            )
+        script, roadmap = paths
+        import importlib.util
+        import sys as _sys
+
+        spec = importlib.util.spec_from_file_location("lint_roadmap", script)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        # Register before exec so ``@dataclass`` annotations can resolve
+        # the owning module (Python 3.10 looks up module globals via
+        # ``sys.modules`` during class body execution).
+        _sys.modules["lint_roadmap"] = module
+        spec.loader.exec_module(module)
+        violations = module.lint(roadmap)
+        if not violations:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"{roadmap.name} clean",
+            )
+        # Surface up to the first 3 violations in the advisory so the user
+        # can act without spelunking; the full list is available via
+        # ``python scripts/lint_roadmap.py``.
+        preview = "; ".join(violations[:3])
+        if len(violations) > 3:
+            preview += f" (+{len(violations) - 3} more)"
+        return CheckResult(
+            name=self.name, ok=False,
+            detail=f"{len(violations)} roadmap violation(s)",
+            advisory=f"run 'python scripts/lint_roadmap.py' — {preview}",
+        )
+
+
+class StalePidCheck(DoctorCheck):
+    """Detect and clean up an orphaned ``daemon.pid`` file.
+
+    If a previous daemon crashed without cleanup, ``~/.xmclaw/v2/daemon.pid``
+    points at a process that no longer exists. ``xmclaw start`` refuses
+    to spawn when that file is present, so users hit a confusing "daemon
+    already running" error. This check catches that state up front and
+    offers a one-shot ``fix()`` that deletes the stale ``daemon.pid`` +
+    ``daemon.meta`` pair.
+
+    States:
+      * No PID file       -> OK "no daemon tracked"
+      * PID file + alive  -> OK "daemon running (pid=N)"
+      * PID file + dead   -> FAIL + fixable "stale pid file"
+
+    Honors the ``XMC_V2_PID_PATH`` env var (same rule
+    :func:`xmclaw.daemon.lifecycle.default_pid_path` uses) and the
+    ``ctx.extras["pid_path"]`` override so tests can point it at a
+    tmp file.
+    """
+
+    id = "pid_lock"
+    name = "pid_lock"
+
+    def _target(self, ctx: DoctorContext) -> Path:
+        override = ctx.extras.get("pid_path")
+        if isinstance(override, (str, Path)):
+            return Path(override)
+        from xmclaw.daemon.lifecycle import default_pid_path
+
+        return default_pid_path()
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        pid_path = self._target(ctx)
+        if not pid_path.exists():
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="no daemon tracked",
+            )
+        try:
+            pid = int(pid_path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError) as exc:
+            # Malformed file counts as stale — remove it.
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"pid file malformed: {exc}",
+                advisory=f"run 'xmclaw doctor --fix' to clear {pid_path}",
+                fix_available=True,
+            )
+        from xmclaw.daemon.lifecycle import _process_alive
+
+        if _process_alive(pid):
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"daemon running (pid={pid})",
+            )
+        return CheckResult(
+            name=self.name, ok=False,
+            detail=f"stale pid file — pid {pid} is not running",
+            advisory=(
+                f"run 'xmclaw doctor --fix' to clear {pid_path}, "
+                "or 'xmclaw stop' then 'xmclaw start'"
+            ),
+            fix_available=True,
+        )
+
+    def fix(self, ctx: DoctorContext) -> bool:
+        pid_path = self._target(ctx)
+        meta_path = pid_path.with_name("daemon.meta")
+        try:
+            pid_path.unlink(missing_ok=True)
+            meta_path.unlink(missing_ok=True)
+        except OSError:
+            return False
+        return True
+
+
+class DaemonHealthCheck(DoctorCheck):
+    id = "daemon"
+    name = "daemon"
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        if not ctx.probe_daemon:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="skipped (--no-daemon-probe)",
+            )
+        from xmclaw.cli.doctor import check_daemon_health
+
+        r = check_daemon_health(ctx.host, ctx.port)
+        return CheckResult(
+            name=r.name, ok=r.ok, detail=r.detail, advisory=r.advisory,
+        )
+
+
+class BackupsCheck(DoctorCheck):
+    """Surface the backup inventory under ``~/.xmclaw/backups/``.
+
+    Epic #20 sibling of the observability checks — not a hard failure
+    gate (absence of a backup isn't broken config, it's a missed habit),
+    but a visible hint that ``xmclaw backup create`` is available and
+    how recently it was last used.
+
+    States (all ``ok=True``, this is informational):
+      * Backups dir missing or empty — detail ``"no backups yet"`` +
+        advisory pointing at ``xmclaw backup create``.
+      * One or more backups — detail ``"N backup(s), newest <age>"``;
+        when the newest is older than :attr:`STALE_AFTER_DAYS`, the
+        advisory nudges the user to run another create.
+
+    Honors ``ctx.extras["backups_dir"]`` so tests can redirect; falls
+    back to :func:`xmclaw.backup.store.default_backups_dir` (which
+    itself honors ``XMC_BACKUPS_DIR``).
+    """
+
+    id = "backups"
+    name = "backups"
+
+    #: Age at which the newest backup is considered stale. 30 days is
+    #: the "you should probably have run one this month" threshold —
+    #: below daily-cadence expectations, above weekly-cadence noise.
+    STALE_AFTER_DAYS = 30
+
+    def _target(self, ctx: DoctorContext) -> Path:
+        override = ctx.extras.get("backups_dir")
+        if isinstance(override, (str, Path)):
+            return Path(override)
+        from xmclaw.backup.store import default_backups_dir
+
+        return default_backups_dir()
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        import time as _time
+
+        from xmclaw.backup.store import list_backups
+
+        root = self._target(ctx)
+        entries = list_backups(root)
+        if not entries:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"no backups yet at {root}",
+                advisory="run 'xmclaw backup create' to capture a snapshot",
+            )
+        # list_backups() returns ascending by created_ts; newest is last.
+        newest = entries[-1]
+        age_s = max(0.0, _time.time() - newest.manifest.created_ts)
+        age_days = age_s / 86400.0
+        age_fmt = _format_age(age_s)
+        detail = (
+            f"{len(entries)} backup(s) at {root}, newest '{newest.name}' "
+            f"{age_fmt} old"
+        )
+        if age_days >= self.STALE_AFTER_DAYS:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=detail,
+                advisory=(
+                    f"newest backup is {int(age_days)}d old — consider "
+                    "'xmclaw backup create'"
+                ),
+            )
+        return CheckResult(name=self.name, ok=True, detail=detail)
+
+
+def _format_age(seconds: float) -> str:
+    """Human-readable age. Keeps units coarse — we're in the "is this
+    yesterday or last quarter" regime, not milliseconds."""
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h"
+    return f"{int(seconds // 86400)}d"
+
+
+class SecretsCheck(DoctorCheck):
+    """Surface the Epic #16 Phase 1 secrets inventory + common footguns.
+
+    Three concerns the doctor should flag, ordered most-surprising first:
+
+    1. **File mode on POSIX.** ``secrets.json`` must be 0600 — the write
+       path sets it, but a copy / git checkout / manual edit can widen
+       it. Wider-than-0600 is the only condition that flips ``ok=False``
+       because it's a live leak: any other user on the box can ``cat``
+       your API keys. :meth:`fix` auto-remediates with ``chmod 600``.
+
+    2. **Env-var overrides.** When ``XMC_SECRET_FOO`` is exported the
+       env value wins over the file — people lose hours chasing "why
+       doesn't my secrets.json edit take effect". Surface it as an
+       advisory (``ok=True``) so the info lands without crying wolf.
+
+    3. **Baseline inventory.** "N secret(s) stored" so operators know
+       the file is actually in use. Empty file = advisory suggesting
+       ``xmclaw config set-secret``.
+
+    Keyring content is deliberately not enumerated — there's no portable
+    keyring-list API. Operators who want a full audit run their OS's
+    credential-manager UI.
+    """
+
+    id = "secrets"
+    name = "secrets"
+
+    def _target(self, ctx: DoctorContext) -> Path:
+        override = ctx.extras.get("secrets_path")
+        if isinstance(override, (str, Path)):
+            return Path(override)
+        from xmclaw.utils.secrets import secrets_file_path
+
+        return secrets_file_path()
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        from xmclaw.utils.secrets import (
+            iter_env_override_names,
+            list_secret_names,
+        )
+
+        path = self._target(ctx)
+
+        if not path.is_file():
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"no secrets file at {path}",
+                advisory=(
+                    "run 'xmclaw config set-secret <name>' to store an "
+                    "API key outside of config.json"
+                ),
+            )
+
+        names = list_secret_names()
+
+        # Empty file carries no secrets → mode is not a live leak. This
+        # matters because on Linux, pytest tmp dirs default to 0o644 and
+        # `{path}.write_text("{}")` inherits it — so the first
+        # ``set-secret`` tightens it, but a freshly touched empty file
+        # shouldn't blow up CI. Emit an advisory nudging the operator to
+        # actually store something, but keep ok=True.
+        if not names:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"secrets file at {path} is empty",
+                advisory=(
+                    "run 'xmclaw config set-secret <name>' to store an "
+                    "API key outside of config.json"
+                ),
+            )
+
+        # Mode check is POSIX-only. On Windows the file's ACLs are what
+        # gate access; chmod is a no-op and any 0o??? bits we'd get back
+        # are meaningless, so we skip the assertion entirely rather than
+        # emit a false positive. If NT-ACL hardening ever lands, this is
+        # where it hooks in.
+        #
+        # Runs *after* the empty-file branch: once there's real content,
+        # 0o600 is enforced because a widened mode is a real leak.
+        if os.name == "posix":
+            mode = path.stat().st_mode & 0o777
+            if mode != 0o600:
+                return CheckResult(
+                    name=self.name, ok=False,
+                    detail=(
+                        f"{path} has mode {oct(mode)} "
+                        "(expected 0o600) — world/group readable"
+                    ),
+                    advisory=(
+                        "run 'xmclaw doctor --fix' or "
+                        f"'chmod 600 {path}' to tighten permissions"
+                    ),
+                    fix_available=True,
+                )
+
+        overrides = list(iter_env_override_names())
+        detail = f"{len(names)} secret(s) at {path}"
+        if overrides:
+            preview = ", ".join(sorted(overrides)[:3])
+            more = "" if len(overrides) <= 3 else f" (+{len(overrides) - 3} more)"
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=detail,
+                advisory=(
+                    f"env vars override {len(overrides)} entry(ies): "
+                    f"{preview}{more} — unset them if you want the file "
+                    "value to win"
+                ),
+            )
+        return CheckResult(name=self.name, ok=True, detail=detail)
+
+    def fix(self, ctx: DoctorContext) -> bool:
+        """Tighten ``secrets.json`` to 0600 when it's wider.
+
+        POSIX-only — on Windows we skip because chmod semantics don't
+        apply. Returns True only when we actually narrowed the mode.
+        """
+        if os.name != "posix":
+            return False
+        path = self._target(ctx)
+        if not path.is_file():
+            return False
+        current = path.stat().st_mode & 0o777
+        if current == 0o600:
+            return False
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            return False
+        return (path.stat().st_mode & 0o777) == 0o600
+
+
+def build_default_registry() -> DoctorRegistry:
+    """Return a registry populated with the built-in checks.
+
+    Order matters: ConfigCheck must run first so subsequent checks
+    can read ``ctx.cfg``.
+    """
+    reg = DoctorRegistry()
+    reg.register(ConfigCheck())
+    reg.register(LLMCheck())
+    reg.register(ToolsCheck())
+    reg.register(WorkspaceCheck())
+    reg.register(PairingCheck())
+    reg.register(PortCheck())
+    reg.register(EventsDbCheck())
+    reg.register(MemoryDbCheck())
+    reg.register(SkillRuntimeCheck())
+    reg.register(ConnectivityCheck())
+    reg.register(RoadmapLintCheck())
+    reg.register(StalePidCheck())
+    reg.register(DaemonHealthCheck())
+    reg.register(BackupsCheck())
+    reg.register(SecretsCheck())
+    return reg

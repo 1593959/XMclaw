@@ -97,8 +97,19 @@ def test_stop_kills_process_and_clears_pid(tmp_pid_env: Path) -> None:
         assert s.state == "dead"
         assert not (tmp_pid_env / "daemon.pid").exists()
         assert not (tmp_pid_env / "daemon.meta").exists()
-        # Process should be gone.
-        time.sleep(0.3)
+        # Reap the child before asserting the pid is gone.
+        #
+        # On Linux, `os.kill(pid, 0)` on a zombie process (exited but
+        # not yet waited on by the parent) does NOT raise
+        # ProcessLookupError — the pid is still in /proc — so
+        # `_process_alive` keeps returning True for a few ms after
+        # stop_daemon has SIGTERM'd the child. That made this assert
+        # flake on Ubuntu CI. `proc.wait()` reaps the zombie, after
+        # which the pid truly leaves the table.
+        try:
+            proc.wait(timeout=3.0)
+        except subprocess.TimeoutExpired:
+            pass  # fall through — the assert below will surface it
         assert not lifecycle._process_alive(proc.pid)
     finally:
         if proc.poll() is None:

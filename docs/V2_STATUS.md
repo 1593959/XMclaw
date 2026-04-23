@@ -1,8 +1,8 @@
 # XMclaw v2 — Status snapshot
 
-**Date:** 2026-04-21
-**Branch:** `main` (v2-rewrite merged)
-**State:** Phase 1–4 complete. Autonomous self-evolution is live-validated; the v2 daemon is end-to-end usable via CLI.
+**Date:** 2026-04-23
+**Branch:** `main` (v2-rewrite merged; v1 strangler-fig sweep complete)
+**State:** Phase 1–4 complete. Autonomous self-evolution is live-validated; the v2 daemon is end-to-end usable via CLI + Web UI (`xmclaw/daemon/static/`).
 
 ---
 
@@ -33,11 +33,10 @@ the loop.
 ### Hermetic test suite
 
 ```
-410 v2 tests passing (unit + integration + conformance + offline bench)
+875 v2 tests collected (unit + integration + conformance + offline bench)
     on Windows, macOS, Linux matrix
  3 live benches passing when XMC_ANTHROPIC_API_KEY set
- 2 v1 tests failing (pre-existing in v1, unrelated to v2 work)
-CI hard gates: import-direction check, v2 ping smoke — all green
+CI hard gates: import-direction check, v2 ping smoke, smart-gate — all green
 ```
 
 ---
@@ -90,9 +89,9 @@ the Actions tab).
 
 ## What's NOT done
 
-- **Phase 3.4 subprocess sandbox:** `LocalSkillRuntime` only enforces CPU timeout in-process; a rogue skill can still `Path(...).read_text()` anywhere. Needs subprocess/docker isolation. Not blocking — Phase 3.5 doesn't depend on it.
-- **Phase 4 daemon integration + web UI + release:** none of `xmclaw/daemon/*` / `web/*` rebuild has happened yet. v1 daemon is still the shipping version.
-- **v1 strangler-fig cleanup:** v1 modules (`xmclaw/core/agent_loop.py`, `evolution/*`, `genes/*`, `task_classifier.py`) still live alongside v2. Intentional; let Phase 4 delete them together with v1 release deprecation.
+- **Sandboxed skill runtime (Epic #3):** `LocalSkillRuntime` enforces a CPU/wall-clock timeout in-process, but a rogue skill can still `Path(...).read_text()` anywhere. `providers/runtime/process.py` is the isolation path; subprocess/docker hard-isolation is what graduates it from "dev default" to "production default". Neither runtime is wired into the AgentLoop yet — skills execute via the scheduler's in-process path.
+- **Second-stage anti-req #14 coverage:** `policy.apply_policy()` is wired at tool-output boundary and exposes four stable source tags (`tool_result` / `agent_profile` / `memory_recall` / `web_fetch`). **SOUL / PROFILE / AGENTS.md auto-injection is not currently implemented in the AgentLoop** — the only system-prompt source is the static `_DEFAULT_SYSTEM`. Memory-recall likewise is not auto-injected (consistent with anti-req #2). The `agent_profile` / `memory_recall` source tags are placeholders waiting for the first consumer; the guard will activate automatically the moment one appears.
+- **72h daemon stress test (M1 exit):** not session-runnable; needs a real multi-day window on a dedicated host.
 
 ---
 

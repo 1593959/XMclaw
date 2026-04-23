@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from starlette.responses import JSONResponse, RedirectResponse
@@ -30,6 +31,8 @@ from xmclaw.core.bus import (
     BehavioralEvent,
     EventType,
     InProcessEventBus,
+    SqliteEventBus,
+    event_as_jsonable,
     make_event,
 )
 
@@ -101,9 +104,48 @@ def create_app(
     WS-plumbing tests and clients that manage their own reasoning
     upstream.
     """
-    app = FastAPI(title="XMclaw v2 daemon", version=__version__)
     bus = bus or InProcessEventBus()
+    memory = None
+    sweep_task = None
+    if config is not None:
+        from xmclaw.daemon.factory import build_memory_from_config
+        from xmclaw.daemon.memory_sweep import (
+            MemorySweepTask,
+            parse_retention_config,
+        )
+        try:
+            memory = build_memory_from_config(config, bus=bus)
+        except Exception:  # noqa: BLE001 — malformed memory config must not block daemon
+            memory = None
+        if memory is not None:
+            retention = parse_retention_config(
+                (config.get("memory") or {}).get("retention")
+                if isinstance(config.get("memory"), dict)
+                else None
+            )
+            sweep_task = MemorySweepTask(memory, retention)
+
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        if sweep_task is not None:
+            await sweep_task.start()
+        try:
+            yield
+        finally:
+            if sweep_task is not None:
+                await sweep_task.stop()
+            if memory is not None and hasattr(memory, "close"):
+                try:
+                    memory.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    app = FastAPI(
+        title="XMclaw v2 daemon", version=__version__, lifespan=_lifespan,
+    )
     app.state.bus = bus
+    app.state.memory = memory
+    app.state.memory_sweep = sweep_task
 
     if agent is None and config is not None:
         # Local import avoids a circular dep (factory imports from this
@@ -204,6 +246,76 @@ def create_app(
                    and hasattr(agent._tools, "_allowed")
                 else []
             ),
+        })
+
+    # ── /api/v2/events — event-log replay / search (Epic #13) ────
+    # When the bus is an SqliteEventBus, this endpoint exposes the
+    # durable log: filter by session_id / since / until / types, or
+    # do an FTS5 keyword search with q=. Falls back to the in-memory
+    # session_logs buffer when the bus is not persistent (tests, CLI
+    # echo mode), so clients can rely on a single endpoint shape.
+    @app.get("/api/v2/events")
+    async def events(
+        session_id: str | None = None,
+        since: float | None = None,
+        until: float | None = None,
+        types: str | None = None,   # comma-separated list of EventType values
+        q: str | None = None,       # FTS5 keyword; takes precedence over range
+        limit: int = 200,
+        offset: int = 0,
+    ) -> JSONResponse:
+        # Clamp limit; the UI should paginate rather than request everything.
+        limit = max(1, min(int(limit), 2000))
+        offset = max(0, int(offset))
+
+        type_list: list[EventType] = []
+        if types:
+            for raw in types.split(","):
+                name = raw.strip()
+                if not name:
+                    continue
+                try:
+                    type_list.append(EventType(name))
+                except ValueError:
+                    continue  # silently drop unknown types
+
+        results: list[BehavioralEvent] = []
+        if isinstance(bus, SqliteEventBus):
+            if q:
+                results = bus.search(q, session_id=session_id, limit=limit)
+            else:
+                results = bus.query(
+                    session_id=session_id,
+                    since=since,
+                    until=until,
+                    types=type_list or None,
+                    limit=limit,
+                    offset=offset,
+                )
+        else:
+            # In-memory fallback: filter the bounded session_logs buffer.
+            source: list[BehavioralEvent]
+            if session_id is not None:
+                source = list(session_logs.get(session_id, []))
+            else:
+                source = [e for buf in session_logs.values() for e in buf]
+            source.sort(key=lambda e: e.ts)
+            for e in source:
+                if since is not None and e.ts < since:
+                    continue
+                if until is not None and e.ts >= until:
+                    continue
+                if type_list and e.type not in type_list:
+                    continue
+                if q and q.lower() not in json.dumps(e.payload).lower():
+                    continue
+                results.append(e)
+            results = results[offset : offset + limit]
+
+        return JSONResponse({
+            "events": [event_as_jsonable(e) for e in results],
+            "count": len(results),
+            "bus": type(bus).__name__,
         })
 
     # ── /ui/ static files + root redirect ──

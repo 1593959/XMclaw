@@ -15,7 +15,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from xmclaw.utils.log import logger
+from xmclaw.utils.log import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass

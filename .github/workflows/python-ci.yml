@@ -6,6 +6,9 @@ name: Python — lint & test
 # and on every PR.
 
 on:
+  # push-to-main always runs the full suite (ground truth for "main is
+  # green"). PRs use the smart-gate (Epic #11) to cut feedback time —
+  # a typo in a provider shouldn't wait for the browser-tool tests.
   push:
     branches: [main]
     paths:
@@ -14,6 +17,8 @@ on:
       - 'requirements-lock.txt'
       - 'requirements-dev-lock.txt'
       - '.github/workflows/python-ci.yml'
+      - 'scripts/test_lanes.yaml'
+      - 'scripts/test_changed.py'
   pull_request:
     paths:
       - '**.py'
@@ -21,6 +26,8 @@ on:
       - 'requirements-lock.txt'
       - 'requirements-dev-lock.txt'
       - '.github/workflows/python-ci.yml'
+      - 'scripts/test_lanes.yaml'
+      - 'scripts/test_changed.py'
   workflow_dispatch:
 
 jobs:
@@ -42,6 +49,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Smart-gate needs the merge-base with the PR target to run
+          # `git diff origin/$base...HEAD`. Full history is the
+          # simplest way to guarantee the base commit is present — the
+          # repo is small enough that this doesn't hurt.
+          fetch-depth: 0
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -54,6 +67,17 @@ jobs:
         run: |
           pip install -r requirements-dev-lock.txt
           pip install -e . --no-deps
+
+      # Playwright Python module is a dev dep (so `importorskip` passes)
+      # but the chromium binary is a separate download. Without it, the
+      # browser-live integration tests fail with "Executable doesn't
+      # exist". The module-level smoke-skip in test_v2_browser_live.py
+      # catches the missing-binary case cleanly, but installing chromium
+      # lets those tests actually run their assertions on CI. Scoped to
+      # chromium only (no firefox/webkit) to keep the step under a minute.
+      - name: Install Playwright chromium (for browser-live tests)
+        continue-on-error: true
+        run: python -m playwright install chromium
 
       # Hard-fail set: syntax errors and undefined names only. Mirrors the
       # old conda workflow's `flake8 --select=E9,F63,F7,F82` gate — these
@@ -70,5 +94,19 @@ jobs:
         continue-on-error: true
         run: ruff check .
 
-      - name: Test
+      # Smart-gate (Epic #11): on PRs, run only the lanes that match
+      # the diff against the target branch. Falls back to the full
+      # suite for pyproject / lockfile / workflow edits (see
+      # scripts/test_lanes.yaml → full_fallback).
+      - name: Test (smart-gate, PR only)
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          git fetch --no-tags --prune origin "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+          python scripts/test_changed.py --base "origin/${{ github.base_ref }}" -- -v
+
+      # Full suite on push-to-main and on workflow_dispatch — ground
+      # truth for "main is green" and a manual safety net.
+      - name: Test (full suite)
+        if: github.event_name != 'pull_request'
         run: pytest tests/ -v

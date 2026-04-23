@@ -324,7 +324,7 @@ Copy / adapt 自 peers，但每个都内置 anti-requirement guard。
 
 ---
 
-## 11. 交付现状（2026-04-21）
+## 11. 交付现状（2026-04-23）
 
 ### 11.1 阶段完成度
 
@@ -343,9 +343,13 @@ Copy / adapt 自 peers，但每个都内置 anti-requirement guard。
 | 3.1 | SkillRegistry + promote/rollback + 审计 | ✅ | `a698d8e` |
 | 3.2 | LocalSkillRuntime + CPU timeout + 矩阵 | ✅ | `6c9f346` |
 | 3.3 | EvolutionController（mock 1.22×）| ✅ | `22ce315` |
-| 3.4 | 进程隔离 runtime（subprocess / docker） | ⬜ 延后 |  |
+| 3.4 | 进程隔离 runtime（subprocess）| 🟡 落地但非 default — `providers/runtime/process.py` 存在；prod 默认仍是 `LocalSkillRuntime`（Epic #3）|  |
 | 3.5 | 真 LLM 自治演化循环 | ✅ **1.18× on MiniMax** | `3f44d6d` |
-| 4–6 | 生态 / 热重载 / 发布 | ⬜ 未开工 |  |
+| 4.0 | Daemon 集成：FastAPI + WS `/agent/v2/{session_id}` + pairing token + event replay | ✅ | `bb3136d` |
+| 4.1 | v2 Web UI（`xmclaw/daemon/static/`）+ CLI `xmclaw start/chat/doctor` | ✅ | `fd1d5a1` |
+| 4.2 | Strangler-fig：v1 `agent_loop.py` / `evolution/*` / `genes/*` / `task_classifier.py` / 旧 daemon / 旧 UI 删除 | ✅ |  |
+| 4.3 | v2-rewrite → main 合并 | ✅ | `fd1d5a1` |
+| 5–6 | 热重载 / 发布流水线 v2 化 | 🟡 进行中（Epic #6 / Epic #2）|  |
 
 ### 11.2 Anti-requirement 记分卡
 
@@ -356,26 +360,28 @@ Copy / adapt 自 peers，但每个都内置 anti-requirement guard。
 | 3 | 翻译器不易碎 | Anthropic + OpenAI 各 18/11 个拒绝路径；跨 provider 矩阵 | Conformance matrix |
 | 4 | 不让 LLM 自评 | HonestGrader LLM 权重硬卡 0.20，weight sum assert at import | Unit + integration |
 | 5 | 技能可回滚 | SkillRegistry 版本化 + append-only 历史 | Unit + integration |
-| 6 | 成本硬熔断 | cost_tracker (v1 迁移) + BudgetExceeded | Unit（v1 遗产，待 Phase 4 补强）|
+| 6 | 成本硬熔断 | `utils.cost` + BudgetExceeded；独立实现，无 v1 耦合 | Unit（硬 cap e2e 测试随 daemon integration bench 落地）|
 | 7 | Channel CI parity | WS adapter + 参数化 conformance matrix (N=1) | Conformance |
-| 8 | 设备绑定 | WSChannelAdapter auth_check 回调预留 | 🚧 Phase 4 落真实现 |
+| 8 | 设备绑定 | Pairing token 共享秘密：0600 文件、query + header 接受、constant-time compare、`close(4401)` 拒绝、crash-safe | Unit + integration |
 | 9 | Session lifecycle | Session lifecycle stub + 跨 session 测试 | Integration |
 | 10 | 多后端同构 | Runtime conformance matrix (N=1) | Conformance |
 | **11** | **同模型 bench gate** | **provider_noninterference conformance (14 tests)** | **Conformance** |
 | **12** | **进化带证据** | **Registry + Controller 双层 "no evidence no promote"** | **Unit + integration + live** |
 | **13** | **接口化 + plugin** | 7 个 provider ABC + import-direction CI 门 | **CI + import surface** |
-| **14** | **跨协议 + 跨平台** | Anthropic-native + OpenAI-tool 双路；Windows 开发验过；macOS/Linux 待 CI | 🚧 部分 |
+| **14** | **跨协议 + 跨平台** | Anthropic-native + OpenAI-tool 双路；CI matrix 跑 Windows / macOS / Linux on every push | **CI matrix + translator conformance** |
 
 ### 11.3 测试计数
 
 ```
-总 v2 测试数量:     293 passing (unit + integration + conformance + bench)
-Live bench runs 通过:  3 / 3
+总 v2 测试数量:     410 passing (unit + integration + conformance + offline bench)
+                    on Windows / macOS / Linux CI matrix
+Live bench runs 通过:  3 / 3 (XMC_ANTHROPIC_API_KEY 设置时)
   ├─ Phase 1.3 learning curve:          1.119× (gate ≥ 1.05×)
-  ├─ Phase 2.6 tool-aware learning:     1.099× + tool-firing 100%
+  ├─ Phase 2.6 tool-aware learning:     100% tool-firing (gate ≥ 80%)
   └─ Phase 3.5 autonomous evolution:    1.183× (session 1 vs session 2)
 CI 门:                全绿
-  ├─ import-direction check
+  ├─ import-direction check（含 utils self-containment 规则）
+  ├─ smart-gate（PR）/ full suite（push-to-main）
   └─ v2 ping smoke
 ```
 
@@ -395,28 +401,18 @@ a698d8e  Phase 3.1 SkillRegistry + versioning
 6c9f346  Phase 3.2 LocalSkillRuntime + conformance matrix
 22ce315  Phase 3.3 EvolutionController (mock 1.22×)
 3f44d6d  Phase 3.5 autonomous evolution LIVE  (1.18× on MiniMax)
+55eeb56  Phase 4.9 MCP bridge (JSON-RPC stdio)
+777abaf  Phase 4 v1 wipe + flat CLI
+bb3136d  Phase 4 event-replay on reconnect + todos + timeline + i18n UI
+fd1d5a1  Merge v2-rewrite → main (UI overhaul, event replay, todo tools)
 ```
 
 ---
 
-## 12. 合并回 main 的决策点
+## 12. 合并回 main 的决策点（已完成）
 
-**目前位置：** `v2-rewrite` 分支携带完整实现，从 `main` 分出未合回。
+**历史：** `v2-rewrite` 分支从 `main` 切出、独立推进到 Phase 4，经 PR `fd1d5a1 Merge v2-rewrite — UI overhaul, event-replay, todo tools, ultrathink, i18n` 合回 `main`。v1 strangler-fig 清理同期完成——`xmclaw/genes/*` / `xmclaw/evolution/*` / `xmclaw/core/agent_loop.py` / `task_classifier.py` / 旧 daemon / 旧 Web UI 全删。
 
-**合回的利弊：**
+**当前状态：** `main` 是 v2-only tree。对外交付版本（`xmclaw.exe` 安装器、PyPI `xmclaw` 包）直接构建自 `main`。`v2-rewrite` 分支已无维护需要。
 
-| 合回 | 不合回 |
-|---|---|
-| v2 成为事实，不再是"实验分支" | `main` 继续是稳定 v1，不受 v2 未完成部分（Phase 3.4 sandbox、Phase 4 daemon 集成）干扰 |
-| 公开 repo 访客直接看到"agent 自进化可度量"的故事 | v2 可以继续独立推进到更完整，合一次性合满 |
-| CI 默认跑 v2 测试 | v1 的 9 个 integration 工程继续依赖 v1 模块，合回需要同步删减或保留 |
-
-**推荐做法：**
-
-1. **不直接 merge to main**。现在 v1 仍然是对外交付版本（`xmclaw.exe` 安装器、PyPI `xmclaw` 包），v2 还没做 daemon 集成 / 发布流水线改造。直接 merge 会打破 v1 用户的使用路径。
-
-2. **走 PR 路线**：在 GitHub 开一个 `v2-rewrite → main` 的 PR，显性化所有改动，等 Phase 4（daemon 集成 + 发布流水线）完成后再 merge。
-
-3. **短期：** 把 v2-rewrite push 到 `origin`（如果还没），让 CI 可见、让 reviewer 能看；main 保持不动。
-
-最终决定权在用户。本文档只是把决策要素罗列清楚。
+该节保留为历史记录。后续决策点见 [DEV_ROADMAP.md](DEV_ROADMAP.md) Epic 列表。

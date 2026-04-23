@@ -51,6 +51,11 @@ from xmclaw.core.bus import (
 from xmclaw.core.ir import ToolCall, ToolResult
 from xmclaw.providers.llm.base import LLMProvider, Message
 from xmclaw.providers.tool.base import ToolProvider
+from xmclaw.security import (
+    SOURCE_TOOL_RESULT,
+    PolicyMode,
+    apply_policy,
+)
 from xmclaw.utils.cost import BudgetExceeded, CostTracker
 
 
@@ -137,6 +142,7 @@ class AgentLoop:
         agent_id: str = "agent",
         cost_tracker: CostTracker | None = None,
         history_cap: int = 40,
+        prompt_injection_policy: PolicyMode = PolicyMode.DETECT_ONLY,
     ) -> None:
         self._llm = llm
         self._bus = bus
@@ -151,6 +157,8 @@ class AgentLoop:
         # _system_prompt take effect immediately, not after the next restart).
         self._histories: dict[str, list[Message]] = {}
         self._history_cap = history_cap
+        # Epic #14: what the scanner does when a tool result looks hostile.
+        self._injection_policy = prompt_injection_policy
 
     def clear_session(self, session_id: str) -> None:
         """Drop a session's conversation history. Called by the WS gateway
@@ -386,11 +394,51 @@ class AgentLoop:
                     else:
                         err = result.error or "tool failed without an error message"
                         tool_msg_content = f"ERROR: {err}"
+                    # Epic #14: scan the tool output for prompt-injection
+                    # attempts before it lands in the conversation history.
+                    # Apply the configured policy (detect / redact / block).
+                    decision = apply_policy(
+                        tool_msg_content,
+                        policy=self._injection_policy,
+                        source=SOURCE_TOOL_RESULT,
+                        extra={
+                            "tool_call_id": call.id,
+                            "tool_name": call.name,
+                        },
+                    )
+                    if decision.event is not None:
+                        await publish(
+                            EventType.PROMPT_INJECTION_DETECTED,
+                            decision.event,
+                        )
+                    if decision.blocked:
+                        tool_msg_content = (
+                            "ERROR: tool output blocked by prompt-injection "
+                            "policy. Categories: "
+                            + ", ".join(decision.scan.categories())
+                        )
+                    else:
+                        tool_msg_content = decision.content
                     messages.append(Message(
                         role="tool",
                         content=tool_msg_content,
                         tool_call_id=call.id,
                     ))
+                    if decision.blocked:
+                        await publish(EventType.ANTI_REQ_VIOLATION, {
+                            "message": "tool output blocked by prompt-injection policy",
+                            "kind": "prompt_injection_blocked",
+                            "tool_call_id": call.id,
+                            "tool_name": call.name,
+                            "hop": hop,
+                        })
+                        return AgentTurnResult(
+                            ok=False, text="",
+                            hops=hop + 1,
+                            tool_calls=tool_calls_made,
+                            events=events,
+                            error="prompt_injection_blocked",
+                        )
                 # Next hop: send tool results back to the LLM.
                 continue
 

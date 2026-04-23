@@ -84,3 +84,42 @@ async def test_subscriber_exception_isolates() -> None:
 
     # Good subscriber still received the event despite bad subscriber crashing.
     assert len(good_seen) == 1
+
+
+@pytest.mark.asyncio
+async def test_subscriber_exception_is_logged_structurally(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Epic #15 phase 2: subscriber failures must go to the structured
+    logger (not ``print``) so the secret scrubber runs and operators can
+    filter by event_type / session_id.
+
+    We assert at the rendered-output level (capsys) rather than caplog,
+    because setup_logging is not necessarily called in unit tests —
+    structlog's default factory emits to stdout. What matters for the
+    regression guard is "the message carries the structured event name
+    and key=value pairs", not the specific routing backend.
+    """
+    bus = InProcessEventBus()
+
+    async def bad(_event: BehavioralEvent) -> None:
+        raise RuntimeError("kaboom-with-secrets")
+
+    bus.subscribe(accept_all, bad)
+    ev = make_event(
+        session_id="sess-xyz", agent_id="a",
+        type=EventType.USER_MESSAGE, payload={},
+    )
+    await bus.publish(ev)
+    await bus.drain()
+
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    # Structured tag — proves it went through a logger, not raw print.
+    assert "bus.subscriber_failed" in output
+    # Context fields preserved — proves operators can grep by session.
+    assert "sess-xyz" in output
+    assert "kaboom-with-secrets" in output
+    # Negative: the old print-based format had '[bus] subscriber failed'.
+    # If that string ever reappears we've regressed to print().
+    assert "[bus] subscriber failed" not in output

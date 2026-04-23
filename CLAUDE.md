@@ -1,41 +1,51 @@
 # CLAUDE.md
 
-Guidance for Claude Code (and other AI coding assistants) when working in this repository.
+Top-level navigation for Claude Code (and other AI coding assistants).
+**Per-directory contracts live in `xmclaw/<subdir>/AGENTS.md`** — read
+those before editing code in that subdir.
+
+## ★ 开发纪律（硬约束，2026-04-22 起）
+
+任何涉及 Epic / Milestone 的代码改动，**必须**同时更新 [docs/DEV_ROADMAP.md](docs/DEV_ROADMAP.md)：
+
+1. **开工前**：在对应 Epic §4 把状态 ⬜→🟡，填负责人 + 起始日期
+2. **子步骤完成**：勾 checkbox + **进度日志**追加一行 `YYYY-MM-DD: <摘要> (commit <sha7>)`
+3. **遇阻塞**：状态 🟡→🔴，进度日志写 reason + 等什么
+4. **Epic 收尾**：状态 ✅ + 完成日期 + §7 对应 Milestone 的退出标准同步打勾
+5. **Commit 消息**必须引用 Epic 号：`Epic #6: <动作>` / `Epic #3 partial: <动作>` / `Epic #14 blocked: <原因>`
+
+**不遵守 = PR 不合格。** 详见 [DEV_ROADMAP.md §3.6 执行协议](docs/DEV_ROADMAP.md#36-执行协议execution-protocol-每次开发必读)。
+
+配套策略背景见 [docs/archive/COMPETITIVE_GAP_ANALYSIS.archived.md](docs/archive/COMPETITIVE_GAP_ANALYSIS.archived.md)（为什么做这些 Epic）。
 
 ## Project
 
-**XMclaw** is a local-first, self-evolving AI agent runtime written in Python. A single FastAPI daemon hosts the AgentLoop, ToolRegistry, MemoryManager, and EvolutionEngine; clients (Web UI, CLI, desktop tray) connect to it over WebSocket. See [README.md](README.md) for the user-facing overview and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the definitive system design.
+**XMclaw** is a local-first, self-evolving AI agent runtime written in Python. A single FastAPI daemon hosts the AgentLoop and composes LLM / Tool / Memory / Channel providers over a streaming `BehavioralEvent` bus; the Honest Grader + SkillScheduler + EvolutionController pipeline drives evidence-based skill promotion. Clients (Web UI, CLI, future desktop tray) connect to the daemon over WebSocket at `/agent/v2/{session_id}`. See [README.md](README.md) for the user-facing overview and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the definitive system design.
 
 ## Repository Layout
 
 ```
-xmclaw/              Python package (the actual runtime)
-├── core/            AgentLoop, Orchestrator, PromptBuilder, Reflection
-├── daemon/          FastAPI + WebSocket server, lifecycle
-├── gateway/         HTTP / WS request handlers
-├── evolution/       GeneForge, SkillForge, VFM, Validator, Scheduler
-├── genes/           Gene matching and registry
-├── llm/             Anthropic + OpenAI router
-├── memory/          SQLite, VectorStore (sqlite-vec), SessionManager
-├── tools/           Built-in tools + MCP bridge
-├── integrations/    Slack, Discord, Telegram, GitHub, Notion, 飞书, QQ, 企业微信
-├── sandbox/         Docker + process sandboxing
-├── desktop/         Desktop tray + browser launcher
-├── cli/             `xmclaw` CLI entry points
-└── utils/           Logging, paths, security helpers
+xmclaw/              Python package — see per-subdir AGENTS.md for contracts
+├── core/            Bus, IR, grader, evolution, scheduler  → xmclaw/core/AGENTS.md
+├── daemon/          FastAPI + WS + AgentLoop + lifecycle   → xmclaw/daemon/AGENTS.md
+├── providers/       LLM / tool / memory / runtime / channel adapters
+│                    Each subdir has its own AGENTS.md.    → xmclaw/providers/AGENTS.md
+├── security/        Prompt-injection scanner + redactor    → xmclaw/security/AGENTS.md
+├── skills/          SkillBase + registry + demo skills     → xmclaw/skills/AGENTS.md
+├── cli/             `xmclaw` entry points + doctor         → xmclaw/cli/AGENTS.md
+├── utils/           Path / log / redact / cost helpers     → xmclaw/utils/AGENTS.md
+└── plugins/         Third-party plugins (Epic #2 WIP)
 
 web/                 Vite-based web UI (vanilla JS + CSS)
-daemon/              Daemon runtime config (config.json — gitignored, config.example.json is the template)
-agents/              Agent profiles (agent.json is gitignored; PROFILE.md / SOUL.md are committed)
-shared/              Auto-generated genes/ and skills/ (populated at runtime)
-plugins/             LLM and tool plugins
-docs/                Architecture, CLI, Tools, Evolution, Integrations, Testing, Troubleshooting
-tests/               pytest suites (test_bash.py, test_config.py, test_evolution.py, …)
-scripts/             Build & installer scripts (build_exe_fast.py, xmclaw_setup.iss, …)
-.github/workflows/   CI (python-package-conda.yml, python-publish.yml)
+daemon/              Runtime config (config.json gitignored; config.example.json is the template)
+docs/                ARCHITECTURE, DEV_ROADMAP, EVENTS, DOCTOR, WORKSPACE, V2_DEVELOPMENT, …
+                     AGENTS_TEMPLATE.md is the template per-subdir AGENTS.md files follow.
+tests/               pytest suites — see scripts/test_lanes.yaml for the smart-gate mapping
+scripts/             Dev/ops — setup.{ps1,bat}, test_changed.py, check_import_direction.py, …
+.github/workflows/   python-ci.yml (lint + smart-gate tests), web-ci.yml, release.yml, python-publish.yml
 ```
 
-Anything not in that tree is either generated at runtime, gitignored dev scratch, or a legacy artifact — check `.gitignore` before assuming a root-level file belongs in git.
+Runtime data (events.db, memory.db, pairing_token.txt, daemon.pid, …) lives under `~/.xmclaw/v2/`, *not* inside the repo — see [docs/WORKSPACE.md](docs/WORKSPACE.md). Anything not in the tree above is either gitignored dev scratch, or a legacy v1 artifact — check `.gitignore` before assuming a root-level file belongs in git.
 
 ## Common Commands
 
@@ -58,10 +68,13 @@ xmclaw stop
 xmclaw chat                      # interactive CLI
 xmclaw chat --plan               # plan mode (approve steps first)
 xmclaw config init               # interactive config
-xmclaw doctor                    # diagnostics
+xmclaw doctor                    # diagnostics (see docs/DOCTOR.md)
+xmclaw doctor --fix              # auto-remediate fixable check failures
 
 # Test & lint
-python -m pytest tests/ -v
+python -m pytest tests/ -v                    # full suite (slow)
+python scripts/test_changed.py --dry-run      # smart-gate: only affected lanes (Epic #11)
+python scripts/test_changed.py --all          # forced full suite via selector
 python -m pytest tests/ --cov=xmclaw --cov-report=html
 ruff check xmclaw/ --fix
 mypy xmclaw/
@@ -75,17 +88,20 @@ Dev env is Windows-first; scripts use `.bat` / `.ps1`. Use `bash` syntax on Git 
 
 ## Key Conventions
 
-- **Config with secrets is gitignored.** `daemon/config.json` and `agents/*/agent.json` hold API keys — never commit. Use `daemon/config.example.json` or env vars prefixed with `XMC__` (e.g. `XMC__llm__anthropic__api_key`).
-- **Generated code lives under `shared/`.** Genes and skills produced by the EvolutionEngine are written there at runtime; do not hand-edit committed ones without understanding the evolution pipeline in [docs/EVOLUTION.md](docs/EVOLUTION.md).
-- **Tool additions are registered, not imported.** New tools go in `xmclaw/tools/` and are picked up by `ToolRegistry`. Update [docs/TOOLS.md](docs/TOOLS.md) when adding one.
-- **Events are the contract.** The daemon emits a typed event stream (`chunk`, `state`, `tool_call`, `tool_result`, `ask_user`, `reflection`, `cost`, `done`, `error`) — see [docs/EVENTS.md](docs/EVENTS.md). Clients must not assume fields outside that schema.
+- **Per-subdir contracts.** Every `xmclaw/<subdir>/AGENTS.md` states that directory's responsibility, dependency rules, test entry points, hard no's, and key files. Before editing `xmclaw/foo/bar.py`, read `xmclaw/foo/AGENTS.md`.
+- **Import direction is enforced.** `scripts/check_import_direction.py` blocks upward edges in the DAG (`core/` cannot import `providers/`, etc). Rules live in each subdir's AGENTS.md.
+- **Config with secrets is gitignored.** `daemon/config.json` holds API keys — never commit. Use `daemon/config.example.json` or env vars prefixed with `XMC__` (e.g. `XMC__llm__anthropic__api_key`).
+- **Events are the contract.** The daemon emits a typed event stream — see [docs/EVENTS.md](docs/EVENTS.md). Clients must not assume fields outside that schema.
+- **Tool additions go to `xmclaw/providers/tool/`.** Register via `ToolProvider` ABC; update [docs/TOOLS.md](docs/TOOLS.md) + the `tools` lane in `scripts/test_lanes.yaml`.
+- **Skill evolution is in-memory.** `xmclaw/skills/` + `xmclaw/core/scheduler/` + `xmclaw/core/evolution/` run the Honest-Grader-driven promotion pipeline; versions live in `SkillRegistry`, not in `shared/skill_*.py` files. See [docs/V2_DEVELOPMENT.md](docs/V2_DEVELOPMENT.md) §1–§3 for the controller / grader / scheduler contract.
 
 ## Git Workflow
 
 - Main branch is `main`. Do not push directly to it.
 - Create a feature branch: `git checkout -b feat/...` / `fix/...` / `docs/...`.
-- Open a PR: `gh pr create`.
+- Open a PR: `gh pr create`. PR CI runs the smart-gate; push-to-main runs the full suite.
 - Keep commit messages in English. Conventional Commits encouraged (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`).
+- Epic-touching PRs must cite the Epic number (`Epic #11:`, `Epic #14 partial:`, etc). See the 开发纪律 section above.
 
 ## Releasing
 

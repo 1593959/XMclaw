@@ -1,0 +1,39 @@
+# Optional pre-commit config (Epic #11).
+#
+# Enable with:
+#     pip install pre-commit
+#     pre-commit install
+#
+# Runs the smart-gate selector against staged working-tree changes, so
+# a failing test fires locally before the commit lands. The hook is a
+# "local" type — no third-party download, just the repo's own script.
+#
+# Why "working tree vs HEAD" rather than "staged only": pre-commit
+# stashes unstaged changes before invocation, so by the time the hook
+# runs, `git diff HEAD` sees exactly the set of files being committed.
+# That matches what the CI job will see on the matching PR.
+#
+# Skip for a single commit:
+#     git commit --no-verify ...    # discouraged; prefer fixing the failure
+#
+# Skip across a batch (e.g. doc-only sweeps where you trust the diff):
+#     SKIP=xmclaw-smart-gate git commit ...
+
+repos:
+  - repo: local
+    hooks:
+      - id: xmclaw-smart-gate
+        name: xmclaw smart-gate pytest
+        description: >-
+          Run only the pytest lanes that match the staged diff
+          (scripts/test_lanes.yaml). Full-suite fallback triggers on
+          pyproject / lockfile / CI-config changes.
+        entry: python scripts/test_changed.py
+        language: system
+        # The script shells out to `git diff` itself, so it doesn't
+        # need the file list from pre-commit. Run once per commit
+        # regardless of how many files changed.
+        pass_filenames: false
+        # Run on every commit; exit 0 when nothing relevant changed.
+        always_run: true
+        stages: [pre-commit]

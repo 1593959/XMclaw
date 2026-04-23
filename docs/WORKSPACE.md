@@ -1,83 +1,97 @@
-# Workspace
+# Workspace（`~/.xmclaw/` 数据目录）
 
-The **workspace** is the user's window onto *who this agent is* and
-what it's working on. It spans the entire agent directory — identity
-files (SOUL.md, PROFILE.md, AGENTS.md), agent-level state
-(tasks.json), and the `workspace/` subfolder where the agent keeps
-task-level scratch (plan.md, notes.md, decisions.md).
+XMclaw v2 daemon 把**所有**运行态数据写到一个根目录下 —— 默认
+`~/.xmclaw/`，所有 v2 产物落在 `~/.xmclaw/v2/` 子树。只要这个根目录
+能换，整个 XMclaw 就能在 Docker 卷、便携盘、test harness 之间
+搬家，不用改代码。
 
-Files that would leak secrets or expose daemon internals are hidden
-by a hard exclude list on the daemon — the frontend can neither list
-nor read them.
+> v1 时代还有个 per-agent 的 `agents/<agent_id>/workspace/` 概念
+> (SOUL.md / PROFILE.md / tasks.json / plan.md 这些) —— v2 已下线。
+> agent 身份文件（SOUL.md / PROFILE.md / AGENTS.md）作为 prompt
+> 来源在 [`xmclaw/security/policy.py`](../xmclaw/security/policy.py)
+> 的 `SOURCE_PROFILE` 里还有引用，但不再由 daemon 提供文件 CRUD
+> HTTP API；todo / plan 这些信息走 [BehavioralEvent](EVENTS.md)
+> 事件流，不再写成磁盘 json 文件。
 
-## Layout
+## 默认布局
 
 ```
-agents/<agent_id>/
-├── SOUL.md            ← visible · personality / character
-├── PROFILE.md         ← visible · who the user is
-├── AGENTS.md          ← visible · multi-agent team config
-├── tasks.json         ← visible · managed by `task` tool
-├── agent.json         ← hidden  · carries API keys
-├── agent.example.json ← hidden  · template, noise
-├── memory/            ← hidden  · SQLite DB + session logs
-├── __pycache__/       ← hidden  · python bytecode
-└── workspace/
-    ├── plan.md        ← current multi-step plan
-    ├── notes.md       ← freeform scratchpad
-    ├── decisions.md   ← append-only log of non-obvious choices
-    ├── tasks.json     ← task-tool managed
-    └── todos.json     ← todo-tool managed
+~/.xmclaw/
+├── v2/                          ← v2 运行时子树
+│   ├── daemon.pid               ← xmclaw start 写入；stop/restart/doctor 都读
+│   ├── daemon.meta              ← 与 pid 并列；记 host/port/version
+│   ├── daemon.log               ← xmclaw start 的 stdout/stderr 纯文本 tee
+│   ├── pairing_token.txt        ← anti-req #8：WS / HTTP 鉴权 token（0600）
+│   ├── events.db                ← SqliteEventBus 的事件持久化（WAL + FTS5）
+│   └── memory.db                ← sqlite-vec 长期记忆
+└── logs/                        ← structlog JSON 行（xmclaw.log + 轮换）
 ```
 
-Only `workspace/tasks.json` and `workspace/todos.json` are
-pre-created by the agent tooling. The rest appear on demand — an
-empty `workspace/` on a fresh agent is correct.
+`logs/` 刻意和 `v2/` **平级**而不放在 `v2/` 里面——让用户执行
+`xmclaw stop && rm -rf ~/.xmclaw/v2` 做一次 "清空运行时状态" 重置
+时，事故取证的日志不会被一起抹掉。
 
-## Exclude list
+## 唯一入口：`xmclaw/utils/paths.py`
 
-Defined in [`xmclaw/daemon/server.py`](../xmclaw/daemon/server.py)
-as `_WORKSPACE_EXCLUDE_NAMES`. Any name in the list, anywhere in the
-path, is dropped from the tree *and* rejected by the file-CRUD
-endpoints (`read_file`, `write_file`, `create_file`, `delete_file`,
-`rename_file`). Dotfiles are excluded by the same mechanism.
+§3.1 「仓库不得写入运行态数据」强制所有 daemon 代码走这个模块
+定位路径，**不得**任何地方手写 `~/.xmclaw/v2/...` 字符串。模块导出的
+函数即为权威：
 
-| Name | Why hidden |
-|---|---|
-| `agent.json` | Carries the LLM API key. Leaking it via the web UI would be a credential disclosure. |
-| `agent.example.json` | Template file, adds noise with no user value. |
-| `memory/` | SQLite + vector store + session transcripts. Owned by the daemon; manual edits corrupt the DB. |
-| `__pycache__/` | Python bytecode. |
-| `.*` | Dotfiles (`.git`, `.venv`, `.DS_Store`). |
+| 函数                           | 返回                                        |
+| ------------------------------ | ------------------------------------------- |
+| `data_dir()`                   | 根目录，默认 `~/.xmclaw`（见下文 env 覆盖） |
+| `v2_workspace_dir()`           | `<data>/v2`                                 |
+| `logs_dir()`                   | `<data>/logs`                               |
+| `default_pid_path()`           | `<data>/v2/daemon.pid`                      |
+| `default_meta_path()`          | `<data>/v2/daemon.meta`                     |
+| `default_daemon_log_path()`    | `<data>/v2/daemon.log`                      |
+| `default_token_path()`         | `<data>/v2/pairing_token.txt`               |
+| `default_events_db_path()`     | `<data>/v2/events.db`                       |
+| `default_memory_db_path()`     | `<data>/v2/memory.db`                       |
 
-## File semantics
+导入规约见 [`xmclaw/utils/AGENTS.md`](../xmclaw/utils/AGENTS.md)：
+paths.py 是 DAG 底层，**不能**反向 import 其他 `xmclaw.*` 子包；
+`scripts/check_import_direction.py` 会在 CI 挡下来。
 
-Files the agent is instructed to create and maintain, in its system
-prompt (see `prompt_builder.py`):
+## 环境变量覆盖
 
-| File | Owner | Purpose |
-|---|---|---|
-| `SOUL.md` | User + Agent | Personality, values, voice. Agent reads this every turn; user edits out-of-band to shape behavior. |
-| `PROFILE.md` | User + Agent | User's context: name, preferences, domain knowledge. Edits are collaborative. |
-| `AGENTS.md` | User | Multi-agent team roster + delegation rules. |
-| `workspace/plan.md` | Agent | Current multi-step plan. Agent writes this *before* executing a medium/high-complexity task so the user can redirect before work starts. Overwritten per task. |
-| `workspace/notes.md` | Agent | Freeform scratchpad for cross-turn thinking that shouldn't pollute the chat. |
-| `workspace/decisions.md` | Agent | Append-only log of non-obvious choices ("picked X over Y because Z"). Breadcrumbs for future sessions.  Use `file_edit` with `mode="append"`. |
-| `workspace/todos.json` | `todo` tool | Checklist. |
-| `workspace/tasks.json` | `task` tool | Longer-running task tracker. |
+按优先级：
 
-## Frontend
+| env var                       | 用途                                                  |
+| ----------------------------- | ----------------------------------------------------- |
+| `XMC_DATA_DIR`                | 整体搬家——换 `~/.xmclaw` 为任意目录。Docker 卷 / 便携盘首选。|
+| `XMC_V2_PID_PATH`             | 只换 `daemon.pid` 位置（pytest 隔离用）               |
+| `XMC_V2_PAIRING_TOKEN_PATH`   | 只换 pairing token 路径                               |
+| `XMC_V2_EVENTS_DB_PATH`       | 只换 events.db 路径                                   |
 
-The 工作区 view in the Web UI reads / writes via:
+「窄覆盖」三条优先于 `XMC_DATA_DIR`——所以单测可以只重定向一个
+文件而不搬整个工作区。
 
-- `GET  /api/agent/<id>/files` — flat list, already filtered through the exclude list
-- `GET  /api/agent/<id>/file?path=...` — read one file (rejected if excluded)
-- `POST /api/agent/<id>/file?path=...` — write one file (rejected if excluded)
-- `POST /api/agent/<id>/file/create`, `DELETE /api/agent/<id>/file`, `POST /api/agent/<id>/file/rename`
+示例：
 
-All endpoints apply the same `_is_excluded` check *before* the
-path-traversal guard, so even a valid in-tree path to `agent.json`
-or `memory/sessions/*.json` returns 403.
+```bash
+# 整个 XMclaw 装到外置盘
+XMC_DATA_DIR=/mnt/xmclaw xmclaw start
 
-Regression tested in
-[`tests/test_integration.py::test_workspace_files_api_shows_identity_hides_secrets`](../tests/test_integration.py).
+# 只把 events.db 挪到 tmpfs，别的走默认
+XMC_V2_EVENTS_DB_PATH=/dev/shm/events.db xmclaw serve
+```
+
+## Doctor 如何校验
+
+[`xmclaw doctor`](DOCTOR.md) 里有三条 check 直接针对这个目录：
+
+- `workspace` —— `~/.xmclaw/v2/` 存在且可写；缺失则 `--fix` 自动 `mkdir -p`。
+- `pairing`   —— `pairing_token.txt` 存在且 POSIX 权限 `0600`；空文件 / 宽权限两种都可 `--fix`。
+- `pid_lock`  —— `daemon.pid` 指向的进程要么活着要么文件干净；僵 pid 可 `--fix`。
+
+这三条是 "能不能把 daemon 跑起来" 的最低要求——任何一条红，
+`xmclaw start` 多半会在 stacktrace 四层远的地方炸。
+
+## 相关文件
+
+- [`xmclaw/utils/paths.py`](../xmclaw/utils/paths.py) —— 单一真相源
+- [`tests/unit/test_v2_utils_paths.py`](../tests/unit/test_v2_utils_paths.py) —— env 覆盖 / 默认路径回归
+- [`xmclaw/cli/doctor_registry.py`](../xmclaw/cli/doctor_registry.py) —— `workspace` / `pairing` / `pid_lock` check 实现
+- [docs/DOCTOR.md](DOCTOR.md) —— `xmclaw doctor` 用法与扩展
+- [docs/CONFIG.md](CONFIG.md) —— `daemon/config.json` 解析（配置文件位置 vs 数据目录的分工）

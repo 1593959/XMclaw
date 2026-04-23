@@ -22,9 +22,19 @@
     "auto_rollback": true
   },
   "memory": {
-    "vector_db_path": "shared/vector_db",
-    "session_retention_days": 7,
-    "max_context_tokens": 120000
+    "_comment": "Epic #5: v2 sqlite-vec memory. db_path defaults to ~/.xmclaw/v2/memory.db. ttl is seconds-per-layer (null disables TTL prune for that layer). pinned_tags are metadata tags whose items are never evicted. retention runs periodic prune+cap sweeps in the daemon; set enabled: false to disable the store entirely.",
+    "enabled": true,
+    "db_path": null,
+    "embedding_dim": null,
+    "ttl": { "short": 3600, "working": 86400, "long": null },
+    "pinned_tags": ["identity", "user-profile"],
+    "retention": {
+      "_comment": "max_items / max_bytes per layer (null = unbounded). sweep_interval_s throttles the background task. prune_by_ttl triggers age-based prune on every tick.",
+      "sweep_interval_s": 3600,
+      "prune_by_ttl": true,
+      "max_items": { "short": 2000, "working": 20000, "long": null },
+      "max_bytes": { "short": 10485760, "working": 104857600, "long": null }
+    }
   },
   "tools": {
     "_comment": "Optional sandbox + per-family kill-switches. With NO tools section (or this empty shape), the agent gets full user-level filesystem, shell, and web access -- the default local-assistant posture. Add allowed_dirs to restrict filesystem tools to specific paths; set enable_bash / enable_web to false to disable those families.",
@@ -32,9 +42,17 @@
     "enable_bash": true,
     "enable_web": true
   },
+  "runtime": {
+    "_comment": "Epic #3: which SkillRuntime executes forked skills. 'local' = in-process asyncio task + CPU-timeout; good for dev + conformance tests. 'process' = separate OS process via multiprocessing.spawn; real SIGKILL + import isolation + crash containment; fs/net/memory are still advisory (see providers/runtime/process.py). Default is 'local'; production should set 'process'.",
+    "backend": "local"
+  },
   "gateway": {
     "host": "127.0.0.1",
     "port": 8765
+  },
+  "security": {
+    "_comment": "Epic #14: prompt-injection policy applied to untrusted tool output before it re-enters the LLM context. Accepts: 'detect_only' (log, pass through), 'redact' (replace matched spans with [redacted:<pattern_id>]), 'block' (abort the turn with ANTI_REQ_VIOLATION). Defaults to 'detect_only'.",
+    "prompt_injection": "detect_only"
   },
   "mcp_servers": {},
   "integrations": {

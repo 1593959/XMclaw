@@ -37,7 +37,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from xmclaw.core.bus.events import EventType, make_event
 from xmclaw.providers.memory.base import Layer, MemoryItem, MemoryProvider
+from xmclaw.utils.log import get_logger
+
+_log = get_logger(__name__)
 
 # Default TTL hints (seconds). These are hints — eviction is explicit via
 # ``forget`` or ``prune``, never silent during queries.
@@ -64,6 +68,18 @@ class SqliteVecMemory(MemoryProvider):
         dimension is frozen from that embedding's length).
     ttl : dict[str, float | None] | None
         Override TTL hints per layer. None for a layer means never expire.
+    pinned_tags : list[str] | None
+        Admin-level allowlist: items whose metadata has a matching
+        ``tag`` / ``tags`` / ``category`` (or truthy ``pinned`` flag)
+        are exempt from ``evict()``. Use this to protect "identity" /
+        "promise" / "user-profile" items without editing each row.
+    bus : EventBus | None
+        Optional event bus. When provided, ``prune()`` / ``evict()``
+        emit a ``MEMORY_EVICTED`` event on successful removal so
+        the UI / grader / oncall can observe daemon maintenance.
+        Structural duck-type: anything with ``async publish(event)``
+        works; we only take it as ``Any`` to avoid an import cycle
+        through ``xmclaw.core.bus``.
     """
 
     def __init__(
@@ -72,10 +88,14 @@ class SqliteVecMemory(MemoryProvider):
         *,
         embedding_dim: int | None = None,
         ttl: dict[str, float | None] | None = None,
+        pinned_tags: list[str] | tuple[str, ...] | None = None,
+        bus: Any | None = None,
     ) -> None:
         self.db_path = str(db_path)
         self._embedding_dim = embedding_dim
         self._ttl = {**_DEFAULT_TTL, **(ttl or {})}
+        self._pinned_tags: frozenset[str] = frozenset(pinned_tags or ())
+        self._bus = bus
         self._conn = self._open_conn()
         self._ensure_schema()
         if embedding_dim is not None:
@@ -317,6 +337,149 @@ class SqliteVecMemory(MemoryProvider):
         ]
         if not ids:
             return 0
+        self._delete_ids(ids)
+        _log.info(
+            "memory.evicted",
+            layer=layer,
+            count=len(ids),
+            reason="age",
+        )
+        await self._emit_evicted(layer=layer, count=len(ids), reason="age")
+        return len(ids)
+
+    async def evict(
+        self,
+        layer: Layer,
+        *,
+        max_items: int | None = None,
+        max_bytes: int | None = None,
+    ) -> int:
+        """Cap-based LRU eviction. Returns count of removed items.
+
+        Policy:
+          * Within ``layer``, rows ordered by ``ts ASC`` are the LRU
+            candidates. Items whose metadata carries a truthy ``pinned``
+            flag (``{"pinned": true}`` etc.) are never evicted.
+          * ``max_items`` caps the count of non-pinned rows. Rows beyond
+            the cap — from oldest — are evicted.
+          * ``max_bytes`` caps the sum of ``len(text.encode('utf-8'))``
+            across non-pinned rows. Rows are dropped oldest-first until
+            the sum fits.
+          * Both caps may be passed together; union of both eviction
+            sets is removed in one transaction.
+          * Either cap may be ``None`` to disable that axis. Both ``None``
+            is a no-op returning 0.
+
+        Pinned items still count toward neither cap (they are neither
+        evicted nor charged against the budget). This matches the
+        expected admin pattern: operator pins critical items and sets
+        caps for the rest.
+        """
+        if max_items is None and max_bytes is None:
+            return 0
+        cur = self._conn.cursor()
+        rows = cur.execute(
+            "SELECT id, text, metadata FROM memory_items "
+            "WHERE layer = ? ORDER BY ts ASC",
+            (layer,),
+        ).fetchall()
+        non_pinned: list[tuple[str, int]] = []  # (id, byte_len), oldest first
+        for r in rows:
+            if self._is_pinned(r["metadata"]):
+                continue
+            non_pinned.append((r["id"], len(r["text"].encode("utf-8"))))
+
+        victim_ids: set[str] = set()
+
+        if max_items is not None and len(non_pinned) > max_items:
+            # Drop oldest such that len == max_items.
+            to_drop = len(non_pinned) - max_items
+            for vid, _ in non_pinned[:to_drop]:
+                victim_ids.add(vid)
+
+        if max_bytes is not None:
+            # Walk newest→oldest; keep items until budget is exhausted,
+            # mark the rest for eviction. Equivalently: drop oldest
+            # until the tail sum ≤ max_bytes.
+            budget = max_bytes
+            keep: set[str] = set()
+            for vid, nbytes in reversed(non_pinned):
+                if nbytes <= budget:
+                    keep.add(vid)
+                    budget -= nbytes
+                else:
+                    # This one and everything older gets evicted.
+                    break
+            for vid, _ in non_pinned:
+                if vid not in keep:
+                    victim_ids.add(vid)
+
+        if not victim_ids:
+            return 0
+        ids = sorted(victim_ids)
+        bytes_removed = sum(
+            n for vid, n in non_pinned if vid in victim_ids
+        ) if max_bytes is not None else None
+        self._delete_ids(ids)
+        reason = (
+            "cap"
+            if max_items is not None and max_bytes is not None
+            else ("cap_items" if max_items is not None else "cap_bytes")
+        )
+        _log.info(
+            "memory.evicted",
+            layer=layer,
+            count=len(ids),
+            reason=reason,
+        )
+        await self._emit_evicted(
+            layer=layer,
+            count=len(ids),
+            reason=reason,
+            bytes_removed=bytes_removed,
+        )
+        return len(ids)
+
+    async def _emit_evicted(
+        self,
+        *,
+        layer: Layer,
+        count: int,
+        reason: str,
+        bytes_removed: int | None = None,
+    ) -> None:
+        """Publish ``MEMORY_EVICTED`` if a bus was configured.
+
+        Failure to publish must not cascade — a dead subscriber cannot
+        rollback a successful eviction. Errors are swallowed and logged.
+        """
+        if self._bus is None or count == 0:
+            return
+        payload: dict[str, Any] = {
+            "layer": layer,
+            "count": count,
+            "reason": reason,
+        }
+        if bytes_removed is not None:
+            payload["bytes_removed"] = bytes_removed
+        try:
+            await self._bus.publish(make_event(
+                session_id="_system",
+                agent_id="daemon",
+                type=EventType.MEMORY_EVICTED,
+                payload=payload,
+            ))
+        except Exception as exc:  # noqa: BLE001 — event emission must not block maintenance
+            _log.warning(
+                "memory.evicted.emit_failed",
+                layer=layer,
+                error=repr(exc),
+            )
+
+    def _delete_ids(self, ids: list[str]) -> None:
+        if not ids:
+            return
+        cur = self._conn.cursor()
         placeholders = ",".join("?" * len(ids))
         cur.execute(
             f"DELETE FROM memory_items WHERE id IN ({placeholders})",
@@ -328,9 +491,106 @@ class SqliteVecMemory(MemoryProvider):
                 ids,
             )
         except sqlite3.OperationalError:
+            # Vec table doesn't exist — nothing to clean there.
             pass
         self._conn.commit()
-        return len(ids)
+
+    def _is_pinned(self, metadata_json: str | None) -> bool:
+        """Return True when a row is exempt from cap-based eviction.
+
+        Two sources of exemption:
+
+        1. Per-row flag — truthy ``metadata.pinned``. Use when a caller
+           knows a specific item must survive.
+        2. Admin allowlist — ``pinned_tags`` constructor arg matches any
+           of ``metadata.tag`` (scalar), ``metadata.tags`` (list), or
+           ``metadata.category``. Use for coarse policy like "never
+           evict identity or promise memories".
+
+        Tolerant of malformed JSON — treats unparseable metadata as
+        unpinned so a bad row can't accidentally become immortal.
+        """
+        if not metadata_json:
+            return False
+        try:
+            meta = json.loads(metadata_json)
+        except (ValueError, TypeError):
+            return False
+        if not isinstance(meta, dict):
+            return False
+        if meta.get("pinned"):
+            return True
+        if not self._pinned_tags:
+            return False
+        tag = meta.get("tag")
+        if isinstance(tag, str) and tag in self._pinned_tags:
+            return True
+        category = meta.get("category")
+        if isinstance(category, str) and category in self._pinned_tags:
+            return True
+        tags = meta.get("tags")
+        if isinstance(tags, list) and any(
+            isinstance(t, str) and t in self._pinned_tags for t in tags
+        ):
+            return True
+        return False
+
+    async def stats(self) -> dict[str, dict[str, Any]]:
+        """Per-layer snapshot. Surface for ``xmclaw memory stats`` CLI.
+
+        Returns a dict keyed by layer name (``short`` / ``working`` / ``long``)
+        — all three layers are always present, with zeros when empty — so
+        the CLI can render a stable row-per-layer table regardless of fill
+        state. Each value has::
+
+            {
+                "count":        int,    # non-pinned + pinned items
+                "bytes":        int,    # sum of len(text.encode('utf-8'))
+                "pinned_count": int,    # subset of count matching pinned rules
+                "oldest_ts":    float | None,  # None when count == 0
+                "newest_ts":    float | None,
+            }
+
+        Pinned counts use the same ``_is_pinned`` rules as ``evict()`` so
+        operators can reconcile "what's protected" before tuning caps.
+        Read-only — does not mutate anything.
+        """
+        cur = self._conn.cursor()
+        rows = cur.execute(
+            "SELECT layer, text, metadata, ts FROM memory_items"
+        ).fetchall()
+        out: dict[str, dict[str, Any]] = {
+            layer: {
+                "count": 0,
+                "bytes": 0,
+                "pinned_count": 0,
+                "oldest_ts": None,
+                "newest_ts": None,
+            }
+            for layer in ("short", "working", "long")
+        }
+        for r in rows:
+            layer = r["layer"]
+            bucket = out.setdefault(
+                layer,
+                {
+                    "count": 0,
+                    "bytes": 0,
+                    "pinned_count": 0,
+                    "oldest_ts": None,
+                    "newest_ts": None,
+                },
+            )
+            bucket["count"] += 1
+            bucket["bytes"] += len(r["text"].encode("utf-8"))
+            if self._is_pinned(r["metadata"]):
+                bucket["pinned_count"] += 1
+            ts = r["ts"]
+            if bucket["oldest_ts"] is None or ts < bucket["oldest_ts"]:
+                bucket["oldest_ts"] = ts
+            if bucket["newest_ts"] is None or ts > bucket["newest_ts"]:
+                bucket["newest_ts"] = ts
+        return out
 
     def close(self) -> None:
         self._conn.close()

@@ -54,6 +54,17 @@ all     = [
 [project.scripts]
 xmclaw = "xmclaw.cli.main:app"
 
+# Plugin entry-point groups (Epic #10). Third parties can publish
+# checks for `xmclaw doctor --discover-plugins` by declaring their
+# own pyproject entry like:
+#
+#   [project.entry-points."xmclaw.doctor"]
+#   my-check = "my_pkg.doctor:MyCheck"
+#
+# where the right-hand side resolves to a
+# xmclaw.cli.doctor_registry.DoctorCheck subclass or a zero-arg
+# factory that returns one. See docs/DOCTOR.md for the protocol.
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
