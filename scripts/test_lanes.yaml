@@ -197,6 +197,15 @@ lanes:
     tests:
       - tests/unit/test_v2_backup.py
 
+  # Secrets (Epic #16 Phase 1). Three-tier env > file > keyring lookup +
+  # CLI set/get/delete/list. Phase 2 (Fernet + factory placeholder) will
+  # expand this lane to cover the config loader.
+  secrets:
+    triggers:
+      - "xmclaw/utils/secrets.py"
+    tests:
+      - tests/unit/test_v2_secrets.py
+
   # Changes to tests themselves: run just the changed test files (handled
   # separately in test_changed.py via direct path match) + the always-on
   # lane.

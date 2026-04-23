@@ -811,6 +811,122 @@ def config_set(
     typer.echo(f"  [ok]  {target}: {key} = {_json.dumps(parsed_value)}")
 
 
+# ── xmclaw config set-secret / get-secret / delete-secret / list-secrets ──
+# Epic #16 Phase 1 entry. Thin shell over xmclaw.utils.secrets. Kept in
+# the config_app group so users find all credential-management commands
+# together. Writes default to the file backend; callers can opt into
+# the OS keyring with --backend keyring (requires `keyring` installed).
+
+
+@config_app.command("set-secret")
+def config_set_secret(
+    name: str = typer.Argument(
+        ..., help="Secret name, e.g. 'llm.anthropic.api_key'.",
+    ),
+    value: str = typer.Option(
+        None, "--value",
+        help=(
+            "Plaintext value. Omit to read from stdin (safer — value "
+            "does not land in shell history)."
+        ),
+    ),
+    backend: str = typer.Option(
+        "file", "--backend",
+        help="Where to store: 'file' (~/.xmclaw/secrets.json) or 'keyring'.",
+    ),
+) -> None:
+    """Store a secret in the chosen backend."""
+    import sys as _sys
+
+    from xmclaw.utils.secrets import set_secret
+
+    if value is None:
+        # Read from stdin without echoing to avoid shell-history leaks.
+        # getpass doesn't work reliably when stdin isn't a tty (CI),
+        # so fall back to a line-read there.
+        if _sys.stdin.isatty():
+            import getpass
+
+            value = getpass.getpass(f"value for {name}: ")
+        else:
+            value = _sys.stdin.readline().rstrip("\n")
+    if not value:
+        typer.echo("  [x]  empty value refused", err=True)
+        raise typer.Exit(code=2)
+    try:
+        set_secret(name, value, backend=backend)  # type: ignore[arg-type]
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(f"  [x]  {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"  [ok]  stored {name} in {backend} backend")
+
+
+@config_app.command("get-secret")
+def config_get_secret(
+    name: str = typer.Argument(..., help="Secret name to resolve."),
+    reveal: bool = typer.Option(
+        False, "--reveal",
+        help=(
+            "Print the plaintext value. Default only prints the source "
+            "backend and a preview — safer for screen-share / logs."
+        ),
+    ),
+) -> None:
+    """Resolve a secret through env > file > keyring precedence."""
+    from xmclaw.utils.secrets import _env_var_for, get_secret
+
+    val = get_secret(name)
+    if val is None:
+        typer.echo(
+            f"  [!]  {name} not set "
+            f"(tried env {_env_var_for(name)}, secrets.json, keyring)"
+        )
+        raise typer.Exit(code=1)
+    if reveal:
+        typer.echo(val)
+        return
+    # Non-reveal: show length + first 2/last 2 chars so the user can
+    # tell "did I set the right key" without leaking the full secret.
+    if len(val) <= 4:
+        preview = "*" * len(val)
+    else:
+        preview = f"{val[:2]}{'*' * (len(val) - 4)}{val[-2:]}"
+    typer.echo(f"  [ok]  {name}: {preview}  (len={len(val)})")
+
+
+@config_app.command("delete-secret")
+def config_delete_secret(
+    name: str = typer.Argument(..., help="Secret name to delete."),
+) -> None:
+    """Remove a secret from file and keyring layers (env is read-only)."""
+    from xmclaw.utils.secrets import delete_secret
+
+    deleted = delete_secret(name)
+    if deleted:
+        typer.echo(f"  [ok]  removed {name}")
+    else:
+        typer.echo(f"  [!]  {name} was not set in any writable backend")
+
+
+@config_app.command("list-secrets")
+def config_list_secrets() -> None:
+    """List the names of secrets in the file backend."""
+    from xmclaw.utils.secrets import (
+        iter_env_override_names,
+        list_secret_names,
+        secrets_file_path,
+    )
+
+    names = list_secret_names()
+    if not names:
+        typer.echo(f"no secrets at {secrets_file_path()}")
+        return
+    env_overrides = set(iter_env_override_names())
+    for n in names:
+        marker = "  (overridden by env)" if n in env_overrides else ""
+        typer.echo(f"  {n}{marker}")
+
+
 # ── xmclaw backup ──────────────────────────────────────────────────────
 # Epic #20 entry. The CLI is a thin shell; all real work lives in
 # xmclaw.backup so other frontends (future web UI, scheduled task) can

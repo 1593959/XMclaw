@@ -888,7 +888,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #16 · Secrets 加密
 
-**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**状态**：🟡 进行中（Phase 1 已落地，Phase 2 加密延期） | **负责人**：claude | **起始**：2026-04-23 | **完成**：-
 **前置依赖**：无
 **关联 Milestone**：M8（安全硬化）+ M6（Onboarding）
 
@@ -903,18 +903,18 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **检查清单**：
 
-- [ ] `utils/secrets.py` 三层优先级
-- [ ] `~/.xmclaw.secret/` sibling 目录 + Fernet 加密
-- [ ] `xmclaw config {set,get}-secret` CLI
-- [ ] `xmclaw config migrate-secrets`（从旧 config.json 抽 secrets）
-- [ ] `${secret:name}` 占位符支持
-- [ ] 单测覆盖三层优先级
+- [x] `utils/secrets.py` 三层优先级（env > secrets.json > keyring 软导入；Phase 1 用 chmod 0600 JSON 而非 Fernet）
+- [ ] `~/.xmclaw.secret/` sibling 目录 + Fernet 加密（Phase 2，待 `cryptography` 入 pyproject 再落地）
+- [x] `xmclaw config {set,get,delete,list}-secret(s)` CLI（stdin 读取 + masked preview + env override 标注）
+- [ ] `xmclaw config migrate-secrets`（Phase 2，待 Fernet 落地后从 config.json 抽 secrets）
+- [ ] `${secret:name}` 占位符支持（Phase 2，factory 集成）
+- [x] 单测覆盖三层优先级（30 个新测：env_var 规范化 / 文件往返 / 损坏 JSON 兜底 / 空白值穿透 / keyring 软失败 / CLI 掩码与 reveal）
 
 **退出标准**：新装用户的 API key 不出现在任何明文文件里；`grep -r "sk-" ~/.xmclaw/` 无命中。
 
 **进度日志**：
 
-- _（尚无）_
+- 2026-04-23: Phase 1 落地——`xmclaw/utils/secrets.py` 实现三层查找（env `XMC_SECRET_<NAME>` → `~/.xmclaw/secrets.json`（chmod 0600，`XMC_SECRETS_PATH` 可覆盖）→ 可选 `keyring` 软导入）；whitespace-only 值视为 miss 避开 `export FOO=` 的常见失误；keyring 模块缺失 / 抛异常都静默 fall-through 给 `get_secret`（secrets 层故障不应级联崩 daemon）；`set_secret(..., backend="keyring")` 无模块时硬性报错（显式优于静默写错地方）；`iter_env_override_names()` 只基于文件键推导 env 覆盖警告，防止无关 `XMC_SECRET_*` 误报；`xmclaw config set-secret` 默认 stdin（getpass 避免 shell history 泄露）、`get-secret` 默认掩码 `ab****yz (len=N)` + `--reveal` 显式解蔽、`list-secrets` 标注 `(overridden by env)`；新增 `tests/unit/test_v2_secrets.py` 30 测全绿（_FakeKeyring 取代真 keyring，CI 上无 D-Bus 也跑得通）；`scripts/test_lanes.yaml` 增 `secrets` lane（触发 `xmclaw/utils/secrets.py`）；Phase 2（Fernet + sibling dir + migrate + `${secret:}` 占位符）延期——`cryptography` / `keyring` 尚未进 pyproject 依赖，现阶段 chmod 0600 JSON 已是对 `config.json` 裸存 API key 的严格改进 (commit pending)
 
 ---
 
