@@ -38,6 +38,8 @@ def test_config_missing_file_is_critical(tmp_path: Path) -> None:
     assert cfg is None
     assert "not found" in result.detail
     assert result.advisory is not None
+    # Advisory should point at the working command, not stale copy-paste instructions.
+    assert "config init" in result.advisory
 
 
 def test_config_invalid_json_is_critical(tmp_path: Path) -> None:
@@ -879,6 +881,89 @@ def test_pid_lock_fix_tolerates_missing_meta(
     ctx = _pid_ctx(tmp_path, pid_path)
     assert check.fix(ctx) is True
     assert not pid_path.exists()
+
+
+# ── ConfigCheck (auto-fix) ──────────────────────────────────────────────
+
+
+def test_config_check_fixable_when_file_missing(tmp_path: Path) -> None:
+    """Missing config file is the one fixable ConfigCheck failure mode."""
+    from xmclaw.cli.doctor_registry import ConfigCheck
+
+    cfg_path = tmp_path / "daemon" / "config.json"
+    ctx = DoctorContext(config_path=cfg_path)
+    check = ConfigCheck()
+    r = check.run(ctx)
+    assert r.ok is False
+    assert r.fix_available is True
+    assert r.advisory is not None
+    assert "--fix" in r.advisory
+
+
+def test_config_check_not_fixable_when_file_invalid(tmp_path: Path) -> None:
+    """A user-created file with bad JSON must not be silently overwritten."""
+    from xmclaw.cli.doctor_registry import ConfigCheck
+
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text("{not json", encoding="utf-8")
+    ctx = DoctorContext(config_path=cfg_path)
+    check = ConfigCheck()
+    r = check.run(ctx)
+    assert r.ok is False
+    assert r.fix_available is False
+
+
+def test_config_check_not_fixable_when_root_is_array(tmp_path: Path) -> None:
+    """Root-is-not-dict is also user data we shouldn't overwrite."""
+    from xmclaw.cli.doctor_registry import ConfigCheck
+
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text("[]", encoding="utf-8")
+    ctx = DoctorContext(config_path=cfg_path)
+    check = ConfigCheck()
+    r = check.run(ctx)
+    assert r.ok is False
+    assert r.fix_available is False
+
+
+def test_config_check_fix_writes_skeleton(tmp_path: Path) -> None:
+    from xmclaw.cli.doctor_registry import ConfigCheck
+
+    cfg_path = tmp_path / "daemon" / "config.json"
+    ctx = DoctorContext(config_path=cfg_path)
+    check = ConfigCheck()
+    assert check.fix(ctx) is True
+    assert cfg_path.exists()
+    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    # Skeleton must be daemon-bootable.
+    assert data["llm"]["default_provider"] == "anthropic"
+    assert "gateway" in data
+    # Re-running the check now succeeds AND populates ctx.cfg.
+    r = check.run(ctx)
+    assert r.ok is True
+    assert ctx.cfg is not None
+
+
+def test_config_check_fix_refuses_to_overwrite(tmp_path: Path) -> None:
+    """fix() on an existing (even malformed) file must return False."""
+    from xmclaw.cli.doctor_registry import ConfigCheck
+
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text("{not json", encoding="utf-8")
+    ctx = DoctorContext(config_path=cfg_path)
+    check = ConfigCheck()
+    assert check.fix(ctx) is False
+    # The broken file must be untouched.
+    assert cfg_path.read_text(encoding="utf-8") == "{not json"
+
+
+def test_config_check_fix_template_matches_config_init_template() -> None:
+    """ConfigCheck.fix() and ``xmclaw config init`` must use the same template
+    so the two recovery paths don't drift."""
+    from xmclaw.cli.config_template import default_config_template
+    from xmclaw.cli.main import _default_config_template
+
+    assert _default_config_template() == default_config_template()
 
 
 # ── PairingCheck (auto-fix) ─────────────────────────────────────────────

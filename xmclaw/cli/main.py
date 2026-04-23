@@ -631,31 +631,10 @@ def memory_stats(
 
 
 def _default_config_template() -> dict:
-    """Minimal, shape-compatible with ``daemon/config.example.json``.
-
-    Embedded in code (not loaded from the example file) so the command
-    works from a pip-installed wheel where the repo-root example isn't
-    bundled. The example JSON stays the canonical documentation of every
-    optional section; this literal is the minimum viable config the
-    daemon needs to boot.
-    """
-    return {
-        "llm": {
-            "default_provider": "anthropic",
-            "anthropic": {
-                "api_key": "",
-                "base_url": "https://api.anthropic.com",
-                "default_model": "",
-            },
-            "openai": {
-                "api_key": "",
-                "base_url": "https://api.openai.com/v1",
-                "default_model": "",
-            },
-        },
-        "gateway": {"host": "127.0.0.1", "port": 8765},
-        "security": {"prompt_injection": "detect_only"},
-    }
+    """Thin wrapper around the shared template so this module keeps its
+    import surface stable. See :mod:`xmclaw.cli.config_template`."""
+    from xmclaw.cli.config_template import default_config_template
+    return default_config_template()
 
 
 def _parse_dotted_value(raw: str):

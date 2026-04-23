@@ -281,11 +281,47 @@ def _load_cfg_on_ctx(ctx: DoctorContext) -> CheckResult:
 
 
 class ConfigCheck(DoctorCheck):
+    """Parse ``daemon/config.json``; cache parsed dict on ``ctx.cfg``.
+
+    Only the "file doesn't exist" failure mode is auto-fixable. Invalid
+    JSON or a non-object root require user-visible inspection -- silently
+    overwriting a file the user just edited would destroy their work.
+    When missing, ``fix()`` writes the same minimum-viable skeleton that
+    ``xmclaw config init`` uses, so the two paths stay in lockstep.
+    """
+
     id = "config"
     name = "config"
 
     def run(self, ctx: DoctorContext) -> CheckResult:
-        return _load_cfg_on_ctx(ctx)
+        result = _load_cfg_on_ctx(ctx)
+        if result.ok:
+            return result
+        fixable = not ctx.config_path.exists()
+        if not fixable:
+            return result
+        extra = f"or run 'xmclaw doctor --fix' to write a skeleton at {ctx.config_path}"
+        advisory = f"{result.advisory}; {extra}" if result.advisory else extra
+        return CheckResult(
+            name=result.name, ok=False, detail=result.detail,
+            advisory=advisory, fix_available=True,
+        )
+
+    def fix(self, ctx: DoctorContext) -> bool:
+        if ctx.config_path.exists():
+            # Never overwrite a user-created file from the doctor path.
+            return False
+        import json as _json
+        from xmclaw.cli.config_template import default_config_template
+        try:
+            ctx.config_path.parent.mkdir(parents=True, exist_ok=True)
+            ctx.config_path.write_text(
+                _json.dumps(default_config_template(), indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            return False
+        return True
 
 
 class LLMCheck(DoctorCheck):

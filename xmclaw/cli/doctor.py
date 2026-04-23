@@ -64,8 +64,8 @@ def check_config_file(path: Path) -> tuple[CheckResult, dict[str, Any] | None]:
             ok=False,
             detail=f"not found at {path}",
             advisory=(
-                "copy daemon/config.example.json to daemon/config.json "
-                "and fill in an LLM api_key"
+                "run 'xmclaw config init' to write a skeleton, "
+                "then set an LLM api_key"
             ),
         ), None
     try:
