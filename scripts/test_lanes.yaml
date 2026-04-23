@@ -117,6 +117,7 @@ lanes:
       - tests/unit/test_v2_cli_memory_stats.py
       - tests/unit/test_v2_cli_config.py
       - tests/unit/test_v2_cli_version.py
+      - tests/unit/test_v2_cli_evolution.py
 
   # Memory stack.
   memory:
