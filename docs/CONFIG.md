@@ -76,3 +76,55 @@ docker run --rm \
 - `xmclaw.daemon.factory._apply_env_overrides` 执行合并
 - `xmclaw.daemon.factory.load_config(path, env=...)` 在读文件后自动调用；传 `env={}` 可跳过（单测用）
 - 测试见 [tests/unit/test_v2_daemon_factory.py](../tests/unit/test_v2_daemon_factory.py) `test_env_override_*` 用例
+
+## Memory 配置（Epic #5）
+
+`memory` 段控制 v2 sqlite-vec 记忆层：存哪、TTL、保留策略、定期清扫。完整 schema：
+
+```jsonc
+{
+  "memory": {
+    "enabled": true,                    // false 则整个 memory 层关闭，daemon 不起 store
+    "db_path": null,                    // null → ~/.xmclaw/v2/memory.db；":memory:" 走纯内存
+    "embedding_dim": null,              // null = 惰性探测第一个向量；设整数则强制校验维度
+    "ttl": {                            // 每层的秒级 TTL；null 表示该层不按 age prune
+      "short":   3600,                  //   short  层：1 小时
+      "working": 86400,                 //   working 层：1 天
+      "long":    null                   //   long   层：不按 TTL 清理
+    },
+    "pinned_tags": ["identity", "user-profile"],  // metadata.tags 命中任一即永久保留
+    "retention": {
+      "sweep_interval_s": 3600,         // 后台清扫间隔（秒）；≤0 或非数 → 回退到 3600
+      "prune_by_ttl": true,             // 每次扫描对所有层跑一次 age-prune
+      "max_items": {                    // 每层条数上限；超出按 ts ASC LRU 淘汰（pinned 跳过）
+        "short":   2000,
+        "working": 20000,
+        "long":    null
+      },
+      "max_bytes": {                    // 每层字节上限（text 长度和）；null = 不限
+        "short":   10485760,            //   10 MiB
+        "working": 104857600,           //  100 MiB
+        "long":    null
+      }
+    }
+  }
+}
+```
+
+### 行为要点
+
+- **后台 task 由 `create_app` lifespan 管理**：daemon 起来时起 `MemorySweepTask`，关闭时先 stop 再 close 记忆。
+- **所有层都没有 cap 且 `prune_by_ttl: false` 时，sweep task 不会启动**——没啥可扫的就别白跑。
+- **淘汰时发事件**：`prune` / `evict` 真删到行时会 `bus.publish(MEMORY_EVICTED)`，payload：
+  - `layer` — `"short" | "working" | "long"`
+  - `count` — 本次删除条数
+  - `reason` — `"age"` / `"cap"` / `"cap_items"` / `"cap_bytes"`
+  - `bytes_removed` — 仅 `max_bytes` 触发时存在
+- **降级语义**：配置段里整数字段传了 0、负数或字符串会被静默降为 `null` 并 `memory_sweep.bad_cap` warn——坏配置不应该让 daemon 拒绝启动。
+
+### 实现
+
+- `xmclaw.daemon.factory.build_memory_from_config` 读 `memory` 段构造 `SqliteVecMemory`
+- `xmclaw.daemon.memory_sweep.parse_retention_config` + `MemorySweepTask` 管清扫
+- `xmclaw.providers.memory.sqlite_vec.SqliteVecMemory` 在 `prune` / `evict` 内部调 `_emit_evicted`
+- 测试：[tests/unit/test_v2_memory_retention.py](../tests/unit/test_v2_memory_retention.py)

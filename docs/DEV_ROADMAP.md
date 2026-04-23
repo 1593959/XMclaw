@@ -505,7 +505,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #5 · Memory eviction
 
-**状态**：🟡 进行中 | **负责人**：Claude (AI pair) | **起始**：2026-04-23 | **完成**：-
+**状态**：✅ 已完成 | **负责人**：Claude (AI pair) | **起始**：2026-04-23 | **完成**：2026-04-23
 **前置依赖**：Epic #13（事件总线持久化）
 **关联 Milestone**：M8（性能与可观测）
 
@@ -524,8 +524,8 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - [x] `pinned_tags` 构造参数：admin 可按 `metadata.tag` / `tags` / `category` 豁免
 - [x] `SqliteVecMemory.stats()` 数据面：三层 × `count` / `bytes` / `pinned_count` / `oldest_ts` / `newest_ts`（为 CLI 打底）
 - [x] `xmclaw memory stats` CLI 落地：`--db PATH`（默认 `~/.xmclaw/v2/memory.db`）/ `--json` / 文本表格 / 空 DB 静默报告（不偷偷建库）
-- [ ] `memory.retention_days` / `max_bytes` daemon 级 config 字段（等 daemon 的 memory factory 落地）
-- [ ] `MEMORY_EVICTED` 事件发出（phase 3，上 bus，随 scheduler 一起落）
+- [x] `memory.retention_days` / `max_bytes` daemon 级 config 字段（`memory.retention` 段 + `memory_sweep` 后台任务）
+- [x] `MEMORY_EVICTED` 事件发出（`prune`/`evict` 调 `_emit_evicted` → bus.publish）
 - [x] 单测覆盖 LRU / bytes / pinned / pinned_tags / 组合 cap / 恶意 metadata / layer 隔离
 - [x] 10k 压测（退出标准一半：延迟部分达标）
 
@@ -538,6 +538,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - 2026-04-23: phase 4 (part 1) — 退出标准延迟部分达标。新增 `test_evict_at_10k_items_is_fast`：on-disk DB + 10k 行 + `max_items=5_000` 一次 evict 5k 条，本机耗时 44ms，<100ms 退出标准；guard 设 500ms（5x 头部空间）吸收 CI 抖动。回归信号：O(n²) 实现或全表重写会被 5x 额度抓到。`xmclaw memory stats` CLI 仍未落（phase 3），退出标准另一半挂单 (commit 2a0fc69)
 - 2026-04-23: phase 3 数据面 — `SqliteVecMemory.stats()` 落地：三层固定返回 `count` / `bytes` (UTF-8) / `pinned_count` / `oldest_ts` / `newest_ts`；空库三层全零、`pinned_count` 复用 `_is_pinned` 规则（`metadata.pinned` / `tag` / `tags` / `category`）、不触库。加 6 条单测（空库 / 计数+字节+ts 范围 / UTF-8 多字节 / pinned 规则复用 / 幂等不突变 / evict 后读数正确）。memory suite 38 passed、smart-gate 106 passed。CLI `xmclaw memory stats` 只剩渲染层，解锁 phase 3 展示面 (commit 24c8177)
 - 2026-04-23: phase 3 CLI — `xmclaw memory stats` 落地：typer 子 app `memory` + 命令 `stats`。`--db PATH`（默认 `~/.xmclaw/v2/memory.db`，遵循 pid / events / token 同款 workspace 约定）/ `--json` / 三层固定表输出（layer / count / bytes / pinned / oldest / newest，UTC 时间戳+人类可读字节）。**不偷偷建库**：DB 不存在时打印提示+退出 0（`exists: false` JSON）。加 6 条 CLI 测试（JSON 读数正确 / 文本表格含三层 / 缺 DB 干净报告+不创建 / JSON 缺 DB `exists=false` / HOME 覆盖默认路径 / 空 DB 仍返回三层零行）。smart-gate 174 passed 1 skipped (commit 32a4d11)
+- 2026-04-23: phase 5 收尾 — daemon 层接线 + `MEMORY_EVICTED` 事件打通。`xmclaw/core/bus/events.py` 加 `EventType.MEMORY_EVICTED`；`SqliteVecMemory(..., bus=)` 接总线，`prune`/`evict` 真删到行时 `bus.publish(make_event(session_id="_system", agent_id="daemon", type=MEMORY_EVICTED, payload={layer, count, reason, bytes_removed?}))`，发事件失败用 try/except 吞掉——清扫是本职工作，总线挂了也要继续。`xmclaw/daemon/factory.py` 加 `build_memory_from_config(cfg, bus=)`：`memory.enabled=false` 返回 None；`db_path=null` 走 `~/.xmclaw/v2/memory.db`；校验 `embedding_dim` / `ttl` / `pinned_tags` 段类型，坏配置抛 `ConfigError`。`xmclaw/daemon/memory_sweep.py` 新建：`LayerRetention` + `RetentionPolicy` + `parse_retention_config`（**永不抛**，坏字段降为 `None` 并 warn）+ `MemorySweepTask`（每 `sweep_interval_s` 跑一次 `prune_by_ttl` + 三层 cap，per-layer try/except 隔离单层失败；无 cap 时 `start()` 空转不起任务）。`xmclaw/daemon/app.py` 用 `@asynccontextmanager` lifespan hook 管起停，挂在 `app.state.memory` / `app.state.memory_sweep`。加 21 条单测 `tests/unit/test_v2_memory_retention.py`（事件 payload / 零 item 不发事件 / subscriber 炸了不 rollback eviction / factory 默认+disabled+custom+ttl+pinned+3 种坏段 / retention 默认+per-layer+坏值降级 / any_cap_set 真假 / sweep_once 跨层 + 单层故障隔离 / start-stop roundtrip + no-op）。`daemon/config.example.json` / `docs/CONFIG.md` / `scripts/test_lanes.yaml` memory lane 同步更新（commit 待落）
 
 ---
 
@@ -1132,7 +1133,7 @@ Hermes、OpenClaw 都给不出这种 demo——他们的"进步"要么是手动 
 | 坑 | 出自 | 我们的规避 |
 |----|------|----------|
 | Tool call 解析飘回文本 | OpenClaw #1467, Hermes #8912 | **已规避**：`core/ir/toolcall.py` 结构化 IR |
-| Memory 绝对阈值溢出 | OpenClaw #31781 | **待做**：Epic #5 eviction |
+| Memory 绝对阈值溢出 | OpenClaw #31781 | **已规避**：Epic #5 eviction + 后台清扫 |
 | Skill 无 rollback | Hermes FAQ "use git" | **已规避**：SkillRegistry append-only history |
 | LLM self-judge 造成虚假满意 | Hermes 公开缺陷 | **已规避**：HonestGrader opinion ≤ 0.20 |
 | 渠道 CI parity 缺失 | OpenClaw #52838 | **待做**：Epic #1 conformance test |
@@ -1271,7 +1272,7 @@ Hermes、OpenClaw 都给不出这种 demo——他们的"进步"要么是手动 
 
 **退出标准**：
 - [x] 结构化日志 + rotation（Epic #15）
-- [ ] Memory eviction（Epic #5）
+- [x] Memory eviction（Epic #5）
 - [ ] Prompt 注入防御（Epic #14）
 - [ ] Secrets 加密（Epic #16）
 - [ ] `grep -r sk- ~/.xmclaw/` 无命中（明文 secret 审计清空）

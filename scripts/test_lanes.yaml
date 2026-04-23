@@ -92,9 +92,11 @@ lanes:
       - "xmclaw/daemon/app.py"
       - "xmclaw/daemon/lifecycle.py"
       - "xmclaw/daemon/pairing.py"
+      - "xmclaw/daemon/memory_sweep.py"
     tests:
       - tests/unit/test_v2_daemon_factory.py
       - tests/unit/test_v2_daemon_lifecycle.py
+      - tests/unit/test_v2_memory_retention.py
       - tests/unit/test_v2_pairing.py
       - tests/integration/test_v2_daemon_app.py
       - tests/integration/test_v2_daemon_agent.py
@@ -118,11 +120,13 @@ lanes:
   # Memory stack.
   memory:
     triggers:
-      - "xmclaw/memory/**"
+      - "xmclaw/providers/memory/**"
       - "xmclaw/daemon/agent_memory.py"
+      - "xmclaw/daemon/memory_sweep.py"
     tests:
       - tests/unit/test_v2_agent_memory.py
       - tests/unit/test_v2_memory_sqlite_vec.py
+      - tests/unit/test_v2_memory_retention.py
       - tests/integration/test_v2_daemon_memory.py
       - tests/integration/test_v2_cross_session_memory.py
 

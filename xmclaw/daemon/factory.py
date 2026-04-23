@@ -6,16 +6,12 @@ configured api_key, and builds a ready-to-use ``AgentLoop``.
 
 Scope of this module:
   * ``build_llm_from_config(cfg)`` — pick provider + instantiate it
+  * ``build_tools_from_config(cfg)`` — assemble ToolProvider composite
+  * ``build_memory_from_config(cfg, bus)`` — optional SqliteVecMemory
+    + retention caps (Epic #5)
   * ``build_agent_from_config(cfg, bus)`` — assemble an AgentLoop
   * ``load_config(path)`` — thin wrapper over json.load (kept out of
     the factory so tests can pass in-memory dicts directly)
-
-Non-goals (deferred):
-  * ToolProvider wiring — Phase 4.3 adds a config section for tools
-    with a file-system allowlist. For now the factory builds a tool-
-    less AgentLoop.
-  * Device-bound auth — Phase 4.4.
-  * Scheduler + evolution controller on top of the agent — Phase 4.3.
 """
 from __future__ import annotations
 
@@ -29,9 +25,11 @@ from xmclaw.daemon.agent_loop import AgentLoop
 from xmclaw.providers.llm.anthropic import AnthropicLLM
 from xmclaw.providers.llm.base import LLMProvider
 from xmclaw.providers.llm.openai import OpenAILLM
+from xmclaw.providers.memory.sqlite_vec import SqliteVecMemory
 from xmclaw.providers.tool.base import ToolProvider
 from xmclaw.providers.tool.builtin import BuiltinTools
 from xmclaw.security.prompt_scanner import PolicyMode
+from xmclaw.utils.paths import default_memory_db_path
 
 
 # Recognised provider kinds in the config. Each maps to a constructor.
@@ -295,6 +293,92 @@ def build_tools_from_config(cfg: dict[str, Any]) -> ToolProvider | None:
 
     from xmclaw.providers.tool.composite import CompositeToolProvider
     return CompositeToolProvider(*children)
+
+
+def build_memory_from_config(
+    cfg: dict[str, Any],
+    bus: InProcessEventBus | None = None,
+) -> SqliteVecMemory | None:
+    """Return a ``SqliteVecMemory`` built from ``cfg['memory']``.
+
+    Returns ``None`` when ``cfg['memory'].enabled`` is falsy so the
+    daemon can omit memory entirely (unit-test mode, pure-chat
+    scenarios). Default when the ``memory`` section is missing is
+    enabled-on.
+
+    Config shape (all fields optional):
+
+    ::
+
+        {
+          "memory": {
+            "enabled": true,                 # default: true
+            "db_path": "<path>",             # default: ~/.xmclaw/v2/memory.db
+            "embedding_dim": null,           # int or null
+            "ttl": {                         # seconds per layer; null = never
+              "short": 3600,
+              "working": 86400,
+              "long": null
+            },
+            "pinned_tags": ["identity"],     # never-evict tag allowlist
+            "retention": {                   # Epic #5 periodic sweep caps
+              "max_items": {"short": 2000, "working": 20000, "long": null},
+              "max_bytes": {"short": null, "working": null, "long": null},
+              "sweep_interval_s": 3600
+            }
+          }
+        }
+
+    The ``retention`` sub-section is consumed by
+    ``xmclaw.daemon.memory_sweep.MemorySweepTask``; this factory only
+    mints the memory store itself. Pass ``bus`` so evictions emit
+    ``MEMORY_EVICTED`` events.
+    """
+    mem_section = cfg.get("memory")
+    if mem_section is None:
+        db_path = default_memory_db_path()
+        return SqliteVecMemory(db_path, bus=bus)
+    if not isinstance(mem_section, dict):
+        raise ConfigError(
+            f"'memory' must be an object, got {type(mem_section).__name__}"
+        )
+    if mem_section.get("enabled") is False:
+        return None
+
+    db_path_raw = mem_section.get("db_path")
+    db_path: Path | str
+    if isinstance(db_path_raw, str) and db_path_raw:
+        db_path = db_path_raw
+    else:
+        db_path = default_memory_db_path()
+
+    embedding_dim = mem_section.get("embedding_dim")
+    if embedding_dim is not None and not isinstance(embedding_dim, int):
+        raise ConfigError(
+            f"'memory.embedding_dim' must be int or null, got "
+            f"{type(embedding_dim).__name__}"
+        )
+
+    ttl = mem_section.get("ttl")
+    if ttl is not None and not isinstance(ttl, dict):
+        raise ConfigError(
+            f"'memory.ttl' must be an object, got {type(ttl).__name__}"
+        )
+
+    pinned_tags = mem_section.get("pinned_tags")
+    if pinned_tags is not None:
+        if not isinstance(pinned_tags, list) or not all(
+            isinstance(t, str) for t in pinned_tags
+        ):
+            raise ConfigError("'memory.pinned_tags' must be a list of strings")
+
+    return SqliteVecMemory(
+        db_path,
+        embedding_dim=embedding_dim,
+        ttl=ttl,
+        pinned_tags=tuple(pinned_tags) if pinned_tags else None,
+        bus=bus,
+    )
 
 
 def build_agent_from_config(

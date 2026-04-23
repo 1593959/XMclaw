@@ -37,6 +37,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from xmclaw.core.bus.events import EventType, make_event
 from xmclaw.providers.memory.base import Layer, MemoryItem, MemoryProvider
 from xmclaw.utils.log import get_logger
 
@@ -72,6 +73,13 @@ class SqliteVecMemory(MemoryProvider):
         ``tag`` / ``tags`` / ``category`` (or truthy ``pinned`` flag)
         are exempt from ``evict()``. Use this to protect "identity" /
         "promise" / "user-profile" items without editing each row.
+    bus : EventBus | None
+        Optional event bus. When provided, ``prune()`` / ``evict()``
+        emit a ``MEMORY_EVICTED`` event on successful removal so
+        the UI / grader / oncall can observe daemon maintenance.
+        Structural duck-type: anything with ``async publish(event)``
+        works; we only take it as ``Any`` to avoid an import cycle
+        through ``xmclaw.core.bus``.
     """
 
     def __init__(
@@ -81,11 +89,13 @@ class SqliteVecMemory(MemoryProvider):
         embedding_dim: int | None = None,
         ttl: dict[str, float | None] | None = None,
         pinned_tags: list[str] | tuple[str, ...] | None = None,
+        bus: Any | None = None,
     ) -> None:
         self.db_path = str(db_path)
         self._embedding_dim = embedding_dim
         self._ttl = {**_DEFAULT_TTL, **(ttl or {})}
         self._pinned_tags: frozenset[str] = frozenset(pinned_tags or ())
+        self._bus = bus
         self._conn = self._open_conn()
         self._ensure_schema()
         if embedding_dim is not None:
@@ -334,6 +344,7 @@ class SqliteVecMemory(MemoryProvider):
             count=len(ids),
             reason="age",
         )
+        await self._emit_evicted(layer=layer, count=len(ids), reason="age")
         return len(ids)
 
     async def evict(
@@ -406,6 +417,9 @@ class SqliteVecMemory(MemoryProvider):
         if not victim_ids:
             return 0
         ids = sorted(victim_ids)
+        bytes_removed = sum(
+            n for vid, n in non_pinned if vid in victim_ids
+        ) if max_bytes is not None else None
         self._delete_ids(ids)
         reason = (
             "cap"
@@ -418,7 +432,49 @@ class SqliteVecMemory(MemoryProvider):
             count=len(ids),
             reason=reason,
         )
+        await self._emit_evicted(
+            layer=layer,
+            count=len(ids),
+            reason=reason,
+            bytes_removed=bytes_removed,
+        )
         return len(ids)
+
+    async def _emit_evicted(
+        self,
+        *,
+        layer: Layer,
+        count: int,
+        reason: str,
+        bytes_removed: int | None = None,
+    ) -> None:
+        """Publish ``MEMORY_EVICTED`` if a bus was configured.
+
+        Failure to publish must not cascade — a dead subscriber cannot
+        rollback a successful eviction. Errors are swallowed and logged.
+        """
+        if self._bus is None or count == 0:
+            return
+        payload: dict[str, Any] = {
+            "layer": layer,
+            "count": count,
+            "reason": reason,
+        }
+        if bytes_removed is not None:
+            payload["bytes_removed"] = bytes_removed
+        try:
+            await self._bus.publish(make_event(
+                session_id="_system",
+                agent_id="daemon",
+                type=EventType.MEMORY_EVICTED,
+                payload=payload,
+            ))
+        except Exception as exc:  # noqa: BLE001 — event emission must not block maintenance
+            _log.warning(
+                "memory.evicted.emit_failed",
+                layer=layer,
+                error=repr(exc),
+            )
 
     def _delete_ids(self, ids: list[str]) -> None:
         if not ids:

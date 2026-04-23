@@ -52,6 +52,16 @@ class EventType(str, Enum):
     #     "tool_call_id": str | None,  # set when source=="tool_result"
     # }
     PROMPT_INJECTION_DETECTED = "prompt_injection_detected"
+    # Epic #5: emitted when the memory provider evicts items, either from
+    # periodic daemon maintenance or an explicit admin prune/evict call.
+    # Emitted with session_id="_system" / agent_id="daemon".
+    # Payload: {
+    #     "layer": "short" | "working" | "long",
+    #     "count": int,              # rows deleted
+    #     "reason": "age" | "cap_items" | "cap_bytes" | "cap",
+    #     "bytes_removed": int | None,  # only present for byte-cap evictions
+    # }
+    MEMORY_EVICTED = "memory_evicted"
 
 
 @dataclass(frozen=True, slots=True)
