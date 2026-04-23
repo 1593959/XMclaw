@@ -148,7 +148,7 @@ xmclaw/
     ├── paths.py             # 从 v1 迁移
     └── cost.py              # 从 v1 迁移 + 熔断
 
-web/                         # 前端（从零重构，另起 README）
+xmclaw/daemon/static/        # Web UI（vanilla HTML/CSS/JS，无构建，`/ui/` 挂载）
 docs/                        # 文档
 plugin-sdk/                  # 独立发包：xmclaw-plugin-sdk
 tests/

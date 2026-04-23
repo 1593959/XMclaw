@@ -36,13 +36,14 @@ xmclaw/              Python package — see per-subdir AGENTS.md for contracts
 ├── utils/           Path / log / redact / cost helpers     → xmclaw/utils/AGENTS.md
 └── plugins/         Third-party plugins (Epic #2 WIP)
 
-web/                 Vite-based web UI (vanilla JS + CSS)
+xmclaw/daemon/static/ Web UI (vanilla JS + CSS, no build step) — served at
+                     `/ui/` via FastAPI `StaticFiles`. No Node.js required.
 daemon/              Runtime config (config.json gitignored; config.example.json is the template)
 docs/                ARCHITECTURE, DEV_ROADMAP, EVENTS, DOCTOR, WORKSPACE, V2_DEVELOPMENT, …
                      AGENTS_TEMPLATE.md is the template per-subdir AGENTS.md files follow.
 tests/               pytest suites — see scripts/test_lanes.yaml for the smart-gate mapping
 scripts/             Dev/ops — setup.{ps1,bat}, test_changed.py, check_import_direction.py, …
-.github/workflows/   python-ci.yml (lint + smart-gate tests), web-ci.yml, release.yml, python-publish.yml
+.github/workflows/   python-ci.yml (lint + smart-gate tests), release.yml, python-publish.yml
 ```
 
 Runtime data (events.db, memory.db, pairing_token.txt, daemon.pid, …) lives under `~/.xmclaw/v2/`, *not* inside the repo — see [docs/WORKSPACE.md](docs/WORKSPACE.md). Anything not in the tree above is either gitignored dev scratch, or a legacy v1 artifact — check `.gitignore` before assuming a root-level file belongs in git.
@@ -122,4 +123,4 @@ The workflow also accepts `workflow_dispatch` for re-builds against an existing 
 
 - Python 3.10+ (see `pyproject.toml`).
 - Optional: `playwright install chromium` for browser tools; `pyautogui` + `mss` for computer-use.
-- No Node.js required for runtime — only for working on `web/` (Vite dev server).
+- No Node.js required. The web UI under `xmclaw/daemon/static/` is plain HTML/CSS/JS served by FastAPI — edit the files directly and refresh the browser.
