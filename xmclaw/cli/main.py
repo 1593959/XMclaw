@@ -39,6 +39,14 @@ memory_app = typer.Typer(
 )
 app.add_typer(memory_app, name="memory")
 
+# ``xmclaw config <subcommand>`` — ``init`` writes a fresh daemon/config.json,
+# ``set`` mutates a dotted key. README has been advertising both since v2
+# rewrite; this typer group is what makes those promises real.
+config_app = typer.Typer(
+    help="Create or tweak daemon/config.json (LLM keys, tools, gateway).",
+)
+app.add_typer(config_app, name="config")
+
 
 def _default_memory_db_path():
     """Delegates to :func:`xmclaw.utils.paths.default_memory_db_path` so
@@ -614,6 +622,200 @@ def memory_stats(
             f"{s['pinned_count']:>6}  {_fmt_ts(s['oldest_ts']):<21}  "
             f"{_fmt_ts(s['newest_ts']):<21}"
         )
+
+
+# ── config subcommands ──────────────────────────────────────────────────
+
+
+def _default_config_template() -> dict:
+    """Minimal, shape-compatible with ``daemon/config.example.json``.
+
+    Embedded in code (not loaded from the example file) so the command
+    works from a pip-installed wheel where the repo-root example isn't
+    bundled. The example JSON stays the canonical documentation of every
+    optional section; this literal is the minimum viable config the
+    daemon needs to boot.
+    """
+    return {
+        "llm": {
+            "default_provider": "anthropic",
+            "anthropic": {
+                "api_key": "",
+                "base_url": "https://api.anthropic.com",
+                "default_model": "",
+            },
+            "openai": {
+                "api_key": "",
+                "base_url": "https://api.openai.com/v1",
+                "default_model": "",
+            },
+        },
+        "gateway": {"host": "127.0.0.1", "port": 8765},
+        "security": {"prompt_injection": "detect_only"},
+    }
+
+
+def _parse_dotted_value(raw: str):
+    """``config set`` argument parsing: JSON literal first, then string.
+
+    ``xmclaw config set gateway.port 9000`` -> int 9000.
+    ``xmclaw config set llm.anthropic.api_key sk-ant-xxx`` -> string.
+    ``xmclaw config set evolution.enabled true`` -> bool True.
+    """
+    import json as _json
+    try:
+        return _json.loads(raw)
+    except _json.JSONDecodeError:
+        return raw
+
+
+@config_app.command("init")
+def config_init(
+    path: str = typer.Option(
+        "daemon/config.json", "--path",
+        help="Where to write the config (default: daemon/config.json).",
+    ),
+    provider: str = typer.Option(
+        "", "--provider",
+        help="Optional: pre-set the default LLM provider ('anthropic' or 'openai').",
+    ),
+    api_key: str = typer.Option(
+        "", "--api-key",
+        help="Optional: populate the chosen provider's api_key non-interactively.",
+    ),
+    force: bool = typer.Option(
+        False, "--force",
+        help="Overwrite an existing config file.",
+    ),
+) -> None:
+    """Write a fresh daemon/config.json skeleton.
+
+    The skeleton covers the three sections the daemon needs to boot:
+    ``llm`` (with empty api_key placeholders for both providers),
+    ``gateway``, and ``security.prompt_injection``. Anything else
+    (``tools``, ``memory``, ``evolution``, ``mcp_servers``,
+    ``integrations``) defaults at daemon level and can be added by hand
+    from ``daemon/config.example.json`` when you need it.
+
+    Refuses to overwrite an existing file unless ``--force`` is passed,
+    so re-running this command is always safe.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    target = _Path(path)
+    if target.exists() and not force:
+        typer.echo(
+            f"  [!]   config already exists at {target}", err=True,
+        )
+        typer.echo(
+            "        pass --force to overwrite, or use "
+            "'xmclaw config set <key> <value>' to edit in place",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    if provider and provider not in ("anthropic", "openai"):
+        typer.echo(
+            f"  [x]  unknown provider '{provider}' "
+            "(expected 'anthropic' or 'openai')",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    template = _default_config_template()
+    if provider:
+        template["llm"]["default_provider"] = provider
+        if api_key:
+            template["llm"][provider]["api_key"] = api_key
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        _json.dumps(template, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    typer.echo(f"  [ok]  wrote {target}")
+    if not api_key:
+        typer.echo(
+            "        next: set an LLM api_key -- e.g. "
+            "'xmclaw config set llm.anthropic.api_key sk-ant-...' "
+            "or edit the file directly"
+        )
+    typer.echo("        then run 'xmclaw doctor' to verify")
+
+
+@config_app.command("set")
+def config_set(
+    key: str = typer.Argument(
+        ..., help="Dotted key path, e.g. 'llm.anthropic.api_key'.",
+    ),
+    value: str = typer.Argument(
+        ..., help="Value. Parsed as JSON when valid (true/false/123/[...]); "
+                  "otherwise treated as a string.",
+    ),
+    path: str = typer.Option(
+        "daemon/config.json", "--path",
+        help="Config file to mutate (default: daemon/config.json).",
+    ),
+) -> None:
+    """Set one dotted key in a config JSON file.
+
+    Creates intermediate objects as needed. Refuses to touch a missing
+    file (run 'xmclaw config init' first) or one that isn't a JSON
+    object at its root -- the daemon factory expects ``dict`` and
+    nothing else.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    target = _Path(path)
+    if not target.exists():
+        typer.echo(
+            f"  [x]  no config at {target} -- run 'xmclaw config init' first",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        data = _json.loads(target.read_text(encoding="utf-8"))
+    except _json.JSONDecodeError as exc:
+        typer.echo(f"  [x]  {target} is not valid JSON: {exc}", err=True)
+        raise typer.Exit(code=1)
+    if not isinstance(data, dict):
+        typer.echo(
+            f"  [x]  {target} must have a JSON object at its root, "
+            f"got {type(data).__name__}",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    parts = [p for p in key.split(".") if p]
+    if not parts:
+        typer.echo("  [x]  key must be non-empty", err=True)
+        raise typer.Exit(code=2)
+
+    parsed_value = _parse_dotted_value(value)
+
+    cursor = data
+    for segment in parts[:-1]:
+        existing = cursor.get(segment)
+        if not isinstance(existing, dict):
+            # Either missing or a scalar that we need to overwrite with a
+            # dict to make room for the nested key. Overwriting a scalar
+            # mid-path is deliberate: 'config set llm.anthropic.x 1'
+            # against a config where 'llm.anthropic' was accidentally set
+            # to "" should recover rather than error-out.
+            cursor[segment] = {}
+            existing = cursor[segment]
+        cursor = existing
+    cursor[parts[-1]] = parsed_value
+
+    target.write_text(
+        _json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    typer.echo(f"  [ok]  {target}: {key} = {_json.dumps(parsed_value)}")
 
 
 if __name__ == "__main__":

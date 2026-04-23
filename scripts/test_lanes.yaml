@@ -110,6 +110,8 @@ lanes:
       - tests/unit/test_v2_doctor.py
       - tests/unit/test_v2_chat_formatter.py
       - tests/unit/test_v2_lint_roadmap.py
+      - tests/unit/test_v2_cli_memory_stats.py
+      - tests/unit/test_v2_cli_config.py
 
   # Memory stack.
   memory:
