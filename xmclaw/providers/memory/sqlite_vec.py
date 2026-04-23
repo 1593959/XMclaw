@@ -67,6 +67,11 @@ class SqliteVecMemory(MemoryProvider):
         dimension is frozen from that embedding's length).
     ttl : dict[str, float | None] | None
         Override TTL hints per layer. None for a layer means never expire.
+    pinned_tags : list[str] | None
+        Admin-level allowlist: items whose metadata has a matching
+        ``tag`` / ``tags`` / ``category`` (or truthy ``pinned`` flag)
+        are exempt from ``evict()``. Use this to protect "identity" /
+        "promise" / "user-profile" items without editing each row.
     """
 
     def __init__(
@@ -75,10 +80,12 @@ class SqliteVecMemory(MemoryProvider):
         *,
         embedding_dim: int | None = None,
         ttl: dict[str, float | None] | None = None,
+        pinned_tags: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         self.db_path = str(db_path)
         self._embedding_dim = embedding_dim
         self._ttl = {**_DEFAULT_TTL, **(ttl or {})}
+        self._pinned_tags: frozenset[str] = frozenset(pinned_tags or ())
         self._conn = self._open_conn()
         self._ensure_schema()
         if embedding_dim is not None:
@@ -432,9 +439,17 @@ class SqliteVecMemory(MemoryProvider):
             pass
         self._conn.commit()
 
-    @staticmethod
-    def _is_pinned(metadata_json: str | None) -> bool:
-        """Return True when metadata has a truthy ``pinned`` field.
+    def _is_pinned(self, metadata_json: str | None) -> bool:
+        """Return True when a row is exempt from cap-based eviction.
+
+        Two sources of exemption:
+
+        1. Per-row flag — truthy ``metadata.pinned``. Use when a caller
+           knows a specific item must survive.
+        2. Admin allowlist — ``pinned_tags`` constructor arg matches any
+           of ``metadata.tag`` (scalar), ``metadata.tags`` (list), or
+           ``metadata.category``. Use for coarse policy like "never
+           evict identity or promise memories".
 
         Tolerant of malformed JSON — treats unparseable metadata as
         unpinned so a bad row can't accidentally become immortal.
@@ -447,7 +462,22 @@ class SqliteVecMemory(MemoryProvider):
             return False
         if not isinstance(meta, dict):
             return False
-        return bool(meta.get("pinned"))
+        if meta.get("pinned"):
+            return True
+        if not self._pinned_tags:
+            return False
+        tag = meta.get("tag")
+        if isinstance(tag, str) and tag in self._pinned_tags:
+            return True
+        category = meta.get("category")
+        if isinstance(category, str) and category in self._pinned_tags:
+            return True
+        tags = meta.get("tags")
+        if isinstance(tags, list) and any(
+            isinstance(t, str) and t in self._pinned_tags for t in tags
+        ):
+            return True
+        return False
 
     def close(self) -> None:
         self._conn.close()

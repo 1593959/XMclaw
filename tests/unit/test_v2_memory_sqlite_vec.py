@@ -394,6 +394,56 @@ async def test_evict_also_drops_embedding_rows(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_evict_pinned_tags_exempt_by_tag_scalar() -> None:
+    mem = SqliteVecMemory(":memory:", pinned_tags=["identity", "promise"])
+    await mem.put("short", _item("who-i-am",  metadata={"tag": "identity"}, ts=1.0))
+    await mem.put("short", _item("random-a",  metadata={"tag": "chatter"},  ts=2.0))
+    await mem.put("short", _item("random-b",  metadata={"tag": "chatter"},  ts=3.0))
+    removed = await mem.evict("short", max_items=0)
+    assert removed == 2
+    survivors = [r.text for r in await mem.query("short")]
+    assert survivors == ["who-i-am"]
+    mem.close()
+
+
+@pytest.mark.asyncio
+async def test_evict_pinned_tags_exempt_by_tags_list() -> None:
+    mem = SqliteVecMemory(":memory:", pinned_tags=["promise"])
+    await mem.put("short", _item("a", metadata={"tags": ["promise", "later"]}, ts=1.0))
+    await mem.put("short", _item("b", metadata={"tags": ["chatter"]},          ts=2.0))
+    removed = await mem.evict("short", max_items=0)
+    assert removed == 1
+    survivors = [r.text for r in await mem.query("short")]
+    assert survivors == ["a"]
+    mem.close()
+
+
+@pytest.mark.asyncio
+async def test_evict_pinned_tags_exempt_by_category() -> None:
+    mem = SqliteVecMemory(":memory:", pinned_tags=["system"])
+    await mem.put("short", _item("sys", metadata={"category": "system"}, ts=1.0))
+    await mem.put("short", _item("usr", metadata={"category": "user"},   ts=2.0))
+    removed = await mem.evict("short", max_items=0)
+    assert removed == 1
+    assert [r.text for r in await mem.query("short")] == ["sys"]
+    mem.close()
+
+
+@pytest.mark.asyncio
+async def test_evict_pinned_tags_none_keeps_default_behaviour() -> None:
+    """Without pinned_tags, only the explicit metadata.pinned flag counts."""
+    mem = SqliteVecMemory(":memory:")
+    await mem.put("short", _item("t", metadata={"tag": "identity"}, ts=1.0))
+    await mem.put("short", _item("u", metadata={"pinned": True},    ts=2.0))
+    removed = await mem.evict("short", max_items=0)
+    # Only "u" survives — "t" has no pinned flag and pinned_tags is empty.
+    assert removed == 1
+    survivors = [r.text for r in await mem.query("short")]
+    assert survivors == ["u"]
+    mem.close()
+
+
+@pytest.mark.asyncio
 async def test_evict_malformed_metadata_not_treated_as_pinned() -> None:
     """Corrupt metadata JSON must not accidentally immortalize a row."""
     mem = SqliteVecMemory(":memory:")
