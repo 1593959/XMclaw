@@ -1,8 +1,8 @@
 # XMclaw v2 — Status snapshot
 
-**Date:** 2026-04-21
-**Branch:** `main` (v2-rewrite merged)
-**State:** Phase 1–4 complete. Autonomous self-evolution is live-validated; the v2 daemon is end-to-end usable via CLI.
+**Date:** 2026-04-23
+**Branch:** `main` (v2-rewrite merged; v1 strangler-fig sweep complete)
+**State:** Phase 1–4 complete. Autonomous self-evolution is live-validated; the v2 daemon is end-to-end usable via CLI + Web UI (`xmclaw/daemon/static/`).
 
 ---
 
@@ -90,9 +90,10 @@ the Actions tab).
 
 ## What's NOT done
 
-- **Phase 3.4 subprocess sandbox:** `LocalSkillRuntime` only enforces CPU timeout in-process; a rogue skill can still `Path(...).read_text()` anywhere. Needs subprocess/docker isolation. Not blocking — Phase 3.5 doesn't depend on it.
-- **Phase 4 daemon integration + web UI + release:** none of `xmclaw/daemon/*` / `web/*` rebuild has happened yet. v1 daemon is still the shipping version.
-- **v1 strangler-fig cleanup:** v1 modules (`xmclaw/core/agent_loop.py`, `evolution/*`, `genes/*`, `task_classifier.py`) still live alongside v2. Intentional; let Phase 4 delete them together with v1 release deprecation.
+- **Sandboxed skill runtime (Epic #3):** `LocalSkillRuntime` enforces a CPU/wall-clock timeout in-process, but a rogue skill can still `Path(...).read_text()` anywhere. `providers/runtime/process.py` is the isolation path; subprocess/docker hard-isolation is what graduates it from "dev default" to "production default".
+- **Daemon memory retention (Epic #5):** factory wiring for `retention_days` / `max_bytes` + a `MEMORY_EVICTED` event is not landed; memory grows unbounded until manually purged.
+- **Second-stage anti-req #14 coverage:** SOUL / PROFILE / memory-recall injection sites exist at the IR boundary but the full "no auto-inject" audit pass across every AgentLoop branch is still open.
+- **72h daemon stress test (M1 exit):** not session-runnable; needs a real multi-day window on a dedicated host.
 
 ---
 

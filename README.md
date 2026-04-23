@@ -43,9 +43,10 @@
 > [docs/REWRITE_PLAN.md](docs/REWRITE_PLAN.md) ·
 > [docs/V2_DEVELOPMENT.md](docs/V2_DEVELOPMENT.md).
 >
-> v1 modules still live alongside v2 during strangler-fig transition — the
-> shipping installer continues to use v1 until Phase 4 (daemon integration +
-> release pipeline rewrite) completes.
+> The v1 strangler-fig sweep is complete — `xmclaw/genes/`, `xmclaw/evolution/`,
+> `xmclaw/core/agent_loop.py`, `task_classifier.py`, the old v1 daemon and v1
+> Web UI are all removed. The v2 daemon + Web UI (`xmclaw/daemon/static/`) is
+> what ships.
 
 **XMclaw** is a personal AI agent that runs entirely on your machine. It is not a chatbot — it is a runtime that can think, act, remember, and continuously improve itself over time.
 

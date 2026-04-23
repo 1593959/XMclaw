@@ -24,10 +24,9 @@ Two contracts:
       "check → call → record", so we block before the next turn
       when we've already exceeded.
 
-The implementation is intentionally standalone — no v1 coupling —
-because ``xmclaw.core.cost_tracker`` (v1) has different semantics
-(soft-warn on near-cap) and different pricing tables. Phase 4 deletes
-the v1 module outright in the strangler-fig sweep.
+The implementation is intentionally standalone so it stays callable
+from any layer (``core``, ``providers``, ``daemon``) without pulling
+sibling subpackage imports through ``utils``.
 """
 from __future__ import annotations
 
