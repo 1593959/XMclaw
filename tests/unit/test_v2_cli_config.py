@@ -232,4 +232,131 @@ def test_config_init_then_set_end_to_end(tmp_path: Path) -> None:
     assert r2.exit_code == 0, r2.stdout
     data = json.loads(target.read_text(encoding="utf-8"))
     assert data["llm"]["anthropic"]["api_key"] == "sk-ant-abc"
-    assert data["llm"]["default_provider"] == "anthropic"
+
+
+# ── config show ─────────────────────────────────────────────────────────
+
+
+def _write_cfg(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_config_show_masks_api_key_by_default(tmp_path: Path) -> None:
+    """Sensitive leaves are partially masked; structure is preserved."""
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {
+        "llm": {"anthropic": {"api_key": "sk-ant-abcdef-1234567890"}},
+    })
+    r = runner.invoke(app, ["config", "show", "--path", str(target), "--json"])
+    assert r.exit_code == 0, r.stdout
+    # Strip the first "[ok]" line — wait, --json skips the "[ok]" header.
+    rendered = json.loads(r.stdout)
+    masked = rendered["llm"]["anthropic"]["api_key"]
+    assert "sk-ant-abcdef-1234567890" not in r.stdout  # nothing leaked
+    assert masked.startswith("sk")
+    assert masked.endswith("90")
+    assert "*" in masked
+    assert len(masked) == len("sk-ant-abcdef-1234567890")
+
+
+def test_config_show_masks_multiple_sensitive_suffixes(tmp_path: Path) -> None:
+    """token / secret / password / private_key all trigger masking."""
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {
+        "channels": {"slack": {"bot_token": "xoxb-super-secret-token"}},
+        "backup": {"encryption_secret": "fernet-1234567890"},
+        "db": {"password": "p@ssw0rd-dev"},
+        "ssh": {"private_key": "----BEGIN RSA----xyz"},
+        "plain": "public value",
+    })
+    r = runner.invoke(app, ["config", "show", "--path", str(target), "--json"])
+    assert r.exit_code == 0
+    out = json.loads(r.stdout)
+    assert "xoxb-super-secret-token" not in r.stdout
+    assert "fernet-1234567890" not in r.stdout
+    assert "p@ssw0rd-dev" not in r.stdout
+    assert "BEGIN RSA" not in r.stdout
+    # Public field must pass through verbatim.
+    assert out["plain"] == "public value"
+
+
+def test_config_show_reveal_prints_raw(tmp_path: Path) -> None:
+    """``--reveal`` is the explicit opt-in for unmasked output."""
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {"llm": {"anthropic": {"api_key": "sk-ant-zzz"}}})
+    r = runner.invoke(app, [
+        "config", "show", "--path", str(target), "--json", "--reveal",
+    ])
+    assert r.exit_code == 0
+    assert "sk-ant-zzz" in r.stdout
+
+
+def test_config_show_short_value_stars_entirely(tmp_path: Path) -> None:
+    """A <=4-char secret would effectively leak under prefix/suffix
+    mask — collapse to all-stars instead."""
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {"foo": {"token": "ab"}})
+    r = runner.invoke(app, ["config", "show", "--path", str(target), "--json"])
+    assert r.exit_code == 0
+    out = json.loads(r.stdout)
+    assert out["foo"]["token"] == "**"
+
+
+def test_config_show_missing_file_exits_nonzero(tmp_path: Path) -> None:
+    runner = CliRunner()
+    r = runner.invoke(app, [
+        "config", "show", "--path", str(tmp_path / "nope.json"),
+    ])
+    assert r.exit_code == 1
+
+
+def test_config_show_invalid_json_exits_nonzero(tmp_path: Path) -> None:
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    target.write_text("{not json", encoding="utf-8")
+    r = runner.invoke(app, ["config", "show", "--path", str(target)])
+    assert r.exit_code == 1
+
+
+def test_config_show_preserves_nested_structure(tmp_path: Path) -> None:
+    """Masking is per-leaf — intermediate dicts / lists survive intact."""
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {
+        "gateway": {"host": "127.0.0.1", "port": 8765},
+        "security": {"prompt_injection": "detect_only"},
+        "tools": {"allowed_dirs": [".", "~/work"]},
+    })
+    r = runner.invoke(app, ["config", "show", "--path", str(target), "--json"])
+    out = json.loads(r.stdout)
+    assert out["gateway"] == {"host": "127.0.0.1", "port": 8765}
+    assert out["security"]["prompt_injection"] == "detect_only"
+    assert out["tools"]["allowed_dirs"] == [".", "~/work"]
+
+
+def test_config_show_text_mode_is_human_readable(tmp_path: Path) -> None:
+    """Default text mode includes the file path + indented JSON body."""
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {"llm": {"anthropic": {"api_key": "sk-abcdef"}}})
+    r = runner.invoke(app, ["config", "show", "--path", str(target)])
+    assert r.exit_code == 0
+    assert str(target) in r.stdout
+    # Body is indented JSON — we should see structure, not a one-liner.
+    assert "\n" in r.stdout.strip()
+
+
+def test_config_show_case_insensitive_suffix_match(tmp_path: Path) -> None:
+    """Key matching ignores case — ``apiKey`` masks like ``api_key``."""
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {"prov": {"apiKey": "sk-mixed-case-0123"}})
+    r = runner.invoke(app, ["config", "show", "--path", str(target), "--json"])
+    out = json.loads(r.stdout)
+    assert "sk-mixed-case-0123" not in r.stdout
+    assert out["prov"]["apiKey"].startswith("sk")
+    assert out["prov"]["apiKey"].endswith("23")

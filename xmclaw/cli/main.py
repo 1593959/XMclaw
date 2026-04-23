@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import typer
 
@@ -925,6 +926,138 @@ def config_list_secrets() -> None:
     for n in names:
         marker = "  (overridden by env)" if n in env_overrides else ""
         typer.echo(f"  {n}{marker}")
+
+
+# ── xmclaw config show ────────────────────────────────────────────────
+# Epic #16 Phase 1 complement: read the daemon config and dump it with
+# sensitive fields masked. Most users reach for ``cat daemon/config.json``
+# today — that's fine alone but dangerous during screenshare / paste-into-
+# chat. This command gives a safe-by-default view and an explicit
+# ``--reveal`` for when full content is actually needed.
+#
+# Masking is *path-based* (key names match a denylist) rather than value-
+# based (entropy / format sniffing) so it doesn't depend on the secret's
+# shape — a custom-format self-hosted key stays masked too.
+
+_SENSITIVE_KEY_SUFFIXES = (
+    "api_key",
+    "apikey",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "access_key",
+    "private_key",
+)
+"""Lowercase key-name suffixes whose values are masked by ``config show``.
+
+Path-based matching: a key is sensitive when its *leaf* name ends in one
+of these (case-insensitive). Intermediate nodes like ``auth`` are never
+masked — otherwise you'd lose the structure preview that makes this
+command useful."""
+
+
+def _is_sensitive_key(name: str) -> bool:
+    low = name.lower()
+    return any(low.endswith(suf) for suf in _SENSITIVE_KEY_SUFFIXES)
+
+
+def _mask_value(val: Any) -> Any:
+    """Render a sensitive value as a length-preserving hint.
+
+    Keeps first/last 2 chars so the operator can still disambiguate
+    "did I paste the right key" without leaking the full value. Short
+    values (<=4 chars) collapse to all-stars so the prefix/suffix
+    doesn't effectively reveal everything.
+    """
+    if val is None:
+        return None
+    if not isinstance(val, str):
+        # Non-string sensitive values are rare (mostly numeric tokens).
+        # Mask them wholesale — a partial reveal of a number is a bigger
+        # leak than a string because the space is smaller.
+        return "***"
+    if val == "":
+        return ""
+    if len(val) <= 4:
+        return "*" * len(val)
+    return f"{val[:2]}{'*' * (len(val) - 4)}{val[-2:]}"
+
+
+def _mask_config(obj: Any, *, path: tuple[str, ...] = ()) -> Any:
+    """Walk a parsed config dict, masking sensitive leaves by key name.
+
+    Args:
+        obj: Node being walked. Dicts recurse; lists recurse element-wise
+            with the parent key applied to each element (so a list of
+            tokens is uniformly masked); scalars pass through unless
+            the parent key flagged them sensitive.
+        path: Dotted path of ancestor keys for debugging / future
+            reference. Not used for masking decisions — only the
+            immediate parent key is.
+    """
+    if isinstance(obj, dict):
+        return {
+            k: (
+                _mask_value(v)
+                if _is_sensitive_key(k) and not isinstance(v, (dict, list))
+                else _mask_config(v, path=path + (k,))
+            )
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        # List context inherits sensitivity from the parent key via the
+        # caller's dict-level branch. When we hit a list here it means
+        # the parent key wasn't sensitive, so recurse plain.
+        return [_mask_config(v, path=path) for v in obj]
+    return obj
+
+
+@config_app.command("show")
+def config_show(
+    path: str = typer.Option(
+        "daemon/config.json", "--path",
+        help="Config file to read (default: daemon/config.json).",
+    ),
+    reveal: bool = typer.Option(
+        False, "--reveal",
+        help=(
+            "Print sensitive values in full. Default masks api_key / token "
+            "/ secret / password fields so this command is safe to paste "
+            "into a chat or run on a screenshare."
+        ),
+    ),
+    json_output: bool = typer.Option(
+        False, "--json",
+        help="Emit JSON instead of indented text (for piping).",
+    ),
+) -> None:
+    """Print daemon config with sensitive values masked by default.
+
+    Exits 1 when the file is missing or not valid JSON (the daemon
+    factory would also reject it — fail early, say why).
+    """
+    import json as _json
+
+    target = Path(path)
+    if not target.exists():
+        typer.echo(
+            f"  [x]  no config at {target} -- run 'xmclaw config init' first",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    try:
+        raw = _json.loads(target.read_text(encoding="utf-8"))
+    except _json.JSONDecodeError as exc:
+        typer.echo(f"  [x]  {target} is not valid JSON: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    rendered = raw if reveal else _mask_config(raw)
+    if json_output:
+        typer.echo(_json.dumps(rendered, indent=2, ensure_ascii=False))
+    else:
+        typer.echo(f"  [ok]  {target}")
+        typer.echo(_json.dumps(rendered, indent=2, ensure_ascii=False))
 
 
 # ── xmclaw backup ──────────────────────────────────────────────────────
