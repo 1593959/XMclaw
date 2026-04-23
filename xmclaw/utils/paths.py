@@ -60,6 +60,20 @@ def logs_dir() -> Path:
     return data_dir() / "logs"
 
 
+def skills_dir() -> Path:
+    """Where ``SkillRegistry`` persists promote/rollback JSONL history.
+
+    One file per skill: ``<skills>/<skill_id>.jsonl``. Peer of ``v2/``
+    rather than nested inside it, so a daemon-workspace wipe
+    (``rm -rf ~/.xmclaw/v2``) does not erase the skill evolution log —
+    that's audit data and must survive session resets.
+    """
+    override = os.environ.get("XMC_V2_SKILLS_DIR")
+    if override:
+        return Path(override)
+    return data_dir() / "skills"
+
+
 def persona_dir() -> Path:
     """Persona profile markdown files — ``<data>/persona/profiles/``.
 
@@ -79,6 +93,22 @@ def workspaces_dir() -> Path:
     tool-preset bundles that the web UI edits.
     """
     return data_dir() / "workspaces"
+
+
+def agents_registry_dir() -> Path:
+    """Running multi-agent registry — ``<data>/v2/agents/*.json``.
+
+    Epic #17 Phase 2 MultiAgentManager persists here. Distinct from
+    :func:`workspaces_dir` on purpose — that directory holds abstract
+    user presets (name / description / model) edited by the web UI,
+    while this one holds the fully-resolved runtime config each
+    live ``Workspace`` was built from (llm keys, tools list, security
+    policy, agent_id). Keeping them apart means hand-editing a preset
+    in the UI can't corrupt a running agent's replay state, and a v2
+    workspace wipe (``rm -rf ~/.xmclaw/v2``) can reset all running
+    agents without touching the user's preset library.
+    """
+    return v2_workspace_dir() / "agents"
 
 
 def file_memory_dir() -> Path:
