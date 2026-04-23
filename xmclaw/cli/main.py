@@ -2,16 +2,19 @@
 
 Subcommands:
 
-    xmclaw version   Print the runtime version.
-    xmclaw ping      Bus round-trip smoke test.
-    xmclaw serve     Foreground daemon (blocks; uvicorn.run).
-    xmclaw start     Spawn the daemon detached; returns once healthy.
-    xmclaw stop      Stop a running daemon (via PID file).
-    xmclaw restart   Stop then start.
-    xmclaw status    Report daemon state (running / stale / dead).
-    xmclaw tools     List the tools wired up from config.
-    xmclaw chat      Interactive REPL that talks to a running daemon.
-    xmclaw doctor    Diagnose a local setup without running anything.
+    xmclaw version                  Print the runtime version.
+    xmclaw ping                     Bus round-trip smoke test.
+    xmclaw serve                    Foreground daemon (blocks; uvicorn.run).
+    xmclaw start                    Spawn the daemon detached; returns once healthy.
+    xmclaw stop                     Stop a running daemon (via PID file).
+    xmclaw restart                  Stop then start.
+    xmclaw status                   Report daemon state (running / stale / dead).
+    xmclaw tools                    List the tools wired up from config.
+    xmclaw chat                     Interactive REPL that talks to a running daemon.
+    xmclaw doctor                   Diagnose a local setup without running anything.
+    xmclaw memory stats             Per-layer memory occupancy.
+    xmclaw config init              Write a daemon/config.json skeleton.
+    xmclaw config set <key> <val>   Mutate a dotted key in config.json.
 
 v1 was deleted wholesale in Phase 4.10; there's now only one CLI.
 """
