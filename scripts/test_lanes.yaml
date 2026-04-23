@@ -94,6 +94,7 @@ lanes:
       - "xmclaw/daemon/pairing.py"
       - "xmclaw/daemon/memory_sweep.py"
       - "xmclaw/daemon/workspace.py"
+      - "xmclaw/daemon/multi_agent_manager.py"
       - "xmclaw/daemon/routers/**"
     tests:
       - tests/unit/test_v2_daemon_factory.py
@@ -101,6 +102,7 @@ lanes:
       - tests/unit/test_v2_memory_retention.py
       - tests/unit/test_v2_pairing.py
       - tests/unit/test_v2_workspace.py
+      - tests/unit/test_v2_multi_agent_manager.py
       - tests/unit/test_v2_web_ui_routers.py
       - tests/integration/test_v2_daemon_app.py
       - tests/integration/test_v2_daemon_agent.py

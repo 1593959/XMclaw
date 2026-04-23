@@ -952,7 +952,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 **检查清单**：
 
 - [x] `daemon/workspace.py` Workspace 类（Phase 1）
-- [ ] `daemon/multi_agent_manager.py` + lock + dedupe
+- [x] `daemon/multi_agent_manager.py` + lock + dedupe（Phase 2）
 - [ ] `DynamicMultiAgentRunner` + `X-Agent-Id` 路由
 - [ ] `AgentContextMiddleware`
 - [ ] 4 个 agent-间 tool
