@@ -20,7 +20,7 @@ those before editing code in that subdir.
 
 ## Project
 
-**XMclaw** is a local-first, self-evolving AI agent runtime written in Python. A single FastAPI daemon hosts the AgentLoop, ToolRegistry, MemoryManager, and EvolutionEngine; clients (Web UI, CLI, desktop tray) connect to it over WebSocket. See [README.md](README.md) for the user-facing overview and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the definitive system design.
+**XMclaw** is a local-first, self-evolving AI agent runtime written in Python. A single FastAPI daemon hosts the AgentLoop and composes LLM / Tool / Memory / Channel providers over a streaming `BehavioralEvent` bus; the Honest Grader + SkillScheduler + EvolutionController pipeline drives evidence-based skill promotion. Clients (Web UI, CLI, future desktop tray) connect to the daemon over WebSocket at `/agent/v2/{session_id}`. See [README.md](README.md) for the user-facing overview and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the definitive system design.
 
 ## Repository Layout
 

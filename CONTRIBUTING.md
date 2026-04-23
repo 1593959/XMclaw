@@ -8,10 +8,11 @@
 
 ### 前置依赖
 
-- Python 3.11+
-- Node.js 20+ (用于 Web UI 构建)
+- Python 3.10+（见 `pyproject.toml`）
 - Git
-- Windows 10+ (当前主要目标平台)
+- Windows 10+/11 是主要开发平台；macOS / Linux 由 CI matrix 跟进
+- 可选：`playwright install chromium`（browser tools）、`pyautogui` + `mss`（computer-use）
+- 仅当改 `web/` 时才需要 Node.js（Vite dev server）
 
 ### 快速开始
 
@@ -33,21 +34,27 @@ pip install -e .
 #   llm.openai.api_key = "sk-..."
 
 # 验证安装
-xmclaw status
+xmclaw doctor
 ```
 
 ### 运行测试
 
 ```bash
-# 运行所有测试
+# 全量测试套件（较慢）
 python -m pytest tests/ -v
 
-# 运行特定模块测试
-python -m pytest tests/test_orchestrator.py -v
+# 只跑受本次改动影响的 lane（Epic #11 smart-gate）
+python scripts/test_changed.py --dry-run   # 先看会跑什么
+python scripts/test_changed.py             # 实际执行
+
+# 强制全量
+python scripts/test_changed.py --all
 
 # 带覆盖率报告
 python -m pytest tests/ --cov=xmclaw --cov-report=term-missing
 ```
+
+Smart-gate lane 映射表在 [`scripts/test_lanes.yaml`](scripts/test_lanes.yaml)；改动某个子包 → 对应 lane 的测试自动跑。
 
 ---
 
@@ -55,37 +62,35 @@ python -m pytest tests/ --cov=xmclaw --cov-report=term-missing
 
 ```
 xmclaw/
-├── core/              # 核心运行时
-│   ├── agent_loop.py  # 主 Agent 循环
-│   ├── orchestrator.py  # 多代理编排
-│   └── event_bus.py  # 事件总线
-├── llm/               # LLM 路由（OpenAI + Anthropic）
-├── tools/             # 工具注册表与实现
-├── memory/            # 记忆系统（向量 + SQLite）
-├── genes/             # Gene 管理
-├── evolution/         # 自主进化引擎
-├── daemon/            # 后台守护进程
-├── desktop/           # PySide6 桌面应用
-├── web/               # Web UI (HTML/CSS/JS)
-└── cli/               # CLI 命令行界面
+├── core/            # Bus / IR / grader / scheduler / evolution       → core/AGENTS.md
+├── daemon/          # FastAPI app + AgentLoop + factory + lifecycle   → daemon/AGENTS.md
+├── providers/       # LLM / tool / memory / runtime / channel 适配器  → providers/AGENTS.md
+├── security/        # Prompt-injection scanner + policy gate          → security/AGENTS.md
+├── skills/          # SkillBase + registry + demo skills              → skills/AGENTS.md
+├── cli/             # xmclaw 入口 + doctor                            → cli/AGENTS.md
+├── utils/           # paths / log / redact / cost（DAG 最底层）        → utils/AGENTS.md
+└── plugins/         # 第三方 plugin 加载（Epic #2 WIP）
 ```
+
+每个子目录都有自己的 `AGENTS.md`，说明职责、依赖规则、测试入口、禁止项。**动代码前先读**。
+
+runtime 数据（events.db / memory.db / daemon.pid / pairing_token.txt）在 `~/.xmclaw/v2/`——**不在仓库里**，见 [docs/WORKSPACE.md](docs/WORKSPACE.md)。
 
 ---
 
 ## 分支策略
 
-| 分支 | 用途 |
-|------|------|
-| `main` | 稳定发布版本 |
-| `develop` | 开发中的下一版本 |
-| `feature/*` | 新功能开发 |
-| `fix/*` | Bug 修复 |
+| 分支             | 用途                                   |
+| ---------------- | -------------------------------------- |
+| `main`           | 发布版本；**不允许**直接 push          |
+| `feat/*`, `fix/*`, `docs/*`, `chore/*` | 功能 / 修复 / 文档 / 杂项分支 |
 
 **工作流程：**
-1. 从 `main` 或 `develop` 创建新分支
-2. 编写代码和测试
-3. 提交时运行 `python -m pytest tests/`
-4. 创建 Pull Request
+1. 从 `main` 切出 `feat/<topic>` 或 `fix/<bug>` 分支
+2. 编写代码 + 测试；遵守对应 AGENTS.md 的依赖规则
+3. 本地跑 `python scripts/test_changed.py` 让 smart-gate 确认改动不破 lane
+4. 提交时引用 Epic 号：`Epic #<n>: ...` / `Epic #<n> partial: ...`（见 [CLAUDE.md § 开发纪律](CLAUDE.md)）
+5. `gh pr create` 开 PR；PR CI 跑 smart-gate，merge 到 main 后跑全量
 
 ---
 
@@ -127,55 +132,82 @@ chore: cleanup stub directories
 
 ### API 设计原则
 
-1. **不要破坏向后兼容** — 公共 API 变更需要 major version bump
-2. **错误处理** — 所有异步操作必须 try/except，错误记录到日志
-3. **不要硬编码** — 配置通过 `agent.json` 或环境变量，不写死在代码里
+1. **事件是契约** — 客户端只消费 [docs/EVENTS.md](docs/EVENTS.md) 里声明的字段；新增事件类型要同步改 `xmclaw/core/bus/events.py` + 文档
+2. **BehavioralEvent schema 破坏性变更走 major bump** —— 规则在 [docs/V2_DEVELOPMENT.md §4.3](docs/V2_DEVELOPMENT.md#43-schema-管理)
+3. **错误 surface 成结构化结果** — `ToolResult(error=...)` / `GraderVerdict(ran=False)` / `ANTI_REQ_VIOLATION` 事件；不要吞异常然后返成功
+4. **配置不硬编码** — secrets 走 `daemon/config.json`（gitignored）或 `XMC__*` 环境变量
 
 ---
 
 ## 安全规则
 
-- **API Key 绝对不能提交** — 使用 `agent.json` 模板（不含真实 Key）
-- **敏感数据** — Cookie、Token、密码必须通过环境变量或安全存储
+- **API Key 绝对不能提交** — `daemon/config.json` 是 gitignored；用 `daemon/config.example.json` 作模板
+- **敏感数据** — Cookie、Token、密码必须通过环境变量（`XMC__llm__anthropic__api_key` 形式）或外部 secret store
 - **外部网络请求** — 所有 HTTP 调用必须设置合理的 timeout
+- **prompt-injection 扫描** — 工具返回值、agent profile、memory recall 都要过 `xmclaw.security.prompt_scanner`，绕过会让 anti-req #14 失效
 
 ---
 
-## 新增工具/技能
+## 新增工具 / Skill
 
-### 添加新工具
+### 添加新 ToolProvider
 
-1. 在 `xmclaw/tools/` 创建 `my_tool.py`
-2. 实现 `BaseTool` 接口
-3. 在 `xmclaw/tools/__init__.py` 注册
-4. 添加单元测试到 `tests/test_tools.py`
+完整协议见 [docs/TOOLS.md § 4](docs/TOOLS.md#4-写一个-toolprovider)。最短路径：
+
+1. 在 `xmclaw/providers/tool/` 新增 `my_provider.py`，实现 `ToolProvider` ABC（`list_tools()` + `async invoke()`）
+2. 在 `xmclaw/daemon/factory.py` 的 `build_tool_provider` 里按 config 条件 append 到 composite
+3. 加测试到 `tests/unit/test_v2_<name>_tools.py`
+4. 把测试文件登录到 `scripts/test_lanes.yaml` 的 `tools` lane
+5. 更新 [docs/TOOLS.md](docs/TOOLS.md) 的工具清单
 
 ```python
-from xmclaw.tools.base import BaseTool
+from xmclaw.core.ir import ToolCall, ToolResult, ToolSpec
+from xmclaw.providers.tool.base import ToolProvider
 
-class MyTool(BaseTool):
-    name = "my_tool"
-    description = "What this tool does"
 
-    async def execute(self, arg1: str, **kwargs) -> str:
-        return f"Did: {arg1}"
+class EchoProvider(ToolProvider):
+    def list_tools(self) -> list[ToolSpec]:
+        return [ToolSpec(
+            name="echo",
+            description="Return the input text unchanged.",
+            parameters_schema={
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
+            },
+        )]
+
+    async def invoke(self, call: ToolCall) -> ToolResult:
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content=call.args.get("text", ""),
+        )
 ```
+
+### 添加新 Skill
+
+实现 `xmclaw.skills.base.SkillBase` 子类 + `skill.yaml` manifest，注册到 `SkillRegistry`。Promotion / rollback 由 `SkillScheduler` + `EvolutionController` 基于 grader 证据自动决策——**不要**自己写 "skill 永远上线" 的 shortcut。协议见 [`xmclaw/skills/AGENTS.md`](xmclaw/skills/AGENTS.md) 和 [docs/V2_DEVELOPMENT.md §3](docs/V2_DEVELOPMENT.md)。
 
 ### 添加新 CLI 命令
 
-在 `xmclaw/cli/main.py` 中添加 typer 命令。
+在 `xmclaw/cli/main.py` 中添加 typer 命令；遵守 [`xmclaw/cli/AGENTS.md`](xmclaw/cli/AGENTS.md)。
+
+### 添加新 doctor check
+
+完整扩展协议见 [docs/DOCTOR.md § 扩展：自己写一个 check](docs/DOCTOR.md#扩展自己写一个-check)——走 `entry_points` 的 `xmclaw.doctor` 组。
 
 ---
 
 ## 测试策略
 
-| 类型 | 位置 | 说明 |
-|------|------|------|
-| 单元测试 | `tests/test_*.py` | 每个模块独立测试 |
-| 集成测试 | `tests/integration/` | 多模块协作测试 |
-| 端到端 | 手动验证 | Desktop UI、CLI |
+| 类型       | 位置                             | 说明                          |
+| ---------- | -------------------------------- | ----------------------------- |
+| 单元测试   | `tests/unit/test_v2_*.py`        | 单文件 / 单模块               |
+| 集成测试   | `tests/integration/test_v2_*.py` | 多模块协作、端到端            |
+| Conformance | `tests/conformance/*.py`         | IR 翻译器双向 fuzz            |
+| Smart-gate | 由 `scripts/test_lanes.yaml` 映射 | 改动文件 → 对应 lane 测试自动跑 |
 
-**覆盖率要求：** 核心模块（core/, tools/）≥ 70%
+核心模块覆盖率目标 ≥ 80%；bus / IR / grader / scheduler 无覆盖下降即为 PR 阻塞项。
 
 ---
 

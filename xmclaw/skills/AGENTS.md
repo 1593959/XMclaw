@@ -7,8 +7,9 @@ schema (`manifest.py`), registry (`registry.py`), and versioning
 rules (`versioning.py`). `demo/` holds the curated skills that ship
 with the repo and get exercised by integration tests.
 
-Skills are the unit the EvolutionEngine produces, mutates, and
-grades. Anything here must stay explicit enough for automated
+Skills are the unit the `EvolutionController` proposes, the
+`HonestGrader` judges by evidence, and the `SkillScheduler` promotes
+or rolls back. Anything here must stay explicit enough for automated
 mutation not to produce silent nonsense.
 
 ## 2. 依赖规则

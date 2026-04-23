@@ -6,9 +6,9 @@ Skill-execution runtimes. `base.py` defines `SkillRuntime` ABC;
 `local.py` runs skills in-process (test default), `process.py` runs
 them as isolated subprocesses with time + resource budgets.
 
-A skill is "code proposed by the EvolutionEngine that we want to run
-without letting it compromise the host." Runtime choice is the main
-safety lever.
+A skill is "code proposed by the `EvolutionController` that we want to
+run without letting it compromise the host." Runtime choice is the
+main safety lever.
 
 ## 2. 依赖规则
 
