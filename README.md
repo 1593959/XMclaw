@@ -12,12 +12,11 @@
   <a href="https://github.com/1593959/XMclaw/actions/workflows/python-ci.yml"><img src="https://img.shields.io/badge/CI-Windows%20%7C%20macOS%20%7C%20Linux-blue?style=for-the-badge" alt="Cross-platform"></a>
 </p>
 
-> ### 🚀 v2 delivery status (2026-04-21)
+> ### 🚀 Delivery status (2026-04-23)
 >
-> A ground-up v2 rewrite is live on `main`. The self-evolution spine —
-> streaming observer bus + honest grader + online scheduler + versioned
-> skill registry + autonomous evolution controller — is **validated on a
-> real LLM with no human in the loop**:
+> The self-evolution spine — streaming observer bus + honest grader +
+> online scheduler + versioned skill registry + autonomous evolution
+> controller — is **validated on a real LLM with no human in the loop**:
 >
 > | Live bench | On | Result | Gate |
 > |---|---|---|---|
@@ -25,28 +24,29 @@
 > | [Tool-aware loop](tests/bench/phase2_tool_aware_live.py) | MiniMax | **100% real tool-firing** on every scored turn | ≥ 80% |
 > | [Autonomous evolution](tests/bench/phase3_autonomous_evolution_live.py) | MiniMax | **1.18× session-over-session** after auto-promote | ≥ 1.05× |
 >
-> **410 v2 tests pass across Windows / macOS / Linux.** End-to-end
-> usable via the v2 CLI:
+> **1055 tests pass** (958 unit + 97 integration) across Windows / macOS / Linux.
+> End-to-end usable via the CLI:
 >
 > ```bash
-> xmclaw v2 ping                 # bus round-trip smoke test
-> xmclaw v2 serve                # FastAPI + WS daemon
+> xmclaw ping                    # bus round-trip smoke test
+> xmclaw serve                   # FastAPI + WS daemon
 >                                #   reads daemon/config.json (LLM key + fs allowlist)
 >                                #   writes pairing token to ~/.xmclaw/v2/ (0600)
-> xmclaw v2 chat                 # interactive REPL talking to the daemon
+> xmclaw chat                    # interactive REPL talking to the daemon
 > ```
 >
 > **12 / 14 anti-requirements** are encoded in code with dedicated tests,
 > including ClawJacked-style cross-origin WS hijack defense (pairing
 > token, constant-time compare, `close(4401)` on invalid auth). See the
 > full scorecard in [docs/V2_STATUS.md](docs/V2_STATUS.md). Design docs:
-> [docs/REWRITE_PLAN.md](docs/REWRITE_PLAN.md) ·
+> [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) ·
 > [docs/V2_DEVELOPMENT.md](docs/V2_DEVELOPMENT.md).
 >
-> The v1 strangler-fig sweep is complete — `xmclaw/genes/`, `xmclaw/evolution/`,
-> `xmclaw/core/agent_loop.py`, `task_classifier.py`, the old v1 daemon and v1
-> Web UI are all removed. The v2 daemon + Web UI (`xmclaw/daemon/static/`) is
-> what ships.
+> Recent additions (Epic #10/#16/#20): **15 doctor checks** with `--fix`
+> auto-remediating 5 of them, a three-tier secrets layer (env >
+> `secrets.json` 0600 > optional keyring) with `config set-secret`, and a
+> full backup/restore CLI (`backup create/list/info/verify/delete/prune/
+> restore`) with sha256-gated integrity checks.
 
 **XMclaw** is a personal AI agent that runs entirely on your machine. It is not a chatbot — it is a runtime that can think, act, remember, and continuously improve itself over time.
 
@@ -65,7 +65,9 @@ Unlike a stateless chat interface, XMclaw keeps a durable memory across sessions
 | **🔁 Event Replay** | Every WS reconnect replays the session's events so the UI hydrates without round-tripping the LLM. `/api/v2/events` supports `session_id` / `since` / `types` filters + FTS5 keyword search. |
 | **🛡️ Anti-Req Driven** | 14 explicit anti-requirements (e.g. "Scheduler must not trust text that describes a tool call", "no LLM self-grading", "WS auth via pairing token with `close(4401)`"). Each is encoded in the code path with a dedicated test; violations emit `ANTI_REQ_VIOLATION` events. |
 | **🔌 MCP + Provider Model** | Tools are composed from `ToolProvider` backends: `builtin`, `browser` (Playwright), `lsp`, `mcp_bridge` (stdio / SSE / WS). Add your own by implementing `list_tools()` + `invoke()`. |
-| **🩺 Doctor with Plugins** | `xmclaw doctor` runs 11 built-in checks + any third-party check registered on the `xmclaw.doctor` entry-point group. `--fix` auto-remediates 4 of them. |
+| **🩺 Doctor with Plugins** | `xmclaw doctor` runs 15 built-in checks (config, LLM, tools, workspace, pairing, port, events db, memory db, skill runtime, network, roadmap lint, pid lock, daemon, backups, secrets) + any third-party check on the `xmclaw.doctor` entry-point group. `--fix` auto-remediates 5 of them. |
+| **🔐 Secrets Layer** | Three-tier resolution: env `XMC_SECRET_<NAME>` > `~/.xmclaw/secrets.json` (chmod 0600) > optional `keyring`. Leave `api_key: ""` in config and set the value via `xmclaw config set-secret llm.anthropic.api_key`; the daemon resolves it at startup without touching your JSON. |
+| **💾 Backup & Restore** | `xmclaw backup create/list/info/verify/delete/prune/restore` — tar.gz + manifest with sha256 integrity gate, atomic swap on restore, tar-slip defense. Pipe through `jq` with `--json`. |
 | **🛰️ Structured Events** | Typed `BehavioralEvent` stream over WebSocket at `/agent/v2/{session_id}`. No custom XML parsing — tool calls are decoded by per-provider translators into a structured `ToolCall` IR. |
 | **🧪 Smart-Gate CI** | `scripts/test_changed.py` maps edited paths to test lanes via `scripts/test_lanes.yaml` — PRs only run the tests they can actually break; main runs the full suite. |
 
@@ -201,16 +203,68 @@ Cost tracking rides the same bus: each LLM call emits a `COST_TICK` event with i
 
 ## 🔧 CLI Reference
 
+### Daemon lifecycle
 ```bash
 xmclaw start              # Start daemon + web UI
 xmclaw stop               # Stop daemon
-xmclaw chat               # Interactive CLI chat
-xmclaw chat --plan        # Plan mode (approve steps before execution)
-xmclaw config init        # Interactively configure API keys
-xmclaw config set <key> <value>   # e.g. xmclaw config set llm.anthropic.model claude-sonnet-4-20250514
-xmclaw doctor             # Run diagnostics
-xmclaw --help             # Full command reference
+xmclaw restart            # Restart in place
+xmclaw status             # Show pid / port / uptime
+xmclaw serve              # Foreground daemon (debug)
+xmclaw ping               # Event-bus round-trip smoke test
+xmclaw version
 ```
+
+### Interactive
+```bash
+xmclaw chat               # REPL talking to the daemon
+xmclaw chat --plan        # Plan mode: approve steps before execution
+xmclaw tools list         # Show registered tools
+```
+
+### Diagnostics
+```bash
+xmclaw doctor                     # 15 built-in checks
+xmclaw doctor --fix               # Auto-remediate 5 fixable checks
+xmclaw doctor --json              # Machine-readable report
+xmclaw doctor --network           # Also probe LLM endpoints
+xmclaw doctor --discover-plugins  # Load third-party checks
+```
+
+### Config CRUD
+```bash
+xmclaw config init                       # Bootstrap daemon/config.json
+xmclaw config show                       # Pretty-print (secrets masked)
+xmclaw config show --reveal              # Print raw values
+xmclaw config get <dotted.key>           # Read one key, masks sensitive leaves
+xmclaw config set <dotted.key> <value>   # JSON-parse scalars; fall back to string
+xmclaw config unset <dotted.key>         # Remove a key; --prune-empty cascades
+```
+
+### Secrets (three-tier: env > secrets.json > keyring)
+```bash
+xmclaw config set-secret <name>          # Reads via stdin (getpass)
+xmclaw config get-secret <name>          # Masked by default; --reveal to unmask
+xmclaw config delete-secret <name>
+xmclaw config list-secrets               # Flags env overrides
+```
+
+### Backup & restore
+```bash
+xmclaw backup create [name]              # tar.gz + manifest (defaults auto-YYYY-MM-DD-HHMMSS)
+xmclaw backup list                       # --json for pipelines
+xmclaw backup info <name>                # Pretty-print manifest (no re-hash)
+xmclaw backup verify <name>              # sha256 integrity gate
+xmclaw backup restore <name>             # Atomic swap with .prev-<ts> rollback
+xmclaw backup delete <name> [--yes]
+xmclaw backup prune --keep 5 --yes       # Drop oldest beyond keep
+```
+
+### Memory
+```bash
+xmclaw memory stats                      # Layer counts, bytes, pinned; --json
+```
+
+Full help: `xmclaw --help` / `xmclaw <cmd> --help`.
 
 ---
 
