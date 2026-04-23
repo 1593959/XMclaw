@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -113,17 +114,111 @@ def _apply_env_overrides(
     return cfg
 
 
+# ── Epic #16 Phase 2: ${secret:name} placeholder resolution ──────────────
+#
+# After the env overlay lands, walk the config dict recursively and replace
+# any string value that is EXACTLY the shape ``${secret:NAME}`` with the
+# value returned by :func:`xmclaw.utils.secrets.get_secret`. This generalises
+# the per-field fallback that ``build_llm_from_config`` does (empty literal
+# → secrets lookup) into a config-wide mechanism — useful for any leaf that
+# ends up holding a credential (tool API keys, channel tokens, memory
+# backend passwords …).
+#
+# Rules:
+#   * Matching is **whole-string only** (anchored): ``"${secret:x}"`` matches,
+#     ``"prefix-${secret:x}-suffix"`` does NOT — partial substitution
+#     invites silent escaping bugs that are exactly the wrong place to have
+#     them. If someone needs concatenation they can pre-assemble in secrets.
+#   * Name charset: ``[A-Za-z0-9_.-]+`` — same shape ``get_secret`` already
+#     accepts (it lowercases & dots; the resolver just hands the raw name
+#     through). Empty name → ``ConfigError`` ("malformed").
+#   * Resolution failure (secret returns ``None``) → ``ConfigError``. We do
+#     NOT silently drop to ``None`` / empty string; if you typed
+#     ``${secret:X}`` you meant "this MUST be resolved at startup", and a
+#     silent fall-through would e.g. turn an LLM API key into a stealth
+#     echo-mode. Loud failure > stealthy degradation.
+#   * Non-string values are untouched (numbers, bools, None, nested dicts
+#     and lists are all traversed; only strings are candidates).
+#   * Lists traverse element-wise; nested dicts recurse.
+
+_SECRET_PLACEHOLDER_RE = re.compile(r"^\$\{secret:([A-Za-z0-9_.\-]+)\}$")
+# Catches malformed placeholders like ``${secret:}`` (empty) or
+# ``${secret: foo }`` (whitespace padding) so users get a clear error
+# rather than a silent miss against the wrong key.
+_SECRET_SHAPE_RE = re.compile(r"^\$\{secret:.*\}$")
+
+
+def _resolve_secret_placeholders(
+    value: Any,
+    *,
+    _resolver=None,
+    _path: str = "$",
+) -> Any:
+    """Recursively walk ``value`` replacing ``${secret:NAME}`` strings.
+
+    ``_resolver`` lets tests inject a fake ``get_secret`` without touching
+    the real secrets layer. Default: :func:`xmclaw.utils.secrets.get_secret`
+    (imported lazily to avoid an import cycle during daemon bootstrap).
+    """
+    if _resolver is None:
+        from xmclaw.utils.secrets import get_secret  # local to dodge cycles
+
+        _resolver = get_secret
+
+    if isinstance(value, str):
+        m = _SECRET_PLACEHOLDER_RE.match(value)
+        if m:
+            name = m.group(1)
+            resolved = _resolver(name)
+            if resolved is None:
+                raise ConfigError(
+                    f"unresolved secret at {_path}: ${{secret:{name}}} "
+                    f"(run `xmclaw config set-secret {name}` or set "
+                    f"env XMC_SECRET_{name.upper().replace('.', '_').replace('-', '_')})"
+                )
+            return resolved
+        # Catch malformed placeholders that *look* like the syntax but
+        # didn't match the strict pattern — otherwise we'd silently let
+        # typos through as literals.
+        if _SECRET_SHAPE_RE.match(value):
+            raise ConfigError(
+                f"malformed secret placeholder at {_path}: {value!r} "
+                "(expected ${secret:NAME} with NAME matching [A-Za-z0-9_.-]+)"
+            )
+        return value
+    if isinstance(value, dict):
+        return {
+            k: _resolve_secret_placeholders(v, _resolver=_resolver, _path=f"{_path}.{k}")
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _resolve_secret_placeholders(v, _resolver=_resolver, _path=f"{_path}[{i}]")
+            for i, v in enumerate(value)
+        ]
+    return value
+
+
 def load_config(
     path: Path | str,
     *,
     env: Mapping[str, str] | None = None,
+    resolve_secrets: bool = True,
 ) -> dict[str, Any]:
-    """Read a JSON config from disk, then overlay ``XMC__*`` env vars.
+    """Read a JSON config from disk, then overlay ``XMC__*`` env vars
+    and resolve any ``${secret:NAME}`` placeholders.
 
-    Precedence (highest last): file → ENV. Kept as a standalone
-    function so tests that want to exercise the factory with a dict
-    can skip the filesystem round-trip; pass ``env={}`` to disable
-    overrides in tests.
+    Precedence (highest last): file → ENV → secret resolution. Kept as
+    a standalone function so tests that want to exercise the factory
+    with a dict can skip the filesystem round-trip; pass ``env={}`` to
+    disable env overrides and ``resolve_secrets=False`` to keep
+    placeholders intact (useful when round-tripping config for export).
+
+    ``resolve_secrets=True`` (default) walks the merged dict recursively
+    and replaces each whole-string ``${secret:name}`` with the value
+    returned by :func:`xmclaw.utils.secrets.get_secret`. Unresolvable
+    references raise :class:`ConfigError` — see
+    :func:`_resolve_secret_placeholders` for the exact rules.
     """
     p = Path(path)
     if not p.exists():
@@ -140,7 +235,10 @@ def load_config(
         raise ConfigError(
             f"config root must be an object, got {type(data).__name__}"
         )
-    return _apply_env_overrides(data, env=env)
+    merged = _apply_env_overrides(data, env=env)
+    if resolve_secrets:
+        merged = _resolve_secret_placeholders(merged)
+    return merged
 
 
 def build_llm_from_config(cfg: dict[str, Any]) -> LLMProvider | None:

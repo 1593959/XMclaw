@@ -77,6 +77,64 @@ docker run --rm \
 - `xmclaw.daemon.factory.load_config(path, env=...)` 在读文件后自动调用；传 `env={}` 可跳过（单测用）
 - 测试见 [tests/unit/test_v2_daemon_factory.py](../tests/unit/test_v2_daemon_factory.py) `test_env_override_*` 用例
 
+## Secrets 占位符（Epic #16 Phase 2）
+
+任何字符串字段都可以写成 `"${secret:NAME}"` 占位符，`load_config` 会在启动时走 [`xmclaw.utils.secrets.get_secret`](../xmclaw/utils/secrets.py)（三层：env `XMC_SECRET_<NAME>` > `~/.xmclaw/secrets.json` > 可选 `keyring`）把它替换为真实值。
+
+```jsonc
+{
+  "llm": {
+    "anthropic": {
+      "api_key": "${secret:llm.anthropic.api_key}",
+      "default_model": "claude-sonnet-4-20250514"
+    }
+  },
+  "channels": {
+    "slack": { "bot_token": "${secret:slack_bot}" },
+    "discord": { "webhook_url": "${secret:discord_hook}" }
+  }
+}
+```
+
+然后任选一种方式把真实值放进 secrets 层：
+
+```bash
+xmclaw config set-secret llm.anthropic.api_key      # 走 ~/.xmclaw/secrets.json
+export XMC_SECRET_LLM_ANTHROPIC_API_KEY=sk-ant-xxx  # 或者直接走环境变量
+```
+
+### 规则
+
+- **必须整串匹配**：`"${secret:foo}"` 命中，`"prefix-${secret:foo}-suffix"` 按字面保留。部分替换容易引入 escaping bug，尤其在 API key 这种敏感字段，不冒风险。
+- **名字字符集**：`[A-Za-z0-9_.\-]+`。推荐用 `llm.anthropic.api_key` 风格（与 env var 和 CLI 命令命名对齐）；横杠和下划线也合法。
+- **坏形状报错**：`"${secret:}"`、`"${secret: foo}"`、`"${secret:with space}"` 这类 LOOK-like 但不匹配 charset 的串会抛 `ConfigError("malformed secret placeholder ...")`，不会静默当成字面量穿透——避免打错字的用户以为"放了占位符"但其实根本没生效。
+- **查不到报错**：`get_secret(name)` 返回 `None` 时抛 `ConfigError`，错误信息里带 JSON 路径（`$.llm.anthropic.api_key`）+ 名字 + remediation 提示（`xmclaw config set-secret <name>` 或 env）。不静默降级为 `None`/`""`——写了占位符就是"启动时必须解析"的硬约束。
+- **递归**：dict / list 会深入遍历；数字、布尔、null、嵌套结构原值返回。空 dict / 空 list 保留（它们结构上有意义）。
+- **顺序**：file → ENV overlay → secret resolution。意味着 ENV override 里塞 `${secret:...}` 也会被解析（`XMC__llm__anthropic__api_key='${secret:foo}'` 有效）。
+
+### 与 Epic #16 Phase 1 的关系
+
+Phase 1 在 `build_llm_from_config` 里做了一个**字段级特例**：`api_key: ""` → 回退到 `get_secret("llm.<provider>.api_key")`。Phase 2 这个占位符是**通用面**：任意字段都可以显式引用 secret，不止 LLM。两条路径共存且不互斥：
+
+| 写法 | 触发条件 | 覆盖范围 |
+|------|---------|---------|
+| `api_key: ""` / missing | 仅 LLM `api_key` 字段、隐式 fallback | 单一特例 |
+| `"${secret:NAME}"` | 任意字段、显式 | 整个 config |
+
+建议新代码用显式占位符（意图清晰、支持任意字段）；Phase 1 的 implicit fallback 保持向后兼容，不会被移除。
+
+### 绕过解析（工具链用）
+
+`load_config(path, resolve_secrets=False)` 保留占位符原样，用于：
+- 配置导出 / 迁移工具需要往返读写而不泄露真实 credential
+- 测试希望断言"我写的确实是占位符"而不是解析后的值
+
+### 实现
+
+- `xmclaw.daemon.factory._SECRET_PLACEHOLDER_RE` + `_resolve_secret_placeholders(value, _resolver=...)` 递归访问器
+- `xmclaw.daemon.factory.load_config(path, ..., resolve_secrets=True)` 默认开启
+- 测试见 [tests/unit/test_v2_daemon_factory.py](../tests/unit/test_v2_daemon_factory.py) `test_placeholder_resolver_*` / `test_load_config_*_placeholder*` 用例
+
 ## Memory 配置（Epic #5）
 
 `memory` 段控制 v2 sqlite-vec 记忆层：存哪、TTL、保留策略、定期清扫。完整 schema：

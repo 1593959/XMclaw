@@ -15,6 +15,7 @@ from xmclaw.core.bus import InProcessEventBus
 from xmclaw.daemon.factory import (
     ConfigError,
     _apply_env_overrides,
+    _resolve_secret_placeholders,
     build_agent_from_config,
     build_llm_from_config,
     build_skill_runtime_from_config,
@@ -235,6 +236,217 @@ def test_secrets_fallback_respects_provider_order(
     })
     assert isinstance(llm, AnthropicLLM)
     assert llm.api_key == "sk-ant-via-secrets"
+
+
+# ── Epic #16 Phase 2: ${secret:NAME} placeholder resolver ────────────────
+#
+# Unit tests drive `_resolve_secret_placeholders` directly with a fake
+# resolver (no filesystem, no keyring). Integration into `load_config` is
+# covered below so users actually see the end-to-end "write
+# ${secret:foo} in config.json → daemon boots with the real value".
+
+
+def _fake_resolver(table: dict[str, str]):
+    """Return a resolver closure backed by an in-memory dict.
+
+    Keeps these tests independent of the real secrets layer so they run
+    fast and don't leak state across the suite.
+    """
+    def _lookup(name: str) -> str | None:
+        return table.get(name)
+    return _lookup
+
+
+def test_placeholder_resolver_substitutes_whole_string() -> None:
+    """``"${secret:x}"`` on its own → resolver value wins."""
+    out = _resolve_secret_placeholders(
+        {"llm": {"anthropic": {"api_key": "${secret:anthropic_prod}"}}},
+        _resolver=_fake_resolver({"anthropic_prod": "sk-ant-resolved"}),
+    )
+    assert out["llm"]["anthropic"]["api_key"] == "sk-ant-resolved"
+
+
+def test_placeholder_resolver_handles_dotted_names() -> None:
+    """Names with dots (the recommended xmclaw convention) survive
+    round-trip to the resolver unchanged."""
+    out = _resolve_secret_placeholders(
+        {"api_key": "${secret:llm.anthropic.api_key}"},
+        _resolver=_fake_resolver({"llm.anthropic.api_key": "sk-dotted"}),
+    )
+    assert out["api_key"] == "sk-dotted"
+
+
+def test_placeholder_resolver_recurses_through_nested_dicts() -> None:
+    """Placeholders bury at any depth; resolver walks everything."""
+    cfg = {
+        "channels": {
+            "slack": {"token": "${secret:slack_bot}"},
+            "discord": {"webhook": "${secret:discord_hook}"},
+        },
+        "tools": {"github": {"token": "${secret:gh_pat}"}},
+    }
+    out = _resolve_secret_placeholders(
+        cfg,
+        _resolver=_fake_resolver({
+            "slack_bot": "xoxb-abc",
+            "discord_hook": "https://hook.example/123",
+            "gh_pat": "ghp_xyz",
+        }),
+    )
+    assert out["channels"]["slack"]["token"] == "xoxb-abc"
+    assert out["channels"]["discord"]["webhook"] == "https://hook.example/123"
+    assert out["tools"]["github"]["token"] == "ghp_xyz"
+
+
+def test_placeholder_resolver_walks_lists_elementwise() -> None:
+    """List entries are treated like dict values — each string is a
+    candidate for substitution."""
+    cfg = {"allowed_keys": ["${secret:prod}", "plain", "${secret:staging}"]}
+    out = _resolve_secret_placeholders(
+        cfg,
+        _resolver=_fake_resolver({"prod": "P", "staging": "S"}),
+    )
+    assert out["allowed_keys"] == ["P", "plain", "S"]
+
+
+def test_placeholder_resolver_leaves_non_strings_alone() -> None:
+    """Numbers / bools / None / mixed nested types pass through
+    untouched. Regression guard against a "walk everything and call
+    str()" implementation that would turn ints into strings."""
+    cfg = {
+        "gateway": {"port": 9000, "tls": True, "cert": None},
+        "evolution": {"enabled": False, "threshold": 0.85},
+    }
+    out = _resolve_secret_placeholders(cfg, _resolver=_fake_resolver({}))
+    assert out == cfg
+
+
+def test_placeholder_resolver_rejects_partial_substitution() -> None:
+    """``"prefix-${secret:x}-suffix"`` does NOT match the anchored
+    pattern — it's treated as a literal. This is by design: partial
+    substitution invites escaping bugs in the exact place you want
+    zero surprise (API keys / tokens)."""
+    cfg = {"url": "https://api.example/${secret:token}"}
+    out = _resolve_secret_placeholders(
+        cfg,
+        _resolver=_fake_resolver({"token": "xyz"}),
+    )
+    # Literal preserved; no substitution attempted.
+    assert out["url"] == "https://api.example/${secret:token}"
+
+
+def test_placeholder_resolver_raises_on_unresolvable() -> None:
+    """Typo'd name / not-yet-set secret → ConfigError. Silent fallback
+    to None would e.g. degrade an LLM key to echo-mode without warning."""
+    cfg = {"api_key": "${secret:anthropic_prod}"}
+    with pytest.raises(ConfigError) as exc_info:
+        _resolve_secret_placeholders(cfg, _resolver=_fake_resolver({}))
+    # Error message carries both the path and the name so users can fix
+    # without guessing what field triggered it.
+    msg = str(exc_info.value)
+    assert "anthropic_prod" in msg
+    assert "$.api_key" in msg
+    # And a remediation hint pointing at the CLI.
+    assert "xmclaw config set-secret" in msg
+
+
+def test_placeholder_resolver_raises_on_malformed_placeholder() -> None:
+    """Strings that LOOK like the syntax but violate the charset rule
+    raise instead of silently passing through. A typo-protection
+    measure — ``"${secret:}"`` / ``"${secret: foo }"`` should be loud."""
+    for bad in ("${secret:}", "${secret: foo}", "${secret:with space}"):
+        cfg = {"k": bad}
+        with pytest.raises(ConfigError) as exc_info:
+            _resolve_secret_placeholders(cfg, _resolver=_fake_resolver({}))
+        assert "malformed secret placeholder" in str(exc_info.value)
+
+
+def test_placeholder_resolver_preserves_empty_containers() -> None:
+    """Empty dicts / lists are structurally significant (they mark a
+    section as present but empty) — resolver must not drop them."""
+    cfg = {"channels": {}, "tools": {"allowed_dirs": []}}
+    out = _resolve_secret_placeholders(cfg, _resolver=_fake_resolver({}))
+    assert out == {"channels": {}, "tools": {"allowed_dirs": []}}
+
+
+def test_load_config_resolves_placeholders_end_to_end(
+    _isolate_secrets: None, tmp_path: Path,
+) -> None:
+    """Full round-trip: config.json with placeholder → ``load_config``
+    returns the resolved value. This is the user-facing deliverable."""
+    from xmclaw.utils.secrets import set_secret
+
+    set_secret("my_anthropic", "sk-ant-resolved-e2e")
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({
+        "llm": {"anthropic": {
+            "api_key": "${secret:my_anthropic}",
+            "default_model": "claude",
+        }},
+    }), encoding="utf-8")
+
+    cfg = load_config(cfg_path, env={})
+    assert cfg["llm"]["anthropic"]["api_key"] == "sk-ant-resolved-e2e"
+
+    # And the downstream factory builds a real LLM from it — no
+    # placeholder-in-api_key leaking all the way to the provider.
+    llm = build_llm_from_config(cfg)
+    assert isinstance(llm, AnthropicLLM)
+    assert llm.api_key == "sk-ant-resolved-e2e"
+
+
+def test_load_config_unresolved_placeholder_raises_with_path(
+    _isolate_secrets: None, tmp_path: Path,
+) -> None:
+    """If the referenced secret is missing, ``load_config`` fails loudly
+    — callers see the JSON path + the offending name."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({
+        "llm": {"anthropic": {"api_key": "${secret:never_set}"}},
+    }), encoding="utf-8")
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_config(cfg_path, env={})
+    msg = str(exc_info.value)
+    assert "never_set" in msg
+    # Nested path shows up so the user can grep their config.
+    assert "llm" in msg and "anthropic" in msg and "api_key" in msg
+
+
+def test_load_config_resolve_secrets_false_keeps_literal(
+    _isolate_secrets: None, tmp_path: Path,
+) -> None:
+    """``resolve_secrets=False`` keeps the placeholder in place — useful
+    for config export / migration tooling that must round-trip the file
+    without leaking real credentials."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({
+        "llm": {"anthropic": {"api_key": "${secret:whatever}"}},
+    }), encoding="utf-8")
+
+    cfg = load_config(cfg_path, env={}, resolve_secrets=False)
+    assert cfg["llm"]["anthropic"]["api_key"] == "${secret:whatever}"
+
+
+def test_load_config_env_override_runs_before_secret_resolution(
+    _isolate_secrets: None, tmp_path: Path,
+) -> None:
+    """If an env override injects a ``${secret:X}`` placeholder, the
+    resolver still sees and resolves it. Precedence: file → ENV →
+    secret resolution."""
+    from xmclaw.utils.secrets import set_secret
+
+    set_secret("from_env_route", "sk-from-env-route")
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({
+        "llm": {"anthropic": {"api_key": "sk-literal", "default_model": "c"}},
+    }), encoding="utf-8")
+
+    cfg = load_config(
+        cfg_path,
+        env={"XMC__llm__anthropic__api_key": "${secret:from_env_route}"},
+    )
+    assert cfg["llm"]["anthropic"]["api_key"] == "sk-from-env-route"
 
 
 # ── build_agent_from_config ──────────────────────────────────────────────
