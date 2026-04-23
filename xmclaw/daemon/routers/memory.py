@@ -29,11 +29,17 @@ router = APIRouter(prefix="/api/v2/memory", tags=["memory"])
 def _safe_name(filename: str) -> str:
     """Collapse any path traversal to a bare filename and enforce ``.md``.
 
-    ``Path(filename).name`` strips any leading dirs. Empty input after
-    stripping becomes ``"note.md"`` so we never create a bare ``.md``
-    file with no stem.
+    ``Path(filename).name`` strips any leading dirs. On POSIX it only
+    treats ``/`` as a separator, so a caller passing a Windows-style
+    ``..\\evil`` slips through. Normalize backslashes to forward before
+    ``.name`` so a Linux daemon can't be tricked by a Windows client
+    (or vice-versa — belt and braces).
+
+    Empty input after stripping becomes ``"note.md"`` so we never
+    create a bare ``.md`` file with no stem.
     """
-    stem = Path(filename).name.strip()
+    normalized = filename.replace("\\", "/")
+    stem = Path(normalized).name.strip()
     if not stem:
         return "note.md"
     if not stem.endswith(".md"):
