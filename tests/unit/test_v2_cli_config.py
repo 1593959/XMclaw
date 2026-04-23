@@ -515,3 +515,159 @@ def test_config_get_then_set_roundtrip(tmp_path: Path) -> None:
     assert r.exit_code == 0, r.stdout
     r = runner.invoke(app, ["config", "get", "gateway.port", "--path", str(target)])
     assert r.exit_code == 0 and r.stdout.strip() == "9001"
+
+
+# ── config unset ────────────────────────────────────────────────────────
+
+
+def test_config_unset_removes_scalar(tmp_path: Path) -> None:
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {"gateway": {"host": "x", "port": 9000}})
+    r = runner.invoke(app, ["config", "unset", "gateway.port", "--path", str(target)])
+    assert r.exit_code == 0, r.stdout
+    data = json.loads(target.read_text(encoding="utf-8"))
+    assert data == {"gateway": {"host": "x"}}
+
+
+def test_config_unset_leaves_parent_dict_by_default(tmp_path: Path) -> None:
+    """Without --prune-empty, removing the last child leaves {} behind."""
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {"llm": {"anthropic": {"api_key": "sk"}}})
+    r = runner.invoke(
+        app, ["config", "unset", "llm.anthropic.api_key", "--path", str(target)]
+    )
+    assert r.exit_code == 0, r.stdout
+    data = json.loads(target.read_text(encoding="utf-8"))
+    assert data == {"llm": {"anthropic": {}}}
+
+
+def test_config_unset_prune_empty_cascades(tmp_path: Path) -> None:
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {"llm": {"anthropic": {"api_key": "sk"}}})
+    r = runner.invoke(
+        app,
+        [
+            "config", "unset", "llm.anthropic.api_key",
+            "--path", str(target), "--prune-empty",
+        ],
+    )
+    assert r.exit_code == 0, r.stdout
+    data = json.loads(target.read_text(encoding="utf-8"))
+    assert data == {}
+
+
+def test_config_unset_prune_empty_stops_at_non_empty_parent(tmp_path: Path) -> None:
+    """Cascade must not remove a container that still has siblings."""
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {
+        "llm": {
+            "anthropic": {"api_key": "sk"},
+            "openai": {"api_key": "other"},
+        },
+    })
+    r = runner.invoke(
+        app,
+        [
+            "config", "unset", "llm.anthropic.api_key",
+            "--path", str(target), "--prune-empty",
+        ],
+    )
+    assert r.exit_code == 0, r.stdout
+    data = json.loads(target.read_text(encoding="utf-8"))
+    assert data == {"llm": {"openai": {"api_key": "other"}}}
+
+
+def test_config_unset_missing_key_exits_nonzero(tmp_path: Path) -> None:
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {"gateway": {"host": "x"}})
+    r = runner.invoke(app, ["config", "unset", "gateway.port", "--path", str(target)])
+    assert r.exit_code == 1
+
+
+def test_config_unset_missing_nested_segment_exits_nonzero(tmp_path: Path) -> None:
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {"gateway": {"host": "x"}})
+    r = runner.invoke(
+        app, ["config", "unset", "llm.anthropic.api_key", "--path", str(target)]
+    )
+    assert r.exit_code == 1
+
+
+def test_config_unset_through_non_dict_exits_nonzero(tmp_path: Path) -> None:
+    """``gateway.host.deeper`` where host='x' walks through a scalar — treat as missing."""
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {"gateway": {"host": "x"}})
+    r = runner.invoke(
+        app, ["config", "unset", "gateway.host.deeper", "--path", str(target)]
+    )
+    assert r.exit_code == 1
+
+
+def test_config_unset_missing_file_exits_nonzero(tmp_path: Path) -> None:
+    runner = CliRunner()
+    target = tmp_path / "config.json"  # not created
+    r = runner.invoke(app, ["config", "unset", "x", "--path", str(target)])
+    assert r.exit_code == 1
+
+
+def test_config_unset_invalid_json_exits_nonzero(tmp_path: Path) -> None:
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    target.write_text("{garbage", encoding="utf-8")
+    r = runner.invoke(app, ["config", "unset", "x", "--path", str(target)])
+    assert r.exit_code == 1
+
+
+def test_config_unset_non_object_root_exits_nonzero(tmp_path: Path) -> None:
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    target.write_text("[1,2,3]", encoding="utf-8")
+    r = runner.invoke(app, ["config", "unset", "x", "--path", str(target)])
+    assert r.exit_code == 1
+
+
+def test_config_unset_empty_key_exits_with_code_2(tmp_path: Path) -> None:
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {"x": 1})
+    r = runner.invoke(app, ["config", "unset", ".", "--path", str(target)])
+    assert r.exit_code == 2
+
+
+def test_config_set_get_unset_full_roundtrip(tmp_path: Path) -> None:
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {})
+    assert runner.invoke(
+        app, ["config", "set", "gateway.port", "9000", "--path", str(target)]
+    ).exit_code == 0
+    assert runner.invoke(
+        app, ["config", "get", "gateway.port", "--path", str(target)]
+    ).stdout.strip() == "9000"
+    assert runner.invoke(
+        app, ["config", "unset", "gateway.port", "--path", str(target)]
+    ).exit_code == 0
+    r = runner.invoke(app, ["config", "get", "gateway.port", "--path", str(target)])
+    assert r.exit_code == 1  # now missing
+
+
+def test_config_unset_preserves_sibling_values(tmp_path: Path) -> None:
+    """Unsetting one key must not perturb other top-level keys."""
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {
+        "gateway": {"host": "127.0.0.1", "port": 9000},
+        "tools": {"allowed_dirs": ["."]},
+    })
+    r = runner.invoke(app, ["config", "unset", "gateway.port", "--path", str(target)])
+    assert r.exit_code == 0
+    data = json.loads(target.read_text(encoding="utf-8"))
+    assert data["tools"] == {"allowed_dirs": ["."]}
+    assert data["gateway"] == {"host": "127.0.0.1"}

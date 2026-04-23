@@ -1013,6 +1013,94 @@ def _mask_config(obj: Any, *, path: tuple[str, ...] = ()) -> Any:
     return obj
 
 
+@config_app.command("unset")
+def config_unset(
+    key: str = typer.Argument(
+        ..., help="Dotted key path to remove, e.g. 'llm.anthropic.api_key'.",
+    ),
+    path: str = typer.Option(
+        "daemon/config.json", "--path",
+        help="Config file to mutate (default: daemon/config.json).",
+    ),
+    prune_empty: bool = typer.Option(
+        False, "--prune-empty",
+        help="After removing the leaf, drop parent dicts that became empty.",
+    ),
+) -> None:
+    """Remove one dotted key from the config file (symmetric to ``set``).
+
+    Exits 1 on: missing file / non-JSON / non-object root / key not set.
+    A missing key is a hard error rather than a silent success — otherwise
+    a typo in the key name would look like "done" and the value would
+    linger.
+
+    ``--prune-empty`` cascades up: if ``llm.anthropic.api_key`` was the
+    only child of ``llm.anthropic``, the empty dict (and ``llm`` if it
+    became empty) is also removed. Off by default because leaving the
+    parent containers preserves the shape ``xmclaw config init`` wrote.
+    """
+    import json as _json
+
+    target = Path(path)
+    if not target.exists():
+        typer.echo(
+            f"  [x]  no config at {target} -- run 'xmclaw config init' first",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    try:
+        data = _json.loads(target.read_text(encoding="utf-8"))
+    except _json.JSONDecodeError as exc:
+        typer.echo(f"  [x]  {target} is not valid JSON: {exc}", err=True)
+        raise typer.Exit(code=1)
+    if not isinstance(data, dict):
+        typer.echo(
+            f"  [x]  {target} must have a JSON object at its root, "
+            f"got {type(data).__name__}",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    parts = [p for p in key.split(".") if p]
+    if not parts:
+        typer.echo("  [x]  key must be non-empty", err=True)
+        raise typer.Exit(code=2)
+
+    # Walk to the parent, collecting the chain so --prune-empty can
+    # unwind. If any segment along the way is missing or non-dict, the
+    # key simply isn't set — treat uniformly as not-found.
+    chain: list[tuple[dict, str]] = []
+    cursor: Any = data
+    for segment in parts[:-1]:
+        if not isinstance(cursor, dict) or segment not in cursor:
+            typer.echo(f"  [x]  key not set: {key}", err=True)
+            raise typer.Exit(code=1)
+        chain.append((cursor, segment))
+        cursor = cursor[segment]
+    if not isinstance(cursor, dict) or parts[-1] not in cursor:
+        typer.echo(f"  [x]  key not set: {key}", err=True)
+        raise typer.Exit(code=1)
+
+    del cursor[parts[-1]]
+
+    if prune_empty:
+        # Walk the chain in reverse, dropping containers that just became
+        # empty. Stops the moment a parent still has siblings — we never
+        # touch keys the user didn't ask about.
+        for parent, seg in reversed(chain):
+            child = parent[seg]
+            if isinstance(child, dict) and not child:
+                del parent[seg]
+            else:
+                break
+
+    target.write_text(
+        _json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    typer.echo(f"  [ok]  {target}: unset {key}")
+
+
 _CONFIG_KEY_MISSING = object()
 """Sentinel — lets `_lookup_dotted` distinguish "key absent" from "value = None"."""
 
