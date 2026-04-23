@@ -211,6 +211,22 @@ lanes:
   # separately in test_changed.py via direct path match) + the always-on
   # lane.
 
+  # Deployment templates (Epic #19). Cheap parse + drift checks on
+  # Dockerfile / compose / fly.toml / systemd unit / launchd plist /
+  # Windows service wrapper / install scripts. Runs whenever any of
+  # those files move — catches e.g. a port rename in compose that the
+  # Dockerfile's EXPOSE didn't follow.
+  deploy:
+    triggers:
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - ".env.example"
+      - "deploy/**"
+      - "scripts/install.sh"
+      - "scripts/install.ps1"
+    tests:
+      - tests/unit/test_v2_deploy_templates.py
+
   # pyproject / lockfiles / CI config — full suite safety net.
   full_fallback:
     triggers:

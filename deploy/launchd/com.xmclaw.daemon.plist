@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Per-user launchd agent for XMclaw on macOS.
+    File goes in ~/Library/LaunchAgents/com.xmclaw.daemon.plist.
+
+    Installation (XML forbids a double-dash here so flags are spelled
+    out as options below):
+      1. Install XMclaw with pip install xmclaw (user install or venv;
+         edit ProgramArguments to point at the right xmclaw binary).
+      2. Copy this plist to ~/Library/LaunchAgents/.
+      3. Edit the EnvironmentVariables block below, OR delete it and
+         keep the key in ~/.xmclaw/config.json (chmod 600).
+      4. Load with launchctl load -w ~/Library/LaunchAgents/com.xmclaw.daemon.plist
+
+    Logs land in /tmp/xmclaw.out.log and /tmp/xmclaw.err.log. Edit the
+    StandardOutPath / StandardErrorPath entries if you prefer
+    ~/Library/Logs/XMclaw/ instead.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.xmclaw.daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/xmclaw</string>
+        <string>serve</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+        <string>--port</string>
+        <string>8765</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!--
+            Uncomment and fill in the block below. Plists do not expand
+            $HOME, so XMC_DATA_DIR must be a literal path. Leaving the
+            block empty is fine; the daemon defaults to ~/.xmclaw via
+            Path.home().
+        -->
+        <!--
+        <key>XMC_DATA_DIR</key>
+        <string>/Users/YOURNAME/.xmclaw</string>
+        <key>XMC__llm__anthropic__api_key</key>
+        <string>REPLACE_WITH_YOUR_API_KEY</string>
+        -->
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/xmclaw.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/xmclaw.err.log</string>
+</dict>
+</plist>

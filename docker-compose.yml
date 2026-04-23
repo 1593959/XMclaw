@@ -1,0 +1,52 @@
+# XMclaw docker-compose stack.
+#
+# Minimal by design: one `xmclaw` service, a named volume for the data
+# dir, and a commented-out playwright sidecar for users who want browser
+# tools. A real self-host usually only needs the first block.
+#
+# Secrets: copy `.env.example` to `.env` and fill the API key(s). Compose
+# auto-loads `.env` from the same directory. Do NOT commit `.env`.
+
+services:
+  xmclaw:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: xmclaw/xmclaw:latest
+    container_name: xmclaw
+    restart: unless-stopped
+    # Publish to 127.0.0.1 by default — the daemon has no auth besides
+    # the pairing token, so exposing it to 0.0.0.0 on a shared host is a
+    # footgun. Change to "8765:8765" intentionally if you know what
+    # you're doing (and consider running behind a reverse proxy).
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - xmclaw-data:/data
+    environment:
+      # Pass API keys from the host `.env` file. Pick whichever provider
+      # you actually use — leaving both empty is fine, the daemon comes
+      # up and just refuses LLM calls until one is set.
+      XMC__llm__anthropic__api_key: "${ANTHROPIC_API_KEY:-}"
+      XMC__llm__openai__api_key: "${OPENAI_API_KEY:-}"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/health',timeout=2).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Optional browser-automation sidecar. Uncomment + rebuild to enable
+  # Playwright-based tools (see xmclaw/providers/tool/browser.py). The
+  # daemon reaches it over the compose network as `playwright:3000`.
+  #
+  # playwright:
+  #   image: mcr.microsoft.com/playwright:v1.47.0-jammy
+  #   container_name: xmclaw-playwright
+  #   restart: unless-stopped
+  #   command: ["npx", "-y", "playwright-mcp-server", "--host", "0.0.0.0", "--port", "3000"]
+  #   ports:
+  #     - "127.0.0.1:3000:3000"
+
+volumes:
+  xmclaw-data:
