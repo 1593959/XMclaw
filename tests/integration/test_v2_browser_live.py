@@ -18,8 +18,49 @@ import pytest
 
 pytest.importorskip("playwright")
 
-from xmclaw.core.ir import ToolCall
-from xmclaw.providers.tool.browser import BrowserTools
+
+def _chromium_installed() -> bool:
+    """Smoke-launch chromium at collect-time.
+
+    The ``playwright`` Python package is listed as a dev dep (so
+    ``importorskip`` passes on CI), but the chromium *binary* is a
+    separate download that contributors / CI workflows must trigger
+    explicitly via ``playwright install chromium``. Without it,
+    ``BrowserType.launch`` raises at use-site with the "Executable
+    doesn't exist" message — which shows up as 6 FAILURES in this
+    module, not a clean skip. We probe once here so the whole module
+    skips cleanly when the binary is missing.
+    """
+    try:
+        from playwright.async_api import async_playwright
+    except Exception:
+        return False
+
+    async def _probe() -> bool:
+        async with async_playwright() as p:
+            try:
+                browser = await p.chromium.launch(headless=True)
+                await browser.close()
+                return True
+            except Exception:
+                return False
+
+    try:
+        return asyncio.run(_probe())
+    except Exception:
+        return False
+
+
+if not _chromium_installed():
+    pytest.skip(
+        "Chromium binary unavailable — run `playwright install chromium` "
+        "to enable browser-live tests.",
+        allow_module_level=True,
+    )
+
+
+from xmclaw.core.ir import ToolCall  # noqa: E402 — after skip gate
+from xmclaw.providers.tool.browser import BrowserTools  # noqa: E402
 
 
 _PAGE_HTML = b"""<!DOCTYPE html>

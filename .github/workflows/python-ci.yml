@@ -68,6 +68,17 @@ jobs:
           pip install -r requirements-dev-lock.txt
           pip install -e . --no-deps
 
+      # Playwright Python module is a dev dep (so `importorskip` passes)
+      # but the chromium binary is a separate download. Without it, the
+      # browser-live integration tests fail with "Executable doesn't
+      # exist". The module-level smoke-skip in test_v2_browser_live.py
+      # catches the missing-binary case cleanly, but installing chromium
+      # lets those tests actually run their assertions on CI. Scoped to
+      # chromium only (no firefox/webkit) to keep the step under a minute.
+      - name: Install Playwright chromium (for browser-live tests)
+        continue-on-error: true
+        run: python -m playwright install chromium
+
       # Hard-fail set: syntax errors and undefined names only. Mirrors the
       # old conda workflow's `flake8 --select=E9,F63,F7,F82` gate — these
       # are "your code is broken" errors, not style.

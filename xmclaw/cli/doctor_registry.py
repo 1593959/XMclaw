@@ -1194,11 +1194,32 @@ class SecretsCheck(DoctorCheck):
                 ),
             )
 
+        names = list_secret_names()
+
+        # Empty file carries no secrets → mode is not a live leak. This
+        # matters because on Linux, pytest tmp dirs default to 0o644 and
+        # `{path}.write_text("{}")` inherits it — so the first
+        # ``set-secret`` tightens it, but a freshly touched empty file
+        # shouldn't blow up CI. Emit an advisory nudging the operator to
+        # actually store something, but keep ok=True.
+        if not names:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"secrets file at {path} is empty",
+                advisory=(
+                    "run 'xmclaw config set-secret <name>' to store an "
+                    "API key outside of config.json"
+                ),
+            )
+
         # Mode check is POSIX-only. On Windows the file's ACLs are what
         # gate access; chmod is a no-op and any 0o??? bits we'd get back
         # are meaningless, so we skip the assertion entirely rather than
         # emit a false positive. If NT-ACL hardening ever lands, this is
         # where it hooks in.
+        #
+        # Runs *after* the empty-file branch: once there's real content,
+        # 0o600 is enforced because a widened mode is a real leak.
         if os.name == "posix":
             mode = path.stat().st_mode & 0o777
             if mode != 0o600:
@@ -1214,17 +1235,6 @@ class SecretsCheck(DoctorCheck):
                     ),
                     fix_available=True,
                 )
-
-        names = list_secret_names()
-        if not names:
-            return CheckResult(
-                name=self.name, ok=True,
-                detail=f"secrets file at {path} is empty",
-                advisory=(
-                    "run 'xmclaw config set-secret <name>' to store an "
-                    "API key outside of config.json"
-                ),
-            )
 
         overrides = list(iter_env_override_names())
         detail = f"{len(names)} secret(s) at {path}"

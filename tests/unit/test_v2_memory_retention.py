@@ -181,14 +181,20 @@ def test_bus_subscriber_exception_does_not_break_eviction():
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_build_memory_from_config_default():
+def test_build_memory_from_config_default(tmp_path, monkeypatch):
+    # Default path is ~/.xmclaw/v2/memory.db; point XMC_DATA_DIR at a
+    # tmp_path so the test runs on CI runners that don't have a writable
+    # ~/.xmclaw (Linux GitHub-Actions runners in particular — the
+    # sqlite3.connect call otherwise trips OperationalError).
+    monkeypatch.setenv("XMC_DATA_DIR", str(tmp_path))
+    (tmp_path / "v2").mkdir(parents=True, exist_ok=True)
     bus = InProcessEventBus()
     cfg: dict = {}
     mem = build_memory_from_config(cfg, bus=bus)
     assert mem is not None
-    # Default path is ~/.xmclaw/v2/memory.db — just assert it's set and
-    # the bus wired through.
+    # Default path honored XMC_DATA_DIR → under tmp_path.
     assert mem.db_path != ""
+    assert str(tmp_path) in str(mem.db_path)
     assert mem._bus is bus
     mem.close()
 
