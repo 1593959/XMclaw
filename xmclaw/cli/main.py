@@ -21,6 +21,8 @@ v1 was deleted wholesale in Phase 4.10; there's now only one CLI.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
+
 import typer
 
 from xmclaw import __version__
@@ -49,6 +51,15 @@ config_app = typer.Typer(
     help="Create or tweak daemon/config.json (LLM keys, tools, gateway).",
 )
 app.add_typer(config_app, name="config")
+
+# ``xmclaw backup <subcommand>`` — Epic #20. ``create`` / ``list`` /
+# ``restore`` of the ``~/.xmclaw/`` workspace into portable tar.gz
+# archives. Not an alias for ``git`` or ``rsync``: the archive format is
+# versioned via ``manifest.json`` so cross-version restores are safe.
+backup_app = typer.Typer(
+    help="Create, list, and restore backups of the ~/.xmclaw/ workspace.",
+)
+app.add_typer(backup_app, name="backup")
 
 
 def _default_memory_db_path():
@@ -798,6 +809,123 @@ def config_set(
         encoding="utf-8",
     )
     typer.echo(f"  [ok]  {target}: {key} = {_json.dumps(parsed_value)}")
+
+
+# ── xmclaw backup ──────────────────────────────────────────────────────
+# Epic #20 entry. The CLI is a thin shell; all real work lives in
+# xmclaw.backup so other frontends (future web UI, scheduled task) can
+# reuse the same code path. Kept at the bottom so the rest of main.py's
+# ordering isn't disturbed.
+
+
+def _default_backup_source() -> Path:
+    from xmclaw.utils.paths import data_dir
+
+    return data_dir()
+
+
+@backup_app.command("create")
+def backup_create(
+    name: str = typer.Argument(
+        None,
+        help="Backup name. Defaults to 'auto-YYYY-MM-DD-HHMMSS'.",
+    ),
+    source: Path = typer.Option(
+        None, "--source",
+        help="Workspace to back up. Defaults to $XMC_DATA_DIR or ~/.xmclaw.",
+    ),
+    dest: Path = typer.Option(
+        None, "--dest",
+        help="Backups directory. Defaults to <source>/backups.",
+    ),
+    overwrite: bool = typer.Option(
+        False, "--overwrite",
+        help="Replace an existing backup with the same name.",
+    ),
+) -> None:
+    """Archive ``~/.xmclaw/`` to a versioned tar.gz + manifest."""
+    import time as _time
+
+    from xmclaw.backup import create_backup
+    from xmclaw.backup.create import BackupError
+
+    src = source or _default_backup_source()
+    if name is None:
+        name = "auto-" + _time.strftime("%Y-%m-%d-%H%M%S", _time.gmtime())
+    try:
+        manifest = create_backup(
+            src, name, backups_dir=dest, overwrite=overwrite,
+        )
+    except BackupError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"  [ok]  {name}: {manifest.entries} file(s), "
+               f"{manifest.archive_bytes} bytes, "
+               f"sha256={manifest.archive_sha256[:12]}...")
+
+
+@backup_app.command("list")
+def backup_list(
+    dest: Path = typer.Option(
+        None, "--dest",
+        help="Backups directory. Defaults to ~/.xmclaw/backups.",
+    ),
+) -> None:
+    """Show every backup on disk."""
+    from xmclaw.backup import list_backups
+
+    entries = list_backups(dest)
+    if not entries:
+        typer.echo("no backups found.")
+        return
+    for entry in entries:
+        m = entry.manifest
+        typer.echo(
+            f"  {entry.name:30s}  "
+            f"{m.entries:6d} files  "
+            f"{m.archive_bytes:>10d} bytes  "
+            f"v{m.xmclaw_version}"
+        )
+
+
+@backup_app.command("restore")
+def backup_restore(
+    name: str = typer.Argument(..., help="Name of the backup to restore."),
+    target: Path = typer.Option(
+        None, "--target",
+        help="Destination workspace. Defaults to $XMC_DATA_DIR or ~/.xmclaw.",
+    ),
+    dest: Path = typer.Option(
+        None, "--dest",
+        help="Backups directory. Defaults to ~/.xmclaw/backups.",
+    ),
+    keep_previous: bool = typer.Option(
+        True, "--keep-previous/--no-keep-previous",
+        help=(
+            "When the target exists, move it aside to <target>.prev-<ts> "
+            "before extracting (default on — lets you roll back a bad "
+            "restore)."
+        ),
+    ),
+) -> None:
+    """Extract a backup back into the workspace.
+
+    Does not stop or restart the daemon. Run ``xmclaw stop`` first; after
+    the restore completes, run ``xmclaw start`` to bring it back up.
+    """
+    from xmclaw.backup import restore_backup
+    from xmclaw.backup.restore import RestoreError
+
+    tgt = target or _default_backup_source()
+    try:
+        result = restore_backup(
+            name, tgt, backups_dir=dest, keep_previous=keep_previous,
+        )
+    except RestoreError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"  [ok]  restored {name} -> {result}")
+    typer.echo("    next: run 'xmclaw start' to bring the daemon back up.")
 
 
 if __name__ == "__main__":

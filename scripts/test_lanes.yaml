@@ -188,6 +188,15 @@ lanes:
     tests:
       - tests/unit/test_v2_plugin_sdk.py
 
+  # Backup/restore (Epic #20). Triggers on backup package changes and on
+  # the CLI backup commands. Filesystem-only today; a future phase will
+  # wire the daemon reloader in and expand this lane.
+  backup:
+    triggers:
+      - "xmclaw/backup/**"
+    tests:
+      - tests/unit/test_v2_backup.py
+
   # Changes to tests themselves: run just the changed test files (handled
   # separately in test_changed.py via direct path match) + the always-on
   # lane.

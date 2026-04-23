@@ -1024,7 +1024,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #20 · 备份与恢复（零停机重载基础）
 
-**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**状态**：🟡 进行中 | **负责人**：XMclaw Bot | **起始**：2026-04-23 | **完成**：-
 **前置依赖**：Epic #13（SQLite event bus）
 **关联 Milestone**：M8（性能与可观测）
 
@@ -1040,17 +1040,17 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **检查清单**：
 
-- [ ] `xmclaw backup create` 产出 tar.gz + manifest
-- [ ] `xmclaw backup restore` 原子交换 + 自动重启
-- [ ] 自动 daily backup
-- [ ] 零停机重载骨架（Workspace swap）
-- [ ] `docs/BACKUP.md`
+- [x] `xmclaw backup create` 产出 tar.gz + manifest
+- [x] `xmclaw backup restore` 原子交换 + 自动重启（文件系统部分；daemon 重启由调用者负责，Phase 2 再补）
+- [ ] 自动 daily backup _(deferred — 需先引入 scheduler，留到 Phase 2)_
+- [ ] 零停机重载骨架（Workspace swap）_(deferred — 需 daemon/reloader.py + agent-loop draining，留到 Phase 2)_
+- [ ] `docs/BACKUP.md` _(deferred — 功能稳定后再写用户文档)_
 
 **退出标准**：恢复 1GB 数据目录时服务中断 < 5 秒；daily auto-backup 连续 7 天不失败。
 
 **进度日志**：
 
-- _（尚无）_
+- 2026-04-23: Phase 1 落地——`xmclaw/backup/` 新包（`manifest.py` / `create.py` / `restore.py` / `store.py` / `AGENTS.md`）+ `xmclaw backup {create,list,restore}` CLI。Manifest v1 = `{schema_version, name, created_ts, xmclaw_version, archive_sha256, archive_bytes, source_dir, excluded, entries}`，permissive 读（忽略未知字段） + 严格写。创建流程：`<name>.tmp` staging → 两遍（写 tar.gz + 再读算 sha256）→ atomic rename；默认排除 `logs/`、`__pycache__/`、`daemon.{pid,meta,log}`、`*.pid`、`*.tmp`（含嵌套路径变体）。恢复流程：schema gate → sha256 verify → `.restore-staging` 解包 → 旧目录改名为 `.prev-<ts>` → 原子 rename staging → 失败时回滚。Tar-slip 防御：`_safe_extract` 用 `resolve().relative_to(target)` 校验每个 member。AGENTS.md 明确依赖规则：backup 不能 import `core/`/`providers/`/`daemon/`（否则坏装不出来）。CLI 三个子命令都走 `BackupError`/`RestoreError` → typer.Exit(1) 路径。smart-gate 新增 `backup` lane。tests: `tests/unit/test_v2_backup.py` 31 个（含 CLI 端到端），`scripts/test_lanes.yaml` always+cli+backup 三 lane 共 253 passed / 2 skipped。第 4 步（auto-daily）和第 5 步（daemon/reloader.py）显式推迟到 Phase 2：前者需先落 scheduler、后者需 agent-loop draining 协议，都是独立工作量。commit <pending>
 
 ---
 
