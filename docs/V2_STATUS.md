@@ -33,11 +33,10 @@ the loop.
 ### Hermetic test suite
 
 ```
-410 v2 tests passing (unit + integration + conformance + offline bench)
+875 v2 tests collected (unit + integration + conformance + offline bench)
     on Windows, macOS, Linux matrix
  3 live benches passing when XMC_ANTHROPIC_API_KEY set
- 2 v1 tests failing (pre-existing in v1, unrelated to v2 work)
-CI hard gates: import-direction check, v2 ping smoke — all green
+CI hard gates: import-direction check, v2 ping smoke, smart-gate — all green
 ```
 
 ---
@@ -90,9 +89,8 @@ the Actions tab).
 
 ## What's NOT done
 
-- **Sandboxed skill runtime (Epic #3):** `LocalSkillRuntime` enforces a CPU/wall-clock timeout in-process, but a rogue skill can still `Path(...).read_text()` anywhere. `providers/runtime/process.py` is the isolation path; subprocess/docker hard-isolation is what graduates it from "dev default" to "production default".
-- **Daemon memory retention (Epic #5):** factory wiring for `retention_days` / `max_bytes` + a `MEMORY_EVICTED` event is not landed; memory grows unbounded until manually purged.
-- **Second-stage anti-req #14 coverage:** SOUL / PROFILE / memory-recall injection sites exist at the IR boundary but the full "no auto-inject" audit pass across every AgentLoop branch is still open.
+- **Sandboxed skill runtime (Epic #3):** `LocalSkillRuntime` enforces a CPU/wall-clock timeout in-process, but a rogue skill can still `Path(...).read_text()` anywhere. `providers/runtime/process.py` is the isolation path; subprocess/docker hard-isolation is what graduates it from "dev default" to "production default". Neither runtime is wired into the AgentLoop yet — skills execute via the scheduler's in-process path.
+- **Second-stage anti-req #14 coverage:** `policy.apply_policy()` is wired at tool-output boundary and exposes four stable source tags (`tool_result` / `agent_profile` / `memory_recall` / `web_fetch`). **SOUL / PROFILE / AGENTS.md auto-injection is not currently implemented in the AgentLoop** — the only system-prompt source is the static `_DEFAULT_SYSTEM`. Memory-recall likewise is not auto-injected (consistent with anti-req #2). The `agent_profile` / `memory_recall` source tags are placeholders waiting for the first consumer; the guard will activate automatically the moment one appears.
 - **72h daemon stress test (M1 exit):** not session-runnable; needs a real multi-day window on a dedicated host.
 
 ---

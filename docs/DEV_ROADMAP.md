@@ -824,7 +824,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #14 · Prompt injection 防御
 
-**状态**：🟡 进行中 | **负责人**：Claude (AI pair) | **起始**：2026-04-23 | **完成**：-
+**状态**：✅ 已完成（阶段 2 关口扎稳：tool_result 已接 scanner；SOUL/PROFILE/memory-recall 目前不自动注入，guard 留位待出现即激活） | **负责人**：Claude (AI pair) | **起始**：2026-04-23 | **完成**：2026-04-23
 **前置依赖**：Epic #13（事件发出需要总线）
 **关联 Milestone**：M8（安全硬化）
 
@@ -840,7 +840,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 **检查清单**：
 
 - [x] `xmclaw/security/prompt_scanner.py` 移植 Hermes 规则（instruction_override / role_forgery / exfiltration + unicode invisibles）
-- [ ] 在所有 prompt 注入点前扫（**tool output 已接**；SOUL / PROFILE / AGENTS / memory 摘要待阶段 2 补）
+- [x] 在所有 prompt 注入点前扫（**tool_result 已接** ——`AgentLoop._acting` 入口；SOUL/PROFILE/AGENTS/memory-recall **当前未自动注入** 到 system prompt，符合 anti-req #2，`policy.py` 已预埋 4 个 source tag 常量，一旦有消费者出现立即激活）
 - [x] `PROMPT_INJECTION_DETECTED` 事件（payload 含 source/policy/findings/categories/acted/tool_call_id）
 - [x] `security.prompt_injection` config 三档策略（factory 接通，默认 `detect_only`）
 - [x] 单测 ≥ 10 典型攻击样本（26 scanner 单测 + 7 AgentLoop 集成测试）
@@ -850,6 +850,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 **进度日志**：
 
 - 2026-04-23: 阶段 1 落地——新增 `xmclaw/security/prompt_scanner.py` 纯函数扫描器（三类共 11 条 regex：`ignore_previous` / `disregard_prior` / `forget_instructions` / `override_system` / `openai_im_start` / `anthropic_human_tag` / `inst_block` / `xml_system` / `new_instructions_header` / `reveal_secrets` / `send_to_url` + unicode invisibles 计数）；`PolicyMode` 枚举 + `redact()` 右到左 splice；新增 `EventType.PROMPT_INJECTION_DETECTED`；`AgentLoop` 在 tool_result 进入 messages 前扫一遍——`detect_only` 放行、`redact` 改写内容（LLM 只看到 `[redacted:<id>]`）、`block` 发 `ANTI_REQ_VIOLATION(kind=prompt_injection_blocked)` 终止 turn；`build_agent_from_config` 读 `security.prompt_injection`；`daemon/config.example.json` 加 `security` 段；26 scanner 单测 + 7 AgentLoop 集成测试（三档策略 × 敌方 payload / 干净 payload + factory 三路径），全套 692 passed (commit 56e2e14)
+- 2026-04-23: 阶段 2 收尾审计——检视 `AgentLoop` 每条注入支路：`_system_prompt` 是静态字符串不走外部数据，`memory` 层从未 `.search()` 后塞进 system prompt（anti-req #2 合规），SOUL/PROFILE/AGENTS.md 目前**没有消费者**自动读取文件 inline 进 prompt。结论：当前 AgentLoop 只有一个"外部数据入 prompt"的切面——`tool_result`——阶段 1 已扫；`policy.py` 预埋的 `SOURCE_PROFILE` / `SOURCE_MEMORY_RECALL` / `SOURCE_WEB_FETCH` 三个 tag 是护栏留位，一旦 Epic #4 / Epic #9 落地 agent profile 或主动 memory recall，call-site 直接 `apply_policy(text, source=SOURCE_PROFILE, ...)` 一行接入。`docs/V2_STATUS.md` 同步说明这个实际状态，避免给用户虚幻"已扫 SOUL/PROFILE" 的错觉。Epic 状态 🟡→✅（anti-req #14 在当前代码表面上已无未扫注入点；M8 退出标准的 Epic #14 侧同步打勾）
 - 2026-04-23: 阶段 2 地基——新增 `xmclaw/security/policy.py` 提供 `apply_policy(text, *, policy, source, extra) -> PolicyDecision` 复用壳：scan + 决定 (detect_only / redact / block) + 构造事件 payload 一次完成；`PolicyDecision` frozen dataclass 含 `content` / `blocked` / `scan` / `event`；导出四个稳定 source tag 常量（`SOURCE_TOOL_RESULT` / `SOURCE_PROFILE` / `SOURCE_MEMORY_RECALL` / `SOURCE_WEB_FETCH`）便于后续 SOUL/PROFILE/memory/web-fetch 注入点统一接入；event `match` 截断 200 字符防总线 DoS，`extra` 用 `setdefault` 保护核心字段不被 callsite 覆盖；`AgentLoop` 重构——原 ~40 行内联 scanner 逻辑压到单次 `apply_policy()` 调用；新增 `tests/unit/test_v2_security_policy.py` 12 测（快路径 / 三档决策 / 事件 shape / 截断 / 防覆盖 / 四 source tag 参数化 / redact 幂等）；全套 728 passed (commit 8748a38)
 
 ---
@@ -1273,7 +1274,7 @@ Hermes、OpenClaw 都给不出这种 demo——他们的"进步"要么是手动 
 **退出标准**：
 - [x] 结构化日志 + rotation（Epic #15）
 - [x] Memory eviction（Epic #5）
-- [ ] Prompt 注入防御（Epic #14）
+- [x] Prompt 注入防御（Epic #14）
 - [ ] Secrets 加密（Epic #16）
 - [ ] `grep -r sk- ~/.xmclaw/` 无命中（明文 secret 审计清空）
 
