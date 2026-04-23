@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -399,7 +400,7 @@ def test_default_registry_builtin_check_order() -> None:
         "config", "llm", "tools", "workspace", "pairing", "port",
         "events_db", "memory_db", "skill_runtime",
         "connectivity", "roadmap_lint", "pid_lock", "daemon",
-        "backups",
+        "backups", "secrets",
     ]
 
 
@@ -468,7 +469,7 @@ def test_run_doctor_still_returns_old_check_result_type(tmp_path: Path) -> None:
         "config", "llm", "tools", "workspace", "pairing", "port 8765",
         "events_db", "memory_db", "skill_runtime",
         "connectivity", "roadmap_lint", "pid_lock", "daemon",
-        "backups",
+        "backups", "secrets",
     ]
 
 
@@ -1572,3 +1573,214 @@ def test_backups_honors_env_override(
     r = BackupsCheck().run(ctx)
     assert r.ok is True
     assert "env_one" in r.detail
+
+
+# ── Epic #10 + #16: SecretsCheck ────────────────────────────────────────
+
+
+def _secrets_ctx(
+    tmp_path: Path, secrets_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> DoctorContext:
+    """DoctorContext wired to a tmp-path secrets.json.
+
+    Also pins ``XMC_SECRETS_PATH`` because
+    :func:`xmclaw.utils.secrets.secrets_file_path` is what ``list_secret_names``
+    / ``iter_env_override_names`` consult — those helpers don't see
+    ``ctx.extras``. Clears host-leaked ``XMC_SECRET_*`` for determinism.
+    """
+    monkeypatch.setenv("XMC_SECRETS_PATH", str(secrets_path))
+    for k in list(os.environ):
+        if k.startswith("XMC_SECRET_"):
+            monkeypatch.delenv(k, raising=False)
+    ctx = DoctorContext(
+        config_path=_write_valid_cfg(tmp_path),
+        probe_daemon=False,
+    )
+    ctx.extras["secrets_path"] = secrets_path
+    return ctx
+
+
+def test_secrets_missing_file_is_ok_with_create_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No secrets file = ok + advisory pointing at set-secret CLI."""
+    from xmclaw.cli.doctor_registry import SecretsCheck
+
+    r = SecretsCheck().run(_secrets_ctx(
+        tmp_path, tmp_path / "missing.json", monkeypatch,
+    ))
+    assert r.ok is True
+    assert "no secrets file" in r.detail
+    assert r.advisory is not None
+    assert "set-secret" in r.advisory
+
+
+def test_secrets_empty_file_is_ok_with_create_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A file with an empty dict produces an advisory, not a failure."""
+    from xmclaw.cli.doctor_registry import SecretsCheck
+
+    path = tmp_path / "secrets.json"
+    path.write_text("{}", encoding="utf-8")
+    r = SecretsCheck().run(_secrets_ctx(tmp_path, path, monkeypatch))
+    assert r.ok is True
+    assert "empty" in r.detail
+    assert r.advisory is not None
+
+
+def test_secrets_populated_file_reports_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A populated file without env overrides = ok + silent detail."""
+    from xmclaw.cli.doctor_registry import SecretsCheck
+    from xmclaw.utils import secrets as secrets_mod
+
+    path = tmp_path / "secrets.json"
+    monkeypatch.setenv("XMC_SECRETS_PATH", str(path))
+    secrets_mod.set_secret("alpha", "a")
+    secrets_mod.set_secret("beta", "b")
+
+    ctx = _secrets_ctx(tmp_path, path, monkeypatch)
+    r = SecretsCheck().run(ctx)
+    assert r.ok is True
+    assert "2 secret(s)" in r.detail
+    assert r.advisory is None
+
+
+def test_secrets_env_override_surfaces_as_advisory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When an env var shadows a file entry, advise the user."""
+    from xmclaw.cli.doctor_registry import SecretsCheck
+    from xmclaw.utils import secrets as secrets_mod
+
+    path = tmp_path / "secrets.json"
+    monkeypatch.setenv("XMC_SECRETS_PATH", str(path))
+    secrets_mod.set_secret("shadowed", "v")
+    secrets_mod.set_secret("not_shadowed", "w")
+    monkeypatch.setenv("XMC_SECRET_SHADOWED", "from-env")
+
+    ctx = _secrets_ctx(tmp_path, path, monkeypatch)
+    # re-apply XMC_SECRET_SHADOWED since _secrets_ctx clears XMC_SECRET_*
+    monkeypatch.setenv("XMC_SECRET_SHADOWED", "from-env")
+    r = SecretsCheck().run(ctx)
+    assert r.ok is True
+    assert r.advisory is not None
+    assert "shadowed" in r.advisory
+    assert "1 entry" in r.advisory or "1 " in r.advisory
+
+
+def test_secrets_many_overrides_truncates_advisory_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With >3 overrides the advisory lists the first 3 + ``+N more``."""
+    from xmclaw.cli.doctor_registry import SecretsCheck
+    from xmclaw.utils import secrets as secrets_mod
+
+    path = tmp_path / "secrets.json"
+    monkeypatch.setenv("XMC_SECRETS_PATH", str(path))
+    for i in range(5):
+        secrets_mod.set_secret(f"k{i}", "v")
+    for i in range(5):
+        monkeypatch.setenv(f"XMC_SECRET_K{i}", "env")
+
+    ctx = _secrets_ctx(tmp_path, path, monkeypatch)
+    for i in range(5):
+        monkeypatch.setenv(f"XMC_SECRET_K{i}", "env")
+    r = SecretsCheck().run(ctx)
+    assert r.ok is True
+    assert r.advisory is not None
+    assert "+2 more" in r.advisory
+
+
+def test_secrets_loose_mode_fails_with_fix_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POSIX-only: a world-readable secrets.json fails loud + fix_available."""
+    if os.name != "posix":
+        pytest.skip("file-mode semantics are POSIX-only")
+    from xmclaw.cli.doctor_registry import SecretsCheck
+
+    path = tmp_path / "secrets.json"
+    path.write_text('{"k": "v"}', encoding="utf-8")
+    os.chmod(path, 0o644)
+
+    ctx = _secrets_ctx(tmp_path, path, monkeypatch)
+    r = SecretsCheck().run(ctx)
+    assert r.ok is False
+    assert "0o644" in r.detail or "readable" in r.detail.lower()
+    assert r.fix_available is True
+
+
+def test_secrets_check_fix_tightens_mode_to_0600(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SecretsCheck.fix() chmods a loose file back to 0600 on POSIX."""
+    if os.name != "posix":
+        pytest.skip("chmod semantics are POSIX-only")
+    from xmclaw.cli.doctor_registry import SecretsCheck
+
+    path = tmp_path / "secrets.json"
+    path.write_text('{"k": "v"}', encoding="utf-8")
+    os.chmod(path, 0o640)
+
+    check = SecretsCheck()
+    ctx = _secrets_ctx(tmp_path, path, monkeypatch)
+    assert check.fix(ctx) is True
+    assert (path.stat().st_mode & 0o777) == 0o600
+    # Re-run: now healthy.
+    r = check.run(ctx)
+    assert r.ok is True
+
+
+def test_secrets_check_fix_noop_when_already_tight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """fix() returns False when there's nothing to tighten — keeps the
+    Epic #10 auto-fix counter honest (no 'fixed' spam for pristine files)."""
+    if os.name != "posix":
+        pytest.skip("chmod semantics are POSIX-only")
+    from xmclaw.cli.doctor_registry import SecretsCheck
+
+    path = tmp_path / "secrets.json"
+    path.write_text('{"k": "v"}', encoding="utf-8")
+    os.chmod(path, 0o600)
+
+    check = SecretsCheck()
+    ctx = _secrets_ctx(tmp_path, path, monkeypatch)
+    assert check.fix(ctx) is False
+
+
+def test_secrets_check_fix_missing_file_is_noop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """fix() returns False (not a crash) when the file simply doesn't exist."""
+    from xmclaw.cli.doctor_registry import SecretsCheck
+
+    check = SecretsCheck()
+    ctx = _secrets_ctx(tmp_path, tmp_path / "absent.json", monkeypatch)
+    assert check.fix(ctx) is False
+
+
+def test_secrets_check_honors_file_path_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without ctx.extras, SecretsCheck falls through to secrets_file_path()."""
+    from xmclaw.cli.doctor_registry import SecretsCheck
+
+    path = tmp_path / "fallthrough.json"
+    monkeypatch.setenv("XMC_SECRETS_PATH", str(path))
+    for k in list(os.environ):
+        if k.startswith("XMC_SECRET_"):
+            monkeypatch.delenv(k, raising=False)
+
+    ctx = DoctorContext(
+        config_path=_write_valid_cfg(tmp_path),
+        probe_daemon=False,
+    )
+    # deliberately no ctx.extras["secrets_path"] — should fall through.
+    r = SecretsCheck().run(ctx)
+    assert r.ok is True
+    assert "no secrets file" in r.detail
+    assert str(path) in r.detail

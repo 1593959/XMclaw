@@ -1140,6 +1140,129 @@ def _format_age(seconds: float) -> str:
     return f"{int(seconds // 86400)}d"
 
 
+class SecretsCheck(DoctorCheck):
+    """Surface the Epic #16 Phase 1 secrets inventory + common footguns.
+
+    Three concerns the doctor should flag, ordered most-surprising first:
+
+    1. **File mode on POSIX.** ``secrets.json`` must be 0600 — the write
+       path sets it, but a copy / git checkout / manual edit can widen
+       it. Wider-than-0600 is the only condition that flips ``ok=False``
+       because it's a live leak: any other user on the box can ``cat``
+       your API keys. :meth:`fix` auto-remediates with ``chmod 600``.
+
+    2. **Env-var overrides.** When ``XMC_SECRET_FOO`` is exported the
+       env value wins over the file — people lose hours chasing "why
+       doesn't my secrets.json edit take effect". Surface it as an
+       advisory (``ok=True``) so the info lands without crying wolf.
+
+    3. **Baseline inventory.** "N secret(s) stored" so operators know
+       the file is actually in use. Empty file = advisory suggesting
+       ``xmclaw config set-secret``.
+
+    Keyring content is deliberately not enumerated — there's no portable
+    keyring-list API. Operators who want a full audit run their OS's
+    credential-manager UI.
+    """
+
+    id = "secrets"
+    name = "secrets"
+
+    def _target(self, ctx: DoctorContext) -> Path:
+        override = ctx.extras.get("secrets_path")
+        if isinstance(override, (str, Path)):
+            return Path(override)
+        from xmclaw.utils.secrets import secrets_file_path
+
+        return secrets_file_path()
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        from xmclaw.utils.secrets import (
+            iter_env_override_names,
+            list_secret_names,
+        )
+
+        path = self._target(ctx)
+
+        if not path.is_file():
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"no secrets file at {path}",
+                advisory=(
+                    "run 'xmclaw config set-secret <name>' to store an "
+                    "API key outside of config.json"
+                ),
+            )
+
+        # Mode check is POSIX-only. On Windows the file's ACLs are what
+        # gate access; chmod is a no-op and any 0o??? bits we'd get back
+        # are meaningless, so we skip the assertion entirely rather than
+        # emit a false positive. If NT-ACL hardening ever lands, this is
+        # where it hooks in.
+        if os.name == "posix":
+            mode = path.stat().st_mode & 0o777
+            if mode != 0o600:
+                return CheckResult(
+                    name=self.name, ok=False,
+                    detail=(
+                        f"{path} has mode {oct(mode)} "
+                        "(expected 0o600) — world/group readable"
+                    ),
+                    advisory=(
+                        "run 'xmclaw doctor --fix' or "
+                        f"'chmod 600 {path}' to tighten permissions"
+                    ),
+                    fix_available=True,
+                )
+
+        names = list_secret_names()
+        if not names:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"secrets file at {path} is empty",
+                advisory=(
+                    "run 'xmclaw config set-secret <name>' to store an "
+                    "API key outside of config.json"
+                ),
+            )
+
+        overrides = list(iter_env_override_names())
+        detail = f"{len(names)} secret(s) at {path}"
+        if overrides:
+            preview = ", ".join(sorted(overrides)[:3])
+            more = "" if len(overrides) <= 3 else f" (+{len(overrides) - 3} more)"
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=detail,
+                advisory=(
+                    f"env vars override {len(overrides)} entry(ies): "
+                    f"{preview}{more} — unset them if you want the file "
+                    "value to win"
+                ),
+            )
+        return CheckResult(name=self.name, ok=True, detail=detail)
+
+    def fix(self, ctx: DoctorContext) -> bool:
+        """Tighten ``secrets.json`` to 0600 when it's wider.
+
+        POSIX-only — on Windows we skip because chmod semantics don't
+        apply. Returns True only when we actually narrowed the mode.
+        """
+        if os.name != "posix":
+            return False
+        path = self._target(ctx)
+        if not path.is_file():
+            return False
+        current = path.stat().st_mode & 0o777
+        if current == 0o600:
+            return False
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            return False
+        return (path.stat().st_mode & 0o777) == 0o600
+
+
 def build_default_registry() -> DoctorRegistry:
     """Return a registry populated with the built-in checks.
 
@@ -1161,4 +1284,5 @@ def build_default_registry() -> DoctorRegistry:
     reg.register(StalePidCheck())
     reg.register(DaemonHealthCheck())
     reg.register(BackupsCheck())
+    reg.register(SecretsCheck())
     return reg
