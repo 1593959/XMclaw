@@ -147,14 +147,29 @@ def build_llm_from_config(cfg: dict[str, Any]) -> LLMProvider | None:
     """Return an LLMProvider constructed from ``cfg['llm'][<provider>]``.
 
     Selects the first provider in ``_PROVIDER_ORDER`` that has a
-    non-empty ``api_key``. Returns ``None`` if no provider is
-    configured — callers should treat this as "run the daemon in echo
-    mode" rather than an error, since that's a valid posture for
-    local-only tool-loop work.
+    resolvable ``api_key``. ``None`` if no provider is configured —
+    callers should treat that as "run the daemon in echo mode" rather
+    than an error, since that's a valid posture for local-only
+    tool-loop work.
+
+    Key resolution order (introduced alongside Epic #16 Phase 1):
+
+    1. The literal string in ``cfg['llm'][<name>]['api_key']``.
+    2. When that's empty / missing / whitespace-only, fall back to
+       :func:`xmclaw.utils.secrets.get_secret` with the dotted name
+       ``llm.<provider>.api_key``.
+
+    Concretely: leaving ``api_key: ""`` in config.json and running
+    ``xmclaw config set-secret llm.anthropic.api_key`` is now a
+    first-class way to keep cleartext keys out of the JSON. Users
+    who prefer the old path (inline string in config.json) are
+    untouched — the literal wins when it's non-empty.
 
     Raises ``ConfigError`` only for STRUCTURAL problems in the
     ``llm`` section (e.g. it exists but isn't a dict).
     """
+    from xmclaw.utils.secrets import get_secret
+
     llm_section = cfg.get("llm")
     if llm_section is None:
         return None
@@ -167,8 +182,15 @@ def build_llm_from_config(cfg: dict[str, Any]) -> LLMProvider | None:
         pcfg = llm_section.get(provider_name)
         if not isinstance(pcfg, dict):
             continue
-        api_key = pcfg.get("api_key")
-        if not api_key or not isinstance(api_key, str):
+        raw_key = pcfg.get("api_key")
+        api_key = raw_key if isinstance(raw_key, str) else None
+
+        # Epic #16 fallback: empty / missing cfg → try the secrets layer.
+        # get_secret() already handles env > file > keyring and treats
+        # whitespace-only as miss, so we just consult it and move on.
+        if not api_key or not api_key.strip():
+            api_key = get_secret(f"llm.{provider_name}.api_key")
+        if not api_key or not api_key.strip():
             continue
 
         model = (

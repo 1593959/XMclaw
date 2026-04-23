@@ -115,6 +115,128 @@ def test_falls_back_to_default_model_when_omitted() -> None:
     assert llm.model  # non-empty default model
 
 
+# ── Epic #16 Phase 1: secrets-layer fallback for api_key ────────────────
+
+
+@pytest.fixture
+def _isolate_secrets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin secrets.json under tmp_path and clear host XMC_SECRET_* env.
+
+    These tests exercise the build_llm_from_config → get_secret fallback,
+    so they must NEVER touch the developer's real ~/.xmclaw/secrets.json.
+    """
+    monkeypatch.setenv("XMC_SECRETS_PATH", str(tmp_path / "secrets.json"))
+    import os as _os
+    for key in list(_os.environ):
+        if key.startswith("XMC_SECRET_"):
+            monkeypatch.delenv(key, raising=False)
+
+
+def test_empty_cfg_api_key_falls_back_to_secrets_file(
+    _isolate_secrets: None,
+) -> None:
+    """``api_key: ""`` in config + stored secret → factory picks it up.
+
+    This is the opt-in path users take to keep cleartext out of
+    config.json: leave the field empty, run ``xmclaw config set-secret
+    llm.anthropic.api_key``, and the daemon resolves it on startup.
+    """
+    from xmclaw.utils.secrets import set_secret
+
+    set_secret("llm.anthropic.api_key", "sk-ant-from-file")
+    llm = build_llm_from_config({
+        "llm": {"anthropic": {"api_key": "", "default_model": "claude-x"}},
+    })
+    assert isinstance(llm, AnthropicLLM)
+    assert llm.api_key == "sk-ant-from-file"
+
+
+def test_whitespace_cfg_api_key_falls_back_to_secrets(
+    _isolate_secrets: None,
+) -> None:
+    """A whitespace-only literal is the classic "export FOO= "-style
+    footgun; it must NOT shadow the secrets-layer lookup."""
+    from xmclaw.utils.secrets import set_secret
+
+    set_secret("llm.openai.api_key", "sk-openai-fallback")
+    llm = build_llm_from_config({
+        "llm": {"openai": {"api_key": "   "}},
+    })
+    assert isinstance(llm, OpenAILLM)
+    assert llm.api_key == "sk-openai-fallback"
+
+
+def test_missing_cfg_api_key_falls_back_to_secrets(
+    _isolate_secrets: None,
+) -> None:
+    """No ``api_key`` key at all in the provider dict still resolves
+    via the secrets layer (common when a user scaffolds a provider
+    block and forgets the field entirely)."""
+    from xmclaw.utils.secrets import set_secret
+
+    set_secret("llm.anthropic.api_key", "sk-ant-scaffold")
+    llm = build_llm_from_config({
+        "llm": {"anthropic": {}},
+    })
+    assert isinstance(llm, AnthropicLLM)
+    assert llm.api_key == "sk-ant-scaffold"
+
+
+def test_cfg_literal_still_wins_over_secrets(_isolate_secrets: None) -> None:
+    """A non-empty literal in config.json is the user's explicit choice
+    — the secrets fallback must NOT override it (no "surprise, your env
+    var won" footgun)."""
+    from xmclaw.utils.secrets import set_secret
+
+    set_secret("llm.anthropic.api_key", "sk-ant-from-secrets")
+    llm = build_llm_from_config({
+        "llm": {"anthropic": {"api_key": "sk-ant-from-cfg"}},
+    })
+    assert isinstance(llm, AnthropicLLM)
+    assert llm.api_key == "sk-ant-from-cfg"
+
+
+def test_env_var_override_reaches_factory(
+    _isolate_secrets: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``XMC_SECRET_LLM_ANTHROPIC_API_KEY`` is the CI-friendly path:
+    config.json has empty api_key, env var carries the real value."""
+    monkeypatch.setenv("XMC_SECRET_LLM_ANTHROPIC_API_KEY", "sk-ant-from-env")
+    llm = build_llm_from_config({
+        "llm": {"anthropic": {"api_key": ""}},
+    })
+    assert isinstance(llm, AnthropicLLM)
+    assert llm.api_key == "sk-ant-from-env"
+
+
+def test_returns_none_when_cfg_empty_and_no_secret(
+    _isolate_secrets: None,
+) -> None:
+    """No literal + no secret = echo mode (not a crash)."""
+    assert build_llm_from_config({
+        "llm": {"anthropic": {"api_key": ""}},
+    }) is None
+
+
+def test_secrets_fallback_respects_provider_order(
+    _isolate_secrets: None,
+) -> None:
+    """When BOTH providers rely on secrets-layer fallback, the stable
+    order (anthropic first) still applies."""
+    from xmclaw.utils.secrets import set_secret
+
+    set_secret("llm.anthropic.api_key", "sk-ant-via-secrets")
+    set_secret("llm.openai.api_key", "sk-oai-via-secrets")
+    llm = build_llm_from_config({
+        "llm": {
+            "anthropic": {"api_key": ""},
+            "openai": {"api_key": ""},
+        },
+    })
+    assert isinstance(llm, AnthropicLLM)
+    assert llm.api_key == "sk-ant-via-secrets"
+
+
 # ── build_agent_from_config ──────────────────────────────────────────────
 
 
