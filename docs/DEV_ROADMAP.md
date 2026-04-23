@@ -505,7 +505,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #5 · Memory eviction
 
-**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**状态**：🟡 进行中 | **负责人**：Claude (AI pair) | **起始**：2026-04-23 | **完成**：-
 **前置依赖**：Epic #13（事件总线持久化）
 **关联 Milestone**：M8（性能与可观测）
 
@@ -519,17 +519,19 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **检查清单**：
 
-- [ ] `core/memory/manager.py:209` LRU + age-based + cap 落地
-- [ ] `memory.retention_days` / `max_bytes` / `pinned_tags` config
-- [ ] `xmclaw memory stats` CLI
-- [ ] `MEMORY_EVICTED` 事件发出
-- [ ] 单测 + 压测
+- [x] `SqliteVecMemory.evict(layer, max_items, max_bytes)` LRU + cap + pinned-bypass 落地
+- [x] `prune()` / `evict()` 经 structlog 发 `memory.evicted` 结构化日志
+- [ ] `memory.retention_days` / `max_bytes` / `pinned_tags` config（phase 2）
+- [ ] `xmclaw memory stats` CLI（phase 3）
+- [ ] `MEMORY_EVICTED` 事件发出（phase 2，上 bus）
+- [x] 单测覆盖 LRU / bytes / pinned / 组合 cap / 恶意 metadata / layer 隔离
+- [ ] 10k 压测（phase 4，退出标准）
 
 **退出标准**：10k 记忆条目下 evict 延迟 < 100ms；`xmclaw memory stats` 能看到淘汰日志。
 
 **进度日志**：
 
-- _（尚无）_
+- 2026-04-23: phase 1 落地 `SqliteVecMemory.evict(layer, *, max_items, max_bytes)` — LRU `ORDER BY ts ASC`、`metadata.pinned` 豁免、双 cap 并集、共用 `_delete_ids` 清 `memory_vec`、恶意 JSON 不被当作 pin。配 11 条单测（空参 noop / 仅 items / 仅 bytes / bytes=0 / pinned 豁免 / pinned 不占配额 / 双 cap 并集 / 双 cap 紧边界 / 跨 layer 隔离 / 带 embedding 清理 / 坏 metadata）。`prune()` 也改走 `_log.info("memory.evicted", reason="age")`。full suite 777 passed (commit pending)
 
 ---
 

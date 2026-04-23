@@ -237,6 +237,181 @@ async def test_prune_long_layer_is_noop_by_default() -> None:
     mem.close()
 
 
+# ── evict() — Epic #5 cap-based LRU (+ pinned bypass) ──────────────────────
+
+@pytest.mark.asyncio
+async def test_evict_both_caps_none_is_noop() -> None:
+    mem = SqliteVecMemory(":memory:")
+    for i in range(3):
+        await mem.put("short", _item(f"n{i}", ts=float(i + 1)))
+    removed = await mem.evict("short")
+    assert removed == 0
+    assert len(await mem.query("short")) == 3
+    mem.close()
+
+
+@pytest.mark.asyncio
+async def test_evict_max_items_trims_oldest_first() -> None:
+    mem = SqliteVecMemory(":memory:")
+    for i in range(5):
+        await mem.put("short", _item(f"n{i}", ts=float(i + 1)))
+    removed = await mem.evict("short", max_items=2)
+    assert removed == 3
+    survivors = sorted(r.text for r in await mem.query("short"))
+    assert survivors == ["n3", "n4"]
+    mem.close()
+
+
+@pytest.mark.asyncio
+async def test_evict_noop_when_under_cap() -> None:
+    mem = SqliteVecMemory(":memory:")
+    await mem.put("short", _item("a", ts=1.0))
+    await mem.put("short", _item("b", ts=2.0))
+    removed = await mem.evict("short", max_items=5)
+    assert removed == 0
+    assert len(await mem.query("short")) == 2
+    mem.close()
+
+
+@pytest.mark.asyncio
+async def test_evict_max_bytes_trims_oldest_first() -> None:
+    mem = SqliteVecMemory(":memory:")
+    # 10-byte texts each; keep 25 bytes → should retain 2 newest.
+    for i, txt in enumerate(["aaaaaaaaaa", "bbbbbbbbbb", "cccccccccc", "dddddddddd"]):
+        await mem.put("short", _item(txt, ts=float(i + 1)))
+    removed = await mem.evict("short", max_bytes=25)
+    assert removed == 2
+    survivors = sorted(r.text for r in await mem.query("short"))
+    assert survivors == ["cccccccccc", "dddddddddd"]
+    mem.close()
+
+
+@pytest.mark.asyncio
+async def test_evict_max_bytes_zero_drops_all_non_pinned() -> None:
+    mem = SqliteVecMemory(":memory:")
+    await mem.put("short", _item("keep", metadata={"pinned": True}, ts=1.0))
+    await mem.put("short", _item("drop_a", ts=2.0))
+    await mem.put("short", _item("drop_b", ts=3.0))
+    removed = await mem.evict("short", max_bytes=0)
+    assert removed == 2
+    survivors = [r.text for r in await mem.query("short")]
+    assert survivors == ["keep"]
+    mem.close()
+
+
+@pytest.mark.asyncio
+async def test_evict_pinned_items_are_exempt() -> None:
+    mem = SqliteVecMemory(":memory:")
+    await mem.put("short", _item("pin",  metadata={"pinned": True}, ts=1.0))
+    await mem.put("short", _item("old",  ts=2.0))
+    await mem.put("short", _item("mid",  ts=3.0))
+    await mem.put("short", _item("new",  ts=4.0))
+    # Cap at 1 non-pinned item — should drop "old" and "mid", keep "new" + pin.
+    removed = await mem.evict("short", max_items=1)
+    assert removed == 2
+    survivors = sorted(r.text for r in await mem.query("short"))
+    assert survivors == ["new", "pin"]
+    mem.close()
+
+
+@pytest.mark.asyncio
+async def test_evict_pinned_does_not_count_against_item_cap() -> None:
+    """Pinning 3 items + cap of 2 shouldn't trigger any eviction — caps
+    govern only non-pinned rows."""
+    mem = SqliteVecMemory(":memory:")
+    for i in range(3):
+        await mem.put(
+            "short",
+            _item(f"p{i}", metadata={"pinned": True}, ts=float(i + 1)),
+        )
+    removed = await mem.evict("short", max_items=2)
+    assert removed == 0
+    assert len(await mem.query("short")) == 3
+    mem.close()
+
+
+@pytest.mark.asyncio
+async def test_evict_combined_caps_take_union() -> None:
+    mem = SqliteVecMemory(":memory:")
+    # 5 items, each 10 bytes.
+    for i, c in enumerate("abcde"):
+        await mem.put("short", _item(c * 10, ts=float(i + 1)))
+    # max_items=3 alone would drop 2; max_bytes=30 alone would drop 2
+    # (keep 3 newest). Both together still drop 2 — union is the same.
+    removed = await mem.evict("short", max_items=3, max_bytes=30)
+    assert removed == 2
+    survivors = sorted(r.text for r in await mem.query("short"))
+    assert survivors == ["c" * 10, "d" * 10, "e" * 10]
+    mem.close()
+
+
+@pytest.mark.asyncio
+async def test_evict_combined_caps_picks_tighter_bound() -> None:
+    mem = SqliteVecMemory(":memory:")
+    # 5 items, 10 bytes each. max_items=4 drops 1; max_bytes=20 drops 3.
+    # Union-of-evicted = the 3 oldest (bytes cap is tighter).
+    for i, c in enumerate("abcde"):
+        await mem.put("short", _item(c * 10, ts=float(i + 1)))
+    removed = await mem.evict("short", max_items=4, max_bytes=20)
+    assert removed == 3
+    survivors = sorted(r.text for r in await mem.query("short"))
+    assert survivors == ["d" * 10, "e" * 10]
+    mem.close()
+
+
+@pytest.mark.asyncio
+async def test_evict_isolates_by_layer() -> None:
+    mem = SqliteVecMemory(":memory:")
+    for i in range(4):
+        await mem.put("short",   _item(f"s{i}", ts=float(i + 1)))
+    for i in range(4):
+        await mem.put("working", _item(f"w{i}", ts=float(i + 1)))
+    removed = await mem.evict("short", max_items=1)
+    assert removed == 3
+    assert len(await mem.query("short"))   == 1
+    assert len(await mem.query("working")) == 4  # untouched
+    mem.close()
+
+
+@requires_vec
+@pytest.mark.asyncio
+async def test_evict_also_drops_embedding_rows(tmp_path) -> None:
+    """Eviction must clean the sqlite-vec row too — otherwise dim-frozen
+    vec tables leak orphan vectors."""
+    db = tmp_path / "mem.db"
+    mem = SqliteVecMemory(db, embedding_dim=2)
+    if not mem._vec_supported:
+        mem.close()
+        pytest.skip("sqlite-vec extension not loadable here")
+    await mem.put("short", _item("a", embedding=[1.0, 0.0], ts=1.0))
+    await mem.put("short", _item("b", embedding=[0.0, 1.0], ts=2.0))
+    removed = await mem.evict("short", max_items=1)
+    assert removed == 1
+    # Inspect via the same connection (it has the vec0 extension loaded).
+    n = mem._conn.execute("SELECT COUNT(*) FROM memory_vec").fetchone()[0]
+    assert n == 1
+    mem.close()
+
+
+@pytest.mark.asyncio
+async def test_evict_malformed_metadata_not_treated_as_pinned() -> None:
+    """Corrupt metadata JSON must not accidentally immortalize a row."""
+    mem = SqliteVecMemory(":memory:")
+    # Insert a row directly with invalid JSON in the metadata column.
+    mem._conn.execute(
+        "INSERT INTO memory_items (id, layer, text, metadata, ts, has_embedding) "
+        "VALUES (?, ?, ?, ?, ?, 0)",
+        ("bad", "short", "garbage", "{not valid json", 1.0),
+    )
+    await mem.put("short", _item("new", ts=2.0))
+    mem._conn.commit()
+    removed = await mem.evict("short", max_items=1)
+    assert removed == 1
+    survivors = [r.text for r in await mem.query("short")]
+    assert survivors == ["new"]
+    mem.close()
+
+
 # ── anti-req #2: no silent prompt injection ───────────────────────────────
 
 def test_memory_provider_has_no_auto_inject_method() -> None:

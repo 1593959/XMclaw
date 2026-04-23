@@ -38,6 +38,9 @@ from pathlib import Path
 from typing import Any
 
 from xmclaw.providers.memory.base import Layer, MemoryItem, MemoryProvider
+from xmclaw.utils.log import get_logger
+
+_log = get_logger(__name__)
 
 # Default TTL hints (seconds). These are hints — eviction is explicit via
 # ``forget`` or ``prune``, never silent during queries.
@@ -317,6 +320,103 @@ class SqliteVecMemory(MemoryProvider):
         ]
         if not ids:
             return 0
+        self._delete_ids(ids)
+        _log.info(
+            "memory.evicted",
+            layer=layer,
+            count=len(ids),
+            reason="age",
+        )
+        return len(ids)
+
+    async def evict(
+        self,
+        layer: Layer,
+        *,
+        max_items: int | None = None,
+        max_bytes: int | None = None,
+    ) -> int:
+        """Cap-based LRU eviction. Returns count of removed items.
+
+        Policy:
+          * Within ``layer``, rows ordered by ``ts ASC`` are the LRU
+            candidates. Items whose metadata carries a truthy ``pinned``
+            flag (``{"pinned": true}`` etc.) are never evicted.
+          * ``max_items`` caps the count of non-pinned rows. Rows beyond
+            the cap — from oldest — are evicted.
+          * ``max_bytes`` caps the sum of ``len(text.encode('utf-8'))``
+            across non-pinned rows. Rows are dropped oldest-first until
+            the sum fits.
+          * Both caps may be passed together; union of both eviction
+            sets is removed in one transaction.
+          * Either cap may be ``None`` to disable that axis. Both ``None``
+            is a no-op returning 0.
+
+        Pinned items still count toward neither cap (they are neither
+        evicted nor charged against the budget). This matches the
+        expected admin pattern: operator pins critical items and sets
+        caps for the rest.
+        """
+        if max_items is None and max_bytes is None:
+            return 0
+        cur = self._conn.cursor()
+        rows = cur.execute(
+            "SELECT id, text, metadata FROM memory_items "
+            "WHERE layer = ? ORDER BY ts ASC",
+            (layer,),
+        ).fetchall()
+        non_pinned: list[tuple[str, int]] = []  # (id, byte_len), oldest first
+        for r in rows:
+            if self._is_pinned(r["metadata"]):
+                continue
+            non_pinned.append((r["id"], len(r["text"].encode("utf-8"))))
+
+        victim_ids: set[str] = set()
+
+        if max_items is not None and len(non_pinned) > max_items:
+            # Drop oldest such that len == max_items.
+            to_drop = len(non_pinned) - max_items
+            for vid, _ in non_pinned[:to_drop]:
+                victim_ids.add(vid)
+
+        if max_bytes is not None:
+            # Walk newest→oldest; keep items until budget is exhausted,
+            # mark the rest for eviction. Equivalently: drop oldest
+            # until the tail sum ≤ max_bytes.
+            budget = max_bytes
+            keep: set[str] = set()
+            for vid, nbytes in reversed(non_pinned):
+                if nbytes <= budget:
+                    keep.add(vid)
+                    budget -= nbytes
+                else:
+                    # This one and everything older gets evicted.
+                    break
+            for vid, _ in non_pinned:
+                if vid not in keep:
+                    victim_ids.add(vid)
+
+        if not victim_ids:
+            return 0
+        ids = sorted(victim_ids)
+        self._delete_ids(ids)
+        reason = (
+            "cap"
+            if max_items is not None and max_bytes is not None
+            else ("cap_items" if max_items is not None else "cap_bytes")
+        )
+        _log.info(
+            "memory.evicted",
+            layer=layer,
+            count=len(ids),
+            reason=reason,
+        )
+        return len(ids)
+
+    def _delete_ids(self, ids: list[str]) -> None:
+        if not ids:
+            return
+        cur = self._conn.cursor()
         placeholders = ",".join("?" * len(ids))
         cur.execute(
             f"DELETE FROM memory_items WHERE id IN ({placeholders})",
@@ -328,9 +428,26 @@ class SqliteVecMemory(MemoryProvider):
                 ids,
             )
         except sqlite3.OperationalError:
+            # Vec table doesn't exist — nothing to clean there.
             pass
         self._conn.commit()
-        return len(ids)
+
+    @staticmethod
+    def _is_pinned(metadata_json: str | None) -> bool:
+        """Return True when metadata has a truthy ``pinned`` field.
+
+        Tolerant of malformed JSON — treats unparseable metadata as
+        unpinned so a bad row can't accidentally become immortal.
+        """
+        if not metadata_json:
+            return False
+        try:
+            meta = json.loads(metadata_json)
+        except (ValueError, TypeError):
+            return False
+        if not isinstance(meta, dict):
+            return False
+        return bool(meta.get("pinned"))
 
     def close(self) -> None:
         self._conn.close()
