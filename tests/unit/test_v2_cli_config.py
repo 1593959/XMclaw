@@ -360,3 +360,158 @@ def test_config_show_case_insensitive_suffix_match(tmp_path: Path) -> None:
     assert "sk-mixed-case-0123" not in r.stdout
     assert out["prov"]["apiKey"].startswith("sk")
     assert out["prov"]["apiKey"].endswith("23")
+
+
+# ── config get ──────────────────────────────────────────────────────────
+
+
+def test_config_get_returns_scalar(tmp_path: Path) -> None:
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {"gateway": {"host": "127.0.0.1", "port": 9000}})
+    r = runner.invoke(app, ["config", "get", "gateway.port", "--path", str(target)])
+    assert r.exit_code == 0, r.stdout
+    assert r.stdout.strip() == "9000"
+
+
+def test_config_get_returns_string_bare(tmp_path: Path) -> None:
+    """Plain strings come out unquoted so ``$(xmclaw config get ...)`` works."""
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {"gateway": {"host": "0.0.0.0"}})
+    r = runner.invoke(app, ["config", "get", "gateway.host", "--path", str(target)])
+    assert r.exit_code == 0, r.stdout
+    assert r.stdout.strip() == "0.0.0.0"
+    assert '"' not in r.stdout.strip()
+
+
+def test_config_get_masks_sensitive_by_default(tmp_path: Path) -> None:
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {"llm": {"anthropic": {"api_key": "sk-ant-abcdef1234567890"}}})
+    r = runner.invoke(
+        app, ["config", "get", "llm.anthropic.api_key", "--path", str(target)]
+    )
+    assert r.exit_code == 0, r.stdout
+    assert "abcdef" not in r.stdout
+    assert "sk" in r.stdout and "90" in r.stdout
+    assert "*" in r.stdout
+
+
+def test_config_get_reveal_shows_raw(tmp_path: Path) -> None:
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {"llm": {"anthropic": {"api_key": "sk-ant-abcdef"}}})
+    r = runner.invoke(
+        app,
+        ["config", "get", "llm.anthropic.api_key", "--path", str(target), "--reveal"],
+    )
+    assert r.exit_code == 0, r.stdout
+    assert "sk-ant-abcdef" in r.stdout
+
+
+def test_config_get_json_mode_encodes_types(tmp_path: Path) -> None:
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {
+        "evolution": {"enabled": True},
+        "tools": {"allowed_dirs": ["/tmp/a", "/tmp/b"]},
+        "gateway": {"host": "localhost"},
+    })
+    # bool → JSON "true"
+    r = runner.invoke(
+        app, ["config", "get", "evolution.enabled", "--path", str(target), "--json"]
+    )
+    assert r.exit_code == 0 and r.stdout.strip() == "true"
+    # list → JSON array
+    r = runner.invoke(
+        app, ["config", "get", "tools.allowed_dirs", "--path", str(target), "--json"]
+    )
+    assert r.exit_code == 0
+    assert json.loads(r.stdout) == ["/tmp/a", "/tmp/b"]
+    # string → JSON-quoted
+    r = runner.invoke(
+        app, ["config", "get", "gateway.host", "--path", str(target), "--json"]
+    )
+    assert r.exit_code == 0 and r.stdout.strip() == '"localhost"'
+
+
+def test_config_get_non_string_scalar_still_json(tmp_path: Path) -> None:
+    """Even in text mode, bools/numbers go through json.dumps so scripts parse cleanly."""
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {"evolution": {"enabled": False}})
+    r = runner.invoke(
+        app, ["config", "get", "evolution.enabled", "--path", str(target)]
+    )
+    assert r.exit_code == 0
+    assert r.stdout.strip() == "false"  # NOT "False" (Python repr)
+
+
+def test_config_get_missing_key_exits_nonzero(tmp_path: Path) -> None:
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {"gateway": {"host": "x"}})
+    r = runner.invoke(app, ["config", "get", "gateway.nope", "--path", str(target)])
+    assert r.exit_code == 1
+    combined = (r.stdout or "") + (r.stderr or "")
+    assert "not set" in combined.lower() or "gateway.nope" in combined
+
+
+def test_config_get_missing_nested_segment_exits_nonzero(tmp_path: Path) -> None:
+    """Navigation through a non-dict value is also 'missing'."""
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {"gateway": {"host": "x"}})
+    r = runner.invoke(
+        app, ["config", "get", "gateway.host.deeper", "--path", str(target)]
+    )
+    assert r.exit_code == 1
+
+
+def test_config_get_missing_file_exits_nonzero(tmp_path: Path) -> None:
+    runner = CliRunner()
+    target = tmp_path / "config.json"  # not created
+    r = runner.invoke(app, ["config", "get", "gateway.port", "--path", str(target)])
+    assert r.exit_code == 1
+
+
+def test_config_get_invalid_json_exits_nonzero(tmp_path: Path) -> None:
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    target.write_text("{not json", encoding="utf-8")
+    r = runner.invoke(app, ["config", "get", "gateway.port", "--path", str(target)])
+    assert r.exit_code == 1
+
+
+def test_config_get_empty_key_exits_nonzero(tmp_path: Path) -> None:
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {"x": 1})
+    r = runner.invoke(app, ["config", "get", ".", "--path", str(target)])
+    assert r.exit_code == 2
+
+
+def test_config_get_reveal_on_non_sensitive_is_noop(tmp_path: Path) -> None:
+    """--reveal on a plain key shouldn't change the output."""
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {"gateway": {"port": 8765}})
+    r_plain = runner.invoke(app, ["config", "get", "gateway.port", "--path", str(target)])
+    r_reveal = runner.invoke(
+        app, ["config", "get", "gateway.port", "--path", str(target), "--reveal"]
+    )
+    assert r_plain.stdout == r_reveal.stdout
+
+
+def test_config_get_then_set_roundtrip(tmp_path: Path) -> None:
+    """End-to-end: set a key, get it back, value matches."""
+    runner = CliRunner()
+    target = tmp_path / "config.json"
+    _write_cfg(target, {})
+    r = runner.invoke(
+        app, ["config", "set", "gateway.port", "9001", "--path", str(target)]
+    )
+    assert r.exit_code == 0, r.stdout
+    r = runner.invoke(app, ["config", "get", "gateway.port", "--path", str(target)])
+    assert r.exit_code == 0 and r.stdout.strip() == "9001"

@@ -1013,6 +1013,110 @@ def _mask_config(obj: Any, *, path: tuple[str, ...] = ()) -> Any:
     return obj
 
 
+_CONFIG_KEY_MISSING = object()
+"""Sentinel — lets `_lookup_dotted` distinguish "key absent" from "value = None"."""
+
+
+def _lookup_dotted(data: dict, key: str) -> Any:
+    """Resolve ``a.b.c`` against a dict, returning ``_CONFIG_KEY_MISSING``
+    when any segment is missing or isn't a dict.
+
+    Matches :func:`config_set` dotted semantics: empty segments (``..``
+    or leading ``.``) are ignored; a fully-empty key errors upstream.
+    """
+    parts = [p for p in key.split(".") if p]
+    if not parts:
+        return _CONFIG_KEY_MISSING
+    cursor: Any = data
+    for segment in parts:
+        if not isinstance(cursor, dict) or segment not in cursor:
+            return _CONFIG_KEY_MISSING
+        cursor = cursor[segment]
+    return cursor
+
+
+@config_app.command("get")
+def config_get(
+    key: str = typer.Argument(
+        ..., help="Dotted key path, e.g. 'gateway.port' or 'llm.anthropic.api_key'.",
+    ),
+    path: str = typer.Option(
+        "daemon/config.json", "--path",
+        help="Config file to read (default: daemon/config.json).",
+    ),
+    reveal: bool = typer.Option(
+        False, "--reveal",
+        help=(
+            "Print the raw value for sensitive leaves (api_key / token / secret / "
+            "password / etc). Default masks them so the output is safe to paste."
+        ),
+    ),
+    json_output: bool = typer.Option(
+        False, "--json",
+        help="Emit the value as JSON (strings get quoted). Scripting-friendly.",
+    ),
+) -> None:
+    """Read a single dotted key from the config file.
+
+    Companion to ``config set`` — after ``config set gateway.port 9000`` you
+    can confirm with ``config get gateway.port``. Prints just the value
+    (no surrounding object) so shell pipelines are easy.
+
+    Exits 1 when the file is missing, not valid JSON, or the key isn't set.
+    Missing keys are a hard error rather than printing empty: the common
+    case of ``config get | xargs ...`` would silently do the wrong thing
+    against blank output.
+    """
+    import json as _json
+
+    target = Path(path)
+    if not target.exists():
+        typer.echo(
+            f"  [x]  no config at {target} -- run 'xmclaw config init' first",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    try:
+        data = _json.loads(target.read_text(encoding="utf-8"))
+    except _json.JSONDecodeError as exc:
+        typer.echo(f"  [x]  {target} is not valid JSON: {exc}", err=True)
+        raise typer.Exit(code=1)
+    if not isinstance(data, dict):
+        typer.echo(
+            f"  [x]  {target} must have a JSON object at its root, "
+            f"got {type(data).__name__}",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    parts = [p for p in key.split(".") if p]
+    if not parts:
+        typer.echo("  [x]  key must be non-empty", err=True)
+        raise typer.Exit(code=2)
+
+    value = _lookup_dotted(data, key)
+    if value is _CONFIG_KEY_MISSING:
+        typer.echo(f"  [x]  key not set: {key}", err=True)
+        raise typer.Exit(code=1)
+
+    leaf = parts[-1]
+    rendered: Any
+    if reveal or not _is_sensitive_key(leaf):
+        rendered = value
+    else:
+        rendered = _mask_value(value)
+
+    if json_output:
+        typer.echo(_json.dumps(rendered, ensure_ascii=False))
+    elif isinstance(rendered, str):
+        # Plain string — emit bare so it can be used as `$(xmclaw config get ...)`.
+        typer.echo(rendered)
+    else:
+        # Numbers / bools / null / containers get JSON-encoded even in text
+        # mode — printing Python's `True` / `None` would surprise scripts.
+        typer.echo(_json.dumps(rendered, ensure_ascii=False))
+
+
 @config_app.command("show")
 def config_show(
     path: str = typer.Option(
