@@ -970,7 +970,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #18 · 前端补全（Web UI 从 Mock 到真实）
 
-**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**状态**：🟡 进行中 | **负责人**：XMclaw Bot | **起始**：2026-04-24 | **完成**：-
 **前置依赖**：Epic #13（SQLite event bus，事件回放 API）
 **关联 Milestone**：M6（Onboarding + Hub）
 
@@ -988,10 +988,10 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **检查清单**：
 
-- [ ] `GET /api/v2/files?path=` 返回真实目录树
-- [ ] `GET /api/v2/workspaces` CRUD
-- [ ] `GET /api/v2/profiles` 列表
-- [ ] `GET/POST /api/v2/memory` 读写 + 搜索
+- [x] `GET /api/v2/files?path=` 返回真实目录树
+- [x] `GET /api/v2/workspaces` CRUD
+- [x] `GET /api/v2/profiles` 列表
+- [x] `GET/POST /api/v2/memory` 读写 + 搜索
 - [ ] Onboarding 页面 4 步流程
 - [ ] `xmclaw_adapter.js` 零 mock
 - [ ] Playwright E2E ≥ 4 个场景
@@ -1000,7 +1000,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **进度日志**：
 
-- _（尚无）_
+- 2026-04-24: Phase A 后端 API 落地——新增 `xmclaw/daemon/routers/{files,workspaces,profiles,memory}.py` 四个 FastAPI 路由（mount 在 `/api/v2/{files,workspaces,profiles,memory}`），`xmclaw/daemon/app.py` 在 create_app 里 `include_router` + `app.state.config = config or {}` 让 file browser 能读 `tools.allowed_dirs` 白名单。`xmclaw/utils/paths.py` +3 helper：`persona_dir()` / `workspaces_dir()` / `file_memory_dir()`（都走 `XMC_DATA_DIR` 环境变量 override，test 端隔离依赖这个契约）。安全模型：files 用 `resolve().relative_to(root)` 做白名单 containment（越界 → 403 而非 404，防止指纹枚举），1 MiB 文件大小上限（413）；memory 用 `Path(filename).name` 吃掉 traversal，自动补 `.md`；workspaces `_sanitize_id` 只允 `[A-Za-z0-9_-]` + 回退 `"default"`；profiles 同 `_safe_name` 折叠 + 只取 `*.md`。Phase A 搜索刻意留 grep（case-insensitive substring + 80 char snippet），Phase B 再上 FTS5。Phase A **不动** `xmclaw_adapter.js`——先把后端 API 稳了，前端切换放进下一个 PR 独立评审。tests：`tests/unit/test_v2_web_ui_routers.py` 30 个（profiles 6 / workspaces 8 / memory 8 / files 7 / router registration 1），`scripts/test_lanes.yaml` `daemon` lane 扩 `xmclaw/daemon/routers/**` trigger + 把新 test 挂上；`always+daemon` smart-gate 全绿 (commit 98434e3)
 
 ---
 

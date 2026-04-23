@@ -146,6 +146,22 @@ def create_app(
     app.state.bus = bus
     app.state.memory = memory
     app.state.memory_sweep = sweep_task
+    # Stash the raw config on app.state so router surfaces (Epic #18)
+    # can read ``tools.allowed_dirs`` without re-loading from disk and
+    # without an import cycle through the factory.
+    app.state.config = config or {}
+
+    # Epic #18 Phase A: web-UI router surfaces (files / memory /
+    # profiles / workspaces). Included here so the panels have real
+    # data instead of the ``xmclaw_adapter.js`` mocks they used to hit.
+    from xmclaw.daemon.routers import files as _files_router
+    from xmclaw.daemon.routers import memory as _memory_router
+    from xmclaw.daemon.routers import profiles as _profiles_router
+    from xmclaw.daemon.routers import workspaces as _workspaces_router
+    app.include_router(_files_router.router)
+    app.include_router(_memory_router.router)
+    app.include_router(_profiles_router.router)
+    app.include_router(_workspaces_router.router)
 
     if agent is None and config is not None:
         # Local import avoids a circular dep (factory imports from this

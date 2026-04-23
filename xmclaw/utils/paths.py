@@ -60,6 +60,38 @@ def logs_dir() -> Path:
     return data_dir() / "logs"
 
 
+def persona_dir() -> Path:
+    """Persona profile markdown files — ``<data>/persona/profiles/``.
+
+    Epic #18 router surface: ``GET /api/v2/profiles`` reads from here.
+    Peer of ``v2/`` so persona files survive a daemon-workspace wipe
+    (they're user content, not daemon state).
+    """
+    return data_dir() / "persona" / "profiles"
+
+
+def workspaces_dir() -> Path:
+    """Persisted workspace configs — ``<data>/workspaces/*.json``.
+
+    Epic #18 router surface: ``GET/POST/DELETE /api/v2/workspaces``.
+    Not to be confused with :func:`v2_workspace_dir` (the daemon's
+    runtime state dir). These are user-authored agent personas /
+    tool-preset bundles that the web UI edits.
+    """
+    return data_dir() / "workspaces"
+
+
+def file_memory_dir() -> Path:
+    """User-editable markdown memory — ``<data>/memory/*.md``.
+
+    Epic #18 router surface: ``GET/POST /api/v2/memory`` reads and
+    writes here. Distinct from the SQLite-vec long-term memory at
+    :func:`default_memory_db_path` — that one is daemon-managed, this
+    one is human-authored notes the agent can consult.
+    """
+    return data_dir() / "memory"
+
+
 def default_pid_path() -> Path:
     """PID file the daemon writes during ``xmclaw start``.
 

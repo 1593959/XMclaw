@@ -93,11 +93,13 @@ lanes:
       - "xmclaw/daemon/lifecycle.py"
       - "xmclaw/daemon/pairing.py"
       - "xmclaw/daemon/memory_sweep.py"
+      - "xmclaw/daemon/routers/**"
     tests:
       - tests/unit/test_v2_daemon_factory.py
       - tests/unit/test_v2_daemon_lifecycle.py
       - tests/unit/test_v2_memory_retention.py
       - tests/unit/test_v2_pairing.py
+      - tests/unit/test_v2_web_ui_routers.py
       - tests/integration/test_v2_daemon_app.py
       - tests/integration/test_v2_daemon_agent.py
       - tests/integration/test_v2_daemon_config.py
