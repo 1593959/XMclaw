@@ -38,8 +38,6 @@ xmclaw/              Python package — see per-subdir AGENTS.md for contracts
 
 web/                 Vite-based web UI (vanilla JS + CSS)
 daemon/              Runtime config (config.json gitignored; config.example.json is the template)
-agents/              Agent profiles (agent.json gitignored; PROFILE.md / SOUL.md committed)
-shared/              Auto-generated genes/ and skills/ (populated at runtime)
 docs/                ARCHITECTURE, DEV_ROADMAP, EVENTS, DOCTOR, WORKSPACE, V2_DEVELOPMENT, …
                      AGENTS_TEMPLATE.md is the template per-subdir AGENTS.md files follow.
 tests/               pytest suites — see scripts/test_lanes.yaml for the smart-gate mapping
@@ -47,7 +45,7 @@ scripts/             Dev/ops — setup.{ps1,bat}, test_changed.py, check_import_
 .github/workflows/   python-ci.yml (lint + smart-gate tests), web-ci.yml, release.yml, python-publish.yml
 ```
 
-Anything not in that tree is either generated at runtime, gitignored dev scratch, or a legacy artifact — check `.gitignore` before assuming a root-level file belongs in git.
+Runtime data (events.db, memory.db, pairing_token.txt, daemon.pid, …) lives under `~/.xmclaw/v2/`, *not* inside the repo — see [docs/WORKSPACE.md](docs/WORKSPACE.md). Anything not in the tree above is either gitignored dev scratch, or a legacy v1 artifact — check `.gitignore` before assuming a root-level file belongs in git.
 
 ## Common Commands
 
@@ -92,10 +90,10 @@ Dev env is Windows-first; scripts use `.bat` / `.ps1`. Use `bash` syntax on Git 
 
 - **Per-subdir contracts.** Every `xmclaw/<subdir>/AGENTS.md` states that directory's responsibility, dependency rules, test entry points, hard no's, and key files. Before editing `xmclaw/foo/bar.py`, read `xmclaw/foo/AGENTS.md`.
 - **Import direction is enforced.** `scripts/check_import_direction.py` blocks upward edges in the DAG (`core/` cannot import `providers/`, etc). Rules live in each subdir's AGENTS.md.
-- **Config with secrets is gitignored.** `daemon/config.json` and `agents/*/agent.json` hold API keys — never commit. Use `daemon/config.example.json` or env vars prefixed with `XMC__` (e.g. `XMC__llm__anthropic__api_key`).
+- **Config with secrets is gitignored.** `daemon/config.json` holds API keys — never commit. Use `daemon/config.example.json` or env vars prefixed with `XMC__` (e.g. `XMC__llm__anthropic__api_key`).
 - **Events are the contract.** The daemon emits a typed event stream — see [docs/EVENTS.md](docs/EVENTS.md). Clients must not assume fields outside that schema.
 - **Tool additions go to `xmclaw/providers/tool/`.** Register via `ToolProvider` ABC; update [docs/TOOLS.md](docs/TOOLS.md) + the `tools` lane in `scripts/test_lanes.yaml`.
-- **Generated code lives under `shared/`.** Genes and skills produced by the EvolutionEngine are written there at runtime; do not hand-edit committed ones without understanding the evolution pipeline in [docs/EVOLUTION.md](docs/EVOLUTION.md).
+- **Skill evolution is in-memory.** `xmclaw/skills/` + `xmclaw/core/scheduler/` + `xmclaw/core/evolution/` run the Honest-Grader-driven promotion pipeline; versions live in `SkillRegistry`, not in `shared/skill_*.py` files. See [docs/V2_DEVELOPMENT.md](docs/V2_DEVELOPMENT.md) §1–§3 for the controller / grader / scheduler contract.
 
 ## Git Workflow
 
