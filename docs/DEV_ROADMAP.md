@@ -965,6 +965,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 **进度日志**：
 
 - 2026-04-24: Phase 1 — 新增 `xmclaw/daemon/workspace.py`（`Workspace` dataclass + `build_workspace()` 工厂）+ 13 条单测；`app.state.agent` 未改动，Phase 2/3 接入时再切换 (commit 2f12d33)
+- 2026-04-24: Phase 2 — 新增 `xmclaw/daemon/multi_agent_manager.py`（`asyncio.Lock` + `pending_starts` 去抖 + 原子写 `~/.xmclaw/v2/agents/*.json` + `load_from_disk` 容错）+ `paths.agents_registry_dir()` + 21 条单测；`app.state` 仍单 agent，Phase 3 接线 (commit 79a796d)
 
 ---
 
