@@ -128,3 +128,24 @@ docker run --rm \
 - `xmclaw.daemon.memory_sweep.parse_retention_config` + `MemorySweepTask` 管清扫
 - `xmclaw.providers.memory.sqlite_vec.SqliteVecMemory` 在 `prune` / `evict` 内部调 `_emit_evicted`
 - 测试：[tests/unit/test_v2_memory_retention.py](../tests/unit/test_v2_memory_retention.py)
+
+## Runtime 配置（Epic #3 entry）
+
+`runtime` 段选择 skill 执行后端。目前两种：
+
+```jsonc
+{
+  "runtime": {
+    "backend": "local"   // "local" | "process"
+  }
+}
+```
+
+- **`local`**（默认）—— `LocalSkillRuntime`：asyncio task + `wait_for` 的 CPU 超时。启动快，适合 dev / 单测。父进程堆可被 skill 污染（Python 无 in-proc 隔离），`Path('/').read_text()` 不受控。
+- **`process`** —— `ProcessSkillRuntime`：`multiprocessing.spawn` 另起 OS 进程。`SIGKILL` 真生效，skill 不共享父进程的 import / heap / event loop；**fs / net / memory 仍是 advisory**，需要真 sandbox 请等 Epic #3 的 docker 后端。
+
+### 注意
+
+- 未知 `backend` 值抛 `ConfigError`，daemon 启动直接失败——坏配置不应该悄悄降级到 `local` 让你以为在跑 process。
+- 没有 `enabled: false`。没有 runtime 的 daemon 没法跑 skill，不是 "可选" 字段。
+- **当前无 caller**：factory 已就绪但 AgentLoop / scheduler 还没把 skill 执行路径切到 `SkillRuntime`。接线工作排到 Epic #3 后续 phase。

@@ -9,6 +9,8 @@ Scope of this module:
   * ``build_tools_from_config(cfg)`` — assemble ToolProvider composite
   * ``build_memory_from_config(cfg, bus)`` — optional SqliteVecMemory
     + retention caps (Epic #5)
+  * ``build_skill_runtime_from_config(cfg)`` — pick Local / Process
+    SkillRuntime (Epic #3 entry point; no caller yet)
   * ``build_agent_from_config(cfg, bus)`` — assemble an AgentLoop
   * ``load_config(path)`` — thin wrapper over json.load (kept out of
     the factory so tests can pass in-memory dicts directly)
@@ -26,6 +28,11 @@ from xmclaw.providers.llm.anthropic import AnthropicLLM
 from xmclaw.providers.llm.base import LLMProvider
 from xmclaw.providers.llm.openai import OpenAILLM
 from xmclaw.providers.memory.sqlite_vec import SqliteVecMemory
+from xmclaw.providers.runtime import (
+    LocalSkillRuntime,
+    ProcessSkillRuntime,
+    SkillRuntime,
+)
 from xmclaw.providers.tool.base import ToolProvider
 from xmclaw.providers.tool.builtin import BuiltinTools
 from xmclaw.security.prompt_scanner import PolicyMode
@@ -379,6 +386,55 @@ def build_memory_from_config(
         pinned_tags=tuple(pinned_tags) if pinned_tags else None,
         bus=bus,
     )
+
+
+_RUNTIME_BACKENDS: dict[str, type[SkillRuntime]] = {
+    "local": LocalSkillRuntime,
+    "process": ProcessSkillRuntime,
+}
+
+
+def build_skill_runtime_from_config(cfg: dict[str, Any]) -> SkillRuntime:
+    """Return a ``SkillRuntime`` picked from ``cfg['runtime']``.
+
+    Config shape::
+
+        {
+          "runtime": {
+            "backend": "local" | "process"
+          }
+        }
+
+    Default is ``"local"`` — the in-process runtime is fine for dev and
+    for conformance tests that assume a fast startup. Production
+    deployments should set ``"process"`` for real subprocess isolation
+    (see ``xmclaw.providers.runtime.process`` for the honest scope of
+    what that gives you vs a true container sandbox).
+
+    Raises ``ConfigError`` on an unknown backend or malformed section.
+    There is no ``enabled: false`` switch — a daemon without any skill
+    runtime has nowhere to execute skills.
+    """
+    rt_section = cfg.get("runtime")
+    if rt_section is None:
+        return LocalSkillRuntime()
+    if not isinstance(rt_section, dict):
+        raise ConfigError(
+            f"'runtime' must be an object, got {type(rt_section).__name__}"
+        )
+    backend = rt_section.get("backend", "local")
+    if not isinstance(backend, str):
+        raise ConfigError(
+            f"'runtime.backend' must be a string, got "
+            f"{type(backend).__name__}"
+        )
+    cls = _RUNTIME_BACKENDS.get(backend)
+    if cls is None:
+        known = ", ".join(sorted(_RUNTIME_BACKENDS))
+        raise ConfigError(
+            f"'runtime.backend' must be one of {{{known}}}, got {backend!r}"
+        )
+    return cls()
 
 
 def build_agent_from_config(

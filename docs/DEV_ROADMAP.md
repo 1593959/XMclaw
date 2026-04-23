@@ -411,7 +411,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #3 · 沙箱（抄 QwenPaw security + Hermes terminal_tool）
 
-**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**状态**：🟡 进行中（runtime 层 + factory 就绪，AgentLoop 接线 + 8 条 Guardian 规则 + ApprovalService 待落）| **负责人**：Claude (AI pair) | **起始**：2026-04-23 | **完成**：-
 **前置依赖**：无
 **关联 Milestone**：M4（沙箱可用）+ M8（安全硬化）
 
@@ -431,8 +431,10 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **检查清单**：
 
-- [ ] `providers/runtime/base.py` ABC
-- [ ] `providers/runtime/process.py`：subprocess + resource limits
+- [x] `providers/runtime/base.py` ABC（Phase 3.2 落地，`SkillRuntime` + `SkillHandle` + `SkillStatus`）
+- [x] `providers/runtime/process.py`：subprocess + CPU 超时（Phase 3.4 落地；fs/net/memory 仍 advisory，真沙箱等 docker 后端）
+- [x] `daemon/factory.py` `build_skill_runtime_from_config`：`runtime.backend: "local"|"process"`；未知 backend 抛 `ConfigError` 不偷偷降级
+- [ ] AgentLoop / scheduler 切到 `SkillRuntime.fork(...)` 执行 skill（当前 skill 直接 `skill.run()` 走内联路径，runtime 层空转）
 - [ ] `providers/runtime/docker.py`：Docker exec（optional extra）
 - [ ] 8 份 YAML + 1 份 shell 规则拷贝到 `xmclaw/security/rules/`
 - [ ] `FilePathToolGuardian` / `RuleBasedToolGuardian` / `ShellEvasionGuardian`
@@ -451,7 +453,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **进度日志**：
 
-- _（尚无）_
+- 2026-04-23: factory 接线 — `build_skill_runtime_from_config(cfg)` 落地：`runtime.backend` 取 `"local"` / `"process"`，缺省走 `local`；未知 backend 抛 `ConfigError(known=...)` 不悄悄降级到 local（坏配置不应让用户以为跑在 process）；没有 `enabled:false`——没 runtime 的 daemon 没法跑 skill。`daemon/config.example.json` + `docs/CONFIG.md` 同步文档；7 条新单测（section 缺失默认 local / backend 缺省默认 local / 显式 local / 显式 process / 非 dict section / 非 string backend / 未知 backend 错误信息含 known 集）。**当前无 caller**：factory 已就绪但 AgentLoop / scheduler 还没 `runtime.fork(skill, ...)`，接线排到 Epic #3 下一 phase。daemon+runtime+always lane 160 passed (commit 待落)
 
 ---
 

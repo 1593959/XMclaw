@@ -42,6 +42,10 @@
     "enable_bash": true,
     "enable_web": true
   },
+  "runtime": {
+    "_comment": "Epic #3: which SkillRuntime executes forked skills. 'local' = in-process asyncio task + CPU-timeout; good for dev + conformance tests. 'process' = separate OS process via multiprocessing.spawn; real SIGKILL + import isolation + crash containment; fs/net/memory are still advisory (see providers/runtime/process.py). Default is 'local'; production should set 'process'.",
+    "backend": "local"
+  },
   "gateway": {
     "host": "127.0.0.1",
     "port": 8765

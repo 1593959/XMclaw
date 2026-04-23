@@ -17,11 +17,13 @@ from xmclaw.daemon.factory import (
     _apply_env_overrides,
     build_agent_from_config,
     build_llm_from_config,
+    build_skill_runtime_from_config,
     build_tools_from_config,
     load_config,
 )
 from xmclaw.providers.llm.anthropic import AnthropicLLM
 from xmclaw.providers.llm.openai import OpenAILLM
+from xmclaw.providers.runtime import LocalSkillRuntime, ProcessSkillRuntime
 from xmclaw.providers.tool.builtin import BuiltinTools
 
 
@@ -415,3 +417,46 @@ def test_load_config_applies_env_overrides(tmp_path: Path) -> None:
     )
     assert data["llm"]["anthropic"]["api_key"] == "env-key"
     assert data["llm"]["anthropic"]["default_model"] == "m"  # untouched
+
+
+# ── build_skill_runtime_from_config (Epic #3) ───────────────────────────
+
+
+def test_build_runtime_defaults_to_local_when_section_missing() -> None:
+    rt = build_skill_runtime_from_config({})
+    assert isinstance(rt, LocalSkillRuntime)
+
+
+def test_build_runtime_defaults_to_local_when_backend_unset() -> None:
+    rt = build_skill_runtime_from_config({"runtime": {}})
+    assert isinstance(rt, LocalSkillRuntime)
+
+
+def test_build_runtime_explicit_local() -> None:
+    rt = build_skill_runtime_from_config({"runtime": {"backend": "local"}})
+    assert isinstance(rt, LocalSkillRuntime)
+
+
+def test_build_runtime_explicit_process() -> None:
+    rt = build_skill_runtime_from_config({"runtime": {"backend": "process"}})
+    assert isinstance(rt, ProcessSkillRuntime)
+
+
+def test_build_runtime_rejects_non_dict_section() -> None:
+    with pytest.raises(ConfigError):
+        build_skill_runtime_from_config({"runtime": "process"})
+
+
+def test_build_runtime_rejects_non_string_backend() -> None:
+    with pytest.raises(ConfigError):
+        build_skill_runtime_from_config({"runtime": {"backend": 1}})
+
+
+def test_build_runtime_rejects_unknown_backend() -> None:
+    with pytest.raises(ConfigError) as exc:
+        build_skill_runtime_from_config(
+            {"runtime": {"backend": "docker"}},
+        )
+    # Error message surfaces the known set so the user can pick one.
+    assert "local" in str(exc.value)
+    assert "process" in str(exc.value)
