@@ -60,6 +60,20 @@ def logs_dir() -> Path:
     return data_dir() / "logs"
 
 
+def skills_dir() -> Path:
+    """Where ``SkillRegistry`` persists promote/rollback JSONL history.
+
+    One file per skill: ``<skills>/<skill_id>.jsonl``. Peer of ``v2/``
+    rather than nested inside it, so a daemon-workspace wipe
+    (``rm -rf ~/.xmclaw/v2``) does not erase the skill evolution log —
+    that's audit data and must survive session resets.
+    """
+    override = os.environ.get("XMC_V2_SKILLS_DIR")
+    if override:
+        return Path(override)
+    return data_dir() / "skills"
+
+
 def persona_dir() -> Path:
     """Persona profile markdown files — ``<data>/persona/profiles/``.
 
