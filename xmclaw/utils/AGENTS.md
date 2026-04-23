@@ -30,8 +30,9 @@ dependencies. Every reverse edge kills that property.
 
 ## 4. 禁止事项
 
-- ❌ Don't import from another `xmclaw.*` module. Enforceable via
-  an extension to `scripts/check_import_direction.py` (TODO).
+- ❌ Don't import from another `xmclaw.*` module. Enforced by
+  `scripts/check_import_direction.py` (rule 2) + its regression
+  guard in `tests/unit/test_v2_check_import_direction.py`.
 - ❌ Don't add runtime-dependent behaviour (env reads, config
   lookups) at module scope. Utils must be functionally pure so
   tests can import them without side effects.
