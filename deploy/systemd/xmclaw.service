@@ -1,0 +1,68 @@
+# /etc/systemd/system/xmclaw.service — user-level systemd unit for the
+# XMclaw daemon on Linux hosts.
+#
+# Installation:
+#   1. Install XMclaw: `pip install --user xmclaw` (or into a venv;
+#      edit ExecStart below to point at `/path/to/venv/bin/xmclaw`).
+#   2. Copy this file: `sudo cp deploy/systemd/xmclaw.service /etc/systemd/system/`
+#   3. Edit the [Service] block: set `User=` to your account, fill
+#      `XMC__llm__anthropic__api_key` (or switch to EnvironmentFile=).
+#   4. Reload + enable:
+#        sudo systemctl daemon-reload
+#        sudo systemctl enable --now xmclaw.service
+#   5. Follow logs: `journalctl -u xmclaw -f`.
+#
+# Security posture: binds 127.0.0.1 by default. To expose the daemon on
+# the LAN, either change the bind address here AND put something
+# authenticating (reverse proxy + auth) in front of it — the pairing
+# token is the only built-in auth and is not sufficient for an open
+# network.
+
+[Unit]
+Description=XMclaw local-first AI agent daemon
+Documentation=https://github.com/1593959/XMclaw
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Replace with the user who owns ~/.xmclaw. The daemon writes to
+# $XMC_DATA_DIR (default ~/.xmclaw) and must not run as root.
+User=xmclaw
+Group=xmclaw
+
+# Either inline the API key here (chmod 600 the unit file!) or point
+# EnvironmentFile at /etc/xmclaw/env with `chmod 600` + owned by the
+# service user. The latter is preferred — secrets don't belong in
+# systemd unit files that systemctl cat exposes to anyone on the box.
+#
+# EnvironmentFile=-/etc/xmclaw/env
+# Environment=XMC__llm__anthropic__api_key=sk-ant-...
+
+Environment=XMC_DATA_DIR=%h/.xmclaw
+
+# `xmclaw serve` runs the FastAPI app as PID 1 for this unit — no
+# background fork, no pidfile juggling, systemd owns the lifecycle.
+ExecStart=/usr/local/bin/xmclaw serve --host 127.0.0.1 --port 8765
+
+Restart=on-failure
+RestartSec=5s
+
+# Sandboxing — reasonable defaults for a network service. If you enable
+# browser/computer-use tools you'll need to loosen some of these (e.g.
+# PrivateDevices=false for ALSA/camera, ProtectHome=false for file
+# browser to see $HOME outside of allowed_dirs).
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.xmclaw
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
