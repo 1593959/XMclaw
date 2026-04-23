@@ -12,7 +12,7 @@
 - Git
 - Windows 10+/11 是主要开发平台；macOS / Linux 由 CI matrix 跟进
 - 可选：`playwright install chromium`（browser tools）、`pyautogui` + `mss`（computer-use）
-- 仅当改 `web/` 时才需要 Node.js（Vite dev server）
+- 不需要 Node.js。Web UI 在 `xmclaw/daemon/static/`（vanilla HTML/CSS/JS），改完刷浏览器即可
 
 ### 快速开始
 

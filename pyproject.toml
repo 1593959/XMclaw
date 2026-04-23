@@ -67,7 +67,11 @@ xmclaw = "xmclaw.cli.main:app"
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+# Match `requires-python = ">=3.10"` above — lint/typecheck against the
+# minimum supported version so we don't accidentally ship 3.11+ syntax
+# (match statements on sets, `Self` without import, Exception groups
+# without the try/except* guard) on a 3.10 user.
+target-version = "py310"
 extend-exclude = [
     # Build outputs, virtualenvs, caches.
     "dist/",
@@ -76,7 +80,7 @@ extend-exclude = [
 ]
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.10"
 strict = true
 
 [tool.pytest.ini_options]
