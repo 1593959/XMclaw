@@ -36,6 +36,20 @@ rules:
    - Enforcement is mechanical: we look for the two literal substrings,
      not whether a 7-char hex actually exists. Verifying real shas would
      bitrot on branch renames / force-pushes — see anti-goals.
+6. **No orphan status lines** (Epic §4 only):
+   - A ``**状态**`` line may appear **exactly once** per Epic block. A
+     second one within the same ``### Epic #N`` scope almost always
+     means the next Epic's ``### Epic #N+1 · Title`` header was deleted
+     and its content is now being silently attributed to the previous
+     Epic. That happened once (Epic #3 header was dropped; Epic #2's
+     state was silently overwritten with Epic #3's — undetectable
+     because both happened to share ``🟡`` / ``2026-04-23``).
+   - Only ``状态`` is checked; ``起始`` / ``完成`` co-occur on the same
+     line in practice, so checking ``状态`` alone covers the failure
+     mode without noisy three-violations-per-line reports.
+   - The violation message names no Epic number — the whole point is
+     that the parser can't tell which Epic the orphan belongs to; the
+     human has to read the context and decide which header to restore.
 
 Exit code ``0`` = clean, ``1`` = violations found (printed as
 ``file:line: message``), ``2`` = roadmap missing / unparseable.
@@ -46,7 +60,8 @@ Invocation:
 Anti-goals: this is a *drift detector*, not a project manager. It does
 not enforce that every Epic has a progress log, nor that commit SHAs
 in the log actually exist. Those heuristics lead to bitrot. Rule #5
-asserts only the *absence* of two literal placeholder strings.
+asserts only the *absence* of two literal placeholder strings; Rule #6
+asserts only the *uniqueness* of ``**状态**`` within an Epic block.
 """
 from __future__ import annotations
 
@@ -99,6 +114,13 @@ class EpicBlock:
     # violation per line so each drifted entry shows up independently.
     progress_log_sha_todos: list[int] = field(default_factory=list)
     in_progress_log: bool = False
+    # Rule #6: line numbers of ``**状态**`` re-assignments within this
+    # Epic's scope (i.e., after the first one). Each entry signals
+    # a likely missing ``### Epic #N · Title`` header between the
+    # first status line and this one. Reported per-line so the
+    # author can spot both the orphan line and the correct Epic
+    # boundary at once.
+    orphan_status_lines: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -151,6 +173,15 @@ def _parse(path: Path) -> tuple[list[EpicBlock], list[MilestoneCriterion]]:
                 continue
 
             if _STATUS_LINE.search(line):
+                # Rule #6: a second **状态** within this Epic's scope
+                # means the next Epic's `### Epic #N · Title` header is
+                # missing — its orphan content is being silently
+                # attributed to us. Record the line but STILL assign
+                # (keeping last-writer-wins for parse continuity lets
+                # the rest of the lint rules still catch drift further
+                # down the orphan block, e.g., checklist Rule #2).
+                if current_epic.status is not None:
+                    current_epic.orphan_status_lines.append(i)
                 current_epic.status = _STATUS_LINE.search(line).group(1)
             if _START_LINE.search(line):
                 current_epic.start = _START_LINE.search(line).group(1)
@@ -253,6 +284,21 @@ def lint(path: Path) -> list[str]:
                 f"{path}:{ln}: Epic #{e.number}: progress log has a sha TODO "
                 f"sentinel (`(commit pending)` or `(commit 待落)`) — "
                 f"backfill the real sha once the commit lands"
+            )
+
+        # Rule #6: orphan `**状态**` lines. Message deliberately omits
+        # any Epic number — the parser's attribution here is suspect by
+        # definition (that's the whole point of the rule), so pointing
+        # the human at the line and the likely fix ("restore a missing
+        # ### Epic #N · Title header") is more useful than misleading
+        # them with whichever Epic we happened to be tracking at parse
+        # time.
+        for ln in e.orphan_status_lines:
+            violations.append(
+                f"{path}:{ln}: orphan `**状态**` line — a second 状态 line "
+                f"inside the same Epic block usually means a `### Epic #N · "
+                f"Title` header above it was deleted; restore the header or "
+                f"merge the block into the previous Epic"
             )
 
     status_by_num = {e.number: e.status for e in epics}
