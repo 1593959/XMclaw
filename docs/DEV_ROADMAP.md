@@ -954,7 +954,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - [x] `daemon/workspace.py` Workspace 类（Phase 1）
 - [x] `daemon/multi_agent_manager.py` + lock + dedupe（Phase 2）
 - [x] `DynamicMultiAgentRunner` + `X-Agent-Id` 路由（Phase 3：WS `?agent_id=` 路由 + `/api/v2/agents` CRUD）
-- [ ] `AgentContextMiddleware`
+- [x] `AgentContextMiddleware`（Phase 4：`contextvars` + ASGI middleware + WS `use_current_agent_id` 包裹 `run_turn`）
 - [ ] 4 个 agent-间 tool
 - [ ] Session ID 命名规范
 - [ ] EvolutionEngine 独立 agent 化

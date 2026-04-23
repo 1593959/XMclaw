@@ -26,6 +26,10 @@ from starlette.responses import JSONResponse, RedirectResponse
 from starlette.staticfiles import StaticFiles
 
 from xmclaw import __version__
+from xmclaw.daemon.agent_context import (
+    AgentContextMiddleware,
+    use_current_agent_id,
+)
 from xmclaw.daemon.agent_loop import AgentLoop
 from xmclaw.daemon.multi_agent_manager import MultiAgentManager
 from xmclaw.core.bus import (
@@ -154,6 +158,11 @@ def create_app(
     app = FastAPI(
         title="XMclaw v2 daemon", version=__version__, lifespan=_lifespan,
     )
+    # Epic #17 Phase 4: ambient "who am I?" contextvar. Seeded from
+    # ``X-Agent-Id`` header or ``agent_id`` query param on every
+    # HTTP/WS request. The WS handler overrides it per-turn with the
+    # resolved id (so "main" and default-to-primary both normalize).
+    app.add_middleware(AgentContextMiddleware)
     app.state.bus = bus
     app.state.memory = memory
     app.state.memory_sweep = sweep_task
@@ -401,6 +410,7 @@ def create_app(
         # rather than a silent hang.
         requested_agent_id = ws.query_params.get("agent_id")
         active_agent: AgentLoop | None = agent
+        resolved_agent_id = "main"
         if requested_agent_id and requested_agent_id != "main":
             ws_obj = agents_manager.get(requested_agent_id)
             if ws_obj is None or ws_obj.agent_loop is None:
@@ -408,6 +418,7 @@ def create_app(
                 await ws.close(code=4404, reason="agent not found")
                 return
             active_agent = ws_obj.agent_loop
+            resolved_agent_id = requested_agent_id
 
         await ws.accept()
 
@@ -516,9 +527,13 @@ def create_app(
                         # Phase 4.1: run the full LLM ↔ tool loop. The
                         # AgentLoop publishes USER_MESSAGE + every LLM /
                         # tool event onto the bus; our subscription
-                        # forwards them to this WS.
+                        # forwards them to this WS. Epic #17 Phase 4:
+                        # wrap in ``use_current_agent_id`` so tools
+                        # invoked during the turn (e.g., agent-to-agent)
+                        # can discover which agent initiated them.
                         try:
-                            await active_agent.run_turn(session_id, content)
+                            with use_current_agent_id(resolved_agent_id):
+                                await active_agent.run_turn(session_id, content)
                         except Exception as exc:  # noqa: BLE001
                             # Surface a structured error frame so the
                             # client sees the failure instead of a
