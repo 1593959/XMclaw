@@ -509,6 +509,122 @@ async def test_evict_at_10k_items_is_fast(tmp_path) -> None:
         mem.close()
 
 
+# ── stats() (Epic #5 phase 3 data surface) ────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_stats_empty_db_returns_all_three_layers_zeroed() -> None:
+    """CLI renders a stable three-row table even when nothing is stored."""
+    mem = SqliteVecMemory(":memory:")
+    try:
+        s = await mem.stats()
+        assert set(s) == {"short", "working", "long"}
+        for layer in ("short", "working", "long"):
+            assert s[layer] == {
+                "count": 0,
+                "bytes": 0,
+                "pinned_count": 0,
+                "oldest_ts": None,
+                "newest_ts": None,
+            }
+    finally:
+        mem.close()
+
+
+@pytest.mark.asyncio
+async def test_stats_counts_bytes_and_ts_range_per_layer() -> None:
+    mem = SqliteVecMemory(":memory:")
+    try:
+        await mem.put("short", _item("aa", id="s1", ts=100.0))         # 2 bytes
+        await mem.put("short", _item("bbbb", id="s2", ts=200.0))       # 4 bytes
+        await mem.put("working", _item("xyz", id="w1", ts=150.0))      # 3 bytes
+        s = await mem.stats()
+        assert s["short"]["count"] == 2
+        assert s["short"]["bytes"] == 6
+        assert s["short"]["oldest_ts"] == 100.0
+        assert s["short"]["newest_ts"] == 200.0
+        assert s["working"]["count"] == 1
+        assert s["working"]["bytes"] == 3
+        assert s["working"]["oldest_ts"] == 150.0
+        assert s["working"]["newest_ts"] == 150.0
+        assert s["long"]["count"] == 0
+        assert s["long"]["oldest_ts"] is None
+    finally:
+        mem.close()
+
+
+@pytest.mark.asyncio
+async def test_stats_bytes_counts_utf8_not_chars() -> None:
+    mem = SqliteVecMemory(":memory:")
+    try:
+        # Three-byte CJK glyphs — 2 chars → 6 UTF-8 bytes.
+        await mem.put("short", _item("你好", id="s1", ts=1.0))
+        s = await mem.stats()
+        assert s["short"]["count"] == 1
+        assert s["short"]["bytes"] == 6
+    finally:
+        mem.close()
+
+
+@pytest.mark.asyncio
+async def test_stats_pinned_count_uses_same_rules_as_evict() -> None:
+    """Operators reconcile 'what's protected' before tuning caps."""
+    mem = SqliteVecMemory(":memory:", pinned_tags=["identity"])
+    try:
+        await mem.put("short", _item("a", id="a1", ts=1.0))
+        await mem.put("short", _item("b", id="a2", ts=2.0,
+                                      metadata={"pinned": True}))
+        await mem.put("short", _item("c", id="a3", ts=3.0,
+                                      metadata={"tag": "identity"}))
+        await mem.put("short", _item("d", id="a4", ts=4.0,
+                                      metadata={"category": "other"}))
+        s = await mem.stats()
+        assert s["short"]["count"] == 4
+        assert s["short"]["pinned_count"] == 2   # a2 + a3
+    finally:
+        mem.close()
+
+
+@pytest.mark.asyncio
+async def test_stats_does_not_mutate() -> None:
+    mem = SqliteVecMemory(":memory:")
+    try:
+        await mem.put("short", _item("hello", id="h1", ts=5.0))
+        before = await mem.stats()
+        # Call multiple times — no side effects.
+        for _ in range(3):
+            await mem.stats()
+        after = await mem.stats()
+        assert before == after
+        # And the actual row is still there.
+        rows = await mem.query("short")
+        assert len(rows) == 1
+        assert rows[0].id == "h1"
+    finally:
+        mem.close()
+
+
+@pytest.mark.asyncio
+async def test_stats_reflects_eviction() -> None:
+    """After an evict() call, stats reports the reduced count/bytes."""
+    mem = SqliteVecMemory(":memory:")
+    try:
+        for i in range(5):
+            await mem.put("short", _item("x" * 10, id=f"e{i}", ts=float(i + 1)))
+        s0 = await mem.stats()
+        assert s0["short"]["count"] == 5
+        assert s0["short"]["bytes"] == 50
+
+        await mem.evict("short", max_items=2)
+        s1 = await mem.stats()
+        assert s1["short"]["count"] == 2
+        assert s1["short"]["bytes"] == 20
+        # Newest two (e3, e4) survive.
+        assert s1["short"]["oldest_ts"] == 4.0
+        assert s1["short"]["newest_ts"] == 5.0
+    finally:
+        mem.close()
+
+
 # ── anti-req #2: no silent prompt injection ───────────────────────────────
 
 def test_memory_provider_has_no_auto_inject_method() -> None:

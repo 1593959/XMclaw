@@ -479,6 +479,63 @@ class SqliteVecMemory(MemoryProvider):
             return True
         return False
 
+    async def stats(self) -> dict[str, dict[str, Any]]:
+        """Per-layer snapshot. Surface for ``xmclaw memory stats`` CLI.
+
+        Returns a dict keyed by layer name (``short`` / ``working`` / ``long``)
+        — all three layers are always present, with zeros when empty — so
+        the CLI can render a stable row-per-layer table regardless of fill
+        state. Each value has::
+
+            {
+                "count":        int,    # non-pinned + pinned items
+                "bytes":        int,    # sum of len(text.encode('utf-8'))
+                "pinned_count": int,    # subset of count matching pinned rules
+                "oldest_ts":    float | None,  # None when count == 0
+                "newest_ts":    float | None,
+            }
+
+        Pinned counts use the same ``_is_pinned`` rules as ``evict()`` so
+        operators can reconcile "what's protected" before tuning caps.
+        Read-only — does not mutate anything.
+        """
+        cur = self._conn.cursor()
+        rows = cur.execute(
+            "SELECT layer, text, metadata, ts FROM memory_items"
+        ).fetchall()
+        out: dict[str, dict[str, Any]] = {
+            layer: {
+                "count": 0,
+                "bytes": 0,
+                "pinned_count": 0,
+                "oldest_ts": None,
+                "newest_ts": None,
+            }
+            for layer in ("short", "working", "long")
+        }
+        for r in rows:
+            layer = r["layer"]
+            bucket = out.setdefault(
+                layer,
+                {
+                    "count": 0,
+                    "bytes": 0,
+                    "pinned_count": 0,
+                    "oldest_ts": None,
+                    "newest_ts": None,
+                },
+            )
+            bucket["count"] += 1
+            bucket["bytes"] += len(r["text"].encode("utf-8"))
+            if self._is_pinned(r["metadata"]):
+                bucket["pinned_count"] += 1
+            ts = r["ts"]
+            if bucket["oldest_ts"] is None or ts < bucket["oldest_ts"]:
+                bucket["oldest_ts"] = ts
+            if bucket["newest_ts"] is None or ts > bucket["newest_ts"]:
+                bucket["newest_ts"] = ts
+        return out
+
     def close(self) -> None:
         self._conn.close()
 
