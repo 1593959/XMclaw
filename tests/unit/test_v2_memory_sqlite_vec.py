@@ -462,6 +462,53 @@ async def test_evict_malformed_metadata_not_treated_as_pinned() -> None:
     mem.close()
 
 
+# ── scale bench (Epic #5 exit criterion) ──────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_evict_at_10k_items_is_fast(tmp_path) -> None:
+    """Epic #5 exit criterion: ``evict()`` on 10k items must return in
+    <100ms.
+
+    This guards against a regression to an O(n²) or full-table-rewrite
+    implementation. The ceiling here is 500ms (5x the target) so CI
+    noise doesn't flake the build, but an order-of-magnitude slowdown
+    still trips.
+
+    Note: this is on-disk, not ``:memory:``, because insert throughput
+    matters for setup and we want to measure a realistic file-backed
+    path — the one the daemon actually uses.
+    """
+    import time
+
+    mem = SqliteVecMemory(tmp_path / "mem.db")
+    try:
+        N = 10_000
+        # Tight insert path: one transaction, then one commit.
+        cur = mem._conn.cursor()
+        cur.execute("BEGIN")
+        for i in range(N):
+            cur.execute(
+                "INSERT INTO memory_items "
+                "(id, layer, text, metadata, ts, has_embedding) "
+                "VALUES (?, ?, ?, ?, ?, 0)",
+                (f"id{i}", "short", f"note {i}", None, float(i + 1)),
+            )
+        mem._conn.commit()
+
+        # Half the table is over the cap → realistic eviction workload.
+        t0 = time.perf_counter()
+        removed = await mem.evict("short", max_items=5_000)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+
+        assert removed == 5_000
+        assert elapsed_ms < 500, (
+            f"evict(10k items, max_items=5000) took {elapsed_ms:.1f}ms "
+            f"(exit criterion is <100ms, guard is 5x headroom)"
+        )
+    finally:
+        mem.close()
+
+
 # ── anti-req #2: no silent prompt injection ───────────────────────────────
 
 def test_memory_provider_has_no_auto_inject_method() -> None:

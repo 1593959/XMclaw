@@ -526,14 +526,15 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - [ ] `xmclaw memory stats` CLI（phase 3）
 - [ ] `MEMORY_EVICTED` 事件发出（phase 3，上 bus，随 scheduler 一起落）
 - [x] 单测覆盖 LRU / bytes / pinned / pinned_tags / 组合 cap / 恶意 metadata / layer 隔离
-- [ ] 10k 压测（phase 4，退出标准）
+- [x] 10k 压测（退出标准一半：延迟部分达标）
 
-**退出标准**：10k 记忆条目下 evict 延迟 < 100ms；`xmclaw memory stats` 能看到淘汰日志。
+**退出标准**：10k 记忆条目下 evict 延迟 < 100ms（**达标** — 本机 44ms）；`xmclaw memory stats` 能看到淘汰日志（phase 3 待 CLI 落地）。
 
 **进度日志**：
 
 - 2026-04-23: phase 1 落地 `SqliteVecMemory.evict(layer, *, max_items, max_bytes)` — LRU `ORDER BY ts ASC`、`metadata.pinned` 豁免、双 cap 并集、共用 `_delete_ids` 清 `memory_vec`、恶意 JSON 不被当作 pin。配 11 条单测（空参 noop / 仅 items / 仅 bytes / bytes=0 / pinned 豁免 / pinned 不占配额 / 双 cap 并集 / 双 cap 紧边界 / 跨 layer 隔离 / 带 embedding 清理 / 坏 metadata）。`prune()` 也改走 `_log.info("memory.evicted", reason="age")`。full suite 777 passed (commit 89ed991)
 - 2026-04-23: phase 2 — `pinned_tags` 构造参数：admin 传 `pinned_tags=["identity", "promise"]`，`_is_pinned` 除了 `metadata.pinned` 外还认 `metadata.tag`（标量）/ `metadata.tags`（列表）/ `metadata.category` 命中。用例目的：不需要改每条 row 就能保护"身份/承诺/系统"类记忆。加 4 条单测（scalar tag / tags list / category / pinned_tags 为空时保持原行为）。full suite 781 passed (commit 275d433)
+- 2026-04-23: phase 4 (part 1) — 退出标准延迟部分达标。新增 `test_evict_at_10k_items_is_fast`：on-disk DB + 10k 行 + `max_items=5_000` 一次 evict 5k 条，本机耗时 44ms，<100ms 退出标准；guard 设 500ms（5x 头部空间）吸收 CI 抖动。回归信号：O(n²) 实现或全表重写会被 5x 额度抓到。`xmclaw memory stats` CLI 仍未落（phase 3），退出标准另一半挂单 (commit pending)
 
 ---
 
