@@ -108,6 +108,7 @@ lanes:
       - tests/integration/test_v2_daemon_agent.py
       - tests/integration/test_v2_daemon_config.py
       - tests/integration/test_v2_daemon_pairing.py
+      - tests/integration/test_v2_daemon_agents_router.py
 
   # CLI + doctor. RoadmapLintCheck wraps scripts/lint_roadmap.py, so
   # treat the linter + its tests as part of this lane too.

@@ -27,6 +27,7 @@ from starlette.staticfiles import StaticFiles
 
 from xmclaw import __version__
 from xmclaw.daemon.agent_loop import AgentLoop
+from xmclaw.daemon.multi_agent_manager import MultiAgentManager
 from xmclaw.core.bus import (
     BehavioralEvent,
     EventType,
@@ -125,10 +126,20 @@ def create_app(
             )
             sweep_task = MemorySweepTask(memory, retention)
 
+    # Epic #17 Phase 3: multi-agent registry. Constructed eagerly so the
+    # routers and WS handler can rely on ``app.state.agents`` being set,
+    # but rehydration from disk happens in lifespan so tests that never
+    # enter lifespan don't pay the filesystem walk.
+    agents_manager = MultiAgentManager(bus)
+
     @asynccontextmanager
     async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
         if sweep_task is not None:
             await sweep_task.start()
+        try:
+            await agents_manager.load_from_disk()
+        except Exception:  # noqa: BLE001 — bad preset file must not block boot
+            pass
         try:
             yield
         finally:
@@ -162,6 +173,11 @@ def create_app(
     app.include_router(_memory_router.router)
     app.include_router(_profiles_router.router)
     app.include_router(_workspaces_router.router)
+
+    # Epic #17 Phase 3: REST surface for the multi-agent registry.
+    from xmclaw.daemon.routers import agents as _agents_router
+    app.include_router(_agents_router.router)
+    app.state.agents = agents_manager
 
     if agent is None and config is not None:
         # Local import avoids a circular dep (factory imports from this
@@ -377,6 +393,22 @@ def create_app(
                 await ws.close(code=4401, reason="unauthorized")
                 return
 
+        # Epic #17 Phase 3: select which agent runs this session.
+        # Clients omit ``agent_id`` (or send "main") for the primary
+        # config-built agent; other values look up in the registry.
+        # Unknown id closes the socket with 4404 — same pattern as
+        # auth failure, so the client sees a structured error code
+        # rather than a silent hang.
+        requested_agent_id = ws.query_params.get("agent_id")
+        active_agent: AgentLoop | None = agent
+        if requested_agent_id and requested_agent_id != "main":
+            ws_obj = agents_manager.get(requested_agent_id)
+            if ws_obj is None or ws_obj.agent_loop is None:
+                await ws.accept()
+                await ws.close(code=4404, reason="agent not found")
+                return
+            active_agent = ws_obj.agent_loop
+
         await ws.accept()
 
         # ── replay historical events for this session ─────────
@@ -480,13 +512,13 @@ def create_app(
                             "and only then give your final answer.\n\n"
                             f"User: {content}"
                         )
-                    if agent is not None:
+                    if active_agent is not None:
                         # Phase 4.1: run the full LLM ↔ tool loop. The
                         # AgentLoop publishes USER_MESSAGE + every LLM /
                         # tool event onto the bus; our subscription
                         # forwards them to this WS.
                         try:
-                            await agent.run_turn(session_id, content)
+                            await active_agent.run_turn(session_id, content)
                         except Exception as exc:  # noqa: BLE001
                             # Surface a structured error frame so the
                             # client sees the failure instead of a
