@@ -491,7 +491,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - [x] `EvolutionOrchestrator`（`xmclaw/skills/orchestrator.py`）把 `SkillRegistry.promote`/`rollback` 翻译成 `SKILL_PROMOTED` / `SKILL_ROLLED_BACK` 总线事件；可选 `auto_apply=True` 自动消费 `EvolutionAgent` 的 `SKILL_CANDIDATE_PROPOSED`，anti-req #12 仍由 registry 把门
 - [x] CLI repl `SKILL_EVOLVED` flash（`xmclaw/cli/chat.py::format_event` 绿色 `[evolved] <skill> v<from>→v<to>` + 黄色 `[rolled back]` + 暗色 `[candidate]`；`xmclaw/daemon/app.py` WS forwarder 增加 `_GLOBAL_EVENT_TYPES` 跨 session 广播）
 - [ ] README 顶部 killer demo GIF
-- [ ] `docs/EVOLUTION.md` 写完 trigger 条件 + 策略 + FAQ
+- [x] `docs/EVOLUTION.md` 写完 trigger 条件 + 策略 + FAQ
 
 **退出标准**：
 
