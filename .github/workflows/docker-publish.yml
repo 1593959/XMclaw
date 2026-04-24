@@ -1,0 +1,136 @@
+name: Docker — build & publish
+
+# Publishes the XMclaw container image to GitHub Container Registry
+# (ghcr.io/<owner>/xmclaw). GHCR is chosen over Docker Hub because it's
+# keyless — the built-in `GITHUB_TOKEN` is enough, no org-level secret
+# to rotate. Users who want a Docker Hub mirror can fork this file and
+# add their own `docker/login-action` step.
+#
+# Triggers:
+#   * Push of a semver tag `vX.Y.Z` — tags the image `:X.Y.Z`, `:X.Y`,
+#     `:X`, and `:latest` via docker/metadata-action. Matches the
+#     release.yml tag pattern so `git push origin v0.3.0` ships the
+#     Windows installer AND the container image in one go.
+#   * Manual `workflow_dispatch` — build-only by default, tick the
+#     `publish` input to also push. Useful for verifying a Dockerfile
+#     change on main before cutting a tag.
+#
+# Why not push-to-main: the repo trades `:edge` / nightly rolling tags
+# for reproducibility. Every pushed image corresponds to a public
+# semver tag users can pin. If that changes, add a `branches: [main]`
+# trigger + a `:main` tag.
+#
+# Why Buildx + QEMU: the Dockerfile's only native step is sqlite-vec's
+# build-essential compile in stage 1, which cross-compiles fine. Adding
+# amd64 + arm64 here means Apple Silicon and Raspberry Pi users get a
+# native image without a local build.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Push the built image to ghcr.io (default: build-only dry run).'
+        type: boolean
+        required: false
+        default: false
+      tag:
+        description: 'Optional image tag override (e.g. "test-fix"). Empty = derive from git ref.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  packages: write  # required to push to ghcr.io under the repo owner
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Lowercase the owner — GHCR rejects mixed-case image names, and
+      # ${{ github.repository_owner }} preserves the GitHub username's
+      # original casing. `1593959` happens to be all-digits today, but
+      # this keeps the workflow correct for forks.
+      - name: Normalise image name
+        id: image
+        run: |
+          OWNER_LOWER="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "name=ghcr.io/${OWNER_LOWER}/xmclaw" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU (multi-arch emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        # Skip auth on a build-only dispatch — Buildx still works, and
+        # we don't want a login event in the audit log for dry runs.
+        if: github.event_name == 'push' || github.event.inputs.publish == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve tags + labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          # Tag matrix:
+          #   * semver tag push (vX.Y.Z)  → X.Y.Z, X.Y, X, latest
+          #   * workflow_dispatch w/ tag  → the literal override
+          #   * workflow_dispatch default → "manual-<shortsha>"
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' }}
+            type=raw,value=manual-${{ github.sha }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag == '' }}
+          labels: |
+            org.opencontainers.image.title=XMclaw
+            org.opencontainers.image.description=Local-first self-evolving AI agent runtime
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT
+
+      - name: Build (and push if authorised)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name == 'push' || github.event.inputs.publish == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          {
+            echo "## Image tags"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo
+            if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event.inputs.publish }}" = "true" ]; then
+              echo "Pushed to \`${{ steps.image.outputs.name }}\`."
+              echo
+              echo "Pull with:"
+              echo '```bash'
+              echo "docker pull ${{ steps.image.outputs.name }}:latest"
+              echo '```'
+            else
+              echo "Dry run — image built but not pushed. Re-run with \`publish: true\` to upload."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
