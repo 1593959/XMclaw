@@ -234,7 +234,7 @@ class TestGuardedToolProvider:
 
     @pytest.mark.anyio
     async def test_blocks_curl_pipe_bash(self, inner, engine):
-        """Dangerous skill #1: curl | bash pipeline."""
+        """Dangerous skill #1: curl | bash pipeline (CRITICAL → auto_denied)."""
         provider = GuardedToolProvider(inner, engine)
         call = ToolCall(
             id="c1",
@@ -244,7 +244,7 @@ class TestGuardedToolProvider:
         )
         result = await provider.invoke(call)
         assert result.ok is False
-        assert result.error.startswith("NEEDS_APPROVAL")
+        assert "CRITICAL" in result.error
         assert "TOOL_CMD_PIPE_TO_SHELL" in result.content
 
     @pytest.mark.anyio

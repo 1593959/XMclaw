@@ -40,8 +40,10 @@ class RuleBasedToolGuardian(BaseToolGuardian):
 
         text = "\n".join(chunks)
         for rf in scan_with_rules(text, rules=self._rules):
-            # Map rule_loader Severity (which lacks CRITICAL) to GuardSeverity
-            if rf.severity.value == "high":
+            # Map rule_loader Severity to GuardSeverity
+            if rf.severity.value == "critical":
+                sev = GuardSeverity.CRITICAL
+            elif rf.severity.value == "high":
                 sev = GuardSeverity.HIGH
             elif rf.severity.value == "medium":
                 sev = GuardSeverity.MEDIUM
