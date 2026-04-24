@@ -11,6 +11,7 @@ Subcommands:
     xmclaw status                   Report daemon state (running / stale / dead).
     xmclaw tools                    List the tools wired up from config.
     xmclaw chat                     Interactive REPL that talks to a running daemon.
+    xmclaw onboard                  Interactive first-time setup wizard.
     xmclaw doctor                   Diagnose a local setup without running anything.
     xmclaw memory stats             Per-layer memory occupancy.
     xmclaw config init              Write a daemon/config.json skeleton.
@@ -33,6 +34,7 @@ from xmclaw.core.bus import (
     InProcessEventBus,
     make_event,
 )
+from xmclaw.cli.onboard import run_onboard
 from xmclaw.core.bus.memory import accept_all
 
 app = typer.Typer(help="XMclaw — local-first, self-evolving AI agent runtime")
@@ -644,6 +646,26 @@ def chat(
         token=effective_token,
     )
     raise typer.Exit(code=exit_code)
+
+
+@app.command("onboard")
+def onboard(
+    config: str = typer.Option(
+        "daemon/config.json", "--config",
+        help="Path to write the config JSON.",
+    ),
+    skip_smoke: bool = typer.Option(
+        False, "--skip-smoke",
+        help="Skip the connectivity smoke test.",
+    ),
+) -> None:
+    """Interactive first-time setup wizard.
+
+    Guides through provider selection, API key capture, workspace
+    confirmation, tool enablement, and a smoke test.
+    """
+    code = run_onboard(config_path=config, skip_smoke=skip_smoke)
+    raise typer.Exit(code=code)
 
 
 @app.command()

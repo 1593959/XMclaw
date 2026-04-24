@@ -135,6 +135,7 @@ lanes:
       - tests/unit/test_v2_cli_version.py
       - tests/unit/test_v2_cli_evolution.py
       - tests/unit/test_v2_session_report.py
+      - tests/unit/test_v2_onboard.py
 
   # Memory stack.
   memory:

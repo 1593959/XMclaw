@@ -23,6 +23,7 @@ dependencies = [
     "pydantic>=2.10.0",
     "httpx>=0.28.0",
     "structlog>=25.1.0",
+    "questionary>=2.0.0",
 ]
 
 [project.optional-dependencies]
