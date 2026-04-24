@@ -1089,6 +1089,42 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ---
 
+### Epic #23 · 前端 v2（Web UI 重做）
+
+**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**前置依赖**：Epic #13（事件总线）、Epic #18（后端 API mock→real）、Epic #3（Tool Guardian 审批）、Epic #4（进化事件）
+**关联 Milestone**：M10（UX / 差异化叙事）
+
+> 详细规格见 [docs/FRONTEND_DESIGN.md](FRONTEND_DESIGN.md)。本 Epic 是把该文档的 Phase 0–Phase 6 落成代码 + 在 `/ui/` 切主。
+
+**开发计划**（对应 FRONTEND_DESIGN.md §12 六阶段）：
+
+1. **Phase 0 技术预研**（1 周）——决定最终框架（Preact+htm vs Alpine）、搭 `static/v2/` 骨架、tokens.css、router、5 个 atom 组件
+2. **Phase 1 Chat 骨架 + 连通性**（2 周）——三栏布局 + WS 接入 + 流式 Markdown（rAF + token keyed diff）+ Plan/Act + @ / 命令
+3. **Phase 2 高权限交互**（2 周）——ApprovalCard + Edit params + Rewind/Retry/Branch + 命令面板 + 快捷键 registry
+4. **Phase 3 Sidebar 页铺开**（3 周）——Agents / Skills / Memory / Tools / MCP / Security / Backup / Doctor / Settings 九页
+5. **Phase 4 进化 & Insights**（2 周）——Evolution 页 + "今天学会了" feed + Insights dashboard + Status bar
+6. **Phase 5 打磨 + a11y + i18n**（2 周）——空态、ARIA、zh/en、HC 主题、prefers-reduced-motion、性能回归
+7. **Phase 6 切主**（1 周）——`/ui/` 指 v2，v1 保 `/ui/legacy/` 一个版本
+
+**检查清单**：
+
+- [ ] `docs/FRONTEND_DESIGN.md` 获 review + Phase 0 技术选型 ADR 敲定
+- [ ] Phase 1：WS 接入 17 个 EventType 全覆盖；流式 markdown 长回答 ≥ 30 fps
+- [ ] Phase 2：ApprovalCard 支持"编辑参数后批准"；§7.1 快捷键全部绑定
+- [ ] Phase 3：Sidebar 12 个页面都有真实数据（无 mock）
+- [ ] Phase 4：Evolution VFM chart + candidate cards + learned-today feed 数据能对上 SQLite bus
+- [ ] Phase 5：WCAG AA 通过（axe-core scan 零 critical）；zh + en 全量翻译
+- [ ] Phase 6：`/ui/` 默认指 v2；v1 挂 `/ui/legacy/` 回滚可用
+
+**退出标准**：新用户首次跑 `xmclaw start` 看到 v2 界面；在 30 天使用中，"今天学会了什么"卡片能显示真实 skill promotion 事件；审批队列、rewind、命令面板在 dogfood 会话中无 critical bug。
+
+**进度日志**：
+
+- 2026-04-25: 规格起草——`docs/FRONTEND_DESIGN.md` v1 草案落地（1281 行，12 节 + 4 附录）：§1 覆盖 17 个竞品（AI IDE / agentic runtime / workflow canvas / 本地 LLM 客户端）+ 深读 5 个源码仓库（Continue / Cline / Open WebUI / Aider / AutoGPT Platform，浅克隆在 `.claude/scratch/competitor-code/`）；§2 把用户六点要求（交互 / 前端高权限 / 便捷 / 功能完善 / 直观 / 方便）翻成 30+ 个可度量硬指标（首帧 < 200ms、流式 ≥ 30fps、按钮反馈 ≤ 16ms 等）；§3 定三栏布局 + Sidebar 12 一级 + 14 workspace 面板的升降路线 + SPA 路由树；§4 把 Chat / Agents / Skills / Memory / Evolution / Tools / Security / Backup / Doctor / Insights / Settings 十一页每一页画 ASCII 线框 + 状态机（Chat 输入 5 态、17 EventType × UI 组件映射表、Plan/Act 切换、Rewind 分叉）；§5 组件库按 atoms/molecules/organisms/pages 分 50+ 文件，硬约束单文件 ≤ 500 行；§6 Store shape + §6.3 WS→action 映射 + §6.4 rAF + token-keyed diff 流式渲染（抄 Open WebUI `Markdown.svelte:62-87`）；§7 shortcut registry 25 条 + 命令面板 + 右键菜单 + DnD + @ 上下文 + / 斜杠命令；§8 审批 UI：可编辑参数（抄 LM Studio）、严重度分级、remember-this-session、audit log；§9 双模 CSS 变量（XMclaw 私有 `--xmc-*` + VSCode host 回退 `--vscode-*`，抄 Continue + Cline），5 主题 + font-scale 滑竿（抄 Open WebUI `app.css:33-60`）；§10 WCAG AA 硬要求 + 6 语言 i18n；§11 技术选型决策树：无 Node.js 构建约束下推荐 **Preact + htm + ESM CDN**（~10 KB，心智与 Continue/Cline 一致），兜底 Alpine 自托管；§12 六阶段 13 周实施路线 + Epic #23 提交；附录 A 现状 vs v2 差异、附录 B 后端需补的 11 个端点（★ 标）、附录 C 八条 ADR、附录 D 工件路径。roadmap lint 绿。下一步：Phase 0 预研 —— 等人手与优先级调配 (commit 4eec74f)
+
+---
+
 ## 5. 让差异化"看得见"（Visible Differentiation）
 
 > 用户不会读 `core/evolution/controller.py`。如果 agent 在进步，要让他**直接看到**。
