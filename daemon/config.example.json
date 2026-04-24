@@ -14,7 +14,9 @@
     }
   },
   "evolution": {
+    "_comment": "Epic #4: evolution visibility + auto-apply. auto_apply=false (default) means the orchestrator observes SKILL_CANDIDATE_PROPOSED events but does not mutate HEAD — users opt-in explicitly. Flip to true after you've watched the pipeline for a while and trust the gates.",
     "enabled": true,
+    "auto_apply": false,
     "interval_minutes": 30,
     "daily_review_hour": 22,
     "vfm_threshold": 5.0,

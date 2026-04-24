@@ -78,6 +78,7 @@ def create_app(
     auth_check: Callable[[str | None], Awaitable[bool]] | None = None,
     agent: AgentLoop | None = None,
     config: dict[str, Any] | None = None,
+    orchestrator: Any | None = None,
 ) -> FastAPI:
     """Build the v2 FastAPI app.
 
@@ -103,6 +104,17 @@ def create_app(
         ``agent`` is not provided but ``config`` is, the factory tries
         to build an AgentLoop from the config's LLM section. This is
         the usable-out-of-the-box path for ``xmclaw v2 serve``.
+    orchestrator : EvolutionOrchestrator | None
+        Epic #4 Phase C. Optional bus-aware wrapper over
+        :class:`xmclaw.skills.registry.SkillRegistry`. When provided,
+        the daemon starts it on lifespan-enter and stops it on
+        shutdown. ``auto_apply=True`` orchestrators then consume
+        ``SKILL_CANDIDATE_PROPOSED`` events and mutate HEAD; the
+        resulting ``SKILL_PROMOTED`` / ``SKILL_ROLLED_BACK`` events
+        flow back onto every connected REPL via ``_GLOBAL_EVENT_TYPES``.
+        Typed as ``Any`` so ``xmclaw/daemon/`` respects the "must not
+        import xmclaw.skills" boundary (see ``xmclaw/daemon/AGENTS.md``);
+        the orchestrator is built upstream by the CLI and handed in.
 
     Precedence: explicit ``agent=`` wins over ``config=``. If neither
     is given, the daemon runs in Phase 4.0 echo mode — useful for
@@ -144,6 +156,18 @@ def create_app(
             await agents_manager.load_from_disk()
         except Exception:  # noqa: BLE001 — bad preset file must not block boot
             pass
+        # Epic #4 Phase C: start the EvolutionOrchestrator so auto_apply
+        # subscriptions go live. No-op when orchestrator is None or
+        # auto_apply is False (it still publishes events on explicit
+        # promote/rollback, just doesn't consume proposals). Failures
+        # here must not prevent the daemon from serving WS traffic —
+        # evolution is a best-effort observability layer, not a
+        # critical path.
+        if orchestrator is not None:
+            try:
+                await orchestrator.start()
+            except Exception:  # noqa: BLE001
+                pass
         try:
             yield
         finally:
@@ -160,6 +184,11 @@ def create_app(
                 try:
                     await _ws.stop()
                 except Exception:  # noqa: BLE001 — one bad stop must not abort shutdown
+                    pass
+            if orchestrator is not None:
+                try:
+                    await orchestrator.stop()
+                except Exception:  # noqa: BLE001
                     pass
             if memory is not None and hasattr(memory, "close"):
                 try:
@@ -178,6 +207,7 @@ def create_app(
     app.state.bus = bus
     app.state.memory = memory
     app.state.memory_sweep = sweep_task
+    app.state.orchestrator = orchestrator
     # Stash the raw config on app.state so router surfaces (Epic #18)
     # can read ``tools.allowed_dirs`` without re-loading from disk and
     # without an import cycle through the factory.

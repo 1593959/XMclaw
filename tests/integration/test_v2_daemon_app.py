@@ -184,3 +184,115 @@ def test_skill_promoted_broadcasts_across_sessions(
             # they don't rely on it matching their own session.
             assert evt_a["session_id"] == "_system"
             assert evt_b["session_id"] == "_system"
+
+
+# ── Epic #4 Phase C: create_app orchestrator lifespan wiring ─────────
+
+def _build_orchestrator(
+    bus: InProcessEventBus, tmp_path, *, auto_apply: bool,
+):
+    """Real EvolutionOrchestrator over an empty registry rooted at tmp_path.
+
+    Real object (not a mock) because we want ``is_running`` / ``start`` /
+    ``stop`` to exercise the actual subscription path — that's the whole
+    thing we're guarding. Empty registry is fine: these tests never call
+    ``promote``/``rollback``, they only verify the lifespan hooks fired.
+    """
+    from xmclaw.skills.orchestrator import EvolutionOrchestrator
+    from xmclaw.skills.registry import SkillRegistry
+
+    registry = SkillRegistry(history_dir=tmp_path / "skills")
+    return EvolutionOrchestrator(registry, bus, auto_apply=auto_apply)
+
+
+def test_create_app_without_orchestrator_still_boots(
+    bus: InProcessEventBus,
+) -> None:
+    """``orchestrator=None`` must be a valid shape (first-install path).
+
+    Most users won't have evolution enabled on day one, so ``xmclaw
+    serve`` passes ``None`` through. The lifespan must not crash and
+    ``app.state.orchestrator`` must read back as ``None`` so downstream
+    surfaces can feature-gate on it.
+    """
+    app = create_app(bus=bus, orchestrator=None)
+    with TestClient(app) as client:
+        assert app.state.orchestrator is None
+        assert client.get("/health").status_code == 200
+
+
+def test_auto_apply_orchestrator_starts_on_lifespan_enter(
+    bus: InProcessEventBus, tmp_path,
+) -> None:
+    """auto_apply=True → ``is_running()`` must be True inside the lifespan.
+
+    This is the whole point of wiring — a configured orchestrator
+    subscribes on daemon boot so SKILL_CANDIDATE_PROPOSED events
+    actually reach ``_on_proposal``. If this test fails, the daemon
+    exposes the feature flag but silently ignores proposals.
+    """
+    orch = _build_orchestrator(bus, tmp_path, auto_apply=True)
+    assert orch.is_running() is False  # not running before app boots
+
+    app = create_app(bus=bus, orchestrator=orch)
+    with TestClient(app) as client:
+        assert orch.is_running() is True
+        assert app.state.orchestrator is orch
+        # Health still works — lifespan didn't block the rest of setup.
+        assert client.get("/health").status_code == 200
+
+    # After the ``with`` exits, shutdown runs and stop() cancels the sub.
+    assert orch.is_running() is False
+
+
+def test_observe_only_orchestrator_start_is_noop(
+    bus: InProcessEventBus, tmp_path,
+) -> None:
+    """auto_apply=False: start() returns early, no subscription.
+
+    First-install default. The orchestrator is still on app.state so
+    ``/agent/v2/*`` routes can call ``.promote()`` / ``.rollback()``
+    explicitly, but the proposal-consumer fiber stays dark until the
+    user flips ``evolution.auto_apply=true`` in config.
+    """
+    orch = _build_orchestrator(bus, tmp_path, auto_apply=False)
+    app = create_app(bus=bus, orchestrator=orch)
+    with TestClient(app):
+        assert orch.is_running() is False
+        assert app.state.orchestrator is orch
+    assert orch.is_running() is False
+
+
+def test_orchestrator_startup_failure_does_not_block_daemon(
+    bus: InProcessEventBus,
+) -> None:
+    """A broken orchestrator.start() must NOT take the daemon down.
+
+    Evolution is best-effort observability, not a critical path. If the
+    orchestrator's ``start`` raises (disk full writing the audit log,
+    corrupt registry file, whatever), the daemon must still serve HTTP
+    + WS. app.py catches the exception inside the lifespan.
+    """
+    class _BrokenOrch:
+        started = False
+        stopped = False
+
+        async def start(self) -> None:
+            _BrokenOrch.started = True
+            raise RuntimeError("synthetic start failure")
+
+        async def stop(self) -> None:
+            _BrokenOrch.stopped = True
+
+    orch = _BrokenOrch()
+    app = create_app(bus=bus, orchestrator=orch)
+    with TestClient(app) as client:
+        assert _BrokenOrch.started is True
+        assert client.get("/health").status_code == 200
+        # WS path still works — start() failing didn't tear down the loop.
+        with client.websocket_connect("/agent/v2/sess-orch-fail") as ws:
+            evt = ws.receive_json()
+            assert evt["type"] == EventType.SESSION_LIFECYCLE.value
+    # stop() is still called on exit even though start() raised —
+    # symmetric cleanup, even if redundant for a broken object.
+    assert _BrokenOrch.stopped is True

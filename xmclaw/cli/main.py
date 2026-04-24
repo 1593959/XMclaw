@@ -294,6 +294,7 @@ def serve(
 
     cfg_path = _Path(config)
     agent = None
+    cfg: dict | None = None
     if cfg_path.exists():
         try:
             cfg = load_config(cfg_path)
@@ -323,13 +324,36 @@ def serve(
     else:
         typer.echo(f"  [!]   config not found at {cfg_path} -- running in echo mode")
 
+    # Epic #4 Phase C: build the EvolutionOrchestrator here — the CLI
+    # layer is the right place because ``xmclaw/daemon/`` must not
+    # import ``xmclaw.skills.*`` (see xmclaw/daemon/AGENTS.md §2). The
+    # registry persists its promote/rollback audit log under
+    # ``skills_dir()`` so ``xmclaw evolution show`` can read it back.
+    orchestrator = None
+    if cfg is not None:
+        ev_cfg = cfg.get("evolution") or {}
+        if ev_cfg.get("enabled", True):
+            from xmclaw.skills.orchestrator import EvolutionOrchestrator
+            from xmclaw.skills.registry import SkillRegistry
+            from xmclaw.utils.paths import skills_dir
+            registry = SkillRegistry(history_dir=skills_dir())
+            auto_apply = bool(ev_cfg.get("auto_apply", False))
+            orchestrator = EvolutionOrchestrator(
+                registry, bus, auto_apply=auto_apply,
+            )
+            mode = "auto-apply" if auto_apply else "observe-only"
+            typer.echo(f"  [ok]  evolution orchestrator: {mode}")
+
     typer.echo(f"xmclaw v{__version__} -- binding ws://{host}:{port}")
     typer.echo(f"  health:  http://{host}:{port}/health")
     typer.echo(f"  session: ws://{host}:{port}/agent/v2/<session_id>")
     typer.echo(f"  web ui:  http://{host}:{port}/")
 
     # Build the app locally so the agent (if any) is wired in.
-    app_instance = _create_app(bus=bus, agent=agent, auth_check=auth_check)
+    app_instance = _create_app(
+        bus=bus, agent=agent, auth_check=auth_check,
+        orchestrator=orchestrator,
+    )
     uvicorn.run(app_instance, host=host, port=port, log_level="info")
 
 
