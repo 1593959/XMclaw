@@ -1,4 +1,4 @@
-"""Agent-to-agent tools — Epic #17 Phase 5.
+"""Agent-to-agent tools — Epic #17 Phase 5 + 6.
 
 Four tools the LLM running in one agent can call to inspect or delegate
 to other agents running in the same daemon:
@@ -41,6 +41,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from xmclaw.core.agent_context import get_current_agent_id
 from xmclaw.core.ir import ToolCall, ToolResult, ToolSpec
 from xmclaw.providers.tool.base import ToolProvider
 
@@ -256,10 +257,10 @@ class AgentInterTools(ToolProvider):
     async def _do_chat_with_agent(self, call: ToolCall) -> str:
         agent_id, content = self._extract_target_and_content(call)
         loop = self._resolve_loop(agent_id)
-        session_id = _make_agent2agent_session_id(
-            caller=call.session_id or self._primary_id, callee=agent_id,
-        )
-        await loop.run_turn(session_id, content)
+        caller = self._resolve_caller_id()
+        session_id = _make_a2a_session_id(caller=caller, callee=agent_id)
+        stamped = _prepend_caller_marker(content, caller)
+        await loop.run_turn(session_id, stamped)
         reply = _extract_last_assistant(loop, session_id)
         return reply
 
@@ -269,13 +270,13 @@ class AgentInterTools(ToolProvider):
         import json
         agent_id, content = self._extract_target_and_content(call)
         loop = self._resolve_loop(agent_id)
+        caller = self._resolve_caller_id()
         task_id = uuid.uuid4().hex[:16]
-        session_id = _make_agent2agent_session_id(
-            caller=call.session_id or self._primary_id, callee=agent_id,
-        )
+        session_id = _make_a2a_session_id(caller=caller, callee=agent_id)
+        stamped = _prepend_caller_marker(content, caller)
         record = _TaskRecord(
             task_id=task_id, agent_id=agent_id,
-            session_id=session_id, content=content,
+            session_id=session_id, content=stamped,
         )
         self._store_task(record)
         # Kick off the real work. We intentionally do NOT await the
@@ -341,6 +342,20 @@ class AgentInterTools(ToolProvider):
             raise _ToolError("content required")
         return agent_id, raw_content
 
+    def _resolve_caller_id(self) -> str:
+        """Return the id of the agent currently running the turn.
+
+        Phase 6: agent-to-agent naming keys off *agent ids*, not WS
+        session ids. The ambient id is populated by the Phase 4
+        :class:`AgentContextMiddleware` + the WS handler's
+        ``use_current_agent_id`` wrap, so any turn that reached a tool
+        via a real WS frame has a value. The ``primary_id`` fallback
+        covers contexts outside that flow — the CLI, tests that call
+        ``invoke`` directly, scheduler / cron jobs — where the only
+        sensible default is "the primary is talking".
+        """
+        return get_current_agent_id() or self._primary_id
+
     def _resolve_loop(self, agent_id: str) -> _AgentLoopLike:
         """Map ``agent_id`` → concrete :class:`AgentLoop`.
 
@@ -369,17 +384,47 @@ class _ToolError(Exception):
     """
 
 
-def _make_agent2agent_session_id(*, caller: str, callee: str) -> str:
-    """Format: ``a2a:{caller}:{callee}:{ts}:{uuid8}``.
+def _make_a2a_session_id(*, caller: str, callee: str) -> str:
+    """Format: ``{caller}:to:{callee}:{ts}:{uuid8}`` — Phase 6 convention.
 
-    Phase 6 replaces this with the roadmap's formal
-    ``{from}:to:{to}:{ts}:{uuid8}`` convention. For now the ``a2a:``
-    prefix is enough to keep agent-delegation sessions visually
-    distinct from user WS sessions in logs / events.
+    The literal ``to`` separator is there on purpose: a single token
+    split on ``:`` yields ``[caller, "to", callee, ts, uuid]`` which is
+    trivially parseable by log viewers and event-dump tooling. It also
+    makes agent-to-agent session ids visually distinct from the raw
+    user-WS session ids (which are free-form and rarely contain ``:to:``).
+
+    ``ts`` is milliseconds since epoch; ``uuid8`` is 8 hex chars from a
+    fresh ``uuid4``. Collisions would require the same caller→callee
+    edge firing twice in the same millisecond AND the uuid's first 32
+    bits colliding — cheap enough to live with.
     """
     stamp = int(time.time() * 1000)
     suffix = uuid.uuid4().hex[:8]
-    return f"a2a:{caller}:{callee}:{stamp}:{suffix}"
+    return f"{caller}:to:{callee}:{stamp}:{suffix}"
+
+
+_CALLER_MARKER_PREFIX = "[Agent "
+
+
+def _prepend_caller_marker(content: str, caller: str) -> str:
+    """Tag ``content`` with ``[Agent {caller} requesting]`` so the callee knows.
+
+    The receiving agent's LLM sees this text as the next user message.
+    Without the tag, a delegated prompt looks indistinguishable from a
+    human user's — the callee might misroute ("the user wants X") or
+    miss that cross-agent trust rules apply. Idempotent: if ``content``
+    already starts with ``[Agent `` we assume the caller already stamped
+    it (nested delegation, retry) and leave it alone — double-tagging
+    would confuse the callee about chain depth.
+
+    Format choice: brackets + blank line separator means the tag is
+    lexically distinct from the body even when the body starts with a
+    heading or code fence. The trailing ``\\n\\n`` is important — some
+    translators collapse single newlines into spaces.
+    """
+    if content.startswith(_CALLER_MARKER_PREFIX):
+        return content
+    return f"[Agent {caller} requesting]\n\n{content}"
 
 
 def _extract_last_assistant(

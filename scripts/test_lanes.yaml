@@ -63,6 +63,7 @@ lanes:
   tools:
     triggers:
       - "xmclaw/providers/tool/**"
+      - "xmclaw/core/agent_context.py"
     tests:
       - tests/unit/test_v2_builtin_tools.py
       - tests/unit/test_v2_browser_tools.py
@@ -97,6 +98,7 @@ lanes:
       - "xmclaw/daemon/workspace.py"
       - "xmclaw/daemon/multi_agent_manager.py"
       - "xmclaw/daemon/agent_context.py"
+      - "xmclaw/core/agent_context.py"
       - "xmclaw/daemon/routers/**"
     tests:
       - tests/unit/test_v2_daemon_factory.py

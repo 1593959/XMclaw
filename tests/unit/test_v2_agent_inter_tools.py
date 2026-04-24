@@ -1,4 +1,4 @@
-"""AgentInterTools — Epic #17 Phase 5.
+"""AgentInterTools — Epic #17 Phase 5 + 6.
 
 Stubs the manager + AgentLoop surfaces so this test doesn't spin up a
 daemon. What we verify:
@@ -24,12 +24,14 @@ from typing import Any
 
 import pytest
 
+from xmclaw.core.agent_context import use_current_agent_id
 from xmclaw.core.ir import ToolCall
 from xmclaw.providers.tool.agent_inter import (
     AgentInterTools,
     _TaskRecord,
     _extract_last_assistant,
-    _make_agent2agent_session_id,
+    _make_a2a_session_id,
+    _prepend_caller_marker,
 )
 
 
@@ -167,11 +169,13 @@ async def test_chat_with_agent_routes_main_to_primary() -> None:
         _call("chat_with_agent", agent_id="main", content="hi primary"),
     )
     assert result.ok
-    assert result.content == "echo: hi primary"
+    # Phase 6 stamps the outgoing content with [Agent <caller> requesting].
+    # Default caller (no ambient id) → primary_id == "main".
+    assert result.content == "echo: [Agent main requesting]\n\nhi primary"
     # worker not called.
     assert worker.turns_seen == []
     assert len(primary.turns_seen) == 1
-    assert primary.turns_seen[0][1] == "hi primary"
+    assert primary.turns_seen[0][1] == "[Agent main requesting]\n\nhi primary"
 
 
 @pytest.mark.asyncio
@@ -183,9 +187,9 @@ async def test_chat_with_agent_routes_to_worker() -> None:
     result = await tools.invoke(
         _call("chat_with_agent", agent_id="worker", content="delegate"),
     )
-    assert result.content == "worker saw: delegate"
+    assert result.content == "worker saw: [Agent main requesting]\n\ndelegate"
     assert primary.turns_seen == []
-    assert worker.turns_seen[0][1] == "delegate"
+    assert worker.turns_seen[0][1] == "[Agent main requesting]\n\ndelegate"
 
 
 @pytest.mark.asyncio
@@ -242,7 +246,7 @@ async def test_submit_and_check_done_path() -> None:
     check = await tools.invoke(_call("check_agent_task", task_id=task_id))
     body = json.loads(check.content)
     assert body["status"] == "done"
-    assert body["reply"] == "done: bg job"
+    assert body["reply"] == "done: [Agent main requesting]\n\nbg job"
     assert body["agent_id"] == "worker"
 
 
@@ -322,12 +326,17 @@ async def test_invoke_unknown_tool_is_clean_error() -> None:
 # ── helper units ─────────────────────────────────────────────────────────
 
 
-def test_make_agent2agent_session_id_shape() -> None:
-    sid = _make_agent2agent_session_id(caller="main", callee="worker-1")
-    assert sid.startswith("a2a:main:worker-1:")
+def test_make_a2a_session_id_shape() -> None:
+    sid = _make_a2a_session_id(caller="main", callee="worker-1")
+    assert sid.startswith("main:to:worker-1:")
     parts = sid.split(":")
-    assert len(parts) == 5  # a2a, caller, callee, ts, uuid8
-    assert parts[-1].isalnum() and len(parts[-1]) == 8
+    # Phase 6 format: {caller}:to:{callee}:{ts}:{uuid8}
+    assert len(parts) == 5
+    assert parts[0] == "main"
+    assert parts[1] == "to"
+    assert parts[2] == "worker-1"
+    assert parts[3].isdigit()            # ms timestamp
+    assert parts[4].isalnum() and len(parts[4]) == 8
 
 
 def test_extract_last_assistant_prefers_latest() -> None:
@@ -345,3 +354,72 @@ def test_extract_last_assistant_empty_history() -> None:
     # caller stuffs this into JSON and the LLM reads it, so None would
     # surface as the literal string "null".
     assert _extract_last_assistant(_StubLoop(), "missing") == ""
+
+
+# ── Phase 6: caller resolution + prefix ─────────────────────────────────
+
+
+def test_prepend_caller_marker_idempotent() -> None:
+    # First stamp adds the prefix.
+    stamped = _prepend_caller_marker("hello", "main")
+    assert stamped == "[Agent main requesting]\n\nhello"
+    # Re-stamp leaves it alone — nested delegation would otherwise
+    # accumulate [Agent ...] banners on every hop.
+    twice = _prepend_caller_marker(stamped, "worker")
+    assert twice == stamped
+
+
+@pytest.mark.asyncio
+async def test_chat_uses_ambient_caller_id() -> None:
+    # The contextvar set by the WS handler (Phase 4) determines who the
+    # callee sees as the requester — not ``primary_id``.
+    worker = _StubLoop(reply_template="worker saw: {content}")
+    mgr = _StubManager({"worker": _StubWorkspace("worker", worker)})
+    tools = AgentInterTools(manager=mgr, primary_loop=_StubLoop())
+    with use_current_agent_id("qa"):
+        result = await tools.invoke(
+            _call("chat_with_agent", agent_id="worker", content="review pls"),
+        )
+    assert result.ok
+    assert worker.turns_seen[0][1] == "[Agent qa requesting]\n\nreview pls"
+    # And the session id carries the same caller → callee edge.
+    sid = worker.turns_seen[0][0]
+    assert sid.startswith("qa:to:worker:")
+
+
+@pytest.mark.asyncio
+async def test_submit_uses_ambient_caller_id_in_session_and_content() -> None:
+    worker = _StubLoop(reply_template="bg: {content}")
+    mgr = _StubManager({"worker": _StubWorkspace("worker", worker)})
+    tools = AgentInterTools(manager=mgr, primary_loop=_StubLoop())
+    with use_current_agent_id("planner"):
+        submit = await tools.invoke(
+            _call("submit_to_agent", agent_id="worker", content="do thing"),
+        )
+    task_id = json.loads(submit.content)["task_id"]
+    # Drain the background task.
+    for _ in range(3):
+        await asyncio.sleep(0)
+    check = await tools.invoke(_call("check_agent_task", task_id=task_id))
+    body = json.loads(check.content)
+    assert body["status"] == "done"
+    assert body["reply"] == "bg: [Agent planner requesting]\n\ndo thing"
+    sid = worker.turns_seen[0][0]
+    assert sid.startswith("planner:to:worker:")
+
+
+@pytest.mark.asyncio
+async def test_caller_defaults_to_primary_id_without_contextvar() -> None:
+    # Outside a scoped turn the ambient id is None — falls back to the
+    # configured primary so CLI / test calls still produce well-formed
+    # session ids.
+    worker = _StubLoop()
+    mgr = _StubManager({"worker": _StubWorkspace("worker", worker)})
+    tools = AgentInterTools(manager=mgr, primary_loop=_StubLoop(),
+                            primary_id="root")
+    await tools.invoke(
+        _call("chat_with_agent", agent_id="worker", content="x"),
+    )
+    sid = worker.turns_seen[0][0]
+    assert sid.startswith("root:to:worker:")
+    assert worker.turns_seen[0][1].startswith("[Agent root requesting]")
