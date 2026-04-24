@@ -683,7 +683,8 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **进度日志**：
 
-- _（尚无）_
+- 2026-04-24: Phase 1 落地——`xmclaw/cli/onboard.py` 实现 6 步交互向导（welcome + 覆盖守护 → provider 选择（anthropic/openai，ollama/lmstudio 留给 Epic #6 非 secret provider 流）→ API key 经 `xmclaw.utils.secrets.set_secret("llm.<provider>.api_key", ...)` 直入 secrets.json（Epic #16，永不落 `daemon/config.json`）→ workspace 默认 `data_dir()` 支持 `~` 展开 → tool 勾选（bash/web 默认开、browser 默认关）→ 写 config → HEAD 请求 provider base URL 做 smoke test（5s timeout，401/403 都算 reachable 因为 TLS 握手成功即证明网络通，auth 留给首轮对话报）→ done；`OnboardAbort(typer.Exit(130))` 把 Ctrl-C/ESC 统一为干净退出；smoke 失败 exit 1 + advisory 指向 `xmclaw doctor`。`xmclaw/cli/main.py` 新增 `onboard` 子命令（`--config` / `--skip-smoke`）。`xmclaw/utils/i18n.py` 加 10 个 `onboard.*` key × 2 语言，catalogue-hygiene 测自动守护键集对齐。`pyproject.toml` 加 `questionary>=2.0.0` 进 base deps（向导是 pip install 后第一件事，不能做 opt-in extra）。`tests/unit/test_v2_onboard.py` 23 测（overwrite 四路径 / provider 三路径 / api-key 二路径 / workspace 四路径 / tools 三路径 / smoke 三路径 / run_onboard 四条端到端：happy path 写 config + secret 回读 / deny-overwrite 返回 0 / smoke failure 返回 1 / --skip-smoke 不触发探测）。`scripts/test_lanes.yaml` cli lane 登记 `test_v2_onboard.py`。smart-gate 884 passed + 6 skipped（18.72s）。**依赖**：本分支基于 PR #22 的 i18n 模块，需等 PR #22 合并才能进 main (commit ae86b7c)
+- 2026-04-24: **开口**：退出标准「≤ 3 分钟」要真人在 Win/Mac/Linux 各走一遍带 key 的 happy path + 一次 Ctrl-C 中断 + 一次 smoke 失败降级；questionary 在 Windows PowerShell / macOS Terminal / Linux gnome-terminal 的箭头键手感也要人工过一遍。该事项是 Epic #9 唯一剩余的 checkbox，状态保持 🟡 等这一步完成
 
 ---
 
