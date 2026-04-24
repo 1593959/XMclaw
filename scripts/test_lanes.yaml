@@ -158,10 +158,10 @@ lanes:
     tests:
       - tests/unit/test_v2_evolution_controller.py
       - tests/unit/test_v2_evolution_agent.py
+      - tests/unit/test_v2_evolution_orchestrator.py
       - tests/unit/test_v2_grader.py
       - tests/unit/test_v2_summary_grader.py
       - tests/unit/test_v2_scheduler.py
-      - tests/unit/test_v2_scheduler_registry.py
       - tests/unit/test_v2_skill_registry.py
       - tests/integration/test_v2_autonomous_evolution.py
       - tests/integration/test_v2_tool_aware_skill.py
