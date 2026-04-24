@@ -411,7 +411,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #3 · 沙箱（抄 QwenPaw security + Hermes terminal_tool）
 
-**状态**：🟡 进行中（Guardian 架构 + ApprovalService + CLI/REST + SkillScanner 已落；AgentLoop runtime.fork 接线 + i18n + policy 分层 + SkillForge pipeline 接入待做）| **负责人**：Claude (AI pair) | **起始**：2026-04-23 | **完成**：-
+**状态**：🟡 进行中（Guardian 架构 + ApprovalService + CLI/REST + SkillScanner + Policy 分层已落；AgentLoop runtime.fork 接线 + i18n + SkillForge pipeline 接入待做）| **负责人**：Claude (AI pair) | **起始**：2026-04-23 | **完成**：-
 **前置依赖**：无
 **关联 Milestone**：M4（沙箱可用）+ M8（安全硬化）
 
@@ -442,7 +442,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - [x] `ApprovalService` + GC（pending 30min/200, completed 1hr/500）
 - [x] `xmclaw approvals {list,approve,deny}` CLI + `/api/v2/approvals` REST
 - [ ] i18n 审批文案（en/zh）
-- [ ] `MEDIUM` / `HIGH` / `CRITICAL` 风险分层策略配置
+- [x] `MEDIUM` / `HIGH` / `CRITICAL` 风险分层策略配置（`GuardianPolicy` 每严重度→动作映射 + `security.guardians.policy` 配置）
 - [x] `xmclaw/security/skill_scanner.py`（regex + AST 两层；SkillForge pipeline 等 Epic #4 candidate->promoted 路径接线再做）
 - [x] `xmclaw security scan <skill>` CLI（text + `--json` 双格式，按 CRITICAL/HIGH→1、MEDIUM→2、LOW/INFO/SAFE→0 映射退出码）
 

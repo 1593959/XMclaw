@@ -177,6 +177,7 @@ lanes:
       - tests/unit/test_v2_tool_guard.py
       - tests/unit/test_v2_approval_service.py
       - tests/unit/test_v2_skill_scanner.py
+      - tests/unit/test_v2_guardian_policy.py
       - tests/integration/test_v2_prompt_injection.py
 
   # Cost tracker + performance monitor + structured logging.

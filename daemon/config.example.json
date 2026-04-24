@@ -55,10 +55,17 @@
   "security": {
     "_comment": "Epic #14: prompt-injection policy applied to untrusted tool output before it re-enters the LLM context. Accepts: 'detect_only' (log, pass through), 'redact' (replace matched spans with [redacted:<pattern_id>]), 'block' (abort the turn with ANTI_REQ_VIOLATION). Defaults to 'detect_only'.",
     "prompt_injection": "detect_only",
-    "_comment_guardians": "Epic #3: pre-execution tool security. enabled=false (default) skips all guardian scans; enabled=true wraps every tool call with FilePathToolGuardian + RuleBasedToolGuardian + ShellEvasionGuardian.",
+    "_comment_guardians": "Epic #3: pre-execution tool security. enabled=false (default) skips all guardian scans; enabled=true wraps every tool call with FilePathToolGuardian + RuleBasedToolGuardian + ShellEvasionGuardian. The optional 'policy' map controls what happens at each severity: 'allow' passes through, 'approve' creates a pending approval (NEEDS_APPROVAL:<id>), 'deny' blocks immediately. Defaults: critical=deny, high=approve, medium/low/info=allow. Tighten by moving entries up (e.g. medium=approve) or loosen for dev (e.g. high=allow — not recommended).",
     "guardians": {
       "enabled": false,
-      "sensitive_files": ["~/.ssh", "~/.gnupg", "~/.aws", "~/.xmclaw.secret"]
+      "sensitive_files": ["~/.ssh", "~/.gnupg", "~/.aws", "~/.xmclaw.secret"],
+      "policy": {
+        "critical": "deny",
+        "high": "approve",
+        "medium": "allow",
+        "low": "allow",
+        "info": "allow"
+      }
     }
   },
   "mcp_servers": {},

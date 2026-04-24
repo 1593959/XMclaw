@@ -5,25 +5,38 @@ from xmclaw.core.ir import ToolCall, ToolResult
 from xmclaw.providers.tool.base import ToolProvider
 from xmclaw.security.approval_service import ApprovalService
 from xmclaw.security.tool_guard.engine import ToolGuardEngine
-from xmclaw.security.tool_guard.models import GuardSeverity
+from xmclaw.security.tool_guard.models import (
+    GuardianAction,
+    GuardianPolicy,
+    GuardSeverity,
+)
 
 
 class GuardedToolProvider(ToolProvider):
-    """Wraps an inner ``ToolProvider`` and enforces the 4-path decision flow
-    before every ``invoke()``.
+    """Wraps an inner ``ToolProvider`` and enforces a policy-driven
+    decision flow before every ``invoke()``.
 
-    Paths:
-      * **auto_denied** — tool is in the denied list or findings contain
-        ``CRITICAL`` → returns a blocked ``ToolResult`` immediately.
-      * **consume_approval** — user already approved this exact call →
-        bypasses the guard and delegates to the inner provider (one-shot).
-      * **preapproved** — tool is guarded but scan comes back clean →
-        delegates to the inner provider.
-      * **needs_approval** — tool is guarded and scan finds ``HIGH`` or
-        above → creates a pending approval and returns a ``ToolResult``
-        with ``error="NEEDS_APPROVAL:<request_id>"``.
-      * **fall_through** — tool is not guarded and no always-run guardian
-        fired → delegates to the inner provider.
+    The flow is:
+
+    1. **denied_list** — tool is unconditionally blocked → return
+       blocked ``ToolResult``.
+    2. **consume_approval** — user already approved this exact
+       ``(session_id, tool_name, params)`` tuple → one-shot bypass
+       and delegate to the inner provider.
+    3. **scan** — run guardians (full scan if ``is_guarded``, only
+       always-run guardians otherwise).
+    4. **policy lookup** — consult :class:`GuardianPolicy` with the
+       scan's ``max_severity``. The result is a :class:`GuardianAction`:
+
+       - ``DENY``    → block with findings summary.
+       - ``APPROVE`` → create a pending approval via
+         :class:`ApprovalService` and return
+         ``error="NEEDS_APPROVAL:<request_id>"``.
+       - ``ALLOW``   → delegate to the inner provider.
+
+    Default policy (set in :class:`GuardianPolicy`) preserves the
+    original hard-coded behavior: CRITICAL→DENY, HIGH→APPROVE, the
+    rest ALLOW.
     """
 
     def __init__(
@@ -31,10 +44,12 @@ class GuardedToolProvider(ToolProvider):
         inner: ToolProvider,
         engine: ToolGuardEngine,
         approval_service: ApprovalService | None = None,
+        policy: GuardianPolicy | None = None,
     ) -> None:
         self._inner = inner
         self._engine = engine
         self._approval_service = approval_service
+        self._policy = policy or GuardianPolicy()
 
     def list_tools(self) -> list:
         return self._inner.list_tools()
@@ -43,7 +58,7 @@ class GuardedToolProvider(ToolProvider):
         tool_name = call.name
         params = call.args
 
-        # 1. auto_denied
+        # 1. auto_denied (explicit deny list)
         if self._engine.is_denied(tool_name):
             return ToolResult(
                 call_id=call.id,
@@ -67,21 +82,25 @@ class GuardedToolProvider(ToolProvider):
             tool_name, params, only_always_run=not is_guarded
         )
 
-        # 4. auto_denied (CRITICAL findings)
-        if result.max_severity == GuardSeverity.CRITICAL:
+        # 4. No findings at all — fall through without consulting policy.
+        #    Saves an enum lookup on the hot path (most calls are clean).
+        if not result.findings:
+            return await self._inner.invoke(call)
+
+        # 5. Policy lookup on max severity.
+        max_sev = result.max_severity or GuardSeverity.SAFE
+        action = self._policy.action_for(max_sev)
+
+        if action == GuardianAction.DENY:
             summary = _format_findings_summary(result.findings)
             return ToolResult(
                 call_id=call.id,
                 ok=False,
                 content=summary,
-                error=f"Tool '{tool_name}' blocked: CRITICAL security finding(s).",
+                error=f"Tool '{tool_name}' blocked: {max_sev.name} security finding(s).",
             )
 
-        # 5. needs_approval (HIGH or above findings on guarded tools)
-        if is_guarded and result.max_severity in (
-            GuardSeverity.HIGH,
-            GuardSeverity.CRITICAL,
-        ):
+        if action == GuardianAction.APPROVE:
             summary = _format_findings_summary(result.findings)
             request_id = ""
             if self._approval_service is not None:
@@ -98,7 +117,7 @@ class GuardedToolProvider(ToolProvider):
                 error=f"NEEDS_APPROVAL:{request_id}",
             )
 
-        # 6. preapproved or fall_through — delegate to inner provider
+        # ALLOW — fall through to the inner provider.
         return await self._inner.invoke(call)
 
 

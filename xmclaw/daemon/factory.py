@@ -433,6 +433,7 @@ def build_tools_from_config(
         from xmclaw.security.tool_guard.file_guardian import FilePathToolGuardian
         from xmclaw.security.tool_guard.rule_guardian import RuleBasedToolGuardian
         from xmclaw.security.tool_guard.shell_evasion_guardian import ShellEvasionGuardian
+        from xmclaw.security.tool_guard.models import GuardianPolicy
         from xmclaw.providers.tool.guarded import GuardedToolProvider
 
         engine = ToolGuardEngine(guardians=[
@@ -442,8 +443,20 @@ def build_tools_from_config(
             RuleBasedToolGuardian(),
             ShellEvasionGuardian(),
         ])
+
+        # Parse ``security.guardians.policy`` — per-severity action
+        # mapping (critical/high/medium/low/info -> allow/approve/deny).
+        # Unknown severities or actions raise ValueError with a
+        # known-set message; we re-raise so bad config surfaces at
+        # startup rather than silently reverting to defaults.
+        policy_cfg = guardians_cfg.get("policy")
+        policy = GuardianPolicy.from_config(policy_cfg)
+
         provider = GuardedToolProvider(
-            provider, engine, approval_service=approval_service
+            provider,
+            engine,
+            approval_service=approval_service,
+            policy=policy,
         )
 
     return provider
