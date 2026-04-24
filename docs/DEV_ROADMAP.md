@@ -798,7 +798,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - [x] `xmclaw/core/AGENTS.md`
 - [x] `xmclaw/daemon/AGENTS.md`
 - [x] `xmclaw/providers/AGENTS.md`（umbrella）+ `providers/{llm,tool,memory,runtime,channel}/AGENTS.md`
-- [ ] `xmclaw/plugin_sdk/AGENTS.md`（留给 Epic #2 — plugin_sdk 本身尚未建立）
+- [x] `xmclaw/plugin_sdk/AGENTS.md`（Epic #2 SDK 边界落地时一并补上，5 段完整）
 - [x] `xmclaw/cli/AGENTS.md`
 - [x] `xmclaw/utils/AGENTS.md`
 - [x] `xmclaw/security/AGENTS.md`（本 Epic 提出时尚未存在，合并补上）
