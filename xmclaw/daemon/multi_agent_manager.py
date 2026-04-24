@@ -171,6 +171,11 @@ class MultiAgentManager:
         # want a running-but-unpersisted agent that would vanish on
         # daemon restart.
         self._write_config(agent_id, ws.config)
+        # Background work (Phase 7 evolution observers) starts before
+        # the workspace enters the public dict — a caller that races a
+        # create+list should never see a workspace that's visible but
+        # not yet subscribed to the bus.
+        await ws.start()
         async with self._lock:
             self._agents[agent_id] = ws
         log.info("multi_agent.registered", extra={"agent_id": agent_id})
@@ -181,8 +186,9 @@ class MultiAgentManager:
 
         Returns True when something was removed, False when the ID
         was already absent. Idempotent on disk (missing file = ok).
-        Does NOT gracefully drain the AgentLoop — Phase 3 will wire
-        lifecycle hooks when it adds the routing middleware.
+        Evolution observers (Phase 7) have their bus subscription
+        cancelled via :meth:`Workspace.stop`; LLM workspaces are inert
+        between turns and need no teardown beyond the dict pop.
         """
         stripped = agent_id.strip()
         if not stripped:
@@ -191,6 +197,14 @@ class MultiAgentManager:
             ws = self._agents.pop(stripped, None)
         if ws is None and not self._config_path(stripped).exists():
             return False
+        if ws is not None:
+            try:
+                await ws.stop()
+            except Exception as exc:  # noqa: BLE001 — best-effort teardown
+                log.warning(
+                    "multi_agent.stop_failed",
+                    extra={"agent_id": stripped, "error": str(exc)},
+                )
         self._delete_config(stripped)
         log.info("multi_agent.removed", extra={"agent_id": stripped})
         return True
@@ -232,6 +246,14 @@ class MultiAgentManager:
                     agent_id, config, self._bus, max_hops=self._max_hops
                 )
             except Exception as exc:  # noqa: BLE001 — one bad config shouldn't kill boot
+                log.warning(
+                    "multi_agent.load_skip",
+                    extra={"agent_id": agent_id, "error": str(exc)},
+                )
+                continue
+            try:
+                await ws.start()
+            except Exception as exc:  # noqa: BLE001 — one bad start shouldn't kill boot
                 log.warning(
                     "multi_agent.load_skip",
                     extra={"agent_id": agent_id, "error": str(exc)},

@@ -111,6 +111,21 @@ def agents_registry_dir() -> Path:
     return v2_workspace_dir() / "agents"
 
 
+def evolution_dir() -> Path:
+    """Per-agent evolution audit trail — ``<data>/v2/evolution/<agent_id>/``.
+
+    Epic #17 Phase 7 EvolutionAgent writes ``decisions.jsonl`` here.
+    Peer of :func:`agents_registry_dir` (``<data>/v2/agents``) on purpose:
+    both belong to the v2 runtime subtree so a workspace wipe
+    (``rm -rf ~/.xmclaw/v2``) clears both in one shot — evolution
+    decisions are daemon state, not user-authored content that needs
+    to survive a reset. The per-agent subdirectory is created lazily
+    by :class:`xmclaw.daemon.evolution_agent.EvolutionAgent` when it
+    first writes a decision.
+    """
+    return v2_workspace_dir() / "evolution"
+
+
 def file_memory_dir() -> Path:
     """User-editable markdown memory — ``<data>/memory/*.md``.
 

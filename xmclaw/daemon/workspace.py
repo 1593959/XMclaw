@@ -29,7 +29,16 @@ from typing import Any
 
 from xmclaw.core.bus import InProcessEventBus
 from xmclaw.daemon.agent_loop import AgentLoop
+from xmclaw.daemon.evolution_agent import EvolutionAgent
 from xmclaw.daemon.factory import build_agent_from_config
+
+# Recognized values of ``config["kind"]``. The default "llm" preserves
+# pre-Phase-7 behavior (build_agent_from_config → AgentLoop). Phase 7
+# adds "evolution" — a headless observer workspace, see
+# :class:`EvolutionAgent`.
+KIND_LLM = "llm"
+KIND_EVOLUTION = "evolution"
+_KNOWN_KINDS = {KIND_LLM, KIND_EVOLUTION}
 
 
 @dataclass
@@ -42,10 +51,18 @@ class Workspace:
       * ``config`` — the resolved config dict the loop was built from.
         Kept around so Phase 2's persistence layer can round-trip it
         to disk without a second load_config pass.
-      * ``agent_loop`` — ``None`` when the config had no LLM set.
-        Mirrors :func:`build_agent_from_config`'s contract — a
-        workspace with no LLM is a valid preset shape (user hasn't
+      * ``kind`` — ``"llm"`` (default, serves WS turns via
+        :attr:`agent_loop`) or ``"evolution"`` (headless observer, see
+        :attr:`observer`). Phase 7 added the discriminator so the UI
+        and the ``list_agents`` tool can tell the two apart without
+        poking at the loop attribute.
+      * ``agent_loop`` — ``None`` when ``kind != "llm"`` or the config
+        had no LLM. Mirrors :func:`build_agent_from_config`'s contract
+        — a workspace with no LLM is a valid preset shape (user hasn't
         picked a provider yet), it just can't serve turns.
+      * ``observer`` — ``None`` unless ``kind == "evolution"``. Phase 7
+        evolution workspaces carry the :class:`EvolutionAgent` here;
+        the manager drives its lifecycle via :meth:`start` / :meth:`stop`.
 
     Not frozen: Phase 2 needs to attach per-workspace resources
     (memory manager, skill registry) via post-hoc setters when those
@@ -55,20 +72,45 @@ class Workspace:
     agent_id: str
     config: dict[str, Any] = field(default_factory=dict)
     agent_loop: AgentLoop | None = None
+    kind: str = KIND_LLM
+    observer: EvolutionAgent | None = None
 
     def is_ready(self) -> bool:
-        """True when the workspace can serve turns (has an AgentLoop)."""
+        """True when the workspace is usable for its kind.
+
+        LLM workspaces need an :class:`AgentLoop`; evolution observers
+        only need an :class:`EvolutionAgent` instance (its subscription
+        is started by the manager, not the dataclass itself).
+        """
+        if self.kind == KIND_EVOLUTION:
+            return self.observer is not None
         return self.agent_loop is not None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a preset-compatible dict.
 
-        Drops ``agent_loop`` (runtime-only) and returns just the config
-        payload plus the agent_id. Shape matches what Epic #18's
-        Web-UI workspace POST writes — so Phase 2's persistence layer
-        can share the same ``~/.xmclaw/workspaces/`` directory.
+        Drops runtime-only handles (``agent_loop``, ``observer``) and
+        returns the config payload plus ``agent_id``. Shape matches
+        what Epic #18's Web-UI workspace POST writes — so Phase 2's
+        persistence layer can share the same ``~/.xmclaw/workspaces/``
+        directory.
         """
         return {"agent_id": self.agent_id, **self.config}
+
+    async def start(self) -> None:
+        """Spin up the workspace's background work, if any.
+
+        LLM workspaces are inert until a turn arrives; evolution
+        workspaces need their bus subscription attached. Called by the
+        manager after a successful build / rehydrate.
+        """
+        if self.observer is not None:
+            await self.observer.start()
+
+    async def stop(self) -> None:
+        """Tear down the workspace's background work, if any."""
+        if self.observer is not None:
+            await self.observer.stop()
 
 
 def build_workspace(
@@ -80,16 +122,35 @@ def build_workspace(
 ) -> Workspace:
     """Assemble a :class:`Workspace` from a preset config.
 
-    Injects ``agent_id`` into the config before calling
-    :func:`build_agent_from_config`, so the resulting AgentLoop stamps
-    the right ID onto every event it emits. An explicit ``agent_id``
-    on the caller side (rather than "read it out of the dict") makes
-    the contract at the manager boundary unambiguous: the manager
-    owns the ID, the config is just payload.
+    Dispatches on ``config["kind"]``:
 
-    Returns a workspace even when the config has no LLM — the caller
-    decides whether to surface that as "not ready yet" to the client.
+    * ``"llm"`` (default) — builds an :class:`AgentLoop` via
+      :func:`build_agent_from_config`. ``agent_id`` is injected so
+      event stamps line up with the manager's key.
+    * ``"evolution"`` — builds an :class:`EvolutionAgent` that will
+      subscribe to the bus on :meth:`Workspace.start`. The observer
+      never needs an LLM, so the config is free of provider keys.
+
+    Unknown kinds raise ``ValueError`` so a typo in a preset file
+    fails loud at rehydrate time rather than silently producing a
+    ``Workspace`` that serves neither turns nor observations.
+
+    Returns a workspace even when the LLM config is empty (for kind
+    "llm") — the caller decides whether to surface that as "not ready
+    yet" to the client.
     """
-    merged = {**config, "agent_id": agent_id}
+    kind = str(config.get("kind", KIND_LLM))
+    if kind not in _KNOWN_KINDS:
+        raise ValueError(
+            f"unknown workspace kind {kind!r}; expected one of {sorted(_KNOWN_KINDS)}"
+        )
+    merged = {**config, "agent_id": agent_id, "kind": kind}
+    if kind == KIND_EVOLUTION:
+        observer = EvolutionAgent(agent_id, bus)
+        return Workspace(
+            agent_id=agent_id, config=merged, kind=kind, observer=observer,
+        )
     loop = build_agent_from_config(merged, bus, max_hops=max_hops)
-    return Workspace(agent_id=agent_id, config=merged, agent_loop=loop)
+    return Workspace(
+        agent_id=agent_id, config=merged, agent_loop=loop, kind=kind,
+    )

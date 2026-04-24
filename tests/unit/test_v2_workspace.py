@@ -119,8 +119,11 @@ def test_build_workspace_returns_not_ready_when_no_llm(bus: InProcessEventBus) -
     assert ws.agent_id == "empty"
     assert ws.agent_loop is None
     assert ws.is_ready() is False
-    # Still stamps agent_id into config so persistence round-trips cleanly.
-    assert ws.config == {"agent_id": "empty"}
+    # Still stamps agent_id + the default kind into config so persistence
+    # round-trips cleanly. kind was added in Phase 7 — its presence in
+    # the resolved config is how the rehydrate path knows which
+    # workspace branch to take.
+    assert ws.config == {"agent_id": "empty", "kind": "llm"}
 
 
 def test_build_workspace_returns_not_ready_when_llm_key_missing(bus: InProcessEventBus) -> None:
@@ -146,3 +149,58 @@ def test_build_workspace_does_not_mutate_input_config(bus: InProcessEventBus, ll
     build_workspace("stamp-1", llm_config, bus)
     assert llm_config == before
     assert "agent_id" not in llm_config
+
+
+# ── Phase 7: kind dispatch ──────────────────────────────────────────────
+
+
+def test_default_kind_is_llm(bus: InProcessEventBus, llm_config: dict[str, object]) -> None:
+    ws = build_workspace("k1", llm_config, bus)
+    assert ws.kind == "llm"
+    assert ws.observer is None
+
+
+def test_evolution_kind_builds_observer_not_loop(bus: InProcessEventBus) -> None:
+    ws = build_workspace("evo-1", {"kind": "evolution"}, bus)
+    assert ws.kind == "evolution"
+    assert ws.agent_loop is None
+    assert ws.observer is not None
+    assert ws.observer.agent_id == "evo-1"
+
+
+def test_evolution_kind_is_ready_without_agent_loop(bus: InProcessEventBus) -> None:
+    # LLM workspaces need a loop; evolution workspaces only need the
+    # observer instance — start() installs the bus subscription.
+    ws = build_workspace("evo-1", {"kind": "evolution"}, bus)
+    assert ws.is_ready() is True
+
+
+def test_unknown_kind_raises(bus: InProcessEventBus) -> None:
+    with pytest.raises(ValueError, match="unknown workspace kind"):
+        build_workspace("bad", {"kind": "nope"}, bus)
+
+
+@pytest.mark.asyncio
+async def test_evolution_start_installs_bus_subscription(
+    bus: InProcessEventBus,
+) -> None:
+    # start() on an evolution workspace must make its observer live;
+    # stop() must unwind it. This is the hook MultiAgentManager calls.
+    ws = build_workspace("evo-1", {"kind": "evolution"}, bus)
+    assert ws.observer is not None
+    await ws.start()
+    assert ws.observer.is_running() is True
+    await ws.stop()
+    assert ws.observer.is_running() is False
+
+
+@pytest.mark.asyncio
+async def test_llm_start_is_inert(
+    bus: InProcessEventBus, llm_config: dict[str, object],
+) -> None:
+    # LLM workspaces' start/stop are no-ops; no raise, no background
+    # work. The manager calls them uniformly for every kind.
+    ws = build_workspace("llm-1", llm_config, bus)
+    await ws.start()  # must not raise
+    await ws.stop()   # must not raise
+    assert ws.agent_loop is not None

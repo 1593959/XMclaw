@@ -324,3 +324,49 @@ async def test_max_hops_propagates_to_loaded_agents(
     ws = second.get("a")
     assert ws is not None and ws.agent_loop is not None
     assert ws.agent_loop._max_hops == 9
+
+
+# ── Phase 7: evolution-kind workspaces ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_create_evolution_workspace_starts_observer(
+    manager: MultiAgentManager,
+) -> None:
+    # The manager must call ws.start() before publishing the workspace —
+    # otherwise a caller that races create+list could see the workspace
+    # without its bus subscription installed.
+    ws = await manager.create("evo-1", {"kind": "evolution"})
+    assert ws.kind == "evolution"
+    assert ws.observer is not None
+    assert ws.observer.is_running() is True
+
+
+@pytest.mark.asyncio
+async def test_remove_evolution_workspace_stops_observer(
+    manager: MultiAgentManager,
+) -> None:
+    ws = await manager.create("evo-1", {"kind": "evolution"})
+    observer = ws.observer
+    assert observer is not None
+    assert observer.is_running() is True
+    assert await manager.remove("evo-1") is True
+    assert observer.is_running() is False
+
+
+@pytest.mark.asyncio
+async def test_load_from_disk_starts_evolution_observers(
+    bus: InProcessEventBus, registry_dir: Path,
+) -> None:
+    (registry_dir / "evo-1.json").write_text(
+        json.dumps({"agent_id": "evo-1", "kind": "evolution"}),
+        encoding="utf-8",
+    )
+    fresh = MultiAgentManager(bus, registry_dir=registry_dir)
+    loaded = await fresh.load_from_disk()
+    assert loaded == ["evo-1"]
+    ws = fresh.get("evo-1")
+    assert ws is not None
+    assert ws.kind == "evolution"
+    assert ws.observer is not None
+    assert ws.observer.is_running() is True
