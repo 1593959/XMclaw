@@ -8,11 +8,35 @@ LLM-less graceful behavior, and max_hops propagation.
 """
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 
 from xmclaw.core.bus import InProcessEventBus
 from xmclaw.daemon.agent_loop import AgentLoop
 from xmclaw.daemon.workspace import Workspace, build_workspace
+
+
+@pytest.fixture(autouse=True)
+def _isolate_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pin both secret stores under ``tmp_path`` to keep ``build_workspace``
+    → ``build_llm_from_config`` → ``get_secret`` away from the developer's
+    real keys.
+
+    Without this, the "empty ``api_key`` returns not_ready" assertion is
+    racy: if the host has ``llm.anthropic.api_key`` set in the encrypted
+    store (Phase 2 default), the secrets-layer fallback resolves it and
+    the workspace comes up ready, flipping the test green-then-red on
+    machines with real credentials.
+    """
+    monkeypatch.setenv("XMC_SECRETS_PATH", str(tmp_path / "secrets.json"))
+    monkeypatch.setenv("XMC_SECRET_DIR", str(tmp_path / ".xmclaw.secret"))
+    for key in list(os.environ):
+        if key.startswith("XMC_SECRET_") and key != "XMC_SECRET_DIR":
+            monkeypatch.delenv(key, raising=False)
 
 
 @pytest.fixture

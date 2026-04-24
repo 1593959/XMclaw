@@ -137,6 +137,35 @@ def file_memory_dir() -> Path:
     return data_dir() / "memory"
 
 
+def secret_dir() -> Path:
+    """Sibling-to-``data_dir`` secret store — ``~/.xmclaw.secret/`` by default.
+
+    Epic #16 Phase 2 keeps the Fernet master key + encrypted secrets
+    **outside** of :func:`data_dir` on purpose. Two reasons:
+
+    1. The exit criterion for Epic #16 is ``grep -r "sk-" ~/.xmclaw/``
+       returns nothing. Putting encrypted credentials anywhere under
+       ``~/.xmclaw/`` would satisfy that literally but defeat the intent
+       — a workspace wipe (``rm -rf ~/.xmclaw/v2``) or a support-bundle
+       export (``xmclaw backup create``) scoops them up. Sibling-dir
+       placement means "workspace data" and "credentials" are two
+       different user-visible concepts.
+    2. Backup-safety: Epic #20's ``backup create`` purposely does NOT
+       include ``secret_dir()``. A ciphertext backup without the key is
+       useless; a backup with *both* key and ciphertext is equivalent to
+       plaintext. Keeping the crypto root out of ``data_dir()`` makes
+       that a structural guarantee rather than a reviewer's discipline.
+
+    Honors ``XMC_SECRET_DIR`` for tests and multi-profile setups; the
+    directory is created lazily with mode ``0o700`` the first time we
+    write into it (see :func:`xmclaw.utils.secrets._ensure_secret_dir`).
+    """
+    override = os.environ.get("XMC_SECRET_DIR")
+    if override:
+        return Path(override)
+    return Path.home() / ".xmclaw.secret"
+
+
 def default_pid_path() -> Path:
     """PID file the daemon writes during ``xmclaw start``.
 

@@ -1778,14 +1778,19 @@ def _secrets_ctx(
 ) -> DoctorContext:
     """DoctorContext wired to a tmp-path secrets.json.
 
-    Also pins ``XMC_SECRETS_PATH`` because
-    :func:`xmclaw.utils.secrets.secrets_file_path` is what ``list_secret_names``
-    / ``iter_env_override_names`` consult — those helpers don't see
-    ``ctx.extras``. Clears host-leaked ``XMC_SECRET_*`` for determinism.
+    Also pins ``XMC_SECRETS_PATH`` (plaintext file) and ``XMC_SECRET_DIR``
+    (Phase 2 Fernet root) because
+    :func:`xmclaw.utils.secrets.secrets_file_path` /
+    :func:`xmclaw.utils.secrets.secret_dir` are what the secrets module
+    consults — those helpers don't see ``ctx.extras``. Isolating both
+    roots keeps tests deterministic regardless of whether the developer
+    has a real encrypted store on their box. Clears host-leaked
+    ``XMC_SECRET_*`` for the same reason.
     """
     monkeypatch.setenv("XMC_SECRETS_PATH", str(secrets_path))
+    monkeypatch.setenv("XMC_SECRET_DIR", str(tmp_path / ".xmclaw.secret"))
     for k in list(os.environ):
-        if k.startswith("XMC_SECRET_"):
+        if k.startswith("XMC_SECRET_") and k != "XMC_SECRET_DIR":
             monkeypatch.delenv(k, raising=False)
     ctx = DoctorContext(
         config_path=_write_valid_cfg(tmp_path),
@@ -1827,16 +1832,22 @@ def test_secrets_empty_file_is_ok_with_create_hint(
 def test_secrets_populated_file_reports_count(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A populated file without env overrides = ok + silent detail."""
+    """A populated file without env overrides = ok + silent detail.
+
+    Phase 2 flipped ``set_secret``'s default backend to ``"encrypted"``;
+    SecretsCheck still reads the plaintext file shape (mode / contents)
+    so we pin backend="file" here. A Phase 3 follow-up should extend
+    SecretsCheck to also surface the encrypted store's entry count —
+    this test pins today's shape.
+    """
     from xmclaw.cli.doctor_registry import SecretsCheck
     from xmclaw.utils import secrets as secrets_mod
 
     path = tmp_path / "secrets.json"
-    monkeypatch.setenv("XMC_SECRETS_PATH", str(path))
-    secrets_mod.set_secret("alpha", "a")
-    secrets_mod.set_secret("beta", "b")
-
     ctx = _secrets_ctx(tmp_path, path, monkeypatch)
+    secrets_mod.set_secret("alpha", "a", backend="file")
+    secrets_mod.set_secret("beta", "b", backend="file")
+
     r = SecretsCheck().run(ctx)
     assert r.ok is True
     assert "2 secret(s)" in r.detail
@@ -1851,14 +1862,11 @@ def test_secrets_env_override_surfaces_as_advisory(
     from xmclaw.utils import secrets as secrets_mod
 
     path = tmp_path / "secrets.json"
-    monkeypatch.setenv("XMC_SECRETS_PATH", str(path))
-    secrets_mod.set_secret("shadowed", "v")
-    secrets_mod.set_secret("not_shadowed", "w")
+    ctx = _secrets_ctx(tmp_path, path, monkeypatch)
+    secrets_mod.set_secret("shadowed", "v", backend="file")
+    secrets_mod.set_secret("not_shadowed", "w", backend="file")
     monkeypatch.setenv("XMC_SECRET_SHADOWED", "from-env")
 
-    ctx = _secrets_ctx(tmp_path, path, monkeypatch)
-    # re-apply XMC_SECRET_SHADOWED since _secrets_ctx clears XMC_SECRET_*
-    monkeypatch.setenv("XMC_SECRET_SHADOWED", "from-env")
     r = SecretsCheck().run(ctx)
     assert r.ok is True
     assert r.advisory is not None
@@ -1874,15 +1882,12 @@ def test_secrets_many_overrides_truncates_advisory_list(
     from xmclaw.utils import secrets as secrets_mod
 
     path = tmp_path / "secrets.json"
-    monkeypatch.setenv("XMC_SECRETS_PATH", str(path))
+    ctx = _secrets_ctx(tmp_path, path, monkeypatch)
     for i in range(5):
-        secrets_mod.set_secret(f"k{i}", "v")
+        secrets_mod.set_secret(f"k{i}", "v", backend="file")
     for i in range(5):
         monkeypatch.setenv(f"XMC_SECRET_K{i}", "env")
 
-    ctx = _secrets_ctx(tmp_path, path, monkeypatch)
-    for i in range(5):
-        monkeypatch.setenv(f"XMC_SECRET_K{i}", "env")
     r = SecretsCheck().run(ctx)
     assert r.ok is True
     assert r.advisory is not None

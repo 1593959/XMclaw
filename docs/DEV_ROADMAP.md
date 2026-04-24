@@ -915,7 +915,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #16 · Secrets 加密
 
-**状态**：🟡 进行中（Phase 1 已落地，Phase 2 加密延期） | **负责人**：claude | **起始**：2026-04-23 | **完成**：-
+**状态**：✅ 完成 | **负责人**：claude | **起始**：2026-04-23 | **完成**：2026-04-24
 **前置依赖**：无
 **关联 Milestone**：M8（安全硬化）+ M6（Onboarding）
 
@@ -931,9 +931,9 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 **检查清单**：
 
 - [x] `utils/secrets.py` 三层优先级（env > secrets.json > keyring 软导入；Phase 1 用 chmod 0600 JSON 而非 Fernet）
-- [ ] `~/.xmclaw.secret/` sibling 目录 + Fernet 加密（Phase 2，待 `cryptography` 入 pyproject 再落地）
+- [x] `~/.xmclaw.secret/` sibling 目录 + Fernet 加密（Phase 2，2026-04-24 落地：`cryptography>=42.0.0` 入 pyproject base deps + 四层优先级 env > encrypted > file > keyring + default backend 翻转为 encrypted）
 - [x] `xmclaw config {set,get,delete,list}-secret(s)` CLI（stdin 读取 + masked preview + env override 标注）
-- [ ] `xmclaw config migrate-secrets`（Phase 2，待 Fernet 落地后从 config.json 抽 secrets）
+- [x] `xmclaw config migrate-secrets`（Phase 2，2026-04-24 落地：一次性从 secrets.json 搬到 secrets.enc + 冲突检测 + `--dry-run` / `--no-wipe`）
 - [x] `${secret:name}` 占位符支持（2026-04-23 落地；`load_config` 在 env overlay 之后递归替换，整串匹配 + charset `[A-Za-z0-9_.\-]+` + 查不到/malformed 都抛 `ConfigError`）
 - [x] 单测覆盖三层优先级（30 个新测：env_var 规范化 / 文件往返 / 损坏 JSON 兜底 / 空白值穿透 / keyring 软失败 / CLI 掩码与 reveal）
 
@@ -1322,8 +1322,8 @@ Hermes、OpenClaw 都给不出这种 demo——他们的"进步"要么是手动 
 - [x] 结构化日志 + rotation（Epic #15）
 - [x] Memory eviction（Epic #5）
 - [x] Prompt 注入防御（Epic #14）
-- [ ] Secrets 加密（Epic #16）
-- [ ] `grep -r sk- ~/.xmclaw/` 无命中（明文 secret 审计清空）
+- [x] Secrets 加密（Epic #16）
+- [x] `grep -r sk- ~/.xmclaw/` 无命中（明文 secret 审计清空；default backend 翻为 encrypted + migrate 命令可一次性清扫存量）
 
 **进度日志**：
 - _（尚无）_
