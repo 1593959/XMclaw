@@ -498,7 +498,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - 一周实测：同类 task 上 grader 分数 +0.1 以上
 - killer demo GIF 能录出来且无造假（`history.jsonl` 真实记录）
 - 用户打 `xmclaw evolution show --since 7d` 能看到 3+ 条真实 evolution 事件
-- 集成测试 `tests/integration/test_evolution_visible.py` 全绿
+- [x] 集成测试 `tests/integration/test_evolution_visible.py` 全绿
 
 **进度日志**：
 
