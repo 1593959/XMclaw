@@ -1065,7 +1065,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #20 · 备份与恢复（零停机重载基础）
 
-**状态**：🟡 进行中 | **负责人**：XMclaw Bot | **起始**：2026-04-23 | **完成**：-
+**状态**：🟡 进行中（Phase 1 CLI + Phase 2 auto-daily 已落地；零停机重载延期 Phase 3） | **负责人**：XMclaw Bot | **起始**：2026-04-23 | **完成**：-
 **前置依赖**：Epic #13（SQLite event bus）
 **关联 Milestone**：M8（性能与可观测）
 
@@ -1083,9 +1083,9 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 - [x] `xmclaw backup create` 产出 tar.gz + manifest
 - [x] `xmclaw backup restore` 原子交换 + 自动重启（文件系统部分；daemon 重启由调用者负责，Phase 2 再补）
-- [ ] 自动 daily backup _(deferred — 需先引入 scheduler，留到 Phase 2)_
-- [ ] 零停机重载骨架（Workspace swap）_(deferred — 需 daemon/reloader.py + agent-loop draining，留到 Phase 2)_
-- [x] `docs/BACKUP.md`
+- [x] 自动 daily backup（Phase 2，2026-04-25 落地：`xmclaw/daemon/backup_scheduler.py` + `config.backup.auto_daily` 开关 + prefix-scoped 保留最新 N + 失败不崩 loop）
+- [ ] 零停机重载骨架（Workspace swap）_(deferred — 需 daemon/reloader.py + agent-loop draining，留到 Phase 3)_
+- [x] `docs/BACKUP.md`（Phase 1 + Phase 2 §8 auto-daily 段落）
 
 **退出标准**：恢复 1GB 数据目录时服务中断 < 5 秒；daily auto-backup 连续 7 天不失败。
 
@@ -1099,6 +1099,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - 2026-04-23: Phase 1 scriptability——`xmclaw backup list` / `backup info` 加 `--json`。`list` 默认列式人读（对齐列），`--json` 吐稳定 array；`info` 默认缩进 key/value，`--json` 吐单 dict 与 `list` 数组元素同形（方便 `jq ".[0]"` 和 `info --json` 直接互换）。两者共享 `_manifest_to_dict()` flattener：`name` + `path`（BackupEntry.dir）+ 全部 manifest 字段（`schema_version` / `created_ts` / `xmclaw_version` / `archive_sha256` 全长 / `archive_bytes` / `source_dir` / `excluded` 列表化 / `entries`）。`info --json` 隐式带全 `excluded`（JSON 消费者要确定性 shape，不做 text-only 的 opt-in 区分）；empty backups dir 下 `list --json` = `[]` 不是 "no backups found." 字面（让管道可检测 len==0 而不是 parse text）；missing name 下 `info --json` 仍 Exit(1)（不静默返 null）。tests +5（空目录 → []，多备份 shape 完整，strict JSON parse，list[0] == info dict，missing Exit1）；backup lane 65/65、smart-gate cli+backup+always 308 passed / 5 skipped (commit 601b4d1)
 - 2026-04-23: Phase 1 scriptability 补齐——`xmclaw backup verify --json` 接上对称面。之前 `list` / `info` 都有 `--json`，`verify` 却只出"sha256 verified (42 files, 12345 bytes)"人读文本；CI / 监控探针要分辨 "corrupt" / "missing" / "ok" 三态只能 grep，脆弱。现在成功出 `{"ok": true, "name", "entries", "archive_bytes", "archive_sha256"}`、失败出 `{"ok": false, "name", "error"}` 都走 stdout（不走 stderr），让 `jq .ok` 统一管道；exit code 仍然 1 作为失败的 tri-state 载体，防止脚本误用 JSON 压制失败。人读路径不改，未传 `--json` 的调用保持向后兼容。tests +3（happy shape 5 键锁、corrupt exit 1 + ok:false dict、missing exit 1 + error 含 name），backup lane 68/68、smart-gate cli+backup+always 349 passed + 5 skipped (commit 9c49991)
 - 2026-04-24: Phase 1 用户文档落地——新增 `docs/BACKUP.md`（10 节，约 268 行），覆盖 8 个子命令（create / list / info / verify / delete / prune / restore + `--json` 变体）的参数表 + 退出码 + 输出样例、manifest v1 schema 字段表、DEFAULT_EXCLUDED 排除规则表、快速上手"停-恢复-起"循环、scriptability 节带 jq 示例（按 `created_ts` 过期告警 + deploy gate 阻断）、doctor `BackupsCheck` 集成、troubleshooting 5 行常见症→修、§8 "Phase 1 不做什么"显式列 auto-daily / 零停机重载 / 远程存储三项延后（让读者知道当前边界而不是猜）、§10 Pointers 链到 `xmclaw/backup/AGENTS.md` + `tests/unit/test_v2_backup.py` + roadmap。DEV_ROADMAP.md Epic #20 检查清单 `[ ] docs/BACKUP.md _(deferred)_` → `[x] docs/BACKUP.md`。roadmap lint 绿。剩下的两条 deferred（auto-daily / zero-downtime reload）仍留 Phase 2 (commit bf10af4)
+- 2026-04-25: Phase 2 auto-daily scheduler 落地——新增 `xmclaw/daemon/backup_scheduler.py`（314 行）：`BackupPolicy` 冻结 dataclass（`auto_daily` / `interval_s` / `keep` / `name_prefix`）+ `parse_backup_config()` 做 per-field fallback（bool 非 bool 容忍、int 非正值回退默认、prefix 非空字符串检查，每种错误走 `_log.warning` 不抛），`_auto_backup_name(prefix, *, now=None)` 用 UTC 出 `auto-YYYYMMDD-HHMMSS` lex-sortable 名，`BackupSchedulerTask` 类：`tick_once()` 用 `asyncio.to_thread` 桥接 sync `create_backup()`（respect `xmclaw/backup/AGENTS.md` rescue-env 契约——backup/ 不能引 asyncio），失败只 `_log.exception` 不崩 loop，跑完立刻跑 `_prune_old_autos()`（prefix-scoped 保护手动备份：只删 `policy.name_prefix` 起头的、按 `created_ts` 升序取前 `len-keep` 条）；`start()` / `stop()` 双幂等；`auto_daily=False` 时 `start()` 为 no-op（零成本），用户不 opt-in daemon 不扰；主循环 `asyncio.wait_for(stop_event.wait(), timeout=interval)` idiom 做可取消 sleep（TimeoutError 即正常到点，取消即退出）。`xmclaw/daemon/app.py` 在 lifespan 里与 `MemorySweepTask` 并排起停（init `backup_scheduler = None`、parse 配置、conditional task 创建、start 在 yield 前 / stop 在 yield 后走 `contextlib.suppress`）。`daemon/config.example.json` 新增 `"backup"` 节：`auto_daily=false`（默认 opt-out）、`interval_s=86400`（24h）、`keep=7`、`name_prefix="auto-"`，带 `_comment` 解释 "zero-downtime 延期 Phase 3"。`docs/BACKUP.md` §8 从"Phase 1 不做什么"改写为"Phase 2 auto-daily scheduler" + config 样例 + 语义 + 保留"still deferred"子节记 zero-downtime reload 推迟 Phase 3。`tests/unit/test_v2_backup_scheduler.py`（424 行）30 测 across 5 class：`TestParseBackupConfig` 12（bool/int/string/None/unknown-keys/fallback 各路径）+ `TestAutoBackupName` 3（格式 / injected clock / monotonic）+ `TestTickOnce` 6（happy path / 用 policy prefix / injected clock 锁名 / create 失败不崩 + 记 exception / create 成功立即 prune / prune 失败独立 log）+ `TestPruneOldAutos` 4（保最新 N / prefix scope 保护非 `auto-` 手动备份 / keep=0 删所有 auto / delete 失败独立 log 不抛）+ `TestStartStop` 5（start 幂等 / stop 幂等 / is_running flag / `auto_daily=False` start no-op / stop 取消 in-flight tick 干净）。`scripts/test_lanes.yaml` `backup` lane 加 `xmclaw/daemon/backup_scheduler.py` trigger + 新 test 文件。30/30 green + always+backup+daemon smart-gate 1469 passed / 7 skipped，ruff clean (commit 007123f)
 
 ---
 
