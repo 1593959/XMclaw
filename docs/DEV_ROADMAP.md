@@ -487,7 +487,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - [ ] `xmclaw/evolution/engine.py`：总装
 - [x] `~/.xmclaw/skills/<skill_id>.jsonl` 促发/回滚 append-only 历史（`SkillRegistry._persist`）；`candidates/` 子树留给 Phase B
 - [x] CLI `xmclaw evolution show` 可用（Phase A: `--since 24h/7d` 过滤、多技能按 ts 合并、空目录友好提示；`typer` 集成测试覆盖）
-- [ ] CLI `xmclaw session report <id>` 可用
+- [x] CLI `xmclaw session report <id>` 可用（Phase B：markdown + `--json`；伴随 `xmclaw session list` 按最近活跃排序浏览；读 `~/.xmclaw/v2/events.db` 无需守护进程在跑）
 - [ ] CLI repl `SKILL_EVOLVED` flash
 - [ ] README 顶部 killer demo GIF
 - [ ] `docs/EVOLUTION.md` 写完 trigger 条件 + 策略 + FAQ
@@ -501,6 +501,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **进度日志**：
 
+- 2026-04-24: Phase B `session report/list` CLI 落地——`xmclaw/cli/session_report.py` 之前已有 `SessionReportGenerator` + `format_markdown`/`format_json`（offline read-only 走 SQLite event log：按 `user_message` 分 turn、把 `llm_response`/`tool_invocation_finished`/`grader_verdict` 挂到当前 turn、`skill_promoted`/`skill_rolled_back`/`skill_candidate_proposed` 归到 `evolution_events`、`anti_req_violation` 归到 `violations`、`cost_tick` 累加入 `cost_summary`）。本次新增 `run_session_report` / `run_session_list` 两个无 typer-耦合的入口函数（错误路径走 `typer.echo(..., err=True)` + exit 1），再在 `xmclaw/cli/main.py` 注册 `session_app` typer 子组 + `session report <id>` / `session list` 两个命令；`report` 支持 `--db` / `--json`，`list` 支持 `--db` / `--limit`/`-n` / `--json`。数据库不存在 vs 会话不存在给不同错误文案方便排查；`list` 空库打"no sessions recorded yet"而不是空表头。tests +12（7 entry-point pytest + 5 typer `CliRunner`：markdown/JSON 路径、unknown session → exit 1、missing DB → exit 1、`list` 空库 notice、`list --json` 数组结构、`list -n` 截断）；总 20 passed。smart-gate `cli` lane 加 `tests/unit/test_v2_session_report.py`。Phase B 仍待：REPL `SKILL_EVOLVED` flash、README killer demo GIF、`docs/EVOLUTION.md` trigger 策略 FAQ、`EvolutionOrchestrator` 把 `SkillRegistry.promote` 翻译成 bus 事件 (commit 1f87040)
 - 2026-04-24: Phase A 可见性落地——`xmclaw evolution show [--since 24h|7d|Nh]` 读 `~/.xmclaw/skills/*.jsonl` 按 `ts` 合并打印。新增 `xmclaw.utils.paths.skills_dir()`（honors `XMC_V2_SKILLS_DIR`，peer of `v2/`，以便 workspace wipe 不清审计日志）+ `xmclaw.cli.evolution` 模块 + `xmclaw.cli.main` typer 注册。15 条 unit tests（`_parse_since` / `_fmt_record` / `run_evolution_show` 空目录/过滤/多技能合并 + 真 `SkillRegistry` round-trip + typer `CliRunner` 集成）。Phase B 仍待：`EvolutionOrchestrator` 把 registry.promote 转成 bus 事件、`session report` CLI、REPL flash。(branch feat/epic-4-evolution-visibility)
 
 ---
