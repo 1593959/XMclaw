@@ -10,6 +10,7 @@ from xmclaw.security.tool_guard.models import (
     GuardianPolicy,
     GuardSeverity,
 )
+from xmclaw.utils.i18n import _
 
 
 class GuardedToolProvider(ToolProvider):
@@ -64,7 +65,7 @@ class GuardedToolProvider(ToolProvider):
                 call_id=call.id,
                 ok=False,
                 content=None,
-                error=f"Tool '{tool_name}' is blocked by security policy (denied list).",
+                error=_("guard.blocked.denied_list", tool_name=tool_name),
             )
 
         # 2. One-shot replay: if user already approved this exact call,
@@ -97,7 +98,7 @@ class GuardedToolProvider(ToolProvider):
                 call_id=call.id,
                 ok=False,
                 content=summary,
-                error=f"Tool '{tool_name}' blocked: {max_sev.name} security finding(s).",
+                error=_("guard.blocked.severity", tool_name=tool_name, severity=max_sev.name),
             )
 
         if action == GuardianAction.APPROVE:
@@ -122,11 +123,21 @@ class GuardedToolProvider(ToolProvider):
 
 
 def _format_findings_summary(findings: list) -> str:
-    lines: list[str] = [f"Security scan found {len(findings)} issue(s):"]
+    lines: list[str] = [_("guard.scan_summary_header", count=len(findings))]
     for f in findings:
         lines.append(
-            f"  [{f.severity.value.upper()}] {f.rule_id}: {f.description}"
+            _(
+                "guard.scan_summary_item",
+                severity=f.severity.value.upper(),
+                rule_id=f.rule_id,
+                description=f.description,
+            )
         )
         if f.remediation:
-            lines.append(f"       Remediation: {f.remediation}")
+            lines.append(
+                _(
+                    "guard.scan_summary_remediation",
+                    remediation=f.remediation,
+                )
+            )
     return "\n".join(lines)

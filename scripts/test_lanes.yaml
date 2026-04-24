@@ -36,6 +36,7 @@ lanes:
       - tests/unit/test_v2_config_example.py
       - tests/unit/test_v2_check_import_direction.py
       - tests/unit/test_v2_print_audit.py
+      - tests/unit/test_v2_i18n.py
 
   # Core bus + events — touched by almost every feature.
   bus:

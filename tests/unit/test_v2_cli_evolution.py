@@ -125,6 +125,7 @@ class TestRunEvolutionShow:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.setenv("XMC_V2_SKILLS_DIR", str(tmp_path))
+        monkeypatch.setenv("XMC_LANG", "en")
         rc = run_evolution_show(None)
         assert rc == 0
         assert "No evolution events" in capsys.readouterr().out
@@ -244,6 +245,7 @@ class TestTyperWiring:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("XMC_V2_SKILLS_DIR", str(tmp_path))
+        monkeypatch.setenv("XMC_LANG", "en")
         runner = CliRunner()
         result = runner.invoke(app, ["evolution", "show"])
         assert result.exit_code == 0, result.output

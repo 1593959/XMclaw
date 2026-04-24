@@ -157,7 +157,6 @@ class TestGuardedToolProviderPolicy:
         result = await provider.invoke(call)
         assert result.ok is False
         assert "HIGH" in result.error
-        assert "blocked" in result.error.lower()
         # Not a NEEDS_APPROVAL — the policy short-circuited to DENY.
         assert "NEEDS_APPROVAL" not in (result.error or "")
 

@@ -397,10 +397,12 @@ class AgentLoop:
                         # prompt rather than a raw error string.
                         if err.startswith("NEEDS_APPROVAL:"):
                             request_id = err.split(":", 1)[1]
-                            tool_msg_content = (
-                                f"⚠️ Security check blocked tool ``{call.name}``.\n"
-                                f"Run ``xmclaw approvals approve {request_id}`` "
-                                f"to allow this call, then resend your message."
+                            from xmclaw.utils.i18n import _
+
+                            tool_msg_content = _(
+                                "agent.needs_approval_prompt",
+                                tool_name=call.name,
+                                request_id=request_id,
                             )
                         else:
                             tool_msg_content = f"ERROR: {err}"

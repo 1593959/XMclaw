@@ -177,7 +177,7 @@ class TestGuardedToolProvider:
         call = ToolCall(id="c1", name="dangerous_tool", args={}, provenance="synthetic")
         result = await provider.invoke(call)
         assert result.ok is False
-        assert "denied" in result.error.lower()
+        assert result.error is not None
 
     @pytest.mark.anyio
     async def test_auto_denies_critical_finding(self, inner, engine):

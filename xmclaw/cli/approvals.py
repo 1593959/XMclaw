@@ -11,6 +11,8 @@ from typing import Any
 
 import typer
 
+from xmclaw.utils.i18n import _
+
 
 _DEFAULT_BASE_URL = os.environ.get("XMC_DAEMON_URL", "http://127.0.0.1:8765")
 
@@ -47,9 +49,9 @@ def run_approvals_list() -> int:
     data = _get(_api("/approvals"))
     pending = data.get("pending", [])
     if not pending:
-        typer.echo("No pending approvals.")
+        typer.echo(_("approvals.none_pending"))
         return 0
-    typer.echo(f"Pending approvals ({len(pending)}):")
+    typer.echo(_("approvals.header", count=len(pending)))
     for item in pending:
         typer.echo(
             f"  {item['request_id']}  {item['tool_name']}  "
@@ -66,7 +68,7 @@ def run_approvals_list() -> int:
 def run_approvals_approve(request_id: str) -> int:
     data = _post(_api(f"/approvals/{request_id}/approve"))
     if data.get("ok"):
-        typer.echo(f"Approved {request_id}.")
+        typer.echo(_("approvals.approved", request_id=request_id))
         return 0
     typer.echo(f"Failed: {data.get('error', 'unknown error')}", err=True)
     return 1
@@ -75,7 +77,7 @@ def run_approvals_approve(request_id: str) -> int:
 def run_approvals_deny(request_id: str) -> int:
     data = _post(_api(f"/approvals/{request_id}/deny"))
     if data.get("ok"):
-        typer.echo(f"Denied {request_id}.")
+        typer.echo(_("approvals.denied", request_id=request_id))
         return 0
     typer.echo(f"Failed: {data.get('error', 'unknown error')}", err=True)
     return 1

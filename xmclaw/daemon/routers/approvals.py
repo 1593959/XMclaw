@@ -10,6 +10,8 @@ from typing import Any
 from fastapi import APIRouter, Request
 from starlette.responses import JSONResponse
 
+from xmclaw.utils.i18n import _
+
 router = APIRouter(prefix="/api/v2/approvals", tags=["approvals"])
 
 
@@ -37,7 +39,7 @@ async def approve_approval(request: Request, request_id: str) -> JSONResponse:
     ok = await svc.approve(request_id)
     if ok:
         return JSONResponse({"ok": True})
-    return JSONResponse({"ok": False, "error": "Request not found or already resolved"}, status_code=404)
+    return JSONResponse({"ok": False, "error": _("approvals.error.not_found")}, status_code=404)
 
 
 @router.post("/{request_id}/deny")
@@ -46,4 +48,4 @@ async def deny_approval(request: Request, request_id: str) -> JSONResponse:
     ok = await svc.deny(request_id)
     if ok:
         return JSONResponse({"ok": True})
-    return JSONResponse({"ok": False, "error": "Request not found or already resolved"}, status_code=404)
+    return JSONResponse({"ok": False, "error": _("approvals.error.not_found")}, status_code=404)
