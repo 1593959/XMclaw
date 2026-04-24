@@ -41,42 +41,25 @@ Design notes:
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
-from contextvars import ContextVar
-from typing import Iterator
 from urllib.parse import parse_qs
 
-_current_agent_id: ContextVar[str | None] = ContextVar(
-    "xmclaw_current_agent_id", default=None
+# Phase 6: the ContextVar + accessors moved to ``xmclaw/core/`` so tool
+# providers (which may not import ``xmclaw.daemon.*`` per
+# ``xmclaw/providers/tool/AGENTS.md`` §2) can read the ambient agent
+# id directly. Re-exported here so existing imports from
+# ``xmclaw.daemon.agent_context`` keep working.
+from xmclaw.core.agent_context import (
+    _current_agent_id,
+    get_current_agent_id,
+    use_current_agent_id,
 )
 
-
-def get_current_agent_id() -> str | None:
-    """Return the agent id for the running turn, or ``None`` outside one.
-
-    Tools should treat ``None`` as "no ambient agent" and fall back to
-    their own configured default (typically ``"main"``). Crashing on
-    ``None`` would make the tool unusable in contexts that don't flow
-    through the WS handler (CLI, tests, scheduler jobs).
-    """
-    return _current_agent_id.get()
-
-
-@contextmanager
-def use_current_agent_id(agent_id: str | None) -> Iterator[None]:
-    """Scope the ambient agent id to a ``with`` block.
-
-    Reset-via-token rather than plain set/clear so nesting works: an
-    inner scope with a different id still restores the outer on exit.
-
-    Accepts ``None`` explicitly so callers can "unset" inside a nested
-    scope (useful in tests that exercise the no-ambient-agent path).
-    """
-    token = _current_agent_id.set(agent_id)
-    try:
-        yield
-    finally:
-        _current_agent_id.reset(token)
+__all__ = [
+    "AgentContextMiddleware",
+    "_current_agent_id",
+    "get_current_agent_id",
+    "use_current_agent_id",
+]
 
 
 def _extract_agent_id_from_scope(scope: dict) -> str | None:
