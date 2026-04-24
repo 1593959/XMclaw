@@ -4,12 +4,6 @@
 #
 #    pip-compile --extra=dev --output-file=requirements-dev-lock.txt --strip-extras pyproject.toml
 #
-aiohappyeyeballs==2.6.1
-    # via aiohttp
-aiohttp==3.13.5
-    # via discord-py
-aiosignal==1.4.0
-    # via aiohttp
 annotated-doc==0.0.4
     # via
     #   fastapi
@@ -25,34 +19,26 @@ anyio==4.13.0
     #   openai
     #   starlette
     #   watchfiles
-apscheduler==3.11.2
-    # via xmclaw (pyproject.toml)
-async-timeout==5.0.1
-    # via aiohttp
-attrs==26.1.0
-    # via aiohttp
 backports-asyncio-runner==1.2.0
     # via pytest-asyncio
+build==1.4.4
+    # via pip-tools
 certifi==2026.2.25
     # via
     #   httpcore
     #   httpx
-cffi==2.0.0
-    # via cryptography
 click==8.3.2
     # via
+    #   pip-tools
     #   typer
     #   uvicorn
 colorama==0.4.6
     # via
+    #   build
     #   click
     #   pytest
     #   tqdm
     #   uvicorn
-cryptography==46.0.7
-    # via xmclaw (pyproject.toml)
-discord-py==2.7.1
-    # via xmclaw (pyproject.toml)
 distro==1.9.0
     # via
     #   anthropic
@@ -65,12 +51,6 @@ exceptiongroup==1.3.1
     #   pytest
 fastapi==0.136.0
     # via xmclaw (pyproject.toml)
-frozenlist==1.8.0
-    # via
-    #   aiohttp
-    #   aiosignal
-greenlet==3.4.0
-    # via playwright
 h11==0.16.0
     # via
     #   httpcore
@@ -83,13 +63,11 @@ httpx==0.28.1
     # via
     #   anthropic
     #   openai
-    #   python-telegram-bot
     #   xmclaw (pyproject.toml)
 idna==3.11
     # via
     #   anyio
     #   httpx
-    #   yarl
 iniconfig==2.3.0
     # via pytest
 jiter==0.14.0
@@ -102,10 +80,6 @@ markdown-it-py==4.0.0
     # via rich
 mdurl==0.1.2
     # via markdown-it-py
-multidict==6.7.1
-    # via
-    #   aiohttp
-    #   yarl
 mypy==1.20.1
     # via xmclaw (pyproject.toml)
 mypy-extensions==1.1.0
@@ -113,25 +87,18 @@ mypy-extensions==1.1.0
 openai==2.32.0
     # via xmclaw (pyproject.toml)
 packaging==26.1
-    # via pytest
+    # via
+    #   build
+    #   pytest
+    #   wheel
 pathspec==1.0.4
     # via mypy
-pillow==12.2.0
-    # via
-    #   pystray
-    #   xmclaw (pyproject.toml)
-playwright==1.58.0
+pip-tools==7.5.3
     # via xmclaw (pyproject.toml)
 pluggy==1.6.0
     # via pytest
 prompt-toolkit==3.0.52
-    # via xmclaw (pyproject.toml)
-propcache==0.4.1
-    # via
-    #   aiohttp
-    #   yarl
-pycparser==3.0
-    # via cffi
+    # via questionary
 pydantic==2.13.2
     # via
     #   anthropic
@@ -140,14 +107,14 @@ pydantic==2.13.2
     #   xmclaw (pyproject.toml)
 pydantic-core==2.46.2
     # via pydantic
-pyee==13.0.1
-    # via playwright
 pygments==2.20.0
     # via
     #   pytest
     #   rich
-pystray==0.19.5
-    # via xmclaw (pyproject.toml)
+pyproject-hooks==1.2.0
+    # via
+    #   build
+    #   pip-tools
 pytest==9.0.3
     # via
     #   pytest-asyncio
@@ -156,22 +123,16 @@ pytest-asyncio==1.3.0
     # via xmclaw (pyproject.toml)
 python-dotenv==1.2.2
     # via uvicorn
-python-telegram-bot==22.7
-    # via xmclaw (pyproject.toml)
 pyyaml==6.0.3
     # via uvicorn
+questionary==2.1.1
+    # via xmclaw (pyproject.toml)
 rich==15.0.0
-    # via
-    #   typer
-    #   xmclaw (pyproject.toml)
+    # via typer
 ruff==0.15.11
     # via xmclaw (pyproject.toml)
 shellingham==1.5.4
     # via typer
-six==1.17.0
-    # via pystray
-slack-sdk==3.41.0
-    # via xmclaw (pyproject.toml)
 sniffio==1.3.1
     # via
     #   anthropic
@@ -184,7 +145,9 @@ structlog==25.5.0
     # via xmclaw (pyproject.toml)
 tomli==2.4.1
     # via
+    #   build
     #   mypy
+    #   pip-tools
     #   pytest
 tqdm==4.67.3
     # via openai
@@ -192,18 +155,14 @@ typer==0.24.1
     # via xmclaw (pyproject.toml)
 typing-extensions==4.15.0
     # via
-    #   aiosignal
     #   anthropic
     #   anyio
-    #   cryptography
     #   exceptiongroup
     #   fastapi
-    #   multidict
     #   mypy
     #   openai
     #   pydantic
     #   pydantic-core
-    #   pyee
     #   pytest-asyncio
     #   starlette
     #   structlog
@@ -213,10 +172,6 @@ typing-inspection==0.4.2
     # via
     #   fastapi
     #   pydantic
-tzdata==2026.1
-    # via tzlocal
-tzlocal==5.3.1
-    # via apscheduler
 uvicorn==0.44.0
     # via xmclaw (pyproject.toml)
 watchfiles==1.1.1
@@ -227,5 +182,9 @@ websockets==16.0
     # via
     #   uvicorn
     #   xmclaw (pyproject.toml)
-yarl==1.23.0
-    # via aiohttp
+wheel==0.47.0
+    # via pip-tools
+
+# The following packages are considered to be unsafe in a requirements file:
+# pip
+# setuptools

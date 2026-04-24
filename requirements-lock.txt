@@ -4,12 +4,6 @@
 #
 #    pip-compile --output-file=requirements-lock.txt --strip-extras pyproject.toml
 #
-aiohappyeyeballs==2.6.1
-    # via aiohttp
-aiohttp==3.13.5
-    # via discord-py
-aiosignal==1.4.0
-    # via aiohttp
 annotated-doc==0.0.4
     # via
     #   fastapi
@@ -25,18 +19,10 @@ anyio==4.13.0
     #   openai
     #   starlette
     #   watchfiles
-apscheduler==3.11.2
-    # via xmclaw (pyproject.toml)
-async-timeout==5.0.1
-    # via aiohttp
-attrs==26.1.0
-    # via aiohttp
 certifi==2026.2.25
     # via
     #   httpcore
     #   httpx
-cffi==2.0.0
-    # via cryptography
 click==8.3.2
     # via
     #   typer
@@ -46,10 +32,6 @@ colorama==0.4.6
     #   click
     #   tqdm
     #   uvicorn
-cryptography==46.0.7
-    # via xmclaw (pyproject.toml)
-discord-py==2.7.1
-    # via xmclaw (pyproject.toml)
 distro==1.9.0
     # via
     #   anthropic
@@ -60,12 +42,6 @@ exceptiongroup==1.3.1
     # via anyio
 fastapi==0.136.0
     # via xmclaw (pyproject.toml)
-frozenlist==1.8.0
-    # via
-    #   aiohttp
-    #   aiosignal
-greenlet==3.4.0
-    # via playwright
 h11==0.16.0
     # via
     #   httpcore
@@ -78,13 +54,11 @@ httpx==0.28.1
     # via
     #   anthropic
     #   openai
-    #   python-telegram-bot
     #   xmclaw (pyproject.toml)
 idna==3.11
     # via
     #   anyio
     #   httpx
-    #   yarl
 jiter==0.14.0
     # via
     #   anthropic
@@ -93,26 +67,10 @@ markdown-it-py==4.0.0
     # via rich
 mdurl==0.1.2
     # via markdown-it-py
-multidict==6.7.1
-    # via
-    #   aiohttp
-    #   yarl
 openai==2.32.0
     # via xmclaw (pyproject.toml)
-pillow==12.2.0
-    # via
-    #   pystray
-    #   xmclaw (pyproject.toml)
-playwright==1.58.0
-    # via xmclaw (pyproject.toml)
 prompt-toolkit==3.0.52
-    # via xmclaw (pyproject.toml)
-propcache==0.4.1
-    # via
-    #   aiohttp
-    #   yarl
-pycparser==3.0
-    # via cffi
+    # via questionary
 pydantic==2.13.2
     # via
     #   anthropic
@@ -121,28 +79,18 @@ pydantic==2.13.2
     #   xmclaw (pyproject.toml)
 pydantic-core==2.46.2
     # via pydantic
-pyee==13.0.1
-    # via playwright
 pygments==2.20.0
     # via rich
-pystray==0.19.5
-    # via xmclaw (pyproject.toml)
 python-dotenv==1.2.2
     # via uvicorn
-python-telegram-bot==22.7
-    # via xmclaw (pyproject.toml)
 pyyaml==6.0.3
     # via uvicorn
+questionary==2.1.1
+    # via xmclaw (pyproject.toml)
 rich==15.0.0
-    # via
-    #   typer
-    #   xmclaw (pyproject.toml)
+    # via typer
 shellingham==1.5.4
     # via typer
-six==1.17.0
-    # via pystray
-slack-sdk==3.41.0
-    # via xmclaw (pyproject.toml)
 sniffio==1.3.1
     # via
     #   anthropic
@@ -159,17 +107,13 @@ typer==0.24.1
     # via xmclaw (pyproject.toml)
 typing-extensions==4.15.0
     # via
-    #   aiosignal
     #   anthropic
     #   anyio
-    #   cryptography
     #   exceptiongroup
     #   fastapi
-    #   multidict
     #   openai
     #   pydantic
     #   pydantic-core
-    #   pyee
     #   starlette
     #   structlog
     #   typing-inspection
@@ -178,10 +122,6 @@ typing-inspection==0.4.2
     # via
     #   fastapi
     #   pydantic
-tzdata==2026.1
-    # via tzlocal
-tzlocal==5.3.1
-    # via apscheduler
 uvicorn==0.44.0
     # via xmclaw (pyproject.toml)
 watchfiles==1.1.1
@@ -192,5 +132,3 @@ websockets==16.0
     # via
     #   uvicorn
     #   xmclaw (pyproject.toml)
-yarl==1.23.0
-    # via aiohttp
