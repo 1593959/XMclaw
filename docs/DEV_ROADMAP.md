@@ -1073,7 +1073,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - [x] `xmclaw backup restore` 原子交换 + 自动重启（文件系统部分；daemon 重启由调用者负责，Phase 2 再补）
 - [ ] 自动 daily backup _(deferred — 需先引入 scheduler，留到 Phase 2)_
 - [ ] 零停机重载骨架（Workspace swap）_(deferred — 需 daemon/reloader.py + agent-loop draining，留到 Phase 2)_
-- [ ] `docs/BACKUP.md` _(deferred — 功能稳定后再写用户文档)_
+- [x] `docs/BACKUP.md`
 
 **退出标准**：恢复 1GB 数据目录时服务中断 < 5 秒；daily auto-backup 连续 7 天不失败。
 
