@@ -75,6 +75,10 @@ class _StubWorkspace:
     agent_id: str
     agent_loop: _StubLoop | None
     _ready: bool = True
+    # Phase 7: workspace discriminator. Defaults to "llm" so existing
+    # tests keep their current assertions; evolution-specific tests
+    # override explicitly.
+    kind: str = "llm"
 
     def is_ready(self) -> bool:
         return self._ready
@@ -128,9 +132,12 @@ async def test_list_agents_with_primary_and_workers() -> None:
     result = await tools.invoke(_call("list_agents"))
     assert result.ok
     body = json.loads(result.content)
-    assert body["agents"][0] == {"agent_id": "main", "ready": True, "primary": True}
+    assert body["agents"][0] == {
+        "agent_id": "main", "ready": True, "primary": True, "kind": "llm",
+    }
     workers = {row["agent_id"]: row for row in body["agents"][1:]}
     assert workers["alpha"]["ready"] is True and workers["alpha"]["primary"] is False
+    assert workers["alpha"]["kind"] == "llm"
     assert workers["beta"]["ready"] is False
 
 
@@ -154,6 +161,27 @@ async def test_list_agents_skips_duplicate_primary_id() -> None:
     body = json.loads(result.content)
     assert [row["agent_id"] for row in body["agents"]] == ["main"]
     assert body["agents"][0]["primary"] is True
+
+
+@pytest.mark.asyncio
+async def test_list_agents_surfaces_evolution_kind() -> None:
+    # Phase 7: the observer workspace must show up in the agent
+    # listing with kind="evolution" so the caller LLM knows not to
+    # send it prompts (chat/submit on it would fail with "not ready").
+    mgr = _StubManager({
+        "evo-1": _StubWorkspace(
+            "evo-1", agent_loop=None, kind="evolution",
+        ),
+    })
+    tools = AgentInterTools(manager=mgr, primary_loop=_StubLoop())
+    result = await tools.invoke(_call("list_agents"))
+    body = json.loads(result.content)
+    row = {r["agent_id"]: r for r in body["agents"]}["evo-1"]
+    assert row["kind"] == "evolution"
+    # The evolution workspace doesn't carry an AgentLoop, so is_ready()
+    # on the stub (which we set to True by default) is what decides the
+    # listing's ready flag — in production this mirrors the observer
+    # having a live bus subscription.
 
 
 # ── chat_with_agent ──────────────────────────────────────────────────────

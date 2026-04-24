@@ -149,6 +149,18 @@ def create_app(
         finally:
             if sweep_task is not None:
                 await sweep_task.stop()
+            # Epic #17 Phase 7: stop all workspace background work
+            # before tearing down the bus + memory store. Evolution
+            # observers cancel their subscriptions here; LLM workspaces
+            # are a no-op.
+            for _ws_id in agents_manager.list_ids():
+                _ws = agents_manager.get(_ws_id)
+                if _ws is None:
+                    continue
+                try:
+                    await _ws.stop()
+                except Exception:  # noqa: BLE001 — one bad stop must not abort shutdown
+                    pass
             if memory is not None and hasattr(memory, "close"):
                 try:
                     memory.close()

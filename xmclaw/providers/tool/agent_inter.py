@@ -60,6 +60,11 @@ class _AgentLoopLike(Protocol):
 class _WorkspaceLike(Protocol):
     agent_id: str
     agent_loop: _AgentLoopLike | None
+    # Phase 7: workspaces with ``kind != "llm"`` (e.g. evolution
+    # observers) carry no agent_loop. Kept as a plain attribute so
+    # ``list_agents`` can surface the discriminator without duck-typing
+    # around a missing field.
+    kind: str
 
     def is_ready(self) -> bool: ...
 
@@ -79,8 +84,10 @@ _LIST_AGENTS_SPEC = ToolSpec(
     description=(
         "List every other agent running on this daemon. Returns a "
         "JSON string with one entry per agent: {agent_id, ready, "
-        "primary}. Use this to discover which agents you can delegate "
-        "to via chat_with_agent or submit_to_agent."
+        "primary, kind}. 'kind' is 'llm' for a chatty agent you can "
+        "delegate to via chat_with_agent / submit_to_agent, or "
+        "'evolution' for a headless observer you should NOT send "
+        "prompts to."
     ),
     parameters_schema={"type": "object", "properties": {}},
 )
@@ -241,6 +248,7 @@ class AgentInterTools(ToolProvider):
         if self._primary_loop is not None:
             rows.append({
                 "agent_id": self._primary_id, "ready": True, "primary": True,
+                "kind": "llm",
             })
         for aid in self._manager.list_ids():
             if aid == self._primary_id:
@@ -249,7 +257,14 @@ class AgentInterTools(ToolProvider):
                 continue
             ws = self._manager.get(aid)
             ready = ws.is_ready() if ws is not None else False
-            rows.append({"agent_id": aid, "ready": ready, "primary": False})
+            # ``getattr`` rather than ``ws.kind`` directly so older
+            # workspace objects that predate Phase 7 still round-trip
+            # cleanly — treat the absence as an LLM workspace.
+            kind = getattr(ws, "kind", "llm") if ws is not None else "llm"
+            rows.append({
+                "agent_id": aid, "ready": ready, "primary": False,
+                "kind": kind,
+            })
         return json.dumps({"agents": rows})
 
     # ── chat_with_agent (sync) ───────────────────────────────────────
