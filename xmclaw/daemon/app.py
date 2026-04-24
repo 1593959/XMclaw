@@ -497,10 +497,29 @@ def create_app(
         # so the client sees its own session-create frame.
         outbox: list[BehavioralEvent] = []
 
+        # Evolution events are globally interesting: a promotion moves
+        # HEAD for *everyone*, so every connected REPL should see the
+        # flash regardless of which session triggered the mutation.
+        # The orchestrator emits them with session_id="_system" by
+        # default, so without this carve-out they'd be silently filtered
+        # out by the per-session forwarder.
+        _GLOBAL_EVENT_TYPES = frozenset({
+            EventType.SKILL_PROMOTED,
+            EventType.SKILL_ROLLED_BACK,
+            EventType.SKILL_CANDIDATE_PROPOSED,
+        })
+
+        def _is_relevant(event: BehavioralEvent) -> bool:
+            return (
+                event.session_id == session_id
+                or event.type in _GLOBAL_EVENT_TYPES
+            )
+
         async def forward(event: BehavioralEvent) -> None:
-            # Only forward events relevant to this session to avoid
-            # leaking across agents on the same daemon.
-            if event.session_id != session_id:
+            # Per-session events + globally interesting events (promotions,
+            # rollbacks, candidate proposals). Everything else is filtered
+            # out to avoid leaking private conversations across sockets.
+            if not _is_relevant(event):
                 return
             outbox.append(event)
             try:
@@ -519,7 +538,7 @@ def create_app(
                 pass
 
         sub = bus.subscribe(
-            lambda e: e.session_id == session_id,
+            _is_relevant,
             forward,
         )
 

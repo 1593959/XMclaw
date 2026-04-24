@@ -176,6 +176,70 @@ def test_session_lifecycle_unknown_phase_silent() -> None:
     assert format_event(_event("session_lifecycle", {"phase": "weird"})) is None
 
 
+# ── evolution flashes ────────────────────────────────────────────────────
+
+
+def test_skill_promoted_renders_green_flash() -> None:
+    """Epic #4: a SKILL_PROMOTED event broadcast from the orchestrator
+    shows up in every REPL as a green ``[evolved]`` line. Users notice
+    the moment a new skill version takes HEAD."""
+    line = format_event(_event("skill_promoted", {
+        "skill_id": "email_digest",
+        "from_version": 3,
+        "to_version": 4,
+        "evidence": ["plays=12", "mean=0.78"],
+    }))
+    assert isinstance(line, RenderedLine)
+    assert "email_digest" in line.text
+    assert "v3" in line.text and "v4" in line.text
+    assert "evolved" in line.text.lower()
+    # Green ANSI escape — the whole point is that the flash is visually
+    # distinct from regular conversation.
+    assert "\x1b[32m" in line.text
+    assert "\x1b[0m" in line.text
+
+
+def test_skill_rolled_back_renders_warning_with_reason() -> None:
+    line = format_event(_event("skill_rolled_back", {
+        "skill_id": "email_digest",
+        "from_version": 4,
+        "to_version": 3,
+        "reason": "regression in domain X",
+    }))
+    assert isinstance(line, RenderedLine)
+    assert "email_digest" in line.text
+    assert "v4" in line.text and "v3" in line.text
+    assert "rolled back" in line.text.lower()
+    assert "regression in domain X" in line.text
+
+
+def test_skill_rolled_back_without_reason_still_renders() -> None:
+    line = format_event(_event("skill_rolled_back", {
+        "skill_id": "s",
+        "from_version": 2,
+        "to_version": 1,
+    }))
+    assert isinstance(line, RenderedLine)
+    assert "rolled back" in line.text.lower()
+
+
+def test_skill_candidate_proposed_renders_dim_info() -> None:
+    """Candidate proposals are informational — just shows the user a
+    winner is on deck. Uses dim ANSI (\x1b[2m) so it doesn't compete
+    visually with the green ``[evolved]`` flash that follows."""
+    line = format_event(_event("skill_candidate_proposed", {
+        "winner_candidate_id": "email_digest",
+        "winner_version": 4,
+        "evidence": ["plays=12"],
+        "reason": "all gates cleared",
+    }))
+    assert isinstance(line, RenderedLine)
+    assert "email_digest" in line.text
+    assert "v4" in line.text
+    assert "candidate" in line.text.lower()
+    assert "\x1b[2m" in line.text
+
+
 # ── unknown event type ───────────────────────────────────────────────────
 
 
