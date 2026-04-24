@@ -193,6 +193,29 @@ def create_app(
         # module's sibling packages).
         from xmclaw.daemon.factory import build_agent_from_config
         agent = build_agent_from_config(config, bus)
+
+    # Epic #17 Phase 5: attach the agent-to-agent tools to the primary
+    # loop so its LLM can call ``list_agents`` / ``chat_with_agent`` /
+    # ``submit_to_agent`` / ``check_agent_task``. Done post-hoc here
+    # (not inside the factory) because the agent-inter tools need a
+    # reference to BOTH the manager and the primary loop — and the
+    # primary loop doesn't exist yet when ``build_tools_from_config``
+    # runs. Worker agents created via ``POST /api/v2/agents`` don't
+    # currently get these tools: they're "delegates" in the initial
+    # design, not "delegators". Revisit when a recursion use-case
+    # shows up.
+    if agent is not None and hasattr(agent, "_tools"):
+        # hasattr guard: test fixtures pass stub agents that don't
+        # implement the full AgentLoop surface. For those, skip —
+        # the agent-inter tools only matter when a real loop is wired.
+        from xmclaw.providers.tool.agent_inter import AgentInterTools
+        from xmclaw.providers.tool.composite import CompositeToolProvider
+        _inter = AgentInterTools(manager=agents_manager, primary_loop=agent)
+        if agent._tools is None:
+            agent._tools = _inter
+        else:
+            agent._tools = CompositeToolProvider(agent._tools, _inter)
+
     app.state.agent = agent
 
     # ── per-session event log (for reconnect replay) ─────────────

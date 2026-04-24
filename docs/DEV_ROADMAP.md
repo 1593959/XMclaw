@@ -955,7 +955,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - [x] `daemon/multi_agent_manager.py` + lock + dedupe（Phase 2）
 - [x] `DynamicMultiAgentRunner` + `X-Agent-Id` 路由（Phase 3：WS `?agent_id=` 路由 + `/api/v2/agents` CRUD）
 - [x] `AgentContextMiddleware`（Phase 4：`contextvars` + ASGI middleware + WS `use_current_agent_id` 包裹 `run_turn`）
-- [ ] 4 个 agent-间 tool
+- [x] 4 个 agent-间 tool（Phase 5：`list_agents` / `chat_with_agent` / `submit_to_agent` / `check_agent_task`，直连本进程 `MultiAgentManager` + primary loop）
 - [ ] Session ID 命名规范
 - [ ] EvolutionEngine 独立 agent 化
 - [ ] `docs/MULTI_AGENT.md`
@@ -968,6 +968,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - 2026-04-24: Phase 2 — 新增 `xmclaw/daemon/multi_agent_manager.py`（`asyncio.Lock` + `pending_starts` 去抖 + 原子写 `~/.xmclaw/v2/agents/*.json` + `load_from_disk` 容错）+ `paths.agents_registry_dir()` + 21 条单测；`app.state` 仍单 agent，Phase 3 接线 (commit 79a796d)
 - 2026-04-24: Phase 3 — `app.state.agents = MultiAgentManager(bus)`（lifespan 拉起 `load_from_disk`）；新增 `xmclaw/daemon/routers/agents.py`（`GET/POST/GET_one/DELETE /api/v2/agents`，`main` 为 reserved）；WS `/agent/v2/{session_id}?agent_id=X` 路由 —— 缺省/`main` → 原 agent，未知 id → close 4404；22 条集成测试；`app.state.agent`（primary）保持不变向后兼容 (commit 6b6afb9)
 - 2026-04-24: Phase 4 — `xmclaw/daemon/agent_context.py`：`ContextVar[str \| None]` + `use_current_agent_id` scoped cm + pure-ASGI `AgentContextMiddleware`（读 `X-Agent-Id` header > `agent_id` query；lifespan 不触碰；`BaseHTTPMiddleware` 会丢 context 所以走 pure-ASGI）；`app.py` 在 `run_turn` 外包 `use_current_agent_id(resolved_agent_id)`（middleware 看到的是 raw 请求值，handler 用解析后的覆盖 —— `main` 与缺省 default-to-primary 都归一）；Phase 5 的 agent-to-agent tools 就能 `get_current_agent_id()` 问到"谁在调我"；18 条单测（默认 None / 作用域嵌套 / 异常 unwind / async task 隔离 / header 胜 query / 空值被跳过 / lifespan passthrough / 中间件异常 reset）；daemon lane 179 passed 无回归 (commit 6af55e2)
+- 2026-04-24: Phase 5 — `xmclaw/providers/tool/agent_inter.py`：`AgentInterTools(ToolProvider)` 暴露 4 工具给 primary LLM —— `list_agents` 读 `MultiAgentManager` + 合成 `main`；`chat_with_agent` await `loop.run_turn` 同步取 `_histories[session_id]` 末尾 assistant 消息；`submit_to_agent` / `check_agent_task` 走进程内 `dict[str, _TaskRecord]` registry（cap 256 drop-oldest，`asyncio.create_task` 跑异步，状态 queued→running→done/error，异常进 `record.error` 不逃逸），session_id 统一 `a2a:{caller}:{callee}:{ts}:{uuid8}`；为绕开 `providers/tool/AGENTS.md` §2 禁止 `import xmclaw.daemon.*`，改用 `typing.Protocol`（`_AgentLoopLike` / `_ManagerLike` / `_WorkspaceLike`）。`app.py` 在 `build_agent_from_config` 之后把 `AgentInterTools` 并入 primary `_tools`：`agent._tools is None` 直接赋值，否则 `CompositeToolProvider(agent._tools, _inter)` 取并集保住 builtin；`hasattr(agent, "_tools")` 作为 test-fixture 逃生门。**Worker agent 暂不分发这 4 工具**——初代设计只让 primary 是 delegator，worker 是 delegate，避免递归 loop 和 session-id 污染，真需要再放。tests/unit 18 条（list/chat 路由已知 vs 未知、not_ready/unknown_tool/missing_args 都走 `ToolResult(ok=False)`、submit+check 成功路径、task cap eviction monkeypatch `_MAX_TASKS=2`、background 异常 → `record.error`、session_id 形状、`_extract_last_assistant` 取最新 + 空 history 返回 ""）；tests/integration 2 条（composite 并集里 4 工具 + builtin file_read/bash 同时可见；`manager.create("helper")` 后经 primary 的 tool surface 调 `list_agents` 能看到 `main`+`helper`）；smart-gate tools+daemon lane 绿 (commit 1fec544)
 
 ---
 
