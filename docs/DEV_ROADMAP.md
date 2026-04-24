@@ -655,7 +655,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #9 · Onboarding 向导
 
-**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**状态**：🟡 进行中（骨架 + 6 步交互 + smoke test 已落，`xmclaw doctor` 串联 + 跨平台真机走查挂单） | **负责人**：Claude (AI pair) | **起始**：2026-04-24 | **完成**：-
 **前置依赖**：Epic #6（ENV override）、Epic #10（doctor）、Epic #16（secrets）
 **关联 Milestone**：M6（Onboarding + Hub）
 
@@ -671,12 +671,13 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **检查清单**：
 
-- [ ] 6 步交互流程
-- [ ] keyring 写入 API key
-- [ ] workspace 路径
-- [ ] tool/channel 勾选
-- [ ] 末尾 smoke test
-- [ ] 错误回退提示
+- [x] 6 步交互流程（welcome → 覆盖确认 → provider → API key → workspace → tools → smoke）
+- [x] keyring 写入 API key（`set_secret("llm.<provider>.api_key", ...)` 调 Epic #16 secrets）
+- [x] workspace 路径（默认 `data_dir()`；`~` expansion 支持）
+- [x] tool/channel 勾选（bash / web 默认勾上，browser 默认关）
+- [x] 末尾 smoke test（HEAD 请求 anthropic/openai base URL；401/403 视为可达）
+- [x] 错误回退提示（smoke 失败提示 `xmclaw doctor`；Ctrl-C/ESC → `OnboardAbort` exit 130）
+- [ ] 真机走查三平台（Win/Mac/Linux）+ questionary keyboard 手感验收（挂单 Epic #9 收尾）
 
 **退出标准**：新用户从 `pip install xmclaw` 到第一次对话 ≤ 3 分钟。
 
