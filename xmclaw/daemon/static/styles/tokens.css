@@ -1,0 +1,142 @@
+/*
+ * XMclaw — design tokens
+ *
+ * Dual-layer variables per FRONTEND_DESIGN.md §9 / ADR-003:
+ *   - Private  --xmc-*    is what component CSS should use.
+ *   - Host     --vscode-* is a fallback when embedded inside VSCode /
+ *                         Cursor webviews. Outside that environment the
+ *                         host vars are undefined and the xmc fallback
+ *                         value kicks in via var(--host, --xmc-fallback).
+ *
+ * Themes: data-theme="dark" (default), "light", "high-contrast".
+ * Density: data-density="comfortable" (default), "compact".
+ *
+ * Keep this file in sync with §9.1–§9.3. Component styles MUST NOT hard-
+ * code colours or sizes — always go through a var here.
+ */
+
+:root {
+  /* ── Colour ramp (dark, default) ─────────────────────────────────── */
+  --xmc-bg: var(--vscode-editor-background, #0e1116);
+  --xmc-bg-elev: var(--vscode-sideBar-background, #161b22);
+  --xmc-bg-elev-2: #1c2330;
+  --xmc-fg: var(--vscode-foreground, #e6edf3);
+  --xmc-fg-muted: #8d96a0;
+  --xmc-fg-subtle: #586069;
+  --xmc-border: var(--vscode-panel-border, #30363d);
+  --xmc-border-strong: #484f58;
+
+  --xmc-accent: var(--vscode-focusBorder, #4c8bf5);
+  --xmc-accent-fg: #ffffff;
+  --xmc-accent-soft: rgba(76, 139, 245, 0.18);
+
+  --xmc-success: #2ea043;
+  --xmc-warn: #d29922;
+  --xmc-error: var(--vscode-errorForeground, #f85149);
+  --xmc-info: #58a6ff;
+
+  /* ── Typography ──────────────────────────────────────────────────── */
+  --xmc-font-sans: var(
+    --vscode-font-family,
+    "Inter",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Microsoft YaHei",
+    system-ui,
+    sans-serif
+  );
+  --xmc-font-mono: var(
+    --vscode-editor-font-family,
+    "JetBrains Mono",
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
+
+  --xmc-font-size-xs: 11px;
+  --xmc-font-size-sm: 12px;
+  --xmc-font-size-base: 13px;
+  --xmc-font-size-md: 14px;
+  --xmc-font-size-lg: 16px;
+  --xmc-font-size-xl: 20px;
+  --xmc-line-height-base: 1.5;
+
+  /* ── Space scale (4-based) ───────────────────────────────────────── */
+  --xmc-space-1: 4px;
+  --xmc-space-2: 8px;
+  --xmc-space-3: 12px;
+  --xmc-space-4: 16px;
+  --xmc-space-5: 20px;
+  --xmc-space-6: 24px;
+  --xmc-space-8: 32px;
+
+  /* ── Radius / elevation ──────────────────────────────────────────── */
+  --xmc-radius-sm: 4px;
+  --xmc-radius-md: 6px;
+  --xmc-radius-lg: 10px;
+  --xmc-radius-pill: 999px;
+
+  --xmc-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --xmc-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --xmc-shadow-focus: 0 0 0 2px var(--xmc-accent);
+
+  /* ── Motion ──────────────────────────────────────────────────────── */
+  --xmc-transition-fast: 120ms ease;
+  --xmc-transition-med: 200ms ease;
+
+  /* ── Layout sizes ────────────────────────────────────────────────── */
+  --xmc-sidebar-w: 220px;
+  --xmc-topbar-h: 44px;
+  --xmc-statusbar-h: 28px;
+}
+
+:root[data-theme="light"] {
+  --xmc-bg: var(--vscode-editor-background, #ffffff);
+  --xmc-bg-elev: var(--vscode-sideBar-background, #f6f8fa);
+  --xmc-bg-elev-2: #eaeef2;
+  --xmc-fg: var(--vscode-foreground, #1f2328);
+  --xmc-fg-muted: #57606a;
+  --xmc-fg-subtle: #6e7781;
+  --xmc-border: var(--vscode-panel-border, #d0d7de);
+  --xmc-border-strong: #afb8c1;
+
+  --xmc-accent: var(--vscode-focusBorder, #0969da);
+  --xmc-accent-soft: rgba(9, 105, 218, 0.12);
+  --xmc-shadow-md: 0 4px 12px rgba(140, 149, 159, 0.2);
+}
+
+:root[data-theme="high-contrast"] {
+  --xmc-bg: #000000;
+  --xmc-bg-elev: #0b0b0b;
+  --xmc-bg-elev-2: #141414;
+  --xmc-fg: #ffffff;
+  --xmc-fg-muted: #e0e0e0;
+  --xmc-fg-subtle: #c0c0c0;
+  --xmc-border: #ffffff;
+  --xmc-border-strong: #ffffff;
+  --xmc-accent: #66d9ff;
+  --xmc-accent-fg: #000000;
+  --xmc-accent-soft: rgba(102, 217, 255, 0.3);
+  --xmc-shadow-focus: 0 0 0 3px var(--xmc-accent);
+}
+
+:root[data-density="compact"] {
+  --xmc-space-1: 3px;
+  --xmc-space-2: 6px;
+  --xmc-space-3: 9px;
+  --xmc-space-4: 12px;
+  --xmc-space-5: 15px;
+  --xmc-space-6: 18px;
+  --xmc-font-size-base: 12px;
+  --xmc-line-height-base: 1.4;
+  --xmc-sidebar-w: 200px;
+  --xmc-topbar-h: 38px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --xmc-transition-fast: 0s;
+    --xmc-transition-med: 0s;
+  }
+}

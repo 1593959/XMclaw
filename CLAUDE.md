@@ -36,7 +36,7 @@ xmclaw/              Python package — see per-subdir AGENTS.md for contracts
 ├── utils/           Path / log / redact / cost helpers     → xmclaw/utils/AGENTS.md
 └── plugins/         Third-party plugins (Epic #2 WIP)
 
-xmclaw/daemon/static/ Web UI (vanilla JS + CSS, no build step) — served at
+xmclaw/daemon/static/ Web UI (Preact + htm via ESM, no build step) — served at
                      `/ui/` via FastAPI `StaticFiles`. No Node.js required.
 daemon/              Runtime config (config.json gitignored; config.example.json is the template)
 docs/                ARCHITECTURE, DEV_ROADMAP, EVENTS, DOCTOR, WORKSPACE, V2_DEVELOPMENT, …
@@ -46,7 +46,7 @@ scripts/             Dev/ops — setup.{ps1,bat}, test_changed.py, check_import_
 .github/workflows/   python-ci.yml (lint + smart-gate tests), release.yml, python-publish.yml
 ```
 
-Runtime data (events.db, memory.db, pairing_token.txt, daemon.pid, …) lives under `~/.xmclaw/v2/`, *not* inside the repo — see [docs/WORKSPACE.md](docs/WORKSPACE.md). Anything not in the tree above is either gitignored dev scratch, or a legacy v1 artifact — check `.gitignore` before assuming a root-level file belongs in git.
+Runtime data (events.db, memory.db, pairing_token.txt, daemon.pid, …) lives under `~/.xmclaw/v2/`, *not* inside the repo — see [docs/WORKSPACE.md](docs/WORKSPACE.md). Anything not in the tree above is either gitignored dev scratch or legacy scaffolding — check `.gitignore` before assuming a root-level file belongs in git.
 
 ## Common Commands
 

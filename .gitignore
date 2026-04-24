@@ -86,6 +86,10 @@ tests/bench/_phase3_live_log.jsonl
 node_modules/
 .vite/
 
+# Vendored UI assets (fetched by scripts/fetch_vendor.py on install)
+xmclaw/daemon/static/vendor/*.js
+xmclaw/daemon/static/vendor/*.js.map
+
 # OS
 .DS_Store
 Thumbs.db

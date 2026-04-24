@@ -1,0 +1,85 @@
+/*
+ * XMclaw — CSS reset
+ * Minimal, intentionally shorter than modern-normalize. We only touch what
+ * the app shell actually renders; anything exotic gets handled by the
+ * owning component stylesheet.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--xmc-bg);
+  color: var(--xmc-fg);
+  font-family: var(--xmc-font-sans);
+  font-size: var(--xmc-font-size-base);
+  line-height: var(--xmc-line-height-base);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p,
+figure,
+blockquote {
+  margin: 0;
+}
+
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+a {
+  color: var(--xmc-accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+code,
+pre,
+kbd {
+  font-family: var(--xmc-font-mono);
+  font-size: 0.95em;
+}
+
+:focus-visible {
+  outline: 2px solid var(--xmc-accent);
+  outline-offset: 2px;
+  border-radius: inherit;
+}
+
+/* Skip the default browser focus ring for mouse users — we only want it
+   on keyboard traversal (done via focus-visible above). */
+:focus:not(:focus-visible) {
+  outline: none;
+}

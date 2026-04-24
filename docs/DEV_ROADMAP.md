@@ -1102,39 +1102,42 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ---
 
-### Epic #23 · 前端 v2（Web UI 重做）
+### Epic #23 · 前端（Web UI 首版）
 
-**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**状态**：🟡 进行中（Phase 0 技术预研完成） | **负责人**：Claude (AI pair) | **起始**：2026-04-25 | **完成**：-
 **前置依赖**：Epic #13（事件总线）、Epic #18（后端 API mock→real）、Epic #3（Tool Guardian 审批）、Epic #4（进化事件）
 **关联 Milestone**：M10（UX / 差异化叙事）
 
-> 详细规格见 [docs/FRONTEND_DESIGN.md](FRONTEND_DESIGN.md)。本 Epic 是把该文档的 Phase 0–Phase 6 落成代码 + 在 `/ui/` 切主。
+> 详细规格见 [docs/FRONTEND_DESIGN.md](FRONTEND_DESIGN.md)。本 Epic 是把该文档的 Phase 0–Phase 6 落成代码。
+> XMclaw 从未发布过旧 Web UI，所以这一版直接落在 `/ui/`，没有 "v1 vs v2" 并存问题。
 
 **开发计划**（对应 FRONTEND_DESIGN.md §12 六阶段）：
 
-1. **Phase 0 技术预研**（1 周）——决定最终框架（Preact+htm vs Alpine）、搭 `static/v2/` 骨架、tokens.css、router、5 个 atom 组件
+1. **Phase 0 技术预研**（1 周）——决定最终框架（Preact+htm vs Alpine）、搭 `static/` 骨架、tokens.css、router、5 个 atom 组件
 2. **Phase 1 Chat 骨架 + 连通性**（2 周）——三栏布局 + WS 接入 + 流式 Markdown（rAF + token keyed diff）+ Plan/Act + @ / 命令
 3. **Phase 2 高权限交互**（2 周）——ApprovalCard + Edit params + Rewind/Retry/Branch + 命令面板 + 快捷键 registry
 4. **Phase 3 Sidebar 页铺开**（3 周）——Agents / Skills / Memory / Tools / MCP / Security / Backup / Doctor / Settings 九页
 5. **Phase 4 进化 & Insights**（2 周）——Evolution 页 + "今天学会了" feed + Insights dashboard + Status bar
 6. **Phase 5 打磨 + a11y + i18n**（2 周）——空态、ARIA、zh/en、HC 主题、prefers-reduced-motion、性能回归
-7. **Phase 6 切主**（1 周）——`/ui/` 指 v2，v1 保 `/ui/legacy/` 一个版本
+7. **Phase 6 发布**（1 周）——端到端 smoke、README + 截图、发 v0.3.0
 
 **检查清单**：
 
-- [ ] `docs/FRONTEND_DESIGN.md` 获 review + Phase 0 技术选型 ADR 敲定
+- [x] `docs/FRONTEND_DESIGN.md` 获 review + Phase 0 技术选型 ADR 敲定
+- [x] Phase 0：静态骨架（`static/{index.html,bootstrap.js,app.js,router.js,store.js}` + 5 atoms + tokens/reset/layout/atoms CSS + vendor 目录 + `fetch_vendor.py` + pytest 门卫 32 用例）
 - [ ] Phase 1：WS 接入 17 个 EventType 全覆盖；流式 markdown 长回答 ≥ 30 fps
 - [ ] Phase 2：ApprovalCard 支持"编辑参数后批准"；§7.1 快捷键全部绑定
 - [ ] Phase 3：Sidebar 12 个页面都有真实数据（无 mock）
 - [ ] Phase 4：Evolution VFM chart + candidate cards + learned-today feed 数据能对上 SQLite bus
 - [ ] Phase 5：WCAG AA 通过（axe-core scan 零 critical）；zh + en 全量翻译
-- [ ] Phase 6：`/ui/` 默认指 v2；v1 挂 `/ui/legacy/` 回滚可用
+- [ ] Phase 6：端到端 smoke 绿 + README 截图更新，v0.3.0 发布
 
-**退出标准**：新用户首次跑 `xmclaw start` 看到 v2 界面；在 30 天使用中，"今天学会了什么"卡片能显示真实 skill promotion 事件；审批队列、rewind、命令面板在 dogfood 会话中无 critical bug。
+**退出标准**：新用户首次跑 `xmclaw start` 看到完整 Web UI；在 30 天使用中，"今天学会了什么"卡片能显示真实 skill promotion 事件；审批队列、rewind、命令面板在 dogfood 会话中无 critical bug。
 
 **进度日志**：
 
-- 2026-04-25: 规格起草——`docs/FRONTEND_DESIGN.md` v1 草案落地（1281 行，12 节 + 4 附录）：§1 覆盖 17 个竞品（AI IDE / agentic runtime / workflow canvas / 本地 LLM 客户端）+ 深读 5 个源码仓库（Continue / Cline / Open WebUI / Aider / AutoGPT Platform，浅克隆在 `.claude/scratch/competitor-code/`）；§2 把用户六点要求（交互 / 前端高权限 / 便捷 / 功能完善 / 直观 / 方便）翻成 30+ 个可度量硬指标（首帧 < 200ms、流式 ≥ 30fps、按钮反馈 ≤ 16ms 等）；§3 定三栏布局 + Sidebar 12 一级 + 14 workspace 面板的升降路线 + SPA 路由树；§4 把 Chat / Agents / Skills / Memory / Evolution / Tools / Security / Backup / Doctor / Insights / Settings 十一页每一页画 ASCII 线框 + 状态机（Chat 输入 5 态、17 EventType × UI 组件映射表、Plan/Act 切换、Rewind 分叉）；§5 组件库按 atoms/molecules/organisms/pages 分 50+ 文件，硬约束单文件 ≤ 500 行；§6 Store shape + §6.3 WS→action 映射 + §6.4 rAF + token-keyed diff 流式渲染（抄 Open WebUI `Markdown.svelte:62-87`）；§7 shortcut registry 25 条 + 命令面板 + 右键菜单 + DnD + @ 上下文 + / 斜杠命令；§8 审批 UI：可编辑参数（抄 LM Studio）、严重度分级、remember-this-session、audit log；§9 双模 CSS 变量（XMclaw 私有 `--xmc-*` + VSCode host 回退 `--vscode-*`，抄 Continue + Cline），5 主题 + font-scale 滑竿（抄 Open WebUI `app.css:33-60`）；§10 WCAG AA 硬要求 + 6 语言 i18n；§11 技术选型决策树：无 Node.js 构建约束下推荐 **Preact + htm + ESM CDN**（~10 KB，心智与 Continue/Cline 一致），兜底 Alpine 自托管；§12 六阶段 13 周实施路线 + Epic #23 提交；附录 A 现状 vs v2 差异、附录 B 后端需补的 11 个端点（★ 标）、附录 C 八条 ADR、附录 D 工件路径。roadmap lint 绿。下一步：Phase 0 预研 —— 等人手与优先级调配 (commit 4eec74f)
+- 2026-04-25: 规格起草——`docs/FRONTEND_DESIGN.md` 初版蓝图落地（12 节 + 4 附录）：§1 覆盖 17 个竞品（AI IDE / agentic runtime / workflow canvas / 本地 LLM 客户端）+ 深读 5 个源码仓库（Continue / Cline / Open WebUI / Aider / AutoGPT Platform，浅克隆在 `.claude/scratch/competitor-code/`）；§2 把用户六点要求（交互 / 前端高权限 / 便捷 / 功能完善 / 直观 / 方便）翻成 30+ 个可度量硬指标（首帧 < 200ms、流式 ≥ 30fps、按钮反馈 ≤ 16ms 等）；§3 定三栏布局 + Sidebar 12 一级 + workspace 子面板分组 + SPA 路由树；§4 把 Chat / Agents / Skills / Memory / Evolution / Tools / Security / Backup / Doctor / Insights / Settings 十一页每一页画 ASCII 线框 + 状态机（Chat 输入 5 态、17 EventType × UI 组件映射表、Plan/Act 切换、Rewind 分叉）；§5 组件库按 atoms/molecules/organisms/pages 分 50+ 文件，硬约束单文件 ≤ 500 行；§6 Store shape + §6.3 WS→action 映射 + §6.4 rAF + token-keyed diff 流式渲染（抄 Open WebUI `Markdown.svelte:62-87`）；§7 shortcut registry 25 条 + 命令面板 + 右键菜单 + DnD + @ 上下文 + / 斜杠命令；§8 审批 UI：可编辑参数（抄 LM Studio）、严重度分级、remember-this-session、audit log；§9 双模 CSS 变量（XMclaw 私有 `--xmc-*` + VSCode host 回退 `--vscode-*`，抄 Continue + Cline），5 主题 + font-scale 滑竿（抄 Open WebUI `app.css:33-60`）；§10 WCAG AA 硬要求 + 6 语言 i18n；§11 技术选型决策树：无 Node.js 构建约束下推荐 **Preact + htm + ESM CDN**（~10 KB，心智与 Continue/Cline 一致），兜底 Alpine 自托管；§12 六阶段 13 周实施路线 + Epic #23 提交；附录 A 覆盖范围对照、附录 B 后端需补的 11 个端点（★ 标）、附录 C ADR 1-10、附录 D 工件路径。roadmap lint 绿 (commit 4eec74f)
+- 2026-04-25: Phase 0 技术预研 + 骨架落地——直接落在 `xmclaw/daemon/static/`（XMclaw 从未发布过旧 Web UI，所以不做并存目录、不做 `/ui/legacy/` 过渡）。(1) 最终选型 ADR-009 敲定 Preact + htm；ADR-010 记录 "一次做对、不留旧版心智税" 的落点策略；FRONTEND_DESIGN.md §11.3.1 新"最终决策"节记录双轨加载（esm.sh CDN 首选 + `vendor/preact.min.js`/`vendor/htm.min.js` 自托管兜底 + `?assets=local` / `localStorage.xmc_assets_mode` / `config.json frontend.assets_mode` 三层开关），bootstrap 选用结果写 `localStorage.xmc_bootstrap_source` 供 Phase 2 的 mini-devtools 读；Alpine 作 Plan B 保留但不落代码。(2) 骨架 18 个文件：`index.html`（三栏挂点 + stylesheet link 顺序锁 + noscript 回退提示 + `aria-busy` 首帧标记）、`bootstrap.js`（5s CDN 超时、失败自动退 vendor、双失败时人类可读错误提示不留空白页）、`app.js`（Preact mount + 11 项 Sidebar + 11 条路由 + TopBar/StatusBar、bootstrap 源暴露在 TopBar Badge 里、Evolution★ 有 accent pulse）、`router.js`（`history.pushState`、自动剥 `/ui` 前缀、同源左键拦截而不破坏 modifier / `_blank`）、`store.js`（frozen-snapshot pub/sub + 订阅异常隔离，seed 5 个 slice：route/session/connection/ui/bootstrap）。(3) 设计 token：`styles/tokens.css` 双层变量（私有 `--xmc-*` + `--vscode-*` host 回退，ADR-003）、3 主题（dark / light / high-contrast）、2 density（comfortable / compact）、`prefers-reduced-motion` 归零动画；`reset.css` + `layout.css` 完成三栏 grid。(4) 5 个 atom（Button / Badge / Icon / Avatar / Spinner）各自 ≤ 60 行，合用 `components/atoms/atoms.css`；Icon 内嵌 11 个 sidebar 所需 SVG（message/users/book/sparkle/layers/wrench/shield/archive/stethoscope/chart/cog），拒绝 CDN 图标库。(5) `AGENTS.md` 按 Epic #12 模板写满 5 段硬契约（禁 Node 构建 / 禁 500+ 行单文件 / 禁硬编码颜色 / 禁 :focus-visible 缺失 / 禁非 CDN 白名单的外部 import）；`vendor/.gitkeep` + `scripts/fetch_vendor.py`（`--check` / `--force` / 默认）填空白目录；`.gitignore` 加 `static/vendor/*.js`。(6) 测试 `tests/unit/test_v2_ui_scaffold.py`（32 用例）：文件存在 15 条 + vendor 目录存在 1 条 + `index.html` stylesheet 顺序 1 条 + bootstrap 双轨 1 条 + 5 个 atom 都用 `window.__xmc` 1 条 × 5 + sidebar 11 个 icon 都有 SVG 1 条 + 500 行预算 1 条 + `/ui/*` 7 个关键资产 HTTP 200 + 正则 needle 1 条 × 7。`scripts/test_lanes.yaml` 新 `ui` lane 触发 `xmclaw/daemon/static/**` + `fetch_vendor.py` + `FRONTEND_DESIGN.md`。(7) 验收：smart-gate 选中 always + cli + ui 共 15 文件 → 411 passed / 5 skipped；ruff 对新 Python 文件全绿；roadmap lint 绿。下一步：Phase 1 Chat 骨架 + WS 接入 (commit 285b219)
 
 ---
 
