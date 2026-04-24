@@ -72,16 +72,42 @@ Two options, both documented in [`deploy/windows-service/README.md`](../deploy/w
 
 ## 3. Container (Docker / Compose)
 
-Single container:
+### Pre-built image (recommended)
+
+Every `vX.Y.Z` tag triggers [`docker-publish.yml`](../.github/workflows/docker-publish.yml)
+which builds a multi-arch (`linux/amd64` + `linux/arm64`) image and
+pushes it to **GitHub Container Registry** as:
+
+- `ghcr.io/1593959/xmclaw:X.Y.Z` — pin a specific release
+- `ghcr.io/1593959/xmclaw:X.Y` / `:X` — track a minor / major
+- `ghcr.io/1593959/xmclaw:latest` — newest release tag
+
+The image is public; no `docker login` needed for `pull`. No Docker
+Hub mirror today — if you need one, fork the workflow and add a
+`docker/login-action` step.
 
 ```bash
-docker build -t xmclaw/xmclaw:latest .
 docker run -d \
   --name xmclaw \
   -p 127.0.0.1:8765:8765 \
   -v $HOME/.xmclaw:/data \
   -e XMC__llm__anthropic__api_key=sk-ant-... \
-  xmclaw/xmclaw:latest
+  ghcr.io/1593959/xmclaw:latest
+```
+
+### Build from source
+
+When you're working off `main` or a feature branch that hasn't been
+tagged yet, build locally:
+
+```bash
+docker build -t xmclaw/xmclaw:dev .
+docker run -d \
+  --name xmclaw \
+  -p 127.0.0.1:8765:8765 \
+  -v $HOME/.xmclaw:/data \
+  -e XMC__llm__anthropic__api_key=sk-ant-... \
+  xmclaw/xmclaw:dev
 ```
 
 Compose (includes healthcheck, named volume, `.env` support):

@@ -172,3 +172,70 @@ def test_install_sh_has_shebang_and_strict_mode() -> None:
     assert re.search(r"set -[a-z]*e[a-z]*[uo]?", sh), (
         "install.sh should enable -e"
     )
+
+
+# ----- docker-publish workflow -------------------------------------------
+
+def test_docker_publish_workflow_parses() -> None:
+    """The workflow file is valid YAML and declares the right triggers.
+
+    This is what we guard: a broken YAML parse (tab / missing colon)
+    means the workflow silently disappears from the Actions list —
+    there's no CI job to page us about it. Parsing with yaml.safe_load
+    catches that class of typo.
+    """
+    wf = REPO_ROOT / ".github" / "workflows" / "docker-publish.yml"
+    assert wf.exists(), "docker-publish.yml missing — Epic #19 image publish is offline"
+    data = yaml.safe_load(wf.read_text(encoding="utf-8"))
+    # `on:` is parsed as a Python True key by yaml 1.1. Accept either.
+    on = data.get("on") or data.get(True)
+    assert on, "workflow has no `on:` triggers"
+    assert "push" in on, "workflow should run on tag pushes"
+    # Semver tag glob — matches release.yml. If these drift, a release
+    # ends up with a Windows installer but no image (or vice versa).
+    assert "v*.*.*" in on["push"]["tags"]
+    assert "workflow_dispatch" in on, (
+        "need manual trigger for verifying Dockerfile changes pre-tag"
+    )
+
+    # Packages: write — required for GHCR push. Without it the
+    # push step fails at runtime with "denied: permission_denied".
+    perms = data.get("permissions", {})
+    assert perms.get("packages") == "write", (
+        "workflow needs `permissions.packages: write` to push to ghcr.io"
+    )
+
+
+def test_docker_publish_workflow_targets_ghcr_multiarch() -> None:
+    """The workflow publishes multi-arch to ghcr.io, not Docker Hub.
+
+    Locks the registry choice (ghcr.io is keyless via GITHUB_TOKEN;
+    Docker Hub would need an org-level secret) and the arch matrix
+    (amd64 + arm64 — Apple Silicon and Raspberry Pi users get native
+    images). Both are deliberate picks documented at the top of the
+    workflow file; a drive-by edit that silently drops arm64 or
+    swaps to Docker Hub should fail this test, not ship.
+    """
+    wf = REPO_ROOT / ".github" / "workflows" / "docker-publish.yml"
+    text = wf.read_text(encoding="utf-8")
+    assert "ghcr.io/" in text, "image registry should be ghcr.io"
+    assert "linux/amd64" in text and "linux/arm64" in text, (
+        "workflow should build a multi-arch image"
+    )
+    # GITHUB_TOKEN auth, not a PAT / org secret.
+    assert "secrets.GITHUB_TOKEN" in text, (
+        "GHCR auth must use the built-in GITHUB_TOKEN, not a user PAT"
+    )
+
+
+def test_deploy_md_references_published_image() -> None:
+    """DEPLOY.md points users at the published image, not just a
+    local build. Catches the case where the workflow ships but docs
+    still say `docker build` only — users never learn the image
+    exists."""
+    deploy_md = REPO_ROOT / "docs" / "DEPLOY.md"
+    assert deploy_md.exists()
+    text = deploy_md.read_text(encoding="utf-8")
+    assert "ghcr.io/" in text, (
+        "DEPLOY.md should reference the pre-built ghcr.io image"
+    )
