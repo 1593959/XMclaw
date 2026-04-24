@@ -54,7 +54,12 @@
   },
   "security": {
     "_comment": "Epic #14: prompt-injection policy applied to untrusted tool output before it re-enters the LLM context. Accepts: 'detect_only' (log, pass through), 'redact' (replace matched spans with [redacted:<pattern_id>]), 'block' (abort the turn with ANTI_REQ_VIOLATION). Defaults to 'detect_only'.",
-    "prompt_injection": "detect_only"
+    "prompt_injection": "detect_only",
+    "_comment_guardians": "Epic #3: pre-execution tool security. enabled=false (default) skips all guardian scans; enabled=true wraps every tool call with FilePathToolGuardian + RuleBasedToolGuardian + ShellEvasionGuardian.",
+    "guardians": {
+      "enabled": false,
+      "sensitive_files": ["~/.ssh", "~/.gnupg", "~/.aws", "~/.xmclaw.secret"]
+    }
   },
   "mcp_servers": {},
   "integrations": {

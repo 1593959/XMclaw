@@ -393,7 +393,17 @@ class AgentLoop:
                         )
                     else:
                         err = result.error or "tool failed without an error message"
-                        tool_msg_content = f"ERROR: {err}"
+                        # Epic #3: render NEEDS_APPROVAL as a user-actionable
+                        # prompt rather than a raw error string.
+                        if err.startswith("NEEDS_APPROVAL:"):
+                            request_id = err.split(":", 1)[1]
+                            tool_msg_content = (
+                                f"⚠️ Security check blocked tool ``{call.name}``.\n"
+                                f"Run ``xmclaw approvals approve {request_id}`` "
+                                f"to allow this call, then resend your message."
+                            )
+                        else:
+                            tool_msg_content = f"ERROR: {err}"
                     # Epic #14: scan the tool output for prompt-injection
                     # attempts before it lands in the conversation history.
                     # Apply the configured policy (detect / redact / block).

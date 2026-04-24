@@ -411,7 +411,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #3 · 沙箱（抄 QwenPaw security + Hermes terminal_tool）
 
-**状态**：🟡 进行中（runtime 层 + factory 就绪，AgentLoop 接线 + 8 条 Guardian 规则 + ApprovalService 待落）| **负责人**：Claude (AI pair) | **起始**：2026-04-23 | **完成**：-
+**状态**：🟡 进行中（Guardian 架构 + ApprovalService + CLI/REST 已落；AgentLoop runtime.fork 接线 + skill_scanner + i18n 待做）| **负责人**：Claude (AI pair) | **起始**：2026-04-23 | **完成**：-
 **前置依赖**：无
 **关联 Milestone**：M4（沙箱可用）+ M8（安全硬化）
 
@@ -436,18 +436,19 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - [x] `daemon/factory.py` `build_skill_runtime_from_config`：`runtime.backend: "local"|"process"`；未知 backend 抛 `ConfigError` 不偷偷降级
 - [ ] AgentLoop / scheduler 切到 `SkillRuntime.fork(...)` 执行 skill（当前 skill 直接 `skill.run()` 走内联路径，runtime 层空转）
 - [ ] `providers/runtime/docker.py`：Docker exec（optional extra）
-- [ ] 8 份 YAML + 1 份 shell 规则拷贝到 `xmclaw/security/rules/`
-- [ ] `FilePathToolGuardian` / `RuleBasedToolGuardian` / `ShellEvasionGuardian`
-- [ ] 4-path 决策流接到 AgentLoop
-- [ ] `ApprovalService` + GC
+- [x] 9 份 YAML 规则拷贝到 `xmclaw/security/rules/`（含 dangerous_shell_commands）
+- [x] `FilePathToolGuardian` / `RuleBasedToolGuardian` / `ShellEvasionGuardian`
+- [x] 4-path 决策流接到 AgentLoop（factory `security.guardians.enabled` 配置开关 + `GuardedToolProvider` 包装）
+- [x] `ApprovalService` + GC（pending 30min/200, completed 1hr/500）
+- [x] `xmclaw approvals {list,approve,deny}` CLI + `/api/v2/approvals` REST
 - [ ] i18n 审批文案（en/zh）
-- [ ] `MEDIUM` / `HIGH` / `CRITICAL` 风险分层
+- [ ] `MEDIUM` / `HIGH` / `CRITICAL` 风险分层策略配置
 - [ ] `xmclaw/security/skill_scanner.py` + SkillForge pipeline
 - [ ] `xmclaw security scan <skill>` CLI
 
 **退出标准**：
 
-- 跑 `tests/security/test_guardians.py` 全绿，每条 YAML 规则都有正反测试
+- 跑 `tests/unit/test_v2_tool_guard.py` 全绿（19 测），每条 YAML 规则都有正反测试
 - 内建 5 条"危险 skill"测试全部被拦截（含 curl|bash、base64 混淆、rm -rf 变体、ssh key 读取、信用卡号外泄）
 - 审批过期后自动 GC
 

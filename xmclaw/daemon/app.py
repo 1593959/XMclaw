@@ -213,6 +213,10 @@ def create_app(
     # without an import cycle through the factory.
     app.state.config = config or {}
 
+    # Epic #3: approval service for GuardedToolProvider needs_approval path.
+    from xmclaw.security.approval_service import ApprovalService
+    app.state.approval_service = ApprovalService()
+
     # Epic #18 Phase A: web-UI router surfaces (files / memory /
     # profiles / workspaces). Included here so the panels have real
     # data instead of the ``xmclaw_adapter.js`` mocks they used to hit.
@@ -228,13 +232,20 @@ def create_app(
     # Epic #17 Phase 3: REST surface for the multi-agent registry.
     from xmclaw.daemon.routers import agents as _agents_router
     app.include_router(_agents_router.router)
+
+    # Epic #3: REST surface for security approvals.
+    from xmclaw.daemon.routers import approvals as _approvals_router
+    app.include_router(_approvals_router.router)
+
     app.state.agents = agents_manager
 
     if agent is None and config is not None:
         # Local import avoids a circular dep (factory imports from this
         # module's sibling packages).
         from xmclaw.daemon.factory import build_agent_from_config
-        agent = build_agent_from_config(config, bus)
+        agent = build_agent_from_config(
+            config, bus, approval_service=app.state.approval_service
+        )
 
     # Epic #17 Phase 5: attach the agent-to-agent tools to the primary
     # loop so its LLM can call ``list_agents`` / ``chat_with_agent`` /
