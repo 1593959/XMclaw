@@ -135,3 +135,52 @@ def test_unknown_frame_type_is_ignored_for_phase_40(
         event = ws.receive_json()
         assert event["type"] == EventType.USER_MESSAGE.value
         assert event["payload"]["content"] == "ok"
+
+
+def test_skill_promoted_broadcasts_across_sessions(
+    client: TestClient, bus: InProcessEventBus,
+) -> None:
+    """Epic #4 REPL flash: evolution events must reach every REPL.
+
+    The orchestrator emits ``SKILL_PROMOTED`` with ``session_id="_system"``
+    (or the evolution fiber's own id). A naive per-session WS filter would
+    swallow those events — nobody's REPL would flash. This test verifies
+    both sockets see the promotion regardless of which session triggered it.
+
+    ``with client:`` makes TestClient hold a single shared portal across
+    the two websocket_connect blocks — needed so that ``bus.publish``
+    called via ``client.portal`` runs on the same loop where the two
+    WS handlers subscribed their ``forward`` coroutines.
+    """
+    with client:
+        with client.websocket_connect("/agent/v2/sess-A") as ws_a, \
+             client.websocket_connect("/agent/v2/sess-B") as ws_b:
+            ws_a.receive_json()  # each session's own create
+            ws_b.receive_json()
+
+            # Publish a promotion event on a totally unrelated session id
+            # — mimics the orchestrator emitting on "_system".
+            async def _pub() -> None:
+                await bus.publish(make_event(
+                    session_id="_system", agent_id="orchestrator",
+                    type=EventType.SKILL_PROMOTED,
+                    payload={
+                        "skill_id": "email_digest",
+                        "from_version": 3,
+                        "to_version": 4,
+                        "evidence": ["plays=12"],
+                    },
+                ))
+                await bus.drain()
+            client.portal.call(_pub)
+
+            evt_a = ws_a.receive_json()
+            evt_b = ws_b.receive_json()
+            assert evt_a["type"] == EventType.SKILL_PROMOTED.value
+            assert evt_b["type"] == EventType.SKILL_PROMOTED.value
+            assert evt_a["payload"]["skill_id"] == "email_digest"
+            assert evt_b["payload"]["skill_id"] == "email_digest"
+            # Event keeps its original session_id — clients format it,
+            # they don't rely on it matching their own session.
+            assert evt_a["session_id"] == "_system"
+            assert evt_b["session_id"] == "_system"

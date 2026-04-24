@@ -122,6 +122,35 @@ def format_event(event: dict[str, Any]) -> RenderedLine | None:
             return RenderedLine(text=f"  (session closed)")
         return None
 
+    # Evolution / skill-promotion flashes. These are globally broadcast
+    # (not scoped to the current session), so a promotion triggered by
+    # the EvolutionAgent on `session_id="_system"` lands here too — the
+    # user sees a green flash in their REPL the moment HEAD moves.
+    if etype == "skill_promoted":
+        skill_id = payload.get("skill_id", "?")
+        fv = payload.get("from_version")
+        tv = payload.get("to_version")
+        return RenderedLine(
+            text=f"  \x1b[32m[evolved] {skill_id} v{fv}→v{tv}\x1b[0m",
+        )
+
+    if etype == "skill_rolled_back":
+        skill_id = payload.get("skill_id", "?")
+        fv = payload.get("from_version")
+        tv = payload.get("to_version")
+        reason = payload.get("reason") or ""
+        tail = f": {reason}" if reason else ""
+        return RenderedLine(
+            text=f"  \x1b[33m[rolled back] {skill_id} v{fv}→v{tv}{tail}\x1b[0m",
+        )
+
+    if etype == "skill_candidate_proposed":
+        skill_id = payload.get("winner_candidate_id", "?")
+        ver = payload.get("winner_version")
+        return RenderedLine(
+            text=f"  \x1b[2m[candidate] {skill_id} v{ver} proposed\x1b[0m",
+        )
+
     return None  # unknown types — stay quiet
 
 
