@@ -12,6 +12,7 @@ from typing import Any
 
 import typer
 
+from xmclaw.utils.i18n import _
 from xmclaw.utils.paths import skills_dir
 
 
@@ -81,7 +82,7 @@ def _fmt_record(rec: dict[str, Any]) -> str:
         if isinstance(ev, str) and "mean=" in ev:
             try:
                 score = float(ev.split("mean=", 1)[1])
-                score_str = f" (score {score:.3f})"
+                score_str = _("evolution.score_label", score=score)
                 break
             except ValueError:
                 pass
@@ -90,7 +91,7 @@ def _fmt_record(rec: dict[str, Any]) -> str:
         return f"  [+] {time_str}  {skill_id:<24} {arrow}{score_str}"
     if kind == "rollback":
         reason = rec.get("reason", "")
-        reason_str = f" — {reason}" if reason else ""
+        reason_str = _("evolution.reason_label", reason=reason) if reason else ""
         return f"  [-] {time_str}  {skill_id:<24} {arrow}{reason_str}"
     return f"  [?] {time_str}  {skill_id:<24} {arrow}"
 
@@ -101,12 +102,12 @@ def run_evolution_show(since: str | None = None) -> int:
     records = _load_history_records(since_ts)
 
     if not records:
-        typer.echo("No evolution events found.")
+        typer.echo(_("evolution.no_events"))
         if since:
-            typer.echo(f"  (filtered by --since {since})")
+            typer.echo(_("evolution.filtered_since", since=since))
         return 0
 
-    header = f"{'Time':<18} {'Skill':<24} {'Change'}"
+    header = f"{_('evolution.header_time'):<18} {_('evolution.header_skill'):<24} {_('evolution.header_change')}"
     typer.echo(header)
     typer.echo("-" * len(header))
     for rec in records:

@@ -317,7 +317,11 @@ def _default_model_for(provider_name: str) -> str:
     }.get(provider_name, "")
 
 
-def build_tools_from_config(cfg: dict[str, Any]) -> ToolProvider | None:
+def build_tools_from_config(
+    cfg: dict[str, Any],
+    *,
+    approval_service: Any | None = None,
+) -> ToolProvider | None:
     """Return a ``ToolProvider`` built from ``cfg['tools']``.
 
     Posture (v2 update): permissions default to MAXIMUM, not minimum.
@@ -416,10 +420,46 @@ def build_tools_from_config(cfg: dict[str, Any]) -> ToolProvider | None:
             pass
 
     if len(children) == 1:
-        return builtins  # no extras wired -- skip the composite wrapper
+        provider = builtins  # no extras wired -- skip the composite wrapper
+    else:
+        from xmclaw.providers.tool.composite import CompositeToolProvider
+        provider = CompositeToolProvider(*children)
 
-    from xmclaw.providers.tool.composite import CompositeToolProvider
-    return CompositeToolProvider(*children)
+    # Epic #3: optionally wrap with security guardians
+    security_cfg = cfg.get("security", {})
+    guardians_cfg = security_cfg.get("guardians", {})
+    if guardians_cfg.get("enabled", False):
+        from xmclaw.security.tool_guard.engine import ToolGuardEngine
+        from xmclaw.security.tool_guard.file_guardian import FilePathToolGuardian
+        from xmclaw.security.tool_guard.rule_guardian import RuleBasedToolGuardian
+        from xmclaw.security.tool_guard.shell_evasion_guardian import ShellEvasionGuardian
+        from xmclaw.security.tool_guard.models import GuardianPolicy
+        from xmclaw.providers.tool.guarded import GuardedToolProvider
+
+        engine = ToolGuardEngine(guardians=[
+            FilePathToolGuardian(
+                sensitive_files=guardians_cfg.get("sensitive_files")
+            ),
+            RuleBasedToolGuardian(),
+            ShellEvasionGuardian(),
+        ])
+
+        # Parse ``security.guardians.policy`` — per-severity action
+        # mapping (critical/high/medium/low/info -> allow/approve/deny).
+        # Unknown severities or actions raise ValueError with a
+        # known-set message; we re-raise so bad config surfaces at
+        # startup rather than silently reverting to defaults.
+        policy_cfg = guardians_cfg.get("policy")
+        policy = GuardianPolicy.from_config(policy_cfg)
+
+        provider = GuardedToolProvider(
+            provider,
+            engine,
+            approval_service=approval_service,
+            policy=policy,
+        )
+
+    return provider
 
 
 def build_memory_from_config(
@@ -562,6 +602,7 @@ def build_agent_from_config(
     bus: InProcessEventBus,
     *,
     max_hops: int = 20,
+    approval_service: Any | None = None,
 ) -> AgentLoop | None:
     """Assemble an AgentLoop from config. Returns None if no LLM is set.
 
@@ -577,7 +618,7 @@ def build_agent_from_config(
     llm = build_llm_from_config(cfg)
     if llm is None:
         return None
-    tools = build_tools_from_config(cfg)
+    tools = build_tools_from_config(cfg, approval_service=approval_service)
     security = cfg.get("security")
     policy_raw = None
     if isinstance(security, Mapping):

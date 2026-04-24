@@ -393,7 +393,19 @@ class AgentLoop:
                         )
                     else:
                         err = result.error or "tool failed without an error message"
-                        tool_msg_content = f"ERROR: {err}"
+                        # Epic #3: render NEEDS_APPROVAL as a user-actionable
+                        # prompt rather than a raw error string.
+                        if err.startswith("NEEDS_APPROVAL:"):
+                            request_id = err.split(":", 1)[1]
+                            from xmclaw.utils.i18n import _
+
+                            tool_msg_content = _(
+                                "agent.needs_approval_prompt",
+                                tool_name=call.name,
+                                request_id=request_id,
+                            )
+                        else:
+                            tool_msg_content = f"ERROR: {err}"
                     # Epic #14: scan the tool output for prompt-injection
                     # attempts before it lands in the conversation history.
                     # Apply the configured policy (detect / redact / block).

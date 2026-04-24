@@ -71,6 +71,21 @@ evolution_app = typer.Typer(
 )
 app.add_typer(evolution_app, name="evolution")
 
+# ``xmclaw approvals <subcommand>`` — Epic #3. List, approve, or deny
+# pending security approvals created by the GuardedToolProvider.
+approvals_app = typer.Typer(
+    help="Manage pending security approvals for guarded tool calls.",
+)
+app.add_typer(approvals_app, name="approvals")
+
+# ``xmclaw security <subcommand>`` — Epic #3. Offline, daemon-independent
+# safety tooling. ``scan`` runs the SkillScanner over a skill's Python
+# source; future siblings (``rules show``, ``policy check``) land here.
+security_app = typer.Typer(
+    help="Offline security tooling (skill scan, rule inspection).",
+)
+app.add_typer(security_app, name="security")
+
 # ``xmclaw session <subcommand>`` — Epic #4 Phase B. Read-only window onto
 # the SQLite event log (``~/.xmclaw/v2/events.db``): ``report <id>``
 # renders a single conversation as markdown / JSON, ``list`` enumerates
@@ -100,6 +115,55 @@ def evolution_show(
     """
     from xmclaw.cli.evolution import run_evolution_show
     raise typer.Exit(code=run_evolution_show(since))
+
+
+@approvals_app.command("list")
+def approvals_list() -> None:
+    """List all pending security approvals."""
+    from xmclaw.cli.approvals import run_approvals_list
+    raise typer.Exit(code=run_approvals_list())
+
+
+@approvals_app.command("approve")
+def approvals_approve(
+    request_id: str = typer.Argument(..., help="The approval request ID."),
+) -> None:
+    """Approve a pending security request."""
+    from xmclaw.cli.approvals import run_approvals_approve
+    raise typer.Exit(code=run_approvals_approve(request_id))
+
+
+@approvals_app.command("deny")
+def approvals_deny(
+    request_id: str = typer.Argument(..., help="The approval request ID."),
+) -> None:
+    """Deny a pending security request."""
+    from xmclaw.cli.approvals import run_approvals_deny
+    raise typer.Exit(code=run_approvals_deny(request_id))
+
+
+@security_app.command("scan")
+def security_scan(
+    path: Path = typer.Argument(
+        ..., help="Skill .py file or directory to recursively scan."
+    ),
+    as_json: bool = typer.Option(
+        False, "--json",
+        help="Emit findings as JSON instead of a human table.",
+    ),
+) -> None:
+    """Scan a skill's Python source for dangerous patterns.
+
+    Runs the YAML rule catalogue (same packs the RuleBasedToolGuardian
+    uses) + an AST pass for dynamic-exec, subprocess-shell, pickle /
+    marshal deserialization, and ctypes / pty / telnetlib imports.
+
+    Exit code: 0 clean (or LOW / INFO only), 1 on any HIGH / CRITICAL,
+    2 on MEDIUM-only findings. Use ``--json`` for CI / tooling
+    integration.
+    """
+    from xmclaw.cli.security_scan import run_security_scan
+    raise typer.Exit(code=run_security_scan(path, as_json=as_json))
 
 
 @session_app.command("report")
