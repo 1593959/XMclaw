@@ -124,6 +124,7 @@ def create_app(
     bus = bus or InProcessEventBus()
     memory = None
     sweep_task = None
+    backup_scheduler = None
     if config is not None:
         from xmclaw.daemon.factory import build_memory_from_config
         from xmclaw.daemon.memory_sweep import (
@@ -142,6 +143,21 @@ def create_app(
             )
             sweep_task = MemorySweepTask(memory, retention)
 
+        # Epic #20 Phase 2: auto-daily workspace backup. Disabled by
+        # default (policy.auto_daily=False ⇒ start() no-ops). Kept
+        # independent of the memory-retention sweep so a daemon can opt
+        # into one without the other.
+        from xmclaw.daemon.backup_scheduler import (
+            BackupSchedulerTask,
+            parse_backup_config,
+        )
+        backup_policy = parse_backup_config(config.get("backup"))
+        if backup_policy.auto_daily:
+            backup_scheduler = BackupSchedulerTask(
+                source_dir=None,  # defer to utils.paths.data_dir() at tick time
+                policy=backup_policy,
+            )
+
     # Epic #17 Phase 3: multi-agent registry. Constructed eagerly so the
     # routers and WS handler can rely on ``app.state.agents`` being set,
     # but rehydration from disk happens in lifespan so tests that never
@@ -152,6 +168,8 @@ def create_app(
     async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
         if sweep_task is not None:
             await sweep_task.start()
+        if backup_scheduler is not None:
+            await backup_scheduler.start()
         try:
             await agents_manager.load_from_disk()
         except Exception:  # noqa: BLE001 — bad preset file must not block boot
@@ -173,6 +191,8 @@ def create_app(
         finally:
             if sweep_task is not None:
                 await sweep_task.stop()
+            if backup_scheduler is not None:
+                await backup_scheduler.stop()
             # Epic #17 Phase 7: stop all workspace background work
             # before tearing down the bus + memory store. Evolution
             # observers cancel their subscriptions here; LLM workspaces
