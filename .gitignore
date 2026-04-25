@@ -51,6 +51,7 @@ agents/*/agent.json
 # Test artifacts
 /test_*.py
 test_results/
+tests/manual/_artifacts/
 screenshot.png
 hello_world.py
 find_*.py

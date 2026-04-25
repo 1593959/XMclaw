@@ -1,0 +1,15 @@
+# Issue template chooser. Templates listed alphanumerically.
+# https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository
+
+blank_issues_enabled: true
+
+contact_links:
+  - name: GitHub Discussions
+    url: https://github.com/1593959/XMclaw/discussions
+    about: Ask questions, share ideas, or discuss XMclaw architecture/roadmap.
+  - name: Architecture & roadmap
+    url: https://github.com/1593959/XMclaw/blob/main/docs/DEV_ROADMAP.md
+    about: Read the live Epic / Milestone state before filing a duplicate request.
+  - name: Anti-Req scorecard
+    url: https://github.com/1593959/XMclaw/blob/main/docs/V2_STATUS.md
+    about: Check whether the behaviour you're reporting is already a tracked anti-requirement.

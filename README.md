@@ -6,17 +6,17 @@
 
 <p align="center">
   <a href="https://github.com/1593959/XMclaw/actions/workflows/python-ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/1593959/XMclaw/python-ci.yml?branch=main&style=for-the-badge" alt="CI"></a>
-  <img src="https://img.shields.io/badge/status-pre--v1%20(2.0.0.dev0)-orange?style=for-the-badge" alt="Status">
+  <img src="https://img.shields.io/badge/status-1.0.0rc1%20(release%20candidate)-yellow?style=for-the-badge" alt="Status">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.10+-blue.svg?style=for-the-badge" alt="Python"></a>
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue?style=for-the-badge" alt="Cross-platform">
 </p>
 
-> ### 🚧 Honest status (2026-04-24)
+> ### 🟡 Status: 1.0.0rc1 — Release Candidate (2026-04-25)
 >
-> XMclaw is a **development preview**, not a 1.0 release. Current version is `2.0.0.dev0`.
+> **This is a release candidate, not yet GA.** The core local-first runtime is feature-complete and contract-frozen for `1.0`. We're now in the dogfood window: real-user usage for 1–2 weeks with no P0 bugs promotes RC1 to `1.0.0`. See [CHANGELOG.md](CHANGELOG.md) for what shipped, [SECURITY.md](SECURITY.md) for the disclosure policy.
 >
-> **What works today** (`main` + `tests/` green locally — 1100 tests collected, 1093 pass, 7 skip):
+> **What's in 1.0 GA scope** — fully tested locally (1387 unit + 1589 total tests, smart-gate selects per PR):
 >
 > - The **self-evolution spine** — streaming bus + Honest Grader + Online Scheduler + EvolutionController + SkillRegistry — is real code, used end-to-end by live benches on MiniMax:
 >
@@ -30,17 +30,25 @@
 > - A **CLI** covering daemon lifecycle / interactive chat / config / secrets / backup / memory / doctor (15 checks, 5 auto-fixable).
 > - A **basic web UI** (vanilla JS under `xmclaw/daemon/static/`) served at `http://127.0.0.1:8765/ui/` — enough to drive the daemon, not a polished product.
 >
-> **What's in progress** (see [Roadmap status](#-roadmap-status)):
+> **RC1 → 1.0 GA promotion gate** (the gap that keeps RC1 from being GA):
 >
-> - **Epic #4** — surfacing evolution to the user (`gene_forge` / `xmclaw evolution show` CLI / killer demo GIF). The engine works; making it visible is the next push.
-> - **Epic #2** — plugin SDK pilot migration (boundary + CI guard shipped; example plugin pending).
-> - **Epic #3** — skill sandbox (runtime + factory shipped; AgentLoop wiring + 8 guardian rules + ApprovalService pending).
-> - **Epic #16** — secrets Phase 2 (Fernet-at-rest; Phase 1 three-tier env/file/keyring lookup already live).
-> - **Epic #20** — backup/restore zero-downtime reload (Phase 1 CLI complete; daemon reloader pending).
+> - 7-day real-user dogfood with no P0 bugs.
+> - 72h continuous-uptime soak — the last open item on M1 Daemon GA.
+> - Three Epic #4 *real-data* exit criteria: a recorded killer-demo GIF, ≥ 0.1 grader-score lift over a week, and ≥ 3 real evolution events visible to `xmclaw evolution show --since 7d`.
 >
-> **What's not built yet** (planned, `⬜` in the roadmap): Channel SDK (#1), IDE / ACP entrypoints (#7), Skill Hub (#8), Onboarding wizard (#9), multi-agent (#17), rich Web UI Phase 2 (#18), cloud/systemd templates (#19).
+> These cannot be faked by writing more code — they require runtime hours.
 >
-> **Roadmap:** 20 Epics — **8 ✅ done, 4 🟡 in progress, 8 ⬜ planned**. None of the 9 milestones (M1–M9) have been officially closed yet. See [docs/DEV_ROADMAP.md](docs/DEV_ROADMAP.md) for the full execution plan.
+> **Explicitly post-1.0** (now on the v2.x roadmap, **not blocking GA**):
+>
+> - Epic #1 Channel SDK (Discord / Slack / Telegram adapters)
+> - Epic #7 IDE + ACP entrypoints (Zed / VS Code)
+> - Epic #8 Skill Hub (`xmclaw skills install <name>`)
+> - Epic #18 Web UI Phase 2 — rich evolution / memory / tool panels (Phase 1 chat workspace ships in 1.0)
+> - Epic #4 Phase D — `gene_forge` rich UI + the killer-demo GIF (the engine ships in 1.0)
+> - Epic #2 plugin SDK pilot (boundary + CI guard ship in 1.0; first real third-party plugin lands in 2.x)
+> - Epic #3 AgentLoop → `SkillRuntime.fork` migration (Guardians + ApprovalService + Scanner ship in 1.0)
+>
+> **Why this scope.** XMclaw 1.0 = "the local-first self-evolving runtime is stable and contract-frozen", not "every feature ever imagined ships." The 7 deferred items above are growth / surface-layer enhancements, not the core thesis. See [docs/DEV_ROADMAP.md § M9](docs/DEV_ROADMAP.md) for the full scope decision and the RC1 → GA gate.
 >
 > Design docs: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/V2_DEVELOPMENT.md](docs/V2_DEVELOPMENT.md) · [docs/V2_STATUS.md](docs/V2_STATUS.md).
 
@@ -286,15 +294,16 @@ Full help: `xmclaw --help` / `xmclaw <cmd> --help`.
 
 ## 🚦 Roadmap status
 
-Delivery is tracked Epic-by-Epic in [docs/DEV_ROADMAP.md](docs/DEV_ROADMAP.md). Snapshot as of **2026-04-24**:
+Delivery is tracked Epic-by-Epic in [docs/DEV_ROADMAP.md](docs/DEV_ROADMAP.md). Snapshot as of **2026-04-25** (1.0 RC1):
 
 | State | Epics |
 |---|---|
-| ✅ **Done** (8) | #5 Memory eviction · #6 `XMC__` env override · #10 Doctor (15 checks + 5 auto-fix) · #11 Smart-gate CI · #12 AGENTS.md layering · #13 SQLite event bus + FTS5 · #14 Prompt-injection defense · #15 Structured logging |
-| 🟡 **In progress** (4) | #2 Plugin SDK (boundary + guard done; pilot pending) · #3 Sandbox (runtime + factory done; AgentLoop wiring pending) · #16 Secrets (Phase 1 done; Fernet Phase 2 pending) · #20 Backup/restore (Phase 1 CLI done; daemon reloader pending) |
-| ⬜ **Planned** (8) | #1 Channel SDK · **#4 Evolution UX (★core)** · #7 IDE / ACP entry · #8 Skill Hub · #9 Onboarding · #17 Multi-agent · #18 Web UI Phase 2 · #19 Cloud / systemd templates |
+| ✅ **Done** (10) | #5 Memory eviction · #6 `XMC__` env override · #10 Doctor (15 checks + 5 auto-fix) · #11 Smart-gate CI · #12 AGENTS.md layering · #13 SQLite event bus + FTS5 · #14 Prompt-injection defense · #15 Structured logging · #16 Secrets (Fernet at-rest) · #17 Multi-agent (one daemon / one bus, agent-id routed) |
+| 🟢 **Substantially in 1.0** (5) | #4 Evolution engine (UX Phase D → v2.x) · #9 Onboarding (cross-platform soak → 1.x.y) · #19 Cloud (Docker + GHCR publish in; systemd / Helm → v2.x) · #20 Backup (CLI + auto-daily in; zero-downtime reload → 1.x.y) · #23 Web UI Phase 1 (chat workspace in; rich panels → Epic #18 / v2.x) |
+| 🟡 **Substrate ships, full feature → v2.x** (2) | #2 Plugin SDK (boundary + CI guard in; first real third-party plugin → v2.x) · #3 Sandbox (Guardians + ApprovalService + Scanner in; AgentLoop runtime.fork → v2.x) |
+| ⏭ **Explicitly v2.x** (4) | #1 Channel SDK · #7 IDE / ACP entry · #8 Skill Hub · #18 Web UI Phase 2 rich panels |
 
-**Milestones M1–M9** all remain formally open; several (M1 Daemon GA, M8 Observability) are close to their exit criteria and awaiting a closeout pass.
+**Milestones**: M8 ✅ closed (5/5), M1 5/6 — last item is 72h soak, deferred to RC → GA gate. M2/M3/M5/M6/M7 partially deferred to v2.x per the [§M9 scope decision](docs/DEV_ROADMAP.md). See [SECURITY.md § Supported versions](SECURITY.md#supported-versions) for the security-fix policy on RC builds.
 
 ---
 
@@ -367,7 +376,13 @@ Per-directory contracts live in `xmclaw/<subdir>/AGENTS.md` — read those befor
 
 ## 🤝 Contributing
 
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions welcome. Start here:
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) — dev workflow, lint / type / test gates, two-commit roadmap protocol.
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — community baseline.
+- [SECURITY.md](SECURITY.md) — vulnerability disclosure (please use private advisories, not public issues).
+- [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md) — Anti-Req checklist + roadmap discipline reminders.
+- [.github/ISSUE_TEMPLATE/](.github/ISSUE_TEMPLATE/) — structured forms for bugs / features / questions (Discussions preferred for open-ended threads).
 
 Any Epic-touching PR must cite the Epic number (`Epic #11:`, `Epic #14 partial:`, etc) and update [docs/DEV_ROADMAP.md](docs/DEV_ROADMAP.md) per the [execution protocol](docs/DEV_ROADMAP.md#36-执行协议execution-protocol-每次开发必读). See [CLAUDE.md](CLAUDE.md) for the AI-assistant onboarding notes.
 

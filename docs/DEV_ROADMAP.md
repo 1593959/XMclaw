@@ -1,7 +1,7 @@
 # XMclaw 开发路线图（Dev Roadmap）
 
-> **日期**：2026-04-22
-> **版本基线**：v2.0.0.dev0（Phase 4.10 完成，全部前端 UI 已删除，进入终端优先测试阶段）
+> **日期**：2026-04-25
+> **版本基线**：v1.0.0rc1（1.0 Release Candidate — 核心运行时契约冻结，dogfood 窗口换 GA tag。Phase 4.10 终端优先测试阶段已完成。）
 >
 > **本文定位**："做什么"——带 file:line 证据的 17 Epic 工程拆解，直接可开 PR。
 > **配套阅读**：
@@ -38,7 +38,7 @@
 | **OpenClaw** (`openclaw/openclaw`) | TypeScript (Node 22+) | MIT | 活跃更新中 | **362k** | 插件化 Monorepo：`src/`(core) + `extensions/`(plugins) + `apps/`(android/iOS native) + `Swabble/`(Swift desktop) |
 | **HermesAgent** (`NousResearch/hermes-agent`) | Python 3.11+ | MIT | v0.10.0 | **109k** | 根目录散布式 Python 包：`agent/` `gateway/` `tools/` `cron/` `hermes_cli/` `ui-tui/`(Ink/React TUI) |
 | **CoPaw→QwenPaw** (`agentscope-ai/QwenPaw`) | Python 3.10-3.13 | Apache-2 | v1.1.3 | 小众但活跃 | AgentScope-based：`src/qwenpaw/{agents,security,channels,backup,providers,...}` + 独立 `console/` Vite UI |
-| **XMclaw** (我们) | Python 3.10+ | — | v2.0.0.dev0 | — | FastAPI+WS daemon，核心引擎在 `xmclaw/core/` + `xmclaw/daemon/` |
+| **XMclaw** (我们) | Python 3.10+ | MIT | v1.0.0rc1 | — | FastAPI+WS daemon，核心引擎在 `xmclaw/core/` + `xmclaw/daemon/` |
 
 ### 1.2 架构决策对照
 
@@ -1248,11 +1248,11 @@ Hermes、OpenClaw 都给不出这种 demo——他们的"进步"要么是手动 
 
 ### M1 · Daemon 稳定性 GA（2 周）
 
-**状态**：⬜ 未开始 | **起始**：- | **完成**：-
+**状态**：🟢 5/6 — 72h soak 推迟到 RC→GA gate | **起始**：2026-04-22 | **完成**：-
 **包含 Epics**：#6 ENV / #10 Doctor / #11 Smart-gate / #12 AGENTS.md / #13 SQLite bus
 
 **退出标准**：
-- [ ] 连续 72h 压测不崩
+- [ ] 连续 72h 压测不崩 — **延期到 RC→GA gate**（见 §7.M9）；本机短跑 + 真模型对话端到端验证已通过，但 72h 连续运行需要 dogfood 窗口
 - [x] `xmclaw doctor` 通过率 100%（Epic #10 — 2026-04-23 收尾：15 条 built-in check、`--fix` 自动处理 5 条、entry-point 插件 pilot 通路有端到端用例）
 - [x] SQLite event bus 落地（Epic #13 — schema + WAL + FTS5 + /api/v2/events + 重启重放 + FTS5 <100ms）
 - [x] ENV override 工作（Epic #6）
@@ -1260,13 +1260,13 @@ Hermes、OpenClaw 都给不出这种 demo——他们的"进步"要么是手动 
 - [x] 所有子包 AGENTS.md 完成（Epic #12，2026-04-23；plugin_sdk/ 的 AGENTS.md 挂单 Epic #2）
 
 **进度日志**：
-- _（尚无）_
+- 2026-04-25: 5/6 退出标准达成，本机 doctor 15/15 ok、smart-gate 全绿 1387 unit 通过、真模型 38.5s 复杂任务 + 6.9s 简单任务两路实测产出符合预期。72h soak 是仅剩一项，按行业惯例推迟到 RC1 → GA 提升关；RC1 由 1.0.0rc1 tag 起算 dogfood 窗口（commit pending）
 
 ---
 
-### M2 · 三渠道可用（2 周）
+### M2 · 三渠道可用（2 周） — **推迟到 v2.x，不阻塞 1.0 GA**
 
-**状态**：⬜ 未开始 | **起始**：- | **完成**：-
+**状态**：⏭ 推迟（2026-04-25 决议） | **起始**：- | **完成**：-
 **包含 Epics**：#1 Channel SDK
 
 **退出标准**：
@@ -1279,9 +1279,9 @@ Hermes、OpenClaw 都给不出这种 demo——他们的"进步"要么是手动 
 
 ---
 
-### M3 · 插件 SDK v1（1 周）
+### M3 · 插件 SDK v1（1 周） — **推迟到 v2.x，不阻塞 1.0 GA**
 
-**状态**：⬜ 未开始 | **起始**：- | **完成**：-
+**状态**：⏭ 推迟（2026-04-25 决议） — 边界 + CI 守护已落，第一个真实第三方插件落地后再正式打勾 | **起始**：- | **完成**：-
 **包含 Epics**：#2 Plugin SDK
 
 **退出标准**：
@@ -1294,9 +1294,9 @@ Hermes、OpenClaw 都给不出这种 demo——他们的"进步"要么是手动 
 
 ---
 
-### M4 · 沙箱可用（2 周）
+### M4 · 沙箱可用（2 周） — **部分达标，AgentLoop runtime.fork 接线推迟到 1.x.y**
 
-**状态**：⬜ 未开始 | **起始**：- | **完成**：-
+**状态**：🟡 4/4 中 3 项达标 — Guardian/ApprovalService/SkillScanner 已落、CRITICAL 风险分层修复已验证；唯 AgentLoop 切换到 SkillRuntime.fork 推迟 | **起始**：2026-04-23 | **完成**：-
 **包含 Epics**：#3 沙箱
 
 **退出标准**：
@@ -1310,11 +1310,11 @@ Hermes、OpenClaw 都给不出这种 demo——他们的"进步"要么是手动 
 
 ---
 
-### M5 · 进化可感知（★3 周）
+### M5 · 进化可感知（★3 周） — **引擎已落，UI/数据层 3 条退出标准推迟到 1.0 GA gate**
 
-**状态**：⬜ 未开始 | **起始**：- | **完成**：-
-**包含 Epics**：#4 Evolution 执行层 + #17 多 Agent（独立进化 agent）
-**这是差异化的单一焦点里程碑——其他里程碑的目的是让它站稳。**
+**状态**：🟡 引擎完整 — 待 dogfood 周补齐 demo GIF + 真实进化数据 ≥ 3 条 + grader +0.1 实测 | **起始**：2026-04-24 | **完成**：-
+**包含 Epics**：#4 Evolution 执行层 + #17 多 Agent（独立进化 agent，✅ 已闭环）
+**这是差异化的单一焦点里程碑——三条退出标准全部是"真实运行数据"，本质上要 dogfood 时间换。**
 
 **退出标准**：
 - [ ] Epic #4 完整交付
@@ -1327,9 +1327,9 @@ Hermes、OpenClaw 都给不出这种 demo——他们的"进步"要么是手动 
 
 ---
 
-### M6 · Onboarding + Hub（2 周）
+### M6 · Onboarding + Hub（2 周） — **部分达标 / Skill Hub 推迟到 v2.x**
 
-**状态**：⬜ 未开始 | **起始**：- | **完成**：-
+**状态**：🟡 #9 Onboarding + #19 云部署 已实质交付，#8 Skill Hub 推迟，#18 富 UI 推迟 | **起始**：2026-04-24 | **完成**：-
 **包含 Epics**：#8 Skill Hub + #9 Onboarding + #18 前端补全 + #19 云部署
 
 **退出标准**：
@@ -1342,9 +1342,9 @@ Hermes、OpenClaw 都给不出这种 demo——他们的"进步"要么是手动 
 
 ---
 
-### M7 · IDE 入口（1 周）
+### M7 · IDE 入口（1 周） — **推迟到 v2.x，不阻塞 1.0 GA**
 
-**状态**：⬜ 未开始 | **起始**：- | **完成**：-
+**状态**：⏭ 推迟（2026-04-25 决议） | **起始**：- | **完成**：-
 **包含 Epics**：#7 ACP
 
 **退出标准**：
@@ -1359,7 +1359,7 @@ Hermes、OpenClaw 都给不出这种 demo——他们的"进步"要么是手动 
 
 ### M8 · 性能与可观测（1 周）
 
-**状态**：⬜ 未开始 | **起始**：- | **完成**：-
+**状态**：✅ 完成 | **起始**：2026-04-23 | **完成**：2026-04-25
 **包含 Epics**：#5 Memory eviction + #14 Prompt 注入 + #15 日志 + #16 Secrets + #20 备份恢复
 
 **退出标准**：
@@ -1370,29 +1370,67 @@ Hermes、OpenClaw 都给不出这种 demo——他们的"进步"要么是手动 
 - [x] `grep -r sk- ~/.xmclaw/` 无命中（明文 secret 审计清空；default backend 翻为 encrypted + migrate 命令可一次性清扫存量）
 
 **进度日志**：
-- _（尚无）_
+- 2026-04-25: M8 closeout — 5 条退出标准全部达成，5 个 Epic（#5 / #14 / #15 / #16 已 ✅；#20 已实质交付 Phase 1+2，剩 Phase 3 zero-downtime reload 推迟到 1.x.y）。M8 是 1.0 RC1 范围内最后一个里程碑（commit pending）
 
 ---
 
-### M9 · v1.0 GA（封板 1 周）
+### M9 · v1.0 GA（RC1 → 真用户 dogfood → GA）
 
-**状态**：⬜ 未开始 | **起始**：- | **完成**：-
-**包含 Epics**：所有 Epic（#1~#20）收尾 + 发布
+**状态**：🟡 RC1 已发 / 等 GA gate | **起始**：2026-04-25 | **完成**：-
+**包含 Epics**：M1 + M8 + Epic #4 引擎层 + 仓库规范化（SECURITY/CoC/CHANGELOG/ISSUE/PR templates 已落）
 
-**退出标准**：
-- [ ] 所有 Epic 关闭
-- [ ] `pyproject.toml` 版本跳 `1.0.0`
-- [ ] 发 PyPI + GitHub release
-- [ ] README 放 killer demo
-- [ ] `DEV_ROADMAP.md` / `COMPETITIVE_GAP_ANALYSIS.md` 全部 Epic / Milestone 状态为 ✅
-- [ ] CHANGELOG.md v1.0.0 段落写完
+**1.0 GA 范围决策**（2026-04-25 重定）：
+
+XMclaw 1.0 = **本地优先的自我进化 agent 核心运行时**。具体包含：
+
+- ✅ daemon + AgentLoop + LLM/Tool/Memory provider
+- ✅ Honest Grader + SkillScheduler + EvolutionController + SkillRegistry
+- ✅ CLI（lifecycle / chat / config / secrets / backup / memory / doctor / approvals / evolution show / session report）
+- ✅ doctor 15 checks + 5 auto-fix + entry-point 插件
+- ✅ 安全：pairing token / `tools.allowed_dirs` 沙箱 / prompt-injection scanner / Fernet secrets
+- ✅ 备份恢复（Phase 1+2 已交付，Phase 3 zero-downtime reload 推迟到 1.x.y）
+- ✅ 多 agent 架构（Epic #17 一 daemon/一 bus 路由）
+- ✅ Onboarding 向导（`xmclaw onboard` Phase 1 已交付，Win/Mac/Linux 真机走查推迟到 1.x.y）
+- ✅ 基础 Web UI（Phase 1 chat workspace + WS streaming）
+- ✅ 云部署（Docker 镜像 + GHCR multi-arch 自动发布）
+
+**明确推迟到 v2.x roadmap**（不阻塞 1.0 GA）：
+
+- ⏭ Epic #1 Channel SDK（Discord/Slack/Telegram 三渠道适配）
+- ⏭ Epic #7 IDE / ACP 双向接入
+- ⏭ Epic #8 Skill Hub 中心仓库
+- ⏭ Epic #18 Web UI Phase 2 富视图（evolution / memory / tools 多面板）
+- ⏭ Epic #4 Phase D 杀手 demo GIF + `gene_forge` 富 UI（引擎已落，UI 表面层补强推迟）
+- ⏭ Epic #2 Plugin SDK pilot 真实第三方插件（边界 + CI 守护已落）
+- ⏭ Epic #3 AgentLoop 切到 `SkillRuntime.fork` 路径（Guardian + ApprovalService 已落）
+
+理由：上面 7 项是**增量功能 / 表面层增强**，不是核心 thesis 的一部分。1.0 GA = 核心引擎稳定 + 契约冻结，不是"功能完整"。
+
+**RC1 已达成**（本次 commit）：
+- [x] `pyproject.toml` `1.0.0rc1`
+- [x] CHANGELOG `[1.0.0rc1]` 段落
+- [x] 仓库规范化：`SECURITY.md` / `CODE_OF_CONDUCT.md` / `CHANGELOG.md` / `.github/ISSUE_TEMPLATE/*.yml` / `.github/PULL_REQUEST_TEMPLATE.md`
+- [x] M1 5/6 退出标准达成、M8 5/5 全部达成
+- [x] 1387 unit + 1589 全套测试本机绿
+- [x] doctor 15/15 ok（含本轮修复的 doctor↔factory `allowed_dirs` 契约对齐）
+- [x] 真模型实测（MiniMax-M2.7-highspeed）：6.9s 简单 + 38.5s 复杂任务两路绿
+
+**RC1 → 1.0 GA 提升关**（dogfood window，约 1–2 周）：
+- [ ] 用户连续 dogfood 7 天无 P0 bug
+- [ ] M1 唯一剩余项：72h 连续运行不崩（实测 + 抽样观察 events.db / memory.db 无写崩 / 无内存泄漏）
+- [ ] M5 Epic #4 三条非代码退出标准：
+  - [ ] 录一段杀手 demo GIF（READMEs §5.3）
+  - [ ] grader 分数实测一周 +0.1 以上
+  - [ ] `xmclaw evolution show --since 7d` 真实事件 ≥ 3 条
+- [ ] `pyproject.toml` 升 `1.0.0`、CHANGELOG `[1.0.0]` 段落写完
+- [ ] `git tag v1.0.0 && git push origin v1.0.0` → release.yml 自动构建 + draft → 人工审稿后 publish → python-publish.yml 推 PyPI
 
 **进度日志**：
-- _（尚无）_
+- 2026-04-25: 1.0 RC1 落地。版本 → `1.0.0rc1`，M1+M8 closeout，1.0 GA 范围明确收窄到"核心运行时"，3 个未做 Epic（#1 / #7 / #8）+ 4 个进行中 Epic 的剩余 phase 全部明确推迟到 v2.x。补齐 SECURITY / CoC / CHANGELOG / 4 个 issue/PR templates。doctor↔factory `allowed_dirs` 契约分歧修复并加测。Honest Grader 信条同样适用于发布判断：模型说自己 GA 不算数，要看真用户用了 1 周不崩才算（commit pending）
 
 ---
 
-**总计**：乐观 ~12 周，现实 ~16 周。
+**总计**：1.0 RC1 已落（2026-04-25），1.0 GA 提升关取决于 dogfood 窗口结果。原乐观 ~12 / 现实 ~16 周估算时间表作废——通过收窄 1.0 范围把"功能完整"和"核心稳定"解耦了。
 
 ### 7.10 里程碑依赖图
 

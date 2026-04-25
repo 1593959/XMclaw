@@ -1,0 +1,98 @@
+name: Bug report
+description: Report a bug or unexpected behaviour in XMclaw.
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing! A reproducer + `xmclaw doctor` output catches >90% of bugs in one round-trip.
+        Please redact API keys / secrets before pasting logs.
+
+  - type: input
+    id: version
+    attributes:
+      label: XMclaw version
+      description: "`xmclaw version` (or git short SHA if installed from source)."
+      placeholder: "2.0.0.dev0 (commit abcdef1)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: Install method
+      options:
+        - pip install -e .
+        - pip install (PyPI)
+        - Windows installer (.exe)
+        - Docker
+        - Built from source
+        - Other (note in details)
+    validations:
+      required: true
+
+  - type: input
+    id: env
+    attributes:
+      label: OS / Python
+      placeholder: "Windows 11, Python 3.10.13 / Ubuntu 22.04, Python 3.11.9"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: components
+    attributes:
+      label: Components affected
+      options:
+        - label: Daemon (FastAPI, WebSocket, AgentLoop)
+        - label: CLI (`xmclaw …` commands)
+        - label: Web UI (`/ui/*`)
+        - label: Tools (builtin / browser / lsp / mcp_bridge)
+        - label: Memory / events DB
+        - label: Skills / Scheduler / Grader / Evolution
+        - label: Doctor (`xmclaw doctor`)
+        - label: Backup / Restore
+        - label: Secrets / Config
+        - label: Docs / Roadmap
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. `xmclaw start`
+        2. Run `xmclaw chat` and ask "..."
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual
+      placeholder: |
+        Expected: ...
+        Actual:   ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`xmclaw doctor` output"
+      description: Run `xmclaw doctor` and paste the result. Helps eliminate environmental issues fast.
+      render: shell
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / events
+      description: Daemon log lines, ANTI_REQ_VIOLATION events, or `events.db` snippets. Redact secrets first.
+      render: shell
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional notes
+      description: Workarounds, related issues, or anything else useful.

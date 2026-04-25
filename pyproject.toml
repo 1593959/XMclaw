@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xmclaw"
-version = "2.0.0.dev0"
+version = "1.0.0rc1"
 description = "XMclaw — local-first, self-evolving AI agent runtime"
 requires-python = ">=3.10"
 # Phase 4.10 trimmed dependency list: removed rich / prompt-toolkit /

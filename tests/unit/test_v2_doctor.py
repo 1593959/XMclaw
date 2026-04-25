@@ -118,10 +118,10 @@ def test_llm_prefers_first_configured_provider() -> None:
 
 
 def test_tools_absent_is_informational_not_error() -> None:
-    """No tools section → LLM-only mode. Not a failure."""
+    """No tools section → default open posture. Not a failure."""
     r = check_tools_configured({})
     assert r.ok
-    assert "LLM-only" in r.detail
+    assert "default open" in r.detail
 
 
 def test_tools_non_dict_is_critical() -> None:
@@ -129,15 +129,21 @@ def test_tools_non_dict_is_critical() -> None:
     assert not r.ok
 
 
-def test_tools_missing_allowed_dirs_is_critical() -> None:
+def test_tools_missing_allowed_dirs_is_default_open() -> None:
+    """Empty / missing allowed_dirs has the same runtime effect as omitting
+    the tools section (factory.py:381 treats [] as None) — surface it as a
+    soft advisory, not a critical, so doctor matches the actual posture."""
     r = check_tools_configured({"tools": {}})
-    assert not r.ok
-    assert "allowed_dirs missing" in r.detail
+    assert r.ok
+    assert "default open" in r.detail
+    assert r.advisory and "allowed_dirs" in r.advisory
 
 
-def test_tools_empty_allowed_dirs_is_critical() -> None:
+def test_tools_empty_allowed_dirs_is_default_open() -> None:
     r = check_tools_configured({"tools": {"allowed_dirs": []}})
-    assert not r.ok
+    assert r.ok
+    assert "default open" in r.detail
+    assert r.advisory and "allowed_dirs" in r.advisory
 
 
 def test_tools_existing_dirs_green(tmp_path: Path) -> None:
