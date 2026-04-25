@@ -134,14 +134,6 @@ xmclaw stop
 
 ---
 
-## 📸 UI Preview
-
-![XMclaw Warm Theme Dashboard](docs/assets/ui-preview.png)
-
-*The current web UI is a vanilla-JS single-page app under `xmclaw/daemon/static/` — enough to drive the daemon end-to-end. A richer Web UI (Epic #18) is planned for Milestone M8.*
-
----
-
 ## 🗂️ Architecture
 
 ```
