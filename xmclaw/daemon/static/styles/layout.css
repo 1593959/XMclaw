@@ -1,0 +1,167 @@
+/*
+ * XMclaw — layout + shell
+ *
+ * Phase 0 delivers the three-region shell (TopBar / Sidebar+Main / StatusBar)
+ * so we can verify the token system works and the routing lights up. The
+ * inner page content is a stubbed placeholder — Phase 1 wires the real
+ * Chat pane into .xmc-main.
+ *
+ * Grid areas:
+ *     [topbar  topbar]
+ *     [sidebar main  ]
+ *     [status  status]
+ */
+
+.xmc-app {
+  min-height: 100vh;
+}
+
+.xmc-shell {
+  display: grid;
+  grid-template-rows: var(--xmc-topbar-h) 1fr var(--xmc-statusbar-h);
+  min-height: 100vh;
+}
+
+.xmc-shell__body {
+  display: grid;
+  grid-template-columns: var(--xmc-sidebar-w) 1fr;
+  min-height: 0;
+}
+
+/* ── TopBar ──────────────────────────────────────────────────────────── */
+
+.xmc-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--xmc-space-4);
+  background: var(--xmc-bg-elev);
+  border-bottom: 1px solid var(--xmc-border);
+}
+
+.xmc-topbar__title {
+  font-weight: 600;
+  font-size: var(--xmc-font-size-md);
+}
+
+.xmc-topbar__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--xmc-space-3);
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────────── */
+
+.xmc-sidebar {
+  background: var(--xmc-bg-elev);
+  border-right: 1px solid var(--xmc-border);
+  padding: var(--xmc-space-3) var(--xmc-space-2);
+  overflow-y: auto;
+}
+
+.xmc-sidebar__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--xmc-space-2);
+  padding: var(--xmc-space-2) var(--xmc-space-3);
+  margin-bottom: var(--xmc-space-3);
+}
+
+.xmc-sidebar__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--xmc-space-1);
+}
+
+.xmc-sidebar__item {
+  display: flex;
+  align-items: center;
+  gap: var(--xmc-space-2);
+  padding: var(--xmc-space-2) var(--xmc-space-3);
+  border-radius: var(--xmc-radius-md);
+  color: var(--xmc-fg);
+  text-decoration: none;
+  transition: background var(--xmc-transition-fast);
+}
+
+.xmc-sidebar__item:hover {
+  background: var(--xmc-bg-elev-2);
+  text-decoration: none;
+}
+
+.xmc-sidebar__item.is-active {
+  background: var(--xmc-accent-soft);
+  color: var(--xmc-fg);
+  font-weight: 600;
+}
+
+.xmc-sidebar__item.is-accent {
+  /* Evolution is the differentiation anchor — give it a subtle pulse. */
+  position: relative;
+}
+
+.xmc-sidebar__item.is-accent::after {
+  content: "";
+  position: absolute;
+  right: var(--xmc-space-3);
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--xmc-accent);
+  box-shadow: 0 0 0 3px var(--xmc-accent-soft);
+}
+
+/* ── Main ────────────────────────────────────────────────────────────── */
+
+.xmc-main {
+  background: var(--xmc-bg);
+  overflow-y: auto;
+  padding: var(--xmc-space-6);
+}
+
+.xmc-placeholder {
+  max-width: 680px;
+  margin: var(--xmc-space-8) auto;
+  padding: var(--xmc-space-6);
+  border: 1px dashed var(--xmc-border);
+  border-radius: var(--xmc-radius-lg);
+  background: var(--xmc-bg-elev);
+}
+
+.xmc-placeholder h2 {
+  font-size: var(--xmc-font-size-xl);
+  margin-bottom: var(--xmc-space-2);
+}
+
+.xmc-placeholder__subtitle {
+  color: var(--xmc-fg-muted);
+  margin-bottom: var(--xmc-space-4);
+}
+
+.xmc-placeholder__hint {
+  color: var(--xmc-fg-subtle);
+  font-size: var(--xmc-font-size-sm);
+}
+
+.xmc-placeholder code {
+  background: var(--xmc-bg-elev-2);
+  padding: 2px 6px;
+  border-radius: var(--xmc-radius-sm);
+}
+
+/* ── StatusBar ───────────────────────────────────────────────────────── */
+
+.xmc-statusbar {
+  display: flex;
+  align-items: center;
+  gap: var(--xmc-space-3);
+  padding: 0 var(--xmc-space-4);
+  background: var(--xmc-bg-elev);
+  border-top: 1px solid var(--xmc-border);
+  font-size: var(--xmc-font-size-xs);
+  color: var(--xmc-fg-muted);
+}
+
+.xmc-statusbar__hint {
+  flex: 1;
+}

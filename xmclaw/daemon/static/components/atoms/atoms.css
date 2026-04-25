@@ -1,0 +1,217 @@
+/*
+ * XMclaw — atom component styles
+ *
+ * One stylesheet for all 5 Phase 0 atoms. When an atom outgrows ~60 LOC of
+ * CSS, split it into its own file and add a <link> in index.html.
+ *
+ * Contract:
+ *   - Class names are BEM-ish with the `xmc-<atom>` prefix.
+ *   - Never hard-code colours or sizes — pull from tokens.css.
+ *   - Every interactive atom MUST have a :focus-visible ring.
+ */
+
+/* ── Button ──────────────────────────────────────────────────────────── */
+
+.xmc-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--xmc-space-2);
+  padding: var(--xmc-space-2) var(--xmc-space-4);
+  border-radius: var(--xmc-radius-md);
+  font-size: var(--xmc-font-size-base);
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--xmc-transition-fast),
+    color var(--xmc-transition-fast),
+    border-color var(--xmc-transition-fast);
+  border: 1px solid transparent;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.xmc-btn:disabled,
+.xmc-btn[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.xmc-btn--primary {
+  background: var(--xmc-accent);
+  color: var(--xmc-accent-fg);
+}
+
+.xmc-btn--primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.xmc-btn--secondary {
+  background: var(--xmc-bg-elev-2);
+  color: var(--xmc-fg);
+  border-color: var(--xmc-border);
+}
+
+.xmc-btn--secondary:hover:not(:disabled) {
+  background: var(--xmc-bg-elev);
+  border-color: var(--xmc-border-strong);
+}
+
+.xmc-btn--ghost {
+  color: var(--xmc-fg);
+  background: transparent;
+}
+
+.xmc-btn--ghost:hover:not(:disabled) {
+  background: var(--xmc-bg-elev-2);
+}
+
+.xmc-btn--danger {
+  background: var(--xmc-error);
+  color: #ffffff;
+}
+
+.xmc-btn--sm {
+  padding: var(--xmc-space-1) var(--xmc-space-3);
+  font-size: var(--xmc-font-size-sm);
+}
+
+.xmc-btn--lg {
+  padding: var(--xmc-space-3) var(--xmc-space-5);
+  font-size: var(--xmc-font-size-md);
+}
+
+/* ── Badge ───────────────────────────────────────────────────────────── */
+
+.xmc-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--xmc-space-1);
+  padding: 2px var(--xmc-space-2);
+  border-radius: var(--xmc-radius-pill);
+  font-size: var(--xmc-font-size-xs);
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.xmc-badge--info {
+  background: var(--xmc-accent-soft);
+  color: var(--xmc-accent);
+}
+
+.xmc-badge--success {
+  background: rgba(46, 160, 67, 0.2);
+  color: var(--xmc-success);
+}
+
+.xmc-badge--warn {
+  background: rgba(210, 153, 34, 0.2);
+  color: var(--xmc-warn);
+}
+
+.xmc-badge--error {
+  background: rgba(248, 81, 73, 0.2);
+  color: var(--xmc-error);
+}
+
+.xmc-badge--muted {
+  background: var(--xmc-bg-elev-2);
+  color: var(--xmc-fg-muted);
+}
+
+/* ── Icon ────────────────────────────────────────────────────────────── */
+
+.xmc-icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: currentColor;
+}
+
+.xmc-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.xmc-icon--lg {
+  width: 20px;
+  height: 20px;
+}
+
+/* ── Avatar ──────────────────────────────────────────────────────────── */
+
+.xmc-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--xmc-accent-soft);
+  color: var(--xmc-accent);
+  font-size: var(--xmc-font-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.xmc-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.xmc-avatar--lg {
+  width: 40px;
+  height: 40px;
+  font-size: var(--xmc-font-size-base);
+}
+
+/* ── Spinner ─────────────────────────────────────────────────────────── */
+
+.xmc-spinner {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--xmc-space-2);
+  color: var(--xmc-fg-muted);
+  font-size: var(--xmc-font-size-xs);
+}
+
+.xmc-spinner__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--xmc-border);
+  border-top-color: var(--xmc-accent);
+  animation: xmc-spin 700ms linear infinite;
+}
+
+.xmc-spinner--sm .xmc-spinner__dot {
+  width: 8px;
+  height: 8px;
+  border-width: 2px;
+}
+
+.xmc-spinner--lg .xmc-spinner__dot {
+  width: 16px;
+  height: 16px;
+  border-width: 3px;
+}
+
+@keyframes xmc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xmc-spinner__dot {
+    animation: none;
+    border-top-color: var(--xmc-fg-muted);
+  }
+}

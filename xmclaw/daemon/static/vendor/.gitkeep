@@ -1,0 +1,8 @@
+# This folder holds self-hosted copies of Preact + htm so XMclaw loads
+# without a CDN. The actual .js files are gitignored (see .gitignore) —
+# run:
+#
+#     python scripts/fetch_vendor.py
+#
+# to populate them. See docs/FRONTEND_DESIGN.md §11.3.1 (ADR-009) for the
+# dual-track loading strategy.

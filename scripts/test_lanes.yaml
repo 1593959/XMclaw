@@ -239,6 +239,18 @@ lanes:
   # separately in test_changed.py via direct path match) + the always-on
   # lane.
 
+  # Web UI scaffold (Epic #23 Phase 0). Triggers on any edit under the
+  # static tree + its fetcher script + the FRONTEND_DESIGN spec. The
+  # scaffold test exercises file presence, HTML wiring, Preact dual-track
+  # loading, and /ui/* reachability through the existing /ui mount.
+  ui:
+    triggers:
+      - "xmclaw/daemon/static/**"
+      - "scripts/fetch_vendor.py"
+      - "docs/FRONTEND_DESIGN.md"
+    tests:
+      - tests/unit/test_v2_ui_scaffold.py
+
   # Deployment templates (Epic #19). Cheap parse + drift checks on
   # Dockerfile / compose / fly.toml / systemd unit / launchd plist /
   # Windows service wrapper / install scripts. Runs whenever any of

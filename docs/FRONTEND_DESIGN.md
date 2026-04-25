@@ -1,9 +1,9 @@
 # XMclaw 前端重设计 — 详细开发文档
 
-> **状态**：v1 草案 · 2026-04-25
+> **状态**：初版蓝图 · 2026-04-25
 > **作者**：XMclaw Bot（基于 2026-04-25 同类竞品调研）
-> **适用范围**：`xmclaw/daemon/static/` 下的 Web UI 重做；为 Epic #23「前端 v2」做蓝图
-> **约束**：CLAUDE.md — **无 Node.js 构建步骤**、FastAPI `StaticFiles` 直出、WebSocket `/agent/v2/{session_id}`
+> **适用范围**：`xmclaw/daemon/static/` 下的 Web UI 首版实现；为 Epic #23「前端」做蓝图
+> **约束**：CLAUDE.md — **无 Node.js 构建步骤**、FastAPI `StaticFiles` 直出、WebSocket `/agent/v2/{session_id}`（后端 agent-v2 版本，与 UI 无关）
 
 ---
 
@@ -100,18 +100,18 @@
 
 **反面定义**：不是"后端推什么、前端显示什么"。**正面定义**：前端可以在用户许可的范围内**直接驱动 daemon**，具备以下 10 个高权动作（→ 对应 REST/WS endpoint）：
 
-| 动作 | 端点 | 当前状态 | v2 状态 |
-| --- | --- | --- | --- |
-| 创建 / 恢复 / 删除会话 | `POST/DELETE /v2/sessions` | 有 | 保留 |
-| 切换 / 创建 / 命名 agent | `POST /v2/agents`, `PATCH /v2/agents/{id}` | 未接 | **接入** |
-| **批准 / 拒绝工具调用** | `POST /v2/approvals/{id}` | 后端有、UI 无 | **接入**（见 §8） |
-| **中断流式** | WS `{type: "cancel"}` | 不稳定 | **修** + UI 按钮 |
-| **编辑参数后重放** | `POST /v2/tool/retry` | 无 | **新增** |
-| **回到事件点重分叉** | `POST /v2/sessions/{id}/rewind` | 无 | **新增**（借 SQLite bus） |
-| **升 / 降 skill 版本** | `POST /v2/skills/{name}/promote` | 有 | 接入 |
-| **下载 / 恢复备份** | `GET /v2/backups/{name}`, `POST /v2/backups/{name}/restore` | CLI 有、UI 无 | **接入** |
-| **跑 doctor + 自修** | `GET /v2/doctor`, `POST /v2/doctor/fix` | 有 | 接入 |
-| **切主题 / 密度** | 前端存 localStorage | 有 | 保留 |
+| 动作 | 端点 | UI 目标 |
+| --- | --- | --- |
+| 创建 / 恢复 / 删除会话 | `POST/DELETE /v2/sessions` | 接入 |
+| 切换 / 创建 / 命名 agent | `POST /v2/agents`, `PATCH /v2/agents/{id}` | **接入** |
+| **批准 / 拒绝工具调用** | `POST /v2/approvals/{id}` | **接入**（见 §8） |
+| **中断流式** | WS `{type: "cancel"}` | **接入** + UI 按钮 |
+| **编辑参数后重放** | `POST /v2/tool/retry` | **新增** |
+| **回到事件点重分叉** | `POST /v2/sessions/{id}/rewind` | **新增**（借 SQLite bus） |
+| **升 / 降 skill 版本** | `POST /v2/skills/{name}/promote` | 接入 |
+| **下载 / 恢复备份** | `GET /v2/backups/{name}`, `POST /v2/backups/{name}/restore` | **接入** |
+| **跑 doctor + 自修** | `GET /v2/doctor`, `POST /v2/doctor/fix` | 接入 |
+| **切主题 / 密度** | 前端存 localStorage | 接入 |
 
 ### 2.3 便捷（Keyboard-first、One-handed）
 
@@ -123,7 +123,7 @@
 
 ### 2.4 功能完善（覆盖率清单）
 
-v2 必须一等覆盖以下 **16 个领域**（当前 UI 14 个面板中 6 个是空壳，见 §3.3）：
+UI 首版必须一等覆盖以下 **16 个领域**：
 
 Chat · Agents · Skills · Memory · Evolution · Tools · MCP · Security · Cost/Tokens · Files · Sessions · Timeline · Doctor · Config · Backup · About
 
@@ -185,24 +185,18 @@ Chat · Agents · Skills · Memory · Evolution · Tools · MCP · Security · C
 
 **折叠规则**：前 6 个总展开；7-12 归入"更多"可展开（抄 Open WebUI 的 sidebar 紧凑）。
 
-### 3.3 现存 14 个 workspace panel 的处置
+### 3.3 右侧 workspace 内容规划
 
-| 当前面板 | 现状 | v2 处置 |
-| --- | --- | --- |
-| activity | 有 | 改名 "Live" — 流式事件流（默认 tab） |
-| todos | 有 | 保留 |
-| timeline | 有 | 保留 + 加 scrubber |
-| sessions | 有 | **升格**到 Sidebar 的 Chat 子栏 |
-| files | 壳 | **接入** `/v2/files` 端点（workspace FS） |
-| skills | 壳 | **升格**到 Sidebar 的 Skills 页，workspace 里保留"当前会话用到的 skill" mini 视图 |
-| tools | 壳 | 同上：Sidebar Tools + workspace mini 视图 |
-| mcp | 壳 | 升 Sidebar |
-| config | 壳 | 升 Sidebar Settings |
-| agents | 壳 | 升 Sidebar |
-| models | 壳 | 归并到 Sidebar Settings 下的 "LLM Providers" |
-| security | 壳 | 升 Sidebar |
-| tokens | 有 | 保留 workspace，叠加 dashboard 链接 |
-| about | 有 | 升 Status Bar 的 version 点击弹窗 |
+Chat 主页右侧的 workspace 面板按以下分组：
+
+- **Live**（默认 tab）— 流式事件流（events.db 实时订阅）
+- **Todos** — 当前会话的 task list
+- **Timeline** — 事件轴 + scrubber（点某事件可 rewind）
+- **Files** — 当前 workspace 的文件树（`/v2/files`）
+- **Tokens** — 会话内 token / cost 计数（链接到 Insights 大面板）
+
+Skills / Tools / MCP / Agents / Security / Settings 等都在左侧 Sidebar 独立成页，
+workspace 里只保留"当前会话涉及到的子集"mini 视图（避免一个页面塞不下）。
 
 ### 3.4 路由（URL 结构）
 
@@ -1090,6 +1084,22 @@ High-contrast 下加粗到 3px。
 
 **兜底方案**：如果 preact ESM CDN 在中国访问不稳，fallback 到 **Alpine.js 自托管**（把 15 KB alpine.min.js 放进 `static/vendor/`）。
 
+### 11.3.1 最终决策（Phase 0 敲定，2026-04-25）
+
+**选定 Preact + htm，双轨加载策略**：
+
+1. **主加载路径**：`https://esm.sh/preact@10` + `https://esm.sh/htm@3`（ESM module）
+2. **自托管兜底**：`static/vendor/preact.min.js` + `static/vendor/htm.min.js`（`scripts/fetch_vendor.py` 落盘）
+3. **运行时选择**：`bootstrap.js` 先试 CDN，5 秒超时或解析失败自动切自托管；结果写 `localStorage.xmc_bootstrap_source` 便于诊断
+4. **离线/内网场景**：`config.json` 里给 `frontend.assets_mode = "local"` 强制走自托管，直接跳过 CDN 探测
+
+理由：
+- 不让"中国访问性"阻塞开发节奏（CDN 通就省 15 KB 首屏带宽，不通就退自托管）
+- 用户只需一个开关就切换，不牵涉代码改动
+- Phase 0 的实际任务是**把骨架落下来**，不是在这里决网络路径 — 两个路径都留口子
+
+**未选 Alpine 的原因**：经过 §11.3 重审，Alpine 的模板指令（`x-for`/`x-if`/`x-show`）在超过 Chat 页规模后会让 HTML 模板越写越像 "PHP 回归"，与 §5 的 "组件化 atoms/molecules/organisms" 心智冲突；而 Preact + htm 的模板字符串本质就是 JSX，能严格按 §5 拆文件、和 §1.4 的"单文件 ≤ 500 行"硬约束天然契合。Alpine 作为 Plan B 保留在 §11.3 兜底段，短期不落代码。
+
 ### 11.4 放弃的能力（诚实列出）
 
 - TS 类型检查（只能靠 JSDoc `@typedef`）
@@ -1101,14 +1111,14 @@ High-contrast 下加粗到 3px。
 
 ## 12. 分阶段实施路线
 
-> 作为 **Epic #23 · 前端 v2** 提交到 `docs/DEV_ROADMAP.md` §4；下列五阶段严格串行，每阶段一个 milestone demo。
+> 作为 **Epic #23 · 前端（Web UI 首版）** 提交到 `docs/DEV_ROADMAP.md` §4；下列阶段严格串行，每阶段一个 milestone demo。
 
 ### Phase 0 · 技术预研（1 周）
 
-- [ ] 决定最终选型（Preact+htm vs Alpine）并在 `docs/FRONTEND_DESIGN.md` §11 加"最终决策"条目
-- [ ] 写 `xmclaw/daemon/static/v2/` 目录骨架 + tokens.css + router.js
-- [ ] 验证 ESM CDN 在中国访问性（如失败切自托管）
-- [ ] 写 5 个 atom 组件 + 单元测试（`tests/ui/` 用 pytest + selenium 或 playwright；不用 vitest）
+- [x] 决定最终选型（Preact+htm vs Alpine）并在 `docs/FRONTEND_DESIGN.md` §11 加"最终决策"条目
+- [x] 写 `xmclaw/daemon/static/` 目录骨架 + tokens.css + router.js + store.js
+- [x] 双轨加载器：ESM CDN + `scripts/fetch_vendor.py` 自托管兜底
+- [x] 写 5 个 atom 组件 + pytest 门卫测试（文件存在 / HTML 连线 / 500 行预算 / `/ui/*` 可达）
 
 ### Phase 1 · Chat 骨架 + 连通性（2 周）
 
@@ -1138,7 +1148,7 @@ High-contrast 下加粗到 3px。
 - [ ] Backup 列表 + restore
 - [ ] Doctor + auto-fix
 - [ ] Settings 全量表单
-- [ ] 验收：v1 的 14 面板 100% 在 v2 有对等或升级后的实现
+- [ ] 验收：§2.4 的 16 个领域在 UI 上都有入口（Live / Todos / Timeline / Files / Sessions / Agents / Skills / Memory / Tools / MCP / Security / Backup / Doctor / Insights / Settings / Evolution）
 
 ### Phase 4 · 进化 & Insights（2 周）
 
@@ -1157,30 +1167,29 @@ High-contrast 下加粗到 3px。
 - [ ] 性能回归：Chrome Performance 录一份回放 ≥ 55fps
 - [ ] 验收：盲人 / 弱视 / 色盲用户能完整走完 "新会话 → 批准工具 → 看结果 → 导出" 五步
 
-### Phase 6 · v2 切换（1 周）
+### Phase 6 · 发布打磨（1 周）
 
-- [ ] `/ui/` 默认指向 v2；v1 保留 `/ui/legacy/` 一个版本
-- [ ] v2 → v1 回滚脚本（改 `app.py` 的 StaticFiles 挂载即可）
-- [ ] 更新 `docs/AGENTS.md` 里 static 目录的描述
+- [ ] 端到端 smoke：走 "新会话 → 流式回答 → 批准工具 → rewind → 查 Evolution" 全路径
+- [ ] 更新 README + 截图
 - [ ] PR 合并后发 v0.3.0
 
 ---
 
-## 附录 A · 现存前端 vs v2 差异一览
+## 附录 A · 首版覆盖范围对照（§2.4 16 个领域 → UI 实现点）
 
-| 维度 | 现状 v1 | v2 目标 |
-| --- | --- | --- |
-| 行数 | 2645 行 vanilla | 目标 ≤ 4000 行（含 12 页） |
-| 架构 | 单文件 app.js 1140 行 | 页 + 组件分文件，每文件 ≤ 500 |
-| 路由 | 无 | history.pushState |
-| 快捷键 | 无 | §7.1 完整 registry |
-| 审批 UI | 无 | §8 完整 |
-| 进化可视化 | 无 | §4.4 |
-| Rewind | 无 | §6.5 |
-| 主题 | 2 档（light/dark） | 5 档 |
-| I18n | 无 | zh/en 首批 |
-| a11y | 基础 | WCAG AA + HC 主题 AAA |
-| 测试 | 0 | 单元 + e2e |
+| 维度 | UI 目标 |
+| --- | --- |
+| 行数 | ≤ 4000 行（含 12 页） |
+| 架构 | 页 + 组件分文件，每文件 ≤ 500 |
+| 路由 | history.pushState |
+| 快捷键 | §7.1 完整 registry |
+| 审批 UI | §8 完整 |
+| 进化可视化 | §4.4 |
+| Rewind | §6.5 |
+| 主题 | 5 档（light/dark/HC-AAA/VSCode host/density-compact） |
+| I18n | zh/en 首批 |
+| a11y | WCAG AA + HC 主题 AAA |
+| 测试 | 单元（pytest）+ e2e（Playwright） |
 
 ## 附录 B · 关键 REST / WS 端点清单（需后端补齐的用 ★ 标）
 
@@ -1265,6 +1274,8 @@ WS     /agent/v2/{session_id}?token={pairing}
 | ADR-006 | 流式 Markdown：rAF + token keyed diff | 2026-04-25 | 抄 Open WebUI `Markdown.svelte:62-87` |
 | ADR-007 | gRPC 风格类型化 IPC 暂不引入 | 2026-04-25 | §1.3 有记录；待 WS 字段 > 30 时再考虑走 proto |
 | ADR-008 | 组件单文件 ≤ 500 行硬约束 | 2026-04-25 | §1.4 反教材 |
+| ADR-009 | **Phase 0 敲定 Preact + htm 为最终框架**（升级 ADR-002 的"推荐"为"决策"）；双轨加载：esm.sh CDN 为主 + `static/vendor/` 自托管兜底 + `config.json frontend.assets_mode` 可强制本地 | 2026-04-25 | §11.3.1；不让网络访问性阻塞节奏；Alpine 作 Plan B 留底不落代码 |
+| ADR-010 | 前端产物直接在 `xmclaw/daemon/static/`，挂 `/ui/`；不做 "旧 UI 并存" 的二级目录（XMclaw 从未发布过旧 Web UI，没有历史负担） | 2026-04-25 | 一次做对；避免任何 "v1 vs v2" 心智税 |
 
 ## 附录 D · 调研工件位置
 
@@ -1276,6 +1287,6 @@ docs/FRONTEND_DESIGN.md              # 本文档
 
 ---
 
-**本文档目标**：在不引入 Node.js 构建、不打破 FastAPI StaticFiles 模型的前提下，把 XMclaw 前端从"还凑合能用的 v1"推到"local-first agent runtime 里 UI 最完整 + 唯一有自进化可视化"的定位。
+**本文档目标**：在不引入 Node.js 构建、不打破 FastAPI StaticFiles 模型的前提下，把 XMclaw 前端一次做到"local-first agent runtime 里 UI 最完整 + 唯一有自进化可视化"的定位。
 
 **下一步**：把本文档作为 Epic #23 的开工依据；先跑 Phase 0 预研，两周内产出最终技术选型 + 骨架目录。

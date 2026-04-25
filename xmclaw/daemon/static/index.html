@@ -1,387 +1,50 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="dark">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>XMclaw</title>
-  <link rel="stylesheet" href="./style.css">
-</head>
-<body>
-  <div class="app">
+<!--
+  XMclaw Web UI · Phase 0 scaffold
+  Spec: docs/FRONTEND_DESIGN.md
+  Tech: Preact + htm via ESM (see bootstrap.js for CDN / vendor switch)
+  No build step. Edit + refresh.
+-->
+<html lang="zh-CN" data-theme="dark" data-density="comfortable">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>XMclaw</title>
 
-    <!-- ── 左侧:品牌 + 导航分组 + 设置 ───────────────────────────── -->
-    <aside class="sidebar" id="sidebar">
-      <div class="brand">
-        <span class="lobster">🦞</span>
-        <div>
-          <div class="brand-name">XMclaw</div>
-          <div class="brand-sub">本地优先 AI 代理</div>
-        </div>
-        <span class="brand-version" id="brand-version">v—</span>
-      </div>
+    <!-- Design tokens first so every subsequent stylesheet can reference vars. -->
+    <link rel="stylesheet" href="./styles/tokens.css" />
+    <link rel="stylesheet" href="./styles/reset.css" />
+    <link rel="stylesheet" href="./styles/layout.css" />
+    <link rel="stylesheet" href="./components/atoms/atoms.css" />
 
-      <button id="new-session" class="btn btn-primary btn-wide">
-        <span class="icon">+</span>
-        <span>新对话</span>
-      </button>
+    <!--
+      bootstrap.js does two jobs:
+        1. Resolve Preact + htm (CDN first, vendor fallback).
+        2. Dynamic-import ./app.js once the framework is ready.
+      We keep it as a module so top-level await is available.
+    -->
+    <script type="module" src="./bootstrap.js"></script>
+  </head>
+  <body>
+    <!--
+      Three-region shell. Phase 0 renders placeholder pages so the visual
+      system (tokens + layout grid + focus ring) and the routing + store
+      wiring can be exercised end-to-end. Phase 1 replaces the placeholders
+      with the real Chat / Sidebar / StatusBar per FRONTEND_DESIGN.md §3.1.
+    -->
+    <div id="root" class="xmc-app" aria-busy="true">
+      <noscript>
+        <p style="padding:1rem">
+          XMclaw requires JavaScript. Enable it and refresh.
+        </p>
+      </noscript>
+    </div>
 
-      <div class="nav-group">
-        <div class="section-label">
-          <span>会话</span>
-          <span id="session-count" class="chip-tiny">0</span>
-        </div>
-        <nav id="session-list" class="session-list"
-             aria-label="聊天会话列表"></nav>
-      </div>
-
-      <div class="nav-group">
-        <div class="section-label"><span>控制</span></div>
-        <button class="nav-item" data-ws-tab="activity">
-          <span class="nav-icon">◇</span><span>活动</span>
-          <span class="nav-badge" id="nav-badge-activity"></span>
-        </button>
-        <button class="nav-item" data-ws-tab="todos">
-          <span class="nav-icon">✓</span><span>待办</span>
-          <span class="nav-badge" id="nav-badge-todos"></span>
-        </button>
-        <button class="nav-item" data-ws-tab="timeline">
-          <span class="nav-icon">⟳</span><span>事件流</span>
-          <span class="nav-badge" id="nav-badge-timeline"></span>
-        </button>
-        <button class="nav-item" data-ws-tab="sessions">
-          <span class="nav-icon">⋯</span><span>所有会话</span>
-        </button>
-      </div>
-
-      <div class="nav-group">
-        <div class="section-label"><span>工作区</span></div>
-        <button class="nav-item" data-ws-tab="files">
-          <span class="nav-icon">▤</span><span>文件</span>
-        </button>
-        <button class="nav-item" data-ws-tab="skills">
-          <span class="nav-icon">✦</span><span>技能</span>
-        </button>
-        <button class="nav-item" data-ws-tab="tools">
-          <span class="nav-icon">⚙</span><span>工具</span>
-        </button>
-        <button class="nav-item" data-ws-tab="mcp">
-          <span class="nav-icon">◈</span><span>MCP</span>
-        </button>
-        <button class="nav-item" data-ws-tab="config">
-          <span class="nav-icon">◐</span><span>运行配置</span>
-        </button>
-      </div>
-
-      <div class="nav-group">
-        <div class="section-label"><span>设置</span></div>
-        <button class="nav-item" data-ws-tab="agents">
-          <span class="nav-icon">☺</span><span>智能体</span>
-        </button>
-        <button class="nav-item" data-ws-tab="models">
-          <span class="nav-icon">◉</span><span>模型</span>
-        </button>
-        <button class="nav-item" data-ws-tab="security">
-          <span class="nav-icon">🛡</span><span>安全</span>
-        </button>
-        <button class="nav-item" data-ws-tab="tokens">
-          <span class="nav-icon">$</span><span>Token 消耗</span>
-        </button>
-        <button class="nav-item" data-ws-tab="about">
-          <span class="nav-icon">ⓘ</span><span>关于</span>
-        </button>
-      </div>
-
-      <div class="sidebar-footer">
-        <div class="row-between">
-          <div id="conn-indicator" class="conn conn-down">
-            <span class="dot"></span>
-            <span id="conn-text">未连接</span>
-          </div>
-          <button id="theme-btn" class="btn-ghost btn-icon"
-                  title="切换主题" aria-label="切换主题">
-            <span id="theme-icon">◐</span>
-          </button>
-        </div>
-        <div class="build" id="build-info">—</div>
-      </div>
-    </aside>
-
-    <!-- ── 中间:聊天 ─────────────────────────────────────────────── -->
-    <main class="main">
-      <header class="topbar">
-        <div class="topbar-left">
-          <button class="btn-ghost btn-icon mobile-only" id="toggle-sidebar"
-                  aria-label="展开会话列表">☰</button>
-          <div class="agent-avatar">🦞</div>
-          <div class="agent-meta">
-            <div class="agent-name" id="chat-title">新对话</div>
-            <div class="agent-sub" id="agent-sub">—</div>
-          </div>
-        </div>
-        <div class="topbar-right">
-          <button id="ultrathink-btn" class="btn-ghost btn-icon"
-                  title="深度思考模式" aria-label="深度思考模式">
-            <span class="icon">🧠</span>
-          </button>
-          <div class="model-picker">
-            <button class="model-btn" id="model-btn" aria-haspopup="true">
-              <span class="model-dot"></span>
-              <span id="model-name">—</span>
-              <span class="model-caret">▾</span>
-            </button>
-            <div class="model-menu" id="model-menu" hidden>
-              <div class="model-menu-label">可用模型</div>
-              <div id="model-list" class="model-list">
-                <div class="ws-empty">加载中…</div>
-              </div>
-            </div>
-          </div>
-          <span class="session-id" id="session-id"></span>
-          <button class="btn-ghost btn-icon" id="toggle-workspace"
-                  title="切换工作区"
-                  aria-label="切换工作区">⌘</button>
-        </div>
-      </header>
-
-      <section class="events-wrap">
-        <div id="events" class="events"></div>
-
-        <div class="welcome" id="welcome" hidden>
-          <div class="welcome-brand">
-            <span class="welcome-lobster">🦞</span>
-          </div>
-          <h2 class="welcome-title">你好,今天想做点什么?</h2>
-          <p class="welcome-sub">XMclaw 是本地优先的 AI 代理,能读写文件、跑 shell、查网络。</p>
-          <div class="welcome-cards">
-            <button class="welcome-card" data-suggest="列出我桌面上的所有文件,按类型分组">
-              <span class="welcome-card-icon">▤</span>
-              <div>
-                <div class="welcome-card-title">列出桌面文件</div>
-                <div class="welcome-card-sub">按类型分组展示</div>
-              </div>
-            </button>
-            <button class="welcome-card" data-suggest="制定一个 5 步的计划来优化这个项目,写成 todo 列表,然后每完成一步更新它">
-              <span class="welcome-card-icon">✓</span>
-              <div>
-                <div class="welcome-card-title">制定计划</div>
-                <div class="welcome-card-sub">用 todo 工具追踪进度</div>
-              </div>
-            </button>
-            <button class="welcome-card" data-suggest="告诉我你能做什么,有哪些工具">
-              <span class="welcome-card-icon">✦</span>
-              <div>
-                <div class="welcome-card-title">能力概览</div>
-                <div class="welcome-card-sub">看看可用的工具清单</div>
-              </div>
-            </button>
-            <button class="welcome-card" data-suggest="这台机器上装了什么版本的 Python?跑一下 python --version">
-              <span class="welcome-card-icon">⚙</span>
-              <div>
-                <div class="welcome-card-title">跑个 shell</div>
-                <div class="welcome-card-sub">采一下环境信息</div>
-              </div>
-            </button>
-          </div>
-        </div>
-
-        <div class="composer">
-          <form id="send-form" class="composer-row">
-            <div class="composer-grow">
-              <textarea id="user-input" rows="1" maxlength="10000"
-                placeholder="让 XMclaw 读文件、搜网页、跑 shell…(Enter 发送,Shift+Enter 换行)"></textarea>
-            </div>
-            <div class="composer-actions">
-              <button type="button" class="btn-ghost btn-icon" id="attach-btn"
-                      title="附件 (即将上线)"
-                      aria-label="附件" disabled>
-                <span class="icon">📎</span>
-              </button>
-              <button type="button" class="btn-ghost btn-icon" id="voice-btn"
-                      title="语音输入 (即将上线)"
-                      aria-label="语音输入" disabled>
-                <span class="icon">🎤</span>
-              </button>
-              <div class="context-ring" id="context-ring"
-                   title="上下文用量">
-                <svg viewBox="0 0 32 32" aria-hidden="true">
-                  <circle class="ring-track" cx="16" cy="16" r="13"
-                          fill="none" stroke-width="3"></circle>
-                  <circle class="ring-fill" cx="16" cy="16" r="13"
-                          fill="none" stroke-width="3"
-                          stroke-dasharray="81.68" stroke-dashoffset="81.68"
-                          transform="rotate(-90 16 16)"></circle>
-                </svg>
-                <span class="ring-label" id="ring-label">0%</span>
-              </div>
-              <button type="submit" class="btn btn-primary send-btn"
-                      aria-label="发送">
-                <span class="icon">↑</span>
-              </button>
-            </div>
-          </form>
-          <div class="composer-hint">
-            <span id="cost-ticker" class="cost-ticker"></span>
-            <span id="ultrathink-chip" class="chip chip-ultra" hidden>🧠 深度思考</span>
-            <span class="spacer"></span>
-            <span id="char-counter" class="char-counter">0/10000</span>
-          </div>
-        </div>
-      </section>
-    </main>
-
-    <!-- ── 右侧:工作区(由左栏导航驱动)──────────────────────────── -->
-    <aside class="workspace" id="workspace">
-      <div class="ws-header">
-        <div class="ws-title" id="ws-title">活动</div>
-        <button class="btn-ghost btn-icon" id="ws-close"
-                title="关闭工作区"
-                aria-label="关闭工作区">×</button>
-      </div>
-
-      <div class="ws-panel active" data-panel="activity">
-        <div class="ws-label">工具调用</div>
-        <div id="ws-activity" class="ws-activity">
-          <div class="ws-empty">暂无工具调用。</div>
-        </div>
-      </div>
-
-      <div class="ws-panel" data-panel="todos">
-        <div class="ws-label">待办列表</div>
-        <div class="ws-todos-hint dim">
-          让代理调用 <code>todo_write</code> 建一个待办清单,
-          进度会实时显示在这里。
-        </div>
-        <div id="ws-todos" class="ws-todos">
-          <div class="ws-empty">还没有待办项。</div>
-        </div>
-      </div>
-
-      <div class="ws-panel" data-panel="timeline">
-        <div class="ws-label">
-          事件流
-          <button class="btn-ghost" id="timeline-clear"
-                  style="float:right;font-size:11px;padding:2px 8px">
-            清空
-          </button>
-        </div>
-        <div class="dim" style="font-size:11px;margin-bottom:6px">
-          按时间倒序显示所有 BehavioralEvent。点一条展开 payload。
-        </div>
-        <div id="ws-timeline" class="ws-timeline">
-          <div class="ws-empty">暂无事件。</div>
-        </div>
-      </div>
-
-      <div class="ws-panel" data-panel="sessions">
-        <div class="ws-label">所有会话</div>
-        <div id="ws-sessions" class="ws-sessions">
-          <div class="ws-empty">从你浏览器本地存储读取。</div>
-        </div>
-      </div>
-
-      <div class="ws-panel" data-panel="files">
-        <div class="ws-label">文件浏览</div>
-        <div class="file-browser-bar">
-          <input type="text" id="fb-path" class="fb-path"
-                 placeholder="输入绝对路径(如 C:\Users\...\Desktop)">
-          <button class="btn" id="fb-go">列出</button>
-        </div>
-        <div id="ws-files" class="ws-files">
-          <div class="ws-empty">输入一个路径,查看里面的文件。</div>
-        </div>
-      </div>
-
-      <div class="ws-panel" data-panel="skills">
-        <div class="ws-label">已安装技能</div>
-        <div id="ws-skills" class="ws-tools">
-          <div class="ws-empty">加载中…</div>
-        </div>
-      </div>
-
-      <div class="ws-panel" data-panel="tools">
-        <div class="ws-label">可用工具</div>
-        <div id="ws-tools" class="ws-tools">
-          <div class="ws-empty">加载中…</div>
-        </div>
-      </div>
-
-      <div class="ws-panel" data-panel="mcp">
-        <div class="ws-label">MCP 服务器</div>
-        <div id="ws-mcp" class="ws-tools">
-          <div class="ws-empty">加载中…</div>
-        </div>
-      </div>
-
-      <div class="ws-panel" data-panel="config">
-        <div class="ws-label">运行配置</div>
-        <div class="dim" style="font-size:11px;margin-bottom:6px">
-          只读快照。改动请编辑 <code>daemon/config.json</code>
-          并重启 daemon(<code>xmclaw restart</code>)。
-        </div>
-        <div class="ws-config" id="ws-config">
-          <div class="ws-empty">加载 /api/v2/config 中…</div>
-        </div>
-      </div>
-
-      <div class="ws-panel" data-panel="agents">
-        <div class="ws-label">智能体</div>
-        <div id="ws-agents" class="ws-agents">
-          <div class="ws-empty">加载中…</div>
-        </div>
-      </div>
-
-      <div class="ws-panel" data-panel="models">
-        <div class="ws-label">已配置模型</div>
-        <div id="ws-models" class="ws-tools">
-          <div class="ws-empty">加载中…</div>
-        </div>
-      </div>
-
-      <div class="ws-panel" data-panel="security">
-        <div class="ws-label">安全态势</div>
-        <div class="ws-security">
-          <ul class="kv">
-            <li><span>认证</span>  <span id="sec-auth">—</span></li>
-            <li><span>沙箱</span>  <span id="sec-sandbox">—</span></li>
-            <li><span>Shell</span> <span id="sec-bash">—</span></li>
-            <li><span>网络</span>  <span id="sec-web">—</span></li>
-          </ul>
-          <p class="dim">从运行中 daemon 的工具清单和配对令牌检查推断。</p>
-        </div>
-      </div>
-
-      <div class="ws-panel" data-panel="tokens">
-        <div class="ws-label">Token 消耗</div>
-        <div class="ws-tokens">
-          <ul class="kv">
-            <li><span>提示</span> <span id="tok-prompt">0</span></li>
-            <li><span>回复</span> <span id="tok-completion">0</span></li>
-            <li><span>合计</span> <span id="tok-total">0</span></li>
-            <li><span>预估成本</span> <span id="tok-cost">$0.0000</span></li>
-          </ul>
-          <p class="dim">当前会话累计,开新对话时重置。</p>
-        </div>
-      </div>
-
-      <div class="ws-panel" data-panel="about">
-        <div class="ws-label">关于</div>
-        <div class="ws-about">
-          <p><strong>XMclaw</strong> 是本地优先 AI 代理。
-             它运行在你的机器上,唯一的对外网络调用是你配置的 LLM 提供商,
-             以及代理替你抓取的那些 URL。</p>
-          <ul class="kv">
-            <li><span>daemon</span> <span id="about-daemon">—</span></li>
-            <li><span>模型</span>   <span id="about-model">—</span></li>
-            <li><span>工具</span>   <span id="about-tools">—</span></li>
-          </ul>
-          <p class="dim">会话上下文存在 daemon 内存里,浏览器刷新后可恢复。
-             重启 daemon 时会清空。</p>
-        </div>
-      </div>
-    </aside>
-
-  </div>
-
-  <script src="./app.js"></script>
-</body>
+    <!--
+      Bootstrap source indicator — wired in bootstrap.js. Lets us debug
+      "is CDN reachable?" without opening devtools.
+    -->
+    <div id="xmc-bootstrap-status" role="status" aria-live="polite" hidden></div>
+  </body>
 </html>
