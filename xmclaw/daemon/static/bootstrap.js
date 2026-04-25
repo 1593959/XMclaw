@@ -52,22 +52,12 @@ function resolveMode() {
 }
 
 function timeoutImport(url, ms) {
-  // Promise.race leaves the loser dangling — if we don't cancel the
-  // timer when the import resolves first, the rejected timeout still
-  // fires later and spawns "Uncaught (in promise) timeout importing ..."
-  // noise in the console (and, in pathological cases where the slow
-  // CDN comes back after we already fell back to vendor, double-loads
-  // app.js because two paths complete). Always clearTimeout on settle.
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`timeout importing ${url}`)),
-      ms
-    );
-  });
-  return Promise.race([import(url), timeout]).finally(() =>
-    clearTimeout(timer)
-  );
+  return Promise.race([
+    import(url),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`timeout importing ${url}`)), ms)
+    ),
+  ]);
 }
 
 async function loadFromCdn() {

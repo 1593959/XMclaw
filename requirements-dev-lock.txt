@@ -27,6 +27,8 @@ certifi==2026.2.25
     # via
     #   httpcore
     #   httpx
+cffi==2.0.0
+    # via cryptography
 click==8.3.2
     # via
     #   pip-tools
@@ -39,6 +41,8 @@ colorama==0.4.6
     #   pytest
     #   tqdm
     #   uvicorn
+cryptography==46.0.7
+    # via xmclaw (pyproject.toml)
 distro==1.9.0
     # via
     #   anthropic
@@ -99,6 +103,8 @@ pluggy==1.6.0
     # via pytest
 prompt-toolkit==3.0.52
     # via questionary
+pycparser==3.0
+    # via cffi
 pydantic==2.13.2
     # via
     #   anthropic
@@ -157,6 +163,7 @@ typing-extensions==4.15.0
     # via
     #   anthropic
     #   anyio
+    #   cryptography
     #   exceptiongroup
     #   fastapi
     #   mypy

@@ -1,8 +1,11 @@
-"""Epic #16 Phase 1 — xmclaw.utils.secrets unit tests.
+"""Epic #16 Phase 1 + Phase 2 — xmclaw.utils.secrets unit tests.
 
-Covers the three-tier precedence (env > file > keyring) plus the CLI
-shell. Keyring is stubbed out via monkeypatch so the tests run on any
-machine including a bare CI worker with no D-Bus / Credential Manager.
+Covers the four-tier precedence (env > encrypted > file > keyring) plus
+the CLI shell. Keyring is stubbed out via monkeypatch so the tests run
+on any machine including a bare CI worker with no D-Bus / Credential
+Manager. The Fernet layer uses real ``cryptography`` (it's a base dep
+from Phase 2 on) — if the import fails at collection, the Phase 2
+tests skip with a clear reason so Phase 1 coverage still runs.
 """
 from __future__ import annotations
 
@@ -24,12 +27,16 @@ from xmclaw.utils import secrets as secrets_mod
 def _isolate_secrets_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pin secrets.json under tmp_path so tests can't touch the real
-    ``~/.xmclaw/secrets.json``. The module respects XMC_SECRETS_PATH."""
+    """Pin both the plaintext and the encrypted stores under ``tmp_path``
+    so tests can't touch ``~/.xmclaw/secrets.json`` or
+    ``~/.xmclaw.secret/``. The module honors ``XMC_SECRETS_PATH`` (plain
+    file) and ``XMC_SECRET_DIR`` (encrypted root)."""
     monkeypatch.setenv("XMC_SECRETS_PATH", str(tmp_path / "secrets.json"))
+    monkeypatch.setenv("XMC_SECRET_DIR", str(tmp_path / ".xmclaw.secret"))
     # Also clear any XMC_SECRET_* env vars bleeding from the host.
+    # (Skip XMC_SECRET_DIR since we just set it.)
     for key in list(os.environ):
-        if key.startswith("XMC_SECRET_"):
+        if key.startswith("XMC_SECRET_") and key != "XMC_SECRET_DIR":
             monkeypatch.delenv(key, raising=False)
 
 
@@ -129,7 +136,9 @@ def test_non_dict_secrets_file_is_treated_as_empty(tmp_path: Path) -> None:
 def test_file_write_uses_0600_on_posix(tmp_path: Path) -> None:
     if os.name != "posix":
         pytest.skip("chmod semantics are POSIX-only")
-    secrets_mod.set_secret("k", "v")
+    # Phase 2 default is "encrypted"; keep the POSIX mode check on the
+    # legacy file layer by opting in explicitly.
+    secrets_mod.set_secret("k", "v", backend="file")
     path = tmp_path / "secrets.json"
     assert path.exists()
     mode = path.stat().st_mode & 0o777
@@ -319,10 +328,304 @@ def test_cli_list_secrets_marks_env_overrides(
 
 def test_secrets_file_json_is_stable_and_sorted(tmp_path: Path) -> None:
     """The file layer writes sort_keys=True + trailing newline — diff-
-    friendly for operators who check it into their dotfiles repo."""
-    secrets_mod.set_secret("z", "last")
-    secrets_mod.set_secret("a", "first")
+    friendly for operators who check it into their dotfiles repo.
+
+    Phase 2 default is ``encrypted``; this test pins backend="file" on
+    purpose to regression-guard the legacy write shape.
+    """
+    secrets_mod.set_secret("z", "last", backend="file")
+    secrets_mod.set_secret("a", "first", backend="file")
     raw = (tmp_path / "secrets.json").read_text(encoding="utf-8")
     assert raw.endswith("\n")
     parsed = json.loads(raw)
     assert list(parsed) == ["a", "z"]
+
+
+# ── Phase 2: Fernet encrypted backend ──────────────────────────────────
+
+# Skip the whole Phase 2 block at collection time if cryptography is
+# missing — it's a base dep, but we want Phase 1 coverage to still run
+# on a stripped-down environment (e.g. a vendored install with no
+# cryptography). The `is_encryption_available()` helper is the public
+# feature gate doctor / CLI use too.
+pytestmark_phase2 = pytest.mark.skipif(
+    not secrets_mod.is_encryption_available(),
+    reason="cryptography not importable; Phase 2 Fernet layer disabled",
+)
+
+
+@pytestmark_phase2
+def test_is_encryption_available_reports_true_when_cryptography_present() -> None:
+    assert secrets_mod.is_encryption_available() is True
+
+
+@pytestmark_phase2
+def test_encrypted_set_get_roundtrip(tmp_path: Path) -> None:
+    secrets_mod.set_secret("api", "sk-encrypted-value", backend="encrypted")
+    assert secrets_mod.get_secret("api") == "sk-encrypted-value"
+    # Ciphertext must actually land on disk at the expected path.
+    assert secrets_mod.encrypted_secrets_path().is_file()
+    # The raw blob must NOT contain the plaintext.
+    blob = secrets_mod.encrypted_secrets_path().read_bytes()
+    assert b"sk-encrypted-value" not in blob
+
+
+@pytestmark_phase2
+def test_encrypted_default_backend_does_not_touch_plaintext_file(
+    tmp_path: Path,
+) -> None:
+    """Regression guard for the Epic #16 Phase 2 exit criterion: a
+    default ``set_secret`` must not write into ``~/.xmclaw/secrets.json``."""
+    secrets_mod.set_secret("api", "sk-value")  # default == "encrypted"
+    plaintext_path = tmp_path / "secrets.json"
+    assert not plaintext_path.exists(), (
+        "default backend silently wrote plaintext — Phase 2 contract broken"
+    )
+    assert secrets_mod.encrypted_secrets_path().is_file()
+
+
+@pytestmark_phase2
+def test_master_key_created_lazily_with_correct_shape(tmp_path: Path) -> None:
+    """Key file materialises on first encrypted write, not on import."""
+    assert not secrets_mod.master_key_path().exists()
+    secrets_mod.set_secret("api", "v", backend="encrypted")
+    assert secrets_mod.master_key_path().is_file()
+    key = secrets_mod.master_key_path().read_bytes().strip()
+    # Fernet keys are 44-byte urlsafe-base64 (32 bytes → 44 chars).
+    assert len(key) == 44
+
+
+@pytestmark_phase2
+def test_master_key_persists_across_calls(tmp_path: Path) -> None:
+    secrets_mod.set_secret("k1", "v1", backend="encrypted")
+    first_key = secrets_mod.master_key_path().read_bytes()
+    secrets_mod.set_secret("k2", "v2", backend="encrypted")
+    second_key = secrets_mod.master_key_path().read_bytes()
+    assert first_key == second_key  # must not rotate silently
+    # Both values must decrypt fine with the same key.
+    assert secrets_mod.get_secret("k1") == "v1"
+    assert secrets_mod.get_secret("k2") == "v2"
+
+
+@pytestmark_phase2
+def test_secret_dir_chmod_is_700_on_posix(tmp_path: Path) -> None:
+    if os.name != "posix":
+        pytest.skip("chmod semantics are POSIX-only")
+    secrets_mod.set_secret("k", "v", backend="encrypted")
+    dir_mode = secrets_mod.secret_dir().stat().st_mode & 0o777
+    assert dir_mode == 0o700
+
+
+@pytestmark_phase2
+def test_master_key_file_chmod_is_600_on_posix(tmp_path: Path) -> None:
+    if os.name != "posix":
+        pytest.skip("chmod semantics are POSIX-only")
+    secrets_mod.set_secret("k", "v", backend="encrypted")
+    mode = secrets_mod.master_key_path().stat().st_mode & 0o777
+    assert mode == 0o600
+
+
+@pytestmark_phase2
+def test_encrypted_wins_over_plain_file() -> None:
+    """Priority: env > encrypted > file > keyring. Same name, different
+    values → encrypted wins because the post-migration world has the
+    encrypted copy as the canonical source of truth."""
+    secrets_mod.set_secret("api", "plaintext-val", backend="file")
+    secrets_mod.set_secret("api", "encrypted-val", backend="encrypted")
+    assert secrets_mod.get_secret("api") == "encrypted-val"
+
+
+@pytestmark_phase2
+def test_env_still_beats_encrypted(monkeypatch: pytest.MonkeyPatch) -> None:
+    secrets_mod.set_secret("api", "encrypted-val", backend="encrypted")
+    monkeypatch.setenv("XMC_SECRET_API", "env-val")
+    assert secrets_mod.get_secret("api") == "env-val"
+
+
+@pytestmark_phase2
+def test_corrupt_encrypted_blob_is_treated_as_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A truncated / scrambled ciphertext must not raise — doctor
+    surfaces the breakage, lookups fall through to other layers."""
+    secrets_mod.set_secret("api", "val", backend="encrypted")
+    # Replace the blob with garbage while keeping a valid master key.
+    secrets_mod.encrypted_secrets_path().write_bytes(b"not-a-fernet-blob")
+    assert secrets_mod.get_secret("api") is None
+
+
+@pytestmark_phase2
+def test_corrupt_master_key_is_treated_as_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A damaged key file disables the encrypted layer rather than
+    clobbering the live key (which would invalidate every ciphertext)."""
+    secrets_mod.set_secret("api", "val", backend="encrypted")
+    secrets_mod.master_key_path().write_bytes(b"not-a-valid-fernet-key")
+    # get_secret falls through; no crash.
+    assert secrets_mod.get_secret("api") is None
+
+
+@pytestmark_phase2
+def test_delete_secret_removes_from_encrypted_store() -> None:
+    secrets_mod.set_secret("api", "v", backend="encrypted")
+    assert secrets_mod.delete_secret("api") is True
+    assert secrets_mod.get_secret("api") is None
+
+
+@pytestmark_phase2
+def test_list_secret_names_merges_layers() -> None:
+    secrets_mod.set_secret("enc_only", "e", backend="encrypted")
+    secrets_mod.set_secret("file_only", "f", backend="file")
+    names = secrets_mod.list_secret_names()
+    assert names == ["enc_only", "file_only"]
+
+
+# ── Phase 2: migrate_plaintext_to_encrypted ─────────────────────────────
+
+
+@pytestmark_phase2
+def test_migrate_moves_plaintext_entries(tmp_path: Path) -> None:
+    secrets_mod.set_secret("a", "va", backend="file")
+    secrets_mod.set_secret("b", "vb", backend="file")
+    result = secrets_mod.migrate_plaintext_to_encrypted()
+    assert result["migrated"] == 2
+    assert result["skipped_same"] == 0
+    assert result["conflicts"] == []
+    assert result["wiped_plaintext"] is True
+    assert not (tmp_path / "secrets.json").exists()
+    # Values now live in the encrypted store.
+    assert secrets_mod.get_secret("a") == "va"
+    assert secrets_mod.get_secret("b") == "vb"
+
+
+@pytestmark_phase2
+def test_migrate_is_idempotent(tmp_path: Path) -> None:
+    secrets_mod.set_secret("a", "va", backend="file")
+    first = secrets_mod.migrate_plaintext_to_encrypted()
+    assert first["migrated"] == 1
+    # Second call on empty plaintext is a no-op.
+    second = secrets_mod.migrate_plaintext_to_encrypted()
+    assert second["migrated"] == 0
+    assert second["skipped_same"] == 0
+    assert second["wiped_plaintext"] is False  # nothing to wipe
+
+
+@pytestmark_phase2
+def test_migrate_detects_conflict_and_blocks_wipe(tmp_path: Path) -> None:
+    secrets_mod.set_secret("a", "encrypted-val", backend="encrypted")
+    secrets_mod.set_secret("a", "plaintext-val", backend="file")
+    result = secrets_mod.migrate_plaintext_to_encrypted()
+    assert result["conflicts"] == ["a"]
+    assert result["migrated"] == 0
+    # Conflict must not silently win — both values remain in place.
+    assert result["wiped_plaintext"] is False
+    assert (tmp_path / "secrets.json").is_file()
+    # And the encrypted value is still retrievable (precedence rule).
+    assert secrets_mod.get_secret("a") == "encrypted-val"
+
+
+@pytestmark_phase2
+def test_migrate_skips_identical_entries(tmp_path: Path) -> None:
+    secrets_mod.set_secret("a", "same", backend="encrypted")
+    secrets_mod.set_secret("a", "same", backend="file")
+    result = secrets_mod.migrate_plaintext_to_encrypted()
+    assert result["migrated"] == 0
+    assert result["skipped_same"] == 1
+    assert result["conflicts"] == []
+    # No-new-data migrations still get to wipe the redundant plaintext.
+    assert result["wiped_plaintext"] is True
+    assert not (tmp_path / "secrets.json").exists()
+
+
+@pytestmark_phase2
+def test_migrate_honors_no_wipe(tmp_path: Path) -> None:
+    secrets_mod.set_secret("a", "va", backend="file")
+    result = secrets_mod.migrate_plaintext_to_encrypted(wipe_plaintext=False)
+    assert result["migrated"] == 1
+    assert result["wiped_plaintext"] is False
+    assert (tmp_path / "secrets.json").is_file()
+    # Encrypted copy is still good.
+    assert secrets_mod.get_secret("a") == "va"
+
+
+@pytestmark_phase2
+def test_migrate_raises_when_cryptography_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(secrets_mod, "_fernet_module", lambda: None)
+    secrets_mod._write_file({"a": "va"})
+    with pytest.raises(RuntimeError, match="cryptography"):
+        secrets_mod.migrate_plaintext_to_encrypted()
+
+
+# ── Phase 2: CLI ────────────────────────────────────────────────────────
+
+
+@pytestmark_phase2
+def test_cli_migrate_secrets_happy_path(tmp_path: Path) -> None:
+    secrets_mod.set_secret("a", "va", backend="file")
+    runner = CliRunner()
+    r = runner.invoke(app, ["config", "migrate-secrets"])
+    assert r.exit_code == 0, r.stdout
+    assert "migrated:       1" in r.stdout
+    assert "plaintext secrets.json removed" in r.stdout
+    assert not (tmp_path / "secrets.json").exists()
+
+
+@pytestmark_phase2
+def test_cli_migrate_secrets_dry_run_does_not_write(tmp_path: Path) -> None:
+    secrets_mod.set_secret("a", "va", backend="file")
+    runner = CliRunner()
+    r = runner.invoke(app, ["config", "migrate-secrets", "--dry-run"])
+    assert r.exit_code == 0, r.stdout
+    assert "would migrate:         1" in r.stdout
+    # Dry-run must not touch either store.
+    assert (tmp_path / "secrets.json").is_file()
+    assert not secrets_mod.encrypted_secrets_path().exists()
+
+
+@pytestmark_phase2
+def test_cli_migrate_secrets_conflict_exits_nonzero(tmp_path: Path) -> None:
+    secrets_mod.set_secret("a", "encrypted-val", backend="encrypted")
+    secrets_mod.set_secret("a", "plaintext-val", backend="file")
+    runner = CliRunner()
+    r = runner.invoke(app, ["config", "migrate-secrets"])
+    assert r.exit_code == 1, r.stdout
+    assert "conflict" in r.stdout.lower()
+    assert "- a" in r.stdout
+
+
+@pytestmark_phase2
+def test_cli_migrate_secrets_no_wipe_keeps_plaintext(tmp_path: Path) -> None:
+    secrets_mod.set_secret("a", "va", backend="file")
+    runner = CliRunner()
+    r = runner.invoke(app, ["config", "migrate-secrets", "--no-wipe"])
+    assert r.exit_code == 0, r.stdout
+    assert "migration complete (plaintext kept" in r.stdout
+    assert (tmp_path / "secrets.json").is_file()
+
+
+@pytestmark_phase2
+def test_cli_migrate_secrets_nothing_to_do(tmp_path: Path) -> None:
+    runner = CliRunner()
+    r = runner.invoke(app, ["config", "migrate-secrets"])
+    assert r.exit_code == 0, r.stdout
+    assert "nothing to migrate" in r.stdout
+
+
+@pytestmark_phase2
+def test_cli_migrate_secrets_errors_when_cryptography_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(secrets_mod, "_fernet_module", lambda: None)
+    # is_encryption_available routes through _fernet_module so this
+    # also flips the CLI's precondition check.
+    #
+    # Click 8.3 removed the ``mix_stderr`` kwarg and always separates
+    # streams — the diagnostic lands on ``result.stderr`` now.
+    runner = CliRunner()
+    r = runner.invoke(app, ["config", "migrate-secrets"])
+    assert r.exit_code == 1
+    combined = (r.stdout or "") + (getattr(r, "stderr", "") or "")
+    assert "cryptography" in combined

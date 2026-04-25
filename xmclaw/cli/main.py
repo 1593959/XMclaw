@@ -1156,6 +1156,98 @@ def config_list_secrets() -> None:
         typer.echo(f"  {n}{marker}")
 
 
+# ── xmclaw config migrate-secrets (Epic #16 Phase 2) ──────────────────
+# One-shot migration from the legacy plaintext ``~/.xmclaw/secrets.json``
+# into the Fernet-encrypted ``~/.xmclaw.secret/secrets.enc`` store.
+# Idempotent by design: re-running is safe and reports "nothing to do".
+# Conflicts (a name present in both layers with *different* values) are
+# surfaced as a failure-to-reconcile rather than silently picking a
+# winner — the operator chooses via explicit ``set-secret`` /
+# ``delete-secret`` before re-running.
+
+
+@config_app.command("migrate-secrets")
+def config_migrate_secrets(
+    wipe: bool = typer.Option(
+        True, "--wipe/--no-wipe",
+        help=(
+            "After a clean migration, remove the plaintext secrets.json "
+            "so `grep -r 'sk-' ~/.xmclaw/` stops matching. --no-wipe keeps "
+            "the plaintext copy for ops verification."
+        ),
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Report what would happen without writing the encrypted store.",
+    ),
+) -> None:
+    """Move secrets.json → Fernet-encrypted store (Epic #16 Phase 2)."""
+    from xmclaw.utils.secrets import (
+        _load_encrypted,
+        _load_file,
+        is_encryption_available,
+        migrate_plaintext_to_encrypted,
+        secrets_file_path,
+        encrypted_secrets_path,
+    )
+
+    if not is_encryption_available():
+        typer.echo(
+            "  [x]  cryptography package not installed; cannot encrypt.\n"
+            "       Run `pip install cryptography` and retry.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    if dry_run:
+        plaintext = _load_file()
+        encrypted = _load_encrypted()
+        new = [k for k in plaintext if k not in encrypted]
+        conflicts = [
+            k for k in plaintext
+            if k in encrypted and encrypted[k] != plaintext[k]
+        ]
+        same = [
+            k for k in plaintext
+            if k in encrypted and encrypted[k] == plaintext[k]
+        ]
+        typer.echo(f"  [dry-run]  plaintext:  {secrets_file_path()}")
+        typer.echo(f"  [dry-run]  encrypted:  {encrypted_secrets_path()}")
+        typer.echo(f"  [dry-run]  would migrate:         {len(new)}")
+        typer.echo(f"  [dry-run]  identical (skip):      {len(same)}")
+        typer.echo(f"  [dry-run]  conflicts (block):     {len(conflicts)}")
+        if conflicts:
+            typer.echo("  [dry-run]  conflicting names:")
+            for name in conflicts:
+                typer.echo(f"    - {name}")
+        return
+
+    try:
+        result = migrate_plaintext_to_encrypted(wipe_plaintext=wipe)
+    except RuntimeError as exc:
+        typer.echo(f"  [x]  {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"  plaintext:  {result['plaintext_path']}")
+    typer.echo(f"  encrypted:  {result['encrypted_path']}")
+    typer.echo(f"  migrated:       {result['migrated']}")
+    typer.echo(f"  identical:      {result['skipped_same']}")
+    typer.echo(f"  conflicts:      {result['skipped_conflict']}")
+    if result["conflicts"]:
+        typer.echo("  conflicting names (unresolved — edit + retry):")
+        for name in result["conflicts"]:  # type: ignore[union-attr]
+            typer.echo(f"    - {name}")
+        raise typer.Exit(code=1)
+    if result["wiped_plaintext"]:
+        typer.echo("  [ok]  plaintext secrets.json removed")
+    elif wipe and result["migrated"] == 0 and result["skipped_same"] == 0:
+        typer.echo("  [ok]  nothing to migrate")
+    elif not wipe:
+        typer.echo("  [ok]  migration complete (plaintext kept; --wipe to remove)")
+    else:
+        typer.echo("  [ok]  migration complete")
+
+
 # ── xmclaw config show ────────────────────────────────────────────────
 # Epic #16 Phase 1 complement: read the daemon config and dump it with
 # sensitive fields masked. Most users reach for ``cat daemon/config.json``
