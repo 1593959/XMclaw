@@ -117,6 +117,7 @@ lanes:
       - tests/integration/test_v2_daemon_config.py
       - tests/integration/test_v2_daemon_pairing.py
       - tests/integration/test_v2_daemon_agents_router.py
+      - tests/integration/test_v2_daemon_approvals_router.py
       - tests/integration/test_v2_agent_inter_wiring.py
 
   # CLI + doctor. RoadmapLintCheck wraps scripts/lint_roadmap.py, so
@@ -180,6 +181,7 @@ lanes:
       - tests/unit/test_v2_approval_service.py
       - tests/unit/test_v2_skill_scanner.py
       - tests/unit/test_v2_guardian_policy.py
+      - tests/unit/test_v2_rule_loader.py
       - tests/integration/test_v2_prompt_injection.py
 
   # Cost tracker + performance monitor + structured logging.
