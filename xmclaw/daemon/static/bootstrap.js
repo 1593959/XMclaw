@@ -52,12 +52,18 @@ function resolveMode() {
 }
 
 function timeoutImport(url, ms) {
-  return Promise.race([
-    import(url),
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(`timeout importing ${url}`)), ms)
-    ),
-  ]);
+  // Capture the timer handle so we can clear it once the race settles.
+  // Without the .finally(clearTimeout) below, a slow CDN that arrives AFTER
+  // the timeout already fired (or after vendor fallback already won) would
+  // leave a dangling rejection / re-import cycle.
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`timeout importing ${url}`)),
+      ms
+    );
+  });
+  return Promise.race([import(url), timeout]).finally(() => clearTimeout(timer));
 }
 
 async function loadFromCdn() {

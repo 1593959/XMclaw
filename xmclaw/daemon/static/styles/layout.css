@@ -111,12 +111,23 @@
   box-shadow: 0 0 0 3px var(--xmc-accent-soft);
 }
 
-/* ── Main ────────────────────────────────────────────────────────────── */
+/* ── Main ──────────────────────────────────────────────────────────────
+ * Flex container so the active page (Chat / placeholder / future pages)
+ * can fill the cell. Placeholder pages add their own padding; full-bleed
+ * pages like Chat bring their own layout grid.
+ */
 
 .xmc-main {
   background: var(--xmc-bg);
-  overflow-y: auto;
-  padding: var(--xmc-space-6);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.xmc-main > * {
+  flex: 1;
+  min-height: 0;
 }
 
 .xmc-placeholder {
@@ -126,6 +137,7 @@
   border: 1px dashed var(--xmc-border);
   border-radius: var(--xmc-radius-lg);
   background: var(--xmc-bg-elev);
+  flex: 0 0 auto;
 }
 
 .xmc-placeholder h2 {

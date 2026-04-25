@@ -246,6 +246,7 @@ lanes:
       - "docs/FRONTEND_DESIGN.md"
     tests:
       - tests/unit/test_v2_ui_scaffold.py
+      - tests/unit/test_v2_ui_chat.py
 
   # Deployment templates (Epic #19). Cheap parse + drift checks on
   # Dockerfile / compose / fly.toml / systemd unit / launchd plist /
