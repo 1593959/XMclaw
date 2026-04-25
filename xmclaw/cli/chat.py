@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import threading
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -68,7 +69,7 @@ def format_event(event: dict[str, Any]) -> RenderedLine | None:
     if etype == "llm_response":
         if not payload.get("ok", True):
             err = payload.get("error", "unknown error")
-            return RenderedLine(text=f"  ⚠ llm error: {err}")
+            return RenderedLine(text=f"  [WARN] llm error: {err}")
         # Terminal-hop responses (no tool calls) are the assistant text
         # the user actually wants to see. Intermediate hops (preceding
         # a tool call) usually have empty or short content — render
@@ -78,7 +79,7 @@ def format_event(event: dict[str, Any]) -> RenderedLine | None:
         content = payload.get("content") or ""
         if tool_calls_count == 0 and content.strip():
             return RenderedLine(
-                text=f"◉ agent: {content}",
+                text=f"> agent: {content}",
                 is_assistant=True,
             )
         return None
@@ -89,18 +90,18 @@ def format_event(event: dict[str, Any]) -> RenderedLine | None:
         args_short = json.dumps(args, ensure_ascii=False)
         if len(args_short) > 80:
             args_short = args_short[:77] + "..."
-        return RenderedLine(text=f"  → {name}({args_short})")
+        return RenderedLine(text=f"  -> {name}({args_short})")
 
     if etype == "tool_invocation_finished":
         name = payload.get("name", "?")
         if not payload.get("ok", True):
             err = payload.get("error", "")
-            return RenderedLine(text=f"  ← {name} failed: {err}")
+            return RenderedLine(text=f"  <- {name} failed: {err}")
         result = payload.get("result")
         side_effects = payload.get("expected_side_effects") or []
         if side_effects:
             return RenderedLine(
-                text=f"  ← {name} ok, wrote: {side_effects}"
+                text=f"  <- {name} ok, wrote: {side_effects}"
             )
         # Summarize the result briefly for the terminal.
         summary: str
@@ -108,11 +109,11 @@ def format_event(event: dict[str, Any]) -> RenderedLine | None:
             summary = result if len(result) < 80 else result[:77] + "..."
         else:
             summary = type(result).__name__
-        return RenderedLine(text=f"  ← {name} ok: {summary}")
+        return RenderedLine(text=f"  <- {name} ok: {summary}")
 
     if etype == "anti_req_violation":
         msg = payload.get("message", "unspecified")
-        return RenderedLine(text=f"  ⚠ violation: {msg}")
+        return RenderedLine(text=f"  [WARN] violation: {msg}")
 
     if etype == "session_lifecycle":
         phase = payload.get("phase", "?")
@@ -189,21 +190,24 @@ async def _drain_until_quiet(
     while True:
         now = asyncio.get_running_loop().time()
         if now >= deadline:
-            print(f"[_drain_until_quiet deadline reached, events={len(events)}]")  # DEBUG
             return events
         wait = quiet if events else (deadline - now)
         try:
             ev = await asyncio.wait_for(inbox.get(), timeout=wait)
         except asyncio.TimeoutError:
-            print(f"[_drain_until_quiet timeout, events={len(events)}]")  # DEBUG
             return events
-        print(f"[_drain_until_quiet got event: {ev.get('type')}]")  # DEBUG
         events.append(ev)
 
 
 async def _chat_loop(url: str, session_id: str) -> int:
     """Main REPL: connect, then loop {prompt → send → drain → render}."""
     import websockets
+
+    # Windows terminals default to cp936 (GBK) which cannot encode
+    # several Unicode symbols used in format_event.  Force UTF-8 so
+    # the REPL doesn't crash with UnicodeEncodeError mid-conversation.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
 
     print(f"connecting to {url} ...")
     try:
@@ -226,13 +230,43 @@ async def _chat_loop(url: str, session_id: str) -> int:
                 print(line.text)
 
         print(f"session: {session_id}   (type /quit to exit)")
-        loop = asyncio.get_running_loop()
+
+        # Use a background thread for stdin so the event loop stays free
+        # to process WS messages while the user is typing.
+        stdin_queue: asyncio.Queue[str | None] = asyncio.Queue()
+        stdin_stop = threading.Event()
+
+        def _stdin_reader() -> None:
+            while not stdin_stop.is_set():
+                try:
+                    line = sys.stdin.readline()
+                except (EOFError, KeyboardInterrupt):
+                    stdin_queue.put_nowait(None)
+                    return
+                if not line:
+                    stdin_queue.put_nowait(None)
+                    return
+                stdin_queue.put_nowait(line)
+
+        stdin_thread = threading.Thread(target=_stdin_reader, daemon=True)
+        stdin_thread.start()
+
         while not stop.is_set():
+            # Poll for user input with a short timeout so daemon events
+            # that arrive while the user is typing are rendered immediately.
             try:
-                user = await loop.run_in_executor(None, sys.stdin.readline)
-            except (EOFError, KeyboardInterrupt):
-                break
-            if not user:  # EOF
+                user = await asyncio.wait_for(stdin_queue.get(), timeout=0.1)
+            except asyncio.TimeoutError:
+                # No input yet — drain any daemon events so the user
+                # sees them right away instead of only after pressing Enter.
+                while not inbox.empty():
+                    ev = inbox.get_nowait()
+                    line = format_event(ev)
+                    if line is not None:
+                        print(line.text)
+                continue
+
+            if user is None:  # EOF
                 break
             user = user.strip()
             if user in ("/quit", "/exit", "/q"):
@@ -247,9 +281,7 @@ async def _chat_loop(url: str, session_id: str) -> int:
                 print(f"send failed: {exc}")
                 break
 
-            print(f"[about to drain, inbox size={inbox.qsize()}]")  # DEBUG
             events = await _drain_until_quiet(inbox)
-            print(f"[drain returned {len(events)} events]")  # DEBUG
             if not events:
                 print("  (no response — daemon idle or agent disabled?)")
                 continue
@@ -258,6 +290,7 @@ async def _chat_loop(url: str, session_id: str) -> int:
                 if line is not None:
                     print(line.text)
 
+        stdin_stop.set()
         return 0
     finally:
         reader.cancel()
