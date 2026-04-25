@@ -121,6 +121,28 @@ def test_bootstrap_probes_both_cdn_and_vendor() -> None:
     assert "xmc_bootstrap_source" in src
 
 
+def test_bootstrap_clears_timeout_to_avoid_dangling_handles() -> None:
+    """The CDN-vs-timeout race must not leak setTimeout handles.
+
+    Without ``clearTimeout`` the loser of ``Promise.race`` keeps firing
+    after the winner resolves. In the auto-mode path that means a slow
+    CDN response can still resolve seconds after we already loaded the
+    vendor copy — leading to a double-init (two ``app.js`` imports).
+    Lock down the source so the canonical pattern can't regress.
+    """
+    src = (STATIC_DIR / "bootstrap.js").read_text(encoding="utf-8")
+    assert "clearTimeout(" in src, (
+        "bootstrap.js must clearTimeout on race settle; "
+        "see FRONTEND_DESIGN.md ADR-009 + audit F-P0-1"
+    )
+    # Defense in depth: the cleanup must run on BOTH outcomes — a
+    # `.finally(...)` after the race is the cleanest contract.
+    assert ".finally(" in src, (
+        "timeoutImport must use Promise#finally to clearTimeout on both "
+        "resolve and reject"
+    )
+
+
 # ── atom modules consume Preact through window.__xmc ───────────────────
 
 
@@ -219,3 +241,21 @@ def test_ui_assets_served_under_ui_mount(
     resp = http_client.get(url)
     assert resp.status_code == 200, f"{url} should be 200; got {resp.status_code}"
     assert needle in resp.text, f"{url} body missing expected marker {needle!r}"
+
+
+def test_ui_bare_path_serves_index_html(http_client: TestClient) -> None:
+    """``/ui/`` (no filename) must return index.html via ``html=True``.
+
+    The StaticFiles mount is configured with ``html=True`` so that the
+    UI works when users open ``http://127.0.0.1:8765/ui/`` directly.
+    Without this, a typo in the FastAPI mount would silently degrade
+    the open-in-browser path to a 404 — and CI wouldn't catch it
+    because we only currently test ``/ui/index.html``.
+    """
+    resp = http_client.get("/ui/")
+    assert resp.status_code == 200, (
+        f"/ui/ should auto-serve index.html via html=True; got {resp.status_code}"
+    )
+    assert "XMclaw" in resp.text
+    # must be html, not a redirect or a directory listing.
+    assert resp.headers.get("content-type", "").startswith("text/html")
