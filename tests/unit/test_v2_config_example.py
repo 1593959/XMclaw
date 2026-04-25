@@ -15,6 +15,7 @@ we wire in a placeholder api_key.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,6 @@ import pytest
 from xmclaw.core.bus import InProcessEventBus
 from xmclaw.daemon.agent_loop import AgentLoop
 from xmclaw.daemon.factory import (
-    ConfigError,
     build_agent_from_config,
     build_llm_from_config,
     build_tools_from_config,
@@ -32,6 +32,26 @@ from xmclaw.providers.tool.builtin import BuiltinTools
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 EXAMPLE_CFG = REPO_ROOT / "daemon" / "config.example.json"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pin both secret stores under tmp_path.
+
+    The "echo mode when no api_key" assertion below would otherwise
+    flip depending on whether the developer has a real
+    ``llm.anthropic.api_key`` / ``llm.openai.api_key`` stored in the
+    Phase 2 encrypted Fernet store — the secrets-layer fallback would
+    resolve it silently and the factory would return an LLM provider
+    instead of None.
+    """
+    monkeypatch.setenv("XMC_SECRETS_PATH", str(tmp_path / "secrets.json"))
+    monkeypatch.setenv("XMC_SECRET_DIR", str(tmp_path / ".xmclaw.secret"))
+    for key in list(os.environ):
+        if key.startswith("XMC_SECRET_") and key != "XMC_SECRET_DIR":
+            monkeypatch.delenv(key, raising=False)
 
 
 @pytest.fixture

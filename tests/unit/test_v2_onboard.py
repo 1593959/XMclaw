@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -161,8 +160,12 @@ class TestRunOnboard:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         cfg_path = tmp_path / "config.json"
-        secrets_path = tmp_path / "secrets.json"
-        monkeypatch.setenv("XMC_SECRETS_PATH", str(secrets_path))
+        # Phase 2: onboard calls set_secret(...) with the default
+        # ``backend="encrypted"``, so pin both stores under tmp_path and
+        # round-trip the value via get_secret rather than grepping the
+        # (no-longer-written) plaintext secrets.json.
+        monkeypatch.setenv("XMC_SECRETS_PATH", str(tmp_path / "secrets.json"))
+        monkeypatch.setenv("XMC_SECRET_DIR", str(tmp_path / ".xmclaw.secret"))
         monkeypatch.setenv("XMC_DATA_DIR", str(tmp_path / "workspace"))
 
         with patch("xmclaw.cli.onboard.questionary.confirm") as m_confirm, \
@@ -190,9 +193,11 @@ class TestRunOnboard:
         assert cfg["tools"]["enable_web"] is True
         assert cfg["tools"]["enable_browser"] is False
 
-        # Secret stored
-        secrets = json.loads(secrets_path.read_text(encoding="utf-8"))
-        assert secrets.get("llm.anthropic.api_key") == "sk-ant-test"
+        # Secret stored — resolve via get_secret, not direct plaintext
+        # file inspection (Phase 2 writes to the encrypted store by
+        # default so the plaintext file is not created).
+        from xmclaw.utils.secrets import get_secret
+        assert get_secret("llm.anthropic.api_key") == "sk-ant-test"
 
     def test_user_denies_overwrite_returns_zero(
         self, tmp_path: Path,

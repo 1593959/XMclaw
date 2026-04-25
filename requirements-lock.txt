@@ -23,6 +23,8 @@ certifi==2026.2.25
     # via
     #   httpcore
     #   httpx
+cffi==2.0.0
+    # via cryptography
 click==8.3.2
     # via
     #   typer
@@ -32,6 +34,8 @@ colorama==0.4.6
     #   click
     #   tqdm
     #   uvicorn
+cryptography==46.0.7
+    # via xmclaw (pyproject.toml)
 distro==1.9.0
     # via
     #   anthropic
@@ -71,6 +75,8 @@ openai==2.32.0
     # via xmclaw (pyproject.toml)
 prompt-toolkit==3.0.52
     # via questionary
+pycparser==3.0
+    # via cffi
 pydantic==2.13.2
     # via
     #   anthropic
@@ -109,6 +115,7 @@ typing-extensions==4.15.0
     # via
     #   anthropic
     #   anyio
+    #   cryptography
     #   exceptiongroup
     #   fastapi
     #   openai
