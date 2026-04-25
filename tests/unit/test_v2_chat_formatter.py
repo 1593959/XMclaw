@@ -88,7 +88,7 @@ def test_tool_call_emitted_shows_name_and_args() -> None:
     assert isinstance(line, RenderedLine)
     assert "file_read" in line.text
     assert "/tmp/x.txt" in line.text
-    assert line.text.startswith("  →")
+    assert line.text.startswith("  ->")
 
 
 def test_tool_call_emitted_truncates_long_args() -> None:
@@ -112,7 +112,7 @@ def test_tool_invocation_finished_ok_pure_read() -> None:
     assert isinstance(line, RenderedLine)
     assert "file_read" in line.text
     assert "ok" in line.text
-    assert "←" in line.text
+    assert "<-" in line.text
 
 
 def test_tool_invocation_finished_ok_with_side_effects() -> None:

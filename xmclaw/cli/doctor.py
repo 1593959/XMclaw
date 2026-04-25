@@ -119,11 +119,19 @@ def check_llm_configured(cfg: dict[str, Any]) -> CheckResult:
 
 
 def check_tools_configured(cfg: dict[str, Any]) -> CheckResult:
+    """Mirror the factory's posture rules in xmclaw/daemon/factory.py:
+
+      * no tools section            → default open (full access)
+      * tools={} or tools={_doc:…}  → default open (same as no section)
+      * tools.allowed_dirs=[]       → default open (factory treats [] as None)
+      * tools.allowed_dirs=[paths]  → sandboxed
+      * tools.allowed_dirs not list → error
+    """
     tools = cfg.get("tools")
     if tools is None:
         return CheckResult(
             name="tools", ok=True,
-            detail="no tools section (LLM-only mode)",
+            detail="no tools section (default open posture)",
         )
     if not isinstance(tools, dict):
         return CheckResult(
@@ -131,17 +139,23 @@ def check_tools_configured(cfg: dict[str, Any]) -> CheckResult:
             detail=f"'tools' must be an object, got {type(tools).__name__}",
         )
     allowed = tools.get("allowed_dirs")
-    if allowed is None:
+    if allowed is None or (isinstance(allowed, list) and not allowed):
+        # Both shapes have the same runtime effect (factory.py:381 treats
+        # [] as None). Surface as a soft advisory so users notice they're
+        # running fully open, but don't block the daemon.
         return CheckResult(
-            name="tools", ok=False,
-            detail="tools section present but allowed_dirs missing",
-            advisory="add 'allowed_dirs: [...]' or remove the tools section",
+            name="tools", ok=True,
+            detail="default open posture (no allowed_dirs sandbox)",
+            advisory=(
+                "filesystem tools have full user-level access. Add "
+                "'allowed_dirs: [\"~/path\", ...]' under 'tools' to sandbox."
+            ),
         )
-    if not isinstance(allowed, list) or not allowed:
+    if not isinstance(allowed, list):
         return CheckResult(
             name="tools", ok=False,
-            detail="allowed_dirs is empty or not a list",
-            advisory="'allowed_dirs' must be a non-empty list of paths",
+            detail=f"allowed_dirs must be a list, got {type(allowed).__name__}",
+            advisory="'allowed_dirs' must be a list of paths (use [] for default-open)",
         )
     missing = [d for d in allowed if not Path(d).exists()]
     if missing:
@@ -161,7 +175,7 @@ def check_pairing_token(path: Path) -> CheckResult:
     if not path.exists():
         return CheckResult(
             name="pairing", ok=True,  # not an error — created on first serve
-            detail=f"not yet created (will be created on `xmclaw serve`)",
+            detail="not yet created (will be created on `xmclaw serve`)",
             advisory=f"expected location: {path}",
         )
     try:

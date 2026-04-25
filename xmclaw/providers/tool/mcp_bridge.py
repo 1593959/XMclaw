@@ -31,7 +31,7 @@ import asyncio
 import json
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from xmclaw.core.ir import ToolCall, ToolResult, ToolSpec
@@ -40,7 +40,7 @@ from xmclaw.providers.tool.base import ToolProvider
 
 _JSONRPC_VERSION = "2.0"
 _CLIENT_NAME = "xmclaw-v2"
-_CLIENT_VERSION = "2.0.0.dev0"
+_CLIENT_VERSION = "1.0.0"
 # Protocol version we claim to speak. Real MCP has versioned protocols;
 # "2024-11-05" is the most widely-deployed stable version at time of
 # writing. Servers that require a newer version will reject the
@@ -132,9 +132,11 @@ class MCPBridge(ToolProvider):
 
         self._reader_task = asyncio.create_task(self._read_loop())
 
-        # 1. initialize handshake.
+        # 1. initialize handshake. Response body is unused — we only care
+        # that the RPC succeeded; capabilities the server advertises are
+        # ignored at this stage.
         try:
-            init_resp = await self._rpc("initialize", {
+            await self._rpc("initialize", {
                 "protocolVersion": _PROTOCOL_VERSION,
                 "capabilities": {},
                 "clientInfo": {

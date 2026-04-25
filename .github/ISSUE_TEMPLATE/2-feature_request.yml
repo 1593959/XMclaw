@@ -1,0 +1,61 @@
+name: Feature request
+description: Propose a new capability or improvement.
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, check `docs/DEV_ROADMAP.md` — it may already be a tracked Epic.
+        If it is, comment on the relevant Epic instead of opening a duplicate.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      placeholder: As a [role], I want to [goal] so that [benefit].
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the API / UX you'd like. Code sketches welcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other ways to solve this and why they fall short.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Rough scope
+      options:
+        - New CLI command / flag
+        - New tool provider
+        - New event type / schema change
+        - Web UI feature
+        - Performance / cost optimization
+        - Security / sandboxing improvement
+        - New skill / built-in
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: epic
+    attributes:
+      label: Related Epic (optional)
+      description: Link if this extends an existing Epic in DEV_ROADMAP.md.
+      placeholder: "Epic #4 — Evolution UX"
+
+  - type: textarea
+    id: extras
+    attributes:
+      label: Additional context

@@ -22,7 +22,6 @@ Works.
 from __future__ import annotations
 
 import time
-from typing import Any
 
 from xmclaw.core.ir import ToolCall, ToolResult, ToolSpec
 from xmclaw.providers.tool.base import ToolProvider

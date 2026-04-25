@@ -250,24 +250,32 @@ class BrowserTools(ToolProvider):
         """Tear down a session's page + context. Safe to call repeatedly."""
         page = self._pages.pop(session_id, None)
         if page is not None:
-            try: await page.close()
-            except Exception: pass  # noqa: BLE001,S110
+            try:
+                await page.close()
+            except Exception:  # noqa: BLE001,S110
+                pass
         ctx = self._contexts.pop(session_id, None)
         if ctx is not None:
-            try: await ctx.close()
-            except Exception: pass  # noqa: BLE001,S110
+            try:
+                await ctx.close()
+            except Exception:  # noqa: BLE001,S110
+                pass
 
     async def shutdown(self) -> None:
         """Close every session + the shared browser. For daemon shutdown."""
         for sid in list(self._contexts):
             await self.close_session(sid)
         if self._browser is not None:
-            try: await self._browser.close()
-            except Exception: pass  # noqa: BLE001,S110
+            try:
+                await self._browser.close()
+            except Exception:  # noqa: BLE001,S110
+                pass
             self._browser = None
         if self._playwright is not None:
-            try: await self._playwright.stop()
-            except Exception: pass  # noqa: BLE001,S110
+            try:
+                await self._playwright.stop()
+            except Exception:  # noqa: BLE001,S110
+                pass
             self._playwright = None
 
     # ── internals ──────────────────────────────────────────────────

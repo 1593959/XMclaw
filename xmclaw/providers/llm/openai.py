@@ -16,7 +16,6 @@ Design principles (same as AnthropicLLM — anti-req #11):
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from collections.abc import AsyncIterator
 from typing import Any

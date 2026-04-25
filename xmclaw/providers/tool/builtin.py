@@ -26,13 +26,11 @@ tool-message content so the LLM sees the real reason instead of "None".
 from __future__ import annotations
 
 import asyncio
-import os
 import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
 
 from xmclaw.core.ir import ToolCall, ToolResult, ToolSpec
 from xmclaw.providers.tool.base import ToolProvider

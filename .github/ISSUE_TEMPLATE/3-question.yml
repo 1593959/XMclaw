@@ -1,0 +1,29 @@
+name: Question / support
+description: Ask a question. (Prefer GitHub Discussions for open-ended threads.)
+title: "[Question]: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For open-ended discussion, please use **GitHub Discussions** instead — it threads better.
+        Use this template only when you suspect a bug behind your question, or want a tracked answer.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: What you've already tried
+      description: docs read, commands run, error messages seen. Saves a round-trip.
+
+  - type: input
+    id: version
+    attributes:
+      label: XMclaw version
+      placeholder: "`xmclaw version`"

@@ -42,7 +42,6 @@ from __future__ import annotations
 import asyncio
 import multiprocessing as mp
 import pickle
-import sys
 import time
 import uuid
 from dataclasses import dataclass, field
