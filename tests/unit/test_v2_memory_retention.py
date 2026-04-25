@@ -296,6 +296,21 @@ def test_any_cap_set_fully_disabled():
     assert p.any_cap_set() is False
 
 
+def test_any_cap_set_caps_only_no_ttl():
+    """``prune_by_ttl=False`` but at least one layer has a cap → still
+    must return True so the sweep loop actually runs. Closes the
+    cap-only branch in ``any_cap_set``."""
+    p_items = RetentionPolicy(
+        short=LayerRetention(max_items=100), prune_by_ttl=False,
+    )
+    assert p_items.any_cap_set() is True
+
+    p_bytes = RetentionPolicy(
+        long=LayerRetention(max_bytes=1024), prune_by_ttl=False,
+    )
+    assert p_bytes.any_cap_set() is True
+
+
 # ──────────────────────────────────────────────────────────────────────
 # MemorySweepTask.sweep_once — exercises prune + evict across layers
 # ──────────────────────────────────────────────────────────────────────
@@ -400,5 +415,111 @@ def test_start_stop_roundtrip():
         await task.start()
         assert task._task is not None
         await task.stop()
+
+    asyncio.run(go())
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Coverage gaps (audit P0): cap-only path, double-start guard, stop()
+# during wait_for. Closes lines 186 / 195 / 221 of memory_sweep.py.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_sweep_once_runs_evict_when_only_caps_set_no_ttl_prune():
+    """``prune_by_ttl=False`` with a per-layer cap must still call
+    ``evict()``. Earlier tests only exercised the prune-by-ttl branch,
+    so the cap-only code path was uncovered."""
+    async def go():
+        evict_calls: list[tuple[str, int | None, int | None]] = []
+        prune_calls: list[str] = []
+
+        class _CapOnlyMem:
+            async def prune(self, layer):
+                prune_calls.append(layer)
+                return 99  # would be a bug if invoked
+
+            async def evict(self, layer, *, max_items=None, max_bytes=None):
+                evict_calls.append((layer, max_items, max_bytes))
+                return 7 if max_items else 0
+
+        policy = RetentionPolicy(
+            short=LayerRetention(max_items=10),
+            working=LayerRetention(max_bytes=1024),
+            long=LayerRetention(),  # no cap → evict skipped
+            prune_by_ttl=False,
+        )
+        task = MemorySweepTask(_CapOnlyMem(), policy)
+        removed = await task.sweep_once()
+
+        # prune was never invoked (prune_by_ttl=False).
+        assert prune_calls == []
+        # short → max_items only; working → max_bytes only; long → not
+        # called at all because both caps are None.
+        assert ("short", 10, None) in evict_calls
+        assert ("working", None, 1024) in evict_calls
+        assert all(c[0] != "long" for c in evict_calls)
+        assert removed == {"short": 7, "working": 0, "long": 0}
+
+    asyncio.run(go())
+
+
+def test_start_is_idempotent_when_already_running():
+    """Calling ``start()`` twice must not spawn a second task — the
+    early-return guard at the top of ``start()`` should keep the first
+    task alive and silently no-op the second call. This protects
+    factory paths that wire memory_sweep into the lifespan more than
+    once during hot-reload."""
+    async def go():
+        class _NoopMem:
+            async def prune(self, layer):
+                return 0
+
+            async def evict(self, layer, *, max_items=None, max_bytes=None):
+                return 0
+
+        task = MemorySweepTask(
+            _NoopMem(),
+            RetentionPolicy(sweep_interval_s=10.0, prune_by_ttl=True),
+        )
+        await task.start()
+        first = task._task
+        assert first is not None
+        # Second start must be a no-op — the original task is preserved.
+        await task.start()
+        assert task._task is first
+        await task.stop()
+
+    asyncio.run(go())
+
+
+def test_stop_event_short_circuits_loop_wait():
+    """When ``stop_event`` fires *during* the inter-sweep wait_for, the
+    loop must exit cleanly via the explicit ``return`` (line 221) rather
+    than waiting out the full interval. We force this by using a long
+    interval (10s) and stopping after 50ms — if the early return is
+    broken, ``stop()`` would block until cancellation forces it."""
+    async def go():
+        class _NoopMem:
+            async def prune(self, layer):
+                return 0
+
+            async def evict(self, layer, *, max_items=None, max_bytes=None):
+                return 0
+
+        # Interval is huge — wait_for would block for 10s without the
+        # stop_event short-circuit. Total test time should be < 200ms.
+        policy = RetentionPolicy(sweep_interval_s=10.0, prune_by_ttl=True)
+        task = MemorySweepTask(_NoopMem(), policy)
+        await task.start()
+        await asyncio.sleep(0.05)
+        # stop() sets stop_event → wait_for unblocks → loop returns.
+        import time
+        t0 = time.monotonic()
+        await task.stop()
+        elapsed = time.monotonic() - t0
+        # Generous bound: cancel always works within a second; the
+        # stop_event path is *also* fast, so they're indistinguishable
+        # here. The hard assertion is just "didn't hang".
+        assert elapsed < 2.0
 
     asyncio.run(go())

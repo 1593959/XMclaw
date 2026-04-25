@@ -68,6 +68,13 @@
       }
     }
   },
+  "backup": {
+    "_comment": "Epic #20 Phase 2: daemon runs a daily workspace backup when auto_daily=true. Prefix-scoped prune keeps only the newest `keep` auto backups (manual `xmclaw backup create <name>` entries are never touched). Disabled by default — the daemon stays cost-free for users who don't opt in. interval_s is the wait between backups in seconds (86400 = 24h).",
+    "auto_daily": false,
+    "interval_s": 86400,
+    "keep": 7,
+    "name_prefix": "auto-"
+  },
   "mcp_servers": {},
   "integrations": {
     "slack":    { "enabled": false, "bot_token": "", "app_token": "", "channel": "" },

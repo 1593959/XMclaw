@@ -11,7 +11,13 @@ requires-python = ">=3.10"
 # pystray / Pillow (desktop tray deleted), playwright (v1 browser-tool),
 # apscheduler (v1 evolution scheduler), slack-sdk / discord.py /
 # python-telegram-bot (v1 integrations — v2 adds these back via the
-# plugin SDK when needed), cryptography (v1 config encryption).
+# plugin SDK when needed).
+#
+# Epic #16 Phase 2 re-added cryptography to base deps — the exit
+# criterion (``grep -r "sk-" ~/.xmclaw/`` must miss) requires that
+# ``set_secret`` has a Fernet-encrypted backend available out of the
+# box. Shipping it as an opt-in extra would leave new installs
+# plaintext-by-default, which defeats the whole point.
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
@@ -24,6 +30,7 @@ dependencies = [
     "httpx>=0.28.0",
     "structlog>=25.1.0",
     "questionary>=2.0.0",
+    "cryptography>=42.0.0",
 ]
 
 [project.optional-dependencies]

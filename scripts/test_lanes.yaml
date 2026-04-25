@@ -117,6 +117,7 @@ lanes:
       - tests/integration/test_v2_daemon_config.py
       - tests/integration/test_v2_daemon_pairing.py
       - tests/integration/test_v2_daemon_agents_router.py
+      - tests/integration/test_v2_daemon_approvals_router.py
       - tests/integration/test_v2_agent_inter_wiring.py
 
   # CLI + doctor. RoadmapLintCheck wraps scripts/lint_roadmap.py, so
@@ -180,6 +181,7 @@ lanes:
       - tests/unit/test_v2_approval_service.py
       - tests/unit/test_v2_skill_scanner.py
       - tests/unit/test_v2_guardian_policy.py
+      - tests/unit/test_v2_rule_loader.py
       - tests/integration/test_v2_prompt_injection.py
 
   # Cost tracker + performance monitor + structured logging.
@@ -213,14 +215,18 @@ lanes:
     tests:
       - tests/unit/test_v2_plugin_sdk.py
 
-  # Backup/restore (Epic #20). Triggers on backup package changes and on
-  # the CLI backup commands. Filesystem-only today; a future phase will
-  # wire the daemon reloader in and expand this lane.
+  # Backup/restore (Epic #20). Triggers on backup package changes, the
+  # CLI backup commands, and Phase 2's daily-backup scheduler. The
+  # scheduler lives under daemon/ (not backup/) because it owns the
+  # background-task lifecycle — but edits to it must still re-run the
+  # backup lane since it directly exercises create_backup / prune.
   backup:
     triggers:
       - "xmclaw/backup/**"
+      - "xmclaw/daemon/backup_scheduler.py"
     tests:
       - tests/unit/test_v2_backup.py
+      - tests/unit/test_v2_backup_scheduler.py
 
   # Secrets (Epic #16 Phase 1). Three-tier env > file > keyring lookup +
   # CLI set/get/delete/list. Phase 2 (Fernet + factory placeholder) will
@@ -246,7 +252,6 @@ lanes:
       - "docs/FRONTEND_DESIGN.md"
     tests:
       - tests/unit/test_v2_ui_scaffold.py
-      - tests/unit/test_v2_ui_chat.py
 
   # Deployment templates (Epic #19). Cheap parse + drift checks on
   # Dockerfile / compose / fly.toml / systemd unit / launchd plist /

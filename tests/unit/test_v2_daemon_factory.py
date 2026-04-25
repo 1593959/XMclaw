@@ -119,17 +119,25 @@ def test_falls_back_to_default_model_when_omitted() -> None:
 # ── Epic #16 Phase 1: secrets-layer fallback for api_key ────────────────
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def _isolate_secrets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin secrets.json under tmp_path and clear host XMC_SECRET_* env.
+    """Pin both secret stores under tmp_path and clear host XMC_SECRET_* env.
+
+    Made autouse so EVERY factory test sees a clean slate — the pre-
+    Phase-1 "empty api_key returns None" assertions would otherwise
+    silently flip green-to-red on a developer box that has a real
+    ``llm.anthropic.api_key`` stored (Phase 2 encrypted store default),
+    because the secrets-layer fallback resolves it behind the scenes.
 
     These tests exercise the build_llm_from_config → get_secret fallback,
-    so they must NEVER touch the developer's real ~/.xmclaw/secrets.json.
+    so they must NEVER touch the developer's real ``~/.xmclaw/secrets.json``
+    or the Phase 2 ``~/.xmclaw.secret/`` Fernet store.
     """
     monkeypatch.setenv("XMC_SECRETS_PATH", str(tmp_path / "secrets.json"))
+    monkeypatch.setenv("XMC_SECRET_DIR", str(tmp_path / ".xmclaw.secret"))
     import os as _os
     for key in list(_os.environ):
-        if key.startswith("XMC_SECRET_"):
+        if key.startswith("XMC_SECRET_") and key != "XMC_SECRET_DIR":
             monkeypatch.delenv(key, raising=False)
 
 

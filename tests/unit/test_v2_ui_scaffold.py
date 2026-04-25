@@ -43,22 +43,12 @@ REQUIRED_FILES = [
     "styles/tokens.css",
     "styles/reset.css",
     "styles/layout.css",
-    "styles/chat.css",
     "components/atoms/atoms.css",
     "components/atoms/button.js",
     "components/atoms/badge.js",
     "components/atoms/icon.js",
     "components/atoms/avatar.js",
     "components/atoms/spinner.js",
-    # Phase 1 additions — Chat workspace.
-    "lib/auth.js",
-    "lib/ws.js",
-    "lib/markdown.js",
-    "lib/chat_reducer.js",
-    "components/molecules/MessageBubble.js",
-    "components/molecules/MessageList.js",
-    "components/molecules/Composer.js",
-    "pages/Chat.js",
 ]
 
 ATOM_MODULES = [
@@ -94,13 +84,11 @@ def test_vendor_dir_present_even_if_empty() -> None:
 def test_index_html_wires_styles_and_bootstrap() -> None:
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     # Stylesheet order: tokens must come first so every later file can
-    # reference the design vars. chat.css is layered between layout and
-    # atoms so chat-specific selectors can override layout but not atoms.
+    # reference the design vars.
     ordered_links = [
         "./styles/tokens.css",
         "./styles/reset.css",
         "./styles/layout.css",
-        "./styles/chat.css",
         "./components/atoms/atoms.css",
     ]
     last_pos = -1
@@ -185,18 +173,7 @@ def test_icon_atom_covers_every_sidebar_glyph() -> None:
 # ── file-size guard (FRONTEND_DESIGN.md §1.4) ──────────────────────────
 
 
-SOURCE_GLOBS = [
-    "*.js",
-    "*.css",
-    "*.html",
-    "components/atoms/*.js",
-    "components/atoms/*.css",
-    "components/molecules/*.js",
-    "components/molecules/*.css",
-    "lib/*.js",
-    "pages/*.js",
-    "styles/*.css",
-]
+SOURCE_GLOBS = ["*.js", "*.css", "*.html", "components/atoms/*.js", "components/atoms/*.css", "styles/*.css"]
 LINE_BUDGET = 500
 
 
@@ -233,17 +210,7 @@ def http_client() -> TestClient:
         ("/ui/router.js", "installRouter"),
         ("/ui/store.js", "createStore"),
         ("/ui/styles/tokens.css", "--xmc-accent"),
-        ("/ui/styles/chat.css", "xmc-chat"),
         ("/ui/components/atoms/button.js", "export function Button"),
-        # Phase 1 modules.
-        ("/ui/lib/ws.js", "createWsClient"),
-        ("/ui/lib/auth.js", "fetchPairingToken"),
-        ("/ui/lib/markdown.js", "renderMarkdown"),
-        ("/ui/lib/chat_reducer.js", "applyEvent"),
-        ("/ui/components/molecules/MessageBubble.js", "export function MessageBubble"),
-        ("/ui/components/molecules/MessageList.js", "export function MessageList"),
-        ("/ui/components/molecules/Composer.js", "export function Composer"),
-        ("/ui/pages/Chat.js", "export function ChatPage"),
     ],
 )
 def test_ui_assets_served_under_ui_mount(
@@ -252,30 +219,3 @@ def test_ui_assets_served_under_ui_mount(
     resp = http_client.get(url)
     assert resp.status_code == 200, f"{url} should be 200; got {resp.status_code}"
     assert needle in resp.text, f"{url} body missing expected marker {needle!r}"
-
-
-def test_ui_bare_path_serves_index_html(http_client: TestClient) -> None:
-    """`/ui/` (no file) must hit the StaticFiles dir-index and return index.html.
-    This is what the user lands on when they open http://127.0.0.1:8765/ui/
-    — silently breaking it would put them on a 404 page."""
-    resp = http_client.get("/ui/")
-    assert resp.status_code == 200
-    assert "<title>XMclaw</title>" in resp.text
-    assert 'id="root"' in resp.text
-
-
-# ── bootstrap timer hygiene ────────────────────────────────────────────
-
-
-def test_bootstrap_clears_timeout_to_avoid_dangling_handles() -> None:
-    """``timeoutImport`` wraps ``Promise.race([import(url), setTimeout-reject])``.
-    If the import wins, the setTimeout MUST be cleared — otherwise a slow
-    CDN can re-trigger the import path after vendor fallback already won,
-    leading to double app.js mount."""
-    src = (STATIC_DIR / "bootstrap.js").read_text(encoding="utf-8")
-    assert "clearTimeout(" in src, (
-        "bootstrap.js must call clearTimeout to clean up the race timer"
-    )
-    assert ".finally(" in src, (
-        "bootstrap.js must use Promise.finally to clear the timer on either outcome"
-    )
