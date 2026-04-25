@@ -53,16 +53,103 @@ export function createStore(initial) {
   return { getState, setState, subscribe };
 }
 
-// App-wide store. Add slices as features land.
+// ── Persistence helpers ────────────────────────────────────────────────
+//
+// Phase 1 keeps session ids in localStorage so a refresh doesn't drop the
+// active conversation. The daemon already replays history server-side via
+// SESSION_LIFECYCLE + replayed events, so we only need to remember the sid.
+
+const ACTIVE_SID_KEY = "xmc.active_sid";
+const SID_LIST_KEY = "xmc.sids";
+
+function readActiveSid() {
+  try {
+    return localStorage.getItem(ACTIVE_SID_KEY) || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function readSidList() {
+  try {
+    const raw = localStorage.getItem(SID_LIST_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr.filter((s) => typeof s === "string") : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+export function persistActiveSid(sid) {
+  try {
+    if (sid) localStorage.setItem(ACTIVE_SID_KEY, sid);
+    else localStorage.removeItem(ACTIVE_SID_KEY);
+  } catch (_) {
+    /* private mode / quota — skip silently */
+  }
+}
+
+export function persistSidList(list) {
+  try {
+    localStorage.setItem(SID_LIST_KEY, JSON.stringify(list));
+  } catch (_) {
+    /* skip */
+  }
+}
+
+export function newSid() {
+  // 8 hex chars after the prefix is plenty for human-readable sids and
+  // matches what the legacy UI used.
+  return "chat-" + Math.random().toString(16).slice(2, 10);
+}
+
+// ── App-wide store ────────────────────────────────────────────────────
+
 export const app = createStore({
   // Router slice (router.js writes here).
   route: { path: "/chat", params: {} },
 
-  // Session slice (Phase 1 will populate from the daemon session API + WS).
-  session: { id: null, lifecycle: "idle" },
+  // Session slice — populated from localStorage on boot, then by user
+  // creating new sessions or switching via the sidebar.
+  session: {
+    activeSid: readActiveSid(),
+    sids: readSidList(),
+    lifecycle: "idle",
+  },
 
-  // Connection slice (WS heartbeat).
-  connection: { status: "disconnected", lastPing: null },
+  // Connection slice (WS lifecycle).
+  //   status: "disconnected" | "connecting" | "connected" | "reconnecting" | "auth_failed"
+  //   lastError: human-readable last failure (for status bar tooltip)
+  //   reconnectAttempt: monotonically increasing int (UI uses this to render "retry n/∞")
+  connection: {
+    status: "disconnected",
+    lastError: null,
+    reconnectAttempt: 0,
+  },
+
+  // Auth slice — pairing token cached after the first /api/v2/pair call.
+  auth: { token: null, fetched: false },
+
+  // Chat slice — flat array of messages, each with a stable id so the
+  // streaming reducer can append tokens without reflowing the whole list.
+  // Shape per message:
+  //   {
+  //     id: string,              // event correlation_id or generated
+  //     role: "user"|"assistant"|"tool"|"system",
+  //     content: string,         // accumulated text (LLM_CHUNK appends)
+  //     status: "streaming"|"complete"|"error",
+  //     ts: number,
+  //     toolCalls?: [{ id, name, args, status, result }],
+  //     ultrathink?: boolean,
+  //   }
+  chat: {
+    messages: [],
+    pendingAssistantId: null,    // id of the in-flight assistant turn, or null
+    composerDraft: "",
+    planMode: false,             // Plan vs Act
+    ultrathink: false,
+  },
 
   // UI prefs (Phase 5 settings page will bind here).
   ui: {
