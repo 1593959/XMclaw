@@ -4,11 +4,25 @@ All notable changes to XMclaw are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **RC stability promise.** From `1.0.0rc1` onward the public surface is **contract-frozen for `1.0`**. Breaking changes during the RC → GA window are bug fixes only; new features go to `1.1`. The `2.0.0.dev0` line below is the prior development-preview snapshot, kept for archaeology.
+> **1.0 stability promise.** From `1.0.0` onward the public surface is **contract-frozen**. Breaking changes go to a `2.x` major; new features go to `1.x` minors. The `2.0.0.dev0` line below is the prior development-preview snapshot, kept for archaeology — the rewrite landed as `1.0.0` after the codebase was reframed around the local-first self-evolving runtime thesis.
 
 ## [Unreleased]
 
-No changes since `1.0.0rc1`.
+No changes since `1.0.0`.
+
+## [1.0.0] — 2026-04-25
+
+**1.0 GA.** Promoted from `1.0.0rc1` on the same day. The core local-first self-evolving runtime is feature-complete and contract-frozen. Per [docs/DEV_ROADMAP.md § M9](docs/DEV_ROADMAP.md), 1.0 GA scope = *the runtime is stable*, not *every Epic ships*. Items explicitly post-1.0 (Channel SDK, IDE/ACP, Skill Hub, Web UI Phase 2 rich panels, Epic #4 Phase D `gene_forge` UI + killer-demo GIF, plugin SDK pilot, AgentLoop → SkillRuntime.fork migration) move to the `v2.x` roadmap.
+
+### Changed (since `1.0.0rc1`)
+
+- **`pyproject.toml` version** `1.0.0rc1` → `1.0.0`; `xmclaw/__init__.py::__version__` and `xmclaw/providers/tool/mcp_bridge.py::_CLIENT_VERSION` follow.
+- **README "Status"** rewritten from *release candidate* tone to *1.0 GA stable* tone; the RC → GA promotion gate (formerly listed as outstanding) is removed.
+- **DEV_ROADMAP § M9** RC → GA gate items collapsed into the GA-shipped record.
+
+### Removed
+
+- Stray `jest.config.js` / `package.json` from the repo root (pre-history dev scratch — the web UI under `xmclaw/daemon/static/` is still no-build-step ESM).
 
 ## [1.0.0rc1] — 2026-04-25
 

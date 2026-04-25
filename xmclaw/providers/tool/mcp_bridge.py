@@ -40,7 +40,7 @@ from xmclaw.providers.tool.base import ToolProvider
 
 _JSONRPC_VERSION = "2.0"
 _CLIENT_NAME = "xmclaw-v2"
-_CLIENT_VERSION = "1.0.0rc1"
+_CLIENT_VERSION = "1.0.0"
 # Protocol version we claim to speak. Real MCP has versioned protocols;
 # "2024-11-05" is the most widely-deployed stable version at time of
 # writing. Servers that require a newer version will reject the

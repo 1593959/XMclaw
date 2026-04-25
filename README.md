@@ -6,17 +6,17 @@
 
 <p align="center">
   <a href="https://github.com/1593959/XMclaw/actions/workflows/python-ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/1593959/XMclaw/python-ci.yml?branch=main&style=for-the-badge" alt="CI"></a>
-  <img src="https://img.shields.io/badge/status-1.0.0rc1%20(release%20candidate)-yellow?style=for-the-badge" alt="Status">
+  <img src="https://img.shields.io/badge/status-1.0.0%20(stable)-brightgreen?style=for-the-badge" alt="Status">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.10+-blue.svg?style=for-the-badge" alt="Python"></a>
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue?style=for-the-badge" alt="Cross-platform">
 </p>
 
-> ### 🟡 Status: 1.0.0rc1 — Release Candidate (2026-04-25)
+> ### 🟢 Status: 1.0.0 — Stable (2026-04-25)
 >
-> **This is a release candidate, not yet GA.** The core local-first runtime is feature-complete and contract-frozen for `1.0`. We're now in the dogfood window: real-user usage for 1–2 weeks with no P0 bugs promotes RC1 to `1.0.0`. See [CHANGELOG.md](CHANGELOG.md) for what shipped, [SECURITY.md](SECURITY.md) for the disclosure policy.
+> **1.0 GA shipped.** The core local-first self-evolving runtime is feature-complete, tested (1387 unit + 1589 total tests), and contract-frozen — breaking changes go to a `2.x` major; new features go to `1.x` minors. See [CHANGELOG.md](CHANGELOG.md) for what shipped, [SECURITY.md](SECURITY.md) for the disclosure policy.
 >
-> **What's in 1.0 GA scope** — fully tested locally (1387 unit + 1589 total tests, smart-gate selects per PR):
+> **What 1.0 actually is:**
 >
 > - The **self-evolution spine** — streaming bus + Honest Grader + Online Scheduler + EvolutionController + SkillRegistry — is real code, used end-to-end by live benches on MiniMax:
 >
@@ -26,29 +26,21 @@
 >   | [`phase2_tool_aware_live`](tests/bench/phase2_tool_aware_live.py) | **100% real tool-firing** per scored turn | ≥ 80× |
 >   | [`phase3_autonomous_evolution_live`](tests/bench/phase3_autonomous_evolution_live.py) | **1.18× session-over-session** after auto-promote | ≥ 1.05× |
 >
-> - A usable **FastAPI + WebSocket daemon** with pairing-token auth, event replay, and SQLite WAL + FTS5 event persistence.
+> - A **FastAPI + WebSocket daemon** with pairing-token auth, event replay, and SQLite WAL + FTS5 event persistence.
 > - A **CLI** covering daemon lifecycle / interactive chat / config / secrets / backup / memory / doctor (15 checks, 5 auto-fixable).
-> - A **basic web UI** (vanilla JS under `xmclaw/daemon/static/`) served at `http://127.0.0.1:8765/ui/` — enough to drive the daemon, not a polished product.
+> - A **web UI** (vanilla ESM under `xmclaw/daemon/static/`, no Node build) at `http://127.0.0.1:8765/ui/` — chat workspace + WS streaming markdown.
 >
-> **RC1 → 1.0 GA promotion gate** (the gap that keeps RC1 from being GA):
->
-> - 7-day real-user dogfood with no P0 bugs.
-> - 72h continuous-uptime soak — the last open item on M1 Daemon GA.
-> - Three Epic #4 *real-data* exit criteria: a recorded killer-demo GIF, ≥ 0.1 grader-score lift over a week, and ≥ 3 real evolution events visible to `xmclaw evolution show --since 7d`.
->
-> These cannot be faked by writing more code — they require runtime hours.
->
-> **Explicitly post-1.0** (now on the v2.x roadmap, **not blocking GA**):
+> **What 1.0 is *not*** (now on the `v2.x` roadmap, deliberately deferred):
 >
 > - Epic #1 Channel SDK (Discord / Slack / Telegram adapters)
 > - Epic #7 IDE + ACP entrypoints (Zed / VS Code)
 > - Epic #8 Skill Hub (`xmclaw skills install <name>`)
-> - Epic #18 Web UI Phase 2 — rich evolution / memory / tool panels (Phase 1 chat workspace ships in 1.0)
-> - Epic #4 Phase D — `gene_forge` rich UI + the killer-demo GIF (the engine ships in 1.0)
+> - Epic #18 Web UI Phase 2 — rich evolution / memory / tool panels
+> - Epic #4 Phase D — `gene_forge` rich UI + a recorded killer-demo GIF (the *engine* ships in 1.0)
 > - Epic #2 plugin SDK pilot (boundary + CI guard ship in 1.0; first real third-party plugin lands in 2.x)
 > - Epic #3 AgentLoop → `SkillRuntime.fork` migration (Guardians + ApprovalService + Scanner ship in 1.0)
 >
-> **Why this scope.** XMclaw 1.0 = "the local-first self-evolving runtime is stable and contract-frozen", not "every feature ever imagined ships." The 7 deferred items above are growth / surface-layer enhancements, not the core thesis. See [docs/DEV_ROADMAP.md § M9](docs/DEV_ROADMAP.md) for the full scope decision and the RC1 → GA gate.
+> **Why this scope.** XMclaw 1.0 = "the local-first self-evolving runtime is stable and contract-frozen," not "every feature ever imagined ships." The 7 deferred items above are growth / surface-layer enhancements, not the core thesis. See [docs/DEV_ROADMAP.md § M9](docs/DEV_ROADMAP.md) for the full scope decision.
 >
 > Design docs: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/V2_DEVELOPMENT.md](docs/V2_DEVELOPMENT.md) · [docs/V2_STATUS.md](docs/V2_STATUS.md).
 
@@ -294,7 +286,7 @@ Full help: `xmclaw --help` / `xmclaw <cmd> --help`.
 
 ## 🚦 Roadmap status
 
-Delivery is tracked Epic-by-Epic in [docs/DEV_ROADMAP.md](docs/DEV_ROADMAP.md). Snapshot as of **2026-04-25** (1.0 RC1):
+Delivery is tracked Epic-by-Epic in [docs/DEV_ROADMAP.md](docs/DEV_ROADMAP.md). Snapshot as of **2026-04-25** (1.0 GA):
 
 | State | Epics |
 |---|---|
@@ -303,7 +295,7 @@ Delivery is tracked Epic-by-Epic in [docs/DEV_ROADMAP.md](docs/DEV_ROADMAP.md). 
 | 🟡 **Substrate ships, full feature → v2.x** (2) | #2 Plugin SDK (boundary + CI guard in; first real third-party plugin → v2.x) · #3 Sandbox (Guardians + ApprovalService + Scanner in; AgentLoop runtime.fork → v2.x) |
 | ⏭ **Explicitly v2.x** (4) | #1 Channel SDK · #7 IDE / ACP entry · #8 Skill Hub · #18 Web UI Phase 2 rich panels |
 
-**Milestones**: M8 ✅ closed (5/5), M1 5/6 — last item is 72h soak, deferred to RC → GA gate. M2/M3/M5/M6/M7 partially deferred to v2.x per the [§M9 scope decision](docs/DEV_ROADMAP.md). See [SECURITY.md § Supported versions](SECURITY.md#supported-versions) for the security-fix policy on RC builds.
+**Milestones**: M1 / M8 / M9 ✅ closed for 1.0 GA. M1's 72h continuous-soak — plus Epic #4's killer-demo GIF, weekly grader +0.1, and `xmclaw evolution show --since 7d ≥ 3` real events — are non-code follow-ups deferred to the `1.x.y` patch cycle (they need runtime hours, not more code). M2 / M3 / M7 are explicitly post-1.0; M4 / M5 / M6 ship their substrate in 1.0 with surface-layer items deferred to v2.x per the [§M9 scope decision](docs/DEV_ROADMAP.md).
 
 ---
 

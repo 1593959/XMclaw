@@ -14,4 +14,4 @@ Package layout (v2; v1 strangler-fig sweep complete):
 Per-subdir contracts live in ``<subdir>/AGENTS.md``.
 """
 
-__version__ = "1.0.0rc1"
+__version__ = "1.0.0"
