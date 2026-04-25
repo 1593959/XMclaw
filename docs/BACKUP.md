@@ -2,10 +2,11 @@
 
 User guide for the `xmclaw backup` CLI family. Phase 1 ships eight
 subcommands that cover the read-your-own-rescue-plan loop: create,
-inspect, verify, prune, restore. Automatic daily backups and zero-
-downtime reload land in Phase 2 — see §8.
+inspect, verify, prune, restore. Phase 2 adds an in-daemon
+auto-daily scheduler — see §8. Zero-downtime reload still deferred;
+see §9.
 
-> Status: Phase 1 — `xmclaw backup {create,list,info,verify,delete,prune,restore}`.
+> Status: Phase 1 CLI + Phase 2 auto-daily scheduler.
 > Epic #20 roadmap: [DEV_ROADMAP.md §Epic #20](DEV_ROADMAP.md).
 
 ## 1. Why
@@ -228,22 +229,54 @@ that's always `ok=True` but surfaces:
 `doctor --json` returns the age in the check's `detail` field so a
 monitoring system can alert without `grep`ping human text.
 
-## 8. What's **not** in Phase 1
+## 8. Phase 2: auto-daily scheduler
 
-Deferred items tracked on Epic #20 checklist:
+The daemon runs a best-effort backup every 24 hours when `backup.auto_daily`
+is enabled. Opt-in only — default config keeps it off so users who
+don't want it pay zero background cost.
 
-- **Auto-daily scheduling** — needs the scheduler from Epic #4 wired to a
-  cron-style trigger. You can get the same effect today via a system
-  cron/launchd/Task Scheduler entry that runs `xmclaw backup create` +
-  `xmclaw backup prune --keep 7 --yes`.
+```jsonc
+// daemon/config.json
+"backup": {
+  "auto_daily": true,       // master switch; default false
+  "interval_s": 86400,      // seconds between ticks; 86400 = 24h
+  "keep": 7,                // retain this many auto backups
+  "name_prefix": "auto-"    // only files with this prefix get pruned
+}
+```
+
+What the scheduler does on each tick:
+
+1. Calls `create_backup(data_dir(), "auto-YYYYMMDD-HHMMSS")` with the
+   current UTC timestamp in the name (lex-sortable).
+2. Prunes older `auto-` backups so only the newest `keep` survive. The
+   prune is **prefix-scoped** — a manual backup made with
+   `xmclaw backup create my-snapshot` is never touched.
+3. On any failure (disk full, perms, transient I/O), logs a structured
+   event (`backup_scheduler.create_failed` / `.prune_failed`) and moves
+   on. One bad tick must not stall the next.
+
+The scheduler uses the same `~/.xmclaw/backups/` directory as the CLI;
+mix-and-match freely. `xmclaw backup list` shows both `auto-*` and
+manual entries side-by-side.
+
+**Naming collisions within the same second** (two ticks land at the
+same UTC second, which happens when a test or operator forces back-
+to-back runs) use `overwrite=True` — the second one wins. The
+timestamp has second resolution; sub-second ticks are not a supported
+production cadence.
+
+### Still deferred
+
 - **Zero-downtime reload** — `restore` will eventually coordinate with
   a `daemon/reloader.py` that drains the AgentLoop, swaps workspaces,
-  and resumes without dropping live connections. Phase 1 needs the
-  manual `stop` / `start` dance.
-- **Remote / encrypted storage** — Phase 1 writes plain tar.gz onto
-  the local filesystem. Push to S3 / restic / duplicity via your own
-  cron wrapper; Epic #16 Phase 2 will encrypt the sensitive bits
-  before they hit the archive.
+  and resumes without dropping live connections. Today's `restore` still
+  needs the manual `stop` / `start` dance.
+- **Remote / encrypted storage** — archives are plain tar.gz on local
+  disk. Push to S3 / restic / duplicity via your own cron wrapper.
+  Epic #16 Phase 2 already encrypts the secrets layer before it reaches
+  the archive (`~/.xmclaw.secret/` is a sibling, so it's never included
+  in backups by design — a leaked tarball + no master key = ciphertext).
 
 ## 9. Troubleshooting
 
