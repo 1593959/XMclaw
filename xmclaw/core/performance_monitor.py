@@ -8,11 +8,10 @@ Tracks:
 - Memory usage
 - LLM call latency
 """
-import asyncio
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from xmclaw.utils.log import get_logger

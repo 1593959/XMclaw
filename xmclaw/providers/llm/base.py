@@ -14,7 +14,7 @@ from __future__ import annotations
 import abc
 import asyncio
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from xmclaw.core.ir import ToolCall, ToolCallShape, ToolSpec

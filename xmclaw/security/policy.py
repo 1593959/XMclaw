@@ -93,7 +93,9 @@ def apply_policy(
         return PolicyDecision(content=text, blocked=False, scan=scan)
 
     acted = policy in (PolicyMode.REDACT, PolicyMode.BLOCK)
-    blocked = policy == PolicyMode.BLOCK
+    # Whether the policy literally blocks is decided per-branch below; we
+    # don't pre-compute it because each return path encodes its own
+    # `blocked` flag. Keeping the boolean here would be dead code.
 
     event: dict[str, Any] = {
         "source": source,

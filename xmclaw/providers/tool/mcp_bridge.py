@@ -31,7 +31,7 @@ import asyncio
 import json
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from xmclaw.core.ir import ToolCall, ToolResult, ToolSpec
@@ -132,9 +132,11 @@ class MCPBridge(ToolProvider):
 
         self._reader_task = asyncio.create_task(self._read_loop())
 
-        # 1. initialize handshake.
+        # 1. initialize handshake. Response body is unused — we only care
+        # that the RPC succeeded; capabilities the server advertises are
+        # ignored at this stage.
         try:
-            init_resp = await self._rpc("initialize", {
+            await self._rpc("initialize", {
                 "protocolVersion": _PROTOCOL_VERSION,
                 "capabilities": {},
                 "clientInfo": {

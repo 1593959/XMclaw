@@ -48,7 +48,6 @@ from xmclaw.core.bus import (
     InProcessEventBus,
     make_event,
 )
-from xmclaw.core.ir import ToolCall, ToolResult
 from xmclaw.providers.llm.base import LLMProvider, Message
 from xmclaw.providers.tool.base import ToolProvider
 from xmclaw.security import (
@@ -74,7 +73,7 @@ def _default_system_prompt() -> str:
         ),
         "Linux": "The shell is bash.",
         "Darwin": "The shell is bash / zsh (macOS).",
-    }.get(os_name, f"The shell is whatever is on PATH.")
+    }.get(os_name, "The shell is whatever is on PATH.")
     return (
         "You are XMclaw, a local-first AI agent running on the user's own "
         f"machine. OS: {os_name}. User home: {home}. Desktop: {desktop}. "

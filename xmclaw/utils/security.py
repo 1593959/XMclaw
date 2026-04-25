@@ -12,11 +12,10 @@ from __future__ import annotations
 import asyncio
 import functools
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
 
 from xmclaw.utils.paths import BASE_DIR
 

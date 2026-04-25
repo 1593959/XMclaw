@@ -161,7 +161,7 @@ def check_pairing_token(path: Path) -> CheckResult:
     if not path.exists():
         return CheckResult(
             name="pairing", ok=True,  # not an error — created on first serve
-            detail=f"not yet created (will be created on `xmclaw serve`)",
+            detail="not yet created (will be created on `xmclaw serve`)",
             advisory=f"expected location: {path}",
         )
     try:

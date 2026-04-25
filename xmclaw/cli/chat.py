@@ -117,9 +117,9 @@ def format_event(event: dict[str, Any]) -> RenderedLine | None:
     if etype == "session_lifecycle":
         phase = payload.get("phase", "?")
         if phase == "create":
-            return RenderedLine(text=f"  (session opened)")
+            return RenderedLine(text="  (session opened)")
         if phase == "destroy":
-            return RenderedLine(text=f"  (session closed)")
+            return RenderedLine(text="  (session closed)")
         return None
 
     # Evolution / skill-promotion flashes. These are globally broadcast
@@ -189,12 +189,15 @@ async def _drain_until_quiet(
     while True:
         now = asyncio.get_running_loop().time()
         if now >= deadline:
+            print(f"[_drain_until_quiet deadline reached, events={len(events)}]")  # DEBUG
             return events
         wait = quiet if events else (deadline - now)
         try:
             ev = await asyncio.wait_for(inbox.get(), timeout=wait)
         except asyncio.TimeoutError:
+            print(f"[_drain_until_quiet timeout, events={len(events)}]")  # DEBUG
             return events
+        print(f"[_drain_until_quiet got event: {ev.get('type')}]")  # DEBUG
         events.append(ev)
 
 
@@ -244,7 +247,9 @@ async def _chat_loop(url: str, session_id: str) -> int:
                 print(f"send failed: {exc}")
                 break
 
+            print(f"[about to drain, inbox size={inbox.qsize()}]")  # DEBUG
             events = await _drain_until_quiet(inbox)
+            print(f"[drain returned {len(events)} events]")  # DEBUG
             if not events:
                 print("  (no response — daemon idle or agent disabled?)")
                 continue

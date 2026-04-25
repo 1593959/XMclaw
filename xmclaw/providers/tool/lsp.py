@@ -135,8 +135,10 @@ class LSPTools(ToolProvider):
                 self._proc.terminate()
                 await asyncio.wait_for(self._proc.wait(), timeout=2.0)
             except Exception:  # noqa: BLE001
-                try: self._proc.kill()
-                except Exception: pass  # noqa: BLE001,S110
+                try:
+                    self._proc.kill()
+                except Exception:  # noqa: BLE001,S110
+                    pass
             self._proc = None
         if self._reader_task is not None:
             self._reader_task.cancel()
