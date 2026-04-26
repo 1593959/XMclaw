@@ -1,0 +1,28 @@
+/* XMclaw — EnvPage styles 1:1 (EnvPage.tsx). */
+
+.xmc-h-env__body {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.xmc-h-env__provider {
+  /* Card already provides padding via xmc-h-card */
+}
+
+.xmc-h-env__provider-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.95rem;
+  margin-bottom: 0.5rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--midground);
+}
+
+.xmc-h-env__actions {
+  margin-top: 0.75rem;
+  display: flex;
+  justify-content: flex-end;
+}
