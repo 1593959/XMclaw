@@ -255,6 +255,10 @@ async def _chat_loop(url: str, session_id: str) -> int:
 
         print(f"session: {session_id}   (type /quit to exit)")
 
+        def _show_prompt() -> None:
+            sys.stdout.write("> ")
+            sys.stdout.flush()
+
         # Use a background thread for stdin so the event loop stays free
         # to process WS messages while the user is typing.
         stdin_queue: asyncio.Queue[str | None] = asyncio.Queue()
@@ -275,6 +279,7 @@ async def _chat_loop(url: str, session_id: str) -> int:
         stdin_thread = threading.Thread(target=_stdin_reader, daemon=True)
         stdin_thread.start()
 
+        _show_prompt()
         while not stop.is_set():
             # Poll for user input with a short timeout so daemon events
             # that arrive while the user is typing are rendered immediately.
@@ -283,11 +288,17 @@ async def _chat_loop(url: str, session_id: str) -> int:
             except asyncio.TimeoutError:
                 # No input yet — drain any daemon events so the user
                 # sees them right away instead of only after pressing Enter.
+                pushed_any = False
                 while not inbox.empty():
                     ev = inbox.get_nowait()
                     line = format_event(ev)
                     if line is not None:
+                        if not pushed_any:
+                            sys.stdout.write("\n")  # break the prompt line
                         print(line.text)
+                        pushed_any = True
+                if pushed_any:
+                    _show_prompt()
                 continue
 
             if user is None:  # EOF
@@ -296,6 +307,7 @@ async def _chat_loop(url: str, session_id: str) -> int:
             if user in ("/quit", "/exit", "/q"):
                 break
             if not user:
+                _show_prompt()
                 continue
 
             frame = {"type": "user", "content": user}
@@ -308,11 +320,12 @@ async def _chat_loop(url: str, session_id: str) -> int:
             events = await _drain_until_quiet(inbox)
             if not events:
                 print("  (no response — daemon idle or agent disabled?)")
-                continue
-            for ev in events:
-                line = format_event(ev)
-                if line is not None:
-                    print(line.text)
+            else:
+                for ev in events:
+                    line = format_event(ev)
+                    if line is not None:
+                        print(line.text)
+            _show_prompt()
 
         stdin_stop.set()
         return 0
