@@ -25,6 +25,7 @@ from typing import Any, Mapping
 
 from xmclaw.core.bus import InProcessEventBus
 from xmclaw.daemon.agent_loop import AgentLoop
+from xmclaw.daemon.session_store import SessionStore
 from xmclaw.providers.llm.anthropic import AnthropicLLM
 from xmclaw.providers.llm.base import LLMProvider
 from xmclaw.providers.llm.openai import OpenAILLM
@@ -37,7 +38,7 @@ from xmclaw.providers.runtime import (
 from xmclaw.providers.tool.base import ToolProvider
 from xmclaw.providers.tool.builtin import BuiltinTools
 from xmclaw.security.prompt_scanner import PolicyMode
-from xmclaw.utils.paths import default_memory_db_path
+from xmclaw.utils.paths import default_memory_db_path, default_sessions_db_path
 
 
 # Recognised provider kinds in the config. Each maps to a constructor.
@@ -626,9 +627,18 @@ def build_agent_from_config(
         if not isinstance(policy_raw, str):
             policy_raw = None
     policy = PolicyMode.parse(policy_raw, default=PolicyMode.DETECT_ONLY)
+    # Persistent conversation history. Best-effort — if SQLite init
+    # fails (read-only fs, weird permissions) we fall back to in-memory
+    # only so the daemon still boots.
+    session_store: SessionStore | None
+    try:
+        session_store = SessionStore(default_sessions_db_path())
+    except Exception:  # noqa: BLE001
+        session_store = None
     return AgentLoop(
         llm=llm, bus=bus, tools=tools,
         max_hops=max_hops,
         agent_id=cfg.get("agent_id", "agent"),
         prompt_injection_policy=policy,
+        session_store=session_store,
     )

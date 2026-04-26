@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from starlette.responses import JSONResponse, RedirectResponse
+from starlette.responses import FileResponse, JSONResponse, RedirectResponse
 from starlette.staticfiles import StaticFiles
 
 from xmclaw import __version__
@@ -78,6 +78,7 @@ def create_app(
     auth_check: Callable[[str | None], Awaitable[bool]] | None = None,
     agent: AgentLoop | None = None,
     config: dict[str, Any] | None = None,
+    config_path: Path | None = None,
     orchestrator: Any | None = None,
 ) -> FastAPI:
     """Build the v2 FastAPI app.
@@ -353,7 +354,82 @@ def create_app(
     async def config_reflection() -> JSONResponse:
         if config is None:
             return JSONResponse({"config": None, "note": "running without a config file"})
-        return JSONResponse({"config": _sanitize_config(config)})
+        return JSONResponse({
+            "config": _sanitize_config(config),
+            "config_path": str(config_path) if config_path else None,
+        })
+
+    # ── PUT /api/v2/config/llm ─────────────────────────────────────
+    # Front-end model configuration: write provider/api_key/base_url/
+    # default_model into the on-disk config.json. Requires the daemon
+    # to know its config path (CLI passes it via create_app); when
+    # config was loaded from a dict but no path was given, falls back
+    # to ``daemon/config.json`` relative to CWD so a fresh install can
+    # still bootstrap from the UI without a CLI step.
+    @app.put("/api/v2/config/llm")
+    async def update_llm_config(payload: dict[str, Any]) -> JSONResponse:
+        provider = payload.get("provider")
+        if provider not in ("openai", "anthropic"):
+            return JSONResponse(
+                {"ok": False, "error": "provider must be 'openai' or 'anthropic'"},
+                status_code=400,
+            )
+        api_key = str(payload.get("api_key", "") or "").strip()
+        base_url = str(payload.get("base_url", "") or "").strip()
+        default_model = str(payload.get("default_model", "") or "").strip()
+        if not default_model:
+            return JSONResponse(
+                {"ok": False, "error": "default_model is required"},
+                status_code=400,
+            )
+
+        target_path = config_path or Path("daemon") / "config.json"
+        target_path = Path(target_path)
+
+        if target_path.exists():
+            try:
+                current = json.loads(target_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                return JSONResponse(
+                    {"ok": False, "error": f"existing config is invalid JSON: {exc}"},
+                    status_code=500,
+                )
+            if not isinstance(current, dict):
+                current = {}
+        else:
+            current = {}
+
+        llm_section = current.setdefault("llm", {})
+        if not isinstance(llm_section, dict):
+            llm_section = {}
+            current["llm"] = llm_section
+        llm_section["default_provider"] = provider
+        prov_block = llm_section.setdefault(provider, {})
+        if not isinstance(prov_block, dict):
+            prov_block = {}
+            llm_section[provider] = prov_block
+        # Only overwrite api_key when caller provided a non-empty value;
+        # an empty string in the form means "keep existing key" so the
+        # user can edit base_url/model without re-entering the secret.
+        if api_key:
+            prov_block["api_key"] = api_key
+        if base_url:
+            prov_block["base_url"] = base_url
+        prov_block["default_model"] = default_model
+
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target_path.with_suffix(target_path.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps(current, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        tmp.replace(target_path)
+
+        return JSONResponse({
+            "ok": True,
+            "path": str(target_path),
+            "restart_required": True,
+        })
 
     # ── /api/v2/status ────────────────────────────────────────────
     # Richer status than /health: active model, tool roster, mcp state.
@@ -463,6 +539,27 @@ def create_app(
     # the UI connects to still requires the pairing token.
     _static_dir = Path(__file__).parent / "static"
     if _static_dir.is_dir():
+        _index_html = _static_dir / "index.html"
+
+        # SPA fallback: client-side router owns /ui/chat, /ui/agents, …
+        # so a refresh on those paths must return index.html, not 404.
+        # Real static assets (.js / .css / .png / fonts) are served by
+        # the StaticFiles mount below; anything else falls through here.
+        _static_root = _static_dir.resolve()
+
+        @app.get("/ui/{spa_path:path}", response_model=None)
+        async def ui_spa_fallback(spa_path: str) -> FileResponse:
+            if spa_path:
+                candidate = (_static_dir / spa_path).resolve()
+                # Reject `..` traversal: candidate must live under static root.
+                try:
+                    candidate.relative_to(_static_root)
+                except ValueError:
+                    return FileResponse(str(_index_html))
+                if candidate.is_file():
+                    return FileResponse(str(candidate))
+            return FileResponse(str(_index_html))
+
         app.mount(
             "/ui",
             StaticFiles(directory=str(_static_dir), html=True),
@@ -626,6 +723,9 @@ def create_app(
                 if frame.get("type") == "user":
                     content = str(frame.get("content", ""))
                     ultrathink = bool(frame.get("ultrathink", False))
+                    user_corr = frame.get("correlation_id")
+                    if user_corr is not None and not isinstance(user_corr, str):
+                        user_corr = None
                     # Ultrathink (borrowed from the /ultrathink pattern):
                     # when set, prepend a directive to make the model
                     # slow down and think step-by-step before answering.
@@ -648,7 +748,10 @@ def create_app(
                         # can discover which agent initiated them.
                         try:
                             with use_current_agent_id(resolved_agent_id):
-                                await active_agent.run_turn(session_id, content)
+                                await active_agent.run_turn(
+                                    session_id, content,
+                                    user_correlation_id=user_corr,
+                                )
                         except Exception as exc:  # noqa: BLE001
                             # Surface a structured error frame so the
                             # client sees the failure instead of a
@@ -671,6 +774,7 @@ def create_app(
                                 "content": content,
                                 "channel": "ws",
                             },
+                            correlation_id=user_corr,
                         ))
                         await bus.drain()
                 # Other frame types are silently ignored for now.

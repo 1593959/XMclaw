@@ -180,7 +180,7 @@ def test_daemon_surfaces_anti_req_violation_when_agent_crashes(
     """Agent.run_turn shouldn't raise — but if it does, daemon publishes
     an ANTI_REQ_VIOLATION so the client never sees a silent socket stall."""
     class _CrashingAgent(AgentLoop):
-        async def run_turn(self, session_id, user_message):  # type: ignore[override]
+        async def run_turn(self, session_id, user_message, **kwargs):  # type: ignore[override]
             raise RuntimeError("agent blew up")
 
     agent = _CrashingAgent(

@@ -48,6 +48,7 @@ from xmclaw.core.bus import (
     InProcessEventBus,
     make_event,
 )
+from xmclaw.daemon.session_store import SessionStore
 from xmclaw.providers.llm.base import LLMProvider, Message
 from xmclaw.providers.tool.base import ToolProvider
 from xmclaw.security import (
@@ -142,6 +143,7 @@ class AgentLoop:
         cost_tracker: CostTracker | None = None,
         history_cap: int = 40,
         prompt_injection_policy: PolicyMode = PolicyMode.DETECT_ONLY,
+        session_store: SessionStore | None = None,
     ) -> None:
         self._llm = llm
         self._bus = bus
@@ -158,11 +160,17 @@ class AgentLoop:
         self._history_cap = history_cap
         # Epic #14: what the scanner does when a tool result looks hostile.
         self._injection_policy = prompt_injection_policy
+        # Optional cross-process persistence. When wired, history outlives
+        # the daemon process — `xmclaw chat --resume <id>` picks up where
+        # a prior daemon run stopped. None falls back to in-memory only.
+        self._session_store = session_store
 
     def clear_session(self, session_id: str) -> None:
         """Drop a session's conversation history. Called by the WS gateway
         on SESSION_LIFECYCLE destroy, or by a ``/reset`` user intent."""
         self._histories.pop(session_id, None)
+        if self._session_store is not None:
+            self._session_store.delete(session_id)
 
     def _persist_history(
         self, session_id: str, messages: list[Message],
@@ -179,18 +187,28 @@ class AgentLoop:
         # Drop the system message we prepended for this turn.
         history = [m for m in messages if m.role != "system"]
         if len(history) <= self._history_cap:
-            self._histories[session_id] = history
-            return
-        start = len(history) - self._history_cap
-        # Advance past partial tool blocks: if the first kept message is a
-        # tool result or an assistant message that references tools, skip
-        # forward to the next user turn.
-        while start < len(history) and history[start].role in ("tool", "assistant"):
-            start += 1
-        self._histories[session_id] = history[start:]
+            kept = history
+        else:
+            start = len(history) - self._history_cap
+            # Advance past partial tool blocks: if the first kept message is a
+            # tool result or an assistant message that references tools, skip
+            # forward to the next user turn.
+            while start < len(history) and history[start].role in ("tool", "assistant"):
+                start += 1
+            kept = history[start:]
+        self._histories[session_id] = kept
+        if self._session_store is not None:
+            try:
+                self._session_store.save(session_id, kept)
+            except Exception:  # noqa: BLE001
+                # Persistence is best-effort -- a corrupt sessions.db should
+                # never break the live turn. The in-memory copy is the source
+                # of truth for the rest of this process.
+                pass
 
     async def run_turn(
         self, session_id: str, user_message: str,
+        *, user_correlation_id: str | None = None,
     ) -> AgentTurnResult:
         events: list[BehavioralEvent] = []
         tool_calls_made: list[dict[str, Any]] = []
@@ -207,15 +225,29 @@ class AgentLoop:
             await self._bus.publish(event)
             return event
 
-        # 1. Announce the user message.
+        # 1. Announce the user message. We propagate the client-supplied
+        # correlation_id so the optimistic local-echo bubble in the web
+        # UI dedupes against the mirrored event (otherwise the user sees
+        # their message twice).
         await publish(
             EventType.USER_MESSAGE,
             {"content": user_message, "channel": "agent_loop"},
+            correlation_id=user_correlation_id,
         )
 
         # Resume prior history for this session; the first turn starts empty.
         # Note: system prompt is prepended fresh each turn (not stored in
         # history) so reprovisioning the agent picks up the new prompt.
+        # Cross-process resume: if memory has nothing for this sid but the
+        # store does (daemon was restarted between turns), hydrate the
+        # in-memory cache once so subsequent turns hit memory.
+        if session_id not in self._histories and self._session_store is not None:
+            try:
+                loaded = self._session_store.load(session_id)
+            except Exception:  # noqa: BLE001
+                loaded = None
+            if loaded:
+                self._histories[session_id] = loaded
         prior = self._histories.get(session_id, [])
         messages: list[Message] = [
             Message(role="system", content=self._system_prompt),

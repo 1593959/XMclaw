@@ -238,7 +238,7 @@ class _StubAgent:
         self._bus = bus
         self.turns: list[tuple[str, str]] = []
 
-    async def run_turn(self, session_id: str, content: str) -> None:
+    async def run_turn(self, session_id: str, content: str, **kwargs) -> None:
         self.turns.append((session_id, content))
 
 

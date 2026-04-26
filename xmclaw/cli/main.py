@@ -418,6 +418,7 @@ def serve(
     # Build the app locally so the agent (if any) is wired in.
     app_instance = _create_app(
         bus=bus, agent=agent, auth_check=auth_check,
+        config=cfg, config_path=cfg_path,
         orchestrator=orchestrator,
     )
     uvicorn.run(app_instance, host=host, port=port, log_level="info")
@@ -595,6 +596,14 @@ def chat(
     session_id: str = typer.Option(
         "", help="Session id (auto-generated if empty).",
     ),
+    resume: bool = typer.Option(
+        False, "--resume", "-r",
+        help="Pick a previous session to continue (interactive list).",
+    ),
+    last: bool = typer.Option(
+        False, "--last", "-l",
+        help="Resume the most recently active session.",
+    ),
     token: str = typer.Option(
         "",
         help=(
@@ -611,6 +620,10 @@ def chat(
     Connects to the daemon's WebSocket, prompts for user input, and
     renders the event stream back as a readable conversation.
 
+    Resume a previous conversation with ``--resume`` (interactive picker)
+    or ``--last`` (most recent), or supply ``--session-id <id>`` directly.
+    Persisted history survives daemon restarts.
+
     Start a daemon in another terminal first:
 
         xmclaw serve
@@ -619,8 +632,26 @@ def chat(
 
         xmclaw chat
     """
-    from xmclaw.cli.chat import run_chat
+    from xmclaw.cli.chat import pick_resume_session, run_chat
     from xmclaw.daemon.pairing import default_token_path
+
+    if (resume or last) and session_id:
+        typer.echo(
+            "  [!]   --resume / --last conflict with --session-id; pick one.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if resume or last:
+        chosen = pick_resume_session(prefer_last=last)
+        if chosen is None:
+            typer.echo(
+                "  [!]   no saved sessions to resume yet -- start a fresh "
+                "chat first.",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        session_id = chosen
 
     effective_token: str | None
     if no_auth:

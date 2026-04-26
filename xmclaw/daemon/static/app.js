@@ -36,6 +36,16 @@ import { Icon } from "./components/atoms/icon.js";
 import { Avatar } from "./components/atoms/avatar.js";
 import { Spinner } from "./components/atoms/spinner.js";
 import { ChatPage } from "./pages/Chat.js";
+import { SettingsPage } from "./pages/Settings.js";
+import { DoctorPage } from "./pages/Doctor.js";
+import { ToolsPage } from "./pages/Tools.js";
+import { AgentsPage } from "./pages/Agents.js";
+import { MemoryPage } from "./pages/Memory.js";
+import { SecurityPage } from "./pages/Security.js";
+import { InsightsPage } from "./pages/Insights.js";
+import { SkillsPage } from "./pages/Skills.js";
+import { EvolutionPage } from "./pages/Evolution.js";
+import { BackupPage } from "./pages/Backup.js";
 
 // ── WS handle (singleton) ─────────────────────────────────────────────
 
@@ -180,33 +190,33 @@ const routes = {
       onNewSession=${startNewSession}
     />
   `,
-  "/agents": () => html`<${Placeholder} title="Agents" subtitle="多 Agent 管理 · Phase 3" />`,
-  "/skills": () => html`<${Placeholder} title="Skills" subtitle="Skill 库与版本矩阵 · Phase 3" />`,
-  "/evolution": () => html`<${Placeholder} title="Evolution ★" subtitle="VFM chart + learned-today feed · Phase 4" />`,
-  "/memory": () => html`<${Placeholder} title="Memory" subtitle="三层记忆浏览 + prune · Phase 3" />`,
-  "/tools": () => html`<${Placeholder} title="Tools" subtitle="工具清单 + MCP servers · Phase 3" />`,
-  "/security": () => html`<${Placeholder} title="Security" subtitle="审批队列 + audit log · Phase 2" />`,
-  "/backup": () => html`<${Placeholder} title="Backup" subtitle="备份与恢复 · Phase 3" />`,
-  "/doctor": () => html`<${Placeholder} title="Doctor" subtitle="诊断 + 自修复 · Phase 3" />`,
-  "/insights": () => html`<${Placeholder} title="Insights" subtitle="Usage / Cost / Learning · Phase 4" />`,
-  "/settings": () => html`<${Placeholder} title="Settings" subtitle="主题 / 快捷键 / i18n · Phase 3" />`,
-  "*": () => html`<${Placeholder} title="Not found" subtitle="未匹配的路由" />`,
+  "/agents": (state) => html`<${AgentsPage} token=${state.auth.token} />`,
+  "/skills": (state) => html`<${SkillsPage} token=${state.auth.token} />`,
+  "/evolution": (state) => html`<${EvolutionPage} token=${state.auth.token} />`,
+  "/memory": (state) => html`<${MemoryPage} token=${state.auth.token} />`,
+  "/tools": (state) => html`<${ToolsPage} token=${state.auth.token} />`,
+  "/security": (state) => html`<${SecurityPage} token=${state.auth.token} />`,
+  "/backup": (state) => html`<${BackupPage} token=${state.auth.token} />`,
+  "/doctor": (state) => html`<${DoctorPage} token=${state.auth.token} />`,
+  "/insights": (state) => html`<${InsightsPage} token=${state.auth.token} />`,
+  "/settings": (state) => html`<${SettingsPage} token=${state.auth.token} />`,
+  "*": () => html`<${Placeholder} title="未找到" subtitle="未匹配的路由" />`,
 };
 
 // ── Shell ─────────────────────────────────────────────────────────────
 
 const SIDEBAR_ITEMS = [
-  { path: "/chat", label: "Chat", icon: "message" },
-  { path: "/agents", label: "Agents", icon: "users" },
-  { path: "/skills", label: "Skills", icon: "book" },
-  { path: "/evolution", label: "Evolution", icon: "sparkle", accent: true },
-  { path: "/memory", label: "Memory", icon: "layers" },
-  { path: "/tools", label: "Tools", icon: "wrench" },
-  { path: "/security", label: "Security", icon: "shield" },
-  { path: "/backup", label: "Backup", icon: "archive" },
-  { path: "/doctor", label: "Doctor", icon: "stethoscope" },
-  { path: "/insights", label: "Insights", icon: "chart" },
-  { path: "/settings", label: "Settings", icon: "cog" },
+  { path: "/chat", label: "对话", icon: "message" },
+  { path: "/agents", label: "智能体", icon: "users" },
+  { path: "/skills", label: "技能", icon: "book" },
+  { path: "/evolution", label: "进化", icon: "sparkle", accent: true },
+  { path: "/memory", label: "记忆", icon: "layers" },
+  { path: "/tools", label: "工具", icon: "wrench" },
+  { path: "/security", label: "安全", icon: "shield" },
+  { path: "/backup", label: "备份", icon: "archive" },
+  { path: "/doctor", label: "诊断", icon: "stethoscope" },
+  { path: "/insights", label: "洞察", icon: "chart" },
+  { path: "/settings", label: "设置", icon: "cog" },
 ];
 
 function Sidebar({ activePath }) {

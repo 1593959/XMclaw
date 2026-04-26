@@ -223,6 +223,21 @@ def default_memory_db_path() -> Path:
     return v2_workspace_dir() / "memory.db"
 
 
+def default_sessions_db_path() -> Path:
+    """SQLite store for per-session conversation history.
+
+    Distinct from ``events.db`` (immutable audit log) because session
+    history is mutable — pruned by ``history_cap`` and dropped on
+    ``/reset``. Honors the narrow ``XMC_V2_SESSIONS_DB_PATH`` override
+    so tests can isolate a single store without moving the full
+    workspace.
+    """
+    override = os.environ.get("XMC_V2_SESSIONS_DB_PATH")
+    if override:
+        return Path(override)
+    return v2_workspace_dir() / "sessions.db"
+
+
 # ── v1 legacy (do not extend; kept so existing callers keep working) ────
 
 def get_agent_dir(agent_id: str) -> Path:
