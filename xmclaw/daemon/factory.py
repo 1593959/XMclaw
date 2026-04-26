@@ -730,43 +730,39 @@ def build_skill_runtime_from_config(cfg: dict[str, Any]) -> SkillRuntime:
     return cls()
 
 
-def _load_persona_addendum(cfg: dict[str, Any]) -> str:
-    """Load persona / custom-instructions text to append to the system prompt.
+def _resolve_persona_profile_dir(cfg: dict[str, Any]) -> Path:
+    """Pick the active persona profile directory.
 
-    Resolution order, first hit wins:
-    1. ``cfg["persona"]["text"]`` — inline override in config.
-    2. ``cfg["persona"]["profile_id"]`` — file stem under :func:`persona_dir`.
-    3. ``persona_dir() / "active.md"`` — the user's selected default persona.
+    Replaces the prior ``_load_persona_addendum`` ad-hoc loader. Returns
+    a directory path (which may not exist yet — assembler falls back to
+    bundled templates). Resolution order:
 
-    Returns ``""`` if no persona is configured. The text is appended as a
-    new section after the built-in identity prompt — so a user persona can
-    add ("you specialize in DevOps") but never delete the identity guard
-    ("you are XMclaw"). That ordering matters: third-party model endpoints
-    (MiniMax / DeepSeek / Qwen via Anthropic-compat shims) tend to drop the
-    last paragraph of an oversized system prompt rather than the first, so
-    the immutable identity stays at the top.
+    1. ``cfg["persona"]["profile_id"]`` → ``~/.xmclaw/persona/profiles/<id>/``
+    2. ``cfg["persona"]["text"]`` (inline) → returns a special transient
+       directory representing "use bundled templates with this SOUL.md
+       overlay". Implemented by writing the inline text to a temp
+       SOUL.md inside ``profiles/_inline/`` so the assembler picks it
+       up via the normal layer cascade.
+    3. Default → ``~/.xmclaw/persona/profiles/default/``
     """
-    persona_section = cfg.get("persona")
-    if isinstance(persona_section, Mapping):
-        inline = persona_section.get("text")
-        if isinstance(inline, str) and inline.strip():
-            return inline.strip()
-        profile_id = persona_section.get("profile_id")
+    section = cfg.get("persona") if isinstance(cfg, Mapping) else None
+    if isinstance(section, Mapping):
+        profile_id = section.get("profile_id")
         if isinstance(profile_id, str) and profile_id.strip():
             stem = profile_id.strip().replace("/", "_").replace("\\", "_")
-            md = persona_dir() / f"{stem}.md"
-            if md.is_file():
-                try:
-                    return md.read_text(encoding="utf-8", errors="replace").strip()
-                except OSError:
-                    return ""
-    active = persona_dir() / "active.md"
-    if active.is_file():
-        try:
-            return active.read_text(encoding="utf-8", errors="replace").strip()
-        except OSError:
-            return ""
-    return ""
+            return persona_dir().parent / "profiles" / stem
+        inline = section.get("text")
+        if isinstance(inline, str) and inline.strip():
+            inline_dir = persona_dir().parent / "profiles" / "_inline"
+            try:
+                inline_dir.mkdir(parents=True, exist_ok=True)
+                (inline_dir / "SOUL.md").write_text(
+                    inline.strip(), encoding="utf-8"
+                )
+            except OSError:
+                pass
+            return inline_dir
+    return persona_dir().parent / "profiles" / "default"
 
 
 def build_agent_from_config(
@@ -808,14 +804,44 @@ def build_agent_from_config(
         session_store = SessionStore(default_sessions_db_path())
     except Exception:  # noqa: BLE001
         session_store = None
-    # Persona / custom instructions are appended to the immutable identity
-    # prompt, never replace it. See _load_persona_addendum for resolution order.
-    from xmclaw.daemon.agent_loop import _DEFAULT_SYSTEM
-    persona = _load_persona_addendum(cfg)
-    system_prompt = (
-        f"{_DEFAULT_SYSTEM}\n\n# 用户人格 / Custom instructions\n{persona}"
-        if persona else _DEFAULT_SYSTEM
+    # Persona system: assemble system prompt from the 7-file SOUL pack
+    # (xmclaw/core/persona). Mirrors OpenClaw / Hermes / QwenPaw layout.
+    # The DEFAULT_IDENTITY_LINE is always slot 0 so identity survives
+    # third-party endpoints that compress long system prompts.
+    from xmclaw.core.persona import (
+        build_system_prompt,
+        ensure_default_profile,
     )
+    profile_dir = _resolve_persona_profile_dir(cfg)
+    # Materialize bundled templates on first install so the user can
+    # actually edit them (otherwise they only see the prompt output, not
+    # the source files). Idempotent — won't overwrite existing files.
+    try:
+        ensure_default_profile(profile_dir)
+    except OSError:
+        pass
+    workspace_root: Path | None = None
+    ws_section = cfg.get("workspace") if isinstance(cfg, Mapping) else None
+    if isinstance(ws_section, Mapping):
+        ws_path = ws_section.get("path")
+        if isinstance(ws_path, str) and ws_path.strip():
+            workspace_root = Path(ws_path).expanduser()
+    tool_specs = tools.list_tools() if tools is not None else []
+    system_prompt = build_system_prompt(
+        profile_dir=profile_dir,
+        workspace_dir=workspace_root,
+        tool_names=[s.name for s in tool_specs],
+    )
+    # Cross-session memory: build the same SqliteVecMemory instance the
+    # daemon already wires (build_memory_from_config) and hand it to the
+    # AgentLoop so run_turn can prefetch + write-back. Best-effort: if
+    # the memory store fails to init, agent stays usable without long-term
+    # recall — same posture as session_store above.
+    memory: SqliteVecMemory | None
+    try:
+        memory = build_memory_from_config(cfg, bus=bus)
+    except Exception:  # noqa: BLE001
+        memory = None
     return AgentLoop(
         llm=llm, bus=bus, tools=tools,
         system_prompt=system_prompt,
@@ -824,4 +850,5 @@ def build_agent_from_config(
         prompt_injection_policy=policy,
         session_store=session_store,
         llm_registry=registry,
+        memory=memory,
     )
