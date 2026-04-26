@@ -72,6 +72,41 @@ def _sanitize_config(cfg: Any) -> Any:
     return cfg
 
 
+def _restore_secrets(existing: Any, incoming: Any) -> Any:
+    """Inverse of :func:`_sanitize_config`.
+
+    The ConfigPage form submits its current view, which has redacted
+    secret fields from the previous GET. When the user edits a non-
+    secret field, the redacted secret is round-tripped back to us as
+    ``"<redacted …xxxx>"`` or ``"<unset>"``. This restores the real
+    secret from ``existing`` so a save doesn't wipe API keys. Users who
+    actually want to change the secret send the new plaintext value
+    (front-end clears the field first).
+    """
+    if isinstance(existing, dict) and isinstance(incoming, dict):
+        out: dict[str, Any] = {}
+        for k, v in incoming.items():
+            ev = existing.get(k) if isinstance(k, str) else None
+            if (
+                isinstance(k, str)
+                and k.lower() in _SECRET_KEYS
+                and isinstance(v, str)
+                and (v.startswith("<redacted ") or v == "<unset>")
+            ):
+                # Keep the existing secret untouched.
+                out[k] = ev if ev is not None else ""
+            else:
+                out[k] = _restore_secrets(ev, v)
+        return out
+    if isinstance(existing, list) and isinstance(incoming, list):
+        # Lists: best-effort element-wise restore for same-length lists,
+        # else trust the incoming list.
+        if len(existing) == len(incoming):
+            return [_restore_secrets(e, i) for e, i in zip(existing, incoming)]
+        return list(incoming)
+    return incoming
+
+
 def create_app(
     *,
     bus: InProcessEventBus | None = None,
@@ -385,6 +420,51 @@ def create_app(
         return JSONResponse({
             "config": _sanitize_config(config),
             "config_path": str(config_path) if config_path else None,
+        })
+
+    # ── PUT /api/v2/config ───────────────────────────────────────
+    # Generic config writer used by the Hermes-style ConfigPage form.
+    # Validates the body is a dict, then atomically writes it to the
+    # on-disk config.json (preserving secrets the front-end can't see —
+    # api_key / bot_token / password fields).
+    @app.put("/api/v2/config")
+    async def update_config(payload: dict[str, Any]) -> JSONResponse:
+        if not isinstance(payload, dict):
+            return JSONResponse(
+                {"ok": False, "error": "body must be a JSON object"},
+                status_code=400,
+            )
+        target_path = config_path or Path("daemon") / "config.json"
+        target_path = Path(target_path)
+        try:
+            existing: dict[str, Any] = {}
+            if target_path.exists():
+                existing = json.loads(target_path.read_text(encoding="utf-8"))
+                if not isinstance(existing, dict):
+                    existing = {}
+            # Re-merge redacted fields the UI never received.
+            merged = _restore_secrets(existing, payload)
+            tmp = target_path.with_suffix(target_path.suffix + ".write.tmp")
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(
+                json.dumps(merged, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            import os as _os
+            _os.replace(tmp, target_path)
+        except (OSError, json.JSONDecodeError) as exc:
+            return JSONResponse(
+                {"ok": False, "error": str(exc)}, status_code=500,
+            )
+        # Update the in-memory config so subsequent requests see the new
+        # values without a daemon restart.
+        if config is not None:
+            config.clear()
+            config.update(merged)
+        return JSONResponse({
+            "ok": True,
+            "config_path": str(target_path),
+            "note": "restart daemon for LLM/runtime changes to take effect",
         })
 
     # ── PUT /api/v2/config/llm ─────────────────────────────────────

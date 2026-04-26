@@ -1,0 +1,169 @@
+/* XMclaw — ConfigPage styles 1:1 (ConfigPage.tsx + AutoField.tsx). */
+
+.xmc-h-cfg__body {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+@media (min-width: 640px) {
+  .xmc-h-cfg__body {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+}
+
+.xmc-h-cfg__content {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.xmc-h-cfg__searchbar {
+  position: relative;
+  padding: 0 0.5rem 0.5rem;
+}
+
+/* ── AutoField ──────────────────────────────────────────────────── */
+
+.xmc-h-cfg__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
+}
+
+.xmc-h-cfg__field:last-child { border-bottom: none; }
+
+.xmc-h-cfg__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--midground);
+  text-transform: uppercase;
+}
+
+.xmc-h-cfg__type {
+  font-size: 0.65rem;
+  color: var(--color-muted-foreground);
+  font-family: var(--theme-font-mono);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.xmc-h-cfg__hint {
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+}
+
+.xmc-h-cfg__hint--path {
+  font-family: var(--theme-font-mono);
+  font-size: 0.68rem;
+  opacity: 0.65;
+}
+
+.xmc-h-cfg__textarea {
+  font-family: var(--theme-font-mono);
+  font-size: 0.78rem;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.xmc-h-cfg__yaml {
+  width: 100%;
+  min-height: 480px;
+  font-family: var(--theme-font-mono);
+  font-size: 0.78rem;
+  line-height: 1.55;
+  padding: 0.75rem;
+}
+
+/* ── Switch (boolean field) ─────────────────────────────────────── */
+
+.xmc-h-cfg__switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  user-select: none;
+  font-size: 0.78rem;
+  color: var(--midground);
+}
+
+.xmc-h-cfg__switch input { display: none; }
+
+.xmc-h-cfg__switch-track {
+  position: relative;
+  width: 2.4rem;
+  height: 1.3rem;
+  background: color-mix(in srgb, var(--midground) 15%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  transition: background 150ms;
+}
+
+.xmc-h-cfg__switch-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 1rem;
+  height: 1rem;
+  background: var(--color-muted-foreground);
+  border-radius: 999px;
+  transition: transform 150ms, background 150ms;
+}
+
+.xmc-h-cfg__switch input:checked + .xmc-h-cfg__switch-track {
+  background: color-mix(in srgb, var(--color-success) 30%, transparent);
+  border-color: color-mix(in srgb, var(--color-success) 50%, transparent);
+}
+
+.xmc-h-cfg__switch input:checked + .xmc-h-cfg__switch-track::after {
+  background: var(--color-success);
+  transform: translateX(1.1rem);
+}
+
+.xmc-h-cfg__switch-state {
+  font-family: var(--theme-font-mono);
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  min-width: 1.6rem;
+}
+
+/* ── Object group ───────────────────────────────────────────────── */
+
+.xmc-h-cfg__group {
+  border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+  border-radius: var(--radius-sm);
+  margin-top: 0.5rem;
+  background: color-mix(in srgb, var(--midground) 2%, transparent);
+}
+
+.xmc-h-cfg__group-title {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-muted-foreground);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
+}
+
+.xmc-h-cfg__group-body {
+  padding: 0.25rem 0.75rem 0.75rem;
+}
+
+/* ── Category glyph in left rail ────────────────────────────────── */
+
+.xmc-h-cfg__catglyph {
+  width: 1.1rem;
+  text-align: center;
+  font-size: 0.95rem;
+  flex-shrink: 0;
+}

@@ -53,6 +53,7 @@ import { BackupPage } from "./pages/Backup.js";
 import { WorkspacePage } from "./pages/Workspace.js";
 import { SessionsPage } from "./pages/Sessions.js";
 import { CronPage } from "./pages/Cron.js";
+import { ConfigPage } from "./pages/Config.js";
 
 // ── WS handle (singleton) ─────────────────────────────────────────────
 
@@ -208,6 +209,7 @@ const routes = {
   `,
   "/sessions": (state) => html`<${SessionsPage} token=${state.auth.token} />`,
   "/cron": (state) => html`<${CronPage} token=${state.auth.token} />`,
+  "/config": (state) => html`<${ConfigPage} token=${state.auth.token} />`,
   "/workspace": (state) => html`<${WorkspacePage} token=${state.auth.token} />`,
   "/agents": (state) => html`<${AgentsPage} token=${state.auth.token} />`,
   "/skills": (state) => html`<${SkillsPage} token=${state.auth.token} />`,
