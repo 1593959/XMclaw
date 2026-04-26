@@ -630,6 +630,12 @@ async def test_failed_tool_content_is_error_string_not_None_str() -> None:
             self._i += 1
             return r
 
+        async def complete_streaming(self, messages, tools=None, *, on_chunk=None):
+            r = await self.complete(messages, tools=tools)
+            if on_chunk is not None and r.content:
+                await on_chunk(r.content)
+            return r
+
         @property
         def tool_call_shape(self) -> ToolCallShape:
             return ToolCallShape.ANTHROPIC_NATIVE

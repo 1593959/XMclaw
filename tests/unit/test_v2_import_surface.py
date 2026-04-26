@@ -60,8 +60,7 @@ V2_MODULES = [
     "xmclaw.skills.demo.picklable_demo",
     "xmclaw.utils.cost",
     "xmclaw.utils.redact",
-    "xmclaw.plugins",
-    "xmclaw.plugins.loader",
+    # xmclaw.plugins.loader was removed in Phase 8 (stale stub).
     "xmclaw.cli.main",
     "xmclaw.cli.chat",
     "xmclaw.cli.doctor",

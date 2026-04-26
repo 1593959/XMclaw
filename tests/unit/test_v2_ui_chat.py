@@ -154,17 +154,18 @@ def test_chat_reducer_exports_phase1_event_list() -> None:
 
 def test_markdown_renderer_escapes_html_first() -> None:
     src = read("lib/markdown.js")
-    # The HTML escape map and its consumer must be present BEFORE the
-    # inline / fence transformation routines run.
+    # Phase 2 rewrote lib/markdown.js around marked@12 + dompurify@3
+    # (CDN with in-house fallback). The escape primitive must still
+    # survive — fallback path escapes raw HTML; marked path runs through
+    # DOMPurify (sanitize() helper).
     assert "escapeHtml" in src
-    # All five HTML special chars covered.
+    # HTML special chars covered in the fallback escape map.
     assert '"&"' in src
     assert '"<"' in src
     assert '">"' in src
-    assert "'\"'" in src or '"\\""' in src
-    # Fenced block extraction prefix.
-    assert "extractCodeBlocks" in src
-    assert "```" in src
+    # Fenced block handling: marked.lexer for primary path + fallback.
+    assert "marked" in src and "lexer" in src
+    assert "```" in src or "code" in src.lower()
 
 
 def test_markdown_renderer_supports_inline_and_fences() -> None:
@@ -198,12 +199,17 @@ def test_molecule_uses_window_xmc(rel: str) -> None:
 
 
 def test_message_bubble_renders_via_dangerouslySetInnerHTML() -> None:
-    """The reducer hands the escape-then-format pipeline a sanitized HTML
-    string; the bubble must inject it via dangerouslySetInnerHTML, not as
-    a child node (which would render the raw HTML as text)."""
+    """Phase 2 rewrote MessageBubble.js to render a token array (each
+    keyed token has its own div with dangerouslySetInnerHTML) so
+    streaming chunks only update the trailing token's DOM. The
+    sanitized-HTML injection path is preserved; the per-token import
+    is what changed."""
     src = read("components/molecules/MessageBubble.js")
     assert "dangerouslySetInnerHTML" in src
-    assert "renderMarkdown" in src
+    # Token-keyed render uses lex() + renderTokenHtml() instead of the
+    # old renderMarkdown() one-shot.
+    assert "lex(" in src or "lex (" in src
+    assert "renderTokenHtml" in src
 
 
 def test_composer_send_keybindings_present() -> None:

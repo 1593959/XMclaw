@@ -78,6 +78,10 @@ import is the dual rule, enforced by
   §2 on `xmclaw/plugins/**`.
 - `../../tests/unit/test_v2_plugin_sdk.py` — surface-freeze + parity
   tests. Read first before adding to `__all__`.
-- `../plugins/loader.py` — the daemon-side discovery stub
-  (`importlib.metadata.entry_points("xmclaw.plugins.*")`). Actual
-  wiring is Phase 2.
+- Discovery via `importlib.metadata.entry_points("xmclaw.plugins.*")`
+  was a Phase 2 stub at `../plugins/loader.py`. Removed in Phase 8
+  cleanup (DEV_PLAN.md §9 appendix B) — it was a `NotImplementedError`
+  no-op, never called. When real entry-point discovery lands, it'll
+  live alongside the concrete provider registries (e.g. inside
+  `xmclaw/providers/channel/registry.py` for channels), not in a
+  separate generic loader.

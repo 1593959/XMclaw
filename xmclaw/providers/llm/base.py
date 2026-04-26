@@ -91,7 +91,13 @@ class LLMProvider(abc.ABC):
         Tool-use blocks aren't streamed — they arrive in the final return
         value, since the agent loop needs the whole call before invoking.
         """
-        response = await self.complete(messages, tools)
+        # ``tools`` passed by keyword so providers (and test mocks) that
+        # declare it as keyword-only still satisfy the call. The two
+        # historical mocks in tests/unit/test_v2_llm_registry.py and
+        # tests/unit/test_v2_builtin_tools.py both pre-date Phase 1's
+        # streaming wiring; this keyword call keeps them green without
+        # forcing every test to re-implement complete_streaming.
+        response = await self.complete(messages, tools=tools)
         if on_chunk is not None and response.content:
             await on_chunk(response.content)
         return response
