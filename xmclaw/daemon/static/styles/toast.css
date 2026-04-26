@@ -1,0 +1,63 @@
+/* XMclaw — toast notifications (lib/toast.js)
+ *
+ * Stack at bottom-right, pointer-events on each toast, fade-in via
+ * keyframes. Mirrors open-webui's `svelte-sonner` defaults:
+ *   - 320px max width
+ *   - 8px gap between toasts
+ *   - drop shadow + bg-elev background
+ */
+
+.xmc-toasts {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 0.5rem;
+  pointer-events: none;
+}
+
+.xmc-toast {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  max-width: 320px;
+  padding: 0.6rem 0.8rem;
+  background: var(--xmc-bg-elev);
+  border: 1px solid var(--xmc-border);
+  border-left: 3px solid var(--xmc-accent);
+  border-radius: var(--xmc-radius-md);
+  color: var(--xmc-fg);
+  font-size: var(--xmc-font-size-sm);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  pointer-events: auto;
+  cursor: pointer;
+  animation: xmc-toast-in 180ms ease-out;
+}
+
+.xmc-toast--success { border-left-color: var(--xmc-success, #10b981); }
+.xmc-toast--error   { border-left-color: var(--xmc-error,   #ef4444); }
+.xmc-toast--info    { border-left-color: var(--xmc-accent); }
+
+.xmc-toast__icon {
+  flex: 0 0 auto;
+  font-weight: 700;
+  font-size: var(--xmc-font-size-base);
+  line-height: 1.2;
+}
+
+.xmc-toast__msg {
+  flex: 1 1 auto;
+  word-break: break-word;
+  line-height: 1.4;
+}
+
+@keyframes xmc-toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xmc-toast { animation: none; }
+}

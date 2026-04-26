@@ -35,6 +35,8 @@ import { Badge } from "./components/atoms/badge.js";
 import { Icon } from "./components/atoms/icon.js";
 import { Avatar } from "./components/atoms/avatar.js";
 import { Spinner } from "./components/atoms/spinner.js";
+import { ToastViewport, toast } from "./lib/toast.js";
+import { ThemeToggle } from "./components/atoms/theme-toggle.js";
 import { ChatPage } from "./pages/Chat.js";
 import { SettingsPage } from "./pages/Settings.js";
 import { DoctorPage } from "./pages/Doctor.js";
@@ -263,9 +265,16 @@ function Sidebar({ activePath }) {
   `;
 }
 
-function TopBar({ bootstrapSource, sessionId }) {
+function TopBar({ bootstrapSource, sessionId, onToggleSidebar }) {
   return html`
     <header class="xmc-topbar" role="banner">
+      <button
+        type="button"
+        class="xmc-topbar__sidebar-toggle"
+        aria-label="折叠 / 展开侧栏"
+        title="折叠 / 展开侧栏 (Cmd-B)"
+        onClick=${onToggleSidebar}
+      >☰</button>
       <div class="xmc-topbar__title">XMclaw</div>
       <div class="xmc-topbar__meta">
         ${sessionId
@@ -275,6 +284,7 @@ function TopBar({ bootstrapSource, sessionId }) {
         <${Button} variant="ghost" size="sm" onClick=${startNewSession}>
           新会话
         </${Button}>
+        <${ThemeToggle} />
       </div>
     </header>
   `;
@@ -310,16 +320,44 @@ function StatusBar({ connection, session }) {
   `;
 }
 
+function _readSidebarPref() {
+  try {
+    return localStorage.getItem("xmc_sidebar_collapsed") === "true";
+  } catch (_) { return false; }
+}
+
+function _toggleSidebarPref() {
+  const next = !_readSidebarPref();
+  try { localStorage.setItem("xmc_sidebar_collapsed", String(next)); }
+  catch (_) { /* ignore */ }
+  document.documentElement.dataset.sidebar = next ? "collapsed" : "expanded";
+  return next;
+}
+
+// Initialize the dataset on first load so CSS sees the right state.
+document.documentElement.dataset.sidebar = _readSidebarPref()
+  ? "collapsed" : "expanded";
+
 function App({ state }) {
   const route = routes[state.route.path] || routes["*"];
+  const onToggleSidebar = () => {
+    _toggleSidebarPref();
+    // Force a re-render so any sidebar-aware children reflow.
+    store.setState({});
+  };
   return html`
     <div class="xmc-shell">
-      <${TopBar} bootstrapSource=${state.bootstrap.source} sessionId=${state.session.activeSid} />
+      <${TopBar}
+        bootstrapSource=${state.bootstrap.source}
+        sessionId=${state.session.activeSid}
+        onToggleSidebar=${onToggleSidebar}
+      />
       <div class="xmc-shell__body">
         <${Sidebar} activePath=${state.route.path} />
         <main class="xmc-main" role="main">${route(state)}</main>
       </div>
       <${StatusBar} connection=${state.connection} session=${state.session} />
+      <${ToastViewport} />
     </div>
   `;
 }
@@ -349,4 +387,5 @@ boot().catch((err) => {
       reconnectAttempt: 0,
     },
   });
+  toast.error("连接 daemon 失败：" + String(err.message || err), { ttl: 6000 });
 });

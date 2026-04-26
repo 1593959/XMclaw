@@ -26,6 +26,22 @@
   display: grid;
   grid-template-columns: var(--xmc-sidebar-w) 1fr;
   min-height: 0;
+  transition: grid-template-columns 180ms ease;
+}
+
+/* Phase 7: collapsed sidebar shrinks to a 56px icon-rail. Toggled by
+ * the topbar button; persisted via localStorage in app.js. Mirrors
+ * OpenClaw `.shell--nav-collapsed` (`ui/.../layout.css:44`). */
+:root[data-sidebar="collapsed"] .xmc-shell__body {
+  grid-template-columns: 56px 1fr;
+}
+:root[data-sidebar="collapsed"] .xmc-sidebar__item span,
+:root[data-sidebar="collapsed"] .xmc-sidebar__brand strong {
+  display: none;
+}
+:root[data-sidebar="collapsed"] .xmc-sidebar__item {
+  justify-content: center;
+  padding-inline: 0;
 }
 
 /* ── TopBar ──────────────────────────────────────────────────────────── */
@@ -35,8 +51,45 @@
   align-items: center;
   justify-content: space-between;
   padding: 0 var(--xmc-space-4);
-  background: var(--xmc-bg-elev);
+  background: color-mix(in srgb, var(--xmc-bg-elev) 82%, transparent);
   border-bottom: 1px solid var(--xmc-border);
+  /* Phase 7: backdrop-filter for that modern frosted-glass look. Mirrors
+   * OpenClaw `ui/.../layout.css:91`. Falls back gracefully on browsers
+   * without backdrop-filter (the color-mix above already provides
+   * partial transparency, just without blur). */
+  backdrop-filter: blur(12px) saturate(1.6);
+  -webkit-backdrop-filter: blur(12px) saturate(1.6);
+}
+
+.xmc-topbar__sidebar-toggle {
+  border: none;
+  background: transparent;
+  color: var(--xmc-fg-muted);
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0.4rem 0.6rem;
+  border-radius: var(--xmc-radius-sm);
+  margin-right: var(--xmc-space-2);
+  transition: background var(--xmc-transition-fast),
+              color var(--xmc-transition-fast);
+}
+.xmc-topbar__sidebar-toggle:hover {
+  background: var(--xmc-bg-elev-2);
+  color: var(--xmc-fg);
+}
+
+.xmc-theme-toggle {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 1.1rem;
+  padding: 0.4rem 0.55rem;
+  border-radius: var(--xmc-radius-sm);
+  transition: background var(--xmc-transition-fast);
+}
+.xmc-theme-toggle:hover {
+  background: var(--xmc-bg-elev-2);
 }
 
 .xmc-topbar__title {
