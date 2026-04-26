@@ -15,8 +15,10 @@
 // finishes loading in some browsers. Keep it dependency-free.
 
 const CDN_PREACT = "https://esm.sh/preact@10";
+const CDN_PREACT_HOOKS = "https://esm.sh/preact@10/hooks";
 const CDN_HTM = "https://esm.sh/htm@3";
 const VENDOR_PREACT = "./vendor/preact.min.js";
+const VENDOR_PREACT_HOOKS = "./vendor/preact-hooks.min.js";
 const VENDOR_HTM = "./vendor/htm.min.js";
 
 const CDN_TIMEOUT_MS = 5000;
@@ -61,11 +63,12 @@ function timeoutImport(url, ms) {
 }
 
 async function loadFromCdn() {
-  const [preact, htmMod] = await Promise.all([
+  const [preact, hooks, htmMod] = await Promise.all([
     timeoutImport(CDN_PREACT, CDN_TIMEOUT_MS),
+    timeoutImport(CDN_PREACT_HOOKS, CDN_TIMEOUT_MS),
     timeoutImport(CDN_HTM, CDN_TIMEOUT_MS),
   ]);
-  return { preact, htmMod, source: "cdn" };
+  return { preact, hooks, htmMod, source: "cdn" };
 }
 
 async function loadFromVendor() {
@@ -73,7 +76,14 @@ async function loadFromVendor() {
     import(VENDOR_PREACT),
     import(VENDOR_HTM),
   ]);
-  return { preact, htmMod, source: "vendor" };
+  let hooks = null;
+  try {
+    hooks = await import(VENDOR_PREACT_HOOKS);
+  } catch (_) {
+    // Hooks vendor file is optional — pages that need hooks should fall
+    // back to a plain-class-component path or require CDN bootstrap.
+  }
+  return { preact, hooks, htmMod, source: "vendor" };
 }
 
 async function resolveFramework() {
@@ -117,6 +127,7 @@ recordSource(frame.source);
 // reuse, but we keep a window handle for mini-devtools later.
 window.__xmc = window.__xmc || {};
 window.__xmc.preact = frame.preact;
+window.__xmc.preact_hooks = frame.hooks || {};
 window.__xmc.htm = frame.htmMod.default || frame.htmMod;
 window.__xmc.bootstrapSource = frame.source;
 
