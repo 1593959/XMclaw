@@ -358,7 +358,33 @@ def serve(
     else:
         typer.echo("  [!]   --no-auth: anyone on this machine can connect")
 
-    cfg_path = _Path(config)
+    # Resolve config path with a search list so `xmclaw start` works no
+    # matter what CWD it inherits. Prior behaviour: only ``daemon/config.json``
+    # relative to CWD, which silently fell through to echo mode whenever
+    # the daemon was launched from anywhere other than the repo root —
+    # exactly the "agent_wired: false, 0 tools" symptom users hit when
+    # `xmclaw start` is wired into a desktop shortcut or systemd unit.
+    #
+    # Order:
+    #   1. Whatever the caller passed via ``--config``, IF it exists.
+    #   2. ``~/.xmclaw/config.json`` — canonical user-level location.
+    #   3. ``daemon/config.json`` relative to CWD (legacy repo-root run).
+    #   4. ``daemon/config.json`` relative to the repo root that contains
+    #      the running ``xmclaw`` package (``pip install -e .`` case).
+    from xmclaw.utils.paths import data_dir
+    _explicit = _Path(config)
+    _candidates = [
+        _explicit,
+        data_dir() / "config.json",
+        _Path("daemon/config.json"),
+        _Path(__file__).resolve().parent.parent.parent / "daemon" / "config.json",
+    ]
+    cfg_path = next(
+        (p for p in _candidates if p.exists()),
+        _explicit,  # fall back to the literal path so the warning stays accurate
+    )
+    if cfg_path != _explicit and cfg_path.exists():
+        typer.echo(f"  [ok]  config resolved: {cfg_path}")
     agent = None
     cfg: dict | None = None
     if cfg_path.exists():
