@@ -233,6 +233,13 @@ def create_app(
     # can read ``tools.allowed_dirs`` without re-loading from disk and
     # without an import cycle through the factory.
     app.state.config = config or {}
+    # Multi-model: routers/llm_profiles.py writes to this path on POST
+    # /DELETE; if it's None the router returns 500 with an explanatory
+    # error rather than guessing a write target.
+    app.state.config_path = config_path
+    # Populated below alongside the agent — kept None when the daemon
+    # boots without an LLM (echo-only mode for tests).
+    app.state.llm_registry = None
 
     # Epic #3: approval service for GuardedToolProvider needs_approval path.
     from xmclaw.security.approval_service import ApprovalService
@@ -242,11 +249,13 @@ def create_app(
     # profiles / workspaces). Included here so the panels have real
     # data instead of the ``xmclaw_adapter.js`` mocks they used to hit.
     from xmclaw.daemon.routers import files as _files_router
+    from xmclaw.daemon.routers import llm_profiles as _llm_profiles_router
     from xmclaw.daemon.routers import memory as _memory_router
     from xmclaw.daemon.routers import profiles as _profiles_router
     from xmclaw.daemon.routers import skills as _skills_router
     from xmclaw.daemon.routers import workspaces as _workspaces_router
     app.include_router(_files_router.router)
+    app.include_router(_llm_profiles_router.router)
     app.include_router(_memory_router.router)
     app.include_router(_profiles_router.router)
     app.include_router(_skills_router.router)
@@ -293,6 +302,10 @@ def create_app(
             agent._tools = CompositeToolProvider(agent._tools, _inter)
 
     app.state.agent = agent
+    # Expose the multi-model registry so routers/llm_profiles.py can
+    # enumerate live profiles without reaching into AgentLoop internals.
+    if agent is not None:
+        app.state.llm_registry = getattr(agent, "_llm_registry", None)
 
     # ── per-session event log (for reconnect replay) ─────────────
     # When a browser refresh disconnects and reconnects to the same
@@ -728,6 +741,12 @@ def create_app(
                     user_corr = frame.get("correlation_id")
                     if user_corr is not None and not isinstance(user_corr, str):
                         user_corr = None
+                    # Multi-model: client picks which configured profile
+                    # to route this turn through. Unset → AgentLoop uses
+                    # the registry default (legacy single-LLM block).
+                    llm_profile_id = frame.get("llm_profile_id")
+                    if llm_profile_id is not None and not isinstance(llm_profile_id, str):
+                        llm_profile_id = None
                     # Ultrathink (borrowed from the /ultrathink pattern):
                     # when set, prepend a directive to make the model
                     # slow down and think step-by-step before answering.
@@ -753,6 +772,7 @@ def create_app(
                                 await active_agent.run_turn(
                                     session_id, content,
                                     user_correlation_id=user_corr,
+                                    llm_profile_id=llm_profile_id,
                                 )
                         except Exception as exc:  # noqa: BLE001
                             # Surface a structured error frame so the

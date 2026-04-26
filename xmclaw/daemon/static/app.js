@@ -131,7 +131,14 @@ function sendComposer() {
     ultrathink: s.chat.ultrathink || undefined,
     correlation_id: id,
     plan_mode: s.chat.planMode || undefined,
+    llm_profile_id: s.chat.llmProfileId || undefined,
   });
+}
+
+function setLlmProfile(profileId) {
+  store.setState((s) => ({
+    chat: { ...s.chat, llmProfileId: profileId || null },
+  }));
 }
 
 function changeDraft(value) {
@@ -184,11 +191,13 @@ const routes = {
       chat=${state.chat}
       session=${state.session}
       connection=${state.connection}
+      token=${state.auth.token}
       onSend=${sendComposer}
       onChangeDraft=${changeDraft}
       onTogglePlan=${togglePlan}
       onToggleUltrathink=${toggleUltrathink}
       onNewSession=${startNewSession}
+      onChangeModel=${setLlmProfile}
     />
   `,
   "/workspace": (state) => html`<${WorkspacePage} token=${state.auth.token} />`,

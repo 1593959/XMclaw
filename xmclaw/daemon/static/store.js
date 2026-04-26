@@ -149,6 +149,9 @@ export const app = createStore({
     composerDraft: "",
     planMode: false,             // Plan vs Act
     ultrathink: false,
+    // Multi-model: which configured LLM profile this session routes to.
+    // null → daemon picks the registry default (legacy single-LLM block).
+    llmProfileId: null,
   },
 
   // UI prefs (Phase 5 settings page will bind here).

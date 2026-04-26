@@ -14,6 +14,7 @@ const html = window.__xmc.htm.bind(h);
 import { Button } from "../components/atoms/button.js";
 import { Badge } from "../components/atoms/badge.js";
 import { apiGet, apiPut } from "../lib/api.js";
+import { ModelProfilesSection } from "./ModelProfiles.js";
 
 const PROVIDER_PRESETS = {
   anthropic: {
@@ -196,6 +197,8 @@ export function SettingsPage({ token }) {
           </p>
         ` : null}
       </form>
+
+      <${ModelProfilesSection} token=${token} />
     </section>
   `;
 }

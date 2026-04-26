@@ -48,6 +48,7 @@ from xmclaw.core.bus import (
     InProcessEventBus,
     make_event,
 )
+from xmclaw.daemon.llm_registry import LLMRegistry
 from xmclaw.daemon.session_store import SessionStore
 from xmclaw.providers.llm.base import LLMProvider, Message
 from xmclaw.providers.tool.base import ToolProvider
@@ -144,6 +145,7 @@ class AgentLoop:
         history_cap: int = 40,
         prompt_injection_policy: PolicyMode = PolicyMode.DETECT_ONLY,
         session_store: SessionStore | None = None,
+        llm_registry: LLMRegistry | None = None,
     ) -> None:
         self._llm = llm
         self._bus = bus
@@ -152,6 +154,10 @@ class AgentLoop:
         self._max_hops = max_hops
         self._agent_id = agent_id
         self._cost_tracker = cost_tracker
+        # Multi-model: when set, ``run_turn(llm_profile_id=...)`` looks
+        # the LLM up here. Unset (or unknown id) → fall back to ``llm``,
+        # so single-LLM deployments keep working untouched.
+        self._llm_registry = llm_registry
         # Per-session conversation history. Keyed by session_id; each value
         # is the running list of Messages EXCLUDING the system prompt
         # (which is re-prepended on every run_turn so operator changes to
@@ -206,12 +212,25 @@ class AgentLoop:
                 # of truth for the rest of this process.
                 pass
 
+    def _resolve_llm(self, llm_profile_id: str | None) -> LLMProvider:
+        """Pick the LLM for this turn. Falls back to ``self._llm`` when
+        the registry is missing or the requested profile is unknown —
+        the caller never sees an error for a stale profile id, so a
+        deleted profile gracefully degrades to the default."""
+        if llm_profile_id and self._llm_registry is not None:
+            prof = self._llm_registry.get(llm_profile_id)
+            if prof is not None:
+                return prof.llm
+        return self._llm
+
     async def run_turn(
         self, session_id: str, user_message: str,
         *, user_correlation_id: str | None = None,
+        llm_profile_id: str | None = None,
     ) -> AgentTurnResult:
         events: list[BehavioralEvent] = []
         tool_calls_made: list[dict[str, Any]] = []
+        llm = self._resolve_llm(llm_profile_id)
 
         async def publish(
             type_: EventType, payload: dict[str, Any],
@@ -281,15 +300,16 @@ class AgentLoop:
             # 2. LLM request event (messages_hash is a cheap fingerprint
             # so the bus consumer can distinguish different hops).
             await publish(EventType.LLM_REQUEST, {
-                "model": getattr(self._llm, "model", None),
+                "model": getattr(llm, "model", None),
                 "hop": hop,
                 "messages_count": len(messages),
                 "tools_count": len(tool_specs) if tool_specs else 0,
+                "llm_profile_id": llm_profile_id,
             })
 
             t0 = time.perf_counter()
             try:
-                response = await self._llm.complete(
+                response = await llm.complete(
                     messages, tools=tool_specs,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -330,8 +350,8 @@ class AgentLoop:
             # hop will block if we crossed the cap during this one.
             if self._cost_tracker is not None:
                 cost = self._cost_tracker.record(
-                    provider=getattr(self._llm, "__class__", type(self._llm)).__name__,
-                    model=getattr(self._llm, "model", "") or "",
+                    provider=getattr(llm, "__class__", type(llm)).__name__,
+                    model=getattr(llm, "model", "") or "",
                     prompt_tokens=response.prompt_tokens,
                     completion_tokens=response.completion_tokens,
                 )

@@ -9,9 +9,10 @@ const html = window.__xmc.htm.bind(h);
 
 import { MessageList } from "../components/molecules/MessageList.js";
 import { Composer } from "../components/molecules/Composer.js";
+import { ModelPicker } from "../components/molecules/ModelPicker.js";
 import { Badge } from "../components/atoms/badge.js";
 
-export function ChatPage({ chat, session, connection, onSend, onChangeDraft, onTogglePlan, onToggleUltrathink, onNewSession }) {
+export function ChatPage({ chat, session, connection, token, onSend, onChangeDraft, onTogglePlan, onToggleUltrathink, onNewSession, onChangeModel }) {
   const canSend =
     connection.status === "connected" &&
     chat.composerDraft.trim().length > 0;
@@ -26,6 +27,11 @@ export function ChatPage({ chat, session, connection, onSend, onChangeDraft, onT
           <code class="xmc-chat__sid">${sid}</code>
         </div>
         <div class="xmc-chat__meta">
+          <${ModelPicker}
+            token=${token}
+            value=${chat.llmProfileId}
+            onChange=${onChangeModel}
+          />
           <${Badge} tone=${connection.status === "connected" ? "success" : "warn"}>
             ${connection.status}
           </${Badge}>

@@ -1,6 +1,7 @@
 {
   "_comment": "XMclaw Daemon Configuration — copy to config.json and fill in your API keys",
   "llm": {
+    "_comment": "default_provider + openai/anthropic blocks define the 'default' profile that the daemon picks when a chat session doesn't specify one. profiles[] adds named alternatives — chat header dropdown lets the user route each session through one of them. Add as many as needed; restart the daemon after editing.",
     "default_provider": "anthropic",
     "openai": {
       "api_key": "",
@@ -11,7 +12,9 @@
       "api_key": "",
       "base_url": "https://api.anthropic.com",
       "default_model": ""
-    }
+    },
+    "_comment_profiles_schema": "each entry: {id (slug, [a-z0-9][a-z0-9_-]*), label?, provider (anthropic|openai), model, api_key, base_url?}. Empty by default; manage via Settings page or edit here directly.",
+    "profiles": []
   },
   "evolution": {
     "_comment": "Epic #4: evolution visibility + auto-apply. auto_apply=false (default) means the orchestrator observes SKILL_CANDIDATE_PROPOSED events but does not mutate HEAD — users opt-in explicitly. Flip to true after you've watched the pipeline for a while and trust the gates.",

@@ -25,6 +25,7 @@ from typing import Any, Mapping
 
 from xmclaw.core.bus import InProcessEventBus
 from xmclaw.daemon.agent_loop import AgentLoop
+from xmclaw.daemon.llm_registry import LLMProfile, LLMRegistry
 from xmclaw.daemon.session_store import SessionStore
 from xmclaw.providers.llm.anthropic import AnthropicLLM
 from xmclaw.providers.llm.base import LLMProvider
@@ -316,6 +317,133 @@ def _default_model_for(provider_name: str) -> str:
         "anthropic": "claude-haiku-4-5-20251001",
         "openai": "gpt-4o-mini",
     }.get(provider_name, "")
+
+
+def _instantiate_llm(
+    provider_name: str, *, api_key: str, model: str, base_url: str | None,
+) -> LLMProvider | None:
+    """Construct one LLMProvider from already-resolved config values.
+
+    Centralised here so both the legacy single-block path and the new
+    profiles-array path build providers identically. Returns ``None``
+    when ``provider_name`` is unknown — callers skip the entry rather
+    than crashing the whole registry.
+    """
+    if provider_name == "anthropic":
+        return AnthropicLLM(api_key=api_key, model=model, base_url=base_url or None)
+    if provider_name == "openai":
+        return OpenAILLM(api_key=api_key, model=model, base_url=base_url or None)
+    return None
+
+
+def build_llm_profiles_from_config(cfg: dict[str, Any]) -> list[LLMProfile]:
+    """Build all named profiles from ``cfg['llm']['profiles']``.
+
+    Schema for each entry::
+
+        {
+          "id": "haiku-fast",                # required, slug-ish
+          "label": "Claude Haiku (fast)",    # optional, shown in UI
+          "provider": "anthropic",           # required: anthropic|openai
+          "model": "claude-haiku-4-5",       # required (or default_model)
+          "api_key": "sk-...",               # required (or via secrets)
+          "base_url": "https://..."          # optional
+        }
+
+    Profiles with missing/empty api_key after the secrets fallback are
+    skipped silently — same posture as :func:`build_llm_from_config`,
+    so a half-filled placeholder doesn't crash the daemon.
+
+    Profiles with duplicate ``id`` keep the first occurrence; later
+    duplicates are dropped (with no error — config is already on
+    disk, the user can fix it and reload).
+    """
+    from xmclaw.utils.secrets import get_secret
+
+    llm_section = cfg.get("llm")
+    if not isinstance(llm_section, dict):
+        return []
+    raw_profiles = llm_section.get("profiles")
+    if not isinstance(raw_profiles, list):
+        return []
+
+    out: list[LLMProfile] = []
+    seen: set[str] = set()
+    for entry in raw_profiles:
+        if not isinstance(entry, dict):
+            continue
+        pid = str(entry.get("id") or "").strip()
+        provider_name = str(entry.get("provider") or "").strip().lower()
+        if not pid or pid in seen or provider_name not in _PROVIDER_ORDER:
+            continue
+
+        raw_key = entry.get("api_key")
+        api_key = raw_key if isinstance(raw_key, str) else ""
+        if not api_key.strip():
+            api_key = get_secret(f"llm.profile.{pid}.api_key") or ""
+        if not api_key.strip():
+            continue
+
+        model = str(
+            entry.get("model")
+            or entry.get("default_model")
+            or _default_model_for(provider_name)
+        ).strip()
+        if not model:
+            continue
+
+        base_url = entry.get("base_url")
+        base_url_str = base_url if isinstance(base_url, str) and base_url.strip() else None
+        llm = _instantiate_llm(
+            provider_name, api_key=api_key, model=model, base_url=base_url_str,
+        )
+        if llm is None:
+            continue
+
+        label = str(entry.get("label") or "").strip() or pid
+        out.append(LLMProfile(
+            id=pid, label=label, provider_name=provider_name,
+            model=model, llm=llm,
+        ))
+        seen.add(pid)
+    return out
+
+
+def build_llm_registry_from_config(cfg: dict[str, Any]) -> LLMRegistry:
+    """Build the per-session-pickable LLMRegistry.
+
+    The legacy single-block (``llm.default_provider`` + ``llm.openai`` /
+    ``llm.anthropic``) becomes a synthesised profile with id
+    ``"default"``. New named entries from ``llm.profiles`` follow.
+
+    The registry's ``default_id`` is ``"default"`` when the legacy
+    block produced an LLM; otherwise the first named profile (so
+    fresh installs that go straight to the new schema still work).
+    Empty registry (no LLM at all) returns a registry with no
+    default — AgentLoop tolerates that and runs in echo mode.
+    """
+    profiles: dict[str, LLMProfile] = {}
+    default_id: str | None = None
+
+    legacy = build_llm_from_config(cfg)
+    if legacy is not None:
+        profiles["default"] = LLMProfile(
+            id="default",
+            label="默认 (config.json)",
+            provider_name=type(legacy).__name__.replace("LLM", "").lower(),
+            model=getattr(legacy, "model", "") or "",
+            llm=legacy,
+        )
+        default_id = "default"
+
+    for prof in build_llm_profiles_from_config(cfg):
+        if prof.id in profiles:
+            continue
+        profiles[prof.id] = prof
+        if default_id is None:
+            default_id = prof.id
+
+    return LLMRegistry(profiles=profiles, default_id=default_id)
 
 
 def build_tools_from_config(
@@ -616,7 +744,9 @@ def build_agent_from_config(
     ``redact`` / ``block``) is read here and handed to the loop. Missing
     or unrecognised values fall back to ``detect_only``.
     """
-    llm = build_llm_from_config(cfg)
+    registry = build_llm_registry_from_config(cfg)
+    default_profile = registry.default()
+    llm = default_profile.llm if default_profile is not None else None
     if llm is None:
         return None
     tools = build_tools_from_config(cfg, approval_service=approval_service)
@@ -641,4 +771,5 @@ def build_agent_from_config(
         agent_id=cfg.get("agent_id", "agent"),
         prompt_injection_policy=policy,
         session_store=session_store,
+        llm_registry=registry,
     )

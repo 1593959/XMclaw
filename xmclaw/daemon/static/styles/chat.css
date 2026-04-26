@@ -65,6 +65,34 @@
   box-shadow: var(--xmc-shadow-focus);
 }
 
+/* Multi-model picker (chat header dropdown). */
+.xmc-chat__model {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--xmc-space-2);
+  font-size: var(--xmc-font-size-sm);
+  color: var(--xmc-fg-muted);
+}
+
+.xmc-chat__model-label {
+  color: var(--xmc-fg-muted);
+}
+
+.xmc-chat__model-select {
+  background: var(--xmc-bg-elev);
+  color: var(--xmc-fg);
+  border: 1px solid var(--xmc-border);
+  border-radius: var(--xmc-radius-sm);
+  padding: 2px var(--xmc-space-2);
+  font-size: var(--xmc-font-size-sm);
+  cursor: pointer;
+}
+
+.xmc-chat__model-select:focus-visible {
+  outline: none;
+  box-shadow: var(--xmc-shadow-focus);
+}
+
 /* ── Message list ─────────────────────────────────────────────────── */
 
 .xmc-msglist {
