@@ -1,0 +1,165 @@
+/* XMclaw — Cron page styles 1:1 (CronPage.tsx).
+ *
+ * Top "New job" Card → form with a 3-col footer row (Schedule / Deliver /
+ * Create button), then a list of job Cards each with info column +
+ * action column. Mirrors CronPage.tsx:170-353 spacing.
+ */
+
+.xmc-h-cron__body {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.xmc-h-cron__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1rem;
+  margin-bottom: 1rem;
+  color: var(--midground);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.xmc-h-cron__form {
+  display: grid;
+  gap: 1rem;
+}
+
+.xmc-h-cron__field {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.xmc-h-cron__field--align-end {
+  align-self: end;
+}
+
+.xmc-h-cron__label {
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.xmc-h-cron__textarea {
+  min-height: 80px;
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.5;
+  padding: 0.6rem 0.75rem;
+}
+
+.xmc-h-cron__row3 {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 640px) {
+  .xmc-h-cron__row3 {
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+}
+
+.xmc-h-cron__create {
+  width: 100%;
+  justify-content: center;
+}
+
+/* ── List header + cards ─────────────────────────────────────────── */
+
+.xmc-h-cron__listhead {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--color-muted-foreground);
+  margin: 0;
+  letter-spacing: 0.05em;
+}
+
+.xmc-h-cron__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.xmc-h-cron__job {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.xmc-h-cron__job-info {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.xmc-h-cron__job-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+  flex-wrap: wrap;
+}
+
+.xmc-h-cron__job-title {
+  font-weight: 500;
+  font-size: 0.85rem;
+  color: var(--midground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+}
+
+.xmc-h-cron__job-prompt {
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground);
+  margin: 0 0 0.5rem 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xmc-h-cron__job-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  font-size: 0.72rem;
+  color: var(--color-muted-foreground);
+}
+
+.xmc-h-cron__sched {
+  font-family: var(--theme-font-mono);
+  font-size: 0.72rem;
+  color: var(--midground);
+}
+
+.xmc-h-cron__job-err {
+  font-size: 0.75rem;
+  color: var(--color-destructive);
+  margin: 0.4rem 0 0 0;
+  word-break: break-word;
+}
+
+.xmc-h-cron__job-actions {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.xmc-h-cron__job-actions .xmc-h-btn {
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  justify-content: center;
+}
+
+.xmc-h-cron__trash {
+  color: var(--color-destructive);
+}
