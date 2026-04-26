@@ -8,14 +8,36 @@ promote without it (anti-req #12 at the autonomous-loop layer).
 Phase 4+ extends this with cross-session signal aggregation and
 online hot-reload of promoted skill versions.
 """
+from xmclaw.core.evolution.constraints import (
+    ConstraintReport,
+    validate_candidate,
+)
 from xmclaw.core.evolution.controller import (
     EvolutionController,
     EvolutionDecision,
     PromotionThresholds,
 )
+from xmclaw.core.evolution.dataset import (
+    EvalDataset,
+    EvalExample,
+    build_dataset_from_history,
+)
+from xmclaw.core.evolution.mutator import (
+    MutationResult,
+    SkillMutator,
+    xmclaw_fitness,
+)
 
 __all__ = [
+    "ConstraintReport",
+    "EvalDataset",
+    "EvalExample",
     "EvolutionController",
     "EvolutionDecision",
+    "MutationResult",
     "PromotionThresholds",
+    "SkillMutator",
+    "build_dataset_from_history",
+    "validate_candidate",
+    "xmclaw_fitness",
 ]
