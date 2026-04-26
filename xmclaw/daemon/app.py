@@ -253,12 +253,14 @@ def create_app(
     from xmclaw.daemon.routers import memory as _memory_router
     from xmclaw.daemon.routers import profiles as _profiles_router
     from xmclaw.daemon.routers import skills as _skills_router
+    from xmclaw.daemon.routers import sessions as _sessions_router
     from xmclaw.daemon.routers import workspace as _workspace_router
     from xmclaw.daemon.routers import workspaces as _workspaces_router
     app.include_router(_files_router.router)
     app.include_router(_llm_profiles_router.router)
     app.include_router(_memory_router.router)
     app.include_router(_profiles_router.router)
+    app.include_router(_sessions_router.router)
     app.include_router(_skills_router.router)
     app.include_router(_workspace_router.router)
     app.include_router(_workspaces_router.router)
