@@ -1,0 +1,100 @@
+/* Workspace tree — sidebar-style file browser used by WorkspacePage.
+   Lives in its own sheet so layout.css stays under the 500-line budget
+   enforced by tests/unit/test_v2_ui_scaffold.py. */
+
+.xmc-ws__tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.xmc-ws__root {
+  display: flex;
+  flex-direction: column;
+}
+
+.xmc-ws__root-header {
+  display: flex;
+  align-items: center;
+  gap: var(--xmc-space-2);
+  padding: var(--xmc-space-2) var(--xmc-space-2);
+  cursor: pointer;
+  border-radius: var(--xmc-radius-sm);
+  user-select: none;
+}
+
+.xmc-ws__root-header:hover {
+  background: var(--xmc-bg-elev);
+}
+
+.xmc-ws__missing {
+  color: var(--xmc-fg-muted);
+  font-style: italic;
+  margin-left: auto;
+}
+
+.xmc-ws__children {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.xmc-ws__row {
+  display: flex;
+  align-items: center;
+  gap: var(--xmc-space-2);
+  padding: 4px var(--xmc-space-2);
+  cursor: pointer;
+  border-radius: var(--xmc-radius-sm);
+  user-select: none;
+  font-size: var(--xmc-font-size-sm);
+  color: var(--xmc-fg);
+}
+
+.xmc-ws__row:hover {
+  background: var(--xmc-bg-elev);
+}
+
+.xmc-ws__row.is-active {
+  background: var(--xmc-bg-elev-2);
+  border-left: 2px solid var(--xmc-accent, #4a8cff);
+}
+
+.xmc-ws__row--dir {
+  font-weight: 500;
+}
+
+.xmc-ws__caret {
+  width: 12px;
+  text-align: center;
+  color: var(--xmc-fg-muted);
+}
+
+.xmc-ws__name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xmc-ws__meta {
+  color: var(--xmc-fg-muted);
+  font-size: var(--xmc-font-size-xs);
+}
+
+.xmc-ws__loading,
+.xmc-ws__empty,
+.xmc-ws__error {
+  padding: var(--xmc-space-2);
+  color: var(--xmc-fg-muted);
+  font-size: var(--xmc-font-size-sm);
+  font-style: italic;
+}
+
+.xmc-ws__error {
+  color: var(--xmc-danger, #c00);
+  font-style: normal;
+}

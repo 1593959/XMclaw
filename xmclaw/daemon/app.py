@@ -244,10 +244,12 @@ def create_app(
     from xmclaw.daemon.routers import files as _files_router
     from xmclaw.daemon.routers import memory as _memory_router
     from xmclaw.daemon.routers import profiles as _profiles_router
+    from xmclaw.daemon.routers import skills as _skills_router
     from xmclaw.daemon.routers import workspaces as _workspaces_router
     app.include_router(_files_router.router)
     app.include_router(_memory_router.router)
     app.include_router(_profiles_router.router)
+    app.include_router(_skills_router.router)
     app.include_router(_workspaces_router.router)
 
     # Epic #17 Phase 3: REST surface for the multi-agent registry.

@@ -46,6 +46,7 @@ import { InsightsPage } from "./pages/Insights.js";
 import { SkillsPage } from "./pages/Skills.js";
 import { EvolutionPage } from "./pages/Evolution.js";
 import { BackupPage } from "./pages/Backup.js";
+import { WorkspacePage } from "./pages/Workspace.js";
 
 // ── WS handle (singleton) ─────────────────────────────────────────────
 
@@ -190,6 +191,7 @@ const routes = {
       onNewSession=${startNewSession}
     />
   `,
+  "/workspace": (state) => html`<${WorkspacePage} token=${state.auth.token} />`,
   "/agents": (state) => html`<${AgentsPage} token=${state.auth.token} />`,
   "/skills": (state) => html`<${SkillsPage} token=${state.auth.token} />`,
   "/evolution": (state) => html`<${EvolutionPage} token=${state.auth.token} />`,
@@ -207,6 +209,7 @@ const routes = {
 
 const SIDEBAR_ITEMS = [
   { path: "/chat", label: "对话", icon: "message" },
+  { path: "/workspace", label: "工作区", icon: "folder" },
   { path: "/agents", label: "智能体", icon: "users" },
   { path: "/skills", label: "技能", icon: "book" },
   { path: "/evolution", label: "进化", icon: "sparkle", accent: true },

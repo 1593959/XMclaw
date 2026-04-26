@@ -22,6 +22,14 @@ from typing import Any
 from fastapi import APIRouter, Request
 from starlette.responses import JSONResponse
 
+from xmclaw.utils.paths import (
+    agents_registry_dir,
+    file_memory_dir,
+    persona_dir,
+    skills_dir,
+    workspaces_dir,
+)
+
 router = APIRouter(prefix="/api/v2/files", tags=["files"])
 
 
@@ -97,6 +105,29 @@ def _entry(p: Path) -> dict[str, Any]:
         "size": size,
         "mtime": mtime,
     }
+
+
+@router.get("/roots")
+async def workspace_roots() -> JSONResponse:
+    """Return the canonical XMclaw workspace roots for the UI file panel.
+
+    Each entry: ``{key, label, path, exists}``. ``exists`` is False for
+    a fresh install (no skills written yet, etc.) — the UI shows the
+    section anyway so the user knows where things will land.
+    """
+    roots = [
+        ("skills",     "技能",      skills_dir()),
+        ("agents",     "智能体",    agents_registry_dir()),
+        ("personas",   "人格",      persona_dir()),
+        ("memory",     "记忆",      file_memory_dir()),
+        ("workspaces", "工作区配置", workspaces_dir()),
+    ]
+    return JSONResponse({
+        "roots": [
+            {"key": k, "label": label, "path": str(p), "exists": p.is_dir()}
+            for k, label, p in roots
+        ],
+    })
 
 
 @router.get("")

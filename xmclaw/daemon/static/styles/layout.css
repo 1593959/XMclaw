@@ -297,6 +297,99 @@
   color: var(--xmc-danger, #c00);
 }
 
+/* ── Split layout (list + viewer) ────────────────────────────────────── */
+
+.xmc-datapage--split { min-height: 0; }
+
+.xmc-datapage__split {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) 1fr;
+  gap: var(--xmc-space-4);
+  flex: 1;
+  min-height: 0;
+}
+
+.xmc-datapage__sidebar {
+  overflow-y: auto;
+  padding-right: var(--xmc-space-2);
+}
+
+.xmc-datapage__viewer {
+  border: 1px solid var(--xmc-border);
+  border-radius: var(--xmc-radius-md);
+  background: var(--xmc-bg);
+  padding: var(--xmc-space-4);
+  overflow: auto;
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--xmc-space-3);
+}
+
+.xmc-datapage__viewer-header h3 {
+  margin: 0;
+  font-size: var(--xmc-font-size-md);
+  color: var(--xmc-fg);
+}
+
+.xmc-datapage__viewer-body {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--xmc-font-mono, ui-monospace, "SFMono-Regular", Consolas, monospace);
+  font-size: var(--xmc-font-size-sm);
+  color: var(--xmc-fg);
+  background: var(--xmc-bg-elev);
+  padding: var(--xmc-space-3);
+  border-radius: var(--xmc-radius-sm);
+  overflow: auto;
+}
+
+.xmc-datapage__hint {
+  color: var(--xmc-fg-muted);
+  font-style: italic;
+}
+
+.xmc-datapage__row--clickable {
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.xmc-datapage__row--clickable:hover {
+  background: var(--xmc-bg-elev);
+  border-color: var(--xmc-fg-muted);
+}
+
+.xmc-datapage__row--clickable:focus {
+  outline: 2px solid var(--xmc-accent, #4a8cff);
+  outline-offset: 1px;
+}
+
+.xmc-datapage__row.is-active {
+  background: var(--xmc-bg-elev-2);
+  border-color: var(--xmc-accent, #4a8cff);
+}
+
+/* ── Skills page ─────────────────────────────────────────────────────── */
+
+.xmc-skills__section {
+  margin-top: var(--xmc-space-4);
+}
+
+.xmc-skills__section h3 {
+  margin: 0 0 var(--xmc-space-2) 0;
+  font-size: var(--xmc-font-size-md);
+  color: var(--xmc-fg);
+}
+
+.xmc-skills__section h3 small {
+  color: var(--xmc-fg-muted);
+  font-weight: normal;
+  margin-left: var(--xmc-space-2);
+}
+
+/* ── Workspace tree → styles/workspace.css ───────────────────────────── */
+
 /* ── StatusBar ───────────────────────────────────────────────────────── */
 
 .xmc-statusbar {

@@ -88,6 +88,16 @@ class EvolutionOrchestrator:
     # ── public lifecycle ─────────────────────────────────────────────
 
     @property
+    def registry(self) -> SkillRegistry:
+        """Expose the wrapped registry for read-only inspection.
+
+        Used by the ``/api/v2/skills`` HTTP surface to enumerate
+        registered skill versions + HEAD without leaking the
+        orchestrator's mutation API to HTTP callers.
+        """
+        return self._registry
+
+    @property
     def agent_id(self) -> str:
         return self._agent_id
 
