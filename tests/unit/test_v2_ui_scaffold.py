@@ -83,12 +83,16 @@ def test_vendor_dir_present_even_if_empty() -> None:
 
 def test_index_html_wires_styles_and_bootstrap() -> None:
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    # Stylesheet order: tokens must come first so every later file can
-    # reference the design vars.
+    # Phase B replaced the legacy 3-region shell stylesheets with a
+    # 1:1 port of Hermes's design system. The new ordering puts the
+    # Hermes tokens first (so every later file can reference its
+    # 3-layer palette / shadcn-compat vars), then the Hermes shell
+    # styles. atoms.css remains last because it consumes the tokens.
     ordered_links = [
-        "./styles/tokens.css",
+        "./styles/hermes-tokens.css",
         "./styles/reset.css",
-        "./styles/layout.css",
+        "./styles/hermes-backdrop.css",
+        "./styles/hermes-shell.css",
         "./components/atoms/atoms.css",
     ]
     last_pos = -1
@@ -136,38 +140,42 @@ def test_atom_module_uses_window_xmc(relpath: str) -> None:
 
 
 def test_icon_atom_covers_every_sidebar_glyph() -> None:
-    # app.js ships a SIDEBAR_ITEMS list. Every icon name used there must
-    # resolve to an inline SVG in icon.js — otherwise we render blank
-    # placeholders in production. Extract the icon names from both files
-    # and diff them.
+    # Phase B moved the sidebar from app.js into the Hermes-port
+    # AppShell organism (components/organisms/AppShell.js). Hermes's
+    # sidebar uses an inline lucide-style ICONS map keyed by PascalCase
+    # names (Terminal / MessageSquare / Sparkles / ...), so the legacy
+    # icon-atom diff no longer applies. We instead lock down that the
+    # NAV_ITEMS list references icons that are all defined in the
+    # AppShell ICONS map (no missing-glyph regressions).
     import re
 
-    app_src = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
-    icon_src = (STATIC_DIR / "components" / "atoms" / "icon.js").read_text(encoding="utf-8")
+    shell_src = (
+        STATIC_DIR / "components" / "organisms" / "AppShell.js"
+    ).read_text(encoding="utf-8")
 
-    # Matches:  icon: "message"   /   icon: 'message'
-    sidebar_icons: set[str] = set(re.findall(r"""icon:\s*["']([a-z0-9_-]+)["']""", app_src))
+    # NAV_ITEMS:  icon: "Terminal"  →  must match a key in ICONS
+    sidebar_icons: set[str] = set(
+        re.findall(r"""icon:\s*["']([A-Za-z0-9_-]+)["']""", shell_src)
+    )
 
-    # Parse the ICONS map keys out of icon.js — quick scan for the
-    # `<name>: html` pattern between `const ICONS = {` and the closing `};`.
     defined_icons: set[str] = set()
     in_map = False
-    for line in icon_src.splitlines():
+    for line in shell_src.splitlines():
         stripped = line.strip()
         if stripped.startswith("const ICONS = {"):
             in_map = True
             continue
-        if in_map:
-            if stripped.startswith("};"):
-                break
-            # Lines like "message: html`" or "message: html`\n..."
-            if ":" in stripped and stripped.split(":", 1)[1].lstrip().startswith("html"):
-                name = stripped.split(":", 1)[0].strip()
-                defined_icons.add(name)
+        if in_map and stripped.startswith("};"):
+            break
+        if not in_map:
+            continue
+        m = re.match(r"""([A-Za-z0-9_]+)\s*:\s*[\"']""", stripped)
+        if m:
+            defined_icons.add(m.group(1))
 
-    assert sidebar_icons, "sidebar icon extraction regex matched nothing — test is broken"
+    assert sidebar_icons, "sidebar icon extraction regex matched nothing"
     missing = sidebar_icons - defined_icons
-    assert not missing, f"Sidebar icons have no glyph defined: {sorted(missing)}"
+    assert not missing, f"AppShell ICONS map missing glyphs: {sorted(missing)}"
 
 
 # ── file-size guard (FRONTEND_DESIGN.md §1.4) ──────────────────────────
@@ -206,7 +214,9 @@ def http_client() -> TestClient:
     [
         ("/ui/index.html", "XMclaw"),
         ("/ui/bootstrap.js", "xmc_bootstrap_source"),
-        ("/ui/app.js", "SIDEBAR_ITEMS"),
+        # Phase B moved sidebar items into the AppShell organism.
+        ("/ui/app.js", "HermesAppShell"),
+        ("/ui/components/organisms/AppShell.js", "NAV_ITEMS"),
         ("/ui/router.js", "installRouter"),
         ("/ui/store.js", "createStore"),
         ("/ui/styles/tokens.css", "--xmc-accent"),

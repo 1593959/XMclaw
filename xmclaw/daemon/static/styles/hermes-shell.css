@@ -1,0 +1,478 @@
+/* XMclaw — Hermes App-shell styles 1:1 (App.tsx).
+ *
+ * Faithful CSS port of the Tailwind utility classes Hermes applies to
+ * its outer flex column, mobile header, sticky sidebar, and main pane.
+ * Class names are XMclaw-scoped (`xmc-h-*`) to coexist with the legacy
+ * Phase-7 styles until cutover. The HTML root keeps the Hermes
+ * data-theme attribute so global tokens.css cascades down.
+ */
+
+/* ── outer shell ────────────────────────────────────────────────────── */
+
+.xmc-h-app {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  max-height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+  background: black;
+  color: var(--midground);
+  text-transform: uppercase;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.xmc-h-shell-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding-top: 3rem; /* matches mobile header h-12 */
+}
+
+@media (min-width: 1024px) {
+  .xmc-h-shell-body { padding-top: 0; }
+}
+
+/* ── mobile header (lg:hidden) ──────────────────────────────────────── */
+
+.xmc-h-mobheader {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 40;
+  height: 3rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.75rem;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  background: color-mix(in srgb, var(--background-base) 90%, transparent);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+@media (min-width: 1024px) {
+  .xmc-h-mobheader { display: none; }
+}
+
+.xmc-h-mobheader__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border: none;
+  background: transparent;
+  color: color-mix(in srgb, var(--midground) 70%, transparent);
+  cursor: pointer;
+  transition: color 150ms;
+}
+
+.xmc-h-mobheader__btn:hover { color: var(--midground); }
+
+.xmc-h-mobheader__btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--midground);
+}
+
+.xmc-h-mobheader__brand {
+  font-weight: 700;
+  font-size: 0.95rem;
+  line-height: 0.95;
+  letter-spacing: 0.05em;
+  color: var(--midground);
+}
+
+/* ── mobile overlay (covers main when sidebar open on mobile) ──────── */
+
+.xmc-h-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  border: none;
+  cursor: pointer;
+}
+
+@media (min-width: 1024px) {
+  .xmc-h-overlay { display: none; }
+}
+
+/* ── sidebar (w-64 = 16rem) ────────────────────────────────────────── */
+
+.xmc-h-sidebar {
+  position: fixed;
+  top: 0; left: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  width: 16rem;
+  height: 100dvh;
+  max-height: 100dvh;
+  min-height: 0;
+  border-right: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  background: color-mix(in srgb, var(--background-base) 95%, transparent);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  transform: translateX(-100%);
+  transition: transform 200ms ease-out;
+}
+
+.xmc-h-sidebar.is-mobile-open { transform: translateX(0); }
+
+@media (min-width: 1024px) {
+  .xmc-h-sidebar {
+    position: sticky;
+    top: 0;
+    transform: translateX(0);
+    flex-shrink: 0;
+  }
+}
+
+.xmc-h-sidebar__brand {
+  display: flex;
+  height: 3.5rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0 1.25rem;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+}
+
+.xmc-h-sidebar__title {
+  font-weight: 700;
+  font-size: 1.125rem;
+  line-height: 0.95;
+  letter-spacing: 0.0525rem;
+  color: var(--midground);
+}
+
+.xmc-h-sidebar__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: none;
+  background: transparent;
+  color: color-mix(in srgb, var(--midground) 70%, transparent);
+  cursor: pointer;
+  transition: color 150ms;
+}
+
+.xmc-h-sidebar__close:hover { color: var(--midground); }
+
+.xmc-h-sidebar__close:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--midground);
+}
+
+@media (min-width: 1024px) {
+  .xmc-h-sidebar__close { display: none; }
+}
+
+/* ── nav (between brand and system actions) ────────────────────────── */
+
+.xmc-h-nav {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+  padding: 0.5rem 0;
+}
+
+.xmc-h-nav::-webkit-scrollbar { width: 4px; }
+.xmc-h-nav::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--midground) 20%, transparent);
+}
+
+.xmc-h-nav__list {
+  display: flex;
+  flex-direction: column;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.xmc-h-nav__link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem 1.25rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+  text-decoration: none;
+  color: var(--midground);
+  opacity: 0.6;
+  transition: opacity 150ms, color 150ms;
+  cursor: pointer;
+}
+
+.xmc-h-nav__link:hover { opacity: 1; }
+.xmc-h-nav__link.is-active { opacity: 1; color: var(--midground); }
+
+.xmc-h-nav__link:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--midground);
+}
+
+.xmc-h-nav__icon {
+  width: 0.875rem;
+  height: 0.875rem;
+  flex-shrink: 0;
+}
+
+.xmc-h-nav__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Hover tint — Hermes uses an absolute span @ 5% bg-midground. */
+.xmc-h-nav__hover-tint {
+  position: absolute;
+  inset: 0.125rem 0.375rem;
+  background: var(--midground);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms;
+}
+
+.xmc-h-nav__link:hover .xmc-h-nav__hover-tint { opacity: 0.05; }
+
+/* Active 1px left bar with plus-lighter blend (Hermes signature). */
+.xmc-h-nav__active-bar {
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  width: 1px;
+  background: var(--midground);
+}
+
+/* ── sidebar system actions (border-top, restart / update) ─────────── */
+
+.xmc-h-sysact {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+  padding: 0.25rem 0;
+}
+
+.xmc-h-sysact__label {
+  padding: 0.125rem 1.25rem;
+  font-size: 0.6rem;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  opacity: 0.3;
+}
+
+.xmc-h-sysact__list {
+  display: flex;
+  flex-direction: column;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.xmc-h-sysact__btn {
+  position: relative;
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.375rem 1.25rem;
+  border: none;
+  background: transparent;
+  font-size: 0.75rem;
+  letter-spacing: 0.1em;
+  color: var(--midground);
+  text-align: left;
+  white-space: nowrap;
+  text-transform: uppercase;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 200ms;
+  font-family: inherit;
+}
+
+.xmc-h-sysact__btn:hover { opacity: 1; }
+.xmc-h-sysact__btn:disabled { cursor: not-allowed; opacity: 0.3; }
+
+.xmc-h-sysact__btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--midground);
+}
+
+/* ── footer row (theme + language) ─────────────────────────────────── */
+
+.xmc-h-sidebar__footrow {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+}
+
+/* ── ThemeSwitcher ──────────────────────────────────────────────────── */
+
+.xmc-h-themesw { position: relative; }
+
+.xmc-h-themesw__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid color-mix(in srgb, var(--midground) 18%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--midground) 4%, transparent);
+  color: var(--midground);
+  font-size: 0.65rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.xmc-h-themesw__btn:hover {
+  background: color-mix(in srgb, var(--midground) 8%, transparent);
+}
+
+.xmc-h-themesw__menu {
+  position: absolute;
+  bottom: calc(100% + 0.5rem);
+  left: 0;
+  width: 14rem;
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem;
+  background: var(--color-popover);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+  animation: dialog-in 140ms ease-out;
+}
+
+.xmc-h-themesw--up .xmc-h-themesw__menu {
+  bottom: calc(100% + 0.5rem);
+  top: auto;
+}
+
+.xmc-h-themesw__opt {
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.xmc-h-themesw__opt:hover { background: var(--color-accent); }
+.xmc-h-themesw__opt.is-active { background: var(--color-accent); }
+
+.xmc-h-themesw__opt strong {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--midground);
+}
+
+.xmc-h-themesw__opt small {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  margin-top: 0.15rem;
+}
+
+/* ── LanguageSwitcher ──────────────────────────────────────────────── */
+
+.xmc-h-langsw {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid color-mix(in srgb, var(--midground) 18%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--midground) 4%, transparent);
+  color: var(--midground);
+  font-size: 0.65rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.xmc-h-langsw:hover {
+  background: color-mix(in srgb, var(--midground) 8%, transparent);
+}
+
+/* ── SidebarFooter (version + org) ─────────────────────────────────── */
+
+.xmc-h-sidefooter {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.625rem 1.25rem;
+  border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.xmc-h-sidefooter__ver {
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.1em;
+  color: color-mix(in srgb, var(--color-muted-foreground) 70%, transparent);
+}
+
+.xmc-h-sidefooter__org {
+  font-size: 0.65rem;
+  letter-spacing: 0.15em;
+  color: var(--midground);
+  text-decoration: none;
+  transition: opacity 150ms;
+}
+
+.xmc-h-sidefooter__org:hover { opacity: 0.9; }
+
+.xmc-h-sidefooter__org:focus-visible {
+  outline: none;
+  border-radius: 0.125rem;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--midground) 40%, transparent);
+}
+
+/* ── main pane ─────────────────────────────────────────────────────── */
+
+.xmc-h-main {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 0.5rem 0.75rem 1rem;
+  overflow: hidden;
+  text-transform: none;       /* pages render normal-case content */
+  letter-spacing: normal;
+}
+
+@media (min-width: 640px) {
+  .xmc-h-main { padding: 1rem 1.5rem 2rem; }
+}
+
+@media (min-width: 1024px) {
+  .xmc-h-main { padding: 1.5rem 1.5rem 2rem; }
+}
+
+/* ── Icon helpers ──────────────────────────────────────────────────── */
+
+.xmc-icon { flex-shrink: 0; }

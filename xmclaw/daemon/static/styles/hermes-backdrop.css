@@ -1,0 +1,55 @@
+/* XMclaw — Hermes Backdrop layer styles 1:1 (Backdrop.tsx).
+ *
+ * 4 fixed full-viewport overlays at distinct z-index, all
+ * pointer-events:none so they never steal mouse input.
+ */
+
+.xmc-backdrop {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* z-1: solid background-base @ blend-mode difference (LENS_0 base). */
+.xmc-backdrop--z1 {
+  z-index: 1;
+  background-color: var(--background-base);
+  mix-blend-mode: difference;
+}
+
+/* z-2: filler image, inverted, very low opacity, blend-mode difference.
+   Theme can override `--theme-asset-bg` to a CSS background URL — when
+   set, `:root[style*="--theme-asset-bg:"] .theme-default-filler` (in
+   hermes-tokens.css) hides the <img>, and the bg shows via this <div>. */
+.xmc-backdrop--z2 {
+  z-index: 2;
+  mix-blend-mode: var(--component-backdrop-filler-blend-mode, difference);
+  opacity: var(--component-backdrop-filler-opacity, 0.033);
+  background-image: var(--theme-asset-bg);
+  background-size: var(--component-backdrop-background-size, cover);
+  background-position: var(--component-backdrop-background-position, center);
+}
+
+.xmc-backdrop__filler {
+  height: 150dvh;
+  width: auto;
+  min-width: 100dvw;
+  object-fit: cover;
+  object-position: top left;
+  filter: invert(1);
+}
+
+/* z-99: warm-glow radial vignette, top-left anchored. */
+.xmc-backdrop--z99 {
+  z-index: 99;
+  background:
+    radial-gradient(ellipse at 0% 0%, transparent 60%, var(--warm-glow) 100%);
+  mix-blend-mode: lighten;
+  opacity: 0.22;
+}
+
+/* z-101: SVG fractal noise (background image set inline in JS so the
+   data-uri stays inline and isn't aborted by CSS prefetch). */
+.xmc-backdrop--z101 {
+  z-index: 101;
+}

@@ -30,13 +30,15 @@ import {
   appendOptimisticUser,
 } from "./lib/chat_reducer.js";
 
-import { Button } from "./components/atoms/button.js";
-import { Badge } from "./components/atoms/badge.js";
-import { Icon } from "./components/atoms/icon.js";
-import { Avatar } from "./components/atoms/avatar.js";
-import { Spinner } from "./components/atoms/spinner.js";
+// Atom imports kept — pages still consume them (Badge / Spinner /
+// Button surface inside Chat / Settings / Doctor etc.). Shell-level
+// renderer comes from HermesAppShell below.
 import { ToastViewport, toast } from "./lib/toast.js";
-import { ThemeToggle } from "./components/atoms/theme-toggle.js";
+// Hermes 1:1 port — IS the shell. No legacy fallback.
+import { AppShell as HermesAppShell } from "./components/organisms/AppShell.js";
+// Side-effect: applies the persisted Hermes theme (or LENS_0 default)
+// to :root before the first paint. Mirrors Hermes ThemeProvider.
+import "./lib/hermes-themes.js";
 import { ChatPage } from "./pages/Chat.js";
 import { SettingsPage } from "./pages/Settings.js";
 import { DoctorPage } from "./pages/Doctor.js";
@@ -217,148 +219,18 @@ const routes = {
 };
 
 // ── Shell ─────────────────────────────────────────────────────────────
-
-// Sidebar follows docs/PRODUCT_REDESIGN.md §8 — collapsed from 12 to 9
-// items, ordered by usage frequency. ModelProfiles folds into Settings +
-// (future) top-bar picker. Backup/Doctor/Insights collapse into one
-// "诊断" page in Phase 5; for now we still link the three pages but only
-// surface 诊断 in the primary nav so the user has one entry point.
-const SIDEBAR_ITEMS = [
-  { path: "/chat", label: "对话", icon: "message" },
-  { path: "/agents", label: "智能体", icon: "users" },
-  { path: "/skills", label: "技能", icon: "book" },
-  { path: "/evolution", label: "进化", icon: "sparkle", accent: true },
-  { path: "/tools", label: "工具", icon: "wrench" },
-  { path: "/memory", label: "记忆", icon: "layers" },
-  { path: "/workspace", label: "工作区", icon: "folder" },
-  { path: "/security", label: "安全", icon: "shield" },
-  { path: "/doctor", label: "诊断", icon: "stethoscope" },
-  { path: "/settings", label: "设置", icon: "cog" },
-];
-
-function Sidebar({ activePath }) {
-  return html`
-    <nav class="xmc-sidebar" aria-label="Primary">
-      <div class="xmc-sidebar__brand">
-        <${Avatar} initials="XM" />
-        <strong>XMclaw</strong>
-      </div>
-      <ul class="xmc-sidebar__list">
-        ${SIDEBAR_ITEMS.map(
-          (item) => html`
-            <li>
-              <a
-                href=${item.path}
-                class=${"xmc-sidebar__item" +
-                (item.path === activePath ? " is-active" : "") +
-                (item.accent ? " is-accent" : "")}
-                aria-current=${item.path === activePath ? "page" : null}
-              >
-                <${Icon} name=${item.icon} />
-                <span>${item.label}</span>
-              </a>
-            </li>
-          `
-        )}
-      </ul>
-    </nav>
-  `;
-}
-
-function TopBar({ bootstrapSource, sessionId, onToggleSidebar }) {
-  return html`
-    <header class="xmc-topbar" role="banner">
-      <button
-        type="button"
-        class="xmc-topbar__sidebar-toggle"
-        aria-label="折叠 / 展开侧栏"
-        title="折叠 / 展开侧栏 (Cmd-B)"
-        onClick=${onToggleSidebar}
-      >☰</button>
-      <div class="xmc-topbar__title">XMclaw</div>
-      <div class="xmc-topbar__meta">
-        ${sessionId
-          ? html`<${Badge} tone="muted">sid: <code>${sessionId}</code></${Badge}>`
-          : null}
-        <${Badge} tone="muted">bootstrap: ${bootstrapSource}</${Badge}>
-        <${Button} variant="ghost" size="sm" onClick=${startNewSession}>
-          新会话
-        </${Button}>
-        <${ThemeToggle} />
-      </div>
-    </header>
-  `;
-}
-
-function StatusBar({ connection, session }) {
-  const tone =
-    connection.status === "connected"
-      ? "success"
-      : connection.status === "auth_failed"
-      ? "error"
-      : connection.status === "reconnecting"
-      ? "warn"
-      : "muted";
-  const detail =
-    connection.status === "reconnecting"
-      ? `重连中 (#${connection.reconnectAttempt || 1})`
-      : connection.status === "auth_failed"
-      ? "配对令牌被拒绝 — 请刷新页面"
-      : connection.status === "connecting"
-      ? "正在连接 daemon…"
-      : connection.status === "connected"
-      ? `lifecycle: ${session.lifecycle}`
-      : connection.lastError || "未连接";
-  return html`
-    <footer class="xmc-statusbar" role="contentinfo">
-      <${Badge} tone=${tone}>${connection.status}</${Badge}>
-      <span class="xmc-statusbar__hint">${detail}</span>
-      ${connection.status === "reconnecting"
-        ? html`<${Spinner} size="sm" label="reconnecting" />`
-        : null}
-    </footer>
-  `;
-}
-
-function _readSidebarPref() {
-  try {
-    return localStorage.getItem("xmc_sidebar_collapsed") === "true";
-  } catch (_) { return false; }
-}
-
-function _toggleSidebarPref() {
-  const next = !_readSidebarPref();
-  try { localStorage.setItem("xmc_sidebar_collapsed", String(next)); }
-  catch (_) { /* ignore */ }
-  document.documentElement.dataset.sidebar = next ? "collapsed" : "expanded";
-  return next;
-}
-
-// Initialize the dataset on first load so CSS sees the right state.
-document.documentElement.dataset.sidebar = _readSidebarPref()
-  ? "collapsed" : "expanded";
+//
+// Phase B 1:1 port of Hermes web/src/App.tsx. The Hermes shell IS the
+// shell — no toggles, no legacy fallback. Pages render into the main
+// pane. Theme + language switch lives inside the sidebar footer.
 
 function App({ state }) {
   const route = routes[state.route.path] || routes["*"];
-  const onToggleSidebar = () => {
-    _toggleSidebarPref();
-    // Force a re-render so any sidebar-aware children reflow.
-    store.setState({});
-  };
   return html`
-    <div class="xmc-shell">
-      <${TopBar}
-        bootstrapSource=${state.bootstrap.source}
-        sessionId=${state.session.activeSid}
-        onToggleSidebar=${onToggleSidebar}
-      />
-      <div class="xmc-shell__body">
-        <${Sidebar} activePath=${state.route.path} />
-        <main class="xmc-main" role="main">${route(state)}</main>
-      </div>
-      <${StatusBar} connection=${state.connection} session=${state.session} />
+    <${HermesAppShell} activePath=${state.route.path}>
+      ${route(state)}
       <${ToastViewport} />
-    </div>
+    </${HermesAppShell}>
   `;
 }
 
