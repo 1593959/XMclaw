@@ -1,0 +1,316 @@
+/* XMclaw — Hermes page chrome + ChatPage terminal-window look.
+ *
+ * Hermes wraps every page in a shadcn `<Card>` (rounded, bg-card,
+ * border-border) — see SessionsPage / SkillsPage / etc. The chat tab
+ * additionally adds a "terminal window" look around the inner
+ * surface (rounded, dark teal interior, padded chrome).
+ *
+ * We replicate both. Class names:
+ *   - .xmc-h-page             — generic page container (mimics Card)
+ *   - .xmc-h-page__header     — page title row
+ *   - .xmc-h-page__title      — H1 with letter-spacing + uppercase
+ *   - .xmc-h-page__subtitle   — muted descriptor
+ *   - .xmc-h-page__body       — scrollable content area
+ *   - .xmc-h-card             — sub-card for grouped sections
+ *   - .xmc-h-chat-frame       — the terminal-window outer frame for /chat
+ *   - .xmc-h-chat-frame__inner — dark teal interior with the chat content
+ */
+
+/* ── Page wrapper ─────────────────────────────────────────────────── */
+
+.xmc-h-page {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.xmc-h-page__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--color-border);
+  flex-wrap: wrap;
+}
+
+.xmc-h-page__heading {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.xmc-h-page__title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--midground);
+}
+
+.xmc-h-page__subtitle {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--color-muted-foreground);
+  text-transform: none;
+  letter-spacing: 0;
+  line-height: 1.5;
+}
+
+.xmc-h-page__actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.xmc-h-page__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 1rem 1.25rem;
+}
+
+.xmc-h-page__body--flush {
+  /* For pages where the content owns its own padding (chat, full-bleed) */
+  padding: 0;
+}
+
+/* ── Card sub-component (used inside pages for grouped sections) ─── */
+
+.xmc-h-card {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+}
+
+.xmc-h-card + .xmc-h-card { margin-top: 1rem; }
+
+.xmc-h-card__title {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--midground);
+}
+
+/* ── Buttons (Hermes shadcn-button equivalents) ───────────────────── */
+
+.xmc-h-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.75rem;
+  background: color-mix(in srgb, var(--midground) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--midground) 18%, transparent);
+  border-radius: var(--radius-sm);
+  color: var(--midground);
+  font-size: 0.78rem;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 150ms, border-color 150ms;
+}
+
+.xmc-h-btn:hover {
+  background: color-mix(in srgb, var(--midground) 14%, transparent);
+}
+
+.xmc-h-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.xmc-h-btn--primary {
+  background: var(--midground);
+  color: var(--background-base);
+  border-color: var(--midground);
+}
+
+.xmc-h-btn--primary:hover {
+  background: color-mix(in srgb, var(--midground) 92%, transparent);
+}
+
+.xmc-h-btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: color-mix(in srgb, var(--midground) 70%, transparent);
+}
+
+.xmc-h-btn--ghost:hover {
+  background: color-mix(in srgb, var(--midground) 8%, transparent);
+  color: var(--midground);
+}
+
+/* ── ChatPage terminal-window frame (port of ChatPage outer wrapper) */
+
+.xmc-h-chat-frame {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  background:
+    linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--background-base) 96%, var(--midground-base) 4%),
+      var(--background-base)
+    );
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow:
+    0 1px 0 0 color-mix(in srgb, var(--midground) 8%, transparent) inset,
+    0 32px 64px -32px rgba(0, 0, 0, 0.55);
+}
+
+/* The "title bar" — three-dot fake-mac chrome, brand on right.
+   Hermes chat uses a thin horizontal strip with a copy button and
+   a sidebar toggle on the right (lucide Copy + PanelRight icons). */
+.xmc-h-chat-frame__chrome {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--background-base) 70%, var(--midground-base) 4%);
+}
+
+.xmc-h-chat-frame__dots {
+  display: flex;
+  gap: 0.35rem;
+  margin-right: 0.5rem;
+}
+
+.xmc-h-chat-frame__dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--midground) 22%, transparent);
+}
+
+.xmc-h-chat-frame__title {
+  flex: 1 1 auto;
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--midground) 55%, transparent);
+  font-family: var(--theme-font-mono);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.xmc-h-chat-frame__inner {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: #0d2626; /* TERMINAL_THEME.background from ChatPage.tsx:64 */
+  color: #f0e6d2;      /* TERMINAL_THEME.foreground */
+}
+
+/* When the user picks a non-default theme, follow the theme palette
+   instead of the hard teal so chat doesn't visually jar. */
+:root:not([data-hermes-theme="default"]) .xmc-h-chat-frame__inner {
+  background: color-mix(in srgb, var(--background-base) 90%, var(--midground-base) 10%);
+  color: var(--midground);
+}
+
+/* ── Empty / loading / error states (used across pages) ──────────── */
+
+.xmc-h-empty {
+  padding: 2rem 1.5rem;
+  text-align: center;
+  color: var(--color-muted-foreground);
+  font-size: 0.85rem;
+}
+
+.xmc-h-loading {
+  padding: 2rem 1.5rem;
+  text-align: center;
+  color: color-mix(in srgb, var(--midground) 60%, transparent);
+  font-size: 0.85rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.xmc-h-error {
+  padding: 1rem 1.25rem;
+  background: color-mix(in srgb, var(--color-destructive) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-destructive) 40%, transparent);
+  border-radius: var(--radius-md);
+  color: var(--color-destructive);
+  font-size: 0.85rem;
+}
+
+/* ── Inputs (port of shadcn <Input> for search / filter rows) ────── */
+
+.xmc-h-input {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  background: color-mix(in srgb, var(--midground) 4%, transparent);
+  border: 1px solid var(--color-input);
+  border-radius: var(--radius-sm);
+  color: var(--midground);
+  font-size: 0.85rem;
+  font-family: inherit;
+  transition: border-color 150ms, box-shadow 150ms;
+}
+
+.xmc-h-input:focus {
+  outline: none;
+  border-color: var(--color-ring);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-ring) 30%, transparent);
+}
+
+.xmc-h-input::placeholder {
+  color: color-mix(in srgb, var(--midground) 35%, transparent);
+}
+
+/* ── Badges (shadcn <Badge> port) ────────────────────────────────── */
+
+.xmc-h-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--midground) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--midground) 18%, transparent);
+  color: var(--midground);
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.xmc-h-badge--success {
+  background: color-mix(in srgb, var(--color-success) 14%, transparent);
+  border-color: color-mix(in srgb, var(--color-success) 40%, transparent);
+  color: var(--color-success);
+}
+
+.xmc-h-badge--warning {
+  background: color-mix(in srgb, var(--color-warning) 14%, transparent);
+  border-color: color-mix(in srgb, var(--color-warning) 40%, transparent);
+  color: var(--color-warning);
+}
+
+.xmc-h-badge--destructive {
+  background: color-mix(in srgb, var(--color-destructive) 14%, transparent);
+  border-color: color-mix(in srgb, var(--color-destructive) 40%, transparent);
+  color: var(--color-destructive);
+}
+
+/* Legacy `xmc-datapage` styles live in styles/hermes-datapage-compat.css
+   so this file stays under the 500-line FRONTEND_DESIGN budget. */
