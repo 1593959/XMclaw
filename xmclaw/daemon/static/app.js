@@ -216,18 +216,21 @@ const routes = {
 
 // ── Shell ─────────────────────────────────────────────────────────────
 
+// Sidebar follows docs/PRODUCT_REDESIGN.md §8 — collapsed from 12 to 9
+// items, ordered by usage frequency. ModelProfiles folds into Settings +
+// (future) top-bar picker. Backup/Doctor/Insights collapse into one
+// "诊断" page in Phase 5; for now we still link the three pages but only
+// surface 诊断 in the primary nav so the user has one entry point.
 const SIDEBAR_ITEMS = [
   { path: "/chat", label: "对话", icon: "message" },
-  { path: "/workspace", label: "工作区", icon: "folder" },
   { path: "/agents", label: "智能体", icon: "users" },
   { path: "/skills", label: "技能", icon: "book" },
   { path: "/evolution", label: "进化", icon: "sparkle", accent: true },
-  { path: "/memory", label: "记忆", icon: "layers" },
   { path: "/tools", label: "工具", icon: "wrench" },
+  { path: "/memory", label: "记忆", icon: "layers" },
+  { path: "/workspace", label: "工作区", icon: "folder" },
   { path: "/security", label: "安全", icon: "shield" },
-  { path: "/backup", label: "备份", icon: "archive" },
   { path: "/doctor", label: "诊断", icon: "stethoscope" },
-  { path: "/insights", label: "洞察", icon: "chart" },
   { path: "/settings", label: "设置", icon: "cog" },
 ];
 
