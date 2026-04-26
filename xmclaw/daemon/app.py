@@ -253,13 +253,22 @@ def create_app(
     from xmclaw.daemon.routers import memory as _memory_router
     from xmclaw.daemon.routers import profiles as _profiles_router
     from xmclaw.daemon.routers import skills as _skills_router
+    from xmclaw.daemon.routers import workspace as _workspace_router
     from xmclaw.daemon.routers import workspaces as _workspaces_router
     app.include_router(_files_router.router)
     app.include_router(_llm_profiles_router.router)
     app.include_router(_memory_router.router)
     app.include_router(_profiles_router.router)
     app.include_router(_skills_router.router)
+    app.include_router(_workspace_router.router)
     app.include_router(_workspaces_router.router)
+
+    # Phase 3: ASGI middleware for X-Agent-Id → ContextVar plumbing
+    # (QwenPaw multi-agent convention #1). Stays a no-op for the
+    # default "main" agent id, so existing single-agent flows aren't
+    # affected.
+    from xmclaw.daemon.middleware import AgentScopeMiddleware
+    app.add_middleware(AgentScopeMiddleware)
 
     # Epic #17 Phase 3: REST surface for the multi-agent registry.
     from xmclaw.daemon.routers import agents as _agents_router
