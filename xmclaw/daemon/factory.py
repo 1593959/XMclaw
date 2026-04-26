@@ -39,7 +39,11 @@ from xmclaw.providers.runtime import (
 from xmclaw.providers.tool.base import ToolProvider
 from xmclaw.providers.tool.builtin import BuiltinTools
 from xmclaw.security.prompt_scanner import PolicyMode
-from xmclaw.utils.paths import default_memory_db_path, default_sessions_db_path
+from xmclaw.utils.paths import (
+    default_memory_db_path,
+    default_sessions_db_path,
+    persona_dir,
+)
 
 
 # Recognised provider kinds in the config. Each maps to a constructor.
@@ -726,6 +730,45 @@ def build_skill_runtime_from_config(cfg: dict[str, Any]) -> SkillRuntime:
     return cls()
 
 
+def _load_persona_addendum(cfg: dict[str, Any]) -> str:
+    """Load persona / custom-instructions text to append to the system prompt.
+
+    Resolution order, first hit wins:
+    1. ``cfg["persona"]["text"]`` — inline override in config.
+    2. ``cfg["persona"]["profile_id"]`` — file stem under :func:`persona_dir`.
+    3. ``persona_dir() / "active.md"`` — the user's selected default persona.
+
+    Returns ``""`` if no persona is configured. The text is appended as a
+    new section after the built-in identity prompt — so a user persona can
+    add ("you specialize in DevOps") but never delete the identity guard
+    ("you are XMclaw"). That ordering matters: third-party model endpoints
+    (MiniMax / DeepSeek / Qwen via Anthropic-compat shims) tend to drop the
+    last paragraph of an oversized system prompt rather than the first, so
+    the immutable identity stays at the top.
+    """
+    persona_section = cfg.get("persona")
+    if isinstance(persona_section, Mapping):
+        inline = persona_section.get("text")
+        if isinstance(inline, str) and inline.strip():
+            return inline.strip()
+        profile_id = persona_section.get("profile_id")
+        if isinstance(profile_id, str) and profile_id.strip():
+            stem = profile_id.strip().replace("/", "_").replace("\\", "_")
+            md = persona_dir() / f"{stem}.md"
+            if md.is_file():
+                try:
+                    return md.read_text(encoding="utf-8", errors="replace").strip()
+                except OSError:
+                    return ""
+    active = persona_dir() / "active.md"
+    if active.is_file():
+        try:
+            return active.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return ""
+    return ""
+
+
 def build_agent_from_config(
     cfg: dict[str, Any],
     bus: InProcessEventBus,
@@ -765,8 +808,17 @@ def build_agent_from_config(
         session_store = SessionStore(default_sessions_db_path())
     except Exception:  # noqa: BLE001
         session_store = None
+    # Persona / custom instructions are appended to the immutable identity
+    # prompt, never replace it. See _load_persona_addendum for resolution order.
+    from xmclaw.daemon.agent_loop import _DEFAULT_SYSTEM
+    persona = _load_persona_addendum(cfg)
+    system_prompt = (
+        f"{_DEFAULT_SYSTEM}\n\n# 用户人格 / Custom instructions\n{persona}"
+        if persona else _DEFAULT_SYSTEM
+    )
     return AgentLoop(
         llm=llm, bus=bus, tools=tools,
+        system_prompt=system_prompt,
         max_hops=max_hops,
         agent_id=cfg.get("agent_id", "agent"),
         prompt_injection_policy=policy,

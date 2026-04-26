@@ -1,9 +1,8 @@
 // XMclaw — Evolution page
 //
 // Same data source as Skills (skill_promoted / candidate / rolled_back) but
-// framed as "what changed today" — counts + the last week of activity. Real
-// VFM-chart visualization will land in Phase 4 when we have the time-series
-// data exposed; until then this is the human-readable feed.
+// framed as "what changed today" — counts, a 7-day activity sparkline, and
+// the recent feed.
 
 const { h } = window.__xmc.preact;
 const { useState, useEffect } = window.__xmc.preact_hooks;
@@ -38,12 +37,29 @@ export function EvolutionPage({ token }) {
   const rolledBack = today.filter((e) => e.type === "skill_rolled_back").length;
   const candidates = today.filter((e) => e.type === "skill_candidate_proposed").length;
 
+  // 7-day events-per-day buckets (oldest left, today right). Inline SVG
+  // sparkline keeps the dep tree zero-cost — no chart lib pulled in.
+  const buckets = new Array(7).fill(0);
+  for (const e of week) {
+    const ageDays = Math.floor((now - e.ts) / 86400);
+    const idx = 6 - Math.min(6, Math.max(0, ageDays));
+    buckets[idx] += 1;
+  }
+  const max = Math.max(1, ...buckets);
+  const W = 280, H = 60, PAD = 4;
+  const stepX = (W - PAD * 2) / (buckets.length - 1);
+  const points = buckets.map((v, i) => {
+    const x = PAD + i * stepX;
+    const y = H - PAD - (v / max) * (H - PAD * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+
   return html`
     <section class="xmc-datapage" aria-labelledby="evo-title">
       <header class="xmc-datapage__header">
         <h2 id="evo-title">进化 ★</h2>
         <p class="xmc-datapage__subtitle">
-          基于 EvolutionOrchestrator 事件流的近况。VFM 折线图见 Phase 4。
+          基于 EvolutionOrchestrator 事件流的近况 — 计数、7 天活动趋势、最近事件。
         </p>
       </header>
       <div style="display:flex;gap:.75rem;margin-bottom:1rem;flex-wrap:wrap">
@@ -64,6 +80,26 @@ export function EvolutionPage({ token }) {
           <strong style="font-size:1.5rem">${week.length}</strong>
         </div>
       </div>
+      <h3 style="margin:1rem 0 .5rem">7 天活动趋势</h3>
+      <div class="xmc-datapage__row" style="padding:.75rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+        <svg viewBox="0 0 ${W} ${H}" width=${W} height=${H} style="display:block">
+          <polyline
+            fill="none"
+            stroke="var(--xmc-accent)"
+            stroke-width="2"
+            points=${points}
+          />
+          ${buckets.map((v, i) => {
+            const x = PAD + i * stepX;
+            const y = H - PAD - (v / max) * (H - PAD * 2);
+            return html`<circle key=${i} cx=${x.toFixed(1)} cy=${y.toFixed(1)} r="2.5" fill="var(--xmc-accent)" />`;
+          })}
+        </svg>
+        <small style="color:var(--xmc-fg-muted);font-family:var(--xmc-font-mono)">
+          每日: ${buckets.join(" / ")}（peak ${max}）
+        </small>
+      </div>
+
       <h3 style="margin:1rem 0 .5rem">最近活动</h3>
       ${events.length === 0
         ? html`<p class="xmc-datapage__empty">还没有进化事件</p>`

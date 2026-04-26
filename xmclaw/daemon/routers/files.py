@@ -19,7 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Body, Request
 from starlette.responses import JSONResponse
 
 from xmclaw.utils.paths import (
@@ -130,6 +130,32 @@ async def workspace_roots() -> JSONResponse:
     })
 
 
+_WORKSPACE_ROOTS_FN = (
+    skills_dir, agents_registry_dir, persona_dir, file_memory_dir, workspaces_dir,
+)
+
+
+def _is_known_workspace_root(target: Path) -> bool:
+    """Is ``target`` one of the canonical XMclaw workspace roots?
+
+    Used by ``browse`` to decide whether a missing directory should
+    return ``{is_dir: True, entries: []}`` (a fresh-install root that
+    just hasn't been populated yet — the UI shouldn't render it as a
+    red 404) or a real 404 (the user typed a bad path).
+    """
+    try:
+        resolved = target.resolve()
+    except OSError:
+        return False
+    for fn in _WORKSPACE_ROOTS_FN:
+        try:
+            if fn().resolve() == resolved:
+                return True
+        except OSError:
+            continue
+    return False
+
+
 @router.get("")
 async def browse(request: Request, path: str | None = None) -> JSONResponse:
     """Directory listing or file read, depending on ``path``.
@@ -138,6 +164,9 @@ async def browse(request: Request, path: str | None = None) -> JSONResponse:
     - ``path`` resolves to a directory → ``{"is_dir": true, "entries": [...]}``.
     - ``path`` resolves to a file ≤ 1 MiB → ``{"is_dir": false, "content": "..."}``.
     - ``path`` outside allowed roots → 403. Never 404 (see ``_safe_path``).
+    - ``path`` is a canonical workspace root that doesn't exist yet
+      (fresh install) → 200 with empty ``entries``. Other missing
+      paths → 404.
     - ``path`` larger than 1 MiB → 413.
     """
     roots = _allowed_roots(request)
@@ -146,6 +175,12 @@ async def browse(request: Request, path: str | None = None) -> JSONResponse:
     if target is None:
         return JSONResponse({"error": "path not allowed"}, status_code=403)
     if not target.exists():
+        if _is_known_workspace_root(target):
+            return JSONResponse({
+                "is_dir": True,
+                "path": str(target),
+                "entries": [],
+            })
         return JSONResponse({"error": "not found"}, status_code=404)
 
     if target.is_dir():
@@ -186,4 +221,98 @@ async def browse(request: Request, path: str | None = None) -> JSONResponse:
         "path": str(target),
         "size": size,
         "content": content,
+    })
+
+
+def _is_under_workspace_root(target: Path) -> bool:
+    """Containment check for the write surface.
+
+    Edits via the UI are restricted to the canonical workspace roots
+    (skills / agents / personas / memory / workspaces). $HOME-wide write
+    would let a stale tab clobber arbitrary user files; the read surface
+    can be broader because reads are inert.
+    """
+    try:
+        resolved = target.resolve()
+    except OSError:
+        return False
+    for fn in _WORKSPACE_ROOTS_FN:
+        try:
+            root = fn().resolve()
+        except OSError:
+            continue
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            continue
+        return True
+    return False
+
+
+@router.put("")
+async def write(
+    request: Request, payload: dict[str, Any] = Body(...),
+) -> JSONResponse:
+    """Atomic file write — restricted to canonical workspace roots.
+
+    Body: ``{"path": "...", "content": "...", "create_parents": false}``.
+    Returns ``{path, size_before, size_after, created}``.
+
+    Refuses paths outside the workspace roots (403) — the UI cannot
+    overwrite arbitrary $HOME files even though it can *read* them.
+    Refuses payloads larger than ``_MAX_READ_BYTES`` (413) so the same
+    cap that bounds the viewer also bounds writes. Atomic via temp +
+    replace so a crash mid-write can't truncate the original.
+    """
+    raw_path = payload.get("path")
+    content = payload.get("content")
+    create_parents = bool(payload.get("create_parents", False))
+    if not isinstance(raw_path, str) or not raw_path:
+        return JSONResponse({"error": "path required"}, status_code=400)
+    if not isinstance(content, str):
+        return JSONResponse({"error": "content must be string"}, status_code=400)
+    if len(content.encode("utf-8")) > _MAX_READ_BYTES:
+        return JSONResponse(
+            {"error": f"payload larger than {_MAX_READ_BYTES} bytes"},
+            status_code=413,
+        )
+
+    roots = _allowed_roots(request)
+    target = _safe_path(raw_path, roots)
+    if target is None:
+        return JSONResponse({"error": "path not allowed"}, status_code=403)
+    if not _is_under_workspace_root(target):
+        return JSONResponse(
+            {"error": "edits restricted to workspace roots"},
+            status_code=403,
+        )
+
+    created = not target.exists()
+    size_before = target.stat().st_size if target.exists() else 0
+    if created:
+        if not create_parents and not target.parent.exists():
+            return JSONResponse(
+                {"error": "parent directory does not exist"},
+                status_code=400,
+            )
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+    tmp = target.with_suffix(target.suffix + ".write.tmp")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        tmp.replace(target)
+    except OSError as exc:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    return JSONResponse({
+        "ok": True,
+        "path": str(target),
+        "size_before": size_before,
+        "size_after": target.stat().st_size,
+        "created": created,
     })

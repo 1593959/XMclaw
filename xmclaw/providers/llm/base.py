@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import abc
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
+
+OnChunkCallback = Callable[[str], Awaitable[None]]
 
 from xmclaw.core.ir import ToolCall, ToolCallShape, ToolSpec
 
@@ -70,6 +72,29 @@ class LLMProvider(abc.ABC):
         messages: list[Message],
         tools: list[ToolSpec] | None = None,
     ) -> LLMResponse: ...
+
+    async def complete_streaming(
+        self,
+        messages: list[Message],
+        tools: list[ToolSpec] | None = None,
+        *,
+        on_chunk: OnChunkCallback | None = None,
+    ) -> LLMResponse:
+        """Stream text deltas to ``on_chunk`` while collecting the final response.
+
+        Default impl falls back to non-streaming ``complete()`` and fires
+        ``on_chunk`` once with the full text — providers that don't support
+        true streaming still satisfy the contract. Real streaming providers
+        (Anthropic, OpenAI) override this to emit per-chunk deltas.
+
+        Returns the full ``LLMResponse`` (text + tool_calls + usage).
+        Tool-use blocks aren't streamed — they arrive in the final return
+        value, since the agent loop needs the whole call before invoking.
+        """
+        response = await self.complete(messages, tools)
+        if on_chunk is not None and response.content:
+            await on_chunk(response.content)
+        return response
 
     @property
     @abc.abstractmethod

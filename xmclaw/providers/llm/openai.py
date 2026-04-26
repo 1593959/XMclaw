@@ -26,6 +26,7 @@ from xmclaw.providers.llm.base import (
     LLMProvider,
     LLMResponse,
     Message,
+    OnChunkCallback,
     Pricing,
 )
 
@@ -206,6 +207,87 @@ class OpenAILLM(LLMProvider):
             tool_calls=tuple(tool_calls),
             prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
             completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+            latency_ms=latency_ms,
+        )
+
+    async def complete_streaming(
+        self,
+        messages: list[Message],
+        tools: list[ToolSpec] | None = None,
+        *,
+        on_chunk: OnChunkCallback | None = None,
+    ) -> LLMResponse:
+        from xmclaw.providers.llm.translators import openai_tool_shape as translator
+
+        client = self._get_client()
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": self._messages_to_openai(messages),
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        tool_defs = self._tools_to_openai(tools)
+        if tool_defs:
+            kwargs["tools"] = tool_defs
+
+        text_parts: list[str] = []
+        # Tool-call assembly: deltas arrive index-by-index, accumulate by index.
+        tool_acc: dict[int, dict[str, Any]] = {}
+        prompt_tokens = 0
+        completion_tokens = 0
+        t0 = time.perf_counter()
+        try:
+            stream = await client.chat.completions.create(**kwargs)
+        except TypeError:
+            # Older SDK without stream_options kwarg — retry without it.
+            kwargs.pop("stream_options", None)
+            stream = await client.chat.completions.create(**kwargs)
+        except Exception:
+            return await self.complete(messages, tools)
+        async for chunk in stream:
+            choices = getattr(chunk, "choices", None) or []
+            if choices:
+                delta = getattr(choices[0], "delta", None)
+                if delta is not None:
+                    content = getattr(delta, "content", None)
+                    if content:
+                        text_parts.append(content)
+                        if on_chunk is not None:
+                            await on_chunk(content)
+                    raw_tcs = getattr(delta, "tool_calls", None) or []
+                    for tc in raw_tcs:
+                        idx = getattr(tc, "index", 0) or 0
+                        bucket = tool_acc.setdefault(idx, {
+                            "id": "", "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        })
+                        if getattr(tc, "id", None):
+                            bucket["id"] = tc.id
+                        fn = getattr(tc, "function", None)
+                        if fn is not None:
+                            if getattr(fn, "name", None):
+                                bucket["function"]["name"] = fn.name
+                            if getattr(fn, "arguments", None):
+                                bucket["function"]["arguments"] += fn.arguments
+            usage = getattr(chunk, "usage", None)
+            if usage is not None:
+                prompt_tokens = getattr(usage, "prompt_tokens", 0) or prompt_tokens
+                completion_tokens = (
+                    getattr(usage, "completion_tokens", 0) or completion_tokens
+                )
+        latency_ms = (time.perf_counter() - t0) * 1000.0
+
+        tool_calls: list[ToolCall] = []
+        for idx in sorted(tool_acc):
+            parsed = translator.decode_from_provider(tool_acc[idx])
+            if parsed is not None:
+                tool_calls.append(parsed)
+
+        return LLMResponse(
+            content="".join(text_parts),
+            tool_calls=tuple(tool_calls),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
             latency_ms=latency_ms,
         )
 

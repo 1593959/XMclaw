@@ -77,8 +77,16 @@ def _default_system_prompt() -> str:
         "Darwin": "The shell is bash / zsh (macOS).",
     }.get(os_name, "The shell is whatever is on PATH.")
     return (
-        "You are XMclaw, a local-first AI agent running on the user's own "
-        f"machine. OS: {os_name}. User home: {home}. Desktop: {desktop}. "
+        "You are XMclaw (小爪 / Xiaozhao), a local-first AI agent running "
+        "on the user's own machine.\n"
+        "Identity is fixed: when asked who you are, who built you, or what "
+        "model you are, answer 'I am XMclaw, a local-first AI agent.' The "
+        "model behind the scenes (Claude / GPT / MiniMax / Qwen / etc.) is "
+        "a swappable backend, not your identity. Never introduce yourself "
+        "as Claude, ChatGPT, MiniMax, Qwen, or any underlying model name; "
+        "never claim to be a 'general-purpose AI assistant' — you are "
+        "XMclaw, with this user's filesystem, shell, and web access.\n\n"
+        f"OS: {os_name}. User home: {home}. Desktop: {desktop}. "
         "You have real access to their filesystem, a shell, and the web.\n\n"
         "Available tools -- use them aggressively rather than refusing:\n"
         "  - file_read, file_write, list_dir: inspect and modify files\n"
@@ -275,7 +283,16 @@ class AgentLoop:
         ]
         tool_specs = self._tools.list_tools() if self._tools else None
 
+        # Per-hop turn id so every LLM_CHUNK + LLM_RESPONSE event in this
+        # hop shares a correlation_id. The chat reducer keys the assistant
+        # bubble by correlation_id; without this, each chunk would land in
+        # its own bubble. Includes the hop number so multi-hop turns get
+        # one bubble per hop (which is what users see in OpenClaw too).
+        import uuid as _uuid
+        turn_uuid = _uuid.uuid4().hex
+
         for hop in range(self._max_hops):
+            hop_corr = f"{turn_uuid}-{hop}"
             # Anti-req #6: check the hard budget cap BEFORE the LLM call.
             # If we've already exceeded, abort with an
             # ANTI_REQ_VIOLATION event — never swallow, never partial.
@@ -307,10 +324,24 @@ class AgentLoop:
                 "llm_profile_id": llm_profile_id,
             })
 
+            # Streaming: each text delta becomes an LLM_CHUNK so the WS
+            # client can render the assistant text token-by-token. Tool-use
+            # blocks aren't streamed; they arrive in the final response.
+            chunk_seq = 0
+
+            async def _emit_chunk(delta: str) -> None:
+                nonlocal chunk_seq
+                await publish(EventType.LLM_CHUNK, {
+                    "hop": hop,
+                    "delta": delta,
+                    "seq": chunk_seq,
+                }, correlation_id=hop_corr)
+                chunk_seq += 1
+
             t0 = time.perf_counter()
             try:
-                response = await llm.complete(
-                    messages, tools=tool_specs,
+                response = await llm.complete_streaming(
+                    messages, tools=tool_specs, on_chunk=_emit_chunk,
                 )
             except Exception as exc:  # noqa: BLE001
                 latency_ms = (time.perf_counter() - t0) * 1000.0
@@ -319,7 +350,7 @@ class AgentLoop:
                     "ok": False,
                     "error": f"{type(exc).__name__}: {exc}",
                     "latency_ms": latency_ms,
-                })
+                }, correlation_id=hop_corr)
                 return AgentTurnResult(
                     ok=False, text="", hops=hop + 1,
                     tool_calls=tool_calls_made,
@@ -343,7 +374,7 @@ class AgentLoop:
                 "prompt_tokens": response.prompt_tokens,
                 "completion_tokens": response.completion_tokens,
                 "latency_ms": latency_ms,
-            })
+            }, correlation_id=hop_corr)
 
             # Anti-req #6 cont'd: record the call's usage against the
             # budget right after we see it. check_budget on the NEXT

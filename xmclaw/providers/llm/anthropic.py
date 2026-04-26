@@ -26,6 +26,7 @@ from xmclaw.providers.llm.base import (
     LLMProvider,
     LLMResponse,
     Message,
+    OnChunkCallback,
     Pricing,
 )
 
@@ -219,6 +220,70 @@ class AnthropicLLM(LLMProvider):
                     tool_calls.append(parsed)
 
         usage = getattr(response, "usage", None)
+        return LLMResponse(
+            content="".join(text_parts),
+            tool_calls=tuple(tool_calls),
+            prompt_tokens=getattr(usage, "input_tokens", 0) or 0,
+            completion_tokens=getattr(usage, "output_tokens", 0) or 0,
+            latency_ms=latency_ms,
+        )
+
+    async def complete_streaming(
+        self,
+        messages: list[Message],
+        tools: list[ToolSpec] | None = None,
+        *,
+        on_chunk: OnChunkCallback | None = None,
+    ) -> LLMResponse:
+        from xmclaw.providers.llm.translators import anthropic_native as translator
+
+        system, anthropic_messages = self._messages_to_anthropic(messages)
+        client = self._get_client()
+
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": anthropic_messages,
+            "max_tokens": 4096,
+        }
+        if system:
+            kwargs["system"] = system
+        tool_defs = self._tools_to_anthropic(tools)
+        if tool_defs:
+            kwargs["tools"] = tool_defs
+
+        text_parts: list[str] = []
+        t0 = time.perf_counter()
+        try:
+            async with client.messages.stream(**kwargs) as stream:
+                async for delta in stream.text_stream:
+                    if not delta:
+                        continue
+                    text_parts.append(delta)
+                    if on_chunk is not None:
+                        await on_chunk(delta)
+                final = await stream.get_final_message()
+        except Exception:
+            # Some Anthropic-compat shims (MiniMax, Qwen via /anthropic) don't
+            # implement the streaming endpoint. Fall back to non-streaming so
+            # the user still gets an answer — they just lose live-typing UX.
+            return await self.complete(messages, tools)
+        latency_ms = (time.perf_counter() - t0) * 1000.0
+
+        tool_calls: list[ToolCall] = []
+        for block in getattr(final, "content", []) or []:
+            btype = getattr(block, "type", None)
+            if btype == "tool_use":
+                block_dict = {
+                    "type": "tool_use",
+                    "id": getattr(block, "id", ""),
+                    "name": getattr(block, "name", ""),
+                    "input": getattr(block, "input", {}),
+                }
+                parsed = translator.decode_from_provider(block_dict)
+                if parsed is not None:
+                    tool_calls.append(parsed)
+
+        usage = getattr(final, "usage", None)
         return LLMResponse(
             content="".join(text_parts),
             tool_calls=tuple(tool_calls),

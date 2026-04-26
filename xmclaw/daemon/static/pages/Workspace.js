@@ -1,17 +1,17 @@
 // XMclaw — Workspace file panel
 //
 // OpenClaw-style sidebar tree of editable artifacts (skills / agents /
-// personas / memory / workspaces). Read-only viewer for now — edit lands
-// in a follow-up.
+// personas / memory / workspaces).
 //
 // Backed by /api/v2/files: GET /roots lists the conceptual roots, GET ""
-// with ?path= lists a directory or reads a file (≤1 MiB).
+// with ?path= lists a directory or reads a file (≤1 MiB), PUT "" with
+// {path, content} writes back atomically (workspace roots only).
 
 const { h } = window.__xmc.preact;
 const { useState, useEffect } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
-import { apiGet } from "../lib/api.js";
+import { apiGet, apiPut } from "../lib/api.js";
 
 function fmtSize(n) {
   if (n == null) return "";
@@ -101,6 +101,18 @@ export function WorkspacePage({ token }) {
   const [errorMap, setErrorMap] = useState({});     // path -> "..."
   const [activePath, setActivePath] = useState(null);
   const [viewer, setViewer] = useState(null);       // {path,size,content} | "loading" | {error}
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(null);
+  const [savedAt, setSavedAt] = useState(null);
+
+  // Workspace roots — used to gate the Edit button so the user can't
+  // try to edit a $HOME file the backend will refuse.
+  const isUnderWorkspaceRoot = (path) => {
+    if (!path || !roots) return false;
+    return roots.some((r) => path === r.path || path.startsWith(r.path + "/") || path.startsWith(r.path + "\\"));
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -122,7 +134,13 @@ export function WorkspacePage({ token }) {
     const path = root.path;
     const next = !openMap[path];
     setOpenMap({ ...openMap, [path]: next });
+    // Fresh-install roots that don't exist on disk yet: short-circuit
+    // to an empty listing so we never paint a red 404 next to "(空)".
     if (next && entriesMap[path] == null && !errorMap[path]) {
+      if (!root.exists) {
+        setEntriesMap((m) => ({ ...m, [path]: [] }));
+        return;
+      }
       fetchListing(path)
         .then((entries) => setEntriesMap((m) => ({ ...m, [path]: entries })))
         .catch((e) => setErrorMap((m) => ({ ...m, [path]: String(e.message || e) })));
@@ -171,9 +189,44 @@ export function WorkspacePage({ token }) {
   const pickFile = (entry) => {
     setActivePath(entry.path);
     setViewer("loading");
+    setEditing(false);
+    setSaveError(null);
+    setSavedAt(null);
     apiGet(`/api/v2/files?path=${encodeURIComponent(entry.path)}`, token)
       .then((d) => setViewer(d))
       .catch((e) => setViewer({ error: String(e.message || e) }));
+  };
+
+  const startEdit = () => {
+    if (!viewer || viewer === "loading" || viewer.error) return;
+    setDraft(viewer.content || "");
+    setEditing(true);
+    setSaveError(null);
+    setSavedAt(null);
+  };
+
+  const cancelEdit = () => {
+    setEditing(false);
+    setDraft("");
+    setSaveError(null);
+  };
+
+  const onSave = async () => {
+    if (!activePath) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const res = await apiPut("/api/v2/files", {
+        path: activePath, content: draft,
+      }, token);
+      setViewer({ ...viewer, content: draft, size: res.size_after });
+      setEditing(false);
+      setSavedAt(Date.now());
+    } catch (exc) {
+      setSaveError(String(exc.message || exc));
+    } finally {
+      setSaving(false);
+    }
   };
 
   if (error) return html`<section class="xmc-datapage"><h2>工作区</h2><p class="xmc-datapage__error">${error}</p></section>`;
@@ -183,7 +236,7 @@ export function WorkspacePage({ token }) {
     <section class="xmc-datapage xmc-datapage--split" aria-labelledby="ws-title">
       <header class="xmc-datapage__header">
         <h2 id="ws-title">工作区</h2>
-        <p class="xmc-datapage__subtitle">浏览技能 / 智能体 / 人格 / 记忆 / 工作区配置文件。当前只读，编辑功能稍后上线。</p>
+        <p class="xmc-datapage__subtitle">浏览 / 编辑技能 / 智能体 / 人格 / 记忆 / 工作区配置文件。$HOME 内可读，写入仅限工作区根目录。</p>
       </header>
       <div class="xmc-datapage__split">
         <aside class="xmc-datapage__sidebar">
@@ -210,9 +263,29 @@ export function WorkspacePage({ token }) {
           ${viewer && viewer.content != null ? html`
             <header class="xmc-datapage__viewer-header">
               <h3>${activePath}</h3>
-              <small>${fmtSize(viewer.size)}</small>
+              <small>${fmtSize(editing ? new Blob([draft]).size : viewer.size)}</small>
+              <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center">
+                ${savedAt ? html`<small style="color:var(--xmc-success)">已保存</small>` : null}
+                ${saveError ? html`<small style="color:var(--xmc-error)">${saveError}</small>` : null}
+                ${editing ? html`
+                  <button type="button" onClick=${cancelEdit} disabled=${saving}>取消</button>
+                  <button type="button" onClick=${onSave} disabled=${saving || draft === viewer.content}>${saving ? "保存中…" : "保存"}</button>
+                ` : html`
+                  ${isUnderWorkspaceRoot(activePath)
+                    ? html`<button type="button" onClick=${startEdit}>编辑</button>`
+                    : html`<small style="color:var(--xmc-fg-muted)">只读 ($HOME 外只可查看)</small>`}
+                `}
+              </div>
             </header>
-            <pre class="xmc-datapage__viewer-body">${viewer.content}</pre>
+            ${editing
+              ? html`<textarea
+                    class="xmc-datapage__viewer-body"
+                    style="width:100%;min-height:480px;font-family:var(--xmc-font-mono);font-size:var(--xmc-font-size-sm);resize:vertical"
+                    value=${draft}
+                    onInput=${(e) => setDraft(e.target.value)}
+                    spellcheck="false"
+                  />`
+              : html`<pre class="xmc-datapage__viewer-body">${viewer.content}</pre>`}
           ` : null}
         </article>
       </div>
