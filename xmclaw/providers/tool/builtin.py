@@ -89,6 +89,47 @@ _LIST_DIR_SPEC = ToolSpec(
     },
 )
 
+_APPLY_PATCH_SPEC = ToolSpec(
+    name="apply_patch",
+    description=(
+        "Apply one or more in-place edits to a single text file atomically. "
+        "Each edit replaces an exact ``old_text`` block with ``new_text``. "
+        "Every ``old_text`` must occur EXACTLY ONCE in the file at the time "
+        "the patch runs — if zero or multiple matches are found, the whole "
+        "patch aborts and nothing is written. Prefer this over file_write "
+        "when you only want to change a few lines: it preserves the rest "
+        "of the file verbatim and refuses to clobber an unexpected state. "
+        "Use file_read first to grab the exact ``old_text`` (whitespace "
+        "matters)."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Absolute path."},
+            "edits": {
+                "type": "array",
+                "description": "List of {old_text, new_text} edits applied in order.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "old_text": {
+                            "type": "string",
+                            "description": "Exact text to find. Must occur exactly once.",
+                        },
+                        "new_text": {
+                            "type": "string",
+                            "description": "Replacement text. May be empty to delete.",
+                        },
+                    },
+                    "required": ["old_text", "new_text"],
+                },
+                "minItems": 1,
+            },
+        },
+        "required": ["path", "edits"],
+    },
+)
+
 _BASH_SPEC = ToolSpec(
     name="bash",
     description=(
@@ -243,7 +284,7 @@ class BuiltinTools(ToolProvider):
         self._todo_listener = todo_listener
 
     def list_tools(self) -> list[ToolSpec]:
-        specs = [_FILE_READ_SPEC, _FILE_WRITE_SPEC, _LIST_DIR_SPEC]
+        specs = [_FILE_READ_SPEC, _FILE_WRITE_SPEC, _APPLY_PATCH_SPEC, _LIST_DIR_SPEC]
         if self._enable_bash:
             specs.append(_BASH_SPEC)
         if self._enable_web:
@@ -258,6 +299,8 @@ class BuiltinTools(ToolProvider):
                 return await self._file_read(call, t0)
             if call.name == "file_write":
                 return await self._file_write(call, t0)
+            if call.name == "apply_patch":
+                return await self._apply_patch(call, t0)
             if call.name == "list_dir":
                 return await self._list_dir(call, t0)
             if call.name == "bash":
@@ -320,6 +363,76 @@ class BuiltinTools(ToolProvider):
             content={
                 "path": str(path),
                 "bytes": len(text.encode("utf-8")),
+            },
+            side_effects=(str(path.resolve()),),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _apply_patch(self, call: ToolCall, t0: float) -> ToolResult:
+        raw_path = call.args.get("path")
+        edits = call.args.get("edits")
+        if not isinstance(raw_path, str) or not raw_path:
+            return _fail(call, t0, "missing or empty 'path' argument")
+        if not isinstance(edits, list) or not edits:
+            return _fail(call, t0, "'edits' must be a non-empty list")
+
+        # Pre-validate every edit's shape before touching disk.
+        clean: list[tuple[str, str]] = []
+        for i, e in enumerate(edits):
+            if not isinstance(e, dict):
+                return _fail(call, t0, f"edits[{i}] must be an object")
+            old_text = e.get("old_text")
+            new_text = e.get("new_text")
+            if not isinstance(old_text, str) or old_text == "":
+                return _fail(call, t0, f"edits[{i}].old_text must be a non-empty string")
+            if not isinstance(new_text, str):
+                return _fail(call, t0, f"edits[{i}].new_text must be a string")
+            clean.append((old_text, new_text))
+
+        path = Path(raw_path)
+        self._check_allowed(path)
+        if not path.exists() or not path.is_file():
+            return _fail(call, t0, f"file does not exist: {path}")
+        original = path.read_text(encoding="utf-8")
+        text = original
+
+        # Apply edits sequentially. Each old_text must occur exactly once
+        # in the *current* text (after prior edits) — so two edits whose
+        # search strings overlap are caught here, not silently mis-applied.
+        for i, (old_text, new_text) in enumerate(clean):
+            count = text.count(old_text)
+            if count == 0:
+                return _fail(
+                    call, t0,
+                    f"edits[{i}].old_text not found in {path} — "
+                    f"file may have changed; re-read it before patching",
+                )
+            if count > 1:
+                return _fail(
+                    call, t0,
+                    f"edits[{i}].old_text occurs {count} times in {path}; "
+                    f"include more surrounding context to make it unique",
+                )
+            text = text.replace(old_text, new_text, 1)
+
+        if text == original:
+            return _fail(call, t0, "patch produced no change (every old_text == new_text)")
+
+        # Atomic write: temp + replace so a crash mid-write can't truncate.
+        tmp = path.with_suffix(path.suffix + ".patch.tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+
+        before = len(original.encode("utf-8"))
+        after = len(text.encode("utf-8"))
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "path": str(path),
+                "edits_applied": len(clean),
+                "bytes_before": before,
+                "bytes_after": after,
+                "delta": after - before,
             },
             side_effects=(str(path.resolve()),),
             latency_ms=(time.perf_counter() - t0) * 1000.0,

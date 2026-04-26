@@ -382,6 +382,208 @@ async def test_web_search_disabled_refuses() -> None:
     assert "disabled" in r.error.lower()
 
 
+# ── apply_patch ──────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_apply_patch_single_edit_succeeds(tmp_path: Path) -> None:
+    p = tmp_path / "f.py"
+    p.write_text("hello world\nbye\n", encoding="utf-8")
+    tools = BuiltinTools(allowed_dirs=[tmp_path])
+    r = await tools.invoke(_call("apply_patch", {
+        "path": str(p),
+        "edits": [{"old_text": "hello world", "new_text": "HELLO"}],
+    }))
+    assert r.ok is True, r.error
+    assert p.read_text(encoding="utf-8") == "HELLO\nbye\n"
+    assert r.content["edits_applied"] == 1
+    assert r.content["bytes_before"] == 16
+    assert r.content["bytes_after"] == 10
+    assert r.content["delta"] == -6
+    assert r.side_effects == (str(p.resolve()),)
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_sequential_edits(tmp_path: Path) -> None:
+    p = tmp_path / "g.txt"
+    p.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    tools = BuiltinTools(allowed_dirs=[tmp_path])
+    r = await tools.invoke(_call("apply_patch", {
+        "path": str(p),
+        "edits": [
+            {"old_text": "alpha", "new_text": "A"},
+            {"old_text": "gamma", "new_text": "G"},
+        ],
+    }))
+    assert r.ok is True, r.error
+    assert p.read_text(encoding="utf-8") == "A\nbeta\nG\n"
+    assert r.content["edits_applied"] == 2
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_listed_in_default_roster() -> None:
+    names = {t.name for t in BuiltinTools().list_tools()}
+    assert "apply_patch" in names
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_missing_path_arg() -> None:
+    r = await BuiltinTools().invoke(_call("apply_patch", {
+        "edits": [{"old_text": "a", "new_text": "b"}],
+    }))
+    assert r.ok is False
+    assert "path" in r.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_empty_edits_rejected(tmp_path: Path) -> None:
+    p = tmp_path / "h.txt"
+    p.write_text("x", encoding="utf-8")
+    tools = BuiltinTools(allowed_dirs=[tmp_path])
+    r = await tools.invoke(_call("apply_patch", {
+        "path": str(p), "edits": [],
+    }))
+    assert r.ok is False
+    assert "edits" in r.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_edits_must_be_list(tmp_path: Path) -> None:
+    p = tmp_path / "h.txt"
+    p.write_text("x", encoding="utf-8")
+    tools = BuiltinTools(allowed_dirs=[tmp_path])
+    r = await tools.invoke(_call("apply_patch", {
+        "path": str(p), "edits": "not-a-list",
+    }))
+    assert r.ok is False
+    assert "edits" in r.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_edit_must_be_object(tmp_path: Path) -> None:
+    p = tmp_path / "h.txt"
+    p.write_text("x", encoding="utf-8")
+    tools = BuiltinTools(allowed_dirs=[tmp_path])
+    r = await tools.invoke(_call("apply_patch", {
+        "path": str(p), "edits": ["x"],
+    }))
+    assert r.ok is False
+    assert "edits[0]" in r.error
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_rejects_empty_old_text(tmp_path: Path) -> None:
+    p = tmp_path / "h.txt"
+    p.write_text("x", encoding="utf-8")
+    tools = BuiltinTools(allowed_dirs=[tmp_path])
+    r = await tools.invoke(_call("apply_patch", {
+        "path": str(p),
+        "edits": [{"old_text": "", "new_text": "y"}],
+    }))
+    assert r.ok is False
+    assert "old_text" in r.error
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_rejects_non_string_new_text(tmp_path: Path) -> None:
+    p = tmp_path / "h.txt"
+    p.write_text("x", encoding="utf-8")
+    tools = BuiltinTools(allowed_dirs=[tmp_path])
+    r = await tools.invoke(_call("apply_patch", {
+        "path": str(p),
+        "edits": [{"old_text": "x", "new_text": 12}],
+    }))
+    assert r.ok is False
+    assert "new_text" in r.error
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_missing_file(tmp_path: Path) -> None:
+    tools = BuiltinTools(allowed_dirs=[tmp_path])
+    r = await tools.invoke(_call("apply_patch", {
+        "path": str(tmp_path / "ghost.txt"),
+        "edits": [{"old_text": "a", "new_text": "b"}],
+    }))
+    assert r.ok is False
+    assert "does not exist" in r.error
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_old_text_not_found(tmp_path: Path) -> None:
+    p = tmp_path / "h.txt"
+    p.write_text("alpha beta\n", encoding="utf-8")
+    tools = BuiltinTools(allowed_dirs=[tmp_path])
+    r = await tools.invoke(_call("apply_patch", {
+        "path": str(p),
+        "edits": [{"old_text": "MISSING", "new_text": "X"}],
+    }))
+    assert r.ok is False
+    assert "not found" in r.error
+    # File untouched.
+    assert p.read_text(encoding="utf-8") == "alpha beta\n"
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_old_text_multiple_matches_aborts(tmp_path: Path) -> None:
+    p = tmp_path / "h.txt"
+    p.write_text("foo\nfoo\nfoo\n", encoding="utf-8")
+    tools = BuiltinTools(allowed_dirs=[tmp_path])
+    r = await tools.invoke(_call("apply_patch", {
+        "path": str(p),
+        "edits": [{"old_text": "foo", "new_text": "bar"}],
+    }))
+    assert r.ok is False
+    assert "3 times" in r.error
+    # Original preserved — atomicity guarantee.
+    assert p.read_text(encoding="utf-8") == "foo\nfoo\nfoo\n"
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_noop_rejected(tmp_path: Path) -> None:
+    p = tmp_path / "h.txt"
+    p.write_text("same\n", encoding="utf-8")
+    tools = BuiltinTools(allowed_dirs=[tmp_path])
+    r = await tools.invoke(_call("apply_patch", {
+        "path": str(p),
+        "edits": [{"old_text": "same", "new_text": "same"}],
+    }))
+    assert r.ok is False
+    assert "no change" in r.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_does_not_leave_temp_file(tmp_path: Path) -> None:
+    p = tmp_path / "h.py"
+    p.write_text("x = 1\n", encoding="utf-8")
+    tools = BuiltinTools(allowed_dirs=[tmp_path])
+    r = await tools.invoke(_call("apply_patch", {
+        "path": str(p),
+        "edits": [{"old_text": "x = 1", "new_text": "x = 2"}],
+    }))
+    assert r.ok is True
+    # The atomic-write tmp suffix must be gone after replace().
+    assert not (tmp_path / "h.py.patch.tmp").exists()
+    assert p.read_text(encoding="utf-8") == "x = 2\n"
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_respects_allowlist(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "_apply_patch_outside.txt"
+    outside.write_text("hello", encoding="utf-8")
+    try:
+        tools = BuiltinTools(allowed_dirs=[tmp_path])
+        r = await tools.invoke(_call("apply_patch", {
+            "path": str(outside),
+            "edits": [{"old_text": "hello", "new_text": "BYE"}],
+        }))
+        assert r.ok is False
+        assert "permission" in r.error.lower()
+        # File untouched.
+        assert outside.read_text(encoding="utf-8") == "hello"
+    finally:
+        if outside.exists():
+            outside.unlink()
+
+
 # ── agent loop: tool-error content surface ──────────────────────────────
 
 @pytest.mark.asyncio
