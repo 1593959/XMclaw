@@ -32,7 +32,9 @@ from typing import Any
 
 # Quiet period (seconds). After the last event, wait this long; if no
 # new event arrives, treat the turn as finished and prompt the user.
-QUIET_MS = 0.8
+# Set generously so slow LLMs (multi-second TTFB) don't trip a false
+# turn-end between user_message and llm_response.
+QUIET_MS = 3.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,23 +182,45 @@ async def _drain_until_quiet(
     quiet: float = QUIET_MS,
     overall_timeout: float = 60.0,
 ) -> list[dict[str, Any]]:
-    """Pull events until no new one arrives within ``quiet`` seconds.
+    """Pull events until the turn is finished.
 
-    Also caps total wait at ``overall_timeout`` so a broken agent can't
-    hang the REPL forever.
+    Turn-end is decided by event sequence, not just timing:
+      * a terminal ``llm_response`` (``tool_calls_count == 0``) ends it
+        immediately — that's the assistant's final answer.
+      * after ``llm_request`` or ``tool_call_emitted`` we *know* a
+        response/result is on the way, so we wait up to the overall
+        timeout, not the short quiet window.
+      * otherwise (post-tool-result, mid-hop) we fall back to the quiet
+        window, which catches odd cases without hanging.
+    ``overall_timeout`` is the hard cap so a broken agent can't hang
+    the REPL forever.
     """
     events: list[dict[str, Any]] = []
     deadline = asyncio.get_running_loop().time() + overall_timeout
+    awaiting_response = False
     while True:
         now = asyncio.get_running_loop().time()
         if now >= deadline:
             return events
-        wait = quiet if events else (deadline - now)
+        if not events or awaiting_response:
+            wait = deadline - now
+        else:
+            wait = quiet
         try:
             ev = await asyncio.wait_for(inbox.get(), timeout=wait)
         except asyncio.TimeoutError:
             return events
         events.append(ev)
+        etype = ev.get("type")
+        if etype == "llm_response":
+            payload = ev.get("payload") or {}
+            if int(payload.get("tool_calls_count", 0) or 0) == 0:
+                return events
+            awaiting_response = False
+        elif etype in ("llm_request", "tool_call_emitted"):
+            awaiting_response = True
+        else:
+            awaiting_response = False
 
 
 async def _chat_loop(url: str, session_id: str) -> int:
@@ -298,6 +322,50 @@ async def _chat_loop(url: str, session_id: str) -> int:
             await ws.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+def pick_resume_session(*, prefer_last: bool = False, limit: int = 10) -> str | None:
+    """Return a session_id to resume, or ``None`` if no saved sessions.
+
+    With ``prefer_last=True`` skip the picker and just return the most
+    recently active session. Otherwise print a numbered list and prompt
+    on stdin.
+    """
+    from datetime import datetime
+
+    from xmclaw.daemon.session_store import SessionStore
+    from xmclaw.utils.paths import default_sessions_db_path
+
+    try:
+        store = SessionStore(default_sessions_db_path())
+        rows = store.list_recent(limit=limit)
+    except Exception:  # noqa: BLE001
+        return None
+    if not rows:
+        return None
+    if prefer_last:
+        return rows[0]["session_id"]
+
+    print("recent sessions:")
+    for i, r in enumerate(rows, start=1):
+        when = datetime.fromtimestamp(r["updated_at"]).strftime("%Y-%m-%d %H:%M")
+        print(f"  {i:>2}. {r['session_id']:24}  {r['message_count']:>3} msgs   {when}")
+    print()
+    try:
+        choice = input("pick a number (Enter to cancel): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return None
+    if not choice:
+        return None
+    try:
+        idx = int(choice)
+    except ValueError:
+        print(f"  not a number: {choice!r}")
+        return None
+    if idx < 1 or idx > len(rows):
+        print(f"  out of range: {idx}")
+        return None
+    return rows[idx - 1]["session_id"]
 
 
 def run_chat(
