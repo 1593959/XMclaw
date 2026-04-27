@@ -16,6 +16,7 @@ Phase 4.x replaces the default accept-all with ed25519 pairing.
 from __future__ import annotations
 
 import json
+import time as time_module
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -200,12 +201,58 @@ def create_app(
     # enter lifespan don't pay the filesystem walk.
     agents_manager = MultiAgentManager(bus)
 
+    # Phase 6 cron: stand up a CronTickTask once the agent is wired so
+    # ~/.xmclaw/cron/jobs.json actually fires every 60s. Runner uses
+    # the primary AgentLoop's run_turn to execute the job's prompt.
+    cron_tick = None
+
     @asynccontextmanager
     async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        nonlocal cron_tick
         if sweep_task is not None:
             await sweep_task.start()
         if backup_scheduler is not None:
             await backup_scheduler.start()
+        # Cron tick: only start once the primary agent is live; without
+        # it run_turn would have nowhere to land. Wraps a per-tick
+        # session_id ('cron:<job_id>:<ts>') so cron output is searchable
+        # via the Sessions page later.
+        try:
+            # Use the module-level singleton so the REST router and the
+            # tick task see the same jobs. Constructing a fresh
+            # CronStore() here would mean the tick loop never observes
+            # POST-created jobs (each instance owns its own _jobs cache).
+            from xmclaw.core.scheduler.cron import (
+                CronTickTask,
+                default_cron_store,
+            )
+            store = default_cron_store()
+
+            async def _runner(job):
+                target_agent = _app.state.agent
+                if target_agent is None or not job.wake_agent:
+                    return f"# {job.name} fired @ {time_module.strftime('%Y-%m-%d %H:%M:%S')}\n\n(no agent wired)\n"
+                sid = f"cron:{job.id}:{int(time_module.time())}"
+                try:
+                    res = await target_agent.run_turn(sid, job.prompt)
+                    return (
+                        f"# {job.name} @ {time_module.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                        f"## Result\n\n{res.text or '(no text)'}\n\n"
+                        f"## Tool calls\n\n{len(res.tool_calls)} call(s); ok={res.ok}\n"
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    return (
+                        f"# {job.name} @ {time_module.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                        f"## Error\n\n{type(exc).__name__}: {exc}\n"
+                    )
+
+            cron_tick = CronTickTask(store=store, runner=_runner, tick_interval_s=60.0)
+            await cron_tick.start()
+        except Exception as exc:  # noqa: BLE001 — cron failures must
+            # not block boot; the API still answers, jobs just won't fire
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).warning("cron.tick_start_failed", exc_info=exc)
+            cron_tick = None
         try:
             await agents_manager.load_from_disk()
         except Exception:  # noqa: BLE001 — bad preset file must not block boot
@@ -229,6 +276,11 @@ def create_app(
                 await sweep_task.stop()
             if backup_scheduler is not None:
                 await backup_scheduler.stop()
+            if cron_tick is not None:
+                try:
+                    await cron_tick.stop()
+                except Exception:  # noqa: BLE001
+                    pass
             # Epic #17 Phase 7: stop all workspace background work
             # before tearing down the bus + memory store. Evolution
             # observers cancel their subscriptions here; LLM workspaces

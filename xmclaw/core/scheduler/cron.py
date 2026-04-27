@@ -293,6 +293,40 @@ class CronStore:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Module-level singleton: shared between the REST router (writes) and
+# the lifespan-owned CronTickTask (reads). Without this, the router and
+# tick task each owned their own ``CronStore``; the router's POST landed
+# in disk + its cache, the tick task only loaded once at boot and never
+# saw new jobs. Tests that need an isolated store still construct
+# ``CronStore(...)`` directly.
+# ──────────────────────────────────────────────────────────────────────
+
+
+_default_store_singleton: CronStore | None = None
+
+
+def default_cron_store() -> CronStore:
+    """Return the process-wide CronStore.
+
+    Lazy-instantiated so importing this module is cheap. Both the FastAPI
+    cron router and the lifespan-owned :class:`CronTickTask` MUST go
+    through this — otherwise a job created via the API never reaches the
+    tick task, because each side keeps its own in-memory ``_jobs`` dict
+    and only reloads from disk on first access.
+    """
+    global _default_store_singleton
+    if _default_store_singleton is None:
+        _default_store_singleton = CronStore()
+    return _default_store_singleton
+
+
+def reset_default_cron_store() -> None:
+    """Test hook: drop the singleton so the next call re-loads from disk."""
+    global _default_store_singleton
+    _default_store_singleton = None
+
+
+# ──────────────────────────────────────────────────────────────────────
 # CronTickTask — long-running coroutine that drives the store
 # ──────────────────────────────────────────────────────────────────────
 

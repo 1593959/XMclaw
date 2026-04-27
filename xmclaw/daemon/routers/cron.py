@@ -11,18 +11,21 @@ from typing import Any
 from fastapi import APIRouter, Body
 from starlette.responses import JSONResponse
 
-from xmclaw.core.scheduler.cron import CronJob, CronStore
+from xmclaw.core.scheduler.cron import CronJob, CronStore, default_cron_store
 
 router = APIRouter(prefix="/api/v2/cron", tags=["cron"])
 
-_store_singleton: CronStore | None = None
-
 
 def _store() -> CronStore:
-    global _store_singleton
-    if _store_singleton is None:
-        _store_singleton = CronStore()
-    return _store_singleton
+    """Return the process-wide CronStore.
+
+    Goes through the module-level singleton so the REST API and the
+    lifespan-owned ``CronTickTask`` share the same in-memory cache.
+    Without this, jobs created via POST never reach the tick task —
+    each side held its own ``CronStore`` instance with its own ``_jobs``
+    dict and only ``_load()``-ed once.
+    """
+    return default_cron_store()
 
 
 @router.get("")
