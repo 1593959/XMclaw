@@ -268,12 +268,44 @@ export function CronPage({ token }) {
     }
   };
 
-  const onTrigger = (jobId) => {
-    toast.info("立即触发尚未实现 (Phase 6.1)");
+  const _post = async (path) => {
+    const res = await fetch(
+      "/api/v2/cron" + path +
+        (token ? `?token=${encodeURIComponent(token)}` : ""),
+      { method: "POST" }
+    );
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
   };
 
-  const onToggle = (jobId) => {
-    toast.info("启用/暂停尚未实现 — 直接编辑 ~/.xmclaw/cron/jobs.json");
+  const onTrigger = async (jobId) => {
+    setBusy(jobId);
+    try {
+      await _post(`/${encodeURIComponent(jobId)}/trigger`);
+      toast.success("已触发，将在下个 tick 运行");
+      load();
+    } catch (e) {
+      toast.error("触发失败：" + (e.message || e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const onToggle = async (jobId) => {
+    const job = (jobs || []).find((j) => j.id === jobId);
+    if (!job) return;
+    const action = job.enabled ? "pause" : "resume";
+    setBusy(jobId);
+    try {
+      const data = await _post(`/${encodeURIComponent(jobId)}/${action}`);
+      toast.success(action === "pause" ? "已暂停" : "已恢复");
+      load();
+    } catch (e) {
+      toast.error((action === "pause" ? "暂停" : "恢复") + "失败：" + (e.message || e));
+    } finally {
+      setBusy(null);
+    }
   };
 
   if (error) {

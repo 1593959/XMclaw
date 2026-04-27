@@ -21,8 +21,13 @@ const html = window.__xmc.htm.bind(h);
 import { lex, renderTokenHtml } from "../../lib/markdown.js";
 import { Spinner } from "../atoms/spinner.js";
 import { Badge } from "../atoms/badge.js";
+import { CodeBlock } from "./CodeBlock.js";
 
 function ToolCard({ call }) {
+  // Hermes ToolCall.tsx pattern: status-tinted card with bullet ●
+  // (running/done/error tones), auto-expand on error, user can override.
+  // We use <details open> bound to a derived default so error rows
+  // open automatically the moment the result arrives.
   const tone =
     call.status === "ok" ? "success" : call.status === "error" ? "error" : "muted";
   const label =
@@ -34,14 +39,16 @@ function ToolCard({ call }) {
       return String(call.args);
     }
   })();
-  // Open/close is user-controlled. Running state is conveyed by the spinner
-  // + shimmer class on the summary; auto-collapse on completion would hide
-  // the result the moment it arrived.
+  const openByDefault = call.status === "error";
   return html`
-    <details class="xmc-toolcard">
+    <details
+      class=${"xmc-toolcard xmc-toolcard--" + call.status}
+      open=${openByDefault}
+    >
       <summary
         class=${"xmc-toolcard__summary" + (call.status === "running" ? " is-running" : "")}
       >
+        <span class="xmc-toolcard__bullet" aria-hidden="true">●</span>
         <code class="xmc-toolcard__name">${call.name}</code>
         <${Badge} tone=${tone}>${label}</${Badge}>
         ${call.status === "running"
@@ -50,14 +57,17 @@ function ToolCard({ call }) {
       </summary>
       <div class="xmc-toolcard__body">
         <div class="xmc-toolcard__section">
-          <div class="xmc-toolcard__label">args</div>
-          <pre class="xmc-toolcard__pre">${argsPreview}</pre>
+          <div class="xmc-toolcard__label">参数</div>
+          <${CodeBlock} code=${argsPreview} lang="json" />
         </div>
         ${call.result != null
           ? html`
               <div class="xmc-toolcard__section">
-                <div class="xmc-toolcard__label">result</div>
-                <pre class="xmc-toolcard__pre">${call.result}</pre>
+                <div class="xmc-toolcard__label">${call.status === "error" ? "错误" : "结果"}</div>
+                <${CodeBlock}
+                  code=${typeof call.result === "string" ? call.result : JSON.stringify(call.result, null, 2)}
+                  lang=${call.status === "error" ? "" : "text"}
+                />
               </div>
             `
           : null}
@@ -77,15 +87,28 @@ function MarkdownBody({ content }) {
   }
   return html`
     <div class="xmc-msg__body xmc-md">
-      ${tokens.map(
-        (tok) => html`
+      ${tokens.map((tok) => {
+        // Intercept code tokens so we can render them through CodeBlock
+        // (lang badge + copy button). marked@12 emits {type:"code",
+        // text, lang}. Fallback path emits {type:"text"} with raw HTML
+        // — let those through unchanged.
+        if (tok.type === "code" && typeof tok.text === "string") {
+          return html`
+            <${CodeBlock}
+              key=${tok.idx}
+              code=${tok.text}
+              lang=${tok.lang || ""}
+            />
+          `;
+        }
+        return html`
           <div
             key=${tok.idx}
             data-tok-type=${tok.type || "text"}
             dangerouslySetInnerHTML=${{ __html: renderTokenHtml(tok) }}
           ></div>
-        `
-      )}
+        `;
+      })}
     </div>
   `;
 }

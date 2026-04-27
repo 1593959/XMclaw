@@ -32,6 +32,7 @@ export function Composer({
   onToggleUltrathink,
   canSend,
   busy,
+  slashStore,
 }) {
   // SlashPopover takeover. When the popover is visible, ↑/↓/Tab/Esc
   // are consumed by it; Enter still falls through to the composer's
@@ -40,6 +41,7 @@ export function Composer({
   const slash = usePopoverApi({
     input: value,
     onApply: (next) => onChange(next),
+    store: slashStore || {},
   });
 
   function handleKeyDown(evt) {

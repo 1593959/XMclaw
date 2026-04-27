@@ -182,6 +182,32 @@ function startNewSession() {
   connectFor(sid, s.auth.token);
 }
 
+// Local-only chat clear (does NOT delete daemon-side history). Used by
+// SlashPopover's /clear command.
+function clearChat() {
+  store.setState((s) => ({
+    chat: { ...s.chat, messages: [], pendingAssistantId: null },
+  }));
+  toast.info("已清空本地 chat 面板（daemon 历史保留）");
+}
+
+// Action bag passed into the chat page so SlashPopover can wire its
+// command items without each having to import every helper itself.
+const CHAT_ACTIONS = {
+  startNewSession,
+  clearChat,
+  togglePlan: (force) => {
+    if (typeof force === "boolean") {
+      store.setState((s) => ({ chat: { ...s.chat, planMode: force } }));
+    } else {
+      togglePlan();
+    }
+  },
+  toggleDebug: () => {
+    toast.info("Debug 模式 toggle (Phase B-9.x): 当前是 toast-only");
+  },
+};
+
 // ── Routes ────────────────────────────────────────────────────────────
 
 function Placeholder({ title, subtitle }) {
@@ -209,6 +235,7 @@ const routes = {
       onToggleUltrathink=${toggleUltrathink}
       onNewSession=${startNewSession}
       onChangeModel=${setLlmProfile}
+      slashStore=${CHAT_ACTIONS}
     />
   `,
   "/sessions": (state) => html`<${SessionsPage} token=${state.auth.token} />`,

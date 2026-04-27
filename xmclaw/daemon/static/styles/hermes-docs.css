@@ -1,15 +1,119 @@
-/* XMclaw — DocsPage styles 1:1 (DocsPage.tsx). */
+/* XMclaw — DocsPage v2 styles (rail + markdown viewer). */
 
-.xmc-h-docs__body {
-  display: flex;
+.xmc-h-docs2__body {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 1rem;
   flex: 1 1 auto;
   min-height: 0;
 }
 
-.xmc-h-docs__iframe {
-  flex: 1 1 auto;
+@media (max-width: 768px) {
+  .xmc-h-docs2__body {
+    grid-template-columns: 1fr;
+  }
+}
+
+.xmc-h-docs2__rail {
+  background: color-mix(in srgb, var(--midground) 3%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: auto;
+  max-height: calc(100vh - 240px);
+}
+
+.xmc-h-docs2__list {
+  list-style: none;
+  margin: 0;
+  padding: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.xmc-h-docs2__item {
+  display: flex;
   width: 100%;
-  min-height: 480px;
-  border: none;
-  background: var(--background-base);
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  color: var(--midground);
+  transition: background 120ms;
+}
+
+.xmc-h-docs2__item:hover {
+  background: color-mix(in srgb, var(--midground) 6%, transparent);
+}
+
+.xmc-h-docs2__item.is-active {
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+  border-color: color-mix(in srgb, var(--color-primary) 50%, transparent);
+}
+
+.xmc-h-docs2__item-icon {
+  width: 0.85rem;
+  height: 0.85rem;
+  flex-shrink: 0;
+  margin-top: 0.15rem;
+  opacity: 0.6;
+}
+
+.xmc-h-docs2__item-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.xmc-h-docs2__item-main strong {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--midground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.xmc-h-docs2__item-main small {
+  display: block;
+  font-size: 0.7rem;
+  font-family: var(--theme-font-mono);
+  color: var(--color-muted-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.xmc-h-docs2__viewer {
+  background: color-mix(in srgb, var(--midground) 2%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 1rem 1.25rem;
+  overflow: auto;
+  max-height: calc(100vh - 240px);
+}
+
+.xmc-h-docs2__md {
+  font-size: 0.88rem;
+  line-height: 1.65;
+  color: var(--midground);
+}
+
+.xmc-h-docs2__md h1 { font-size: 1.4rem; margin: 0.5rem 0 1rem; }
+.xmc-h-docs2__md h2 { font-size: 1.15rem; margin: 1.5rem 0 0.5rem; border-bottom: 1px solid var(--color-border); padding-bottom: 0.25rem; }
+.xmc-h-docs2__md h3 { font-size: 1rem; margin: 1rem 0 0.4rem; }
+.xmc-h-docs2__md a { color: var(--color-primary); text-decoration: underline; }
+.xmc-h-docs2__md table { border-collapse: collapse; margin: 0.5rem 0; }
+.xmc-h-docs2__md th, .xmc-h-docs2__md td {
+  border: 1px solid var(--color-border);
+  padding: 0.35rem 0.6rem;
+  font-size: 0.82rem;
+}
+.xmc-h-docs2__md th {
+  background: color-mix(in srgb, var(--midground) 5%, transparent);
 }

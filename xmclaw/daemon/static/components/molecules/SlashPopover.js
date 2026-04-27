@@ -15,25 +15,51 @@ const { useState, useEffect, useMemo } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
 // Default command set — covers the verbs the Ink TUI ships with plus
-// XMclaw additions. Each entry mirrors Hermes CompletionItem shape:
-//   { display, text, meta }
-// where `text` is what gets stuffed into the composer when applied.
+// XMclaw additions. Each entry mirrors Hermes CompletionItem shape +
+// adds an `action` so applying actually does something instead of
+// just stuffing text into the composer.
+//
+// Action types:
+//   * { kind: "navigate", to: "/path" } — navigate via SPA router
+//   * { kind: "store",    do: (store) => void } — mutate the store
+//   * { kind: "text" }   — insert literal `text` into composer (default)
 const SLASH_COMMANDS = [
-  { display: "/new",      text: "/new ",      meta: "新建一个会话" },
-  { display: "/reset",    text: "/reset",     meta: "重置当前会话历史" },
-  { display: "/clear",    text: "/clear",     meta: "清空 chat 面板（保留 daemon 历史）" },
-  { display: "/plan",     text: "/plan ",     meta: "切到 Plan 模式（先批准再执行）" },
-  { display: "/act",      text: "/act",       meta: "切到 Act 模式" },
+  { display: "/new",      text: "/new",       meta: "新建一个会话",
+    action: { kind: "store", do: (store) => store.startNewSession?.() } },
+  { display: "/reset",    text: "/reset",     meta: "重置当前会话历史",
+    action: { kind: "send", text: "/reset" } },
+  { display: "/clear",    text: "/clear",     meta: "清空 chat 面板（保留 daemon 历史）",
+    action: { kind: "store", do: (store) => store.clearChat?.() } },
+  { display: "/plan",     text: "/plan",      meta: "切到 Plan 模式（先批准再执行）",
+    action: { kind: "store", do: (store) => store.togglePlan?.(true) } },
+  { display: "/act",      text: "/act",       meta: "切到 Act 模式",
+    action: { kind: "store", do: (store) => store.togglePlan?.(false) } },
   { display: "/model",    text: "/model ",    meta: "切换 LLM profile" },
   { display: "/agent",    text: "/agent ",    meta: "切换运行的 agent profile" },
-  { display: "/sessions", text: "/sessions",  meta: "跳到会话列表" },
-  { display: "/skills",   text: "/skills",    meta: "跳到技能页" },
-  { display: "/cron",     text: "/cron",      meta: "跳到定时任务页" },
-  { display: "/logs",     text: "/logs",      meta: "跳到日志页" },
-  { display: "/config",   text: "/config",    meta: "跳到配置页" },
-  { display: "/help",     text: "/help",      meta: "命令清单 + 快捷键" },
-  { display: "/debug",    text: "/debug",     meta: "切换 debug 输出" },
+  { display: "/sessions", text: "/sessions",  meta: "跳到会话列表",
+    action: { kind: "navigate", to: "/sessions" } },
+  { display: "/skills",   text: "/skills",    meta: "跳到技能页",
+    action: { kind: "navigate", to: "/skills" } },
+  { display: "/cron",     text: "/cron",      meta: "跳到定时任务页",
+    action: { kind: "navigate", to: "/cron" } },
+  { display: "/logs",     text: "/logs",      meta: "跳到日志页",
+    action: { kind: "navigate", to: "/logs" } },
+  { display: "/config",   text: "/config",    meta: "跳到配置页",
+    action: { kind: "navigate", to: "/config" } },
+  { display: "/analytics",text: "/analytics", meta: "跳到分析页",
+    action: { kind: "navigate", to: "/analytics" } },
+  { display: "/docs",     text: "/docs",      meta: "跳到文档页",
+    action: { kind: "navigate", to: "/docs" } },
+  { display: "/help",     text: "/help",      meta: "命令清单 + 快捷键",
+    action: { kind: "navigate", to: "/docs" } },
+  { display: "/debug",    text: "/debug",     meta: "切换 debug toast",
+    action: { kind: "store", do: (store) => store.toggleDebug?.() } },
 ];
+
+function _navigate(to) {
+  window.history.pushState({}, "", to);
+  window.dispatchEvent(new PopStateEvent("popstate"));
+}
 
 function filterCommands(input) {
   if (!input.startsWith("/")) return [];
@@ -76,7 +102,7 @@ function ChevIcon({ active }) {
  * is a `usePopoverApi` hook returning `{ render, handleKey }` so the
  * Composer can call handleKey from its onKeyDown without lifting state.
  */
-export function usePopoverApi({ input, onApply }) {
+export function usePopoverApi({ input, onApply, store }) {
   const [selected, setSelected] = useState(0);
   const items = useMemo(() => filterCommands(input || ""), [input]);
   const visible = items.length > 0 && (input || "").startsWith("/");
@@ -88,6 +114,23 @@ export function usePopoverApi({ input, onApply }) {
 
   const apply = (item) => {
     if (!item) return;
+    const a = item.action;
+    if (a && a.kind === "navigate" && a.to) {
+      onApply("");
+      _navigate(a.to);
+      return;
+    }
+    if (a && a.kind === "store" && typeof a.do === "function") {
+      try { a.do(store || {}); } catch (_) {}
+      onApply("");
+      return;
+    }
+    if (a && a.kind === "send" && a.text) {
+      // Stuff the text and let composer's Enter send it.
+      onApply(a.text);
+      return;
+    }
+    // Default: insert text and let user keep typing.
     onApply(item.text);
   };
 

@@ -1,0 +1,149 @@
+/* XMclaw — CodeBlock + ToolCard styles 1:1 (hermes Markdown.tsx CodeBlock,
+ * ToolCall.tsx). Visual goal: dark frame, lang badge top-left, copy button
+ * top-right, mono content at 0.78rem. ToolCard adds status-tinted border +
+ * bullet glyph and auto-opens on error.
+ */
+
+/* ── CodeBlock ─────────────────────────────────────────────────── */
+
+.xmc-h-codeblock {
+  margin: 0.5rem 0;
+  background: color-mix(in srgb, var(--background-base) 90%, var(--midground-base) 10%);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.xmc-h-codeblock__chrome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.3rem 0.6rem;
+  background: color-mix(in srgb, var(--background-base) 70%, var(--midground-base) 6%);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.xmc-h-codeblock__lang {
+  font-family: var(--theme-font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--midground) 65%, transparent);
+}
+
+.xmc-h-codeblock__copy {
+  border: 1px solid color-mix(in srgb, var(--midground) 18%, transparent);
+  background: color-mix(in srgb, var(--midground) 5%, transparent);
+  color: var(--midground);
+  font-family: inherit;
+  font-size: 0.68rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  letter-spacing: 0.04em;
+  transition: background 120ms;
+}
+
+.xmc-h-codeblock__copy:hover {
+  background: color-mix(in srgb, var(--midground) 12%, transparent);
+}
+
+.xmc-h-codeblock__copy.is-copied {
+  background: color-mix(in srgb, var(--color-success) 18%, transparent);
+  border-color: color-mix(in srgb, var(--color-success) 50%, transparent);
+  color: var(--color-success);
+}
+
+.xmc-h-codeblock__pre {
+  margin: 0;
+  padding: 0.65rem 0.85rem;
+  font-family: var(--theme-font-mono);
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--midground);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.xmc-h-codeblock__pre code {
+  font-family: inherit;
+  font-size: inherit;
+  background: transparent;
+  padding: 0;
+}
+
+/* ── ToolCard upgrades — Hermes ToolCall status colors ──────────── */
+
+.xmc-toolcard {
+  margin: 0.4rem 0;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.xmc-toolcard--running {
+  border: 1px solid color-mix(in srgb, var(--color-primary) 40%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 4%, transparent);
+}
+.xmc-toolcard--ok {
+  border: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--midground) 3%, transparent);
+}
+.xmc-toolcard--error {
+  border: 1px solid color-mix(in srgb, var(--color-destructive) 50%, transparent);
+  background: color-mix(in srgb, var(--color-destructive) 4%, transparent);
+}
+
+.xmc-toolcard__summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.65rem;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.xmc-toolcard__summary::-webkit-details-marker { display: none; }
+
+.xmc-toolcard__summary:hover {
+  background: color-mix(in srgb, var(--midground) 4%, transparent);
+}
+
+.xmc-toolcard__bullet {
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.xmc-toolcard--running .xmc-toolcard__bullet { color: var(--color-primary); }
+.xmc-toolcard--ok      .xmc-toolcard__bullet { color: color-mix(in srgb, var(--color-primary) 80%, transparent); }
+.xmc-toolcard--error   .xmc-toolcard__bullet { color: var(--color-destructive); }
+
+.xmc-toolcard__name {
+  font-family: var(--theme-font-mono);
+  font-size: 0.78rem;
+  color: var(--midground);
+}
+
+.xmc-toolcard__summary.is-running .xmc-toolcard__name {
+  animation: hermes-spin-shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes hermes-spin-shimmer {
+  0%, 100% { opacity: 0.7; }
+  50%      { opacity: 1; }
+}
+
+.xmc-toolcard__body {
+  padding: 0.5rem 0.65rem 0.65rem;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+
+.xmc-toolcard__section + .xmc-toolcard__section { margin-top: 0.5rem; }
+
+.xmc-toolcard__label {
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-muted-foreground);
+  margin-bottom: 0.25rem;
+}

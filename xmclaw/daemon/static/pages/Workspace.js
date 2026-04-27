@@ -26,6 +26,7 @@ const { useState, useEffect } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
 import { apiGet } from "../lib/api.js";
+import { toast } from "../lib/toast.js";
 
 const LS_KEY = "xmcWorkspaceRoot";
 
@@ -44,29 +45,28 @@ function BlockLink({ icon, label, href, hint }) {
 export function WorkspacePage({ token }) {
   const [error, setError] = useState(null);
   const [roots, setRoots] = useState(null);
-  const [activeRoot, setActiveRoot] = useState(() => {
-    try {
-      return localStorage.getItem(LS_KEY) || "";
-    } catch (_) {
-      return "";
-    }
-  });
+  // Workspace state persisted by daemon (~/.xmclaw/state.json).
+  const [wsState, setWsState] = useState(null);
   const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
+  // Compute "active" from daemon state when available, fall back to
+  // localStorage for the brief window before the GET resolves.
+  const activeRoot =
+    wsState && wsState.roots && wsState.roots[wsState.primary_index || 0]?.path
+      ? wsState.roots[wsState.primary_index || 0].path
+      : (() => { try { return localStorage.getItem(LS_KEY) || ""; } catch (_) { return ""; } })();
+
+  const loadAll = () => {
     apiGet("/api/v2/files/roots", token)
-      .then((d) => {
-        if (cancelled) return;
-        setRoots(d.roots || []);
-      })
-      .catch((e) => {
-        if (!cancelled) setError(String(e.message || e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [token]);
+      .then((d) => setRoots(d.roots || []))
+      .catch((e) => setError(String(e.message || e)));
+    apiGet("/api/v2/workspace", token)
+      .then((d) => setWsState(d))
+      .catch((e) => setError(String(e.message || e)));
+  };
+
+  useEffect(loadAll, [token]);
 
   const onPickFolder = async () => {
     if (typeof window.showDirectoryPicker !== "function") {
@@ -88,16 +88,75 @@ export function WorkspacePage({ token }) {
     }
   };
 
-  const onApply = () => {
+  const onApply = async () => {
     const p = (draft || "").trim();
     if (!p) return;
+    setBusy(true);
     try {
-      localStorage.setItem(LS_KEY, p);
-    } catch (_) {
-      /* ignore */
+      const res = await fetch(
+        "/api/v2/workspace" + (token ? `?token=${encodeURIComponent(token)}` : ""),
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "add", path: p }),
+        }
+      );
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      try { localStorage.setItem(LS_KEY, p); } catch (_) {}
+      setWsState(data);
+      setDraft("");
+      toast.success(`工作区已添加并设为活动：${p}`);
+    } catch (e) {
+      toast.error("添加失败：" + (e.message || e));
+    } finally {
+      setBusy(false);
     }
-    setActiveRoot(p);
-    setDraft("");
+  };
+
+  const onSetPrimary = async (index) => {
+    setBusy(true);
+    try {
+      const res = await fetch(
+        "/api/v2/workspace" + (token ? `?token=${encodeURIComponent(token)}` : ""),
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "set_primary", index }),
+        }
+      );
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      setWsState(data);
+      toast.success("主工作区已切换");
+    } catch (e) {
+      toast.error("切换失败：" + (e.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onRemove = async (path) => {
+    if (!confirm(`移除工作区:\n${path}？`)) return;
+    setBusy(true);
+    try {
+      const res = await fetch(
+        "/api/v2/workspace" + (token ? `?token=${encodeURIComponent(token)}` : ""),
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "remove", path }),
+        }
+      );
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      setWsState(data);
+      toast.success("已移除");
+    } catch (e) {
+      toast.error("移除失败：" + (e.message || e));
+    } finally {
+      setBusy(false);
+    }
   };
 
   if (error) {
@@ -139,9 +198,39 @@ export function WorkspacePage({ token }) {
           }}
           style="flex:1 1 320px;min-width:0;font-family:var(--xmc-font-mono);font-size:var(--xmc-font-size-sm);padding:.4rem .6rem"
         />
-        <button type="button" onClick=${onPickFolder}>选择文件夹…</button>
-        <button type="button" onClick=${onApply} disabled=${!draft.trim()}>应用</button>
+        <button type="button" onClick=${onPickFolder} disabled=${busy}>选择文件夹…</button>
+        <button type="button" onClick=${onApply} disabled=${busy || !draft.trim()}>添加并设为活动</button>
       </div>
+
+      ${wsState && wsState.roots && wsState.roots.length
+        ? html`
+          <h3 style="margin:1.5rem 0 .5rem">已注册工作区（daemon 持久化在 ~/.xmclaw/state.json）</h3>
+          <ul class="xmc-datapage__list">
+            ${wsState.roots.map((r, i) => {
+              const isPrimary = (wsState.primary_index || 0) === i;
+              return html`
+                <li class="xmc-datapage__row" key=${r.path} style="display:flex;align-items:center;gap:.5rem">
+                  <strong style="flex:0 0 auto;font-size:.95rem">${r.name}</strong>
+                  ${isPrimary ? html`<span class="xmc-h-badge xmc-h-badge--success">活动</span>` : null}
+                  ${r.vcs === "git" ? html`<span class="xmc-h-badge">git</span>` : null}
+                  <code style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.path}</code>
+                  ${!isPrimary
+                    ? html`<button type="button" onClick=${() => onSetPrimary(i)} disabled=${busy} title="设为活动">设为活动</button>`
+                    : null}
+                  <button
+                    type="button"
+                    onClick=${() => onRemove(r.path)}
+                    disabled=${busy}
+                    title="移除"
+                    class="xmc-h-btn--danger"
+                    style="background:color-mix(in srgb,var(--color-destructive) 14%,transparent);color:var(--color-destructive)"
+                  >移除</button>
+                </li>
+              `;
+            })}
+          </ul>
+        `
+        : null}
 
       <h3 style="margin:1.5rem 0 .5rem">这个工作区的配置块</h3>
       <p class="xmc-datapage__subtitle" style="margin-bottom:.75rem">

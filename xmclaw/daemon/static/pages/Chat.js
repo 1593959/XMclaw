@@ -18,7 +18,7 @@ import { Composer } from "../components/molecules/Composer.js";
 import { ModelPicker } from "../components/molecules/ModelPicker.js";
 import { Badge } from "../components/atoms/badge.js";
 
-export function ChatPage({ chat, session, connection, token, onSend, onChangeDraft, onTogglePlan, onToggleUltrathink, onNewSession, onChangeModel }) {
+export function ChatPage({ chat, session, connection, token, onSend, onChangeDraft, onTogglePlan, onToggleUltrathink, onNewSession, onChangeModel, slashStore }) {
   const canSend =
     connection.status === "connected" &&
     chat.composerDraft.trim().length > 0;
@@ -74,6 +74,7 @@ export function ChatPage({ chat, session, connection, token, onSend, onChangeDra
           onToggleUltrathink=${onToggleUltrathink}
           canSend=${canSend}
           busy=${busy}
+          slashStore=${slashStore}
         />
       </div>
     </section>

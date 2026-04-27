@@ -334,11 +334,14 @@ export function SessionsPage({ token }) {
 
   const onResume = (sid) => {
     try {
-      localStorage.setItem("xmcActiveSid", sid);
-      window.history.pushState({}, "", "/chat");
-      window.dispatchEvent(new PopStateEvent("popstate"));
-      toast.info(`已切换到会话 ${sid.slice(0, 12)}`);
+      // Match the store's localStorage key (store.js:62) so app.js
+      // boot()'s readActiveSid picks it up on the next mount.
+      localStorage.setItem("xmc.active_sid", sid);
     } catch (_) {}
+    toast.info(`正在切换到会话 ${sid.slice(0, 12)}…`);
+    // Hard reload so the WS reconnects with the new sid; navigate
+    // to /chat at the same time so the user lands on the right page.
+    window.location.assign("/ui/chat");
   };
 
   const onDeleteConfirm = async () => {
