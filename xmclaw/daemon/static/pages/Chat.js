@@ -16,6 +16,7 @@ const html = window.__xmc.htm.bind(h);
 import { MessageList } from "../components/molecules/MessageList.js";
 import { Composer } from "../components/molecules/Composer.js";
 import { ModelPicker } from "../components/molecules/ModelPicker.js";
+import { ChatSidebar } from "../components/molecules/ChatSidebar.js";
 import { Badge } from "../components/atoms/badge.js";
 
 export function ChatPage({ chat, session, connection, token, onSend, onChangeDraft, onTogglePlan, onToggleUltrathink, onNewSession, onChangeModel, slashStore }) {
@@ -46,7 +47,8 @@ export function ChatPage({ chat, session, connection, token, onSend, onChangeDra
           + 新会话
         </button>
       </div>
-      <div class="xmc-h-chat-frame__inner xmc-chat">
+      <div class="xmc-h-chat-frame__body">
+       <div class="xmc-h-chat-frame__inner xmc-chat">
         <header class="xmc-chat__header">
           <div class="xmc-chat__title">
             <strong>会话</strong>
@@ -76,6 +78,14 @@ export function ChatPage({ chat, session, connection, token, onSend, onChangeDra
           busy=${busy}
           slashStore=${slashStore}
         />
+       </div>
+       <${ChatSidebar}
+         token=${token}
+         activeSid=${session.activeSid}
+         connectionStatus=${connection.status}
+         toolsCount=${0}
+         onNewSession=${onNewSession}
+       />
       </div>
     </section>
   `;

@@ -176,6 +176,9 @@
   .xmc-h-sidebar__close { display: none; }
 }
 
+/* ContextStrip moved to styles/hermes-context.css to keep this file
+   under the 500-line FRONTEND_DESIGN budget. */
+
 /* ── nav (between brand and system actions) ────────────────────────── */
 
 .xmc-h-nav {

@@ -210,10 +210,20 @@
   text-overflow: ellipsis;
 }
 
+/* Frame body splits horizontally: messages+composer on the left,
+   ChatSidebar on the right (B-10c). */
+.xmc-h-chat-frame__body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .xmc-h-chat-frame__inner {
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   background: #0d2626; /* TERMINAL_THEME.background from ChatPage.tsx:64 */
   color: #f0e6d2;      /* TERMINAL_THEME.foreground */

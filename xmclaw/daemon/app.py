@@ -560,6 +560,21 @@ def create_app(
             mcp = config.get("mcp_servers") or {}
             if isinstance(mcp, dict):
                 mcp_servers = list(mcp.keys())
+        # Surface the daemon's currently-active workspace + total
+        # registered roots so the topbar / chat-sidebar can show the
+        # cwd context the agent is running against. Reads state.json
+        # via WorkspaceManager so /api/v2/workspace mutations show
+        # up here on the next call without a daemon restart.
+        active_workspace: str | None = None
+        workspace_count = 0
+        try:
+            from xmclaw.core.workspace import WorkspaceManager
+            ws_state = WorkspaceManager().get()
+            workspace_count = len(ws_state.roots)
+            if ws_state.primary is not None:
+                active_workspace = str(ws_state.primary.path)
+        except Exception:  # noqa: BLE001
+            pass
         return JSONResponse({
             "version": __version__,
             "agent_wired": agent is not None,
@@ -573,6 +588,10 @@ def create_app(
                    and hasattr(agent._tools, "_allowed")
                 else []
             ),
+            "workspace": {
+                "active": active_workspace,
+                "count":  workspace_count,
+            },
         })
 
     # ── /api/v2/events — event-log replay / search (Epic #13) ────

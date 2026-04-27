@@ -268,12 +268,20 @@ class BuiltinTools(ToolProvider):
         enable_bash: bool = True,
         enable_web: bool = True,
         todo_listener: "object | None" = None,
+        workspace_root_provider: "object | None" = None,
     ) -> None:
         self._allowed = (
             [Path(d).resolve() for d in allowed_dirs] if allowed_dirs else None
         )
         self._enable_bash = enable_bash
         self._enable_web = enable_web
+        # Optional callable () -> Path | None returning the daemon's
+        # active workspace root (driven by ~/.xmclaw/state.json via
+        # WorkspaceManager). When the LLM omits an explicit `cwd` arg
+        # on a bash call we fall back to this so commands like `ls` /
+        # `pwd` run inside the project the user is actually working
+        # on, not wherever the daemon was started from.
+        self._workspace_root_provider = workspace_root_provider
         # Per-session todo lists. Key: session_id (falls back to "_default"
         # when a caller doesn't fill in ToolCall.session_id).
         self._todos: dict[str, list[dict[str, str]]] = {}
@@ -480,6 +488,18 @@ class BuiltinTools(ToolProvider):
             return _fail(
                 call, t0, f"'cwd' must be string, got {type(cwd).__name__}",
             )
+        # Workspace fallback: when the LLM doesn't pin cwd, use the
+        # active workspace root from WorkspaceManager so `pwd` / `ls`
+        # land in the user's project, not wherever the daemon launched
+        # from. Best-effort — provider failures fall through to None
+        # which subprocess interprets as the daemon's CWD.
+        if cwd is None and self._workspace_root_provider is not None:
+            try:
+                resolved = self._workspace_root_provider()
+                if resolved is not None:
+                    cwd = str(resolved)
+            except Exception:  # noqa: BLE001
+                cwd = None
         timeout = call.args.get("timeout_seconds", _BASH_DEFAULT_TIMEOUT)
         try:
             timeout = float(timeout)

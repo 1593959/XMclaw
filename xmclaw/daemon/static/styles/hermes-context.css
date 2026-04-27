@@ -1,0 +1,42 @@
+/* XMclaw — sidebar ContextStrip (workspace / model / tools).
+ *
+ * Phase B-10a chrome that surfaces the daemon's active workspace
+ * root + LLM model + tool count just under the brand block. Reads
+ * /api/v2/status; updates every 30s. Mirrors how Hermes shows
+ * current-model context near the top of its sidebar.
+ */
+
+.xmc-h-sidebar__contextstrip {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.5rem 1.25rem 0.6rem;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.xmc-h-sidebar__ctx-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.xmc-h-sidebar__ctx-key {
+  font-size: 0.55rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--midground) 45%, transparent);
+}
+
+.xmc-h-sidebar__ctx-val {
+  flex: 1 1 auto;
+  text-align: right;
+  font-family: var(--theme-font-mono);
+  font-size: 0.7rem;
+  color: var(--midground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0;
+  text-transform: none;
+}

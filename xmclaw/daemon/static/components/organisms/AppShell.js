@@ -23,6 +23,7 @@ const html = window.__xmc.htm.bind(h);
 
 import { Backdrop } from "./Backdrop.js";
 import { THEMES, applyTheme, readActiveTheme, listThemes } from "../../lib/hermes-themes.js";
+import { apiGet } from "../../lib/api.js";
 
 // Lucide-style inline SVG icons. Each takes className for sizing.
 // Direct shape ports of the Hermes nav-icon set so visual size + stroke
@@ -213,9 +214,58 @@ function SidebarSystemActions() {
   `;
 }
 
-export function AppShell({ activePath, brand = "XMclaw", subBrand = "Agent", children }) {
+function _useDaemonStatus(token) {
+  // Lightweight daemon-status hook used by the top of the sidebar to
+  // surface the agent's active workspace + model. Polls every 30s so
+  // a workspace switch via /workspace shows up in chrome without a
+  // page reload. Best-effort — failures keep the last-known value.
+  const [status, setStatus] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    const tick = () => {
+      apiGet("/api/v2/status", token)
+        .then((d) => { if (!cancelled) setStatus(d); })
+        .catch(() => { /* keep prior */ });
+    };
+    tick();
+    const id = setInterval(tick, 30_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [token]);
+  return status;
+}
+
+function _basename(path) {
+  if (!path) return "";
+  const parts = String(path).split(/[\\/]/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : path;
+}
+
+function ContextStrip({ status }) {
+  if (!status) return null;
+  const wsActive = status.workspace?.active;
+  const wsName = wsActive ? _basename(wsActive) : null;
+  return html`
+    <div class="xmc-h-sidebar__contextstrip" title=${wsActive || ""}>
+      <div class="xmc-h-sidebar__ctx-row" title=${wsActive || "(无)"}>
+        <span class="xmc-h-sidebar__ctx-key">workspace</span>
+        <span class="xmc-h-sidebar__ctx-val">${wsName || "—"}</span>
+      </div>
+      <div class="xmc-h-sidebar__ctx-row" title=${status.model || ""}>
+        <span class="xmc-h-sidebar__ctx-key">model</span>
+        <span class="xmc-h-sidebar__ctx-val">${status.model || "—"}</span>
+      </div>
+      <div class="xmc-h-sidebar__ctx-row">
+        <span class="xmc-h-sidebar__ctx-key">tools</span>
+        <span class="xmc-h-sidebar__ctx-val">${(status.tools || []).length}</span>
+      </div>
+    </div>
+  `;
+}
+
+export function AppShell({ activePath, brand = "XMclaw", subBrand = "Agent", token, children }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
+  const status = _useDaemonStatus(token);
 
   // Close on Escape (Hermes parity).
   useEffect(() => {
@@ -277,6 +327,8 @@ export function AppShell({ activePath, brand = "XMclaw", subBrand = "Agent", chi
               <${Icon} name="X" />
             </button>
           </div>
+
+          <${ContextStrip} status=${status} />
 
           <nav class="xmc-h-nav" aria-label="primary navigation">
             <ul class="xmc-h-nav__list">

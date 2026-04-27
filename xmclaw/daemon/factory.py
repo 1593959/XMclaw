@@ -450,6 +450,27 @@ def build_llm_registry_from_config(cfg: dict[str, Any]) -> LLMRegistry:
     return LLMRegistry(profiles=profiles, default_id=default_id)
 
 
+def _workspace_root_provider() -> Any:
+    """Return a callable that yields the daemon's currently-active
+    workspace root (or None when none configured).
+
+    Reads ``~/.xmclaw/state.json`` via :class:`WorkspaceManager` on
+    every call so the AgentLoop's bash tool picks up live changes the
+    user makes via the Web UI Workspace page without a daemon
+    restart. Imported lazily to avoid a hard dep cycle for tests
+    that build BuiltinTools directly.
+    """
+    def _provider():
+        try:
+            from xmclaw.core.workspace import WorkspaceManager
+            mgr = WorkspaceManager()
+            primary = mgr.get().primary
+            return primary.path if primary is not None else None
+        except Exception:  # noqa: BLE001
+            return None
+    return _provider
+
+
 def build_tools_from_config(
     cfg: dict[str, Any],
     *,
@@ -523,6 +544,7 @@ def build_tools_from_config(
         allowed_dirs=allowed_dirs,
         enable_bash=bool(enable_bash),
         enable_web=bool(enable_web),
+        workspace_root_provider=_workspace_root_provider(),
     )
     children: list[ToolProvider] = [builtins]
 
