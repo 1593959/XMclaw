@@ -1,0 +1,320 @@
+/* XMclaw — ModelPickerDialog styles 1:1 (ModelPickerDialog.tsx). */
+
+.xmc-h-mpd {
+  /* Wider than the default xmc-h-dialog (which is 420px). */
+  width: min(720px, 100%);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.xmc-h-mpd__head {
+  position: relative;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.xmc-h-mpd__title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--midground);
+}
+
+.xmc-h-mpd__subtitle {
+  margin: 0.4rem 0 0;
+  font-size: 0.72rem;
+  color: var(--color-muted-foreground);
+  font-family: var(--theme-font-mono);
+}
+
+.xmc-h-mpd__close {
+  position: absolute;
+  top: 0.85rem;
+  right: 0.85rem;
+  width: 1.75rem;
+  height: 1.75rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--color-muted-foreground);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.xmc-h-mpd__close:hover {
+  background: color-mix(in srgb, var(--midground) 8%, transparent);
+  color: var(--midground);
+}
+
+/* ── Searchbar ─────────────────────────────────────────────────── */
+
+.xmc-h-mpd__searchbar {
+  position: relative;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.xmc-h-mpd__searchbar .xmc-h-input {
+  padding-left: 2rem;
+}
+
+.xmc-h-mpd__searchicon {
+  position: absolute;
+  left: 1.7rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 0.85rem;
+  height: 0.85rem;
+  color: color-mix(in srgb, var(--midground) 40%, transparent);
+}
+
+/* ── 2-column body ────────────────────────────────────────────── */
+
+.xmc-h-mpd__cols {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  flex: 1 1 auto;
+  min-height: 280px;
+  max-height: 50vh;
+  overflow: hidden;
+}
+
+@media (max-width: 640px) {
+  .xmc-h-mpd__cols {
+    grid-template-columns: 1fr;
+    grid-template-rows: 200px 1fr;
+  }
+}
+
+.xmc-h-mpd__provcol {
+  border-right: 1px solid var(--color-border);
+  overflow-y: auto;
+}
+
+@media (max-width: 640px) {
+  .xmc-h-mpd__provcol {
+    border-right: none;
+    border-bottom: 1px solid var(--color-border);
+  }
+}
+
+.xmc-h-mpd__col-loading,
+.xmc-h-mpd__col-error,
+.xmc-h-mpd__col-empty {
+  padding: 1rem;
+  font-size: 0.72rem;
+  color: var(--color-muted-foreground);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.xmc-h-mpd__col-error { color: var(--color-destructive); }
+
+.xmc-h-mpd__col-empty { font-style: italic; }
+
+.xmc-h-mpd__spin { animation: hermes-spin 1.4s linear infinite; }
+
+/* ── Provider rows ────────────────────────────────────────────── */
+
+.xmc-h-mpd__provrow {
+  display: flex;
+  width: 100%;
+  text-align: left;
+  padding: 0.6rem 0.75rem;
+  background: transparent;
+  border: none;
+  border-left: 2px solid transparent;
+  color: var(--color-muted-foreground);
+  font-size: 0.78rem;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 120ms, color 120ms, border-color 120ms;
+}
+
+.xmc-h-mpd__provrow:hover {
+  background: color-mix(in srgb, var(--midground) 6%, transparent);
+  color: var(--midground);
+}
+
+.xmc-h-mpd__provrow.is-active {
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  border-left-color: var(--color-primary);
+  color: var(--midground);
+}
+
+.xmc-h-mpd__provrow-main { flex: 1 1 auto; min-width: 0; }
+
+.xmc-h-mpd__provrow-titleline {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.2rem;
+}
+
+.xmc-h-mpd__provrow-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.xmc-h-mpd__provrow-meta {
+  font-family: var(--theme-font-mono);
+  font-size: 0.65rem;
+  color: color-mix(in srgb, var(--color-muted-foreground) 80%, transparent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Current tag ──────────────────────────────────────────────── */
+
+.xmc-h-mpd__current-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.05rem 0.35rem;
+  background: color-mix(in srgb, var(--color-success) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-success) 40%, transparent);
+  border-radius: 999px;
+  color: var(--color-success);
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.xmc-h-mpd__current-tag svg { width: 0.55rem; height: 0.55rem; }
+
+/* ── Model column ─────────────────────────────────────────────── */
+
+.xmc-h-mpd__modelcol {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.xmc-h-mpd__modelcol-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 0.85rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.xmc-h-mpd__modelcol-title {
+  margin: 0;
+  font-size: 0.85rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--midground);
+}
+
+.xmc-h-mpd__modelcol-count {
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  font-family: var(--theme-font-mono);
+}
+
+.xmc-h-mpd__modellist {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 0.5rem;
+}
+
+.xmc-h-mpd__modelrow {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--midground);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 120ms, border-color 120ms;
+  margin-bottom: 0.2rem;
+}
+
+.xmc-h-mpd__modelrow:hover {
+  background: color-mix(in srgb, var(--midground) 6%, transparent);
+}
+
+.xmc-h-mpd__modelrow.is-active {
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+  border-color: color-mix(in srgb, var(--color-primary) 50%, transparent);
+}
+
+.xmc-h-mpd__modelname {
+  flex: 1 1 auto;
+  font-family: var(--theme-font-mono);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.xmc-h-mpd__modelcheck {
+  width: 0.85rem;
+  height: 0.85rem;
+  color: var(--color-primary);
+}
+
+/* ── Footer ───────────────────────────────────────────────────── */
+
+.xmc-h-mpd__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--midground) 3%, transparent);
+  flex-wrap: wrap;
+}
+
+.xmc-h-mpd__persist {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground);
+  cursor: pointer;
+}
+
+.xmc-h-mpd__persist input { cursor: pointer; }
+
+.xmc-h-mpd__foot-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+/* ── Chat-header browse button (opens the dialog) ─────────────── */
+
+.xmc-chat__model-browse {
+  margin-left: 0.25rem;
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--midground) 18%, transparent);
+  background: color-mix(in srgb, var(--midground) 5%, transparent);
+  color: var(--midground);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.xmc-chat__model-browse:hover {
+  background: color-mix(in srgb, var(--midground) 12%, transparent);
+}

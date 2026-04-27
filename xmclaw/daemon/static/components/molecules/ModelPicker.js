@@ -13,11 +13,13 @@ const { useEffect, useState } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
 import { apiGet } from "../../lib/api.js";
+import { ModelPickerDialog } from "./ModelPickerDialog.js";
 
 export function ModelPicker({ token, value, onChange }) {
   const [profiles, setProfiles] = useState([]);
   const [defaultId, setDefaultId] = useState(null);
   const [loaded, setLoaded] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -56,6 +58,20 @@ export function ModelPicker({ token, value, onChange }) {
           </option>
         `)}
       </select>
+      <button
+        type="button"
+        class="xmc-chat__model-browse"
+        onClick=${() => setDialogOpen(true)}
+        title="2-stage modal: provider → model"
+      >…</button>
+      ${dialogOpen
+        ? html`<${ModelPickerDialog}
+            token=${token}
+            currentProfileId=${value || defaultId}
+            onClose=${() => setDialogOpen(false)}
+            onApply=${(sel) => onChange(sel.profile_id)}
+          />`
+        : null}
     </label>
   `;
 }

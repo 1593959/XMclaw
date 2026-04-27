@@ -20,6 +20,7 @@ const html = window.__xmc.htm.bind(h);
 
 import { Button } from "../atoms/button.js";
 import { Badge } from "../atoms/badge.js";
+import { usePopoverApi } from "./SlashPopover.js";
 
 export function Composer({
   value,
@@ -32,7 +33,18 @@ export function Composer({
   canSend,
   busy,
 }) {
+  // SlashPopover takeover. When the popover is visible, ↑/↓/Tab/Esc
+  // are consumed by it; Enter still falls through to the composer's
+  // own send logic so the user can submit "/help" verbatim if they
+  // dismiss the popover with Esc first. Mirrors the Hermes Ink TUI.
+  const slash = usePopoverApi({
+    input: value,
+    onApply: (next) => onChange(next),
+  });
+
   function handleKeyDown(evt) {
+    // Let the SlashPopover claim ↑↓ Tab Esc when it's visible.
+    if (slash.handleKey(evt)) return;
     if (evt.key === "Enter" && !evt.shiftKey && !evt.isComposing) {
       evt.preventDefault();
       if (canSend) onSend();
@@ -58,7 +70,8 @@ export function Composer({
 
   return html`
     <div class="xmc-composer" data-busy=${busy ? "1" : "0"}>
-      <div class="xmc-composer__row">
+      <div class="xmc-composer__row xmc-composer__row--popover-host">
+        ${slash.render()}
         <textarea
           class="xmc-composer__input"
           rows="1"
