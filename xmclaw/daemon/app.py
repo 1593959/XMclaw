@@ -1302,8 +1302,28 @@ def create_app(
                             correlation_id=user_corr,
                         ))
                         await bus.drain()
+                # B-38: handle cancel frame — Stop button in Chat
+                # sends ``{"type": "cancel"}`` while a turn is in
+                # flight. Sets the AgentLoop's per-session event so
+                # the run_turn hop loop bails at the next boundary.
+                # No-op when no turn is running.
+                elif frame.get("type") == "cancel":
+                    if active_agent is not None:
+                        try:
+                            cancelled = active_agent.cancel_session(session_id)
+                        except Exception:  # noqa: BLE001
+                            cancelled = False
+                        await bus.publish(make_event(
+                            session_id=session_id, agent_id="daemon",
+                            type=EventType.SESSION_LIFECYCLE,
+                            payload={
+                                "phase": "cancel_requested",
+                                "active": cancelled,
+                            },
+                        ))
+                        await bus.drain()
                 # Other frame types are silently ignored for now.
-                # Phase 4.2+ will add cancel / ask_user_answer / etc.
+                # Phase 4.2+ will add ask_user_answer / etc.
         except WebSocketDisconnect:
             pass
         finally:

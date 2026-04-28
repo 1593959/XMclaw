@@ -29,6 +29,7 @@ export function Composer({
   value,
   onChange,
   onSend,
+  onCancel,
   planMode,
   onTogglePlan,
   ultrathink,
@@ -149,15 +150,25 @@ export function Composer({
         >
           ${listening ? "🔴" : "🎙"}
         </button>
-        <${Button}
-          variant="primary"
-          size="md"
-          disabled=${!canSend}
-          onClick=${() => canSend && onSend()}
-          aria-label="send"
-        >
-          发送
-        </${Button}>
+        ${busy && onCancel
+          ? html`<${Button}
+              variant="danger"
+              size="md"
+              onClick=${() => onCancel()}
+              aria-label="stop"
+              title="停止当前回答（在 hop 边界生效）"
+            >
+              ⏹ 停止
+            </${Button}>`
+          : html`<${Button}
+              variant="primary"
+              size="md"
+              disabled=${!canSend}
+              onClick=${() => canSend && onSend()}
+              aria-label="send"
+            >
+              发送
+            </${Button}>`}
       </div>
       <div class="xmc-composer__toolbar">
         <button

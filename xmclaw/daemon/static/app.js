@@ -186,6 +186,22 @@ function setLlmProfile(profileId) {
   }));
 }
 
+// B-38: send a cancel frame so the daemon's WS handler signals the
+// running run_turn to bail at its next hop boundary. No-op when no
+// turn is in flight (the server happily processes a stray cancel).
+function cancelComposer() {
+  if (!wsHandle) {
+    toast.error("WS 未连接");
+    return;
+  }
+  const result = wsHandle.send({ type: "cancel" });
+  if (result && !result.ok) {
+    toast.error("取消请求失败：" + (result.reason || "未知"));
+  } else {
+    toast.info("已请求停止当前回答");
+  }
+}
+
 function changeDraft(value) {
   store.setState((s) => ({ chat: { ...s.chat, composerDraft: value } }));
 }
@@ -264,6 +280,7 @@ const routes = {
       connection=${state.connection}
       token=${state.auth.token}
       onSend=${sendComposer}
+      onCancel=${cancelComposer}
       onChangeDraft=${changeDraft}
       onTogglePlan=${togglePlan}
       onToggleUltrathink=${toggleUltrathink}

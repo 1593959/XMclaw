@@ -78,6 +78,14 @@ class PluginManifest:
       (mirrors QwenPaw's tunnel/cloudflare.py wiring)
     * ``config_schema`` — JSON-shape for required config keys (e.g.
       ``{"app_id": "string", "app_secret": "secret"}``)
+    * ``implementation_status`` — B-38 honesty flag. ``"ready"`` =
+      ``adapter_factory_path`` actually resolves to a working class;
+      ``"scaffold"`` = manifest exists but the adapter module is a
+      stub waiting on SDK choice / credentials. UI grays scaffold
+      entries; ``discover()`` filters to ready-only by default.
+      Without this flag the registry was advertising 5 phantom
+      Chinese-IM channels (feishu/dingtalk/wecom/weixin/telegram —
+      all manifest-only as of B-37) as if they were ready to enable.
     """
     id: str
     label: str
@@ -85,3 +93,4 @@ class PluginManifest:
     requires: tuple[str, ...] = ()
     needs_tunnel: bool = False
     config_schema: dict[str, Any] = field(default_factory=dict)
+    implementation_status: str = "ready"

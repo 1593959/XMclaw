@@ -27,7 +27,10 @@ def test_canonical_ids_match_dev_plan():
 
 
 def test_discover_returns_all_five_manifests():
-    manifests = discover()
+    # B-38: default discover() filters scaffolds; pass
+    # ``include_scaffolds=True`` to get the full Phase 5 set. All five
+    # are scaffold-only as of B-37 (no adapter modules wired yet).
+    manifests = discover(include_scaffolds=True)
     assert set(manifests.keys()) == set(CHANNEL_IDS)
     for cid, m in manifests.items():
         assert isinstance(m, PluginManifest)
@@ -38,13 +41,20 @@ def test_discover_returns_all_five_manifests():
         assert isinstance(m.config_schema, dict)
 
 
+def test_default_discover_filters_scaffolds():
+    """B-38: Phantom channel filter — the 5 scaffolds-only manifests
+    should NOT show up in the default discover(). The daemon was
+    advertising 5 phantom Chinese-IM channels as ready before this fix."""
+    assert discover() == {}
+
+
 def test_feishu_does_not_need_tunnel():
-    m = discover()["feishu"]
+    m = discover(include_scaffolds=True)["feishu"]
     assert m.needs_tunnel is False  # lark-oapi WS long-poll
 
 
 def test_wecom_needs_tunnel():
-    m = discover()["wecom"]
+    m = discover(include_scaffolds=True)["wecom"]
     assert m.needs_tunnel is True
 
 

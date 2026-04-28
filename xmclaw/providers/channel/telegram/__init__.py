@@ -18,4 +18,5 @@ MANIFEST = PluginManifest(
         "mode": "string (poll | webhook, default poll)",
         "public_url": "string (only when mode=webhook)",
     },
+    implementation_status="scaffold",  # B-38: adapter module not yet implemented
 )

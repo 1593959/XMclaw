@@ -18,4 +18,5 @@ MANIFEST = PluginManifest(
         "relay_kind": "string (wxauto | wechatferry)",
         "config": "dict (relay-specific config)",
     },
+    implementation_status="scaffold",  # B-38: adapter module not yet implemented
 )

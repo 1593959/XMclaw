@@ -27,9 +27,17 @@ CHANNEL_IDS: tuple[str, ...] = (
 )
 
 
-def discover() -> dict[str, PluginManifest]:
+def discover(*, include_scaffolds: bool = False) -> dict[str, PluginManifest]:
     """Return ``{channel_id: PluginManifest}`` for every package that
-    exposes a valid ``MANIFEST``. Skips broken packages with a warning."""
+    exposes a valid ``MANIFEST``. Skips broken packages with a warning.
+
+    B-38: by default, scaffold-only manifests (those whose
+    ``implementation_status != "ready"``) are filtered out so the
+    daemon doesn't advertise phantom channels in the UI. Pass
+    ``include_scaffolds=True`` to get the raw set — useful for the
+    Channels page that wants to render scaffolds as grayed-out
+    "coming soon" entries.
+    """
     out: dict[str, PluginManifest] = {}
     for cid in CHANNEL_IDS:
         try:
@@ -37,14 +45,25 @@ def discover() -> dict[str, PluginManifest]:
         except ImportError:
             continue
         manifest = getattr(mod, "MANIFEST", None)
-        if isinstance(manifest, PluginManifest):
-            out[manifest.id] = manifest
+        if not isinstance(manifest, PluginManifest):
+            continue
+        if (not include_scaffolds
+                and getattr(manifest, "implementation_status", "ready") != "ready"):
+            continue
+        out[manifest.id] = manifest
     return out
 
 
 def needs_tunnel(enabled_ids: Iterable[str]) -> bool:
-    """Should the daemon auto-start cloudflared given this enable list?"""
-    manifests = discover()
+    """Should the daemon auto-start cloudflared given this enable list?
+
+    Consults scaffolds too — the tunnel decision happens before
+    adapter import, and configured-but-scaffold channels still
+    declare their tunnel needs in the manifest. Filtering scaffolds
+    out of the decision would mean re-enabling a channel after its
+    adapter ships would silently miss the tunnel auto-start.
+    """
+    manifests = discover(include_scaffolds=True)
     for cid in enabled_ids:
         m = manifests.get(cid)
         if m is not None and m.needs_tunnel:

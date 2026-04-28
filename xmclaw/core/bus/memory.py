@@ -3,7 +3,11 @@
 Real implementation (not stub): small enough to be correct on first write,
 provides a working vehicle for the `xmclaw v2 ping` end-to-end demo.
 
-Persistence and replay live in ``sqlite.py`` / ``replay.py`` (stubs for now).
+Persistence and replay live in ``sqlite.py`` (``SqliteEventBus`` —
+the real durable bus the daemon runs) and ``replay.py`` (the
+``replay()`` async iterator the CLI's ``xmclaw replay <session>``
+uses). Both are full implementations as of Phase 1; the original
+"stubs for now" note is no longer accurate.
 """
 from __future__ import annotations
 

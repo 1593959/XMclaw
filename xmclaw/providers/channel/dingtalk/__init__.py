@@ -21,4 +21,5 @@ MANIFEST = PluginManifest(
         "client_secret": "secret (required)",
         "robot_code": "string (required for AI-card replies)",
     },
+    implementation_status="scaffold",  # B-38: adapter module not yet implemented
 )

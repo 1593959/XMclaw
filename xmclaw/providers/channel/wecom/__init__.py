@@ -21,4 +21,5 @@ MANIFEST = PluginManifest(
         "encoding_aes_key": "secret (webhook crypto)",
         "public_url": "string (optional, auto via cloudflared if absent)",
     },
+    implementation_status="scaffold",  # B-38: adapter module not yet implemented
 )

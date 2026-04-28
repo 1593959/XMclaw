@@ -37,6 +37,7 @@ objects produced by the provider's translator. A response whose
 """
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -469,6 +470,11 @@ class AgentLoop:
         # every subsequent turn.
         self._skill_consecutive_errors: dict[str, int] = {}
         self._skill_auto_disable_threshold = 3
+        # B-38: per-session cancellation flag. WS handler sets this
+        # via ``cancel_session`` when the user clicks Stop in Chat;
+        # ``run_turn`` checks at hop boundaries (cheap, doesn't
+        # interrupt in-flight LLM calls but escapes tool-loop stalls).
+        self._cancel_events: dict[str, "asyncio.Event"] = {}
         self._max_hops = max_hops
         self._agent_id = agent_id
         self._cost_tracker = cost_tracker
@@ -526,8 +532,20 @@ class AgentLoop:
         """Drop a session's conversation history. Called by the WS gateway
         on SESSION_LIFECYCLE destroy, or by a ``/reset`` user intent."""
         self._histories.pop(session_id, None)
+        self._cancel_events.pop(session_id, None)
         if self._session_store is not None:
             self._session_store.delete(session_id)
+
+    def cancel_session(self, session_id: str) -> bool:
+        """B-38: signal the in-flight ``run_turn`` for this session to
+        bail out at the next hop boundary. Idempotent: setting an
+        already-set event is fine. Returns True when an event existed
+        (a turn was actually running), False otherwise."""
+        ev = self._cancel_events.get(session_id)
+        if ev is None:
+            return False
+        ev.set()
+        return True
 
     async def _detect_skill_invocations(
         self,
@@ -1063,6 +1081,30 @@ class AgentLoop:
         *, user_correlation_id: str | None = None,
         llm_profile_id: str | None = None,
     ) -> AgentTurnResult:
+        # B-38: register a fresh per-session cancel event. Cleared via
+        # ``cancel_session`` (set by the WS handler when the user clicks
+        # Stop in Chat). Checked at hop boundaries — won't interrupt an
+        # in-flight LLM stream, but will break out of any tool-call
+        # loop that's spinning between hops.
+        cancel_event = asyncio.Event()
+        self._cancel_events[session_id] = cancel_event
+        try:
+            return await self._run_turn_inner(
+                session_id=session_id,
+                user_message=user_message,
+                user_correlation_id=user_correlation_id,
+                llm_profile_id=llm_profile_id,
+                cancel_event=cancel_event,
+            )
+        finally:
+            self._cancel_events.pop(session_id, None)
+
+    async def _run_turn_inner(
+        self, *, session_id: str, user_message: str,
+        user_correlation_id: str | None,
+        llm_profile_id: str | None,
+        cancel_event: asyncio.Event,
+    ) -> AgentTurnResult:
         events: list[BehavioralEvent] = []
         tool_calls_made: list[dict[str, Any]] = []
         llm = self._resolve_llm(llm_profile_id)
@@ -1253,6 +1295,23 @@ class AgentLoop:
 
         for hop in range(self._max_hops):
             hop_corr = f"{turn_uuid}-{hop}"
+            # B-38: cancel fence — if the user clicked Stop, bail out
+            # cleanly before doing more LLM/tool work. Checked AT
+            # HOP BOUNDARIES (cheap, doesn't interrupt in-flight
+            # streams). The event is cleared by run_turn's outer
+            # try/finally so subsequent turns start fresh.
+            if cancel_event.is_set():
+                await publish(EventType.ANTI_REQ_VIOLATION, {
+                    "message": "turn cancelled by user",
+                    "kind": "cancelled",
+                    "hop": hop,
+                })
+                return AgentTurnResult(
+                    ok=False, text="", hops=hop,
+                    tool_calls=tool_calls_made,
+                    events=events,
+                    error="cancelled",
+                )
             # Anti-req #6: check the hard budget cap BEFORE the LLM call.
             # If we've already exceeded, abort with an
             # ANTI_REQ_VIOLATION event — never swallow, never partial.

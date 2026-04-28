@@ -219,12 +219,18 @@ export function applyEvent(chat, envelope) {
       // Always render as an inline system bubble so the user can see why a
       // turn was blocked.
       const id = "antireq_" + corr;
+      // B-38: a violation event terminates the turn — clear
+      // pendingAssistantId so the Stop button flips back to Send and
+      // the streaming spinner stops. Without this clear, after a
+      // cancel the UI stays in "busy" forever even though run_turn
+      // already returned.
       return {
         ...chat,
+        pendingAssistantId: null,
         messages: chat.messages.concat({
           id,
           role: "system",
-          content: "Blocked: " + (payload.reason || payload.kind || "anti-requirement violation"),
+          content: "Blocked: " + (payload.reason || payload.message || payload.kind || "anti-requirement violation"),
           status: "error",
           ts,
         }),
