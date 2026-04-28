@@ -147,6 +147,57 @@ class BuiltinFileMemoryProvider(MemoryProvider):
         """No-op — the file format doesn't have stable item ids
         suitable for direct deletion. Use the Memory page to edit."""
 
+    async def sync_turn(
+        self, *, session_id: str, agent_id: str,
+        user_content: str, assistant_content: str,
+    ) -> None:
+        """B-40 (CoPaw parity): append a one-line entry to the daily
+        episodic log at ``<persona_dir>/memory/YYYY-MM-DD.md``.
+
+        Gives the agent a per-day chronology distinct from the
+        always-summarised MEMORY.md (which gets char-capped + LRU-
+        evicted). Daily logs are kept indefinitely — pruning is the
+        agent's responsibility (future Auto-Dream cron will compact
+        old days into MEMORY.md). The base class default ``sync_turn``
+        wrote to MemoryItem-via-put which appended bullets to
+        MEMORY.md; that double-tapped the curated file with raw
+        turn text. We override to keep MEMORY.md clean (curated
+        only) and put episodic detail in the daily log.
+        """
+        u = (user_content or "").strip().replace("\n", " ")
+        a = (assistant_content or "").strip().replace("\n", " ")
+        if not u and not a:
+            return
+        # Trim to keep daily log readable.
+        if len(u) > 400:
+            u = u[:397] + "..."
+        if len(a) > 400:
+            a = a[:397] + "..."
+        pdir = self._persona_dir()
+        log_dir = pdir / "memory"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        date = time.strftime("%Y-%m-%d")
+        ts = time.strftime("%H:%M:%S")
+        log_path = log_dir / f"{date}.md"
+        header = f"# 对话日志 {date}\n\n"
+        entry = (
+            f"## {ts} · session={session_id[-8:] if session_id else '?'}\n\n"
+            f"**User:** {u}\n\n"
+            f"**Assistant:** {a}\n\n"
+        )
+        try:
+            if log_path.is_file():
+                existing = log_path.read_text(encoding="utf-8", errors="replace")
+                # Keep existing content; append new entry below.
+                if not existing.startswith("# "):
+                    existing = header + existing
+                log_path.write_text(existing.rstrip() + "\n\n" + entry, encoding="utf-8")
+            else:
+                log_path.write_text(header + entry, encoding="utf-8")
+        except OSError:
+            # Disk-full / permission — best-effort, never block the turn.
+            pass
+
     # ── extended hooks (used by MemoryManager) ───────────────────
 
     def system_prompt_block(self) -> str:

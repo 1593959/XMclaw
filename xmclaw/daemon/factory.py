@@ -1065,6 +1065,26 @@ def build_agent_from_config(
             # block agent boot
             pass
 
+    # B-40: wire the MemoryManager into BuiltinTools so the unified
+    # ``memory_search`` tool surfaces. Walk the composite chain to
+    # find the BuiltinTools instance — it might be inside a
+    # CompositeToolProvider added by the memory-bridge step above.
+    if memory_arg is not None and tools is not None:
+        from xmclaw.providers.tool.builtin import BuiltinTools
+        from xmclaw.providers.tool.composite import CompositeToolProvider
+
+        def _walk(p):
+            if isinstance(p, BuiltinTools):
+                yield p
+            elif isinstance(p, CompositeToolProvider):
+                for child in getattr(p, "_children", []):
+                    yield from _walk(child)
+        for bt in _walk(tools):
+            try:
+                bt.set_memory_manager(memory_arg)
+            except Exception:  # noqa: BLE001
+                pass
+
     # B-31: optional token-based compression gate. When set in config
     # ( ``evolution.compression.token_cap`` ), AgentLoop fires
     # compression once the kept history's char/4 estimate crosses

@@ -357,6 +357,44 @@ _SCHEDULE_FOLLOWUP_SPEC = ToolSpec(
     },
 )
 
+_MEMORY_SEARCH_SPEC = ToolSpec(
+    name="memory_search",
+    description=(
+        "Search the agent's long-term memory across every wired "
+        "backend (persona files MEMORY.md/USER.md, sqlite-vec vector "
+        "store, optional cloud providers like hindsight/supermemory/"
+        "mem0). Use this BEFORE answering questions about prior "
+        "decisions, user preferences, names/dates the user mentioned, "
+        "or anything that might already be on disk from earlier "
+        "sessions.\n\n"
+        "Hits are merged across providers — the external (vector) "
+        "provider's results come first when present, builtin "
+        "(keyword) bullets fill in. Each row carries the originating "
+        "provider in metadata so you can tell."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Natural-language query. CJK / Latin "
+                "both fine.",
+            },
+            "k": {
+                "type": "integer",
+                "description": "Top-k hits per provider (default 5, max 20).",
+            },
+            "layer": {
+                "type": "string",
+                "enum": ["short", "working", "long"],
+                "description": "Memory layer (default 'long').",
+            },
+        },
+        "required": ["query"],
+    },
+)
+
+
 _SQLITE_QUERY_SPEC = ToolSpec(
     name="sqlite_query",
     description=(
@@ -507,6 +545,7 @@ class BuiltinTools(ToolProvider):
         workspace_root_provider: "object | None" = None,
         persona_dir_provider: "object | None" = None,
         persona_writeback: "object | None" = None,
+        memory_manager: "object | None" = None,
     ) -> None:
         self._allowed = (
             [Path(d).resolve() for d in allowed_dirs] if allowed_dirs else None
@@ -539,6 +578,23 @@ class BuiltinTools(ToolProvider):
         # ``def todo_listener(session_id, items) -> None``. Keeping it as
         # a plain callable avoids coupling this module to the bus type.
         self._todo_listener = todo_listener
+        # B-40: optional MemoryManager handle so the unified
+        # ``memory_search`` tool can fan a query across every wired
+        # memory provider (builtin file + sqlite_vec / hindsight /
+        # supermemory / mem0). When None, memory_search is hidden
+        # from list_tools — the agent doesn't get a tool that can't
+        # do anything useful.
+        self._memory_manager = memory_manager
+
+    def set_memory_manager(self, mgr: "object | None") -> None:
+        """Wire (or clear) the MemoryManager AFTER construction.
+
+        BuiltinTools is built before the MemoryManager in
+        ``factory.py``, so the manager has to be patched in
+        post-construction. Surfaces / hides ``memory_search`` from
+        ``list_tools`` accordingly.
+        """
+        self._memory_manager = mgr
 
     def list_tools(self) -> list[ToolSpec]:
         specs = [_FILE_READ_SPEC, _FILE_WRITE_SPEC, _APPLY_PATCH_SPEC, _LIST_DIR_SPEC]
@@ -561,6 +617,11 @@ class BuiltinTools(ToolProvider):
         # (fresh install), in which case the tool reports that
         # cleanly.
         specs.append(_SQLITE_QUERY_SPEC)
+        # B-40: unified memory_search across every wired provider.
+        # Only advertised when a MemoryManager is wired — without one
+        # the tool would be a no-op.
+        if self._memory_manager is not None:
+            specs.append(_MEMORY_SEARCH_SPEC)
         return specs
 
     async def invoke(self, call: ToolCall) -> ToolResult:
@@ -606,6 +667,10 @@ class BuiltinTools(ToolProvider):
                 return await self._schedule_followup(call, t0)
             if call.name == "sqlite_query":
                 return await self._sqlite_query(call, t0)
+            if call.name == "memory_search":
+                if self._memory_manager is None:
+                    return _fail(call, t0, "memory_search not configured (no MemoryManager wired)")
+                return await self._memory_search(call, t0)
             return _fail(call, t0, f"unknown tool: {call.name!r}")
         except PermissionError as exc:
             return _fail(call, t0, f"permission denied: {exc}")
@@ -1061,6 +1126,56 @@ class BuiltinTools(ToolProvider):
                 "schedule": saved.schedule,
                 "next_run_at": saved.next_run_at,
                 "run_once": run_once,
+            },
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _memory_search(self, call: ToolCall, t0: float) -> ToolResult:
+        """B-40: unified memory_search — fan a query across every wired
+        memory provider via MemoryManager.query.
+
+        Returns up to k hits per provider, each row carrying its
+        originating provider in metadata.provider so the agent can
+        tell vector hits from persona-bullet keyword hits.
+        """
+        query = str(call.args.get("query") or "").strip()
+        if not query:
+            return _fail(call, t0, "missing 'query'")
+        try:
+            k = int(call.args.get("k") or 5)
+        except (TypeError, ValueError):
+            k = 5
+        k = max(1, min(k, 20))
+        layer = str(call.args.get("layer") or "long")
+        if layer not in ("short", "working", "long"):
+            return _fail(call, t0, f"unknown layer: {layer!r}")
+
+        try:
+            hits = await self._memory_manager.query(  # type: ignore[union-attr]
+                layer, text=query, k=k,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _fail(call, t0, f"memory_search failed: {exc}")
+
+        rows: list[dict[str, Any]] = []
+        for h in hits[:k * 4]:  # 4 = max possible providers
+            md = dict(getattr(h, "metadata", None) or {})
+            rows.append({
+                "id": getattr(h, "id", ""),
+                "text": (getattr(h, "text", "") or "")[:400],
+                "ts": getattr(h, "ts", 0.0),
+                "provider": md.get("provider") or md.get("backend") or md.get("file") or "?",
+                "metadata": md,
+            })
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "query": query,
+                "layer": layer,
+                "k": k,
+                "rows": rows,
+                "row_count": len(rows),
             },
             side_effects=(),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
