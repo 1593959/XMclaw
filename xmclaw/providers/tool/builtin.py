@@ -889,6 +889,13 @@ class BuiltinTools(ToolProvider):
         # ``def todo_listener(session_id, items) -> None``. Keeping it as
         # a plain callable avoids coupling this module to the bus type.
         self._todo_listener = todo_listener
+        # B-63: per-path async locks for read-modify-write file ops
+        # (persona / notes / journal append). Without this, two
+        # concurrent ``remember`` calls (e.g. agent + dream cron, or
+        # multi-agent setup) would both read the same ``existing``
+        # snapshot then both write — the second's append clobbers
+        # the first. Lazy-initialised by str(path).
+        self._fs_locks: dict[str, asyncio.Lock] = {}
         # B-40: optional MemoryManager handle so the unified
         # ``memory_search`` tool can fan a query across every wired
         # memory provider (builtin file + sqlite_vec / hindsight /
@@ -2332,51 +2339,55 @@ class BuiltinTools(ToolProvider):
             return _fail(call, t0, f"could not create persona dir: {exc}")
         target = pdir / canonical
 
-        try:
-            if mode == "delete":
-                if target.is_file():
-                    target.unlink()
-                    written_size = 0
-                    summary = f"deleted {canonical}"
-                else:
-                    summary = f"{canonical} did not exist (no-op)"
-                    written_size = 0
-            elif mode == "replace":
-                content = call.args.get("content")
-                if not isinstance(content, str):
-                    return _fail(call, t0, "'content' required for replace mode")
-                target.write_text(content, encoding="utf-8")
-                written_size = len(content.encode("utf-8"))
-                summary = f"replaced {canonical} ({written_size} bytes)"
-            else:  # append_section
-                section = call.args.get("section")
-                content = call.args.get("content")
-                if not isinstance(section, str) or not section.strip():
-                    return _fail(call, t0, "'section' required for append_section mode")
-                if not isinstance(content, str) or not content:
-                    return _fail(call, t0, "'content' required for append_section mode")
-                section_clean = section.strip().lstrip("#").strip()
-                section_header = f"## {section_clean}"
-                existing = (
-                    target.read_text(encoding="utf-8") if target.is_file() else ""
-                )
-                new_text = _append_under_section(
-                    existing,
-                    section_header=section_header,
-                    bullet=content,  # caller decides whether to lead with "-"
-                    placeholder_title=f"{canonical} — agent-curated",
-                )
-                # B-25 char cap (Hermes parity). Only enforced for
-                # the auto-curated files (MEMORY.md / USER.md) where
-                # bloat from many reflection runs is the failure mode.
-                cap = PERSONA_CHAR_CAPS.get(canonical)
-                if cap is not None and len(new_text) > cap:
-                    new_text = enforce_char_cap(new_text, cap)
-                target.write_text(new_text, encoding="utf-8")
-                written_size = len(new_text.encode("utf-8"))
-                summary = f"appended to {canonical} under {section_header}"
-        except OSError as exc:
-            return _fail(call, t0, f"write failed: {exc}")
+        # B-63: serialise concurrent writes through the per-path lock
+        # so an in-flight append_section (read-modify-write) doesn't
+        # race with a sibling delete or replace.
+        async with self._fs_lock(target):
+            try:
+                if mode == "delete":
+                    if target.is_file():
+                        target.unlink()
+                        written_size = 0
+                        summary = f"deleted {canonical}"
+                    else:
+                        summary = f"{canonical} did not exist (no-op)"
+                        written_size = 0
+                elif mode == "replace":
+                    content = call.args.get("content")
+                    if not isinstance(content, str):
+                        return _fail(call, t0, "'content' required for replace mode")
+                    target.write_text(content, encoding="utf-8")
+                    written_size = len(content.encode("utf-8"))
+                    summary = f"replaced {canonical} ({written_size} bytes)"
+                else:  # append_section
+                    section = call.args.get("section")
+                    content = call.args.get("content")
+                    if not isinstance(section, str) or not section.strip():
+                        return _fail(call, t0, "'section' required for append_section mode")
+                    if not isinstance(content, str) or not content:
+                        return _fail(call, t0, "'content' required for append_section mode")
+                    section_clean = section.strip().lstrip("#").strip()
+                    section_header = f"## {section_clean}"
+                    existing = (
+                        target.read_text(encoding="utf-8") if target.is_file() else ""
+                    )
+                    new_text = _append_under_section(
+                        existing,
+                        section_header=section_header,
+                        bullet=content,  # caller decides whether to lead with "-"
+                        placeholder_title=f"{canonical} — agent-curated",
+                    )
+                    # B-25 char cap (Hermes parity). Only enforced for
+                    # the auto-curated files (MEMORY.md / USER.md) where
+                    # bloat from many reflection runs is the failure mode.
+                    cap = PERSONA_CHAR_CAPS.get(canonical)
+                    if cap is not None and len(new_text) > cap:
+                        new_text = enforce_char_cap(new_text, cap)
+                    target.write_text(new_text, encoding="utf-8")
+                    written_size = len(new_text.encode("utf-8"))
+                    summary = f"appended to {canonical} under {section_header}"
+            except OSError as exc:
+                return _fail(call, t0, f"write failed: {exc}")
 
         # Sidecar log so the Memory UI can show "agent wrote this" badges.
         snippet = ""
@@ -2441,6 +2452,10 @@ class BuiltinTools(ToolProvider):
         We don't try to be too clever about merging — duplicate entries
         on different days are fine (the date prefix shows when it was
         learned). Heavy de-dup would risk dropping useful context.
+
+        B-63: the read-modify-write block is serialised by a per-path
+        asyncio.Lock so concurrent agent + dream cron + multi-agent
+        ``remember`` calls don't race + lose appends.
         """
         from datetime import date as _date
         try:
@@ -2456,38 +2471,39 @@ class BuiltinTools(ToolProvider):
             return _fail(call, t0, f"could not create persona dir: {exc}")
         target = pdir / basename
 
-        try:
-            existing = (
-                target.read_text(encoding="utf-8") if target.is_file() else ""
-            )
-        except OSError as exc:
-            return _fail(call, t0, f"read failed: {exc}")
-
-        today = _date.today().isoformat()
-        bullet = f"- {today}: {entry}"
-        section_header = f"## {section}"
-
-        new_text = _append_under_section(
-            existing,
-            section_header=section_header,
-            bullet=bullet,
-            placeholder_title=placeholder_title,
-        )
-
-        # B-25: enforce char cap (LRU eviction) — Hermes parity. Stops
-        # MEMORY.md / USER.md from growing unbounded across many
-        # reflection runs. Caps from PERSONA_CHAR_CAPS.
-        cap = PERSONA_CHAR_CAPS.get(basename)
         evicted = 0
-        if cap is not None and len(new_text) > cap:
-            before_len = len(new_text)
-            new_text = enforce_char_cap(new_text, cap)
-            evicted = before_len - len(new_text)
+        async with self._fs_lock(target):
+            try:
+                existing = (
+                    target.read_text(encoding="utf-8") if target.is_file() else ""
+                )
+            except OSError as exc:
+                return _fail(call, t0, f"read failed: {exc}")
 
-        try:
-            target.write_text(new_text, encoding="utf-8")
-        except OSError as exc:
-            return _fail(call, t0, f"write failed: {exc}")
+            today = _date.today().isoformat()
+            bullet = f"- {today}: {entry}"
+            section_header = f"## {section}"
+
+            new_text = _append_under_section(
+                existing,
+                section_header=section_header,
+                bullet=bullet,
+                placeholder_title=placeholder_title,
+            )
+
+            # B-25: enforce char cap (LRU eviction) — Hermes parity. Stops
+            # MEMORY.md / USER.md from growing unbounded across many
+            # reflection runs. Caps from PERSONA_CHAR_CAPS.
+            cap = PERSONA_CHAR_CAPS.get(basename)
+            if cap is not None and len(new_text) > cap:
+                before_len = len(new_text)
+                new_text = enforce_char_cap(new_text, cap)
+                evicted = before_len - len(new_text)
+
+            try:
+                target.write_text(new_text, encoding="utf-8")
+            except OSError as exc:
+                return _fail(call, t0, f"write failed: {exc}")
 
         # Sidecar log: this write came from the agent (vs. user via
         # Memory page). Powers the diff badge in the UI.
@@ -2517,6 +2533,23 @@ class BuiltinTools(ToolProvider):
         )
 
     # ── allowlist ─────────────────────────────────────────────────────
+
+    def _fs_lock(self, path: Path) -> asyncio.Lock:
+        """B-63: get or create the asyncio.Lock for a given path.
+
+        Keeping locks in a process-wide dict keyed by str(path) means
+        TWO BuiltinTools instances would each have their own dict —
+        which is fine because each is also the only writer in its
+        own process. Cross-process concurrency (multiple daemon
+        instances on the same workspace) is out of scope; the user
+        runs one daemon per machine.
+        """
+        key = str(path)
+        lock = self._fs_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._fs_locks[key] = lock
+        return lock
 
     def _check_allowed(self, path: Path) -> None:
         if self._allowed is None:
