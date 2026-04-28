@@ -159,6 +159,11 @@ function AutoEvoPanel({ token }) {
               ${(learnedSkills || []).slice(0, 20).map((s) => {
                 const triggers = (s.triggers || []).slice(0, 4);
                 const invokes = s.invocation_count || 0;
+                const outcomes = s.outcomes || { success: 0, partial: 0, error: 0 };
+                const totalOut = (outcomes.success || 0) + (outcomes.partial || 0) + (outcomes.error || 0);
+                const successRate = totalOut > 0
+                  ? Math.round((outcomes.success || 0) * 100 / totalOut)
+                  : null;
                 const isDisabled = !!s.disabled;
                 const onToggle = async () => {
                   try {
@@ -185,6 +190,12 @@ function AutoEvoPanel({ token }) {
                         ${invokes > 0
                           ? html`<span class="xmc-h-badge xmc-h-badge--success" title="agent 实际调用过的次数（B-29 启用后）">⚡ ${invokes}</span>`
                           : html`<span class="xmc-h-badge xmc-h-badge--muted" title="尚未观察到调用">0 用</span>`}
+                        ${successRate !== null
+                          ? html`<span
+                              class=${"xmc-h-badge xmc-h-badge--" + (successRate >= 80 ? "success" : successRate >= 50 ? "warn" : "error")}
+                              title=${`${outcomes.success || 0} 成功 / ${outcomes.partial || 0} 部分 / ${outcomes.error || 0} 失败 (B-35)`}
+                            >${successRate}% ✓</span>`
+                          : null}
                         <code style="font-size:.7rem;color:var(--xmc-fg-muted)">${s.skill_id}</code>
                         <button
                           class="xmc-h-btn xmc-h-btn--ghost"

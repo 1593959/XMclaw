@@ -81,6 +81,16 @@ class EventType(str, Enum):
     # auto_repair_v9 can be compared with v8 by real invocation rate.
     SKILL_INVOKED = "skill_invoked"
 
+    # B-35: emitted alongside SKILL_INVOKED with a verdict for the
+    # whole turn the skill rode. Payload:
+    # {"skill_id": str, "session_id": str,
+    #  "verdict": "success" | "partial" | "error",
+    #  "hops": int, "tool_errors": int}
+    # Closes the evolution feedback loop: invocation count alone
+    # treats every fire as equal; the outcome lets the optimizer
+    # weight skills by whether they actually helped vs broke turns.
+    SKILL_OUTCOME = "skill_outcome"
+
     # B-33: emitted when AgentLoop._persist_history compresses older
     # turns into a synthetic system summary. Payload:
     # {"session_id": str,

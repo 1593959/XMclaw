@@ -260,8 +260,12 @@ async def learned_skills(include_disabled: bool = False) -> JSONResponse:
     loader = default_learned_skills_loader()
     skills = loader.list_for_api(include_disabled=include_disabled)
 
-    # Aggregate skill invocation counts from the events DB.
+    # Aggregate skill invocation counts + B-35 outcome verdicts from
+    # the events DB. One DB pass for both event types — a single scan
+    # of the last N events covers invocation_count, success_count,
+    # error_count, partial_count.
     invocation_counts: dict[str, int] = {}
+    verdict_counts: dict[str, dict[str, int]] = {}
     try:
         import sqlite3
         from xmclaw.utils.paths import data_dir
@@ -271,8 +275,9 @@ async def learned_skills(include_disabled: bool = False) -> JSONResponse:
             con.row_factory = sqlite3.Row
             try:
                 rows = con.execute(
-                    "SELECT payload FROM events WHERE type='skill_invoked' "
-                    "ORDER BY ts DESC LIMIT 1000"
+                    "SELECT type, payload FROM events "
+                    "WHERE type IN ('skill_invoked', 'skill_outcome') "
+                    "ORDER BY ts DESC LIMIT 2000"
                 ).fetchall()
                 for r in rows:
                     try:
@@ -280,8 +285,18 @@ async def learned_skills(include_disabled: bool = False) -> JSONResponse:
                     except (ValueError, TypeError):
                         continue
                     sid = p.get("skill_id")
-                    if sid:
+                    if not sid:
+                        continue
+                    if r["type"] == "skill_invoked":
                         invocation_counts[sid] = invocation_counts.get(sid, 0) + 1
+                    else:  # skill_outcome
+                        verdict = str(p.get("verdict") or "")
+                        if verdict not in ("success", "partial", "error"):
+                            continue
+                        d = verdict_counts.setdefault(
+                            sid, {"success": 0, "partial": 0, "error": 0},
+                        )
+                        d[verdict] += 1
             finally:
                 con.close()
     except Exception:  # noqa: BLE001
@@ -289,6 +304,9 @@ async def learned_skills(include_disabled: bool = False) -> JSONResponse:
 
     for s in skills:
         s["invocation_count"] = invocation_counts.get(s["skill_id"], 0)
+        s["outcomes"] = verdict_counts.get(
+            s["skill_id"], {"success": 0, "partial": 0, "error": 0},
+        )
 
     return JSONResponse({
         "skills_root": str(loader.skills_root),

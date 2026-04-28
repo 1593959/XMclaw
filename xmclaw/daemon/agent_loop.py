@@ -527,6 +527,10 @@ class AgentLoop:
         user_message: str,
         assistant_text: str,
         tool_calls: list[dict[str, Any]],
+        *,
+        verdict: str = "success",
+        hops: int = 0,
+        tool_errors: int = 0,
     ) -> None:
         """Heuristic detection: emit SKILL_INVOKED events when a
         learned SKILL.md appears to have driven this turn.
@@ -617,6 +621,20 @@ class AgentLoop:
                     "trigger_match": trigger_match,
                     "session_id": session_id,
                     "tool_count": len(tool_calls),
+                })
+            except Exception:  # noqa: BLE001
+                pass
+
+            # B-35: paired SKILL_OUTCOME — turn-level verdict for the
+            # skill that just fired. Same cooldown gate as INVOKED so
+            # we never get OUTCOME without the matching INVOKED.
+            try:
+                await publish(EventType.SKILL_OUTCOME, {
+                    "skill_id": sk.skill_id,
+                    "session_id": session_id,
+                    "verdict": verdict,
+                    "hops": hops,
+                    "tool_errors": tool_errors,
                 })
             except Exception:  # noqa: BLE001
                 pass
@@ -1468,10 +1486,19 @@ class AgentLoop:
             # keywords. Emit a SKILL_INVOKED event so the Evolution UI
             # can show real per-skill usage counts (auto_repair_v9 vs
             # v8 — actual quality signal beyond the version counter).
+            #
+            # B-35: also pair with SKILL_OUTCOME — turn-level verdict
+            # (success / partial / error) so evolution can weight
+            # skills by whether they actually helped vs broke turns.
+            tool_errors = sum(
+                1 for tc in tool_calls_made if not tc.get("ok", True)
+            )
+            verdict = "success" if tool_errors == 0 else "partial"
             try:
                 await self._detect_skill_invocations(
                     publish, session_id, user_message, response.content,
                     tool_calls_made,
+                    verdict=verdict, hops=hop + 1, tool_errors=tool_errors,
                 )
             except Exception:  # noqa: BLE001 — telemetry never blocks
                 pass
@@ -1487,6 +1514,21 @@ class AgentLoop:
             "message": f"agent loop hit max_hops={self._max_hops} without terminal text",
             "hops": self._max_hops,
         })
+        # B-35: any skill that fired in this turn earns an "error" verdict
+        # since we never reached terminal text. Tool error count
+        # contributes — multi-fail loops are worse than a single fizzle.
+        tool_errors_final = sum(
+            1 for tc in tool_calls_made if not tc.get("ok", True)
+        )
+        try:
+            await self._detect_skill_invocations(
+                publish, session_id, user_message, "",
+                tool_calls_made,
+                verdict="error", hops=self._max_hops,
+                tool_errors=tool_errors_final,
+            )
+        except Exception:  # noqa: BLE001 — telemetry never blocks
+            pass
         return AgentTurnResult(
             ok=False, text="",
             hops=self._max_hops,

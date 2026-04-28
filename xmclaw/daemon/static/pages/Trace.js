@@ -36,6 +36,7 @@ const TONE = {
   memory_evicted: "muted",
   memory_op: "info",
   skill_invoked: "success",
+  skill_outcome: "info",
   todo_updated: "info",
   context_compressed: "warn",
 };
@@ -55,6 +56,7 @@ const LABEL = {
   memory_evicted: "记忆驱逐",
   memory_op: "记忆操作",
   skill_invoked: "技能触发",
+  skill_outcome: "技能结果",
   todo_updated: "Todos 更新",
   context_compressed: "上下文压缩",
 };
@@ -70,6 +72,7 @@ const EVENT_TYPES = [
   "memory_put",
   "memory_op",
   "skill_invoked",
+  "skill_outcome",
   "todo_updated",
   "context_compressed",
 ];
@@ -117,6 +120,12 @@ function shortPayload(ev) {
   }
   if (t === "skill_invoked") {
     return `${p.skill_id || "?"} (evidence: ${p.evidence || "?"})`;
+  }
+  if (t === "skill_outcome") {
+    const v = p.verdict || "?";
+    const errs = p.tool_errors != null ? p.tool_errors : 0;
+    const hops = p.hops != null ? p.hops : 0;
+    return `${p.skill_id || "?"} → ${v} (hops=${hops} errs=${errs})`;
   }
   if (t === "todo_updated") return `${p.count || 0} items`;
   if (t === "context_compressed") {
