@@ -34,6 +34,7 @@ const TONE = {
   anti_req_violation: "error",
   memory_put: "info",
   memory_evicted: "muted",
+  memory_op: "info",
   todo_updated: "info",
 };
 
@@ -50,6 +51,7 @@ const LABEL = {
   anti_req_violation: "反需求违规",
   memory_put: "记忆写入",
   memory_evicted: "记忆驱逐",
+  memory_op: "记忆操作",
   todo_updated: "Todos 更新",
 };
 
@@ -62,6 +64,7 @@ const EVENT_TYPES = [
   "session_lifecycle",
   "anti_req_violation",
   "memory_put",
+  "memory_op",
   "todo_updated",
 ];
 
@@ -97,6 +100,15 @@ function shortPayload(ev) {
   if (t === "session_lifecycle") return p.phase || "";
   if (t === "anti_req_violation") return p.reason || p.kind || "";
   if (t === "memory_put") return `${p.tag || ""}: ${(p.content || "").slice(0, 80)}`;
+  if (t === "memory_op") {
+    const op = p.op || "?";
+    const prov = p.provider || "?";
+    const stats = [];
+    if (p.k != null) stats.push(`k=${p.k}`);
+    if (p.hits != null) stats.push(`hits=${p.hits}`);
+    if (p.elapsed_ms != null) stats.push(`${Math.round(p.elapsed_ms)}ms`);
+    return `${prov}.${op}` + (stats.length ? "  " + stats.join(" ") : "");
+  }
   if (t === "todo_updated") return `${p.count || 0} items`;
   return JSON.stringify(p).slice(0, 120);
 }

@@ -955,7 +955,7 @@ def build_agent_from_config(
     from xmclaw.providers.memory.manager import MemoryManager
     from xmclaw.providers.memory.builtin_file import BuiltinFileMemoryProvider
 
-    memory_manager = MemoryManager()
+    memory_manager = MemoryManager(bus=bus)
     # Builtin file provider — backed by the persona profile dir.
     try:
         memory_manager.add_provider(
@@ -981,6 +981,23 @@ def build_agent_from_config(
         memory_arg = None
     else:
         memory_arg = memory_manager if not memory_manager.is_empty else None
+
+    # B-27: if memory providers expose tool schemas, wrap them in a
+    # MemoryToolBridge and chain with the agent's existing tools via
+    # CompositeToolProvider. Today's BuiltinFile/SqliteVec providers
+    # both return [] schemas so this is currently a no-op — but the
+    # plumbing is ready for hindsight / supermemory plugins that DO
+    # expose recall_memory / synthesize / etc tools.
+    if memory_arg is not None and tools is not None:
+        try:
+            from xmclaw.providers.memory.tool_bridge import MemoryToolBridge
+            from xmclaw.providers.tool.composite import CompositeToolProvider
+            bridge = MemoryToolBridge(memory_arg)
+            if bridge.list_tools():
+                tools = CompositeToolProvider(tools, bridge)
+        except Exception:  # noqa: BLE001 — bridge failure should not
+            # block agent boot
+            pass
 
     return AgentLoop(
         llm=llm, bus=bus, tools=tools,

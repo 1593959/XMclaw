@@ -40,9 +40,49 @@ class MemoryManager:
 
     BUILTIN_NAME = "builtin"
 
-    def __init__(self) -> None:
+    def __init__(self, *, bus: Any | None = None) -> None:
         self._providers: list[MemoryProvider] = []
         self._has_external: bool = False
+        # B-27: emit MEMORY_OP events for observability so the Trace
+        # page can show provider activity. ``bus`` is duck-typed —
+        # anything with ``async publish(event)`` works. None = no
+        # emission (used by tests / standalone code).
+        self._bus = bus
+
+    def attach_bus(self, bus: Any) -> None:
+        """Wire a bus after construction. Tools that build the manager
+        before the bus is available use this to upgrade later."""
+        self._bus = bus
+
+    async def _emit(
+        self, op: str, *, provider: str, session_id: str | None = None,
+        elapsed_ms: float = 0.0, k: int | None = None,
+        hits: int | None = None, extra: dict | None = None,
+    ) -> None:
+        """Emit a MEMORY_OP event. Best-effort; never raises."""
+        if self._bus is None:
+            return
+        try:
+            from xmclaw.core.bus import EventType, make_event
+            payload: dict = {
+                "provider": provider, "op": op,
+                "session_id": session_id, "elapsed_ms": elapsed_ms,
+            }
+            if k is not None:
+                payload["k"] = k
+            if hits is not None:
+                payload["hits"] = hits
+            if extra:
+                payload.update(extra)
+            ev = make_event(
+                session_id=session_id or "_system",
+                agent_id="memory",
+                type=EventType.MEMORY_OP,
+                payload=payload,
+            )
+            await self._bus.publish(ev)
+        except Exception:  # noqa: BLE001 — observability must not break ops
+            pass
 
     # ── registration ─────────────────────────────────────────────
 
@@ -79,12 +119,21 @@ class MemoryManager:
     async def put(self, layer: Layer, item: MemoryItem) -> str | None:
         """Write to the first provider that accepts. External provider
         first (it's the "active recall" surface), builtin last."""
+        import time as _t
         # Iterate external first, then builtin, so the EXTERNAL provider
         # gets writes if both are registered. The builtin is a fallback
         # when nothing else is wired.
         for p in self._iter_external_first():
+            t0 = _t.perf_counter()
             try:
-                return await p.put(layer, item)
+                rid = await p.put(layer, item)
+                await self._emit(
+                    "put", provider=getattr(p, "name", "?"),
+                    session_id=(item.metadata or {}).get("session_id"),
+                    elapsed_ms=(_t.perf_counter() - t0) * 1000.0,
+                    extra={"layer": layer},
+                )
+                return rid
             except Exception as exc:  # noqa: BLE001
                 _log.warning(
                     "memory.put_failed provider=%s err=%s",
@@ -104,10 +153,19 @@ class MemoryManager:
     ) -> list[MemoryItem]:
         """Query first provider that returns results. Returns empty
         list if all providers fail."""
+        import time as _t
+        sid = (filters or {}).get("session_id") if filters else None
         for p in self._iter_external_first():
+            t0 = _t.perf_counter()
             try:
                 hits = await p.query(
                     layer, text=text, embedding=embedding, k=k, filters=filters,
+                )
+                await self._emit(
+                    "query", provider=getattr(p, "name", "?"),
+                    session_id=sid,
+                    elapsed_ms=(_t.perf_counter() - t0) * 1000.0,
+                    k=k, hits=len(hits),
                 )
                 if hits:
                     return hits
@@ -134,10 +192,12 @@ class MemoryManager:
     ) -> None:
         """End-of-turn write-back. Each provider gets a chance; failures
         in one don't block others. Mirrors Hermes ``sync_all``."""
+        import time as _t
         for p in self._providers:
             sync = getattr(p, "sync_turn", None)
             if sync is None:
                 continue
+            t0 = _t.perf_counter()
             try:
                 if _is_async_method(sync):
                     await sync(
@@ -149,6 +209,14 @@ class MemoryManager:
                         session_id=session_id, agent_id=agent_id,
                         user_content=user_content, assistant_content=assistant_content,
                     )
+                # B-27: emit so the Trace page sees provider activity
+                # even when the provider's sync_turn goes via its own
+                # put (bypassing manager.put which has its own emit).
+                await self._emit(
+                    "sync_turn", provider=getattr(p, "name", "?"),
+                    session_id=session_id,
+                    elapsed_ms=(_t.perf_counter() - t0) * 1000.0,
+                )
             except Exception as exc:  # noqa: BLE001
                 _log.warning(
                     "memory.sync_failed provider=%s err=%s",

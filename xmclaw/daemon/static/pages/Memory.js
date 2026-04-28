@@ -61,7 +61,69 @@ const TAB_LABELS = [
   { id: "identity", label: "标识", hint: "SOUL / AGENTS / USER / MEMORY 等核心人格文件" },
   { id: "notes", label: "笔记", hint: "随手保存的主题笔记（~/.xmclaw/memory/*.md）" },
   { id: "journal", label: "日记", hint: "按日期归档的对话/事件记录" },
+  { id: "providers", label: "Providers", hint: "已挂载的记忆 provider（B-26 Hermes-style 抽象）" },
 ];
+
+// ── Providers tab (B-27) ─────────────────────────────────────────
+
+function ProvidersTab({ token }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    apiGet("/api/v2/memory/providers", token)
+      .then((d) => setData(d))
+      .catch((e) => setError(String(e.message || e)));
+  }, [token]);
+
+  if (error) return html`<p class="xmc-datapage__error">${error}</p>`;
+  if (!data) return html`<p class="xmc-datapage__hint">加载中…</p>`;
+  if (!data.wired) {
+    return html`
+      <div class="xmc-h-card" style="padding:1rem">
+        <h3 style="margin:0 0 .5rem">⚠ Memory manager 未挂载</h3>
+        <p class="xmc-datapage__subtitle">
+          agent 未启动，或配置 <code>memory.enabled=false</code>。
+        </p>
+      </div>
+    `;
+  }
+
+  return html`
+    <div>
+      <p class="xmc-datapage__subtitle" style="margin:.4rem 0 1rem">
+        XMclaw 的内存层是 Hermes-style 可插拔架构（B-25/B-26 完成）：
+        <strong>1 个内置 provider + 至多 1 个外部 provider</strong>。
+        外部 provider 优先（active recall），内置 provider 永远在底（fallback）。
+      </p>
+      <ul class="xmc-datapage__list">
+        ${(data.providers || []).map((p) => html`
+          <li class="xmc-datapage__row" key=${p.name}>
+            <div style="display:flex;justify-content:space-between;align-items:baseline;gap:.5rem;flex-wrap:wrap">
+              <strong style="font-size:1rem">${p.name}</strong>
+              <span class="xmc-h-badge xmc-h-badge--${p.kind === 'builtin' ? 'success' : 'info'}" style="font-size:.7rem">
+                ${p.kind === 'builtin' ? '内置 (永久)' : '外部 (可换)'}
+              </span>
+            </div>
+            <div style="margin-top:.25rem;color:var(--xmc-fg-muted);font-size:.78rem">
+              ${p.tool_count > 0
+                ? html`暴露 ${p.tool_count} 个 LLM 工具: ${(p.tools || []).slice(0, 3).map((t) => html`<code key=${t} style="margin-right:.3rem">${t}</code>`)}`
+                : html`<small>不暴露 LLM 工具</small>`}
+            </div>
+          </li>
+        `)}
+      </ul>
+      <h3 style="margin:1.2rem 0 .5rem">如何接入新 provider</h3>
+      <p class="xmc-datapage__subtitle">
+        实现 <code>xmclaw/providers/memory/base.MemoryProvider</code> ABC（put / query / forget +
+        可选的 prefetch / sync_turn / on_session_end / on_pre_compress / get_tool_schemas /
+        handle_tool_call），放到 <code>xmclaw/providers/memory/&lt;name&gt;.py</code>，
+        在 <code>factory.py</code> 注册即可 — agent_loop 不需修改。
+        参考实现 <code>builtin_file.py</code>（内置）和 <code>sqlite_vec.py</code>（外部）。
+      </p>
+    </div>
+  `;
+}
 
 // ── 标识 (Identity) tab ───────────────────────────────────────────────
 
@@ -528,6 +590,7 @@ export function MemoryPage({ token }) {
       ${tab === "identity" ? html`<${IdentityTab} token=${token} />` : null}
       ${tab === "notes" ? html`<${NotesTab} token=${token} />` : null}
       ${tab === "journal" ? html`<${JournalTab} token=${token} />` : null}
+      ${tab === "providers" ? html`<${ProvidersTab} token=${token} />` : null}
     </section>
   `;
 }

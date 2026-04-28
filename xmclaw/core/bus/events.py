@@ -63,6 +63,15 @@ class EventType(str, Enum):
     # }
     MEMORY_EVICTED = "memory_evicted"
 
+    # B-27: emitted when a memory provider stores or recalls. Payload:
+    # {"provider": "builtin" | "sqlite_vec" | ...,
+    #  "op": "put" | "query" | "prefetch" | "sync_turn",
+    #  "session_id": str | None,
+    #  "k": int | None, "hits": int | None,
+    #  "elapsed_ms": float}
+    # Surfaced in the Trace page so users can see memory-layer activity.
+    MEMORY_OP = "memory_op"
+
 
 @dataclass(frozen=True, slots=True)
 class BehavioralEvent:

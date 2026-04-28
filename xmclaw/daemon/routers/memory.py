@@ -47,6 +47,38 @@ def _safe_name(filename: str) -> str:
     return stem
 
 
+@router.get("/providers")
+async def list_providers(request: Request) -> JSONResponse:
+    """B-27: enumerate memory providers attached to the running agent.
+
+    Surfaces which providers are wired (always builtin + at most one
+    external), each one's name, and whether it has any LLM-callable
+    tools registered. Backs the Memory page → Provider panel + the
+    upcoming /memory/setup wizard.
+    """
+    agent = getattr(request.app.state, "agent", None)
+    mgr = getattr(agent, "_memory_manager", None) if agent else None
+    if mgr is None:
+        return JSONResponse({"providers": [], "wired": False})
+    out: list[dict[str, Any]] = []
+    for p in getattr(mgr, "providers", []):
+        try:
+            schemas = p.get_tool_schemas() if hasattr(p, "get_tool_schemas") else []
+        except Exception:  # noqa: BLE001
+            schemas = []
+        out.append({
+            "name": getattr(p, "name", "?"),
+            "kind": "builtin" if getattr(p, "name", "") == "builtin" else "external",
+            "tool_count": len(schemas) if isinstance(schemas, list) else 0,
+            "tools": [s.get("name") for s in (schemas or []) if isinstance(s, dict)],
+        })
+    return JSONResponse({
+        "providers": out,
+        "wired": True,
+        "count": len(out),
+    })
+
+
 @router.get("")
 async def list_memory() -> JSONResponse:
     """Return filename + size + mtime for every ``*.md`` note.
