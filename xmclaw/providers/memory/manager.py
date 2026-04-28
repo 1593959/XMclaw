@@ -150,19 +150,38 @@ class MemoryManager:
         embedding: list[float] | None = None,
         k: int = 10,
         filters: dict[str, Any] | None = None,
+        hybrid: bool = False,
     ) -> list[MemoryItem]:
         """Query first provider that returns results. Returns empty
-        list if all providers fail."""
+        list if all providers fail.
+
+        B-50: when ``hybrid=True`` AND both ``text`` and ``embedding``
+        are supplied AND the provider implements ``hybrid_query``,
+        route through that path instead — Reciprocal Rank Fusion of
+        the vector + keyword candidate lists. Falls back to plain
+        ``query()`` when the provider doesn't support hybrid.
+        """
         import time as _t
         sid = (filters or {}).get("session_id") if filters else None
         for p in self._iter_external_first():
             t0 = _t.perf_counter()
             try:
-                hits = await p.query(
-                    layer, text=text, embedding=embedding, k=k, filters=filters,
+                use_hybrid = (
+                    hybrid and text and embedding
+                    and hasattr(p, "hybrid_query")
                 )
+                if use_hybrid:
+                    hits = await p.hybrid_query(  # type: ignore[attr-defined]
+                        layer, text=text, embedding=embedding, k=k, filters=filters,
+                    )
+                    op_label = "hybrid_query"
+                else:
+                    hits = await p.query(
+                        layer, text=text, embedding=embedding, k=k, filters=filters,
+                    )
+                    op_label = "query"
                 await self._emit(
-                    "query", provider=getattr(p, "name", "?"),
+                    op_label, provider=getattr(p, "name", "?"),
                     session_id=sid,
                     elapsed_ms=(_t.perf_counter() - t0) * 1000.0,
                     k=k, hits=len(hits),

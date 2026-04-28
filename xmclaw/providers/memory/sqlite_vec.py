@@ -312,6 +312,71 @@ class SqliteVecMemory(MemoryProvider):
 
         return [self._row_to_item(r) for r in rows]
 
+    async def hybrid_query(
+        self,
+        layer: Layer,
+        *,
+        text: str,
+        embedding: list[float],
+        k: int = 10,
+        filters: dict[str, Any] | None = None,
+        rrf_k: int = 60,
+        candidate_multiplier: int = 3,
+    ) -> list[MemoryItem]:
+        """B-50: hybrid Vector + keyword retrieval merged via Reciprocal
+        Rank Fusion.
+
+        Pulls ``k * candidate_multiplier`` candidates from each path
+        (vector KNN by embedding cosine, keyword LIKE by ``text``),
+        ranks each list, then merges with::
+
+            rrf_score(item) = Σ 1 / (rrf_k + rank_in_list)
+
+        across the two lists. ``rrf_k=60`` matches the original
+        Cormack et al. paper. Items found in BOTH paths get a strong
+        boost (sum of two contributions); items only in one path still
+        score reasonably. Final list sorted by rrf_score, top-k
+        returned.
+
+        Falls back to pure vector when ``text`` is empty, or pure
+        keyword when ``embedding`` is empty / dim was never set. Same
+        fallthrough behaviour as ``query()`` for callers that don't
+        care which mode runs.
+        """
+        if not text:
+            return await self.query(
+                layer, embedding=embedding, k=k, filters=filters,
+            )
+        if not embedding or self._embedding_dim is None:
+            return await self.query(
+                layer, text=text, k=k, filters=filters,
+            )
+
+        n_candidates = max(k * max(1, candidate_multiplier), k)
+        # Vector path
+        vec_hits = await self.query(
+            layer, embedding=embedding, k=n_candidates, filters=filters,
+        )
+        # Keyword path — substring against the same layer/filters.
+        kw_hits = await self.query(
+            layer, text=text, k=n_candidates, filters=filters,
+        )
+
+        # RRF merge. Items keyed by id (dedup across the two lists).
+        scores: dict[str, float] = {}
+        meta_by_id: dict[str, MemoryItem] = {}
+        for rank, item in enumerate(vec_hits):
+            scores[item.id] = scores.get(item.id, 0.0) + 1.0 / (rrf_k + rank)
+            meta_by_id[item.id] = item
+        for rank, item in enumerate(kw_hits):
+            scores[item.id] = scores.get(item.id, 0.0) + 1.0 / (rrf_k + rank)
+            # Prefer the one we already have (vector hit's metadata is
+            # complete); keyword path returns the same row anyway.
+            meta_by_id.setdefault(item.id, item)
+
+        ordered_ids = sorted(scores, key=lambda i: -scores[i])
+        return [meta_by_id[i] for i in ordered_ids[:k]]
+
     async def forget(self, item_id: str) -> None:
         cur = self._conn.cursor()
         cur.execute("DELETE FROM memory_items WHERE id = ?", (item_id,))

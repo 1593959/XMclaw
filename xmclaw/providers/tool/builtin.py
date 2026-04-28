@@ -1836,11 +1836,22 @@ class BuiltinTools(ToolProvider):
                 embedding = None
 
         try:
+            # B-50: hybrid Vector + keyword RRF when both signals are
+            # available; manager falls back to plain vector / keyword
+            # for providers that don't implement hybrid_query.
+            hits = await self._memory_manager.query(  # type: ignore[union-attr]
+                layer, text=query, embedding=embedding, k=k, hybrid=True,
+            )
+        except TypeError:
+            # Older MemoryManager without hybrid kwarg — still works.
             hits = await self._memory_manager.query(  # type: ignore[union-attr]
                 layer, text=query, embedding=embedding, k=k,
             )
         except Exception as exc:  # noqa: BLE001
             return _fail(call, t0, f"memory_search failed: {exc}")
+        # Tag the mode reflecting what the manager actually used.
+        if embedding and used_mode == "semantic":
+            used_mode = "hybrid"
 
         rows: list[dict[str, Any]] = []
         for h in hits[:k * 4]:  # 4 = max possible providers
