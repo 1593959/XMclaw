@@ -28,6 +28,7 @@ Design notes:
 from __future__ import annotations
 
 import os
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1077,6 +1078,188 @@ class MemoryIndexerCheck(DoctorCheck):
             )
 
 
+class PersonaProfileCheck(DoctorCheck):
+    """B-56: surface the health of the active persona profile.
+
+    Checks the 7 canonical files (SOUL/AGENTS/IDENTITY/USER/TOOLS/
+    BOOTSTRAP/MEMORY) for existence + reasonable size. Flags:
+
+      * Empty SOUL.md / IDENTITY.md (no character → agent has
+        nothing to root its replies in)
+      * MEMORY.md > 50 KB (long past the char-cap; Auto-Dream
+        should have compacted by now)
+      * Any canonical file > 200 KB (probably accidentally
+        appended a huge blob)
+
+    Doesn't fail on missing optional files (BOOTSTRAP is supposed
+    to be deleted after first-run interview).
+    """
+
+    id = "persona_profile"
+    name = "persona_profile"
+
+    # Files we want to see + soft-required level.
+    _REQUIRED = {"SOUL.md", "IDENTITY.md", "USER.md", "MEMORY.md"}
+    _OPTIONAL = {"AGENTS.md", "TOOLS.md", "BOOTSTRAP.md"}
+    # Per-file sane-size caps (bytes).
+    _SOFT_CAP_BYTES = 50 * 1024
+    _HARD_CAP_BYTES = 200 * 1024
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        try:
+            from xmclaw.daemon.factory import _resolve_persona_profile_dir
+            pdir = _resolve_persona_profile_dir(ctx.cfg or {})
+        except Exception as exc:  # noqa: BLE001
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"could not resolve persona dir: {exc}",
+            )
+        if not pdir.is_dir():
+            # Treat as INFO not FAIL — doctor runs on fresh installs
+            # too, and onboarding is a separate user-driven flow that
+            # creates the dir + bootstrap files on first use.
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"persona dir not yet created (fresh install)",
+                advisory="run 'xmclaw onboard' to bootstrap the profile",
+            )
+        problems: list[str] = []
+        oversized: list[str] = []
+        bloated: list[str] = []
+        empty: list[str] = []
+        for name in self._REQUIRED | self._OPTIONAL:
+            p = pdir / name
+            if not p.is_file():
+                if name in self._REQUIRED and name != "BOOTSTRAP.md":
+                    # BOOTSTRAP is deliberately deleted after onboard.
+                    problems.append(f"{name} missing")
+                continue
+            try:
+                size = p.stat().st_size
+            except OSError:
+                continue
+            if size == 0 and name in self._REQUIRED:
+                empty.append(name)
+            elif size > self._HARD_CAP_BYTES:
+                oversized.append(f"{name}={size//1024}KB")
+            elif size > self._SOFT_CAP_BYTES and name == "MEMORY.md":
+                bloated.append(f"{name}={size//1024}KB")
+        if problems or oversized:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail="; ".join(
+                    (problems + ([f"oversized: {','.join(oversized)}"] if oversized else []))
+                ),
+                advisory=(
+                    "missing required persona file → run 'xmclaw onboard'; "
+                    "oversized → check for accidental binary/log dump"
+                    if oversized else "missing required persona file → run 'xmclaw onboard'"
+                ),
+            )
+        if bloated:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"profile OK; bloated: {', '.join(bloated)}",
+                advisory=(
+                    "MEMORY.md is past 50KB — let Auto-Dream compact it "
+                    "(POST /api/v2/memory/dream/run) or wait until the "
+                    "next 03:00 cron"
+                ),
+            )
+        if empty:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"profile OK; empty: {', '.join(empty)}",
+                advisory=(
+                    f"{', '.join(empty)} are blank — fine for a fresh "
+                    "install, but agent has less character grounding"
+                ),
+            )
+        return CheckResult(
+            name=self.name, ok=True,
+            detail=f"profile OK at {pdir.name}",
+        )
+
+
+class DreamCronCheck(DoctorCheck):
+    """B-56: surface the Auto-Dream cron state.
+
+    Three states:
+      * No LLM configured / dream disabled → OK "disabled"
+      * Configured + last run failed → FAIL with the error text
+      * Configured + healthy → OK "next 03:00 · last @ <when>"
+
+    Live state lives on the daemon, not in config. We probe via the
+    HTTP endpoint when ``probe_daemon=True``.
+    """
+
+    id = "dream_cron"
+    name = "dream_cron"
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        cfg = ctx.cfg or {}
+        sec = ((cfg.get("evolution") or {}).get("dream") or {})
+        enabled = sec.get("enabled", True)
+        if not enabled:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="dream cron disabled (evolution.dream.enabled=false)",
+            )
+        if not getattr(ctx, "probe_daemon", True):
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"dream config hour={sec.get('hour', 3):02d}:{sec.get('minute', 0):02d} (probe skipped)",
+            )
+
+        # Probe the daemon endpoint. Requires the daemon to be up.
+        try:
+            import urllib.request as _ur
+            import urllib.error as _ue
+            import json as _json
+            url = "http://127.0.0.1:8765/api/v2/memory/dream/status"
+            with _ur.urlopen(url, timeout=3.0) as resp:
+                data = _json.loads(resp.read().decode("utf-8"))
+        except _ue.URLError:
+            # Daemon not running — different check (DaemonHealthCheck)
+            # handles that. Don't double-fail here.
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="daemon not reachable (dream state unknown)",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"dream status probe failed: {exc}",
+            )
+
+        if not data.get("wired"):
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"dream not wired: {data.get('reason', 'unknown')}",
+                advisory="configure an LLM to enable Auto-Dream",
+            )
+        last_result = data.get("last_result")
+        last_at = data.get("last_run_at")
+        hour = data.get("hour", 3)
+        minute = data.get("minute", 0)
+        when_label = (
+            f"last @ {time.strftime('%Y-%m-%d %H:%M', time.localtime(last_at))}"
+            if last_at else "never run yet"
+        )
+        if last_result and not last_result.get("ok"):
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"last dream failed: {last_result.get('error', '?')}",
+                advisory="check Memory page or POST /api/v2/memory/dream/run to retry",
+            )
+        return CheckResult(
+            name=self.name, ok=True,
+            detail=(
+                f"dream cron running, daily at {hour:02d}:{minute:02d}, {when_label}"
+            ),
+        )
+
+
 class SkillRuntimeCheck(DoctorCheck):
     """Validate the ``runtime`` config section picks a known backend.
 
@@ -1530,6 +1713,8 @@ def build_default_registry() -> DoctorRegistry:
     reg.register(MemoryProviderCheck())
     reg.register(MemoryProviderConfigCheck())
     reg.register(MemoryIndexerCheck())
+    reg.register(PersonaProfileCheck())
+    reg.register(DreamCronCheck())
     reg.register(SkillRuntimeCheck())
     reg.register(ConnectivityCheck())
     reg.register(RoadmapLintCheck())
