@@ -234,6 +234,7 @@ class AnthropicLLM(LLMProvider):
         tools: list[ToolSpec] | None = None,
         *,
         on_chunk: OnChunkCallback | None = None,
+        cancel: asyncio.Event | None = None,
     ) -> LLMResponse:
         from xmclaw.providers.llm.translators import anthropic_native as translator
 
@@ -252,15 +253,34 @@ class AnthropicLLM(LLMProvider):
             kwargs["tools"] = tool_defs
 
         text_parts: list[str] = []
+        cancelled = False
         t0 = time.perf_counter()
         try:
             async with client.messages.stream(**kwargs) as stream:
                 async for delta in stream.text_stream:
+                    # B-39: bail out mid-stream if cancel fires. We
+                    # break the inner loop but still let the context
+                    # manager close cleanly so the SDK can release
+                    # the underlying HTTP/2 stream.
+                    if cancel is not None and cancel.is_set():
+                        cancelled = True
+                        break
                     if not delta:
                         continue
                     text_parts.append(delta)
                     if on_chunk is not None:
                         await on_chunk(delta)
+                if cancelled:
+                    # Don't wait for get_final_message — we might be
+                    # holding a long stream that hasn't sent the
+                    # closing frame yet. Synthesise a partial final.
+                    return LLMResponse(
+                        content="".join(text_parts),
+                        tool_calls=(),
+                        prompt_tokens=0,
+                        completion_tokens=0,
+                        latency_ms=(time.perf_counter() - t0) * 1000.0,
+                    )
                 final = await stream.get_final_message()
         except Exception:
             # Some Anthropic-compat shims (MiniMax, Qwen via /anthropic) don't

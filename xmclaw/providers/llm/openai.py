@@ -216,6 +216,7 @@ class OpenAILLM(LLMProvider):
         tools: list[ToolSpec] | None = None,
         *,
         on_chunk: OnChunkCallback | None = None,
+        cancel: asyncio.Event | None = None,
     ) -> LLMResponse:
         from xmclaw.providers.llm.translators import openai_tool_shape as translator
 
@@ -235,6 +236,7 @@ class OpenAILLM(LLMProvider):
         tool_acc: dict[int, dict[str, Any]] = {}
         prompt_tokens = 0
         completion_tokens = 0
+        cancelled = False
         t0 = time.perf_counter()
         try:
             stream = await client.chat.completions.create(**kwargs)
@@ -245,6 +247,11 @@ class OpenAILLM(LLMProvider):
         except Exception:
             return await self.complete(messages, tools)
         async for chunk in stream:
+            # B-39: bail mid-stream when the WS-side cancel event fires.
+            # We close the SDK's underlying iterator by returning early.
+            if cancel is not None and cancel.is_set():
+                cancelled = True
+                break
             choices = getattr(chunk, "choices", None) or []
             if choices:
                 delta = getattr(choices[0], "delta", None)
@@ -276,6 +283,18 @@ class OpenAILLM(LLMProvider):
                     getattr(usage, "completion_tokens", 0) or completion_tokens
                 )
         latency_ms = (time.perf_counter() - t0) * 1000.0
+
+        # B-39: when cancelled mid-stream, return what we accumulated
+        # without parsing any partial tool-call deltas (a half-built
+        # tool call would crash the agent loop's invocation step).
+        if cancelled:
+            return LLMResponse(
+                content="".join(text_parts),
+                tool_calls=(),
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                latency_ms=latency_ms,
+            )
 
         tool_calls: list[ToolCall] = []
         for idx in sorted(tool_acc):

@@ -1359,8 +1359,14 @@ class AgentLoop:
 
             t0 = time.perf_counter()
             try:
+                # B-39: pass the per-session cancel event so streaming
+                # providers (Anthropic / OpenAI) can bail mid-chunk
+                # when the user clicks Stop, instead of waiting for
+                # the next hop boundary. Falls back gracefully on
+                # providers that ignore the kwarg.
                 response = await llm.complete_streaming(
                     messages, tools=tool_specs, on_chunk=_emit_chunk,
+                    cancel=cancel_event,
                 )
             except Exception as exc:  # noqa: BLE001
                 latency_ms = (time.perf_counter() - t0) * 1000.0

@@ -79,6 +79,7 @@ class LLMProvider(abc.ABC):
         tools: list[ToolSpec] | None = None,
         *,
         on_chunk: OnChunkCallback | None = None,
+        cancel: asyncio.Event | None = None,
     ) -> LLMResponse:
         """Stream text deltas to ``on_chunk`` while collecting the final response.
 
@@ -86,6 +87,12 @@ class LLMProvider(abc.ABC):
         ``on_chunk`` once with the full text — providers that don't support
         true streaming still satisfy the contract. Real streaming providers
         (Anthropic, OpenAI) override this to emit per-chunk deltas.
+
+        ``cancel`` (B-39): when set mid-stream, providers that override
+        this method break out of their inner streaming loop and return
+        whatever's been accumulated so far. The default impl below is
+        not interruptible (a single ``complete()`` call can't be split)
+        — providers that need real cancellation MUST override.
 
         Returns the full ``LLMResponse`` (text + tool_calls + usage).
         Tool-use blocks aren't streamed — they arrive in the final return
