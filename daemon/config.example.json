@@ -24,7 +24,21 @@
     "daily_review_hour": 22,
     "vfm_threshold": 5.0,
     "max_genes_per_day": 10,
-    "auto_rollback": true
+    "auto_rollback": true,
+    "memory": {
+      "_comment_b41": "B-41 vector index — when 'embedding' is configured, the daemon auto-indexes MEMORY.md / USER.md / memory/*.md into the sqlite-vec store so memory_search returns real semantic hits. Without an embedding key the indexer is silently disabled and memory_search falls back to keyword scan.",
+      "embedding": {
+        "provider": "openai",
+        "api_key": "",
+        "base_url": "https://api.openai.com/v1",
+        "model": "text-embedding-3-small",
+        "dimensions": 1536,
+        "max_batch_size": 16
+      },
+      "indexer": {
+        "poll_interval_s": 10
+      }
+    }
   },
   "memory": {
     "_comment": "Epic #5: v2 sqlite-vec memory. db_path defaults to ~/.xmclaw/v2/memory.db. ttl is seconds-per-layer (null disables TTL prune for that layer). pinned_tags are metadata tags whose items are never evicted. retention runs periodic prune+cap sweeps in the daemon; set enabled: false to disable the store entirely.",

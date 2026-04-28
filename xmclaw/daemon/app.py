@@ -462,6 +462,58 @@ def create_app(
             from xmclaw.utils.log import get_logger
             get_logger(__name__).warning("cron.tick_start_failed", exc_info=exc)
             cron_tick = None
+
+        # B-41: built-in vector index. Watches MEMORY.md / USER.md /
+        # memory/*.md and pumps chunks into SqliteVecMemory so the
+        # ``memory_search`` tool gets real semantic results, not just
+        # keyword fallback. Quietly disabled when no embedding provider
+        # is configured — fresh installs run without forcing the user
+        # to set an embedding key just to boot.
+        memory_indexer = None
+        try:
+            from xmclaw.providers.memory.embedding import build_embedding_provider
+            from xmclaw.daemon.memory_indexer import MemoryFileIndexer
+            from xmclaw.providers.memory.sqlite_vec import SqliteVecMemory
+            embedder = build_embedding_provider(config or {})
+            mgr = getattr(_app.state, "memory", None)
+            vec_provider = None
+            if mgr is not None:
+                for p in getattr(mgr, "providers", []):
+                    if isinstance(p, SqliteVecMemory):
+                        vec_provider = p
+                        break
+            if embedder is not None and vec_provider is not None:
+                # Resolve persona dir lazily — same path the agent's
+                # remember tool writes to.
+                from xmclaw.daemon.factory import _resolve_persona_profile_dir
+                _cfg = config or {}
+
+                def _pdir():
+                    return _resolve_persona_profile_dir(_cfg)
+
+                _idx_section = (
+                    ((_cfg.get("evolution") or {}).get("memory") or {})
+                    .get("indexer") or {}
+                )
+                memory_indexer = MemoryFileIndexer(
+                    persona_dir_provider=_pdir,
+                    sqlite_vec=vec_provider,
+                    embedder=embedder,
+                    poll_interval_s=float(_idx_section.get("poll_interval_s", 10.0)),
+                )
+                await memory_indexer.start()
+                _app.state.memory_indexer = memory_indexer
+            else:
+                _app.state.memory_indexer = None
+        except Exception as exc:  # noqa: BLE001 — indexer failures
+            # must not block daemon boot. Without it, memory_search
+            # falls back to keyword scan over MEMORY.md — degraded
+            # but not broken.
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).warning(
+                "memory_indexer.start_failed err=%s", exc,
+            )
+            _app.state.memory_indexer = None
         try:
             await agents_manager.load_from_disk()
         except Exception:  # noqa: BLE001 — bad preset file must not block boot
@@ -488,6 +540,13 @@ def create_app(
             if cron_tick is not None:
                 try:
                     await cron_tick.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            # B-41: stop the memory indexer.
+            _idx = getattr(_app.state, "memory_indexer", None)
+            if _idx is not None:
+                try:
+                    await _idx.stop()
                 except Exception:  # noqa: BLE001
                     pass
             # Stop xm-auto-evo subsystem.
