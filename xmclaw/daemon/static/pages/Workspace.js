@@ -27,6 +27,7 @@ const html = window.__xmc.htm.bind(h);
 
 import { apiGet } from "../lib/api.js";
 import { toast } from "../lib/toast.js";
+import { confirmDialog } from "../lib/dialog.js";
 
 const LS_KEY = "xmcWorkspaceRoot";
 
@@ -146,7 +147,13 @@ export function WorkspacePage({ token }) {
   };
 
   const onRemove = async (path) => {
-    if (!confirm(`移除工作区:\n${path}？`)) return;
+    const ok = await confirmDialog({
+      title: "移除工作区",
+      body: path,
+      confirmLabel: "移除",
+      confirmTone: "danger",
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       const res = await fetch(

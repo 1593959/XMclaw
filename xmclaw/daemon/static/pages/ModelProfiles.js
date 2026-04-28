@@ -22,6 +22,7 @@ const html = window.__xmc.htm.bind(h);
 import { Button } from "../components/atoms/button.js";
 import { Badge } from "../components/atoms/badge.js";
 import { apiGet, apiPost, apiDelete } from "../lib/api.js";
+import { confirmDialog } from "../lib/dialog.js";
 
 const PROVIDER_OPTIONS = [
   { value: "anthropic", label: "Anthropic / Claude" },
@@ -110,7 +111,13 @@ export function ModelProfilesSection({ token }) {
   }
 
   async function onDelete(id) {
-    if (!confirm(`确定删除 profile "${id}"？需重启 daemon 才会生效。`)) return;
+    const ok = await confirmDialog({
+      title: "删除模型 profile",
+      body: `Profile "${id}" 将从配置中移除。\n需重启 daemon 才会生效。`,
+      confirmLabel: "删除",
+      confirmTone: "danger",
+    });
+    if (!ok) return;
     setBusy(true);
     setError(null);
     try {

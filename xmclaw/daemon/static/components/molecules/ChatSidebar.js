@@ -16,6 +16,7 @@ const html = window.__xmc.htm.bind(h);
 
 import { apiGet } from "../../lib/api.js";
 import { toast } from "../../lib/toast.js";
+import { confirmDialog } from "../../lib/dialog.js";
 
 function Icon({ d, className }) {
   return html`
@@ -77,7 +78,13 @@ export function ChatSidebar({
 
   const onDelete = async (sid, e) => {
     e.stopPropagation();
-    if (!confirm("删除这个会话？")) return;
+    const ok = await confirmDialog({
+      title: "删除会话",
+      body: "对话历史一同清除，操作不可撤销。",
+      confirmLabel: "删除",
+      confirmTone: "danger",
+    });
+    if (!ok) return;
     setBusy(sid);
     try {
       const res = await fetch(

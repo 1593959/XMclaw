@@ -24,6 +24,7 @@ const html = window.__xmc.htm.bind(h);
 
 import { apiGet } from "../lib/api.js";
 import { toast } from "../lib/toast.js";
+import { confirmDialog } from "../lib/dialog.js";
 
 function Icon({ d, className }) {
   return html`
@@ -250,7 +251,13 @@ export function CronPage({ token }) {
   useEffect(() => { load(); }, [load]);
 
   const onDelete = async (jobId) => {
-    if (!confirm("确认删除这个 cron 任务？")) return;
+    const ok = await confirmDialog({
+      title: "删除 cron 任务",
+      body: "任务历史不会保留，操作不可撤销。",
+      confirmLabel: "删除",
+      confirmTone: "danger",
+    });
+    if (!ok) return;
     setBusy(jobId);
     try {
       const res = await fetch(

@@ -220,8 +220,14 @@ export function MessageBubble({ message }) {
   const elapsedS = isWorking && message.ts
     ? Math.max(0, Math.floor(Date.now() / 1000 - message.ts))
     : null;
+  // B-46: stall detector. A genuine LLM call takes < 60 s for any
+  // production model. Past 120 s we're almost certainly stuck (network
+  // drop, provider 504, daemon crashed mid-stream). Hint the user.
+  const stalled = elapsedS != null && elapsedS > 120;
   const statusLabel = baseLabel
-    ? (elapsedS != null && elapsedS >= 1 ? `${baseLabel} · ${elapsedS}s` : baseLabel)
+    ? (stalled
+        ? `${baseLabel} · ${elapsedS}s · 可能卡住，看 Trace 页`
+        : (elapsedS != null && elapsedS >= 1 ? `${baseLabel} · ${elapsedS}s` : baseLabel))
     : null;
 
   return html`

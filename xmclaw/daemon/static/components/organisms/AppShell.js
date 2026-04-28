@@ -24,6 +24,7 @@ const html = window.__xmc.htm.bind(h);
 import { Backdrop } from "./Backdrop.js";
 import { THEMES, applyTheme, readActiveTheme, listThemes } from "../../lib/hermes-themes.js";
 import { apiGet } from "../../lib/api.js";
+import { confirmDialog } from "../../lib/dialog.js";
 
 // Lucide-style inline SVG icons. Each takes className for sizing.
 // Direct shape ports of the Hermes nav-icon set so visual size + stroke
@@ -204,7 +205,12 @@ function SidebarSystemActions({ token }) {
   const [restartTick, setRestartTick] = useState(0);
 
   const onRestart = async () => {
-    if (!confirm("重启 daemon？当前会话连接会断开，约 3 秒后恢复。")) return;
+    const ok = await confirmDialog({
+      title: "重启 daemon",
+      body: "当前会话连接会断开，约 3 秒后恢复。",
+      confirmLabel: "重启",
+    });
+    if (!ok) return;
     setBusyKind("restart");
     try {
       const url = "/api/v2/system/restart" +
@@ -239,7 +245,12 @@ function SidebarSystemActions({ token }) {
   };
 
   const onUpgrade = async () => {
-    if (!confirm("升级 XMclaw（pip install --upgrade xmclaw）？升级完成后需要点 '重启 daemon' 才会加载新版本。")) return;
+    const ok = await confirmDialog({
+      title: "升级 XMclaw",
+      body: "执行 pip install --upgrade xmclaw。\n升级完成后需要点 '重启 daemon' 才会加载新版本。",
+      confirmLabel: "升级",
+    });
+    if (!ok) return;
     setBusyKind("upgrade");
     setUpgradeState({ phase: "starting", tail: [] });
     try {

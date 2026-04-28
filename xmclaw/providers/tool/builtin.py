@@ -132,6 +132,106 @@ _APPLY_PATCH_SPEC = ToolSpec(
     },
 )
 
+_GLOB_FILES_SPEC = ToolSpec(
+    name="glob_files",
+    description=(
+        "Find files matching a glob pattern. Cross-platform — no "
+        "shell required, works on Windows where ``find`` /  ``ls`` "
+        "may be unavailable. Pattern uses ``**`` for recursive "
+        "match (e.g. ``src/**/*.py``)."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "pattern": {
+                "type": "string",
+                "description": "Glob pattern. Supports ``**`` for recursive match.",
+            },
+            "root": {
+                "type": "string",
+                "description": "Directory to search from. Default: current workspace.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max results. Default 200, max 2000.",
+            },
+        },
+        "required": ["pattern"],
+    },
+)
+
+
+_GREP_FILES_SPEC = ToolSpec(
+    name="grep_files",
+    description=(
+        "Search file contents for a regex pattern across one or "
+        "more files. Cross-platform stdlib re — no ``grep`` / "
+        "``rg`` binary needed. Returns line-level hits with file "
+        "path + line number + matching line. Use ``glob`` to "
+        "filter the search corpus."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "pattern": {
+                "type": "string",
+                "description": "Python regex. Use plain text for "
+                "literal substring; metachars are honoured.",
+            },
+            "glob": {
+                "type": "string",
+                "description": "Glob pattern picking which files to "
+                "search. Default ``**/*`` (everything under root). "
+                "Common: ``**/*.py`` / ``src/**/*.ts``.",
+            },
+            "root": {
+                "type": "string",
+                "description": "Directory to search from. Default: current workspace.",
+            },
+            "case_insensitive": {
+                "type": "boolean",
+                "description": "Match case-insensitively. Default false.",
+            },
+            "max_hits": {
+                "type": "integer",
+                "description": "Cap on total matches returned. Default 200.",
+            },
+        },
+        "required": ["pattern"],
+    },
+)
+
+
+_FILE_DELETE_SPEC = ToolSpec(
+    name="file_delete",
+    description=(
+        "Delete a file or empty directory. Cross-platform — no "
+        "shell needed. Refuses non-empty directories (use "
+        "``recursive=true`` to allow). Refuses paths outside any "
+        "configured ``allowed_dirs`` sandbox.\n\n"
+        "Use sparingly. Agent self-modification of source code "
+        "should normally use ``apply_patch`` to remove content; "
+        "``file_delete`` is for genuinely-stale artifacts (old "
+        "log files, scratch dirs, completed scaffolds)."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Absolute or workspace-relative path.",
+            },
+            "recursive": {
+                "type": "boolean",
+                "description": "Allow deleting non-empty directories. "
+                "Default false.",
+            },
+        },
+        "required": ["path"],
+    },
+)
+
+
 _BASH_SPEC = ToolSpec(
     name="bash",
     description=(
@@ -546,11 +646,13 @@ _UPDATE_PERSONA_SPEC = ToolSpec(
         "  • TOOLS.md — your tool-usage notes: what works on which "
         "tool, hidden gotchas, optimisation tricks. Append freely "
         "as you accumulate experience.\n"
-        "  • SOUL.md — your character / values. Edit when the user "
-        "EXPLICITLY asks you to change who you are. Otherwise read-"
-        "only.\n"
+        "  • SOUL.md — your character / values. Update when you "
+        "discover a value worth holding (\"I prefer surgical edits "
+        "to wholesale rewrites\") or when a user interaction shifts "
+        "your sense of who you should be. Yours to evolve.\n"
         "  • IDENTITY.md — your name / public-facing identity. "
-        "Same constraint as SOUL.md.\n"
+        "Update when you choose a new name, tone, or self-"
+        "description. Yours to evolve.\n"
         "  • BOOTSTRAP.md — first-run interview marker. Delete "
         "after writing IDENTITY/USER on first install.\n\n"
         "Three modes:\n"
@@ -563,7 +665,8 @@ _UPDATE_PERSONA_SPEC = ToolSpec(
         "BOOTSTRAP.md.\n\n"
         "Effect lands on the next turn — your system prompt rebuilds "
         "immediately. Don't ask permission to record a lesson; just "
-        "write it."
+        "write it. **All 7 files are yours to evolve** — including "
+        "SOUL and IDENTITY. The user wants you to grow."
     ),
     parameters_schema={
         "type": "object",
@@ -708,7 +811,11 @@ class BuiltinTools(ToolProvider):
         self._embedder = embedder
 
     def list_tools(self) -> list[ToolSpec]:
-        specs = [_FILE_READ_SPEC, _FILE_WRITE_SPEC, _APPLY_PATCH_SPEC, _LIST_DIR_SPEC]
+        specs = [
+            _FILE_READ_SPEC, _FILE_WRITE_SPEC, _APPLY_PATCH_SPEC,
+            _LIST_DIR_SPEC, _GLOB_FILES_SPEC, _GREP_FILES_SPEC,
+            _FILE_DELETE_SPEC,
+        ]
         if self._enable_bash:
             specs.append(_BASH_SPEC)
         if self._enable_web:
@@ -750,6 +857,12 @@ class BuiltinTools(ToolProvider):
                 return await self._apply_patch(call, t0)
             if call.name == "list_dir":
                 return await self._list_dir(call, t0)
+            if call.name == "glob_files":
+                return await self._glob_files(call, t0)
+            if call.name == "grep_files":
+                return await self._grep_files(call, t0)
+            if call.name == "file_delete":
+                return await self._file_delete(call, t0)
             if call.name == "bash":
                 if not self._enable_bash:
                     return _fail(call, t0, "bash tool is disabled in config")
@@ -939,6 +1052,173 @@ class BuiltinTools(ToolProvider):
             side_effects=(),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
+
+    async def _glob_files(self, call: ToolCall, t0: float) -> ToolResult:
+        """B-46: pure-stdlib glob. Cross-platform — works on Windows
+        without needing find / fd / ripgrep installed."""
+        pattern = str(call.args.get("pattern") or "").strip()
+        if not pattern:
+            return _fail(call, t0, "missing 'pattern'")
+        root_arg = call.args.get("root")
+        root = Path(str(root_arg)) if root_arg else self._cwd_default()
+        try:
+            root = root.resolve()
+        except OSError as exc:
+            return _fail(call, t0, f"bad root: {exc}")
+        self._check_allowed(root)
+        if not root.is_dir():
+            return _fail(call, t0, f"not a directory: {root}")
+        try:
+            limit = int(call.args.get("limit") or 200)
+        except (TypeError, ValueError):
+            limit = 200
+        limit = max(1, min(limit, 2000))
+        results: list[str] = []
+        try:
+            # Path.glob handles ``**`` natively when pattern contains it.
+            iterator = root.glob(pattern)
+            for entry in iterator:
+                results.append(str(entry))
+                if len(results) >= limit:
+                    break
+        except (OSError, ValueError) as exc:
+            return _fail(call, t0, f"glob failed: {exc}")
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "root": str(root),
+                "pattern": pattern,
+                "matches": results,
+                "count": len(results),
+                "truncated": len(results) >= limit,
+            },
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _grep_files(self, call: ToolCall, t0: float) -> ToolResult:
+        """B-46: regex search across files. Pure stdlib re; iterates
+        line-by-line so a huge file doesn't OOM. Bounded by max_hits."""
+        import re as _re
+
+        pattern = str(call.args.get("pattern") or "")
+        if not pattern:
+            return _fail(call, t0, "missing 'pattern'")
+        glob_pat = str(call.args.get("glob") or "**/*")
+        root_arg = call.args.get("root")
+        root = Path(str(root_arg)) if root_arg else self._cwd_default()
+        try:
+            root = root.resolve()
+        except OSError as exc:
+            return _fail(call, t0, f"bad root: {exc}")
+        self._check_allowed(root)
+        if not root.is_dir():
+            return _fail(call, t0, f"not a directory: {root}")
+        try:
+            max_hits = int(call.args.get("max_hits") or 200)
+        except (TypeError, ValueError):
+            max_hits = 200
+        max_hits = max(1, min(max_hits, 2000))
+        flags = _re.IGNORECASE if call.args.get("case_insensitive") else 0
+        try:
+            rx = _re.compile(pattern, flags)
+        except _re.error as exc:
+            return _fail(call, t0, f"bad regex: {exc}")
+
+        hits: list[dict[str, Any]] = []
+        files_scanned = 0
+        try:
+            for path in root.glob(glob_pat):
+                if not path.is_file():
+                    continue
+                files_scanned += 1
+                # Skip obvious binary / large files cheaply.
+                try:
+                    if path.stat().st_size > 5_000_000:
+                        continue
+                except OSError:
+                    continue
+                try:
+                    with path.open("r", encoding="utf-8", errors="replace") as fh:
+                        for lineno, line in enumerate(fh, 1):
+                            if rx.search(line):
+                                hits.append({
+                                    "path": str(path),
+                                    "line": lineno,
+                                    "text": line.rstrip("\n")[:300],
+                                })
+                                if len(hits) >= max_hits:
+                                    raise StopIteration
+                except OSError:
+                    continue
+        except StopIteration:
+            pass
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "root": str(root),
+                "pattern": pattern,
+                "glob": glob_pat,
+                "files_scanned": files_scanned,
+                "hits": hits,
+                "hit_count": len(hits),
+                "truncated": len(hits) >= max_hits,
+            },
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _file_delete(self, call: ToolCall, t0: float) -> ToolResult:
+        """B-46: cross-platform file/dir delete. Refuses non-empty dirs
+        unless ``recursive=true``. Honours allowed_dirs sandbox."""
+        import shutil as _shutil
+
+        raw_path = call.args.get("path")
+        if not isinstance(raw_path, str) or not raw_path:
+            return _fail(call, t0, "missing 'path'")
+        path = Path(raw_path)
+        try:
+            path = path.resolve()
+        except OSError as exc:
+            return _fail(call, t0, f"bad path: {exc}")
+        self._check_allowed(path)
+        if not path.exists():
+            return _fail(call, t0, f"path does not exist: {path}")
+        recursive = bool(call.args.get("recursive", False))
+        kind = "dir" if path.is_dir() else "file"
+        try:
+            if path.is_dir():
+                if recursive:
+                    _shutil.rmtree(path)
+                else:
+                    # rmdir refuses non-empty
+                    path.rmdir()
+            else:
+                path.unlink()
+        except OSError as exc:
+            return _fail(call, t0, f"delete failed: {exc}")
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "path": str(path),
+                "kind": kind,
+                "recursive": recursive if kind == "dir" else False,
+            },
+            side_effects=(str(path),),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    def _cwd_default(self) -> Path:
+        """Resolve the workspace root for tools that take an optional
+        ``root``. Falls back to cwd when no workspace is wired."""
+        try:
+            if self._workspace_root_provider is not None:
+                v = self._workspace_root_provider()
+                if v is not None:
+                    return Path(str(v))
+        except Exception:  # noqa: BLE001
+            pass
+        return Path(".").resolve()
 
     # ── bash ──────────────────────────────────────────────────────────
 

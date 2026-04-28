@@ -19,6 +19,7 @@ const html = window.__xmc.htm.bind(h);
 
 import { apiGet } from "../lib/api.js";
 import { toast } from "../lib/toast.js";
+import { confirmDialog } from "../lib/dialog.js";
 
 // ── shared ────────────────────────────────────────────────────────────
 
@@ -308,7 +309,12 @@ function IdentityTab({ token }) {
   };
 
   const onDedupe = async () => {
-    if (!confirm("整理重复条目（合并同一事实的多次写入，保留最早日期）？该操作不可撤销但只删重复，不删唯一内容。")) return;
+    const ok = await confirmDialog({
+      title: "整理重复条目",
+      body: "合并同一事实的多次写入，保留最早日期。\n该操作不可撤销但只删重复，不删唯一内容。",
+      confirmLabel: "整理",
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       const r = await apiPost("/api/v2/profiles/active/dedupe", token, {});

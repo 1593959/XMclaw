@@ -178,10 +178,17 @@ export function applyEvent(chat, envelope) {
     case "llm_response": {
       // Final assistant turn. If we never saw chunks (non-streaming model),
       // create the bubble in one shot.
+      // B-46: an LLM call that errored out emits {ok: false, error: ...}
+      // with no text. Mark the bubble as 'error' (not 'complete') so the
+      // user sees the failure instead of an empty completed bubble, and
+      // clear `phase` so the "正在调用 LLM · Ns" indicator stops ticking.
       const id = corr;
       const finalText = typeof payload.content === "string"
         ? payload.content
         : (payload.text || "");
+      const ok = payload.ok !== false;
+      const finalStatus = ok ? "complete" : "error";
+      const errBody = !ok ? `LLM 调用失败：${payload.error || "未知"}` : "";
       const idx = chat.messages.findIndex((m) => m.id === id);
       if (idx === -1) {
         return {
@@ -190,8 +197,9 @@ export function applyEvent(chat, envelope) {
           messages: chat.messages.concat({
             id,
             role: "assistant",
-            content: finalText,
-            status: "complete",
+            content: finalText || errBody,
+            status: finalStatus,
+            phase: null,
             ts,
             toolCalls: [],
           }),
@@ -205,8 +213,9 @@ export function applyEvent(chat, envelope) {
           // If the server sent the canonical full text, prefer it over
           // accumulated chunks — this is how we recover from a dropped
           // chunk mid-stream.
-          content: finalText || m.content,
-          status: "complete",
+          content: finalText || m.content || errBody,
+          status: finalStatus,
+          phase: null,
           ts,
         })),
       };
@@ -272,21 +281,33 @@ export function applyEvent(chat, envelope) {
       // Always render as an inline system bubble so the user can see why a
       // turn was blocked.
       const id = "antireq_" + corr;
-      // B-38: a violation event terminates the turn — clear
-      // pendingAssistantId so the Stop button flips back to Send and
-      // the streaming spinner stops. Without this clear, after a
-      // cancel the UI stays in "busy" forever even though run_turn
-      // already returned.
+      // B-38 + B-46: a violation event terminates the turn. Two cleanups:
+      //   1) clear pendingAssistantId so Stop flips back to Send.
+      //   2) flip the in-flight assistant bubble's status from
+      //      'thinking'/'streaming' → 'error' so the "正在调用 LLM · Ns"
+      //      indicator stops ticking. Without (2) the indicator stuck at
+      //      thousands of seconds — the LLM call legitimately ended (the
+      //      anti_req fired), but the bubble never got a terminal status
+      //      because llm_response wasn't emitted (the violation took its
+      //      place).
+      const reason = payload.reason || payload.message || payload.kind || "anti-requirement violation";
+      const haveBubble = chat.messages.findIndex((m) => m.id === corr) !== -1;
+      const messages = chat.messages.concat({
+        id,
+        role: "system",
+        content: "Blocked: " + reason,
+        status: "error",
+        ts,
+      });
+      const finalMessages = haveBubble
+        ? upsertById(messages, corr, (m) => (
+            m.status === "complete" ? m : { ...m, status: "error", phase: null }
+          ))
+        : messages;
       return {
         ...chat,
         pendingAssistantId: null,
-        messages: chat.messages.concat({
-          id,
-          role: "system",
-          content: "Blocked: " + (payload.reason || payload.message || payload.kind || "anti-requirement violation"),
-          status: "error",
-          ts,
-        }),
+        messages: finalMessages,
       };
     }
 

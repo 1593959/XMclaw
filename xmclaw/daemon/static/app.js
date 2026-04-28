@@ -35,6 +35,7 @@ import {
 // Button surface inside Chat / Settings / Doctor etc.). Shell-level
 // renderer comes from HermesAppShell below.
 import { ToastViewport, toast } from "./lib/toast.js";
+import { DialogViewport } from "./lib/dialog.js";
 // Hermes 1:1 port — IS the shell. No legacy fallback.
 import { AppShell as HermesAppShell } from "./components/organisms/AppShell.js";
 // Side-effect: applies the persisted Hermes theme (or LENS_0 default)
@@ -323,6 +324,7 @@ function App({ state }) {
     <${HermesAppShell} activePath=${state.route.path} token=${state.auth.token}>
       ${route(state)}
       <${ToastViewport} />
+      <${DialogViewport} />
     </${HermesAppShell}>
   `;
 }
