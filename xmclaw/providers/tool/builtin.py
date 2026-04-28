@@ -1406,7 +1406,15 @@ class BuiltinTools(ToolProvider):
 
     async def _file_delete(self, call: ToolCall, t0: float) -> ToolResult:
         """B-46: cross-platform file/dir delete. Refuses non-empty dirs
-        unless ``recursive=true``. Honours allowed_dirs sandbox."""
+        unless ``recursive=true``. Honours allowed_dirs sandbox.
+
+        B-62: refuses to delete a sandbox root itself, even when the
+        path resolves "inside" the sandbox. Otherwise an agent given
+        ``allowed_dirs=["/home/proj"]`` could call
+        ``file_delete("/home/proj", recursive=True)`` and nuke the
+        whole project including .git — sandbox-respecting in name,
+        catastrophic in effect.
+        """
         import shutil as _shutil
 
         raw_path = call.args.get("path")
@@ -1418,6 +1426,20 @@ class BuiltinTools(ToolProvider):
         except OSError as exc:
             return _fail(call, t0, f"bad path: {exc}")
         self._check_allowed(path)
+        # B-62 guard: deny deletion when path IS one of the sandbox
+        # roots (not just inside them). Apply only when sandbox is on
+        # — without sandbox, there's no notion of "root to protect".
+        if self._allowed is not None:
+            for root in self._allowed:
+                try:
+                    if path.samefile(root):
+                        return _fail(
+                            call, t0,
+                            f"refused: {path} is a sandbox root; deleting "
+                            f"it would wipe the entire allowlisted area",
+                        )
+                except OSError:
+                    continue
         if not path.exists():
             return _fail(call, t0, f"path does not exist: {path}")
         recursive = bool(call.args.get("recursive", False))
