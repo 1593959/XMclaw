@@ -1115,6 +1115,22 @@ def build_agent_from_config(
     else:
         token_cap = None
 
+    # B-55: hand the EmbeddingProvider to AgentLoop too — without it
+    # cross-session memory prefetch falls back to "most recent items"
+    # rather than semantically related ones. The same embedder the
+    # indexer + memory_search use. Variable may be unbound if the
+    # memory-bridge branch above didn't run; resolve cleanly.
+    try:
+        agent_embedder = embedder  # noqa: F821 — bound in B-40 branch above
+    except NameError:
+        agent_embedder = None
+    if agent_embedder is None:
+        try:
+            from xmclaw.providers.memory.embedding import build_embedding_provider
+            agent_embedder = build_embedding_provider(cfg)
+        except Exception:  # noqa: BLE001
+            agent_embedder = None
+
     return AgentLoop(
         llm=llm, bus=bus, tools=tools,
         system_prompt=system_prompt,
@@ -1125,4 +1141,5 @@ def build_agent_from_config(
         llm_registry=registry,
         memory=memory_arg,
         compression_token_cap=token_cap,
+        embedder=agent_embedder,
     )

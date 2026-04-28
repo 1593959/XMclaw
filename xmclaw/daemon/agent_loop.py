@@ -437,6 +437,7 @@ class AgentLoop:
         llm_registry: LLMRegistry | None = None,
         memory: Any = None,
         memory_top_k: int = 3,
+        embedder: Any = None,
     ) -> None:
         self._llm = llm
         self._bus = bus
@@ -527,6 +528,11 @@ class AgentLoop:
         # code reading agent._memory still gets a working .query/.put.
         self._memory = self._memory_manager
         self._memory_top_k = memory_top_k
+        # B-55: optional embedder so cross-session memory prefetch
+        # actually does semantic retrieval (not just "show me recent
+        # items"). When None, falls back to keyword-only via the
+        # manager's hybrid_query → query() chain.
+        self._embedder = embedder
 
     def clear_session(self, session_id: str) -> None:
         """Drop a session's conversation history. Called by the WS gateway
@@ -1189,12 +1195,40 @@ class AgentLoop:
                         + prefetch_block
                         + "\n</memory-context>"
                     )
-                # Pull a wider window than top_k so we have room to
-                # filter out same-session + stale items below.
-                hits = await self._memory_manager.query(
-                    layer="long",
-                    k=max(self._memory_top_k * 4, 12),
-                ) if not prefetch_block else []
+                # B-55: pass user_message as text + embed it (when an
+                # embedder is wired) so cross-session recall is
+                # semantically related to what the user just asked
+                # — was previously "most recent items" which is
+                # noise. Hybrid mode merges vector + keyword via RRF
+                # (B-50). Pull a wider window than top_k so we have
+                # room to filter out same-session + stale items below.
+                if not prefetch_block:
+                    q_embedding: list[float] | None = None
+                    if self._embedder is not None and user_message:
+                        try:
+                            vecs = await self._embedder.embed([user_message])
+                            if vecs and vecs[0]:
+                                q_embedding = list(vecs[0])
+                        except Exception:  # noqa: BLE001
+                            q_embedding = None
+                    try:
+                        hits = await self._memory_manager.query(
+                            layer="long",
+                            text=user_message,
+                            embedding=q_embedding,
+                            k=max(self._memory_top_k * 4, 12),
+                            hybrid=True,
+                        )
+                    except TypeError:
+                        # Older MemoryManager without hybrid kwarg.
+                        hits = await self._memory_manager.query(
+                            layer="long",
+                            text=user_message,
+                            embedding=q_embedding,
+                            k=max(self._memory_top_k * 4, 12),
+                        )
+                else:
+                    hits = []
                 # Filter out current session + very-recent items, then
                 # render. Limit total ctx to ~2 KB so we don't blow up
                 # prompt cost.
