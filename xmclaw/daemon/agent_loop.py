@@ -55,6 +55,7 @@ from xmclaw.daemon.session_store import SessionStore
 from xmclaw.providers.llm.base import LLMProvider, Message
 from xmclaw.providers.tool.base import ToolProvider
 from xmclaw.security import (
+    SOURCE_MEMORY_RECALL,
     SOURCE_TOOL_RESULT,
     PolicyMode,
     apply_policy,
@@ -1257,6 +1258,32 @@ class AgentLoop:
                         snippet = (h.text or "").strip()
                         if len(snippet) > 600:
                             snippet = snippet[:600] + "…"
+                        # B-61: scan each chunk through the prompt-
+                        # injection policy with SOURCE_MEMORY_RECALL.
+                        # An attacker could have planted "ignore all
+                        # previous instructions and …" in the past;
+                        # without this scan it would silently land in
+                        # the user message via the <memory-context>
+                        # block. Blocked chunks are skipped (with an
+                        # event for observability); flagged-but-ok
+                        # chunks pass through (DETECT_ONLY by default).
+                        decision = apply_policy(
+                            snippet,
+                            policy=self._injection_policy,
+                            source=SOURCE_MEMORY_RECALL,
+                            extra={"chunk_id": getattr(h, "id", "?")},
+                        )
+                        if decision.event is not None:
+                            try:
+                                await publish(
+                                    EventType.PROMPT_INJECTION_DETECTED,
+                                    decision.event,
+                                )
+                            except Exception:  # noqa: BLE001
+                                pass
+                        if decision.blocked:
+                            continue  # drop this chunk, keep filtering
+                        snippet = decision.content
                         line = f"{i}. [{ts}] {snippet}"
                         if total + len(line) > 2048:
                             break
