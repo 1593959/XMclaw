@@ -115,6 +115,65 @@ async def list_profiles() -> JSONResponse:
 # ──────────────────────────────────────────────────────────────────────
 
 
+@router.post("/active/dedupe")
+async def dedupe_active_profile(request: Request) -> JSONResponse:
+    """One-shot cleanup of duplicate bullets accumulated by earlier
+    dedup-less reflection runs. Walks each of the 7 canonical persona
+    files in the active profile dir, collapses semantically-identical
+    bullets (keeping first occurrence), reports what was dropped.
+
+    Idempotent — running twice in a row makes no further changes.
+    """
+    from xmclaw.providers.tool.builtin import collapse_existing_duplicates
+
+    profile_id, pdir = _resolve_active_profile_dir(request)
+    pdir.mkdir(parents=True, exist_ok=True)
+    summary: list[dict[str, Any]] = []
+    for canonical in _ALLOWED_BASENAMES:
+        path = pdir / canonical
+        if not path.is_file():
+            continue
+        try:
+            before = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        after = collapse_existing_duplicates(before)
+        if after == before:
+            summary.append({
+                "file": canonical,
+                "before_bytes": len(before.encode("utf-8")),
+                "after_bytes": len(before.encode("utf-8")),
+                "removed_lines": 0,
+            })
+            continue
+        try:
+            path.write_text(after, encoding="utf-8")
+        except OSError as exc:
+            summary.append({"file": canonical, "error": str(exc)})
+            continue
+        removed = before.count("\n") - after.count("\n")
+        summary.append({
+            "file": canonical,
+            "before_bytes": len(before.encode("utf-8")),
+            "after_bytes": len(after.encode("utf-8")),
+            "removed_lines": removed,
+        })
+
+    # Bust the system-prompt cache so the next agent turn reads the
+    # cleaned-up files.
+    try:
+        from xmclaw.core.persona.assembler import clear_cache
+        clear_cache()
+    except Exception:  # noqa: BLE001
+        pass
+
+    return JSONResponse({
+        "ok": True,
+        "profile_id": profile_id,
+        "files": summary,
+    })
+
+
 @router.get("/active/agent_writes")
 async def list_agent_writes(request: Request) -> JSONResponse:
     """Return the agent-wrote-this sidecar log so the Memory UI can

@@ -169,12 +169,41 @@ function generateSkillMd(pattern, options = {}) {
   const skillName = pattern.category || 'auto-skill';
   const level = options.level || 0;
 
+  // B-23: derive triggers up front so they land in BOTH the YAML
+  // frontmatter (where XMclaw's LearnedSkillsLoader reads them via
+  // signals_match) AND in the body. Was: only the body had triggers,
+  // frontmatter signals_match was empty → LearnedSkillsLoader had
+  // nothing to match on, agent never recognized when to fire.
+  const triggers = [];
+  if (pattern.signature) {
+    for (const t of String(pattern.signature).split(',')) {
+      const trimmed = t.trim();
+      if (trimmed) triggers.push(trimmed);
+    }
+  }
+  if (Array.isArray(pattern.signals)) {
+    for (const s of pattern.signals) {
+      if (typeof s === 'string' && s.trim()) triggers.push(s.trim());
+    }
+  }
+  if (pattern.category) triggers.push(`category:${pattern.category}`);
+  // de-dup while preserving order
+  const seen = new Set();
+  const uniqTriggers = [];
+  for (const t of triggers) {
+    if (!seen.has(t)) { seen.add(t); uniqTriggers.push(t); }
+  }
+  // YAML list rendering — indented dashes under the key.
+  const triggersYaml = uniqTriggers.length
+    ? '\nsignals_match:\n' + uniqTriggers.map(t => `  - ${JSON.stringify(t)}`).join('\n')
+    : '';
+
   let content = `---
 name: ${skillName}
-description: "${pattern.description || '自动生成的 Skill'}"
+description: "${(pattern.description || '自动生成的 Skill').replace(/"/g, '\\"')}"
 level: ${level}
 auto_created: true
-created_at: ${new Date().toISOString()}
+created_at: ${new Date().toISOString()}${triggersYaml}
 ---
 
 # 使用时机
@@ -194,9 +223,9 @@ created_at: ${new Date().toISOString()}
 直接调用 ${skillName} 的主要函数，传入对应的上下文参数。具体函数取决于 index.js 中的导出。
 `;
 
-  if (pattern.signature) {
-    const triggers = pattern.signature.split(',').map(t => '  - ' + t.trim()).join('\n');
-    content += '\n```yaml\ntriggers:\n' + triggers + '\n```\n';
+  if (uniqTriggers.length) {
+    content += '\n## 触发信号\n\n';
+    content += uniqTriggers.map(t => `- \`${t}\``).join('\n') + '\n';
   }
 
   if (level >= 1) {

@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import json
+import re
 import time
 from pathlib import Path
 
@@ -1238,6 +1239,29 @@ class BuiltinTools(ToolProvider):
 
 # ── helpers ───────────────────────────────────────────────────────────
 
+_BULLET_DATE_RE = re.compile(
+    r"^\s*-\s*\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2}:\d{2})?(?:\s+[A-Z]{2,5})?\s*[:：]?\s*"
+)
+
+
+def _bullet_core(line: str) -> str:
+    """Extract the meat of a bullet for dedup comparison.
+
+    Strips ``- YYYY-MM-DD: `` (and variants with time / TZ) plus
+    surrounding whitespace, then lowercases and collapses internal
+    whitespace. Two bullets compare equal iff they say the same thing
+    regardless of when they were written.
+    """
+    cleaned = _BULLET_DATE_RE.sub("", line.strip())
+    # Some entries got nested ``YYYY-MM-DD: YYYY-MM-DD: ...`` from
+    # earlier dedup-less runs — strip a second date prefix too.
+    cleaned = _BULLET_DATE_RE.sub("", cleaned).strip()
+    # Normalise punctuation/whitespace.
+    cleaned = re.sub(r"\s+", " ", cleaned).lower()
+    # Strip trailing punctuation that doesn't change semantics.
+    return cleaned.rstrip(".。,，!！?？")
+
+
 def _append_under_section(
     existing: str, *, section_header: str, bullet: str, placeholder_title: str,
 ) -> str:
@@ -1250,6 +1274,12 @@ def _append_under_section(
       of that section (just before the next ``## `` heading or EOF).
     * If the section is missing, append a new ``## section`` block at
       the bottom of the file with the bullet under it.
+
+    Dedup (B-23): if a semantically-identical bullet already exists
+    anywhere in the file (date stripped + whitespace normalised), the
+    write is a no-op. Without this, every reflection adds the same
+    insight again — MEMORY.md / USER.md grow unboundedly with
+    duplicates.
 
     Strips a trailing newline from ``existing`` first so we don't accumulate
     blank lines on every call.
@@ -1264,6 +1294,20 @@ def _append_under_section(
 
     body = existing.rstrip("\n")
     lines = body.split("\n")
+
+    # Dedup: skip the write entirely if the same fact (after date strip
+    # + normalisation) already appears in the file. We compare against
+    # ALL bullets, not just the target section, because the agent
+    # sometimes files things under different headings on different days.
+    incoming_core = _bullet_core(bullet)
+    if incoming_core:
+        for ln in lines:
+            stripped = ln.strip()
+            if not stripped or not stripped.startswith("-"):
+                continue
+            if _bullet_core(stripped) == incoming_core:
+                # Already there — return file unchanged.
+                return existing if existing.endswith("\n") else existing + "\n"
 
     # Locate the section.
     try:
@@ -1294,6 +1338,31 @@ def _append_under_section(
         + lines[insert_at:]
     )
     return "\n".join(new_lines) + "\n"
+
+
+def collapse_existing_duplicates(
+    existing: str, *, max_bullets_per_section: int = 50,
+) -> str:
+    """One-shot cleanup: walk an already-bloated MEMORY/USER.md and
+    drop bullets that have a duplicate earlier in the file. Keeps
+    the *first* occurrence (so the original date stamp survives).
+
+    Used by ``cleanup_persona_duplicates`` on demand — e.g. via a
+    REST endpoint or the Memory page UI's "整理" button.
+    """
+    lines = existing.split("\n")
+    seen: set[str] = set()
+    out: list[str] = []
+    for ln in lines:
+        stripped = ln.strip()
+        if stripped.startswith("-"):
+            core = _bullet_core(stripped)
+            if core and core in seen:
+                continue
+            if core:
+                seen.add(core)
+        out.append(ln)
+    return "\n".join(out)
 
 
 def _fail(call: ToolCall, t0: float, err: str) -> ToolResult:

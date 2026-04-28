@@ -1185,7 +1185,18 @@ def create_app(
 
         try:
             while True:
-                raw = await ws.receive_text()
+                try:
+                    raw = await ws.receive_text()
+                except RuntimeError as exc:
+                    # B-23: client disconnected before the server's
+                    # accept() handshake fully completed (rare race
+                    # under heavy test load). Starlette raises
+                    # ``RuntimeError("WebSocket is not connected. Need
+                    # to call "accept" first.")`` — log nothing, exit
+                    # the loop the same way as a clean disconnect.
+                    if "not connected" in str(exc).lower():
+                        break
+                    raise
                 try:
                     frame: Any = json.loads(raw)
                 except json.JSONDecodeError:

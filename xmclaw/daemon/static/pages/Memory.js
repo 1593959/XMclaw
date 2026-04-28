@@ -126,6 +126,26 @@ function IdentityTab({ token }) {
     }
   };
 
+  const onDedupe = async () => {
+    if (!confirm("整理重复条目（合并同一事实的多次写入，保留最早日期）？该操作不可撤销但只删重复，不删唯一内容。")) return;
+    setBusy(true);
+    try {
+      const r = await apiPost("/api/v2/profiles/active/dedupe", token, {});
+      const removed = (r.files || []).reduce((acc, f) => acc + (f.removed_lines || 0), 0);
+      toast.success(`整理完成 — 删除 ${removed} 行重复内容`);
+      load();
+      // refresh viewer to show the cleaned content
+      if (active && state.data) {
+        const f = state.data.files.find((x) => x.basename === active);
+        if (f) setDraft(f.content || "");
+      }
+    } catch (e) {
+      toast.error("整理失败：" + (e.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (state.status === "loading") {
     return html`<p class="xmc-datapage__hint">加载中…</p>`;
   }
@@ -156,8 +176,9 @@ function IdentityTab({ token }) {
         <code>${data.profile_id}</code>
         <small class="xmc-datapage__subtitle" style="margin-left:.5rem">${data.profile_dir}</small>
       </header>
-      <p class="xmc-datapage__subtitle" style="margin:.4rem 0 .8rem">
-        这 7 个文件是 agent 的"灵魂"。每次对话开始时会被注入 system prompt（顺序固定，按 OpenClaw 约定）。改完保存即生效，无需重启 daemon。
+      <p class="xmc-datapage__subtitle" style="margin:.4rem 0 .8rem;display:flex;justify-content:space-between;align-items:center;gap:.5rem;flex-wrap:wrap">
+        <span>这 7 个文件是 agent 的"灵魂"。每次对话开始时会被注入 system prompt。改完保存即生效，无需重启 daemon。</span>
+        <button type="button" class="xmc-h-btn xmc-h-btn--ghost" onClick=${onDedupe} disabled=${busy} title="合并语义重复的条目（保留最早日期）" style="flex:0 0 auto">整理重复</button>
       </p>
       <div class="xmc-datapage__split">
         <aside class="xmc-datapage__sidebar">

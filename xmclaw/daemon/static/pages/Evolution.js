@@ -35,6 +35,7 @@ function AutoEvoPanel({ token }) {
   const [genes, setGenes] = useState(null);
   const [events, setEvents] = useState(null);
   const [capsules, setCapsules] = useState(null);
+  const [learnedSkills, setLearnedSkills] = useState(null);
   const [busy, setBusy] = useState(null); // "start"|"stop"|"observe"|"learn"|"evolve"|null
   const [logTail, setLogTail] = useState(null);
 
@@ -43,6 +44,7 @@ function AutoEvoPanel({ token }) {
     apiGet("/api/v2/auto_evo/genes", token).then((d) => setGenes(d.genes || [])).catch(() => setGenes([]));
     apiGet("/api/v2/auto_evo/events?tail=50", token).then((d) => setEvents(d.events || [])).catch(() => setEvents([]));
     apiGet("/api/v2/auto_evo/capsules?tail=20", token).then((d) => setCapsules(d.capsules || [])).catch(() => setCapsules([]));
+    apiGet("/api/v2/auto_evo/learned_skills", token).then((d) => setLearnedSkills(d.skills || [])).catch(() => setLearnedSkills([]));
   }, [token]);
 
   const loadLog = useCallback(() => {
@@ -107,6 +109,10 @@ function AutoEvoPanel({ token }) {
           工作目录 <code>${status.workspace}</code>。
         </p>
         <div style="display:flex;gap:.75rem;margin:.5rem 0;flex-wrap:wrap">
+          <div class="xmc-datapage__row" style="flex:1;min-width:120px;background:color-mix(in srgb, var(--color-primary, #6aa3f0) 14%, transparent);border-color:color-mix(in srgb, var(--color-primary, #6aa3f0) 35%, transparent)">
+            <small>已学技能 (agent 可用)</small>
+            <strong style="font-size:1.6rem">${status.counts?.learned_skills ?? (learnedSkills || []).length}</strong>
+          </div>
           <div class="xmc-datapage__row" style="flex:1;min-width:120px">
             <small>事件</small>
             <strong style="font-size:1.4rem">${status.counts?.events || 0}</strong>
@@ -118,10 +124,6 @@ function AutoEvoPanel({ token }) {
           <div class="xmc-datapage__row" style="flex:1;min-width:120px">
             <small>封包 (Capsule)</small>
             <strong style="font-size:1.4rem">${status.counts?.capsules || 0}</strong>
-          </div>
-          <div class="xmc-datapage__row" style="flex:1;min-width:120px">
-            <small>已注册 Gene</small>
-            <strong style="font-size:1.4rem">${(genes || []).length}</strong>
           </div>
         </div>
         <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.5rem">
@@ -139,6 +141,39 @@ function AutoEvoPanel({ token }) {
             `
           : null}
       </div>
+
+      <h3 style="margin:1rem 0 .5rem">已学技能（agent 实际可调用）${(learnedSkills || []).length ? ` (${learnedSkills.length})` : ""}</h3>
+      <p class="xmc-datapage__subtitle" style="margin-bottom:.5rem">
+        这些 SKILL.md 已被 LearnedSkillsLoader 注入到 system prompt — agent 在下一轮对话能直接读到、按 trigger 触发。
+        Gene/Capsule 是调度器内部状态，<strong>真正能用的是这里列出的 Skill</strong>。
+      </p>
+      ${(learnedSkills || []).length === 0
+        ? html`<p class="xmc-datapage__empty">还没有 — 当 xm-auto-evo 检测到重复模式后会自动生成</p>`
+        : html`
+            <ul class="xmc-datapage__list">
+              ${(learnedSkills || []).slice(0, 20).map((s) => {
+                const triggers = (s.triggers || []).slice(0, 4);
+                return html`
+                  <li class="xmc-datapage__row" key=${s.skill_id}>
+                    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:.5rem;flex-wrap:wrap">
+                      <strong>${s.title || s.skill_id}</strong>
+                      <code style="font-size:.7rem;color:var(--xmc-fg-muted)">${s.skill_id}</code>
+                    </div>
+                    ${s.description
+                      ? html`<small style="display:block;margin-top:.2rem;color:var(--xmc-fg-muted)">${s.description.slice(0, 160)}</small>`
+                      : null}
+                    ${triggers.length
+                      ? html`
+                          <div style="margin-top:.3rem;display:flex;gap:.3rem;flex-wrap:wrap">
+                            ${triggers.map((t) => html`<code style="font-size:.7rem;background:color-mix(in srgb, var(--color-primary, #6aa3f0) 12%, transparent);padding:1px 6px;border-radius:4px" key=${t}>${t}</code>`)}
+                          </div>
+                        `
+                      : html`<small style="margin-top:.2rem;display:block;color:var(--xmc-fg-muted);font-size:.7rem">⚠ 这个 SKILL 没有 trigger，agent 可能不知道何时调它（B-23 已修写入器）</small>`}
+                  </li>
+                `;
+              })}
+            </ul>
+          `}
 
       <h3 style="margin:1rem 0 .5rem">已注册 Gene (${(genes || []).length})</h3>
       ${(genes || []).length === 0

@@ -127,3 +127,4 @@ sdist/
 var/
 wheels/
 .installed.cfg
+MEMORY.md
