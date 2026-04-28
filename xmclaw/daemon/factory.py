@@ -1069,9 +1069,14 @@ def build_agent_from_config(
     # ``memory_search`` tool surfaces. Walk the composite chain to
     # find the BuiltinTools instance — it might be inside a
     # CompositeToolProvider added by the memory-bridge step above.
+    #
+    # B-42: also wire the EmbeddingProvider so memory_search embeds
+    # the query and pulls real semantic hits (not just keyword) from
+    # SqliteVecMemory.
     if memory_arg is not None and tools is not None:
         from xmclaw.providers.tool.builtin import BuiltinTools
         from xmclaw.providers.tool.composite import CompositeToolProvider
+        from xmclaw.providers.memory.embedding import build_embedding_provider
 
         def _walk(p):
             if isinstance(p, BuiltinTools):
@@ -1079,9 +1084,21 @@ def build_agent_from_config(
             elif isinstance(p, CompositeToolProvider):
                 for child in getattr(p, "_children", []):
                     yield from _walk(child)
+
+        embedder = None
+        try:
+            embedder = build_embedding_provider(cfg)
+        except Exception:  # noqa: BLE001
+            embedder = None
+
         for bt in _walk(tools):
             try:
                 bt.set_memory_manager(memory_arg)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                if embedder is not None:
+                    bt.set_embedder(embedder)
             except Exception:  # noqa: BLE001
                 pass
 

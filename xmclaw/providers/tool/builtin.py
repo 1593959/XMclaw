@@ -546,6 +546,7 @@ class BuiltinTools(ToolProvider):
         persona_dir_provider: "object | None" = None,
         persona_writeback: "object | None" = None,
         memory_manager: "object | None" = None,
+        embedder: "object | None" = None,
     ) -> None:
         self._allowed = (
             [Path(d).resolve() for d in allowed_dirs] if allowed_dirs else None
@@ -585,6 +586,13 @@ class BuiltinTools(ToolProvider):
         # from list_tools — the agent doesn't get a tool that can't
         # do anything useful.
         self._memory_manager = memory_manager
+        # B-42: optional embedder so memory_search embeds the query
+        # and gets real semantic hits back. Without it, the tool falls
+        # through to MemoryManager.query's keyword path — same as before
+        # B-41/B-42, just less useful. Wired post-construction by the
+        # factory because EmbeddingProvider is built alongside the
+        # indexer (after BuiltinTools).
+        self._embedder = embedder
 
     def set_memory_manager(self, mgr: "object | None") -> None:
         """Wire (or clear) the MemoryManager AFTER construction.
@@ -595,6 +603,14 @@ class BuiltinTools(ToolProvider):
         ``list_tools`` accordingly.
         """
         self._memory_manager = mgr
+
+    def set_embedder(self, embedder: "object | None") -> None:
+        """B-42: wire (or clear) the EmbeddingProvider post-construction.
+
+        When set, ``memory_search`` embeds the query and routes through
+        the vector path. When None, the tool keyword-searches.
+        """
+        self._embedder = embedder
 
     def list_tools(self) -> list[ToolSpec]:
         specs = [_FILE_READ_SPEC, _FILE_WRITE_SPEC, _APPLY_PATCH_SPEC, _LIST_DIR_SPEC]
@@ -1135,6 +1151,12 @@ class BuiltinTools(ToolProvider):
         """B-40: unified memory_search — fan a query across every wired
         memory provider via MemoryManager.query.
 
+        B-42: when an EmbeddingProvider is wired, the query gets
+        embedded first and the manager routes the dense vector to
+        SqliteVecMemory's KNN path — real semantic hits, not just
+        substring. Without an embedder we fall through to the
+        keyword path (same behaviour as B-40).
+
         Returns up to k hits per provider, each row carrying its
         originating provider in metadata.provider so the agent can
         tell vector hits from persona-bullet keyword hits.
@@ -1151,9 +1173,22 @@ class BuiltinTools(ToolProvider):
         if layer not in ("short", "working", "long"):
             return _fail(call, t0, f"unknown layer: {layer!r}")
 
+        # B-42: try semantic via the embedder; fall back to keyword on
+        # any failure so an embedding outage degrades gracefully.
+        embedding: list[float] | None = None
+        used_mode = "keyword"
+        if self._embedder is not None:
+            try:
+                vecs = await self._embedder.embed([query])  # type: ignore[union-attr]
+                if vecs and vecs[0]:
+                    embedding = list(vecs[0])
+                    used_mode = "semantic"
+            except Exception:  # noqa: BLE001
+                embedding = None
+
         try:
             hits = await self._memory_manager.query(  # type: ignore[union-attr]
-                layer, text=query, k=k,
+                layer, text=query, embedding=embedding, k=k,
             )
         except Exception as exc:  # noqa: BLE001
             return _fail(call, t0, f"memory_search failed: {exc}")
@@ -1174,6 +1209,7 @@ class BuiltinTools(ToolProvider):
                 "query": query,
                 "layer": layer,
                 "k": k,
+                "mode": used_mode,
                 "rows": rows,
                 "row_count": len(rows),
             },

@@ -952,6 +952,62 @@ class MemoryProviderConfigCheck(DoctorCheck):
         )
 
 
+class MemoryIndexerCheck(DoctorCheck):
+    """B-42: surface the state of the auto-indexer + embedding pipeline.
+
+    Three states:
+      * No embedding provider configured → INFO "indexer disabled"
+        (memory_search falls back to keyword scan)
+      * Provider configured but key missing → FAIL with hint to set
+        evolution.memory.embedding.api_key OR XMC_EMBEDDING_API_KEY
+      * Provider + key present → OK "model=<name> dim=<n>"
+
+    Doesn't probe the daemon or call the embedding API — that's the
+    daemon's job. This check is purely config-shape validation.
+    """
+
+    id = "memory_indexer"
+    name = "memory_indexer"
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        cfg = ctx.cfg or {}
+        sec = (((cfg.get("evolution") or {}).get("memory") or {})
+               .get("embedding") or {})
+        if not sec:
+            import os as _os
+            if _os.environ.get("XMC_EMBEDDING_API_KEY"):
+                return CheckResult(
+                    name=self.name, ok=True,
+                    detail="indexer enabled via XMC_EMBEDDING_API_KEY env var",
+                )
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="indexer disabled (no embedding key configured)",
+                advisory=(
+                    "to enable semantic memory_search, set "
+                    "evolution.memory.embedding.api_key in config OR "
+                    "XMC_EMBEDDING_API_KEY env var"
+                ),
+            )
+        api_key = sec.get("api_key")
+        import os as _os
+        if not api_key and not _os.environ.get("XMC_EMBEDDING_API_KEY"):
+            return CheckResult(
+                name=self.name, ok=False,
+                detail="embedding section present but no api_key",
+                advisory=(
+                    "set evolution.memory.embedding.api_key OR "
+                    "XMC_EMBEDDING_API_KEY env var"
+                ),
+            )
+        model = sec.get("model") or "text-embedding-3-small"
+        dim = sec.get("dimensions") or 1536
+        return CheckResult(
+            name=self.name, ok=True,
+            detail=f"indexer enabled: model={model} dim={dim}",
+        )
+
+
 class SkillRuntimeCheck(DoctorCheck):
     """Validate the ``runtime`` config section picks a known backend.
 
@@ -1404,6 +1460,7 @@ def build_default_registry() -> DoctorRegistry:
     reg.register(MemoryDbCheck())
     reg.register(MemoryProviderCheck())
     reg.register(MemoryProviderConfigCheck())
+    reg.register(MemoryIndexerCheck())
     reg.register(SkillRuntimeCheck())
     reg.register(ConnectivityCheck())
     reg.register(RoadmapLintCheck())
