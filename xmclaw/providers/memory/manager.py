@@ -169,6 +169,59 @@ class MemoryManager:
             except Exception:  # noqa: BLE001
                 pass
 
+    async def prefetch(self, query: str, *, session_id: str = "") -> str:
+        """Aggregate prefetched recall blocks across providers.
+
+        External provider returns first (its recall is usually
+        higher-signal); builtin appends below. Empty providers are
+        skipped silently. Failures are isolated per-provider.
+        """
+        parts: list[str] = []
+        for p in self._iter_external_first():
+            fn = getattr(p, "prefetch", None)
+            if fn is None:
+                continue
+            try:
+                blk = await fn(query, session_id=session_id) if _is_async_method(fn) \
+                    else fn(query, session_id=session_id)
+            except Exception:  # noqa: BLE001
+                continue
+            if blk:
+                parts.append(str(blk))
+        return "\n\n".join(parts)
+
+    async def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
+        """Fan-out: notify every provider to spin a background fetch
+        for the NEXT turn. Best-effort, non-blocking."""
+        for p in self._providers:
+            fn = getattr(p, "queue_prefetch", None)
+            if fn is None:
+                continue
+            try:
+                if _is_async_method(fn):
+                    await fn(query, session_id=session_id)
+                else:
+                    fn(query, session_id=session_id)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def on_pre_compress(self, messages: list) -> str:
+        """Aggregate pre-compression text from all providers — used
+        by future context compressor to preserve fact-extracted
+        insights when older messages get dropped."""
+        parts: list[str] = []
+        for p in self._providers:
+            fn = getattr(p, "on_pre_compress", None)
+            if fn is None:
+                continue
+            try:
+                blk = fn(messages)
+            except Exception:  # noqa: BLE001
+                continue
+            if blk:
+                parts.append(str(blk))
+        return "\n\n".join(parts)
+
     def system_prompt_block(self) -> str:
         """Concatenate static prompt blocks from all providers.
 

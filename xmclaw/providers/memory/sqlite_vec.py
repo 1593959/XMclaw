@@ -55,6 +55,11 @@ _DEFAULT_TTL: dict[str, float | None] = {
 class SqliteVecMemory(MemoryProvider):
     """sqlite-vec backed memory with hierarchical layers.
 
+    ``name="sqlite_vec"`` distinguishes from
+    :class:`BuiltinFileMemoryProvider` inside the
+    :class:`MemoryManager` — it counts as the "external" provider per
+    Hermes semantics (only one external allowed at a time).
+
     Parameters
     ----------
     db_path : Path
@@ -81,6 +86,8 @@ class SqliteVecMemory(MemoryProvider):
         works; we only take it as ``Any`` to avoid an import cycle
         through ``xmclaw.core.bus``.
     """
+
+    name = "sqlite_vec"
 
     def __init__(
         self,

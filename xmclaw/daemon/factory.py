@@ -946,16 +946,42 @@ def build_agent_from_config(
         workspace_dir=workspace_root,
         tool_names=[s.name for s in tool_specs],
     )
-    # Cross-session memory: build the same SqliteVecMemory instance the
-    # daemon already wires (build_memory_from_config) and hand it to the
-    # AgentLoop so run_turn can prefetch + write-back. Best-effort: if
-    # the memory store fails to init, agent stays usable without long-term
-    # recall — same posture as session_store above.
-    memory: SqliteVecMemory | None
+    # Cross-session memory: B-26 builds a MemoryManager with two
+    # providers — the BuiltinFileMemoryProvider (always-on, wraps
+    # MEMORY.md / USER.md) plus an external SqliteVecMemory when one
+    # builds successfully. Hermes-style: only ONE external provider
+    # at a time, builtin is non-removable. Both are best-effort: if
+    # init fails the agent stays usable without long-term recall.
+    from xmclaw.providers.memory.manager import MemoryManager
+    from xmclaw.providers.memory.builtin_file import BuiltinFileMemoryProvider
+
+    memory_manager = MemoryManager()
+    # Builtin file provider — backed by the persona profile dir.
     try:
-        memory = build_memory_from_config(cfg, bus=bus)
+        memory_manager.add_provider(
+            BuiltinFileMemoryProvider(
+                persona_dir_provider=lambda pd=profile_dir: pd,
+            )
+        )
     except Exception:  # noqa: BLE001
-        memory = None
+        pass
+    # External provider (SqliteVecMemory). Best-effort.
+    try:
+        external = build_memory_from_config(cfg, bus=bus)
+        if external is not None:
+            memory_manager.add_provider(external)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Keep an opt-out: tests / minimal configs that explicitly set
+    # memory.enabled=false get None instead of an empty-but-noisy
+    # manager.
+    mem_section = (cfg or {}).get("memory") or {}
+    if mem_section.get("enabled", True) is False and memory_manager.is_empty:
+        memory_arg = None
+    else:
+        memory_arg = memory_manager if not memory_manager.is_empty else None
+
     return AgentLoop(
         llm=llm, bus=bus, tools=tools,
         system_prompt=system_prompt,
@@ -964,5 +990,5 @@ def build_agent_from_config(
         prompt_injection_policy=policy,
         session_store=session_store,
         llm_registry=registry,
-        memory=memory,
+        memory=memory_arg,
     )
