@@ -104,7 +104,17 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         self._timeout_s = float(timeout_s)
 
     def is_available(self) -> bool:
-        return bool(self._api_key)
+        # B-43: Ollama / vLLM / local servers don't require an API key.
+        # Treat a localhost/127.0.0.1 base_url as auth-free — the
+        # admin opted in by pointing at a private endpoint. Cloud
+        # endpoints (OpenAI / DashScope etc) still need a key.
+        if self._api_key:
+            return True
+        host = self._base_url.lower()
+        for local in ("://localhost", "://127.0.0.1", "://0.0.0.0", "://[::1]"):
+            if local in host:
+                return True
+        return False
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
@@ -144,10 +154,12 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 
     async def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any] | None:
         url = f"{self._base_url}{path}"
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        # B-43: only set Authorization when we actually have a key —
+        # Ollama tolerates Bearer "" but some self-hosted shims reject
+        # malformed auth headers. Cleaner to omit.
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
         try:
             import httpx
             async with httpx.AsyncClient(timeout=self._timeout_s) as client:
@@ -227,7 +239,12 @@ def build_embedding_provider(cfg: dict | None) -> EmbeddingProvider | None:
 
 
 def _from_env() -> EmbeddingProvider | None:
-    if not os.environ.get("XMC_EMBEDDING_API_KEY"):
+    # B-43: allow an Ollama-style env config without a key — the
+    # base_url being localhost is the user's signal that auth isn't
+    # required.
+    has_key = bool(os.environ.get("XMC_EMBEDDING_API_KEY"))
+    has_local_url = bool(os.environ.get("XMC_EMBEDDING_BASE_URL"))
+    if not has_key and not has_local_url:
         return None
     p = OpenAIEmbeddingProvider(
         dimensions=int(os.environ.get("XMC_EMBEDDING_DIMENSIONS") or 1536),

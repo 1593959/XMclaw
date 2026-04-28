@@ -39,6 +39,7 @@ const TONE = {
   skill_outcome: "info",
   todo_updated: "info",
   context_compressed: "warn",
+  memory_indexed: "info",
 };
 
 // Friendly Chinese labels.
@@ -59,6 +60,7 @@ const LABEL = {
   skill_outcome: "技能结果",
   todo_updated: "Todos 更新",
   context_compressed: "上下文压缩",
+  memory_indexed: "记忆索引",
 };
 
 const EVENT_TYPES = [
@@ -75,6 +77,7 @@ const EVENT_TYPES = [
   "skill_outcome",
   "todo_updated",
   "context_compressed",
+  "memory_indexed",
 ];
 
 function fmtTs(ts) {
@@ -133,6 +136,13 @@ function shortPayload(ev) {
     const dropped = p.dropped_count != null ? p.dropped_count : "?";
     const tok = p.dropped_tokens_estimated != null ? p.dropped_tokens_estimated : "?";
     return `${trig} · dropped ${dropped} msgs (~${tok} tok)`;
+  }
+  if (t === "memory_indexed") {
+    const fc = p.files_changed != null ? p.files_changed : 0;
+    const ca = p.chunks_added != null ? p.chunks_added : 0;
+    const cd = p.chunks_deleted != null ? p.chunks_deleted : 0;
+    const ms = p.elapsed_ms != null ? Math.round(p.elapsed_ms) : "?";
+    return `${fc} files · +${ca}/-${cd} chunks · ${ms}ms`;
   }
   return JSON.stringify(p).slice(0, 120);
 }

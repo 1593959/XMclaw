@@ -7,11 +7,13 @@ CoPaw / QwenPaw solves this by file-watching ``MEMORY.md`` +
 ``memory/*.md`` and incrementally embedding chunks. This indexer is
 the XMclaw counterpart, minus the ``reme-ai`` black-box dependency.
 
-What it watches::
+What it watches (B-43: unified across all memory roots)::
 
     <persona_dir>/MEMORY.md
     <persona_dir>/USER.md
     <persona_dir>/memory/*.md      # daily episodic logs (B-40)
+    <file_memory_dir>/*.md         # web UI memory editor notes
+    <file_memory_dir>/journal/*.md # journal entries
 
 How it works:
 
@@ -88,6 +90,7 @@ class MemoryFileIndexer:
         embedder: "EmbeddingProvider",
         poll_interval_s: float = 10.0,
         layer: str = "long",
+        bus: "Any | None" = None,
     ) -> None:
         self._persona_dir_provider = persona_dir_provider
         self._vec = sqlite_vec
@@ -103,6 +106,10 @@ class MemoryFileIndexer:
         self._known_paths: set[str] = set()
         self._task: asyncio.Task | None = None
         self._stopped = asyncio.Event()
+        # B-43: optional bus for MEMORY_INDEXED events. Only emitted
+        # when a tick actually changed something so quiet polling
+        # doesn't flood the Trace page.
+        self._bus = bus
 
     @property
     def is_running(self) -> bool:
@@ -146,7 +153,12 @@ class MemoryFileIndexer:
 
         Counters: ``files_scanned``, ``files_changed``, ``chunks_added``,
         ``chunks_deleted``, ``chunks_unchanged``, ``files_removed``.
+
+        B-43: emits a MEMORY_INDEXED bus event when the tick actually
+        changed something (skipped on quiet polls).
         """
+        import time as _t
+        t0 = _t.perf_counter()
         counters = {
             "files_scanned": 0,
             "files_changed": 0,
@@ -196,24 +208,65 @@ class MemoryFileIndexer:
                 )
             self._mtime_cache.pop(missing, None)
             self._known_paths.discard(missing)
+
+        # B-43: emit MEMORY_INDEXED if we actually moved any rows.
+        if (
+            self._bus is not None
+            and (counters["files_changed"]
+                 or counters["files_removed"]
+                 or counters["chunks_added"]
+                 or counters["chunks_deleted"])
+        ):
+            try:
+                from xmclaw.core.bus import EventType, make_event
+                payload = dict(counters)
+                payload["elapsed_ms"] = (_t.perf_counter() - t0) * 1000.0
+                ev = make_event(
+                    session_id="_system", agent_id="indexer",
+                    type=EventType.MEMORY_INDEXED, payload=payload,
+                )
+                await self._bus.publish(ev)
+            except Exception:  # noqa: BLE001 — telemetry never blocks
+                pass
         return counters
 
     def _watched_paths(self):
+        # 1. Persona dir — agent's identity files + B-40 daily logs.
         try:
             pdir = Path(self._persona_dir_provider())
         except Exception:  # noqa: BLE001
-            return
-        if not pdir.is_dir():
-            return
-        for name in ("MEMORY.md", "USER.md"):
-            p = pdir / name
-            if p.is_file():
-                yield p
-        log_dir = pdir / "memory"
-        if log_dir.is_dir():
-            for entry in sorted(log_dir.glob("*.md")):
+            pdir = None
+        if pdir is not None and pdir.is_dir():
+            for name in ("MEMORY.md", "USER.md"):
+                p = pdir / name
+                if p.is_file():
+                    yield p
+            log_dir = pdir / "memory"
+            if log_dir.is_dir():
+                for entry in sorted(log_dir.glob("*.md")):
+                    if entry.is_file():
+                        yield entry
+
+        # 2. Shared file_memory_dir — Web UI's "memory editor" panel
+        # writes here. B-43 unifies these into the same vector index
+        # so user-authored notes are searchable alongside agent-curated
+        # bullets and daily logs.
+        try:
+            from xmclaw.utils.paths import file_memory_dir
+            fmd = file_memory_dir()
+        except Exception:  # noqa: BLE001
+            fmd = None
+        if fmd is not None and fmd.is_dir():
+            # Top-level user notes
+            for entry in sorted(fmd.glob("*.md")):
                 if entry.is_file():
                     yield entry
+            # Journal sub-dir entries
+            jdir = fmd / "journal"
+            if jdir.is_dir():
+                for entry in sorted(jdir.glob("*.md")):
+                    if entry.is_file():
+                        yield entry
 
     async def _index_file(self, path: Path) -> tuple[int, int, int]:
         """Index one file. Returns (added, deleted, unchanged)."""

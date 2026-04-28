@@ -91,6 +91,16 @@ class EventType(str, Enum):
     # weight skills by whether they actually helped vs broke turns.
     SKILL_OUTCOME = "skill_outcome"
 
+    # B-43: emitted by MemoryFileIndexer at the end of every tick
+    # that actually changed something. Payload:
+    # {"files_changed": int, "chunks_added": int, "chunks_deleted": int,
+    #  "chunks_unchanged": int, "files_removed": int, "elapsed_ms": float}
+    # Lets the Trace page show "indexer just embedded 3 chunks from
+    # MEMORY.md" so the user knows their edit landed in the vector
+    # store. No-op ticks (no changes) don't emit, so the bus stays
+    # quiet when the user isn't editing.
+    MEMORY_INDEXED = "memory_indexed"
+
     # B-33: emitted when AgentLoop._persist_history compresses older
     # turns into a synthetic system summary. Payload:
     # {"session_id": str,

@@ -197,10 +197,31 @@ export function MessageBubble({ message }) {
     (streaming ? " is-streaming" : "") +
     (errored ? " is-error" : "");
 
-  const statusLabel = thinking
-    ? "正在思考"
+  // B-43: phase-aware label. The reducer now sets message.phase to
+  // 'calling_llm' on llm_request and 'tool_running' on
+  // tool_invocation_started, so a slow LLM call no longer looks like a
+  // hung "正在思考". Plus a live elapsed-second counter for any bubble
+  // still working (re-renders every 500ms via the tick state below).
+  const phase = message.phase;
+  const baseLabel = thinking
+    ? (phase === "calling_llm" ? "正在调用 LLM" : "正在思考")
     : streaming
     ? hasToolsRunning ? "正在执行工具" : "正在回复"
+    : null;
+
+  const isWorking = thinking || streaming;
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!isWorking) return;
+    const id = setInterval(() => setTick((n) => n + 1), 500);
+    return () => clearInterval(id);
+  }, [isWorking]);
+
+  const elapsedS = isWorking && message.ts
+    ? Math.max(0, Math.floor(Date.now() / 1000 - message.ts))
+    : null;
+  const statusLabel = baseLabel
+    ? (elapsedS != null && elapsedS >= 1 ? `${baseLabel} · ${elapsedS}s` : baseLabel)
     : null;
 
   return html`

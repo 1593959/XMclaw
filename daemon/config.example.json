@@ -26,13 +26,14 @@
     "max_genes_per_day": 10,
     "auto_rollback": true,
     "memory": {
-      "_comment_b41": "B-41 vector index — when 'embedding' is configured, the daemon auto-indexes MEMORY.md / USER.md / memory/*.md into the sqlite-vec store so memory_search returns real semantic hits. Without an embedding key the indexer is silently disabled and memory_search falls back to keyword scan.",
+      "_comment_b41": "B-41 vector index — when 'embedding' is configured, the daemon auto-indexes MEMORY.md / USER.md / memory/*.md AND the user's web-UI memory editor notes into the sqlite-vec store so memory_search returns real semantic hits. Without an embedding key the indexer is silently disabled and memory_search falls back to keyword scan.",
+      "_comment_ollama_example": "For local Ollama: base_url='http://127.0.0.1:11434/v1', api_key may be empty (localhost is auth-free in our client). Recommended: model='qwen3-embedding:0.6b' dim=1024 (multilingual, fast). Alternatives: 'bge-m3' dim=1024, 'nomic-embed-text' dim=768. Pull first: 'ollama pull qwen3-embedding:0.6b'.",
       "embedding": {
         "provider": "openai",
         "api_key": "",
-        "base_url": "https://api.openai.com/v1",
-        "model": "text-embedding-3-small",
-        "dimensions": 1536,
+        "base_url": "http://127.0.0.1:11434/v1",
+        "model": "qwen3-embedding:0.6b",
+        "dimensions": 1024,
         "max_batch_size": 16
       },
       "indexer": {

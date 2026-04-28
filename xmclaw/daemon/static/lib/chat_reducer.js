@@ -27,9 +27,11 @@
 
 export const PHASE_1_EVENT_TYPES = [
   "user_message",
+  "llm_request",
   "llm_chunk",
   "llm_response",
   "tool_call_emitted",
+  "tool_invocation_started",
   "tool_invocation_finished",
   "anti_req_violation",
   "session_lifecycle",
@@ -83,6 +85,57 @@ export function applyEvent(chat, envelope) {
           ts,
           ultrathink: !!payload.ultrathink,
         }),
+      };
+    }
+
+    case "llm_request": {
+      // B-43: phase-update — let the user see what stage the turn is in
+      // ("calling LLM" vs the generic "thinking dots") so a slow first
+      // token doesn't feel like a hang. Upserts the existing thinking
+      // bubble; create one if our optimistic-echo missed (race).
+      const id = corr;
+      const idx = chat.messages.findIndex((m) => m.id === id);
+      if (idx === -1) {
+        return {
+          ...chat,
+          pendingAssistantId: id,
+          messages: chat.messages.concat({
+            id,
+            role: "assistant",
+            content: "",
+            status: "thinking",
+            phase: "calling_llm",
+            ts,
+            toolCalls: [],
+          }),
+        };
+      }
+      return {
+        ...chat,
+        pendingAssistantId: id,
+        messages: upsertById(chat.messages, id, (m) => ({
+          ...m,
+          phase: "calling_llm",
+        })),
+      };
+    }
+
+    case "tool_invocation_started": {
+      // B-43: bubble phase update. The matching tool_call_emitted case
+      // (below) already adds the ToolCard with status=pending; this
+      // event flips it to 'running' AND tags the bubble's phase so the
+      // header reads "正在执行工具" instead of "正在思考".
+      const id = corr;
+      const callId = payload.call_id || payload.id;
+      return {
+        ...chat,
+        messages: upsertById(chat.messages, id, (m) => ({
+          ...m,
+          phase: "tool_running",
+          toolCalls: (m.toolCalls || []).map((tc) =>
+            tc.id === callId ? { ...tc, status: "running" } : tc,
+          ),
+        })),
       };
     }
 

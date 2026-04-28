@@ -500,6 +500,7 @@ def create_app(
                     sqlite_vec=vec_provider,
                     embedder=embedder,
                     poll_interval_s=float(_idx_section.get("poll_interval_s", 10.0)),
+                    bus=bus,
                 )
                 await memory_indexer.start()
                 _app.state.memory_indexer = memory_indexer
