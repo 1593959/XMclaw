@@ -453,6 +453,13 @@ class AgentLoop:
         # dropped messages here so the NEXT run_turn can do an async
         # LLM upgrade. Eliminates the sync→async bridge risk.
         self._pending_llm_compression: dict[str, dict[str, Any]] = {}
+        # B-32: per-(session_id, skill_id) cooldown — last-fired
+        # timestamp. Suppresses SKILL_INVOKED events for the same
+        # skill within ``_skill_cooldown_s`` seconds in a session.
+        # Stops a body-keyword like "test" matching every dev-loop
+        # message and inflating the invocation_count metric.
+        self._skill_last_fired: dict[tuple[str, str], float] = {}
+        self._skill_cooldown_s = 60.0
         self._max_hops = max_hops
         self._agent_id = agent_id
         self._cost_tracker = cost_tracker
@@ -590,6 +597,18 @@ class AgentLoop:
 
             if not evidence:
                 continue
+
+            # B-32: per-(session, skill) cooldown gate. Drop repeats
+            # within the cooldown window — keeps the metric honest
+            # without losing legitimate multi-turn use (turns 1+5
+            # both legitimately invoking are still both counted).
+            import time as _t
+            now = _t.time()
+            cool_key = (session_id, sk.skill_id)
+            last = self._skill_last_fired.get(cool_key, 0.0)
+            if now - last < self._skill_cooldown_s:
+                continue
+            self._skill_last_fired[cool_key] = now
 
             try:
                 await publish(EventType.SKILL_INVOKED, {

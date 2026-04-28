@@ -296,6 +296,35 @@ async def learned_skills() -> JSONResponse:
     })
 
 
+@router.post("/learned_skills/reload")
+async def reload_learned_skills() -> JSONResponse:
+    """B-32: force a rescan of the learned-skills directory + bump
+    the prompt-freeze generation so every running session picks up
+    the new set on its next turn.
+
+    Normally ``LearnedSkillsLoader.render_section`` auto-bumps when
+    the fingerprint changes — this endpoint is the manual override
+    for "I just dropped a SKILL.md in by hand, make the agent see
+    it RIGHT NOW" and for tests/CI that need deterministic flushes.
+    Returns the post-reload skill count.
+    """
+    from xmclaw.daemon.learned_skills import default_learned_skills_loader
+    from xmclaw.daemon.agent_loop import bump_prompt_freeze_generation
+
+    loader = default_learned_skills_loader()
+    # Drop the loader's own fingerprint cache so the next render
+    # actually re-scans the disk + re-builds the markdown block.
+    loader._cache_key = None  # type: ignore[attr-defined]
+    skills = loader.list_skills()
+    bump_prompt_freeze_generation()
+    return JSONResponse({
+        "ok": True,
+        "skills_count": len(skills),
+        "skills_root": str(loader.skills_root),
+        "bumped": True,
+    })
+
+
 @router.get("/log")
 async def log(lines: int = 200) -> JSONResponse:
     """Tail the heartbeat log for the UI."""

@@ -309,6 +309,30 @@ class LearnedSkillsLoader:
         if fp == self._cache_key:
             return self._cache_block
 
+        # B-32: skill set changed since last render — bump the global
+        # prompt-freeze generation so every session's frozen system
+        # prompt invalidates on its next turn. Closes the "real-time
+        # cross-session" gap: xm-auto-evo writes a new SKILL.md →
+        # next agent turn (in any session) sees it without daemon
+        # restart. We deliberately bump only on FIRST detection of a
+        # diff (subsequent renders inside the same generation hit the
+        # fp-match short-circuit above).
+        #
+        # Skip on the very first render (cache_key was None) — that's
+        # not a "change", it's initial state. Sessions starting after
+        # boot pick up the current set anyway.
+        if self._cache_key is not None:
+            try:
+                from xmclaw.daemon.agent_loop import bump_prompt_freeze_generation
+                bump_prompt_freeze_generation()
+                _log.info(
+                    "learned_skills.changed bumping prompt cache "
+                    "old_count=%d new_count=%d",
+                    len(self._cache_skills), len(skills),
+                )
+            except Exception:  # noqa: BLE001 — bumping is observability-grade
+                pass
+
         if not skills:
             self._cache_key = fp
             self._cache_block = ""
