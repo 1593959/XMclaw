@@ -201,6 +201,12 @@ class AgentInterTools(ToolProvider):
         self._primary_loop = primary_loop
         self._primary_id = primary_id
         self._tasks: dict[str, _TaskRecord] = {}
+        # B-68: hold strong references to fire-and-forget background
+        # tasks. asyncio docs explicitly warn that ``create_task``
+        # without holding the result risks the task being GC'd mid-
+        # flight when the only reference is the event loop's weak
+        # ref. Removed via the done_callback below.
+        self._running_tasks: set["asyncio.Task[None]"] = set()
 
     # ── ToolProvider surface ─────────────────────────────────────────
 
@@ -298,7 +304,13 @@ class AgentInterTools(ToolProvider):
         # coroutine — the whole point of submit is that the caller can
         # proceed in parallel. The task's exceptions are captured into
         # ``record.error`` via the wrapper.
-        asyncio.create_task(self._run_background(record, loop))
+        # B-68: hold a strong ref + clean up on done. Without this,
+        # the asyncio loop's only ref is weak; the task can be GC'd
+        # mid-execution leaving the record stuck at status="running"
+        # forever (and the caller's check_agent_task polls forever).
+        bg = asyncio.create_task(self._run_background(record, loop))
+        self._running_tasks.add(bg)
+        bg.add_done_callback(self._running_tasks.discard)
         return json.dumps({"task_id": task_id, "agent_id": agent_id})
 
     async def _run_background(
