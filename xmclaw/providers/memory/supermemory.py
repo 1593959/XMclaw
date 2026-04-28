@@ -72,6 +72,10 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._timeout_s = float(timeout_s)
         self._prefetch_cache: dict[tuple[str, str], str] = {}
         self._inflight: set[tuple[str, str]] = set()
+        # B-69: hold strong refs to fire-and-forget prefetch tasks
+        # so asyncio's weak-ref tracking can't GC them mid-flight.
+        import asyncio as _asyncio_init
+        self._bg_tasks: set[_asyncio_init.Task] = set()
 
     def is_available(self) -> bool:
         return bool(self._api_key)
@@ -213,7 +217,10 @@ class SupermemoryMemoryProvider(MemoryProvider):
             finally:
                 self._inflight.discard(key)
 
-        _asyncio.create_task(_bg(), name=f"supermemory-prefetch-{session_id[:8]}")
+        # B-69: hold strong ref + auto-cleanup on done.
+        bg = _asyncio.create_task(_bg(), name=f"supermemory-prefetch-{session_id[:8]}")
+        self._bg_tasks.add(bg)
+        bg.add_done_callback(self._bg_tasks.discard)
 
     def on_pre_compress(self, messages: list) -> str:
         if not messages:

@@ -73,6 +73,14 @@ class HindsightMemoryProvider(MemoryProvider):
         # background; prefetch drains. Bounded to 32 entries.
         self._prefetch_cache: dict[tuple[str, str], str] = {}
         self._inflight: set[tuple[str, str]] = set()
+        # B-69: hold strong refs to fire-and-forget prefetch tasks so
+        # the asyncio loop's weak-ref tracking can't GC them mid-call.
+        # Without this, ``queue_prefetch`` could spawn a task that
+        # never reaches its first await; ``_inflight`` would stay
+        # populated forever and subsequent prefetch calls become
+        # silent no-ops.
+        import asyncio as _asyncio_init
+        self._bg_tasks: set[_asyncio_init.Task] = set()
 
     def is_available(self) -> bool:
         return bool(self._api_key)
@@ -226,7 +234,10 @@ class HindsightMemoryProvider(MemoryProvider):
             finally:
                 self._inflight.discard(key)
 
-        _asyncio.create_task(_bg(), name=f"hindsight-prefetch-{session_id[:8]}")
+        # B-69: hold strong ref + auto-cleanup on done.
+        bg = _asyncio.create_task(_bg(), name=f"hindsight-prefetch-{session_id[:8]}")
+        self._bg_tasks.add(bg)
+        bg.add_done_callback(self._bg_tasks.discard)
 
     async def on_session_end(
         self, *, session_id: str, messages: list,
