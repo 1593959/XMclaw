@@ -118,6 +118,12 @@ class CronJob:
     last_run_at: float | None = None
     last_error: str | None = None
     run_count: int = 0
+    # B-37: one-shot semantics. When ``run_once`` is True, CronStore
+    # deletes the job after the first ``mark_fired`` instead of
+    # rescheduling. Closes the long-standing bug where ``run_once``
+    # only added a "delete me later" breadcrumb to the prompt — if
+    # the agent didn't act on it, the job kept refiring.
+    run_once: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -137,6 +143,7 @@ class CronJob:
             last_run_at=raw.get("last_run_at"),
             last_error=raw.get("last_error"),
             run_count=int(raw.get("run_count") or 0),
+            run_once=bool(raw.get("run_once", False)),
         )
 
     def with_updates(self, **changes: Any) -> "CronJob":
@@ -267,6 +274,22 @@ class CronStore:
         if job is None:
             return None
         cur = when or time.time()
+
+        # B-37: one-shot job → drop after firing instead of rescheduling.
+        # Returns the captured snapshot so the caller can still inspect
+        # what fired (the in-store dict no longer has it).
+        if job.run_once:
+            fired_snapshot = job.with_updates(
+                last_run_at=cur,
+                last_error=error,
+                run_count=job.run_count + 1,
+                next_run_at=0.0,
+            )
+            del self._jobs[job_id]
+            self._dirty = True
+            self._save()
+            return fired_snapshot
+
         try:
             next_at = parse_schedule(job.schedule, now=cur)
         except ValueError as exc:

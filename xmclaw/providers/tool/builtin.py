@@ -357,6 +357,55 @@ _SCHEDULE_FOLLOWUP_SPEC = ToolSpec(
     },
 )
 
+_SQLITE_QUERY_SPEC = ToolSpec(
+    name="sqlite_query",
+    description=(
+        "Read-only SQL query against XMclaw's own state DBs. Use this "
+        "instead of shelling out to ``sqlite3`` — works on Windows where "
+        "the binary often isn't installed.\n\n"
+        "Allowed databases (referenced by ``db`` arg):\n"
+        "  • ``events`` → ~/.xmclaw/v2/events.db (BehavioralEvent log: "
+        "user_message, llm_response, tool_call_emitted, skill_invoked, "
+        "skill_outcome, memory_op, etc.)\n"
+        "  • ``memory`` → ~/.xmclaw/v2/memory.db (sqlite-vec long-term "
+        "memory).\n\n"
+        "Hard rules: only SELECT/PRAGMA/EXPLAIN are allowed; any "
+        "INSERT/UPDATE/DELETE/DROP/ATTACH/CREATE refused. Up to 200 "
+        "rows returned per call (use LIMIT in your query). Schema "
+        "preview: ``PRAGMA table_info(events)`` lists columns."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "db": {
+                "type": "string",
+                "enum": ["events", "memory"],
+                "description": "Which DB to read.",
+            },
+            "sql": {
+                "type": "string",
+                "description": "A single SELECT/PRAGMA/EXPLAIN statement. "
+                "Multi-statement input is rejected. Parameter "
+                "substitution via ``params`` is the safe way to pass "
+                "values.",
+            },
+            "params": {
+                "type": "array",
+                "description": "Optional positional parameters for ? "
+                "placeholders. Strings/numbers/null only.",
+                "items": {},
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Cap on rows returned (default 50, max 200). "
+                "Add a LIMIT clause yourself for the DB-side bound.",
+            },
+        },
+        "required": ["db", "sql"],
+    },
+)
+
+
 _UPDATE_PERSONA_SPEC = ToolSpec(
     name="update_persona",
     description=(
@@ -507,6 +556,11 @@ class BuiltinTools(ToolProvider):
         # schedule_followup is always available — it doesn't need any
         # constructor wiring; the cron store is a process-wide singleton.
         specs.append(_SCHEDULE_FOLLOWUP_SPEC)
+        # B-37: read-only SQL access to the agent's own state DBs.
+        # Always available — the DBs themselves may not exist yet
+        # (fresh install), in which case the tool reports that
+        # cleanly.
+        specs.append(_SQLITE_QUERY_SPEC)
         return specs
 
     async def invoke(self, call: ToolCall) -> ToolResult:
@@ -550,6 +604,8 @@ class BuiltinTools(ToolProvider):
                 return await self._update_persona(call, t0)
             if call.name == "schedule_followup":
                 return await self._schedule_followup(call, t0)
+            if call.name == "sqlite_query":
+                return await self._sqlite_query(call, t0)
             return _fail(call, t0, f"unknown tool: {call.name!r}")
         except PermissionError as exc:
             return _fail(call, t0, f"permission denied: {exc}")
@@ -977,18 +1033,10 @@ class BuiltinTools(ToolProvider):
         if not isinstance(prompt, str) or not prompt.strip():
             return _fail(call, t0, "missing or empty 'prompt'")
 
-        # Append a self-cleanup line for run_once jobs. We don't have
-        # a delete-self tool, but the future agent can just call
-        # bash/curl against /api/v2/cron/{job_id}. Cleaner: implement
-        # one-shot semantics in the cron store later. For now, leave a
-        # clear breadcrumb in the prompt so the future agent knows.
+        # B-37: run_once is now a real CronJob field — CronStore.mark_fired
+        # deletes the job after firing instead of rescheduling. No more
+        # "future agent please delete yourself" breadcrumbs.
         full_prompt = prompt.strip()
-        if run_once:
-            full_prompt += (
-                "\n\n[note: this is a one-shot reminder. After "
-                "responding, you may delete this job via the Cron page "
-                "or by calling DELETE /api/v2/cron/{this_job_id}.]"
-            )
 
         try:
             from xmclaw.core.scheduler.cron import CronJob, default_cron_store
@@ -999,6 +1047,7 @@ class BuiltinTools(ToolProvider):
                 name=name.strip(),
                 schedule=schedule.strip(),
                 prompt=full_prompt,
+                run_once=run_once,
             )
             saved = store.add(job)
         except Exception as exc:  # noqa: BLE001
@@ -1012,6 +1061,131 @@ class BuiltinTools(ToolProvider):
                 "schedule": saved.schedule,
                 "next_run_at": saved.next_run_at,
                 "run_once": run_once,
+            },
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _sqlite_query(self, call: ToolCall, t0: float) -> ToolResult:
+        """B-37: read-only SQL against the agent's own state DBs.
+
+        Refuses anything that mutates. We use sqlite3's ``authorizer``
+        callback as the primary defence: every action the engine
+        considers gets vetted, so even sneaky things like
+        ``WITH RECURSIVE foo AS (...) DELETE FROM bar`` are caught
+        before any rows move. A whitelist statement-prefix check is
+        a second belt — keeps obvious garbage out of the parser.
+
+        Connections open with ``mode=ro`` URI so the file itself is
+        opened read-only at the OS level too — three layers of
+        protection, defensive enough for a tool the LLM can call.
+        """
+        import sqlite3
+        from xmclaw.utils.paths import data_dir
+
+        db_choice = str(call.args.get("db") or "").strip().lower()
+        sql = str(call.args.get("sql") or "").strip()
+        params_raw = call.args.get("params") or []
+        limit = call.args.get("limit")
+
+        # Resolve the DB path (allowlisted).
+        if db_choice == "events":
+            db_path = data_dir() / "v2" / "events.db"
+        elif db_choice == "memory":
+            db_path = data_dir() / "v2" / "memory.db"
+        else:
+            return _fail(
+                call, t0,
+                f"unknown db {db_choice!r}; expected 'events' or 'memory'",
+            )
+        if not db_path.is_file():
+            return _fail(call, t0, f"db not yet created: {db_path}")
+
+        if not sql:
+            return _fail(call, t0, "missing 'sql'")
+
+        # Statement-prefix whitelist. Strip leading comment lines first.
+        cleaned_lines = []
+        for ln in sql.splitlines():
+            s = ln.strip()
+            if not s or s.startswith("--"):
+                continue
+            cleaned_lines.append(ln)
+        cleaned = "\n".join(cleaned_lines).strip()
+        head = cleaned.split(None, 1)[0].upper() if cleaned else ""
+        if head not in ("SELECT", "PRAGMA", "EXPLAIN", "WITH"):
+            return _fail(
+                call, t0,
+                f"only SELECT/PRAGMA/EXPLAIN/WITH allowed (got {head!r})",
+            )
+        # Reject multi-statement input via stripped trailing-semicolon-aware
+        # check — sqlite3 in Python's default mode would only execute the
+        # first statement anyway, but we want a clean error.
+        body_no_trailing_semi = cleaned.rstrip(";").strip()
+        if ";" in body_no_trailing_semi:
+            return _fail(
+                call, t0,
+                "multi-statement input rejected; pass one statement at a time",
+            )
+
+        # Coerce params.
+        params: tuple = ()
+        if isinstance(params_raw, list):
+            try:
+                params = tuple(params_raw)
+            except (TypeError, ValueError):
+                return _fail(call, t0, "params must be a list of scalars")
+
+        # Cap row count.
+        try:
+            n = int(limit) if limit is not None else 50
+        except (TypeError, ValueError):
+            n = 50
+        n = max(1, min(n, 200))
+
+        # Authorizer: deny anything that isn't a pure read.
+        ALLOWED_ACTIONS = {
+            sqlite3.SQLITE_SELECT,
+            sqlite3.SQLITE_READ,
+            sqlite3.SQLITE_FUNCTION,
+            sqlite3.SQLITE_PRAGMA,
+            sqlite3.SQLITE_TRANSACTION,
+            sqlite3.SQLITE_ANALYZE,
+            sqlite3.SQLITE_RECURSIVE,
+        }
+
+        def _authorizer(action, *_args):  # type: ignore[no-untyped-def]
+            if action in ALLOWED_ACTIONS:
+                return sqlite3.SQLITE_OK
+            return sqlite3.SQLITE_DENY
+
+        # ``mode=ro`` makes the OS-level handle read-only.
+        uri = f"file:{db_path}?mode=ro"
+        try:
+            con = sqlite3.connect(uri, uri=True, timeout=5)
+        except sqlite3.Error as exc:
+            return _fail(call, t0, f"open failed: {exc}")
+
+        con.row_factory = sqlite3.Row
+        con.set_authorizer(_authorizer)
+        try:
+            cur = con.execute(cleaned, params)
+            rows = cur.fetchmany(n)
+            cols = [d[0] for d in (cur.description or [])]
+        except sqlite3.Error as exc:
+            return _fail(call, t0, f"query failed: {exc}")
+        finally:
+            con.close()
+
+        out_rows = [dict(r) for r in rows]
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "db": db_choice,
+                "columns": cols,
+                "rows": out_rows,
+                "row_count": len(out_rows),
+                "truncated": len(out_rows) >= n,
             },
             side_effects=(),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
