@@ -586,10 +586,22 @@ def create_app(
         try:
             yield
         finally:
+            # B-67: every stop wrapped in try/except. Previously the
+            # first two (sweep_task, backup_scheduler) raised bare; if
+            # either's stop raised (e.g. cancelled-task collision on
+            # rapid restart), every subsequent shutdown step was
+            # skipped and background tasks leaked across the daemon's
+            # lifetime. Now: each step is independent.
             if sweep_task is not None:
-                await sweep_task.stop()
+                try:
+                    await sweep_task.stop()
+                except Exception:  # noqa: BLE001
+                    pass
             if backup_scheduler is not None:
-                await backup_scheduler.stop()
+                try:
+                    await backup_scheduler.stop()
+                except Exception:  # noqa: BLE001
+                    pass
             if cron_tick is not None:
                 try:
                     await cron_tick.stop()
