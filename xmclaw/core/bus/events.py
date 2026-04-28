@@ -72,6 +72,15 @@ class EventType(str, Enum):
     # Surfaced in the Trace page so users can see memory-layer activity.
     MEMORY_OP = "memory_op"
 
+    # B-29: emitted heuristically when the agent appears to be acting
+    # on a learned SKILL.md (i.e. its reply mentions the skill's
+    # title or trigger keywords). Payload:
+    # {"skill_id": str, "trigger_match": str | None,
+    #  "session_id": str, "evidence": "title" | "trigger"}
+    # Used by the Evolution UI to show per-skill usage counts so
+    # auto_repair_v9 can be compared with v8 by real invocation rate.
+    SKILL_INVOKED = "skill_invoked"
+
 
 @dataclass(frozen=True, slots=True)
 class BehavioralEvent:

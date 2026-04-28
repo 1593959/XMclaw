@@ -64,7 +64,58 @@ const TAB_LABELS = [
   { id: "providers", label: "Providers", hint: "已挂载的记忆 provider（B-26 Hermes-style 抽象）" },
 ];
 
-// ── Providers tab (B-27/B-28) ─────────────────────────────────────────
+// ── Providers tab (B-27/B-28/B-29) ───────────────────────────────────
+
+function MemoryActivitySparkline({ token }) {
+  // B-29: poll /api/v2/events?types=memory_op every 5s, plot a 60-second
+  // sparkline of provider call rate so users see live memory activity
+  // at a glance without dropping into the Trace page.
+  const [points, setPoints] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    const tick = () => {
+      apiGet("/api/v2/events?limit=400&types=memory_op", token)
+        .then((d) => {
+          if (cancelled) return;
+          const evs = d.events || [];
+          const now = Date.now() / 1000;
+          // 12 buckets × 5s = 60s window
+          const buckets = new Array(12).fill(0);
+          for (const e of evs) {
+            const age = now - (e.ts || 0);
+            if (age < 0 || age > 60) continue;
+            const idx = 11 - Math.min(11, Math.floor(age / 5));
+            if (idx >= 0) buckets[idx] += 1;
+          }
+          setPoints(buckets);
+        })
+        .catch(() => {});
+    };
+    tick();
+    const id = setInterval(tick, 5000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [token]);
+
+  if (!points) return null;
+  const max = Math.max(1, ...points);
+  const W = 200, H = 30, PAD = 2;
+  const stepX = (W - PAD * 2) / (points.length - 1);
+  const path = points.map((v, i) => {
+    const x = PAD + i * stepX;
+    const y = H - PAD - (v / max) * (H - PAD * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  const total = points.reduce((a, b) => a + b, 0);
+  return html`
+    <div class="xmc-h-card" style="padding:.6rem .8rem;display:flex;align-items:center;gap:.6rem;flex-wrap:wrap">
+      <small style="color:var(--xmc-fg-muted);font-family:var(--xmc-font-mono)">memory ops · last 60s</small>
+      <svg viewBox="0 0 ${W} ${H}" width=${W} height=${H} style="display:block">
+        <polyline fill="none" stroke="var(--xmc-accent, #6aa3f0)" stroke-width="1.5" points=${path} />
+      </svg>
+      <small style="font-family:var(--xmc-font-mono);font-size:.7rem">${total} calls · peak ${max}/5s</small>
+    </div>
+  `;
+}
 
 function ProvidersTab({ token }) {
   const [data, setData] = useState(null);
@@ -125,7 +176,8 @@ function ProvidersTab({ token }) {
 
   return html`
     <div>
-      <p class="xmc-datapage__subtitle" style="margin:.4rem 0 1rem">
+      <${MemoryActivitySparkline} token=${token} />
+      <p class="xmc-datapage__subtitle" style="margin:.6rem 0 1rem">
         XMclaw 的内存层是 Hermes-style 可插拔架构（B-25/B-26 完成）：
         <strong>1 个内置 provider + 至多 1 个外部 provider</strong>。
         外部 provider 优先（active recall），内置 provider 永远在底（fallback）。

@@ -252,15 +252,47 @@ async def learned_skills() -> JSONResponse:
     """Skills xm-auto-evo has generated AND XMclaw is actively
     feeding into the agent's system prompt.
 
-    This is the closed-loop view: anything listed here is reachable
-    by the agent on its next turn. If a skill is on disk but NOT in
-    this list, something's wrong with the loader (perhaps the
-    SKILL.md is malformed)."""
+    B-29: each skill now also carries an ``invocation_count`` —
+    aggregated from SKILL_INVOKED events on the bus. Lets the UI
+    show per-skill usage so auto_repair_v9 can be compared with v8
+    by REAL invocations not just by version number."""
     from xmclaw.daemon.learned_skills import default_learned_skills_loader
     loader = default_learned_skills_loader()
+    skills = loader.list_for_api()
+
+    # Aggregate skill invocation counts from the events DB.
+    invocation_counts: dict[str, int] = {}
+    try:
+        import sqlite3
+        from xmclaw.utils.paths import data_dir
+        db = data_dir() / "v2" / "events.db"
+        if db.is_file():
+            con = sqlite3.connect(str(db))
+            con.row_factory = sqlite3.Row
+            try:
+                rows = con.execute(
+                    "SELECT payload FROM events WHERE type='skill_invoked' "
+                    "ORDER BY ts DESC LIMIT 1000"
+                ).fetchall()
+                for r in rows:
+                    try:
+                        p = json.loads(r["payload"]) if r["payload"] else {}
+                    except (ValueError, TypeError):
+                        continue
+                    sid = p.get("skill_id")
+                    if sid:
+                        invocation_counts[sid] = invocation_counts.get(sid, 0) + 1
+            finally:
+                con.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+    for s in skills:
+        s["invocation_count"] = invocation_counts.get(s["skill_id"], 0)
+
     return JSONResponse({
         "skills_root": str(loader.skills_root),
-        "skills": loader.list_for_api(),
+        "skills": skills,
     })
 
 

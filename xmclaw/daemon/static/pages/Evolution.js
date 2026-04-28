@@ -153,11 +153,17 @@ function AutoEvoPanel({ token }) {
             <ul class="xmc-datapage__list">
               ${(learnedSkills || []).slice(0, 20).map((s) => {
                 const triggers = (s.triggers || []).slice(0, 4);
+                const invokes = s.invocation_count || 0;
                 return html`
                   <li class="xmc-datapage__row" key=${s.skill_id}>
                     <div style="display:flex;justify-content:space-between;align-items:baseline;gap:.5rem;flex-wrap:wrap">
                       <strong>${s.title || s.skill_id}</strong>
-                      <code style="font-size:.7rem;color:var(--xmc-fg-muted)">${s.skill_id}</code>
+                      <span style="display:flex;gap:.4rem;align-items:center">
+                        ${invokes > 0
+                          ? html`<span class="xmc-h-badge xmc-h-badge--success" title="agent 实际调用过的次数（B-29 启用后）">⚡ ${invokes}</span>`
+                          : html`<span class="xmc-h-badge xmc-h-badge--muted" title="尚未观察到调用">0 用</span>`}
+                        <code style="font-size:.7rem;color:var(--xmc-fg-muted)">${s.skill_id}</code>
+                      </span>
                     </div>
                     ${s.description
                       ? html`<small style="display:block;margin-top:.2rem;color:var(--xmc-fg-muted)">${s.description.slice(0, 160)}</small>`

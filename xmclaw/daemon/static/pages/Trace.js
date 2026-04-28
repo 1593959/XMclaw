@@ -35,6 +35,7 @@ const TONE = {
   memory_put: "info",
   memory_evicted: "muted",
   memory_op: "info",
+  skill_invoked: "success",
   todo_updated: "info",
 };
 
@@ -52,6 +53,7 @@ const LABEL = {
   memory_put: "记忆写入",
   memory_evicted: "记忆驱逐",
   memory_op: "记忆操作",
+  skill_invoked: "技能触发",
   todo_updated: "Todos 更新",
 };
 
@@ -65,6 +67,7 @@ const EVENT_TYPES = [
   "anti_req_violation",
   "memory_put",
   "memory_op",
+  "skill_invoked",
   "todo_updated",
 ];
 
@@ -108,6 +111,9 @@ function shortPayload(ev) {
     if (p.hits != null) stats.push(`hits=${p.hits}`);
     if (p.elapsed_ms != null) stats.push(`${Math.round(p.elapsed_ms)}ms`);
     return `${prov}.${op}` + (stats.length ? "  " + stats.join(" ") : "");
+  }
+  if (t === "skill_invoked") {
+    return `${p.skill_id || "?"} (evidence: ${p.evidence || "?"})`;
   }
   if (t === "todo_updated") return `${p.count || 0} items`;
   return JSON.stringify(p).slice(0, 120);
