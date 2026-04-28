@@ -489,8 +489,43 @@ _MEMORY_SEARCH_SPEC = ToolSpec(
                 "enum": ["short", "working", "long"],
                 "description": "Memory layer (default 'long').",
             },
+            "max_chars": {
+                "type": "integer",
+                "description": "Total result chars cap (default 6000, "
+                "min 500, max 20000). Returns ``truncated: true`` when "
+                "the cap stops accumulation before all hits land.",
+            },
         },
         "required": ["query"],
+    },
+)
+
+
+_MEMORY_PIN_SPEC = ToolSpec(
+    name="memory_pin",
+    description=(
+        "Pin a fact to MEMORY.md's `## Pinned` section. Pinned items "
+        "survive every Auto-Dream pass — the dream prompt preserves "
+        "the section verbatim. Use for facts you NEVER want to lose: "
+        "credentials format hints, irreversible decisions, the user's "
+        "absolute preferences (\"never auto-push to main\"), recovery "
+        "procedures.\n\n"
+        "Distinct from regular ``remember``: ``remember`` lands in a "
+        "topical section that Auto-Dream may dedupe / consolidate. "
+        "``memory_pin`` lands somewhere safe.\n\n"
+        "After pin, the indexer (10s) will embed it like any other "
+        "MEMORY.md content, so memory_search still finds it."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "content": {
+                "type": "string",
+                "description": "The fact, one sentence. Will be "
+                "prefixed with the current date.",
+            },
+        },
+        "required": ["content"],
     },
 )
 
@@ -897,6 +932,12 @@ class BuiltinTools(ToolProvider):
         # Always advertised; the handler refuses cleanly when no LLM
         # is wired (which is the only failure mode).
         specs.append(_MEMORY_COMPACT_SPEC)
+        # B-53: memory_pin lands in MEMORY.md's `## Pinned` section.
+        # Gated on persona_dir wiring (same as ``remember``); the
+        # actual write reuses _append_under_section so pinned bullets
+        # share dedup behaviour.
+        if self._persona_dir_provider is not None:
+            specs.append(_MEMORY_PIN_SPEC)
         return specs
 
     async def invoke(self, call: ToolCall) -> ToolResult:
@@ -960,6 +1001,10 @@ class BuiltinTools(ToolProvider):
                 return await self._agent_status(call, t0)
             if call.name == "memory_compact":
                 return await self._memory_compact(call, t0)
+            if call.name == "memory_pin":
+                if self._persona_dir_provider is None:
+                    return _fail(call, t0, "memory_pin not configured (no persona dir)")
+                return await self._memory_pin(call, t0)
             return _fail(call, t0, f"unknown tool: {call.name!r}")
         except PermissionError as exc:
             return _fail(call, t0, f"permission denied: {exc}")
@@ -1519,6 +1564,21 @@ class BuiltinTools(ToolProvider):
             placeholder_title="MEMORY.md — what I want to remember next time",
         )
 
+    async def _memory_pin(self, call: ToolCall, t0: float) -> ToolResult:
+        """B-53: pin a fact to MEMORY.md's ``## Pinned`` section. Same
+        write path as ``remember``, just under a section the dream
+        prompt is told to preserve verbatim."""
+        content = call.args.get("content")
+        if not isinstance(content, str) or not content.strip():
+            return _fail(call, t0, "missing or empty 'content'")
+        return await self._append_persona(
+            call, t0,
+            basename="MEMORY.md",
+            section="Pinned",
+            entry=content.strip(),
+            placeholder_title="MEMORY.md — what I want to remember next time",
+        )
+
     async def _learn_about_user(self, call: ToolCall, t0: float) -> ToolResult:
         section = call.args.get("section")
         fact = call.args.get("fact")
@@ -1910,16 +1970,35 @@ class BuiltinTools(ToolProvider):
         if embedding and used_mode == "semantic":
             used_mode = "hybrid"
 
+        # B-53: total-chars cap so a wide search doesn't flood the
+        # context. Defaults to 6000 chars (~1500 tokens at chars/4) —
+        # enough for ~15 chunks of typical MEMORY.md size, well under
+        # most context windows. The agent can opt for a shorter cap
+        # via ``max_chars``.
+        try:
+            max_chars = int(call.args.get("max_chars") or 6000)
+        except (TypeError, ValueError):
+            max_chars = 6000
+        max_chars = max(500, min(max_chars, 20000))
+
         rows: list[dict[str, Any]] = []
+        used_chars = 0
+        truncated = False
         for h in hits[:k * 4]:  # 4 = max possible providers
             md = dict(getattr(h, "metadata", None) or {})
+            text = (getattr(h, "text", "") or "")[:400]
+            # Stop accumulating once budget is exhausted; flag in result.
+            if used_chars + len(text) > max_chars and rows:
+                truncated = True
+                break
             rows.append({
                 "id": getattr(h, "id", ""),
-                "text": (getattr(h, "text", "") or "")[:400],
+                "text": text,
                 "ts": getattr(h, "ts", 0.0),
                 "provider": md.get("provider") or md.get("backend") or md.get("file") or "?",
                 "metadata": md,
             })
+            used_chars += len(text)
         return ToolResult(
             call_id=call.id, ok=True,
             content={
@@ -1929,6 +2008,8 @@ class BuiltinTools(ToolProvider):
                 "mode": used_mode,
                 "rows": rows,
                 "row_count": len(rows),
+                "total_chars": used_chars,
+                "truncated": truncated,
             },
             side_effects=(),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
