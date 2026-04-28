@@ -1844,18 +1844,22 @@ class BuiltinTools(ToolProvider):
             return _fail(call, t0, f"mkdir failed: {exc}")
         path = mdir / safe
 
-        try:
-            if mode == "append" and path.is_file():
-                existing = path.read_text(encoding="utf-8", errors="replace")
-                sep = "\n\n---\n\n" if existing.strip() else ""
-                path.write_text(
-                    existing.rstrip() + sep + content.strip() + "\n",
-                    encoding="utf-8",
-                )
-            else:
-                path.write_text(content, encoding="utf-8")
-        except OSError as exc:
-            return _fail(call, t0, f"write failed: {exc}")
+        # B-64: lock the file so concurrent note_write calls (or note +
+        # daemon-side editor write via /api/v2/memory POST) don't race
+        # on the read-modify-write append path.
+        async with self._fs_lock(path):
+            try:
+                if mode == "append" and path.is_file():
+                    existing = path.read_text(encoding="utf-8", errors="replace")
+                    sep = "\n\n---\n\n" if existing.strip() else ""
+                    path.write_text(
+                        existing.rstrip() + sep + content.strip() + "\n",
+                        encoding="utf-8",
+                    )
+                else:
+                    path.write_text(content, encoding="utf-8")
+            except OSError as exc:
+                return _fail(call, t0, f"write failed: {exc}")
 
         return ToolResult(
             call_id=call.id, ok=True,
@@ -1910,22 +1914,26 @@ class BuiltinTools(ToolProvider):
         block_parts.append(content.strip())
         block = "\n\n".join(block_parts)
 
-        try:
-            if path.is_file():
-                existing = path.read_text(encoding="utf-8", errors="replace")
-                if not existing.startswith("# "):
-                    existing = f"# 日记 {date}\n\n" + existing
-                path.write_text(
-                    existing.rstrip() + "\n\n---\n\n" + block + "\n",
-                    encoding="utf-8",
-                )
-            else:
-                path.write_text(
-                    f"# 日记 {date}\n\n" + block + "\n",
-                    encoding="utf-8",
-                )
-        except OSError as exc:
-            return _fail(call, t0, f"write failed: {exc}")
+        # B-64: same RMW lock as note_write — concurrent agent +
+        # cron append on the same daily file would otherwise lose
+        # entries.
+        async with self._fs_lock(path):
+            try:
+                if path.is_file():
+                    existing = path.read_text(encoding="utf-8", errors="replace")
+                    if not existing.startswith("# "):
+                        existing = f"# 日记 {date}\n\n" + existing
+                    path.write_text(
+                        existing.rstrip() + "\n\n---\n\n" + block + "\n",
+                        encoding="utf-8",
+                    )
+                else:
+                    path.write_text(
+                        f"# 日记 {date}\n\n" + block + "\n",
+                        encoding="utf-8",
+                    )
+            except OSError as exc:
+                return _fail(call, t0, f"write failed: {exc}")
 
         return ToolResult(
             call_id=call.id, ok=True,

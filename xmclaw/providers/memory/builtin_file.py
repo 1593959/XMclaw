@@ -46,6 +46,22 @@ class BuiltinFileMemoryProvider(MemoryProvider):
         profile dir (``~/.xmclaw/persona/profiles/<active>/``). When
         None, falls back to the canonical default path."""
         self._persona_dir_provider = persona_dir_provider
+        # B-64: per-path async lock for read-modify-write paths
+        # (put → MEMORY.md/USER.md; sync_turn → memory/YYYY-MM-DD.md).
+        # Same pattern as BuiltinTools._fs_locks (B-63). Each provider
+        # instance carries its own dict — there's only one
+        # BuiltinFileMemoryProvider per daemon.
+        import asyncio as _asyncio
+        self._fs_locks: dict[str, _asyncio.Lock] = {}
+
+    def _fs_lock(self, path):
+        import asyncio as _asyncio
+        key = str(path)
+        lock = self._fs_locks.get(key)
+        if lock is None:
+            lock = _asyncio.Lock()
+            self._fs_locks[key] = lock
+        return lock
 
     def _persona_dir(self) -> Path:
         try:
@@ -79,17 +95,20 @@ class BuiltinFileMemoryProvider(MemoryProvider):
         pdir = self._persona_dir()
         pdir.mkdir(parents=True, exist_ok=True)
         path = pdir / target_file
-        existing = path.read_text(encoding="utf-8") if path.is_file() else ""
-        new_text = _append_under_section(
-            existing,
-            section_header=section_header,
-            bullet=bullet,
-            placeholder_title=f"{target_file} — agent-curated",
-        )
-        cap = PERSONA_CHAR_CAPS.get(target_file)
-        if cap is not None and len(new_text) > cap:
-            new_text = enforce_char_cap(new_text, cap)
-        path.write_text(new_text, encoding="utf-8")
+        # B-64: serialise so concurrent puts don't lose appends. Same
+        # pattern as BuiltinTools._append_persona (B-63).
+        async with self._fs_lock(path):
+            existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+            new_text = _append_under_section(
+                existing,
+                section_header=section_header,
+                bullet=bullet,
+                placeholder_title=f"{target_file} — agent-curated",
+            )
+            cap = PERSONA_CHAR_CAPS.get(target_file)
+            if cap is not None and len(new_text) > cap:
+                new_text = enforce_char_cap(new_text, cap)
+            path.write_text(new_text, encoding="utf-8")
         return item.id or uuid.uuid4().hex
 
     async def query(
@@ -185,18 +204,22 @@ class BuiltinFileMemoryProvider(MemoryProvider):
             f"**User:** {u}\n\n"
             f"**Assistant:** {a}\n\n"
         )
-        try:
-            if log_path.is_file():
-                existing = log_path.read_text(encoding="utf-8", errors="replace")
-                # Keep existing content; append new entry below.
-                if not existing.startswith("# "):
-                    existing = header + existing
-                log_path.write_text(existing.rstrip() + "\n\n" + entry, encoding="utf-8")
-            else:
-                log_path.write_text(header + entry, encoding="utf-8")
-        except OSError:
-            # Disk-full / permission — best-effort, never block the turn.
-            pass
+        # B-64: lock per-day-log path. Two sessions ending the same
+        # second on the same day would otherwise race-overwrite the
+        # daily log file.
+        async with self._fs_lock(log_path):
+            try:
+                if log_path.is_file():
+                    existing = log_path.read_text(encoding="utf-8", errors="replace")
+                    # Keep existing content; append new entry below.
+                    if not existing.startswith("# "):
+                        existing = header + existing
+                    log_path.write_text(existing.rstrip() + "\n\n" + entry, encoding="utf-8")
+                else:
+                    log_path.write_text(header + entry, encoding="utf-8")
+            except OSError:
+                # Disk-full / permission — best-effort, never block the turn.
+                pass
 
     # ── extended hooks (used by MemoryManager) ───────────────────
 
