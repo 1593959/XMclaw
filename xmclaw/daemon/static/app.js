@@ -77,8 +77,63 @@ function disposeWs() {
   }
 }
 
+// B-60: rehydrate the chat panel from the daemon's persisted session
+// store on connect. Without this, a page reload showed an empty chat
+// even though the daemon retained the full conversation — every new
+// turn landed with full server-side context but the user only saw
+// turn N+1 going forward, producing a half-conversation feeling.
+async function hydrateChatHistory(sid, token) {
+  if (!sid) return;
+  try {
+    const url = `/api/v2/sessions/${encodeURIComponent(sid)}` +
+      (token ? `?token=${encodeURIComponent(token)}` : "");
+    const r = await fetch(url, { cache: "no-store" });
+    if (!r.ok) return;
+    const data = await r.json().catch(() => null);
+    const msgs = (data && data.messages) || [];
+    if (!msgs.length) return;
+    // Map daemon's persisted shape → reducer's chat-message shape.
+    const hydrated = [];
+    for (let i = 0; i < msgs.length; i++) {
+      const m = msgs[i];
+      const role = m.role;
+      // Skip tool messages — they're rendered as ToolCard children
+      // of their owning assistant bubble, which the reducer rebuilds
+      // on the fly when assistant carries tool_calls.
+      if (role === "tool") continue;
+      hydrated.push({
+        id: `restore_${i}`,
+        role,
+        content: m.content || "",
+        status: "complete",
+        ts: 0,
+        toolCalls: (m.tool_calls || []).map((tc) => ({
+          id: tc.id,
+          name: tc.name,
+          args: tc.args || {},
+          status: "complete",
+        })),
+      });
+    }
+    if (hydrated.length === 0) return;
+    store.setState((s) => {
+      // Don't clobber if the user already typed something during the
+      // restore window — concat with whatever's there.
+      const cur = s.chat.messages || [];
+      // De-dup: if cur already starts with our hydrated head, skip.
+      if (cur.length >= hydrated.length) return s;
+      return { ...s, chat: { ...s.chat, messages: hydrated.concat(cur) } };
+    });
+  } catch (_) {
+    /* offline / not-found / stale token — fail silent */
+  }
+}
+
 function connectFor(sid, token) {
   disposeWs();
+  // Fire-and-forget rehydrate; WS connect proceeds in parallel so a
+  // slow restore never blocks the live channel.
+  hydrateChatHistory(sid, token);
   wsHandle = createWsClient({
     sessionId: sid,
     token,
