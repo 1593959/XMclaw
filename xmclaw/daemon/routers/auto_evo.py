@@ -248,7 +248,7 @@ async def capsules(tail: int = 50) -> JSONResponse:
 
 
 @router.get("/learned_skills")
-async def learned_skills() -> JSONResponse:
+async def learned_skills(include_disabled: bool = False) -> JSONResponse:
     """Skills xm-auto-evo has generated AND XMclaw is actively
     feeding into the agent's system prompt.
 
@@ -258,7 +258,7 @@ async def learned_skills() -> JSONResponse:
     by REAL invocations not just by version number."""
     from xmclaw.daemon.learned_skills import default_learned_skills_loader
     loader = default_learned_skills_loader()
-    skills = loader.list_for_api()
+    skills = loader.list_for_api(include_disabled=include_disabled)
 
     # Aggregate skill invocation counts from the events DB.
     invocation_counts: dict[str, int] = {}

@@ -18,9 +18,14 @@ const TYPES = "skill_promoted,skill_rolled_back,skill_candidate_proposed";
 
 // ── shared ─────────────────────────────────────────────────────────
 
-async function postJson(path, token) {
+async function postJson(path, token, body = null) {
   const url = path + (token ? `?token=${encodeURIComponent(token)}` : "");
-  const r = await fetch(url, { method: "POST" });
+  const init = { method: "POST" };
+  if (body !== null) {
+    init.headers = { "Content-Type": "application/json" };
+    init.body = JSON.stringify(body);
+  }
+  const r = await fetch(url, init);
   const d = await r.json().catch(() => ({}));
   if (!r.ok || d.error || d.ok === false) {
     throw new Error(d.error || `HTTP ${r.status}`);
@@ -44,7 +49,7 @@ function AutoEvoPanel({ token }) {
     apiGet("/api/v2/auto_evo/genes", token).then((d) => setGenes(d.genes || [])).catch(() => setGenes([]));
     apiGet("/api/v2/auto_evo/events?tail=50", token).then((d) => setEvents(d.events || [])).catch(() => setEvents([]));
     apiGet("/api/v2/auto_evo/capsules?tail=20", token).then((d) => setCapsules(d.capsules || [])).catch(() => setCapsules([]));
-    apiGet("/api/v2/auto_evo/learned_skills", token).then((d) => setLearnedSkills(d.skills || [])).catch(() => setLearnedSkills([]));
+    apiGet("/api/v2/auto_evo/learned_skills?include_disabled=1", token).then((d) => setLearnedSkills(d.skills || [])).catch(() => setLearnedSkills([]));
   }, [token]);
 
   const loadLog = useCallback(() => {
@@ -154,15 +159,39 @@ function AutoEvoPanel({ token }) {
               ${(learnedSkills || []).slice(0, 20).map((s) => {
                 const triggers = (s.triggers || []).slice(0, 4);
                 const invokes = s.invocation_count || 0;
+                const isDisabled = !!s.disabled;
+                const onToggle = async () => {
+                  try {
+                    await postJson(
+                      `/api/v2/auto_evo/learned_skills/${encodeURIComponent(s.skill_id)}/disable`,
+                      token,
+                      { disabled: !isDisabled },
+                    );
+                    toast.success(isDisabled ? `${s.skill_id} 已恢复` : `${s.skill_id} 已暂停`);
+                    loadAll();
+                  } catch (e) {
+                    toast.error(`切换失败: ${e.message || e}`);
+                  }
+                };
                 return html`
-                  <li class="xmc-datapage__row" key=${s.skill_id}>
+                  <li class="xmc-datapage__row" key=${s.skill_id}
+                      style=${isDisabled ? "opacity:.55" : ""}>
                     <div style="display:flex;justify-content:space-between;align-items:baseline;gap:.5rem;flex-wrap:wrap">
                       <strong>${s.title || s.skill_id}</strong>
                       <span style="display:flex;gap:.4rem;align-items:center">
+                        ${isDisabled
+                          ? html`<span class="xmc-h-badge xmc-h-badge--warn" title="已暂停 - agent 看不到">⏸ 暂停</span>`
+                          : null}
                         ${invokes > 0
                           ? html`<span class="xmc-h-badge xmc-h-badge--success" title="agent 实际调用过的次数（B-29 启用后）">⚡ ${invokes}</span>`
                           : html`<span class="xmc-h-badge xmc-h-badge--muted" title="尚未观察到调用">0 用</span>`}
                         <code style="font-size:.7rem;color:var(--xmc-fg-muted)">${s.skill_id}</code>
+                        <button
+                          class="xmc-h-btn xmc-h-btn--ghost"
+                          style="padding:.15rem .5rem;font-size:.7rem"
+                          title=${isDisabled ? "恢复 - agent 下一轮重新看到" : "暂停 - 写 disabled:true 到 SKILL.md frontmatter"}
+                          onClick=${onToggle}
+                        >${isDisabled ? "恢复" : "暂停"}</button>
                       </span>
                     </div>
                     ${s.description

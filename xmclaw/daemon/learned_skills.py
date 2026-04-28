@@ -399,10 +399,20 @@ class LearnedSkillsLoader:
         self._cache_skills = skills
         return block
 
-    def list_for_api(self) -> list[dict]:
-        """Json-serialisable view for the /api/v2/auto_evo/learned_skills endpoint."""
-        return [
-            {
+    def list_for_api(self, *, include_disabled: bool = False) -> list[dict]:
+        """Json-serialisable view for the /api/v2/auto_evo/learned_skills endpoint.
+
+        When ``include_disabled`` is True, this also walks the skills
+        root and tags any directory whose SKILL.md sets
+        ``disabled: true`` / ``enabled: false`` with ``disabled=True``,
+        so the UI can render a parked-but-not-deleted entry. Active
+        entries get ``disabled=False``.
+        """
+        active = self.list_skills()
+        active_ids = {s.skill_id for s in active}
+        out: list[dict] = []
+        for s in active:
+            out.append({
                 "skill_id": s.skill_id,
                 "title": s.title,
                 "description": s.description,
@@ -410,9 +420,54 @@ class LearnedSkillsLoader:
                 "source_path": str(s.source_path),
                 "mtime": s.mtime,
                 "body_preview": s.body[:300],
-            }
-            for s in self.list_skills()
-        ]
+                "disabled": False,
+            })
+        if not include_disabled or not self._root.is_dir():
+            return out
+
+        # Walk root once more, surface skills _load_one rejected because
+        # of the disabled flag. Other rejection reasons (skill_guard
+        # block, bad path, etc.) stay hidden — the UI can't usefully
+        # toggle a guard-blocked skill.
+        try:
+            entries = sorted(self._root.iterdir())
+        except OSError:
+            return out
+        for entry in entries:
+            if not entry.is_dir() or entry.name in active_ids:
+                continue
+            skill_md = entry / "SKILL.md"
+            if not skill_md.is_file():
+                continue
+            try:
+                text = skill_md.read_text(encoding="utf-8", errors="replace")
+                stat = skill_md.stat()
+            except OSError:
+                continue
+            fm, body = _parse_frontmatter(text)
+            disabled_flag = (
+                str(fm.get("disabled", "")).strip().lower() in ("true", "yes", "1", "on")
+                or str(fm.get("enabled", "")).strip().lower() in ("false", "no", "0", "off")
+            )
+            if not disabled_flag:
+                continue  # not parked — must be hidden for some other reason
+            triggers_raw = fm.get("signals_match") or fm.get("triggers") or []
+            triggers = (
+                [str(t) for t in triggers_raw if str(t).strip()]
+                if isinstance(triggers_raw, list)
+                else ([str(triggers_raw)] if str(triggers_raw).strip() else [])
+            )
+            out.append({
+                "skill_id": entry.name,
+                "title": str(fm.get("name") or _first_heading(body) or entry.name),
+                "description": str(fm.get("description") or _first_paragraph(body)),
+                "triggers": triggers,
+                "source_path": str(skill_md),
+                "mtime": stat.st_mtime,
+                "body_preview": body[:300],
+                "disabled": True,
+            })
+        return out
 
 
 # Module-level singleton — used by the persona writeback helper in
