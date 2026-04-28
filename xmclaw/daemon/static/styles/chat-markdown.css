@@ -1,0 +1,97 @@
+/*
+ * XMclaw — Chat markdown rendering styles (split out of chat.css in B-47
+ * to keep the parent file under the 500-line UI budget).
+ *
+ * Owns every ``.xmc-md*`` selector — code blocks, tables, blockquotes,
+ * lists, headings, hr. Loaded by index.html alongside chat.css; nothing
+ * here references chat-layout selectors so the two files are
+ * independent.
+ */
+
+/* ── Code blocks (CodeBlock molecule wraps these) ─────────────────── */
+
+.xmc-md__pre {
+  background: var(--xmc-bg);
+  border: 1px solid var(--xmc-border);
+  border-radius: var(--xmc-radius-md);
+  padding: var(--xmc-space-3);
+  overflow-x: auto;
+  font-family: var(--xmc-font-mono);
+  font-size: var(--xmc-font-size-sm);
+  margin: var(--xmc-space-2) 0;
+}
+
+.xmc-md__code {
+  background: var(--xmc-bg);
+  border-radius: var(--xmc-radius-sm);
+  padding: 1px 5px;
+  font-family: var(--xmc-font-mono);
+  font-size: 0.95em;
+}
+
+/* ── Tables ───────────────────────────────────────────────────────── */
+
+.xmc-md table {
+  border-collapse: collapse;
+  margin: var(--xmc-space-3) 0;
+  width: 100%;
+  max-width: 100%;
+  font-size: var(--xmc-font-size-sm);
+  display: block;
+  overflow-x: auto;
+}
+.xmc-md th,
+.xmc-md td {
+  border: 1px solid var(--xmc-border);
+  padding: 0.35rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+}
+.xmc-md th {
+  background: var(--xmc-bg-elev-2, var(--xmc-bg-elev));
+  font-weight: 600;
+}
+.xmc-md tr:nth-child(2n) td {
+  background: color-mix(in srgb, var(--xmc-fg-muted) 4%, transparent);
+}
+
+/* ── Blockquotes + horizontal rule ────────────────────────────────── */
+
+.xmc-md blockquote {
+  border-left: 3px solid var(--color-primary, #6aa3f0);
+  margin: var(--xmc-space-2) 0;
+  padding: 0.2rem 0.8rem;
+  background: color-mix(in srgb, var(--color-primary, #6aa3f0) 6%, transparent);
+  color: var(--xmc-fg-muted);
+  border-radius: 0 var(--xmc-radius-sm) var(--xmc-radius-sm) 0;
+}
+.xmc-md blockquote p {
+  margin: 0.3rem 0;
+}
+
+.xmc-md hr {
+  border: 0;
+  border-top: 1px dashed var(--xmc-border);
+  margin: var(--xmc-space-3) 0;
+}
+
+/* ── Lists ─────────────────────────────────────────────────────────── */
+
+.xmc-md ul,
+.xmc-md ol {
+  padding-left: 1.4rem;
+}
+.xmc-md li {
+  margin: 0.18rem 0;
+}
+
+/* ── Headings ─────────────────────────────────────────────────────── */
+
+.xmc-md h1, .xmc-md h2, .xmc-md h3, .xmc-md h4 {
+  margin: var(--xmc-space-3) 0 var(--xmc-space-2);
+  line-height: 1.25;
+}
+.xmc-md h1 { font-size: 1.25rem; }
+.xmc-md h2 { font-size: 1.1rem; }
+.xmc-md h3 { font-size: 1rem; }
+.xmc-md h4 { font-size: 0.95rem; color: var(--xmc-fg-muted); }

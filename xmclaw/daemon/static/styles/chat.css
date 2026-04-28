@@ -177,26 +177,8 @@
   line-height: var(--xmc-line-height-base);
 }
 
-/* ── Markdown ─────────────────────────────────────────────────────── */
-
-.xmc-md__pre {
-  background: var(--xmc-bg);
-  border: 1px solid var(--xmc-border);
-  border-radius: var(--xmc-radius-md);
-  padding: var(--xmc-space-3);
-  overflow-x: auto;
-  font-family: var(--xmc-font-mono);
-  font-size: var(--xmc-font-size-sm);
-  margin: var(--xmc-space-2) 0;
-}
-
-.xmc-md__code {
-  background: var(--xmc-bg);
-  border-radius: var(--xmc-radius-sm);
-  padding: 1px 5px;
-  font-family: var(--xmc-font-mono);
-  font-size: 0.95em;
-}
+/* Markdown rendering rules (.xmc-md*) live in chat-markdown.css —
+   split out in B-47 to keep this file under the 500-line UI budget. */
 
 /* ── Tool card ────────────────────────────────────────────────────── */
 
@@ -453,3 +435,55 @@
   from { background-position: 100% 0; }
   to { background-position: -100% 0; }
 }
+
+/* ── B-47: bubble entrance + streaming caret + richer markdown ────── */
+
+/* Every bubble fades + slides in slightly so a new assistant turn is
+   visually obvious. 180ms is fast enough to feel snappy, slow enough
+   the user's eye registers the change. ``prefers-reduced-motion`` skips
+   the animation. */
+.xmc-msg {
+  animation: xmc-msg-in 180ms ease-out;
+}
+@keyframes xmc-msg-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .xmc-msg { animation: none; }
+}
+
+/* Streaming caret — appears at the end of the visible text in the
+   trailing assistant bubble while content is still arriving. Catches
+   the user's eye even when chunks arrive faster than they can read. */
+.xmc-msg.is-streaming .xmc-msg__body::after {
+  content: "▍";
+  display: inline-block;
+  margin-left: 1px;
+  color: var(--color-primary, #6aa3f0);
+  animation: xmc-caret-blink 0.9s step-end infinite;
+  font-weight: 700;
+}
+@keyframes xmc-caret-blink {
+  50% { opacity: 0; }
+}
+
+/* Beef up the thinking pill — bigger label, slightly louder dots. */
+.xmc-thinking {
+  font-size: 0.82rem;
+  padding: 0.5rem 0.8rem;
+}
+.xmc-thinking__dot {
+  width: 7px;
+  height: 7px;
+}
+
+/* Stalled state (B-46 watchdog flips the label past 120s). Highlight
+   warning so the user notices something's off vs. normal slow. */
+.xmc-msg.is-thinking .xmc-msg__status {
+  color: var(--color-primary, #6aa3f0);
+}
+
+/* Markdown rendering for tables / blockquotes / lists / headings lives
+   in chat-markdown.css (split out in B-47). */
+

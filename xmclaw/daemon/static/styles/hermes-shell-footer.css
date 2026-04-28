@@ -1,0 +1,172 @@
+/*
+ * XMclaw — Hermes shell footer styles (theme switcher, language
+ * switcher, sidebar footer, main pane, icon helpers). Split out of
+ * hermes-shell.css in B-47 to keep the parent file under the
+ * 500-line UI budget.
+ */
+
+/* ── footer row (theme + language) ─────────────────────────────────── */
+
+.xmc-h-sidebar__footrow {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+}
+
+/* ── ThemeSwitcher ──────────────────────────────────────────────────── */
+
+.xmc-h-themesw { position: relative; }
+
+.xmc-h-themesw__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid color-mix(in srgb, var(--midground) 18%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--midground) 4%, transparent);
+  color: var(--midground);
+  font-size: 0.65rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.xmc-h-themesw__btn:hover {
+  background: color-mix(in srgb, var(--midground) 8%, transparent);
+}
+
+.xmc-h-themesw__menu {
+  position: absolute;
+  bottom: calc(100% + 0.5rem);
+  left: 0;
+  width: 14rem;
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem;
+  background: var(--color-popover);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+  animation: dialog-in 140ms ease-out;
+}
+
+.xmc-h-themesw--up .xmc-h-themesw__menu {
+  bottom: calc(100% + 0.5rem);
+  top: auto;
+}
+
+.xmc-h-themesw__opt {
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.xmc-h-themesw__opt:hover { background: var(--color-accent); }
+.xmc-h-themesw__opt.is-active { background: var(--color-accent); }
+
+.xmc-h-themesw__opt strong {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--midground);
+}
+
+.xmc-h-themesw__opt small {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  margin-top: 0.15rem;
+}
+
+/* ── LanguageSwitcher ──────────────────────────────────────────────── */
+
+.xmc-h-langsw {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid color-mix(in srgb, var(--midground) 18%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--midground) 4%, transparent);
+  color: var(--midground);
+  font-size: 0.65rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.xmc-h-langsw:hover {
+  background: color-mix(in srgb, var(--midground) 8%, transparent);
+}
+
+/* ── SidebarFooter (version + org) ─────────────────────────────────── */
+
+.xmc-h-sidefooter {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.625rem 1.25rem;
+  border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.xmc-h-sidefooter__ver {
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.1em;
+  color: color-mix(in srgb, var(--color-muted-foreground) 70%, transparent);
+}
+
+.xmc-h-sidefooter__org {
+  font-size: 0.65rem;
+  letter-spacing: 0.15em;
+  color: var(--midground);
+  text-decoration: none;
+  transition: opacity 150ms;
+}
+
+.xmc-h-sidefooter__org:hover { opacity: 0.9; }
+
+.xmc-h-sidefooter__org:focus-visible {
+  outline: none;
+  border-radius: 0.125rem;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--midground) 40%, transparent);
+}
+
+/* ── main pane ─────────────────────────────────────────────────────── */
+
+.xmc-h-main {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 0.5rem 0.75rem 1rem;
+  overflow: hidden;
+  text-transform: none;       /* pages render normal-case content */
+  letter-spacing: normal;
+}
+
+@media (min-width: 640px) {
+  .xmc-h-main { padding: 1rem 1.5rem 2rem; }
+}
+
+@media (min-width: 1024px) {
+  .xmc-h-main { padding: 1.5rem 1.5rem 2rem; }
+}
+
+/* ── Icon helpers ──────────────────────────────────────────────────── */
+
+.xmc-icon { flex-shrink: 0; }
