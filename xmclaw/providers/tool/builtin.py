@@ -1087,6 +1087,12 @@ class BuiltinTools(ToolProvider):
                     bullet=content,  # caller decides whether to lead with "-"
                     placeholder_title=f"{canonical} — agent-curated",
                 )
+                # B-25 char cap (Hermes parity). Only enforced for
+                # the auto-curated files (MEMORY.md / USER.md) where
+                # bloat from many reflection runs is the failure mode.
+                cap = PERSONA_CHAR_CAPS.get(canonical)
+                if cap is not None and len(new_text) > cap:
+                    new_text = enforce_char_cap(new_text, cap)
                 target.write_text(new_text, encoding="utf-8")
                 written_size = len(new_text.encode("utf-8"))
                 summary = f"appended to {canonical} under {section_header}"
@@ -1189,6 +1195,16 @@ class BuiltinTools(ToolProvider):
             placeholder_title=placeholder_title,
         )
 
+        # B-25: enforce char cap (LRU eviction) — Hermes parity. Stops
+        # MEMORY.md / USER.md from growing unbounded across many
+        # reflection runs. Caps from PERSONA_CHAR_CAPS.
+        cap = PERSONA_CHAR_CAPS.get(basename)
+        evicted = 0
+        if cap is not None and len(new_text) > cap:
+            before_len = len(new_text)
+            new_text = enforce_char_cap(new_text, cap)
+            evicted = before_len - len(new_text)
+
         try:
             target.write_text(new_text, encoding="utf-8")
         except OSError as exc:
@@ -1215,6 +1231,7 @@ class BuiltinTools(ToolProvider):
                 "section": section,
                 "appended": bullet,
                 "bytes": len(new_text.encode("utf-8")),
+                "evicted_chars": evicted,
             },
             side_effects=(str(target.resolve()),),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
@@ -1338,6 +1355,68 @@ def _append_under_section(
         + lines[insert_at:]
     )
     return "\n".join(new_lines) + "\n"
+
+
+# B-25 (Hermes parity): char-level cap on persona files. The
+# defaults follow Hermes' MemoryStore (MEMORY.md=2200, USER.md=1375)
+# — bigger than that is a sign of bloat, not insight density. Eviction
+# is LRU by ENTRY (lines starting with "-"): drop the oldest bullets
+# in the largest section first, keep the file's frontmatter + section
+# headers + non-bullet prose intact.
+PERSONA_CHAR_CAPS: dict[str, int] = {
+    "MEMORY.md": 2200,
+    "USER.md":   1375,
+    # Other persona files are user-authored and not subject to LRU.
+}
+
+
+def enforce_char_cap(text: str, cap: int) -> str:
+    """If ``text`` exceeds ``cap`` chars, drop oldest bullets until
+    it fits. Returns possibly-shrunk text. No-op when already small.
+
+    Heuristic for "oldest": bullets sort by the ``YYYY-MM-DD`` prefix
+    that ``remember`` / ``learn_about_user`` write — earliest date
+    evicts first. Bullets without a date prefix are evicted only when
+    everything else is gone.
+    """
+    if len(text) <= cap:
+        return text
+
+    lines = text.split("\n")
+
+    def _bullet_date(ln: str) -> str:
+        """Return the YYYY-MM-DD prefix or empty string."""
+        m = re.match(r"\s*-\s*(\d{4}-\d{2}-\d{2})", ln)
+        return m.group(1) if m else ""
+
+    # Index every bullet line for eviction candidacy. Non-bullet lines
+    # (headers, frontmatter, prose) are preserved in place.
+    bullet_idx = [
+        (i, _bullet_date(ln))
+        for i, ln in enumerate(lines)
+        if ln.strip().startswith("-")
+    ]
+    if not bullet_idx:
+        return text  # nothing to evict
+
+    # Order bullets oldest-first. Empty date sorts FIRST (evict
+    # context-less bullets earliest because we have no temporal info
+    # to weigh them).
+    bullet_idx.sort(key=lambda x: (x[1] or ""))
+
+    drop_set: set[int] = set()
+    out_text = text
+    while len(out_text) > cap and bullet_idx:
+        drop_idx, _ = bullet_idx.pop(0)
+        drop_set.add(drop_idx)
+        # Recompute size with evictions applied.
+        out_text = "\n".join(
+            ln for i, ln in enumerate(lines) if i not in drop_set
+        )
+
+    # Strip trailing blank lines that may now form runs.
+    out_text = re.sub(r"\n{3,}", "\n\n", out_text).rstrip() + "\n"
+    return out_text
 
 
 def collapse_existing_duplicates(

@@ -131,6 +131,51 @@ def _default_system_prompt() -> str:
 _DEFAULT_SYSTEM = _default_system_prompt()
 
 
+# ── Memory-context fence sanitisation (B-25, Hermes parity) ──────────
+#
+# When a turn closes we PERSIST the user message that the LLM saw —
+# which we'd already concatenated with a ``<memory-context>...``
+# block of recalled prior-session data. If we save that verbatim,
+# the NEXT turn's history shows the prefetched recall as if it were
+# part of the user's actual words. Two failure modes:
+#   1. The model echoes "as you mentioned earlier" referencing a
+#      memory line the user never typed.
+#   2. Memory grows quadratically: each turn's recall ends up
+#      embedded in the next turn's history, which then gets recalled
+#      again, etc.
+# Hermes' memory_manager.sanitize_context strips this. We mirror it.
+
+import re as _re_mem
+
+_MEMORY_FENCE_BLOCK_RE = _re_mem.compile(
+    r"<\s*memory-context\s*>[\s\S]*?</\s*memory-context\s*>",
+    _re_mem.IGNORECASE,
+)
+_MEMORY_FENCE_TAG_RE = _re_mem.compile(
+    r"</?\s*memory-context\s*>", _re_mem.IGNORECASE,
+)
+_MEMORY_SYS_NOTE_RE = _re_mem.compile(
+    r"\[\s*System\s+note:\s*The\s+following\s+is\s+recalled\s+memory\s+"
+    r"context[^\]]*\]\s*",
+    _re_mem.IGNORECASE,
+)
+
+
+def _sanitize_memory_context(text: str) -> str:
+    """Remove ``<memory-context>...</memory-context>`` blocks and the
+    "[System note: ...]" framing from a string. Used before persisting
+    history so the on-disk record reflects what the user actually
+    said, not the prefetched recall block."""
+    if not text:
+        return text
+    out = _MEMORY_FENCE_BLOCK_RE.sub("", text)
+    # Catch orphaned tags (e.g. block was malformed and only one tag
+    # made it through) and orphaned system notes.
+    out = _MEMORY_FENCE_TAG_RE.sub("", out)
+    out = _MEMORY_SYS_NOTE_RE.sub("", out)
+    return out.rstrip()
+
+
 # Transient tool errors that earn one automatic retry. Conservative on
 # purpose — semantic failures (file not found, bad args) are NOT
 # retried because retrying won't help, it'll just delay the LLM
@@ -160,6 +205,33 @@ def _is_transient_tool_error(err: str) -> bool:
         return False
     low = err.lower()
     return any(p.lower() in low for p in _TRANSIENT_PATTERNS)
+
+
+# ── System-prompt frozen-snapshot cache (B-25, Hermes parity) ────────
+#
+# Without this, every turn re-rendered learned_skills + appended time
+# fresh — meaning the LLM provider's prompt cache rarely hits, because
+# the "static" section was technically a brand-new string every call.
+# Hermes freezes its system prompt at session start and keeps it
+# stable for the whole session. Time / dynamic content rides on the
+# user message instead (or in our case: appended AFTER the frozen
+# block, so the cache prefix is still stable up to the time slot).
+#
+# Cache key: session_id. Bumped to invalidate all sessions when
+# persona writeback fires (the agent OR user just edited a persona
+# file → next turn must re-render).
+
+_PROMPT_FREEZE_GENERATION = 0
+
+
+def bump_prompt_freeze_generation() -> None:
+    """Invalidate every session's frozen system-prompt snapshot.
+
+    Called by persona-writeback paths so a user's MEMORY.md edit (or
+    the agent's own ``remember`` tool) lands on the next turn.
+    """
+    global _PROMPT_FREEZE_GENERATION
+    _PROMPT_FREEZE_GENERATION += 1
 
 
 def _with_fresh_time(system_prompt: str) -> str:
@@ -273,6 +345,12 @@ class AgentLoop:
         self._bus = bus
         self._tools = tools
         self._system_prompt = system_prompt
+        # B-25 Hermes parity: per-session frozen snapshot of the
+        # static system-prompt portion (= base prompt + learned_skills,
+        # NO time). Time is appended fresh on every turn; the rest is
+        # stable across a session, which is what the LLM provider's
+        # prompt cache wants.
+        self._frozen_prompts: dict[str, tuple[int, str]] = {}
         self._max_hops = max_hops
         self._agent_id = agent_id
         self._cost_tracker = cost_tracker
@@ -322,6 +400,23 @@ class AgentLoop:
         """
         # Drop the system message we prepended for this turn.
         history = [m for m in messages if m.role != "system"]
+        # B-25: strip memory-context fences from user messages before
+        # persisting. The injected ``<memory-context>...</memory-
+        # context>`` block was useful for THIS turn's LLM call — it
+        # must NOT survive into history, or every subsequent turn
+        # would see the prefetched recall as part of the user's
+        # actual words (and the model would echo it back as if the
+        # user had said it). Hermes does this in its memory_manager.
+        import dataclasses as _dc
+        cleaned_history: list[Message] = []
+        for m in history:
+            if m.role == "user" and isinstance(m.content, str) and "memory-context" in m.content:
+                cleaned_history.append(_dc.replace(
+                    m, content=_sanitize_memory_context(m.content),
+                ))
+            else:
+                cleaned_history.append(m)
+        history = cleaned_history
         if len(history) <= self._history_cap:
             kept = history
         else:
@@ -470,8 +565,42 @@ class AgentLoop:
             except Exception as exc:  # noqa: BLE001 — memory is best-effort
                 _log_memory_failure(exc)
 
+        # B-25: frozen system-prompt snapshot per session.
+        # _with_fresh_time builds (base + learned_skills + time). Cache
+        # the (base + learned_skills) part keyed by (session_id,
+        # generation); only re-render when the global generation is
+        # bumped (persona write triggers it). Time still updates each
+        # turn but is appended after the cached prefix, so the
+        # provider's prompt-cache prefix stays stable.
+        cache_entry = self._frozen_prompts.get(session_id)
+        if cache_entry is None or cache_entry[0] != _PROMPT_FREEZE_GENERATION:
+            # Render once: include learned_skills but NOT time.
+            static_with_skills = _with_fresh_time(self._system_prompt)
+            # Strip the trailing "## 当前时刻" block we just appended —
+            # we'll add a fresh one right below. This is a tiny waste
+            # but keeps the rendering helper centralised.
+            t_idx = static_with_skills.rfind("## 当前时刻")
+            if t_idx > 0:
+                static_with_skills = static_with_skills[:t_idx].rstrip()
+            self._frozen_prompts[session_id] = (
+                _PROMPT_FREEZE_GENERATION, static_with_skills,
+            )
+            cache_entry = self._frozen_prompts[session_id]
+        # Append fresh time (cheap; no cache impact on the prefix).
+        import time as _t
+        now_local = _t.localtime()
+        time_block = (
+            f"## 当前时刻\n\n"
+            f"{_t.strftime('%Y-%m-%d %H:%M:%S', now_local)} "
+            f"({_t.strftime('%Z', now_local) or _t.strftime('%z', now_local)}, "
+            f"weekday: {_t.strftime('%A', now_local)}). Use this for any "
+            f"reasoning about deadlines, schedules, or \"recent\" events. "
+            f"Trust this over your training-time clock."
+        )
+        system_content = cache_entry[1] + "\n\n" + time_block
+
         messages: list[Message] = [
-            Message(role="system", content=_with_fresh_time(self._system_prompt)),
+            Message(role="system", content=system_content),
             *prior,
             Message(
                 role="user",

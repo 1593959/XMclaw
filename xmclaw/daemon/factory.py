@@ -532,6 +532,16 @@ def _persona_writeback(app_state_holder: Any) -> Any:
                 tool_names=[s.name for s in tool_specs],
             )
             agent._system_prompt = new_prompt  # noqa: SLF001
+            # B-25: bump the frozen-prompt-snapshot generation so all
+            # sessions re-render their system prompt on the next turn.
+            # Without this, the static cache would still serve the
+            # PRE-edit system prompt — the agent's own ``remember``
+            # write wouldn't take effect until a daemon restart.
+            try:
+                from xmclaw.daemon.agent_loop import bump_prompt_freeze_generation
+                bump_prompt_freeze_generation()
+            except Exception:  # noqa: BLE001
+                pass
         except Exception:  # noqa: BLE001 — never let writeback failures
             # break the tool call. Worst case the agent doesn't see its
             # own write until the daemon restarts.
