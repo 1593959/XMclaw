@@ -840,7 +840,7 @@ class AgentLoop:
 
     def _persist_history(
         self, session_id: str, messages: list[Message],
-    ) -> None:
+    ) -> dict[str, Any] | None:
         """Save conversation history (system prompt excluded) with a size cap.
 
         Trims from the front to keep the most recent ``_history_cap``
@@ -849,6 +849,11 @@ class AgentLoop:
         we round the cut point up to the next "clean" boundary -- i.e.
         skip forward past any trailing tool-result orphans until we
         land on a user message or the end.
+
+        B-33: returns a compression-info dict when compression actually
+        ran (the caller emits a CONTEXT_COMPRESSED bus event with it),
+        ``None`` when the history fit under both caps. Keeping this
+        method sync — bus emission happens at the async caller.
         """
         # Drop the system message we prepended for this turn.
         history = [m for m in messages if m.role != "system"]
@@ -881,6 +886,7 @@ class AgentLoop:
             self._compression_token_cap is not None
             and _estimate_history_tokens(history) > self._compression_token_cap
         )
+        compression_info: dict[str, Any] | None = None
         if not (msg_over or tok_over):
             kept = history
         else:
@@ -916,6 +922,19 @@ class AgentLoop:
                     kept = [summary_msg] + history[start:]
                 else:
                     kept = history[start:]
+                # B-33: capture telemetry for the caller to emit on the bus.
+                trigger = (
+                    "both" if msg_over and tok_over
+                    else "msg_cap" if msg_over else "token_cap"
+                )
+                compression_info = {
+                    "session_id": session_id,
+                    "dropped_count": len(dropped),
+                    "kept_count": len(kept),
+                    "dropped_tokens_estimated": _estimate_history_tokens(dropped),
+                    "trigger": trigger,
+                    "summary_chars": len(summary_text or ""),
+                }
             else:
                 kept = history[start:]
         self._histories[session_id] = kept
@@ -927,6 +946,7 @@ class AgentLoop:
                 # never break the live turn. The in-memory copy is the source
                 # of truth for the rest of this process.
                 pass
+        return compression_info
 
     def _resolve_llm(self, llm_profile_id: str | None) -> LLMProvider:
         """Pick the LLM for this turn. Falls back to ``self._llm`` when
@@ -1409,7 +1429,15 @@ class AgentLoop:
             messages.append(Message(
                 role="assistant", content=response.content,
             ))
-            self._persist_history(session_id, messages)
+            compression_info = self._persist_history(session_id, messages)
+            if compression_info is not None:
+                # B-33: emit a CONTEXT_COMPRESSED event so the Trace
+                # page surfaces the squeeze. Best-effort — never let
+                # observability break the turn.
+                try:
+                    await publish(EventType.CONTEXT_COMPRESSED, compression_info)
+                except Exception:  # noqa: BLE001
+                    pass
 
             # B-26 Cross-session memory write-back via MemoryManager.
             # The manager fans out sync_turn to every registered

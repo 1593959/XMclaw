@@ -37,6 +37,7 @@ const TONE = {
   memory_op: "info",
   skill_invoked: "success",
   todo_updated: "info",
+  context_compressed: "warn",
 };
 
 // Friendly Chinese labels.
@@ -55,6 +56,7 @@ const LABEL = {
   memory_op: "记忆操作",
   skill_invoked: "技能触发",
   todo_updated: "Todos 更新",
+  context_compressed: "上下文压缩",
 };
 
 const EVENT_TYPES = [
@@ -69,6 +71,7 @@ const EVENT_TYPES = [
   "memory_op",
   "skill_invoked",
   "todo_updated",
+  "context_compressed",
 ];
 
 function fmtTs(ts) {
@@ -116,6 +119,12 @@ function shortPayload(ev) {
     return `${p.skill_id || "?"} (evidence: ${p.evidence || "?"})`;
   }
   if (t === "todo_updated") return `${p.count || 0} items`;
+  if (t === "context_compressed") {
+    const trig = p.trigger || "?";
+    const dropped = p.dropped_count != null ? p.dropped_count : "?";
+    const tok = p.dropped_tokens_estimated != null ? p.dropped_tokens_estimated : "?";
+    return `${trig} · dropped ${dropped} msgs (~${tok} tok)`;
+  }
   return JSON.stringify(p).slice(0, 120);
 }
 

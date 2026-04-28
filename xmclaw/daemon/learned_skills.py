@@ -140,6 +140,18 @@ def _load_one(
         return None
     fm, body = _parse_frontmatter(text)
 
+    # B-33: ``disabled: true`` (or ``enabled: false``) frontmatter
+    # opt-out. Lets the user park a misfiring skill without deleting
+    # the file. Recognised values are case-insensitive truthy strings.
+    def _truthy(v: object) -> bool:
+        return str(v).strip().lower() in ("true", "yes", "1", "on")
+
+    if _truthy(fm.get("disabled")):
+        return None
+    enabled_val = fm.get("enabled")
+    if enabled_val is not None and not _truthy(enabled_val):
+        return None
+
     # B-24 (Hermes parity): expand template variables and (optionally)
     # inline shell snippets in the body BEFORE we hand it to the agent.
     # Frontmatter is left raw — it's structural metadata, not prose.

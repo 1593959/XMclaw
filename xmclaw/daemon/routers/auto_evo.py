@@ -296,6 +296,108 @@ async def learned_skills() -> JSONResponse:
     })
 
 
+@router.post("/learned_skills/{skill_id}/disable")
+async def disable_learned_skill(skill_id: str, request: Request) -> JSONResponse:
+    """B-33: park or unpark a learned skill without deleting it.
+
+    Writes ``disabled: true`` (or removes it) into the SKILL.md
+    frontmatter, then bumps the prompt-freeze generation so every
+    running session reflects the change on its next turn.
+
+    Body: ``{"disabled": true}`` to park, ``{"disabled": false}`` to
+    re-enable. Defaults to true (the common case is "stop this thing
+    misfiring NOW"). Returns the new disabled state.
+    """
+    from xmclaw.daemon.learned_skills import default_learned_skills_loader
+    from xmclaw.daemon.agent_loop import bump_prompt_freeze_generation
+
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    disable = bool(body.get("disabled", True))
+
+    loader = default_learned_skills_loader()
+    # Path-traversal hardening: normalise + reject anything that
+    # tries to escape the skills root.
+    safe_id = skill_id.replace("\\", "/").split("/")[-1].strip()
+    if not safe_id or safe_id.startswith("."):
+        return JSONResponse(
+            {"ok": False, "error": "invalid skill_id"}, status_code=400,
+        )
+    skill_dir = loader.skills_root / safe_id
+    skill_md = skill_dir / "SKILL.md"
+    if not skill_md.is_file():
+        return JSONResponse(
+            {"ok": False, "error": f"skill {safe_id!r} not found"},
+            status_code=404,
+        )
+
+    text = skill_md.read_text(encoding="utf-8", errors="replace")
+    new_text = _set_frontmatter_key(text, "disabled", "true" if disable else None)
+    if new_text != text:
+        skill_md.write_text(new_text, encoding="utf-8")
+
+    # Drop loader cache + bump generation so live sessions pick up.
+    loader._cache_key = None  # type: ignore[attr-defined]
+    bump_prompt_freeze_generation()
+    return JSONResponse({
+        "ok": True,
+        "skill_id": safe_id,
+        "disabled": disable,
+        "path": str(skill_md),
+    })
+
+
+def _set_frontmatter_key(text: str, key: str, value: str | None) -> str:
+    """Insert / update / remove a single frontmatter key.
+
+    Lightweight YAML-frontmatter mutator — paired with the lightweight
+    parser in :mod:`xmclaw.daemon.learned_skills` (we deliberately
+    don't pull PyYAML for either side).
+
+    * ``value`` non-None → set ``key: value``
+    * ``value`` None → remove the line entirely
+    * No frontmatter block → wrap the body in one when setting; no-op
+      when removing.
+    """
+    lines = text.splitlines(keepends=True)
+    if lines and lines[0].rstrip("\r\n") == "---":
+        # Find closing fence
+        end_idx = None
+        for i in range(1, len(lines)):
+            if lines[i].rstrip("\r\n") == "---":
+                end_idx = i
+                break
+        if end_idx is None:
+            # Malformed; bail out unchanged.
+            return text
+        fm_block = lines[1:end_idx]
+        # Locate existing key (top-level inline form only).
+        key_idx = None
+        for i, ln in enumerate(fm_block):
+            stripped = ln.lstrip()
+            if stripped.startswith(f"{key}:") or stripped.rstrip() == f"{key}:":
+                key_idx = i
+                break
+        if value is None:
+            if key_idx is not None:
+                del fm_block[key_idx]
+        else:
+            new_line = f"{key}: {value}\n"
+            if key_idx is not None:
+                fm_block[key_idx] = new_line
+            else:
+                fm_block.append(new_line)
+        return "".join(lines[:1] + fm_block + lines[end_idx:])
+    # No frontmatter — wrap the file when setting.
+    if value is None:
+        return text
+    return f"---\n{key}: {value}\n---\n{text}"
+
+
 @router.post("/learned_skills/reload")
 async def reload_learned_skills() -> JSONResponse:
     """B-32: force a rescan of the learned-skills directory + bump

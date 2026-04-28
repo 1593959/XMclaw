@@ -81,6 +81,18 @@ class EventType(str, Enum):
     # auto_repair_v9 can be compared with v8 by real invocation rate.
     SKILL_INVOKED = "skill_invoked"
 
+    # B-33: emitted when AgentLoop._persist_history compresses older
+    # turns into a synthetic system summary. Payload:
+    # {"session_id": str,
+    #  "dropped_count": int,         # number of messages summarised
+    #  "kept_count": int,            # surviving history length
+    #  "dropped_tokens_estimated": int,  # chars/4 estimate
+    #  "trigger": "msg_cap" | "token_cap" | "both",
+    #  "summary_chars": int}         # length of the inserted summary text
+    # Surfaces compression activity on the Trace page so the user knows
+    # WHY older content disappeared from the agent's view.
+    CONTEXT_COMPRESSED = "context_compressed"
+
 
 @dataclass(frozen=True, slots=True)
 class BehavioralEvent:
