@@ -736,6 +736,17 @@ def create_app(
     from xmclaw.daemon.middleware import AgentScopeMiddleware
     app.add_middleware(AgentScopeMiddleware)
 
+    # B-73: pairing-token auth on HTTP API routes. The WS handler
+    # already enforces ``auth_check``; without this middleware the
+    # parallel HTTP surface (sessions / config / memory / agents / …)
+    # was wide open to anything on localhost — so a curl from any
+    # process on the user's machine could read full chat history,
+    # rewrite the daemon config, or delete sessions. Skipped when
+    # ``auth_check is None`` (--no-auth daemon mode).
+    if auth_check is not None:
+        from xmclaw.daemon.middleware import PairingAuthMiddleware
+        app.add_middleware(PairingAuthMiddleware, auth_check=auth_check)
+
     # Epic #17 Phase 3: REST surface for the multi-agent registry.
     from xmclaw.daemon.routers import agents as _agents_router
     app.include_router(_agents_router.router)
