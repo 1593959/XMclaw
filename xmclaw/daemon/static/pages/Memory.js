@@ -64,17 +64,51 @@ const TAB_LABELS = [
   { id: "providers", label: "Providers", hint: "已挂载的记忆 provider（B-26 Hermes-style 抽象）" },
 ];
 
-// ── Providers tab (B-27) ─────────────────────────────────────────
+// ── Providers tab (B-27/B-28) ─────────────────────────────────────────
 
 function ProvidersTab({ token }) {
   const [data, setData] = useState(null);
+  const [available, setAvailable] = useState(null);
+  const [selected, setSelected] = useState("");
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
-  useEffect(() => {
+  const reload = useCallback(() => {
     apiGet("/api/v2/memory/providers", token)
-      .then((d) => setData(d))
+      .then((d) => {
+        setData(d);
+        // Pre-select whichever external provider is currently active
+        const ext = (d.providers || []).find((p) => p.kind === "external");
+        if (ext) setSelected(ext.name);
+        else if (d.wired) setSelected("none");
+      })
       .catch((e) => setError(String(e.message || e)));
+    apiGet("/api/v2/memory/providers/available", token)
+      .then((d) => setAvailable(d.providers || []))
+      .catch(() => setAvailable([]));
   }, [token]);
+
+  useEffect(reload, [reload]);
+
+  const onSwitch = async (newProvider) => {
+    if (!newProvider || newProvider === selected) return;
+    setBusy(true);
+    try {
+      const r = await apiPost("/api/v2/memory/providers/switch", token, {
+        provider: newProvider,
+      });
+      if (r.ok) {
+        setSelected(newProvider);
+        toast.success(
+          `已切换到 ${newProvider} — ${r.restart_required ? '需重启 daemon 生效' : '已生效'}`,
+        );
+      }
+    } catch (e) {
+      toast.error("切换失败：" + (e.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   if (error) return html`<p class="xmc-datapage__error">${error}</p>`;
   if (!data) return html`<p class="xmc-datapage__hint">加载中…</p>`;
@@ -113,13 +147,46 @@ function ProvidersTab({ token }) {
           </li>
         `)}
       </ul>
-      <h3 style="margin:1.2rem 0 .5rem">如何接入新 provider</h3>
+      <h3 style="margin:1.2rem 0 .5rem">切换外部 provider</h3>
+      ${available && available.length > 0 ? html`
+        <div class="xmc-datapage__row" style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+          <select
+            value=${selected}
+            onChange=${(e) => onSwitch(e.target.value)}
+            disabled=${busy}
+            style="padding:.4rem .5rem;font-size:.9rem;min-width:220px"
+          >
+            ${available.map((p) => html`
+              <option value=${p.id} key=${p.id}>${p.label}</option>
+            `)}
+          </select>
+          <small class="xmc-datapage__subtitle">切换需重启 daemon 生效</small>
+        </div>
+        ${(() => {
+          const cur = (available || []).find((p) => p.id === selected);
+          if (!cur) return null;
+          return html`
+            <div class="xmc-h-card" style="padding:.5rem .8rem;margin-top:.5rem;background:var(--color-bg)">
+              <small style="color:var(--xmc-fg-muted)">${cur.description}</small>
+              ${(cur.needs || []).length > 0 ? html`
+                <div style="margin-top:.3rem">
+                  <small style="color:var(--xmc-fg-muted)">需要配置：</small>
+                  ${cur.needs.map((n) => html`<code key=${n} style="margin-right:.4rem;font-size:.7rem">${n}</code>`)}
+                </div>
+              ` : null}
+            </div>
+          `;
+        })()}
+      ` : null}
+
+      <h3 style="margin:1.2rem 0 .5rem">如何写一个新 provider</h3>
       <p class="xmc-datapage__subtitle">
         实现 <code>xmclaw/providers/memory/base.MemoryProvider</code> ABC（put / query / forget +
         可选的 prefetch / sync_turn / on_session_end / on_pre_compress / get_tool_schemas /
         handle_tool_call），放到 <code>xmclaw/providers/memory/&lt;name&gt;.py</code>，
         在 <code>factory.py</code> 注册即可 — agent_loop 不需修改。
-        参考实现 <code>builtin_file.py</code>（内置）和 <code>sqlite_vec.py</code>（外部）。
+        参考实现 <code>builtin_file.py</code>（内置）/ <code>sqlite_vec.py</code>（外部）/
+        <code>hindsight.py</code>（云 KG 模板）。
       </p>
     </div>
   `;

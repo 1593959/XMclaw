@@ -965,13 +965,41 @@ def build_agent_from_config(
         )
     except Exception:  # noqa: BLE001
         pass
-    # External provider (SqliteVecMemory). Best-effort.
-    try:
-        external = build_memory_from_config(cfg, bus=bus)
-        if external is not None:
-            memory_manager.add_provider(external)
-    except Exception:  # noqa: BLE001
-        pass
+    # External provider — selected by ``evolution.memory.provider``
+    # (sqlite_vec | hindsight | none). Default sqlite_vec for back-
+    # compat. Best-effort throughout: provider init failure falls
+    # back to "no external" without breaking agent boot.
+    evo_section = (cfg or {}).get("evolution") or {}
+    provider_choice = (
+        (evo_section.get("memory") or {}).get("provider")
+        or "sqlite_vec"
+    )
+    if provider_choice == "sqlite_vec":
+        try:
+            external = build_memory_from_config(cfg, bus=bus)
+            if external is not None:
+                memory_manager.add_provider(external)
+        except Exception:  # noqa: BLE001
+            pass
+    elif provider_choice == "hindsight":
+        try:
+            from xmclaw.providers.memory.hindsight import HindsightMemoryProvider
+            cfg_hs = (evo_section.get("memory") or {}).get("hindsight") or {}
+            hs = HindsightMemoryProvider(
+                api_key=cfg_hs.get("api_key"),
+                base_url=cfg_hs.get("base_url"),
+            )
+            if hs.is_available():
+                memory_manager.add_provider(hs)
+            else:
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).warning(
+                    "memory.hindsight_unavailable — needs api_key + SDK; "
+                    "falling back to no external provider",
+                )
+        except Exception:  # noqa: BLE001
+            pass
+    # provider_choice == "none" → no external provider registered.
 
     # Keep an opt-out: tests / minimal configs that explicitly set
     # memory.enabled=false get None instead of an empty-but-noisy

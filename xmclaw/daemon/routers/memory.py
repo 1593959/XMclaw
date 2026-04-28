@@ -47,6 +47,94 @@ def _safe_name(filename: str) -> str:
     return stem
 
 
+_AVAILABLE_PROVIDERS = {
+    "sqlite_vec": {
+        "label": "SQLite Vec (built-in vector store)",
+        "kind": "external",
+        "needs": [],
+        "description": "Local vector DB — no external service. Good default.",
+    },
+    "hindsight": {
+        "label": "Hindsight (cloud knowledge graph)",
+        "kind": "external",
+        "needs": ["evolution.memory.hindsight.api_key"],
+        "description": "Knowledge-graph backed long-term memory. Needs API key.",
+    },
+    "none": {
+        "label": "Disabled (no external provider)",
+        "kind": "external",
+        "needs": [],
+        "description": "Only the always-on builtin file provider runs.",
+    },
+}
+
+
+@router.get("/providers/available")
+async def list_available_providers() -> JSONResponse:
+    """Catalogue of provider implementations the user can switch to.
+
+    The 'active' one is whichever the running agent has registered as
+    its external provider (per /providers); switching writes config
+    and requires a daemon restart to take effect.
+    """
+    return JSONResponse({
+        "providers": [
+            {"id": pid, **meta}
+            for pid, meta in _AVAILABLE_PROVIDERS.items()
+        ],
+    })
+
+
+@router.post("/providers/switch")
+async def switch_provider(request: Request) -> JSONResponse:
+    """Switch the external memory provider. Persists to config.
+
+    Body: ``{"provider": "sqlite_vec" | "hindsight" | "none"}``.
+    Daemon restart required for the swap to take effect — the
+    response includes ``restart_required: true`` so the UI can prompt.
+    """
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+    provider = str(body.get("provider", "")).strip().lower()
+    if provider not in _AVAILABLE_PROVIDERS:
+        return JSONResponse(
+            {"ok": False, "error": f"unknown provider {provider!r}"},
+            status_code=400,
+        )
+
+    # Update the running config + persist to disk.
+    state = request.app.state
+    cfg = getattr(state, "config", None)
+    if cfg is None:
+        return JSONResponse(
+            {"ok": False, "error": "no config attached to daemon"}, status_code=500,
+        )
+    config_path = getattr(state, "config_path", None)
+    cfg.setdefault("evolution", {}).setdefault("memory", {})["provider"] = provider
+    if config_path:
+        try:
+            from pathlib import Path as _P
+            p = _P(config_path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+        except OSError as exc:
+            return JSONResponse(
+                {"ok": False, "error": f"config write failed: {exc}"},
+                status_code=500,
+            )
+
+    return JSONResponse({
+        "ok": True,
+        "provider": provider,
+        "restart_required": True,
+        "config_path": str(config_path) if config_path else None,
+    })
+
+
 @router.get("/providers")
 async def list_providers(request: Request) -> JSONResponse:
     """B-27: enumerate memory providers attached to the running agent.

@@ -403,6 +403,76 @@ class AgentLoop:
         if self._session_store is not None:
             self._session_store.delete(session_id)
 
+    def _build_compression_summary(
+        self, session_id: str, dropped: list[Message],
+    ) -> str:
+        """Compress a prefix of dropped history into a one-paragraph
+        summary that survives as a single system message.
+
+        B-28. Hermes' context_compressor passes the dropped messages
+        to a cheap LLM for summarisation; we go simpler — assemble a
+        deterministic digest from message roles + first lines + any
+        provider-extracted insights from on_pre_compress. Avoids the
+        latency spike of an inline LLM call inside _persist_history.
+
+        If a future, smarter compressor wants to call an auxiliary
+        LLM, this is the seam — just swap the body.
+        """
+        if not dropped:
+            return ""
+
+        # Collect provider-extracted insights via on_pre_compress.
+        provider_extract = ""
+        try:
+            mgr = self._memory_manager
+            if mgr is not None and hasattr(mgr, "on_pre_compress"):
+                history_dicts = [
+                    {"role": m.role,
+                     "content": m.content if isinstance(m.content, str) else ""}
+                    for m in dropped
+                ]
+                provider_extract = mgr.on_pre_compress(history_dicts) or ""
+        except Exception:  # noqa: BLE001
+            provider_extract = ""
+
+        # Build a deterministic digest. Counts + first user message +
+        # last assistant reply give the model a useful anchor without
+        # an LLM round-trip.
+        roles: dict[str, int] = {}
+        first_user = ""
+        last_assistant = ""
+        for m in dropped:
+            roles[m.role] = roles.get(m.role, 0) + 1
+            if m.role == "user" and isinstance(m.content, str) and not first_user:
+                first_user = m.content[:200].replace("\n", " ").strip()
+            if m.role == "assistant" and isinstance(m.content, str):
+                last_assistant = m.content[:200].replace("\n", " ").strip()
+
+        parts = [
+            "## Earlier conversation summary",
+            "",
+            f"_Compressed {len(dropped)} earlier messages from this session_:",
+        ]
+        for r in ("user", "assistant", "tool", "system"):
+            if r in roles:
+                parts.append(f"- {r}: {roles[r]} message(s)")
+        if first_user:
+            parts.append("")
+            parts.append(f"**Conversation started with:** \"{first_user}\"")
+        if last_assistant:
+            parts.append(f"**Last assistant reply (before compression):** "
+                         f"\"{last_assistant[:160]}\"")
+        if provider_extract:
+            parts.append("")
+            parts.append("**Memory-extracted facts to preserve:**")
+            parts.append(provider_extract)
+        parts.append("")
+        parts.append(
+            "_(Use this summary as background; recent turns above "
+            "are the live context.)_"
+        )
+        return "\n".join(parts)
+
     def _persist_history(
         self, session_id: str, messages: list[Message],
     ) -> None:
@@ -443,7 +513,28 @@ class AgentLoop:
             # forward to the next user turn.
             while start < len(history) and history[start].role in ("tool", "assistant"):
                 start += 1
-            kept = history[start:]
+
+            # B-28 context compressor: instead of dropping the dropped
+            # prefix on the floor, summarise it into a single system
+            # message so the agent retains gist-level memory of the
+            # earlier conversation. Pulls provider-extracted insights
+            # via on_pre_compress so e.g. fact-extracted user prefs
+            # survive the squeeze.
+            dropped = history[:start]
+            if dropped:
+                summary_text = self._build_compression_summary(
+                    session_id, dropped,
+                )
+                if summary_text:
+                    summary_msg = Message(
+                        role="system",
+                        content=summary_text,
+                    )
+                    kept = [summary_msg] + history[start:]
+                else:
+                    kept = history[start:]
+            else:
+                kept = history[start:]
         self._histories[session_id] = kept
         if self._session_store is not None:
             try:

@@ -205,6 +205,38 @@ async def _run_session_reflection(
             extra={"session_id": session_id, "err": str(exc)},
         )
 
+    # B-28 on_session_end hook: fan out to every memory provider so
+    # they can do end-of-session fact extraction / summarisation.
+    # Hindsight calls client.flush; sqlite_vec is a no-op default;
+    # builtin_file ignores. The reflection step above already covered
+    # MEMORY.md / USER.md curation via the agent's own tools — this
+    # hook is the LOWER-LEVEL post-session signal for backends that
+    # batch their writes.
+    try:
+        mgr = getattr(agent, "_memory_manager", None) if agent is not None else None
+        if mgr is not None:
+            # Pull a serialisable copy of the closed session's history.
+            try:
+                history = list(agent._histories.get(session_id, []))  # noqa: SLF001
+            except Exception:  # noqa: BLE001
+                history = []
+            history_dicts = []
+            for m in history:
+                d = {"role": getattr(m, "role", "?")}
+                c = getattr(m, "content", None)
+                if isinstance(c, str):
+                    d["content"] = c
+                history_dicts.append(d)
+            await mgr.on_session_end(
+                session_id=session_id, messages=history_dicts,
+            )
+    except Exception as exc:  # noqa: BLE001
+        from xmclaw.utils.log import get_logger
+        get_logger(__name__).warning(
+            "session.on_session_end_failed",
+            extra={"session_id": session_id, "err": str(exc)},
+        )
+
 
 def create_app(
     *,
