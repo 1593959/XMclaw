@@ -279,13 +279,92 @@ def create_app(
     # the primary AgentLoop's run_turn to execute the job's prompt.
     cron_tick = None
 
+    # B-16 evolution core: xm-auto-evo (Node.js) is XMclaw's autonomous
+    # evolution heart, not a plugin or skill. The daemon manages it as
+    # a first-class subsystem — lifespan starts the heartbeat, the
+    # DialogExporter pipes session activity to it, and the
+    # /api/v2/auto_evo router surfaces it in the Web UI Evolution page.
+    auto_evo_proc: Any = None
+    dialog_exporter_unsub: Any = None
+
     @asynccontextmanager
     async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        nonlocal cron_tick
+        nonlocal cron_tick, auto_evo_proc, dialog_exporter_unsub
         if sweep_task is not None:
             await sweep_task.start()
         if backup_scheduler is not None:
             await backup_scheduler.start()
+
+        # ── xm-auto-evo evolution core ──────────────────────────────
+        # Always-on subsystem (per user, "system level, not plugin").
+        # Two halves:
+        #   1. DialogExporter subscribes to the bus and writes session
+        #      activity to <auto_evo_workspace>/dialog/YYYY-MM-DD.jsonl
+        #      in XMclaw native format (the patched signals.js reads it).
+        #   2. AutoEvoProcess spawns ``node index.js heartbeat`` as a
+        #      managed subprocess so observation/learning/evolution
+        #      runs at the configured interval without manual triggers.
+        # Disabled by setting evolution.auto_evo.enabled=false in config
+        # for users who don't have Node installed; defaults to enabled
+        # because this IS the evolution core, not an optional add-on.
+        try:
+            from xmclaw.daemon.auto_evo_bridge import (
+                DialogExporter,
+                AutoEvoProcess,
+                auto_evo_repo_path,
+                auto_evo_workspace,
+            )
+            evo_section = (config or {}).get("evolution", {}).get("auto_evo", {})
+            evo_enabled = evo_section.get("enabled", True)
+            if evo_enabled:
+                workspace = auto_evo_workspace()
+                workspace.mkdir(parents=True, exist_ok=True)
+
+                exporter = DialogExporter(workspace)
+                # Subscribe to USER_MESSAGE / LLM_RESPONSE / TOOL_*
+                # events only — exporter doesn't care about lifecycle
+                # or chunk events (LLM_CHUNK fires per token).
+                _exporter_types = {
+                    EventType.USER_MESSAGE,
+                    EventType.LLM_RESPONSE,
+                    EventType.TOOL_CALL_EMITTED,
+                    EventType.TOOL_INVOCATION_FINISHED,
+                }
+                dialog_exporter_unsub = bus.subscribe(
+                    lambda e: e.type in _exporter_types,
+                    exporter.on_event,
+                )
+                _app.state.dialog_exporter = exporter
+
+                repo = auto_evo_repo_path(config or {})
+                interval = int(evo_section.get("interval_min", 30))
+                auto_evo_proc = AutoEvoProcess(
+                    repo, workspace, interval_min=interval,
+                )
+                _app.state.auto_evo_process = auto_evo_proc
+
+                # Auto-start on boot unless explicitly disabled.
+                if evo_section.get("autostart", True):
+                    res = await auto_evo_proc.start()
+                    if not res.get("ok"):
+                        from xmclaw.utils.log import get_logger
+                        get_logger(__name__).warning(
+                            "auto_evo.start_failed",
+                            extra={"err": res.get("error")},
+                        )
+            else:
+                _app.state.auto_evo_process = None
+                _app.state.dialog_exporter = None
+        except Exception as exc:  # noqa: BLE001 — auto_evo failures
+            # must NEVER block daemon boot. The agent itself still works
+            # without the evolution core; users without Node installed
+            # see "wired:false" in the Evolution page.
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).warning(
+                "auto_evo.init_failed", extra={"err": str(exc)},
+            )
+            _app.state.auto_evo_process = None
+            _app.state.dialog_exporter = None
         # Cron tick: only start once the primary agent is live; without
         # it run_turn would have nowhere to land. Wraps a per-tick
         # session_id ('cron:<job_id>:<ts>') so cron output is searchable
@@ -352,6 +431,22 @@ def create_app(
             if cron_tick is not None:
                 try:
                     await cron_tick.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            # Stop xm-auto-evo subsystem.
+            if auto_evo_proc is not None:
+                try:
+                    await auto_evo_proc.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            if dialog_exporter_unsub is not None:
+                try:
+                    # Bus subscribers return either an awaitable cancel
+                    # or just None; we tolerate both.
+                    if hasattr(dialog_exporter_unsub, "cancel"):
+                        dialog_exporter_unsub.cancel()
+                    elif callable(dialog_exporter_unsub):
+                        dialog_exporter_unsub()
                 except Exception:  # noqa: BLE001
                     pass
             # Epic #17 Phase 7: stop all workspace background work
@@ -422,6 +517,7 @@ def create_app(
     from xmclaw.daemon.routers import workspaces as _workspaces_router
     from xmclaw.daemon.routers import journal as _journal_router
     from xmclaw.daemon.routers import system as _system_router
+    from xmclaw.daemon.routers import auto_evo as _auto_evo_router
     app.include_router(_files_router.router)
     app.include_router(_llm_profiles_router.router)
     app.include_router(_memory_router.router)
@@ -436,6 +532,7 @@ def create_app(
     app.include_router(_workspaces_router.router)
     app.include_router(_journal_router.router)
     app.include_router(_system_router.router)
+    app.include_router(_auto_evo_router.router)
 
     # Phase 3: ASGI middleware for X-Agent-Id → ContextVar plumbing
     # (QwenPaw multi-agent convention #1). Stays a no-op for the
