@@ -747,6 +747,16 @@ def create_app(
         from xmclaw.daemon.middleware import PairingAuthMiddleware
         app.add_middleware(PairingAuthMiddleware, auth_check=auth_check)
 
+    # B-75: cap request body size on /api/v2/* at 10 MB. ``request.json()``
+    # buffers the entire body in memory before parsing — a 1 GB POST to
+    # /api/v2/memory/<filename> or /api/v2/profiles/<canonical> would
+    # OOM the daemon process. The cap covers every legitimate XMclaw
+    # write (persona files, journal entries, notes, workspace manifests
+    # all live in the KB-to-low-MB range). Always installed, even in
+    # --no-auth mode, because OOM defence is orthogonal to authn.
+    from xmclaw.daemon.middleware import BodySizeLimitMiddleware
+    app.add_middleware(BodySizeLimitMiddleware)
+
     # Epic #17 Phase 3: REST surface for the multi-agent registry.
     from xmclaw.daemon.routers import agents as _agents_router
     app.include_router(_agents_router.router)
