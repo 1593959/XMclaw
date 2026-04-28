@@ -87,9 +87,19 @@ function connectFor(sid, token) {
       }));
     },
     onStatus: ({ status, error, attempt }) => {
+      const pending = wsHandle?.getPendingCount?.() || 0;
       store.setState({
-        connection: { status, lastError: error, reconnectAttempt: attempt },
+        connection: { status, lastError: error, reconnectAttempt: attempt, pendingFrames: pending },
       });
+      // On a successful reconnect that drained queued frames, tell
+      // the user their earlier messages went out — proves the
+      // out-of-band recovery worked rather than failing silently.
+      if (status === "connected" && wsHandle?.consumeLastFlushCount) {
+        const flushed = wsHandle.consumeLastFlushCount();
+        if (flushed > 0) {
+          toast.success(`已重连 — ${flushed} 条排队消息已发送`);
+        }
+      }
     },
   });
 }
@@ -127,8 +137,16 @@ function sendComposer() {
   const s = store.getState();
   const text = (s.chat.composerDraft || "").trim();
   if (!text) return;
-  if (!wsHandle) return;
-  if (s.connection.status !== "connected") return;
+  if (!wsHandle) {
+    toast.error("WS 未连接，消息未发送 — 请检查 daemon 状态");
+    return;
+  }
+
+  // Allow send even when reconnecting; the WS client now queues frames
+  // and flushes them on reconnect (B-13 fix). Without this gate,
+  // pressing Enter during a daemon restart would silently lose the
+  // message — UI showed an optimistic bubble but the server never
+  // got the frame.
 
   // Optimistic local echo. The daemon will mirror it back as USER_MESSAGE,
   // and the reducer will dedupe by id.
@@ -141,7 +159,7 @@ function sendComposer() {
   const nextChat = appendThinkingAssistant(afterUser, id);
   store.setState({ chat: { ...nextChat, composerDraft: "" } });
 
-  wsHandle.send({
+  const result = wsHandle.send({
     type: "user",
     content: text,
     ultrathink: s.chat.ultrathink || undefined,
@@ -149,6 +167,16 @@ function sendComposer() {
     plan_mode: s.chat.planMode || undefined,
     llm_profile_id: s.chat.llmProfileId || undefined,
   });
+
+  // Tell the user when the frame is queued vs. sent. Queued frames
+  // ride out the reconnect; rejected frames need to be retyped.
+  if (result && result.queued) {
+    toast.info(
+      `当前未连接 daemon，消息已排队 (#${result.pendingCount}) — 重连后自动发送`,
+    );
+  } else if (result && !result.ok) {
+    toast.error("发送失败：" + (result.reason || "未知"));
+  }
 }
 
 function setLlmProfile(profileId) {

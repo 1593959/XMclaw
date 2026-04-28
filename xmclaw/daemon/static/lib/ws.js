@@ -53,12 +53,27 @@ export function createWsClient({
   // tests pin it to 0 so a connect failure surfaces immediately as
   // "auth_failed" or "disconnected" without scheduling a retry.
   maxReconnects = Infinity,
+  // How many frames to retain in the pending-send queue while the
+  // socket is closed. When the queue fills, the oldest frame is
+  // dropped — capped so a multi-day disconnect doesn't grow without
+  // bound. ``Infinity`` = no cap (used by tests).
+  pendingQueueMax = 64,
 }) {
   let socket = null;
   let reconnectTimer = null;
   let reconnectAttempt = 0;
   let closedByUser = false;
   let status = "disconnected";
+  // Frames that arrived while the socket was reconnecting. Flushed
+  // in order on the next ``open`` event. Without this, a user who
+  // pressed Enter during a reconnect would silently lose their
+  // message — the server never received it but the UI showed an
+  // optimistic bubble. See B-13 incident.
+  const pendingQueue = [];
+  // How many frames the most recent ``open`` event drained from the
+  // queue. Surfaced via ``getLastFlushCount()`` so the UI can show
+  // "已重连 — N 条排队消息已发送" once after a reconnect.
+  let lastFlushCount = 0;
 
   function setStatus(next, error) {
     if (next === status && !error) return;
@@ -88,6 +103,25 @@ export function createWsClient({
 
     s.addEventListener("open", () => {
       reconnectAttempt = 0;
+      // Flush any frames that the user enqueued while we were
+      // reconnecting BEFORE announcing "connected". This way the
+      // status callback always sees the queue at its post-drain
+      // state and can compare delta correctly.
+      let flushed = 0;
+      if (pendingQueue.length) {
+        const drain = pendingQueue.splice(0);
+        for (const payload of drain) {
+          try {
+            s.send(JSON.stringify(payload));
+            flushed += 1;
+          } catch (err) {
+            console.error("[xmc/ws] flush threw, re-queueing", err);
+            pendingQueue.unshift(payload);
+            break;
+          }
+        }
+      }
+      lastFlushCount = flushed;
       setStatus("connected");
     });
 
@@ -146,17 +180,38 @@ export function createWsClient({
   }
 
   function send(payload) {
-    if (!socket || socket.readyState !== 1 /* OPEN */) {
-      console.warn("[xmc/ws] dropped frame; socket not open", payload);
-      return false;
+    if (socket && socket.readyState === 1 /* OPEN */) {
+      try {
+        socket.send(JSON.stringify(payload));
+        return { ok: true, queued: false };
+      } catch (err) {
+        console.error("[xmc/ws] send threw, re-queueing", err);
+        // Fall through to the queue path so the frame survives.
+      }
     }
-    try {
-      socket.send(JSON.stringify(payload));
-      return true;
-    } catch (err) {
-      console.error("[xmc/ws] send threw", err);
-      return false;
+    if (closedByUser) {
+      // Caller explicitly closed — don't pretend we'll retry.
+      return { ok: false, queued: false, reason: "closed_by_user" };
     }
+    if (pendingQueue.length >= pendingQueueMax) {
+      // Drop the oldest frame to keep the queue bounded. This is the
+      // "I left my browser open over the weekend" path; preferring
+      // newer messages over older keeps recent intent intact.
+      pendingQueue.shift();
+    }
+    pendingQueue.push(payload);
+    return {
+      ok: true,
+      queued: true,
+      pendingCount: pendingQueue.length,
+      reason: status === "connecting" || status === "reconnecting"
+        ? "reconnecting"
+        : "disconnected",
+    };
+  }
+
+  function getPendingCount() {
+    return pendingQueue.length;
   }
 
   function close() {
@@ -184,5 +239,14 @@ export function createWsClient({
     send,
     close,
     getStatus: () => status,
+    getPendingCount,
+    // Returns the number of frames flushed by the most recent
+    // ``open`` event. Caller is expected to read-and-clear via
+    // consumeLastFlushCount().
+    consumeLastFlushCount: () => {
+      const n = lastFlushCount;
+      lastFlushCount = 0;
+      return n;
+    },
   };
 }
