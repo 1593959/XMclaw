@@ -170,6 +170,99 @@ async def dream_status(request: Request) -> JSONResponse:
     })
 
 
+@router.get("/dream/backups")
+async def dream_backups(request: Request) -> JSONResponse:
+    """B-52: list MEMORY.md backups created by Auto-Dream / manual run.
+
+    Persona-dir's ``backup/`` subdirectory holds ``memory_backup_*.md``
+    files. We return them newest-first with size + ts so the UI / agent
+    can choose what to restore from.
+    """
+    try:
+        from xmclaw.daemon.factory import _resolve_persona_profile_dir
+        cfg = getattr(request.app.state, "config", None) or {}
+        pdir = _resolve_persona_profile_dir(cfg)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"backups": [], "error": str(exc)})
+    bdir = pdir / "backup"
+    if not bdir.is_dir():
+        return JSONResponse({"backups": [], "persona_dir": str(pdir)})
+    out: list[dict[str, Any]] = []
+    for entry in sorted(bdir.glob("memory_backup_*.md"), reverse=True):
+        try:
+            stat = entry.stat()
+        except OSError:
+            continue
+        out.append({
+            "name": entry.name,
+            "size": stat.st_size,
+            "mtime": stat.st_mtime,
+        })
+    return JSONResponse({"backups": out, "persona_dir": str(pdir)})
+
+
+@router.post("/dream/restore/{name}")
+async def dream_restore(name: str, request: Request) -> JSONResponse:
+    """B-52: restore MEMORY.md from a named backup.
+
+    Path-traversal hardened: only basenames matching
+    ``memory_backup_*.md`` are honoured. The current MEMORY.md is
+    backed up to ``memory_backup_predates_<ts>_restore.md`` BEFORE
+    overwrite — restores are themselves reversible.
+    """
+    safe = name.replace("\\", "/").split("/")[-1].strip()
+    if not safe.startswith("memory_backup_") or not safe.endswith(".md"):
+        return JSONResponse(
+            {"ok": False, "error": "invalid backup name"},
+            status_code=400,
+        )
+    try:
+        from xmclaw.daemon.factory import _resolve_persona_profile_dir
+        cfg = getattr(request.app.state, "config", None) or {}
+        pdir = _resolve_persona_profile_dir(cfg)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            {"ok": False, "error": str(exc)}, status_code=500,
+        )
+    src = pdir / "backup" / safe
+    if not src.is_file():
+        return JSONResponse(
+            {"ok": False, "error": f"backup not found: {safe}"},
+            status_code=404,
+        )
+    target = pdir / "MEMORY.md"
+    # Backup current before overwrite (restore is reversible).
+    import time as _t
+    pre_backup = pdir / "backup" / (
+        f"memory_backup_predates_{_t.strftime('%Y%m%d-%H%M%S')}_restore.md"
+    )
+    try:
+        if target.is_file():
+            pre_backup.write_text(
+                target.read_text(encoding="utf-8", errors="replace"),
+                encoding="utf-8",
+            )
+        body = src.read_text(encoding="utf-8", errors="replace")
+        target.write_text(body, encoding="utf-8")
+    except OSError as exc:
+        return JSONResponse(
+            {"ok": False, "error": f"restore failed: {exc}"},
+            status_code=500,
+        )
+    # Bump generation so live sessions see restored version next turn.
+    try:
+        from xmclaw.daemon.agent_loop import bump_prompt_freeze_generation
+        bump_prompt_freeze_generation()
+    except Exception:  # noqa: BLE001
+        pass
+    return JSONResponse({
+        "ok": True,
+        "restored_from": safe,
+        "pre_restore_backup": pre_backup.name,
+        "memory_path": str(target),
+    })
+
+
 @router.post("/dream/run")
 async def dream_run(request: Request) -> JSONResponse:
     """B-51: on-demand dream pass. Same code path as the daily cron,

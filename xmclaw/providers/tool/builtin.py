@@ -495,6 +495,30 @@ _MEMORY_SEARCH_SPEC = ToolSpec(
 )
 
 
+_MEMORY_COMPACT_SPEC = ToolSpec(
+    name="memory_compact",
+    description=(
+        "Trigger an Auto-Dream pass on MEMORY.md right now (instead of "
+        "waiting until 03:00 daily). Useful when you've just done a "
+        "burst of remember/update_persona writes and want to dedupe + "
+        "crystallise BEFORE the next conversation.\n\n"
+        "The compactor reads MEMORY.md + last 7 days of memory/*.md "
+        "logs, asks the LLM to merge duplicates / overwrite stale "
+        "facts / consolidate / drop expired, writes a backup under "
+        "<persona>/backup/ first, then rewrites MEMORY.md atomically.\n\n"
+        "Returns {ok, before_chars, after_chars, saved_chars, "
+        "backup_path}. Refuses to run when no LLM is configured. "
+        "Refuses rewrites that shrink the file by more than 70% as "
+        "an LLM-error guard. The pre-compact version is recoverable "
+        "from the backup directory if the rewrite went badly."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {},
+    },
+)
+
+
 _AGENT_STATUS_SPEC = ToolSpec(
     name="agent_status",
     description=(
@@ -869,6 +893,10 @@ class BuiltinTools(ToolProvider):
         # B-49: self-introspection tool. Always advertised — works
         # even with zero providers wired (returns "nothing wired").
         specs.append(_AGENT_STATUS_SPEC)
+        # B-52: memory_compact triggers an immediate Auto-Dream pass.
+        # Always advertised; the handler refuses cleanly when no LLM
+        # is wired (which is the only failure mode).
+        specs.append(_MEMORY_COMPACT_SPEC)
         return specs
 
     async def invoke(self, call: ToolCall) -> ToolResult:
@@ -930,6 +958,8 @@ class BuiltinTools(ToolProvider):
                 return await self._journal_append(call, t0)
             if call.name == "agent_status":
                 return await self._agent_status(call, t0)
+            if call.name == "memory_compact":
+                return await self._memory_compact(call, t0)
             return _fail(call, t0, f"unknown tool: {call.name!r}")
         except PermissionError as exc:
             return _fail(call, t0, f"permission denied: {exc}")
@@ -1683,6 +1713,33 @@ class BuiltinTools(ToolProvider):
                 "title": title or None,
             },
             side_effects=(str(path),),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _memory_compact(self, call: ToolCall, t0: float) -> ToolResult:
+        """B-52: trigger Auto-Dream now (instead of waiting for the
+        daily cron). Reaches the running compactor via the same
+        ``_LAST_APP_STATE`` holder factory.py uses for persona-writeback.
+        Refuses cleanly when no LLM is configured."""
+        try:
+            from xmclaw.daemon import app as _app_mod
+            state = getattr(_app_mod, "_LAST_APP_STATE", None)
+        except Exception:  # noqa: BLE001
+            state = None
+        if state is None:
+            return _fail(call, t0, "daemon not started (no app.state available)")
+        compactor = getattr(state, "dream_compactor", None)
+        if compactor is None:
+            return _fail(
+                call, t0,
+                "memory_compact unavailable: no LLM configured for dream",
+            )
+        result = await compactor.dream()
+        return ToolResult(
+            call_id=call.id, ok=bool(result.get("ok")),
+            content=result,
+            error=None if result.get("ok") else result.get("error"),
+            side_effects=(result.get("memory_path") or "",) if result.get("ok") else (),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 

@@ -52,9 +52,10 @@ def test_list_tools_kill_switches() -> None:
 
 
 def test_list_tools_schemas_well_formed() -> None:
-    """Every spec has an object parameters_schema. ``todo_read`` and
-    ``agent_status`` (B-49 self-introspection) take no args."""
-    zero_arg = {"todo_read", "agent_status"}
+    """Every spec has an object parameters_schema. ``todo_read``,
+    ``agent_status`` (B-49 self-introspection), and ``memory_compact``
+    (B-52 dream trigger) take no args."""
+    zero_arg = {"todo_read", "agent_status", "memory_compact"}
     for spec in BuiltinTools().list_tools():
         assert spec.parameters_schema["type"] == "object"
         if spec.name in zero_arg:
