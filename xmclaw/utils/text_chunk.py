@@ -58,6 +58,12 @@ def _hash_text(text: str) -> str:
     return hashlib.blake2s(norm.encode("utf-8"), digest_size=12).hexdigest()
 
 
+def _is_h2_or_h3(line: str) -> bool:
+    """``## `` or ``### `` heading line — natural section boundary."""
+    s = line.lstrip()
+    return s.startswith("## ") or s.startswith("### ")
+
+
 def chunk_markdown(
     text: str,
     *,
@@ -66,9 +72,22 @@ def chunk_markdown(
 ) -> list[MarkdownChunk]:
     """Split ``text`` into a list of overlapping line-range chunks.
 
-    Empty / whitespace-only input yields an empty list. A document
-    that fits within ``chunk_chars`` returns one chunk spanning the
-    whole file.
+    Two boundary triggers, whichever fires first:
+
+    1. Size — adding the current line would push the chunk over
+       ``chunk_chars``. Standard CoPaw / ReMe behaviour.
+    2. Section heading — a fresh ``## `` or ``### `` line starts
+       a new logical section. We force a split here even when
+       size-budget hasn't been hit. Without this, a small file
+       (e.g. 800-char MEMORY.md with ## 用户偏好 + ## 项目状态)
+       fits in one chunk → every query lands the same hit. Section
+       splitting gives the agent's vector search semantic
+       granularity even on small files.
+
+    The flush-and-overlap mechanic is identical whichever way the
+    boundary triggered.
+
+    Empty / whitespace-only input yields an empty list.
     """
     if not text or not text.strip():
         return []
@@ -83,14 +102,12 @@ def chunk_markdown(
     chunk_lines: list[str] = []
 
     def _flush(start_idx: int, end_idx: int) -> None:
-        # Convert 0-indexed (start_idx, end_idx exclusive end) to
-        # 1-indexed inclusive.
         body = "\n".join(lines[start_idx:end_idx]).strip()
         if not body:
             return
         chunks.append(MarkdownChunk(
             start_line=start_idx + 1,
-            end_line=end_idx,  # 1-indexed inclusive == 0-indexed exclusive
+            end_line=end_idx,
             text=body,
             hash=_hash_text(body),
         ))
@@ -98,19 +115,34 @@ def chunk_markdown(
     i = 0
     while i < n:
         line = lines[i]
-        line_len = len(line) + 1  # +1 for newline
-        # If adding this line would exceed the budget AND we already
-        # have content, flush. Avoid infinite loop on a single huge
-        # line by always advancing at least one line.
-        if cur_chars + line_len > chunk_chars and chunk_lines:
+        line_len = len(line) + 1
+
+        # Section-boundary trigger: a heading line AFTER we already
+        # have body content starts a fresh chunk. Skip when chunk
+        # is empty (the heading itself opens the next chunk).
+        section_break = (
+            _is_h2_or_h3(line)
+            and chunk_lines
+            and any(ln.strip() for ln in chunk_lines)
+        )
+
+        # Size trigger: adding this line would overflow.
+        size_break = cur_chars + line_len > chunk_chars and chunk_lines
+
+        if section_break or size_break:
             _flush(cur_start, i)
-            # Next chunk starts ``overlap_lines`` lines back so
-            # boundary sentences aren't split.
-            cur_start = max(0, i - overlap_lines)
-            cur_chars = sum(len(lines[k]) + 1 for k in range(cur_start, i))
-            chunk_lines = lines[cur_start:i]
-            # Don't re-process; fall through to append the current
-            # line below.
+            # On section breaks we DON'T overlap — section boundaries
+            # are deliberate semantic cuts. On size breaks we keep
+            # ``overlap_lines`` of overlap so sentences aren't split.
+            if section_break:
+                cur_start = i
+                cur_chars = 0
+                chunk_lines = []
+            else:
+                cur_start = max(0, i - overlap_lines)
+                cur_chars = sum(len(lines[k]) + 1 for k in range(cur_start, i))
+                chunk_lines = lines[cur_start:i]
+
         chunk_lines.append(line)
         cur_chars += line_len
         i += 1
