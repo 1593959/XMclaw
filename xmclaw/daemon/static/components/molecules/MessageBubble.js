@@ -16,12 +16,21 @@
 // moment it arrived — opposite of what the user wants.
 
 const { h } = window.__xmc.preact;
+const { useEffect, useRef, useState } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
 import { lex, renderTokenHtml } from "../../lib/markdown.js";
 import { Spinner } from "../atoms/spinner.js";
 import { Badge } from "../atoms/badge.js";
 import { CodeBlock } from "./CodeBlock.js";
+import {
+  speak,
+  stopSpeaking,
+  isSpeaking,
+  ttsSupported,
+  plainTextForTts,
+  getAudioPrefs,
+} from "../../lib/audio.js";
 
 function ToolCard({ call }) {
   // Hermes ToolCall.tsx pattern: status-tinted card with bullet ●
@@ -131,6 +140,46 @@ export function MessageBubble({ message }) {
   const thinking = message.status === "thinking";
   const streaming = message.status === "streaming";
   const errored = message.status === "error";
+
+  // ── TTS auto-speak (B-20) ────────────────────────────────────────
+  // When the assistant's turn finalizes (status=complete) and the
+  // user has enabled auto-speak, read the message aloud. Per-message
+  // 🔊 button lets them replay/start manually too. We track a local
+  // playing state purely for the button's visual feedback.
+  const [playing, setPlaying] = useState(false);
+  const spokenRef = useRef(false);
+
+  useEffect(() => {
+    if (!ttsSupported) return;
+    if (role !== "assistant") return;
+    if (message.status !== "complete") return;
+    if (spokenRef.current) return;
+    const prefs = getAudioPrefs();
+    if (!prefs.autoSpeak) return;
+    const txt = plainTextForTts(message.content);
+    if (!txt) return;
+    spokenRef.current = true;
+    setPlaying(true);
+    speak(txt, {
+      onEnd: () => setPlaying(false),
+      onError: () => setPlaying(false),
+    });
+  }, [role, message.status, message.content]);
+
+  const onTogglePlay = () => {
+    if (playing || isSpeaking()) {
+      stopSpeaking();
+      setPlaying(false);
+      return;
+    }
+    const txt = plainTextForTts(message.content);
+    if (!txt) return;
+    setPlaying(true);
+    speak(txt, {
+      onEnd: () => setPlaying(false),
+      onError: () => setPlaying(false),
+    });
+  };
   // A streaming bubble that has tool calls running but no LLM text yet
   // counts as "working" — show the thinking dots even if the reducer
   // already moved it past the thinking phase.
@@ -172,6 +221,18 @@ export function MessageBubble({ message }) {
           : null}
         ${streaming && message.content
           ? html`<${Spinner} size="sm" label="streaming" />`
+          : null}
+        ${role === "assistant" && message.status === "complete" && ttsSupported && message.content
+          ? html`
+              <button
+                type="button"
+                class="xmc-msg__tts"
+                onClick=${onTogglePlay}
+                aria-pressed=${playing ? "true" : "false"}
+                title=${playing ? "停止朗读" : "朗读这条回复"}
+                style="margin-left:auto;background:none;border:none;cursor:pointer;font-size:.9rem;color:var(--xmc-fg-muted);padding:.2rem .4rem;border-radius:4px"
+              >${playing ? "⏹" : "🔊"}</button>
+            `
           : null}
       </header>
       ${showThinking ? html`<${ThinkingDots} label=${statusLabel || "正在思考"} />` : null}

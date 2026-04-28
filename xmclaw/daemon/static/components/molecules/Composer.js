@@ -16,11 +16,14 @@
 // becomes disabled while the socket isn't OPEN to give visible feedback.
 
 const { h } = window.__xmc.preact;
+const { useState, useRef, useEffect } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
 import { Button } from "../atoms/button.js";
 import { Badge } from "../atoms/badge.js";
 import { usePopoverApi } from "./SlashPopover.js";
+import { createRecognizer, sttSupported } from "../../lib/audio.js";
+import { toast } from "../../lib/toast.js";
 
 export function Composer({
   value,
@@ -43,6 +46,52 @@ export function Composer({
     onApply: (next) => onChange(next),
     store: slashStore || {},
   });
+
+  // ── Mic / STT (B-20) ─────────────────────────────────────────────
+  // Click the mic to dictate. Live partial transcript replaces a
+  // "[听写中…]" placeholder; final result becomes the actual draft.
+  // The recognizer is one-shot — auto-stops after the user pauses.
+  const [listening, setListening] = useState(false);
+  const recRef = useRef(null);
+  const baseTextRef = useRef("");
+
+  useEffect(() => () => {
+    if (recRef.current) recRef.current.stop();
+  }, []);
+
+  const startListening = () => {
+    if (!sttSupported) {
+      toast.error("当前浏览器不支持语音输入（建议 Chrome 或 Edge）");
+      return;
+    }
+    if (recRef.current?.isActive?.()) {
+      recRef.current.stop();
+      return;
+    }
+    baseTextRef.current = value || "";
+    const rec = createRecognizer({
+      onPartial: (interim) => {
+        const sep = baseTextRef.current && !baseTextRef.current.endsWith(" ") ? " " : "";
+        onChange(baseTextRef.current + sep + interim);
+      },
+      onFinal: (final) => {
+        const sep = baseTextRef.current && !baseTextRef.current.endsWith(" ") ? " " : "";
+        baseTextRef.current = baseTextRef.current + sep + final;
+        onChange(baseTextRef.current);
+      },
+      onError: (err) => {
+        setListening(false);
+        const msg = err?.message || String(err) || "语音识别失败";
+        if (msg !== "no-speech" && msg !== "aborted") {
+          toast.error("语音识别：" + msg);
+        }
+      },
+      onEnd: () => setListening(false),
+    });
+    recRef.current = rec;
+    rec.start();
+    setListening(true);
+  };
 
   function handleKeyDown(evt) {
     // Let the SlashPopover claim ↑↓ Tab Esc when it's visible.
@@ -85,6 +134,19 @@ export function Composer({
           onKeyDown=${handleKeyDown}
           aria-label="message composer"
         ></textarea>
+        <button
+          type="button"
+          class=${"xmc-composer__mic" + (listening ? " is-on" : "") + (sttSupported ? "" : " is-disabled")}
+          onClick=${startListening}
+          disabled=${!sttSupported}
+          aria-pressed=${listening ? "true" : "false"}
+          aria-label=${listening ? "停止听写" : "开始语音输入"}
+          title=${sttSupported
+            ? (listening ? "停止听写（再次点击）" : "语音输入 — 点击开始说话")
+            : "当前浏览器不支持语音输入"}
+        >
+          ${listening ? "🔴" : "🎙"}
+        </button>
         <${Button}
           variant="primary"
           size="md"

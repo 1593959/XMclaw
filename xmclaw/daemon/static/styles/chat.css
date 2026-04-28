@@ -339,6 +339,51 @@
   border: 1px solid var(--xmc-border);
 }
 
+/* ── mic button (B-20 STT) ────────────────────────────────────── */
+
+.xmc-composer__mic {
+  flex: 0 0 auto;
+  width: 2.4rem;
+  height: 2.4rem;
+  border: 1px solid var(--color-border, var(--xmc-border));
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-fg, var(--xmc-fg));
+  font-size: 1.1rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 120ms, transform 120ms;
+}
+.xmc-composer__mic:hover {
+  background: color-mix(in srgb, var(--color-primary, #6aa3f0) 14%, transparent);
+}
+.xmc-composer__mic:focus-visible {
+  outline: 2px solid var(--color-primary, #6aa3f0);
+  outline-offset: 2px;
+}
+.xmc-composer__mic.is-on {
+  background: color-mix(in srgb, #ef4444 30%, transparent);
+  border-color: #ef4444;
+  animation: xmc-mic-pulse 1.4s ease-in-out infinite;
+}
+.xmc-composer__mic.is-disabled,
+.xmc-composer__mic[disabled] {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+@keyframes xmc-mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6); }
+  50%      { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
+}
+
+/* TTS button on assistant bubble header */
+.xmc-msg__tts:hover {
+  background: color-mix(in srgb, var(--color-primary, #6aa3f0) 14%, transparent) !important;
+  color: var(--color-fg, var(--xmc-fg)) !important;
+}
+
 /* ── thinking / status pill — bridges the gap between user-send and
    the first llm_chunk so the chat never goes blank ───────────────── */
 
