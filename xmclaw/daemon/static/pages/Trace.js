@@ -40,6 +40,7 @@ const TONE = {
   todo_updated: "info",
   context_compressed: "warn",
   memory_indexed: "info",
+  memory_dreamed: "success",
 };
 
 // Friendly Chinese labels.
@@ -61,6 +62,7 @@ const LABEL = {
   todo_updated: "Todos 更新",
   context_compressed: "上下文压缩",
   memory_indexed: "记忆索引",
+  memory_dreamed: "记忆蒸馏",
 };
 
 const EVENT_TYPES = [
@@ -78,6 +80,7 @@ const EVENT_TYPES = [
   "todo_updated",
   "context_compressed",
   "memory_indexed",
+  "memory_dreamed",
 ];
 
 function fmtTs(ts) {
@@ -143,6 +146,12 @@ function shortPayload(ev) {
     const cd = p.chunks_deleted != null ? p.chunks_deleted : 0;
     const ms = p.elapsed_ms != null ? Math.round(p.elapsed_ms) : "?";
     return `${fc} files · +${ca}/-${cd} chunks · ${ms}ms`;
+  }
+  if (t === "memory_dreamed") {
+    const before = p.before_chars != null ? p.before_chars : "?";
+    const after = p.after_chars != null ? p.after_chars : "?";
+    const saved = p.saved_chars != null ? p.saved_chars : "?";
+    return `${before} → ${after} chars (节省 ${saved})`;
   }
   return JSON.stringify(p).slice(0, 120);
 }
