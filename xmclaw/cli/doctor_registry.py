@@ -838,6 +838,113 @@ class MemoryDbCheck(DoctorCheck):
         )
 
 
+class MemoryProviderCheck(DoctorCheck):
+    """Verify the live agent has a MemoryManager + at least the
+    BuiltinFileMemoryProvider registered (B-30).
+
+    Probes ``app.state.agent._memory_manager`` via a daemon HTTP call
+    when the daemon's running; returns "skip" when the daemon is off.
+    """
+
+    id = "memory_providers"
+    name = "memory_providers"
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        if not ctx.probe_daemon:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="skipped (probe_daemon=False)",
+            )
+        try:
+            import json as _json
+            import urllib.request as _ur
+            import urllib.error as _ue
+            url = f"http://{ctx.host}:{ctx.port}/api/v2/memory/providers"
+            try:
+                token = ctx.token_path.read_text(encoding="utf-8").strip() if ctx.token_path else ""
+            except OSError:
+                token = ""
+            if token:
+                url += f"?token={token}"
+            with _ur.urlopen(url, timeout=3) as r:
+                data = _json.loads(r.read().decode("utf-8", "replace"))
+        except (_ue.URLError, OSError, _json.JSONDecodeError):
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="daemon unreachable (skipped)",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"endpoint failed: {exc}",
+            )
+        if not data.get("wired"):
+            return CheckResult(
+                name=self.name, ok=False,
+                detail="MemoryManager not wired",
+                advisory="agent boot may have failed; check daemon.log",
+            )
+        provs = data.get("providers", [])
+        names = [p.get("name", "?") for p in provs]
+        if "builtin" not in names:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"missing 'builtin' provider; found: {names}",
+                advisory="BuiltinFileMemoryProvider should always be registered",
+            )
+        external = [n for n in names if n != "builtin"]
+        if len(external) > 1:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"multiple external providers: {external}",
+                advisory="manager should reject duplicates — investigate",
+            )
+        return CheckResult(
+            name=self.name, ok=True,
+            detail=f"providers wired: {names}",
+        )
+
+
+class MemoryProviderConfigCheck(DoctorCheck):
+    """Verify the configured external memory provider is sane:
+    ``evolution.memory.provider`` is one of the known names and any
+    required credentials are present (B-30)."""
+
+    id = "memory_provider_config"
+    name = "memory_provider_config"
+
+    KNOWN = {"sqlite_vec", "hindsight", "none"}
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        cfg = ctx.cfg or {}
+        evo_section = (cfg.get("evolution") or {}).get("memory") or {}
+        provider = evo_section.get("provider", "sqlite_vec")
+        if provider not in self.KNOWN:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"unknown provider: {provider!r}",
+                advisory=f"set to one of: {', '.join(sorted(self.KNOWN))}",
+            )
+        if provider == "hindsight":
+            hs = (evo_section.get("hindsight") or {})
+            api_key = hs.get("api_key")
+            import os as _os
+            env_key = _os.environ.get("HINDSIGHT_API_KEY")
+            if not api_key and not env_key:
+                return CheckResult(
+                    name=self.name, ok=False,
+                    detail="hindsight selected but no api_key configured",
+                    advisory=(
+                        "set evolution.memory.hindsight.api_key in config "
+                        "OR HINDSIGHT_API_KEY env var"
+                    ),
+                )
+        return CheckResult(
+            name=self.name, ok=True,
+            detail=f"provider config: {provider}",
+        )
+
+
 class SkillRuntimeCheck(DoctorCheck):
     """Validate the ``runtime`` config section picks a known backend.
 
@@ -1288,6 +1395,8 @@ def build_default_registry() -> DoctorRegistry:
     reg.register(PortCheck())
     reg.register(EventsDbCheck())
     reg.register(MemoryDbCheck())
+    reg.register(MemoryProviderCheck())
+    reg.register(MemoryProviderConfigCheck())
     reg.register(SkillRuntimeCheck())
     reg.register(ConnectivityCheck())
     reg.register(RoadmapLintCheck())

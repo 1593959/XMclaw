@@ -419,6 +419,12 @@ class AgentLoop:
         # stable across a session, which is what the LLM provider's
         # prompt cache wants.
         self._frozen_prompts: dict[str, tuple[int, str]] = {}
+        # B-30: per-session deferred-LLM-compression queue. When
+        # _persist_history detects history overflow it drops the
+        # rule-based summary in immediately AND records the raw
+        # dropped messages here so the NEXT run_turn can do an async
+        # LLM upgrade. Eliminates the sync→async bridge risk.
+        self._pending_llm_compression: dict[str, dict[str, Any]] = {}
         self._max_hops = max_hops
         self._agent_id = agent_id
         self._cost_tracker = cost_tracker
@@ -566,20 +572,18 @@ class AgentLoop:
         """Compress a prefix of dropped history into a one-paragraph
         summary that survives as a single system message.
 
-        B-29 dual-mode:
-          * default — call the auxiliary LLM (same as the agent's
-            primary LLM, OR a cheap one if config sets
-            ``llm.compressor.profile_id``). Returns a real gist
-            summary preserving entities, decisions, open questions.
-          * fallback — when LLM call fails OR
-            ``llm.compressor.enabled=false``, build a deterministic
-            digest from message roles + first/last lines + any
-            provider-extracted insights from on_pre_compress.
+        B-30 deferred-LLM design:
+          * THIS call (sync, inside _persist_history) always returns
+            the rule-based digest — fast, safe, deterministic.
+          * If LLM compression is enabled, we ALSO record the dropped
+            messages on ``self._pending_llm_compression[session_id]``
+            so the next ``run_turn`` can do an async LLM upgrade BEFORE
+            the LLM sees the system prompt.
 
-        The LLM path makes a single non-streaming call with a small
-        prompt; latency hit is ~1-2s for the rare case where history
-        actually overflows. Worst case it gracefully degrades to the
-        rule-based digest.
+        This eliminates the sync→async bridge risk (which was the
+        whole reason the LLM path defaulted off in B-29). The agent's
+        very next turn gets the better summary; this turn's reply is
+        unaffected.
         """
         if not dropped:
             return ""
@@ -599,50 +603,92 @@ class AgentLoop:
         except Exception:  # noqa: BLE001
             provider_extract = ""
 
-        # Try LLM-based summary first.
-        llm_summary = ""
-        try:
-            llm_summary = self._compress_via_llm(dropped, provider_extract)
-        except Exception as exc:  # noqa: BLE001
-            from xmclaw.utils.log import get_logger
-            get_logger(__name__).debug(
-                "compress.llm_failed err=%s — falling back to rule digest", exc,
-            )
-            llm_summary = ""
+        # Schedule LLM compression for the next turn if enabled.
+        if self._llm_compressor_enabled():
+            try:
+                self._pending_llm_compression[session_id] = {
+                    "dropped": list(dropped),  # immutable snapshot
+                    "provider_extract": provider_extract,
+                    "ts": time.time(),
+                }
+            except Exception:  # noqa: BLE001
+                pass
 
-        if llm_summary:
-            return llm_summary
-
-        # Rule-based digest fallback.
+        # Always return rule-based digest synchronously — covers the
+        # case where LLM is off, this is the FIRST overflow, or the
+        # async path failed.
         return self._build_compression_summary_rule_based(
             dropped, provider_extract,
         )
 
-    def _compress_via_llm(
-        self, dropped: list[Message], provider_extract: str,
-    ) -> str:
-        """Run an auxiliary LLM call to produce a gist summary.
-
-        Returns "" when the LLM is unavailable or the call fails.
-
-        B-29 OFF BY DEFAULT. Enabling requires
-        ``llm.compressor.enabled=true`` in config. The sync→async
-        bridge from _persist_history is risky inside an already-
-        running event loop; until that's been hardened with a
-        proper inline await path (refactor _persist_history → async),
-        we default to the rule-based digest which is always safe.
-        """
+    def _llm_compressor_enabled(self) -> bool:
+        """True iff config opts into LLM-based compression. Default
+        TRUE in B-30 (was opt-in/false in B-29) because the deferred
+        async path is now safe."""
         if self._llm is None:
-            return ""
-        # Opt-in gate: read from app config if available, else off.
+            return False
         try:
             from xmclaw.daemon import app as _app_mod
             state = getattr(_app_mod, "_LAST_APP_STATE", None)
             cfg = getattr(state, "config", None) if state else None
             llm_cfg = ((cfg or {}).get("llm") or {}).get("compressor") or {}
-            if not llm_cfg.get("enabled", False):
-                return ""
+            return bool(llm_cfg.get("enabled", True))
         except Exception:  # noqa: BLE001
+            return True
+
+    async def _maybe_apply_llm_compression(self, session_id: str) -> None:
+        """Pre-turn hook: if a previous turn scheduled LLM compression
+        for this session, run it NOW (async-safe) and replace the
+        stale rule-based summary system message with the LLM gist.
+
+        Called from ``run_turn`` right after history is loaded but
+        before the system prompt is built. Best-effort: any failure
+        falls through silently and the rule-based summary stays.
+        """
+        pending = self._pending_llm_compression.pop(session_id, None)
+        if not pending:
+            return
+        if not self._llm_compressor_enabled():
+            return
+        try:
+            llm_summary = await self._compress_via_llm_async(
+                pending["dropped"], pending["provider_extract"],
+            )
+        except Exception:  # noqa: BLE001
+            return
+        if not llm_summary:
+            return
+
+        # Find the rule-based summary at the start of history (always
+        # the first system message inserted by _persist_history when
+        # compression fired) and replace its content.
+        history = self._histories.get(session_id, [])
+        if not history:
+            return
+        head = history[0]
+        if head.role != "system":
+            return
+        if "Earlier conversation summary" not in (head.content or ""):
+            return
+        import dataclasses as _dc
+        history[0] = _dc.replace(head, content=llm_summary)
+        self._histories[session_id] = history
+        # Persist the upgrade so future loads from disk see it too.
+        if self._session_store is not None:
+            try:
+                self._session_store.save(session_id, history)
+            except Exception:  # noqa: BLE001
+                pass
+
+    async def _compress_via_llm_async(
+        self, dropped: list[Message], provider_extract: str,
+    ) -> str:
+        """Run an auxiliary LLM call to produce a gist summary.
+
+        B-30 async-only — called from run_turn (already async). No
+        sync-bridging tricks needed. Returns "" if LLM unavailable
+        or the call fails."""
+        if self._llm is None:
             return ""
 
         # Build a compact transcript for the summariser.
@@ -683,61 +729,20 @@ class AgentLoop:
             f"{provider_block}\n\nReturn the summary:"
         )
 
-        # Synchronous-style call against the LLM. ``LLMProvider.complete``
-        # is async; we're already inside an async context (run_turn calls
-        # _persist_history which calls us). But _persist_history is
-        # NOT async. So we inspect: if the loop is running we schedule;
-        # else we run sync.
-        import asyncio as _asyncio
+        # B-30: simple async call — we're already in an async context.
+        messages = [
+            Message(role="system", content=sys_prompt),
+            Message(role="user", content=user_prompt),
+        ]
         try:
-            loop = _asyncio.get_event_loop()
-            in_async = loop.is_running()
-        except RuntimeError:
-            in_async = False
-            loop = None
-
-        async def _do_call() -> str:
-            messages = [
-                Message(role="system", content=sys_prompt),
-                Message(role="user", content=user_prompt),
-            ]
-            try:
-                resp = await self._llm.complete(messages, tools=None)
-            except Exception:  # noqa: BLE001
-                return ""
-            return (resp.content or "").strip()
-
-        if in_async:
-            # We're inside the agent's async stack already. Schedule
-            # via asyncio.run_coroutine_threadsafe is overkill —
-            # easier: turn the synchronous _persist_history caller into
-            # one that awaits this. We avoid that surgery and instead
-            # use a fire-and-forget approach: kick a task and wait
-            # bounded. Worst case we time out and use the rule digest.
-            import concurrent.futures as _cf
-            future: _cf.Future = _asyncio.run_coroutine_threadsafe(
-                _do_call(), loop,
-            ) if loop and not loop.is_running() else None
-            if future is None:
-                # Loop is running — use a transient nested loop in a
-                # thread to avoid deadlock.
-                with _cf.ThreadPoolExecutor(max_workers=1) as ex:
-                    fut = ex.submit(_asyncio.run, _do_call())
-                    try:
-                        result = fut.result(timeout=15.0)
-                    except Exception:
-                        result = ""
-                return result
-            try:
-                return future.result(timeout=15.0)
-            except Exception:  # noqa: BLE001
-                return ""
-
-        # Not in async context — run a fresh loop.
-        try:
-            return _asyncio.run(_do_call())
-        except Exception:  # noqa: BLE001
+            import asyncio as _asyncio
+            resp = await _asyncio.wait_for(
+                self._llm.complete(messages, tools=None),
+                timeout=20.0,
+            )
+        except (Exception, _asyncio.TimeoutError):  # noqa: BLE001
             return ""
+        return (resp.content or "").strip()
 
     def _build_compression_summary_rule_based(
         self, dropped: list[Message], provider_extract: str,
@@ -905,6 +910,18 @@ class AgentLoop:
                 loaded = None
             if loaded:
                 self._histories[session_id] = loaded
+
+        # B-30: pre-turn LLM-compression upgrade. If a previous turn
+        # in this session triggered overflow + queued an async LLM
+        # compression request, run it NOW (we're already async-safe).
+        # The rule-based summary at history[0] gets replaced with a
+        # real gist. This turn's reply benefits from the better
+        # context, not the next-next one.
+        try:
+            await self._maybe_apply_llm_compression(session_id)
+        except Exception:  # noqa: BLE001 — never block the turn
+            pass
+
         prior = self._histories.get(session_id, [])
 
         # Cross-session memory prefetch + inject. Mirrors open-webui
