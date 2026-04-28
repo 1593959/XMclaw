@@ -116,6 +116,13 @@ def _restore_secrets(existing: Any, incoming: Any) -> Any:
 # the FastAPI app see the bare default and treat it as "no agent".
 _LAST_APP_STATE: Any = None
 
+# B-70: hold strong refs to background session-reflection tasks
+# fired from the WS disconnect path. Same pattern as B-68/B-69 —
+# asyncio's weak-ref tracking lets fire-and-forget tasks get GC'd
+# mid-flight, dropping the reflection LLM call silently. Each task
+# adds itself + auto-removes on done via the wrapper below.
+_PENDING_REFLECTIONS: set[Any] = set()
+
 
 async def _run_session_reflection(
     agent: Any, session_id: str, msg_count: int,
@@ -1497,12 +1504,15 @@ def create_app(
                         # WS close path returns immediately. Failures
                         # are logged but don't propagate.
                         import asyncio as _asyncio
-                        _asyncio.create_task(
+                        # B-70: hold ref to prevent mid-flight GC.
+                        _refl = _asyncio.create_task(
                             _run_session_reflection(
                                 tgt_agent, session_id, msg_count,
                             ),
                             name=f"xmclaw-reflect-{session_id}",
                         )
+                        _PENDING_REFLECTIONS.add(_refl)
+                        _refl.add_done_callback(_PENDING_REFLECTIONS.discard)
             except Exception:  # noqa: BLE001
                 pass
 
