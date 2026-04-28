@@ -924,6 +924,185 @@ def memory_stats(
         )
 
 
+# B-31: list of provider IDs the wizard accepts. Kept in sync with the
+# router's _AVAILABLE_PROVIDERS catalogue + factory.py wiring. Adding a
+# new provider here without wiring its factory branch is a no-op until
+# the daemon is taught how to construct it.
+_MEMORY_PROVIDER_IDS = ("sqlite_vec", "hindsight", "supermemory", "mem0", "none")
+
+
+@memory_app.command("setup")
+def memory_setup(
+    path: str = typer.Option(
+        "daemon/config.json", "--path",
+        help="Config file to mutate (default: daemon/config.json).",
+    ),
+    provider: str = typer.Option(
+        "", "--provider",
+        help=(
+            "Skip the interactive picker and choose directly. "
+            f"One of: {', '.join(_MEMORY_PROVIDER_IDS)}."
+        ),
+    ),
+    api_key: str = typer.Option(
+        "", "--api-key",
+        help="API key for the chosen cloud provider (hindsight/supermemory/mem0).",
+    ),
+    base_url: str = typer.Option(
+        "", "--base-url",
+        help="Override the provider's default base URL (cloud providers only).",
+    ),
+) -> None:
+    """Interactive picker for the external long-term memory provider.
+
+    Walks the user through choosing one of: ``sqlite_vec`` (local
+    vector DB, default), ``hindsight`` / ``supermemory`` / ``mem0``
+    (cloud knowledge-graph backends, need an API key), or ``none``
+    (only the always-on builtin file provider runs).
+
+    Writes ``evolution.memory.provider`` plus the per-provider
+    sub-section to the config. The builtin file provider is
+    non-removable — this wizard only configures the *external* slot.
+
+    Daemon restart required for the swap to take effect; we print a
+    reminder. Re-running the wizard against a configured backend is
+    safe and lets the user rotate API keys.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    target = _Path(path)
+    if not target.exists():
+        typer.echo(
+            f"  [x]  no config at {target} -- run 'xmclaw config init' first",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    try:
+        cfg = _json.loads(target.read_text(encoding="utf-8"))
+    except _json.JSONDecodeError as exc:
+        typer.echo(f"  [x]  {target} is not valid JSON: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    if not isinstance(cfg, dict):
+        typer.echo(
+            f"  [x]  {target} must have a JSON object at its root", err=True,
+        )
+        raise typer.Exit(code=1)
+
+    current = (
+        ((cfg.get("evolution") or {}).get("memory") or {}).get("provider")
+        or "sqlite_vec"
+    )
+
+    typer.echo("xmclaw memory setup")
+    typer.echo(f"  current external provider: {current}")
+    typer.echo("")
+    typer.echo("  available providers:")
+    typer.echo("    1) sqlite_vec   — local vector DB (no external service)")
+    typer.echo("    2) hindsight    — cloud knowledge graph (needs API key)")
+    typer.echo("    3) supermemory  — cloud key-value memory (needs API key)")
+    typer.echo("    4) mem0         — cloud agent memory (needs API key)")
+    typer.echo("    5) none         — only the builtin file provider runs")
+    typer.echo("")
+
+    # Resolve provider choice — flag value first, then interactive prompt.
+    # Passing --provider switches the wizard into non-interactive mode:
+    # only flags supply per-provider fields (api_key, base_url). This
+    # makes the command scriptable + safe under CI/typer.testing.
+    non_interactive = bool(provider)
+    chosen = (provider or "").strip().lower()
+    if chosen and chosen not in _MEMORY_PROVIDER_IDS:
+        typer.echo(
+            f"  [x]  unknown --provider {provider!r}; expected one of: "
+            f"{', '.join(_MEMORY_PROVIDER_IDS)}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if not chosen:
+        raw = typer.prompt(
+            "  pick provider (1-5 or name)", default=current,
+            show_default=True,
+        ).strip().lower()
+        # Number → name mapping.
+        by_num = {
+            "1": "sqlite_vec", "2": "hindsight", "3": "supermemory",
+            "4": "mem0", "5": "none",
+        }
+        chosen = by_num.get(raw, raw)
+    if chosen not in _MEMORY_PROVIDER_IDS:
+        typer.echo(
+            f"  [x]  unknown provider {chosen!r}; expected one of: "
+            f"{', '.join(_MEMORY_PROVIDER_IDS)}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    # Per-provider extras.
+    section: dict[str, Any] = {"provider": chosen}
+    cloud_providers = {"hindsight", "supermemory", "mem0"}
+    if chosen in cloud_providers:
+        key = api_key
+        url = base_url
+        if not non_interactive:
+            if not key:
+                try:
+                    import getpass as _gp
+                    key = _gp.getpass(
+                        f"  {chosen} api_key (input hidden, blank to skip): "
+                    )
+                except Exception:  # noqa: BLE001
+                    key = typer.prompt(
+                        f"  {chosen} api_key (blank to skip)", default="",
+                    )
+            if not url:
+                url = typer.prompt(
+                    f"  {chosen} base_url (blank for default)", default="",
+                )
+        sub: dict[str, Any] = {}
+        if key:
+            sub["api_key"] = key
+        if url:
+            sub["base_url"] = url
+        section[chosen] = sub
+
+    # Merge into config preserving siblings.
+    evo = cfg.setdefault("evolution", {})
+    if not isinstance(evo, dict):
+        evo = {}
+        cfg["evolution"] = evo
+    mem = evo.setdefault("memory", {})
+    if not isinstance(mem, dict):
+        mem = {}
+        evo["memory"] = mem
+    mem["provider"] = chosen
+    if chosen in cloud_providers and section.get(chosen):
+        # Merge sub-section so existing keys (rate limits, future
+        # tunables) survive.
+        sub_existing = mem.get(chosen)
+        if not isinstance(sub_existing, dict):
+            sub_existing = {}
+        sub_existing.update(section[chosen])
+        mem[chosen] = sub_existing
+
+    target.write_text(
+        _json.dumps(cfg, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    typer.echo("")
+    typer.echo(f"  [ok]  wrote {target}")
+    typer.echo(f"        evolution.memory.provider = {chosen}")
+    if chosen in cloud_providers:
+        sub = mem.get(chosen) or {}
+        if sub.get("api_key"):
+            typer.echo(f"        evolution.memory.{chosen}.api_key = ***")
+        else:
+            typer.echo(
+                f"        no api_key set — export {chosen.upper()}_API_KEY "
+                "or rerun this wizard"
+            )
+    typer.echo("        next: restart the daemon — 'xmclaw restart'")
+
+
 # ── config subcommands ──────────────────────────────────────────────────
 
 

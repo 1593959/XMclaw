@@ -202,10 +202,13 @@ async def test_history_cap_trims_old_messages() -> None:
     for i in range(6):
         await agent.run_turn("s1", f"user msg {i}")
 
-    # Turn 6's call should have at most: system + 4 history + 1 new user
-    # = 6 messages. Not 12.
+    # Turn 6's call should be: base system + (optional compression
+    # summary system) + ≤4 history + 1 new user. B-28 added the
+    # compression summary as a synthetic system message at the head
+    # of history when compression fires, so the upper bound is 7.
+    # Crucially still ≪ 12 (the no-cap baseline).
     turn6_msgs = llm.seen_messages[-1]
-    assert len(turn6_msgs) <= 6, (
+    assert len(turn6_msgs) <= 7, (
         f"history cap not applied: got {len(turn6_msgs)} messages"
     )
 

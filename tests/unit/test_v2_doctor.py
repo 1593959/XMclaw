@@ -404,7 +404,8 @@ def test_default_registry_builtin_check_order() -> None:
     ids = [c.id for c in reg.checks()]
     assert ids == [
         "config", "llm", "tools", "workspace", "pairing", "port",
-        "events_db", "memory_db", "skill_runtime",
+        "events_db", "memory_db", "memory_providers", "memory_provider_config",
+        "skill_runtime",
         "connectivity", "roadmap_lint", "pid_lock", "daemon",
         "backups", "secrets",
     ]
@@ -473,7 +474,8 @@ def test_run_doctor_still_returns_old_check_result_type(tmp_path: Path) -> None:
     assert all(isinstance(r, CheckResult) for r in results)
     assert [r.name for r in results] == [
         "config", "llm", "tools", "workspace", "pairing", "port 8765",
-        "events_db", "memory_db", "skill_runtime",
+        "events_db", "memory_db", "memory_providers", "memory_provider_config",
+        "skill_runtime",
         "connectivity", "roadmap_lint", "pid_lock", "daemon",
         "backups", "secrets",
     ]

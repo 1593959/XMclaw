@@ -60,6 +60,18 @@ _AVAILABLE_PROVIDERS = {
         "needs": ["evolution.memory.hindsight.api_key"],
         "description": "Knowledge-graph backed long-term memory. Needs API key.",
     },
+    "supermemory": {
+        "label": "Supermemory (cloud key-value memory)",
+        "kind": "external",
+        "needs": ["evolution.memory.supermemory.api_key"],
+        "description": "Cloud key-value memory store. Needs API key.",
+    },
+    "mem0": {
+        "label": "Mem0 (cloud agent memory)",
+        "kind": "external",
+        "needs": ["evolution.memory.mem0.api_key"],
+        "description": "Mem0.ai cloud agent memory. Needs API key.",
+    },
     "none": {
         "label": "Disabled (no external provider)",
         "kind": "external",

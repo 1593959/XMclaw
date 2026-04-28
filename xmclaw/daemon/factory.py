@@ -999,6 +999,44 @@ def build_agent_from_config(
                 )
         except Exception:  # noqa: BLE001
             pass
+    elif provider_choice == "supermemory":
+        try:
+            from xmclaw.providers.memory.supermemory import SupermemoryMemoryProvider
+            cfg_sm = (evo_section.get("memory") or {}).get("supermemory") or {}
+            sm = SupermemoryMemoryProvider(
+                api_key=cfg_sm.get("api_key"),
+                base_url=cfg_sm.get("base_url"),
+                container_tag=cfg_sm.get("container_tag"),
+            )
+            if sm.is_available():
+                memory_manager.add_provider(sm)
+            else:
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).warning(
+                    "memory.supermemory_unavailable — needs api_key; "
+                    "falling back to no external provider",
+                )
+        except Exception:  # noqa: BLE001
+            pass
+    elif provider_choice == "mem0":
+        try:
+            from xmclaw.providers.memory.mem0 import Mem0MemoryProvider
+            cfg_m0 = (evo_section.get("memory") or {}).get("mem0") or {}
+            m0 = Mem0MemoryProvider(
+                api_key=cfg_m0.get("api_key"),
+                base_url=cfg_m0.get("base_url"),
+                user_id=cfg_m0.get("user_id"),
+            )
+            if m0.is_available():
+                memory_manager.add_provider(m0)
+            else:
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).warning(
+                    "memory.mem0_unavailable — needs api_key; "
+                    "falling back to no external provider",
+                )
+        except Exception:  # noqa: BLE001
+            pass
     # provider_choice == "none" → no external provider registered.
 
     # Keep an opt-out: tests / minimal configs that explicitly set
@@ -1027,6 +1065,19 @@ def build_agent_from_config(
             # block agent boot
             pass
 
+    # B-31: optional token-based compression gate. When set in config
+    # ( ``evolution.compression.token_cap`` ), AgentLoop fires
+    # compression once the kept history's char/4 estimate crosses
+    # this threshold — protects against single-huge-message overruns
+    # that the message-count cap can't catch.
+    compression_section = (cfg or {}).get("evolution", {}).get("compression") or {}
+    raw_token_cap = compression_section.get("token_cap")
+    token_cap: int | None
+    if isinstance(raw_token_cap, (int, float)) and raw_token_cap > 0:
+        token_cap = int(raw_token_cap)
+    else:
+        token_cap = None
+
     return AgentLoop(
         llm=llm, bus=bus, tools=tools,
         system_prompt=system_prompt,
@@ -1036,4 +1087,5 @@ def build_agent_from_config(
         session_store=session_store,
         llm_registry=registry,
         memory=memory_arg,
+        compression_token_cap=token_cap,
     )

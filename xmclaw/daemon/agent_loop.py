@@ -208,6 +208,33 @@ def _is_transient_tool_error(err: str) -> bool:
     return any(p.lower() in low for p in _TRANSIENT_PATTERNS)
 
 
+def _estimate_history_tokens(history: list) -> int:
+    """B-31: char/4 token approximation for the compression gate.
+
+    Sums ``len(content)`` across messages and divides by 4. Cheap
+    and ~5% off real BPE for English/Chinese mix — accurate enough
+    to decide "are we in danger of running out of context?". We
+    deliberately don't pull tiktoken: it's heavy, model-specific,
+    and we'd need different encoders per provider. The gate is
+    advisory; a real overflow would raise from the LLM provider.
+    """
+    total = 0
+    for m in history:
+        c = getattr(m, "content", "")
+        if isinstance(c, str):
+            total += len(c)
+        elif c is not None:
+            # Tool messages can carry structured payloads; serialize
+            # cheaply rather than pulling json.dumps every call.
+            total += len(str(c))
+        # Account for tool-call payloads on assistant messages.
+        for tc in getattr(m, "tool_calls", ()) or ():
+            args = getattr(tc, "args", None)
+            if args:
+                total += len(str(args))
+    return total // 4
+
+
 # ── SKILL invocation keyword extraction (B-29) ────────────────────────
 #
 # Pull distinctive multi-char tokens from a SKILL.md body so the
@@ -403,6 +430,7 @@ class AgentLoop:
         agent_id: str = "agent",
         cost_tracker: CostTracker | None = None,
         history_cap: int = 40,
+        compression_token_cap: int | None = None,
         prompt_injection_policy: PolicyMode = PolicyMode.DETECT_ONLY,
         session_store: SessionStore | None = None,
         llm_registry: LLMRegistry | None = None,
@@ -438,6 +466,14 @@ class AgentLoop:
         # _system_prompt take effect immediately, not after the next restart).
         self._histories: dict[str, list[Message]] = {}
         self._history_cap = history_cap
+        # B-31: optional token-based gate. When set, compression also
+        # fires once the estimated token count of the kept history
+        # exceeds this cap — protects against the "few but huge"
+        # message case (1 user msg + 1 huge tool result can blow
+        # past the context window long before history_cap fires).
+        # Estimator is chars/4 to avoid pulling tiktoken; ~5% off
+        # for English, fine for a "should I summarise yet" gate.
+        self._compression_token_cap = compression_token_cap
         # Epic #14: what the scanner does when a tool result looks hostile.
         self._injection_policy = prompt_injection_policy
         # Optional cross-process persistence. When wired, history outlives
@@ -814,10 +850,28 @@ class AgentLoop:
             else:
                 cleaned_history.append(m)
         history = cleaned_history
-        if len(history) <= self._history_cap:
+
+        # Decide whether compression should fire. Two independent gates:
+        #   1) message-count: classic ``history_cap``
+        #   2) token-budget: ``compression_token_cap`` (B-31, opt-in)
+        # Either one tripping triggers compression. The cut-point is
+        # the SAME mechanism either way — find the smallest prefix
+        # whose drop brings us back under both caps simultaneously.
+        msg_over = len(history) > self._history_cap
+        tok_over = (
+            self._compression_token_cap is not None
+            and _estimate_history_tokens(history) > self._compression_token_cap
+        )
+        if not (msg_over or tok_over):
             kept = history
         else:
-            start = len(history) - self._history_cap
+            # Greedy: keep dropping the oldest message until we're
+            # under BOTH limits (or down to ≥1 message remaining).
+            start = max(0, len(history) - self._history_cap) if msg_over else 0
+            if tok_over and self._compression_token_cap is not None:
+                cap = self._compression_token_cap
+                while start < len(history) - 1 and _estimate_history_tokens(history[start:]) > cap:
+                    start += 1
             # Advance past partial tool blocks: if the first kept message is a
             # tool result or an assistant message that references tools, skip
             # forward to the next user turn.

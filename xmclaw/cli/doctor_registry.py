@@ -913,7 +913,13 @@ class MemoryProviderConfigCheck(DoctorCheck):
     id = "memory_provider_config"
     name = "memory_provider_config"
 
-    KNOWN = {"sqlite_vec", "hindsight", "none"}
+    KNOWN = {"sqlite_vec", "hindsight", "supermemory", "mem0", "none"}
+    # Per-provider credential requirements: provider → (env_var, config_key).
+    _CRED_REQS = {
+        "hindsight": ("HINDSIGHT_API_KEY", "hindsight"),
+        "supermemory": ("SUPERMEMORY_API_KEY", "supermemory"),
+        "mem0": ("MEM0_API_KEY", "mem0"),
+    }
 
     def run(self, ctx: DoctorContext) -> CheckResult:
         cfg = ctx.cfg or {}
@@ -925,18 +931,19 @@ class MemoryProviderConfigCheck(DoctorCheck):
                 detail=f"unknown provider: {provider!r}",
                 advisory=f"set to one of: {', '.join(sorted(self.KNOWN))}",
             )
-        if provider == "hindsight":
-            hs = (evo_section.get("hindsight") or {})
-            api_key = hs.get("api_key")
+        if provider in self._CRED_REQS:
+            env_var, sub_key = self._CRED_REQS[provider]
+            sub = (evo_section.get(sub_key) or {})
+            api_key = sub.get("api_key")
             import os as _os
-            env_key = _os.environ.get("HINDSIGHT_API_KEY")
+            env_key = _os.environ.get(env_var)
             if not api_key and not env_key:
                 return CheckResult(
                     name=self.name, ok=False,
-                    detail="hindsight selected but no api_key configured",
+                    detail=f"{provider} selected but no api_key configured",
                     advisory=(
-                        "set evolution.memory.hindsight.api_key in config "
-                        "OR HINDSIGHT_API_KEY env var"
+                        f"set evolution.memory.{sub_key}.api_key in config "
+                        f"OR {env_var} env var"
                     ),
                 )
         return CheckResult(
