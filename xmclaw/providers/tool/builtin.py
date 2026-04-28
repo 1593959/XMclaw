@@ -42,13 +42,37 @@ from xmclaw.providers.tool.base import ToolProvider
 
 _FILE_READ_SPEC = ToolSpec(
     name="file_read",
-    description="Read a UTF-8 text file and return its full contents.",
+    description=(
+        "Read a UTF-8 text file. Defaults to the first ~100KB; use "
+        "``offset`` + ``limit`` (1-indexed lines) to read a range, or "
+        "``max_bytes`` to widen the cap up to 1MB. Refuses files that "
+        "look binary (NUL byte in the first 8KB).\n\n"
+        "Result is text. When the file was truncated by the cap, the "
+        "result ends with a ``[truncated, N total bytes]`` marker so "
+        "the agent knows there's more."
+    ),
     parameters_schema={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
                 "description": "Absolute path to the file to read.",
+            },
+            "offset": {
+                "type": "integer",
+                "description": "1-indexed line number to start at "
+                "(default 1). When set, ``limit`` defaults to 2000.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Number of lines to read after "
+                "``offset``. Default 2000 when ``offset`` is set, "
+                "else read up to ``max_bytes`` worth.",
+            },
+            "max_bytes": {
+                "type": "integer",
+                "description": "Byte cap (default 100000, max 1000000). "
+                "Ignored when ``offset``/``limit`` is set.",
             },
         },
         "required": ["path"],
@@ -1016,12 +1040,96 @@ class BuiltinTools(ToolProvider):
     # ── filesystem tools ──────────────────────────────────────────────
 
     async def _file_read(self, call: ToolCall, t0: float) -> ToolResult:
+        """B-57: capped + range-aware file read.
+
+        Three modes, mutually exclusive but resolved by argument
+        presence (no explicit mode flag):
+
+        * ``offset`` + ``limit`` set → read line range
+        * neither → read up to ``max_bytes`` (default 100KB) from
+          the start, append ``[truncated]`` marker if larger
+        * Either way: refuse binary-looking files (NUL byte in the
+          first 8KB).
+
+        Honors ``allowed_dirs`` sandbox via ``_check_allowed``.
+        """
         raw_path = call.args.get("path")
         if not isinstance(raw_path, str) or not raw_path:
             return _fail(call, t0, "missing or empty 'path' argument")
         path = Path(raw_path)
         self._check_allowed(path)
-        content = path.read_text(encoding="utf-8")
+        if not path.exists():
+            return _fail(call, t0, f"file not found: {path}")
+        if not path.is_file():
+            return _fail(call, t0, f"not a file: {path}")
+
+        # Binary heuristic — read first 8KB raw, look for NUL.
+        try:
+            with path.open("rb") as fh:
+                head = fh.read(8192)
+        except OSError as exc:
+            return _fail(call, t0, f"open failed: {exc}")
+        if b"\x00" in head:
+            try:
+                size = path.stat().st_size
+            except OSError:
+                size = 0
+            return _fail(
+                call, t0,
+                f"file looks binary ({size} bytes, NUL byte in first 8KB) "
+                f"— file_read is text-only",
+            )
+
+        # Range read (offset + limit) takes precedence.
+        offset = call.args.get("offset")
+        limit = call.args.get("limit")
+        if offset is not None or limit is not None:
+            try:
+                off_i = int(offset) if offset is not None else 1
+                lim_i = int(limit) if limit is not None else 2000
+            except (TypeError, ValueError):
+                return _fail(call, t0, "offset / limit must be integers")
+            off_i = max(1, off_i)
+            lim_i = max(1, min(lim_i, 50000))
+            try:
+                with path.open("r", encoding="utf-8", errors="replace") as fh:
+                    lines = []
+                    for i, line in enumerate(fh, 1):
+                        if i < off_i:
+                            continue
+                        if len(lines) >= lim_i:
+                            break
+                        lines.append(line)
+            except OSError as exc:
+                return _fail(call, t0, f"read failed: {exc}")
+            content = "".join(lines)
+            return ToolResult(
+                call_id=call.id, ok=True, content=content,
+                side_effects=(),
+                latency_ms=(time.perf_counter() - t0) * 1000.0,
+            )
+
+        # Byte-cap mode.
+        try:
+            max_bytes = int(call.args.get("max_bytes") or 100_000)
+        except (TypeError, ValueError):
+            max_bytes = 100_000
+        max_bytes = max(1024, min(max_bytes, 1_000_000))
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            return _fail(call, t0, f"stat failed: {exc}")
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as fh:
+                # Read max_bytes worth — actually char-count not byte
+                # since Python decodes. Close enough — UTF-8 char
+                # length and byte length are equal for ASCII, ≤4x
+                # for CJK; we err on the side of slightly more.
+                content = fh.read(max_bytes)
+        except OSError as exc:
+            return _fail(call, t0, f"read failed: {exc}")
+        if stat.st_size > max_bytes:
+            content += f"\n\n[truncated, {stat.st_size} total bytes; pass max_bytes or offset/limit for more]"
         return ToolResult(
             call_id=call.id, ok=True, content=content,
             side_effects=(),
