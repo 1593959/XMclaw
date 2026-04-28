@@ -98,9 +98,12 @@ _FILE_WRITE_SPEC = ToolSpec(
 _LIST_DIR_SPEC = ToolSpec(
     name="list_dir",
     description=(
-        "List entries in a directory. Returns a JSON-ish text block with "
-        "one entry per line: '<type> <size> <name>' where type is 'd' for "
-        "directories, 'f' for files, or 'l' for symlinks."
+        "List entries in a directory. Returns a text block with one "
+        "entry per line: '<type> <size> <name>' where type is 'd' for "
+        "directories, 'f' for files, or 'l' for symlinks. Capped at "
+        "``limit`` entries (default 200, max 5000) to keep large "
+        "directories from flooding context — append a '[truncated, N "
+        "more]' marker when the cap kicks in."
     ),
     parameters_schema={
         "type": "object",
@@ -109,6 +112,10 @@ _LIST_DIR_SPEC = ToolSpec(
             "pattern": {
                 "type": "string",
                 "description": "Optional glob filter (e.g. '*.docx'). Default '*' (all).",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max entries returned. Default 200, max 5000.",
             },
         },
         "required": ["path"],
@@ -1239,14 +1246,31 @@ class BuiltinTools(ToolProvider):
             return _fail(call, t0, "missing or empty 'path' argument")
         if not isinstance(pattern, str) or not pattern:
             pattern = "*"
+        try:
+            limit = int(call.args.get("limit") or 200)
+        except (TypeError, ValueError):
+            limit = 200
+        limit = max(1, min(limit, 5000))
         path = Path(raw_path)
         self._check_allowed(path)
         if not path.exists():
             return _fail(call, t0, f"path does not exist: {path}")
         if not path.is_dir():
             return _fail(call, t0, f"not a directory: {path}")
+        # B-58: stream entries one-by-one with an entry-count cap so a
+        # huge dir doesn't flood the LLM context. We collect into a
+        # list because path.glob's order isn't sorted; sort *all*
+        # then truncate vs sort *truncated* — small price for
+        # determinism, and a 5000-entry sort is sub-ms.
+        try:
+            all_entries = sorted(path.glob(pattern))
+        except OSError as exc:
+            return _fail(call, t0, f"glob failed: {exc}")
+        total = len(all_entries)
+        truncated = total > limit
+        kept = all_entries[:limit]
         lines: list[str] = []
-        for entry in sorted(path.glob(pattern)):
+        for entry in kept:
             kind = "l" if entry.is_symlink() else (
                 "d" if entry.is_dir() else "f"
             )
@@ -1256,9 +1280,11 @@ class BuiltinTools(ToolProvider):
                 size = 0
             lines.append(f"{kind} {size:>10} {entry.name}")
         body = "\n".join(lines) if lines else f"(no entries matching {pattern!r})"
+        if truncated:
+            body += f"\n[truncated, {total - limit} more — pass limit= for all]"
         return ToolResult(
             call_id=call.id, ok=True,
-            content=f"{len(lines)} entries in {path}:\n{body}",
+            content=f"{len(lines)} of {total} entries in {path}:\n{body}",
             side_effects=(),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
