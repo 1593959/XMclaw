@@ -827,15 +827,61 @@ class MemoryDbCheck(DoctorCheck):
             count = int(count_row[0]) if count_row else 0
         except sqlite3.Error:
             count = -1
+
+        # B-59: read the vec table's declared dim and compare against
+        # configured embedding.dimensions. SqliteVecMemory raises
+        # RuntimeError on mismatch at first put — better to surface
+        # here so the user can fix config (or wipe the DB) before
+        # the daemon ever tries to ingest.
+        existing_dim: int | None = None
+        try:
+            vec_row = conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='table' AND name='memory_vec'"
+            ).fetchone()
+            # connect() default row_factory returns a tuple — access
+            # by index, not key.
+            sql = vec_row[0] if vec_row else None
+            if sql and "float[" in sql and "]" in sql.split("float[")[1]:
+                existing_dim = int(sql.split("float[")[1].split("]")[0])
+        except (sqlite3.Error, ValueError, IndexError, TypeError):
+            existing_dim = None
+
         conn.close()
+
+        cfg = ctx.cfg or {}
+        emb_section = (((cfg.get("evolution") or {}).get("memory") or {})
+                       .get("embedding") or {})
+        configured_dim = emb_section.get("dimensions")
+        if (
+            existing_dim is not None
+            and configured_dim is not None
+            and int(configured_dim) != existing_dim
+        ):
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=(
+                    f"embedding dim mismatch: memory.db has "
+                    f"{existing_dim}-D vectors but config says "
+                    f"{int(configured_dim)}-D"
+                ),
+                advisory=(
+                    f"either set evolution.memory.embedding.dimensions="
+                    f"{existing_dim} OR delete {path.name} (and the "
+                    f"daemon will rebuild it on next put). The current "
+                    f"setup will crash on the first agent write."
+                ),
+            )
+
         if count < 0:
             return CheckResult(
                 name=self.name, ok=True,
                 detail=f"memory.db present at {path} (count unavailable)",
             )
+        dim_label = f", {existing_dim}-D" if existing_dim else ""
         return CheckResult(
             name=self.name, ok=True,
-            detail=f"memory.db healthy at {path} ({count} item(s))",
+            detail=f"memory.db healthy at {path} ({count} item(s){dim_label})",
         )
 
 
