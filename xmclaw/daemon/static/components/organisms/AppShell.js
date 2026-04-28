@@ -190,26 +190,144 @@ function SidebarFooter() {
   `;
 }
 
-function SidebarSystemActions() {
-  // Mirrors Hermes SidebarSystemActions: restart-gateway / update.
-  // Stubbed for now (no daemon endpoints wired) — visual layout kept.
+function SidebarSystemActions({ token }) {
+  // Wired to /api/v2/system/{restart,upgrade}. Restart fires a detached
+  // relauncher and exits the current daemon; the UI shows a "正在重启…"
+  // overlay until /status responds again. Upgrade kicks off pip in the
+  // background; the same hook polls /upgrade/status so the user sees
+  // "升级中…" → "升级完成（请点重启）".
+  const [busyKind, setBusyKind] = useState(null); // "restart" | "upgrade" | null
+  const [upgradeState, setUpgradeState] = useState(null);
+  // Restart progress: when set, we keep polling /api/v2/status until
+  // it answers, then clear.
+  const [restartTick, setRestartTick] = useState(0);
+
+  const onRestart = async () => {
+    if (!confirm("重启 daemon？当前会话连接会断开，约 3 秒后恢复。")) return;
+    setBusyKind("restart");
+    try {
+      const url = "/api/v2/system/restart" +
+        (token ? `?token=${encodeURIComponent(token)}` : "");
+      await fetch(url, { method: "POST" }).catch(() => null);
+      // Daemon is going down. Poll /status until it's back.
+      let attempts = 0;
+      const poll = async () => {
+        attempts += 1;
+        try {
+          const r = await fetch(
+            "/api/v2/status" +
+            (token ? `?token=${encodeURIComponent(token)}` : ""),
+            { cache: "no-store" },
+          );
+          if (r.ok) {
+            setBusyKind(null);
+            setRestartTick(0);
+            // Force a reload so WS reconnects against the new daemon.
+            window.location.reload();
+            return;
+          }
+        } catch (_) { /* still down — fine */ }
+        setRestartTick(attempts);
+        if (attempts < 60) setTimeout(poll, 800);
+        else setBusyKind(null);
+      };
+      setTimeout(poll, 1500);
+    } catch (_) {
+      setBusyKind(null);
+    }
+  };
+
+  const onUpgrade = async () => {
+    if (!confirm("升级 XMclaw（pip install --upgrade xmclaw）？升级完成后需要点 '重启 daemon' 才会加载新版本。")) return;
+    setBusyKind("upgrade");
+    setUpgradeState({ phase: "starting", tail: [] });
+    try {
+      const url = "/api/v2/system/upgrade" +
+        (token ? `?token=${encodeURIComponent(token)}` : "");
+      const res = await fetch(url, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setUpgradeState({ phase: "error", error: data.error || `HTTP ${res.status}` });
+        setBusyKind(null);
+        return;
+      }
+      // Poll status every 1.5s until process exits.
+      const poll = async () => {
+        try {
+          const r = await fetch(
+            "/api/v2/system/upgrade/status" +
+            (token ? `?token=${encodeURIComponent(token)}` : ""),
+          );
+          const s = await r.json();
+          setUpgradeState({
+            phase: s.running ? "running" : "done",
+            tail: s.log_tail || [],
+            returncode: s.returncode,
+          });
+          if (s.running) {
+            setTimeout(poll, 1500);
+          } else {
+            setBusyKind(null);
+          }
+        } catch (_) {
+          setTimeout(poll, 2000);
+        }
+      };
+      setTimeout(poll, 1500);
+    } catch (e) {
+      setUpgradeState({ phase: "error", error: String(e.message || e) });
+      setBusyKind(null);
+    }
+  };
+
+  const dismissUpgrade = () => setUpgradeState(null);
+
   return html`
     <div class="xmc-h-sysact">
       <span class="xmc-h-sysact__label">系统</span>
       <ul class="xmc-h-sysact__list">
         <li>
-          <button type="button" class="xmc-h-sysact__btn" disabled>
+          <button
+            type="button"
+            class="xmc-h-sysact__btn"
+            onClick=${onRestart}
+            disabled=${busyKind != null}
+            title="POST /api/v2/system/restart"
+          >
             <${Icon} name="RotateCw" className="xmc-h-nav__icon" />
-            <span>重启 daemon</span>
+            <span>${busyKind === "restart" ? `重启中 (${restartTick})` : "重启 daemon"}</span>
           </button>
         </li>
         <li>
-          <button type="button" class="xmc-h-sysact__btn" disabled>
+          <button
+            type="button"
+            class="xmc-h-sysact__btn"
+            onClick=${onUpgrade}
+            disabled=${busyKind != null}
+            title="POST /api/v2/system/upgrade"
+          >
             <${Icon} name="Download" className="xmc-h-nav__icon" />
-            <span>更新 XMclaw</span>
+            <span>${busyKind === "upgrade" ? "升级中…" : "更新 XMclaw"}</span>
           </button>
         </li>
       </ul>
+      ${upgradeState ? html`
+        <div class="xmc-h-sysact__panel" role="status" aria-live="polite">
+          <div class="xmc-h-sysact__panel-head">
+            <strong>升级状态：${
+              upgradeState.phase === "starting" ? "启动中"
+              : upgradeState.phase === "running" ? "运行中"
+              : upgradeState.phase === "done" ? (upgradeState.returncode === 0 ? "成功（请点 重启 daemon）" : `失败 rc=${upgradeState.returncode}`)
+              : upgradeState.phase === "error" ? "出错" : upgradeState.phase
+            }</strong>
+            <button type="button" class="xmc-h-btn xmc-h-btn--ghost" onClick=${dismissUpgrade}>关闭</button>
+          </div>
+          ${upgradeState.error ? html`<p class="xmc-datapage__error">${upgradeState.error}</p>` : null}
+          ${upgradeState.tail && upgradeState.tail.length ? html`
+            <pre class="xmc-h-sysact__log">${upgradeState.tail.slice(-12).join("\n")}</pre>
+          ` : null}
+        </div>
+      ` : null}
     </div>
   `;
 }
@@ -345,7 +463,7 @@ export function AppShell({ activePath, brand = "XMclaw", subBrand = "Agent", tok
             </ul>
           </nav>
 
-          <${SidebarSystemActions} />
+          <${SidebarSystemActions} token=${token} />
 
           <div class="xmc-h-sidebar__footrow">
             <${ThemeSwitcher} dropUp=${true} />

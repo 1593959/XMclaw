@@ -47,6 +47,10 @@ export function WorkspacePage({ token }) {
   const [roots, setRoots] = useState(null);
   // Workspace state persisted by daemon (~/.xmclaw/state.json).
   const [wsState, setWsState] = useState(null);
+  // Active persona snapshot — surfaced as a "agent 的身份与记忆" preview
+  // card so the Workspace page reflects the agent's brain, not just
+  // filesystem roots. Editing happens on the Memory page (link below).
+  const [persona, setPersona] = useState(null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -64,6 +68,11 @@ export function WorkspacePage({ token }) {
     apiGet("/api/v2/workspace", token)
       .then((d) => setWsState(d))
       .catch((e) => setError(String(e.message || e)));
+    // Load active persona summary — failures here aren't fatal,
+    // the page is still useful without the preview card.
+    apiGet("/api/v2/profiles/active", token)
+      .then((d) => setPersona(d))
+      .catch(() => setPersona({ profile_id: "?", files: [] }));
   };
 
   useEffect(loadAll, [token]);
@@ -170,17 +179,68 @@ export function WorkspacePage({ token }) {
     `;
   }
 
+  // ── persona preview card ────────────────────────────────────────
+  // Shows the 7 canonical files (SOUL/AGENTS/USER/MEMORY/IDENTITY/
+  // TOOLS/BOOTSTRAP) the agent is currently running with, plus a
+  // direct link to the Memory page for editing.
+  const PersonaCard = () => {
+    if (!persona) return html`<p class="xmc-datapage__hint">加载身份信息…</p>`;
+    const files = persona.files || [];
+    const layerLabel = (l) => l === "project" ? "项目覆写"
+      : l === "profile" ? "用户档案"
+      : l === "builtin" ? "内置默认"
+      : "未创建";
+    const layerTone = (l) => l === "project" ? "info"
+      : l === "profile" ? "success"
+      : l === "builtin" ? "muted"
+      : "warn";
+    return html`
+      <div class="xmc-h-card" style="padding:.9rem;margin-bottom:1.2rem">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:.5rem">
+          <h3 style="margin:0">Agent 的身份与记忆</h3>
+          <a href="/memory" class="xmc-h-btn xmc-h-btn--primary" style="text-decoration:none">编辑 →</a>
+        </div>
+        <p class="xmc-datapage__subtitle" style="margin:.4rem 0 .8rem">
+          这是当前档案 <code>${persona.profile_id || "default"}</code> 加载的人格文件。
+          每次对话开始时，按下面顺序拼到 system prompt。
+          点击右上 <strong>编辑</strong> 进入完整编辑器（标识 / 笔记 / 日记 三个 tab）。
+        </p>
+        <ul style="list-style:none;padding:0;margin:0;display:grid;gap:.4rem;grid-template-columns:repeat(auto-fill,minmax(220px,1fr))">
+          ${files.map((f) => {
+            const preview = (f.content || "")
+              .split("\n")
+              .map((s) => s.trim())
+              .filter(Boolean)[0] || "(空)";
+            return html`
+              <li
+                key=${f.basename}
+                style="padding:.5rem .6rem;border:1px solid var(--color-border);border-radius:6px;background:var(--color-card)"
+              >
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:.4rem">
+                  <strong style="font-size:.85rem">${f.basename}</strong>
+                  <span class="xmc-h-badge xmc-h-badge--${layerTone(f.layer)}" style="font-size:.6rem">${layerLabel(f.layer)}</span>
+                </div>
+                <small style="display:block;color:var(--xmc-fg-muted);font-size:.72rem;margin-top:.25rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${preview.slice(0, 60).replace(/^#+\s*/, "")}</small>
+              </li>
+            `;
+          })}
+        </ul>
+      </div>
+    `;
+  };
+
   return html`
     <section class="xmc-datapage" aria-labelledby="ws-title">
       <header class="xmc-datapage__header">
         <h2 id="ws-title">工作区</h2>
         <p class="xmc-datapage__subtitle">
-          工作区 = 一个项目目录（mirrors Cline <code>WorkspaceRoot</code>）。每项目的智能体 / 规则 /
-          技能 / 记忆 配置约定在
-          <code>&lt;workspace&gt;/.xmclaw/</code>，全局配置在
-          <code>~/.xmclaw/</code>。Phase 2 接 daemon API；当前为只读视图 + 浏览器端记忆。
+          工作区 = 一个项目目录（mirrors Cline <code>WorkspaceRoot</code>）+ agent 的身份与记忆。
+          下方先看 agent 当前的"灵魂"（身份/记忆文件 — 在 <a href="/memory">记忆</a> 页编辑），
+          再看你注册的项目根目录。
         </p>
       </header>
+
+      ${PersonaCard()}
 
       <div class="xmc-datapage__row" style="display:flex;gap:.75rem;align-items:center;flex-wrap:wrap">
         <strong style="flex:0 0 auto">当前工作区：</strong>

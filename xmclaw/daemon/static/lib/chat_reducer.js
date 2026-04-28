@@ -258,3 +258,30 @@ export function appendOptimisticUser(chat, content, { ultrathink = false } = {})
   });
   return { id, chat: { ...chat, messages } };
 }
+
+// Right after a send, push an empty assistant bubble with
+// `status: "thinking"` keyed by the *correlation_id* (== turn id).
+// The first `llm_chunk` event upserts it into `status: "streaming"`
+// with content; `llm_response` finalizes to `status: "complete"`.
+//
+// Without this, the user sees a gap between "你: ..." and the eventual
+// reply — sometimes seconds — with no visible signal that the agent
+// even received the message. The thinking bubble bridges that gap.
+export function appendThinkingAssistant(chat, correlationId) {
+  if (!correlationId) return chat;
+  // Defensive: if a bubble for this id already exists (race with the
+  // server's first chunk), don't double-up.
+  if (chat.messages.some((m) => m.id === correlationId)) return chat;
+  return {
+    ...chat,
+    pendingAssistantId: correlationId,
+    messages: chat.messages.concat({
+      id: correlationId,
+      role: "assistant",
+      content: "",
+      status: "thinking",
+      ts: Date.now() / 1000,
+      toolCalls: [],
+    }),
+  };
+}

@@ -50,7 +50,30 @@ const CAT_GLYPHS = {
   workspace: "📁",
   agent: "🤖",
   general: "⚙",
+  persona: "👤",
 };
+
+// Chinese display labels for the top-level categories. Falls back to
+// the raw key when missing, so a config with a custom new section
+// still renders rather than crashing on a lookup miss.
+const CAT_LABELS = {
+  llm: "模型与 API",
+  evolution: "技能进化",
+  memory: "记忆与向量库",
+  gateway: "网关与认证",
+  tools: "工具与权限",
+  mcp_servers: "MCP 服务器",
+  integrations: "外部集成",
+  security: "安全策略",
+  workspace: "工作区设置",
+  agent: "Agent 默认",
+  general: "通用设置",
+  persona: "人格档案",
+};
+
+function catLabel(c) {
+  return CAT_LABELS[c] || c;
+}
 
 // ── AutoField (port of components/AutoField.tsx) ─────────────────
 
@@ -212,6 +235,9 @@ export function ConfigPage({ token }) {
     const q = search.toLowerCase();
     return categories.filter((c) => {
       if (c.toLowerCase().includes(q)) return true;
+      // Match against the Chinese label too so a user searching "记忆"
+      // finds the memory section even though the raw key is English.
+      if (catLabel(c).toLowerCase().includes(q)) return true;
       const flat = JSON.stringify(draft?.[c] || {}).toLowerCase();
       return flat.includes(q);
     });
@@ -355,7 +381,7 @@ export function ConfigPage({ token }) {
                 onClick=${() => setActiveCat(c)}
               >
                 <span class="xmc-h-cfg__catglyph">${CAT_GLYPHS[c] || "•"}</span>
-                <span class="xmc-h-skills__panelitem-label">${c}</span>
+                <span class="xmc-h-skills__panelitem-label">${catLabel(c)}</span>
               </button>
             `)}
           </div>
@@ -379,7 +405,7 @@ export function ConfigPage({ token }) {
               : typeof activeData === "object" && activeData !== null && !Array.isArray(activeData)
                 ? html`
                   <div class="xmc-h-card">
-                    <h3 class="xmc-h-card__title">${activeCat}</h3>
+                    <h3 class="xmc-h-card__title">${catLabel(activeCat)}</h3>
                     <div class="xmc-h-cfg__group-body">
                       ${Object.entries(activeData).map(([k, v]) => {
                         if (k.startsWith("_")) return null;
@@ -398,7 +424,7 @@ export function ConfigPage({ token }) {
                 `
                 : html`
                   <div class="xmc-h-card">
-                    <h3 class="xmc-h-card__title">${activeCat}</h3>
+                    <h3 class="xmc-h-card__title">${catLabel(activeCat)}</h3>
                     <${AutoField}
                       label=${activeCat}
                       path=${activeCat}

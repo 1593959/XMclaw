@@ -113,18 +113,46 @@ function MarkdownBody({ content }) {
   `;
 }
 
+function ThinkingDots({ label = "正在思考" }) {
+  return html`
+    <div class="xmc-thinking" role="status" aria-live="polite">
+      <span class="xmc-thinking__label">${label}</span>
+      <span class="xmc-thinking__dot"></span>
+      <span class="xmc-thinking__dot"></span>
+      <span class="xmc-thinking__dot"></span>
+    </div>
+  `;
+}
+
 export function MessageBubble({ message }) {
   const role = message.role || "system";
   const isUser = role === "user";
   const isSystem = role === "system";
+  const thinking = message.status === "thinking";
   const streaming = message.status === "streaming";
   const errored = message.status === "error";
+  // A streaming bubble that has tool calls running but no LLM text yet
+  // counts as "working" — show the thinking dots even if the reducer
+  // already moved it past the thinking phase.
+  const hasToolsRunning = (message.toolCalls || []).some(
+    (c) => c.status === "running",
+  );
+  const showThinking =
+    thinking ||
+    (streaming && !message.content && !hasToolsRunning);
 
   const cls =
     "xmc-msg xmc-msg--" +
     role +
+    (thinking ? " is-thinking" : "") +
     (streaming ? " is-streaming" : "") +
     (errored ? " is-error" : "");
+
+  const statusLabel = thinking
+    ? "正在思考"
+    : streaming
+    ? hasToolsRunning ? "正在执行工具" : "正在回复"
+    : null;
 
   return html`
     <article
@@ -132,16 +160,24 @@ export function MessageBubble({ message }) {
       data-msg-id=${message.id}
       data-role=${role}
       role=${isSystem ? "alert" : "article"}
-      aria-busy=${streaming ? "true" : "false"}
+      aria-busy=${thinking || streaming ? "true" : "false"}
     >
       <header class="xmc-msg__header">
         <span class="xmc-msg__role">${isUser ? "you" : isSystem ? "system" : "assistant"}</span>
         ${message.ultrathink
           ? html`<${Badge} tone="info">ultrathink</${Badge}>`
           : null}
-        ${streaming ? html`<${Spinner} size="sm" label="streaming" />` : null}
+        ${statusLabel
+          ? html`<span class="xmc-msg__status">${statusLabel}</span>`
+          : null}
+        ${streaming && message.content
+          ? html`<${Spinner} size="sm" label="streaming" />`
+          : null}
       </header>
-      <${MarkdownBody} content=${message.content || ""} />
+      ${showThinking ? html`<${ThinkingDots} label=${statusLabel || "正在思考"} />` : null}
+      ${message.content
+        ? html`<${MarkdownBody} content=${message.content} />`
+        : null}
       ${(message.toolCalls || []).map(
         (call) => html`<${ToolCard} key=${call.id} call=${call} />`
       )}

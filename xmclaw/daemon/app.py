@@ -347,6 +347,8 @@ def create_app(
     from xmclaw.daemon.routers import sessions as _sessions_router
     from xmclaw.daemon.routers import workspace as _workspace_router
     from xmclaw.daemon.routers import workspaces as _workspaces_router
+    from xmclaw.daemon.routers import journal as _journal_router
+    from xmclaw.daemon.routers import system as _system_router
     app.include_router(_files_router.router)
     app.include_router(_llm_profiles_router.router)
     app.include_router(_memory_router.router)
@@ -359,6 +361,8 @@ def create_app(
     app.include_router(_skills_router.router)
     app.include_router(_workspace_router.router)
     app.include_router(_workspaces_router.router)
+    app.include_router(_journal_router.router)
+    app.include_router(_system_router.router)
 
     # Phase 3: ASGI middleware for X-Agent-Id → ContextVar plumbing
     # (QwenPaw multi-agent convention #1). Stays a no-op for the

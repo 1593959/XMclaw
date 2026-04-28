@@ -28,6 +28,7 @@ import {
   applyEvent,
   applySessionLifecycle,
   appendOptimisticUser,
+  appendThinkingAssistant,
 } from "./lib/chat_reducer.js";
 
 // Atom imports kept — pages still consume them (Badge / Spinner /
@@ -131,9 +132,13 @@ function sendComposer() {
 
   // Optimistic local echo. The daemon will mirror it back as USER_MESSAGE,
   // and the reducer will dedupe by id.
-  const { id, chat: nextChat } = appendOptimisticUser(s.chat, text, {
+  const { id, chat: afterUser } = appendOptimisticUser(s.chat, text, {
     ultrathink: s.chat.ultrathink,
   });
+  // Push a "thinking" assistant bubble keyed by `id` so the UI shows
+  // immediate feedback. The reducer's llm_chunk / llm_response cases
+  // upsert by id, transitioning this bubble into streaming/complete.
+  const nextChat = appendThinkingAssistant(afterUser, id);
   store.setState({ chat: { ...nextChat, composerDraft: "" } });
 
   wsHandle.send({

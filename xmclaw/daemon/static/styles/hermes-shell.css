@@ -314,6 +314,37 @@
   box-shadow: 0 0 0 1px var(--midground);
 }
 
+/* Upgrade-progress panel rendered below the system buttons. */
+.xmc-h-sysact__panel {
+  margin: 0.5rem 1.25rem 0.6rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-card, #18181b) 60%, transparent);
+  border: 1px solid var(--color-border, #444);
+  font-size: 0.7rem;
+  color: var(--color-fg, #ddd);
+}
+.xmc-h-sysact__panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  margin-bottom: 0.4rem;
+}
+.xmc-h-sysact__log {
+  margin: 0;
+  padding: 0.4rem;
+  max-height: 8rem;
+  overflow-y: auto;
+  background: var(--color-bg, #0c0c0e);
+  border-radius: 4px;
+  font-family: var(--xmc-font-mono);
+  font-size: 0.65rem;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* ── footer row (theme + language) ─────────────────────────────────── */
 
 .xmc-h-sidebar__footrow {
