@@ -20,12 +20,12 @@ from xmclaw.daemon.auto_evo_bridge import auto_evo_workspace
 router = APIRouter(prefix="/api/v2/auto_evo", tags=["auto_evo"])
 
 
-def _read_jsonl(path: Path, *, tail: int = 100) -> list[dict[str, Any]]:
+def _read_jsonl(path: Path | None, *, tail: int = 100) -> list[dict[str, Any]]:
     """Cheap JSONL tail. xm-auto-evo's events.jsonl can grow large
     over time, so we read the whole file but only return the last
     ``tail`` rows. SQLite would be cleaner but we don't control the
     JS side's storage choice."""
-    if not path.is_file():
+    if path is None or not path.is_file():
         return []
     try:
         with path.open("r", encoding="utf-8", errors="replace") as f:
@@ -67,15 +67,35 @@ async def status(request: Request) -> JSONResponse:
 
     # File-based counts — xm-auto-evo writes these regardless of
     # whether the heartbeat is running right now.
-    events_path = workspace / "events.jsonl"
-    if events_path.is_file():
+    #
+    # B-22 path fix: xm-auto-evo writes everything under
+    # ``<workspace>/data/`` (gep/store.js DATA_DIR), NOT directly
+    # under workspace. The earlier ``workspace / "events.jsonl"``
+    # path always missed and reported 0/0/0 even after evolution
+    # had genuinely produced output. Try both locations to stay
+    # compatible with possible future layouts.
+    def _resolve_first(*candidates: Path) -> Path | None:
+        for c in candidates:
+            if c.is_file():
+                return c
+        return None
+
+    events_path = _resolve_first(
+        workspace / "data" / "events.jsonl",
+        workspace / "events.jsonl",
+    )
+    if events_path is not None:
         try:
             with events_path.open("r", encoding="utf-8", errors="replace") as f:
                 info["counts"]["events"] = sum(1 for _ in f)
         except OSError:
             pass
-    genes_path = workspace / "genes.json"
-    if genes_path.is_file():
+
+    genes_path = _resolve_first(
+        workspace / "data" / "genes.json",
+        workspace / "genes.json",
+    )
+    if genes_path is not None:
         try:
             data = json.loads(genes_path.read_text(encoding="utf-8"))
             info["counts"]["genes"] = (
@@ -85,13 +105,36 @@ async def status(request: Request) -> JSONResponse:
             )
         except (OSError, json.JSONDecodeError):
             pass
-    capsules_path = workspace / "capsules.jsonl"
-    if capsules_path.is_file():
+
+    capsules_path = _resolve_first(
+        workspace / "data" / "capsules.jsonl",
+        workspace / "data" / "capsules.json",
+        workspace / "capsules.jsonl",
+    )
+    if capsules_path is not None:
         try:
             with capsules_path.open("r", encoding="utf-8", errors="replace") as f:
-                info["counts"]["capsules"] = sum(1 for _ in f)
-        except OSError:
+                # A .json file holds an array, .jsonl is one row per line.
+                if capsules_path.suffix == ".json":
+                    data = json.loads(f.read())
+                    info["counts"]["capsules"] = (
+                        len(data) if isinstance(data, list) else len(data.get("capsules", []))
+                    )
+                else:
+                    info["counts"]["capsules"] = sum(1 for _ in f)
+        except (OSError, json.JSONDecodeError):
             pass
+
+    # Also count auto-generated skills on disk — those are the closed-
+    # loop USABLE products. /skills_count is what matters for "did
+    # evolution actually produce something the agent can use?"
+    skills_dir = workspace / "skills"
+    skills_count = 0
+    if skills_dir.is_dir():
+        for entry in skills_dir.iterdir():
+            if entry.is_dir() and (entry / "SKILL.md").is_file():
+                skills_count += 1
+    info["counts"]["learned_skills"] = skills_count
 
     return JSONResponse(info)
 
@@ -133,12 +176,25 @@ async def run_once(command: str, request: Request) -> JSONResponse:
     return JSONResponse(res)
 
 
+def _resolve_data_file(workspace: Path, *names: str) -> Path | None:
+    """Probe both ``<workspace>/data/<name>`` and ``<workspace>/<name>``
+    for each candidate name. xm-auto-evo's gep/store.js writes under
+    the data/ subdir — earlier router code always missed that."""
+    for n in names:
+        for base in (workspace / "data", workspace):
+            p = base / n
+            if p.is_file():
+                return p
+    return None
+
+
 @router.get("/events")
 async def events(tail: int = 100) -> JSONResponse:
     """Tail xm-auto-evo's events.jsonl — observe_complete /
     learn_complete / evolution_complete / solidify_failed etc."""
     workspace = auto_evo_workspace()
-    rows = _read_jsonl(workspace / "events.jsonl", tail=max(1, min(int(tail), 1000)))
+    path = _resolve_data_file(workspace, "events.jsonl")
+    rows = _read_jsonl(path, tail=max(1, min(int(tail), 1000))) if path else []
     return JSONResponse({"events": rows, "count": len(rows)})
 
 
@@ -146,8 +202,8 @@ async def events(tail: int = 100) -> JSONResponse:
 async def genes() -> JSONResponse:
     """Return the current gene catalogue."""
     workspace = auto_evo_workspace()
-    path = workspace / "genes.json"
-    if not path.is_file():
+    path = _resolve_data_file(workspace, "genes.json")
+    if path is None:
         return JSONResponse({"genes": []})
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -164,13 +220,31 @@ async def genes() -> JSONResponse:
 
 @router.get("/capsules")
 async def capsules(tail: int = 50) -> JSONResponse:
-    """Tail capsules.jsonl — one row per evolution attempt
-    (success/fail + what was tried)."""
+    """Tail capsules — one row per evolution attempt (success/fail +
+    what was tried). xm-auto-evo writes capsules.json (array) on
+    some paths and capsules.jsonl on others; we try both."""
     workspace = auto_evo_workspace()
-    rows = _read_jsonl(
-        workspace / "capsules.jsonl", tail=max(1, min(int(tail), 500))
-    )
-    return JSONResponse({"capsules": rows, "count": len(rows)})
+    n = max(1, min(int(tail), 500))
+    # JSONL preferred
+    path = _resolve_data_file(workspace, "capsules.jsonl")
+    if path is not None:
+        rows = _read_jsonl(path, tail=n)
+        return JSONResponse({"capsules": rows, "count": len(rows)})
+    # JSON fallback
+    path = _resolve_data_file(workspace, "capsules.json")
+    if path is not None:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                rows = data[-n:]
+            elif isinstance(data, dict):
+                rows = (data.get("capsules") or [])[-n:]
+            else:
+                rows = []
+            return JSONResponse({"capsules": rows, "count": len(rows)})
+        except (OSError, json.JSONDecodeError):
+            pass
+    return JSONResponse({"capsules": [], "count": 0})
 
 
 @router.get("/learned_skills")
