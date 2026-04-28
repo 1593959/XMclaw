@@ -46,22 +46,12 @@ class BuiltinFileMemoryProvider(MemoryProvider):
         profile dir (``~/.xmclaw/persona/profiles/<active>/``). When
         None, falls back to the canonical default path."""
         self._persona_dir_provider = persona_dir_provider
-        # B-64: per-path async lock for read-modify-write paths
-        # (put → MEMORY.md/USER.md; sync_turn → memory/YYYY-MM-DD.md).
-        # Same pattern as BuiltinTools._fs_locks (B-63). Each provider
-        # instance carries its own dict — there's only one
-        # BuiltinFileMemoryProvider per daemon.
-        import asyncio as _asyncio
-        self._fs_locks: dict[str, _asyncio.Lock] = {}
 
     def _fs_lock(self, path):
-        import asyncio as _asyncio
-        key = str(path)
-        lock = self._fs_locks.get(key)
-        if lock is None:
-            lock = _asyncio.Lock()
-            self._fs_locks[key] = lock
-        return lock
+        """B-65: shared module-level lock store so DreamCompactor
+        + BuiltinTools writers see the same mutex for the same path."""
+        from xmclaw.utils.fs_locks import get_lock
+        return get_lock(path)
 
     def _persona_dir(self) -> Path:
         try:

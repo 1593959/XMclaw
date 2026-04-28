@@ -889,13 +889,10 @@ class BuiltinTools(ToolProvider):
         # ``def todo_listener(session_id, items) -> None``. Keeping it as
         # a plain callable avoids coupling this module to the bus type.
         self._todo_listener = todo_listener
-        # B-63: per-path async locks for read-modify-write file ops
-        # (persona / notes / journal append). Without this, two
-        # concurrent ``remember`` calls (e.g. agent + dream cron, or
-        # multi-agent setup) would both read the same ``existing``
-        # snapshot then both write — the second's append clobbers
-        # the first. Lazy-initialised by str(path).
-        self._fs_locks: dict[str, asyncio.Lock] = {}
+        # B-63: per-path async locks live in xmclaw.utils.fs_locks
+        # (B-65 promoted them to a shared module-level store so
+        # DreamCompactor and BuiltinFileMemoryProvider lock the
+        # SAME mutex per file).
         # B-40: optional MemoryManager handle so the unified
         # ``memory_search`` tool can fan a query across every wired
         # memory provider (builtin file + sqlite_vec / hindsight /
@@ -2543,21 +2540,15 @@ class BuiltinTools(ToolProvider):
     # ── allowlist ─────────────────────────────────────────────────────
 
     def _fs_lock(self, path: Path) -> asyncio.Lock:
-        """B-63: get or create the asyncio.Lock for a given path.
+        """B-63 / B-65: per-path async lock for read-modify-write.
 
-        Keeping locks in a process-wide dict keyed by str(path) means
-        TWO BuiltinTools instances would each have their own dict —
-        which is fine because each is also the only writer in its
-        own process. Cross-process concurrency (multiple daemon
-        instances on the same workspace) is out of scope; the user
-        runs one daemon per machine.
+        B-65: routes through ``xmclaw.utils.fs_locks.get_lock`` so the
+        SAME lock is shared with BuiltinFileMemoryProvider and
+        DreamCompactor — without this, three writers to MEMORY.md each
+        held their own mutex providing zero actual mutual exclusion.
         """
-        key = str(path)
-        lock = self._fs_locks.get(key)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._fs_locks[key] = lock
-        return lock
+        from xmclaw.utils.fs_locks import get_lock
+        return get_lock(path)
 
     def _check_allowed(self, path: Path) -> None:
         if self._allowed is None:

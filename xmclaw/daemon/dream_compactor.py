@@ -133,80 +133,91 @@ class DreamCompactor:
         if not memory_path.is_file():
             return {"ok": False, "error": "no MEMORY.md to compact"}
 
-        try:
-            current = memory_path.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            return {"ok": False, "error": f"read failed: {exc}"}
-        if not current.strip():
-            return {"ok": True, "skipped": "empty", "before_chars": 0}
+        # B-65: acquire the shared per-path lock for the WHOLE
+        # read-LLM-write window. Otherwise an agent calling
+        # ``remember`` mid-dream would land an append into a snapshot
+        # that's about to be overwritten — the new bullet would be
+        # lost when dream's tmp+rename lands. Holding for the full
+        # 60-120s LLM call is heavy but the alternative is silent
+        # data loss; appends to MEMORY.md mid-dream simply queue
+        # behind the dream pass and run after.
+        from xmclaw.utils.fs_locks import get_lock as _get_lock
 
-        daily_logs = self._read_recent_daily_logs(pdir)
+        async with _get_lock(memory_path):
+            try:
+                current = memory_path.read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                return {"ok": False, "error": f"read failed: {exc}"}
+            if not current.strip():
+                return {"ok": True, "skipped": "empty", "before_chars": 0}
 
-        prompt = DREAM_PROMPT_ZH.format(
-            memory_md=current,
-            daily_logs=daily_logs or "(无)",
-        )
+            daily_logs = self._read_recent_daily_logs(pdir)
 
-        # Call the LLM. Single-shot, no streaming — we want the
-        # complete rewrite atomically.
-        from xmclaw.providers.llm.base import Message
-        try:
-            resp = await asyncio.wait_for(
-                self._llm.complete(
-                    [Message(role="user", content=prompt)], tools=None,
-                ),
-                timeout=120.0,
+            prompt = DREAM_PROMPT_ZH.format(
+                memory_md=current,
+                daily_logs=daily_logs or "(无)",
             )
-        except asyncio.TimeoutError:
-            return {"ok": False, "error": "LLM timeout (120s)"}
-        except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "error": f"LLM call failed: {exc}"}
 
-        new_text = (resp.content or "").strip()
-        # Strip a leading ```markdown fence if the LLM emitted one
-        # despite our instruction not to.
-        if new_text.startswith("```"):
-            lines = new_text.splitlines()
-            if lines and lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].startswith("```"):
-                lines = lines[:-1]
-            new_text = "\n".join(lines).strip()
+            # Call the LLM. Single-shot, no streaming — we want the
+            # complete rewrite atomically.
+            from xmclaw.providers.llm.base import Message
+            try:
+                resp = await asyncio.wait_for(
+                    self._llm.complete(
+                        [Message(role="user", content=prompt)], tools=None,
+                    ),
+                    timeout=120.0,
+                )
+            except asyncio.TimeoutError:
+                return {"ok": False, "error": "LLM timeout (120s)"}
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "error": f"LLM call failed: {exc}"}
 
-        # Sanity: the rewrite must not collapse the file to nothing.
-        # Reject anything < min_keep_ratio of the original — almost
-        # certainly a model error.
-        if len(new_text) < self._min_ratio * len(current):
-            return {
-                "ok": False,
-                "error": (
-                    f"rewrite too small ({len(new_text)} chars vs "
-                    f"{len(current)} original; min_ratio={self._min_ratio})"
-                ),
-                "before_chars": len(current),
-                "after_chars": len(new_text),
-            }
-        if not new_text:
-            return {"ok": False, "error": "LLM returned empty"}
+            new_text = (resp.content or "").strip()
+            # Strip a leading ```markdown fence if the LLM emitted one
+            # despite our instruction not to.
+            if new_text.startswith("```"):
+                lines = new_text.splitlines()
+                if lines and lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].startswith("```"):
+                    lines = lines[:-1]
+                new_text = "\n".join(lines).strip()
 
-        # Backup first.
-        backup_dir = pdir / "backup"
-        try:
-            backup_dir.mkdir(parents=True, exist_ok=True)
-            ts = time.strftime("%Y%m%d-%H%M%S")
-            backup_path = backup_dir / f"memory_backup_{ts}.md"
-            backup_path.write_text(current, encoding="utf-8")
-        except OSError as exc:
-            return {"ok": False, "error": f"backup write failed: {exc}"}
+            # Sanity: the rewrite must not collapse the file to nothing.
+            # Reject anything < min_keep_ratio of the original — almost
+            # certainly a model error.
+            if len(new_text) < self._min_ratio * len(current):
+                return {
+                    "ok": False,
+                    "error": (
+                        f"rewrite too small ({len(new_text)} chars vs "
+                        f"{len(current)} original; min_ratio={self._min_ratio})"
+                    ),
+                    "before_chars": len(current),
+                    "after_chars": len(new_text),
+                }
+            if not new_text:
+                return {"ok": False, "error": "LLM returned empty"}
 
-        # Atomic-ish rewrite: write tmp, replace.
-        try:
-            tmp = memory_path.with_suffix(".md.dream.tmp")
-            tmp.write_text(new_text, encoding="utf-8")
-            import os as _os
-            _os.replace(tmp, memory_path)
-        except OSError as exc:
-            return {"ok": False, "error": f"write failed: {exc}"}
+            # Backup first.
+            backup_dir = pdir / "backup"
+            try:
+                backup_dir.mkdir(parents=True, exist_ok=True)
+                ts = time.strftime("%Y%m%d-%H%M%S")
+                backup_path = backup_dir / f"memory_backup_{ts}.md"
+                backup_path.write_text(current, encoding="utf-8")
+            except OSError as exc:
+                return {"ok": False, "error": f"backup write failed: {exc}"}
+
+            # Atomic-ish rewrite: write tmp, replace.
+            try:
+                tmp = memory_path.with_suffix(".md.dream.tmp")
+                tmp.write_text(new_text, encoding="utf-8")
+                import os as _os
+                _os.replace(tmp, memory_path)
+            except OSError as exc:
+                return {"ok": False, "error": f"write failed: {exc}"}
 
         # Bump prompt-freeze generation so live sessions pick up.
         try:
