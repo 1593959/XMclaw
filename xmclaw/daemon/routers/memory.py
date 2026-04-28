@@ -147,6 +147,48 @@ async def switch_provider(request: Request) -> JSONResponse:
     })
 
 
+@router.get("/dream/status")
+async def dream_status(request: Request) -> JSONResponse:
+    """B-51: surface DreamCron state for the Memory page.
+
+    Returns ``{wired, running, hour, minute, last_run_at, last_result}``.
+    ``wired=False`` when no LLM is configured (compactor was never built).
+    """
+    cron = getattr(request.app.state, "dream_cron", None)
+    if cron is None:
+        return JSONResponse({
+            "wired": False,
+            "reason": "no LLM configured (dream needs a complete-able LLM)",
+        })
+    return JSONResponse({
+        "wired": True,
+        "running": cron.is_running,
+        "hour": cron._hour,           # noqa: SLF001
+        "minute": cron._minute,       # noqa: SLF001
+        "last_run_at": cron.last_run_at,
+        "last_result": cron.last_result,
+    })
+
+
+@router.post("/dream/run")
+async def dream_run(request: Request) -> JSONResponse:
+    """B-51: on-demand dream pass. Same code path as the daily cron,
+    just fires NOW instead of at 03:00 local. Useful for users who want
+    to compact MEMORY.md without waiting overnight.
+
+    Returns the compactor's result dict — caller sees backup_path +
+    char-count delta on success. Won't run when no LLM configured.
+    """
+    compactor = getattr(request.app.state, "dream_compactor", None)
+    if compactor is None:
+        return JSONResponse(
+            {"ok": False, "error": "dream not wired (no LLM)"},
+            status_code=400,
+        )
+    result = await compactor.dream()
+    return JSONResponse(result, status_code=200 if result.get("ok") else 500)
+
+
 @router.get("/indexer_status")
 async def indexer_status(request: Request) -> JSONResponse:
     """B-49: surface MemoryFileIndexer state for the Memory page.

@@ -515,6 +515,58 @@ def create_app(
                 "memory_indexer.start_failed err=%s", exc,
             )
             _app.state.memory_indexer = None
+
+        # B-51: Auto-Dream cron — daily LLM-driven MEMORY.md
+        # compaction. Off when no LLM is configured (we can't rewrite
+        # without one). Gated by ``evolution.dream.enabled`` (default
+        # true) so users can opt out.
+        _app.state.dream_cron = None
+        try:
+            agent = _app.state.agent if hasattr(_app.state, "agent") else None
+            llm = getattr(agent, "_llm", None) if agent is not None else None
+            dream_section = (
+                ((config or {}).get("evolution") or {}).get("dream") or {}
+            )
+            dream_enabled = dream_section.get("enabled", True)
+            if llm is not None and dream_enabled:
+                from xmclaw.daemon.dream_compactor import (
+                    DreamCompactor, DreamCron,
+                )
+                from xmclaw.daemon.factory import _resolve_persona_profile_dir
+                _cfg = config or {}
+
+                def _pdir():
+                    return _resolve_persona_profile_dir(_cfg)
+
+                compactor = DreamCompactor(
+                    llm=llm,
+                    persona_dir_provider=_pdir,
+                    bus=bus,
+                    daily_log_window_days=int(
+                        dream_section.get("daily_log_window_days", 7)
+                    ),
+                    min_keep_ratio=float(
+                        dream_section.get("min_keep_ratio", 0.3)
+                    ),
+                )
+                cron = DreamCron(
+                    compactor=compactor,
+                    hour=int(dream_section.get("hour", 3)),
+                    minute=int(dream_section.get("minute", 0)),
+                )
+                await cron.start()
+                _app.state.dream_compactor = compactor
+                _app.state.dream_cron = cron
+            else:
+                _app.state.dream_compactor = None
+        except Exception as exc:  # noqa: BLE001
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).warning(
+                "dream_cron.start_failed err=%s", exc,
+            )
+            _app.state.dream_compactor = None
+            _app.state.dream_cron = None
+
         try:
             await agents_manager.load_from_disk()
         except Exception:  # noqa: BLE001 — bad preset file must not block boot
@@ -548,6 +600,13 @@ def create_app(
             if _idx is not None:
                 try:
                     await _idx.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            # B-51: stop the dream cron.
+            _dream_cron = getattr(_app.state, "dream_cron", None)
+            if _dream_cron is not None:
+                try:
+                    await _dream_cron.stop()
                 except Exception:  # noqa: BLE001
                     pass
             # Stop xm-auto-evo subsystem.

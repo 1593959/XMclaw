@@ -91,6 +91,11 @@ class EventType(str, Enum):
     # weight skills by whether they actually helped vs broke turns.
     SKILL_OUTCOME = "skill_outcome"
 
+    # B-51: emitted when DreamCompactor successfully rewrites
+    # MEMORY.md. Payload: {ok, before_chars, after_chars,
+    # saved_chars, backup_path, memory_path, ts}.
+    MEMORY_DREAMED = "memory_dreamed"
+
     # B-43: emitted by MemoryFileIndexer at the end of every tick
     # that actually changed something. Payload:
     # {"files_changed": int, "chunks_added": int, "chunks_deleted": int,

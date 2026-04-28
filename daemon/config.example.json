@@ -25,6 +25,14 @@
     "vfm_threshold": 5.0,
     "max_genes_per_day": 10,
     "auto_rollback": true,
+    "dream": {
+      "_comment_b51": "B-51 Auto-Dream — daily LLM-driven MEMORY.md compaction (CoPaw parity). Reads MEMORY.md + last N daily logs, asks the LLM to dedupe + crystallise + drop stale entries, writes back. Backs up old version under <persona>/backup/ first. Off when no LLM is configured. Set enabled=false to skip even with LLM wired.",
+      "enabled": true,
+      "hour": 3,
+      "minute": 0,
+      "daily_log_window_days": 7,
+      "min_keep_ratio": 0.3
+    },
     "memory": {
       "_comment_b41": "B-41 vector index — when 'embedding' is configured, the daemon auto-indexes MEMORY.md / USER.md / memory/*.md AND the user's web-UI memory editor notes into the sqlite-vec store so memory_search returns real semantic hits. Without an embedding key the indexer is silently disabled and memory_search falls back to keyword scan.",
       "_comment_ollama_example": "For local Ollama: base_url='http://127.0.0.1:11434/v1', api_key may be empty (localhost is auth-free in our client). Recommended: model='qwen3-embedding:0.6b' dim=1024 (multilingual, fast). Alternatives: 'bge-m3' dim=1024, 'nomic-embed-text' dim=768. Pull first: 'ollama pull qwen3-embedding:0.6b'.",
