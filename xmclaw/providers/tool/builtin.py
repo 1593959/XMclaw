@@ -1160,7 +1160,8 @@ class BuiltinTools(ToolProvider):
         path = Path(raw_path)
         self._check_allowed(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        from xmclaw.utils.fs_locks import atomic_write_text
+        atomic_write_text(path, text)
         # Structured dict for graders and the bus; agent_loop renders
         # it into a readable tool-message string when feeding to the LLM.
         return ToolResult(
@@ -1844,17 +1845,18 @@ class BuiltinTools(ToolProvider):
         # B-64: lock the file so concurrent note_write calls (or note +
         # daemon-side editor write via /api/v2/memory POST) don't race
         # on the read-modify-write append path.
+        from xmclaw.utils.fs_locks import atomic_write_text
         async with self._fs_lock(path):
             try:
                 if mode == "append" and path.is_file():
                     existing = path.read_text(encoding="utf-8", errors="replace")
                     sep = "\n\n---\n\n" if existing.strip() else ""
-                    path.write_text(
+                    atomic_write_text(
+                        path,
                         existing.rstrip() + sep + content.strip() + "\n",
-                        encoding="utf-8",
                     )
                 else:
-                    path.write_text(content, encoding="utf-8")
+                    atomic_write_text(path, content)
             except OSError as exc:
                 return _fail(call, t0, f"write failed: {exc}")
 
@@ -1914,20 +1916,21 @@ class BuiltinTools(ToolProvider):
         # B-64: same RMW lock as note_write — concurrent agent +
         # cron append on the same daily file would otherwise lose
         # entries.
+        from xmclaw.utils.fs_locks import atomic_write_text
         async with self._fs_lock(path):
             try:
                 if path.is_file():
                     existing = path.read_text(encoding="utf-8", errors="replace")
                     if not existing.startswith("# "):
                         existing = f"# 日记 {date}\n\n" + existing
-                    path.write_text(
+                    atomic_write_text(
+                        path,
                         existing.rstrip() + "\n\n---\n\n" + block + "\n",
-                        encoding="utf-8",
                     )
                 else:
-                    path.write_text(
+                    atomic_write_text(
+                        path,
                         f"# 日记 {date}\n\n" + block + "\n",
-                        encoding="utf-8",
                     )
             except OSError as exc:
                 return _fail(call, t0, f"write failed: {exc}")
@@ -2361,7 +2364,8 @@ class BuiltinTools(ToolProvider):
                     content = call.args.get("content")
                     if not isinstance(content, str):
                         return _fail(call, t0, "'content' required for replace mode")
-                    target.write_text(content, encoding="utf-8")
+                    from xmclaw.utils.fs_locks import atomic_write_text
+                    atomic_write_text(target, content)
                     written_size = len(content.encode("utf-8"))
                     summary = f"replaced {canonical} ({written_size} bytes)"
                 else:  # append_section
@@ -2388,7 +2392,8 @@ class BuiltinTools(ToolProvider):
                     cap = PERSONA_CHAR_CAPS.get(canonical)
                     if cap is not None and len(new_text) > cap:
                         new_text = enforce_char_cap(new_text, cap)
-                    target.write_text(new_text, encoding="utf-8")
+                    from xmclaw.utils.fs_locks import atomic_write_text
+                    atomic_write_text(target, new_text)
                     written_size = len(new_text.encode("utf-8"))
                     summary = f"appended to {canonical} under {section_header}"
             except OSError as exc:
@@ -2505,8 +2510,9 @@ class BuiltinTools(ToolProvider):
                 new_text = enforce_char_cap(new_text, cap)
                 evicted = before_len - len(new_text)
 
+            from xmclaw.utils.fs_locks import atomic_write_text
             try:
-                target.write_text(new_text, encoding="utf-8")
+                atomic_write_text(target, new_text)
             except OSError as exc:
                 return _fail(call, t0, f"write failed: {exc}")
 

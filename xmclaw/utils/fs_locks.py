@@ -51,4 +51,31 @@ def reset_for_tests() -> None:
     _LOCKS.clear()
 
 
-__all__ = ["get_lock", "reset_for_tests"]
+def atomic_write_text(path: str | Path, content: str, *, encoding: str = "utf-8") -> None:
+    """B-71: durable file write — tmp + ``os.replace``.
+
+    ``Path.write_text`` does ``open + write + close`` directly. If
+    the daemon dies mid-write (SIGKILL, OOM, disk full, machine
+    crash, container OOMKilled), the file is left truncated /
+    half-written. For files the user trusts to keep their state
+    (MEMORY.md, USER.md, daily logs), that's silent data loss.
+
+    POSIX (and modern Windows) guarantee ``os.replace`` is atomic
+    on the same filesystem — readers see either the old file or
+    the new file, never a half-written one. DreamCompactor was
+    already using this pattern; this helper makes it the default
+    for every persona / notes / journal write path.
+
+    The tmp file lives next to the target (same filesystem) so
+    ``os.replace`` is a metadata operation, not a copy. Suffix
+    includes ``.tmp.write`` to distinguish from DreamCompactor's
+    own ``.dream.tmp``.
+    """
+    import os as _os
+    p = Path(path)
+    tmp = p.with_suffix(p.suffix + ".write.tmp")
+    tmp.write_text(content, encoding=encoding)
+    _os.replace(tmp, p)
+
+
+__all__ = ["get_lock", "reset_for_tests", "atomic_write_text"]

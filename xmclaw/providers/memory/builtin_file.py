@@ -98,7 +98,8 @@ class BuiltinFileMemoryProvider(MemoryProvider):
             cap = PERSONA_CHAR_CAPS.get(target_file)
             if cap is not None and len(new_text) > cap:
                 new_text = enforce_char_cap(new_text, cap)
-            path.write_text(new_text, encoding="utf-8")
+            from xmclaw.utils.fs_locks import atomic_write_text
+            atomic_write_text(path, new_text)
         return item.id or uuid.uuid4().hex
 
     async def query(
@@ -197,6 +198,7 @@ class BuiltinFileMemoryProvider(MemoryProvider):
         # B-64: lock per-day-log path. Two sessions ending the same
         # second on the same day would otherwise race-overwrite the
         # daily log file.
+        from xmclaw.utils.fs_locks import atomic_write_text
         async with self._fs_lock(log_path):
             try:
                 if log_path.is_file():
@@ -204,9 +206,9 @@ class BuiltinFileMemoryProvider(MemoryProvider):
                     # Keep existing content; append new entry below.
                     if not existing.startswith("# "):
                         existing = header + existing
-                    log_path.write_text(existing.rstrip() + "\n\n" + entry, encoding="utf-8")
+                    atomic_write_text(log_path, existing.rstrip() + "\n\n" + entry)
                 else:
-                    log_path.write_text(header + entry, encoding="utf-8")
+                    atomic_write_text(log_path, header + entry)
             except OSError:
                 # Disk-full / permission — best-effort, never block the turn.
                 pass
