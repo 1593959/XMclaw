@@ -730,59 +730,112 @@ def create_app(
     if _static_dir.is_dir():
         _index_html = _static_dir / "index.html"
 
-        # SPA fallback: client-side router owns /ui/chat, /ui/agents, …
-        # so a refresh on those paths must return index.html, not 404.
-        # Real static assets (.js / .css / .png / fonts) are served by
-        # the StaticFiles mount below; anything else falls through here.
         _static_root = _static_dir.resolve()
 
-        # Cache-Control: no-store on every /ui/* response. The bundle is
-        # plain ESM served straight off disk — no build step, no
-        # content-hashed filenames — so any browser cache will pin
-        # users to a stale file after we ship a fix. ETag-driven
-        # caching also misbehaves: ESM module records get pinned in
-        # the browser's module graph and "刷新页面" doesn't always
-        # bust them. ``no-store`` is heavy-handed but it's the only
-        # thing that reliably matches "the daemon's filesystem is the
-        # source of truth, every navigation re-reads it".
+        # No-store + per-startup boot version. The bundle is plain ESM
+        # served off disk (no build, no content-hashed filenames). Two
+        # caches conspire against us:
+        #
+        # 1. Browser HTTP cache → fixed by ``Cache-Control: no-store``.
+        # 2. Browser ESM module map (in-memory, scoped to the page
+        #    lifetime) → no header can bust this. Only a *different
+        #    URL* makes the browser treat the module as new. So we
+        #    rewrite every relative ``import`` and ``<script src>`` to
+        #    include ``?v=<BOOT_VERSION>``. BOOT_VERSION is the daemon
+        #    startup timestamp — ``xmclaw stop && xmclaw start`` (or
+        #    the in-UI 重启 button) is enough to force the entire
+        #    module graph to refetch.
+        import re as _re
+        import time as _time
+        BOOT_VERSION = str(int(_time.time()))
+
         _NO_STORE_HEADERS = {
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
             "Pragma": "no-cache",
             "Expires": "0",
         }
 
+        # Match relative ESM specifiers used by ``import``,
+        # ``import()`` and ``export ... from`` — both single + double
+        # quoted. The regex deliberately doesn't touch absolute URLs
+        # (https://esm.sh/preact, etc) or anything starting with /.
+        _IMPORT_RE = _re.compile(
+            r"""(\b(?:from|import)\s*\(?\s*)(["'])(\.{1,2}/[^"']+?)(["'])""",
+            _re.MULTILINE,
+        )
+        # And a separate pattern for HTML ``<script src="./...">``.
+        _HTML_SRC_RE = _re.compile(
+            r"""(<script\b[^>]*\bsrc\s*=\s*)(["'])(\.{1,2}/[^"']+?)(["'])""",
+            _re.MULTILINE,
+        )
+
+        def _stamp_url(specifier: str) -> str:
+            """Append ?v=BOOT_VERSION (or &v= when query already present)."""
+            sep = "&" if "?" in specifier else "?"
+            return f"{specifier}{sep}v={BOOT_VERSION}"
+
+        def _stamp_js(text: str) -> str:
+            return _IMPORT_RE.sub(
+                lambda m: f"{m.group(1)}{m.group(2)}{_stamp_url(m.group(3))}{m.group(4)}",
+                text,
+            )
+
+        def _stamp_html(text: str) -> str:
+            return _HTML_SRC_RE.sub(
+                lambda m: f"{m.group(1)}{m.group(2)}{_stamp_url(m.group(3))}{m.group(4)}",
+                text,
+            )
+
+        from starlette.responses import Response as _Response
+
+        def _rewritten_response(path: Path) -> _Response | FileResponse:
+            """Return either a rewritten Response (for .html / .js) or a
+            plain FileResponse for everything else."""
+            suffix = path.suffix.lower()
+            if suffix == ".html":
+                text = path.read_text(encoding="utf-8")
+                return _Response(
+                    _stamp_html(text),
+                    media_type="text/html; charset=utf-8",
+                    headers=_NO_STORE_HEADERS,
+                )
+            if suffix == ".js" or suffix == ".mjs":
+                text = path.read_text(encoding="utf-8")
+                return _Response(
+                    _stamp_js(text),
+                    media_type="application/javascript; charset=utf-8",
+                    headers=_NO_STORE_HEADERS,
+                )
+            return FileResponse(str(path), headers=_NO_STORE_HEADERS)
+
         @app.get("/ui/{spa_path:path}", response_model=None)
-        async def ui_spa_fallback(spa_path: str) -> FileResponse:
+        async def ui_spa_fallback(spa_path: str):
             if spa_path:
                 candidate = (_static_dir / spa_path).resolve()
-                # Reject `..` traversal: candidate must live under static root.
                 try:
                     candidate.relative_to(_static_root)
                 except ValueError:
-                    return FileResponse(
-                        str(_index_html), headers=_NO_STORE_HEADERS,
-                    )
+                    return _rewritten_response(_index_html)
                 if candidate.is_file():
-                    return FileResponse(
-                        str(candidate), headers=_NO_STORE_HEADERS,
-                    )
-            return FileResponse(str(_index_html), headers=_NO_STORE_HEADERS)
+                    return _rewritten_response(candidate)
+            return _rewritten_response(_index_html)
 
-        # StaticFiles takes precedence for files that exist on disk; we
-        # subclass it just to inject the no-store headers consistently.
+        # StaticFiles is mounted as a fallback so paths the SPA route
+        # above doesn't catch (rare; mostly directory-style URLs) still
+        # resolve. We subclass to inject no-store + the same import
+        # rewriting so the BOOT_VERSION reaches every served module.
         from starlette.types import Scope
 
-        class _NoStoreStaticFiles(StaticFiles):
+        class _BootStampingStaticFiles(StaticFiles):
             async def get_response(self, path: str, scope: Scope):  # type: ignore[override]
                 resp = await super().get_response(path, scope)
-                # Never cache anything under /ui/ in dev — see comment above.
                 for k, v in _NO_STORE_HEADERS.items():
                     resp.headers[k] = v
                 return resp
 
         app.mount(
             "/ui",
-            _NoStoreStaticFiles(directory=str(_static_dir), html=True),
+            _BootStampingStaticFiles(directory=str(_static_dir), html=True),
             name="ui",
         )
 
