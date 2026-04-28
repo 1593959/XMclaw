@@ -395,6 +395,89 @@ _MEMORY_SEARCH_SPEC = ToolSpec(
 )
 
 
+_NOTE_WRITE_SPEC = ToolSpec(
+    name="note_write",
+    description=(
+        "Write or update a topic note under ~/.xmclaw/memory/*.md — "
+        "the user's Notes tab in the Memory page. Use this when YOU "
+        "(the agent) want to capture a workflow, a lesson learned, a "
+        "process improvement, a piece of accumulated reference, or a "
+        "draft you want to revisit. The Web UI lists every file here "
+        "as a 笔记 entry the user can browse + edit.\n\n"
+        "This is one of your evolution surfaces. Examples:\n"
+        "  • workflow.md — \"how I usually approach X kind of task\"\n"
+        "  • lessons-2026-04.md — failures + what to do differently\n"
+        "  • api-cheatsheet.md — accumulated reference for an API\n\n"
+        "When ``mode='replace'`` the file is overwritten with "
+        "``content``. When ``mode='append'`` the content is appended "
+        "after a separator. Default ``replace``.\n\n"
+        "After write the indexer (10s poll) embeds the file into the "
+        "vector store, so future ``memory_search`` calls can retrieve "
+        "it semantically."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Note filename. ``.md`` auto-appended. "
+                "Slashes are stripped for safety.",
+            },
+            "content": {
+                "type": "string",
+                "description": "Markdown body to write. Headings + "
+                "bullet lists are recommended for retrievability.",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["replace", "append"],
+                "description": "Write mode. Default 'replace'.",
+            },
+        },
+        "required": ["name", "content"],
+    },
+)
+
+
+_JOURNAL_APPEND_SPEC = ToolSpec(
+    name="journal_append",
+    description=(
+        "Append an entry to today's daily journal under "
+        "~/.xmclaw/memory/journal/YYYY-MM-DD.md (or a specific "
+        "``date`` if supplied). The entry is timestamped and "
+        "separated by a horizontal rule from prior entries.\n\n"
+        "Use this for chronological observations the user might "
+        "want to revisit by date — a debugging session breakthrough, "
+        "a meeting summary, or an end-of-day reflection. Distinct "
+        "from B-40's automatic per-turn dialog log; this one is "
+        "for entries YOU choose to record.\n\n"
+        "Indexer picks the file up on its next poll, so journal "
+        "entries become searchable via ``memory_search``."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "content": {
+                "type": "string",
+                "description": "Entry body. One paragraph or several; "
+                "markdown OK.",
+            },
+            "date": {
+                "type": "string",
+                "description": "ISO date YYYY-MM-DD. Defaults to "
+                "today (local time).",
+            },
+            "title": {
+                "type": "string",
+                "description": "Optional heading shown above the "
+                "entry. Useful for table-of-contents recall.",
+            },
+        },
+        "required": ["content"],
+    },
+)
+
+
 _SQLITE_QUERY_SPEC = ToolSpec(
     name="sqlite_query",
     description=(
@@ -447,28 +530,40 @@ _SQLITE_QUERY_SPEC = ToolSpec(
 _UPDATE_PERSONA_SPEC = ToolSpec(
     name="update_persona",
     description=(
-        "Edit ANY of your own persona files. This is the powerful "
-        "self-modification tool — use it when ``remember`` / "
-        "``learn_about_user`` are too narrow. Targets one of the 7 "
-        "canonical files: SOUL.md, AGENTS.md, IDENTITY.md, USER.md, "
-        "TOOLS.md, BOOTSTRAP.md, MEMORY.md. Three modes:\n\n"
-        "  • ``append_section`` — add a bullet (or arbitrary block) "
-        "under a section header. Args: section, content. The most "
-        "common mode.\n"
-        "  • ``replace`` — overwrite the entire file with ``content``. "
-        "Use sparingly; this discards prior state. Good for SOUL/"
-        "IDENTITY rewrites the user explicitly asked for, or for "
-        "cleaning up MEMORY.md after a refactor.\n"
-        "  • ``delete`` — remove the file from disk. Used for the "
-        "BOOTSTRAP.md cleanup after first-run interview completes "
-        "(write IDENTITY/USER, then delete BOOTSTRAP). DO NOT delete "
-        "SOUL/AGENTS/USER/MEMORY/IDENTITY — they have no opt-in/opt-"
-        "out semantics.\n\n"
-        "Be conservative with SOUL.md and IDENTITY.md — those are the "
-        "user's mental model of you; only modify if the user has "
-        "explicitly asked you to. MEMORY.md and USER.md are yours to "
-        "curate within reason. Effect lands on the next turn — your "
-        "system prompt is rebuilt immediately on success."
+        "Edit ANY of your own persona files. This is your most "
+        "powerful self-modification tool — use it actively to "
+        "evolve. Targets one of the 7 canonical files:\n\n"
+        "  • MEMORY.md — curated long-term facts, decisions, "
+        "preferences. Yours to maintain. Use freely.\n"
+        "  • USER.md — what you've learned about the user. Yours "
+        "to maintain. Use freely.\n"
+        "  • AGENTS.md — your operating model: how you work, what "
+        "playbooks you've developed, lessons learned, workflow "
+        "improvements. **WRITE TO THIS often** — every time you "
+        "discover a better way to do a task, or a process that "
+        "worked, or a recurring failure mode, append a section. "
+        "This is core evolution.\n"
+        "  • TOOLS.md — your tool-usage notes: what works on which "
+        "tool, hidden gotchas, optimisation tricks. Append freely "
+        "as you accumulate experience.\n"
+        "  • SOUL.md — your character / values. Edit when the user "
+        "EXPLICITLY asks you to change who you are. Otherwise read-"
+        "only.\n"
+        "  • IDENTITY.md — your name / public-facing identity. "
+        "Same constraint as SOUL.md.\n"
+        "  • BOOTSTRAP.md — first-run interview marker. Delete "
+        "after writing IDENTITY/USER on first install.\n\n"
+        "Three modes:\n"
+        "  • ``append_section`` — add a bullet or block under a "
+        "section header. Args: section, content. The MOST common "
+        "mode and the safest.\n"
+        "  • ``replace`` — overwrite the whole file. Use sparingly; "
+        "discards prior state. Good for cleanups after a refactor.\n"
+        "  • ``delete`` — remove from disk. Only safe for "
+        "BOOTSTRAP.md.\n\n"
+        "Effect lands on the next turn — your system prompt rebuilds "
+        "immediately. Don't ask permission to record a lesson; just "
+        "write it."
     ),
     parameters_schema={
         "type": "object",
@@ -638,6 +733,10 @@ class BuiltinTools(ToolProvider):
         # the tool would be a no-op.
         if self._memory_manager is not None:
             specs.append(_MEMORY_SEARCH_SPEC)
+        # B-45: agent-facing tools to write to the user's Notes +
+        # Journal panels — both are evolution surfaces (workflow notes,
+        # lessons learned, daily logs). Path-only ops, always available.
+        specs.extend([_NOTE_WRITE_SPEC, _JOURNAL_APPEND_SPEC])
         return specs
 
     async def invoke(self, call: ToolCall) -> ToolResult:
@@ -687,6 +786,10 @@ class BuiltinTools(ToolProvider):
                 if self._memory_manager is None:
                     return _fail(call, t0, "memory_search not configured (no MemoryManager wired)")
                 return await self._memory_search(call, t0)
+            if call.name == "note_write":
+                return await self._note_write(call, t0)
+            if call.name == "journal_append":
+                return await self._journal_append(call, t0)
             return _fail(call, t0, f"unknown tool: {call.name!r}")
         except PermissionError as exc:
             return _fail(call, t0, f"permission denied: {exc}")
@@ -1144,6 +1247,135 @@ class BuiltinTools(ToolProvider):
                 "run_once": run_once,
             },
             side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _note_write(self, call: ToolCall, t0: float) -> ToolResult:
+        """B-45: agent-driven write to ~/.xmclaw/memory/*.md.
+
+        Lands in the Web UI's Notes tab + gets vector-indexed by
+        the next indexer tick. Used by the agent to record workflows,
+        lessons learned, accumulated reference — first-class evolution
+        surface alongside MEMORY.md.
+        """
+        from xmclaw.utils.paths import file_memory_dir
+
+        name = str(call.args.get("name") or "").strip()
+        content = call.args.get("content")
+        mode = str(call.args.get("mode") or "replace").lower()
+        if not name:
+            return _fail(call, t0, "missing 'name'")
+        if not isinstance(content, str):
+            return _fail(call, t0, "'content' must be a string")
+        if mode not in ("replace", "append"):
+            return _fail(call, t0, f"unknown mode {mode!r}")
+
+        # Strip path components for safety, ensure .md.
+        safe = name.replace("\\", "/").split("/")[-1].strip()
+        if not safe or safe.startswith("."):
+            return _fail(call, t0, f"invalid note name {name!r}")
+        if not safe.endswith(".md"):
+            safe = safe + ".md"
+
+        mdir = file_memory_dir()
+        try:
+            mdir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return _fail(call, t0, f"mkdir failed: {exc}")
+        path = mdir / safe
+
+        try:
+            if mode == "append" and path.is_file():
+                existing = path.read_text(encoding="utf-8", errors="replace")
+                sep = "\n\n---\n\n" if existing.strip() else ""
+                path.write_text(
+                    existing.rstrip() + sep + content.strip() + "\n",
+                    encoding="utf-8",
+                )
+            else:
+                path.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            return _fail(call, t0, f"write failed: {exc}")
+
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "name": safe,
+                "path": str(path),
+                "mode": mode,
+                "size": path.stat().st_size,
+            },
+            side_effects=(str(path),),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _journal_append(self, call: ToolCall, t0: float) -> ToolResult:
+        """B-45: append a dated entry to ~/.xmclaw/memory/journal/<date>.md.
+
+        Web UI's Journal tab reads from the same path. Each entry gets
+        a horizontal rule separator + an HH:MM:SS timestamp. Optional
+        ``title`` becomes a ## heading for table-of-contents-style
+        scanning later.
+        """
+        from xmclaw.utils.paths import file_memory_dir
+        import re as _re
+
+        content = call.args.get("content")
+        date = str(call.args.get("date") or "").strip() or time.strftime("%Y-%m-%d")
+        title = str(call.args.get("title") or "").strip()
+
+        if not isinstance(content, str) or not content.strip():
+            return _fail(call, t0, "missing 'content'")
+        # Reject malformed dates rather than silently writing to a
+        # weird filename — agent sometimes hands us "today" as the
+        # literal string.
+        if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            return _fail(
+                call, t0,
+                f"date must be YYYY-MM-DD (got {date!r})",
+            )
+
+        jdir = file_memory_dir() / "journal"
+        try:
+            jdir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return _fail(call, t0, f"mkdir failed: {exc}")
+
+        path = jdir / f"{date}.md"
+        ts = time.strftime("%H:%M:%S")
+        block_parts: list[str] = []
+        if title:
+            block_parts.append(f"## {title}")
+        block_parts.append(f"_{ts}_")
+        block_parts.append(content.strip())
+        block = "\n\n".join(block_parts)
+
+        try:
+            if path.is_file():
+                existing = path.read_text(encoding="utf-8", errors="replace")
+                if not existing.startswith("# "):
+                    existing = f"# 日记 {date}\n\n" + existing
+                path.write_text(
+                    existing.rstrip() + "\n\n---\n\n" + block + "\n",
+                    encoding="utf-8",
+                )
+            else:
+                path.write_text(
+                    f"# 日记 {date}\n\n" + block + "\n",
+                    encoding="utf-8",
+                )
+        except OSError as exc:
+            return _fail(call, t0, f"write failed: {exc}")
+
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "date": date,
+                "path": str(path),
+                "size": path.stat().st_size,
+                "title": title or None,
+            },
+            side_effects=(str(path),),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 
