@@ -56,7 +56,7 @@ class TestProfilesRouter:
         self, client: TestClient, tmp_home: Path
     ) -> None:
         pdir = tmp_home / "persona" / "profiles"
-        pdir.mkdir(parents=True)
+        pdir.mkdir(parents=True, exist_ok=True)
         (pdir / "coder.md").write_text("# Senior Coder\n\nAct like X.", encoding="utf-8")
         (pdir / "writer.md").write_text("## Prose Buddy\n\nHelp with drafts.", encoding="utf-8")
 
@@ -70,7 +70,7 @@ class TestProfilesRouter:
         self, client: TestClient, tmp_home: Path
     ) -> None:
         pdir = tmp_home / "persona" / "profiles"
-        pdir.mkdir(parents=True)
+        pdir.mkdir(parents=True, exist_ok=True)
         (pdir / "blank.md").write_text("", encoding="utf-8")
 
         profs = client.get("/api/v2/profiles").json()["profiles"]
@@ -80,7 +80,7 @@ class TestProfilesRouter:
         self, client: TestClient, tmp_home: Path
     ) -> None:
         pdir = tmp_home / "persona" / "profiles"
-        pdir.mkdir(parents=True)
+        pdir.mkdir(parents=True, exist_ok=True)
         body = "# Coder\n\nAct like X."
         (pdir / "coder.md").write_text(body, encoding="utf-8")
 
@@ -96,7 +96,7 @@ class TestProfilesRouter:
         self, client: TestClient, tmp_home: Path
     ) -> None:
         """``../`` style ids must not escape the persona dir."""
-        (tmp_home / "persona" / "profiles").mkdir(parents=True)
+        (tmp_home / "persona" / "profiles").mkdir(parents=True, exist_ok=True)
         # Even if this file existed, the sanitizer would rewrite the id
         # before we touch disk — so the route sees ``___etc_passwd.md``
         # under persona_dir, which does not exist → 404.
@@ -176,7 +176,7 @@ class TestWorkspacesRouter:
         self, client: TestClient, tmp_home: Path
     ) -> None:
         wdir = tmp_home / "workspaces"
-        wdir.mkdir(parents=True)
+        wdir.mkdir(parents=True, exist_ok=True)
         (wdir / "good.json").write_text('{"name": "G"}', encoding="utf-8")
         (wdir / "bad.json").write_text("not json at all", encoding="utf-8")
 

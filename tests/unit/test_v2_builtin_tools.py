@@ -630,7 +630,11 @@ async def test_failed_tool_content_is_error_string_not_None_str() -> None:
             self._i += 1
             return r
 
-        async def complete_streaming(self, messages, tools=None, *, on_chunk=None):
+        async def complete_streaming(
+            self, messages, tools=None, *, on_chunk=None, cancel=None,
+        ):
+            # B-39: AgentLoop now passes ``cancel=cancel_event`` for
+            # mid-stream interruption. Mocks accept-and-ignore.
             r = await self.complete(messages, tools=tools)
             if on_chunk is not None and r.content:
                 await on_chunk(r.content)
