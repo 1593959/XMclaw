@@ -131,6 +131,59 @@ def _default_system_prompt() -> str:
 _DEFAULT_SYSTEM = _default_system_prompt()
 
 
+def _with_fresh_time(system_prompt: str) -> str:
+    """Append a fresh ``## 当前时刻`` block to the system prompt.
+
+    Re-evaluated on every ``run_turn``. Without this, the model's
+    notion of "now" is whatever it was trained on — frequently months
+    or years off — and any time-sensitive judgement is broken
+    ("what day is it?" / "is the deadline tomorrow?").
+
+    The block is APPENDED rather than baked into the assembler-cached
+    prompt because we don't want to bust the persona-prompt cache on
+    every turn just to update one timestamp. If the prompt already
+    contains a "## 当前时刻" header from a previous build (e.g. the
+    operator pasted one into SOUL.md), we strip the existing block
+    first so we don't end up with two contradictory dates.
+    """
+    import time as _t
+    now_local = _t.localtime()
+    tz = _t.strftime("%Z", now_local) or _t.strftime("%z", now_local)
+    weekday = _t.strftime("%A", now_local)
+    timestamp = _t.strftime("%Y-%m-%d %H:%M:%S", now_local)
+    block = (
+        f"## 当前时刻\n\n"
+        f"{timestamp} ({tz}, weekday: {weekday}). Use this for any "
+        f"reasoning about deadlines, schedules, or \"recent\" events. "
+        f"Trust this over your training-time clock."
+    )
+
+    # Strip a prior "## 当前时刻" block if present. We look for the
+    # literal header and the blank-line-separated paragraph that
+    # follows it, up to the next "## " heading or EOF.
+    header = "## 当前时刻"
+    if header in system_prompt:
+        lines = system_prompt.split("\n")
+        out = []
+        skip = False
+        for line in lines:
+            if line.strip() == header:
+                skip = True
+                continue
+            if skip:
+                # Stop skipping once we hit the next ## heading.
+                stripped = line.lstrip()
+                if stripped.startswith("## "):
+                    skip = False
+                    out.append(line)
+                # Otherwise keep skipping (drop this line).
+                continue
+            out.append(line)
+        system_prompt = "\n".join(out).rstrip()
+
+    return system_prompt + "\n\n" + block
+
+
 @dataclass
 class AgentTurnResult:
     """What ``run_turn`` returns after a single user turn completes."""
@@ -374,7 +427,7 @@ class AgentLoop:
                 _log_memory_failure(exc)
 
         messages: list[Message] = [
-            Message(role="system", content=self._system_prompt),
+            Message(role="system", content=_with_fresh_time(self._system_prompt)),
             *prior,
             Message(
                 role="user",

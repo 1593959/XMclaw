@@ -136,18 +136,45 @@ class SessionStore:
             )
 
     def list_recent(self, limit: int = 20) -> list[dict]:
-        """Return [{session_id, message_count, updated_at}], newest first."""
+        """Return [{session_id, message_count, updated_at, preview}], newest first.
+
+        The ``preview`` field is a short string derived from the first
+        user message — drives the human-readable session title in the
+        Web UI Sessions page (so users see "做一个音乐播放器" instead
+        of an opaque ``chat-16fc5186``). Falls back to "" when history
+        couldn't be parsed.
+        """
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT session_id, message_count, updated_at
+                SELECT session_id, message_count, updated_at, history_json
                 FROM session_history
                 ORDER BY updated_at DESC
                 LIMIT ?
                 """,
                 (max(1, int(limit)),),
             ).fetchall()
-        return [
-            {"session_id": r[0], "message_count": r[1], "updated_at": r[2]}
-            for r in rows
-        ]
+        out: list[dict] = []
+        for sid, count, updated, hjson in rows:
+            preview = ""
+            try:
+                hist = json.loads(hjson) if hjson else []
+                for entry in hist:
+                    if (
+                        isinstance(entry, dict)
+                        and entry.get("role") == "user"
+                    ):
+                        body = entry.get("content") or ""
+                        if isinstance(body, str):
+                            cleaned = body.strip().split("\n", 1)[0]
+                            preview = cleaned[:80]
+                            break
+            except (json.JSONDecodeError, TypeError):
+                preview = ""
+            out.append({
+                "session_id": sid,
+                "message_count": count,
+                "updated_at": updated,
+                "preview": preview,
+            })
+        return out

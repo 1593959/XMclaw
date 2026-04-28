@@ -54,10 +54,35 @@ def _platform_hint() -> str:
     home = str(Path.home())
     desktop = str(Path.home() / "Desktop")
     shell = _SHELL_HINTS.get(os_name, "The shell is whatever is on PATH.")
+    # Inject the current local time on every assembly. The cache key
+    # below already includes ``_fingerprint`` (mtime-based on persona
+    # files) but NOT the time — so the cached prompt would freeze the
+    # time of first build. We work around this by rebuilding the time
+    # portion in :func:`build_system_prompt` itself; this helper just
+    # provides the rest of the runtime context.
     return (
         f"## 运行时环境\n\n"
         f"OS: {os_name}. User home: `{home}`. Desktop: `{desktop}`.\n"
         f"{shell}"
+    )
+
+
+def _now_hint() -> str:
+    """Today's date + local time + timezone, formatted for the prompt.
+
+    Rebuilt on every ``build_system_prompt`` call (NOT cached) so the
+    agent always knows what day it is. Without this slot, the model's
+    notion of "now" is whatever it was trained on — frequently months
+    or years off — and any time-sensitive judgement is broken.
+    """
+    now_local = time.localtime()
+    tz = time.strftime("%Z", now_local) or time.strftime("%z", now_local)
+    return (
+        f"## 当前时刻\n\n"
+        f"{time.strftime('%Y-%m-%d %H:%M:%S', now_local)} "
+        f"({tz}, weekday: {time.strftime('%A', now_local)}). "
+        f"Use this when reasoning about deadlines, schedules, or "
+        f"\"recent\" events."
     )
 
 
@@ -178,6 +203,11 @@ def build_system_prompt(
     digest = _tools_digest(tool_names)
     if digest:
         parts.append(digest)
+
+    # NOTE: the current-time slot is injected by ``agent_loop.run_turn``
+    # at message-build time, NOT here. We can't cache time, and we
+    # don't want to bypass the cache that everything else relies on,
+    # so the time block lives in agent_loop._with_fresh_time().
 
     out = "\n\n".join(p for p in parts if p)
     _CACHE[cache_key] = out

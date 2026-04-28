@@ -117,6 +117,70 @@ def _restore_secrets(existing: Any, incoming: Any) -> Any:
 _LAST_APP_STATE: Any = None
 
 
+async def _run_session_reflection(
+    agent: Any, session_id: str, msg_count: int,
+) -> None:
+    """Fire a self-prompted reflection turn after a substantive session.
+
+    Called from the WS close handler when ``msg_count`` clears a
+    threshold. Spawns a fresh session id (``reflect:<sid>:<ts>``) so
+    the reflection doesn't pollute the user's transcript, but the
+    agent still has its full history of the just-closed session
+    available because it copies the history into the new session id
+    before running the turn.
+
+    The agent is asked to be conservative — most sessions don't
+    produce durable insights, and we don't want MEMORY.md to bloat
+    with one-off chitchat.
+    """
+    try:
+        # Copy the closing session's history into the reflect session
+        # so the agent can read what was discussed. AgentLoop keeps
+        # histories in self._histories (in-memory dict).
+        import time as _time
+        reflect_sid = f"reflect:{session_id}:{int(_time.time())}"
+        try:
+            prior = list(agent._histories.get(session_id, []))  # noqa: SLF001
+            if prior:
+                agent._histories[reflect_sid] = prior  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            pass
+
+        prompt = (
+            "Session reflection — the user just disconnected from "
+            f"session {session_id} ({msg_count} messages). "
+            "Look back over the conversation in your history. Ask "
+            "yourself: did anything DURABLE come up that should "
+            "survive into next conversation?\n\n"
+            "Triggers worth writing:\n"
+            "  - User stated a preference (terse vs detailed, "
+            "language, naming, etc.) → learn_about_user\n"
+            "  - User shared a fact about themselves or their "
+            "project → learn_about_user\n"
+            "  - We made a decision together (\"we'll use X not "
+            "Y\") → remember (category: \"Decisions\")\n"
+            "  - I learned a project convention worth remembering "
+            "→ remember (category: \"Project conventions\")\n\n"
+            "Triggers NOT worth writing:\n"
+            "  - One-off requests / completed tasks (those leave "
+            "their own artifacts, no need to record)\n"
+            "  - Standard back-and-forth (\"can you read this "
+            "file\") — totally fine, just not memory-worthy\n\n"
+            "If nothing durable came up, just reply 'no notes' — "
+            "do not write to MEMORY.md or USER.md. Otherwise, "
+            "call remember / learn_about_user (or update_persona) "
+            "with one or two well-targeted entries. Be terse — "
+            "MEMORY.md is supposed to age well."
+        )
+        await agent.run_turn(reflect_sid, prompt)
+    except Exception as exc:  # noqa: BLE001
+        from xmclaw.utils.log import get_logger
+        get_logger(__name__).warning(
+            "session.reflection_failed",
+            extra={"session_id": session_id, "err": str(exc)},
+        )
+
+
 def create_app(
     *,
     bus: InProcessEventBus | None = None,
@@ -1096,6 +1160,35 @@ def create_app(
                 payload={"phase": "destroy", "via": "ws"},
             ))
             await bus.drain()
+
+            # Cross-session memory hook: if this session had real
+            # back-and-forth (>= 4 exchanges = 8 messages incl. agent
+            # replies), schedule a delayed reflection turn that asks
+            # the agent to write any durable insights to MEMORY.md or
+            # USER.md. Keeps the user's "what did we figure out" from
+            # evaporating between conversations — directly addresses
+            # the "记忆依赖文件" / "跨会话记忆关联" gap the user
+            # called out in B-15.
+            try:
+                tgt_agent = getattr(app.state, "agent", None)
+                if tgt_agent is not None:
+                    history = tgt_agent._histories.get(session_id, [])  # noqa: SLF001
+                    msg_count = len(history)
+                    # 8 = roughly 4 user-assistant exchanges. Below
+                    # that, reflection isn't worth the LLM call.
+                    if msg_count >= 8:
+                        # Spawn the reflection in the background so the
+                        # WS close path returns immediately. Failures
+                        # are logged but don't propagate.
+                        import asyncio as _asyncio
+                        _asyncio.create_task(
+                            _run_session_reflection(
+                                tgt_agent, session_id, msg_count,
+                            ),
+                            name=f"xmclaw-reflect-{session_id}",
+                        )
+            except Exception:  # noqa: BLE001
+                pass
 
     return app
 

@@ -218,7 +218,12 @@ function SessionRow({ session, query, expanded, onToggle, onDelete, onResume, to
       >
         <${Icon} d=${expanded ? I_CHEVRON_DOWN : I_CHEVRON_RIGHT} className="xmc-h-srow__chev" />
         <span class="xmc-h-srow__source" title=${sCfg.label}>${sCfg.glyph}</span>
-        <code class="xmc-h-srow__sid">${sid}</code>
+        ${session.preview
+          ? html`
+              <span class="xmc-h-srow__preview" title=${sid} style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;color:var(--color-fg)">${session.preview}</span>
+              <code class="xmc-h-srow__sid" style="opacity:.5;font-size:.75em">${sid.slice(0, 12)}</code>
+            `
+          : html`<code class="xmc-h-srow__sid">${sid}</code>`}
         <span class="xmc-h-srow__count">${session.message_count || 0} 轮</span>
         <span class="xmc-h-srow__time">${timeAgo(session.updated_at)}</span>
         <span class="xmc-h-srow__actions">
@@ -321,7 +326,11 @@ export function SessionsPage({ token }) {
     if (!sessions) return [];
     const q = query.trim().toLowerCase();
     if (!q) return sessions;
-    return sessions.filter((s) => (s.session_id || "").toLowerCase().includes(q));
+    return sessions.filter((s) => {
+      const sid = (s.session_id || "").toLowerCase();
+      const preview = (s.preview || "").toLowerCase();
+      return sid.includes(q) || preview.includes(q);
+    });
   }, [sessions, query]);
 
   const onToggle = (sid) => {

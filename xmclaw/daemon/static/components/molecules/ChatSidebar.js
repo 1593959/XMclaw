@@ -157,9 +157,18 @@ export function ChatSidebar({
                   class=${"xmc-h-chatside__item " + (s.session_id === activeSid ? "is-active" : "")}
                   onClick=${() => onResume(s.session_id)}
                 >
-                  <code class="xmc-h-chatside__item-sid" title=${s.session_id}>
-                    ${(s.session_id || "").slice(0, 18)}
-                  </code>
+                  ${s.preview
+                    ? html`
+                        <span class="xmc-h-chatside__item-title" title=${s.session_id}
+                              style="display:block;font-size:.78rem;color:var(--color-fg);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                          ${s.preview}
+                        </span>
+                      `
+                    : html`
+                        <code class="xmc-h-chatside__item-sid" title=${s.session_id}>
+                          ${(s.session_id || "").slice(0, 18)}
+                        </code>
+                      `}
                   <span class="xmc-h-chatside__item-meta">
                     ${s.message_count || 0}m · ${timeAgo(s.updated_at)}
                   </span>

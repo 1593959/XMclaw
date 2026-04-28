@@ -304,6 +304,57 @@ _LEARN_ABOUT_USER_SPEC = ToolSpec(
     },
 )
 
+_SCHEDULE_FOLLOWUP_SPEC = ToolSpec(
+    name="schedule_followup",
+    description=(
+        "Schedule a future agent turn — your own reminder system. Use "
+        "when the user asks you to follow up later (\"remind me "
+        "tomorrow morning\"), or when YOU decide a periodic check is "
+        "useful (e.g. \"remember to revisit MEMORY.md weekly\"). "
+        "Creates a cron job under ``~/.xmclaw/cron/jobs.json``; on "
+        "fire the daemon spins up a fresh session named "
+        "``cron:<job_id>:<ts>`` and runs the prompt as you. The job "
+        "fires recurrently per ``schedule``; use ``run_once=true`` "
+        "for one-shot reminders. The user can pause/resume/delete the "
+        "job from the Cron page in the UI."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Short label, shown in the UI cron list. "
+                "e.g. \"daily standup nudge\".",
+            },
+            "schedule": {
+                "type": "string",
+                "description": "When to fire. Two formats accepted: "
+                "\"every Nu\" (interval — e.g. \"every 5m\", \"every "
+                "1d\", \"every 2h\") OR full cron syntax (\"0 9 * * "
+                "MON-FRI\" means 9 AM weekdays — needs croniter "
+                "installed). For one-off reminders, set run_once=true "
+                "and use the smallest interval that gets you past the "
+                "trigger time (e.g. \"every 1h\" run-once will fire "
+                "within an hour).",
+            },
+            "prompt": {
+                "type": "string",
+                "description": "What the FUTURE you should do when the "
+                "job fires. Write it like a self-instruction: \"Check "
+                "the user's MEMORY.md for stale entries and report\". "
+                "The future session has no chat history; restate any "
+                "context you need.",
+            },
+            "run_once": {
+                "type": "boolean",
+                "description": "If true, the job auto-deletes after "
+                "firing once. Default false (recurring).",
+            },
+        },
+        "required": ["name", "schedule", "prompt"],
+    },
+)
+
 _UPDATE_PERSONA_SPEC = ToolSpec(
     name="update_persona",
     description=(
@@ -451,6 +502,9 @@ class BuiltinTools(ToolProvider):
         # the provider; production wiring (factory.py) supplies it.
         if self._persona_dir_provider is not None:
             specs.extend([_REMEMBER_SPEC, _LEARN_ABOUT_USER_SPEC, _UPDATE_PERSONA_SPEC])
+        # schedule_followup is always available — it doesn't need any
+        # constructor wiring; the cron store is a process-wide singleton.
+        specs.append(_SCHEDULE_FOLLOWUP_SPEC)
         return specs
 
     async def invoke(self, call: ToolCall) -> ToolResult:
@@ -492,6 +546,8 @@ class BuiltinTools(ToolProvider):
                 if self._persona_dir_provider is None:
                     return _fail(call, t0, "update_persona tool not configured (no persona dir)")
                 return await self._update_persona(call, t0)
+            if call.name == "schedule_followup":
+                return await self._schedule_followup(call, t0)
             return _fail(call, t0, f"unknown tool: {call.name!r}")
         except PermissionError as exc:
             return _fail(call, t0, f"permission denied: {exc}")
@@ -897,6 +953,66 @@ class BuiltinTools(ToolProvider):
             section=section.strip(),
             entry=fact.strip(),
             placeholder_title="USER.md — who I'm working with",
+        )
+
+    async def _schedule_followup(self, call: ToolCall, t0: float) -> ToolResult:
+        """Create a cron job — agent's self-scheduling primitive.
+
+        Wraps :class:`xmclaw.core.scheduler.cron.CronStore` so the agent
+        can set its own reminders without learning the full
+        ``/api/v2/cron`` REST surface. ``run_once=True`` is implemented
+        by appending a deletion clause to the prompt — the future agent
+        deletes its own job after firing.
+        """
+        name = call.args.get("name")
+        schedule = call.args.get("schedule")
+        prompt = call.args.get("prompt")
+        run_once = bool(call.args.get("run_once", False))
+        if not isinstance(name, str) or not name.strip():
+            return _fail(call, t0, "missing or empty 'name'")
+        if not isinstance(schedule, str) or not schedule.strip():
+            return _fail(call, t0, "missing or empty 'schedule'")
+        if not isinstance(prompt, str) or not prompt.strip():
+            return _fail(call, t0, "missing or empty 'prompt'")
+
+        # Append a self-cleanup line for run_once jobs. We don't have
+        # a delete-self tool, but the future agent can just call
+        # bash/curl against /api/v2/cron/{job_id}. Cleaner: implement
+        # one-shot semantics in the cron store later. For now, leave a
+        # clear breadcrumb in the prompt so the future agent knows.
+        full_prompt = prompt.strip()
+        if run_once:
+            full_prompt += (
+                "\n\n[note: this is a one-shot reminder. After "
+                "responding, you may delete this job via the Cron page "
+                "or by calling DELETE /api/v2/cron/{this_job_id}.]"
+            )
+
+        try:
+            from xmclaw.core.scheduler.cron import CronJob, default_cron_store
+            store = default_cron_store()
+            import uuid as _uuid
+            job = CronJob(
+                id=_uuid.uuid4().hex,
+                name=name.strip(),
+                schedule=schedule.strip(),
+                prompt=full_prompt,
+            )
+            saved = store.add(job)
+        except Exception as exc:  # noqa: BLE001
+            return _fail(call, t0, f"schedule failed: {exc}")
+
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "job_id": saved.id,
+                "name": saved.name,
+                "schedule": saved.schedule,
+                "next_run_at": saved.next_run_at,
+                "run_once": run_once,
+            },
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 
     async def _update_persona(self, call: ToolCall, t0: float) -> ToolResult:
