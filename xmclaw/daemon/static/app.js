@@ -59,6 +59,7 @@ import { LogsPage } from "./pages/Logs.js";
 import { EnvPage } from "./pages/Env.js";
 import { AnalyticsPage } from "./pages/Analytics.js";
 import { DocsPage } from "./pages/Docs.js";
+import { TracePage } from "./pages/Trace.js";
 
 // ── WS handle (singleton) ─────────────────────────────────────────────
 
@@ -278,6 +279,7 @@ const routes = {
   "/env":       (state) => html`<${EnvPage}       token=${state.auth.token} />`,
   "/analytics": (state) => html`<${AnalyticsPage} token=${state.auth.token} />`,
   "/docs":      ()      => html`<${DocsPage} />`,
+  "/trace":     (state) => html`<${TracePage} token=${state.auth.token} />`,
   "/workspace": (state) => html`<${WorkspacePage} token=${state.auth.token} />`,
   "/agents": (state) => html`<${AgentsPage} token=${state.auth.token} />`,
   "/skills": (state) => html`<${SkillsPage} token=${state.auth.token} />`,

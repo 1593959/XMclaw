@@ -180,6 +180,31 @@ async def _run_session_reflection(
             extra={"session_id": session_id, "err": str(exc)},
         )
 
+    # B-19 real-time evolution: after the reflection has had a chance
+    # to update MEMORY.md / USER.md, fire a one-shot xm-auto-evo
+    # observe→learn→evolve cycle. This collapses the worst-case
+    # observation latency from "next 30-min heartbeat" down to
+    # "right after this session ended" — meaning a recurring pattern
+    # in conversation N can become a SKILL.md visible to conversation
+    # N+1, not N+1+30min.
+    try:
+        state = _LAST_APP_STATE
+        proc = getattr(state, "auto_evo_process", None) if state else None
+        if proc is not None:
+            res = await proc.run_once("start")
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).info(
+                "session.realtime_evolve rc=%s session=%s",
+                res.get("returncode"), session_id,
+            )
+    except Exception as exc:  # noqa: BLE001 — must not break the
+        # session-close path
+        from xmclaw.utils.log import get_logger
+        get_logger(__name__).warning(
+            "session.realtime_evolve_failed",
+            extra={"session_id": session_id, "err": str(exc)},
+        )
+
 
 def create_app(
     *,

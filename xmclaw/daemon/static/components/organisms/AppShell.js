@@ -90,6 +90,7 @@ const NAV_ITEMS = [
   { path: "/workspace", label: "工作区", icon: "FileText" },
   { path: "/security",  label: "安全",   icon: "Shield" },
   { path: "/cron",      label: "Cron",  icon: "Clock" },
+  { path: "/trace",     label: "思考",   icon: "Activity" },
   { path: "/logs",      label: "日志",   icon: "FileText" },
   { path: "/analytics", label: "分析",   icon: "BarChart3" },
   { path: "/config",    label: "配置",   icon: "Settings" },
