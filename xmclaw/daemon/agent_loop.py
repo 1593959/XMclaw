@@ -460,6 +460,15 @@ class AgentLoop:
         # message and inflating the invocation_count metric.
         self._skill_last_fired: dict[tuple[str, str], float] = {}
         self._skill_cooldown_s = 60.0
+        # B-36: per-skill consecutive-error tally. After
+        # ``_skill_auto_disable_threshold`` consecutive ``error``
+        # verdicts, the skill auto-parks (disabled:true gets written
+        # to its frontmatter). Reset on any non-error verdict. This
+        # is the self-healing loop: a skill that keeps causing
+        # max_hops crashes silently parks itself instead of polluting
+        # every subsequent turn.
+        self._skill_consecutive_errors: dict[str, int] = {}
+        self._skill_auto_disable_threshold = 3
         self._max_hops = max_hops
         self._agent_id = agent_id
         self._cost_tracker = cost_tracker
@@ -638,6 +647,78 @@ class AgentLoop:
                 })
             except Exception:  # noqa: BLE001
                 pass
+
+            # B-36: consecutive-error → auto-disable. Reset on any
+            # non-error verdict. At threshold, write disabled:true
+            # to the SKILL.md frontmatter + bump the prompt-freeze
+            # generation so live sessions stop seeing the skill on
+            # the next turn. Best-effort — observability never
+            # blocks the main path.
+            if verdict == "error":
+                streak = self._skill_consecutive_errors.get(sk.skill_id, 0) + 1
+                self._skill_consecutive_errors[sk.skill_id] = streak
+                if streak >= self._skill_auto_disable_threshold:
+                    self._skill_consecutive_errors[sk.skill_id] = 0
+                    try:
+                        await self._auto_disable_skill(
+                            sk.skill_id, publish, streak,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+            else:
+                # Reset streak on any non-error (success / partial).
+                self._skill_consecutive_errors.pop(sk.skill_id, None)
+
+    async def _auto_disable_skill(
+        self, skill_id: str, publish: Any, streak: int,
+    ) -> None:
+        """B-36: park a misbehaving skill by writing ``disabled: true``
+        to its SKILL.md frontmatter + bumping the prompt-freeze
+        generation so running sessions stop seeing it next turn.
+
+        Reuses the same frontmatter mutator the manual /disable
+        endpoint uses, so the on-disk shape is identical whether the
+        user or the agent parked the skill. Emits a SKILL_INVOKED
+        event with evidence='auto_disabled' so the trace + invocation
+        count visibly mark the auto-park (a fresh signal that's not a
+        real new invocation, useful for the UI badge).
+        """
+        from xmclaw.daemon.learned_skills import default_learned_skills_loader
+        from xmclaw.daemon.routers.auto_evo import _set_frontmatter_key
+
+        loader = default_learned_skills_loader()
+        # Path-traversal hardening even though skill_id came from disk.
+        safe_id = skill_id.replace("\\", "/").split("/")[-1].strip()
+        if not safe_id or safe_id.startswith("."):
+            return
+        skill_md = loader.skills_root / safe_id / "SKILL.md"
+        if not skill_md.is_file():
+            return
+        try:
+            text = skill_md.read_text(encoding="utf-8", errors="replace")
+            new_text = _set_frontmatter_key(text, "disabled", "true")
+            if new_text != text:
+                skill_md.write_text(new_text, encoding="utf-8")
+        except OSError:
+            return
+        # Drop loader cache + bump generation.
+        loader._cache_key = None  # type: ignore[attr-defined]
+        try:
+            bump_prompt_freeze_generation()
+        except Exception:  # noqa: BLE001
+            pass
+        # Telemetry — emit a SKILL_OUTCOME with verdict="auto_disabled"
+        # so the Trace page shows the self-park and Evolution can count
+        # it. Using OUTCOME (not INVOKED) preserves the meaning: the
+        # skill didn't fire, it got benched.
+        try:
+            await publish(EventType.SKILL_OUTCOME, {
+                "skill_id": safe_id,
+                "verdict": "auto_disabled",
+                "consecutive_errors": streak,
+            })
+        except Exception:  # noqa: BLE001
+            pass
 
     def _build_compression_summary(
         self, session_id: str, dropped: list[Message],

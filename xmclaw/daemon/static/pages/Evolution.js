@@ -18,6 +18,25 @@ const TYPES = "skill_promoted,skill_rolled_back,skill_candidate_proposed";
 
 // ── shared ─────────────────────────────────────────────────────────
 
+// B-36: humanise an epoch timestamp into "just now / 5m ago / 2h ago".
+// Cheap fallback — i18n later if we need richer phrasing.
+function formatRelative(ts) {
+  if (!ts) return "";
+  const ms = typeof ts === "number" ? ts * 1000 : Date.parse(ts);
+  if (!ms || Number.isNaN(ms)) return "";
+  const delta = Math.max(0, Date.now() - ms);
+  const sec = Math.floor(delta / 1000);
+  if (sec < 30) return "刚刚";
+  if (sec < 60) return `${sec}s 前`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m 前`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `${h}h 前`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d}d 前`;
+  return new Date(ms).toLocaleDateString("zh-CN");
+}
+
 async function postJson(path, token, body = null) {
   const url = path + (token ? `?token=${encodeURIComponent(token)}` : "");
   const init = { method: "POST" };
@@ -207,6 +226,9 @@ function AutoEvoPanel({ token }) {
                     </div>
                     ${s.description
                       ? html`<small style="display:block;margin-top:.2rem;color:var(--xmc-fg-muted)">${s.description.slice(0, 160)}</small>`
+                      : null}
+                    ${s.last_fired_ts
+                      ? html`<small style="display:block;margin-top:.15rem;color:var(--xmc-fg-muted);font-size:.7rem">最近触发: ${formatRelative(s.last_fired_ts)}</small>`
                       : null}
                     ${triggers.length
                       ? html`

@@ -266,6 +266,7 @@ async def learned_skills(include_disabled: bool = False) -> JSONResponse:
     # error_count, partial_count.
     invocation_counts: dict[str, int] = {}
     verdict_counts: dict[str, dict[str, int]] = {}
+    last_fired: dict[str, float] = {}
     try:
         import sqlite3
         from xmclaw.utils.paths import data_dir
@@ -275,7 +276,7 @@ async def learned_skills(include_disabled: bool = False) -> JSONResponse:
             con.row_factory = sqlite3.Row
             try:
                 rows = con.execute(
-                    "SELECT type, payload FROM events "
+                    "SELECT type, ts, payload FROM events "
                     "WHERE type IN ('skill_invoked', 'skill_outcome') "
                     "ORDER BY ts DESC LIMIT 2000"
                 ).fetchall()
@@ -289,6 +290,8 @@ async def learned_skills(include_disabled: bool = False) -> JSONResponse:
                         continue
                     if r["type"] == "skill_invoked":
                         invocation_counts[sid] = invocation_counts.get(sid, 0) + 1
+                        # Rows are DESC by ts so first hit per sid is newest.
+                        last_fired.setdefault(sid, float(r["ts"]))
                     else:  # skill_outcome
                         verdict = str(p.get("verdict") or "")
                         if verdict not in ("success", "partial", "error"):
@@ -307,6 +310,7 @@ async def learned_skills(include_disabled: bool = False) -> JSONResponse:
         s["outcomes"] = verdict_counts.get(
             s["skill_id"], {"success": 0, "partial": 0, "error": 0},
         )
+        s["last_fired_ts"] = last_fired.get(s["skill_id"])
 
     return JSONResponse({
         "skills_root": str(loader.skills_root),
