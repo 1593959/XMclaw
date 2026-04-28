@@ -1,0 +1,71 @@
+{
+  "auto_evolution": {
+    "enabled": true,
+    "observation_interval_min": 30,
+    "evolution_trigger_threshold": 2,
+    "auto_gene_creation": true,
+    "auto_skill_creation": true,
+    "auto_memory_update": true,
+    "safety": {
+      "require_validation": true,
+      "rollback_on_regression": true,
+      "max_genes_per_day": 10,
+      "v_score_threshold": 20
+    }
+  },
+  "pattern_detection": {
+    "min_occurrences": 2,
+    "similarity_threshold": 0.7,
+    "forbidden_patterns": [
+      "password",
+      "secret",
+      "key",
+      "token",
+      "api_key",
+      "apikey"
+    ],
+    "category_weights": {
+      "web_search": 1.0,
+      "file_operation": 0.9,
+      "code_generation": 0.8,
+      "analysis": 0.7,
+      "question": 0.5
+    }
+  },
+  "memory": {
+    "short_term": {
+      "max_entries": 50,
+      "ttl_hours": 24
+    },
+    "medium_term": {
+      "auto_summarize": true,
+      "summarize_interval_days": 7,
+      "max_entries": 100
+    },
+    "long_term": {
+      "auto_update": true,
+      "update_threshold": 0.8
+    }
+  },
+  "reme": {
+    "enabled": true,
+    "top_k": 5,
+    "description": "完全使用 CoPaw 原生 ReMeLight 向量记忆系统，不再维护独立向量后端"
+  },
+  "scheduler": {
+    "interval_min": 30,
+    "min_interval_min": 10,
+    "max_interval_min": 240
+  },
+  "learning": {
+    "from_conversation": true,
+    "from_tool_usage": true,
+    "from_errors": true,
+    "pattern_decay_days": 30
+  },
+  "logging": {
+    "level": "info",
+    "file": "xm-auto-evo.log",
+    "max_size_mb": 10
+  }
+}

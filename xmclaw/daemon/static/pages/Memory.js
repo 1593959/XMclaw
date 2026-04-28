@@ -70,6 +70,10 @@ function IdentityTab({ token }) {
   const [active, setActive] = useState(null);     // basename
   const [draft, setDraft] = useState("");         // edit buffer
   const [busy, setBusy] = useState(false);
+  // Per-file count of agent-driven writes (from .agent_writes.jsonl
+  // sidecar). Powers the "agent" badge in the file rail showing which
+  // files the agent has been editing on its own.
+  const [agentWrites, setAgentWrites] = useState({});
 
   const load = useCallback(() => {
     setState({ status: "loading", data: null, error: null });
@@ -83,6 +87,16 @@ function IdentityTab({ token }) {
         }
       })
       .catch((e) => setState({ status: "error", data: null, error: String(e.message || e) }));
+    apiGet("/api/v2/profiles/active/agent_writes", token)
+      .then((d) => {
+        const counts = {};
+        for (const w of d.writes || []) {
+          if (!w.file) continue;
+          counts[w.file] = (counts[w.file] || 0) + 1;
+        }
+        setAgentWrites(counts);
+      })
+      .catch(() => setAgentWrites({}));
   }, [token]);
 
   useEffect(load, [load]);
@@ -151,6 +165,7 @@ function IdentityTab({ token }) {
             ${data.files.map((f) => {
               const isActive = f.basename === active;
               const tone = layerTone(f.layer);
+              const writes = agentWrites[f.basename] || 0;
               return html`
                 <li
                   class="xmc-datapage__row xmc-datapage__row--clickable ${isActive ? "is-active" : ""}"
@@ -159,10 +174,15 @@ function IdentityTab({ token }) {
                   role="button"
                   onClick=${() => onSelect(f.basename)}
                   onKeyDown=${(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(f.basename); } }}
-                  style="display:flex;align-items:center;gap:.5rem;justify-content:space-between"
+                  style="display:flex;align-items:center;gap:.4rem;justify-content:space-between;flex-wrap:wrap"
                 >
                   <strong style="font-size:.9rem">${f.basename}</strong>
-                  <span class="xmc-h-badge xmc-h-badge--${tone}" style="font-size:.6rem">${layerLabel(f.layer)}</span>
+                  <span style="display:flex;gap:.3rem;align-items:center">
+                    ${writes > 0
+                      ? html`<span class="xmc-h-badge xmc-h-badge--info" style="font-size:.6rem" title=${`agent 写入了 ${writes} 次`}>🤖 ${writes}</span>`
+                      : null}
+                    <span class="xmc-h-badge xmc-h-badge--${tone}" style="font-size:.6rem">${layerLabel(f.layer)}</span>
+                  </span>
                 </li>
               `;
             })}

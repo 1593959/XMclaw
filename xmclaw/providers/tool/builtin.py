@@ -29,6 +29,7 @@ import asyncio
 import shutil
 import subprocess
 import sys
+import json
 import time
 from pathlib import Path
 
@@ -1091,6 +1092,20 @@ class BuiltinTools(ToolProvider):
         except OSError as exc:
             return _fail(call, t0, f"write failed: {exc}")
 
+        # Sidecar log so the Memory UI can show "agent wrote this" badges.
+        snippet = ""
+        if mode == "append_section":
+            snippet = (call.args.get("content") or "")[:200]
+        elif mode == "replace":
+            snippet = (call.args.get("content") or "")[:200]
+        elif mode == "delete":
+            snippet = "(deleted)"
+        self._record_agent_write(
+            pdir, canonical,
+            call.args.get("section") if mode == "append_section" else None,
+            snippet,
+        )
+
         # Trigger system-prompt rebuild on success so the agent's NEXT
         # turn sees its own edit.
         if self._persona_writeback is not None:
@@ -1110,6 +1125,25 @@ class BuiltinTools(ToolProvider):
             side_effects=(str(target.resolve()),),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
+
+    def _record_agent_write(
+        self, pdir: Path, basename: str, section: str | None, snippet: str,
+    ) -> None:
+        """Record this write to a sidecar log so the Memory page can
+        show "agent wrote this" badges. JSONL one row per write.
+        Best-effort — sidecar failures don't fail the main write."""
+        try:
+            sidecar = pdir / ".agent_writes.jsonl"
+            entry = {
+                "ts": time.time(),
+                "file": basename,
+                "section": section,
+                "snippet": snippet[:200],
+            }
+            with sidecar.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
 
     async def _append_persona(
         self, call: ToolCall, t0: float, *,
@@ -1158,6 +1192,10 @@ class BuiltinTools(ToolProvider):
             target.write_text(new_text, encoding="utf-8")
         except OSError as exc:
             return _fail(call, t0, f"write failed: {exc}")
+
+        # Sidecar log: this write came from the agent (vs. user via
+        # Memory page). Powers the diff badge in the UI.
+        self._record_agent_write(pdir, basename, section, entry)
 
         # Trigger system-prompt rebuild so the agent's NEXT turn sees the
         # entry in its system prompt (closes the "wrote and then forgot

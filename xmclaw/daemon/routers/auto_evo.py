@@ -173,6 +173,23 @@ async def capsules(tail: int = 50) -> JSONResponse:
     return JSONResponse({"capsules": rows, "count": len(rows)})
 
 
+@router.get("/learned_skills")
+async def learned_skills() -> JSONResponse:
+    """Skills xm-auto-evo has generated AND XMclaw is actively
+    feeding into the agent's system prompt.
+
+    This is the closed-loop view: anything listed here is reachable
+    by the agent on its next turn. If a skill is on disk but NOT in
+    this list, something's wrong with the loader (perhaps the
+    SKILL.md is malformed)."""
+    from xmclaw.daemon.learned_skills import default_learned_skills_loader
+    loader = default_learned_skills_loader()
+    return JSONResponse({
+        "skills_root": str(loader.skills_root),
+        "skills": loader.list_for_api(),
+    })
+
+
 @router.get("/log")
 async def log(lines: int = 200) -> JSONResponse:
     """Tail the heartbeat log for the UI."""

@@ -115,6 +115,34 @@ async def list_profiles() -> JSONResponse:
 # ──────────────────────────────────────────────────────────────────────
 
 
+@router.get("/active/agent_writes")
+async def list_agent_writes(request: Request) -> JSONResponse:
+    """Return the agent-wrote-this sidecar log so the Memory UI can
+    show diff badges. Each row is a write event recorded by the
+    persona-modifying tools (remember / learn_about_user / update_persona).
+    """
+    profile_id, pdir = _resolve_active_profile_dir(request)
+    sidecar = pdir / ".agent_writes.jsonl"
+    if not sidecar.is_file():
+        return JSONResponse({"writes": [], "profile_id": profile_id})
+    rows: list[dict[str, Any]] = []
+    try:
+        for line in sidecar.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    except OSError:
+        pass
+    return JSONResponse({
+        "writes": rows[-200:],  # cap response payload
+        "profile_id": profile_id,
+    })
+
+
 @router.get("/active")
 async def get_active_profile(request: Request) -> JSONResponse:
     """Return the 7 canonical persona files of the active profile.

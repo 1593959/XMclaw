@@ -131,6 +131,37 @@ def _default_system_prompt() -> str:
 _DEFAULT_SYSTEM = _default_system_prompt()
 
 
+# Transient tool errors that earn one automatic retry. Conservative on
+# purpose — semantic failures (file not found, bad args) are NOT
+# retried because retrying won't help, it'll just delay the LLM
+# getting honest feedback. Match against the error STRING since
+# tools return ToolResult.error as a free-form message.
+_TRANSIENT_PATTERNS = (
+    "timeout",
+    "timed out",
+    "connection reset",
+    "connection refused",
+    "temporarily unavailable",
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "ETIMEDOUT",
+    "EAI_AGAIN",
+    "name or service not known",
+    "503 ",
+    "502 ",
+    "504 ",
+    "429 ",  # rate-limit; retrying after 0.5s often works for spiky bursts
+    "remote disconnected",
+)
+
+
+def _is_transient_tool_error(err: str) -> bool:
+    if not err:
+        return False
+    low = err.lower()
+    return any(p.lower() in low for p in _TRANSIENT_PATTERNS)
+
+
 def _with_fresh_time(system_prompt: str) -> str:
     """Append a fresh ``## 当前时刻`` block to the system prompt.
 
@@ -158,30 +189,43 @@ def _with_fresh_time(system_prompt: str) -> str:
         f"Trust this over your training-time clock."
     )
 
-    # Strip a prior "## 当前时刻" block if present. We look for the
-    # literal header and the blank-line-separated paragraph that
-    # follows it, up to the next "## " heading or EOF.
-    header = "## 当前时刻"
-    if header in system_prompt:
-        lines = system_prompt.split("\n")
-        out = []
-        skip = False
-        for line in lines:
-            if line.strip() == header:
-                skip = True
-                continue
-            if skip:
-                # Stop skipping once we hit the next ## heading.
-                stripped = line.lstrip()
-                if stripped.startswith("## "):
-                    skip = False
-                    out.append(line)
-                # Otherwise keep skipping (drop this line).
-                continue
-            out.append(line)
-        system_prompt = "\n".join(out).rstrip()
+    # Strip a prior "## 当前时刻" / "## 已学习的技能" block if present.
+    # Both are re-rendered fresh on every turn (time obviously, learned
+    # skills because the auto-evo subsystem may have just generated a
+    # new SKILL.md and we want it picked up on the very next turn).
+    for hdr in ("## 当前时刻", "## 已学习的技能（XMclaw 自主进化产出）"):
+        if hdr in system_prompt:
+            lines = system_prompt.split("\n")
+            out = []
+            skip = False
+            for line in lines:
+                if line.strip() == hdr:
+                    skip = True
+                    continue
+                if skip:
+                    stripped = line.lstrip()
+                    if stripped.startswith("## "):
+                        skip = False
+                        out.append(line)
+                    continue
+                out.append(line)
+            system_prompt = "\n".join(out).rstrip()
 
-    return system_prompt + "\n\n" + block
+    # B-17: append learned-skills block (the closed-loop product of
+    # xm-auto-evo). Empty string when no skills exist yet, so this is
+    # a no-op for fresh installs.
+    learned_block = ""
+    try:
+        from xmclaw.daemon.learned_skills import default_learned_skills_loader
+        learned_block = default_learned_skills_loader().render_section()
+    except Exception:  # noqa: BLE001 — never let learned-skills loading
+        # break the agent's main path
+        learned_block = ""
+
+    suffix = "\n\n" + block
+    if learned_block:
+        suffix = "\n\n" + learned_block + suffix
+    return system_prompt + suffix
 
 
 @dataclass
@@ -587,6 +631,32 @@ class AgentLoop:
                     import dataclasses as _dc
                     call_with_sid = _dc.replace(call, session_id=session_id)
                     result = await self._tools.invoke(call_with_sid)
+                    # B-17: retry once on transient failures. We're
+                    # narrow about what counts as transient — only
+                    # network-shaped errors and timeouts get a second
+                    # chance, NOT semantic failures (file not found,
+                    # bad args). Without this, a single flaky DNS
+                    # resolution permanently breaks a turn even though
+                    # the second attempt would have worked.
+                    if (
+                        not result.ok
+                        and result.error
+                        and _is_transient_tool_error(result.error)
+                    ):
+                        import asyncio as _asyncio
+                        await _asyncio.sleep(0.5)
+                        retry = await self._tools.invoke(call_with_sid)
+                        if retry.ok:
+                            # Tag the retry so the bus event reflects
+                            # what happened; the LLM never sees the
+                            # first failure (good — it just sees the
+                            # successful second attempt).
+                            from xmclaw.utils.log import get_logger
+                            get_logger(__name__).info(
+                                "tool.retry_succeeded tool=%s first_error=%s",
+                                call.name, (result.error or "")[:120],
+                            )
+                            result = retry
                     # After todo tool runs, surface TODO_UPDATED so the UI
                     # can live-render the panel. We detect this here to
                     # keep BuiltinTools decoupled from the bus.

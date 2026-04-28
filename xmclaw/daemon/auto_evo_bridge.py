@@ -55,17 +55,25 @@ def auto_evo_repo_path(cfg: dict[str, Any] | None = None) -> Path:
     """Resolve the on-disk path to the xm-auto-evo Node project.
 
     Resolution order:
-      1. cfg["evolution"]["xm_auto_evo"]["path"]
+      1. cfg["evolution"]["auto_evo"]["path"]
       2. env XMC_AUTO_EVO_PATH
-      3. fallback: ~/Desktop/xm-auto-evo (the user's current location)
+      3. **vendored copy** at xmclaw/evolution_core/ (B-17) — the
+         project ships with its evolution core so a fresh install
+         has it out of the box, no separate clone needed
+      4. fallback: ~/Desktop/xm-auto-evo (legacy dev location)
     """
-    section = (cfg or {}).get("evolution", {}).get("xm_auto_evo", {})
+    section = (cfg or {}).get("evolution", {}).get("auto_evo", {})
     raw = section.get("path") if isinstance(section, dict) else None
     if isinstance(raw, str) and raw.strip():
         return Path(raw).expanduser()
     env_raw = os.environ.get("XMC_AUTO_EVO_PATH")
     if env_raw:
         return Path(env_raw).expanduser()
+    # Vendored: xmclaw/evolution_core/ relative to this module.
+    here = Path(__file__).resolve().parent.parent  # xmclaw/
+    vendored = here / "evolution_core"
+    if (vendored / "index.js").is_file():
+        return vendored
     return Path.home() / "Desktop" / "xm-auto-evo"
 
 
