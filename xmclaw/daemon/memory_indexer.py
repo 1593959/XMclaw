@@ -284,7 +284,7 @@ class MemoryFileIndexer:
         existing_ids: set[str] = set(existing.keys())
         new_ids: set[str] = set(new_by_id.keys())
 
-        # Drop chunks that no longer exist OR whose hash changed.
+        # Plan the diff: which chunks would change vs unchanged.
         to_drop: list[str] = []
         unchanged_ids: set[str] = set()
         for cid in existing_ids:
@@ -296,24 +296,43 @@ class MemoryFileIndexer:
                 to_drop.append(cid)
             else:
                 unchanged_ids.add(cid)
-        for cid in to_drop:
-            await self._vec.forget(cid)
 
-        # Embed and insert chunks that aren't unchanged.
+        # Determine what needs embedding.
         to_embed: list[tuple[str, MarkdownChunk]] = [
             (cid, c) for cid, c in new_by_id.items()
             if cid not in unchanged_ids
         ]
-        if not to_embed:
-            return (0, len(to_drop), len(unchanged_ids))
+        # B-66: previously we dropped old chunks BEFORE embedding. If
+        # the embedder timed out / API down / returned empty, we'd
+        # return early with the file's old chunks already deleted —
+        # the file would temporarily have ZERO indexed chunks until
+        # the next successful tick. Now: embed FIRST; only drop the
+        # old chunks AFTER we've got the new vectors in hand. If
+        # embedding fails the old chunks remain valid (slightly stale
+        # vs current text, but discoverable). The next tick retries.
+        vectors: list[list[float]] = []
+        if to_embed:
+            try:
+                vectors = await self._embedder.embed(
+                    [c.text for _, c in to_embed]
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "memory_indexer.embed_failed path=%s err=%s "
+                    "(keeping old chunks, will retry next tick)",
+                    path, exc,
+                )
+                return (0, 0, len(unchanged_ids))
+            # Provider can return per-row empties for partial failure.
+            # If we got nothing usable, keep the old chunks too.
+            if not any(vectors):
+                return (0, 0, len(unchanged_ids))
 
-        try:
-            vectors = await self._embedder.embed([c.text for _, c in to_embed])
-        except Exception as exc:  # noqa: BLE001
-            _log.warning(
-                "memory_indexer.embed_failed path=%s err=%s", path, exc,
-            )
-            return (0, len(to_drop), len(unchanged_ids))
+        # Now safe to drop superseded chunks — we have a working
+        # replacement for each (or the candidate had no embedding,
+        # in which case its old chunk lingering is the lesser evil).
+        for cid in to_drop:
+            await self._vec.forget(cid)
 
         from xmclaw.providers.memory.base import MemoryItem
         added = 0
