@@ -147,6 +147,33 @@ async def switch_provider(request: Request) -> JSONResponse:
     })
 
 
+@router.get("/indexer_status")
+async def indexer_status(request: Request) -> JSONResponse:
+    """B-49: surface MemoryFileIndexer state for the Memory page.
+
+    Returns ``{wired, running, watched_count, known_count,
+    poll_interval_s}``. ``wired=False`` when no embedding provider is
+    configured (indexer was never started).
+    """
+    idx = getattr(request.app.state, "memory_indexer", None)
+    if idx is None:
+        return JSONResponse({
+            "wired": False,
+            "reason": "indexer not started (no embedding provider configured)",
+        })
+    try:
+        watched = sum(1 for _ in idx._watched_paths())  # noqa: SLF001
+    except Exception:  # noqa: BLE001
+        watched = 0
+    return JSONResponse({
+        "wired": True,
+        "running": getattr(idx, "is_running", False),
+        "watched_count": watched,
+        "known_count": len(getattr(idx, "_known_paths", set()) or set()),
+        "poll_interval_s": getattr(idx, "_poll_s", None),
+    })
+
+
 @router.get("/providers")
 async def list_providers(request: Request) -> JSONResponse:
     """B-27: enumerate memory providers attached to the running agent.

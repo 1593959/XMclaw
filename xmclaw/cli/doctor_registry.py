@@ -953,17 +953,21 @@ class MemoryProviderConfigCheck(DoctorCheck):
 
 
 class MemoryIndexerCheck(DoctorCheck):
-    """B-42: surface the state of the auto-indexer + embedding pipeline.
+    """B-42 + B-49: surface the state of the embedding pipeline AND
+    actually ping the configured endpoint to verify it's reachable +
+    the dim claim matches reality.
 
-    Three states:
-      * No embedding provider configured → INFO "indexer disabled"
-        (memory_search falls back to keyword scan)
-      * Provider configured but key missing → FAIL with hint to set
-        evolution.memory.embedding.api_key OR XMC_EMBEDDING_API_KEY
-      * Provider + key present → OK "model=<name> dim=<n>"
+    States:
+      * No embedding provider configured → OK "disabled" (indexer
+        fall through, memory_search runs keyword)
+      * Configured but unreachable / dim-mismatch → FAIL with concrete
+        error
+      * Configured + responds + dim matches → OK "ready: <vec_count>D
+        from <model>"
 
-    Doesn't probe the daemon or call the embedding API — that's the
-    daemon's job. This check is purely config-shape validation.
+    The probe is short — single ``embed(["ping"])`` call with a 5 s
+    timeout. Skipped when only ``probe_daemon=False`` (offline doctor
+    runs) or when no key/local-url is configured.
     """
 
     id = "memory_indexer"
@@ -973,13 +977,12 @@ class MemoryIndexerCheck(DoctorCheck):
         cfg = ctx.cfg or {}
         sec = (((cfg.get("evolution") or {}).get("memory") or {})
                .get("embedding") or {})
-        if not sec:
-            import os as _os
-            if _os.environ.get("XMC_EMBEDDING_API_KEY"):
-                return CheckResult(
-                    name=self.name, ok=True,
-                    detail="indexer enabled via XMC_EMBEDDING_API_KEY env var",
-                )
+        import os as _os
+        env_key = _os.environ.get("XMC_EMBEDDING_API_KEY")
+        env_url = _os.environ.get("XMC_EMBEDDING_BASE_URL")
+
+        # Empty config and no env override → indexer just disabled.
+        if not sec and not env_key and not env_url:
             return CheckResult(
                 name=self.name, ok=True,
                 detail="indexer disabled (no embedding key configured)",
@@ -990,22 +993,88 @@ class MemoryIndexerCheck(DoctorCheck):
                 ),
             )
         api_key = sec.get("api_key")
-        import os as _os
-        if not api_key and not _os.environ.get("XMC_EMBEDDING_API_KEY"):
+        base_url = sec.get("base_url") or env_url or "https://api.openai.com/v1"
+        is_local = any(s in base_url.lower() for s in (
+            "://localhost", "://127.0.0.1", "://0.0.0.0", "://[::1]",
+        ))
+        if not api_key and not env_key and not is_local:
             return CheckResult(
                 name=self.name, ok=False,
                 detail="embedding section present but no api_key",
                 advisory=(
                     "set evolution.memory.embedding.api_key OR "
-                    "XMC_EMBEDDING_API_KEY env var"
+                    "XMC_EMBEDDING_API_KEY env var (cloud endpoints "
+                    "require auth; localhost endpoints don't)"
                 ),
             )
         model = sec.get("model") or "text-embedding-3-small"
-        dim = sec.get("dimensions") or 1536
-        return CheckResult(
-            name=self.name, ok=True,
-            detail=f"indexer enabled: model={model} dim={dim}",
-        )
+        dim = int(sec.get("dimensions") or 1536)
+
+        # Skip the live probe when ``--no-probe`` was passed at CLI.
+        # ``ctx.probe_daemon`` is the canonical flag the other check
+        # bodies inspect.
+        if not getattr(ctx, "probe_daemon", True):
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"indexer configured: model={model} dim={dim} (probe skipped)",
+            )
+
+        # Live probe.
+        try:
+            import asyncio as _aio
+            from xmclaw.providers.memory.embedding import build_embedding_provider
+            provider = build_embedding_provider(cfg)
+            if provider is None:
+                return CheckResult(
+                    name=self.name, ok=False,
+                    detail="provider failed to construct from config",
+                    advisory="check evolution.memory.embedding shape",
+                )
+            vecs = _aio.run(_aio.wait_for(provider.embed(["ping"]), timeout=8.0))
+            if not vecs or not vecs[0]:
+                return CheckResult(
+                    name=self.name, ok=False,
+                    detail=f"embedding endpoint {base_url} returned empty result",
+                    advisory=(
+                        f"verify the model '{model}' is pulled / available "
+                        "(for Ollama: ``ollama pull <model>``)"
+                    ),
+                )
+            actual_dim = len(vecs[0])
+            if actual_dim != dim:
+                return CheckResult(
+                    name=self.name, ok=False,
+                    detail=(
+                        f"dim mismatch: config says {dim}, model "
+                        f"'{model}' returned {actual_dim}-D vectors"
+                    ),
+                    advisory=(
+                        f"set evolution.memory.embedding.dimensions={actual_dim} "
+                        "in config (mismatch will crash sqlite_vec at first put)"
+                    ),
+                )
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=(
+                    f"indexer ready: {model} @ {base_url} → "
+                    f"{actual_dim}D vectors"
+                ),
+            )
+        except _aio.TimeoutError:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"embedding endpoint {base_url} timed out (8s)",
+                advisory="is the daemon / Ollama actually running?",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"embedding probe failed: {type(exc).__name__}: {exc}",
+                advisory=(
+                    f"endpoint {base_url} unreachable / refused; "
+                    "verify it's running and the model exists"
+                ),
+            )
 
 
 class SkillRuntimeCheck(DoctorCheck):

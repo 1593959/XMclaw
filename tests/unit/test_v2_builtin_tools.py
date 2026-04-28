@@ -52,12 +52,12 @@ def test_list_tools_kill_switches() -> None:
 
 
 def test_list_tools_schemas_well_formed() -> None:
-    """Every spec has an object parameters_schema. todo_read takes no
-    args (required=[]); everything else has at least one required field."""
+    """Every spec has an object parameters_schema. ``todo_read`` and
+    ``agent_status`` (B-49 self-introspection) take no args."""
+    zero_arg = {"todo_read", "agent_status"}
     for spec in BuiltinTools().list_tools():
         assert spec.parameters_schema["type"] == "object"
-        if spec.name == "todo_read":
-            # Legitimately zero-arg -- just reads current state.
+        if spec.name in zero_arg:
             continue
         assert len(spec.parameters_schema.get("required", [])) >= 1, (
             f"{spec.name} has no required fields"

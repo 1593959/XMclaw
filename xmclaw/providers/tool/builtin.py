@@ -495,6 +495,28 @@ _MEMORY_SEARCH_SPEC = ToolSpec(
 )
 
 
+_AGENT_STATUS_SPEC = ToolSpec(
+    name="agent_status",
+    description=(
+        "Self-introspection — returns the daemon's current state in "
+        "one shot: indexer (running? last tick? chunks indexed?), "
+        "cron (job count + next fire), memory layer (provider list, "
+        "vector count when known), auto_evo (heartbeat running? PID?), "
+        "config snapshot.\n\n"
+        "Use BEFORE answering questions like 'are you indexing my "
+        "notes?', 'what cron jobs are scheduled?', 'is the evolution "
+        "subsystem running?'. Pure read — no side effects.\n\n"
+        "Returns a structured dict; the agent should summarise the "
+        "interesting subset rather than dumping the whole thing back "
+        "to the user."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {},
+    },
+)
+
+
 _NOTE_WRITE_SPEC = ToolSpec(
     name="note_write",
     description=(
@@ -844,6 +866,9 @@ class BuiltinTools(ToolProvider):
         # Journal panels — both are evolution surfaces (workflow notes,
         # lessons learned, daily logs). Path-only ops, always available.
         specs.extend([_NOTE_WRITE_SPEC, _JOURNAL_APPEND_SPEC])
+        # B-49: self-introspection tool. Always advertised — works
+        # even with zero providers wired (returns "nothing wired").
+        specs.append(_AGENT_STATUS_SPEC)
         return specs
 
     async def invoke(self, call: ToolCall) -> ToolResult:
@@ -903,6 +928,8 @@ class BuiltinTools(ToolProvider):
                 return await self._note_write(call, t0)
             if call.name == "journal_append":
                 return await self._journal_append(call, t0)
+            if call.name == "agent_status":
+                return await self._agent_status(call, t0)
             return _fail(call, t0, f"unknown tool: {call.name!r}")
         except PermissionError as exc:
             return _fail(call, t0, f"permission denied: {exc}")
@@ -1656,6 +1683,116 @@ class BuiltinTools(ToolProvider):
                 "title": title or None,
             },
             side_effects=(str(path),),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _agent_status(self, call: ToolCall, t0: float) -> ToolResult:
+        """B-49: self-introspection. Reads daemon state via the same
+        ``_LAST_APP_STATE`` holder factory.py uses for persona-writeback,
+        so works without forcing every BuiltinTools instance to carry
+        an explicit app.state reference."""
+        out: dict[str, Any] = {}
+        # 1) Memory layer — providers + indexer.
+        if self._memory_manager is not None:
+            providers = []
+            for p in getattr(self._memory_manager, "providers", []):
+                providers.append({
+                    "name": getattr(p, "name", "?"),
+                    "kind": "builtin" if getattr(p, "name", "") == "builtin" else "external",
+                })
+            out["memory"] = {
+                "wired": True,
+                "providers": providers,
+                "embedder": (
+                    {"name": getattr(self._embedder, "name", "?"),
+                     "dim": getattr(self._embedder, "dim", 0)}
+                    if self._embedder is not None else None
+                ),
+            }
+        else:
+            out["memory"] = {"wired": False}
+
+        # 2) Daemon-side state via _LAST_APP_STATE.
+        state = None
+        try:
+            from xmclaw.daemon import app as _app_mod
+            state = getattr(_app_mod, "_LAST_APP_STATE", None)
+        except Exception:  # noqa: BLE001
+            state = None
+
+        if state is not None:
+            # Indexer
+            idx = getattr(state, "memory_indexer", None)
+            if idx is not None:
+                out["indexer"] = {
+                    "wired": True,
+                    "running": getattr(idx, "is_running", False),
+                    "watched_paths_count": sum(1 for _ in getattr(idx, "_watched_paths", lambda: [])()),
+                    "known_paths_count": len(getattr(idx, "_known_paths", set()) or set()),
+                    "poll_interval_s": getattr(idx, "_poll_s", None),
+                }
+            else:
+                out["indexer"] = {"wired": False}
+
+            # Auto-evo
+            ae = getattr(state, "auto_evo_process", None)
+            if ae is not None:
+                out["auto_evo"] = {
+                    "wired": True,
+                    "running": getattr(ae, "is_running", False),
+                    "pid": getattr(ae, "pid", None),
+                }
+            else:
+                out["auto_evo"] = {"wired": False}
+
+            # Bus event count proxy via the events DB row count when
+            # the daemon's running. Cheap query.
+            try:
+                import sqlite3 as _sql
+                from xmclaw.utils.paths import data_dir
+                events_db = data_dir() / "v2" / "events.db"
+                if events_db.is_file():
+                    con = _sql.connect(f"file:{events_db}?mode=ro", uri=True, timeout=2)
+                    try:
+                        n = con.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+                        out["events_db"] = {"row_count": int(n)}
+                    finally:
+                        con.close()
+            except Exception:  # noqa: BLE001
+                out["events_db"] = {"row_count": None}
+
+        # 3) Cron — singleton, always reachable.
+        try:
+            from xmclaw.core.scheduler.cron import default_cron_store
+            store = default_cron_store()
+            jobs = store.list_jobs()
+            next_at = min((j.next_run_at for j in jobs if j.enabled and j.next_run_at), default=None)
+            out["cron"] = {
+                "job_count": len(jobs),
+                "enabled_count": sum(1 for j in jobs if j.enabled),
+                "next_run_at": next_at,
+            }
+        except Exception:  # noqa: BLE001
+            out["cron"] = {"wired": False}
+
+        # 4) Workspace + persona dirs (resolved lazily).
+        try:
+            if self._workspace_root_provider is not None:
+                v = self._workspace_root_provider()
+                out["workspace_root"] = str(v) if v else None
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if self._persona_dir_provider is not None:
+                v = self._persona_dir_provider()
+                out["persona_dir"] = str(v) if v else None
+        except Exception:  # noqa: BLE001
+            pass
+
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content=out,
+            side_effects=(),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 
