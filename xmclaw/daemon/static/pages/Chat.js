@@ -77,6 +77,7 @@ export function ChatPage({ chat, session, connection, token, onSend, onChangeDra
           canSend=${canSend}
           busy=${busy}
           slashStore=${slashStore}
+          token=${token}
         />
        </div>
        <${ChatSidebar}

@@ -124,7 +124,12 @@ def _first_paragraph(body: str, *, max_chars: int = 240) -> str:
     return paras[0][:max_chars]
 
 
-def _load_one(skill_dir: Path) -> LearnedSkill | None:
+def _load_one(
+    skill_dir: Path,
+    *,
+    inline_shell_enabled: bool = False,
+    template_ctx: dict | None = None,
+) -> LearnedSkill | None:
     skill_md = skill_dir / "SKILL.md"
     if not skill_md.is_file():
         return None
@@ -134,6 +139,61 @@ def _load_one(skill_dir: Path) -> LearnedSkill | None:
     except OSError:
         return None
     fm, body = _parse_frontmatter(text)
+
+    # B-24 (Hermes parity): expand template variables and (optionally)
+    # inline shell snippets in the body BEFORE we hand it to the agent.
+    # Frontmatter is left raw — it's structural metadata, not prose.
+    try:
+        from xmclaw.daemon.skill_template import (
+            substitute_template_vars,
+            expand_inline_shell,
+        )
+        ctx = dict(template_ctx or {})
+        ctx.setdefault("skill_dir", skill_dir)
+        body = substitute_template_vars(body, **ctx)
+        if inline_shell_enabled:
+            body = expand_inline_shell(body, cwd=skill_dir)
+    except Exception:  # noqa: BLE001 — never let template expansion
+        # break the loader; fall back to raw body
+        pass
+
+    # B-24 skill_guard: scan the (post-substitution) body for
+    # destructive / injection patterns. xm-auto-evo is autonomous;
+    # in principle it could synthesise a SKILL.md that tells the
+    # agent to ``rm -rf /`` or curl-pipe-shell. We default to the
+    # ``agent-created`` trust tier — caution-warn, dangerous-block.
+    # ``builtin``/``trusted`` skills (from frontmatter ``trust`` key)
+    # bypass with a higher tolerance.
+    skill_action = "allow"
+    skill_scan_summary = ""
+    try:
+        from xmclaw.security.skill_guard import (
+            scan_skill_content,
+            apply_policy,
+            TrustLevel,
+        )
+        trust_str = str(fm.get("trust") or "").lower().strip()
+        try:
+            trust_lvl = TrustLevel(trust_str) if trust_str else TrustLevel.AGENT_CREATED
+        except ValueError:
+            trust_lvl = TrustLevel.AGENT_CREATED
+        scan = scan_skill_content(body)
+        skill_action, skill_scan_summary = apply_policy(scan, trust=trust_lvl)
+        if skill_action == "block":
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).warning(
+                "skill_guard.blocked skill=%s reason=%s",
+                skill_dir.name, skill_scan_summary,
+            )
+            return None  # Drop the skill — agent never sees it.
+        if skill_action == "warn":
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).warning(
+                "skill_guard.warning skill=%s reason=%s",
+                skill_dir.name, skill_scan_summary,
+            )
+    except Exception:  # noqa: BLE001 — scan failure must not block
+        pass
     title = (
         str(fm.get("name") or "")
         or _first_heading(body)
@@ -163,13 +223,49 @@ def _load_one(skill_dir: Path) -> LearnedSkill | None:
 class LearnedSkillsLoader:
     """Reads ~/.xmclaw/auto_evo/skills/* and renders a system-prompt
     section. Cached by (skills_dir mtime, set of skill mtimes) so a
-    no-op rebuild is free."""
+    no-op rebuild is free.
 
-    def __init__(self, skills_root: Path) -> None:
+    B-24: inline-shell expansion is config-gated
+    (``evolution.auto_evo.inline_shell.enabled`` — default False).
+    Template variables (``${XMC_SKILL_DIR}`` etc.) are always on.
+    """
+
+    def __init__(
+        self,
+        skills_root: Path,
+        *,
+        inline_shell_enabled: bool = False,
+        workspace_provider: "object | None" = None,
+        profile_dir_provider: "object | None" = None,
+    ) -> None:
         self._root = skills_root
+        self._inline_shell_enabled = bool(inline_shell_enabled)
+        self._workspace_provider = workspace_provider
+        self._profile_dir_provider = profile_dir_provider
         self._cache_key: tuple | None = None
         self._cache_block: str = ""
         self._cache_skills: list[LearnedSkill] = []
+
+    def _template_ctx(self, skill_dir: Path) -> dict:
+        """Resolve runtime values (workspace path, profile dir) lazily
+        per skill load. Providers may return None when nothing's wired
+        — that's fine, the substituter leaves the token in place."""
+        ctx: dict = {"skill_dir": skill_dir}
+        try:
+            if self._workspace_provider is not None:
+                v = self._workspace_provider()
+                if v is not None:
+                    ctx["workspace"] = Path(str(v))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if self._profile_dir_provider is not None:
+                v = self._profile_dir_provider()
+                if v is not None:
+                    ctx["profile_dir"] = Path(str(v))
+        except Exception:  # noqa: BLE001
+            pass
+        return ctx
 
     @property
     def skills_root(self) -> Path:
@@ -186,7 +282,11 @@ class LearnedSkillsLoader:
         for entry in entries:
             if not entry.is_dir():
                 continue
-            sk = _load_one(entry)
+            sk = _load_one(
+                entry,
+                inline_shell_enabled=self._inline_shell_enabled,
+                template_ctx=self._template_ctx(entry),
+            )
             if sk is not None:
                 skills.append(sk)
         return skills
@@ -285,11 +385,53 @@ _default_loader: LearnedSkillsLoader | None = None
 
 
 def default_learned_skills_loader() -> LearnedSkillsLoader:
+    """Return the process-wide LearnedSkillsLoader.
+
+    Wired with workspace + profile-dir providers so SKILL.md template
+    tokens (``${XMC_WORKSPACE}`` / ``${XMC_PROFILE_DIR}``) resolve at
+    load time. ``inline_shell`` flag pulled from app config —
+    defaults False because exec-on-load is risky for auto-generated
+    skills. Set ``evolution.auto_evo.inline_shell.enabled=true`` to
+    opt in.
+    """
     global _default_loader
     if _default_loader is None:
         from xmclaw.daemon.auto_evo_bridge import auto_evo_workspace
+
+        # Best-effort config read — _LAST_APP_STATE may not be set yet
+        # when the loader is first instantiated (e.g. tests).
+        inline_enabled = False
+        try:
+            from xmclaw.daemon import app as _app_mod
+            state = getattr(_app_mod, "_LAST_APP_STATE", None)
+            cfg = getattr(state, "config", None) if state else None
+            if isinstance(cfg, dict):
+                evo = (cfg.get("evolution") or {}).get("auto_evo") or {}
+                shell_cfg = evo.get("inline_shell") or {}
+                inline_enabled = bool(shell_cfg.get("enabled", False))
+        except Exception:  # noqa: BLE001
+            inline_enabled = False
+
+        def _ws_provider():
+            try:
+                from xmclaw.core.workspace import WorkspaceManager
+                ws = WorkspaceManager().get()
+                return ws.primary.path if ws.primary is not None else None
+            except Exception:  # noqa: BLE001
+                return None
+
+        def _profile_provider():
+            try:
+                from xmclaw.utils.paths import persona_dir
+                return persona_dir().parent / "profiles" / "default"
+            except Exception:  # noqa: BLE001
+                return None
+
         _default_loader = LearnedSkillsLoader(
             auto_evo_workspace() / "skills",
+            inline_shell_enabled=inline_enabled,
+            workspace_provider=_ws_provider,
+            profile_dir_provider=_profile_provider,
         )
     return _default_loader
 
