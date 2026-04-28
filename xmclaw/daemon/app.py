@@ -108,6 +108,15 @@ def _restore_secrets(existing: Any, incoming: Any) -> Any:
     return incoming
 
 
+# Module-level handle to the active app's ``state``. Populated late in
+# ``create_app`` (after agent wiring) so factory-time closures — most
+# importantly the persona writeback used by self-modification tools —
+# can reach the live agent without an explicit Request. ``None`` until
+# ``create_app`` runs; tests that import this module without booting
+# the FastAPI app see the bare default and treat it as "no agent".
+_LAST_APP_STATE: Any = None
+
+
 def create_app(
     *,
     bus: InProcessEventBus | None = None,
@@ -412,6 +421,13 @@ def create_app(
             agent._tools = CompositeToolProvider(agent._tools, _inter)
 
     app.state.agent = agent
+    # Module-level handle so factory-time callbacks (the persona
+    # writeback used by ``remember`` / ``learn_about_user`` /
+    # ``update_persona``) can find the live agent without needing a
+    # FastAPI Request object. Stored as the *state* object, not the
+    # whole app, because the closures only need state attributes.
+    global _LAST_APP_STATE
+    _LAST_APP_STATE = app.state
     # Expose the multi-model registry so routers/llm_profiles.py can
     # enumerate live profiles without reaching into AgentLoop internals.
     if agent is not None:

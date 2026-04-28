@@ -471,6 +471,74 @@ def _workspace_root_provider() -> Any:
     return _provider
 
 
+def _persona_dir_provider(cfg_ref: dict[str, Any]) -> Any:
+    """Return a callable that yields the agent's active persona profile
+    directory.
+
+    Used by the ``remember`` and ``learn_about_user`` tools so the
+    agent can append to MEMORY.md / USER.md inside its own profile.
+    Closes over a *reference* to ``cfg`` so a hot config swap (e.g.
+    user picks a different profile via the UI) is picked up on the
+    next call without rebuilding the BuiltinTools instance.
+    """
+    def _provider():
+        return _resolve_persona_profile_dir(cfg_ref)
+    return _provider
+
+
+def _persona_writeback(app_state_holder: Any) -> Any:
+    """Return a callback that rebuilds ``app.state.agent._system_prompt``
+    after a persona file write.
+
+    The agent's system prompt is set at construction; once the
+    ``remember`` tool appends to MEMORY.md, the very next turn must
+    see the new bullet without a daemon restart. This callback rebuilds
+    the prompt and assigns it onto the running loop.
+
+    ``app_state_holder`` is a callable returning the FastAPI
+    ``app.state`` (or None when the agent isn't wired yet — e.g. tests).
+    """
+    def _writeback(_basename: str) -> None:
+        try:
+            state = app_state_holder()
+            if state is None:
+                return
+            agent = getattr(state, "agent", None)
+            if agent is None:
+                return
+            cfg = getattr(state, "config", None) or {}
+            profile_dir = _resolve_persona_profile_dir(cfg)
+            from xmclaw.core.persona import build_system_prompt
+            from xmclaw.core.persona.assembler import clear_cache
+            clear_cache()
+            tool_specs = []
+            tools = getattr(agent, "_tools", None)
+            if tools is not None:
+                try:
+                    tool_specs = tools.list_tools() or []
+                except Exception:  # noqa: BLE001
+                    tool_specs = []
+            ws_root = None
+            try:
+                from xmclaw.core.workspace import WorkspaceManager
+                ws = WorkspaceManager().get()
+                if ws.primary is not None:
+                    ws_root = Path(ws.primary.path)
+            except Exception:  # noqa: BLE001
+                ws_root = None
+            new_prompt = build_system_prompt(
+                profile_dir=profile_dir,
+                workspace_dir=ws_root,
+                tool_names=[s.name for s in tool_specs],
+            )
+            agent._system_prompt = new_prompt  # noqa: SLF001
+        except Exception:  # noqa: BLE001 — never let writeback failures
+            # break the tool call. Worst case the agent doesn't see its
+            # own write until the daemon restarts.
+            pass
+    return _writeback
+
+
 def build_tools_from_config(
     cfg: dict[str, Any],
     *,
@@ -540,11 +608,25 @@ def build_tools_from_config(
     enable_browser = tools_section.get("enable_browser", False)
     enable_lsp = tools_section.get("enable_lsp", False)
 
+    # Stash the daemon's app.state in module scope so the persona
+    # writeback callback can find the running agent. ``build_tools_*``
+    # is called both from the lifespan (where app.state.agent is set
+    # later) and at agent boot (where it isn't yet) — so we look up
+    # lazily on each call.
+    def _app_state_holder():
+        try:
+            from xmclaw.daemon import app as _app_mod
+            return getattr(_app_mod, "_LAST_APP_STATE", None)
+        except Exception:  # noqa: BLE001
+            return None
+
     builtins = BuiltinTools(
         allowed_dirs=allowed_dirs,
         enable_bash=bool(enable_bash),
         enable_web=bool(enable_web),
         workspace_root_provider=_workspace_root_provider(),
+        persona_dir_provider=_persona_dir_provider(cfg),
+        persona_writeback=_persona_writeback(_app_state_holder),
     )
     children: list[ToolProvider] = [builtins]
 

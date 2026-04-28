@@ -239,11 +239,145 @@ _TODO_READ_SPEC = ToolSpec(
     parameters_schema={"type": "object", "properties": {}},
 )
 
+_REMEMBER_SPEC = ToolSpec(
+    name="remember",
+    description=(
+        "Append a durable, cross-session note to MEMORY.md. Use sparingly "
+        "for facts that will still matter NEXT conversation: project "
+        "conventions, decisions made, recurring constraints, things the "
+        "user explicitly told you to remember. NOT for ephemeral session "
+        "context (use todos for that). NOT for facts about the user as a "
+        "person (use learn_about_user for that). Each call appends a "
+        "timestamped bullet under the matching ## category heading; the "
+        "category is created if missing. Categories should be short noun "
+        "phrases like 'Project conventions' / 'User preferences' / "
+        "'Decisions'. Effect lands on the next turn — your system prompt "
+        "is rebuilt the moment this returns."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "category": {
+                "type": "string",
+                "description": "Short heading the note belongs under "
+                "(e.g. 'Project conventions', 'Decisions'). Will be "
+                "created if it doesn't exist yet.",
+            },
+            "note": {
+                "type": "string",
+                "description": "The fact to remember, one sentence "
+                "ideally. Will be prefixed with the current date.",
+            },
+        },
+        "required": ["category", "note"],
+    },
+)
+
+_LEARN_ABOUT_USER_SPEC = ToolSpec(
+    name="learn_about_user",
+    description=(
+        "Append a fact about the user to USER.md. Use when you learn "
+        "something durable about who they are or how they want to work: "
+        "their role, expertise, language preferences, communication "
+        "style, recurring projects, things they've corrected you on. "
+        "Skip noise (one-off requests, things that change session-to-"
+        "session — those go to todos). Each call appends a timestamped "
+        "bullet under the matching ## section; sections are created on "
+        "demand. Effect lands on the next turn — your system prompt is "
+        "rebuilt the moment this returns."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "section": {
+                "type": "string",
+                "description": "Section heading (e.g. 'Role & expertise', "
+                "'Communication style', 'Preferences'). Created if missing.",
+            },
+            "fact": {
+                "type": "string",
+                "description": "The fact, one sentence. Will be "
+                "prefixed with the current date.",
+            },
+        },
+        "required": ["section", "fact"],
+    },
+)
+
+_UPDATE_PERSONA_SPEC = ToolSpec(
+    name="update_persona",
+    description=(
+        "Edit ANY of your own persona files. This is the powerful "
+        "self-modification tool — use it when ``remember`` / "
+        "``learn_about_user`` are too narrow. Targets one of the 7 "
+        "canonical files: SOUL.md, AGENTS.md, IDENTITY.md, USER.md, "
+        "TOOLS.md, BOOTSTRAP.md, MEMORY.md. Three modes:\n\n"
+        "  • ``append_section`` — add a bullet (or arbitrary block) "
+        "under a section header. Args: section, content. The most "
+        "common mode.\n"
+        "  • ``replace`` — overwrite the entire file with ``content``. "
+        "Use sparingly; this discards prior state. Good for SOUL/"
+        "IDENTITY rewrites the user explicitly asked for, or for "
+        "cleaning up MEMORY.md after a refactor.\n"
+        "  • ``delete`` — remove the file from disk. Used for the "
+        "BOOTSTRAP.md cleanup after first-run interview completes "
+        "(write IDENTITY/USER, then delete BOOTSTRAP). DO NOT delete "
+        "SOUL/AGENTS/USER/MEMORY/IDENTITY — they have no opt-in/opt-"
+        "out semantics.\n\n"
+        "Be conservative with SOUL.md and IDENTITY.md — those are the "
+        "user's mental model of you; only modify if the user has "
+        "explicitly asked you to. MEMORY.md and USER.md are yours to "
+        "curate within reason. Effect lands on the next turn — your "
+        "system prompt is rebuilt immediately on success."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "file": {
+                "type": "string",
+                "description": "One of: SOUL.md, AGENTS.md, IDENTITY.md, "
+                "USER.md, TOOLS.md, BOOTSTRAP.md, MEMORY.md. "
+                "Case-insensitive.",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["append_section", "replace", "delete"],
+                "description": "How to mutate the file.",
+            },
+            "section": {
+                "type": "string",
+                "description": "Section heading for append_section mode "
+                "(e.g. '## Decisions' — '## ' prefix optional). Ignored "
+                "by other modes.",
+            },
+            "content": {
+                "type": "string",
+                "description": "Content to write. For append_section: "
+                "the block to append (one bullet, multiple bullets, "
+                "or a paragraph). For replace: the full new file body. "
+                "Ignored for delete.",
+            },
+        },
+        "required": ["file", "mode"],
+    },
+)
+
 
 _MAX_WEB_BYTES = 200_000
 _BASH_DEFAULT_TIMEOUT = 30.0
 _BASH_MAX_OUTPUT = 100_000
 _VALID_TODO_STATUSES = {"pending", "in_progress", "done"}
+
+# Map case-insensitive lookup → canonical-cased basename. Used by
+# the ``update_persona`` tool so the LLM can pass "soul.md", "SOUL",
+# or "Soul.md" and we resolve to the on-disk filename.
+_PERSONA_BASENAMES_LOOKUP: dict[str, str] = {}
+for _b in (
+    "AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md",
+    "TOOLS.md", "BOOTSTRAP.md", "MEMORY.md",
+):
+    _PERSONA_BASENAMES_LOOKUP[_b.lower()] = _b
+    _PERSONA_BASENAMES_LOOKUP[_b.lower().removesuffix(".md")] = _b
 
 
 class BuiltinTools(ToolProvider):
@@ -269,12 +403,25 @@ class BuiltinTools(ToolProvider):
         enable_web: bool = True,
         todo_listener: "object | None" = None,
         workspace_root_provider: "object | None" = None,
+        persona_dir_provider: "object | None" = None,
+        persona_writeback: "object | None" = None,
     ) -> None:
         self._allowed = (
             [Path(d).resolve() for d in allowed_dirs] if allowed_dirs else None
         )
         self._enable_bash = enable_bash
         self._enable_web = enable_web
+        # Optional callable () -> Path returning the active persona profile
+        # directory (e.g. ~/.xmclaw/persona/profiles/default/). The
+        # ``remember`` and ``learn_about_user`` tools target MEMORY.md and
+        # USER.md inside this directory. Without a provider, the tools
+        # fall back to ``~/.xmclaw/persona/profiles/default/``.
+        self._persona_dir_provider = persona_dir_provider
+        # Optional callable invoked AFTER a successful persona-file write,
+        # so the daemon can rebuild ``app.state.agent._system_prompt``
+        # immediately and the agent picks up its own update on the next
+        # turn (no daemon restart needed). Signature: ``(basename) -> None``.
+        self._persona_writeback = persona_writeback
         # Optional callable () -> Path | None returning the daemon's
         # active workspace root (driven by ~/.xmclaw/state.json via
         # WorkspaceManager). When the LLM omits an explicit `cwd` arg
@@ -298,6 +445,12 @@ class BuiltinTools(ToolProvider):
         if self._enable_web:
             specs.extend([_WEB_FETCH_SPEC, _WEB_SEARCH_SPEC])
         specs.extend([_TODO_WRITE_SPEC, _TODO_READ_SPEC])
+        # Self-modifying memory tools are gated by the persona_dir
+        # provider — without it we have nowhere to write, so we don't
+        # advertise the tools. Tests construct BuiltinTools without
+        # the provider; production wiring (factory.py) supplies it.
+        if self._persona_dir_provider is not None:
+            specs.extend([_REMEMBER_SPEC, _LEARN_ABOUT_USER_SPEC, _UPDATE_PERSONA_SPEC])
         return specs
 
     async def invoke(self, call: ToolCall) -> ToolResult:
@@ -327,6 +480,18 @@ class BuiltinTools(ToolProvider):
                 return await self._todo_write(call, t0)
             if call.name == "todo_read":
                 return await self._todo_read(call, t0)
+            if call.name == "remember":
+                if self._persona_dir_provider is None:
+                    return _fail(call, t0, "remember tool not configured (no persona dir)")
+                return await self._remember(call, t0)
+            if call.name == "learn_about_user":
+                if self._persona_dir_provider is None:
+                    return _fail(call, t0, "learn_about_user tool not configured (no persona dir)")
+                return await self._learn_about_user(call, t0)
+            if call.name == "update_persona":
+                if self._persona_dir_provider is None:
+                    return _fail(call, t0, "update_persona tool not configured (no persona dir)")
+                return await self._update_persona(call, t0)
             return _fail(call, t0, f"unknown tool: {call.name!r}")
         except PermissionError as exc:
             return _fail(call, t0, f"permission denied: {exc}")
@@ -702,6 +867,204 @@ class BuiltinTools(ToolProvider):
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 
+    # ── self-modifying memory tools ───────────────────────────────────
+
+    async def _remember(self, call: ToolCall, t0: float) -> ToolResult:
+        category = call.args.get("category")
+        note = call.args.get("note")
+        if not isinstance(category, str) or not category.strip():
+            return _fail(call, t0, "missing or empty 'category'")
+        if not isinstance(note, str) or not note.strip():
+            return _fail(call, t0, "missing or empty 'note'")
+        return await self._append_persona(
+            call, t0,
+            basename="MEMORY.md",
+            section=category.strip(),
+            entry=note.strip(),
+            placeholder_title="MEMORY.md — what I want to remember next time",
+        )
+
+    async def _learn_about_user(self, call: ToolCall, t0: float) -> ToolResult:
+        section = call.args.get("section")
+        fact = call.args.get("fact")
+        if not isinstance(section, str) or not section.strip():
+            return _fail(call, t0, "missing or empty 'section'")
+        if not isinstance(fact, str) or not fact.strip():
+            return _fail(call, t0, "missing or empty 'fact'")
+        return await self._append_persona(
+            call, t0,
+            basename="USER.md",
+            section=section.strip(),
+            entry=fact.strip(),
+            placeholder_title="USER.md — who I'm working with",
+        )
+
+    async def _update_persona(self, call: ToolCall, t0: float) -> ToolResult:
+        """General-purpose persona file editor — append_section / replace
+        / delete on any of the 7 canonical files.
+
+        Per user direction (B-14): full self-modification rights, no
+        per-file blocklist. The agent is trusted to use sparingly and
+        ask before rewriting SOUL.md / IDENTITY.md.
+        """
+        file_arg = call.args.get("file")
+        mode = call.args.get("mode")
+        if not isinstance(file_arg, str) or not file_arg.strip():
+            return _fail(call, t0, "missing or empty 'file'")
+        if mode not in ("append_section", "replace", "delete"):
+            return _fail(call, t0, f"invalid 'mode' {mode!r}; expected append_section|replace|delete")
+
+        canonical = _PERSONA_BASENAMES_LOOKUP.get(file_arg.strip().lower())
+        if canonical is None:
+            return _fail(
+                call, t0,
+                f"unknown persona file {file_arg!r}; expected one of "
+                + ", ".join(_PERSONA_BASENAMES_LOOKUP.values()),
+            )
+
+        try:
+            pdir_raw = self._persona_dir_provider()
+        except Exception as exc:  # noqa: BLE001
+            return _fail(call, t0, f"persona dir provider failed: {exc}")
+        if pdir_raw is None:
+            return _fail(call, t0, "no active persona dir")
+        pdir = Path(pdir_raw)
+        try:
+            pdir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return _fail(call, t0, f"could not create persona dir: {exc}")
+        target = pdir / canonical
+
+        try:
+            if mode == "delete":
+                if target.is_file():
+                    target.unlink()
+                    written_size = 0
+                    summary = f"deleted {canonical}"
+                else:
+                    summary = f"{canonical} did not exist (no-op)"
+                    written_size = 0
+            elif mode == "replace":
+                content = call.args.get("content")
+                if not isinstance(content, str):
+                    return _fail(call, t0, "'content' required for replace mode")
+                target.write_text(content, encoding="utf-8")
+                written_size = len(content.encode("utf-8"))
+                summary = f"replaced {canonical} ({written_size} bytes)"
+            else:  # append_section
+                section = call.args.get("section")
+                content = call.args.get("content")
+                if not isinstance(section, str) or not section.strip():
+                    return _fail(call, t0, "'section' required for append_section mode")
+                if not isinstance(content, str) or not content:
+                    return _fail(call, t0, "'content' required for append_section mode")
+                section_clean = section.strip().lstrip("#").strip()
+                section_header = f"## {section_clean}"
+                existing = (
+                    target.read_text(encoding="utf-8") if target.is_file() else ""
+                )
+                new_text = _append_under_section(
+                    existing,
+                    section_header=section_header,
+                    bullet=content,  # caller decides whether to lead with "-"
+                    placeholder_title=f"{canonical} — agent-curated",
+                )
+                target.write_text(new_text, encoding="utf-8")
+                written_size = len(new_text.encode("utf-8"))
+                summary = f"appended to {canonical} under {section_header}"
+        except OSError as exc:
+            return _fail(call, t0, f"write failed: {exc}")
+
+        # Trigger system-prompt rebuild on success so the agent's NEXT
+        # turn sees its own edit.
+        if self._persona_writeback is not None:
+            try:
+                self._persona_writeback(canonical)
+            except Exception:  # noqa: BLE001
+                pass
+
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "file": str(target),
+                "mode": mode,
+                "summary": summary,
+                "bytes": written_size,
+            },
+            side_effects=(str(target.resolve()),),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _append_persona(
+        self, call: ToolCall, t0: float, *,
+        basename: str, section: str, entry: str, placeholder_title: str,
+    ) -> ToolResult:
+        """Idempotent-ish append: locate or create the ``## section``
+        block, append a ``- YYYY-MM-DD: entry`` bullet under it.
+
+        We don't try to be too clever about merging — duplicate entries
+        on different days are fine (the date prefix shows when it was
+        learned). Heavy de-dup would risk dropping useful context.
+        """
+        from datetime import date as _date
+        try:
+            pdir_raw = self._persona_dir_provider()
+        except Exception as exc:  # noqa: BLE001
+            return _fail(call, t0, f"persona dir provider failed: {exc}")
+        if pdir_raw is None:
+            return _fail(call, t0, "no active persona dir")
+        pdir = Path(pdir_raw)
+        try:
+            pdir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return _fail(call, t0, f"could not create persona dir: {exc}")
+        target = pdir / basename
+
+        try:
+            existing = (
+                target.read_text(encoding="utf-8") if target.is_file() else ""
+            )
+        except OSError as exc:
+            return _fail(call, t0, f"read failed: {exc}")
+
+        today = _date.today().isoformat()
+        bullet = f"- {today}: {entry}"
+        section_header = f"## {section}"
+
+        new_text = _append_under_section(
+            existing,
+            section_header=section_header,
+            bullet=bullet,
+            placeholder_title=placeholder_title,
+        )
+
+        try:
+            target.write_text(new_text, encoding="utf-8")
+        except OSError as exc:
+            return _fail(call, t0, f"write failed: {exc}")
+
+        # Trigger system-prompt rebuild so the agent's NEXT turn sees the
+        # entry in its system prompt (closes the "wrote and then forgot
+        # immediately" feedback gap).
+        if self._persona_writeback is not None:
+            try:
+                self._persona_writeback(basename)
+            except Exception:  # noqa: BLE001 — writeback failure must
+                # not roll back the write itself
+                pass
+
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "file": str(target),
+                "section": section,
+                "appended": bullet,
+                "bytes": len(new_text.encode("utf-8")),
+            },
+            side_effects=(str(target.resolve()),),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
     # ── allowlist ─────────────────────────────────────────────────────
 
     def _check_allowed(self, path: Path) -> None:
@@ -720,6 +1083,64 @@ class BuiltinTools(ToolProvider):
 
 
 # ── helpers ───────────────────────────────────────────────────────────
+
+def _append_under_section(
+    existing: str, *, section_header: str, bullet: str, placeholder_title: str,
+) -> str:
+    """Append ``bullet`` under ``section_header`` (a line like ``## Foo``).
+
+    Behavior:
+    * If the file is empty, write a stub: ``# placeholder_title``,
+      blank line, then the section + bullet.
+    * If the section exists, locate it and append the bullet at the end
+      of that section (just before the next ``## `` heading or EOF).
+    * If the section is missing, append a new ``## section`` block at
+      the bottom of the file with the bullet under it.
+
+    Strips a trailing newline from ``existing`` first so we don't accumulate
+    blank lines on every call.
+    """
+    if not existing.strip():
+        # Brand-new file. Plant a top heading so the file reads naturally.
+        return (
+            f"# {placeholder_title}\n\n"
+            f"{section_header}\n\n"
+            f"{bullet}\n"
+        )
+
+    body = existing.rstrip("\n")
+    lines = body.split("\n")
+
+    # Locate the section.
+    try:
+        sec_idx = next(
+            i for i, ln in enumerate(lines)
+            if ln.strip() == section_header.strip()
+        )
+    except StopIteration:
+        # Section missing → append a new block.
+        return body + "\n\n" + section_header + "\n\n" + bullet + "\n"
+
+    # Find end of this section: either the next ``## `` line or EOF.
+    end_idx = len(lines)
+    for j in range(sec_idx + 1, len(lines)):
+        s = lines[j].lstrip()
+        if s.startswith("## ") or s.startswith("# "):
+            end_idx = j
+            break
+
+    # Trim trailing blank lines inside the section before our insert.
+    insert_at = end_idx
+    while insert_at > sec_idx + 1 and not lines[insert_at - 1].strip():
+        insert_at -= 1
+
+    new_lines = (
+        lines[:insert_at]
+        + [bullet]
+        + lines[insert_at:]
+    )
+    return "\n".join(new_lines) + "\n"
+
 
 def _fail(call: ToolCall, t0: float, err: str) -> ToolResult:
     return ToolResult(
