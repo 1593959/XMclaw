@@ -164,10 +164,12 @@ async def upgrade_xmclaw() -> JSONResponse:
     log_path = _upgrade_log_path()
     log_path.parent.mkdir(parents=True, exist_ok=True)
     # Fresh log per attempt so the UI can show "this run" without
-    # mixing in the prior one.
-    log_path.write_text(
+    # mixing in the prior one. B-74: atomic — keeps the log readable
+    # if the daemon dies between the truncate-old and write-new steps.
+    from xmclaw.utils.fs_locks import atomic_write_text
+    atomic_write_text(
+        log_path,
         f"# xmclaw upgrade started @ {time.strftime('%Y-%m-%d %H:%M:%S')}\n",
-        encoding="utf-8",
     )
 
     # ``sys.executable -m pip`` because the installed-as-script ``pip``

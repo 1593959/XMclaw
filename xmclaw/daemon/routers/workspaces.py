@@ -91,9 +91,13 @@ async def create_workspace(request: Request) -> JSONResponse:
         "model": body.get("model", "default"),
         "tools": body.get("tools", {}),
     }
-    cfg_file.write_text(
+    # B-74: atomic write so a daemon crash mid-save can't leave the
+    # workspace manifest half-written (which would prevent the daemon
+    # from re-loading that workspace on next start).
+    from xmclaw.utils.fs_locks import atomic_write_text
+    atomic_write_text(
+        cfg_file,
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
     )
     return JSONResponse({"ok": True, "id": ws_id})
 

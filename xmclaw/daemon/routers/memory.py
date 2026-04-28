@@ -130,9 +130,13 @@ async def switch_provider(request: Request) -> JSONResponse:
     if config_path:
         try:
             from pathlib import Path as _P
+            from xmclaw.utils.fs_locks import atomic_write_text
             p = _P(config_path)
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+            # B-74: atomic write so a crash mid-save doesn't leave the
+            # daemon's config truncated (which would prevent the next
+            # restart from loading anything).
+            atomic_write_text(p, json.dumps(cfg, indent=2, ensure_ascii=False))
         except OSError as exc:
             return JSONResponse(
                 {"ok": False, "error": f"config write failed: {exc}"},
@@ -237,13 +241,18 @@ async def dream_restore(name: str, request: Request) -> JSONResponse:
         f"memory_backup_predates_{_t.strftime('%Y%m%d-%H%M%S')}_restore.md"
     )
     try:
+        # B-74: atomic writes for both the pre-restore backup and the
+        # restored MEMORY.md. A crash mid-restore would otherwise leave
+        # MEMORY.md truncated — the very file the user trusts to keep
+        # the agent's long-term memory.
+        from xmclaw.utils.fs_locks import atomic_write_text
         if target.is_file():
-            pre_backup.write_text(
+            atomic_write_text(
+                pre_backup,
                 target.read_text(encoding="utf-8", errors="replace"),
-                encoding="utf-8",
             )
         body = src.read_text(encoding="utf-8", errors="replace")
-        target.write_text(body, encoding="utf-8")
+        atomic_write_text(target, body)
     except OSError as exc:
         return JSONResponse(
             {"ok": False, "error": f"restore failed: {exc}"},
@@ -443,5 +452,9 @@ async def save_memory_file(filename: str, request: Request) -> JSONResponse:
     name = _safe_name(filename)
     md = mdir / name
     content = str(body.get("content", ""))
-    md.write_text(content, encoding="utf-8")
+    # B-74: atomic write so a daemon crash mid-save can't truncate the
+    # user's note. The note_write agent tool already used this pattern
+    # (B-71); the UI's POST path was the missing twin.
+    from xmclaw.utils.fs_locks import atomic_write_text
+    atomic_write_text(md, content)
     return JSONResponse({"ok": True, "name": name})

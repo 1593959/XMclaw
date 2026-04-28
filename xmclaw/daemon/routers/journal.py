@@ -162,7 +162,10 @@ async def upsert_journal_entry(
             "ok": True, "date": canonical, "exists": False, "size": 0,
         })
     jdir.mkdir(parents=True, exist_ok=True)
-    md.write_text(content, encoding="utf-8")
+    # B-74: atomic write — matches the journal_append tool path (B-71)
+    # so daemon crash mid-save can't truncate today's journal.
+    from xmclaw.utils.fs_locks import atomic_write_text
+    atomic_write_text(md, content)
     return JSONResponse({
         "ok": True,
         "date": canonical,

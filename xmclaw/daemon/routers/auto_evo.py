@@ -360,7 +360,10 @@ async def disable_learned_skill(skill_id: str, request: Request) -> JSONResponse
     text = skill_md.read_text(encoding="utf-8", errors="replace")
     new_text = _set_frontmatter_key(text, "disabled", "true" if disable else None)
     if new_text != text:
-        skill_md.write_text(new_text, encoding="utf-8")
+        # B-74: atomic write so a daemon crash mid-save can't truncate
+        # the skill file (matches B-71 for tool writes).
+        from xmclaw.utils.fs_locks import atomic_write_text
+        atomic_write_text(skill_md, new_text)
 
     # Drop loader cache + bump generation so live sessions pick up.
     loader._cache_key = None  # type: ignore[attr-defined]

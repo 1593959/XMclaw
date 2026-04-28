@@ -147,7 +147,10 @@ async def dedupe_active_profile(request: Request) -> JSONResponse:
             })
             continue
         try:
-            path.write_text(after, encoding="utf-8")
+            # B-74: atomic write so a crash mid-dedup can't truncate
+            # the persona file the agent's identity depends on.
+            from xmclaw.utils.fs_locks import atomic_write_text
+            atomic_write_text(path, after)
         except OSError as exc:
             summary.append({"file": canonical, "error": str(exc)})
             continue
@@ -307,7 +310,14 @@ async def upsert_active_profile_file(
     profile_id, pdir = _resolve_active_profile_dir(request)
     pdir.mkdir(parents=True, exist_ok=True)
     target = pdir / canonical
-    target.write_text(content, encoding="utf-8")
+    # B-74: atomic write — agent identity files (SOUL.md / IDENTITY.md /
+    # MEMORY.md / USER.md) get rewritten via this endpoint when the
+    # user edits them in the Web UI Memory page. A daemon crash mid-
+    # save would otherwise corrupt the file the agent's persona depends
+    # on. update_persona / remember tool paths already use this pattern
+    # (B-71); the UI's POST path was the missing twin.
+    from xmclaw.utils.fs_locks import atomic_write_text
+    atomic_write_text(target, content)
 
     # Best-effort: bust the assembled-prompt cache + nudge the running
     # AgentLoop to rebuild on the next turn. The assembler cache is
