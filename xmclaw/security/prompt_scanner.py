@@ -331,9 +331,17 @@ _INDIRECT_INJECTION = [
 _TOOL_HIJACK = [
     _compile(
         "post_to_url",
-        r"\b(?:now|next|then|please)\s+(?:POST|send|submit|upload|fetch|curl)\s+"
-        r"(?:this|the\s+results?|everything|all\s+files)\s+to\s+"
-        r"(?:https?://|`https?://)",
+        # ``(now|please|...) POST/send/upload <pronoun> to <https://...>``
+        # B-21: "these results" / "those files" / "the data" / etc were
+        # missing from the original alternation, so a perfectly natural
+        # phrasing slipped past. Broadened to a permissive pronoun /
+        # short-noun span.
+        r"\b(?:now|next|then|please|finally)\s+"
+        r"(?:POST|send|submit|upload|fetch|curl|exfiltrate)\s+"
+        r"(?:this|that|these|those|the|all|every)?\s*"
+        r"(?:results?|data|files?|content|info(?:rmation)?|"
+        r"output|response|everything)?\s+to\s+"
+        r"(?:https?://|`https?://|http\\?:|attacker|evil)",
         Severity.HIGH, "tool_hijack",
     ),
     _compile(
