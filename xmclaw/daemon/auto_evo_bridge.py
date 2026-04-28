@@ -55,14 +55,16 @@ def auto_evo_repo_path(cfg: dict[str, Any] | None = None) -> Path:
     """Resolve the on-disk path to the xm-auto-evo Node project.
 
     Resolution order:
-      1. cfg["evolution"]["auto_evo"]["path"]
-      2. env XMC_AUTO_EVO_PATH
-      3. **vendored copy** at xmclaw/evolution_core/ (B-17) — the
+      1. cfg["evolution"]["auto_evo"]["path"]   (canonical, B-18)
+      2. cfg["evolution"]["xm_auto_evo"]["path"] (legacy alias, B-17 typo)
+      3. env XMC_AUTO_EVO_PATH
+      4. **vendored copy** at xmclaw/evolution_core/ (B-17) — the
          project ships with its evolution core so a fresh install
          has it out of the box, no separate clone needed
-      4. fallback: ~/Desktop/xm-auto-evo (legacy dev location)
+      5. fallback: ~/Desktop/xm-auto-evo (legacy dev location)
     """
-    section = (cfg or {}).get("evolution", {}).get("auto_evo", {})
+    evo_root = (cfg or {}).get("evolution", {}) or {}
+    section = evo_root.get("auto_evo") or evo_root.get("xm_auto_evo") or {}
     raw = section.get("path") if isinstance(section, dict) else None
     if isinstance(raw, str) and raw.strip():
         return Path(raw).expanduser()
@@ -262,7 +264,7 @@ class AutoEvoProcess:
             return {
                 "ok": False,
                 "error": f"xm-auto-evo not found at {index_js}",
-                "hint": "set evolution.xm_auto_evo.path in config",
+                "hint": "set evolution.auto_evo.path in config",
             }
 
         # Pre-truncate the log so each daemon run starts fresh — old
@@ -281,6 +283,19 @@ class AutoEvoProcess:
 
         env = os.environ.copy()
         env["WORKSPACE"] = str(self._workspace)
+        # B-18 unification: route xm-auto-evo's MEMORY.md / PROFILE.md
+        # reads + writes to the XMclaw-canonical persona files. Without
+        # these env vars the JS side writes a parallel MEMORY.md inside
+        # ~/.xmclaw/auto_evo/ that the agent's system-prompt assembler
+        # never sees — closed-loop breaks.
+        try:
+            from xmclaw.utils.paths import persona_dir as _persona_dir
+            _persona_root = _persona_dir().parent / "profiles" / "default"
+            _persona_root.mkdir(parents=True, exist_ok=True)
+            env.setdefault("XMC_MEMORY_PATH", str(_persona_root / "MEMORY.md"))
+            env.setdefault("XMC_PROFILE_PATH", str(_persona_root / "USER.md"))
+        except Exception:  # noqa: BLE001
+            pass
 
         creationflags = 0
         if os.name == "nt":
@@ -341,6 +356,19 @@ class AutoEvoProcess:
 
         env = os.environ.copy()
         env["WORKSPACE"] = str(self._workspace)
+        # B-18 unification: route xm-auto-evo's MEMORY.md / PROFILE.md
+        # reads + writes to the XMclaw-canonical persona files. Without
+        # these env vars the JS side writes a parallel MEMORY.md inside
+        # ~/.xmclaw/auto_evo/ that the agent's system-prompt assembler
+        # never sees — closed-loop breaks.
+        try:
+            from xmclaw.utils.paths import persona_dir as _persona_dir
+            _persona_root = _persona_dir().parent / "profiles" / "default"
+            _persona_root.mkdir(parents=True, exist_ok=True)
+            env.setdefault("XMC_MEMORY_PATH", str(_persona_root / "MEMORY.md"))
+            env.setdefault("XMC_PROFILE_PATH", str(_persona_root / "USER.md"))
+        except Exception:  # noqa: BLE001
+            pass
 
         creationflags = 0
         if os.name == "nt":

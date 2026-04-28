@@ -125,14 +125,25 @@ class AutoEvoEngine {
       console.log('   👤 用户画像: 未加载');
     }
 
-    // 加载 MEMORY.md 作为跨会话上下文
+    // 加载 MEMORY.md 作为跨会话上下文。
+    //
+    // B-18 unification: prefer the XMclaw-canonical persona MEMORY.md
+    // (~/.xmclaw/persona/profiles/<active>/MEMORY.md) when present —
+    // that's where the agent's `remember` / `learn_about_user` /
+    // `update_persona` tools write, AND where the system-prompt
+    // assembler reads from. Falling back to <workspace>/MEMORY.md
+    // keeps the standalone-CoPaw mode working for users who run
+    // xm-auto-evo without XMclaw.
     try {
-      const memoryPath = path.join(this.workspace, 'MEMORY.md');
+      let memoryPath = process.env.XMC_MEMORY_PATH || null;
+      if (!memoryPath || !fs.existsSync(memoryPath)) {
+        memoryPath = path.join(this.workspace, 'MEMORY.md');
+      }
       if (fs.existsSync(memoryPath)) {
         const memoryContent = fs.readFileSync(memoryPath, 'utf-8');
         this.personality.memory_context = memoryContent.slice(0, 5000);
         const lessonCount = (memoryContent.match(/lesson|教训|经验/gi) || []).length;
-        console.log(`   📚 MEMORY.md 加载成功（约 ${lessonCount} 条教训）`);
+        console.log(`   📚 MEMORY.md 加载成功（约 ${lessonCount} 条教训, src=${memoryPath}）`);
       }
     } catch (e) {
       console.log('   📚 MEMORY.md: 未加载');

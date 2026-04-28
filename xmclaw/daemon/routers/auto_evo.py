@@ -101,7 +101,7 @@ async def start(request: Request) -> JSONResponse:
     proc = getattr(request.app.state, "auto_evo_process", None)
     if proc is None:
         return JSONResponse(
-            {"ok": False, "error": "auto_evo not wired (set evolution.xm_auto_evo.enabled=true)"},
+            {"ok": False, "error": "auto_evo not wired (set evolution.auto_evo.enabled=true)"},
             status_code=400,
         )
     res = await proc.start()

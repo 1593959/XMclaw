@@ -12,13 +12,37 @@
  */
 
 const fs = require('fs').promises;
+const fsSync = require('fs');
 const path = require('path');
+
+// B-18 unification: when running under XMclaw, env XMC_MEMORY_PATH
+// points at the canonical persona MEMORY.md (so xm-auto-evo writes
+// land in the SAME file the agent's `remember`/`learn_about_user`
+// tools update, AND the XMclaw system-prompt assembler reads). Falls
+// back to <workspace>/MEMORY.md for standalone CoPaw mode.
+function _resolveMemoryFile(workspace) {
+    const envPath = process.env.XMC_MEMORY_PATH;
+    if (envPath) {
+        // ensure the parent directory exists
+        try { fsSync.mkdirSync(path.dirname(envPath), { recursive: true }); } catch {}
+        return envPath;
+    }
+    return _resolveMemoryFile(workspace);
+}
+
+function _resolveProfileFile(workspace) {
+    const envPath = process.env.XMC_PROFILE_PATH;
+    if (envPath) {
+        try { fsSync.mkdirSync(path.dirname(envPath), { recursive: true }); } catch {}
+        return envPath;
+    }
+    return path.join(workspace || process.cwd(), 'PROFILE.md');
+}
 
 // 初始化
 async function init(workspace) {
-    const base = workspace || process.cwd();
-    const memFile = path.join(base, 'MEMORY.md');
-    const userFile = path.join(base, 'PROFILE.md');
+    const memFile = _resolveMemoryFile(workspace);
+    const userFile = _resolveProfileFile(workspace);
     
     for (const file of [memFile, userFile]) {
         try { await fs.access(file); } 
@@ -55,7 +79,7 @@ async function write(file, entries, title) {
 // 记录 Gene 固化成功
 async function recordGeneCreated(gene, workspace) {
     await init(workspace);
-    const file = path.join(workspace || process.cwd(), 'MEMORY.md');
+    const file = _resolveMemoryFile(workspace);
     const entries = await read(file);
 
     const content = `Gene 固化: ${gene.id} (VFM: ${gene.vfmScore?.toFixed(2) || '?'})`;
@@ -69,7 +93,7 @@ async function recordGeneCreated(gene, workspace) {
 // 记录 Skill 创建成功
 async function recordSkillCreated(skill, workspace) {
     await init(workspace);
-    const file = path.join(workspace || process.cwd(), 'MEMORY.md');
+    const file = _resolveMemoryFile(workspace);
     const entries = await read(file);
 
     const content = `Skill 创建: ${skill.id || skill.skillId}`;
@@ -83,7 +107,7 @@ async function recordSkillCreated(skill, workspace) {
 // 记录用户偏好
 async function recordUserPreference(preference, workspace) {
     await init(workspace);
-    const file = path.join(workspace || process.cwd(), 'PROFILE.md');
+    const file = _resolveProfileFile(workspace);
     const entries = await read(file);
 
     const content = `${preference}`;
@@ -97,7 +121,7 @@ async function recordUserPreference(preference, workspace) {
 // 记录经验教训
 async function recordLesson(lesson, workspace) {
     await init(workspace);
-    const file = path.join(workspace || process.cwd(), 'MEMORY.md');
+    const file = _resolveMemoryFile(workspace);
     const entries = await read(file);
 
     const content = `教训: ${lesson}`;
@@ -111,7 +135,7 @@ async function recordLesson(lesson, workspace) {
 // 记录工具配置
 async function recordToolConfig(config, workspace) {
     await init(workspace);
-    const file = path.join(workspace || process.cwd(), 'MEMORY.md');
+    const file = _resolveMemoryFile(workspace);
     const entries = await read(file);
 
     const content = `工具配置: ${config}`;
@@ -125,7 +149,7 @@ async function recordToolConfig(config, workspace) {
 // 记录模式发现
 async function recordPattern(pattern, workspace) {
     await init(workspace);
-    const file = path.join(workspace || process.cwd(), 'MEMORY.md');
+    const file = _resolveMemoryFile(workspace);
     const entries = await read(file);
 
     const content = `模式: ${pattern.description || pattern}`;
