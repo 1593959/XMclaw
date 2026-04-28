@@ -736,6 +736,21 @@ def create_app(
         # the StaticFiles mount below; anything else falls through here.
         _static_root = _static_dir.resolve()
 
+        # Cache-Control: no-store on every /ui/* response. The bundle is
+        # plain ESM served straight off disk — no build step, no
+        # content-hashed filenames — so any browser cache will pin
+        # users to a stale file after we ship a fix. ETag-driven
+        # caching also misbehaves: ESM module records get pinned in
+        # the browser's module graph and "刷新页面" doesn't always
+        # bust them. ``no-store`` is heavy-handed but it's the only
+        # thing that reliably matches "the daemon's filesystem is the
+        # source of truth, every navigation re-reads it".
+        _NO_STORE_HEADERS = {
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        }
+
         @app.get("/ui/{spa_path:path}", response_model=None)
         async def ui_spa_fallback(spa_path: str) -> FileResponse:
             if spa_path:
@@ -744,14 +759,30 @@ def create_app(
                 try:
                     candidate.relative_to(_static_root)
                 except ValueError:
-                    return FileResponse(str(_index_html))
+                    return FileResponse(
+                        str(_index_html), headers=_NO_STORE_HEADERS,
+                    )
                 if candidate.is_file():
-                    return FileResponse(str(candidate))
-            return FileResponse(str(_index_html))
+                    return FileResponse(
+                        str(candidate), headers=_NO_STORE_HEADERS,
+                    )
+            return FileResponse(str(_index_html), headers=_NO_STORE_HEADERS)
+
+        # StaticFiles takes precedence for files that exist on disk; we
+        # subclass it just to inject the no-store headers consistently.
+        from starlette.types import Scope
+
+        class _NoStoreStaticFiles(StaticFiles):
+            async def get_response(self, path: str, scope: Scope):  # type: ignore[override]
+                resp = await super().get_response(path, scope)
+                # Never cache anything under /ui/ in dev — see comment above.
+                for k, v in _NO_STORE_HEADERS.items():
+                    resp.headers[k] = v
+                return resp
 
         app.mount(
             "/ui",
-            StaticFiles(directory=str(_static_dir), html=True),
+            _NoStoreStaticFiles(directory=str(_static_dir), html=True),
             name="ui",
         )
 
