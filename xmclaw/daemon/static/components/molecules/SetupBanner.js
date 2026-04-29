@@ -449,23 +449,50 @@ export function SetupBanner({ token }) {
           style="margin-top:.5rem;padding:.5rem .7rem;border-top:1px dashed rgba(200,168,106,.25);display:flex;justify-content:space-between;align-items:center;gap:.6rem;flex-wrap:wrap"
         >
           <div style="flex:1;min-width:0">
-            <div style="font-weight:600">🔄 daemon 未重启 — 已保存的配置还没生效</div>
-            <div style="margin-top:.2rem;color:var(--xmc-fg-muted);font-size:.76rem;line-height:1.5">
-              你已经把 embedding 配置写到了磁盘，但 daemon 是冷加载的——
-              它内存里那一份 config 是 <code>xmclaw start</code> 那一刻的快照。
-              在终端跑 <code>xmclaw stop &amp;&amp; xmclaw start</code>
-              之后向量索引会真正启动，本提示自动消失。
-            </div>
+            ${setup.indexer_start_error ? html`
+              <!-- B-87: indexer try/catch surfaced a concrete reason — show it. -->
+              <div style="font-weight:600;color:#e77f7f">⚠ 向量索引启动失败（daemon 已重启过，但 indexer 起不来）</div>
+              <div style="margin-top:.3rem;font-size:.76rem;line-height:1.5;color:var(--xmc-fg-muted)">
+                <strong style="color:var(--xmc-fg)">原因：</strong>
+                <code style="font-size:.74rem;white-space:pre-wrap">${setup.indexer_start_error}</code>
+              </div>
+              <div style="margin-top:.3rem;font-size:.74rem;line-height:1.55;color:var(--xmc-fg-muted)">
+                常见对应修法：
+                <ul style="margin:.2rem 0 0 1.1rem;padding:0">
+                  <li>Ollama 没起来 → 在终端跑 <code>ollama serve</code>（或检查 base_url）</li>
+                  <li>模型本地没拉 → <code>ollama pull qwen3-embedding:0.6b</code></li>
+                  <li>维度跟历史数据冲突 → 删 <code>~/.xmclaw/v2/memory.db</code> 重启（会丢已有向量索引，不会丢 MEMORY.md）</li>
+                </ul>
+              </div>
+            ` : html`
+              <div style="font-weight:600">🔄 daemon 未重启 — 已保存的配置还没生效</div>
+              <div style="margin-top:.2rem;color:var(--xmc-fg-muted);font-size:.76rem;line-height:1.5">
+                你已经把 embedding 配置写到了磁盘，但 daemon 是冷加载的——
+                它内存里那一份 config 是 <code>xmclaw start</code> 那一刻的快照。
+                在终端跑 <code>xmclaw stop &amp;&amp; xmclaw start</code>
+                之后向量索引会真正启动，本提示自动消失。
+              </div>
+            `}
           </div>
           <div style="display:flex;gap:.3rem;flex-shrink:0">
-            <button
-              type="button"
-              class="xmc-h-btn xmc-h-btn--primary"
-              style="font-size:.72rem;padding:.2rem .55rem"
-              onClick=${() => onCopy("xmclaw stop && xmclaw start")}
-            >
-              复制重启命令
-            </button>
+            ${setup.indexer_start_error ? html`
+              <a
+                href="/ui/doctor"
+                class="xmc-h-btn xmc-h-btn--primary"
+                style="font-size:.72rem;padding:.2rem .55rem;text-decoration:none"
+              >
+                打开 Doctor →
+              </a>
+            ` : html`
+              <button
+                type="button"
+                class="xmc-h-btn xmc-h-btn--primary"
+                style="font-size:.72rem;padding:.2rem .55rem"
+                onClick=${() => onCopy("xmclaw stop && xmclaw start")}
+              >
+                复制重启命令
+              </button>
+            `}
           </div>
         </div>
       ` : null}

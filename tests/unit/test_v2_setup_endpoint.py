@@ -113,6 +113,33 @@ def test_embedding_requires_model_and_dimensions() -> None:
     assert body2["embedding_configured"] is True
 
 
+def test_indexer_start_error_propagates_to_setup(tmp_path, monkeypatch) -> None:
+    """B-87: when lifespan recorded an indexer-start failure, /api/v2/setup
+    surfaces the reason so the UI can show "向量索引启动失败" with the
+    actual cause, not the misleading "等待 daemon 重启" fallback."""
+    cfg = {
+        "evolution": {
+            "memory": {"embedding": {"model": "x", "dimensions": 1024}},
+        },
+    }
+    app = create_app(config=cfg)
+    with TestClient(app) as client:
+        # Inject a synthetic indexer-start error onto app.state, then
+        # query /api/v2/setup and expect it back in the payload.
+        app.state.indexer_start_error = (
+            "indexer 启动抛异常：ConnectionError: Ollama 拒绝连接"
+        )
+        body = _setup(client)
+    assert body["indexer_start_error"] == (
+        "indexer 启动抛异常：ConnectionError: Ollama 拒绝连接"
+    )
+    # embedding_configured stays true (config has it); indexer_running
+    # stays false (state.memory_indexer is None) — UI uses both signals
+    # plus indexer_start_error to render the right banner row.
+    assert body["embedding_configured"] is True
+    assert body["indexer_running"] is False
+
+
 def test_ready_true_when_everything_set(tmp_path, monkeypatch) -> None:
     """Persona check needs an actual filesystem dir. Wire the persona
     resolver to a writable tmp path with a stub SOUL.md."""

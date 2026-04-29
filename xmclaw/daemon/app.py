@@ -477,6 +477,16 @@ def create_app(
         # is configured — fresh installs run without forcing the user
         # to set an embedding key just to boot.
         memory_indexer = None
+        # B-87: record the precise reason indexer didn't start so the UI
+        # can stop guessing. Three failure modes the user actually hits:
+        #   * embedder None — config evolution.memory.embedding missing
+        #     or build_embedding_provider returned None (api_key empty
+        #     for a remote endpoint, etc).
+        #   * vec_provider None — memory.enabled=false in config, or
+        #     factory failed to construct SqliteVecMemory.
+        #   * start() raised — Ollama unreachable, dim mismatch with
+        #     existing memory_vec table, sqlite-vec extension load fail.
+        _app.state.indexer_start_error = None
         try:
             from xmclaw.providers.memory.embedding import build_embedding_provider
             from xmclaw.daemon.memory_indexer import MemoryFileIndexer
@@ -489,6 +499,16 @@ def create_app(
                     if isinstance(p, SqliteVecMemory):
                         vec_provider = p
                         break
+            if embedder is None:
+                _app.state.indexer_start_error = (
+                    "embedder 未构造（evolution.memory.embedding 节缺失或不可用 — "
+                    "检查 api_key / base_url / model）"
+                )
+            elif vec_provider is None:
+                _app.state.indexer_start_error = (
+                    "sqlite_vec 未挂载（memory.enabled=false 或构造失败 — "
+                    "检查 memory.* 节）"
+                )
             if embedder is not None and vec_provider is not None:
                 # Resolve persona dir lazily — same path the agent's
                 # remember tool writes to.
@@ -522,6 +542,9 @@ def create_app(
                 "memory_indexer.start_failed err=%s", exc,
             )
             _app.state.memory_indexer = None
+            _app.state.indexer_start_error = (
+                f"indexer 启动抛异常：{type(exc).__name__}: {exc}"
+            )
 
         # B-51: Auto-Dream cron — daily LLM-driven MEMORY.md
         # compaction. Off when no LLM is configured (we can't rewrite
@@ -1176,6 +1199,10 @@ def create_app(
         # to non-None on success.
         indexer_running = getattr(app.state, "memory_indexer", None) is not None
         dream_running = getattr(app.state, "dream_cron", None) is not None
+        # B-87: precise reason the indexer isn't running, when applicable.
+        # Lets the UI stop guessing "must be a missing restart" when
+        # actually the embedder / vec_provider / start() failed.
+        indexer_start_error = getattr(app.state, "indexer_start_error", None)
 
         missing: list[str] = []
         if not llm_configured:
@@ -1191,6 +1218,7 @@ def create_app(
             "persona_ready": persona_ready,
             "embedding_configured": embedding_configured,
             "indexer_running": indexer_running,
+            "indexer_start_error": indexer_start_error,
             "dream_running": dream_running,
             "missing": missing,
             "ready": len(missing) == 0,
