@@ -53,6 +53,24 @@ async function apiPost(path, token, body) {
   return data;
 }
 
+// B-77: turn an apiGet failure into a human-readable diagnostic.
+// apiGet throws Error("<status> <statusText>: <detail>") on 4xx/5xx and a
+// TypeError("Failed to fetch") on network failure. The previous catch
+// fallbacks all collapsed to a single "endpoint unavailable" string,
+// which conflated four very different states (404 = stale daemon, 401 =
+// token mismatch, 5xx = backend bug, network = daemon down) and made
+// screenshots like "怎么回事" unactionable. This maps each shape to a
+// distinguishable reason — same surface, real signal.
+function _diagnoseFetch(err) {
+  const msg = String((err && err.message) || err || "");
+  if (/^401\b/.test(msg)) return "鉴权失败（pairing token 失效，刷新页面或检查 daemon --no-auth 设置）";
+  if (/^403\b/.test(msg)) return "禁止访问（403）";
+  if (/^404\b/.test(msg)) return "endpoint 不存在（daemon 可能未重启到最新版本）";
+  if (/^5\d\d\b/.test(msg)) return "后端异常（" + msg + "）";
+  if (/Failed to fetch|NetworkError/i.test(msg)) return "无法连接 daemon（进程可能已退出）";
+  return msg || "未知错误";
+}
+
 function todayIso() {
   const d = new Date();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -160,10 +178,10 @@ function ProvidersTab({ token }) {
       .catch(() => setAvailable([]));
     apiGet("/api/v2/memory/indexer_status", token)
       .then(setIndexer)
-      .catch(() => setIndexer({ wired: false, reason: "endpoint unavailable" }));
+      .catch((e) => setIndexer({ wired: false, reason: _diagnoseFetch(e) }));
     apiGet("/api/v2/memory/dream/status", token)
       .then(setDream)
-      .catch(() => setDream({ wired: false, reason: "endpoint unavailable" }));
+      .catch((e) => setDream({ wired: false, reason: _diagnoseFetch(e) }));
   }, [token]);
 
   useEffect(reload, [reload]);
