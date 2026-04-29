@@ -253,9 +253,25 @@ _INVISIBLE_CHARS = "​‌‍﻿‮‭"
 def sanitize_for_prompt(text: str) -> str:
     """Strip prompt-injection markers from user-edited context.
 
-    Defensive only — the injection scanner in :mod:`xmclaw.security` is
-    the authoritative defense. This is a fast first line that runs even
-    if security policy is set to ``detect_only``.
+    Two layers (B-79):
+
+    1. The legacy 8-pattern English blacklist + zero-width-char strip
+       (this module's ``_CONTEXT_THREAT_PATTERNS`` + ``_INVISIBLE_CHARS``).
+       Cheap, runs first.
+    2. The full :mod:`xmclaw.security.prompt_scanner` — 70+ patterns
+       covering Chinese phrasing, jailbreaks, indirect injection, tool
+       hijack, and ``<|system|>``-style role markers. Used to be wired
+       only on the SOURCE_TOOL_RESULT / SOURCE_MEMORY_RECALL paths in
+       agent_loop; persona files (which are equally untrusted when
+       restored from a backup, pulled from a tampered branch, or
+       cross-written by another agent) had nothing.
+
+    Findings at HIGH or above are redacted in place via
+    :func:`xmclaw.security.prompt_scanner.redact` — they leave a
+    ``[redacted:<pattern_id>]`` placeholder, surfacing to the user
+    that something looked off rather than silently swallowing it.
+    LOW / MEDIUM hits pass through (a SOUL.md line discussing the
+    *concept* of prompt injection should not break the prompt).
     """
     out = text
     for ch in _INVISIBLE_CHARS:
@@ -275,4 +291,22 @@ def sanitize_for_prompt(text: str) -> str:
                     new_lines.append(line)
             out = "\n".join(new_lines)
             lower = out.lower()
-    return out
+
+    # B-79: defer-import to avoid a hard core->security edge at module
+    # load time (security is a peer subpackage, not a dependency of
+    # core). The import is cheap; this function is only called during
+    # persona assembly, not on every turn.
+    try:
+        from xmclaw.security.prompt_scanner import (
+            Severity, redact, scan_text,
+        )
+    except Exception:  # noqa: BLE001 — security pkg load failure must
+        # not break the agent's ability to read its own SOUL.md.
+        return out
+    try:
+        result = scan_text(out, severity_threshold=Severity.HIGH)
+    except Exception:  # noqa: BLE001 — same reason as above.
+        return out
+    if not result.any_findings:
+        return out
+    return redact(out, result)
