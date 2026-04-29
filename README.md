@@ -12,9 +12,9 @@
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue?style=for-the-badge" alt="Cross-platform">
 </p>
 
-> ### 🟢 Status: 1.0.0 — Stable (2026-04-25)
+> ### 🟢 Status: 1.0.0 — Stable (2026-04-25, last hardening pass 2026-04-29)
 >
-> **1.0 GA shipped.** The core local-first self-evolving runtime is feature-complete, tested (1387 unit + 1589 total tests), and contract-frozen — breaking changes go to a `2.x` major; new features go to `1.x` minors. See [CHANGELOG.md](CHANGELOG.md) for what shipped, [SECURITY.md](SECURITY.md) for the disclosure policy.
+> **1.0 GA shipped.** The core local-first self-evolving runtime is feature-complete, tested (1565 unit + 1700+ total tests), and contract-frozen — breaking changes go to a `2.x` major; new features go to `1.x` minors. The post-GA hardening pass (B-71 → B-83) added atomic-write durability, full HTTP-auth coverage, OOM-defending request size cap, persona-file prompt-injection scanning, Chinese-language injection patterns, a first-run setup banner, and inline LLM / embedding configuration forms — all without breaking the 1.0 contract. See [CHANGELOG.md](CHANGELOG.md) for what shipped, [SECURITY.md](SECURITY.md) for the disclosure policy.
 >
 > **What 1.0 actually is:**
 >
@@ -27,8 +27,8 @@
 >   | [`phase3_autonomous_evolution_live`](tests/bench/phase3_autonomous_evolution_live.py) | **1.18× session-over-session** after auto-promote | ≥ 1.05× |
 >
 > - A **FastAPI + WebSocket daemon** with pairing-token auth, event replay, and SQLite WAL + FTS5 event persistence.
-> - A **CLI** covering daemon lifecycle / interactive chat / config / secrets / backup / memory / doctor (15 checks, 5 auto-fixable).
-> - A **web UI** (vanilla ESM under `xmclaw/daemon/static/`, no Node build) at `http://127.0.0.1:8765/ui/` — chat workspace + WS streaming markdown.
+> - A **CLI** covering daemon lifecycle / interactive chat / config / secrets / backup / memory / doctor (21 checks, 5 auto-fixable — the most recent additions: `MemoryIndexerCheck`, `MemoryProviderConfigCheck`, `PersonaProfileCheck`, `DreamCronCheck`, `ConfigDeadFieldsCheck`).
+> - A **web UI** (vanilla ESM under `xmclaw/daemon/static/`, no Node build) at `http://127.0.0.1:8765/ui/` — chat workspace + WS streaming markdown + first-run **setup banner** that walks new users through configuring their LLM / persona / embedding inline.
 >
 > **What 1.0 is *not*** (now on the `v2.x` roadmap, deliberately deferred):
 >
@@ -61,7 +61,7 @@ Unlike a stateless chat interface, XMclaw keeps durable memory across sessions, 
 | **🔁 Event Replay** | Every WS reconnect replays the session's events so the UI hydrates without round-tripping the LLM. `/api/v2/events` supports `session_id` / `since` / `types` filters + FTS5 keyword search across payloads. |
 | **🛡️ Anti-Req Driven** | 14 explicit anti-requirements (e.g. *"the scheduler must not trust text that describes a tool call"*, *"no LLM self-grading"*, *"WS auth via pairing token with `close(4401)`"*). Each is encoded in the code path with a dedicated test; violations emit `ANTI_REQ_VIOLATION` events. Scorecard in [docs/V2_STATUS.md](docs/V2_STATUS.md). |
 | **🔌 MCP + Provider Model** | Tools are composed from `ToolProvider` backends: `builtin`, `browser` (Playwright), `lsp`, `mcp_bridge` (stdio / SSE / WS). Add your own by implementing `list_tools()` + `invoke()`. |
-| **🩺 Doctor with Plugins** | `xmclaw doctor` runs **15 built-in checks** (config / LLM / tools / workspace / pairing / port / events db / memory db / skill runtime / connectivity / roadmap lint / stale pid / daemon health / backups / secrets) plus any third-party check on the `xmclaw.doctor` entry-point group. `--fix` auto-remediates 5 of them. |
+| **🩺 Doctor with Plugins** | `xmclaw doctor` runs **21 built-in checks** (config / config-dead-fields / LLM / tools / workspace / pairing / port / events-db / memory-db / memory-providers / memory-provider-config / memory-indexer / persona-profile / dream-cron / skill-runtime / connectivity / roadmap-lint / stale-pid / daemon-health / backups / secrets) plus any third-party check on the `xmclaw.doctor` entry-point group. `--fix` auto-remediates 5 of them. The `config-dead-fields` check (B-78) flags config keys no production code path actually reads — catches stale templates copied from out-of-date docs. |
 | **🔐 Secrets Layer (Phase 1)** | Three-tier resolution: env `XMC_SECRET_<NAME>` > `~/.xmclaw/secrets.json` (chmod 0600) > optional `keyring`. Leave `api_key: ""` in config and set the value via `xmclaw config set-secret llm.anthropic.api_key`; the daemon resolves it at startup without touching your JSON. Phase 2 (Fernet-at-rest) is on the roadmap. |
 | **💾 Backup & Restore** | `xmclaw backup create/list/info/verify/delete/prune/restore` — tar.gz + manifest with sha256 integrity gate, atomic swap on restore, tar-slip defense. `--json` output on every subcommand for pipelines. |
 | **🛰️ Structured Events** | Typed `BehavioralEvent` stream over WebSocket at `/agent/v2/{session_id}`. No custom XML parsing — tool calls are decoded by per-provider translators into a structured `ToolCall` IR. |
@@ -134,6 +134,22 @@ xmclaw stop
 
 ---
 
+## 🚀 First-Run Onboarding
+
+Open `http://127.0.0.1:8765/ui/` after `xmclaw start`. If anything is missing for normal operation, the **Setup Banner** at the top of every page (B-81) tells you exactly what to do — no docs hunt, no config-field hunt:
+
+| Missing | What it means | Fix it from the UI |
+|---|---|---|
+| **LLM API key** | Agent runs in echo mode (just mirrors your messages back) | Click "立即配置" on the banner — opens an inline form (provider · key · base_url · default_model) right there. Submit, restart daemon. (B-83) |
+| **Persona files** | No SOUL.md / IDENTITY.md — agent has no identity | Click "复制命令" to grab `xmclaw onboard`, paste in terminal, follow the wizard. |
+| **Vector embedding** | `memory_search` falls back to keyword scan, no semantic recall | Memory page → Providers tab → "配置 embedding" inline form. Defaults pre-filled for local Ollama (`qwen3-embedding:0.6b @ 1024`). (B-76) |
+
+The banner auto-disappears once everything checks out and re-surfaces if state regresses (e.g. you wipe `config.json`). Per-item dismiss is per-browser (localStorage). Backed by `GET /api/v2/setup`.
+
+If you prefer the CLI: `xmclaw onboard` is an interactive wizard that walks the same three steps end-to-end.
+
+---
+
 ## 🗂️ Architecture
 
 ```
@@ -183,10 +199,13 @@ On MiniMax, the full autonomous cycle lifts session-level mean reward by **18%**
 
 XMclaw treats anything it didn't generate as untrusted:
 
-- **WS pairing token** — the daemon writes a 0600 token to `~/.xmclaw/v2/pairing_token.txt` on start; WS connects without it get `close(4401)`. Constant-time compare (`xmclaw/daemon/auth.py`).
-- **Filesystem sandbox** — `tools.allowed_dirs` in `daemon/config.json` gates every `file_read` / `file_write` / `list_dir` argument; traversal attempts return `ToolResult(ok=False)`.
+- **WS + HTTP pairing token** — the daemon writes a 0600 token to `~/.xmclaw/v2/pairing_token.txt` on start; both the WebSocket handler and (since B-73) the entire `/api/v2/*` HTTP surface enforce it. WS rejects with `close(4401)`; HTTP returns 401. Constant-time compare. Allowlisted: `/health`, `/api/v2/pair` (UI bootstrap).
+- **Request body size cap** — `BodySizeLimitMiddleware` (B-75) rejects any `/api/v2/*` request whose body exceeds 10 MB at 413, before parse. Stops a malicious or accidental 1 GB POST from OOM-killing the daemon.
+- **Filesystem sandbox** — `tools.allowed_dirs` in `daemon/config.json` gates every `file_read` / `file_write` / `list_dir` / `file_delete` argument; traversal attempts return `ToolResult(ok=False)`. `file_delete` refuses to operate on the sandbox root itself.
+- **Atomic file writes** — every persona / notes / journal / config write goes through `atomic_write_text` (tmp + `os.replace`). A daemon crash mid-write can never leave SOUL.md / MEMORY.md / config.json truncated.
 - **No shell metacharacter parsing** — `bash` tool uses `subprocess.run(argv, shell=False)`. Nothing the model emits can be interpreted by a shell.
-- **Prompt-injection scanner** — every `ToolResult.content` passes `xmclaw.security.prompt_scanner.scan_text` before returning to the LLM; detections emit `PROMPT_INJECTION_DETECTED` (anti-req #14).
+- **Prompt-injection scanner** — every `ToolResult.content`, every recalled memory chunk, AND (since B-79) every persona file (SOUL.md / IDENTITY.md / MEMORY.md / USER.md) passes `xmclaw.security.prompt_scanner.scan_text` before reaching the LLM context. HIGH-severity findings get redacted in place with `[redacted:<pattern_id>]`. 90+ patterns covering instruction overrides, role forgery, jailbreaks, exfiltration, indirect injection, and tool hijack — both English AND Chinese (B-80). Detections emit `PROMPT_INJECTION_DETECTED` (anti-req #14).
+- **XSS-safe markdown rendering** — the chat panel renders LLM markdown via `marked@12` + `dompurify@3` from CDN. If DOMPurify fails to load (offline, firewall), B-72 forces fallback to an in-house escape-only renderer instead of letting raw HTML through.
 - **Skill isolation** — `providers/runtime/process.py` runs untrusted skills in subprocesses with wall-clock + CPU caps; no module-level state leaks between runs.
 - **Secret redaction** — `api_key` / `token` / `password` fields go through `utils.redact` before events, logs, or UI rendering.
 - **MCP subprocess boundary** — each MCP server gets its own subprocess with JSON-RPC on stdin/stdout; no env-var inheritance unless the `mcp_servers.*` config declares it.
