@@ -120,11 +120,26 @@ export function SetupBanner({ token }) {
     }
   }, [setup, dismissed]);
 
-  if (!setup || setup.ready) return null;
+  // B-86: detect "config saved on disk but daemon hasn't reloaded".
+  // The setup endpoint reports embedding_configured (cfg dict has the
+  // section) AND indexer_running (lifespan actually constructed an
+  // embedder + vec provider). If the first is true but the second is
+  // false, the most common reason is the user edited config.json or
+  // saved via the inline form but forgot to restart the daemon —
+  // surface that explicitly so the next move is obvious.
+  const restartPending =
+    setup &&
+    setup.embedding_configured === true &&
+    setup.indexer_running === false;
+
+  // Banner shows when EITHER there's something missing OR a restart is
+  // pending. Once everything is missing-clean AND running, hide.
+  if (!setup) return null;
+  if (setup.ready && !restartPending) return null;
 
   // Filter out items the user has explicitly dismissed.
   const visible = (setup.missing || []).filter((m) => !dismissed.has(m));
-  if (visible.length === 0) return null;
+  if (visible.length === 0 && !restartPending) return null;
 
   const onDismiss = (key) => {
     const next = new Set(dismissed);
@@ -222,17 +237,21 @@ export function SetupBanner({ token }) {
     >
       <div style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;margin-bottom:.4rem">
         <strong style="letter-spacing:.05em;text-transform:uppercase;color:var(--color-warning, #c8a86a)">
-          首次设置进度（${visible.length} / ${(setup.missing || []).length} 待完成）
+          ${visible.length > 0
+            ? html`首次设置进度（${visible.length} / ${(setup.missing || []).length} 待完成）`
+            : html`配置已保存，等待 daemon 重启`}
         </strong>
-        <button
-          type="button"
-          class="xmc-h-btn xmc-h-btn--ghost"
-          style="font-size:.7rem;padding:.1rem .5rem"
-          onClick=${onDismissAll}
-          title="全部忽略，恢复进度后会自动重新提示"
-        >
-          全部忽略
-        </button>
+        ${visible.length > 0 ? html`
+          <button
+            type="button"
+            class="xmc-h-btn xmc-h-btn--ghost"
+            style="font-size:.7rem;padding:.1rem .5rem"
+            onClick=${onDismissAll}
+            title="全部忽略，恢复进度后会自动重新提示"
+          >
+            全部忽略
+          </button>
+        ` : null}
       </div>
       ${visible.map((key) => {
         const info = STEP_INFO[key];
@@ -425,6 +444,31 @@ export function SetupBanner({ token }) {
           </div>
         `;
       })}
+      ${restartPending ? html`
+        <div
+          style="margin-top:.5rem;padding:.5rem .7rem;border-top:1px dashed rgba(200,168,106,.25);display:flex;justify-content:space-between;align-items:center;gap:.6rem;flex-wrap:wrap"
+        >
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600">🔄 daemon 未重启 — 已保存的配置还没生效</div>
+            <div style="margin-top:.2rem;color:var(--xmc-fg-muted);font-size:.76rem;line-height:1.5">
+              你已经把 embedding 配置写到了磁盘，但 daemon 是冷加载的——
+              它内存里那一份 config 是 <code>xmclaw start</code> 那一刻的快照。
+              在终端跑 <code>xmclaw stop &amp;&amp; xmclaw start</code>
+              之后向量索引会真正启动，本提示自动消失。
+            </div>
+          </div>
+          <div style="display:flex;gap:.3rem;flex-shrink:0">
+            <button
+              type="button"
+              class="xmc-h-btn xmc-h-btn--primary"
+              style="font-size:.72rem;padding:.2rem .55rem"
+              onClick=${() => onCopy("xmclaw stop && xmclaw start")}
+            >
+              复制重启命令
+            </button>
+          </div>
+        </div>
+      ` : null}
     </div>
   `;
 }
