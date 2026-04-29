@@ -49,8 +49,8 @@ const STEP_INFO = {
   embedding: {
     title: "向量索引未启用",
     body: "memory_search 当前只能做关键词匹配。配置一个 embedding provider 后会获得真正的语义检索。",
-    action: "前往配置",
-    href: "/ui/memory",
+    action: "立即配置",
+    form: "embedding",  // B-84: inline form (twin of B-83 LLM form)
   },
 };
 
@@ -86,6 +86,17 @@ export function SetupBanner({ token }) {
     default_model: "",
   });
   const [llmSaving, setLlmSaving] = useState(false);
+  // B-84: form state for the embedding panel. Defaults are pre-filled
+  // for the local Ollama path (qwen3-embedding:0.6b @ 1024) — same
+  // defaults as the Memory page's inline form (B-76).
+  const [embForm, setEmbForm] = useState({
+    provider: "openai",
+    base_url: "http://127.0.0.1:11434/v1",
+    model: "qwen3-embedding:0.6b",
+    dimensions: 1024,
+    api_key: "",
+  });
+  const [embSaving, setEmbSaving] = useState(false);
 
   const reload = useCallback(() => {
     apiGet("/api/v2/setup", token)
@@ -134,6 +145,40 @@ export function SetupBanner({ token }) {
       toast.success(`已复制到剪贴板：${cmd}`);
     } catch (_) {
       toast.info(`手动复制：${cmd}`);
+    }
+  };
+
+  // B-84: submit the inline embedding form. Hits the same endpoint
+  // as Memory → Providers → 配置 embedding (B-76).
+  const onSaveEmbedding = async () => {
+    if (!embForm.model.trim()) {
+      toast.error("model 不能为空");
+      return;
+    }
+    if (!embForm.dimensions || embForm.dimensions <= 0) {
+      toast.error("dimensions 必须 > 0（要和模型实际输出维度一致）");
+      return;
+    }
+    setEmbSaving(true);
+    try {
+      const url = "/api/v2/memory/embedding/configure" +
+        (token ? `?token=${encodeURIComponent(token)}` : "");
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(embForm),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      toast.success("已保存 — 重启 daemon 生效");
+      setOpenForm(null);
+      reload();
+    } catch (e) {
+      toast.error("保存失败：" + (e.message || e));
+    } finally {
+      setEmbSaving(false);
     }
   };
 
@@ -198,13 +243,13 @@ export function SetupBanner({ token }) {
         //   - info.href  → plain navigation link
         //   - info.copyCmd → copy-to-clipboard
         let actionBtn;
-        if (info.form === "llm") {
+        if (info.form === "llm" || info.form === "embedding") {
           actionBtn = html`
             <button
               type="button"
               class="xmc-h-btn xmc-h-btn--primary"
               style="font-size:.72rem;padding:.2rem .55rem"
-              onClick=${() => setOpenForm(expanded ? null : "llm")}
+              onClick=${() => setOpenForm(expanded ? null : info.form)}
             >
               ${expanded ? "收起" : info.action}
             </button>
@@ -311,6 +356,70 @@ export function SetupBanner({ token }) {
               <div style="margin-top:.4rem;font-size:.7rem;color:var(--xmc-fg-muted)">
                 提示：base_url 和 default_model 是可选的；不填用 provider 默认值。<br/>
                 想用第三方兼容服务（MiniMax / DashScope / Moonshot 等）？把它们的 base_url 填上，把对应模型 ID 填到 default_model。
+              </div>
+            ` : null}
+            ${expanded && info.form === "embedding" ? html`
+              <div style="margin-top:.6rem;display:grid;grid-template-columns:auto 1fr;gap:.4rem .6rem;align-items:center;font-size:.78rem;padding:.5rem;background:rgba(0,0,0,.2);border-radius:4px">
+                <label>provider</label>
+                <select
+                  value=${embForm.provider}
+                  onChange=${(e) => setEmbForm({ ...embForm, provider: e.target.value })}
+                  class="xmc-h-input"
+                >
+                  <option value="openai">openai (兼容 OpenAI / Ollama / vLLM / DashScope)</option>
+                </select>
+                <label>base_url</label>
+                <input
+                  type="text"
+                  class="xmc-h-input"
+                  value=${embForm.base_url}
+                  placeholder="http://127.0.0.1:11434/v1"
+                  onInput=${(e) => setEmbForm({ ...embForm, base_url: e.target.value })}
+                />
+                <label>model</label>
+                <input
+                  type="text"
+                  class="xmc-h-input"
+                  value=${embForm.model}
+                  placeholder="qwen3-embedding:0.6b"
+                  onInput=${(e) => setEmbForm({ ...embForm, model: e.target.value })}
+                />
+                <label>dimensions</label>
+                <input
+                  type="number"
+                  class="xmc-h-input"
+                  value=${embForm.dimensions}
+                  min="1"
+                  onInput=${(e) => setEmbForm({ ...embForm, dimensions: Number(e.target.value) || 0 })}
+                />
+                <label>api_key</label>
+                <input
+                  type="password"
+                  class="xmc-h-input"
+                  value=${embForm.api_key}
+                  placeholder="（Ollama 本地不需要）"
+                  onInput=${(e) => setEmbForm({ ...embForm, api_key: e.target.value })}
+                  autocomplete="new-password"
+                />
+              </div>
+              <div style="margin-top:.5rem;display:flex;gap:.4rem;justify-content:flex-end">
+                <button
+                  type="button"
+                  class="xmc-h-btn xmc-h-btn--ghost"
+                  style="font-size:.75rem"
+                  onClick=${() => setOpenForm(null)}
+                >取消</button>
+                <button
+                  type="button"
+                  class="xmc-h-btn xmc-h-btn--primary"
+                  style="font-size:.75rem"
+                  disabled=${embSaving}
+                  onClick=${onSaveEmbedding}
+                >${embSaving ? "保存中…" : "保存（需重启 daemon）"}</button>
+              </div>
+              <div style="margin-top:.4rem;font-size:.7rem;color:var(--xmc-fg-muted)">
+                提示：dimensions 必须和模型实际输出维度一致 — qwen3-embedding:0.6b = 1024，
+                text-embedding-3-small = 1536，bge-m3 = 1024。错位会让向量表悄悄写脏。
               </div>
             ` : null}
           </div>
