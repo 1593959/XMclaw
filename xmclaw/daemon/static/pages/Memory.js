@@ -134,6 +134,16 @@ function ProvidersTab({ token }) {
   // B-53: backup list (lazy-loaded on toggle).
   const [showBackups, setShowBackups] = useState(false);
   const [backups, setBackups] = useState(null);
+  // B-76: inline embedding-config form (only shown when indexer is unwired).
+  const [showEmb, setShowEmb] = useState(false);
+  const [embForm, setEmbForm] = useState({
+    provider: "openai",
+    base_url: "http://127.0.0.1:11434/v1",
+    model: "qwen3-embedding:0.6b",
+    dimensions: 1024,
+    api_key: "",
+  });
+  const [embSaving, setEmbSaving] = useState(false);
 
   const reload = useCallback(() => {
     apiGet("/api/v2/memory/providers", token)
@@ -213,6 +223,36 @@ function ProvidersTab({ token }) {
     }
   };
 
+  // B-76: save the embedding section via POST /api/v2/memory/embedding/configure.
+  // Same shape as onSwitch — daemon restart still required to actually
+  // pick up the new embedder + start the indexer.
+  const onSaveEmbedding = async () => {
+    if (!embForm.model) {
+      toast.error("model 不能为空");
+      return;
+    }
+    if (!embForm.dimensions || embForm.dimensions <= 0) {
+      toast.error("dimensions 必须 > 0（要和模型实际输出维度一致）");
+      return;
+    }
+    setEmbSaving(true);
+    try {
+      const r = await apiPost(
+        "/api/v2/memory/embedding/configure", token, embForm,
+      );
+      if (r.ok) {
+        toast.success("已保存 — 重启 daemon 生效");
+        setShowEmb(false);
+      } else {
+        toast.error("保存失败：" + (r.error || "未知"));
+      }
+    } catch (e) {
+      toast.error("保存失败：" + (e.message || e));
+    } finally {
+      setEmbSaving(false);
+    }
+  };
+
   const onSwitch = async (newProvider) => {
     if (!newProvider || newProvider === selected) return;
     setBusy(true);
@@ -265,9 +305,79 @@ function ProvidersTab({ token }) {
                     </div>
                   `
                 : html`
-                    <div style="margin-top:.3rem;color:var(--xmc-fg-muted);font-size:.78rem">
-                      ⚠ ${indexer.reason || '未启用'}（设置 <code>evolution.memory.embedding</code> 启用语义检索）
+                    <div style="margin-top:.3rem;color:var(--xmc-fg-muted);font-size:.78rem;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
+                      <span>⚠ ${indexer.reason || '未启用'}</span>
+                      <button
+                        type="button"
+                        class="xmc-h-btn xmc-h-btn--ghost"
+                        style="font-size:.7rem;padding:.15rem .5rem"
+                        onClick=${() => setShowEmb((v) => !v)}
+                      >
+                        ${showEmb ? '收起' : '配置 embedding'}
+                      </button>
                     </div>
+                    ${showEmb ? html`
+                      <div style="margin-top:.6rem;display:grid;grid-template-columns:auto 1fr;gap:.4rem .6rem;align-items:center;font-size:.78rem">
+                        <label>provider</label>
+                        <select
+                          value=${embForm.provider}
+                          onChange=${(e) => setEmbForm({ ...embForm, provider: e.target.value })}
+                          class="xmc-h-input"
+                        >
+                          <option value="openai">openai (covers Ollama / vLLM / DashScope)</option>
+                        </select>
+                        <label>base_url</label>
+                        <input
+                          type="text"
+                          class="xmc-h-input"
+                          value=${embForm.base_url}
+                          placeholder="http://127.0.0.1:11434/v1"
+                          onInput=${(e) => setEmbForm({ ...embForm, base_url: e.target.value })}
+                        />
+                        <label>model</label>
+                        <input
+                          type="text"
+                          class="xmc-h-input"
+                          value=${embForm.model}
+                          placeholder="qwen3-embedding:0.6b"
+                          onInput=${(e) => setEmbForm({ ...embForm, model: e.target.value })}
+                        />
+                        <label>dimensions</label>
+                        <input
+                          type="number"
+                          class="xmc-h-input"
+                          value=${embForm.dimensions}
+                          min="1"
+                          onInput=${(e) => setEmbForm({ ...embForm, dimensions: Number(e.target.value) || 0 })}
+                        />
+                        <label>api_key</label>
+                        <input
+                          type="password"
+                          class="xmc-h-input"
+                          value=${embForm.api_key}
+                          placeholder="（Ollama 本地不需要）"
+                          onInput=${(e) => setEmbForm({ ...embForm, api_key: e.target.value })}
+                        />
+                      </div>
+                      <div style="margin-top:.6rem;display:flex;gap:.4rem;justify-content:flex-end">
+                        <button
+                          type="button"
+                          class="xmc-h-btn xmc-h-btn--ghost"
+                          style="font-size:.75rem"
+                          onClick=${() => setShowEmb(false)}
+                        >取消</button>
+                        <button
+                          type="button"
+                          class="xmc-h-btn xmc-h-btn--primary"
+                          style="font-size:.75rem"
+                          disabled=${embSaving}
+                          onClick=${onSaveEmbedding}
+                        >${embSaving ? '保存中…' : '保存（需重启 daemon）'}</button>
+                      </div>
+                      <div style="margin-top:.4rem;font-size:.7rem;color:var(--xmc-fg-muted)">
+                        提示：dimensions 必须和模型实际输出维度一致——qwen3-embedding:0.6b = 1024，text-embedding-3-small = 1536。
+                      </div>
+                    ` : null}
                   `}
             </div>
           `

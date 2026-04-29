@@ -97,6 +97,108 @@ async def list_available_providers() -> JSONResponse:
     })
 
 
+@router.post("/embedding/configure")
+async def configure_embedding(request: Request) -> JSONResponse:
+    """B-76: write the ``evolution.memory.embedding`` config section
+    from the Web UI.
+
+    Body fields:
+      * ``provider``    str — currently ``"openai"`` (covers OpenAI,
+                        Ollama, vLLM, DashScope; build_embedding_provider
+                        normalises non-openai shapes to the openai
+                        client). Required.
+      * ``base_url``    str — e.g. ``http://127.0.0.1:11434/v1`` for a
+                        local Ollama. Optional (defaults to
+                        ``https://api.openai.com/v1``).
+      * ``model``       str — model id. Required.
+      * ``dimensions``  int — vector dim, must match what the model
+                        actually emits or the indexer raises mid-batch.
+                        Required (no sensible default — wrong dim
+                        silently corrupts the vec table).
+      * ``api_key``     str | empty — auth key. Optional for localhost
+                        endpoints (B-43).
+      * ``timeout_s``, ``max_batch_size`` — optional, sane defaults.
+
+    Same shape as ``/providers/switch``: writes config to disk and
+    updates in-memory config; daemon restart still required to actually
+    rebuild the embedder + start the indexer (start is wired in the
+    lifespan, not on config change).
+    """
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+
+    provider = str(body.get("provider", "")).strip().lower() or "openai"
+    model = str(body.get("model", "")).strip()
+    if not model:
+        return JSONResponse(
+            {"ok": False, "error": "missing 'model'"}, status_code=400,
+        )
+    try:
+        dimensions = int(body.get("dimensions") or 0)
+    except (TypeError, ValueError):
+        dimensions = 0
+    if dimensions <= 0:
+        return JSONResponse(
+            {"ok": False, "error": "dimensions must be a positive integer"},
+            status_code=400,
+        )
+
+    section: dict[str, Any] = {
+        "provider": provider,
+        "model": model,
+        "dimensions": dimensions,
+    }
+    base_url = str(body.get("base_url", "")).strip()
+    if base_url:
+        section["base_url"] = base_url
+    api_key = str(body.get("api_key", "")).strip()
+    if api_key:
+        section["api_key"] = api_key
+    if "timeout_s" in body:
+        try:
+            section["timeout_s"] = float(body["timeout_s"])
+        except (TypeError, ValueError):
+            pass
+    if "max_batch_size" in body:
+        try:
+            section["max_batch_size"] = int(body["max_batch_size"])
+        except (TypeError, ValueError):
+            pass
+
+    state = request.app.state
+    cfg = getattr(state, "config", None)
+    if cfg is None:
+        return JSONResponse(
+            {"ok": False, "error": "no config attached to daemon"}, status_code=500,
+        )
+    config_path = getattr(state, "config_path", None)
+    cfg.setdefault("evolution", {}).setdefault("memory", {})["embedding"] = section
+
+    if config_path:
+        try:
+            from pathlib import Path as _P
+            from xmclaw.utils.fs_locks import atomic_write_text
+            p = _P(config_path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(p, json.dumps(cfg, indent=2, ensure_ascii=False))
+        except OSError as exc:
+            return JSONResponse(
+                {"ok": False, "error": f"config write failed: {exc}"},
+                status_code=500,
+            )
+
+    return JSONResponse({
+        "ok": True,
+        "embedding": section,
+        "restart_required": True,
+        "config_path": str(config_path) if config_path else None,
+    })
+
+
 @router.post("/providers/switch")
 async def switch_provider(request: Request) -> JSONResponse:
     """Switch the external memory provider. Persists to config.
