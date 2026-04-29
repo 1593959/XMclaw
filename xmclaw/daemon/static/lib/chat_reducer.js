@@ -49,6 +49,30 @@ function upsertById(messages, id, patcher) {
   return next;
 }
 
+// B-89: when a fresh assistant turn starts (new correlation_id), any
+// PRIOR assistant bubble still in 'thinking' / 'streaming' state has
+// effectively been abandoned — its terminal LLM_RESPONSE event never
+// arrived (WS reconnect mid-stream / daemon kill / etc). Without this,
+// the old bubble keeps the "正在调用 LLM · Ns" header running forever
+// underneath the actual new assistant reply, which is the bug the
+// user reported (11752s ticking on a stale bubble while a fresh
+// answer is already streaming below it).
+function _finalizeAbandoned(messages, newAssistantId) {
+  let touched = false;
+  const next = messages.map((m) => {
+    if (m.id === newAssistantId) return m;
+    if (m.role !== "assistant") return m;
+    if (m.status !== "thinking" && m.status !== "streaming") return m;
+    touched = true;
+    return {
+      ...m,
+      status: "complete",  // best-effort: don't fail loud, just stop the spinner
+      phase: null,         // kill the "正在调用 LLM · Ns" indicator
+    };
+  });
+  return touched ? next : messages;
+}
+
 export function applyEvent(chat, envelope) {
   if (!envelope || typeof envelope !== "object") return chat;
   const t = envelope.type;
@@ -94,12 +118,16 @@ export function applyEvent(chat, envelope) {
       // token doesn't feel like a hang. Upserts the existing thinking
       // bubble; create one if our optimistic-echo missed (race).
       const id = corr;
-      const idx = chat.messages.findIndex((m) => m.id === id);
+      // B-89: a new turn starting → any abandoned earlier bubble must
+      // stop spinning. Same call-site exists in llm_chunk + tool_call
+      // below for the cases where llm_request didn't fire first.
+      const cleaned = _finalizeAbandoned(chat.messages, id);
+      const idx = cleaned.findIndex((m) => m.id === id);
       if (idx === -1) {
         return {
           ...chat,
           pendingAssistantId: id,
-          messages: chat.messages.concat({
+          messages: cleaned.concat({
             id,
             role: "assistant",
             content: "",
@@ -113,7 +141,7 @@ export function applyEvent(chat, envelope) {
       return {
         ...chat,
         pendingAssistantId: id,
-        messages: upsertById(chat.messages, id, (m) => ({
+        messages: upsertById(cleaned, id, (m) => ({
           ...m,
           phase: "calling_llm",
         })),
@@ -149,12 +177,17 @@ export function applyEvent(chat, envelope) {
         : typeof payload.content === "string"
           ? payload.content
           : "";
-      const idx = chat.messages.findIndex((m) => m.id === id);
+      // B-89: stop any prior abandoned-streaming bubble before this
+      // turn starts producing chunks. Some providers skip llm_request
+      // and start straight from llm_chunk, so we need this guard here
+      // too.
+      const cleaned = _finalizeAbandoned(chat.messages, id);
+      const idx = cleaned.findIndex((m) => m.id === id);
       if (idx === -1) {
         return {
           ...chat,
           pendingAssistantId: id,
-          messages: chat.messages.concat({
+          messages: cleaned.concat({
             id,
             role: "assistant",
             content: delta,
@@ -167,7 +200,7 @@ export function applyEvent(chat, envelope) {
       return {
         ...chat,
         pendingAssistantId: id,
-        messages: upsertById(chat.messages, id, (m) => ({
+        messages: upsertById(cleaned, id, (m) => ({
           ...m,
           content: m.content + delta,
           status: "streaming",
@@ -231,12 +264,16 @@ export function applyEvent(chat, envelope) {
         status: "running",
         result: null,
       };
-      const idx = chat.messages.findIndex((m) => m.id === aid);
+      // B-89: tool_call_emitted can be the FIRST event for a turn when
+      // the LLM goes straight to a tool without prefacing prose. Same
+      // abandoned-bubble guard as llm_request / llm_chunk.
+      const cleanedTC = _finalizeAbandoned(chat.messages, aid);
+      const idx = cleanedTC.findIndex((m) => m.id === aid);
       if (idx === -1) {
         // No assistant bubble yet — create one with the tool card attached.
         return {
           ...chat,
-          messages: chat.messages.concat({
+          messages: cleanedTC.concat({
             id: aid,
             role: "assistant",
             content: "",
@@ -248,7 +285,7 @@ export function applyEvent(chat, envelope) {
       }
       return {
         ...chat,
-        messages: upsertById(chat.messages, aid, (m) => ({
+        messages: upsertById(cleanedTC, aid, (m) => ({
           ...m,
           toolCalls: (m.toolCalls || []).concat(tc),
         })),

@@ -149,6 +149,32 @@ def test_chat_reducer_exports_phase1_event_list() -> None:
     assert "PHASE_1_EVENT_TYPES" in src
 
 
+def test_chat_reducer_finalizes_abandoned_bubbles_on_new_turn() -> None:
+    """B-89 regression guard. When a fresh turn starts (new
+    correlation_id), every entry-point — llm_request, llm_chunk, and
+    tool_call_emitted — must run _finalizeAbandoned so a stale
+    'thinking'/'streaming' bubble from a prior dropped turn stops
+    showing the '正在调用 LLM · Ns' indicator. Without this guard, an
+    abandoned bubble keeps ticking forever underneath the live new
+    answer.
+    """
+    src = read("lib/chat_reducer.js")
+    # Helper must be defined.
+    assert "function _finalizeAbandoned" in src
+    # Helper must clear status + phase together (not one without the
+    # other) — otherwise the spinner header keeps rendering.
+    assert 'status: "complete"' in src
+    assert "phase: null" in src
+    # Each new-turn entry-point invokes the helper. We can't easily
+    # distinguish call sites in plain text, but at least three calls
+    # must exist (one per entry-point).
+    call_count = src.count("_finalizeAbandoned(")
+    assert call_count >= 3, (
+        f"expected ≥3 _finalizeAbandoned() calls (llm_request + llm_chunk "
+        f"+ tool_call_emitted), found {call_count}"
+    )
+
+
 # ── lib/markdown.js: XSS safety + fence support ────────────────────────
 
 
