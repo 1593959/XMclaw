@@ -25,6 +25,7 @@ import { Backdrop } from "./Backdrop.js";
 import { THEMES, applyTheme, readActiveTheme, listThemes } from "../../lib/hermes-themes.js";
 import { apiGet } from "../../lib/api.js";
 import { confirmDialog } from "../../lib/dialog.js";
+import { SetupBanner } from "../molecules/SetupBanner.js";
 
 // Lucide-style inline SVG icons. Each takes className for sizing.
 // Direct shape ports of the Hermes nav-icon set so visual size + stroke
@@ -486,6 +487,7 @@ export function AppShell({ activePath, brand = "XMclaw", subBrand = "Agent", tok
         </aside>
 
         <main class="xmc-h-main" role="main">
+          <${SetupBanner} token=${token} />
           ${children}
         </main>
       </div>

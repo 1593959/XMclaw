@@ -1043,6 +1043,88 @@ def create_app(
             },
         })
 
+    # ── /api/v2/setup ─────────────────────────────────────────────
+    # B-81: aggregate "is this daemon ready for a new user yet?"
+    # checklist used by the Web UI's SetupBanner. Each field is a
+    # boolean that maps to one onboarding step; the front-end
+    # constructs Chinese-language guidance from these flags.
+    #
+    # Distinct from /api/v2/status (which surfaces *current runtime*)
+    # in that this endpoint answers "does the user need to do something
+    # before XMclaw is useful?" — a question status was never designed
+    # to answer.
+    @app.get("/api/v2/setup")
+    async def setup_status() -> JSONResponse:
+        from xmclaw.daemon.factory import _resolve_persona_profile_dir
+
+        cfg = config or {}
+
+        # 1. LLM key configured? Walk both default-provider blocks AND
+        # named profiles, since an Anthropic-only setup with the key
+        # under llm.profiles[0] should still count.
+        llm_section = cfg.get("llm") or {}
+        llm_configured = False
+        llm_provider_used: str | None = None
+        for provider_name in ("anthropic", "openai"):
+            block = llm_section.get(provider_name) or {}
+            if isinstance(block, dict) and (block.get("api_key") or "").strip():
+                llm_configured = True
+                if llm_provider_used is None:
+                    llm_provider_used = provider_name
+        for prof in (llm_section.get("profiles") or []):
+            if isinstance(prof, dict) and (prof.get("api_key") or "").strip():
+                llm_configured = True
+                if llm_provider_used is None:
+                    llm_provider_used = str(prof.get("provider") or "?")
+
+        # 2. Persona profile initialised? Bare-minimum SOUL.md or
+        # IDENTITY.md present in the active profile dir tells us
+        # `xmclaw onboard` (or its hand-written equivalent) has run.
+        persona_ready = False
+        try:
+            pdir = _resolve_persona_profile_dir(cfg)
+            if pdir.is_dir():
+                for canon in ("SOUL.md", "IDENTITY.md"):
+                    if (pdir / canon).is_file():
+                        persona_ready = True
+                        break
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 3. Embedding configured? Same key the indexer reads.
+        emb_section = (
+            ((cfg.get("evolution") or {}).get("memory") or {}).get("embedding")
+        )
+        embedding_configured = bool(
+            isinstance(emb_section, dict)
+            and (emb_section.get("model") or "").strip()
+            and emb_section.get("dimensions")
+        )
+
+        # Indexer / dream cron actually running? Lifespan sets these
+        # to non-None on success.
+        indexer_running = getattr(app.state, "memory_indexer", None) is not None
+        dream_running = getattr(app.state, "dream_cron", None) is not None
+
+        missing: list[str] = []
+        if not llm_configured:
+            missing.append("llm")
+        if not persona_ready:
+            missing.append("persona")
+        if not embedding_configured:
+            missing.append("embedding")
+
+        return JSONResponse({
+            "llm_configured": llm_configured,
+            "llm_provider": llm_provider_used,
+            "persona_ready": persona_ready,
+            "embedding_configured": embedding_configured,
+            "indexer_running": indexer_running,
+            "dream_running": dream_running,
+            "missing": missing,
+            "ready": len(missing) == 0,
+        })
+
     # ── /api/v2/events — event-log replay / search (Epic #13) ────
     # When the bus is an SqliteEventBus, this endpoint exposes the
     # durable log: filter by session_id / since / until / types, or
