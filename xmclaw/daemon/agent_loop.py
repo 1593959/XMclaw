@@ -1228,6 +1228,26 @@ class AgentLoop:
                             embedding=q_embedding,
                             k=max(self._memory_top_k * 4, 12),
                         )
+                    # B-85: when no embedder is wired, the query above
+                    # degrades to a substring LIKE — for "Where did the
+                    # build break?" against a stored "The build broke at
+                    # line 47 of main.py" the LIKE returns nothing, even
+                    # though the items are clearly relevant. Fall back
+                    # to "most-recent in the layer" so cross-session
+                    # recall still works pre-embedder. Skipped when the
+                    # query DID match (don't dilute precise hits) and
+                    # when an embedder is wired (a vector miss is a
+                    # genuine "nothing semantically close").
+                    if not hits and q_embedding is None:
+                        try:
+                            hits = await self._memory_manager.query(
+                                layer="long",
+                                text=None,
+                                embedding=None,
+                                k=max(self._memory_top_k * 4, 12),
+                            )
+                        except Exception:  # noqa: BLE001
+                            hits = []
                 else:
                     hits = []
                 # Filter out current session + very-recent items, then
