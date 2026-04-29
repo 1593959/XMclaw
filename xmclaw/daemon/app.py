@@ -1043,6 +1043,77 @@ def create_app(
             },
         })
 
+    # ── /api/v2/llm/configure ─────────────────────────────────────
+    # B-83: focused single-section LLM endpoint, twin of
+    # /api/v2/memory/embedding/configure (B-76). The Web UI's
+    # SetupBanner pops an inline form on missing.llm and POSTs here
+    # rather than dropping the user into the generic Config page.
+    @app.put("/api/v2/llm/configure")
+    @app.post("/api/v2/llm/configure")
+    async def configure_llm(payload: dict[str, Any]) -> JSONResponse:
+        if not isinstance(payload, dict):
+            return JSONResponse(
+                {"ok": False, "error": "body must be a JSON object"},
+                status_code=400,
+            )
+        provider = str(payload.get("provider", "")).strip().lower()
+        if provider not in ("anthropic", "openai"):
+            return JSONResponse(
+                {"ok": False, "error": "provider must be 'anthropic' or 'openai'"},
+                status_code=400,
+            )
+        api_key = str(payload.get("api_key", "")).strip()
+        if not api_key:
+            return JSONResponse(
+                {"ok": False, "error": "api_key is required"}, status_code=400,
+            )
+        # base_url + default_model are optional — sane defaults if omitted.
+        base_url = str(payload.get("base_url", "")).strip()
+        default_model = str(payload.get("default_model", "")).strip()
+
+        if config is None:
+            return JSONResponse(
+                {"ok": False, "error": "no config attached to daemon"},
+                status_code=500,
+            )
+
+        block = config.setdefault("llm", {}).setdefault(provider, {})
+        if not isinstance(block, dict):
+            block = {}
+            config["llm"][provider] = block
+        block["api_key"] = api_key
+        if base_url:
+            block["base_url"] = base_url
+        if default_model:
+            block["default_model"] = default_model
+        # Set this provider as default if none is set yet — first-config
+        # case: the user just told us which one they have a key for, so
+        # we shouldn't leave default_provider pointing at the empty other.
+        llm_section = config["llm"]
+        if not llm_section.get("default_provider"):
+            llm_section["default_provider"] = provider
+
+        if config_path:
+            try:
+                from xmclaw.utils.fs_locks import atomic_write_text
+                p = Path(str(config_path))
+                p.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_text(
+                    p, json.dumps(config, indent=2, ensure_ascii=False),
+                )
+            except OSError as exc:
+                return JSONResponse(
+                    {"ok": False, "error": f"config write failed: {exc}"},
+                    status_code=500,
+                )
+        return JSONResponse({
+            "ok": True,
+            "provider": provider,
+            "default_provider": llm_section.get("default_provider"),
+            "restart_required": True,
+            "config_path": str(config_path) if config_path else None,
+        })
+
     # ── /api/v2/setup ─────────────────────────────────────────────
     # B-81: aggregate "is this daemon ready for a new user yet?"
     # checklist used by the Web UI's SetupBanner. Each field is a

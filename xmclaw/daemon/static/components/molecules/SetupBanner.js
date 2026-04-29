@@ -27,12 +27,17 @@ const DISMISS_KEY = "xmc-setup-dismissed-set";
 
 // Per-missing-item descriptor: label + (Chinese) what's broken + a
 // quick-jump callback. Ordered by priority — LLM > persona > embedding.
+// ``form`` field opts the row into B-83's inline-expand UX: rather
+// than navigating away, clicking the action toggles a form right in
+// the banner. ``href`` is the fallback for items without an inline
+// form (persona requires a CLI command, embedding lives on its own
+// dedicated page that already has an inline form).
 const STEP_INFO = {
   llm: {
     title: "未配置 LLM API key",
     body: "Agent 当前以 echo 模式运行（只回显消息），需要至少一个 provider 的 API key 才能真正对话。",
-    action: "前往配置",
-    href: "/ui/config",
+    action: "立即配置",
+    form: "llm",  // B-83: inline form
   },
   persona: {
     title: "Persona 文件未初始化",
@@ -71,6 +76,16 @@ function _writeDismissed(set) {
 export function SetupBanner({ token }) {
   const [setup, setSetup] = useState(null);
   const [dismissed, setDismissed] = useState(_readDismissed);
+  // B-83: which inline form (if any) is currently expanded.
+  const [openForm, setOpenForm] = useState(null);
+  // Form state for the LLM panel.
+  const [llmForm, setLlmForm] = useState({
+    provider: "anthropic",
+    api_key: "",
+    base_url: "",
+    default_model: "",
+  });
+  const [llmSaving, setLlmSaving] = useState(false);
 
   const reload = useCallback(() => {
     apiGet("/api/v2/setup", token)
@@ -122,6 +137,37 @@ export function SetupBanner({ token }) {
     }
   };
 
+  // B-83: submit the inline LLM form. Mirrors the embedding-configure
+  // flow on the Memory page (B-76).
+  const onSaveLLM = async () => {
+    if (!llmForm.api_key.trim()) {
+      toast.error("API key 不能为空");
+      return;
+    }
+    setLlmSaving(true);
+    try {
+      const url = "/api/v2/llm/configure" +
+        (token ? `?token=${encodeURIComponent(token)}` : "");
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(llmForm),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      toast.success("已保存 — 重启 daemon 生效");
+      setOpenForm(null);
+      // Re-fetch setup so the banner reflects the new state on next tick.
+      reload();
+    } catch (e) {
+      toast.error("保存失败：" + (e.message || e));
+    } finally {
+      setLlmSaving(false);
+    }
+  };
+
   return html`
     <div
       class="xmc-h-setupbanner"
@@ -146,46 +192,127 @@ export function SetupBanner({ token }) {
       ${visible.map((key) => {
         const info = STEP_INFO[key];
         if (!info) return null;
+        const expanded = openForm === key;
+        // Action button:
+        //   - info.form  → toggles inline form
+        //   - info.href  → plain navigation link
+        //   - info.copyCmd → copy-to-clipboard
+        let actionBtn;
+        if (info.form === "llm") {
+          actionBtn = html`
+            <button
+              type="button"
+              class="xmc-h-btn xmc-h-btn--primary"
+              style="font-size:.72rem;padding:.2rem .55rem"
+              onClick=${() => setOpenForm(expanded ? null : "llm")}
+            >
+              ${expanded ? "收起" : info.action}
+            </button>
+          `;
+        } else if (info.href) {
+          actionBtn = html`
+            <a
+              href=${info.href}
+              class="xmc-h-btn xmc-h-btn--primary"
+              style="font-size:.72rem;padding:.2rem .55rem;text-decoration:none"
+            >
+              ${info.action} →
+            </a>
+          `;
+        } else {
+          actionBtn = html`
+            <button
+              type="button"
+              class="xmc-h-btn xmc-h-btn--primary"
+              style="font-size:.72rem;padding:.2rem .55rem"
+              onClick=${() => onCopy(info.copyCmd)}
+            >
+              ${info.action}
+            </button>
+          `;
+        }
         return html`
           <div
             key=${key}
-            style="display:flex;justify-content:space-between;align-items:center;gap:.6rem;padding:.4rem 0;border-top:1px dashed rgba(200,168,106,.25)"
+            style="padding:.4rem 0;border-top:1px dashed rgba(200,168,106,.25)"
           >
-            <div style="flex:1;min-width:0">
-              <div style="font-weight:600">⚠ ${info.title}</div>
-              <div style="margin-top:.2rem;color:var(--xmc-fg-muted);font-size:.76rem;line-height:1.5">
-                ${info.body}
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:.6rem">
+              <div style="flex:1;min-width:0">
+                <div style="font-weight:600">⚠ ${info.title}</div>
+                <div style="margin-top:.2rem;color:var(--xmc-fg-muted);font-size:.76rem;line-height:1.5">
+                  ${info.body}
+                </div>
+              </div>
+              <div style="display:flex;gap:.3rem;flex-shrink:0">
+                ${actionBtn}
+                <button
+                  type="button"
+                  class="xmc-h-btn xmc-h-btn--ghost"
+                  style="font-size:.72rem;padding:.2rem .5rem"
+                  onClick=${() => onDismiss(key)}
+                  title="只忽略这一项"
+                >
+                  忽略
+                </button>
               </div>
             </div>
-            <div style="display:flex;gap:.3rem;flex-shrink:0">
-              ${info.href ? html`
-                <a
-                  href=${info.href}
-                  class="xmc-h-btn xmc-h-btn--primary"
-                  style="font-size:.72rem;padding:.2rem .55rem;text-decoration:none"
+            ${expanded && info.form === "llm" ? html`
+              <div style="margin-top:.6rem;display:grid;grid-template-columns:auto 1fr;gap:.4rem .6rem;align-items:center;font-size:.78rem;padding:.5rem;background:rgba(0,0,0,.2);border-radius:4px">
+                <label>provider</label>
+                <select
+                  value=${llmForm.provider}
+                  onChange=${(e) => setLlmForm({ ...llmForm, provider: e.target.value })}
+                  class="xmc-h-input"
                 >
-                  ${info.action} →
-                </a>
-              ` : html`
+                  <option value="anthropic">anthropic (Claude)</option>
+                  <option value="openai">openai (GPT 兼容协议)</option>
+                </select>
+                <label>api_key</label>
+                <input
+                  type="password"
+                  class="xmc-h-input"
+                  value=${llmForm.api_key}
+                  placeholder=${llmForm.provider === "anthropic" ? "sk-ant-..." : "sk-..."}
+                  onInput=${(e) => setLlmForm({ ...llmForm, api_key: e.target.value })}
+                  autocomplete="new-password"
+                />
+                <label>base_url</label>
+                <input
+                  type="text"
+                  class="xmc-h-input"
+                  value=${llmForm.base_url}
+                  placeholder=${llmForm.provider === "anthropic" ? "https://api.anthropic.com（默认）" : "https://api.openai.com/v1（默认）"}
+                  onInput=${(e) => setLlmForm({ ...llmForm, base_url: e.target.value })}
+                />
+                <label>default_model</label>
+                <input
+                  type="text"
+                  class="xmc-h-input"
+                  value=${llmForm.default_model}
+                  placeholder=${llmForm.provider === "anthropic" ? "claude-sonnet-4 / claude-opus-4 / ..." : "gpt-4.1 / gpt-4.1-mini / ..."}
+                  onInput=${(e) => setLlmForm({ ...llmForm, default_model: e.target.value })}
+                />
+              </div>
+              <div style="margin-top:.5rem;display:flex;gap:.4rem;justify-content:flex-end">
+                <button
+                  type="button"
+                  class="xmc-h-btn xmc-h-btn--ghost"
+                  style="font-size:.75rem"
+                  onClick=${() => setOpenForm(null)}
+                >取消</button>
                 <button
                   type="button"
                   class="xmc-h-btn xmc-h-btn--primary"
-                  style="font-size:.72rem;padding:.2rem .55rem"
-                  onClick=${() => onCopy(info.copyCmd)}
-                >
-                  ${info.action}
-                </button>
-              `}
-              <button
-                type="button"
-                class="xmc-h-btn xmc-h-btn--ghost"
-                style="font-size:.72rem;padding:.2rem .5rem"
-                onClick=${() => onDismiss(key)}
-                title="只忽略这一项"
-              >
-                忽略
-              </button>
-            </div>
+                  style="font-size:.75rem"
+                  disabled=${llmSaving}
+                  onClick=${onSaveLLM}
+                >${llmSaving ? "保存中…" : "保存（需重启 daemon）"}</button>
+              </div>
+              <div style="margin-top:.4rem;font-size:.7rem;color:var(--xmc-fg-muted)">
+                提示：base_url 和 default_model 是可选的；不填用 provider 默认值。<br/>
+                想用第三方兼容服务（MiniMax / DashScope / Moonshot 等）？把它们的 base_url 填上，把对应模型 ID 填到 default_model。
+              </div>
+            ` : null}
           </div>
         `;
       })}
