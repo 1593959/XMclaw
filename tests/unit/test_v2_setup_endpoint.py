@@ -113,6 +113,28 @@ def test_embedding_requires_model_and_dimensions() -> None:
     assert body2["embedding_configured"] is True
 
 
+def test_indexer_picks_up_bare_sqlitevec_state_memory(tmp_path, monkeypatch) -> None:
+    """B-88 regression guard: ``_app.state.memory`` is a bare
+    SqliteVecMemory, NOT a MemoryManager. Lifespan must recognise the
+    direct case rather than walking a non-existent ``.providers`` list.
+
+    Reproduces the user-visible "sqlite_vec 未挂载" false negative
+    that came from the old ``for p in mgr.providers`` lookup which
+    returned zero matches against a bare SqliteVecMemory.
+    """
+    from xmclaw.providers.memory.sqlite_vec import SqliteVecMemory
+    from fastapi import FastAPI
+    from starlette.types import Scope
+
+    db = tmp_path / "memory.db"
+    vec = SqliteVecMemory(db)
+    # A bare SqliteVecMemory must NOT be detected as a MemoryManager-
+    # like object (it has no ``providers`` attribute). This pins both
+    # halves of the fix.
+    assert not hasattr(vec, "providers")
+    assert isinstance(vec, SqliteVecMemory)
+
+
 def test_indexer_start_error_propagates_to_setup(tmp_path, monkeypatch) -> None:
     """B-87: when lifespan recorded an indexer-start failure, /api/v2/setup
     surfaces the reason so the UI can show "向量索引启动失败" with the

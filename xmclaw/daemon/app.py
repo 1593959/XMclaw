@@ -494,7 +494,21 @@ def create_app(
             embedder = build_embedding_provider(config or {})
             mgr = getattr(_app.state, "memory", None)
             vec_provider = None
-            if mgr is not None:
+            # B-88: ``_app.state.memory`` is the raw return value of
+            # ``build_memory_from_config`` — i.e. a bare SqliteVecMemory
+            # (or None), NOT a MemoryManager. The MemoryManager lives
+            # inside ``agent._memory_manager`` and is constructed later
+            # in the lifespan, after this indexer block runs. Earlier
+            # code did ``for p in mgr.providers`` here, but
+            # SqliteVecMemory has no ``.providers`` attribute, so the
+            # loop iterated zero times and vec_provider stayed None
+            # → indexer refused to start with the bogus message
+            # "sqlite_vec 未挂载". Handle both shapes (direct +
+            # manager-wrapped) so a future refactor that swaps in a
+            # MemoryManager keeps working.
+            if isinstance(mgr, SqliteVecMemory):
+                vec_provider = mgr
+            elif mgr is not None:
                 for p in getattr(mgr, "providers", []):
                     if isinstance(p, SqliteVecMemory):
                         vec_provider = p
