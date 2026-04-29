@@ -36,7 +36,19 @@ export function AgentsPage({ token }) {
         <p class="xmc-datapage__subtitle">已注册 ${agents.length} 个 agent 预设。</p>
       </header>
       ${agents.length === 0
-        ? html`<p class="xmc-datapage__empty">尚无 agent 预设</p>`
+        ? html`
+            <div class="xmc-datapage__empty" style="padding:1rem;line-height:1.7">
+              <p style="margin:0 0 .5rem"><strong>还没有任何 agent 预设。</strong></p>
+              <p style="margin:0 0 .5rem;font-size:.85rem">
+                XMclaw 默认只跑一个名为 <code>main</code> 的主 agent — 用 <code>config.json</code> 里的 <code>llm</code> 节配置。
+              </p>
+              <p style="margin:0;font-size:.85rem;color:var(--xmc-fg-muted)">
+                这个页面是 Epic #17 的多 agent 注册表。当你需要让多个 agent 协同工作（不同 persona / 不同 LLM / 不同工具集），
+                通过 <code>POST /api/v2/agents</code> 创建预设，或者用 <code>chat_with_agent</code> / <code>submit_to_agent</code> 工具让主 agent 派遣子 agent。
+                这是高阶玩法，新手可忽略。
+              </p>
+            </div>
+          `
         : html`
             <ul class="xmc-datapage__list">
               ${agents.map((a) => html`

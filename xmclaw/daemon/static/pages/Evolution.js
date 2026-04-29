@@ -105,11 +105,21 @@ function AutoEvoPanel({ token }) {
   if (!status) return html`<p class="xmc-datapage__hint">加载进化核心状态…</p>`;
   if (!status.wired) {
     return html`
-      <div class="xmc-h-card" style="padding:1rem">
-        <h3 style="margin:0 0 .5rem">⚠️ xm-auto-evo 未挂载</h3>
-        <p class="xmc-datapage__subtitle">
-          配置中 <code>evolution.auto_evo.enabled</code> 为 false，或 daemon 启动时
-          初始化失败。详见日志。
+      <div class="xmc-h-card" style="padding:1rem;line-height:1.65">
+        <h3 style="margin:0 0 .5rem">技能进化未启动</h3>
+        <p class="xmc-datapage__subtitle" style="margin:0 0 .8rem">
+          技能进化（xm-auto-evo）是后台模块：观察你和 agent 的对话，识别重复出现的"动作模式"，
+          把它们提炼成可复用的技能（Skill），打分通过后挂载到 agent 的工具集——下次遇到类似场景直接调用，省 token、提速度。
+        </p>
+        <p class="xmc-datapage__subtitle" style="margin:0 0 .4rem;font-size:.82rem">
+          没启动有两种可能：
+        </p>
+        <ul class="xmc-datapage__subtitle" style="margin:0 0 .6rem 1.2rem;font-size:.82rem">
+          <li>config 里 <code>evolution.enabled</code> 是 false（默认 true，可改回）</li>
+          <li>daemon 启动时初始化失败 — <a href="/ui/logs">查看 logs</a> 找具体报错</li>
+        </ul>
+        <p class="xmc-datapage__subtitle" style="margin:0;font-size:.78rem;color:var(--xmc-fg-muted)">
+          新手可忽略 — 这功能要在你已经跟 agent 反复打交道一段时间之后才会显出价值。
         </p>
       </div>
     `;

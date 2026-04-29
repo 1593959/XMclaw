@@ -132,7 +132,15 @@ export function NotesTab({ token }) {
       <div class="xmc-datapage__split">
         <aside class="xmc-datapage__sidebar">
           ${files.length === 0
-            ? html`<p class="xmc-datapage__empty">尚无笔记</p>`
+            ? html`
+                <div class="xmc-datapage__empty" style="padding:.7rem .4rem;line-height:1.6">
+                  <p style="margin:0 0 .4rem">还没写过笔记。</p>
+                  <p style="margin:0;font-size:.75rem;color:var(--xmc-fg-muted)">
+                    在上方输入名字（例如 <code>2026-04-29</code> 或 <code>idea-database</code>）→ 新建笔记 → 在右侧编辑器写内容 → 自动保存。<br/>
+                    Agent 也会用 <code>note_write</code> 工具往这里写它觉得需要长期保留的内容。
+                  </p>
+                </div>
+              `
             : html`
                 <ul class="xmc-datapage__list">
                   ${files.map((f) => {
@@ -253,7 +261,15 @@ export function JournalTab({ token }) {
           ${entries == null
             ? html`<p class="xmc-datapage__hint">加载中…</p>`
             : entries.length === 0
-              ? html`<p class="xmc-datapage__empty">尚无日记 — 在右侧写下今天的事</p>`
+              ? html`
+                  <div class="xmc-datapage__empty" style="padding:.7rem .4rem;line-height:1.6">
+                    <p style="margin:0 0 .4rem">还没记过日记。</p>
+                    <p style="margin:0;font-size:.75rem;color:var(--xmc-fg-muted)">
+                      在右侧写下今天的事 → 离开页面或换日期时自动保存。<br/>
+                      Agent 也会用 <code>journal_append</code> 工具自己往里追加（按对话日期分文件）。
+                    </p>
+                  </div>
+                `
               : html`
                   <ul class="xmc-datapage__list">
                     ${entries.map((e) => {

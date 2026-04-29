@@ -296,9 +296,17 @@ function ProvidersTab({ token }) {
   if (!data.wired) {
     return html`
       <div class="xmc-h-card" style="padding:1rem">
-        <h3 style="margin:0 0 .5rem">⚠ Memory manager 未挂载</h3>
-        <p class="xmc-datapage__subtitle">
-          agent 未启动，或配置 <code>memory.enabled=false</code>。
+        <h3 style="margin:0 0 .5rem">⚠ 记忆系统还没准备好</h3>
+        <p class="xmc-datapage__subtitle" style="line-height:1.6">
+          可能原因：
+        </p>
+        <ul class="xmc-datapage__subtitle" style="margin:.4rem 0 .8rem 1.2rem;line-height:1.7">
+          <li>daemon 还在启动 — 等几秒刷新</li>
+          <li>没有配置 LLM API key — 顶部"首次设置进度"横幅会提示</li>
+          <li><code>memory.enabled=false</code> 关掉了整个记忆 store — 在 Config → 记忆与向量库 改回 true</li>
+        </ul>
+        <p class="xmc-datapage__subtitle" style="font-size:.75rem">
+          先去 <a href="/ui/doctor">Doctor 页面</a> 看哪一项 fail，按 advisory 修。
         </p>
       </div>
     `;
