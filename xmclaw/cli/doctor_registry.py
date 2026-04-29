@@ -1741,6 +1741,114 @@ class SecretsCheck(DoctorCheck):
         return (path.stat().st_mode & 0o777) == 0o600
 
 
+# B-78: per-section whitelist of immediate child keys that production
+# code actually reads. Anything outside this map is flagged as a
+# possible "ghost" field (legacy config from old templates, typos, or
+# fields whose feature was deprecated and never removed). Sections
+# mapped to None are permissive (mcp_servers' children are user-named
+# servers; integrations.* are well-known but their inner shape is
+# vendor-specific). Top-level keys starting with ``_`` are always
+# allowed (user comments). Keep this list in sync when adding a new
+# config section — `xmclaw doctor` will nudge users to clean up but
+# a stale whitelist gives false positives, so the check is INFO-level
+# (ok=True with advisory) rather than a hard fail.
+_CONFIG_KNOWN_CHILD_KEYS: dict[str, set[str] | None] = {
+    "llm": {
+        "default_provider", "openai", "anthropic", "profiles",
+        "compressor",
+    },
+    "evolution": {
+        "enabled", "auto_apply", "interval_minutes",
+        "daily_review_hour", "vfm_threshold", "max_genes_per_day",
+        "auto_rollback", "dream", "memory",
+        "pattern_thresholds", "tool_specific_thresholds",
+    },
+    "memory": {
+        "enabled", "db_path", "embedding_dim", "ttl",
+        "pinned_tags", "retention",
+    },
+    "tools": {"allowed_dirs", "enable_bash", "enable_web"},
+    "runtime": {"backend"},
+    "gateway": {"host", "port"},
+    "security": {"prompt_injection", "guardians"},
+    "backup": {"auto_daily", "interval_s", "keep", "name_prefix"},
+    "mcp_servers": None,
+    "integrations": None,
+}
+
+# Top-level sections that are entirely valid even though they're not in
+# the schema map (e.g. someone wires a custom subsystem; we don't want
+# to flag every new feature). Add here BEFORE adding to the map above
+# during development.
+_CONFIG_KNOWN_TOP_KEYS: set[str] = set(_CONFIG_KNOWN_CHILD_KEYS.keys())
+
+
+class ConfigDeadFieldsCheck(DoctorCheck):
+    """Flag config.json fields that no production code path reads.
+
+    Motivation: real incident on 2026-04-29 — a user's config.json
+    contained ``memory.vector_db_path`` / ``session_retention_days`` /
+    ``max_context_tokens`` left over from a long-archived design
+    document's example block. Those fields rendered as a "记忆与向量库"
+    category in the Web UI's Config page (which is schema-driven from
+    the live config dict) and the user reasonably assumed editing them
+    would change behaviour — but no code anywhere read them. This check
+    surfaces such ghosts during ``xmclaw doctor``.
+
+    The whitelist of valid keys lives at ``_CONFIG_KNOWN_CHILD_KEYS``
+    and ``_CONFIG_KNOWN_TOP_KEYS`` above. Underscored keys (``_comment``
+    etc) are always allowed. Sections mapped to ``None`` (mcp_servers,
+    integrations) are permissive — their child keys are user-named.
+
+    Severity is INFO (``ok=True`` with advisory). A stale whitelist
+    here would otherwise generate false-positive failures on every
+    doctor run between a feature landing and someone updating this
+    file. Operators see the advisory and decide.
+    """
+
+    id = "config_dead_fields"
+    name = "config dead fields"
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        cfg = ctx.cfg
+        if not isinstance(cfg, dict):
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="no config loaded; nothing to scan",
+            )
+        ghosts: list[str] = []
+        for top_key, top_val in cfg.items():
+            if top_key.startswith("_"):
+                continue
+            if top_key not in _CONFIG_KNOWN_TOP_KEYS:
+                ghosts.append(top_key)
+                continue
+            allowed = _CONFIG_KNOWN_CHILD_KEYS.get(top_key)
+            if allowed is None or not isinstance(top_val, dict):
+                continue  # permissive section / scalar — don't recurse
+            for child_key in top_val.keys():
+                if child_key.startswith("_"):
+                    continue
+                if child_key not in allowed:
+                    ghosts.append(f"{top_key}.{child_key}")
+        if not ghosts:
+            return CheckResult(
+                name=self.name, ok=True, detail="no unknown fields",
+            )
+        preview = ", ".join(ghosts[:5])
+        more = "" if len(ghosts) <= 5 else f" (+{len(ghosts) - 5} more)"
+        return CheckResult(
+            name=self.name, ok=True,
+            detail=f"{len(ghosts)} unknown field(s): {preview}{more}",
+            advisory=(
+                "these keys are not consumed by any production code path "
+                "— likely stale from an older config template or a typo. "
+                "Remove or rename. (Run 'xmclaw doctor --json' to see the "
+                "full list.)"
+            ),
+        )
+
+
 def build_default_registry() -> DoctorRegistry:
     """Return a registry populated with the built-in checks.
 
@@ -1749,6 +1857,7 @@ def build_default_registry() -> DoctorRegistry:
     """
     reg = DoctorRegistry()
     reg.register(ConfigCheck())
+    reg.register(ConfigDeadFieldsCheck())
     reg.register(LLMCheck())
     reg.register(ToolsCheck())
     reg.register(WorkspaceCheck())
