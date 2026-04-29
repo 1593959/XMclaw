@@ -374,9 +374,143 @@ _TOOL_HIJACK = [
 ]
 
 
+# B-80: Chinese-language counterparts to the English groups above.
+# Up to this point every pattern was English-only — a SOUL.md / web-
+# page / tool result that says "忽略上面所有指令" or "进入开发者模式"
+# slipped past the scanner clean. These mirror the English categories
+# and severities; the regexes are intentionally narrow (require both
+# the action verb AND a scope qualifier like "上面/所有/之前") so a
+# legitimate phrase like "忽略琐碎的指令" doesn't trip a false
+# positive. \b word boundaries don't apply to CJK so they're omitted;
+# IGNORECASE is harmless for CJK chars and matters for the Latin
+# fragments (XMclaw / DAN / API key) that mix in.
+_CHINESE_INJECTION = [
+    # instruction_override 中文版.  Patterns require BOTH the action verb
+    # (忽略/忘记/覆盖) AND at least one scope qualifier (上面/之前/所有/
+    # 你的) before the target noun (指令/规则/提示) so a benign phrase
+    # like "忽略琐碎细节" or "记得保持..." doesn't false-positive. The
+    # ``{1,4}`` lets multiple qualifiers chain naturally — "忽略上面所有
+    # 指令" stacks 上面+所有 before 指令.
+    _compile(
+        "zh_ignore_previous",
+        r"忽略(?:(?:上面|之前|以前|前面|所有|全部|你的|你)\s*的?\s*){1,4}"
+        r"(?:指令|提示|规则|要求|约束|系统提示|系统消息|对话)",
+        Severity.HIGH, "instruction_override",
+    ),
+    _compile(
+        "zh_forget_instructions",
+        r"忘记(?:(?:你|所有|之前|以上|刚才|前面|你的)\s*的?\s*){1,4}"
+        r"(?:指令|对话|提示|规则|系统提示|persona|身份)",
+        Severity.HIGH, "instruction_override",
+    ),
+    _compile(
+        "zh_override_system",
+        r"(?:覆盖|重置|清除)(?:你的|当前)?(?:的)?\s*"
+        r"(?:系统提示|系统消息|身份|persona|指令|约束|规则)",
+        Severity.HIGH, "instruction_override",
+    ),
+    _compile(
+        "zh_disregard_safety",
+        # "解除安全限制 / 绕过过滤" — don't share verb with zh_ignore_previous
+        # so we keep the two findings independent.
+        r"(?:解除|绕过|关闭|无视)(?:所有|任何|这些)?(?:的)?\s*(?:安全)?\s*"
+        r"(?:警告|拒绝|限制|过滤|防护)",
+        Severity.HIGH, "indirect_injection",
+    ),
+    # role_forgery 中文版 — must mention the agent name explicitly to
+    # avoid catching benign "你是用户" / "你是助手" small talk.
+    _compile(
+        "zh_no_longer_xmclaw",
+        r"你(?:现在)?(?:已经)?不(?:再)?是\s*(?:XMclaw|小爪|主人)",
+        Severity.HIGH, "role_forgery",
+    ),
+    _compile(
+        "zh_from_now_on_you",
+        r"(?:从现在(?:开始)?|从此(?:刻)?(?:起)?)\s*[,，]?\s*"
+        r"你(?:是|叫|的名字是|的身份是|要扮演|要假装是)",
+        Severity.HIGH, "role_forgery",
+    ),
+    _compile(
+        "zh_new_identity",
+        r"你的?(?:新)?(?:身份|角色|persona)(?:现在)?(?:是|为|改为|换成|"
+        r"更换为)",
+        Severity.HIGH, "role_forgery",
+    ),
+    # jailbreak 中文版
+    _compile(
+        "zh_developer_mode",
+        r"(?:进入|启用|激活|切换到|开启)(?:开发者|调试|debug|管理员|admin|"
+        r"root|无限制|越狱|jailbreak|god|上帝)模式",
+        Severity.HIGH, "jailbreak",
+    ),
+    _compile(
+        "zh_no_restrictions",
+        r"(?:解除|去除|移除|绕过)(?:所有|任何)?(?:的)?"
+        r"(?:限制|约束|安全|规则|过滤|审查|防护)",
+        Severity.HIGH, "jailbreak",
+    ),
+    _compile(
+        "zh_pretend_uncensored",
+        r"(?:假装|想象|模拟)(?:你|自己|你自己)?(?:是|为)?\s*"
+        r"(?:没有限制|无限制|越狱|不受约束|无审查|无过滤)(?:的)?",
+        Severity.HIGH, "jailbreak",
+    ),
+    _compile(
+        "zh_evil_ai",
+        r"(?:扮演|成为|你是)(?:一个|一只)?\s*"
+        r"(?:邪恶|恶意|有害|不道德|阴暗)的?\s*"
+        r"(?:AI|助手|agent|代理|模型|机器人)",
+        Severity.HIGH, "jailbreak",
+    ),
+    # exfiltration 中文版
+    _compile(
+        "zh_reveal_secrets",
+        r"(?:泄露|展示|打印|输出|显示|发送|上传|公开|告诉我)"
+        r"(?:你的|当前的|完整的)?\s*"
+        r"(?:系统提示|系统消息|API\s?[Kk]ey|api[_\s]?key|密钥|令牌|"
+        r"token|密码|凭证|私钥|环境变量|env\s*var)",
+        Severity.HIGH, "exfiltration",
+    ),
+    _compile(
+        "zh_send_to_url",
+        r"(?:把|将)\s*(?:这|那|所有|全部)?(?:的)?\s*"
+        r"(?:数据|信息|内容|结果|文件|api\s?key|密钥|系统提示)\s*"
+        r"(?:发|发送|上传|提交|POST|curl)\s*(?:给|到|至)\s*"
+        r"(?:https?://|攻击者|evil)",
+        Severity.HIGH, "exfiltration",
+    ),
+    # indirect_injection 中文版
+    _compile(
+        "zh_fake_user_authorization",
+        r"用户(?:已经)?(?:授权|批准|同意|要求|让你|希望你)"
+        r"(?:你)?(?:去|来|可以)?",
+        Severity.HIGH, "indirect_injection",
+    ),
+    _compile(
+        "zh_fake_admin",
+        r"(?:作为)?(?:管理员|系统管理员|sysadmin|root|owner|拥有者|"
+        r"开发者)(?:说|告诉你|要求|命令|下令)",
+        Severity.HIGH, "indirect_injection",
+    ),
+    _compile(
+        "zh_fake_anthropic",
+        r"(?:来自|消息来自)\s*(?:Anthropic|OpenAI|开发团队|官方|公司|"
+        r"开发者团队)\s*[:：]",
+        Severity.HIGH, "indirect_injection",
+    ),
+    _compile(
+        "zh_emergency_override",
+        r"(?:紧急|警报|危急|立即)\s*[!！:：]+\s*"
+        r"(?:你必须|请|执行|运行|删除|发送)",
+        Severity.MEDIUM, "indirect_injection",
+    ),
+]
+
+
 _ALL_PATTERNS: tuple[_PatternSpec, ...] = tuple(
     _INSTRUCTION_OVERRIDE + _ROLE_FORGERY + _EXFILTRATION
-    + _JAILBREAK + _INDIRECT_INJECTION + _TOOL_HIJACK,
+    + _JAILBREAK + _INDIRECT_INJECTION + _TOOL_HIJACK
+    + _CHINESE_INJECTION,
 )
 
 
