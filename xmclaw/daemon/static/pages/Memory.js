@@ -166,6 +166,10 @@ function ProvidersTab({ token }) {
   const [picker, setPicker] = useState(null);
   const [pickerForm, setPickerForm] = useState({ enabled: false, k: 3, max_chars: 4000 });
   const [pickerSaving, setPickerSaving] = useState(false);
+  // B-98: pinned bullets state + add-bullet draft.
+  const [pinned, setPinned] = useState(null);
+  const [pinDraft, setPinDraft] = useState("");
+  const [pinBusy, setPinBusy] = useState(false);
 
   const reload = useCallback(() => {
     apiGet("/api/v2/memory/providers", token)
@@ -193,6 +197,9 @@ function ProvidersTab({ token }) {
         if (d.config) setPickerForm(d.config);
       })
       .catch(() => setPicker(null));
+    apiGet("/api/v2/memory/pinned", token)
+      .then((d) => setPinned(Array.isArray(d.items) ? d.items : []))
+      .catch(() => setPinned([]));
   }, [token]);
 
   useEffect(reload, [reload]);
@@ -279,6 +286,54 @@ function ProvidersTab({ token }) {
       toast.error("保存失败：" + (e.message || e));
     } finally {
       setEmbSaving(false);
+    }
+  };
+
+  // B-98: pin / unpin handlers.
+  const onAddPin = async () => {
+    const content = pinDraft.trim();
+    if (!content) return;
+    setPinBusy(true);
+    try {
+      await apiPost("/api/v2/memory/pinned", token, { content });
+      setPinDraft("");
+      apiGet("/api/v2/memory/pinned", token)
+        .then((d) => setPinned(Array.isArray(d.items) ? d.items : []))
+        .catch(() => {});
+      toast.success("已 pin");
+    } catch (e) {
+      toast.error("pin 失败：" + (e.message || e));
+    } finally {
+      setPinBusy(false);
+    }
+  };
+
+  const onRemovePin = async (line) => {
+    const ok = await confirmDialog({
+      title: "取消 pin",
+      body: `从 ## Pinned 删除：\n\n${line}`,
+      confirmLabel: "删除",
+      confirmTone: "danger",
+    });
+    if (!ok) return;
+    try {
+      const url = "/api/v2/memory/pinned" +
+        (token ? `?token=${encodeURIComponent(token)}` : "");
+      const res = await fetch(url, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ line }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      apiGet("/api/v2/memory/pinned", token)
+        .then((d) => setPinned(Array.isArray(d.items) ? d.items : []))
+        .catch(() => {});
+      toast.success("已删除");
+    } catch (e) {
+      toast.error("删除失败：" + (e.message || e));
     }
   };
 
@@ -500,6 +555,63 @@ function ProvidersTab({ token }) {
                       ⚠ ${dream.reason || '未启用'}（需配置 LLM）
                     </div>
                   `}
+            </div>
+          `
+        : null}
+      ${pinned !== null
+        ? html`
+            <div class="xmc-h-card" style="padding:.6rem .8rem;margin:.6rem 0;background:var(--color-bg);border-left:3px solid var(--color-success, #6ac88a)">
+              <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
+                <strong style="font-size:.85rem">📌 Pinned（B-98 永不被 Auto-Dream 压缩）</strong>
+                <span class="xmc-h-badge xmc-h-badge--muted" style="font-size:.7rem">
+                  ${pinned.length} 条
+                </span>
+              </div>
+              <div style="margin-top:.3rem;color:var(--xmc-fg-muted);font-size:.78rem;line-height:1.55">
+                ## Pinned 里的 bullet 在 dream 压缩时会被原封不动保留（B-53）。
+                Agent 也可以用 <code>memory_pin</code> 工具往这里写。
+              </div>
+              <div style="margin-top:.5rem;display:flex;gap:.4rem;flex-wrap:wrap">
+                <input
+                  type="text"
+                  class="xmc-h-input"
+                  value=${pinDraft}
+                  placeholder="新 pin 一条（如：永远不要把 .env 提交到 git）"
+                  onInput=${(e) => setPinDraft(e.target.value)}
+                  onKeyDown=${(e) => { if (e.key === "Enter" && pinDraft.trim()) onAddPin(); }}
+                  style="flex:1 1 240px;min-width:0"
+                />
+                <button
+                  type="button"
+                  class="xmc-h-btn xmc-h-btn--primary"
+                  style="font-size:.75rem"
+                  onClick=${onAddPin}
+                  disabled=${pinBusy || !pinDraft.trim()}
+                >Pin</button>
+              </div>
+              ${pinned.length > 0 ? html`
+                <ul style="margin:.5rem 0 0;padding:0;list-style:none">
+                  ${pinned.map((p) => html`
+                    <li
+                      key=${p.line}
+                      style="display:flex;justify-content:space-between;align-items:flex-start;gap:.5rem;padding:.35rem .5rem;border-top:1px dashed rgba(106,200,138,.2)"
+                    >
+                      <span style="flex:1;font-size:.78rem;line-height:1.5">${p.text}</span>
+                      <button
+                        type="button"
+                        class="xmc-h-btn xmc-h-btn--ghost"
+                        style="font-size:.7rem;padding:.1rem .5rem;flex-shrink:0"
+                        onClick=${() => onRemovePin(p.line)}
+                        title="取消 pin"
+                      >×</button>
+                    </li>
+                  `)}
+                </ul>
+              ` : html`
+                <p style="margin:.5rem 0 0;font-size:.74rem;color:var(--xmc-fg-muted);font-style:italic">
+                  暂无 pin 项 — 在上面输入要永久保留的事实后回车。
+                </p>
+              `}
             </div>
           `
         : null}

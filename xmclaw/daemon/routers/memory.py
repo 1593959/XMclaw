@@ -97,6 +97,164 @@ async def list_available_providers() -> JSONResponse:
     })
 
 
+@router.get("/pinned")
+async def list_pinned(request: Request) -> JSONResponse:
+    """B-98: list bullets under ``## Pinned`` in the active profile's
+    MEMORY.md. Pinned items survive Auto-Dream verbatim (B-53), so this
+    is the agent's / user's "never forget" surface."""
+    try:
+        from xmclaw.daemon.factory import _resolve_persona_profile_dir
+        cfg = getattr(request.app.state, "config", None) or {}
+        pdir = _resolve_persona_profile_dir(cfg)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"items": [], "error": str(exc)})
+    mfile = pdir / "MEMORY.md"
+    if not mfile.is_file():
+        return JSONResponse({"items": [], "memory_path": str(mfile)})
+    try:
+        text = mfile.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return JSONResponse({"items": [], "error": str(exc)}, status_code=500)
+    items = _parse_pinned_section(text)
+    return JSONResponse({"items": items, "memory_path": str(mfile)})
+
+
+def _parse_pinned_section(text: str) -> list[dict[str, str]]:
+    """Extract bullet lines under ``## Pinned`` until the next H2.
+    Returns ``[{line, text}, …]`` where ``line`` is the original
+    bullet (for matching on delete) and ``text`` is the bullet body
+    minus the leading ``- ``. Date prefixes (``YYYY-MM-DD: ``) are
+    kept on ``line`` but stripped from ``text``."""
+    out: list[dict[str, str]] = []
+    in_section = False
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("## "):
+            heading = stripped.lstrip("# ").strip().lower()
+            in_section = heading == "pinned"
+            continue
+        if not in_section:
+            continue
+        if stripped.startswith("-"):
+            line = stripped
+            body = stripped.lstrip("-").strip()
+            # Strip leading "YYYY-MM-DD: " for the display text
+            import re as _re
+            body = _re.sub(
+                r"^\d{4}-\d{2}-\d{2}\s*:\s*", "", body,
+            )
+            out.append({"line": line, "text": body})
+    return out
+
+
+@router.post("/pinned")
+async def add_pinned(request: Request) -> JSONResponse:
+    """B-98: append a bullet to ``## Pinned``. Mirrors the memory_pin
+    agent tool — same _append_under_section helper, same dedup."""
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+    content = str(body.get("content", "") or "").strip()
+    if not content:
+        return JSONResponse(
+            {"ok": False, "error": "content is required"}, status_code=400,
+        )
+    try:
+        from xmclaw.daemon.factory import _resolve_persona_profile_dir
+        from xmclaw.providers.tool.builtin import (
+            PERSONA_CHAR_CAPS,
+            _append_under_section,
+            enforce_char_cap,
+        )
+        from xmclaw.utils.fs_locks import atomic_write_text, get_lock
+        cfg = getattr(request.app.state, "config", None) or {}
+        pdir = _resolve_persona_profile_dir(cfg)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    pdir.mkdir(parents=True, exist_ok=True)
+    mfile = pdir / "MEMORY.md"
+    bullet = "- " + (
+        __import__("time").strftime("%Y-%m-%d") + ": " + content.replace("\n", " ").strip()
+    )
+    async with get_lock(mfile):
+        try:
+            existing = mfile.read_text(encoding="utf-8") if mfile.is_file() else ""
+            new_text = _append_under_section(
+                existing,
+                section_header="## Pinned",
+                bullet=bullet,
+                placeholder_title="MEMORY.md — what I want to remember next time",
+            )
+            cap = PERSONA_CHAR_CAPS.get("MEMORY.md")
+            if cap is not None and len(new_text) > cap:
+                new_text = enforce_char_cap(new_text, cap)
+            atomic_write_text(mfile, new_text)
+        except OSError as exc:
+            return JSONResponse(
+                {"ok": False, "error": f"write failed: {exc}"}, status_code=500,
+            )
+    return JSONResponse({"ok": True, "bullet": bullet})
+
+
+@router.delete("/pinned")
+async def delete_pinned(request: Request) -> JSONResponse:
+    """B-98: remove a single bullet from ``## Pinned`` by exact match.
+    Body: ``{line: "- 2026-04-29: …"}``. Match must be byte-exact (the
+    UI sends the line straight from /pinned GET) so we never delete
+    the wrong row."""
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+    target_line = str(body.get("line", "") or "").strip()
+    if not target_line:
+        return JSONResponse(
+            {"ok": False, "error": "line is required"}, status_code=400,
+        )
+    try:
+        from xmclaw.daemon.factory import _resolve_persona_profile_dir
+        from xmclaw.utils.fs_locks import atomic_write_text, get_lock
+        cfg = getattr(request.app.state, "config", None) or {}
+        pdir = _resolve_persona_profile_dir(cfg)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    mfile = pdir / "MEMORY.md"
+    if not mfile.is_file():
+        return JSONResponse({"ok": False, "error": "MEMORY.md not found"}, status_code=404)
+    async with get_lock(mfile):
+        try:
+            text = mfile.read_text(encoding="utf-8", errors="replace")
+            in_pinned = False
+            kept_lines: list[str] = []
+            removed = False
+            for raw in text.splitlines():
+                stripped = raw.strip()
+                if stripped.startswith("## "):
+                    in_pinned = stripped.lstrip("# ").strip().lower() == "pinned"
+                    kept_lines.append(raw)
+                    continue
+                if in_pinned and stripped == target_line:
+                    removed = True
+                    continue
+                kept_lines.append(raw)
+            if not removed:
+                return JSONResponse(
+                    {"ok": False, "error": "bullet not found"}, status_code=404,
+                )
+            atomic_write_text(mfile, "\n".join(kept_lines) + "\n")
+        except OSError as exc:
+            return JSONResponse(
+                {"ok": False, "error": f"write failed: {exc}"}, status_code=500,
+            )
+    return JSONResponse({"ok": True, "removed": target_line})
+
+
 @router.get("/relevant_picker/status")
 async def relevant_picker_status(request: Request) -> JSONResponse:
     """B-96: surface the current LLM-pick top-K relevant-files setting
