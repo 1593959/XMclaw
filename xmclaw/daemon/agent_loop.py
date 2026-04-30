@@ -454,6 +454,8 @@ class AgentLoop:
         relevant_files_picker_enabled: bool = False,
         relevant_files_picker_k: int = 3,
         relevant_files_max_chars: int = 4000,
+        cfg: dict[str, Any] | None = None,
+        post_sampling_registry: "Any | None" = None,
     ) -> None:
         self._llm = llm
         self._bus = bus
@@ -558,6 +560,13 @@ class AgentLoop:
         self._relevant_files_picker_enabled = bool(relevant_files_picker_enabled)
         self._relevant_files_picker_k = max(1, int(relevant_files_picker_k))
         self._relevant_files_max_chars = max(500, int(relevant_files_max_chars))
+        # B-112: post-sampling hooks. Off when registry is None (tests,
+        # callers that don't want extra LLM round-trips). Default
+        # registry from factory.py / build_agent_from_config wires the
+        # standard ExtractMemoriesHook.
+        self._cfg = cfg or {}
+        self._post_sampling_registry = post_sampling_registry
+        self._post_sampling_bg: set[asyncio.Task] = set()
 
     def clear_session(self, session_id: str) -> None:
         """Drop a session's conversation history. Called by the WS gateway
@@ -1859,6 +1868,42 @@ class AgentLoop:
                         user_message, session_id=session_id,
                     )
                 except Exception as exc:  # noqa: BLE001 — best-effort
+                    _log_memory_failure(exc)
+
+            # B-112: post-sampling hooks (free-code parity). Each hook
+            # gets a snapshot of the just-finished turn and runs in
+            # the background via gather() so the user's next prompt
+            # isn't blocked. Hook failures are caught + logged inside
+            # _safe_run; never propagate. Runs only on terminal turns
+            # (final assistant response, no pending tool calls).
+            if self._post_sampling_registry is not None and response.content:
+                try:
+                    from xmclaw.daemon.post_sampling_hooks import HookContext
+                    from xmclaw.daemon.factory import _resolve_persona_profile_dir
+                    try:
+                        pdir = _resolve_persona_profile_dir(self._cfg)
+                    except Exception:  # noqa: BLE001
+                        pdir = None
+                    hook_ctx = HookContext(
+                        session_id=session_id,
+                        agent_id=self._agent_id,
+                        user_message=user_message,
+                        assistant_response=response.content,
+                        history=list(self._histories.get(session_id) or []),
+                        llm=llm,
+                        persona_dir=pdir,
+                        cfg=self._cfg or {},
+                    )
+                    # Fire-and-forget — don't await, the next turn must
+                    # not wait for hooks. Strong ref via add() / discard
+                    # callback (B-69 pattern) to prevent GC mid-flight.
+                    bg = asyncio.create_task(
+                        self._post_sampling_registry.dispatch(hook_ctx),
+                        name=f"post-sampling-hooks-{session_id[:8]}",
+                    )
+                    self._post_sampling_bg.add(bg)
+                    bg.add_done_callback(self._post_sampling_bg.discard)
+                except Exception as exc:  # noqa: BLE001
                     _log_memory_failure(exc)
 
             # B-29 SKILL invocation detection. Heuristic: a learned

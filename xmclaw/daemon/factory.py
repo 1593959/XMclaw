@@ -1144,6 +1144,15 @@ def build_agent_from_config(
     _picker_k = int(_picker_section.get("k", 3))
     _picker_max_chars = int(_picker_section.get("max_chars", 4000))
 
+    # B-112: post-sampling hooks framework. Default registry ships with
+    # ExtractMemoriesHook (gated by config). New hooks can be added by
+    # extending build_default_registry().
+    try:
+        from xmclaw.daemon.post_sampling_hooks import build_default_registry
+        _hook_registry = build_default_registry()
+    except Exception:  # noqa: BLE001
+        _hook_registry = None
+
     return AgentLoop(
         llm=llm, bus=bus, tools=tools,
         system_prompt=system_prompt,
@@ -1158,4 +1167,6 @@ def build_agent_from_config(
         relevant_files_picker_enabled=_picker_enabled,
         relevant_files_picker_k=_picker_k,
         relevant_files_max_chars=_picker_max_chars,
+        cfg=cfg,
+        post_sampling_registry=_hook_registry,
     )
