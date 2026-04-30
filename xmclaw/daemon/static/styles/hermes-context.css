@@ -40,3 +40,28 @@
   letter-spacing: 0;
   text-transform: none;
 }
+
+/* B-107: token budget mini-bar — fills left-to-right as the session
+   burns through its configured spend cap. Tone (muted/info/warn)
+   maps to <70 / 70-90 / >90 percent so glance-readability is high. */
+.xmc-h-sidebar__ctx-budget {
+  margin: 4px 8px 0;
+  height: 3px;
+  background: var(--theme-border, rgba(255,255,255,0.08));
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.xmc-h-sidebar__ctx-budget-fill {
+  height: 100%;
+  transition: width 200ms ease;
+  background: var(--theme-foreground, rgba(255,255,255,0.4));
+}
+
+.xmc-h-sidebar__ctx-budget-fill.is-info {
+  background: var(--xmc-info, #6aa3f0);
+}
+
+.xmc-h-sidebar__ctx-budget-fill.is-warn {
+  background: var(--xmc-warn, #c8a86a);
+}

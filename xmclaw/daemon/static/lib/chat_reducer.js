@@ -36,6 +36,7 @@ export const PHASE_1_EVENT_TYPES = [
   "tool_invocation_finished",
   "agent_asked_question",   // B-92
   "user_answered_question", // B-92
+  "cost_tick",              // B-107
   "anti_req_violation",
   "session_lifecycle",
 ];
@@ -417,6 +418,37 @@ export function applyEvent(chat, envelope) {
             tc.id === callId ? { ...tc, status, result } : tc
           ),
         })),
+      };
+    }
+
+    case "cost_tick": {
+      // B-107: aggregate per-turn token / cost stats for the live
+      // budget widget. Updates a flat ``tokenUsage`` slot on chat
+      // state — the UI shows running totals across the session.
+      const prev = chat.tokenUsage || {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        spent_usd: 0,
+        budget_usd: 0,
+        last_model: "",
+        turns: 0,
+      };
+      const pt = Number(payload.prompt_tokens) || 0;
+      const ct = Number(payload.completion_tokens) || 0;
+      // ``spent_usd`` is the daemon-side running total — replace,
+      // don't sum, so we stay in sync if the daemon resets.
+      return {
+        ...chat,
+        tokenUsage: {
+          prompt_tokens: prev.prompt_tokens + pt,
+          completion_tokens: prev.completion_tokens + ct,
+          spent_usd: typeof payload.spent_usd === "number"
+            ? payload.spent_usd : prev.spent_usd,
+          budget_usd: typeof payload.budget_usd === "number"
+            ? payload.budget_usd : prev.budget_usd,
+          last_model: payload.model || prev.last_model,
+          turns: prev.turns + 1,
+        },
       };
     }
 

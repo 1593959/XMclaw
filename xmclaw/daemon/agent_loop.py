@@ -1646,6 +1646,12 @@ class AgentLoop:
                     "spent_usd": self._cost_tracker.spent_usd,
                     "budget_usd": self._cost_tracker.budget_usd,
                     "remaining_usd": self._cost_tracker.remaining_usd,
+                    # B-107: surface per-call token counts so the Web UI
+                    # can render a live "tokens this turn" widget without
+                    # synthesising it from chunk events.
+                    "prompt_tokens": response.prompt_tokens,
+                    "completion_tokens": response.completion_tokens,
+                    "model": getattr(llm, "model", "") or "",
                 })
 
             # 3. If the model made tool calls, execute them and feed

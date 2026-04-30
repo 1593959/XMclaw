@@ -462,7 +462,7 @@ const routes = {
 function App({ state }) {
   const route = routes[state.route.path] || routes["*"];
   return html`
-    <${HermesAppShell} activePath=${state.route.path} token=${state.auth.token}>
+    <${HermesAppShell} activePath=${state.route.path} token=${state.auth.token} tokenUsage=${state.chat.tokenUsage}>
       ${route(state)}
       <${ToastViewport} />
       <${DialogViewport} />

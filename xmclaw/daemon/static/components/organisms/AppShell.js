@@ -377,10 +377,37 @@ function _basename(path) {
   return parts.length ? parts[parts.length - 1] : path;
 }
 
-function ContextStrip({ status }) {
+// B-107: humanise large token counts. 12_345 → "12.3k", 1_234_567 → "1.23M".
+function _fmtTokens(n) {
+  const v = Number(n) || 0;
+  if (v < 1000) return String(v);
+  if (v < 1_000_000) return (v / 1000).toFixed(1) + "k";
+  return (v / 1_000_000).toFixed(2) + "M";
+}
+
+function _fmtUsd(n) {
+  const v = Number(n) || 0;
+  if (v === 0) return "—";
+  if (v < 0.01) return "<¢1";
+  if (v < 1) return `$${v.toFixed(3)}`;
+  return `$${v.toFixed(2)}`;
+}
+
+function ContextStrip({ status, tokenUsage }) {
   if (!status) return null;
   const wsActive = status.workspace?.active;
   const wsName = wsActive ? _basename(wsActive) : null;
+  // B-107: only render token rows when we've seen at least one
+  // COST_TICK this session (turns > 0). Empty session = quiet UI.
+  const hasUsage = tokenUsage && tokenUsage.turns > 0;
+  const totalTokens = hasUsage
+    ? (tokenUsage.prompt_tokens + tokenUsage.completion_tokens) : 0;
+  // Show a budget bar only when the daemon set a non-zero budget.
+  const showBudget = hasUsage && tokenUsage.budget_usd > 0;
+  const budgetPct = showBudget
+    ? Math.min(100, (tokenUsage.spent_usd / tokenUsage.budget_usd) * 100)
+    : 0;
+  const budgetTone = budgetPct > 90 ? "warn" : budgetPct > 70 ? "info" : "muted";
   return html`
     <div class="xmc-h-sidebar__contextstrip" title=${wsActive || ""}>
       <div class="xmc-h-sidebar__ctx-row" title=${wsActive || "(无)"}>
@@ -395,11 +422,29 @@ function ContextStrip({ status }) {
         <span class="xmc-h-sidebar__ctx-key">tools</span>
         <span class="xmc-h-sidebar__ctx-val">${(status.tools || []).length}</span>
       </div>
+      ${hasUsage ? html`
+        <div class="xmc-h-sidebar__ctx-row" title=${`prompt ${tokenUsage.prompt_tokens} + completion ${tokenUsage.completion_tokens}`}>
+          <span class="xmc-h-sidebar__ctx-key">tokens</span>
+          <span class="xmc-h-sidebar__ctx-val">${_fmtTokens(totalTokens)}</span>
+        </div>
+        <div class="xmc-h-sidebar__ctx-row" title=${`已花费 ${tokenUsage.spent_usd.toFixed(4)} 美元${showBudget ? ` / 预算 ${tokenUsage.budget_usd.toFixed(2)} 美元` : ""}`}>
+          <span class="xmc-h-sidebar__ctx-key">cost</span>
+          <span class="xmc-h-sidebar__ctx-val">${_fmtUsd(tokenUsage.spent_usd)}</span>
+        </div>
+        ${showBudget ? html`
+          <div class="xmc-h-sidebar__ctx-budget" aria-label=${`预算消耗 ${budgetPct.toFixed(1)}%`}>
+            <div
+              class=${"xmc-h-sidebar__ctx-budget-fill is-" + budgetTone}
+              style=${"width:" + budgetPct.toFixed(1) + "%"}
+            ></div>
+          </div>
+        ` : null}
+      ` : null}
     </div>
   `;
 }
 
-export function AppShell({ activePath, brand = "XMclaw", subBrand = "Agent", token, children }) {
+export function AppShell({ activePath, brand = "XMclaw", subBrand = "Agent", token, tokenUsage, children }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
   const status = _useDaemonStatus(token);
@@ -465,7 +510,7 @@ export function AppShell({ activePath, brand = "XMclaw", subBrand = "Agent", tok
             </button>
           </div>
 
-          <${ContextStrip} status=${status} />
+          <${ContextStrip} status=${status} tokenUsage=${tokenUsage} />
 
           <nav class="xmc-h-nav" aria-label="primary navigation">
             <ul class="xmc-h-nav__list">
