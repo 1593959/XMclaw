@@ -57,6 +57,13 @@ export function NotesTab({ token }) {
   const [pristine, setPristine] = useState("");
   const [busy, setBusy] = useState(false);
   const [newName, setNewName] = useState("");
+  // B-97: description / tags meta. Edited inline; saved as YAML
+  // frontmatter at the top of the file by /api/v2/memory/{name} POST.
+  const [newDesc, setNewDesc] = useState("");
+  const [newTags, setNewTags] = useState("");
+  const [desc, setDesc] = useState("");
+  const [tags, setTags] = useState("");
+  const [pristineMeta, setPristineMeta] = useState({ desc: "", tags: "" });
 
   const load = useCallback(() => {
     apiGet("/api/v2/memory", token)
@@ -73,18 +80,34 @@ export function NotesTab({ token }) {
     setActive(name);
     apiGet(`/api/v2/memory/${encodeURIComponent(name)}`, token)
       .then((d) => {
+        // B-97: backend returns description + tags from parsed
+        // frontmatter; the editor body shows the raw file (frontmatter
+        // included) so the user keeps full control. The two extra
+        // inputs above the editor mirror those structured fields.
         setDraft(d.content || "");
         setPristine(d.content || "");
+        const dDesc = d.description || "";
+        const dTags = Array.isArray(d.tags) ? d.tags.join(", ") : "";
+        setDesc(dDesc);
+        setTags(dTags);
+        setPristineMeta({ desc: dDesc, tags: dTags });
       })
       .catch((e) => toast.error(e.message || String(e)));
   };
+
+  const _parseTags = (s) => (s || "").split(",").map((t) => t.trim()).filter(Boolean);
 
   const onSave = async () => {
     if (!active) return;
     setBusy(true);
     try {
-      await apiPost(`/api/v2/memory/${encodeURIComponent(active)}`, token, { content: draft });
+      await apiPost(`/api/v2/memory/${encodeURIComponent(active)}`, token, {
+        content: draft,
+        description: desc.trim() || undefined,
+        tags: _parseTags(tags),
+      });
       setPristine(draft);
+      setPristineMeta({ desc, tags });
       toast.success(`已保存 ${active}`);
       load();
     } catch (e) {
@@ -100,9 +123,15 @@ export function NotesTab({ token }) {
     if (!name.endsWith(".md")) name += ".md";
     setBusy(true);
     try {
-      await apiPost(`/api/v2/memory/${encodeURIComponent(name)}`, token, { content: `# ${name.replace(/\.md$/, "")}\n\n` });
+      await apiPost(`/api/v2/memory/${encodeURIComponent(name)}`, token, {
+        content: `# ${name.replace(/\.md$/, "")}\n\n`,
+        description: newDesc.trim() || undefined,
+        tags: _parseTags(newTags),
+      });
       toast.success(`已创建 ${name}`);
       setNewName("");
+      setNewDesc("");
+      setNewTags("");
       load();
       setTimeout(() => open(name), 100);
     } catch (e) {
@@ -116,18 +145,37 @@ export function NotesTab({ token }) {
   if (!files) return html`<p class="xmc-datapage__hint">加载中…</p>`;
   const dirty = active && draft !== pristine;
 
+  // B-97: also flag dirty when description / tags changed but body didn't.
+  const metaDirty = active && (desc !== pristineMeta.desc || tags !== pristineMeta.tags);
   return html`
     <div>
-      <div class="xmc-datapage__row" style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-bottom:.6rem">
+      <!-- B-97: 三行 create panel — name / description / tags -->
+      <div style="display:flex;flex-direction:column;gap:.4rem;margin-bottom:.6rem;padding:.5rem;background:var(--color-bg);border-radius:4px">
+        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+          <input
+            type="text"
+            placeholder="笔记名（自动追加 .md）"
+            value=${newName}
+            onInput=${(e) => setNewName(e.target.value)}
+            onKeyDown=${(e) => { if (e.key === "Enter") onCreate(); }}
+            style="flex:1 1 220px;min-width:0;padding:.4rem .6rem;font-family:var(--xmc-font-mono);font-size:.85rem"
+          />
+          <button type="button" class="xmc-h-btn" onClick=${onCreate} disabled=${busy || !newName.trim()}>新建笔记</button>
+        </div>
         <input
           type="text"
-          placeholder="新笔记名（自动追加 .md）"
-          value=${newName}
-          onInput=${(e) => setNewName(e.target.value)}
-          onKeyDown=${(e) => { if (e.key === "Enter") onCreate(); }}
-          style="flex:1 1 220px;min-width:0;padding:.4rem .6rem;font-family:var(--xmc-font-mono);font-size:.85rem"
+          placeholder="description（一行简介，让 LLM-pick 找得到这条笔记）"
+          value=${newDesc}
+          onInput=${(e) => setNewDesc(e.target.value)}
+          style="padding:.35rem .6rem;font-family:var(--xmc-font-mono);font-size:.78rem"
         />
-        <button type="button" class="xmc-h-btn" onClick=${onCreate} disabled=${busy || !newName.trim()}>新建笔记</button>
+        <input
+          type="text"
+          placeholder="tags（逗号分隔，如 build, frontend, deps）"
+          value=${newTags}
+          onInput=${(e) => setNewTags(e.target.value)}
+          style="padding:.35rem .6rem;font-family:var(--xmc-font-mono);font-size:.78rem"
+        />
       </div>
       <div class="xmc-datapage__split">
         <aside class="xmc-datapage__sidebar">
@@ -170,6 +218,23 @@ export function NotesTab({ token }) {
               <header class="xmc-datapage__viewer-header">
                 <h3 style="margin:0">${active}</h3>
               </header>
+              <!-- B-97: description / tags inputs above the body textarea -->
+              <div style="display:flex;flex-direction:column;gap:.3rem;margin:.4rem 0">
+                <input
+                  type="text"
+                  placeholder="description（一行简介）"
+                  value=${desc}
+                  onInput=${(e) => setDesc(e.target.value)}
+                  style="padding:.35rem .55rem;font-family:var(--xmc-font-mono);font-size:.78rem;border:1px solid var(--color-border);border-radius:4px;background:var(--color-card);color:var(--color-fg)"
+                />
+                <input
+                  type="text"
+                  placeholder="tags（逗号分隔）"
+                  value=${tags}
+                  onInput=${(e) => setTags(e.target.value)}
+                  style="padding:.35rem .55rem;font-family:var(--xmc-font-mono);font-size:.78rem;border:1px solid var(--color-border);border-radius:4px;background:var(--color-card);color:var(--color-fg)"
+                />
+              </div>
               <textarea
                 value=${draft}
                 onInput=${(e) => setDraft(e.target.value)}
@@ -177,11 +242,11 @@ export function NotesTab({ token }) {
                 style="flex:1 1 auto;min-height:320px;width:100%;font-family:var(--xmc-font-mono);font-size:.85rem;padding:.6rem;border:1px solid var(--color-border);border-radius:6px;background:var(--color-card);color:var(--color-fg);resize:vertical;line-height:1.5"
               ></textarea>
               <div style="display:flex;gap:.5rem;align-items:center;margin-top:.5rem">
-                <button type="button" class="xmc-h-btn xmc-h-btn--primary" onClick=${onSave} disabled=${busy || !dirty}>
-                  ${busy ? "保存中…" : dirty ? "保存" : "已保存"}
+                <button type="button" class="xmc-h-btn xmc-h-btn--primary" onClick=${onSave} disabled=${busy || (!dirty && !metaDirty)}>
+                  ${busy ? "保存中…" : (dirty || metaDirty) ? "保存" : "已保存"}
                 </button>
-                ${dirty
-                  ? html`<button type="button" class="xmc-h-btn xmc-h-btn--ghost" onClick=${() => setDraft(pristine)} disabled=${busy}>放弃修改</button>`
+                ${(dirty || metaDirty)
+                  ? html`<button type="button" class="xmc-h-btn xmc-h-btn--ghost" onClick=${() => { setDraft(pristine); setDesc(pristineMeta.desc); setTags(pristineMeta.tags); }} disabled=${busy}>放弃修改</button>`
                   : null}
                 <small class="xmc-datapage__subtitle" style="margin-left:auto">${draft.length} 字符</small>
               </div>

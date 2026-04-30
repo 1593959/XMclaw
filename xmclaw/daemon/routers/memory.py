@@ -641,7 +641,29 @@ async def get_memory_file(filename: str) -> JSONResponse:
         text = md.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
-    return JSONResponse({"name": md.name, "content": text})
+    # B-97: also surface the parsed frontmatter so the UI's edit form
+    # can pre-populate the description / tags fields without re-
+    # parsing in JS.
+    try:
+        from xmclaw.providers.memory.file_index import parse_frontmatter
+        fields, _body = parse_frontmatter(text)
+    except Exception:  # noqa: BLE001
+        fields = {}
+    desc = fields.get("description") if isinstance(fields, dict) else None
+    tags_raw = fields.get("tags") if isinstance(fields, dict) else None
+    tags: list[str]
+    if isinstance(tags_raw, list):
+        tags = [str(t) for t in tags_raw]
+    elif isinstance(tags_raw, str) and tags_raw.strip():
+        tags = [t.strip() for t in tags_raw.split(",") if t.strip()]
+    else:
+        tags = []
+    return JSONResponse({
+        "name": md.name,
+        "content": text,
+        "description": str(desc) if isinstance(desc, str) else "",
+        "tags": tags,
+    })
 
 
 @router.post("/{filename}")
@@ -650,6 +672,12 @@ async def save_memory_file(filename: str, request: Request) -> JSONResponse:
 
     ``.md`` suffix is auto-appended. A missing ``memory/`` dir is
     created — the first save after a clean install must not 500.
+
+    B-97: optional ``description`` (str) and ``tags`` (list[str]) fields
+    in the request body are written as YAML frontmatter at the top of
+    the saved file — same shape that ``note_write`` agent tool produces
+    (B-93). Body content is rendered AFTER the frontmatter, so users
+    can edit just the body in the UI without their tags getting wiped.
     """
     try:
         body = await request.json()
@@ -663,9 +691,39 @@ async def save_memory_file(filename: str, request: Request) -> JSONResponse:
     name = _safe_name(filename)
     md = mdir / name
     content = str(body.get("content", ""))
+    description = str(body.get("description", "") or "").strip()
+    tags_raw = body.get("tags") or []
+    tags: list[str] = (
+        [str(t).strip() for t in tags_raw if str(t).strip()]
+        if isinstance(tags_raw, list) else []
+    )
+
+    # B-97: build frontmatter when either field is non-empty. Strip
+    # any pre-existing frontmatter from ``content`` first so we don't
+    # double-stack on edits.
+    final_body = content
+    if description or tags:
+        try:
+            from xmclaw.providers.memory.file_index import parse_frontmatter
+            _existing_fields, stripped_body = parse_frontmatter(content)
+            final_body = stripped_body if stripped_body else content
+        except Exception:  # noqa: BLE001
+            pass
+        lines = ["---"]
+        if description:
+            # ``---`` inside the value would terminate the block early —
+            # rewrite to em-dash. Same defence as note_write tool.
+            lines.append(f"description: {description.replace('---', '—')}")
+        if tags:
+            lines.append("tags: [" + ", ".join(tags) + "]")
+        lines.append("---")
+        lines.append("")
+        frontmatter = "\n".join(lines) + "\n"
+        final_body = frontmatter + final_body.lstrip()
+
     # B-74: atomic write so a daemon crash mid-save can't truncate the
     # user's note. The note_write agent tool already used this pattern
     # (B-71); the UI's POST path was the missing twin.
     from xmclaw.utils.fs_locks import atomic_write_text
-    atomic_write_text(md, content)
+    atomic_write_text(md, final_body)
     return JSONResponse({"ok": True, "name": name})
