@@ -14,7 +14,7 @@ const { h } = window.__xmc.preact;
 const { useState, useEffect, useCallback } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
-import { apiGet } from "../lib/api.js";
+import { apiGet, apiPost } from "../lib/api.js";
 import { toast } from "../lib/toast.js";
 
 function Icon({ d, className }) {
@@ -160,6 +160,119 @@ function ProviderCard({ provider, current, token, onSaved }) {
   `;
 }
 
+// B-104: secrets store panel (file/encrypted backend, env override
+// detection). Lives at the bottom of the Env page since it's the
+// secondary mechanism — most users will use the LLM provider cards
+// above this.
+function SecretsPanel({ token }) {
+  const [items, setItems] = useState(null);
+  const [encryption, setEncryption] = useState(false);
+  const [error, setError] = useState(null);
+  const [name, setName] = useState("");
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    apiGet("/api/v2/secrets", token)
+      .then((d) => {
+        setItems(Array.isArray(d.items) ? d.items : []);
+        setEncryption(!!d.encryption_available);
+      })
+      .catch((e) => setError(String(e.message || e)));
+  }, [token]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const onSet = async () => {
+    if (!name.trim() || !value) return;
+    setBusy(true);
+    try {
+      const r = await apiPost("/api/v2/secrets", { name: name.trim(), value }, token);
+      if (r.ok) {
+        toast.success(`已保存 — backend: ${r.backend}`);
+        setName("");
+        setValue("");
+        load();
+      } else {
+        toast.error("保存失败：" + (r.error || "未知"));
+      }
+    } catch (e) {
+      toast.error("保存失败：" + (e.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onDelete = async (n) => {
+    try {
+      const url = `/api/v2/secrets/${encodeURIComponent(n)}` + (token ? `?token=${encodeURIComponent(token)}` : "");
+      const res = await fetch(url, { method: "DELETE" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      toast.success(`已删除 ${n}`);
+      load();
+    } catch (e) {
+      toast.error("删除失败：" + (e.message || e));
+    }
+  };
+
+  return html`
+    <div class="xmc-h-card">
+      <h3 class="xmc-h-card__title">Secrets 存储（B-104）</h3>
+      <p class="xmc-h-cfg__hint">
+        独立于 config.json 的密钥仓库。优先级：env 变量 <code>XMC_SECRET_&lt;NAME&gt;</code> &gt;
+        secrets 文件 &gt; keyring。${encryption ? "加密后端可用。" : "仅明文文件后端（cryptography 未安装）。"}
+        Agent 启动时按 ``llm.&lt;provider&gt;.api_key`` → ``llm.anthropic.api_key`` 这种 dotted name 查询。
+      </p>
+      ${error ? html`<div class="xmc-h-error">${error}</div>` : null}
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.6rem">
+        <input
+          type="text"
+          placeholder="名称（如 llm.anthropic.api_key）"
+          value=${name}
+          onInput=${(e) => setName(e.target.value)}
+          style="flex:1 1 240px;min-width:0;padding:.4rem .6rem;font-family:var(--xmc-font-mono);font-size:.82rem"
+        />
+        <input
+          type="password"
+          placeholder="值"
+          value=${value}
+          onInput=${(e) => setValue(e.target.value)}
+          autocomplete="new-password"
+          style="flex:1 1 200px;min-width:0;padding:.4rem .6rem;font-family:var(--xmc-font-mono);font-size:.82rem"
+        />
+        <button type="button" class="xmc-h-btn xmc-h-btn--primary" onClick=${onSet} disabled=${busy || !name.trim() || !value}>
+          ${busy ? "保存中…" : "保存"}
+        </button>
+      </div>
+      ${items === null
+        ? html`<div class="xmc-h-loading">载入中…</div>`
+        : items.length === 0
+          ? html`<p class="xmc-h-cfg__hint">尚无密钥。在上面输入 name + value → 保存。</p>`
+          : html`
+              <ul style="margin:0;padding:0;list-style:none">
+                ${items.map((it) => html`
+                  <li
+                    key=${it.name}
+                    style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;padding:.4rem .5rem;border-top:1px dashed var(--color-border)"
+                  >
+                    <code style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">${it.name}</code>
+                    ${it.env_only
+                      ? html`<small style="color:var(--xmc-warn,#c8a86a)">只在环境变量里（XMC_SECRET_${it.name.replace(/\./g,'_').toUpperCase()}）</small>`
+                      : it.env_override
+                        ? html`<small style="color:var(--xmc-warn,#c8a86a)">env 变量覆盖中</small>`
+                        : null}
+                    ${!it.env_only ? html`
+                      <button type="button" class="xmc-h-btn xmc-h-btn--ghost" style="font-size:.7rem;padding:.15rem .5rem"
+                        onClick=${() => onDelete(it.name)}>删除</button>
+                    ` : null}
+                  </li>
+                `)}
+              </ul>
+            `}
+    </div>
+  `;
+}
+
 export function EnvPage({ token }) {
   const [config, setConfig] = useState(null);
   const [error, setError] = useState(null);
@@ -228,6 +341,8 @@ export function EnvPage({ token }) {
             "配置" 页 (左栏 llm 类目) 直接可编辑底层 JSON。
           </p>
         </div>
+
+        <${SecretsPanel} token=${token} />
       </div>
     </section>
   `;
