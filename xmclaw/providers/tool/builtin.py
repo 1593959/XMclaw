@@ -989,6 +989,21 @@ _PENDING_QUESTIONS: dict[str, asyncio.Future] = {}
 _WORKTREE_ORIGIN: dict[str, Path] = {}
 
 
+# B-99: snapshot of question metadata, indexed by question_id, used
+# by the WS reconnect path (``GET /api/v2/pending_questions``) to
+# rebuild the QuestionCard after a browser refresh. Cleared whenever
+# ``_PENDING_QUESTIONS`` removes the future, so the two stay in sync.
+_PENDING_QUESTION_PAYLOADS: dict[str, dict] = {}
+
+
+def list_pending_questions() -> list[dict]:
+    """B-99: return snapshots of every in-flight question. Each entry
+    has the same shape as the AGENT_ASKED_QUESTION event payload so
+    the front-end can rebuild the QuestionCard without a special
+    code path."""
+    return list(_PENDING_QUESTION_PAYLOADS.values())
+
+
 def resolve_pending_question(
     question_id: str, answer: "str | list[str]",
 ) -> bool:
@@ -2458,6 +2473,18 @@ class BuiltinTools(ToolProvider):
         loop = asyncio.get_event_loop()
         future: asyncio.Future = loop.create_future()
         _PENDING_QUESTIONS[question_id] = future
+        # B-99: payload snapshot for the reconnect-recovery endpoint.
+        # Front-end calls ``GET /api/v2/pending_questions`` on WS open
+        # so a browser refresh while an ask is in flight rebuilds the
+        # card instead of stranding the future.
+        _PENDING_QUESTION_PAYLOADS[question_id] = {
+            "question_id": question_id,
+            "question": question,
+            "options": norm_options,
+            "multi_select": multi,
+            "allow_other": allow_other,
+            "tool_call_id": call.id,
+        }
 
         # Publish AGENT_ASKED_QUESTION via the bus the daemon factory
         # supplies. Same indirection pattern persona-writeback uses
@@ -2499,6 +2526,7 @@ class BuiltinTools(ToolProvider):
             )
         finally:
             _PENDING_QUESTIONS.pop(question_id, None)
+            _PENDING_QUESTION_PAYLOADS.pop(question_id, None)
 
         # ``answer`` is a string for single-select, list for multi-select,
         # or a free-text "Other" string. Caller (the LLM) sees it as

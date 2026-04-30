@@ -17,6 +17,8 @@ from xmclaw.core.ir import ToolCall
 from xmclaw.providers.tool.builtin import (
     BuiltinTools,
     _PENDING_QUESTIONS,
+    _PENDING_QUESTION_PAYLOADS,
+    list_pending_questions,
     resolve_pending_question,
 )
 
@@ -25,8 +27,10 @@ from xmclaw.providers.tool.builtin import (
 def _clear_pending() -> None:
     """Don't let pending entries leak across tests."""
     _PENDING_QUESTIONS.clear()
+    _PENDING_QUESTION_PAYLOADS.clear()
     yield
     _PENDING_QUESTIONS.clear()
+    _PENDING_QUESTION_PAYLOADS.clear()
 
 
 def test_spec_is_advertised() -> None:
@@ -125,6 +129,44 @@ async def test_empty_options_fail() -> None:
     result = await tools.invoke(call)
     assert result.ok is False
     assert "options" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_pending_payload_visible_to_recovery_endpoint() -> None:
+    """B-99: while a question is in flight, list_pending_questions()
+    returns its payload so the WS reconnect path can rebuild the
+    QuestionCard. Cleared on resolve."""
+    tools = BuiltinTools()
+    call = ToolCall(
+        id="c1", provenance="synthetic", name="ask_user_question",
+        args={
+            "question": "where to deploy?",
+            "options": [
+                {"label": "us-east-1", "value": "use1"},
+                {"label": "eu-west-1", "value": "euw1"},
+            ],
+            "multi_select": True,
+        },
+    )
+    invoke_task = asyncio.create_task(tools.invoke(call))
+    for _ in range(10):
+        await asyncio.sleep(0.01)
+        if _PENDING_QUESTIONS:
+            break
+
+    items = list_pending_questions()
+    assert len(items) == 1
+    item = items[0]
+    assert item["question"] == "where to deploy?"
+    assert item["multi_select"] is True
+    assert len(item["options"]) == 2
+    assert {o["value"] for o in item["options"]} == {"use1", "euw1"}
+
+    # Resolve and confirm the payload disappears.
+    qid = next(iter(_PENDING_QUESTIONS.keys()))
+    resolve_pending_question(qid, ["use1"])
+    await invoke_task
+    assert list_pending_questions() == []
 
 
 @pytest.mark.asyncio

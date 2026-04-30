@@ -129,11 +129,57 @@ async function hydrateChatHistory(sid, token) {
   }
 }
 
+// B-99: rehydrate any in-flight ask_user_question. The daemon's tool
+// future is still ``await``-ing on the server; we just need to put
+// the QuestionCard back in the transcript so the user can answer.
+async function rehydratePendingQuestions(token) {
+  try {
+    const url = "/api/v2/pending_questions" + (token ? `?token=${encodeURIComponent(token)}` : "");
+    const r = await fetch(url);
+    if (!r.ok) return;
+    const data = await r.json();
+    const items = Array.isArray(data && data.items) ? data.items : [];
+    if (!items.length) return;
+    store.setState((s) => {
+      // Skip questions we already have a card for (multi-tab safety).
+      const existingIds = new Set(
+        s.chat.messages
+          .filter((m) => m.kind === "question")
+          .map((m) => m.question && m.question.id)
+          .filter(Boolean),
+      );
+      const fresh = items
+        .filter((q) => !existingIds.has(q.question_id))
+        .map((q) => ({
+          id: "q_" + q.question_id,
+          role: "system",
+          kind: "question",
+          content: "",
+          status: "pending",
+          ts: Date.now() / 1000,
+          question: {
+            id: q.question_id,
+            question: q.question || "",
+            options: Array.isArray(q.options) ? q.options : [],
+            multi_select: !!q.multi_select,
+            allow_other: q.allow_other !== false,
+            tool_call_id: q.tool_call_id || null,
+          },
+        }));
+      if (!fresh.length) return s;
+      return { ...s, chat: { ...s.chat, messages: s.chat.messages.concat(fresh) } };
+    });
+  } catch (_) {
+    /* fail silent — picker is not critical */
+  }
+}
+
 function connectFor(sid, token) {
   disposeWs();
   // Fire-and-forget rehydrate; WS connect proceeds in parallel so a
   // slow restore never blocks the live channel.
   hydrateChatHistory(sid, token);
+  rehydratePendingQuestions(token);
   wsHandle = createWsClient({
     sessionId: sid,
     token,

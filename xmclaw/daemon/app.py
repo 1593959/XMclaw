@@ -1161,6 +1161,19 @@ def create_app(
     # in that this endpoint answers "does the user need to do something
     # before XMclaw is useful?" — a question status was never designed
     # to answer.
+    # B-99: surface in-flight ask_user_question calls so a browser
+    # refresh can rebuild the QuestionCard. Without this, the user
+    # who closed the tab mid-question has no way back — the daemon's
+    # tool future is still ``await``-ing forever.
+    @app.get("/api/v2/pending_questions")
+    async def pending_questions() -> JSONResponse:
+        try:
+            from xmclaw.providers.tool.builtin import list_pending_questions
+            items = list_pending_questions()
+        except Exception:  # noqa: BLE001
+            items = []
+        return JSONResponse({"items": items})
+
     @app.get("/api/v2/setup")
     async def setup_status() -> JSONResponse:
         from xmclaw.daemon.factory import _resolve_persona_profile_dir
