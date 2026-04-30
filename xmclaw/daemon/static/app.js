@@ -258,6 +258,27 @@ function cancelComposer() {
   }
 }
 
+// B-92: forward an answer to the daemon. The QuestionCard built by
+// MessageBubble calls this when the user clicks an option (or types
+// "Other" free text). The daemon's WS handler resolves the in-flight
+// ask_user_question Future and the agent's run_turn loop continues.
+// ``value`` is a string for single-select / Other, or an array for
+// multi-select.
+function answerQuestion(questionId, value) {
+  if (!wsHandle) {
+    toast.error("WS 未连接，无法提交回答");
+    return;
+  }
+  const result = wsHandle.send({
+    type: "answer_question",
+    question_id: questionId,
+    value,
+  });
+  if (result && !result.ok) {
+    toast.error("回答提交失败：" + (result.reason || "未知"));
+  }
+}
+
 function changeDraft(value) {
   store.setState((s) => ({ chat: { ...s.chat, composerDraft: value } }));
 }
@@ -337,6 +358,7 @@ const routes = {
       token=${state.auth.token}
       onSend=${sendComposer}
       onCancel=${cancelComposer}
+      onAnswerQuestion=${answerQuestion}
       onChangeDraft=${changeDraft}
       onTogglePlan=${togglePlan}
       onToggleUltrathink=${toggleUltrathink}

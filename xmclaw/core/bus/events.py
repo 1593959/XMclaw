@@ -33,6 +33,18 @@ class EventType(str, Enum):
     # before it answered" in the PhaseCard body.
     LLM_THINKING_CHUNK = "llm_thinking_chunk"
     LLM_RESPONSE = "llm_response"
+    # B-92: agent stops mid-turn to ask the user a question with N
+    # options (single- or multi-select). Tool invocation blocks on a
+    # future that the WS handler resolves when the user clicks an
+    # answer in the UI's QuestionCard. Inspired by free-code's
+    # AskUserQuestionTool — closes the "agent guesses when ambiguous"
+    # gap. Payload: {question_id, question, options, multi_select}.
+    AGENT_ASKED_QUESTION = "agent_asked_question"
+    # User's answer comes back via the same WS connection as a
+    # client→server frame; the daemon re-broadcasts it as this event
+    # so the chat transcript and any audit log replay can see what
+    # the user picked. Payload: {question_id, value}.
+    USER_ANSWERED_QUESTION = "user_answered_question"
     TOOL_CALL_EMITTED = "tool_call_emitted"
     TOOL_INVOCATION_STARTED = "tool_invocation_started"
     TOOL_INVOCATION_FINISHED = "tool_invocation_finished"

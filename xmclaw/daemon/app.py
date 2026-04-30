@@ -1676,8 +1676,41 @@ def create_app(
                             },
                         ))
                         await bus.drain()
+                # B-92: handle answer_question frame — UI's QuestionCard
+                # sends ``{"type": "answer_question", "question_id": "...",
+                # "value": "..."}`` when the user clicks an option.
+                # Resolves the in-flight Future inside the
+                # ask_user_question tool handler so the agent's tool
+                # invocation unblocks and the run_turn loop continues.
+                # ``value`` is a string (single-select / Other) or a
+                # list of strings (multi-select).
+                elif frame.get("type") == "answer_question":
+                    qid = frame.get("question_id")
+                    value = frame.get("value")
+                    resolved = False
+                    if isinstance(qid, str) and qid and value is not None:
+                        try:
+                            from xmclaw.providers.tool.builtin import (
+                                resolve_pending_question,
+                            )
+                            resolved = resolve_pending_question(qid, value)
+                        except Exception:  # noqa: BLE001
+                            resolved = False
+                    # Re-broadcast the answer so the chat transcript +
+                    # event log replay can show what the user picked.
+                    # Always publish (even on stale answer) so the UI
+                    # has something to clear the QuestionCard with.
+                    await bus.publish(make_event(
+                        session_id=session_id, agent_id="user",
+                        type=EventType.USER_ANSWERED_QUESTION,
+                        payload={
+                            "question_id": qid or "",
+                            "value": value,
+                            "resolved": resolved,
+                        },
+                    ))
+                    await bus.drain()
                 # Other frame types are silently ignored for now.
-                # Phase 4.2+ will add ask_user_answer / etc.
         except WebSocketDisconnect:
             pass
         finally:

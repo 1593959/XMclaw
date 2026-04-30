@@ -149,3 +149,98 @@
   color: var(--xmc-info, #6aa3f0);
 }
 
+/* ── QuestionCard (B-92) — agent-asks-user multi-choice ─────────────── */
+
+.xmc-questioncard {
+  border: 1px solid var(--xmc-border);
+  border-radius: var(--xmc-radius-md);
+  background: var(--xmc-bg);
+  padding: var(--xmc-space-3);
+  margin: var(--xmc-space-2) 0;
+  font-size: var(--xmc-font-size-sm);
+}
+
+.xmc-questioncard--pending {
+  border-left: 3px solid var(--xmc-warn, #c8a86a);
+  background: rgba(200, 168, 106, 0.06);
+}
+
+.xmc-questioncard--answered {
+  border-left: 3px solid var(--xmc-success, #6ac88a);
+  opacity: 0.85;
+}
+
+.xmc-questioncard__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--xmc-space-2);
+  margin-bottom: var(--xmc-space-3);
+}
+
+.xmc-questioncard__options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--xmc-space-2);
+}
+
+.xmc-questioncard__option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: var(--xmc-space-2) var(--xmc-space-3);
+  border: 1px solid var(--xmc-border);
+  border-radius: var(--xmc-radius-sm);
+  background: var(--xmc-bg-elev);
+  color: var(--xmc-fg);
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--xmc-font-mono);
+  font-size: var(--xmc-font-size-sm);
+  transition: border-color 80ms ease, background 80ms ease;
+}
+
+.xmc-questioncard__option:hover {
+  border-color: var(--xmc-info, #6aa3f0);
+}
+
+.xmc-questioncard__option.is-picked {
+  border-color: var(--xmc-info, #6aa3f0);
+  background: rgba(106, 163, 240, 0.12);
+}
+
+.xmc-questioncard__option--other {
+  border-style: dashed;
+}
+
+.xmc-questioncard__option-label {
+  font-weight: 600;
+}
+
+.xmc-questioncard__option-desc {
+  font-size: var(--xmc-font-size-xs);
+  color: var(--xmc-fg-muted);
+}
+
+.xmc-questioncard__other {
+  margin-top: var(--xmc-space-2);
+}
+
+.xmc-questioncard__actions {
+  margin-top: var(--xmc-space-3);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.xmc-questioncard__answer {
+  display: flex;
+  align-items: baseline;
+  gap: var(--xmc-space-2);
+  font-size: var(--xmc-font-size-sm);
+}
+
+.xmc-questioncard__answer-label {
+  color: var(--xmc-fg-muted);
+}
+

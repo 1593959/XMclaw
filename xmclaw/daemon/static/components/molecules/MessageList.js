@@ -38,7 +38,7 @@ function ensureScrollState(node, lastLen) {
   node.dataset.xmcLen = String(lastLen);
 }
 
-export function MessageList({ messages }) {
+export function MessageList({ messages, onAnswerQuestion }) {
   const empty = messages.length === 0;
   return html`
     <div
@@ -58,7 +58,7 @@ export function MessageList({ messages }) {
             </div>
           `
         : messages.map(
-            (m) => html`<${MessageBubble} key=${m.id} message=${m} />`
+            (m) => html`<${MessageBubble} key=${m.id} message=${m} onAnswerQuestion=${onAnswerQuestion} />`
           )}
     </div>
   `;

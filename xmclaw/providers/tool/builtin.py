@@ -32,6 +32,7 @@ import sys
 import json
 import re
 import time
+import uuid
 from pathlib import Path
 
 from xmclaw.core.ir import ToolCall, ToolResult, ToolSpec
@@ -739,6 +740,67 @@ _SQLITE_QUERY_SPEC = ToolSpec(
 )
 
 
+_ASK_USER_QUESTION_SPEC = ToolSpec(
+    name="ask_user_question",
+    description=(
+        "Stop the turn and ask the user a multiple-choice question. Use "
+        "this when you genuinely don't know which path to take and the "
+        "answer materially changes what you'd do — e.g. \"library A or "
+        "library B?\", \"keep the legacy field or drop it?\", \"target "
+        "tomorrow or next week?\". DO NOT use it for trivia or to ask "
+        "permission for things you should just do.\n\n"
+        "The UI shows a card with clickable options; the tool blocks "
+        "until the user picks one. Default timeout 10 minutes — past "
+        "that the tool returns an error and you proceed with your best "
+        "guess.\n\n"
+        "Recommended option ordering: put the option you'd pick first "
+        "with `(Recommended)` at the end of its label. Always include "
+        "an `Other` escape hatch by setting allow_other=true so the "
+        "user can type a custom answer."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "question": {
+                "type": "string",
+                "description": "The question to ask. One sentence is best.",
+            },
+            "options": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string"},
+                        "value": {"type": "string"},
+                        "description": {"type": "string"},
+                    },
+                    "required": ["label", "value"],
+                },
+                "description": (
+                    "2-6 choices. ``label`` is what the user sees; "
+                    "``value`` is what comes back to you (use a short "
+                    "machine-friendly token). ``description`` is "
+                    "optional helper text shown under the label."
+                ),
+            },
+            "multi_select": {
+                "type": "boolean",
+                "description": "Allow the user to pick multiple options. Default false.",
+            },
+            "allow_other": {
+                "type": "boolean",
+                "description": (
+                    "Show an 'Other' option that lets the user type a "
+                    "custom answer. Default true. Set false only when "
+                    "the option list is genuinely exhaustive."
+                ),
+            },
+        },
+        "required": ["question", "options"],
+    },
+)
+
+
 _UPDATE_PERSONA_SPEC = ToolSpec(
     name="update_persona",
     description=(
@@ -817,6 +879,32 @@ _MAX_WEB_BYTES = 200_000
 _BASH_DEFAULT_TIMEOUT = 30.0
 _BASH_MAX_OUTPUT = 100_000
 _VALID_TODO_STATUSES = {"pending", "in_progress", "done"}
+
+# B-92: cross-boundary store for in-flight ``ask_user_question`` calls.
+# The tool handler awaits a Future stored here; the daemon's WS
+# handler resolves it when the user clicks an answer in the UI. Keys
+# are uuid4 hex; values are ``asyncio.Future``. Cleared by the tool
+# handler's ``finally`` block whether the future resolved or timed
+# out, so the dict never accumulates dead entries.
+_PENDING_QUESTIONS: dict[str, asyncio.Future] = {}
+
+
+def resolve_pending_question(
+    question_id: str, answer: "str | list[str]",
+) -> bool:
+    """Resolve an in-flight ``ask_user_question`` future.
+
+    Called from the daemon's WS handler when the client sends an
+    ``answer_question`` frame. Returns True when the future was
+    resolved (i.e. the question was actually pending), False when
+    the question id was unknown or already resolved (stale answer
+    after a timeout, double-click, etc).
+    """
+    fut = _PENDING_QUESTIONS.get(question_id)
+    if fut is None or fut.done():
+        return False
+    fut.set_result(answer)
+    return True
 
 # Map case-insensitive lookup → canonical-cased basename. Used by
 # the ``update_persona`` tool so the LLM can pass "soul.md", "SOUL",
@@ -963,6 +1051,10 @@ class BuiltinTools(ToolProvider):
         # B-49: self-introspection tool. Always advertised — works
         # even with zero providers wired (returns "nothing wired").
         specs.append(_AGENT_STATUS_SPEC)
+        # B-92: ask the user a multiple-choice question mid-turn.
+        # Always advertised — daemon-process-local resolver works
+        # even without persona / memory wiring.
+        specs.append(_ASK_USER_QUESTION_SPEC)
         # B-52: memory_compact triggers an immediate Auto-Dream pass.
         # Always advertised; the handler refuses cleanly when no LLM
         # is wired (which is the only failure mode).
@@ -1040,6 +1132,8 @@ class BuiltinTools(ToolProvider):
                 if self._persona_dir_provider is None:
                     return _fail(call, t0, "memory_pin not configured (no persona dir)")
                 return await self._memory_pin(call, t0)
+            if call.name == "ask_user_question":
+                return await self._ask_user_question(call, t0)
             return _fail(call, t0, f"unknown tool: {call.name!r}")
         except PermissionError as exc:
             return _fail(call, t0, f"permission denied: {exc}")
@@ -1971,6 +2065,105 @@ class BuiltinTools(ToolProvider):
             content=result,
             error=None if result.get("ok") else result.get("error"),
             side_effects=(result.get("memory_path") or "",) if result.get("ok") else (),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _ask_user_question(self, call: ToolCall, t0: float) -> ToolResult:
+        """B-92: stop the turn, publish AGENT_ASKED_QUESTION, block on a
+        Future until the WS handler resolves it with the user's answer.
+
+        Cross-boundary plumbing: the future lives in the module-level
+        :data:`_PENDING_QUESTIONS` dict so both this tool (which awaits
+        it) and ``daemon/app.py`` 's WS handler (which resolves it on
+        the answer_question client frame) share the same identity.
+
+        Timeout caps the wait at 600 seconds — past that we return
+        ``ok=False`` so the agent can recover and proceed with its
+        best guess instead of hanging indefinitely.
+        """
+        question = str(call.args.get("question") or "").strip()
+        options = call.args.get("options") or []
+        multi = bool(call.args.get("multi_select"))
+        allow_other = bool(call.args.get("allow_other", True))
+        if not question:
+            return _fail(call, t0, "missing 'question'")
+        if not isinstance(options, list) or not options:
+            return _fail(call, t0, "options must be a non-empty list")
+        # Normalise options to {label, value, description?} dicts.
+        norm_options: list[dict[str, str]] = []
+        for i, o in enumerate(options):
+            if not isinstance(o, dict):
+                return _fail(call, t0, f"options[{i}] must be an object")
+            label = str(o.get("label") or "").strip()
+            value = str(o.get("value") or "").strip()
+            if not label or not value:
+                return _fail(call, t0, f"options[{i}] needs both 'label' and 'value'")
+            entry = {"label": label, "value": value}
+            desc = o.get("description")
+            if isinstance(desc, str) and desc.strip():
+                entry["description"] = desc.strip()
+            norm_options.append(entry)
+
+        question_id = uuid.uuid4().hex
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future = loop.create_future()
+        _PENDING_QUESTIONS[question_id] = future
+
+        # Publish AGENT_ASKED_QUESTION via the bus the daemon factory
+        # supplies. Same indirection pattern persona-writeback uses
+        # (_LAST_APP_STATE) so this tool stays decoupled from the
+        # daemon module.
+        try:
+            from xmclaw.daemon import app as _app_mod
+            state = getattr(_app_mod, "_LAST_APP_STATE", None)
+            bus = getattr(state, "bus", None) if state is not None else None
+        except Exception:  # noqa: BLE001
+            bus = None
+        if bus is not None:
+            try:
+                from xmclaw.core.bus import EventType, make_event
+                ev = make_event(
+                    session_id="_question",
+                    agent_id="main",
+                    type=EventType.AGENT_ASKED_QUESTION,
+                    payload={
+                        "question_id": question_id,
+                        "question": question,
+                        "options": norm_options,
+                        "multi_select": multi,
+                        "allow_other": allow_other,
+                        "tool_call_id": call.id,
+                    },
+                )
+                await bus.publish(ev)
+            except Exception:  # noqa: BLE001 — telemetry path; never block
+                pass
+
+        try:
+            answer = await asyncio.wait_for(future, timeout=600.0)
+        except asyncio.TimeoutError:
+            return _fail(
+                call, t0,
+                "user did not respond within 10 minutes — proceed with "
+                "your best guess or ask again differently",
+            )
+        finally:
+            _PENDING_QUESTIONS.pop(question_id, None)
+
+        # ``answer`` is a string for single-select, list for multi-select,
+        # or a free-text "Other" string. Caller (the LLM) sees it as
+        # plain text in the tool result.
+        if isinstance(answer, list):
+            return ToolResult(
+                call_id=call.id, ok=True,
+                content=", ".join(str(a) for a in answer),
+                side_effects=(),
+                latency_ms=(time.perf_counter() - t0) * 1000.0,
+            )
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content=str(answer),
+            side_effects=(),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 

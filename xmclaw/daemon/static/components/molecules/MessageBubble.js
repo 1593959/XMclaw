@@ -23,6 +23,7 @@ import { lex, renderTokenHtml } from "../../lib/markdown.js";
 import { Spinner } from "../atoms/spinner.js";
 import { Badge } from "../atoms/badge.js";
 import { CodeBlock } from "./CodeBlock.js";
+import { QuestionCard } from "./QuestionCard.js";
 import {
   speak,
   stopSpeaking,
@@ -243,7 +244,21 @@ function PhaseCard({ message, baseLabel, elapsedS, stalled, isWorking }) {
   `;
 }
 
-export function MessageBubble({ message }) {
+export function MessageBubble({ message, onAnswerQuestion }) {
+  // B-92: question-kind bubbles render as QuestionCard, not as
+  // markdown text. The reducer creates these on AGENT_ASKED_QUESTION
+  // events. They sit in the transcript like any other message so the
+  // back-scroll history shows what was asked + the answer.
+  if (message.kind === "question") {
+    return html`
+      <article class="xmc-msg xmc-msg--system" data-msg-id=${message.id}>
+        <${QuestionCard}
+          message=${message}
+          onAnswerQuestion=${onAnswerQuestion}
+        />
+      </article>
+    `;
+  }
   const role = message.role || "system";
   const isUser = role === "user";
   const isSystem = role === "system";

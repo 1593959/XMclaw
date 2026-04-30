@@ -34,6 +34,8 @@ export const PHASE_1_EVENT_TYPES = [
   "tool_call_emitted",
   "tool_invocation_started",
   "tool_invocation_finished",
+  "agent_asked_question",   // B-92
+  "user_answered_question", // B-92
   "anti_req_violation",
   "session_lifecycle",
 ];
@@ -263,6 +265,51 @@ export function applyEvent(chat, envelope) {
         messages: upsertById(cleaned, id, (m) => ({
           ...m,
           thinking: (m.thinking || "") + delta,
+        })),
+      };
+    }
+
+    case "agent_asked_question": {
+      // B-92: agent stops mid-turn to ask a multi-choice question.
+      // Lives as a system-tagged bubble in the transcript so the user
+      // sees what's being asked alongside any preceding tool calls
+      // and assistant text. The QuestionCard component renders an
+      // interactive UI from message.question.
+      const id = "q_" + (payload.question_id || corr);
+      return {
+        ...chat,
+        messages: chat.messages.concat({
+          id,
+          role: "system",
+          kind: "question",
+          content: "",
+          status: "pending",
+          ts,
+          question: {
+            id: payload.question_id || corr,
+            question: payload.question || "",
+            options: Array.isArray(payload.options) ? payload.options : [],
+            multi_select: !!payload.multi_select,
+            allow_other: payload.allow_other !== false,
+            tool_call_id: payload.tool_call_id || null,
+          },
+        }),
+      };
+    }
+
+    case "user_answered_question": {
+      // B-92: collapse the QuestionCard. We mark the matching bubble
+      // as 'complete' and stash the answer so the card can render a
+      // read-only summary ("you picked: …") instead of disappearing.
+      const id = "q_" + (payload.question_id || corr);
+      const idx = chat.messages.findIndex((m) => m.id === id);
+      if (idx === -1) return chat;
+      return {
+        ...chat,
+        messages: upsertById(chat.messages, id, (m) => ({
+          ...m,
+          status: "complete",
+          answer: payload.value,
         })),
       };
     }
