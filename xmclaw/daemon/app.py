@@ -1745,6 +1745,30 @@ def create_app(
                             },
                         ))
                         await bus.drain()
+                # B-106: undo frame — drop the last user/assistant pair
+                # from history. Used by /undo slash command. Echoes a
+                # SESSION_LIFECYCLE event back so the UI can flush the
+                # last bubble and refresh from the new history.
+                elif frame.get("type") == "undo":
+                    removed = 0
+                    history_len = 0
+                    if active_agent is not None:
+                        try:
+                            res = active_agent.pop_last_turn(session_id)
+                            removed = int(res.get("removed", 0))
+                            history_len = int(res.get("history_len", 0))
+                        except Exception:  # noqa: BLE001
+                            removed = 0
+                    await bus.publish(make_event(
+                        session_id=session_id, agent_id="daemon",
+                        type=EventType.SESSION_LIFECYCLE,
+                        payload={
+                            "phase": "undo_applied",
+                            "removed": removed,
+                            "history_len": history_len,
+                        },
+                    ))
+                    await bus.drain()
                 # B-92: handle answer_question frame — UI's QuestionCard
                 # sends ``{"type": "answer_question", "question_id": "...",
                 # "value": "..."}`` when the user clicks an option.

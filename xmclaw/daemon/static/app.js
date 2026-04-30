@@ -370,11 +370,23 @@ function clearChat() {
   toast.info("已清空本地 chat 面板（daemon 历史保留）");
 }
 
+// B-106: /retry + /undo helpers live in lib/chat_actions.js (split out
+// to keep app.js under the 500-line UI budget). Bind to our store +
+// wsHandle here.
+import { createChatActions } from "./lib/chat_actions.js";
+const _CHAT_HELPERS = createChatActions({
+  store, getWsHandle: () => wsHandle,
+});
+const retryLast = _CHAT_HELPERS.retryLast;
+const undoLast = _CHAT_HELPERS.undoLast;
+
 // Action bag passed into the chat page so SlashPopover can wire its
 // command items without each having to import every helper itself.
 const CHAT_ACTIONS = {
   startNewSession,
   clearChat,
+  retryLast,
+  undoLast,
   togglePlan: (force) => {
     if (typeof force === "boolean") {
       store.setState((s) => ({ chat: { ...s.chat, planMode: force } }));

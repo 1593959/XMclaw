@@ -567,6 +567,41 @@ class AgentLoop:
         if self._session_store is not None:
             self._session_store.delete(session_id)
 
+    def pop_last_turn(self, session_id: str) -> dict[str, Any]:
+        """B-106: drop the last user/assistant pair from a session's
+        history. Used by ``/undo`` slash command. Returns a small
+        summary dict the WS handler echoes back so the UI can confirm
+        what was removed.
+
+        Walks back from the tail past one assistant + one user message
+        (and any tool messages clinging to that turn). Returns
+        ``{removed: 0}`` when the session has no history yet, so the
+        client side never has to handle "nothing to undo" specially.
+        """
+        history = self._histories.get(session_id) or []
+        if not history:
+            return {"removed": 0, "history_len": 0}
+        # Collect indices to drop: last assistant + everything after it
+        # back to (and including) the prior user message. Tool messages
+        # interleave between user→assistant and stick to the assistant
+        # turn — drop those too.
+        drop_from = len(history)
+        for i in range(len(history) - 1, -1, -1):
+            m = history[i]
+            role = getattr(m, "role", "") or m.get("role", "") if isinstance(m, dict) else ""
+            if role == "user":
+                drop_from = i
+                break
+        kept = history[:drop_from]
+        removed = len(history) - len(kept)
+        self._histories[session_id] = kept
+        if self._session_store is not None:
+            try:
+                self._session_store.put(session_id, kept)  # overwrite
+            except Exception:  # noqa: BLE001 — best-effort
+                pass
+        return {"removed": removed, "history_len": len(kept)}
+
     def cancel_session(self, session_id: str) -> bool:
         """B-38: signal the in-flight ``run_turn`` for this session to
         bail out at the next hop boundary. Idempotent: setting an
