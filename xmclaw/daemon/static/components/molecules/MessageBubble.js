@@ -142,19 +142,33 @@ function ThinkingDots({ label = "正在思考" }) {
 // stream lands one (placeholder slot today).
 function PhaseCard({ message, baseLabel, elapsedS, stalled, isWorking }) {
   const phase = message.phase;
-  if (!isWorking || !phase) return null;
+  const hasThinkingHistory = !!(message.thinking && message.thinking.length > 0);
+  // Card shows in two cases:
+  //   1. The turn is still active (isWorking) — live status with dots.
+  //   2. The turn has finished BUT a thinking trace was captured —
+  //      so the user can click open and review what the model
+  //      reasoned through, even after the answer is on screen.
+  if (!isWorking && !hasThinkingHistory) return null;
   const meta = message.phaseMeta || null;
   const history = message.phaseHistory || [];
   const tone = stalled ? "warn" : "muted";
   // Auto-expand when stalled — show the user what the call is doing
-  // when the spinner has been running uncomfortably long.
+  // when the spinner has been running uncomfortably long. Don't auto-
+  // expand the post-turn review card; that should stay folded by
+  // default to keep the transcript readable.
   return html`
-    <details class=${"xmc-phasecard xmc-phasecard--" + phase} open=${stalled}>
+    <details class=${"xmc-phasecard xmc-phasecard--" + (phase || "review")} open=${isWorking && stalled}>
       <summary class=${"xmc-phasecard__summary" + (stalled ? " is-stalled" : "")}>
-        <span class="xmc-thinking__dot"></span>
-        <span class="xmc-thinking__dot"></span>
-        <span class="xmc-thinking__dot"></span>
-        <span class="xmc-phasecard__label">${baseLabel}</span>
+        ${isWorking ? html`
+          <span class="xmc-thinking__dot"></span>
+          <span class="xmc-thinking__dot"></span>
+          <span class="xmc-thinking__dot"></span>
+        ` : html`
+          <span class="xmc-phasecard__check" aria-hidden="true">▸</span>
+        `}
+        <span class="xmc-phasecard__label">
+          ${isWorking ? baseLabel : "思考过程（已完成）"}
+        </span>
         ${elapsedS != null && elapsedS >= 1
           ? html`<${Badge} tone=${tone}>${elapsedS}s</${Badge}>`
           : null}

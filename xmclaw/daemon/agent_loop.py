@@ -1428,6 +1428,7 @@ class AgentLoop:
             # client can render the assistant text token-by-token. Tool-use
             # blocks aren't streamed; they arrive in the final response.
             chunk_seq = 0
+            think_seq = 0
 
             async def _emit_chunk(delta: str) -> None:
                 nonlocal chunk_seq
@@ -1438,6 +1439,20 @@ class AgentLoop:
                 }, correlation_id=hop_corr)
                 chunk_seq += 1
 
+            # B-91: separate channel for reasoning / extended-thinking
+            # deltas. PhaseCard accumulates these into ``message.thinking``
+            # and shows them in its body when expanded. Distinct event
+            # type from LLM_CHUNK so the chat reducer can route them to
+            # the right slot without sniffing content.
+            async def _emit_thinking_chunk(delta: str) -> None:
+                nonlocal think_seq
+                await publish(EventType.LLM_THINKING_CHUNK, {
+                    "hop": hop,
+                    "delta": delta,
+                    "seq": think_seq,
+                }, correlation_id=hop_corr)
+                think_seq += 1
+
             t0 = time.perf_counter()
             try:
                 # B-39: pass the per-session cancel event so streaming
@@ -1445,8 +1460,12 @@ class AgentLoop:
                 # when the user clicks Stop, instead of waiting for
                 # the next hop boundary. Falls back gracefully on
                 # providers that ignore the kwarg.
+                # B-91: also pass the thinking-chunk callback. Providers
+                # that don't support reasoning streams ignore the kwarg
+                # via the base-class default impl.
                 response = await llm.complete_streaming(
                     messages, tools=tool_specs, on_chunk=_emit_chunk,
+                    on_thinking_chunk=_emit_thinking_chunk,
                     cancel=cancel_event,
                 )
             except Exception as exc:  # noqa: BLE001

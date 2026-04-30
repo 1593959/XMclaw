@@ -24,6 +24,14 @@ class EventType(str, Enum):
     USER_MESSAGE = "user_message"
     LLM_REQUEST = "llm_request"
     LLM_CHUNK = "llm_chunk"
+    # B-91: per-token reasoning / extended-thinking chunks. Distinct
+    # from LLM_CHUNK (which carries user-visible text). Anthropic
+    # surfaces these as ``thinking_delta`` events; OpenAI / MiniMax /
+    # Moonshot / DashScope surface them as ``delta.reasoning_content``
+    # or ``delta.reasoning``. Provider layer normalises both shapes
+    # into this event so the UI can show "what was the model thinking
+    # before it answered" in the PhaseCard body.
+    LLM_THINKING_CHUNK = "llm_thinking_chunk"
     LLM_RESPONSE = "llm_response"
     TOOL_CALL_EMITTED = "tool_call_emitted"
     TOOL_INVOCATION_STARTED = "tool_invocation_started"

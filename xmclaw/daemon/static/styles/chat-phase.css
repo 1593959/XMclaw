@@ -28,6 +28,24 @@
   border-left: 3px solid var(--xmc-warn, #c8a86a);
 }
 
+.xmc-phasecard--review {
+  /* B-91: post-turn "review" card — same look but muted left border so
+     it doesn't compete with the answer text for attention. */
+  border-left: 3px solid var(--xmc-fg-muted);
+  opacity: 0.85;
+}
+
+.xmc-phasecard__check {
+  color: var(--xmc-fg-muted);
+  font-family: var(--xmc-font-mono);
+  font-size: var(--xmc-font-size-sm);
+}
+
+.xmc-phasecard[open] .xmc-phasecard__check {
+  transform: rotate(90deg);
+  display: inline-block;
+}
+
 .xmc-phasecard__summary {
   display: flex;
   align-items: center;

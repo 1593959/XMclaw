@@ -29,6 +29,7 @@ export const PHASE_1_EVENT_TYPES = [
   "user_message",
   "llm_request",
   "llm_chunk",
+  "llm_thinking_chunk",  // B-91
   "llm_response",
   "tool_call_emitted",
   "tool_invocation_started",
@@ -222,6 +223,46 @@ export function applyEvent(chat, envelope) {
           ...m,
           content: m.content + delta,
           status: "streaming",
+        })),
+      };
+    }
+
+    case "llm_thinking_chunk": {
+      // B-91: reasoning / extended-thinking token delta. Accumulate
+      // onto ``message.thinking`` (separate from message.content) so
+      // the PhaseCard body can render it without polluting the main
+      // bubble text. Bubble is created lazily on the first thinking
+      // chunk so a model that emits reasoning before any visible
+      // content still gets a card to attach to.
+      const id = corr;
+      const delta = typeof payload.delta === "string"
+        ? payload.delta
+        : "";
+      if (!delta) return chat;
+      const cleaned = _finalizeAbandoned(chat.messages, id);
+      const idx = cleaned.findIndex((m) => m.id === id);
+      if (idx === -1) {
+        return {
+          ...chat,
+          pendingAssistantId: id,
+          messages: cleaned.concat({
+            id,
+            role: "assistant",
+            content: "",
+            thinking: delta,
+            status: "thinking",
+            phase: "calling_llm",
+            ts,
+            toolCalls: [],
+          }),
+        };
+      }
+      return {
+        ...chat,
+        pendingAssistantId: id,
+        messages: upsertById(cleaned, id, (m) => ({
+          ...m,
+          thinking: (m.thinking || "") + delta,
         })),
       };
     }

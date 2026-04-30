@@ -18,6 +18,10 @@ from dataclasses import dataclass
 from typing import Any
 
 OnChunkCallback = Callable[[str], Awaitable[None]]
+# B-91: separate channel for reasoning / extended-thinking deltas.
+# Same signature as OnChunkCallback so callers can wire either or
+# both. Distinct alias to make the call-site intent obvious.
+OnThinkingChunkCallback = Callable[[str], Awaitable[None]]
 
 from xmclaw.core.ir import ToolCall, ToolCallShape, ToolSpec
 
@@ -79,6 +83,7 @@ class LLMProvider(abc.ABC):
         tools: list[ToolSpec] | None = None,
         *,
         on_chunk: OnChunkCallback | None = None,
+        on_thinking_chunk: OnThinkingChunkCallback | None = None,
         cancel: asyncio.Event | None = None,
     ) -> LLMResponse:
         """Stream text deltas to ``on_chunk`` while collecting the final response.
@@ -93,6 +98,16 @@ class LLMProvider(abc.ABC):
         whatever's been accumulated so far. The default impl below is
         not interruptible (a single ``complete()`` call can't be split)
         — providers that need real cancellation MUST override.
+
+        ``on_thinking_chunk`` (B-91): optional separate callback for
+        reasoning / extended-thinking deltas (distinct from the user-
+        visible ``on_chunk`` text stream). Providers that support
+        thinking-block emission (Anthropic extended-thinking,
+        OpenAI o1/o3 reasoning, MiniMax/Moonshot/DashScope
+        ``reasoning_content``) call this for every thinking delta. The
+        default impl is a non-streaming complete() so this is a no-op
+        — only real streaming overrides have somewhere to source
+        thinking deltas from.
 
         Returns the full ``LLMResponse`` (text + tool_calls + usage).
         Tool-use blocks aren't streamed — they arrive in the final return

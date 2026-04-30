@@ -27,6 +27,7 @@ from xmclaw.providers.llm.base import (
     LLMResponse,
     Message,
     OnChunkCallback,
+    OnThinkingChunkCallback,
     Pricing,
 )
 
@@ -216,6 +217,7 @@ class OpenAILLM(LLMProvider):
         tools: list[ToolSpec] | None = None,
         *,
         on_chunk: OnChunkCallback | None = None,
+        on_thinking_chunk: OnThinkingChunkCallback | None = None,
         cancel: asyncio.Event | None = None,
     ) -> LLMResponse:
         from xmclaw.providers.llm.translators import openai_tool_shape as translator
@@ -256,6 +258,22 @@ class OpenAILLM(LLMProvider):
             if choices:
                 delta = getattr(choices[0], "delta", None)
                 if delta is not None:
+                    # B-91: surface reasoning / extended-thinking deltas
+                    # before the visible content. Three field names are in
+                    # the wild:
+                    #   * ``reasoning_content`` — MiniMax M2 / Moonshot /
+                    #     DashScope / Qwen / GLM (most "reasoning" Chinese
+                    #     providers settled on this)
+                    #   * ``reasoning`` — OpenAI o1 / o3 / o4 native
+                    #   * ``thinking`` — some forks
+                    # Try each in order; only fire the callback when a
+                    # non-empty delta is present.
+                    if on_thinking_chunk is not None:
+                        for attr in ("reasoning_content", "reasoning", "thinking"):
+                            think_delta = getattr(delta, attr, None)
+                            if isinstance(think_delta, str) and think_delta:
+                                await on_thinking_chunk(think_delta)
+                                break
                     content = getattr(delta, "content", None)
                     if content:
                         text_parts.append(content)

@@ -27,6 +27,7 @@ from xmclaw.providers.llm.base import (
     LLMResponse,
     Message,
     OnChunkCallback,
+    OnThinkingChunkCallback,
     Pricing,
 )
 
@@ -234,6 +235,7 @@ class AnthropicLLM(LLMProvider):
         tools: list[ToolSpec] | None = None,
         *,
         on_chunk: OnChunkCallback | None = None,
+        on_thinking_chunk: OnThinkingChunkCallback | None = None,
         cancel: asyncio.Event | None = None,
     ) -> LLMResponse:
         from xmclaw.providers.llm.translators import anthropic_native as translator
