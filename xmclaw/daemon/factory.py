@@ -1131,6 +1131,19 @@ def build_agent_from_config(
         except Exception:  # noqa: BLE001
             agent_embedder = None
 
+    # B-93: opt-in LLM-pick top-K memory files. Reads
+    # ``evolution.memory.relevant_picker.{enabled,k,max_chars}`` from
+    # config.json. Defaults are ALL OFF / conservative — adds one extra
+    # LLM call per turn so it stays opt-in until the user decides the
+    # extra recall is worth the latency / cost.
+    _picker_section = (
+        ((cfg.get("evolution") or {}).get("memory") or {})
+        .get("relevant_picker") or {}
+    )
+    _picker_enabled = bool(_picker_section.get("enabled", False))
+    _picker_k = int(_picker_section.get("k", 3))
+    _picker_max_chars = int(_picker_section.get("max_chars", 4000))
+
     return AgentLoop(
         llm=llm, bus=bus, tools=tools,
         system_prompt=system_prompt,
@@ -1142,4 +1155,7 @@ def build_agent_from_config(
         memory=memory_arg,
         compression_token_cap=token_cap,
         embedder=agent_embedder,
+        relevant_files_picker_enabled=_picker_enabled,
+        relevant_files_picker_k=_picker_k,
+        relevant_files_max_chars=_picker_max_chars,
     )

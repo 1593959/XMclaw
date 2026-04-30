@@ -624,6 +624,12 @@ _NOTE_WRITE_SPEC = ToolSpec(
         "When ``mode='replace'`` the file is overwritten with "
         "``content``. When ``mode='append'`` the content is appended "
         "after a separator. Default ``replace``.\n\n"
+        "**Strongly recommended (B-93):** pass a one-line "
+        "``description`` field describing what this note covers. The "
+        "LLM-picker uses descriptions to choose which notes to recall "
+        "at the start of a turn — a note with no description is "
+        "harder to find. ``tags`` is optional but helps cluster "
+        "related notes in the manifest.\n\n"
         "After write the indexer (10s poll) embeds the file into the "
         "vector store, so future ``memory_search`` calls can retrieve "
         "it semantically."
@@ -645,6 +651,19 @@ _NOTE_WRITE_SPEC = ToolSpec(
                 "type": "string",
                 "enum": ["replace", "append"],
                 "description": "Write mode. Default 'replace'.",
+            },
+            "description": {
+                "type": "string",
+                "description": "B-93: one-line summary. Stored as "
+                "frontmatter ``description:`` so the LLM-picker can "
+                "find this note by intent, not just by keyword. "
+                "Skip on append mode — keeps existing header.",
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "B-93: short tag list for clustering. "
+                "Stored as frontmatter ``tags: [a, b, c]``. Optional.",
             },
         },
         "required": ["name", "content"],
@@ -1915,6 +1934,11 @@ class BuiltinTools(ToolProvider):
         name = str(call.args.get("name") or "").strip()
         content = call.args.get("content")
         mode = str(call.args.get("mode") or "replace").lower()
+        description = str(call.args.get("description") or "").strip()
+        tags_raw = call.args.get("tags")
+        tags: list[str] = []
+        if isinstance(tags_raw, list):
+            tags = [str(t).strip() for t in tags_raw if str(t).strip()]
         if not name:
             return _fail(call, t0, "missing 'name'")
         if not isinstance(content, str):
@@ -1936,6 +1960,24 @@ class BuiltinTools(ToolProvider):
             return _fail(call, t0, f"mkdir failed: {exc}")
         path = mdir / safe
 
+        # B-93: build YAML-style frontmatter when description/tags
+        # passed. Only on replace mode — append preserves whatever
+        # frontmatter the file already had.
+        def _build_frontmatter() -> str:
+            if not description and not tags:
+                return ""
+            lines = ["---"]
+            if description:
+                # Escape any literal \"---\" inside the description
+                # so it can't terminate the block early.
+                clean = description.replace("---", "—")
+                lines.append(f"description: {clean}")
+            if tags:
+                lines.append("tags: [" + ", ".join(tags) + "]")
+            lines.append("---")
+            lines.append("")  # blank line before body
+            return "\n".join(lines) + "\n"
+
         # B-64: lock the file so concurrent note_write calls (or note +
         # daemon-side editor write via /api/v2/memory POST) don't race
         # on the read-modify-write append path.
@@ -1950,7 +1992,8 @@ class BuiltinTools(ToolProvider):
                         existing.rstrip() + sep + content.strip() + "\n",
                     )
                 else:
-                    atomic_write_text(path, content)
+                    body = _build_frontmatter() + content
+                    atomic_write_text(path, body)
             except OSError as exc:
                 return _fail(call, t0, f"write failed: {exc}")
 

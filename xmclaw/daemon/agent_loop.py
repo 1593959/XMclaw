@@ -157,6 +157,16 @@ _MEMORY_FENCE_BLOCK_RE = _re_mem.compile(
 _MEMORY_FENCE_TAG_RE = _re_mem.compile(
     r"</?\s*memory-context\s*>", _re_mem.IGNORECASE,
 )
+# B-93: strip the LLM-picked-files block from persisted history too —
+# same reason as <memory-context>: the on-disk record should be what
+# the user typed, not what the picker injected.
+_MEMORY_FILES_BLOCK_RE = _re_mem.compile(
+    r"<\s*recalled-memory-files\s*>[\s\S]*?</\s*recalled-memory-files\s*>",
+    _re_mem.IGNORECASE,
+)
+_MEMORY_FILES_TAG_RE = _re_mem.compile(
+    r"</?\s*recalled-memory-files\s*>", _re_mem.IGNORECASE,
+)
 _MEMORY_SYS_NOTE_RE = _re_mem.compile(
     r"\[\s*System\s+note:\s*The\s+following\s+is\s+recalled\s+memory\s+"
     r"context[^\]]*\]\s*",
@@ -172,9 +182,11 @@ def _sanitize_memory_context(text: str) -> str:
     if not text:
         return text
     out = _MEMORY_FENCE_BLOCK_RE.sub("", text)
+    out = _MEMORY_FILES_BLOCK_RE.sub("", out)
     # Catch orphaned tags (e.g. block was malformed and only one tag
     # made it through) and orphaned system notes.
     out = _MEMORY_FENCE_TAG_RE.sub("", out)
+    out = _MEMORY_FILES_TAG_RE.sub("", out)
     out = _MEMORY_SYS_NOTE_RE.sub("", out)
     return out.rstrip()
 
@@ -439,6 +451,9 @@ class AgentLoop:
         memory: Any = None,
         memory_top_k: int = 3,
         embedder: Any = None,
+        relevant_files_picker_enabled: bool = False,
+        relevant_files_picker_k: int = 3,
+        relevant_files_max_chars: int = 4000,
     ) -> None:
         self._llm = llm
         self._bus = bus
@@ -534,6 +549,15 @@ class AgentLoop:
         # items"). When None, falls back to keyword-only via the
         # manager's hybrid_query → query() chain.
         self._embedder = embedder
+        # B-93: free-code memdir parity — when enabled, every turn
+        # scans ~/.xmclaw/memory/*.md, asks the LLM to pick the top-K
+        # files relevant to the user query, and injects their full
+        # contents into the user message via a <recalled-memory-files>
+        # block. Default OFF — adds one extra LLM call per turn so
+        # users opt in via config.
+        self._relevant_files_picker_enabled = bool(relevant_files_picker_enabled)
+        self._relevant_files_picker_k = max(1, int(relevant_files_picker_k))
+        self._relevant_files_max_chars = max(500, int(relevant_files_max_chars))
 
     def clear_session(self, session_id: str) -> None:
         """Drop a session's conversation history. Called by the WS gateway
@@ -1322,6 +1346,76 @@ class AgentLoop:
             except Exception as exc:  # noqa: BLE001 — memory is best-effort
                 _log_memory_failure(exc)
 
+        # B-93: LLM-picked relevant memory files (free-code memdir
+        # parity). Disabled by default because it adds one extra LLM
+        # call per turn. When enabled (config:
+        # ``evolution.memory.relevant_picker.enabled = true``), scan
+        # the user's note dir, ask the LLM which top-K files are
+        # worth reading for THIS query, and inject their full bodies.
+        # Complementary to the chunk-grain <memory-context> block
+        # above — that's vector / keyword similarity at paragraph
+        # grain; this is concept-grain at file scale.
+        memory_files_block = ""
+        if self._relevant_files_picker_enabled and user_message:
+            try:
+                from xmclaw.utils.paths import file_memory_dir
+                from xmclaw.providers.memory.file_index import scan_memory_files
+                from xmclaw.providers.memory.relevant_picker import (
+                    find_relevant_memories,
+                )
+                entries = scan_memory_files(file_memory_dir())
+                if entries:
+                    picked = await find_relevant_memories(
+                        query=user_message,
+                        entries=entries,
+                        llm=self._llm,
+                        k=self._relevant_files_picker_k,
+                    )
+                    if picked:
+                        rendered_files: list[str] = []
+                        used = 0
+                        for entry in picked:
+                            try:
+                                body = entry.path.read_text(
+                                    encoding="utf-8", errors="replace",
+                                )
+                            except OSError:
+                                continue
+                            # Cap each file individually so one
+                            # giant note doesn't eat the budget.
+                            cap_each = max(
+                                500,
+                                self._relevant_files_max_chars
+                                // max(1, len(picked)),
+                            )
+                            if len(body) > cap_each:
+                                body = body[:cap_each] + (
+                                    f"\n\n[…file truncated, full size "
+                                    f"{entry.size} bytes]"
+                                )
+                            block = (
+                                f"### {entry.name}.md\n"
+                                f"_{entry.description}_\n\n"
+                                + body.rstrip()
+                            )
+                            if used + len(block) > self._relevant_files_max_chars:
+                                break
+                            rendered_files.append(block)
+                            used += len(block)
+                        if rendered_files:
+                            memory_files_block = (
+                                "\n\n<recalled-memory-files>\n"
+                                "[System note: the agent's relevance "
+                                "picker selected these notes as likely "
+                                "useful for the current query. Treat as "
+                                "background; the user's actual question "
+                                "is the user message itself.]\n\n"
+                                + "\n\n---\n\n".join(rendered_files)
+                                + "\n</recalled-memory-files>"
+                            )
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                _log_memory_failure(exc)
+
         # B-25: frozen system-prompt snapshot per session.
         # _with_fresh_time builds (base + learned_skills + time). Cache
         # the (base + learned_skills) part keyed by (session_id,
@@ -1361,7 +1455,7 @@ class AgentLoop:
             *prior,
             Message(
                 role="user",
-                content=user_message + memory_ctx_block,
+                content=user_message + memory_ctx_block + memory_files_block,
             ),
         ]
         tool_specs = self._tools.list_tools() if self._tools else None
