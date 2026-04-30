@@ -122,6 +122,20 @@ export function applyEvent(chat, envelope) {
       // stop spinning. Same call-site exists in llm_chunk + tool_call
       // below for the cases where llm_request didn't fire first.
       const cleaned = _finalizeAbandoned(chat.messages, id);
+      // B-90: snapshot the request metadata onto the bubble so PhaseCard
+      // can show useful detail when the user expands it (model name,
+      // tool-loop hop, history depth, available tool count). Append to
+      // any existing phaseMeta so a tool→LLM→tool→LLM loop preserves
+      // hop history rather than clobbering it.
+      const newMeta = {
+        kind: "llm_request",
+        model: payload.model || null,
+        hop: payload.hop != null ? payload.hop : null,
+        messages_count: payload.messages_count != null ? payload.messages_count : null,
+        tools_count: payload.tools_count != null ? payload.tools_count : null,
+        llm_profile_id: payload.llm_profile_id || null,
+        started_at: ts,
+      };
       const idx = cleaned.findIndex((m) => m.id === id);
       if (idx === -1) {
         return {
@@ -133,6 +147,8 @@ export function applyEvent(chat, envelope) {
             content: "",
             status: "thinking",
             phase: "calling_llm",
+            phaseMeta: newMeta,
+            phaseHistory: [newMeta],
             ts,
             toolCalls: [],
           }),
@@ -144,6 +160,8 @@ export function applyEvent(chat, envelope) {
         messages: upsertById(cleaned, id, (m) => ({
           ...m,
           phase: "calling_llm",
+          phaseMeta: newMeta,
+          phaseHistory: [...(m.phaseHistory || []), newMeta],
         })),
       };
     }

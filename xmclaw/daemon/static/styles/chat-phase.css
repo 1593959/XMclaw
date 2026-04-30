@@ -1,0 +1,133 @@
+/*
+ * XMclaw — PhaseCard styles (split out of chat.css in B-90 to keep
+ * each stylesheet under the 500-line budget enforced by
+ * tests/unit/test_v2_ui_scaffold.py::test_no_file_exceeds_line_budget,
+ * matching the chat-markdown.css split done in B-47).
+ *
+ * Visual family: same <details>-based collapse pattern as ToolCard.
+ * The PhaseCard wraps the assistant's "thinking / calling LLM" stage
+ * with metadata (model / hop / message count / tools) plus a slot
+ * for future thinking content.
+ */
+
+/* ── Phase card (B-90) — same visual family as ToolCard ──────────── */
+
+.xmc-phasecard {
+  border: 1px solid var(--xmc-border);
+  border-radius: var(--xmc-radius-md);
+  background: var(--xmc-bg);
+  font-size: var(--xmc-font-size-sm);
+  margin: var(--xmc-space-2) 0;
+}
+
+.xmc-phasecard--calling_llm {
+  border-left: 3px solid var(--xmc-info, #6aa3f0);
+}
+
+.xmc-phasecard--tool_running {
+  border-left: 3px solid var(--xmc-warn, #c8a86a);
+}
+
+.xmc-phasecard__summary {
+  display: flex;
+  align-items: center;
+  gap: var(--xmc-space-2);
+  padding: var(--xmc-space-2) var(--xmc-space-3);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.xmc-phasecard__summary::-webkit-details-marker {
+  display: none;
+}
+
+.xmc-phasecard__summary.is-stalled {
+  color: var(--xmc-warn, #c8a86a);
+}
+
+.xmc-phasecard__label {
+  font-family: var(--xmc-font-mono);
+  letter-spacing: 0.04em;
+  color: var(--xmc-fg-muted);
+}
+
+.xmc-phasecard__warn {
+  font-size: var(--xmc-font-size-xs);
+  color: var(--xmc-warn, #c8a86a);
+}
+
+.xmc-phasecard__body {
+  border-top: 1px solid var(--xmc-border);
+  padding: var(--xmc-space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--xmc-space-3);
+}
+
+.xmc-phasecard__meta {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--xmc-space-1) var(--xmc-space-3);
+  font-size: var(--xmc-font-size-xs);
+}
+
+.xmc-phasecard__row {
+  display: contents;
+}
+
+.xmc-phasecard__row dt {
+  color: var(--xmc-fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: var(--xmc-font-size-xs);
+}
+
+.xmc-phasecard__row dd {
+  margin: 0;
+  color: var(--xmc-fg);
+}
+
+.xmc-phasecard__hint {
+  font-size: var(--xmc-font-size-xs);
+  color: var(--xmc-fg-muted);
+  font-style: italic;
+}
+
+.xmc-phasecard__thinking {
+  background: var(--xmc-bg-elev);
+  border: 1px solid var(--xmc-border);
+  border-radius: var(--xmc-radius-sm);
+  padding: var(--xmc-space-2) var(--xmc-space-3);
+}
+
+.xmc-phasecard__thinking-label {
+  font-size: var(--xmc-font-size-xs);
+  color: var(--xmc-fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: var(--xmc-space-1);
+}
+
+.xmc-phasecard__thinking-body {
+  margin: 0;
+  font-family: var(--xmc-font-mono);
+  font-size: var(--xmc-font-size-xs);
+  white-space: pre-wrap;
+  color: var(--xmc-fg-muted);
+  max-height: 18rem;
+  overflow-y: auto;
+}
+
+.xmc-phasecard__history-list {
+  margin: 0;
+  padding-left: var(--xmc-space-4);
+  font-size: var(--xmc-font-size-xs);
+  color: var(--xmc-fg-muted);
+}
+
+.xmc-phasecard__history-list code {
+  color: var(--xmc-info, #6aa3f0);
+}
+

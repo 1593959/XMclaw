@@ -133,6 +133,102 @@ function ThinkingDots({ label = "正在思考" }) {
   `;
 }
 
+// B-90: PhaseCard — same <details>-based collapse pattern as ToolCard,
+// but for the assistant's "thinking / calling LLM" stages. The dots
+// belong on the summary line so the visual signal is consistent
+// whether the card is collapsed or expanded. Body shows whatever the
+// reducer captured (model / hop / message_count / tools_count from
+// LLM_REQUEST) plus thinking content if a future LLM_THINKING_CHUNK
+// stream lands one (placeholder slot today).
+function PhaseCard({ message, baseLabel, elapsedS, stalled, isWorking }) {
+  const phase = message.phase;
+  if (!isWorking || !phase) return null;
+  const meta = message.phaseMeta || null;
+  const history = message.phaseHistory || [];
+  const tone = stalled ? "warn" : "muted";
+  // Auto-expand when stalled — show the user what the call is doing
+  // when the spinner has been running uncomfortably long.
+  return html`
+    <details class=${"xmc-phasecard xmc-phasecard--" + phase} open=${stalled}>
+      <summary class=${"xmc-phasecard__summary" + (stalled ? " is-stalled" : "")}>
+        <span class="xmc-thinking__dot"></span>
+        <span class="xmc-thinking__dot"></span>
+        <span class="xmc-thinking__dot"></span>
+        <span class="xmc-phasecard__label">${baseLabel}</span>
+        ${elapsedS != null && elapsedS >= 1
+          ? html`<${Badge} tone=${tone}>${elapsedS}s</${Badge}>`
+          : null}
+        ${stalled
+          ? html`<span class="xmc-phasecard__warn">· 可能卡住</span>`
+          : null}
+      </summary>
+      <div class="xmc-phasecard__body">
+        ${meta ? html`
+          <dl class="xmc-phasecard__meta">
+            ${meta.model ? html`
+              <div class="xmc-phasecard__row">
+                <dt>model</dt>
+                <dd><code>${meta.model}</code></dd>
+              </div>
+            ` : null}
+            ${meta.llm_profile_id && meta.llm_profile_id !== "default" ? html`
+              <div class="xmc-phasecard__row">
+                <dt>profile</dt>
+                <dd><code>${meta.llm_profile_id}</code></dd>
+              </div>
+            ` : null}
+            ${meta.hop != null ? html`
+              <div class="xmc-phasecard__row">
+                <dt>hop</dt>
+                <dd>第 ${meta.hop} 跳（工具循环里第几次回 LLM）</dd>
+              </div>
+            ` : null}
+            ${meta.messages_count != null ? html`
+              <div class="xmc-phasecard__row">
+                <dt>历史</dt>
+                <dd>${meta.messages_count} 条消息</dd>
+              </div>
+            ` : null}
+            ${meta.tools_count != null ? html`
+              <div class="xmc-phasecard__row">
+                <dt>可用工具</dt>
+                <dd>${meta.tools_count} 个</dd>
+              </div>
+            ` : null}
+          </dl>
+        ` : null}
+        ${message.thinking ? html`
+          <div class="xmc-phasecard__thinking">
+            <div class="xmc-phasecard__thinking-label">思考过程</div>
+            <pre class="xmc-phasecard__thinking-body">${message.thinking}</pre>
+          </div>
+        ` : html`
+          <div class="xmc-phasecard__hint">
+            ${stalled
+              ? "若一直卡在这里，去 Trace 页看是否后端真的还在调用，或者 Stop 后重发。"
+              : "等待 LLM 第一个 token —— 完整 thinking 内容尚未在事件流里。"}
+          </div>
+        `}
+        ${history.length > 1 ? html`
+          <div class="xmc-phasecard__history">
+            <div class="xmc-phasecard__thinking-label">本轮 LLM 调用历史</div>
+            <ol class="xmc-phasecard__history-list">
+              ${history.map((h, i) => html`
+                <li key=${i}>
+                  hop ${h.hop ?? i} ·
+                  <code>${h.model || "?"}</code> ·
+                  ${h.messages_count ?? "?"} msgs ·
+                  ${h.tools_count ?? "?"} tools
+                </li>
+              `)}
+            </ol>
+          </div>
+        ` : null}
+      </div>
+    </details>
+  `;
+}
+
 export function MessageBubble({ message }) {
   const role = message.role || "system";
   const isUser = role === "user";
@@ -224,11 +320,6 @@ export function MessageBubble({ message }) {
   // production model. Past 120 s we're almost certainly stuck (network
   // drop, provider 504, daemon crashed mid-stream). Hint the user.
   const stalled = elapsedS != null && elapsedS > 120;
-  const statusLabel = baseLabel
-    ? (stalled
-        ? `${baseLabel} · ${elapsedS}s · 可能卡住，看 Trace 页`
-        : (elapsedS != null && elapsedS >= 1 ? `${baseLabel} · ${elapsedS}s` : baseLabel))
-    : null;
 
   return html`
     <article
@@ -242,9 +333,6 @@ export function MessageBubble({ message }) {
         <span class="xmc-msg__role">${isUser ? "you" : isSystem ? "system" : "assistant"}</span>
         ${message.ultrathink
           ? html`<${Badge} tone="info">ultrathink</${Badge}>`
-          : null}
-        ${statusLabel
-          ? html`<span class="xmc-msg__status">${statusLabel}</span>`
           : null}
         ${streaming && message.content
           ? html`<${Spinner} size="sm" label="streaming" />`
@@ -262,7 +350,14 @@ export function MessageBubble({ message }) {
             `
           : null}
       </header>
-      ${showThinking ? html`<${ThinkingDots} label=${statusLabel || "正在思考"} />` : null}
+      <!-- B-90: phase status now renders as a collapsible PhaseCard with model / hop / depth metadata, replacing the old single-line status header label. -->
+      <${PhaseCard}
+        message=${message}
+        baseLabel=${baseLabel || "正在思考"}
+        elapsedS=${elapsedS}
+        stalled=${stalled}
+        isWorking=${isWorking}
+      />
       ${message.content
         ? html`<${MarkdownBody} content=${message.content} />`
         : null}
