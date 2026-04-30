@@ -1161,6 +1161,58 @@ def create_app(
     # in that this endpoint answers "does the user need to do something
     # before XMclaw is useful?" — a question status was never designed
     # to answer.
+    # B-102: run the full doctor pipeline programmatically + apply
+    # fixes. Mirrors what ``xmclaw doctor [--fix] --json`` does on
+    # the CLI but reachable from the Web UI's Doctor page so users
+    # don't have to drop into a terminal to see check results.
+    @app.post("/api/v2/doctor/run")
+    async def doctor_run(payload: dict[str, Any] = None) -> JSONResponse:  # type: ignore[assignment]
+        from xmclaw.cli.doctor_registry import (
+            DoctorContext, build_default_registry,
+        )
+        body = payload or {}
+        apply_fix = bool(body.get("fix", False))
+        target_path = config_path or Path("daemon") / "config.json"
+        ctx = DoctorContext(
+            config_path=Path(target_path),
+            host="127.0.0.1",
+            port=8765,
+            probe_daemon=False,  # avoid recursing into our own /health
+        )
+        reg = build_default_registry()
+        results = reg.run_all(ctx)
+        fixes_applied: list[str] = []
+        if apply_fix:
+            for check in reg.checks():
+                # Re-run each fixable check after the initial sweep —
+                # use the cached ctx.cfg from the first pass.
+                try:
+                    if check.fix(ctx):
+                        fixes_applied.append(check.id)
+                except Exception:  # noqa: BLE001 — fix must not crash run
+                    pass
+            # Re-run after fixes so the response shows the post-fix state.
+            results = reg.run_all(ctx)
+        return JSONResponse({
+            "results": [
+                {
+                    "id": getattr(check, "id", ""),
+                    "name": r.name,
+                    "ok": r.ok,
+                    "detail": r.detail,
+                    "advisory": r.advisory,
+                    "fix_available": r.fix_available,
+                }
+                for check, r in zip(reg.checks(), results)
+            ],
+            "summary": {
+                "total": len(results),
+                "ok": sum(1 for r in results if r.ok),
+                "failed": sum(1 for r in results if not r.ok),
+                "fixes_applied": fixes_applied,
+            },
+        })
+
     # B-99: surface in-flight ask_user_question calls so a browser
     # refresh can rebuild the QuestionCard. Without this, the user
     # who closed the tab mid-question has no way back — the daemon's
