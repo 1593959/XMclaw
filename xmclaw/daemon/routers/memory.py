@@ -97,6 +97,115 @@ async def list_available_providers() -> JSONResponse:
     })
 
 
+@router.get("/relevant_picker/status")
+async def relevant_picker_status(request: Request) -> JSONResponse:
+    """B-96: surface the current LLM-pick top-K relevant-files setting
+    + whether the running daemon picked it up.
+
+    Two layers:
+      * config (on disk)  ←  what's saved
+      * runtime           ←  what the AgentLoop actually reads
+    Mismatch → user edited config but didn't restart, same pattern
+    as embedding (B-87).
+    """
+    state = request.app.state
+    cfg = getattr(state, "config", None) or {}
+    section = (
+        ((cfg.get("evolution") or {}).get("memory") or {}).get("relevant_picker") or {}
+    )
+    cfg_enabled = bool(section.get("enabled", False))
+    cfg_k = int(section.get("k", 3))
+    cfg_max_chars = int(section.get("max_chars", 4000))
+
+    agent = getattr(state, "agent", None)
+    runtime_enabled = bool(getattr(agent, "_relevant_files_picker_enabled", False))
+    runtime_k = int(getattr(agent, "_relevant_files_picker_k", 3))
+    runtime_max_chars = int(getattr(agent, "_relevant_files_max_chars", 4000))
+
+    return JSONResponse({
+        "config": {
+            "enabled": cfg_enabled,
+            "k": cfg_k,
+            "max_chars": cfg_max_chars,
+        },
+        "runtime": {
+            "enabled": runtime_enabled,
+            "k": runtime_k,
+            "max_chars": runtime_max_chars,
+        },
+        "restart_pending": (
+            cfg_enabled != runtime_enabled
+            or cfg_k != runtime_k
+            or cfg_max_chars != runtime_max_chars
+        ),
+    })
+
+
+@router.post("/relevant_picker/configure")
+async def configure_relevant_picker(request: Request) -> JSONResponse:
+    """B-96: write the ``evolution.memory.relevant_picker`` config
+    section. Body: ``{enabled: bool, k: int?, max_chars: int?}``.
+
+    Same shape as ``/embedding/configure`` (B-76) — daemon restart
+    still required to actually start using the new value (the picker
+    flag is read once in ``factory.build_agent_from_config``).
+    """
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+
+    enabled = bool(body.get("enabled", False))
+    try:
+        k = int(body.get("k", 3))
+    except (TypeError, ValueError):
+        k = 3
+    try:
+        max_chars = int(body.get("max_chars", 4000))
+    except (TypeError, ValueError):
+        max_chars = 4000
+    if k < 1 or k > 20:
+        return JSONResponse(
+            {"ok": False, "error": "k must be in [1, 20]"}, status_code=400,
+        )
+    if max_chars < 500 or max_chars > 50000:
+        return JSONResponse(
+            {"ok": False, "error": "max_chars must be in [500, 50000]"},
+            status_code=400,
+        )
+
+    state = request.app.state
+    cfg = getattr(state, "config", None)
+    if cfg is None:
+        return JSONResponse(
+            {"ok": False, "error": "no config attached to daemon"}, status_code=500,
+        )
+    cfg.setdefault("evolution", {}).setdefault("memory", {})["relevant_picker"] = {
+        "enabled": enabled, "k": k, "max_chars": max_chars,
+    }
+    config_path = getattr(state, "config_path", None)
+    if config_path:
+        try:
+            from pathlib import Path as _P
+            from xmclaw.utils.fs_locks import atomic_write_text
+            p = _P(config_path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(p, json.dumps(cfg, indent=2, ensure_ascii=False))
+        except OSError as exc:
+            return JSONResponse(
+                {"ok": False, "error": f"config write failed: {exc}"},
+                status_code=500,
+            )
+    return JSONResponse({
+        "ok": True,
+        "settings": {"enabled": enabled, "k": k, "max_chars": max_chars},
+        "restart_required": True,
+        "config_path": str(config_path) if config_path else None,
+    })
+
+
 @router.post("/embedding/configure")
 async def configure_embedding(request: Request) -> JSONResponse:
     """B-76: write the ``evolution.memory.embedding`` config section
