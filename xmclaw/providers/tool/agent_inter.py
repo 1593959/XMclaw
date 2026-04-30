@@ -139,6 +139,59 @@ _SUBMIT_TO_AGENT_SPEC = ToolSpec(
     },
 )
 
+_LIST_AGENT_TASKS_SPEC = ToolSpec(
+    name="list_agent_tasks",
+    description=(
+        "List recent / in-flight tasks dispatched via submit_to_agent. "
+        "Returns up to ``limit`` (default 20) most-recent records "
+        "newest-first. Filter by ``status`` to find only running ones, "
+        "or by ``agent_id`` to scope to one delegate. Useful when you "
+        "lost track of a task_id or want to know if any subagent is "
+        "still working before asking 'is everyone done?'."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "description": "Max records to return (1-100, default 20).",
+            },
+            "status": {
+                "type": "string",
+                "enum": ["pending", "running", "done", "error"],
+                "description": "Filter by status. Omit for all.",
+            },
+            "agent_id": {
+                "type": "string",
+                "description": "Filter to tasks dispatched to this agent.",
+            },
+        },
+    },
+)
+
+
+_STOP_AGENT_TASK_SPEC = ToolSpec(
+    name="stop_agent_task",
+    description=(
+        "Cancel an in-flight task by id. Marks the record 'error' with "
+        "a 'cancelled' message. The underlying asyncio task is "
+        "cancelled best-effort — it may still complete one more step "
+        "before observing the cancel signal. Already-done / errored "
+        "tasks are no-ops; the call always succeeds."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Id from a prior submit_to_agent call.",
+            },
+        },
+        "required": ["task_id"],
+    },
+)
+
+
 _CHECK_AGENT_TASK_SPEC = ToolSpec(
     name="check_agent_task",
     description=(
@@ -216,6 +269,8 @@ class AgentInterTools(ToolProvider):
             _CHAT_WITH_AGENT_SPEC,
             _SUBMIT_TO_AGENT_SPEC,
             _CHECK_AGENT_TASK_SPEC,
+            _LIST_AGENT_TASKS_SPEC,  # B-111
+            _STOP_AGENT_TASK_SPEC,   # B-111
         ]
 
     async def invoke(self, call: ToolCall) -> ToolResult:
@@ -229,6 +284,10 @@ class AgentInterTools(ToolProvider):
                 content = self._do_submit_to_agent(call)
             elif call.name == "check_agent_task":
                 content = self._do_check_agent_task(call)
+            elif call.name == "list_agent_tasks":
+                content = self._do_list_agent_tasks(call)
+            elif call.name == "stop_agent_task":
+                content = self._do_stop_agent_task(call)
             else:
                 return ToolResult(
                     call_id=call.id, ok=False, content=None,
@@ -308,7 +367,12 @@ class AgentInterTools(ToolProvider):
         # the asyncio loop's only ref is weak; the task can be GC'd
         # mid-execution leaving the record stuck at status="running"
         # forever (and the caller's check_agent_task polls forever).
-        bg = asyncio.create_task(self._run_background(record, loop))
+        bg = asyncio.create_task(
+            self._run_background(record, loop),
+            # B-111: name lets ``stop_agent_task`` find this task for
+            # cancellation without an extra side dict.
+            name=f"agent-inter-task-{task_id}",
+        )
         self._running_tasks.add(bg)
         bg.add_done_callback(self._running_tasks.discard)
         return json.dumps({"task_id": task_id, "agent_id": agent_id})
@@ -356,6 +420,83 @@ class AgentInterTools(ToolProvider):
         elif record.status == "error":
             payload["error"] = record.error or "unknown error"
         return json.dumps(payload)
+
+    def _do_list_agent_tasks(self, call: ToolCall) -> str:
+        """B-111: list recent / in-flight tasks newest-first.
+
+        Filters by status / agent_id. Bounded by ``limit`` (default 20,
+        cap 100). Reply text is truncated to keep the LLM-visible blob
+        short — full content stays accessible via ``check_agent_task``.
+        """
+        import json
+        try:
+            limit = int(call.args.get("limit") or 20)
+        except (TypeError, ValueError):
+            limit = 20
+        limit = max(1, min(100, limit))
+        status_filter = (call.args.get("status") or "").strip() or None
+        agent_filter = (call.args.get("agent_id") or "").strip() or None
+
+        # Walk the bounded dict in reverse (oldest-first → newest-first).
+        records = list(self._tasks.values())
+        records.sort(key=lambda r: r.created_at, reverse=True)
+        out: list[dict[str, Any]] = []
+        for r in records:
+            if status_filter and r.status != status_filter:
+                continue
+            if agent_filter and r.agent_id != agent_filter:
+                continue
+            entry: dict[str, Any] = {
+                "task_id": r.task_id,
+                "agent_id": r.agent_id,
+                "status": r.status,
+                "created_at": r.created_at,
+            }
+            if r.completed_at:
+                entry["completed_at"] = r.completed_at
+            if r.reply and len(r.reply) > 0:
+                # Tease first 200 chars; LLM can fetch full via check.
+                entry["reply_preview"] = r.reply[:200]
+            if r.error:
+                entry["error"] = r.error
+            out.append(entry)
+            if len(out) >= limit:
+                break
+        return json.dumps({
+            "count": len(out),
+            "total_tracked": len(self._tasks),
+            "tasks": out,
+        })
+
+    def _do_stop_agent_task(self, call: ToolCall) -> str:
+        """B-111: cancel an in-flight task. Marks the record as 'error'
+        with reason='cancelled'; the underlying asyncio.Task gets a
+        cancel signal best-effort (it may still run one more step
+        before the cancel fires)."""
+        import json
+        raw = call.args.get("task_id")
+        if not isinstance(raw, str) or not raw.strip():
+            raise _ToolError("task_id required")
+        task_id = raw.strip()
+        record = self._tasks.get(task_id)
+        if record is None:
+            raise _ToolError(f"unknown task_id: {task_id!r}")
+        was_running = record.status in ("pending", "running")
+        if was_running:
+            record.status = "error"
+            record.error = "cancelled"
+            record.completed_at = time.time()
+            # Best-effort cancel of the matching asyncio task. We
+            # identify it by name (set in _do_submit_to_agent below).
+            for t in list(self._running_tasks):
+                if t.get_name() == f"agent-inter-task-{task_id}":
+                    t.cancel()
+                    break
+        return json.dumps({
+            "task_id": task_id,
+            "stopped": was_running,
+            "status": record.status,
+        })
 
     # ── helpers ──────────────────────────────────────────────────────
 

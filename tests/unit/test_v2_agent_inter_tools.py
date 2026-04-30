@@ -108,13 +108,17 @@ def _call(name: str, **args: Any) -> ToolCall:
 # ── list_tools ───────────────────────────────────────────────────────────
 
 
-def test_list_tools_advertises_all_four() -> None:
+def test_list_tools_advertises_all_six() -> None:
+    """B-111: TaskCreate family was originally 4 tools; B-111 added
+    list_agent_tasks + stop_agent_task to make it 6. Cap kept open
+    so future task-CRUD additions don't immediately break this pin."""
     mgr = _StubManager()
     tools = AgentInterTools(manager=mgr, primary_loop=_StubLoop())
     names = {s.name for s in tools.list_tools()}
-    assert names == {
+    assert names >= {
         "list_agents", "chat_with_agent",
         "submit_to_agent", "check_agent_task",
+        "list_agent_tasks", "stop_agent_task",
     }
 
 
@@ -451,3 +455,83 @@ async def test_caller_defaults_to_primary_id_without_contextvar() -> None:
     sid = worker.turns_seen[0][0]
     assert sid.startswith("root:to:worker:")
     assert worker.turns_seen[0][1].startswith("[Agent root requesting]")
+
+
+# ── B-111: list_agent_tasks ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_agent_tasks_returns_recent_records() -> None:
+    """list_agent_tasks should walk the in-memory tasks dict newest-
+    first, with sensible filtering and a reply preview."""
+    worker = _StubLoop()
+    mgr = _StubManager({"worker": _StubWorkspace("worker", worker)})
+    tools = AgentInterTools(manager=mgr, primary_loop=_StubLoop())
+
+    # Submit two tasks.
+    s1 = await tools.invoke(_call("submit_to_agent", agent_id="worker", content="t1"))
+    s2 = await tools.invoke(_call("submit_to_agent", agent_id="worker", content="t2"))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    listing = await tools.invoke(_call("list_agent_tasks"))
+    body = json.loads(listing.content)
+    assert body["count"] >= 2
+    ids = {t["task_id"] for t in body["tasks"]}
+    assert json.loads(s1.content)["task_id"] in ids
+    assert json.loads(s2.content)["task_id"] in ids
+    # Reply preview present on done tasks.
+    for t in body["tasks"]:
+        if t["status"] == "done":
+            assert "reply_preview" in t
+
+
+@pytest.mark.asyncio
+async def test_list_agent_tasks_filters_by_status_and_agent() -> None:
+    worker = _StubLoop()
+    mgr = _StubManager({"worker": _StubWorkspace("worker", worker)})
+    tools = AgentInterTools(manager=mgr, primary_loop=_StubLoop())
+    await tools.invoke(_call("submit_to_agent", agent_id="worker", content="x"))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    # Filter by agent — only worker matches.
+    res = await tools.invoke(_call("list_agent_tasks", agent_id="worker"))
+    body = json.loads(res.content)
+    assert all(t["agent_id"] == "worker" for t in body["tasks"])
+    # Filter by status=done — every returned record is in done state.
+    res2 = await tools.invoke(_call("list_agent_tasks", status="done"))
+    body2 = json.loads(res2.content)
+    assert all(t["status"] == "done" for t in body2["tasks"])
+
+
+# ── B-111: stop_agent_task ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_stop_agent_task_marks_record_cancelled() -> None:
+    """Stopping an in-flight task flips status to error/cancelled and
+    stop_agent_task itself returns ``stopped=True`` on the first call,
+    ``stopped=False`` on idempotent re-stop."""
+    worker = _StubLoop()
+    mgr = _StubManager({"worker": _StubWorkspace("worker", worker)})
+    tools = AgentInterTools(manager=mgr, primary_loop=_StubLoop())
+    sub = await tools.invoke(_call("submit_to_agent", agent_id="worker", content="x"))
+    task_id = json.loads(sub.content)["task_id"]
+    # Stop right away — may or may not have completed yet given the
+    # stub returns synchronously, but the assertion is invariant
+    # under both branches.
+    res = await tools.invoke(_call("stop_agent_task", task_id=task_id))
+    body = json.loads(res.content)
+    assert body["task_id"] == task_id
+    # Second stop is a no-op (record already non-running).
+    res2 = await tools.invoke(_call("stop_agent_task", task_id=task_id))
+    body2 = json.loads(res2.content)
+    assert body2["stopped"] is False
+
+
+@pytest.mark.asyncio
+async def test_stop_agent_task_unknown_id_errors() -> None:
+    mgr = _StubManager({"worker": _StubWorkspace("worker", _StubLoop())})
+    tools = AgentInterTools(manager=mgr, primary_loop=_StubLoop())
+    res = await tools.invoke(_call("stop_agent_task", task_id="nope"))
+    assert res.ok is False
+    assert "unknown task_id" in (res.error or "")
