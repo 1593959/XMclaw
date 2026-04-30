@@ -759,6 +759,79 @@ _SQLITE_QUERY_SPEC = ToolSpec(
 )
 
 
+_ENTER_WORKTREE_SPEC = ToolSpec(
+    name="enter_worktree",
+    description=(
+        "Create an isolated git worktree and switch this session's "
+        "primary workspace into it. Use this **only when the user "
+        "explicitly asks for a worktree** (or when you're about to do "
+        "a risky structural change you want sandboxed and the user "
+        "agreed to the experiment). For everyday branching, use plain "
+        "git commands.\n\n"
+        "Behaviour:\n"
+        "  • Creates a worktree under ``.claude/worktrees/<name>/`` "
+        "(matching free-code's convention).\n"
+        "  • Creates a fresh branch based on the current HEAD (or the "
+        "given ``base_branch``).\n"
+        "  • Updates WorkspaceManager so the next bash / file_* call "
+        "lands inside the worktree, not the original repo.\n\n"
+        "Requirements: must be run from inside a git repository. "
+        "Must NOT already be inside a worktree (guarded — errors out "
+        "with a clear message).\n\n"
+        "On exit: call ``exit_worktree`` to switch back. By default "
+        "exit removes the worktree + branch; pass ``keep=true`` to "
+        "preserve them for follow-up review."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": (
+                    "Worktree directory name + branch suffix. If "
+                    "omitted, a random adjective-noun name is "
+                    "generated. Slashes / dots are stripped for safety."
+                ),
+            },
+            "base_branch": {
+                "type": "string",
+                "description": (
+                    "Branch / commit to base the new worktree on. "
+                    "Default: current HEAD."
+                ),
+            },
+        },
+    },
+)
+
+
+_EXIT_WORKTREE_SPEC = ToolSpec(
+    name="exit_worktree",
+    description=(
+        "Leave a worktree previously entered via ``enter_worktree`` "
+        "and return the session's primary workspace to the original "
+        "repo. Refuses to run when the current primary isn't a "
+        "worktree under ``.claude/worktrees/`` (so you can't "
+        "accidentally remove the user's main checkout).\n\n"
+        "Default: removes the worktree directory + the branch it "
+        "carried. Pass ``keep=true`` to keep both on disk so the user "
+        "can inspect them later."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "keep": {
+                "type": "boolean",
+                "description": (
+                    "True → keep the worktree directory and branch. "
+                    "False (default) → remove both."
+                ),
+            },
+        },
+    },
+)
+
+
 _ASK_USER_QUESTION_SPEC = ToolSpec(
     name="ask_user_question",
     description=(
@@ -906,6 +979,14 @@ _VALID_TODO_STATUSES = {"pending", "in_progress", "done"}
 # handler's ``finally`` block whether the future resolved or timed
 # out, so the dict never accumulates dead entries.
 _PENDING_QUESTIONS: dict[str, asyncio.Future] = {}
+
+
+# B-94: process-wide memo of the workspace path each currently-active
+# worktree was originally entered from. Keyed by the worktree's
+# absolute path; value is the original root path. Lets ``exit_worktree``
+# walk back to where ``enter_worktree`` started, even when the agent
+# left the worktree open across many turns.
+_WORKTREE_ORIGIN: dict[str, Path] = {}
 
 
 def resolve_pending_question(
@@ -1074,6 +1155,11 @@ class BuiltinTools(ToolProvider):
         # Always advertised — daemon-process-local resolver works
         # even without persona / memory wiring.
         specs.append(_ASK_USER_QUESTION_SPEC)
+        # B-94: free-code parity — let the agent spin up an isolated
+        # git worktree for risky / experimental changes. Always
+        # advertised; ``enter_worktree`` itself errors out cleanly
+        # when not in a git repo (so test contexts aren't surprised).
+        specs.extend([_ENTER_WORKTREE_SPEC, _EXIT_WORKTREE_SPEC])
         # B-52: memory_compact triggers an immediate Auto-Dream pass.
         # Always advertised; the handler refuses cleanly when no LLM
         # is wired (which is the only failure mode).
@@ -1153,6 +1239,10 @@ class BuiltinTools(ToolProvider):
                 return await self._memory_pin(call, t0)
             if call.name == "ask_user_question":
                 return await self._ask_user_question(call, t0)
+            if call.name == "enter_worktree":
+                return await self._enter_worktree(call, t0)
+            if call.name == "exit_worktree":
+                return await self._exit_worktree(call, t0)
             return _fail(call, t0, f"unknown tool: {call.name!r}")
         except PermissionError as exc:
             return _fail(call, t0, f"permission denied: {exc}")
@@ -2108,6 +2198,223 @@ class BuiltinTools(ToolProvider):
             content=result,
             error=None if result.get("ok") else result.get("error"),
             side_effects=(result.get("memory_path") or "",) if result.get("ok") else (),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _enter_worktree(self, call: ToolCall, t0: float) -> ToolResult:
+        """B-94: create ``.claude/worktrees/<name>/`` + new branch and
+        switch the daemon's primary workspace into it.
+
+        Refuses when:
+          * not inside a git repo (``git rev-parse`` fails)
+          * already inside a worktree (path under .claude/worktrees/)
+        Both check messages tell the agent what to do next.
+        """
+        from xmclaw.core.workspace import WorkspaceManager
+
+        # 1. Resolve current primary root.
+        wm = WorkspaceManager()
+        state = wm.get()
+        if state.primary is None:
+            return _fail(
+                call, t0,
+                "no primary workspace — register one with the "
+                "WorkspaceManager first (or call from a daemon that "
+                "auto-loaded a project root)",
+            )
+        original_root = state.primary.path
+        # Reject if already in a worktree — nesting just creates
+        # confusion and the cleanup path can't tell what to undo.
+        if ".claude" in original_root.parts and "worktrees" in original_root.parts:
+            return _fail(
+                call, t0,
+                "already inside a worktree — call ``exit_worktree`` "
+                "first if you want to swap into a new one",
+            )
+
+        # 2. Confirm the original root is a git repo.
+        try:
+            check = subprocess.run(
+                ["git", "-C", str(original_root), "rev-parse", "--is-inside-work-tree"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            return _fail(call, t0, f"git unavailable: {exc}")
+        if check.returncode != 0 or check.stdout.strip() != "true":
+            return _fail(
+                call, t0,
+                f"{original_root} is not a git repository — "
+                "worktrees only work inside git repos",
+            )
+
+        # 3. Pick worktree name + branch. Strip slashes etc — git rejects
+        # weird tokens but a clean name keeps the dir layout neat.
+        raw_name = str(call.args.get("name") or "").strip()
+        raw_name = re.sub(r"[^a-zA-Z0-9._-]", "-", raw_name).strip("-._")
+        if not raw_name:
+            # Random adjective-noun: stable enough for humans to type
+            # without relying on a wordlist file.
+            import random as _rnd
+            adjectives = ("quick", "calm", "spicy", "bold", "nimble", "still")
+            nouns = ("otter", "panda", "ember", "river", "forge", "pebble")
+            raw_name = (
+                f"{_rnd.choice(adjectives)}-{_rnd.choice(nouns)}-"
+                f"{uuid.uuid4().hex[:6]}"
+            )
+        wt_path = original_root / ".claude" / "worktrees" / raw_name
+        if wt_path.exists():
+            return _fail(
+                call, t0,
+                f"worktree path already exists: {wt_path} — "
+                "pick a different name or remove the leftover dir",
+            )
+        # Branch name: prefix to avoid colliding with regular branches
+        # the user creates manually.
+        branch = f"wt/{raw_name}"
+        base_branch = str(call.args.get("base_branch") or "").strip()
+
+        # 4. ``git worktree add -b <branch> <path> [<base>]``.
+        cmd = [
+            "git", "-C", str(original_root),
+            "worktree", "add", "-b", branch, str(wt_path),
+        ]
+        if base_branch:
+            cmd.append(base_branch)
+        try:
+            res = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return _fail(call, t0, f"git worktree add timed out: {exc}")
+        if res.returncode != 0:
+            return _fail(
+                call, t0,
+                f"git worktree add failed: {(res.stderr or res.stdout).strip()}",
+            )
+
+        # 5. Register the new worktree as primary; remember the origin
+        # so ``exit_worktree`` can walk back.
+        wm.add(wt_path, name=raw_name)
+        _WORKTREE_ORIGIN[str(wt_path.resolve())] = original_root
+
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "worktree_path": str(wt_path),
+                "branch": branch,
+                "original_root": str(original_root),
+                "base_branch": base_branch or "HEAD",
+            },
+            side_effects=(str(wt_path),),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _exit_worktree(self, call: ToolCall, t0: float) -> ToolResult:
+        """B-94: leave the current worktree, optionally remove it.
+
+        Validates that the current primary actually IS a worktree
+        before doing anything destructive — refuses to run otherwise.
+        """
+        from xmclaw.core.workspace import WorkspaceManager
+
+        keep = bool(call.args.get("keep", False))
+
+        wm = WorkspaceManager()
+        state = wm.get()
+        if state.primary is None:
+            return _fail(call, t0, "no primary workspace registered")
+        wt_path = state.primary.path
+        # Worktree directory must live under .claude/worktrees/. This is
+        # the cheap heuristic that prevents an accidental
+        # ``exit_worktree`` from wiping the user's main checkout.
+        wt_str = str(wt_path).replace("\\", "/")
+        if "/.claude/worktrees/" not in wt_str + "/":
+            return _fail(
+                call, t0,
+                "current primary is not a worktree under "
+                ".claude/worktrees/ — refusing to act",
+            )
+
+        # Look up the origin we recorded on enter. Fall back to git's
+        # own ``worktree list`` if we lost track (daemon restart, etc).
+        origin = _WORKTREE_ORIGIN.get(str(wt_path.resolve()))
+        if origin is None:
+            try:
+                res = subprocess.run(
+                    ["git", "-C", str(wt_path), "rev-parse", "--show-superproject-working-tree"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if res.returncode == 0 and res.stdout.strip():
+                    origin = Path(res.stdout.strip())
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
+            if origin is None:
+                # Walk up: a worktree under <repo>/.claude/worktrees/<name>
+                # has the original repo at <repo>.
+                # parents: name → worktrees → .claude → repo
+                if len(wt_path.parts) >= 4 and wt_path.parts[-3:] == (
+                    ".claude", "worktrees", wt_path.name,
+                ) or wt_path.parents[1].name == "worktrees":
+                    origin = wt_path.parents[2]
+        if origin is None or not origin.exists():
+            return _fail(
+                call, t0,
+                "couldn't determine origin repo for this worktree — "
+                "the agent may need to manually `cd` to the parent",
+            )
+
+        # Read the current branch name so we can drop it after removal.
+        branch_name: str | None = None
+        try:
+            br = subprocess.run(
+                ["git", "-C", str(wt_path), "branch", "--show-current"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if br.returncode == 0:
+                branch_name = (br.stdout or "").strip() or None
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+        # Switch primary back to the origin BEFORE removing the worktree
+        # dir — otherwise WorkspaceManager could end up with a dangling
+        # primary entry pointing at a vanished path.
+        wm.add(origin)  # add() returns existing entry when already present + makes it primary
+        wm.remove(wt_path)
+        _WORKTREE_ORIGIN.pop(str(wt_path.resolve()), None)
+
+        removed = False
+        if not keep:
+            try:
+                rm = subprocess.run(
+                    ["git", "-C", str(origin), "worktree", "remove", "--force", str(wt_path)],
+                    capture_output=True, text=True, timeout=30,
+                )
+                removed = rm.returncode == 0
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                removed = False
+            # Drop the branch too — it has no commits worth keeping in
+            # the default-discard path. Best-effort; keep returning OK
+            # even if the branch delete fails (the worktree is gone,
+            # which is the user-visible cleanup goal).
+            if removed and branch_name:
+                try:
+                    subprocess.run(
+                        ["git", "-C", str(origin), "branch", "-D", branch_name],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    pass
+
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "returned_to": str(origin),
+                "worktree_path": str(wt_path),
+                "branch": branch_name,
+                "kept": keep,
+                "removed": removed,
+            },
+            side_effects=(),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 

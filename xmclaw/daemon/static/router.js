@@ -29,7 +29,14 @@ function parsePath(raw) {
   if (path.length > 1 && path.endsWith("/")) {
     path = path.slice(0, -1);
   }
-  return path || DEFAULT_ROUTE;
+  // B-95: bare "/" or "" (i.e. user opened ``/ui/`` directly) maps to
+  // the default route. The previous ``path || DEFAULT_ROUTE`` was
+  // wrong because ``"/"`` is truthy in JS — it returned "/" verbatim,
+  // which has no entry in the routes table, which then fell through
+  // to the ``"*"`` 404 fallback. So every fresh page open showed
+  // "未找到 / 未匹配的路由" instead of landing on /chat.
+  if (!path || path === "/") return DEFAULT_ROUTE;
+  return path;
 }
 
 function toUrl(path) {
