@@ -96,7 +96,13 @@ const NAV_ITEMS = [
   { path: "/logs",      label: "日志",   icon: "FileText" },
   { path: "/analytics", label: "分析",   icon: "BarChart3" },
   { path: "/config",    label: "配置",   icon: "Settings" },
+  { path: "/settings",  label: "设置",   icon: "Settings" },
   { path: "/env",       label: "密钥",   icon: "KeyRound" },
+  // B-101: these pages were registered in app.js routes but not nav-
+  // visible — users had to type the URL by hand to reach them.
+  { path: "/doctor",    label: "诊断",   icon: "Heart" },
+  { path: "/backup",    label: "备份",   icon: "Database" },
+  { path: "/insights",  label: "洞察",   icon: "Eye" },
   { path: "/docs",      label: "文档",   icon: "BookOpen" },
 ];
 
