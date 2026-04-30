@@ -36,6 +36,8 @@ import {
 // renderer comes from HermesAppShell below.
 import { ToastViewport, toast } from "./lib/toast.js";
 import { DialogViewport } from "./lib/dialog.js";
+// B-105: prompt history helper lives in Composer module.
+import { appendPromptHistory } from "./components/molecules/Composer.js";
 // Hermes 1:1 port — IS the shell. No legacy fallback.
 import { AppShell as HermesAppShell } from "./components/organisms/AppShell.js";
 // Side-effect: applies the persisted Hermes theme (or LENS_0 default)
@@ -244,6 +246,10 @@ function sendComposer() {
     toast.error("WS 未连接，消息未发送 — 请检查 daemon 状态");
     return;
   }
+  // B-105: persist this prompt in the up/down history before send.
+  try {
+    appendPromptHistory(text);
+  } catch (_) { /* never block send on history */ }
 
   // Allow send even when reconnecting; the WS client now queues frames
   // and flushes them on reconnect (B-13 fix). Without this gate,

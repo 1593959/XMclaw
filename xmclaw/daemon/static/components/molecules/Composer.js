@@ -10,6 +10,8 @@
 //   * Ctrl/Cmd+Enter    → send (mirror of Enter; some keyboards block plain
 //                         Enter via IME composition)
 //   * Esc               → blur + clear pendingAssistantId hint
+//   * ArrowUp on empty  → B-105: pull previous prompt from history
+//   * ArrowDown         → B-105: walk back toward most-recent (clears at end)
 //
 // We don't disable the input while a turn is streaming — interrupt /
 // follow-up framing is part of the agentic UX. The send button itself
@@ -24,6 +26,44 @@ import { Badge } from "../atoms/badge.js";
 import { usePopoverApi } from "./SlashPopover.js";
 import { createRecognizer, sttSupported } from "../../lib/audio.js";
 import { toast } from "../../lib/toast.js";
+
+// B-105: prompt history picker (free-code HISTORY_PICKER parity).
+// Stores the last 50 distinct user-sent prompts in localStorage so
+// Up/Down on an empty composer cycle through past prompts. Same UX
+// as a shell history. Keyed by ``xmc-prompt-history-v1``; old entries
+// roll off as the cap fills.
+const _HISTORY_KEY = "xmc-prompt-history-v1";
+const _HISTORY_MAX = 50;
+
+function _readHistory() {
+  try {
+    const raw = localStorage.getItem(_HISTORY_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr.filter((s) => typeof s === "string") : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function _writeHistory(list) {
+  try {
+    localStorage.setItem(_HISTORY_KEY, JSON.stringify(list.slice(-_HISTORY_MAX)));
+  } catch (_) {
+    /* private mode / quota — fail silent */
+  }
+}
+
+export function appendPromptHistory(text) {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return;
+  const cur = _readHistory();
+  // Drop adjacent duplicates so spamming Enter on the same prompt
+  // doesn't fill the buffer.
+  if (cur.length > 0 && cur[cur.length - 1] === trimmed) return;
+  cur.push(trimmed);
+  _writeHistory(cur);
+}
 
 export function Composer({
   value,
@@ -57,6 +97,13 @@ export function Composer({
   const [listening, setListening] = useState(false);
   const recRef = useRef(null);
   const baseTextRef = useRef("");
+
+  // B-105: prompt history pointer. Refreshed-from-localStorage on every
+  // ↑ press (single source of truth = localStorage so multi-tab stays
+  // consistent without subscribers). ``idx === null`` means "not
+  // browsing history; user is typing fresh".
+  const historyIdxRef = useRef(null);
+  const draftBeforeHistoryRef = useRef("");
 
   useEffect(() => () => {
     if (recRef.current) recRef.current.stop();
@@ -101,16 +148,69 @@ export function Composer({
     if (slash.handleKey(evt)) return;
     if (evt.key === "Enter" && !evt.shiftKey && !evt.isComposing) {
       evt.preventDefault();
-      if (canSend) onSend();
+      if (canSend) {
+        historyIdxRef.current = null;  // reset history cursor on send
+        onSend();
+      }
       return;
     }
     if (evt.key === "Enter" && (evt.ctrlKey || evt.metaKey)) {
       evt.preventDefault();
-      if (canSend) onSend();
+      if (canSend) {
+        historyIdxRef.current = null;
+        onSend();
+      }
       return;
     }
     if (evt.key === "Escape") {
+      historyIdxRef.current = null;
       evt.target.blur();
+      return;
+    }
+    // B-105: prompt history. ArrowUp pulls older prompts; ArrowDown
+    // walks toward newer ones. Only triggers when the cursor is on
+    // a single-line view (no internal newlines so ↑↓ aren't navigating
+    // the textarea content) — keeps multi-line editing unbroken.
+    if (evt.key === "ArrowUp" && !evt.shiftKey && !evt.altKey) {
+      const ta = evt.target;
+      const v = ta.value || "";
+      // Only intercept when textarea cursor is on the FIRST line — same
+      // heuristic free-code uses. Multi-line drafts behave normally.
+      const caretAtStart = ta.selectionStart === 0 || !v.slice(0, ta.selectionStart).includes("\n");
+      if (!caretAtStart) return;
+      const hist = _readHistory();
+      if (hist.length === 0) return;
+      // Save the live draft on the first up so down can restore it.
+      if (historyIdxRef.current === null) {
+        draftBeforeHistoryRef.current = v;
+        historyIdxRef.current = hist.length - 1;
+      } else if (historyIdxRef.current > 0) {
+        historyIdxRef.current -= 1;
+      } else {
+        return;  // already at oldest
+      }
+      evt.preventDefault();
+      onChange(hist[historyIdxRef.current]);
+      return;
+    }
+    if (evt.key === "ArrowDown" && !evt.shiftKey && !evt.altKey) {
+      if (historyIdxRef.current === null) return;
+      const ta = evt.target;
+      const v = ta.value || "";
+      const caretAtEnd =
+        ta.selectionStart === v.length || !v.slice(ta.selectionStart).includes("\n");
+      if (!caretAtEnd) return;
+      const hist = _readHistory();
+      if (historyIdxRef.current >= hist.length - 1) {
+        // Walked back past most-recent — restore live draft.
+        historyIdxRef.current = null;
+        evt.preventDefault();
+        onChange(draftBeforeHistoryRef.current);
+        return;
+      }
+      historyIdxRef.current += 1;
+      evt.preventDefault();
+      onChange(hist[historyIdxRef.current]);
     }
   }
 
