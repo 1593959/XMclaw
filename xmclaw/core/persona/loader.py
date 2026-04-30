@@ -16,7 +16,6 @@ OpenClaw / Hermes treat workspace-overlay vs. global rules.
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -285,7 +284,7 @@ def sanitize_for_prompt(text: str) -> str:
             for line in out.split("\n"):
                 if marker in line.lower():
                     new_lines.append(
-                        f"[XMclaw: line removed — looked like a prompt-injection marker]"
+                        "[XMclaw: line removed — looked like a prompt-injection marker]"
                     )
                 else:
                     new_lines.append(line)

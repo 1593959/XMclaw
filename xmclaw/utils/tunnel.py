@@ -24,7 +24,6 @@ import asyncio
 import logging
 import re
 import shutil
-from typing import Any
 
 _log = logging.getLogger(__name__)
 

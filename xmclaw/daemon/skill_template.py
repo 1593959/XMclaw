@@ -128,7 +128,7 @@ def expand_inline_shell(
                     env=dict(env) if env else None,
                 )
             else:
-                return f"[inline-shell error: bash not found]"
+                return "[inline-shell error: bash not found]"
         except subprocess.TimeoutExpired:
             return f"[inline-shell timeout after {timeout_s}s: {command[:60]}]"
         except (OSError, FileNotFoundError) as exc:

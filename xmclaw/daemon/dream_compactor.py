@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING, Any
 from xmclaw.utils.log import get_logger
 
 if TYPE_CHECKING:
-    from xmclaw.providers.llm.base import LLMProvider, Message
+    from xmclaw.providers.llm.base import LLMProvider
 
 _log = get_logger(__name__)
 

@@ -15,7 +15,7 @@ inter-agent tools); this class just owns the dict.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Awaitable, Callable, Generic, TypeVar
+from typing import Awaitable, Callable, Generic, TypeVar
 
 T = TypeVar("T")
 

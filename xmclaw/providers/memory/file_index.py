@@ -27,7 +27,7 @@ these and renders a manifest the LLM picks from.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 # Cap fallback description length. Long enough to capture the topic

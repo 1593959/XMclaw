@@ -12,7 +12,6 @@ keep working.
 """
 from __future__ import annotations
 
-from typing import Any
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -22,7 +21,6 @@ from xmclaw.core.multi_agent import (
     reset_current_agent_id,
     set_current_agent_id,
 )
-from xmclaw.core.multi_agent.context import _current_agent_id
 
 
 class AgentScopeMiddleware(BaseHTTPMiddleware):

@@ -34,6 +34,7 @@ import re
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 from xmclaw.core.ir import ToolCall, ToolResult, ToolSpec
 from xmclaw.providers.tool.base import ToolProvider

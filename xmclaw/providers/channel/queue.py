@@ -17,7 +17,6 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any
 
 from xmclaw.providers.channel.base import InboundMessage
 

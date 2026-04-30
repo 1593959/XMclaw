@@ -18,7 +18,6 @@ name + whether an env var is currently shadowing it.
 """
 from __future__ import annotations
 
-from typing import Any
 
 from fastapi import APIRouter, Request
 from starlette.responses import JSONResponse

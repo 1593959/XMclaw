@@ -1166,7 +1166,7 @@ class PersonaProfileCheck(DoctorCheck):
             # creates the dir + bootstrap files on first use.
             return CheckResult(
                 name=self.name, ok=True,
-                detail=f"persona dir not yet created (fresh install)",
+                detail="persona dir not yet created (fresh install)",
                 advisory="run 'xmclaw onboard' to bootstrap the profile",
             )
         problems: list[str] = []

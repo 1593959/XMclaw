@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter
 from starlette.responses import JSONResponse
 
 from xmclaw.daemon.session_store import SessionStore
