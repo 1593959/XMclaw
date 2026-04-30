@@ -560,6 +560,28 @@ def create_app(
                 f"indexer 启动抛异常：{type(exc).__name__}: {exc}"
             )
 
+        # B-109: hot-reload config.json on external edits. Polls
+        # mtime every 5s; mutates the in-memory cfg dict in place
+        # and publishes CONFIG_RELOADED so subscribers can react.
+        # Some sections (llm/memory/gateway/runtime/mcp_servers/
+        # integrations) need a daemon restart to fully take effect —
+        # the event payload flags that.
+        _app.state.config_watcher = None
+        try:
+            if config is not None and config_path is not None:
+                from xmclaw.daemon.config_watcher import ConfigFileWatcher
+                cw = ConfigFileWatcher(
+                    config_path=Path(config_path), cfg=config, bus=bus,
+                )
+                await cw.start()
+                _app.state.config_watcher = cw
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).warning(
+                "config_watcher.start_failed err=%s", exc,
+            )
+            _app.state.config_watcher = None
+
         # B-51: Auto-Dream cron — daily LLM-driven MEMORY.md
         # compaction. Off when no LLM is configured (we can't rewrite
         # without one). Gated by ``evolution.dream.enabled`` (default
@@ -663,6 +685,13 @@ def create_app(
             if _dream_cron is not None:
                 try:
                     await _dream_cron.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            # B-109: stop the config-file watcher.
+            _cw = getattr(_app.state, "config_watcher", None)
+            if _cw is not None:
+                try:
+                    await _cw.stop()
                 except Exception:  # noqa: BLE001
                     pass
             # Stop xm-auto-evo subsystem.

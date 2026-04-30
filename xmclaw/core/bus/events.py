@@ -45,6 +45,12 @@ class EventType(str, Enum):
     # so the chat transcript and any audit log replay can see what
     # the user picked. Payload: {question_id, value}.
     USER_ANSWERED_QUESTION = "user_answered_question"
+    # B-109: daemon detected an external write to daemon/config.json
+    # and refreshed the in-memory cfg dict. Some fields take effect
+    # live (prompt-injection policy, tools.allowed_dirs, retention),
+    # others (LLM, memory providers) require a daemon restart — the
+    # payload reports which keys changed so the UI can advise.
+    CONFIG_RELOADED = "config_reloaded"
     TOOL_CALL_EMITTED = "tool_call_emitted"
     TOOL_INVOCATION_STARTED = "tool_invocation_started"
     TOOL_INVOCATION_FINISHED = "tool_invocation_finished"
