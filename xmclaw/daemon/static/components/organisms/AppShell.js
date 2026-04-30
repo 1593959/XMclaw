@@ -26,6 +26,7 @@ import { THEMES, applyTheme, readActiveTheme, listThemes } from "../../lib/herme
 import { apiGet } from "../../lib/api.js";
 import { confirmDialog } from "../../lib/dialog.js";
 import { SetupBanner } from "../molecules/SetupBanner.js";
+import { BuddyMascot } from "../molecules/BuddyMascot.js";
 
 // Lucide-style inline SVG icons. Each takes className for sizing.
 // Direct shape ports of the Hermes nav-icon set so visual size + stroke
@@ -542,6 +543,7 @@ export function AppShell({ activePath, brand = "XMclaw", subBrand = "Agent", tok
           ${children}
         </main>
       </div>
+      <${BuddyMascot} />
     </div>
   `;
 }

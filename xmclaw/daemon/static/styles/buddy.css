@@ -1,0 +1,100 @@
+/*
+ * XMclaw — Buddy mascot styles (B-108).
+ * Lives bottom-right. Animation cycles via JS frame ticks; this file
+ * just gives it a tasteful fixed-position container, hover state,
+ * pet bounce, and a heart-floating effect.
+ */
+
+.xmc-buddy {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+  z-index: 50;          /* above page content, below toasts (z 9999) */
+  font-size: 28px;
+  line-height: 1;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4));
+  transition: transform 80ms ease, filter 80ms ease;
+}
+
+.xmc-buddy:hover {
+  transform: translateY(-2px);
+  filter: drop-shadow(0 3px 6px rgba(0, 0, 0, 0.5));
+}
+
+.xmc-buddy:focus {
+  outline: 2px solid var(--xmc-info, #6aa3f0);
+  outline-offset: 4px;
+  border-radius: 50%;
+}
+
+.xmc-buddy__sprite {
+  display: inline-block;
+  pointer-events: none;
+}
+
+/* Pet bounce: small jump + return. */
+.xmc-buddy.is-bouncing .xmc-buddy__sprite {
+  animation: xmc-buddy-bounce 480ms ease;
+}
+
+@keyframes xmc-buddy-bounce {
+  0%   { transform: translateY(0)     scale(1); }
+  30%  { transform: translateY(-12px) scale(1.15); }
+  60%  { transform: translateY(0)     scale(0.95); }
+  100% { transform: translateY(0)     scale(1); }
+}
+
+/* Heart floats up and fades. */
+.xmc-buddy__heart {
+  position: absolute;
+  top: -8px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 14px;
+  color: #e85a8d;
+  pointer-events: none;
+  animation: xmc-buddy-heart 800ms ease-out forwards;
+}
+
+@keyframes xmc-buddy-heart {
+  0%   { transform: translate(-50%, 0)     scale(0.6); opacity: 0; }
+  20%  { transform: translate(-50%, -8px)  scale(1.0); opacity: 1; }
+  80%  { transform: translate(-50%, -28px) scale(1.0); opacity: 0.8; }
+  100% { transform: translate(-50%, -36px) scale(0.8); opacity: 0; }
+}
+
+/* Right-click menu: disable button. */
+.xmc-buddy__menu {
+  position: absolute;
+  bottom: 44px;
+  right: 0;
+  background: var(--color-bg-elevated, rgba(15, 25, 25, 0.95));
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.1));
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  min-width: 120px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  font-family: var(--xmc-font-mono, monospace);
+  font-size: 0.78rem;
+}
+
+.xmc-buddy__menu-item {
+  background: transparent;
+  border: none;
+  color: var(--xmc-fg, #d8e4d8);
+  text-align: left;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.xmc-buddy__menu-item:hover {
+  background: rgba(106, 163, 240, 0.15);
+}
