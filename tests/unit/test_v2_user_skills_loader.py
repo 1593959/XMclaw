@@ -156,13 +156,16 @@ def test_dir_id_mismatch_fails_loudly(tmp_path: Path) -> None:
     assert "disagrees" in (results[0].error or "")
 
 
-def test_missing_skill_py_skipped(tmp_path: Path) -> None:
+def test_missing_skill_py_and_md_skipped(tmp_path: Path) -> None:
+    """Epic #24 Phase 5: error message updated to mention both
+    skill.py and SKILL.md after the markdown branch was added."""
     (tmp_path / "empty").mkdir()
     reg = SkillRegistry()
     results = UserSkillsLoader(reg, tmp_path).load_all()
     assert len(results) == 1
     assert not results[0].ok
-    assert "skill.py not found" in (results[0].error or "")
+    assert "skill.py" in (results[0].error or "")
+    assert "SKILL.md" in (results[0].error or "")
 
 
 def test_import_error_does_not_kill_other_skills(tmp_path: Path) -> None:

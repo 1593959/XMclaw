@@ -494,20 +494,37 @@ def serve(
             mode = "auto-apply" if auto_apply else "observe-only"
             typer.echo(f"  [ok]  evolution orchestrator: {mode}")
 
-            # B-127: scan ~/.xmclaw/skills_user/<id>/skill.py and
-            # auto-register every Skill subclass found. After this,
-            # user-authored skills appear as `skill_<id>` tools via
-            # the SkillToolProvider bridge — no daemon code changes
-            # needed for the user.
+            # B-127 + Epic #24 Phase 5: scan ~/.xmclaw/skills_user/<id>/
+            # for skill.py (Python class) OR SKILL.md (markdown
+            # procedure). Optional ``evolution.skill_paths.extra``
+            # config opt-in lets the loader also scan e.g.
+            # ~/.agents/skills/ so users with the skills.sh muscle
+            # memory don't end up with ghost installs.
             from xmclaw.skills.user_loader import UserSkillsLoader
             user_root = user_skills_dir()
-            results = UserSkillsLoader(registry, user_root).load_all()
+            extra_raw = (
+                (ev_cfg.get("skill_paths") or {}).get("extra") or []
+            )
+            extra_roots: list[Path] = []
+            for raw in extra_raw if isinstance(extra_raw, list) else []:
+                try:
+                    extra_roots.append(Path(str(raw)).expanduser())
+                except Exception:  # noqa: BLE001
+                    continue
+            results = UserSkillsLoader(
+                registry, user_root, extra_roots=extra_roots,
+            ).load_all()
             if results:
                 ok_n = sum(1 for r in results if r.ok)
+                py_n = sum(1 for r in results if r.ok and r.kind == "python")
+                md_n = sum(1 for r in results if r.ok and r.kind == "markdown")
                 fail = [r for r in results if not r.ok]
+                roots_msg = str(user_root)
+                if extra_roots:
+                    roots_msg += " + " + ", ".join(str(r) for r in extra_roots)
                 typer.echo(
                     f"  [ok]  user skills: {ok_n}/{len(results)} loaded "
-                    f"from {user_root}"
+                    f"({py_n} python, {md_n} markdown) from {roots_msg}"
                 )
                 for r in fail:
                     typer.echo(

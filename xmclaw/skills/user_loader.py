@@ -1,33 +1,34 @@
-"""UserSkillsLoader — discover + register user-authored Python Skills.
+"""UserSkillsLoader — discover + register user-authored skills.
 
-B-127. Closes the "I want to install my own skill" gap.
+Two formats accepted in the same canonical directory tree:
 
-Epic #24 Phase 1 made this loader the **single** entry-point for
-user-installed skills (the parallel SKILL.md / xm-auto-evo paths were
-removed). Layout:
+  ``<root>/<skill_id>/skill.py``
+      Python ``Skill`` subclass (B-127 original). The loader picks
+      the first concrete subclass with a zero-arg ``__init__``, or
+      calls ``build_skill()`` if the module exports one.
 
-  ``~/.xmclaw/skills_user/<skill_id>/skill.py``
-      Contains exactly one :class:`Skill` subclass (the loader scans
-      module attrs and picks the first concrete subclass that is not
-      :class:`Skill` itself). Optional zero-arg ``__init__``; otherwise
-      provide a ``build_skill()`` factory in the same module.
+  ``<root>/<skill_id>/SKILL.md``
+      Markdown procedure body (Epic #24 Phase 5 immediate fix —
+      previously broken: Phase 1 deleted the multi-path SKILL.md
+      scanner without giving the canonical path a SKILL.md
+      bridge, so users following the skills.sh convention ended
+      up with files XMclaw literally couldn't see). The loader
+      wraps the body in :class:`MarkdownProcedureSkill` so the
+      agent can ``skill_<id>``-invoke it like any other tool;
+      the wrapper returns the body text and the agent follows
+      the steps using its existing tools.
 
-  ``~/.xmclaw/skills_user/<skill_id>/manifest.json``  (optional)
-      JSON object whose keys map to :class:`SkillManifest` fields.
-      When absent, a minimal manifest is synthesised (created_by =
-      "user"). Required fields ``id`` / ``version`` default to the
-      directory name and ``skill.version``.
+  ``<root>/<skill_id>/manifest.json``  (optional)
+      JSON object with :class:`SkillManifest` fields.
 
-The loader is invoked once at daemon boot (CLI), AFTER the
-SkillRegistry is constructed but BEFORE the agent is wired. Errors
-loading one skill are logged + skipped; other skills still load.
+The loader scans :func:`xmclaw.utils.paths.user_skills_dir`
+(``~/.xmclaw/skills_user/`` by default) plus any opt-in
+``extra_roots`` (typically ``~/.agents/skills/`` so users can keep
+``npx skills add`` muscle memory without the file becoming a ghost).
 
-Trust model
------------
-
-User-authored Python is fully trusted — XMclaw is local-first and
-single-user. ``importlib`` runs whatever the user wrote at module
-top-level. We do NOT sandbox; that would be theatre at this layer.
+Trust model: user-authored Python and SKILL.md are fully trusted.
+XMclaw is local-first and single-user; ``importlib`` runs the file
+at module top-level, and SKILL.md is read directly.
 """
 from __future__ import annotations
 
@@ -35,11 +36,12 @@ import importlib.util
 import inspect
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from xmclaw.skills.base import Skill
 from xmclaw.skills.manifest import SkillManifest
+from xmclaw.skills.markdown_skill import MarkdownProcedureSkill
 from xmclaw.skills.registry import SkillRegistry
 
 
@@ -56,38 +58,81 @@ class LoadResult:
     manifest_path: Path | None = None
     version: int | None = None
     error: str | None = None
+    kind: str = "python"  # "python" or "markdown"
+    source_root: str | None = None  # which root the skill came from
 
 
 class UserSkillsLoader:
-    """Scan a user-skills directory and register every found Skill.
+    """Scan one or more user-skills directories and register every
+    found Skill. Accepts both ``skill.py`` (Python class) and
+    ``SKILL.md`` (markdown procedure) formats in the same directory
+    tree.
 
     Designed for boot-time use: instantiate with the registry +
-    skills root, call :meth:`load_all`. Returns a list of
-    :class:`LoadResult` for telemetry / startup logging.
+    skills_root + optional ``extra_roots`` (e.g. ``~/.agents/skills``
+    when ``evolution.skill_paths.extra`` is set in config), call
+    :meth:`load_all`. Returns a list of :class:`LoadResult` for
+    telemetry / startup logging.
+
+    Skill-id collisions across roots: first wins (canonical root
+    scanned first; extra roots only fill in missing ids). This makes
+    the canonical path the source-of-truth and turns extra roots into
+    a "convenience overlay" rather than a competing register.
     """
 
-    def __init__(self, registry: SkillRegistry, skills_root: Path) -> None:
+    def __init__(
+        self,
+        registry: SkillRegistry,
+        skills_root: Path,
+        extra_roots: list[Path] | None = None,
+    ) -> None:
         self._registry = registry
         self._root = skills_root
+        self._extra_roots = list(extra_roots or [])
 
     def load_all(self) -> list[LoadResult]:
         results: list[LoadResult] = []
-        if not self._root.is_dir():
-            return results
-        for entry in sorted(self._root.iterdir()):
-            if not entry.is_dir():
+        seen_ids: set[str] = set()
+
+        # Canonical first, then extras — first-wins on collisions.
+        for root in [self._root, *self._extra_roots]:
+            if not root.is_dir():
                 continue
-            if entry.name.startswith(".") or entry.name.startswith("_"):
-                continue
-            results.append(self._load_one(entry))
+            for entry in sorted(root.iterdir()):
+                if not entry.is_dir():
+                    continue
+                if entry.name.startswith(".") or entry.name.startswith("_"):
+                    continue
+                if entry.name in seen_ids:
+                    log.debug(
+                        "user_skill.shadowed_by_canonical",
+                        extra={
+                            "skill_id": entry.name,
+                            "shadowed_root": str(root),
+                        },
+                    )
+                    continue
+                res = self._load_one(entry)
+                res = replace(res, source_root=str(root))
+                results.append(res)
+                if res.ok:
+                    seen_ids.add(entry.name)
         return results
 
     def _load_one(self, skill_dir: Path) -> LoadResult:
         skill_py = skill_dir / "skill.py"
+        skill_md = skill_dir / "SKILL.md"
+
+        # SKILL.md branch (Epic #24 Phase 5 immediate fix). Python
+        # ``skill.py`` takes priority when both exist — the user
+        # signaled they want code, not a procedure.
+        if not skill_py.is_file() and skill_md.is_file():
+            return self._load_markdown(skill_dir, skill_md)
+
         if not skill_py.is_file():
             return LoadResult(
                 skill_id=skill_dir.name, ok=False, skill_path=skill_py,
-                error="skill.py not found",
+                error="neither skill.py nor SKILL.md found",
             )
 
         skill_id = skill_dir.name
@@ -195,6 +240,43 @@ class UserSkillsLoader:
         return LoadResult(
             skill_id=skill_id, ok=True, skill_path=skill_py,
             manifest_path=manifest_path, version=instance_version,
+        )
+
+    def _load_markdown(
+        self, skill_dir: Path, skill_md: Path,
+    ) -> LoadResult:
+        """Wrap a SKILL.md file in :class:`MarkdownProcedureSkill` and
+        register it under the directory name."""
+        skill_id = skill_dir.name
+        try:
+            body = skill_md.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return LoadResult(
+                skill_id=skill_id, ok=False, skill_path=skill_md,
+                kind="markdown",
+                error=f"SKILL.md read failed: {exc}",
+            )
+
+        skill = MarkdownProcedureSkill(id=skill_id, body=body, version=1)
+        manifest = SkillManifest(
+            id=skill_id, version=1, created_by="user",
+        )
+        try:
+            self._registry.register(skill, manifest, set_head=True)
+        except ValueError as exc:
+            if "already registered" in str(exc):
+                return LoadResult(
+                    skill_id=skill_id, ok=True, skill_path=skill_md,
+                    kind="markdown", version=1,
+                )
+            return LoadResult(
+                skill_id=skill_id, ok=False, skill_path=skill_md,
+                kind="markdown",
+                error=f"register failed: {exc}",
+            )
+        return LoadResult(
+            skill_id=skill_id, ok=True, skill_path=skill_md,
+            kind="markdown", version=1,
         )
 
     def _instantiate(self, module: object) -> Skill | None:

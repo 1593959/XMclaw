@@ -314,13 +314,18 @@ export function SkillsPage({ token }) {
                 view !== "all" ? `这个分类下还没有技能。` :
                 html`<div style="line-height:1.7">
                   <p style="margin:0 0 .5rem"><strong>还没有任何技能。</strong></p>
-                  <p style="margin:0;font-size:.85rem">
-                    Phase 1 把 SKILL.md 多路径扫描（auto-evo / skills.sh / Claude Code）
-                    全部下线了 — 唯一的入口是 SkillRegistry。
-                    用户技能放到 <code>~/.xmclaw/skills_user/&lt;skill_id&gt;/skill.py</code>，
+                  <p style="margin:0 0 .5rem;font-size:.85rem">
+                    规范路径一个：<code>~/.xmclaw/skills_user/&lt;skill_id&gt;/</code>，
+                    目录里二选一：<code>skill.py</code>（Python 子类）或 <code>SKILL.md</code>（Markdown 步骤说明）。
                     daemon 重启自动注册。
-                    Phase 3 上线后，agent 会通过 SkillProposer 自己造新技能候选，
-                    经 HonestGrader 把关后才会出现在这里。
+                  </p>
+                  <p style="margin:0 0 .5rem;font-size:.85rem">
+                    已经用 <code>npx skills add</code> 装到 <code>~/.agents/skills/</code>？
+                    在 <code>daemon/config.json</code> 加：
+                  </p>
+                  <pre style="margin:.3rem 0;padding:.4rem .6rem;background:color-mix(in srgb, var(--midground) 6%, transparent);border-radius:4px;font-size:.72rem;overflow-x:auto">"evolution": { "skill_paths": { "extra": ["~/.agents/skills"] } }</pre>
+                  <p style="margin:0;font-size:.85rem">
+                    重启 daemon 即可扫到（规范路径优先，extra 路径作为 overlay 不覆盖）。
                   </p>
                 </div>`
               }</div>`
