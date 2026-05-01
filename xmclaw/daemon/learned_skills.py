@@ -354,14 +354,19 @@ class LearnedSkillsLoader:
         lines.append("")
         lines.append(
             "下面是你（XMclaw）通过观察用户对话自主总结出的技能。"
-            "当用户的请求 **匹配下面的 trigger** 时，"
-            "**优先按对应 SKILL 的步骤执行** — "
-            "用你已有的工具（`file_read` / `bash` / `web_search` 等）"
-            "去走流程。这是你已经学会的事情，"
+            "每个技能都暴露为一个 `learned_skill_<id>` 工具 — "
+            "当用户请求 **匹配下面的 trigger** 时，"
+            "**调用对应工具**取回完整步骤，再按步骤执行。"
             "比从零思考更可靠。"
         )
         lines.append("")
         for sk in skills[:max_skills]:
+            # B-126: index-only — title + description + triggers + tool name.
+            # Full body is no longer pre-injected; the agent retrieves it on
+            # demand via the matching learned_skill_<id> tool (B-125). Drops
+            # ~600 chars × N skills from the system prompt and turns the
+            # heuristic SKILL_INVOKED detection into a deterministic tool-call.
+            tool_name = f"learned_skill_{sk.skill_id.replace('.', '__')}"
             lines.append(f"### {sk.title or sk.skill_id}")
             lines.append("")
             if sk.description:
@@ -373,23 +378,8 @@ class LearnedSkillsLoader:
                     + ", ".join(f"`{t}`" for t in sk.triggers[:6])
                 )
                 lines.append("")
-            # First ~600 chars of the body — enough for the agent to
-            # see the procedure without bloating the system prompt.
-            excerpt = sk.body.strip()
-            if excerpt:
-                # Strip top-level # heading since we already render
-                # it above as ###.
-                excerpt_lines = []
-                skipped_first_h1 = False
-                for ln in excerpt.splitlines():
-                    if not skipped_first_h1 and ln.lstrip().startswith("# "):
-                        skipped_first_h1 = True
-                        continue
-                    excerpt_lines.append(ln)
-                excerpt = "\n".join(excerpt_lines).strip()[:600]
-                if excerpt:
-                    lines.append(excerpt)
-                    lines.append("")
+            lines.append(f"**调用:** `{tool_name}`（无参数；返回完整流程）")
+            lines.append("")
 
         block = "\n".join(lines).rstrip()
         self._cache_key = fp
