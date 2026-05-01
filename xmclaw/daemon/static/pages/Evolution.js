@@ -216,7 +216,12 @@ function AutoEvoPanel({ token }) {
                       <strong>${s.title || s.skill_id}</strong>
                       <span style="display:flex;gap:.4rem;align-items:center">
                         ${isDisabled
-                          ? html`<span class="xmc-h-badge xmc-h-badge--warn" title="已暂停 - agent 看不到">⏸ 暂停</span>`
+                          ? (s.auto_disabled_ts
+                              ? html`<span
+                                  class="xmc-h-badge xmc-h-badge--error"
+                                  title=${`B-36 自动暂停: ${s.auto_disabled_streak || 0} 次连续报错 @ ${formatRelative(s.auto_disabled_ts)}`}
+                                >🚫 auto-停 (${s.auto_disabled_streak || "?"} err)</span>`
+                              : html`<span class="xmc-h-badge xmc-h-badge--warn" title="已暂停 - agent 看不到">⏸ 暂停</span>`)
                           : null}
                         ${isStale && !isDisabled
                           ? html`<span class="xmc-h-badge xmc-h-badge--warn" title="60+ 天未触发且最近 30 天 0 调用 — 考虑暂停">🕸 stale</span>`

@@ -274,6 +274,13 @@ async def learned_skills(include_disabled: bool = False) -> JSONResponse:
     invocation_counts_30d: dict[str, int] = {}
     verdict_counts: dict[str, dict[str, int]] = {}
     last_fired: dict[str, float] = {}
+    # B-123: auto-disable audit trail. When B-36 parks a misbehaving
+    # skill, it emits SKILL_OUTCOME with verdict='auto_disabled'. The
+    # SKILL.md frontmatter alone tells the UI THAT the skill is
+    # disabled but not WHY — was it user click or N consecutive errors?
+    # Surface the latest auto_disabled event so the UI can label it.
+    auto_disabled_last_ts: dict[str, float] = {}
+    auto_disabled_streak: dict[str, int] = {}
     try:
         import sqlite3
         from xmclaw.utils.paths import data_dir
@@ -306,6 +313,15 @@ async def learned_skills(include_disabled: bool = False) -> JSONResponse:
                         last_fired.setdefault(sid, ts)
                     else:  # skill_outcome
                         verdict = str(p.get("verdict") or "")
+                        if verdict == "auto_disabled":
+                            # Rows are DESC by ts → first hit per sid
+                            # is the most recent auto-disable event.
+                            if sid not in auto_disabled_last_ts:
+                                auto_disabled_last_ts[sid] = ts
+                                auto_disabled_streak[sid] = int(
+                                    p.get("consecutive_errors") or 0
+                                )
+                            continue
                         if verdict not in ("success", "partial", "error"):
                             continue
                         d = verdict_counts.setdefault(
@@ -332,6 +348,12 @@ async def learned_skills(include_disabled: bool = False) -> JSONResponse:
             invocation_counts_30d.get(sid, 0) == 0
             and (last is None or last < cutoff_60d)
         )
+        # B-123: auto-disable provenance. Only meaningful when the
+        # skill is currently disabled — tells the UI "user click" vs
+        # "auto-disabled after N errors".
+        if sid in auto_disabled_last_ts:
+            s["auto_disabled_ts"] = auto_disabled_last_ts[sid]
+            s["auto_disabled_streak"] = auto_disabled_streak.get(sid, 0)
 
     return JSONResponse({
         "skills_root": str(loader.skills_root),
