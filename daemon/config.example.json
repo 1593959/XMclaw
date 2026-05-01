@@ -107,6 +107,11 @@
     "discord":  { "enabled": false, "bot_token": "", "channel_id": "" },
     "telegram": { "enabled": false, "bot_token": "", "chat_id": "" },
     "github":   { "enabled": false, "token": "", "repo": "", "poll_interval": 60 },
-    "notion":   { "enabled": false, "api_key": "", "database_id": "" }
+    "notion":   { "enabled": false, "api_key": "", "database_id": "" },
+    "email":    { "smtp_host": "", "smtp_port": 587, "username": "", "password": "", "from": "", "use_tls": true },
+    "feishu":   { "_comment": "群里 添加自定义机器人 → 复制 webhook URL", "webhook_url": "", "secret": "" },
+    "wecom":    { "_comment": "企业微信群机器人 webhook (个人微信无官方 API)", "webhook_url": "" },
+    "dingtalk": { "_comment": "钉钉群自定义机器人 webhook", "webhook_url": "", "secret": "" },
+    "qq":       { "_comment": "OneBot v11 兼容 bot 的 HTTP API base_url (go-cqhttp/NapCat/Lagrange)", "base_url": "", "access_token": "" }
   }
 }

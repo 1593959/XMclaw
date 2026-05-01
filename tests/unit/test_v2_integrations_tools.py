@@ -30,12 +30,14 @@ def _call(name: str, args: dict | None = None) -> ToolCall:
 # ── tool list ─────────────────────────────────────────────────────
 
 
-def test_list_tools_always_advertises_eight() -> None:
+def test_list_tools_always_advertises_twelve() -> None:
     names = {s.name for s in IntegrationsTools().list_tools()}
     assert names == {
         "webhook_send", "email_send", "rss_fetch",
         "slack_send", "telegram_send", "discord_send",
         "github_create_issue", "notion_create_page",
+        # B-144 国内主流聊天工具
+        "feishu_send", "wecom_send", "dingtalk_send", "qq_send",
     }
 
 
@@ -247,3 +249,182 @@ async def test_unknown_tool_returns_structured_error() -> None:
     r = await IntegrationsTools().invoke(_call("nothing_here"))
     assert r.ok is False
     assert "unknown" in (r.error or "")
+
+
+# ── B-144: 国内主流聊天工具 ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_feishu_unconfigured() -> None:
+    r = await IntegrationsTools().invoke(_call("feishu_send", {"text": "x"}))
+    assert r.ok is False
+    assert "飞书" in (r.error or "") or "feishu" in (r.error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_wecom_unconfigured() -> None:
+    r = await IntegrationsTools().invoke(_call("wecom_send", {"text": "x"}))
+    assert r.ok is False
+    assert "企业微信" in (r.error or "") or "wecom" in (r.error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_dingtalk_unconfigured() -> None:
+    r = await IntegrationsTools().invoke(_call("dingtalk_send", {"text": "x"}))
+    assert r.ok is False
+    assert "钉钉" in (r.error or "") or "dingtalk" in (r.error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_qq_unconfigured() -> None:
+    r = await IntegrationsTools().invoke(_call("qq_send", {
+        "text": "x", "target_type": "group", "target_id": "1",
+    }))
+    assert r.ok is False
+    assert "QQ" in (r.error or "") or "OneBot" in (r.error or "")
+
+
+@pytest.mark.asyncio
+async def test_feishu_send_text_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify feishu_send POSTs the right shape: msg_type=text, content.text=...,
+    no signature when secret not set."""
+    captured: dict[str, Any] = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"code": 0, "msg": "ok"})
+
+    transport = httpx.MockTransport(_handler)
+    real_client = httpx.AsyncClient
+    def patched(*a, **kw):
+        kw["transport"] = transport
+        return real_client(*a, **kw)
+    monkeypatch.setattr("httpx.AsyncClient", patched)
+
+    tools = IntegrationsTools({
+        "feishu": {"webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/abc"},
+    })
+    r = await tools.invoke(_call("feishu_send", {"text": "hello"}))
+    assert r.ok is True
+    assert captured["body"]["msg_type"] == "text"
+    assert captured["body"]["content"]["text"] == "hello"
+    # No secret → no timestamp/sign fields
+    assert "sign" not in captured["body"]
+
+
+@pytest.mark.asyncio
+async def test_wecom_markdown_msg_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"errcode": 0, "errmsg": "ok"})
+
+    transport = httpx.MockTransport(_handler)
+    real_client = httpx.AsyncClient
+    def patched(*a, **kw):
+        kw["transport"] = transport
+        return real_client(*a, **kw)
+    monkeypatch.setattr("httpx.AsyncClient", patched)
+
+    tools = IntegrationsTools({
+        "wecom": {"webhook_url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=x"},
+    })
+    r = await tools.invoke(_call("wecom_send", {
+        "text": "# 头", "msg_type": "markdown",
+    }))
+    assert r.ok is True
+    assert captured["body"]["msgtype"] == "markdown"
+    assert captured["body"]["markdown"]["content"] == "# 头"
+
+
+@pytest.mark.asyncio
+async def test_dingtalk_signs_url_when_secret_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    """加签设置：钉钉机器人有 'secret' 时，webhook URL 必须 append
+    timestamp + sign query params。"""
+    captured: dict[str, Any] = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json={"errcode": 0, "errmsg": "ok"})
+
+    transport = httpx.MockTransport(_handler)
+    real_client = httpx.AsyncClient
+    def patched(*a, **kw):
+        kw["transport"] = transport
+        return real_client(*a, **kw)
+    monkeypatch.setattr("httpx.AsyncClient", patched)
+
+    tools = IntegrationsTools({
+        "dingtalk": {
+            "webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=abc",
+            "secret": "SEC123",
+        },
+    })
+    r = await tools.invoke(_call("dingtalk_send", {"text": "hi"}))
+    assert r.ok is True
+    assert "timestamp=" in captured["url"]
+    assert "sign=" in captured["url"]
+    # Original access_token must still be there
+    assert "access_token=abc" in captured["url"]
+
+
+@pytest.mark.asyncio
+async def test_qq_send_routes_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OneBot v11: send_group_msg endpoint, group_id as int, message body."""
+    captured: dict[str, Any] = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.content)
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={
+            "status": "ok", "retcode": 0, "data": {"message_id": 99},
+        })
+
+    transport = httpx.MockTransport(_handler)
+    real_client = httpx.AsyncClient
+    def patched(*a, **kw):
+        kw["transport"] = transport
+        return real_client(*a, **kw)
+    monkeypatch.setattr("httpx.AsyncClient", patched)
+
+    tools = IntegrationsTools({
+        "qq": {"base_url": "http://127.0.0.1:5700", "access_token": "T1"},
+    })
+    r = await tools.invoke(_call("qq_send", {
+        "text": "hi", "target_type": "group", "target_id": "12345",
+    }))
+    assert r.ok is True
+    assert captured["url"].endswith("/send_group_msg")
+    assert captured["body"]["group_id"] == 12345
+    assert captured["body"]["message"] == "hi"
+    assert captured["auth"] == "Bearer T1"
+
+
+@pytest.mark.asyncio
+async def test_qq_send_routes_private(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"status": "ok", "data": {"message_id": 1}})
+
+    transport = httpx.MockTransport(_handler)
+    real_client = httpx.AsyncClient
+    def patched(*a, **kw):
+        kw["transport"] = transport
+        return real_client(*a, **kw)
+    monkeypatch.setattr("httpx.AsyncClient", patched)
+
+    tools = IntegrationsTools({
+        "qq": {"base_url": "http://127.0.0.1:5700"},
+    })
+    r = await tools.invoke(_call("qq_send", {
+        "text": "私聊", "target_type": "private", "target_id": "999",
+    }))
+    assert r.ok is True
+    assert captured["url"].endswith("/send_private_msg")
+    assert captured["body"]["user_id"] == 999
