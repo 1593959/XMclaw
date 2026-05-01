@@ -228,3 +228,41 @@ async def test_llm_start_is_inert(
     await ws.start()  # must not raise
     await ws.stop()   # must not raise
     assert ws.agent_loop is not None
+
+
+# ── B-134: sub-agent inherits primary's llm when omitted ─────────────
+
+
+def test_sub_agent_inherits_llm_from_primary(
+    bus: InProcessEventBus, llm_config: dict[str, object],
+) -> None:
+    """Persona-template sub-agents ship only system_prompt; the LLM
+    block falls through from the daemon's primary config."""
+    sub_config = {"system_prompt": "你是测试子 agent"}
+    ws = build_workspace(
+        "sub", sub_config, bus, primary_config=llm_config,
+    )
+    assert ws.agent_loop is not None
+    # The merged config that landed on the workspace contains the
+    # inherited llm section.
+    assert ws.config.get("llm") == llm_config["llm"]
+    assert ws.config.get("system_prompt") == "你是测试子 agent"
+
+
+def test_sub_agent_explicit_empty_llm_does_not_inherit(
+    bus: InProcessEventBus, llm_config: dict[str, object],
+) -> None:
+    """An explicit empty {} signals 'no LLM, this agent is meant to be
+    inert' — must override the primary inheritance."""
+    sub_config = {"llm": {}, "system_prompt": "i'm intentionally inert"}
+    ws = build_workspace(
+        "sub", sub_config, bus, primary_config=llm_config,
+    )
+    assert ws.config.get("llm") == {}
+
+
+def test_no_primary_config_no_inheritance(bus: InProcessEventBus) -> None:
+    """Without primary_config the sub-agent's llm absence is
+    preserved — no llm in, no llm out."""
+    ws = build_workspace("sub", {"system_prompt": "x"}, bus)
+    assert "llm" not in ws.config or ws.config.get("llm") is None

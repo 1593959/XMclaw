@@ -336,7 +336,10 @@ def create_app(
     # routers and WS handler can rely on ``app.state.agents`` being set,
     # but rehydration from disk happens in lifespan so tests that never
     # enter lifespan don't pay the filesystem walk.
-    agents_manager = MultiAgentManager(bus)
+    # B-134: pass the primary config so sub-agents can inherit its llm
+    # block when their own preset omits one (persona templates ship
+    # only system_prompt; provider/model fall through from main).
+    agents_manager = MultiAgentManager(bus, primary_config=config)
 
     # Phase 6 cron: stand up a CronTickTask once the agent is wired so
     # ~/.xmclaw/cron/jobs.json actually fires every 60s. Runner uses

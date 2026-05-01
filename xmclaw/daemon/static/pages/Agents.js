@@ -84,6 +84,88 @@ function AgentRow({ a, onDelete, busy }) {
   `;
 }
 
+// B-134: persona templates so users don't have to hand-write config
+// JSON for common sub-agent roles. Each template seeds agent_id +
+// system_prompt; the LLM block stays empty so the sub-agent inherits
+// the daemon's primary LLM config (lazy fallback in build_workspace).
+const PERSONA_TEMPLATES = [
+  {
+    key: "code_reviewer",
+    label: "🔍 代码审查",
+    agent_id: "code_reviewer",
+    system_prompt: (
+      "你是 XMclaw 的代码审查子 agent。当主 agent 派活给你时：\n"
+      + "1. 用 file_read / list_dir 看完相关文件\n"
+      + "2. 找潜在 bug、安全问题、性能坑、命名不一致\n"
+      + "3. 用 bullet 列表给具体行号 + 修改建议\n"
+      + "保持简洁、不要表扬，只说问题。"
+    ),
+  },
+  {
+    key: "test_runner",
+    label: "🧪 测试执行",
+    agent_id: "test_runner",
+    system_prompt: (
+      "你是 XMclaw 的测试子 agent。任务流程：\n"
+      + "1. bash 运行 pytest / npm test / 用户指定的命令\n"
+      + "2. 失败时用 file_read 定位错误源，给最小复现\n"
+      + "3. 不擅自修代码，只汇报结果 + 建议（除非主 agent 明说）"
+    ),
+  },
+  {
+    key: "doc_writer",
+    label: "📝 文档撰写",
+    agent_id: "doc_writer",
+    system_prompt: (
+      "你是 XMclaw 的文档子 agent。当被派活：\n"
+      + "1. file_read 看代码弄懂功能\n"
+      + "2. 写清晰的中文 README / 注释 / API doc\n"
+      + "3. 用 file_write 落盘前先把改动的全文返回给主 agent 确认"
+    ),
+  },
+  {
+    key: "researcher",
+    label: "🌐 网络研究",
+    agent_id: "researcher",
+    system_prompt: (
+      "你是 XMclaw 的研究子 agent。主 agent 给你一个题目时：\n"
+      + "1. web_search 找最新资料（优先 30 天内）\n"
+      + "2. web_fetch 读 1-3 篇核心源\n"
+      + "3. 总结时给链接，区分事实 vs 观点；2-3 段中文。"
+    ),
+  },
+  {
+    key: "debugger",
+    label: "🐛 Bug 排查",
+    agent_id: "debugger",
+    system_prompt: (
+      "你是 XMclaw 的 debug 子 agent。流程：\n"
+      + "1. 收到错误 → bash 复现\n"
+      + "2. file_read + grep 顺着 stack trace 找根因\n"
+      + "3. 提出修复方案（写最小补丁），说清为什么这么改"
+    ),
+  },
+  {
+    key: "planner",
+    label: "🗺 任务规划",
+    agent_id: "planner",
+    system_prompt: (
+      "你是 XMclaw 的规划子 agent。主 agent 抛过来一个大任务：\n"
+      + "1. 拆成 3-7 个有序步骤\n"
+      + "2. 每步写：要做什么、用什么工具、怎么验证完成\n"
+      + "3. 直接返回 markdown 列表，不要废话"
+    ),
+  },
+];
+
+function _templateConfigJson(tpl) {
+  return JSON.stringify({
+    system_prompt: tpl.system_prompt,
+    // LLM block intentionally omitted — workspace 会回退到主 agent
+    // 的 daemon config，避免每个子 agent 都重复填一次 provider/model
+  }, null, 2);
+}
+
 function CreateAgentForm({ token, onCreated }) {
   const [agentId, setAgentId] = useState("");
   const [configText, setConfigText] = useState(
@@ -91,6 +173,10 @@ function CreateAgentForm({ token, onCreated }) {
   );
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
+  const applyTemplate = (tpl) => {
+    setAgentId(tpl.agent_id);
+    setConfigText(_templateConfigJson(tpl));
+  };
 
   const submit = async (e) => {
     e.preventDefault();
@@ -134,6 +220,21 @@ function CreateAgentForm({ token, onCreated }) {
       <div style="display:flex;gap:.4rem;align-items:center;margin-bottom:.5rem">
         <strong style="font-size:.9rem">创建子 agent</strong>
         <button type="button" class="xmc-h-btn xmc-h-btn--ghost" style="margin-left:auto;padding:.1rem .4rem;font-size:.7rem" onClick=${() => setOpen(false)}>×</button>
+      </div>
+      <div style="margin-bottom:.5rem;font-size:.72rem">
+        <small style="display:block;margin-bottom:.25rem;color:var(--xmc-fg-muted)">从模板快速开始 (B-134)：</small>
+        <div style="display:flex;flex-wrap:wrap;gap:.3rem">
+          ${PERSONA_TEMPLATES.map((tpl) => html`
+            <button
+              type="button"
+              key=${tpl.key}
+              class="xmc-h-btn xmc-h-btn--ghost"
+              style="padding:.18rem .5rem;font-size:.72rem"
+              onClick=${() => applyTemplate(tpl)}
+              title=${tpl.system_prompt.slice(0, 80) + "..."}
+            >${tpl.label}</button>
+          `)}
+        </div>
       </div>
       <label style="display:block;margin-bottom:.4rem;font-size:.78rem">
         agent_id (字母数字下划线，不能叫 main):

@@ -119,6 +119,7 @@ def build_workspace(
     bus: InProcessEventBus,
     *,
     max_hops: int = 20,
+    primary_config: dict[str, Any] | None = None,
 ) -> Workspace:
     """Assemble a :class:`Workspace` from a preset config.
 
@@ -138,6 +139,12 @@ def build_workspace(
     Returns a workspace even when the LLM config is empty (for kind
     "llm") — the caller decides whether to surface that as "not ready
     yet" to the client.
+
+    B-134: ``primary_config`` (the daemon's config used for the main
+    agent) lets sub-agents OMIT their own ``llm`` block and inherit
+    the primary's LLM provider/model/api_key. Templates that only
+    customise the system prompt no longer need to repeat the LLM
+    section. The sub-agent's own ``llm`` block, when present, wins.
     """
     kind = str(config.get("kind", KIND_LLM))
     if kind not in _KNOWN_KINDS:
@@ -145,6 +152,17 @@ def build_workspace(
             f"unknown workspace kind {kind!r}; expected one of {sorted(_KNOWN_KINDS)}"
         )
     merged = {**config, "agent_id": agent_id, "kind": kind}
+    # B-134: inherit primary's llm section when sub-agent omits it.
+    # We only fall back when ``llm`` is wholly absent — an explicit
+    # empty ``{}`` in the sub-agent config still wins (user signalled
+    # "no LLM, this agent is meant to be inert").
+    if (
+        kind == KIND_LLM
+        and "llm" not in merged
+        and isinstance(primary_config, dict)
+        and isinstance(primary_config.get("llm"), dict)
+    ):
+        merged["llm"] = primary_config["llm"]
     if kind == KIND_EVOLUTION:
         # B-117: thresholds读自 config evolution.promotion_thresholds.*。
         # 之前是 dataclass 默认值硬编码 — 改要改源码 + 重启。现在

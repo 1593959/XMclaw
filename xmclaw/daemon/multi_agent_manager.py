@@ -79,13 +79,29 @@ class MultiAgentManager:
         *,
         registry_dir: Path | None = None,
         max_hops: int = 20,
+        primary_config: dict[str, Any] | None = None,
     ) -> None:
         self._bus = bus
         self._dir = registry_dir if registry_dir is not None else agents_registry_dir()
         self._max_hops = max_hops
+        # B-134: stored so sub-agents whose config omits ``llm`` can
+        # inherit the primary's provider/model/api_key. Lets the persona
+        # template UI ship a one-line system_prompt without forcing the
+        # user to re-type the LLM section.
+        self._primary_config = primary_config
         self._agents: dict[str, Workspace] = {}
         self._lock = asyncio.Lock()
         self._pending: dict[str, asyncio.Task[Workspace]] = {}
+
+    def set_primary_config(self, primary_config: dict[str, Any] | None) -> None:
+        """Update the inherited primary config after construction.
+
+        The daemon builds the manager BEFORE it knows the resolved
+        primary config (the order is: bus → manager → factory). This
+        setter lets ``app.py`` hand over the config once it's parsed
+        without forcing the manager into a two-phase init.
+        """
+        self._primary_config = primary_config
 
     # ── read-only views ────────────────────────────────────────────────
 
@@ -165,7 +181,8 @@ class MultiAgentManager:
     async def _do_create(self, agent_id: str, config: dict[str, Any]) -> Workspace:
         """The actual build. Runs inside a ``pending_starts`` task."""
         ws = build_workspace(
-            agent_id, config, self._bus, max_hops=self._max_hops
+            agent_id, config, self._bus, max_hops=self._max_hops,
+            primary_config=self._primary_config,  # B-134
         )
         # Persist before registering: if the disk write fails we don't
         # want a running-but-unpersisted agent that would vanish on
