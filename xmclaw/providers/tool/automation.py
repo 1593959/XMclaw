@@ -28,11 +28,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
 import sys
 import time
 import uuid
-from pathlib import Path
 from typing import Any
 
 from xmclaw.core.ir import ToolCall, ToolResult, ToolSpec

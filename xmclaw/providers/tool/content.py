@@ -35,7 +35,6 @@ agent_inter and the skill bridges).
 from __future__ import annotations
 
 import base64
-import io
 import json
 import time
 from pathlib import Path
