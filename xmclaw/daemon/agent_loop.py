@@ -660,16 +660,52 @@ class AgentLoop:
             return
 
         text_blob = f"{user_message}\n{assistant_text}".lower()
+        assistant_blob_lower = assistant_text.lower()
+
+        # B-122: list-context guard. When assistant_text mentions 3+
+        # distinct skill_ids, the agent is enumerating skills (e.g.
+        # answering "what skills do you have?") rather than invoking
+        # them. Suppress detection entirely for this turn — every skill
+        # would match its own ID and inflate the invocation_count
+        # metric across the board.
+        #
+        # Word-boundary check (\b) so skill_id "git_status" doesn't
+        # match the literal phrase "git status" in unrelated git
+        # answers. \b is ASCII-class-based in Python's re; learned
+        # skill_ids are conventionally snake_case Latin so this is the
+        # right tool for that field. Title/trigger matching below stays
+        # substring-based because titles often contain CJK chars.
+        import re as _re_b122
+        listed_ids: set[str] = set()
+        for _sk in skills:
+            sid = (_sk.skill_id or "").lower()
+            if not sid or len(sid) < 3:
+                continue
+            if _re_b122.search(
+                r"\b" + _re_b122.escape(sid) + r"\b",
+                assistant_blob_lower,
+            ):
+                listed_ids.add(sid)
+                if len(listed_ids) >= 3:
+                    return
+
         for sk in skills:
             evidence = ""
             trigger_match: str | None = None
 
-            # Strongest signal: skill_id directly mentioned.
-            if sk.skill_id and sk.skill_id.lower() in text_blob:
+            sid_l = (sk.skill_id or "").lower()
+            # Strongest signal: skill_id mentioned with word boundaries
+            # — drops the "git_status matches 'git status'" false
+            # positive that pure substring matching produced.
+            if sid_l and len(sid_l) >= 3 and _re_b122.search(
+                r"\b" + _re_b122.escape(sid_l) + r"\b", text_blob,
+            ):
                 evidence = "skill_id"
-            # Title mention (less specific but more natural).
+            # Title mention (less specific but more natural). Bumped
+            # min length 4→6 to reduce 4-char titles like "code" / "test"
+            # firing on every dev-loop message.
             elif (
-                sk.title and len(sk.title) > 4
+                sk.title and len(sk.title) >= 6
                 and sk.title.lower() in text_blob
             ):
                 evidence = "title"
