@@ -104,7 +104,7 @@ class EvolutionController:
         head_version: int | None,
         head_mean: float | None = None,
     ) -> EvolutionReport:
-        """Return a report with either a promotion or NO_CHANGE.
+        """Return a report: PROMOTE / NO_CHANGE / ROLLBACK.
 
         ``head_version`` is the currently-active skill version. Candidates
         whose ``version == head_version`` are the baseline and cannot
@@ -113,6 +113,12 @@ class EvolutionController:
         ``head_mean`` is the HEAD's measured mean score in this bench
         (if available). If None, gap-over-head is computed against the
         session's overall mean as a less-strict baseline.
+
+        B-119: also returns ROLLBACK when HEAD's measured mean has
+        regressed below an earlier version that beats it by the same
+        threshold gap. The earlier version must have enough plays
+        itself (same ``min_plays`` gate) so we don't roll back to a
+        small-sample fluke.
         """
         if not evaluations:
             return EvolutionReport(
@@ -135,6 +141,46 @@ class EvolutionController:
                     f"(mean={best.mean_score:.3f})"
                 ),
             )
+
+        # B-119: check rollback candidate. Triggered when:
+        #   - HEAD has a measured mean (head_mean) AND
+        #   - some EARLIER version (version < head_version) has both
+        #     enough plays AND a mean ≥ HEAD + min_gap_over_head.
+        # This is the inverse of promotion — same threshold, same
+        # gate logic, different direction. Rollback wins over promote
+        # when HEAD has truly regressed; otherwise we let promote run
+        # its course on the new winner (which is ranked best above).
+        if head_version is not None and head_mean is not None:
+            earlier_winners = [
+                e for e in evaluations
+                if e.version < head_version
+                and e.plays >= self._t.min_plays
+                and e.mean_score - head_mean >= self._t.min_gap_over_head
+            ]
+            if earlier_winners:
+                # Pick the highest-scoring earlier version — most
+                # confidence that rollback to THIS specific version
+                # is what users want.
+                target = max(earlier_winners, key=lambda e: e.mean_score)
+                return EvolutionReport(
+                    decision=EvolutionDecision.ROLLBACK,
+                    winner_candidate_id=target.candidate_id,
+                    winner_version=target.version,
+                    evidence=(
+                        f"head_v={head_version}",
+                        f"head_mean={head_mean:.3f}",
+                        f"target_v={target.version}",
+                        f"target_mean={target.mean_score:.3f}",
+                        f"target_plays={target.plays}",
+                        f"gap={target.mean_score - head_mean:.3f}",
+                    ),
+                    reason=(
+                        f"HEAD v{head_version} regressed to mean "
+                        f"{head_mean:.3f}; v{target.version} (mean "
+                        f"{target.mean_score:.3f}, plays={target.plays}) "
+                        f"beats it by ≥ {self._t.min_gap_over_head}"
+                    ),
+                )
 
         # Baseline for gap-over-head.
         if head_mean is not None:

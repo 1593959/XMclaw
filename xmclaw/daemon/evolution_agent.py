@@ -89,17 +89,46 @@ class _ArmAggregate:
     keyed by (skill_id, version) rather than an index — the observer
     may learn about new candidates mid-run and can't assume a dense
     integer space.
+
+    B-118: tracks BOTH the simple running mean (``mean``) and an
+    exponentially-weighted moving average (``ewma_mean``). The latter
+    weights recent plays more so a skill that's getting worse over
+    time actually shows declining score in the controller. ``alpha``
+    governs decay rate — 0.1 ≈ "last 20 plays dominate".
     """
 
     skill_id: str
     version: int
     plays: int = 0
     total_reward: float = 0.0
+    ewma_reward: float = 0.0
+    ewma_alpha: float = 0.1
     notes: dict[str, Any] = field(default_factory=dict)
+
+    def update(self, reward: float) -> None:
+        """Record one verdict. Updates BOTH mean and EWMA in one call."""
+        self.plays += 1
+        self.total_reward += reward
+        if self.plays == 1:
+            self.ewma_reward = reward
+        else:
+            self.ewma_reward = (
+                self.ewma_alpha * reward
+                + (1.0 - self.ewma_alpha) * self.ewma_reward
+            )
 
     @property
     def mean(self) -> float:
+        """Lifetime simple mean — kept for backwards compatibility +
+        early plays where EWMA is still warming up."""
         return self.total_reward / self.plays if self.plays else 0.0
+
+    @property
+    def ewma_mean(self) -> float:
+        """Recency-weighted mean. Same scale as ``mean`` but biased
+        toward the last ~1/alpha plays. The controller uses this once
+        plays exceed a warm-up threshold."""
+        return self.ewma_reward if self.plays > 0 else 0.0
 
 
 class EvolutionAgent:
@@ -191,16 +220,30 @@ class EvolutionAgent:
         call site; Phase 8's UI will poll this for the "candidates"
         panel.
         """
-        return [
-            CandidateEvaluation(
+        # B-118: use EWMA once we have enough plays for it to be
+        # well-warmed. Threshold ``2 / alpha`` means the most-recent
+        # ~20 plays dominate (alpha=0.1 default) — past that the
+        # simple mean is dominated by stale early-trial readings.
+        # Below the threshold, fall back to the simple mean which
+        # has lower variance on small samples. A note is attached
+        # so audit logs can tell which scoring mode drove a decision.
+        out: list[CandidateEvaluation] = []
+        for arm in self._arms.values():
+            warm_threshold = max(5, int(2.0 / max(1e-3, arm.ewma_alpha)))
+            use_ewma = arm.plays >= warm_threshold
+            score = arm.ewma_mean if use_ewma else arm.mean
+            notes = dict(arm.notes)
+            notes["score_mode"] = "ewma" if use_ewma else "mean"
+            notes["lifetime_mean"] = arm.mean
+            notes["ewma_mean"] = arm.ewma_mean
+            out.append(CandidateEvaluation(
                 candidate_id=arm.skill_id,
                 version=arm.version,
                 plays=arm.plays,
-                mean_score=arm.mean,
-                notes=dict(arm.notes),
-            )
-            for arm in self._arms.values()
-        ]
+                mean_score=score,
+                notes=notes,
+            ))
+        return out
 
     async def _on_event(self, event: BehavioralEvent) -> None:
         """Bus callback. Filters + updates the per-arm aggregate.
@@ -242,8 +285,8 @@ class EvolutionAgent:
             if arm is None:
                 arm = _ArmAggregate(skill_id=str(skill_id), version=version)
                 self._arms[key] = arm
-            arm.plays += 1
-            arm.total_reward += float(score)
+            # B-118: route through .update() so EWMA gets recomputed too.
+            arm.update(float(score))
 
     # ── decision ─────────────────────────────────────────────────────
 
@@ -268,23 +311,32 @@ class EvolutionAgent:
             evaluations, head_version=head_version, head_mean=head_mean,
         )
         self._append_audit(report, evaluations, head_version=head_version)
-        if report.decision == EvolutionDecision.PROMOTE:
+        # B-119: publish a proposal for both PROMOTE and ROLLBACK. The
+        # orchestrator subscribes to both and routes through the same
+        # registry methods (anti-req #12 evidence gate stays active for
+        # promote; reason gate stays for rollback).
+        if report.decision in (EvolutionDecision.PROMOTE, EvolutionDecision.ROLLBACK):
             await self._emit_proposal(report)
         return report
 
     async def _emit_proposal(self, report: EvolutionReport) -> None:
-        """Publish a SKILL_CANDIDATE_PROPOSED event for a PROMOTE report.
+        """Publish a candidate event for PROMOTE or ROLLBACK.
 
         Session id is synthetic — the observer runs outside any WS
         turn. The ``agent_id`` on the event is the observer's own id,
         which the UI uses to attribute the proposal back to the
         workspace that emitted it.
+
+        B-119: ROLLBACK uses the same SKILL_CANDIDATE_PROPOSED event
+        type with payload ``decision: "rollback"`` so the orchestrator
+        + UI can branch on it without a parallel event lane.
         """
         event = make_event(
             session_id=f"evolution:{self._agent_id}",
             agent_id=self._agent_id,
             type=EventType.SKILL_CANDIDATE_PROPOSED,
             payload={
+                "decision": report.decision.value,  # "promote" | "rollback"
                 "winner_candidate_id": report.winner_candidate_id,
                 "winner_version": report.winner_version,
                 "evidence": list(report.evidence),

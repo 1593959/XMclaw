@@ -195,18 +195,48 @@ class EvolutionOrchestrator:
         Wrapped so a single bad proposal (missing field, unknown skill
         id, registry race) logs + skips rather than killing the
         subscription task.
+
+        B-119: payload now carries ``decision: "promote"|"rollback"``.
+        Promote uses ``evidence`` (anti-req #12); rollback uses
+        ``reason`` (registry.rollback's mandatory field). Default is
+        promote when ``decision`` is missing — back-compat for older
+        EvolutionAgent payloads that didn't emit the field.
         """
         payload = event.payload or {}
+        decision = str(payload.get("decision", "promote")).lower()
         skill_id = payload.get("winner_candidate_id")
         to_version = payload.get("winner_version")
-        evidence = list(payload.get("evidence", []))
-        if not isinstance(skill_id, str) or to_version is None or not evidence:
+        if not isinstance(skill_id, str) or to_version is None:
             log.warning(
                 "orchestrator.proposal_malformed",
                 extra={"event_id": event.id, "payload": payload},
             )
             return
         try:
+            if decision == "rollback":
+                # Compose a reason from evidence + reason if both present.
+                reason_parts: list[str] = []
+                if payload.get("reason"):
+                    reason_parts.append(str(payload["reason"]))
+                evidence_list = payload.get("evidence") or []
+                if isinstance(evidence_list, list) and evidence_list:
+                    reason_parts.append("evidence: " + "; ".join(str(e) for e in evidence_list))
+                reason = " — ".join(reason_parts) or "auto-rollback (controller)"
+                await self.rollback(
+                    skill_id,
+                    int(to_version),
+                    reason=reason,
+                    session_id=event.session_id,
+                    agent_id=event.agent_id,
+                )
+                return
+            evidence = list(payload.get("evidence", []))
+            if not evidence:
+                log.warning(
+                    "orchestrator.promote_no_evidence",
+                    extra={"event_id": event.id, "payload": payload},
+                )
+                return
             await self.promote(
                 skill_id,
                 int(to_version),

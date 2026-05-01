@@ -146,7 +146,21 @@ def build_workspace(
         )
     merged = {**config, "agent_id": agent_id, "kind": kind}
     if kind == KIND_EVOLUTION:
-        observer = EvolutionAgent(agent_id, bus)
+        # B-117: thresholds读自 config evolution.promotion_thresholds.*。
+        # 之前是 dataclass 默认值硬编码 — 改要改源码 + 重启。现在
+        # 也热重载（B-109 watcher 改 config dict 但 controller 自己
+        # 不持续读，所以严格说热生效要等下一次 EvolutionAgent 重建。
+        # 大多数用户改 thresholds 是配 + 重启 daemon，所以接受。)
+        from xmclaw.core.evolution.controller import PromotionThresholds
+        ev_section = (config.get("evolution") or {}) if isinstance(config, dict) else {}
+        thresh_section = ev_section.get("promotion_thresholds") or {}
+        thresholds = PromotionThresholds(
+            min_plays=int(thresh_section.get("min_plays", 10)),
+            min_mean=float(thresh_section.get("min_mean", 0.65)),
+            min_gap_over_head=float(thresh_section.get("min_gap_over_head", 0.05)),
+            min_gap_over_second=float(thresh_section.get("min_gap_over_second", 0.03)),
+        )
+        observer = EvolutionAgent(agent_id, bus, thresholds=thresholds)
         return Workspace(
             agent_id=agent_id, config=merged, kind=kind, observer=observer,
         )
