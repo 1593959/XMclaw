@@ -1276,6 +1276,28 @@ Phase 2-4 检查清单 Phase 1 完成后再细化。
 
   **验收**：18 unit tests new (13 proposer + 5 dream) pass；`pytest tests/unit/` 全跑 1791 passed / 9 skipped；ruff xmclaw/ 仅 3 个 pre-existing E402，0 个新增。架构具备 Phase 3 退出能力（events 在 emit + audit 在写），实际效果待 Phase 3.5 LLM extractor 落地后验证。
 
+- 2026-05-02: **Phase 3.5 LLM extractor 落地**——把 Phase 2/3 留下来的两个 noop extractor（ProfileExtractor + SkillProposer）真正接到主 LLM，整条"学徒成长"链从架构到运行时全部活了。
+
+  **新增**：`xmclaw/daemon/llm_extractors.py`（200 行 + 15 unit tests）：
+  - `build_skill_extractor(llm)` 返回 async callable 匹配 `SkillProposer.extractor_callable` 签名。Prompt 让 LLM 输出 strict JSON array of ProposedSkill（system prompt 明确字段 schema + "NO PROSE, NO MARKDOWN FENCES"），用 `_parse_json_array` tolerant parser 兜底（支持 raw / fenced ```json``` / inline-with-prose 三种 LLM 常见返回形态）。每个 dict 走 `_coerce_proposed_skill` 校验 + 强制 evidence 非空（anti-req #12 ABI 守门接力）。
+  - `build_profile_extractor(llm)` 同样模式 — LLM 看最近 12 turns 抽 ProfileDelta（kind/text/confidence），用 meta 里 session_id + last_user_event_id 填 audit trail。
+
+  **wiring**：`xmclaw/daemon/app.py` lifespan 在构造 ProfileExtractor / SkillDreamCycle 时检查 agent._llm 是否存在 — 有就跑 `build_*_extractor(agent._llm)` 注入；没有（echo-only / 配置缺失 LLM）回落到 `noop_extractor`。失败回落不阻塞 boot，只 warning 一下。
+
+  **prompt 工程**：strict JSON 输出 + 字段 schema 注释 + "NO PROSE / NO MARKDOWN" 禁令。tolerant parser 三层 fallback：raw → fenced → first-`[`-to-last-`]` slice。即使 LLM 任性加 prose 也能拿到结构。
+
+  **失败隔离**：LLM call 异常、bad JSON、wrong-shape 字段、非 list return — 一律返回 []，不抛。harness 层（SkillProposer.min_confidence + ProfileExtractor.min_confidence + SkillDreamCycle 的 try/except）继续守门。
+
+  **Phase 3.5.3 SkillMutator 接通推到 Phase 4**：SkillMutator 优化 prompt body，但当前 SkillRegistry 存的是 Python 类（demo.read_and_summarize 之类）—— 没有自然的 `baseline_text` 给 mutator。等 Phase 4 把 SkillRegistry 改造成"既存 Python 类也存 prompt body"后再回头接 mutator + 用 Journal 数据集跑 DSPy/GEPA 优化。
+
+  **路径统一**：没新加任何 path — `daemon/llm_extractors.py` 只是 wiring，所有产物（ProfileDelta → USER.md / ProposedSkill → SKILL_CANDIDATE_PROPOSED 事件 + skill-dream/proposals.jsonl）都走 Phase 2/3 已经定的规范路径。
+
+  **依赖方向**：`daemon/llm_extractors.py` 导入 core/{evolution, journal, profile} + providers/llm/base — 都是 daemon→core / daemon→providers 合法方向。core/ 里所有模块仍只能用 noop_extractor。
+
+  **验收**：15 new unit tests (5 parser + 5 skill_extractor + 5 profile_extractor) all pass；`pytest tests/unit/` 全跑 1806 passed / 9 skipped；ruff xmclaw/ 仅 3 pre-existing E402（同 Phase 1 之前），0 新增。
+
+  **Phase 3 完整退出**：到这里 Phase 1/1.5/2/3/3.5 已经把"学徒成长"链上每一段都接通真实数据流。**用户配上 LLM 后跑一周就能看到**：USER.md 自动累积偏好 → Evolution 页待审区域出现 SkillProposer 起草的 SKILL.md candidate → `xmclaw evolve approve <id>` 能走 evidence-gated promote。下一步 Phase 4：行为驱动懂用户（query rewriter / tool path bias / proactive_recall）+ SkillMutator 真接通（需 SkillRegistry 改造成存 prompt body）。
+
 ---
 
 ## 5. 让差异化"看得见"（Visible Differentiation）

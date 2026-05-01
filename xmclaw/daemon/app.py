@@ -617,14 +617,33 @@ def create_app(
 
         _app.state.profile_extractor = None
         try:
-            from xmclaw.core.profile import ProfileExtractor
+            from xmclaw.core.profile import ProfileExtractor, noop_extractor
             from xmclaw.daemon.factory import _resolve_persona_profile_dir
             _cfg = config or {}
 
             def _user_md_path():
                 return _resolve_persona_profile_dir(_cfg) / "USER.md"
 
-            pe = ProfileExtractor(bus, _user_md_path)
+            # Phase 3.5: pull a real LLM-backed extractor if an agent
+            # (and therefore an LLM provider) is wired. Falls back to
+            # the bench-friendly no-op when there's no LLM (echo-only
+            # mode, fresh install before LLM key is set).
+            extractor = noop_extractor
+            try:
+                if agent is not None and getattr(agent, "_llm", None) is not None:
+                    from xmclaw.daemon.llm_extractors import (
+                        build_profile_extractor,
+                    )
+                    extractor = build_profile_extractor(agent._llm)
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "profile.llm_extractor_build_failed err=%s — "
+                    "falling back to noop", exc,
+                )
+
+            pe = ProfileExtractor(
+                bus, _user_md_path, extractor_callable=extractor,
+            )
             await pe.start()
             _app.state.profile_extractor = pe
         except Exception as exc:  # noqa: BLE001
@@ -667,7 +686,7 @@ def create_app(
         # Configurable via ``evolution.skill_dream.{enabled,interval_s}``.
         _app.state.skill_dream = None
         try:
-            from xmclaw.core.evolution import SkillProposer
+            from xmclaw.core.evolution import SkillProposer, noop_extractor
             from xmclaw.core.journal import JournalReader
             from xmclaw.daemon.skill_dream import SkillDreamCycle
 
@@ -678,7 +697,22 @@ def create_app(
             sd_enabled = bool(sd_cfg.get("enabled", True))
             sd_interval = float(sd_cfg.get("interval_s", 1800.0))
             if sd_enabled:
-                proposer = SkillProposer(JournalReader())
+                # Phase 3.5: real LLM-backed extractor when LLM is wired.
+                sk_extractor = noop_extractor
+                try:
+                    if agent is not None and getattr(agent, "_llm", None) is not None:
+                        from xmclaw.daemon.llm_extractors import (
+                            build_skill_extractor,
+                        )
+                        sk_extractor = build_skill_extractor(agent._llm)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "skill_dream.llm_extractor_build_failed err=%s — "
+                        "falling back to noop", exc,
+                    )
+                proposer = SkillProposer(
+                    JournalReader(), extractor_callable=sk_extractor,
+                )
                 dream = SkillDreamCycle(
                     proposer, bus,
                     interval_s=sd_interval, enabled=True,
