@@ -877,6 +877,13 @@ def create_app(
         from xmclaw.providers.tool.content import ContentTools
         agent._tools = CompositeToolProvider(agent._tools, ContentTools())
 
+        # B-136: automation tools — cron CRUD (5 tools) +
+        # code_python + process_list/kill. Same wiring pattern as
+        # ContentTools — graceful degradation on missing optional
+        # deps (psutil for process_*).
+        from xmclaw.providers.tool.automation import AutomationTools
+        agent._tools = CompositeToolProvider(agent._tools, AutomationTools())
+
         # B-124: bridge SkillRegistry HEAD entries into the tool surface.
         # Until now, registered Skill subclasses were dead from the
         # agent's perspective — only LearnedSkill (SKILL.md) text made
