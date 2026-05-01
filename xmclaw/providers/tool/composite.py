@@ -50,6 +50,19 @@ class CompositeToolProvider(ToolProvider):
 
     async def invoke(self, call: ToolCall) -> ToolResult:
         child = self._router.get(call.name)
+        # B-124: fall back to a live re-scan when the static router
+        # misses. The router is built once at construction, but some
+        # children (e.g. SkillToolProvider) advertise tools that come
+        # and go as the SkillRegistry's HEAD changes. ``list_tools``
+        # already polls children fresh; ``invoke`` should match —
+        # otherwise a freshly-registered skill would appear in the
+        # LLM's tool spec but fail on invocation.
+        if child is None:
+            for c in self._children:
+                if any(s.name == call.name for s in c.list_tools()):
+                    self._router[call.name] = c
+                    child = c
+                    break
         if child is None:
             t0 = time.perf_counter()
             return ToolResult(

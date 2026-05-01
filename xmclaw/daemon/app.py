@@ -867,6 +867,16 @@ def create_app(
         else:
             agent._tools = CompositeToolProvider(agent._tools, _inter)
 
+        # B-124: bridge SkillRegistry HEAD entries into the tool surface.
+        # Until now, registered Skill subclasses were dead from the
+        # agent's perspective — only LearnedSkill (SKILL.md) text made
+        # it into the prompt. This makes registered skills first-class
+        # tools the LLM picks like any other.
+        if orchestrator is not None:
+            from xmclaw.skills.tool_bridge import SkillToolProvider
+            _skill_tools = SkillToolProvider(orchestrator.registry)
+            agent._tools = CompositeToolProvider(agent._tools, _skill_tools)
+
     app.state.agent = agent
     # Module-level handle so factory-time callbacks (the persona
     # writeback used by ``remember`` / ``learn_about_user`` /
