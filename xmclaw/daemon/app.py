@@ -877,6 +877,27 @@ def create_app(
             _skill_tools = SkillToolProvider(orchestrator.registry)
             agent._tools = CompositeToolProvider(agent._tools, _skill_tools)
 
+        # B-125: bridge LearnedSkill (SKILL.md) procedures into the
+        # tool surface. Each becomes a `learned_skill_<id>` tool that
+        # returns the full procedure body when invoked. Lets the LLM
+        # explicitly opt in to following a learned skill (deterministic
+        # SKILL_INVOKED replacing B-122's heuristic detection).
+        try:
+            from xmclaw.daemon.learned_skills import (
+                default_learned_skills_loader,
+            )
+            from xmclaw.daemon.learned_skills_tool import (
+                LearnedSkillToolProvider,
+            )
+            _learned_loader = default_learned_skills_loader()
+            _learned_tools = LearnedSkillToolProvider(
+                _learned_loader, bus=bus,
+                agent_id=getattr(agent, "_agent_id", "agent"),
+            )
+            agent._tools = CompositeToolProvider(agent._tools, _learned_tools)
+        except Exception:  # noqa: BLE001 — never block agent boot
+            pass
+
     app.state.agent = agent
     # Module-level handle so factory-time callbacks (the persona
     # writeback used by ``remember`` / ``learn_about_user`` /
