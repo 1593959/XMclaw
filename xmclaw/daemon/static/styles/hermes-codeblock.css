@@ -107,6 +107,18 @@
   font-size: 0.95em;
 }
 
+/* B-132: agent-inter tool calls (chat_with_agent / submit_to_agent /
+   list_agents / etc.) get a violet tint so multi-agent delegations are
+   visually distinct from skill tool-calls (gold) and ordinary tools. */
+.xmc-toolcard--agent {
+  border-left: 3px solid color-mix(in srgb, mediumorchid 65%, var(--color-primary) 35%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, mediumorchid 16%, transparent) inset;
+}
+.xmc-toolcard--agent .xmc-toolcard__bullet {
+  color: color-mix(in srgb, mediumorchid 65%, var(--color-primary) 35%);
+  font-size: 0.95em;
+}
+
 /* B-130: inline marker for heuristic-path skill detections (B-122
    substring fallback). Smaller and quieter than ToolCard — it's an
    observation, not a primary chat action. */

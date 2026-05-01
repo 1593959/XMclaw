@@ -58,27 +58,48 @@ function ToolCard({ call }) {
   const isSkillTool = (call.name || "").startsWith("skill_");
   const isLearnedSkill = (call.name || "").startsWith("learned_skill_");
   const isAnySkill = isSkillTool || isLearnedSkill;
-  const skillLabel = isLearnedSkill ? "📖 已学技能" : isSkillTool ? "🎯 注册技能" : "";
+  // B-132: detect agent-inter tools (Epic #17) so multi-agent
+  // delegations are visually distinct from "bash" or "file_read".
+  // The 6 tools agent_inter.py exposes are a fixed set.
+  const AGENT_INTER_TOOLS = new Set([
+    "list_agents", "chat_with_agent", "submit_to_agent",
+    "list_agent_tasks", "stop_agent_task", "check_agent_task",
+  ]);
+  const isAgentTool = AGENT_INTER_TOOLS.has(call.name);
+  const skillLabel = isLearnedSkill ? "📖 已学技能"
+    : isSkillTool ? "🎯 注册技能"
+    : isAgentTool ? "🤝 子 agent 协作" : "";
   const displayName = isLearnedSkill
     ? call.name.slice("learned_skill_".length)
     : isSkillTool
       ? call.name.slice("skill_".length)
       : call.name;
+  // Pull the target agent_id out of args for chat/submit/check/stop
+  // so the user sees "→ code_reviewer" inline rather than having to
+  // expand the card to read JSON.
+  const targetAgent = isAgentTool
+    ? (call.args?.agent_id || (call.args?.task_id ? "(by task)" : null))
+    : null;
 
+  const cardModifier = isAnySkill ? " xmc-toolcard--skill"
+    : isAgentTool ? " xmc-toolcard--agent" : "";
+  const bullet = isAnySkill ? "⚡" : isAgentTool ? "🤝" : "●";
   return html`
     <details
-      class=${"xmc-toolcard xmc-toolcard--" + call.status
-        + (isAnySkill ? " xmc-toolcard--skill" : "")}
+      class=${"xmc-toolcard xmc-toolcard--" + call.status + cardModifier}
       open=${openByDefault}
     >
       <summary
         class=${"xmc-toolcard__summary" + (call.status === "running" ? " is-running" : "")}
       >
-        <span class="xmc-toolcard__bullet" aria-hidden="true">${isAnySkill ? "⚡" : "●"}</span>
-        ${isAnySkill
-          ? html`<${Badge} tone="success" title=${`${skillLabel} — agent 自主选取的`}>${skillLabel}</${Badge}>`
+        <span class="xmc-toolcard__bullet" aria-hidden="true">${bullet}</span>
+        ${(isAnySkill || isAgentTool)
+          ? html`<${Badge} tone=${isAgentTool ? "warn" : "success"} title=${`${skillLabel} — agent 自主选取的`}>${skillLabel}</${Badge}>`
           : null}
         <code class="xmc-toolcard__name">${displayName}</code>
+        ${targetAgent
+          ? html`<small style="color:var(--xmc-fg-muted)">→ <code style="font-family:var(--xmc-font-mono)">${targetAgent}</code></small>`
+          : null}
         <${Badge} tone=${tone}>${label}</${Badge}>
         ${call.status === "running"
           ? html`<${Spinner} size="sm" label="running" />`
