@@ -361,6 +361,12 @@ def build_llm_profiles_from_config(cfg: dict[str, Any]) -> list[LLMProfile]:
     Profiles with duplicate ``id`` keep the first occurrence; later
     duplicates are dropped (with no error — config is already on
     disk, the user can fix it and reload).
+
+    B-146 api_key inheritance: when a profile entry leaves ``api_key``
+    blank, fall back to the SAME provider's legacy block
+    (``llm.<provider>.api_key``) before giving up. This kills the
+    "Profile 创建强制重填 api_key" UX wart — user fills the key once
+    in 设置 / 高级配置, and every same-provider profile inherits it.
     """
     from xmclaw.utils.secrets import get_secret
 
@@ -385,6 +391,17 @@ def build_llm_profiles_from_config(cfg: dict[str, Any]) -> list[LLMProfile]:
         api_key = raw_key if isinstance(raw_key, str) else ""
         if not api_key.strip():
             api_key = get_secret(f"llm.profile.{pid}.api_key") or ""
+        # B-146: inherit from legacy same-provider block when still
+        # empty. Only honors the literal legacy block (cfg-driven
+        # inheritance), NOT the env-var / secrets path — those flow
+        # through the legacy build path on its own. This keeps
+        # profile loading deterministic with the cfg dict alone.
+        if not api_key.strip():
+            legacy_pcfg = llm_section.get(provider_name)
+            if isinstance(legacy_pcfg, dict):
+                inherited = legacy_pcfg.get("api_key")
+                if isinstance(inherited, str) and inherited.strip():
+                    api_key = inherited
         if not api_key.strip():
             continue
 
@@ -398,6 +415,15 @@ def build_llm_profiles_from_config(cfg: dict[str, Any]) -> list[LLMProfile]:
 
         base_url = entry.get("base_url")
         base_url_str = base_url if isinstance(base_url, str) and base_url.strip() else None
+        # B-146: inherit base_url from legacy same-provider block when
+        # not set on the profile (keeps OpenAI-compatible endpoint URL
+        # like MiniMax / DeepSeek consistent across profiles).
+        if base_url_str is None:
+            legacy_pcfg = llm_section.get(provider_name)
+            if isinstance(legacy_pcfg, dict):
+                inherited_url = legacy_pcfg.get("base_url")
+                if isinstance(inherited_url, str) and inherited_url.strip():
+                    base_url_str = inherited_url
         llm = _instantiate_llm(
             provider_name, api_key=api_key, model=model, base_url=base_url_str,
         )
@@ -420,32 +446,54 @@ def build_llm_registry_from_config(cfg: dict[str, Any]) -> LLMRegistry:
     ``llm.anthropic``) becomes a synthesised profile with id
     ``"default"``. New named entries from ``llm.profiles`` follow.
 
-    The registry's ``default_id`` is ``"default"`` when the legacy
-    block produced an LLM; otherwise the first named profile (so
-    fresh installs that go straight to the new schema still work).
+    Default selection order (B-146):
+      1. ``llm.default_profile_id`` if it points to an existing profile.
+         Lets the user pin a NAMED profile as the daemon-wide default,
+         the missing knob users kept asking for.
+      2. ``"default"`` (the legacy block) when present.
+      3. First named profile when no legacy block.
+      4. None → AgentLoop runs in echo mode.
+
     Empty registry (no LLM at all) returns a registry with no
     default — AgentLoop tolerates that and runs in echo mode.
     """
     profiles: dict[str, LLMProfile] = {}
-    default_id: str | None = None
 
     legacy = build_llm_from_config(cfg)
     if legacy is not None:
+        # B-146: derive a useful label instead of the opaque "默认 (config.json)".
+        # Show "<provider>/<model>" so the chat picker can surface what
+        # the daemon is actually wired to without the user reading
+        # config.json.
+        legacy_provider = type(legacy).__name__.replace("LLM", "").lower()
+        legacy_model = getattr(legacy, "model", "") or ""
+        legacy_label = (
+            f"{legacy_provider}/{legacy_model}" if legacy_model else legacy_provider
+        )
         profiles["default"] = LLMProfile(
             id="default",
-            label="默认 (config.json)",
-            provider_name=type(legacy).__name__.replace("LLM", "").lower(),
-            model=getattr(legacy, "model", "") or "",
+            label=legacy_label,
+            provider_name=legacy_provider,
+            model=legacy_model,
             llm=legacy,
         )
-        default_id = "default"
 
     for prof in build_llm_profiles_from_config(cfg):
         if prof.id in profiles:
             continue
         profiles[prof.id] = prof
-        if default_id is None:
-            default_id = prof.id
+
+    # B-146: explicit default_profile_id wins over the legacy fallback.
+    default_id: str | None = None
+    llm_section = cfg.get("llm") if isinstance(cfg, dict) else None
+    if isinstance(llm_section, dict):
+        explicit = llm_section.get("default_profile_id")
+        if isinstance(explicit, str) and explicit.strip() in profiles:
+            default_id = explicit.strip()
+    if default_id is None and "default" in profiles:
+        default_id = "default"
+    if default_id is None and profiles:
+        default_id = next(iter(profiles))
 
     return LLMRegistry(profiles=profiles, default_id=default_id)
 

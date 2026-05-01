@@ -354,3 +354,82 @@ class TestProfilesRouter:
             resp = c.delete("/api/v2/llm/profiles/never-existed")
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
+
+
+# ── B-146 model config fixes ─────────────────────────────────────────
+
+
+class TestB146DefaultProfileId:
+    """B-146 #1+#2: explicit ``llm.default_profile_id`` overrides the
+    legacy fallback, lets users pin any named profile as default."""
+
+    def test_explicit_default_profile_id_wins_over_legacy(self) -> None:
+        cfg = {"llm": {
+            "anthropic": {"api_key": "sk-legacy", "default_model": "claude-haiku-4-5-20251001"},
+            "default_profile_id": "smart",
+            "profiles": [
+                {"id": "smart", "provider": "openai",
+                 "model": "gpt-4o", "api_key": "sk-2"},
+            ],
+        }}
+        r = build_llm_registry_from_config(cfg)
+        # Both legacy and named profile load
+        assert "default" in r.ids() and "smart" in r.ids()
+        # But the explicit pin wins
+        assert r.default_id == "smart"
+
+    def test_default_profile_id_falls_back_when_id_unknown(self) -> None:
+        """Unknown id silently falls back to legacy default — better
+        than crashing on stale config."""
+        cfg = {"llm": {
+            "anthropic": {"api_key": "sk-legacy", "default_model": "x"},
+            "default_profile_id": "no-such-profile",
+        }}
+        r = build_llm_registry_from_config(cfg)
+        assert r.default_id == "default"
+
+
+class TestB146ApiKeyInheritance:
+    """B-146 #4: profile leaves api_key blank → inherit from legacy
+    same-provider block, instead of being silently dropped."""
+
+    def test_profile_inherits_legacy_anthropic_api_key(self) -> None:
+        cfg = {"llm": {
+            "anthropic": {"api_key": "sk-shared", "default_model": "x"},
+            "profiles": [
+                # No api_key on the profile — would be dropped pre-B-146
+                {"id": "haiku", "provider": "anthropic",
+                 "model": "claude-haiku-4-5-20251001"},
+            ],
+        }}
+        r = build_llm_registry_from_config(cfg)
+        assert "haiku" in r.ids()
+
+    def test_profile_does_not_inherit_across_providers(self) -> None:
+        """Anthropic legacy key MUST NOT silently fill an OpenAI profile."""
+        cfg = {"llm": {
+            "anthropic": {"api_key": "sk-anthropic-only"},
+            "profiles": [
+                {"id": "weird", "provider": "openai", "model": "gpt-4o"},
+            ],
+        }}
+        r = build_llm_registry_from_config(cfg)
+        assert "weird" not in r.ids()
+
+
+class TestB146LegacyLabelDerivedFromModel:
+    """B-146 #5: legacy 'default' profile label was hardcoded
+    '默认 (config.json)' — now derives '<provider>/<model>' so the
+    chat picker can show which model is actually wired."""
+
+    def test_legacy_label_uses_provider_slash_model(self) -> None:
+        cfg = {"llm": {
+            "default_provider": "anthropic",
+            "anthropic": {"api_key": "k", "default_model": "claude-haiku-4-5-20251001"},
+        }}
+        r = build_llm_registry_from_config(cfg)
+        prof = r.get("default")
+        assert prof is not None
+        # Old: "默认 (config.json)" — no model name visible
+        # New: contains the model name so the picker can render it
+        assert "claude-haiku-4-5-20251001" in prof.label

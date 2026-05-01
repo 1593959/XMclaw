@@ -46,6 +46,12 @@ export function ModelPicker({ token, value, onChange }) {
   // invisible to anyone who hadn't set up named profiles yet, which
   // is exactly the user who needs the affordance most.
   const empty = profiles.length === 0;
+  // B-146: 之前默认选项硬写 "默认 (default)" — 用户看不出实际是
+  // 哪个 model。改成显示 default profile 真实的 label/model。
+  const defaultProfile = profiles.find((p) => p.id === defaultId) || null;
+  const defaultLabel = defaultProfile
+    ? `默认 · ${defaultProfile.label || defaultProfile.id} · ${defaultProfile.model}`
+    : (empty ? "(未配置)" : "默认");
 
   return html`
     <label class="xmc-chat__model" title="本会话使用的模型 profile">
@@ -57,10 +63,10 @@ export function ModelPicker({ token, value, onChange }) {
         disabled=${empty}
         title=${empty ? "没有命名 profile — 点 ⚙ 进设置创建" : null}
       >
-        <option value="">${empty ? "(未配置)" : `默认 (${defaultId || "未配置"})`}</option>
+        <option value="">${defaultLabel}</option>
         ${profiles.map((p) => html`
           <option key=${p.id} value=${p.id}>
-            ${p.label || p.id} · ${p.model}
+            ${p.id === defaultId ? "★ " : ""}${p.label || p.id} · ${p.model}
           </option>
         `)}
       </select>

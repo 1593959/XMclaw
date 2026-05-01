@@ -204,10 +204,33 @@ async def upsert_profile(request: Request, payload: dict[str, Any]) -> JSONRespo
     elif isinstance(existing, dict) and isinstance(existing.get("api_key"), str):
         new_entry["api_key"] = existing["api_key"]
     else:
-        return JSONResponse(
-            {"ok": False, "error": "api_key is required for new profiles"},
-            status_code=400,
+        # B-146: skip the require-api_key check when the legacy
+        # same-provider block has a key the profile can inherit.
+        # Build-time falls through to llm.<provider>.api_key in
+        # build_llm_profiles_from_config; persisting an empty string
+        # here just means "use whatever the legacy key resolves to".
+        legacy_pcfg = llm.get(provider)
+        legacy_key = (
+            legacy_pcfg.get("api_key")
+            if isinstance(legacy_pcfg, dict)
+            else None
         )
+        if isinstance(legacy_key, str) and legacy_key.strip():
+            # Don't write the secret into the new entry — just let it
+            # inherit. Keeps the on-disk config DRY.
+            pass
+        else:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": (
+                        f"api_key required: no legacy llm.{provider}.api_key "
+                        "to inherit from. Set the provider's key in 设置 "
+                        "first, then this profile can leave api_key blank."
+                    ),
+                },
+                status_code=400,
+            )
 
     if existing is None:
         profiles.append(new_entry)
@@ -264,3 +287,54 @@ async def delete_profile(request: Request, profile_id: str) -> JSONResponse:
                     )
 
     return JSONResponse({"ok": True, "id": profile_id, "restart_required": True})
+
+
+@router.put("/default")
+async def set_default_profile(request: Request, payload: dict[str, Any]) -> JSONResponse:
+    """B-146: pick which profile is the daemon-wide default.
+
+    Writes ``llm.default_profile_id = "<id>"`` to ``config.json``.
+    The factory's ``build_llm_registry_from_config`` honors that on
+    next boot. Empty string clears the override and falls back to the
+    legacy ``"default"`` profile.
+    """
+    new_id = str(payload.get("id") or "").strip()
+    target = _config_path(request)
+    if target is None:
+        return JSONResponse(
+            {"ok": False, "error": "daemon has no config_path; cannot persist"},
+            status_code=500,
+        )
+    try:
+        cfg = _load_config(target)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    llm = cfg.setdefault("llm", {})
+    if not isinstance(llm, dict):
+        llm = {}
+        cfg["llm"] = llm
+    # Validate the requested id exists somewhere — runtime registry OR
+    # on-disk profiles list OR the synthesised "default".
+    valid_ids: set[str] = {"default", ""}
+    profiles = llm.get("profiles") if isinstance(llm.get("profiles"), list) else []
+    for entry in profiles:
+        if isinstance(entry, dict) and entry.get("id"):
+            valid_ids.add(str(entry["id"]))
+    if new_id and new_id not in valid_ids:
+        return JSONResponse(
+            {"ok": False, "error": f"unknown profile id {new_id!r}"},
+            status_code=400,
+        )
+    if new_id:
+        llm["default_profile_id"] = new_id
+    else:
+        llm.pop("default_profile_id", None)
+    try:
+        _atomic_write(target, cfg)
+    except OSError as exc:
+        return JSONResponse({"ok": False, "error": f"write failed: {exc}"}, status_code=500)
+    return JSONResponse({
+        "ok": True,
+        "default_profile_id": new_id,
+        "restart_required": True,
+    })
