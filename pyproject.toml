@@ -65,6 +65,8 @@ content = [
     "python-docx>=1.1.0",
     "openpyxl>=3.1.0",
     "Pillow>=11.0.0",
+    # B-143: rss_fetch tool
+    "feedparser>=6.0.0",
 ]
 all     = [
     "playwright>=1.48.0",

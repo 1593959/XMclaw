@@ -207,6 +207,32 @@ class MCPHub(ToolProvider):
                 _log.warning("mcp.settings_read_failed: %s", exc)
                 text = ""
         configs = parse_settings_file(text) if text else {}
+        return await self._apply_configs(configs)
+
+    async def reload_from_config(
+        self, mcp_servers: dict[str, Any] | None,
+    ) -> dict[str, str]:
+        """B-142: load servers directly from ``daemon/config.json``'s
+        ``mcp_servers`` dict instead of (or in addition to) the
+        Claude-Desktop ``mcpServers.json`` file.
+
+        Same shape as the file format: each value is a dict with
+        ``command`` / ``args`` / ``env`` / ``disabled`` / etc. Lets
+        the user manage MCP servers from the same config they edit
+        for everything else, without learning about a second file.
+        """
+        configs: dict[str, McpServerConfig] = {}
+        if isinstance(mcp_servers, dict):
+            for name, raw in mcp_servers.items():
+                cfg = _parse_server_config(str(name), raw)
+                if cfg is not None:
+                    configs[cfg.name] = cfg
+        return await self._apply_configs(configs)
+
+    async def _apply_configs(
+        self, configs: dict[str, McpServerConfig],
+    ) -> dict[str, str]:
+        """Shared diff-and-restart machinery used by both reload paths."""
 
         async with self._lock:
             existing_names = set(self._servers.keys())

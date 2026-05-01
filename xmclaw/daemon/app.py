@@ -652,6 +652,30 @@ def create_app(
                 await orchestrator.start()
             except Exception:  # noqa: BLE001
                 pass
+
+        # B-142: MCP Hub. Reads ``config.mcp_servers`` (Claude-Desktop
+        # shape) + spawns each stdio server as a subprocess. Tools land
+        # under name ``<server>__<tool>`` and compose into agent._tools
+        # below. MCPHub is itself a ToolProvider so wiring is one-line.
+        mcp_hub = None
+        try:
+            from xmclaw.providers.tool.mcp_hub import MCPHub
+            from xmclaw.providers.tool.composite import CompositeToolProvider
+            mcp_hub = MCPHub()
+            statuses = await mcp_hub.reload_from_config(
+                (config or {}).get("mcp_servers"),
+            )
+            connected = sum(1 for s in statuses.values() if s == "connected")
+            if connected > 0 and agent is not None and hasattr(agent, "_tools"):
+                if agent._tools is None:
+                    agent._tools = mcp_hub
+                else:
+                    agent._tools = CompositeToolProvider(agent._tools, mcp_hub)
+            _app.state.mcp_hub = mcp_hub
+        except Exception as exc:  # noqa: BLE001 — MCP failure must not block daemon
+            log.warning("mcp.hub_init_failed err=%s", exc)
+            _app.state.mcp_hub = None
+
         try:
             yield
         finally:
@@ -681,6 +705,14 @@ def create_app(
             if _idx is not None:
                 try:
                     await _idx.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            # B-142: stop every MCP subprocess so we don't leak
+            # JSON-RPC stdio clients across daemon restarts.
+            _mcp = getattr(_app.state, "mcp_hub", None)
+            if _mcp is not None:
+                try:
+                    await _mcp.stop()
                 except Exception:  # noqa: BLE001
                     pass
             # B-51: stop the dream cron.
@@ -883,6 +915,17 @@ def create_app(
         # deps (psutil for process_*).
         from xmclaw.providers.tool.automation import AutomationTools
         agent._tools = CompositeToolProvider(agent._tools, AutomationTools())
+
+        # B-143: integration tools — webhook / email / rss /
+        # slack / telegram / discord / github / notion. Each reads
+        # its credentials from config.integrations.<service>.* and
+        # surfaces 'configure first' when not set up. Closes the
+        # 'integrations are stubs' gap the user flagged.
+        from xmclaw.providers.tool.integrations import IntegrationsTools
+        agent._tools = CompositeToolProvider(
+            agent._tools,
+            IntegrationsTools((config or {}).get("integrations")),
+        )
 
         # B-124: bridge SkillRegistry HEAD entries into the tool surface.
         # Until now, registered Skill subclasses were dead from the
@@ -1127,6 +1170,16 @@ def create_app(
             mcp = config.get("mcp_servers") or {}
             if isinstance(mcp, dict):
                 mcp_servers = list(mcp.keys())
+        # B-142: surface MCP runtime state — connected/error/disabled
+        # per server. Lets the UI show "the MCP servers you configured
+        # are actually running" instead of just listing config keys.
+        mcp_status: dict = {}
+        _hub = getattr(app.state, "mcp_hub", None)
+        if _hub is not None:
+            try:
+                mcp_status = _hub.status()
+            except Exception:  # noqa: BLE001
+                mcp_status = {}
         # Surface the daemon's currently-active workspace + total
         # registered roots so the topbar / chat-sidebar can show the
         # cwd context the agent is running against. Reads state.json
@@ -1149,6 +1202,7 @@ def create_app(
             "model": model_name,
             "tools": tool_names,
             "mcp_servers": mcp_servers,
+            "mcp_status": mcp_status,  # B-142
             "sandbox_allowed_dirs": (
                 [str(p) for p in (agent._tools._allowed or [])]
                 if agent is not None and agent._tools is not None

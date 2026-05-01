@@ -153,3 +153,39 @@ async def test_hub_rejects_non_stdio_transport(tmp_path):
     assert statuses["remote"] == "error"
     snapshot = hub.status()["remote"]
     assert "non-stdio" in (snapshot["last_error"] or "")
+
+
+# ── B-142: reload_from_config (no settings file needed) ────────────
+
+
+@pytest.mark.asyncio
+async def test_reload_from_config_dict(tmp_path):
+    """B-142 — daemon config.mcp_servers can drive the hub directly,
+    without users having to maintain a separate ~/.xmclaw/mcpServers.json."""
+    hub = MCPHub(settings_path=tmp_path / "ignored.json")
+    cfg = {
+        "fs-disabled": {"command": "echo", "disabled": True},
+    }
+    statuses = await hub.reload_from_config(cfg)
+    assert statuses == {"fs-disabled": "disabled"}
+    assert hub.list_tools() == []
+
+
+@pytest.mark.asyncio
+async def test_reload_from_config_none_or_invalid(tmp_path):
+    """None / non-dict input is a no-op (treated as 'no MCP servers
+    configured') — matches the path where the user hasn't filled in
+    mcp_servers in their daemon config yet."""
+    hub = MCPHub(settings_path=tmp_path / "x.json")
+    assert await hub.reload_from_config(None) == {}
+    assert await hub.reload_from_config("not-a-dict") == {}  # type: ignore[arg-type]
+    assert await hub.reload_from_config({}) == {}
+
+
+@pytest.mark.asyncio
+async def test_reload_from_config_rejects_non_stdio(tmp_path):
+    hub = MCPHub(settings_path=tmp_path / "x.json")
+    statuses = await hub.reload_from_config({
+        "remote": {"url": "https://example.com/sse", "transport": "sse"},
+    })
+    assert statuses["remote"] == "error"
