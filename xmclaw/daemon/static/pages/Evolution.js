@@ -188,6 +188,8 @@ function AutoEvoPanel({ token }) {
               ${(learnedSkills || []).slice(0, 20).map((s) => {
                 const triggers = (s.triggers || []).slice(0, 4);
                 const invokes = s.invocation_count || 0;
+                const invokes30d = s.invocation_count_30d || 0;
+                const isStale = !!s.is_stale;
                 const outcomes = s.outcomes || { success: 0, partial: 0, error: 0 };
                 const totalOut = (outcomes.success || 0) + (outcomes.partial || 0) + (outcomes.error || 0);
                 const successRate = totalOut > 0
@@ -216,8 +218,11 @@ function AutoEvoPanel({ token }) {
                         ${isDisabled
                           ? html`<span class="xmc-h-badge xmc-h-badge--warn" title="已暂停 - agent 看不到">⏸ 暂停</span>`
                           : null}
+                        ${isStale && !isDisabled
+                          ? html`<span class="xmc-h-badge xmc-h-badge--warn" title="60+ 天未触发且最近 30 天 0 调用 — 考虑暂停">🕸 stale</span>`
+                          : null}
                         ${invokes > 0
-                          ? html`<span class="xmc-h-badge xmc-h-badge--success" title="agent 实际调用过的次数（B-29 启用后）">⚡ ${invokes}</span>`
+                          ? html`<span class="xmc-h-badge xmc-h-badge--success" title=${`总计调用 ${invokes} 次，最近 30 天 ${invokes30d} 次（B-120）`}>⚡ ${invokes}${invokes30d > 0 ? ` · ${invokes30d}/30d` : ""}</span>`
                           : html`<span class="xmc-h-badge xmc-h-badge--muted" title="尚未观察到调用">0 用</span>`}
                         ${successRate !== null
                           ? html`<span

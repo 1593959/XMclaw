@@ -264,7 +264,14 @@ async def learned_skills(include_disabled: bool = False) -> JSONResponse:
     # the events DB. One DB pass for both event types — a single scan
     # of the last N events covers invocation_count, success_count,
     # error_count, partial_count.
+    # B-120: also count invocations within the last 30 days so the UI
+    # can flag stale skills (lifetime count alone misleads when a
+    # skill was active months ago but is now dead weight).
+    import time as _t_b120
+    cutoff_30d = _t_b120.time() - (30 * 24 * 3600)
+    cutoff_60d = _t_b120.time() - (60 * 24 * 3600)
     invocation_counts: dict[str, int] = {}
+    invocation_counts_30d: dict[str, int] = {}
     verdict_counts: dict[str, dict[str, int]] = {}
     last_fired: dict[str, float] = {}
     try:
@@ -288,10 +295,15 @@ async def learned_skills(include_disabled: bool = False) -> JSONResponse:
                     sid = p.get("skill_id")
                     if not sid:
                         continue
+                    ts = float(r["ts"])
                     if r["type"] == "skill_invoked":
                         invocation_counts[sid] = invocation_counts.get(sid, 0) + 1
+                        if ts >= cutoff_30d:
+                            invocation_counts_30d[sid] = (
+                                invocation_counts_30d.get(sid, 0) + 1
+                            )
                         # Rows are DESC by ts so first hit per sid is newest.
-                        last_fired.setdefault(sid, float(r["ts"]))
+                        last_fired.setdefault(sid, ts)
                     else:  # skill_outcome
                         verdict = str(p.get("verdict") or "")
                         if verdict not in ("success", "partial", "error"):
@@ -306,11 +318,20 @@ async def learned_skills(include_disabled: bool = False) -> JSONResponse:
         pass
 
     for s in skills:
-        s["invocation_count"] = invocation_counts.get(s["skill_id"], 0)
+        sid = s["skill_id"]
+        s["invocation_count"] = invocation_counts.get(sid, 0)
+        s["invocation_count_30d"] = invocation_counts_30d.get(sid, 0)
         s["outcomes"] = verdict_counts.get(
-            s["skill_id"], {"success": 0, "partial": 0, "error": 0},
+            sid, {"success": 0, "partial": 0, "error": 0},
         )
-        s["last_fired_ts"] = last_fired.get(s["skill_id"])
+        s["last_fired_ts"] = last_fired.get(sid)
+        # B-120: stale flag — last fired > 60 days ago AND no fires
+        # in last 30 days. UI can surface a "考虑 disable" hint.
+        last = s.get("last_fired_ts")
+        s["is_stale"] = bool(
+            invocation_counts_30d.get(sid, 0) == 0
+            and (last is None or last < cutoff_60d)
+        )
 
     return JSONResponse({
         "skills_root": str(loader.skills_root),
