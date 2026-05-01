@@ -657,6 +657,38 @@ def create_app(
                 exc,
             )
 
+        # Epic #24 Phase 3.2: SkillDreamCycle — periodic SkillProposer
+        # task that walks recent journal history and emits
+        # SKILL_CANDIDATE_PROPOSED events for tool-use patterns the
+        # agent keeps repeating. Default extractor is no-op until
+        # Phase 3.3 layers an LLM-backed one inside the factory; the
+        # cycle runs the (cheap) pattern detection regardless so the
+        # wiring is exercised in production from day one.
+        # Configurable via ``evolution.skill_dream.{enabled,interval_s}``.
+        _app.state.skill_dream = None
+        try:
+            from xmclaw.core.evolution import SkillProposer
+            from xmclaw.core.journal import JournalReader
+            from xmclaw.daemon.skill_dream import SkillDreamCycle
+
+            sd_cfg = (
+                ((config or {}).get("evolution") or {}).get("skill_dream")
+                or {}
+            )
+            sd_enabled = bool(sd_cfg.get("enabled", True))
+            sd_interval = float(sd_cfg.get("interval_s", 1800.0))
+            if sd_enabled:
+                proposer = SkillProposer(JournalReader())
+                dream = SkillDreamCycle(
+                    proposer, bus,
+                    interval_s=sd_interval, enabled=True,
+                )
+                await dream.start()
+                _app.state.skill_dream = dream
+        except Exception as exc:  # noqa: BLE001
+            log.warning("skill_dream.start_failed err=%s", exc)
+            _app.state.skill_dream = None
+
         # B-145: channel adapters (飞书 / 钉钉 / 企微 / Telegram).
         # Each enabled channel gets a long-running adapter that listens
         # for inbound messages + dispatches them through the same
@@ -823,6 +855,13 @@ def create_app(
             if _pe is not None:
                 try:
                     await _pe.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            # Epic #24 Phase 3.2: stop the skill_dream periodic task.
+            _sd = getattr(_app.state, "skill_dream", None)
+            if _sd is not None:
+                try:
+                    await _sd.stop()
                 except Exception:  # noqa: BLE001
                     pass
             if memory is not None and hasattr(memory, "close"):

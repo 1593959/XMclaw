@@ -27,6 +27,11 @@ from xmclaw.core.evolution.mutator import (
     SkillMutator,
     xmclaw_fitness,
 )
+from xmclaw.core.evolution.proposer import (
+    ProposedSkill,
+    SkillProposer,
+    noop_extractor,
+)
 
 __all__ = [
     "ConstraintReport",
@@ -35,9 +40,12 @@ __all__ = [
     "EvolutionController",
     "EvolutionDecision",
     "MutationResult",
+    "ProposedSkill",
     "PromotionThresholds",
     "SkillMutator",
+    "SkillProposer",
     "build_dataset_from_history",
+    "noop_extractor",
     "validate_candidate",
     "xmclaw_fitness",
 ]

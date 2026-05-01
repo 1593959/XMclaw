@@ -1262,6 +1262,20 @@ Phase 2-4 检查清单 Phase 1 完成后再细化。
 
   Phase 3 启动条件已具备：journal 数据流 + profile extractor 框架 + grader 接通 evolution observer。下一步 Phase 3 SkillProposer 从 journal 历史里挖重复模式 → LLM 起草新 SKILL.md candidate → DSPy/GEPA 优化已有 + DreamLoop 周期跑。
 
+- 2026-05-02: **Phase 3 大头落地（SkillProposer + SkillDreamCycle + UI v2）**——3.1/3.2/3.4 三个子阶段连干完。3.3（SkillMutator 接进生产路径）按下到 Phase 3.5：依赖 LLM extractor 真实落地后再做更合理。
+
+  **Phase 3.1 SkillProposer 骨架**：新建 `xmclaw/core/evolution/proposer.py`（含 `ProposedSkill` frozen dataclass + `SkillProposer` 类 + `_Pattern` 模式 + `noop_extractor` 默认值）。Pattern detection 简单版：跨最近 N 个 journal entries 数 tool name 频率，频次 ≥ `min_pattern_count`（default 3）的算"重复模式"。`ProposedSkill.__post_init__` 强制 `evidence` 非空（anti-req #12 ABI-level 守门，不让"无证据 candidate"在内存里都构造不出来）。`extractor_callable` 签名 `(patterns, entries) -> list[ProposedSkill]`，async/sync 都支持。13 unit tests pass，覆盖：empty journal / 阈值过滤 / 平均 grader score 计算 / 异步 extractor / 异常隔离 / bad return type drop / confidence 过滤 / evidence 强制等等。
+
+  **Phase 3.2 SkillDreamCycle**：新建 `xmclaw/daemon/skill_dream.py`（区别于已有的 `dream_compactor.DreamCron`，后者是 memory dream 跑 MEMORY.md 压缩；这个是 skill dream 跑 SkillProposer）。周期 task（`asyncio.wait_for(stop_event.wait, timeout=interval)` idiom，stop 立刻取消而不是等满 interval），默认 1800s/30min。每 cycle 调 SkillProposer.propose() → 每 ProposedSkill emit `SKILL_CANDIDATE_PROPOSED` 事件 + 写一行 jsonl audit 到 `~/.xmclaw/v2/evolution/skill-dream/proposals.jsonl`。事件 payload 加 `decision: "propose"` 区分 EvolutionAgent observer 的 `"promote"/"rollback"`，下游消费者可路由。失败隔离：bad payload / 慢 LLM / audit 写盘失败都不杀 loop，下次 cycle 重新尝试。`xmclaw/daemon/app.py` lifespan 默认拉起 + stop hook，配置项 `evolution.skill_dream.{enabled, interval_s}`（默认开）。5 unit tests pass：run_once 正常路径 + 空 proposals 不发事件 + disabled start no-op + start/stop 幂等 + stop 立即取消。
+
+  **Phase 3.4 UI Evolution 页 v2**：替换 Phase 1 的 placeholder，写成真实进化 dashboard。完全用现有 `/api/v2/events` endpoint（不加新后端 API），三套并行查询（30s 轮询）。四个 section：顶部 4 个摘要 stat 卡片（7 天提议 / promote / rollback / grader 平均分）+ 待审提议列表（draft body 前 600 字符 + evidence + `xmclaw evolve approve <id>` CLI hint）+ grader 直方图（10 bucket inline SVG，红→黄→绿）+ promote/rollback 时间线。空状态友好引导，告诉用户当前默认 noop extractor 时为啥没数据。
+
+  **Phase 3.3 推到 3.5**（SkillMutator 接进生产）：SkillMutator 已存在但需要 LLM provider + DSPy 可选依赖 + EvalDataset 从 Journal 构造。当前 SkillProposer 默认 noop，没有真实候选可优化；提前接 SkillMutator 是在断电电路上加新设备。等 Phase 3.5 LLM extractor 落地后再回头接。
+
+  **路径统一**：`~/.xmclaw/v2/evolution/skill-dream/proposals.jsonl` 是 SkillDream audit 唯一规范路径。前端 UI 读 events.db（write 是 SqliteEventBus，read 是 `/api/v2/events`，编译期共享）。
+
+  **验收**：18 unit tests new (13 proposer + 5 dream) pass；`pytest tests/unit/` 全跑 1791 passed / 9 skipped；ruff xmclaw/ 仅 3 个 pre-existing E402，0 个新增。架构具备 Phase 3 退出能力（events 在 emit + audit 在写），实际效果待 Phase 3.5 LLM extractor 落地后验证。
+
 ---
 
 ## 5. 让差异化"看得见"（Visible Differentiation）
