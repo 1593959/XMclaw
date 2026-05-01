@@ -55,16 +55,43 @@ export function ChatSidebar({
   const [sessions, setSessions] = useState(null);
   const [busy, setBusy] = useState(null);
 
+  // B-160: filter out internal sessions (reflect:/dream:/etc) — same
+  // rule as Sessions page (B-156). Prevents the sidebar from showing
+  // 4 "从现在开始..." rows because each WS disconnect spawns one.
+  const isInternalSid = (sid) => {
+    if (!sid) return false;
+    return (
+      sid.startsWith("reflect:")
+      || sid.startsWith("dream:")
+      || sid.startsWith("_system:")
+      || sid.startsWith("evolution:")
+    );
+  };
+
   const load = useCallback(() => {
-    apiGet("/api/v2/sessions?limit=10", token)
-      .then((d) => setSessions(d.sessions || []))
+    // Pull more rows so post-filter we still have ~10 to show.
+    apiGet("/api/v2/sessions?limit=40", token)
+      .then((d) => {
+        const all = d.sessions || [];
+        setSessions(all.filter((s) => !isInternalSid(s.session_id)).slice(0, 10));
+      })
       .catch(() => {});
   }, [token]);
 
   useEffect(() => {
     load();
-    const id = setInterval(load, 30_000);
-    return () => clearInterval(id);
+    // B-160: 5 秒一次 (was 30s) — 30s 太慢，用户在 Sessions 页删除
+    // 后能等半分钟看到边栏才刷新，期间还能点跳转到死会话
+    const id = setInterval(load, 5_000);
+    // B-160: cross-page invalidation. Sessions page (or any page) can
+    // dispatch ``xmc:sessions:changed`` to force every listener to
+    // reload immediately instead of waiting for the next poll tick.
+    const onChanged = () => load();
+    window.addEventListener("xmc:sessions:changed", onChanged);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("xmc:sessions:changed", onChanged);
+    };
   }, [load]);
 
   const onResume = (sid) => {
@@ -94,6 +121,10 @@ export function ChatSidebar({
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       load();
+      // B-160: cross-page broadcast so /sessions auto-refreshes too
+      try {
+        window.dispatchEvent(new CustomEvent("xmc:sessions:changed"));
+      } catch (_) { /* old browsers */ }
       toast.success("已删除");
     } catch (e) {
       toast.error("删除失败：" + (e.message || e));

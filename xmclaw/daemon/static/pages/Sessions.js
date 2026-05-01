@@ -25,6 +25,7 @@ const html = window.__xmc.htm.bind(h);
 import { apiGet } from "../lib/api.js";
 import { lex, renderTokenHtml } from "../lib/markdown.js";
 import { toast } from "../lib/toast.js";
+import { confirmDialog } from "../lib/dialog.js";
 
 // Map session-id prefix → source-config (icon glyph + color class).
 // Mirrors hermes SOURCE_CONFIG (SessionsPage.tsx:52-60). Our prefixes:
@@ -398,9 +399,15 @@ export function SessionsPage({ token }) {
 
   const onBulkDelete = async () => {
     if (selected.size === 0 || bulkBusy) return;
-    if (!window.confirm(`确认删除 ${selected.size} 个会话？此操作不可撤销。`)) {
-      return;
-    }
+    // B-160: 用项目内置 confirmDialog 替换 window.confirm —
+    // 后者样式跟主题完全不搭、位置在浏览器顶部突兀
+    const ok = await confirmDialog({
+      title: `批量删除 ${selected.size} 个会话`,
+      body: "操作不可撤销。所有勾选的会话历史会从 sessions.db 永久移除。",
+      confirmLabel: "删除",
+      confirmTone: "danger",
+    });
+    if (!ok) return;
     setBulkBusy(true);
     let okCount = 0;
     let failCount = 0;
@@ -421,6 +428,10 @@ export function SessionsPage({ token }) {
     setSessions((prev) => (prev || []).filter((s) => !selected.has(s.session_id)));
     setSelected(new Set());
     setBulkBusy(false);
+    // B-160: 跨页失效广播 — ChatSidebar 等监听者立即刷新
+    try {
+      window.dispatchEvent(new CustomEvent("xmc:sessions:changed"));
+    } catch (_) { /* old browsers */ }
     if (failCount === 0) {
       toast.success(`已删除 ${okCount} 个会话`);
     } else {
@@ -459,6 +470,10 @@ export function SessionsPage({ token }) {
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setSessions((prev) => (prev || []).filter((s) => s.session_id !== pendingDelete));
+      // B-160: cross-page broadcast (ChatSidebar listens)
+      try {
+        window.dispatchEvent(new CustomEvent("xmc:sessions:changed"));
+      } catch (_) { /* old browsers */ }
       toast.success("会话已删除");
     } catch (e) {
       toast.error("删除失败：" + (e.message || e));
