@@ -135,12 +135,16 @@ export function EvolutionPage({ token }) {
   const [error, setError] = useState(null);
 
   const load = () => {
+    if (!token) return;  // wait for store hydration; useEffect re-fires on token change
     const since = (Date.now() - 7 * DAY_MS) / 1000;
     Promise.all([
       apiGet(`/api/v2/events?types=skill_candidate_proposed&since=${since}&limit=50`, token),
       apiGet(`/api/v2/events?types=grader_verdict&limit=50`, token),
       apiGet(`/api/v2/events?types=skill_promoted,skill_rolled_back&since=${since}&limit=20`, token),
     ]).then(([p, g, m]) => {
+      // Clear any prior error so a transient 401 during token hydration
+      // doesn't stick on screen forever.
+      setError(null);
       setProposals(p.events || []);
       setVerdicts(g.events || []);
       setMutations(m.events || []);
@@ -148,6 +152,7 @@ export function EvolutionPage({ token }) {
   };
 
   useEffect(() => {
+    if (!token) return;
     load();
     const id = setInterval(load, 30_000);
     return () => clearInterval(id);
