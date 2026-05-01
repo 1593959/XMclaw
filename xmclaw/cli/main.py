@@ -427,7 +427,7 @@ def serve(
         if ev_cfg.get("enabled", True):
             from xmclaw.skills.orchestrator import EvolutionOrchestrator
             from xmclaw.skills.registry import SkillRegistry
-            from xmclaw.utils.paths import skills_dir
+            from xmclaw.utils.paths import skills_dir, user_skills_dir
             registry = SkillRegistry(history_dir=skills_dir())
             auto_apply = bool(ev_cfg.get("auto_apply", False))
             orchestrator = EvolutionOrchestrator(
@@ -435,6 +435,27 @@ def serve(
             )
             mode = "auto-apply" if auto_apply else "observe-only"
             typer.echo(f"  [ok]  evolution orchestrator: {mode}")
+
+            # B-127: scan ~/.xmclaw/skills_user/<id>/skill.py and
+            # auto-register every Skill subclass found. After this,
+            # user-authored skills appear as `skill_<id>` tools via
+            # the SkillToolProvider bridge — no daemon code changes
+            # needed for the user.
+            from xmclaw.skills.user_loader import UserSkillsLoader
+            user_root = user_skills_dir()
+            results = UserSkillsLoader(registry, user_root).load_all()
+            if results:
+                ok_n = sum(1 for r in results if r.ok)
+                fail = [r for r in results if not r.ok]
+                typer.echo(
+                    f"  [ok]  user skills: {ok_n}/{len(results)} loaded "
+                    f"from {user_root}"
+                )
+                for r in fail:
+                    typer.echo(
+                        f"  [!]   user skill {r.skill_id!r}: {r.error}",
+                        err=True,
+                    )
 
     typer.echo(f"xmclaw v{__version__} -- binding ws://{host}:{port}")
     typer.echo(f"  health:  http://{host}:{port}/health")

@@ -74,6 +74,26 @@ def skills_dir() -> Path:
     return data_dir() / "skills"
 
 
+def user_skills_dir() -> Path:
+    """B-127: Where user-authored Python Skill subclasses live.
+
+    Layout: ``<user_skills>/<skill_id>/skill.py`` (+ optional
+    ``manifest.json``). The :class:`UserSkillsLoader` scans this dir
+    on daemon boot, dynamically imports each ``skill.py``, finds the
+    Skill subclass, and registers it in :class:`SkillRegistry`. The
+    SkillToolProvider (B-124) then exposes them as ``skill_<id>`` tools
+    the LLM can call autonomously — no code changes needed in XMclaw
+    itself.
+
+    Peer of ``skills/`` (which holds audit JSONL) so a user-authored
+    skill survives a daemon-workspace wipe (it's user content).
+    """
+    override = os.environ.get("XMC_V2_USER_SKILLS_DIR")
+    if override:
+        return Path(override)
+    return data_dir() / "skills_user"
+
+
 def persona_dir() -> Path:
     """Persona profile markdown files — ``<data>/persona/profiles/``.
 
