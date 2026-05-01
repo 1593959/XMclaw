@@ -191,7 +191,7 @@ function MessageList({ messages, highlight }) {
 
 // ── SessionRow (one card per session) ─────────────────────────────
 
-function SessionRow({ session, query, expanded, onToggle, onDelete, onResume, token }) {
+function SessionRow({ session, query, expanded, onToggle, onDelete, onResume, token, isSelected, onToggleSelect }) {
   const [messages, setMessages] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -209,12 +209,28 @@ function SessionRow({ session, query, expanded, onToggle, onDelete, onResume, to
   }, [expanded, sid, token, messages, loading]);
 
   return html`
-    <div class="xmc-h-srow" key=${sid}>
+    <div class=${"xmc-h-srow" + (isSelected ? " is-selected" : "")} key=${sid}
+         style=${"display:flex;align-items:stretch;flex-wrap:wrap;" + (isSelected ? "background:color-mix(in srgb,var(--color-primary,#6aa3f0) 8%,transparent);border-color:color-mix(in srgb,var(--color-primary,#6aa3f0) 50%,transparent);" : "")}>
+      <!-- B-156: 行首 checkbox 触发批量选择，stopPropagation 防止误展开 -->
+      ${onToggleSelect
+        ? html`<label
+            style="display:flex;align-items:center;padding:0 .4rem 0 .6rem;cursor:pointer"
+            onClick=${(e) => e.stopPropagation()}
+            title="勾选用于批量删除"
+          >
+            <input
+              type="checkbox"
+              checked=${!!isSelected}
+              onChange=${onToggleSelect}
+            />
+          </label>`
+        : null}
       <button
         type="button"
         class="xmc-h-srow__head"
         onClick=${onToggle}
         aria-expanded=${expanded ? "true" : "false"}
+        style="flex:1 1 auto;min-width:0;width:auto"
       >
         <${Icon} d=${expanded ? I_CHEVRON_DOWN : I_CHEVRON_RIGHT} className="xmc-h-srow__chev" />
         <span class="xmc-h-srow__source" title=${sCfg.label}>${sCfg.glyph}</span>
@@ -251,7 +267,7 @@ function SessionRow({ session, query, expanded, onToggle, onDelete, onResume, to
       </button>
       ${expanded
         ? html`
-          <div class="xmc-h-srow__body">
+          <div class="xmc-h-srow__body" style="flex:0 0 100%;width:100%">
             ${error
               ? html`<div class="xmc-h-error">${error}</div>`
               : loading
@@ -313,6 +329,10 @@ export function SessionsPage({ token }) {
   const [expanded, setExpanded] = useState(new Set());
   const [pendingDelete, setPendingDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  // B-156: 批量选择状态 + 内部 session 过滤开关
+  const [selected, setSelected] = useState(new Set());
+  const [showInternal, setShowInternal] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -322,16 +342,91 @@ export function SessionsPage({ token }) {
     return () => { cancelled = true; };
   }, [token]);
 
+  // B-156: identify internal sessions (reflection / dream / etc.) the
+  // daemon spawns for self-bookkeeping. Filtering them out by default
+  // closes the "same conversation appears 4 times" bug — reflections
+  // copy the user's history, so each spawned reflect:<sid>:<ts> shows
+  // the same first user message and looks like a duplicate chat.
+  const isInternalSid = (sid) => {
+    if (!sid) return false;
+    return (
+      sid.startsWith("reflect:")
+      || sid.startsWith("dream:")
+      || sid.startsWith("_system:")
+      || sid.startsWith("evolution:")
+    );
+  };
+
   const filtered = useMemo(() => {
     if (!sessions) return [];
     const q = query.trim().toLowerCase();
-    if (!q) return sessions;
     return sessions.filter((s) => {
-      const sid = (s.session_id || "").toLowerCase();
+      const sid = s.session_id || "";
+      // B-156: hide reflect:/dream:/etc by default; toggle to show.
+      if (!showInternal && isInternalSid(sid)) return false;
+      if (!q) return true;
       const preview = (s.preview || "").toLowerCase();
-      return sid.includes(q) || preview.includes(q);
+      return sid.toLowerCase().includes(q) || preview.includes(q);
     });
-  }, [sessions, query]);
+  }, [sessions, query, showInternal]);
+
+  // B-156: how many internal sessions are hidden right now (for the
+  // toggle's count badge).
+  const internalCount = useMemo(() => {
+    return (sessions || []).filter((s) => isInternalSid(s.session_id)).length;
+  }, [sessions]);
+
+  // B-156: keep selected set in sync with filtered list — when
+  // filter changes, drop ids no longer visible.
+  const onToggleSelect = (sid) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(sid)) next.delete(sid); else next.add(sid);
+      return next;
+    });
+  };
+  const onSelectAllVisible = () => {
+    const visibleIds = filtered.map((s) => s.session_id);
+    const allSelected = visibleIds.every((id) => selected.has(id));
+    if (allSelected) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(visibleIds));
+    }
+  };
+  const onClearSelection = () => setSelected(new Set());
+
+  const onBulkDelete = async () => {
+    if (selected.size === 0 || bulkBusy) return;
+    if (!window.confirm(`确认删除 ${selected.size} 个会话？此操作不可撤销。`)) {
+      return;
+    }
+    setBulkBusy(true);
+    let okCount = 0;
+    let failCount = 0;
+    const ids = [...selected];
+    for (const sid of ids) {
+      try {
+        const res = await fetch(
+          `/api/v2/sessions/${encodeURIComponent(sid)}`
+          + (token ? `?token=${encodeURIComponent(token)}` : ""),
+          { method: "DELETE" },
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        okCount++;
+      } catch (_e) {
+        failCount++;
+      }
+    }
+    setSessions((prev) => (prev || []).filter((s) => !selected.has(s.session_id)));
+    setSelected(new Set());
+    setBulkBusy(false);
+    if (failCount === 0) {
+      toast.success(`已删除 ${okCount} 个会话`);
+    } else {
+      toast.error(`删除完成：成功 ${okCount}，失败 ${failCount}`);
+    }
+  };
 
   const onToggle = (sid) => {
     setExpanded((prev) => {
@@ -386,17 +481,28 @@ export function SessionsPage({ token }) {
     `;
   }
 
+  const allVisibleSelected =
+    filtered.length > 0 && filtered.every((s) => selected.has(s.session_id));
+
   return html`
     <section class="xmc-h-page" aria-labelledby="sessions-title">
       <header class="xmc-h-page__header">
         <div class="xmc-h-page__heading">
           <h2 id="sessions-title" class="xmc-h-page__title">会话</h2>
           <p class="xmc-h-page__subtitle">
-            历史会话保存在 <code>~/.xmclaw/v2/sessions.db</code>。点击展开消息，回放 / 删除均不可逆。
+            历史会话保存在 <code>~/.xmclaw/v2/sessions.db</code>。
+            <strong>B-156</strong>：默认隐藏 <code>reflect:</code> /
+            <code>dream:</code> 等内部 session（agent 自反思临时产物）；可勾选批量删除。
           </p>
         </div>
-        <div class="xmc-h-page__actions">
-          <span class="xmc-h-badge">${(sessions || []).length} 个</span>
+        <div class="xmc-h-page__actions" style="display:flex;gap:.4rem;align-items:center">
+          <span class="xmc-h-badge">${filtered.length} 个</span>
+          ${internalCount > 0
+            ? html`<label style="display:flex;align-items:center;gap:.3rem;font-size:.75rem;cursor:pointer">
+                <input type="checkbox" checked=${showInternal} onChange=${(e) => setShowInternal(e.target.checked)} />
+                显示内部 (${internalCount})
+              </label>`
+            : null}
         </div>
       </header>
 
@@ -408,16 +514,53 @@ export function SessionsPage({ token }) {
           <input
             type="search"
             class="xmc-h-input"
-            placeholder="搜索会话 id…"
+            placeholder="搜索会话 id / 内容…"
             value=${query}
             onInput=${(e) => setQuery(e.target.value)}
           />
         </div>
 
+        <!-- B-156: 批量选择工具栏 — 仅在有可见 session 时显示 -->
+        ${filtered.length > 0
+          ? html`<div style="display:flex;align-items:center;gap:.6rem;padding:.4rem .6rem;margin:.4rem 0;border:1px solid var(--color-border);border-radius:6px;background:color-mix(in srgb, var(--midground) 4%, transparent);font-size:.8rem">
+              <label style="display:flex;align-items:center;gap:.4rem;cursor:pointer">
+                <input
+                  type="checkbox"
+                  checked=${allVisibleSelected}
+                  onChange=${onSelectAllVisible}
+                  title=${allVisibleSelected ? "取消全选" : "全选当前可见"}
+                />
+                <span>${allVisibleSelected ? "全部已选" : "全选可见"}</span>
+              </label>
+              ${selected.size > 0
+                ? html`<span style="display:contents">
+                    <span style="opacity:.7">已选 <strong>${selected.size}</strong> 个</span>
+                    <button
+                      class="xmc-h-btn xmc-h-btn--danger"
+                      style="padding:.25rem .7rem;font-size:.75rem;background:color-mix(in srgb,var(--color-destructive) 20%,transparent);color:var(--color-destructive);border:1px solid color-mix(in srgb,var(--color-destructive) 40%,transparent)"
+                      onClick=${onBulkDelete}
+                      disabled=${bulkBusy}
+                    >${bulkBusy ? "删除中…" : `🗑 批量删除 (${selected.size})`}</button>
+                    <button
+                      class="xmc-h-btn xmc-h-btn--ghost"
+                      style="padding:.2rem .55rem;font-size:.72rem;margin-left:auto"
+                      onClick=${onClearSelection}
+                      disabled=${bulkBusy}
+                    >清除选择</button>
+                  </span>`
+                : html`<span style="opacity:.55">勾选行批量操作</span>`}
+            </div>`
+          : null}
+
         ${sessions === null
           ? html`<div class="xmc-h-loading">载入中…</div>`
           : filtered.length === 0
-            ? html`<div class="xmc-h-empty">${query ? "没有匹配的会话。" : "还没有保存的会话 — 在 Chat 页发条消息试试。"}</div>`
+            ? html`<div class="xmc-h-empty">${
+                query ? "没有匹配的会话。"
+                : (sessions.length > 0 && !showInternal
+                    ? "可见会话已过滤完。点击右上角 '显示内部' 看 reflect:/dream: 等。"
+                    : "还没有保存的会话 — 在 Chat 页发条消息试试。")
+              }</div>`
             : html`
               <div class="xmc-h-srow__list">
                 ${filtered.map((s) => html`
@@ -430,6 +573,8 @@ export function SessionsPage({ token }) {
                     onDelete=${(sid) => setPendingDelete(sid)}
                     onResume=${onResume}
                     token=${token}
+                    isSelected=${selected.has(s.session_id)}
+                    onToggleSelect=${() => onToggleSelect(s.session_id)}
                   />
                 `)}
               </div>
