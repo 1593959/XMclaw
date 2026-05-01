@@ -167,6 +167,19 @@ export function IdentityTab({ token }) {
               const isActive = f.basename === active;
               const tone = layerTone(f.layer);
               const writes = agentWrites[f.basename] || 0;
+              // B-138: per-file purpose hint so user can see why each
+              // file exists + whether the agent has actually written
+              // to it (idle = candidate to nudge agent toward).
+              const PURPOSE = {
+                "MEMORY.md":    "长期事实与决策",
+                "USER.md":      "agent 学到的关于你的事",
+                "AGENTS.md":    "agent 的 playbook 与失败教训",
+                "TOOLS.md":     "agent 用工具的小窍门",
+                "SOUL.md":      "agent 的价值观",
+                "IDENTITY.md":  "agent 的名字与口吻",
+                "BOOTSTRAP.md": "首次安装 interview 标记",
+              };
+              const idle = writes === 0 && f.basename !== "BOOTSTRAP.md";
               return html`
                 <li
                   class="xmc-datapage__row xmc-datapage__row--clickable ${isActive ? "is-active" : ""}"
@@ -175,15 +188,20 @@ export function IdentityTab({ token }) {
                   role="button"
                   onClick=${() => onSelect(f.basename)}
                   onKeyDown=${(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(f.basename); } }}
-                  style="display:flex;align-items:center;gap:.4rem;justify-content:space-between;flex-wrap:wrap"
+                  style="display:flex;flex-direction:column;align-items:flex-start;gap:.2rem"
                 >
-                  <strong style="font-size:.9rem">${f.basename}</strong>
-                  <span style="display:flex;gap:.3rem;align-items:center">
-                    ${writes > 0
-                      ? html`<span class="xmc-h-badge xmc-h-badge--info" style="font-size:.6rem" title=${`agent 写入了 ${writes} 次`}>🤖 ${writes}</span>`
-                      : null}
-                    <span class="xmc-h-badge xmc-h-badge--${tone}" style="font-size:.6rem">${layerLabel(f.layer)}</span>
-                  </span>
+                  <div style="display:flex;align-items:center;gap:.4rem;justify-content:space-between;width:100%;flex-wrap:wrap">
+                    <strong style="font-size:.9rem">${f.basename}</strong>
+                    <span style="display:flex;gap:.3rem;align-items:center">
+                      ${writes > 0
+                        ? html`<span class="xmc-h-badge xmc-h-badge--info" style="font-size:.6rem" title=${`agent 写入了 ${writes} 次`}>🤖 ${writes}</span>`
+                        : idle
+                          ? html`<span class="xmc-h-badge xmc-h-badge--warn" style="font-size:.6rem" title="agent 从未写过 — B-138 之后系统提示已要求主动维护，但还没观察到写入">😴 待用</span>`
+                          : null}
+                      <span class="xmc-h-badge xmc-h-badge--${tone}" style="font-size:.6rem">${layerLabel(f.layer)}</span>
+                    </span>
+                  </div>
+                  <small style="font-size:.65rem;color:var(--xmc-fg-muted);line-height:1.3">${PURPOSE[f.basename] || ""}</small>
                 </li>
               `;
             })}
