@@ -684,11 +684,18 @@ def create_app(
         # cycle runs the (cheap) pattern detection regardless so the
         # wiring is exercised in production from day one.
         # Configurable via ``evolution.skill_dream.{enabled,interval_s}``.
+        # B-164 layers ``RealtimeEvolutionTrigger`` on top so each
+        # turn pokes the same proposer ~15s after settling. Configurable
+        # via ``evolution.realtime.{enabled,debounce_s,cooldown_s}``.
         _app.state.skill_dream = None
+        _app.state.realtime_evolution = None
         try:
             from xmclaw.core.evolution import SkillProposer, noop_extractor
             from xmclaw.core.journal import JournalReader
-            from xmclaw.daemon.skill_dream import SkillDreamCycle
+            from xmclaw.daemon.skill_dream import (
+                RealtimeEvolutionTrigger,
+                SkillDreamCycle,
+            )
 
             sd_cfg = (
                 ((config or {}).get("evolution") or {}).get("skill_dream")
@@ -719,9 +726,30 @@ def create_app(
                 )
                 await dream.start()
                 _app.state.skill_dream = dream
+
+                # B-164: realtime trigger. Default ON so the user
+                # feels evolution after every conversation; opt-out
+                # via ``evolution.realtime.enabled = false``.
+                rt_cfg = (
+                    ((config or {}).get("evolution") or {}).get("realtime")
+                    or {}
+                )
+                rt_enabled = bool(rt_cfg.get("enabled", True))
+                rt_debounce = float(rt_cfg.get("debounce_s", 15.0))
+                rt_cooldown = float(rt_cfg.get("cooldown_s", 60.0))
+                if rt_enabled:
+                    realtime = RealtimeEvolutionTrigger(
+                        dream, bus,
+                        debounce_s=rt_debounce,
+                        cooldown_s=rt_cooldown,
+                        enabled=True,
+                    )
+                    await realtime.start()
+                    _app.state.realtime_evolution = realtime
         except Exception as exc:  # noqa: BLE001
             log.warning("skill_dream.start_failed err=%s", exc)
             _app.state.skill_dream = None
+            _app.state.realtime_evolution = None
 
         # B-145: channel adapters (飞书 / 钉钉 / 企微 / Telegram).
         # Each enabled channel gets a long-running adapter that listens
@@ -889,6 +917,14 @@ def create_app(
             if _pe is not None:
                 try:
                     await _pe.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            # B-164: stop the realtime trigger first so it doesn't
+            # try to fire run_once() while skill_dream is shutting down.
+            _rt = getattr(_app.state, "realtime_evolution", None)
+            if _rt is not None:
+                try:
+                    await _rt.stop()
                 except Exception:  # noqa: BLE001
                     pass
             # Epic #24 Phase 3.2: stop the skill_dream periodic task.

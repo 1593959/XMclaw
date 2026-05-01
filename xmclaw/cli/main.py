@@ -494,17 +494,24 @@ def serve(
             mode = "auto-apply" if auto_apply else "observe-only"
             typer.echo(f"  [ok]  evolution orchestrator: {mode}")
 
-            # B-127 + Epic #24 Phase 5: scan ~/.xmclaw/skills_user/<id>/
-            # for skill.py (Python class) OR SKILL.md (markdown
-            # procedure). Optional ``evolution.skill_paths.extra``
-            # config opt-in lets the loader also scan e.g.
-            # ~/.agents/skills/ so users with the skills.sh muscle
-            # memory don't end up with ghost installs.
+            # B-127 + Epic #24 Phase 5 + B-163: scan
+            # ``~/.xmclaw/skills_user/<id>/`` for skill.py / SKILL.md.
+            # Plus zero-config defaults for the two ecosystem dirs so
+            # users who muscle-memory'd ``npx skills add`` (writes to
+            # ``~/.agents/skills``) or already have Claude Code skills
+            # under ``~/.claude/skills/`` get them visible without
+            # editing config. User can override / disable via
+            # ``evolution.skill_paths.extra`` (set to ``[]`` to opt
+            # out of the shared-dir scan entirely).
             from xmclaw.skills.user_loader import UserSkillsLoader
             user_root = user_skills_dir()
-            extra_raw = (
-                (ev_cfg.get("skill_paths") or {}).get("extra") or []
-            )
+            sp_cfg = ev_cfg.get("skill_paths")
+            if isinstance(sp_cfg, dict) and "extra" in sp_cfg:
+                # Explicit user choice — respect it, even if empty.
+                extra_raw = sp_cfg.get("extra") or []
+            else:
+                # B-163 default: pick up the two ecosystem dirs.
+                extra_raw = ["~/.agents/skills", "~/.claude/skills"]
             extra_roots: list[Path] = []
             for raw in extra_raw if isinstance(extra_raw, list) else []:
                 try:

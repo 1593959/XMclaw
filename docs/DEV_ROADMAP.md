@@ -1328,6 +1328,13 @@ Phase 2-4 检查清单 Phase 1 完成后再细化。
 
   **状态：✅ 完成 | 完成日期 2026-05-02**
 
+  **Phase 6 修真补丁（B-163 + B-164，2026-05-02）**：用户实战反馈两个体感问题——(1) 装在 `~/.agents/skills/`（npx skills add 默认）的技能 XMclaw 看不到，得手改 config；(2) 进化只在 30 分钟周期跑，每次对话之后想看新候选要等半小时。修法：
+  - **B-163 零 config 扫描**：`xmclaw/cli/main.py` 的 `extra_roots` 默认从 `[]` 改为 `["~/.agents/skills", "~/.claude/skills"]`，用户显式写 `evolution.skill_paths.extra` 才覆盖（含写空数组关闭）。`agent_loop.py` 系统提示同步：装技能落 3 个根之一即被扫，无需手改 config。`Skills.js` 空状态文案重写说明三根目录 + 关闭方式。
+  - **B-164 实时进化**：新增 `RealtimeEvolutionTrigger`（与 `SkillDreamCycle` 同模块）订阅 `LLM_RESPONSE` 事件，去抖 15s + 60s 全局冷却，复用同一个 `dream.run_once()` 路径——内部 session（_system / skill-dream / dream / evolution / reflect）按前缀过滤掉避免递归。`app.py` lifespan 在 SkillDreamCycle 启动后追加挂这个 trigger，关停顺序倒序。配置：`evolution.realtime.{enabled,debounce_s,cooldown_s}`，默认 ON。`Evolution.js` 文案改为"每轮对话结束 ~15s 后扫 journal"，提示如何关掉。
+  - **测试**：13 个新 unit test（`test_v2_realtime_evolution.py`）覆盖单事件触发、burst 去抖塌缩、冷却内重复 burst、内部 session 过滤、start/stop 幂等、stop 取消 pending、run_once 异常不杀订阅。13/13 pass。Smart-gate 731 pass / 6 skip 全绿。
+
+  **路径统一**：B-163 是直面"路径与文件统一原则"的退让——共享路径事实上是其他工具系统的写路径，XMclaw 默认读它换"零 config"换"路径分裂"。原则没破：写还是写到 `~/.xmclaw/skills_user/`（规范路径），扫描多三个 read source 是 *最终用户已经在用* 的目录，不是 XMclaw 自己写的。
+
 ---
 
 ## 5. 让差异化"看得见"（Visible Differentiation）

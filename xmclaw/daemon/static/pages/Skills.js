@@ -5,12 +5,14 @@
 //    evolution_enabled}
 //
 // All skills go through SkillRegistry — built-in (xmclaw.skills.*) and
-// user-installed are the only two sources. The xm-auto-evo path
-// (`~/.xmclaw/auto_evo/skills/...`), `~/.agents/skills/`, and
-// `~/.claude/skills/` scanning were torn out in Phase 1; the future
-// SkillProposer (Phase 3) registers candidates back through the same
-// `SkillRegistry.add_candidate` door so this page stays the one
-// place the user goes for "what skills does my agent have?".
+// user-installed are the only two sources. After B-163 the user-loader
+// scans three roots by default (zero config): the canonical
+// `~/.xmclaw/skills_user/`, plus `~/.agents/skills/` (skills.sh muscle
+// memory) and `~/.claude/skills/` (Claude Code shared skills). The old
+// xm-auto-evo path was torn out in Phase 1; the future SkillProposer
+// (Phase 3) registers candidates back through `SkillRegistry.add_candidate`
+// so this page stays the one place the user goes for "what skills does
+// my agent have?".
 //
 // Layout: sticky left filter panel (All / Built-in / User) + content
 // area with version-ladder cards. Promote / rollback land manual
@@ -315,17 +317,19 @@ export function SkillsPage({ token }) {
                 html`<div style="line-height:1.7">
                   <p style="margin:0 0 .5rem"><strong>还没有任何技能。</strong></p>
                   <p style="margin:0 0 .5rem;font-size:.85rem">
-                    规范路径一个：<code>~/.xmclaw/skills_user/&lt;skill_id&gt;/</code>，
-                    目录里二选一：<code>skill.py</code>（Python 子类）或 <code>SKILL.md</code>（Markdown 步骤说明）。
-                    daemon 重启自动注册。
+                    daemon 启动时会自动扫这三个目录，谁先匹配 skill_id 谁先入库——
+                    <strong>零 config</strong>，重启即生效：
                   </p>
-                  <p style="margin:0 0 .5rem;font-size:.85rem">
-                    已经用 <code>npx skills add</code> 装到 <code>~/.agents/skills/</code>？
-                    在 <code>daemon/config.json</code> 加：
+                  <ul style="margin:.2rem 0;padding-left:1.2rem;font-size:.82rem">
+                    <li><code>~/.xmclaw/skills_user/&lt;skill_id&gt;/</code> ← 规范路径（首选）</li>
+                    <li><code>~/.agents/skills/&lt;skill_id&gt;/</code> ← <code>npx skills add</code> 默认</li>
+                    <li><code>~/.claude/skills/&lt;skill_id&gt;/</code> ← Claude Code 共享技能</li>
+                  </ul>
+                  <p style="margin:.4rem 0 .2rem;font-size:.85rem">
+                    每个目录里 <code>skill.py</code>（Python 子类）或 <code>SKILL.md</code>（Markdown 步骤）二选一即可。
                   </p>
-                  <pre style="margin:.3rem 0;padding:.4rem .6rem;background:color-mix(in srgb, var(--midground) 6%, transparent);border-radius:4px;font-size:.72rem;overflow-x:auto">"evolution": { "skill_paths": { "extra": ["~/.agents/skills"] } }</pre>
-                  <p style="margin:0;font-size:.85rem">
-                    重启 daemon 即可扫到（规范路径优先，extra 路径作为 overlay 不覆盖）。
+                  <p style="margin:.4rem 0 0;font-size:.78rem;opacity:.75">
+                    想关共享扫描？<code>daemon/config.json</code> 加 <code>"evolution":{"skill_paths":{"extra":[]}}</code>。
                   </p>
                 </div>`
               }</div>`

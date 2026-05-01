@@ -5,6 +5,14 @@ minutes) and turns the ``ProposedSkill`` results into
 ``SKILL_CANDIDATE_PROPOSED`` events on the bus + a JSONL audit row in
 ``~/.xmclaw/v2/evolution/<agent_id>/proposals.jsonl``.
 
+B-164 adds :class:`RealtimeEvolutionTrigger` — same proposer, but
+fires after each conversation turn (debounced ~15s, with a global
+cooldown ~60s) so the user feels evolution happen in real time
+instead of waiting for the next 30-minute batch. The two coexist:
+periodic catches drift the realtime trigger missed (idle gaps, daemon
+restarts), realtime catches the "I just used a tool 5 times this
+turn" pattern within minutes.
+
 Distinct from the **memory dream** (``xmclaw.daemon.dream_compactor``),
 which compacts MEMORY.md on a daily cron. This is the **skill
 dream** — looking back at recent journal history and asking "what
@@ -36,7 +44,7 @@ import time
 from pathlib import Path
 
 from xmclaw.core.bus import InProcessEventBus
-from xmclaw.core.bus.events import EventType, make_event
+from xmclaw.core.bus.events import BehavioralEvent, EventType, make_event
 from xmclaw.core.evolution import SkillProposer
 from xmclaw.utils.paths import evolution_dir
 
@@ -232,4 +240,172 @@ class SkillDreamCycle:
             _log.warning(
                 "skill_dream.audit_write_failed agent=%s err=%s",
                 self._agent_id, exc,
+            )
+
+
+class RealtimeEvolutionTrigger:
+    """B-164: drives :meth:`SkillDreamCycle.run_once` on a debounced,
+    cooldown-bounded schedule, fed by ``LLM_RESPONSE`` events.
+
+    Why: the periodic 30-minute cycle is correct but feels dead — the
+    user runs five tool calls in a row, finishes the conversation,
+    and then has to wait up to half an hour for the proposer to even
+    look at what they just did. With this trigger the proposer fires
+    ~15s after each turn settles, so by the time the user opens the
+    Evolution page the candidate is already there.
+
+    Why not "fire on every event": LLM_RESPONSE can fire 3-10 times in
+    one turn (tool-call hops + final response). We debounce on a
+    short window so we run **once per turn**, not once per LLM hop.
+    A global cooldown then bounds total cost — multi-session bursts
+    (channel adapters, parallel chats) collapse into a single run.
+
+    Lifecycle: :meth:`start` subscribes to the bus; :meth:`stop`
+    cancels the subscription and any in-flight debounce timer. Both
+    are idempotent; the daemon's lifespan calls them in order.
+
+    Parameters
+    ----------
+    dream
+        The :class:`SkillDreamCycle` to call ``run_once()`` on. Same
+        instance the periodic loop drives — the audit log and event
+        emission paths are reused unchanged.
+    bus
+        Shared event bus. We subscribe a predicate that filters for
+        ``LLM_RESPONSE`` and skips internal sessions (system, dream,
+        evolution agent) so the trigger doesn't recurse on its own
+        emitted events.
+    debounce_s
+        Quiet-period seconds before firing after the last
+        ``LLM_RESPONSE``. Default 15s — long enough that mid-turn
+        tool-call hops collapse into one fire, short enough that
+        the user sees the candidate within a few seconds of finishing.
+    cooldown_s
+        Minimum seconds between successive fires. Default 60s.
+        Multi-session bursts that arrive within this window all map
+        to a single run.
+    enabled
+        Off-switch for tests / users who want the periodic-only
+        behaviour. ``start()`` is a no-op when False.
+    """
+
+    _SKIP_SESSION_PREFIXES = (
+        "_system",
+        "skill-dream",
+        "dream:",
+        "evolution:",
+        "reflect:",
+    )
+
+    def __init__(
+        self,
+        dream: SkillDreamCycle,
+        bus: InProcessEventBus,
+        *,
+        debounce_s: float = 15.0,
+        cooldown_s: float = 60.0,
+        enabled: bool = True,
+    ) -> None:
+        self._dream = dream
+        self._bus = bus
+        # Tiny floor (10ms) so a config of 0 doesn't pin the loop;
+        # not "the right operational value" — tests need fast values
+        # and the production default of 15s is set at the call site.
+        self._debounce_s = max(0.01, float(debounce_s))
+        self._cooldown_s = max(0.0, float(cooldown_s))
+        self._enabled = bool(enabled)
+        self._subscription = None
+        self._pending_task: asyncio.Task | None = None
+        self._last_run_ts: float = 0.0
+        self._fire_lock = asyncio.Lock()
+        self._fire_count: int = 0
+
+    @property
+    def fire_count(self) -> int:
+        """Total successful run_once invocations. Useful for tests."""
+        return self._fire_count
+
+    @property
+    def is_active(self) -> bool:
+        return self._subscription is not None
+
+    async def start(self) -> None:
+        """Subscribe the trigger handler. Idempotent. No-op when disabled."""
+        if not self._enabled:
+            return
+        if self._subscription is not None:
+            return
+        self._subscription = self._bus.subscribe(
+            self._predicate, self._on_response,
+        )
+        _log.info(
+            "realtime_evolution.start debounce_s=%.1f cooldown_s=%.1f",
+            self._debounce_s, self._cooldown_s,
+        )
+
+    async def stop(self) -> None:
+        """Unsubscribe and cancel any pending debounce. Idempotent."""
+        sub = self._subscription
+        self._subscription = None
+        if sub is not None:
+            try:
+                sub.cancel()
+            except Exception:  # noqa: BLE001
+                pass
+        pending = self._pending_task
+        self._pending_task = None
+        if pending is not None and not pending.done():
+            pending.cancel()
+            try:
+                await pending
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+
+    def _predicate(self, event: BehavioralEvent) -> bool:
+        if event.type is not EventType.LLM_RESPONSE:
+            return False
+        sid = event.session_id or ""
+        for pref in self._SKIP_SESSION_PREFIXES:
+            if sid.startswith(pref):
+                return False
+        return True
+
+    async def _on_response(self, _event: BehavioralEvent) -> None:
+        # Reset the debounce: cancel the previous pending fire and
+        # schedule a fresh one. The latest LLM_RESPONSE in a burst
+        # wins the timer.
+        prev = self._pending_task
+        if prev is not None and not prev.done():
+            prev.cancel()
+        self._pending_task = asyncio.create_task(
+            self._fire_after_debounce(),
+            name="realtime-evolution-debounce",
+        )
+
+    async def _fire_after_debounce(self) -> None:
+        try:
+            await asyncio.sleep(self._debounce_s)
+        except asyncio.CancelledError:
+            return
+        async with self._fire_lock:
+            now = time.time()
+            if now - self._last_run_ts < self._cooldown_s:
+                _log.debug(
+                    "realtime_evolution.cooldown_skip "
+                    "since_last=%.1fs cooldown=%.1fs",
+                    now - self._last_run_ts, self._cooldown_s,
+                )
+                return
+            try:
+                n = await self._dream.run_once()
+            except Exception as exc:  # noqa: BLE001 — isolate proposer
+                _log.warning(
+                    "realtime_evolution.run_once_failed err=%s", exc,
+                )
+                return
+            self._last_run_ts = time.time()
+            self._fire_count += 1
+            _log.info(
+                "realtime_evolution.fired proposals=%d total_fires=%d",
+                n, self._fire_count,
             )

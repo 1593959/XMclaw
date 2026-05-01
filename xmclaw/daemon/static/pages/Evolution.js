@@ -248,9 +248,12 @@ export function EvolutionPage({ token }) {
           ${proposals.length === 0
             ? html`<div class="xmc-h-empty" style="padding:1rem;font-size:.85rem;line-height:1.6">
                 <p style="margin:0 0 .4rem"><strong>暂无待审提议。</strong></p>
-                <p style="margin:0;opacity:.8">SkillDreamCycle 默认每 30 分钟跑一次：扫最近 50 个 session 的 journal，
-                找重复出现的 tool 模式，让 LLM 起草新 SKILL.md 候选。Phase 3 默认 noop extractor —
-                LLM-backed extractor 落地（Phase 3.5）后这里会真的有内容出现。</p>
+                <p style="margin:0 0 .3rem;opacity:.8">B-164 起进化是<strong>实时</strong>的：
+                每轮对话结束 ~15s 后 SkillProposer 会扫最近的 journal，
+                找重复出现的 tool 模式，让 LLM 起草新 SKILL.md 候选。
+                还会兜底跑 30 分钟周期任务以防漏掉空闲时段的演化机会。</p>
+                <p style="margin:0;opacity:.7;font-size:.78rem">想关实时触发？<code>daemon/config.json</code> 加
+                <code>"evolution":{"realtime":{"enabled":false}}</code>。</p>
               </div>`
             : html`<div style="display:grid;gap:.5rem">
                 ${proposals.map((ev) => html`<${ProposalCard} key=${ev.id} ev=${ev} />`)}
