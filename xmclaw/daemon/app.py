@@ -595,6 +595,68 @@ def create_app(
             )
             _app.state.evolution_observer = None
 
+        # Epic #24 Phase 2.3: default-start JournalWriter + Profile
+        # Extractor. JournalWriter buffers session events and writes
+        # one mechanical-metadata row per ``SESSION_LIFECYCLE
+        # phase=destroy`` to ``~/.xmclaw/v2/journal/<YYYY-MM>/``.
+        # ProfileExtractor buffers user/assistant turns and (on every
+        # Nth turn or session destroy) calls a pluggable extractor
+        # callable to derive ProfileDelta lines, which it appends to
+        # the active persona's ``USER.md``. Phase 2.3 wires the
+        # *harness* — both default to no-op extractors. Phase 2.4
+        # plugs in a real LLM-driven extractor.
+        _app.state.journal_writer = None
+        try:
+            from xmclaw.core.journal import JournalWriter
+            jw = JournalWriter(bus)
+            await jw.start()
+            _app.state.journal_writer = jw
+        except Exception as exc:  # noqa: BLE001
+            log.warning("journal.writer_start_failed err=%s", exc)
+            _app.state.journal_writer = None
+
+        _app.state.profile_extractor = None
+        try:
+            from xmclaw.core.profile import ProfileExtractor
+            from xmclaw.daemon.factory import _resolve_persona_profile_dir
+            _cfg = config or {}
+
+            def _user_md_path():
+                return _resolve_persona_profile_dir(_cfg) / "USER.md"
+
+            pe = ProfileExtractor(bus, _user_md_path)
+            await pe.start()
+            _app.state.profile_extractor = pe
+        except Exception as exc:  # noqa: BLE001
+            log.warning("profile.extractor_start_failed err=%s", exc)
+            _app.state.profile_extractor = None
+
+        # Epic #24 Phase 2.4: invalidate the system-prompt cache when
+        # USER.md gets new auto-extracted preferences. Without this,
+        # the persona assembler keeps serving the cached snapshot
+        # taken at session start and the new lines never reach the
+        # agent until the next persona write or daemon restart.
+        try:
+            from xmclaw.daemon.agent_loop import (
+                bump_prompt_freeze_generation,
+            )
+
+            async def _on_profile_updated(event: BehavioralEvent) -> None:
+                try:
+                    bump_prompt_freeze_generation()
+                except Exception:  # noqa: BLE001
+                    pass
+
+            bus.subscribe(
+                lambda e: e.type == EventType.USER_PROFILE_UPDATED,
+                _on_profile_updated,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "profile.prompt_cache_invalidation_wire_failed err=%s",
+                exc,
+            )
+
         # B-145: channel adapters (飞书 / 钉钉 / 企微 / Telegram).
         # Each enabled channel gets a long-running adapter that listens
         # for inbound messages + dispatches them through the same
@@ -746,6 +808,21 @@ def create_app(
             if _evo_obs is not None:
                 try:
                     await _evo_obs.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            # Epic #24 Phase 2.3: stop the JournalWriter + ProfileExtractor.
+            # Both flush in-flight session buffers so SIGINT mid-session
+            # doesn't drop the pending journal row / delta lines.
+            _jw = getattr(_app.state, "journal_writer", None)
+            if _jw is not None:
+                try:
+                    await _jw.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            _pe = getattr(_app.state, "profile_extractor", None)
+            if _pe is not None:
+                try:
+                    await _pe.stop()
                 except Exception:  # noqa: BLE001
                     pass
             if memory is not None and hasattr(memory, "close"):

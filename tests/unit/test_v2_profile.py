@@ -1,0 +1,340 @@
+"""ProfileExtractor — unit tests (Epic #24 Phase 2.2).
+
+Locks the contract:
+
+* Subscribes idempotently. Buffers per-session.
+* Threshold flush: every Nth user turn fires the extractor.
+* Session destroy flushes regardless of count.
+* Stop() flushes still-open buffers (SIGINT defence).
+* Writes go to the *exact* path the persona assembler reads
+  (anti-req from 2026-05-01: write path == read path).
+* Atomic append + per-path lock survive concurrent writers.
+* Confidence floor drops low-confidence deltas.
+* USER_PROFILE_UPDATED event published with the delta payload.
+"""
+from __future__ import annotations
+
+import time
+from pathlib import Path
+
+import pytest
+
+from xmclaw.core.bus import InProcessEventBus
+from xmclaw.core.bus.events import EventType, make_event
+from xmclaw.core.profile import ProfileDelta, ProfileExtractor
+
+
+@pytest.fixture
+def bus() -> InProcessEventBus:
+    return InProcessEventBus()
+
+
+@pytest.fixture
+def user_md(tmp_path: Path) -> Path:
+    persona = tmp_path / "persona" / "default"
+    persona.mkdir(parents=True, exist_ok=True)
+    return persona / "USER.md"
+
+
+def _provider(path: Path):
+    """Build a persona_user_md_provider closure for tests."""
+    return lambda: path
+
+
+def _delta(text: str, *, conf: float = 0.9, kind: str = "preference") -> ProfileDelta:
+    return ProfileDelta(
+        kind=kind, text=text, confidence=conf,
+        source_session_id="sess", source_event_id="ev1",
+        ts=time.time(),
+    )
+
+
+# ── threshold flush ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_flush_after_threshold_user_turns(
+    bus: InProcessEventBus, user_md: Path,
+) -> None:
+    calls: list[tuple[list[dict], dict]] = []
+
+    def fake_extractor(msgs, meta):
+        calls.append((msgs, meta))
+        return [_delta("user prefers terse answers")]
+
+    ex = ProfileExtractor(
+        bus, _provider(user_md),
+        extractor_callable=fake_extractor, flush_threshold=2,
+    )
+    await ex.start()
+    try:
+        # 2 user turns + 2 assistant responses → threshold hit on turn 2
+        for i in range(2):
+            await bus.publish(make_event(
+                session_id="s", agent_id="agent",
+                type=EventType.USER_MESSAGE,
+                payload={"content": f"turn {i}"},
+            ))
+            await bus.publish(make_event(
+                session_id="s", agent_id="agent",
+                type=EventType.LLM_RESPONSE,
+                payload={"content": f"reply {i}"},
+            ))
+        await bus.drain()
+    finally:
+        await ex.stop()
+
+    assert len(calls) >= 1, "extractor was invoked at threshold"
+    assert user_md.is_file()
+    content = user_md.read_text(encoding="utf-8")
+    assert "user prefers terse answers" in content
+    assert "## Auto-extracted preferences" in content
+
+
+# ── session destroy flushes regardless of count ─────────────────────
+
+
+@pytest.mark.asyncio
+async def test_destroy_flushes_below_threshold(
+    bus: InProcessEventBus, user_md: Path,
+) -> None:
+    def fake_extractor(_msgs, _meta):
+        return [_delta("user runs Windows")]
+
+    ex = ProfileExtractor(
+        bus, _provider(user_md),
+        extractor_callable=fake_extractor, flush_threshold=10,
+    )
+    await ex.start()
+    try:
+        await bus.publish(make_event(
+            session_id="s2", agent_id="agent",
+            type=EventType.USER_MESSAGE, payload={"content": "hi"},
+        ))
+        await bus.publish(make_event(
+            session_id="s2", agent_id="agent",
+            type=EventType.SESSION_LIFECYCLE,
+            payload={"phase": "destroy"},
+        ))
+        await bus.drain()
+    finally:
+        await ex.stop()
+
+    assert "user runs Windows" in user_md.read_text(encoding="utf-8")
+
+
+# ── confidence floor drops low-confidence deltas ────────────────────
+
+
+@pytest.mark.asyncio
+async def test_confidence_floor_drops_low_confidence(
+    bus: InProcessEventBus, user_md: Path,
+) -> None:
+    def fake_extractor(_msgs, _meta):
+        return [
+            _delta("real signal", conf=0.9),
+            _delta("noisy guess", conf=0.2),
+        ]
+
+    ex = ProfileExtractor(
+        bus, _provider(user_md),
+        extractor_callable=fake_extractor, flush_threshold=1,
+        min_confidence=0.5,
+    )
+    await ex.start()
+    try:
+        await bus.publish(make_event(
+            session_id="s3", agent_id="agent",
+            type=EventType.USER_MESSAGE, payload={"content": "hi"},
+        ))
+        await bus.drain()
+    finally:
+        await ex.stop()
+
+    text = user_md.read_text(encoding="utf-8")
+    assert "real signal" in text
+    assert "noisy guess" not in text
+
+
+# ── empty extractor result is a no-op ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_no_deltas_no_write(
+    bus: InProcessEventBus, user_md: Path,
+) -> None:
+    ex = ProfileExtractor(
+        bus, _provider(user_md),
+        extractor_callable=lambda _m, _meta: [],
+        flush_threshold=1,
+    )
+    await ex.start()
+    try:
+        await bus.publish(make_event(
+            session_id="s4", agent_id="agent",
+            type=EventType.USER_MESSAGE, payload={"content": "hi"},
+        ))
+        await bus.drain()
+    finally:
+        await ex.stop()
+
+    assert not user_md.exists() or user_md.read_text(encoding="utf-8") == ""
+
+
+# ── USER_PROFILE_UPDATED event published ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_publishes_user_profile_updated_event(
+    bus: InProcessEventBus, user_md: Path,
+) -> None:
+    seen = []
+
+    async def capture(event):
+        if event.type == EventType.USER_PROFILE_UPDATED:
+            seen.append(event)
+
+    bus.subscribe(lambda e: e.type == EventType.USER_PROFILE_UPDATED, capture)
+
+    def fake_extractor(_msgs, _meta):
+        return [_delta("a thing", conf=0.9)]
+
+    ex = ProfileExtractor(
+        bus, _provider(user_md),
+        extractor_callable=fake_extractor, flush_threshold=1,
+    )
+    await ex.start()
+    try:
+        await bus.publish(make_event(
+            session_id="s5", agent_id="agent",
+            type=EventType.USER_MESSAGE, payload={"content": "hi"},
+        ))
+        await bus.drain()
+    finally:
+        await ex.stop()
+
+    assert len(seen) == 1
+    p = seen[0].payload
+    assert p["delta_count"] == 1
+    assert p["file_path"] == str(user_md)
+    assert p["session_id"] == "s5"
+    assert p["deltas"][0]["text"] == "a thing"
+
+
+# ── append twice keeps both deltas ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_second_flush_appends_below_existing(
+    bus: InProcessEventBus, user_md: Path,
+) -> None:
+    seq = iter([
+        [_delta("first delta", conf=0.9)],
+        [_delta("second delta", conf=0.9)],
+    ])
+
+    def fake_extractor(_msgs, _meta):
+        return next(seq, [])
+
+    ex = ProfileExtractor(
+        bus, _provider(user_md),
+        extractor_callable=fake_extractor, flush_threshold=1,
+    )
+    await ex.start()
+    try:
+        await bus.publish(make_event(
+            session_id="s6", agent_id="agent",
+            type=EventType.USER_MESSAGE, payload={"content": "a"},
+        ))
+        await bus.drain()
+        await bus.publish(make_event(
+            session_id="s6", agent_id="agent",
+            type=EventType.USER_MESSAGE, payload={"content": "b"},
+        ))
+        await bus.drain()
+    finally:
+        await ex.stop()
+
+    text = user_md.read_text(encoding="utf-8")
+    assert "first delta" in text
+    assert "second delta" in text
+    # Only ONE section header (we append below the same one).
+    assert text.count("## Auto-extracted preferences") == 1
+
+
+# ── extractor exception doesn't crash subscription ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_extractor_exception_isolated(
+    bus: InProcessEventBus, user_md: Path,
+) -> None:
+    crashes = {"n": 0}
+
+    def crashing(_msgs, _meta):
+        crashes["n"] += 1
+        raise RuntimeError("simulated extractor failure")
+
+    ex = ProfileExtractor(
+        bus, _provider(user_md),
+        extractor_callable=crashing, flush_threshold=1,
+    )
+    await ex.start()
+    try:
+        for _ in range(3):
+            await bus.publish(make_event(
+                session_id="s7", agent_id="agent",
+                type=EventType.USER_MESSAGE, payload={"content": "x"},
+            ))
+            await bus.drain()
+    finally:
+        await ex.stop()
+
+    # Subscription survived all three crashes.
+    assert crashes["n"] >= 3
+    assert not user_md.exists() or "## Auto-extracted" not in user_md.read_text(
+        encoding="utf-8"
+    )
+
+
+# ── start/stop idempotent ───────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_start_stop_idempotent(
+    bus: InProcessEventBus, user_md: Path,
+) -> None:
+    ex = ProfileExtractor(bus, _provider(user_md))
+    await ex.start()
+    await ex.start()  # no-op
+    assert ex.is_running()
+    await ex.stop()
+    await ex.stop()  # no-op
+    assert not ex.is_running()
+
+
+# ── async extractor callable supported ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_async_extractor_callable(
+    bus: InProcessEventBus, user_md: Path,
+) -> None:
+    async def async_extractor(_msgs, _meta):
+        return [_delta("async delta", conf=0.9)]
+
+    ex = ProfileExtractor(
+        bus, _provider(user_md),
+        extractor_callable=async_extractor, flush_threshold=1,
+    )
+    await ex.start()
+    try:
+        await bus.publish(make_event(
+            session_id="s8", agent_id="agent",
+            type=EventType.USER_MESSAGE, payload={"content": "hi"},
+        ))
+        await bus.drain()
+    finally:
+        await ex.stop()
+
+    assert "async delta" in user_md.read_text(encoding="utf-8")

@@ -60,10 +60,14 @@ def test_list_tools_schemas_well_formed() -> None:
     * ``memory_compact``      — B-52 dream trigger
     * ``enter_worktree``      — B-94 (auto-generates name + base if omitted)
     * ``exit_worktree``       — B-94 (``keep`` is optional flag)
+    * ``journal_recall``      — Epic #24 Phase 2.5 (defaults limit=5,
+      days_back=30; the agent typically calls without args to scan
+      "what have I been doing recently")
     """
     zero_arg = {
         "todo_read", "agent_status", "memory_compact",
         "enter_worktree", "exit_worktree",
+        "journal_recall",
     }
     for spec in BuiltinTools().list_tools():
         assert spec.parameters_schema["type"] == "object"

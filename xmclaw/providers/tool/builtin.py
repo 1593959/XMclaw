@@ -671,6 +671,48 @@ _NOTE_WRITE_SPEC = ToolSpec(
 )
 
 
+_JOURNAL_RECALL_SPEC = ToolSpec(
+    name="journal_recall",
+    description=(
+        "Read past session journal entries written by JournalWriter "
+        "(Epic #24 Phase 2.1). Each entry summarises ONE WS session: "
+        "turn count, tool calls (with ok/error), grader stats "
+        "(avg/lowest/highest score), anti-req violations.\n\n"
+        "Use BEFORE tackling a task that the user has likely asked "
+        "about before — pull the last few sessions with similar tool "
+        "patterns and check what worked / what crashed. Avoids "
+        "re-discovering yesterday's mistakes. Lightweight read; no "
+        "side effects. Hidden when the journal directory hasn't been "
+        "initialised yet (fresh install with no prior sessions).\n\n"
+        "Filtering: ``limit`` caps rows returned (default 5, max 50). "
+        "``days_back`` drops entries older than N days (default 30). "
+        "``contains`` keeps only entries whose tool list contains the "
+        "given substring (e.g. ``contains='git'`` to recall sessions "
+        "that touched git tools)."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "description": "Max entries to return (1-50). Default 5.",
+            },
+            "days_back": {
+                "type": "integer",
+                "description": "Drop entries older than this many days. "
+                "Default 30.",
+            },
+            "contains": {
+                "type": "string",
+                "description": "Optional substring; keep entries whose "
+                "tool_calls list contains a tool name with this "
+                "substring. Case-insensitive.",
+            },
+        },
+    },
+)
+
+
 _JOURNAL_APPEND_SPEC = ToolSpec(
     name="journal_append",
     description=(
@@ -1163,6 +1205,11 @@ class BuiltinTools(ToolProvider):
         # Journal panels — both are evolution surfaces (workflow notes,
         # lessons learned, daily logs). Path-only ops, always available.
         specs.extend([_NOTE_WRITE_SPEC, _JOURNAL_APPEND_SPEC])
+        # Epic #24 Phase 2.5: journal_recall reads past session
+        # journals written by JournalWriter so the agent can avoid
+        # rediscovering yesterday's mistakes. Always advertised — the
+        # handler reports cleanly when the journal dir is empty.
+        specs.append(_JOURNAL_RECALL_SPEC)
         # B-49: self-introspection tool. Always advertised — works
         # even with zero providers wired (returns "nothing wired").
         specs.append(_AGENT_STATUS_SPEC)
@@ -1244,6 +1291,8 @@ class BuiltinTools(ToolProvider):
                 return await self._note_write(call, t0)
             if call.name == "journal_append":
                 return await self._journal_append(call, t0)
+            if call.name == "journal_recall":
+                return await self._journal_recall(call, t0)
             if call.name == "agent_status":
                 return await self._agent_status(call, t0)
             if call.name == "memory_compact":
@@ -2186,6 +2235,92 @@ class BuiltinTools(ToolProvider):
                 "title": title or None,
             },
             side_effects=(str(path),),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _journal_recall(self, call: ToolCall, t0: float) -> ToolResult:
+        """Epic #24 Phase 2.5: read past session journals.
+
+        Loads ``JournalReader`` lazily so a config without persona/
+        memory wiring still surfaces the tool cleanly. Filters:
+
+        * ``limit`` (1-50, default 5)
+        * ``days_back`` (default 30) drops entries older than that
+        * ``contains`` substring filter on tool name list
+
+        Returns one dict per matching entry with the journal fields
+        the agent typically wants to reason about (session_id,
+        ts_end ISO, duration_s, turn_count, tool names, grader avg).
+        """
+        from xmclaw.core.journal import JournalReader
+
+        limit_raw = call.args.get("limit", 5)
+        days_back_raw = call.args.get("days_back", 30)
+        contains = (call.args.get("contains") or "").strip().lower()
+
+        try:
+            limit = max(1, min(50, int(limit_raw)))
+        except (TypeError, ValueError):
+            return _fail(call, t0, f"limit must be integer (got {limit_raw!r})")
+        try:
+            days_back = max(1, int(days_back_raw))
+        except (TypeError, ValueError):
+            return _fail(
+                call, t0,
+                f"days_back must be integer (got {days_back_raw!r})",
+            )
+
+        reader = JournalReader()
+        # Pull a couple extra so the days_back / contains filters have
+        # room to drop without ending up under the requested limit.
+        candidates = reader.recent(limit=max(limit * 4, 20))
+        if not candidates:
+            return ToolResult(
+                call_id=call.id, ok=True,
+                content={
+                    "entries": [],
+                    "note": "journal directory empty — no prior sessions yet",
+                },
+                side_effects=(),
+                latency_ms=(time.perf_counter() - t0) * 1000.0,
+            )
+
+        cutoff = time.time() - days_back * 86400
+        out: list[dict] = []
+        for entry in candidates:
+            if entry.ts_end < cutoff:
+                continue
+            tool_names = [tc.name for tc in entry.tool_calls]
+            if contains and not any(
+                contains in (n or "").lower() for n in tool_names
+            ):
+                continue
+            out.append({
+                "session_id": entry.session_id,
+                "ts_end_iso": time.strftime(
+                    "%Y-%m-%d %H:%M:%S",
+                    time.localtime(entry.ts_end),
+                ),
+                "duration_s": round(entry.duration_s, 1),
+                "turn_count": entry.turn_count,
+                "tool_names": tool_names,
+                "tool_errors": sum(
+                    1 for tc in entry.tool_calls if not tc.ok
+                ),
+                "grader_avg": (
+                    round(entry.grader_avg_score, 3)
+                    if entry.grader_avg_score is not None else None
+                ),
+                "grader_play_count": entry.grader_play_count,
+                "anti_req_violations": entry.anti_req_violations,
+            })
+            if len(out) >= limit:
+                break
+
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={"entries": out, "matched": len(out)},
+            side_effects=(),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 

@@ -144,6 +144,16 @@ class EventType(str, Enum):
     # WHY older content disappeared from the agent's view.
     CONTEXT_COMPRESSED = "context_compressed"
 
+    # Epic #24 Phase 2.2: emitted when ProfileExtractor flushes new
+    # delta lines to ``<persona>/USER.md`` so the agent's frozen
+    # system-prompt cache can invalidate (next turn re-reads USER.md
+    # via persona assembler). Payload:
+    # {"file_path": str,             # absolute path of file written
+    #  "delta_count": int,           # how many delta lines appended
+    #  "session_id": str,            # source session whose buffer triggered the flush
+    #  "deltas": [{kind, text, confidence}, ...]}
+    USER_PROFILE_UPDATED = "user_profile_updated"
+
 
 @dataclass(frozen=True, slots=True)
 class BehavioralEvent:

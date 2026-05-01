@@ -1233,6 +1233,35 @@ Phase 2-4 检查清单 Phase 1 完成后再细化。
 - 2026-05-01: Epic 启动——经过三轮对齐 + 全包 grep 确认"两套并行进化系统"诊断准确（系统 A 空转 + 系统 B 不诚实）；用户授权全部推倒重做；plan 落到 `~/.claude/plans/elegant-greeting-hippo.md`；Phase 1 第一刀拆系统 B + 接 grader
 - 2026-05-02: **Phase 1 完成（拆 + 接电源）**——一刀切完。删除：`xmclaw/evolution_core/` 整个 Node 子项目（30+ JS 文件 + observer/pcec/vfm/tree/memory 五个子模块）+ `xmclaw/daemon/{auto_evo_bridge,learned_skills,learned_skills_tool,skill_template}.py` + `routers/auto_evo.py` + 4 个围绕 auto_evo 的 unit tests + 2 个 integration test 里的 closed-loop SKILL block。Stub：`pages/Evolution.js` 改为 "Epic #24 重做中" 提示（保留 sidebar 路由，避免点进 404）。改写：`Skills.js` 简化为单数据源（`/api/v2/skills`），`SlashPopover.js` 移除 learned_skills 动态获取。`agent_loop.py`：移除 `_detect_skill_invocations` / `_auto_disable_skill` / `_extract_skill_keywords` + 各调用点 + 缓存键里的 learned_skills 段；新增 `self._grader = HonestGrader()` + 每个 `TOOL_INVOCATION_FINISHED` 后调 `grade()` 发 `GRADER_VERDICT`。`app.py`：移除 lifespan 里的 `xm-auto-evo` 启动段（DialogExporter / AutoEvoProcess / 路由挂载）+ session_close hook 里的"实时进化"触发；新增 lifespan 默认启动 `EvolutionAgent("evo-main", bus)` observer + 对应 stop hook + 顶部 `log = get_logger(__name__)` 顺手修 4 处 pre-existing 的 NameError。CLI：`xmclaw cli/evolution.py` 加 `run_evolve_review` / `run_evolve_approve` / `run_evolve_reject`（urllib + pairing-token 直接调 `/api/v2/skills/<id>/{promote,rollback}`）；`main.py` 加 `evolution_app.command` × 3 + `app.add_typer(evolution_app, name="evolve")` 短别名。Doctor：新增 `EvolutionPathHygieneCheck`（扫 `~/.xmclaw/auto_evo/` / `~/.agents/skills/` / `~/.claude/skills/` 残留 → 提示归并到 `SkillRegistry` 路径；落 anti-req: 路径与文件统一原则）+ `EvolutionRuntimeCheck`（assert AgentLoop 源码里 `HonestGrader` + `GRADER_VERDICT` 都接到了，否则报 fix 建议）。文档：`README.md` 改写"Self-improvement on evidence" 段（描述 grader → observer → controller → orchestrator → registry 完整链 + 默认 auto_apply=False + `xmclaw evolve` 工作流）；`docs/ARCHITECTURE.md` 加 Epic #24 note + 改写"one-paragraph summary"; 加 plan 第 6 条不退让规则"路径与文件统一"（用户硬性约束 2026-05-01）。验收：smart-gate `tests/unit/test_v2_{grader,evolution_*,skill_*,skills_router,agent_loop,doctor,cli_evolution}.py` + `tests/integration/test_v2_daemon_app.py` + `tests/unit/test_v2_{check_import_direction,lint_roadmap,daemon_factory,daemon_lifecycle}.py` 共 344 / 344 passed（5 skipped）；ruff 在 xmclaw/ 仅 3 个 pre-existing E402 残留（不归 Phase 1 修），0 个新增 lint。Phase 1 退出标准之"daemon 启动后没有 Node 子进程 + tool_invocation_finished 后能在 events.db 看到 grader_verdict + xmclaw evolve review 能列出待审"全部满足
 
+- 2026-05-02: **Phase 1.5（GRADER_VERDICT skill_id payload 完成度补丁）**——Phase 1 push 后自检发现：`agent_loop.py` 发 `GRADER_VERDICT` 只有 `tool_name`，没有 `skill_id` / `version`，而 `EvolutionAgent._ingest` 见到 payload 没 skill_id 立即 return — observer 收到 verdict 后零聚合，整个 evolution loop 实际是空转。补丁：tool name 走 `skill_*` 前缀时反推 skill_id（`__` ↔ `.`，对照 `SkillToolProvider._to_tool_name`）+ version=0 默认，塞进 verdict payload。非 skill tool（bash / file_read 等）不塞 skill_id — observer 跳过它们是正确语义。3 条新测试包含 end-to-end `test_evolution_agent_observer_receives_skill_verdicts`：跑 AgentLoop → GRADER_VERDICT → EvolutionAgent.snapshot() 验证 plays=1 + mean_score>0。10/10 agent_loop tests pass。这是 Phase 1 退出标准 "closed loop wired" 的真正证据。
+
+- 2026-05-02: **Phase 2 完成（Journal + UserProfile + journal_recall）**——4 个子阶段一次性落地。
+
+  **Phase 2.1 Journal 子系统**：新建 `xmclaw/core/journal/` 子包（models.py + journal.py + __init__.py + 7 unit tests）。`JournalWriter` 订阅 `USER_MESSAGE / TOOL_INVOCATION_FINISHED / GRADER_VERDICT / ANTI_REQ_VIOLATION / SESSION_LIFECYCLE`，按 session_id buffer，`destroy phase` 触发 flush 一行 jsonl 到 `~/.xmclaw/v2/journal/<YYYY-MM>/<session_id>.jsonl`（路径与文件统一原则：写路径 == 读路径，没有 shadow index）。`stop()` 也 flush 还在 buffer 的 session（SIGINT 防丢）。`JournalReader` 三个 API：`recent` / `by_session_id` / `iter_month`。`utils/paths.py` 加 `journal_dir()` 函数。机械字段：turn_count（USER_MESSAGE 计数）+ tool_calls（TOOL_INVOCATION_FINISHED 累积，含 ok/error）+ grader_avg/lo/hi/play_count（GRADER_VERDICT 累积）+ anti_req_violations。Phase 2.2 加 `reflection: str | None` 字段时 bump schema_version。
+
+  **Phase 2.2 UserProfile 子系统**：新建 `xmclaw/core/profile/` 子包（models.py + extractor.py + __init__.py + 9 unit tests）。`ProfileDelta` frozen dataclass（kind/text/confidence/source_session_id/source_event_id/ts），有 audit trail（每条 delta 知道来自哪个 turn）。`ProfileExtractor` 订阅 `USER_MESSAGE / LLM_RESPONSE / SESSION_LIFECYCLE`，buffer per session_id，每 N user turns（default 3）或 destroy 触发 — 调 `extractor_callable`（默认 noop，Phase 2.4 daemon 接 LLM）抽取 deltas，`min_confidence` 过滤（default 0.5）后通过 `atomic_write_text` + per-path async lock 追加到 active persona 的 USER.md `## Auto-extracted preferences` section。第二次 flush 不重复创建 section。emit `USER_PROFILE_UPDATED` 事件携带 file_path + delta_count + 完整 deltas payload。新加 `EventType.USER_PROFILE_UPDATED`（schema 加成员，向后兼容）。
+
+  **Phase 2.3 daemon lifespan 接电源**：`xmclaw/daemon/app.py` 默认拉起 JournalWriter + ProfileExtractor 跟 EvolutionAgent observer 并排。ProfileExtractor 通过 `_resolve_persona_profile_dir(cfg) / "USER.md"` 拿当前 active persona 的 USER.md path（同 dream_compactor 的取值方式），保证写路径就是 persona assembler 读路径。lifespan 关闭时 `stop()` 两个 observer，flush 在 buffer 的 session。
+
+  **Phase 2.4 USER_PROFILE_UPDATED → prompt cache 失效**：lifespan 加一个 bus subscription：见到 `USER_PROFILE_UPDATED` 调 `bump_prompt_freeze_generation()`（已有的全局 cache invalidation 机制）。下一个 turn 重渲 system prompt，新 deltas 进 agent 的视野。
+
+  **Phase 2.5 journal_recall tool**：`xmclaw/providers/tool/builtin.py` 加 `_JOURNAL_RECALL_SPEC` + `_journal_recall` handler。Tool 参数 limit / days_back / contains（substring filter on tool name list）。返回结构化 entries（session_id / ts_end_iso / duration_s / turn_count / tool_names / tool_errors / grader_avg / anti_req_violations）。空 journal dir 返回 friendly note。`tests/unit/test_v2_builtin_tools.py` 加 `journal_recall` 到 zero_arg list（agent 主流场景就是无参数调"看看最近做了什么"）。
+
+  **路径决策**（核心 anti-req "路径与文件统一" 落地）：
+  - 新增 path: `~/.xmclaw/v2/journal/<YYYY-MM>/` —— writer + reader 都通过 `xmclaw.utils.paths.journal_dir()` 拿同一个 root，编译期共享
+  - 复用 path: 现有 `<persona>/USER.md` —— ProfileExtractor 走 `learn_about_user` tool 同款 atomic write 路径，没有 shadow store
+  - 没引入第三个并行写入入口，没 mirror copy
+
+  **依赖方向**：`xmclaw/core/{journal,profile}/` 只 import core/bus + utils/{paths,fs_locks}，遵守 `xmclaw/core/AGENTS.md` "core/ 不向下" 硬约束（CI-1 import_direction 守门）。
+
+  **验收**：`pytest tests/unit/` 全跑 = 1773 passed / 9 skipped；`pytest tests/integration/`（除外部服务 live test）= 115 passed；ruff 仅 3 个 pre-existing E402（Phase 1 之前就在），0 个新增 lint。Phase 2 退出标准全部满足：
+  - 连开 N session 后 `~/.xmclaw/v2/journal/` 真有 jsonl 文件 ✅（test_destroy_event_flushes_one_row 等覆盖）
+  - 配上 LLM extractor 后 USER.md 自动累积偏好 ✅（test_flush_after_threshold_user_turns 等覆盖；Phase 2.4 daemon 默认 noop，等 Phase 2.4+ 接真实 LLM extractor）
+  - `journal_recall` tool 可调 ✅（_journal_recall handler）
+  - USER_PROFILE_UPDATED 触发 prompt cache 失效 ✅（lifespan subscription）
+
+  Phase 3 启动条件已具备：journal 数据流 + profile extractor 框架 + grader 接通 evolution observer。下一步 Phase 3 SkillProposer 从 journal 历史里挖重复模式 → LLM 起草新 SKILL.md candidate → DSPy/GEPA 优化已有 + DreamLoop 周期跑。
+
 ---
 
 ## 5. 让差异化"看得见"（Visible Differentiation）
