@@ -481,6 +481,147 @@ def _set_frontmatter_key(text: str, key: str, value: str | None) -> str:
     return f"---\n{key}: {value}\n---\n{text}"
 
 
+@router.get("/learned_skills/discoverable")
+async def discoverable_external_skills() -> JSONResponse:
+    """B-161: list SKILL.md sitting in cross-agent shared paths
+    (``~/.agents/skills/`` / ``~/.claude/skills/``) that XMclaw has
+    NOT loaded by default. Surfaces them so users can selectively
+    import the ones they trust into the private dir.
+    """
+    from xmclaw.daemon.learned_skills import default_learned_skills_loader
+    loader = default_learned_skills_loader()
+    private_root = loader.skills_root
+    private_ids: set[str] = set()
+    if private_root.is_dir():
+        for entry in private_root.iterdir():
+            if entry.is_dir():
+                private_ids.add(entry.name)
+
+    home = Path.home()
+    candidate_roots = [
+        ("skills.sh / OpenClaw", home / ".agents" / "skills"),
+        ("Claude Code", home / ".claude" / "skills"),
+    ]
+    out: list[dict[str, Any]] = []
+    for label, root in candidate_roots:
+        if not root.is_dir():
+            continue
+        try:
+            for entry in sorted(root.iterdir()):
+                if not entry.is_dir():
+                    continue
+                skill_md = entry / "SKILL.md"
+                if not skill_md.is_file():
+                    continue
+                # Cheap title/description peek without full lex.
+                description = ""
+                try:
+                    head = skill_md.open("r", encoding="utf-8", errors="replace").read(800)
+                    if head.lstrip().startswith("---"):
+                        block = head.split("---", 2)
+                        if len(block) >= 3:
+                            for ln in block[1].splitlines():
+                                s = ln.strip()
+                                if s.lower().startswith("description:"):
+                                    description = s.split(":", 1)[1].strip()
+                                    break
+                except OSError:
+                    pass
+                out.append({
+                    "skill_id": entry.name,
+                    "source_label": label,
+                    "source_path": str(skill_md),
+                    "description": description,
+                    "already_imported": entry.name in private_ids,
+                })
+        except OSError:
+            continue
+    return JSONResponse({
+        "private_root": str(private_root),
+        "candidates": out,
+    })
+
+
+@router.post("/learned_skills/import")
+async def import_external_skill(request: Request) -> JSONResponse:
+    """B-161: copy one SKILL.md from a cross-agent shared path into the
+    XMclaw private dir. Body: ``{"source_path": "<absolute>"}``. Refuses
+    paths outside the two known shared roots (~/.agents, ~/.claude) to
+    keep the import surface narrow.
+    """
+    import shutil
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+    raw_src = body.get("source_path", "")
+    if not isinstance(raw_src, str) or not raw_src.strip():
+        return JSONResponse({"ok": False, "error": "source_path required"}, status_code=400)
+    src = Path(raw_src).resolve()
+    if not src.is_file() or src.name != "SKILL.md":
+        return JSONResponse(
+            {"ok": False, "error": "source must be a SKILL.md file"},
+            status_code=400,
+        )
+    home = Path.home().resolve()
+    allowed_prefixes = [
+        home / ".agents" / "skills",
+        home / ".claude" / "skills",
+    ]
+    src_dir = src.parent.resolve()
+    if not any(
+        str(src_dir).startswith(str(p.resolve()))
+        for p in allowed_prefixes
+        if p.exists()
+    ):
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": (
+                    "source_path must live under ~/.agents/skills/ or "
+                    "~/.claude/skills/. Other paths require manual copy."
+                ),
+            },
+            status_code=400,
+        )
+    skill_id = src_dir.name
+
+    from xmclaw.daemon.learned_skills import default_learned_skills_loader
+    from xmclaw.daemon.agent_loop import bump_prompt_freeze_generation
+    loader = default_learned_skills_loader()
+    target_dir = loader.skills_root / skill_id
+    if target_dir.exists():
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": (
+                    f"already imported: {target_dir} exists. Delete or "
+                    "rename if you want to re-import."
+                ),
+            },
+            status_code=409,
+        )
+    try:
+        target_dir.mkdir(parents=True, exist_ok=False)
+        shutil.copy2(src, target_dir / "SKILL.md")
+    except OSError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    # Drop loader cache + bump prompt-freeze so the next agent turn sees it.
+    loader._cache_key = None  # type: ignore[attr-defined]
+    try:
+        bump_prompt_freeze_generation()
+    except Exception:  # noqa: BLE001
+        pass
+    return JSONResponse({
+        "ok": True,
+        "skill_id": skill_id,
+        "imported_to": str(target_dir / "SKILL.md"),
+    })
+
+
 @router.post("/learned_skills/reload")
 async def reload_learned_skills() -> JSONResponse:
     """B-32: force a rescan of the learned-skills directory + bump

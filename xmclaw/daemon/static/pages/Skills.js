@@ -40,6 +40,96 @@ const I_SPARKLES = "m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1
 
 // ── Panel item (left-rail option button) ─────────────────────────
 
+// B-161: 外部技能导入面板。列出 ~/.agents/skills/ + ~/.claude/skills/
+// 下的 SKILL.md，让用户挑选 import 进 XMclaw 私有目录。
+// 改装路径策略：默认不扫共享目录，避免跨 agent 信任污染。
+function ImportExternalSkills({ token, onImported }) {
+  const [data, setData] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(null);
+
+  const load = () => {
+    apiGet("/api/v2/auto_evo/learned_skills/discoverable", token)
+      .then((d) => setData(d))
+      .catch(() => setData({ candidates: [] }));
+  };
+
+  useEffect(() => {
+    if (open && data === null) load();
+  }, [open]);
+
+  const onImport = async (sourcePath) => {
+    setBusy(sourcePath);
+    try {
+      const url = "/api/v2/auto_evo/learned_skills/import"
+        + (token ? `?token=${encodeURIComponent(token)}` : "");
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_path: sourcePath }),
+      });
+      const d = await r.json();
+      if (!r.ok || d.error || d.ok === false) throw new Error(d.error || `HTTP ${r.status}`);
+      toast.success("已导入");
+      load();
+      if (onImported) onImported();
+    } catch (e) {
+      toast.error("导入失败：" + (e.message || e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const candidates = data?.candidates || [];
+  const importable = candidates.filter((c) => !c.already_imported);
+
+  return html`
+    <details
+      open=${open}
+      onToggle=${(e) => setOpen(e.target.open)}
+      style="margin:.5rem 0;padding:.5rem .7rem;border:1px solid var(--color-border);border-radius:6px;background:color-mix(in srgb, var(--midground) 4%, transparent)"
+    >
+      <summary style="cursor:pointer;font-size:.85rem">
+        <strong>📥 从其他 agent 路径导入技能</strong>
+        ${candidates.length
+          ? html`<span class="xmc-h-badge xmc-h-badge--info" style="margin-left:.4rem">发现 ${candidates.length} 个</span>`
+          : null}
+        <small style="opacity:.7;margin-left:.4rem">扫 ~/.agents/skills/ + ~/.claude/skills/，挑选要的导进 XMclaw 私有目录</small>
+      </summary>
+      ${data === null
+        ? html`<p style="margin:.5rem 0;font-size:.78rem;opacity:.7">加载中…</p>`
+        : candidates.length === 0
+          ? html`<p style="margin:.5rem 0;font-size:.78rem;opacity:.7">~/.agents/skills/ 和 ~/.claude/skills/ 都为空。装新技能可用 <code>npx skills add &lt;url&gt;</code> 后回这里导入。</p>`
+          : html`<ul style="list-style:none;padding:0;margin:.5rem 0 0;display:grid;gap:.3rem">
+              ${candidates.map((c) => html`
+                <li key=${c.source_path} style="display:flex;align-items:center;gap:.5rem;padding:.4rem .55rem;border:1px solid var(--color-border);border-radius:4px;${c.already_imported ? "opacity:.55" : ""}">
+                  <strong style="font-family:var(--xmc-font-mono);font-size:.8rem">${c.skill_id}</strong>
+                  <span class="xmc-h-badge xmc-h-badge--muted" style="font-size:.6rem">${c.source_label}</span>
+                  ${c.already_imported
+                    ? html`<span class="xmc-h-badge xmc-h-badge--success" style="font-size:.6rem">已导入</span>`
+                    : null}
+                  <small style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.7;font-size:.7rem">${c.description || c.source_path}</small>
+                  ${!c.already_imported
+                    ? html`<button
+                        class="xmc-h-btn"
+                        style="padding:.15rem .55rem;font-size:.72rem"
+                        disabled=${busy === c.source_path}
+                        onClick=${() => onImport(c.source_path)}
+                      >${busy === c.source_path ? "导入中…" : "导入"}</button>`
+                    : null}
+                </li>
+              `)}
+              ${importable.length > 1
+                ? html`<li style="padding:.3rem .55rem;font-size:.7rem;opacity:.7">
+                    💡 导入后 SKILL.md 文件 copy 到 ${data?.private_root}，下次 agent 即可使用。
+                    源文件保留原位（不删），其他 agent 可继续读。
+                  </li>`
+                : null}
+            </ul>`}
+    </details>
+  `;
+}
+
 function PanelItem({ icon, label, active, onClick, count }) {
   return html`
     <button
@@ -216,6 +306,17 @@ export function SkillsPage({ token }) {
       .catch((e) => toast.error("刷新失败：" + (e.message || e)));
   };
 
+  // B-161: full reload covers both registry + learned skills + scanned roots.
+  const reloadAll = () => {
+    reload();
+    apiGet("/api/v2/auto_evo/learned_skills?include_disabled=1", token)
+      .then((d) => {
+        setLearned(d.skills || []);
+        setScannedRoots(d.scanned_roots || []);
+      })
+      .catch(() => {});
+  };
+
   // B-115: manual promote — anti-req #12 requires non-empty evidence,
   // so we prompt the user via a textarea-in-confirm (keeps the existing
   // dialog API minimal). Empty input cancels.
@@ -308,7 +409,7 @@ export function SkillsPage({ token }) {
       ${scannedRoots.length ? html`
         <details style="margin:.5rem 0;padding:.5rem .7rem;border:1px solid var(--color-border);border-radius:6px;background:color-mix(in srgb, var(--midground) 4%, transparent)">
           <summary style="cursor:pointer;font-size:.85rem">
-            <strong>📂 扫描路径</strong> <small style="opacity:.7">(B-149 — 多目录扫描，自动识别 skills.sh / Claude Code 安装的 SKILL.md)</small>
+            <strong>📂 扫描路径</strong> <small style="opacity:.7">(B-161 — XMclaw 默认只扫私有目录，外部 skills 显式导入)</small>
           </summary>
           <ul style="list-style:none;padding:.4rem 0 0;margin:0;font-size:.78rem">
             ${scannedRoots.map((r) => html`
@@ -320,7 +421,13 @@ export function SkillsPage({ token }) {
               </li>
             `)}
           </ul>
+          <p style="margin:.5rem 0 0;font-size:.72rem;opacity:.75;line-height:1.5">
+            <strong>B-161 隔离策略：</strong>不再自动扫描 <code>~/.agents/skills/</code> /
+            <code>~/.claude/skills/</code>（其他 agent 共享路径），避免供应链攻击 + 跨 agent 污染。
+            想用那边的技能 → 下方"导入外部技能"显式 copy 一份到私有目录。
+          </p>
         </details>
+        <${ImportExternalSkills} token=${token} onImported=${reloadAll} />
       ` : null}
 
       <div class="xmc-h-page__body xmc-h-skills__body">

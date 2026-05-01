@@ -616,25 +616,23 @@ def default_learned_skills_loader() -> LearnedSkillsLoader:
             except Exception:  # noqa: BLE001
                 return None
 
-        # B-149: standard cross-agent SKILL.md install paths.
-        # `npx skills add ...` (skills.sh CLI) writes to ~/.agents/skills/;
-        # Claude Code uses ~/.claude/skills/. By auto-scanning these
-        # paths XMclaw recognises skills the user installed via any
-        # peer ecosystem without manual copy/symlink.
+        # B-162: 路径就一个 — ~/.xmclaw/auto_evo/skills/。装在哪、扫
+        # 在哪、用在哪全是这一个。不再扫 ~/.agents/ 或 ~/.claude/ 共
+        # 享目录 — XMclaw 自治，安装动作必须落进这个私有目录才生效。
+        # 已经在 ~/.agents/ 里的旧 skill 通过 import 按钮一次性搬过来。
+        # 高级用户仍可通过 config.evolution.skill_paths.extra 加路径。
         from pathlib import Path as _Path
-        _extra_roots = [
-            _Path.home() / ".agents" / "skills",  # skills.sh / OpenClaw
-            _Path.home() / ".claude" / "skills",  # Claude Code
-        ]
-        # Plus project-local: <workspace>/.agents/skills, .claude/skills
+        _extra_roots: list[_Path] = []
         try:
-            ws_path = _ws_provider()
-            if ws_path is not None:
-                ws_p = _Path(str(ws_path))
-                _extra_roots.extend([
-                    ws_p / ".agents" / "skills",
-                    ws_p / ".claude" / "skills",
-                ])
+            from xmclaw.daemon import app as _app_mod
+            state = getattr(_app_mod, "_LAST_APP_STATE", None)
+            cfg = getattr(state, "config", None) if state else None
+            if isinstance(cfg, dict):
+                evo = (cfg.get("evolution") or {})
+                paths_cfg = evo.get("skill_paths") or {}
+                raw_extra = paths_cfg.get("extra")
+                if isinstance(raw_extra, list):
+                    _extra_roots = [_Path(p).expanduser() for p in raw_extra if isinstance(p, str) and p.strip()]
         except Exception:  # noqa: BLE001
             pass
 
