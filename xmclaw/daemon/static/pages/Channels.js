@@ -178,11 +178,12 @@ export function ChannelsPage({ token }) {
   return html`
     <section class="xmc-datapage" aria-labelledby="channels-title">
       <header class="xmc-datapage__header">
-        <h2 id="channels-title">外部聊天接入</h2>
+        <h2 id="channels-title">聊天接入（入站）</h2>
         <p class="xmc-datapage__subtitle">
-          双向 channel adapter — 在第三方 IM 群里 @机器人，bot 走 agent
-          流程答话。区别于"集成"：集成是 agent 主动出站发通知，channel
-          是入站对话。
+          <strong>入站方向</strong>：第三方群里 @机器人 → bot 走 agent
+          流程答话回去。区别于<strong>出站集成</strong>（agent 主动调
+          <code>feishu_send</code>/<code>slack_send</code> 发通知 — 那个在
+          <a href="#/config">高级配置 → integrations</a> 配凭据）。
           已实现 ${readyCount} / ${channels.length}，运行中 ${runningCount}。
           <strong>改完保存后需重启 daemon</strong>（adapter 启动时绑凭据）。
         </p>

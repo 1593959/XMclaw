@@ -216,9 +216,19 @@ export function ConfigPage({ token }) {
 
   useEffect(() => { load(); }, [load]);
 
+  // B-153: hide categories that have a dedicated friendly UI elsewhere.
+  // 三处都能改 LLM block 只会让用户懵 — 这里直接砍掉，引导去 设置。
+  // channels (B-147 聊天接入页) 同理。
+  // integrations 暂留 (出站工具凭据如 slack_bot_token 还没专属页)。
+  const HIDDEN_CATEGORIES = new Set([
+    "llm",          // → 设置
+    "channels",     // → 聊天接入
+  ]);
   const categories = useMemo(() => {
     if (!draft) return [];
-    return Object.keys(draft).filter((k) => !k.startsWith("_"));
+    return Object.keys(draft)
+      .filter((k) => !k.startsWith("_"))
+      .filter((k) => !HIDDEN_CATEGORIES.has(k));
   }, [draft]);
 
   useEffect(() => {
@@ -318,11 +328,12 @@ export function ConfigPage({ token }) {
         <div class="xmc-h-page__heading">
           <h2 id="config-title" class="xmc-h-page__title">高级配置</h2>
           <p class="xmc-h-page__subtitle">
-            daemon/config.json 的字段级编辑器（power user）。LLM key / 模型 /
-            音频 用 <a href="#/settings">设置</a> 更友好。这里覆盖
-            memory / security / MCP / 插件 / 工具权限等设置 没管的字段。
-            <strong>留空 secret 字段</strong>（显示为 redacted）则保留现有值；
-            LLM/runtime 改动需重启 daemon。
+            daemon/config.json 的字段级编辑器（power user）。
+            <strong>LLM / 模型 / 音频</strong>请去 <a href="#/settings">设置</a>，
+            <strong>聊天接入</strong>（飞书 / 钉钉 等入站机器人）请去
+            <a href="#/channels">聊天接入</a>。这里只覆盖那些没有专属页的字段：
+            memory / security / MCP / 工具权限 / 网关 / 出站集成凭据 等。
+            <strong>留空 secret 字段</strong>（显示为 redacted）则保留现有值。
           </p>
         </div>
         <div class="xmc-h-page__actions">

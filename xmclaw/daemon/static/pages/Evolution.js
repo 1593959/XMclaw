@@ -176,92 +176,13 @@ function AutoEvoPanel({ token }) {
           : null}
       </div>
 
-      <h3 style="margin:1rem 0 .5rem">已学技能（agent 实际可调用）${(learnedSkills || []).length ? ` (${learnedSkills.length})` : ""}</h3>
-      <p class="xmc-datapage__subtitle" style="margin-bottom:.5rem">
-        这些 SKILL.md 已被 LearnedSkillsLoader 注入到 system prompt — agent 在下一轮对话能直接读到、按 trigger 触发。
-        Gene/Capsule 是调度器内部状态，<strong>真正能用的是这里列出的 Skill</strong>。
+      <!-- B-155: 已学技能列表已搬到 /技能 页（B-150 统一视图）。
+           这里只留一句引导，避免一项数据两处呈现造成的"乱"。 -->
+      <p class="xmc-datapage__subtitle" style="margin:1rem 0 .8rem;padding:.5rem .7rem;border-left:3px solid var(--color-primary, #6aa3f0);background:color-mix(in srgb, var(--color-primary, #6aa3f0) 6%, transparent);border-radius:4px">
+        📦 ${(learnedSkills || []).length} 个已学技能（agent 可调用）— 完整列表 + 启停 + 来源路径请去
+        <a href="#/skills"><strong>技能页</strong></a>查看。本页专注 xm-auto-evo
+        生命周期（gene / capsule / 调用流）。
       </p>
-      ${(learnedSkills || []).length === 0
-        ? html`<p class="xmc-datapage__empty">还没有 — 当 xm-auto-evo 检测到重复模式后会自动生成</p>`
-        : html`
-            <ul class="xmc-datapage__list">
-              ${(learnedSkills || []).slice(0, 20).map((s) => {
-                const triggers = (s.triggers || []).slice(0, 4);
-                const invokes = s.invocation_count || 0;
-                const invokes30d = s.invocation_count_30d || 0;
-                const isStale = !!s.is_stale;
-                const outcomes = s.outcomes || { success: 0, partial: 0, error: 0 };
-                const totalOut = (outcomes.success || 0) + (outcomes.partial || 0) + (outcomes.error || 0);
-                const successRate = totalOut > 0
-                  ? Math.round((outcomes.success || 0) * 100 / totalOut)
-                  : null;
-                const isDisabled = !!s.disabled;
-                const onToggle = async () => {
-                  try {
-                    await postJson(
-                      `/api/v2/auto_evo/learned_skills/${encodeURIComponent(s.skill_id)}/disable`,
-                      token,
-                      { disabled: !isDisabled },
-                    );
-                    toast.success(isDisabled ? `${s.skill_id} 已恢复` : `${s.skill_id} 已暂停`);
-                    loadAll();
-                  } catch (e) {
-                    toast.error(`切换失败: ${e.message || e}`);
-                  }
-                };
-                return html`
-                  <li class="xmc-datapage__row" key=${s.skill_id}
-                      style=${isDisabled ? "opacity:.55" : ""}>
-                    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:.5rem;flex-wrap:wrap">
-                      <strong>${s.title || s.skill_id}</strong>
-                      <span style="display:flex;gap:.4rem;align-items:center">
-                        ${isDisabled
-                          ? (s.auto_disabled_ts
-                              ? html`<span
-                                  class="xmc-h-badge xmc-h-badge--error"
-                                  title=${`B-36 自动暂停: ${s.auto_disabled_streak || 0} 次连续报错 @ ${formatRelative(s.auto_disabled_ts)}`}
-                                >🚫 auto-停 (${s.auto_disabled_streak || "?"} err)</span>`
-                              : html`<span class="xmc-h-badge xmc-h-badge--warn" title="已暂停 - agent 看不到">⏸ 暂停</span>`)
-                          : null}
-                        ${isStale && !isDisabled
-                          ? html`<span class="xmc-h-badge xmc-h-badge--warn" title="60+ 天未触发且最近 30 天 0 调用 — 考虑暂停">🕸 stale</span>`
-                          : null}
-                        ${invokes > 0
-                          ? html`<span class="xmc-h-badge xmc-h-badge--success" title=${`总计调用 ${invokes} 次，最近 30 天 ${invokes30d} 次（B-120）`}>⚡ ${invokes}${invokes30d > 0 ? ` · ${invokes30d}/30d` : ""}</span>`
-                          : html`<span class="xmc-h-badge xmc-h-badge--muted" title="尚未观察到调用">0 用</span>`}
-                        ${successRate !== null
-                          ? html`<span
-                              class=${"xmc-h-badge xmc-h-badge--" + (successRate >= 80 ? "success" : successRate >= 50 ? "warn" : "error")}
-                              title=${`${outcomes.success || 0} 成功 / ${outcomes.partial || 0} 部分 / ${outcomes.error || 0} 失败 (B-35)`}
-                            >${successRate}% ✓</span>`
-                          : null}
-                        <code style="font-size:.7rem;color:var(--xmc-fg-muted)">${s.skill_id}</code>
-                        <button
-                          class="xmc-h-btn xmc-h-btn--ghost"
-                          style="padding:.15rem .5rem;font-size:.7rem"
-                          title=${isDisabled ? "恢复 - agent 下一轮重新看到" : "暂停 - 写 disabled:true 到 SKILL.md frontmatter"}
-                          onClick=${onToggle}
-                        >${isDisabled ? "恢复" : "暂停"}</button>
-                      </span>
-                    </div>
-                    ${s.description
-                      ? html`<small style="display:block;margin-top:.2rem;color:var(--xmc-fg-muted)">${s.description.slice(0, 160)}</small>`
-                      : null}
-                    ${s.last_fired_ts
-                      ? html`<small style="display:block;margin-top:.15rem;color:var(--xmc-fg-muted);font-size:.7rem">最近触发: ${formatRelative(s.last_fired_ts)}</small>`
-                      : null}
-                    ${triggers.length
-                      ? html`
-                          <div style="margin-top:.3rem;display:flex;gap:.3rem;flex-wrap:wrap">
-                            ${triggers.map((t) => html`<code style="font-size:.7rem;background:color-mix(in srgb, var(--color-primary, #6aa3f0) 12%, transparent);padding:1px 6px;border-radius:4px" key=${t}>${t}</code>`)}
-                          </div>
-                        `
-                      : html`<small style="margin-top:.2rem;display:block;color:var(--xmc-fg-muted);font-size:.7rem">⚠ 这个 SKILL 没有 trigger，agent 可能不知道何时调它（B-23 已修写入器）</small>`}
-                  </li>
-                `;
-              })}
-            </ul>
-          `}
 
       <h3 style="margin:1rem 0 .5rem">已注册 Gene (${(genes || []).length})</h3>
       ${(genes || []).length === 0

@@ -99,7 +99,7 @@ const NAV_GROUPS = [
       { path: "/chat",      label: "对话",     icon: "Terminal" },
       { path: "/sessions",  label: "会话",     icon: "MessageSquare" },
       { path: "/agents",    label: "智能体",   icon: "Heart" },
-      { path: "/channels",  label: "聊天接入", icon: "MessageSquare" },
+      { path: "/channels",  label: "聊天接入（入站）", icon: "MessageSquare" },
     ],
   },
   {
