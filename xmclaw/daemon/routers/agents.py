@@ -46,11 +46,85 @@ def _manager(request: Request) -> MultiAgentManager | None:
 
 
 def _workspace_summary(agent_id: str, ws, *, is_primary: bool) -> dict:
-    return {
+    """B-131: enrich the agent row with what UIs need to make sense of it.
+
+    Returns kind / model / tool_count / system_prompt preview so the
+    UI doesn't show 8 rows of indistinguishable agent_ids.
+    """
+    base: dict = {
         "agent_id": agent_id,
         "ready": ws.is_ready() if ws is not None else True,
         "primary": is_primary,
+        "kind": "llm",
     }
+    if ws is None:
+        return base
+    kind = getattr(ws, "kind", "llm")
+    base["kind"] = kind
+    cfg = getattr(ws, "config", None) or {}
+    if isinstance(cfg, dict):
+        llm_cfg = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
+        # Pick the most informative model name we can find. config.llm
+        # has both "provider" + "model" — show "provider/model" so a
+        # row showing two skills with the same model name still
+        # distinguishes them by provider.
+        provider = llm_cfg.get("provider") or ""
+        model = llm_cfg.get("model") or ""
+        if provider and model:
+            base["model"] = f"{provider}/{model}"
+        elif model:
+            base["model"] = model
+        # System prompt preview (first 120 chars) — lets the UI show
+        # WHAT this agent is supposed to do, not just its id.
+        sp = cfg.get("system_prompt") or llm_cfg.get("system_prompt") or ""
+        if isinstance(sp, str) and sp.strip():
+            base["system_prompt_preview"] = sp.strip()[:120]
+    loop = getattr(ws, "agent_loop", None)
+    if loop is not None:
+        tools = getattr(loop, "_tools", None)
+        if tools is not None and hasattr(tools, "list_tools"):
+            try:
+                base["tool_count"] = len(tools.list_tools())
+            except Exception:  # noqa: BLE001 — UI hint only
+                pass
+    return base
+
+
+def _primary_summary(request: Request) -> dict:
+    """B-131: synthesise the same enriched row for the primary agent.
+
+    The primary lives on ``app.state.agent`` instead of the manager —
+    pull config / model from there so 'main' shows up in the UI with
+    parity to user-launched agents.
+    """
+    base: dict = {
+        "agent_id": "main",
+        "ready": True,
+        "primary": True,
+        "kind": "llm",
+    }
+    primary = getattr(request.app.state, "agent", None)
+    if primary is None:
+        return base
+    cfg = getattr(request.app.state, "config", None) or {}
+    if isinstance(cfg, dict):
+        llm_cfg = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
+        provider = llm_cfg.get("provider") or ""
+        model = llm_cfg.get("model") or ""
+        if provider and model:
+            base["model"] = f"{provider}/{model}"
+        elif model:
+            base["model"] = model
+        sp = cfg.get("system_prompt") or llm_cfg.get("system_prompt") or ""
+        if isinstance(sp, str) and sp.strip():
+            base["system_prompt_preview"] = sp.strip()[:120]
+    tools = getattr(primary, "_tools", None)
+    if tools is not None and hasattr(tools, "list_tools"):
+        try:
+            base["tool_count"] = len(tools.list_tools())
+        except Exception:  # noqa: BLE001
+            pass
+    return base
 
 
 @router.get("")
@@ -67,7 +141,7 @@ async def list_agents(request: Request) -> JSONResponse:
     # Synthetic entry for the primary agent, if one exists.
     primary = getattr(request.app.state, "agent", None)
     if primary is not None:
-        items.append({"agent_id": "main", "ready": True, "primary": True})
+        items.append(_primary_summary(request))
 
     if manager is not None:
         for agent_id in manager.list_ids():
