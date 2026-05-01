@@ -870,6 +870,13 @@ def create_app(
         else:
             agent._tools = CompositeToolProvider(agent._tools, _inter)
 
+        # B-135: content tools — screenshot / pdf_read / docx_read /
+        # xlsx_read / clipboard_read|write / image_read. Each tool
+        # degrades gracefully (returns ok=False) when its optional
+        # dep isn't installed; the daemon never refuses to boot.
+        from xmclaw.providers.tool.content import ContentTools
+        agent._tools = CompositeToolProvider(agent._tools, ContentTools())
+
         # B-124: bridge SkillRegistry HEAD entries into the tool surface.
         # Until now, registered Skill subclasses were dead from the
         # agent's perspective — only LearnedSkill (SKILL.md) text made

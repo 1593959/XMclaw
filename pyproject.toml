@@ -54,9 +54,27 @@ dev = [
 #        servers for other languages land as separate extras.
 browser = ["playwright>=1.48.0"]
 lsp     = ["python-lsp-server>=1.12.0"]
+# B-135: content tools — screenshot / image / clipboard / Office docs.
+# pypdf is the PDF text-extractor; mss is the screenshot grabber;
+# pyperclip handles clipboard; python-docx + openpyxl read Word/Excel.
+# `pip install 'xmclaw[content]'` enables the full set.
+content = [
+    "mss>=9.0.0",
+    "pyperclip>=1.9.0",
+    "pypdf>=5.0.0",
+    "python-docx>=1.1.0",
+    "openpyxl>=3.1.0",
+    "Pillow>=11.0.0",
+]
 all     = [
     "playwright>=1.48.0",
     "python-lsp-server>=1.12.0",
+    "mss>=9.0.0",
+    "pyperclip>=1.9.0",
+    "pypdf>=5.0.0",
+    "python-docx>=1.1.0",
+    "openpyxl>=3.1.0",
+    "Pillow>=11.0.0",
 ]
 
 [project.scripts]
