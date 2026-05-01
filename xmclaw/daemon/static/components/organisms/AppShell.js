@@ -86,6 +86,7 @@ const NAV_ITEMS = [
   { path: "/chat",      label: "对话",   icon: "Terminal" },
   { path: "/sessions",  label: "会话",   icon: "MessageSquare" },
   { path: "/agents",    label: "智能体", icon: "Heart" },
+  { path: "/channels",  label: "聊天接入", icon: "MessageSquare" },
   { path: "/skills",    label: "技能",   icon: "Package" },
   { path: "/evolution", label: "进化",   icon: "Sparkles", accent: true },
   { path: "/tools",     label: "工具",   icon: "Wrench" },

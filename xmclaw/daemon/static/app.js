@@ -41,6 +41,7 @@ import { SettingsPage } from "./pages/Settings.js";
 import { DoctorPage } from "./pages/Doctor.js";
 import { ToolsPage } from "./pages/Tools.js";
 import { AgentsPage } from "./pages/Agents.js";
+import { ChannelsPage } from "./pages/Channels.js";
 import { MemoryPage } from "./pages/Memory.js";
 import { SecurityPage } from "./pages/Security.js";
 import { InsightsPage } from "./pages/Insights.js";
@@ -433,14 +434,14 @@ const routes = {
   "/cron": (state) => html`<${CronPage} token=${state.auth.token} />`,
   "/config": (state) => html`<${ConfigPage} token=${state.auth.token} />`,
   "/logs":      (state) => html`<${LogsPage}      token=${state.auth.token} />`,
-  // B-137: /env (旧"密钥"页) 合入 /settings。route 留兼容性 →
-  // 仍然渲染 EnvPage，但导航里不再露出。书签 + 旧 URL 不会 404。
+  // B-137: /env 合入 /settings；route 留兼容性给旧书签。
   "/env":       (state) => html`<${EnvPage}       token=${state.auth.token} />`,
   "/analytics": (state) => html`<${AnalyticsPage} token=${state.auth.token} />`,
   "/docs":      ()      => html`<${DocsPage} />`,
   "/trace":     (state) => html`<${TracePage} token=${state.auth.token} />`,
   "/workspace": (state) => html`<${WorkspacePage} token=${state.auth.token} />`,
   "/agents": (state) => html`<${AgentsPage} token=${state.auth.token} />`,
+  "/channels": (state) => html`<${ChannelsPage} token=${state.auth.token} />`,
   "/skills": (state) => html`<${SkillsPage} token=${state.auth.token} />`,
   "/evolution": (state) => html`<${EvolutionPage} token=${state.auth.token} />`,
   "/memory": (state) => html`<${MemoryPage} token=${state.auth.token} />`,
