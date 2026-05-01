@@ -17,7 +17,9 @@ const { h } = window.__xmc.preact;
 const { useState, useEffect, useMemo } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
-import { apiGet } from "../lib/api.js";
+import { apiGet, apiPost } from "../lib/api.js";
+import { confirmDialog } from "../lib/dialog.js";
+import { toast } from "../lib/toast.js";
 
 // Inline SVG (lucide-react equivalents).
 function Icon({ d, className }) {
@@ -56,7 +58,7 @@ function PanelItem({ icon, label, active, onClick, count }) {
 
 // ── SkillCard — one skill in the content list ────────────────────
 
-function SkillCard({ skill, expanded, onToggle }) {
+function SkillCard({ skill, expanded, onToggle, onPromote, onRollback }) {
   const sourceTone =
     skill.source === "built-in" ? "success"
     : skill.source === "user" ? "warning"
@@ -86,6 +88,25 @@ function SkillCard({ skill, expanded, onToggle }) {
                   <span class="xmc-h-skill-card__verdesc">
                     ${v.manifest?.description || v.manifest?.summary || "—"}
                   </span>
+                  <!-- B-115: per-version promote / rollback. HEAD itself is
+                       neither (clicking HEAD = no-op). Promote when v >
+                       head_version (forward step); rollback when v <. -->
+                  ${!v.is_head && v.version > skill.head_version ? html`
+                    <button
+                      type="button"
+                      class="xmc-h-btn xmc-h-btn--primary"
+                      style="font-size:.7rem;padding:.15rem .5rem"
+                      onClick=${(e) => { e.stopPropagation(); onPromote(skill, v.version); }}
+                    >推到此版本</button>
+                  ` : null}
+                  ${!v.is_head && v.version < skill.head_version ? html`
+                    <button
+                      type="button"
+                      class="xmc-h-btn xmc-h-btn--ghost"
+                      style="font-size:.7rem;padding:.15rem .5rem"
+                      onClick=${(e) => { e.stopPropagation(); onRollback(skill, v.version); }}
+                    >回滚到此版本</button>
+                  ` : null}
                 </li>
               `)}
             </ul>
@@ -146,6 +167,58 @@ export function SkillsPage({ token }) {
       if (next.has(sid)) next.delete(sid); else next.add(sid);
       return next;
     });
+  };
+
+  const reload = () => {
+    apiGet("/api/v2/skills", token)
+      .then((d) => setSkills(d.skills || []))
+      .catch((e) => toast.error("刷新失败：" + (e.message || e)));
+  };
+
+  // B-115: manual promote — anti-req #12 requires non-empty evidence,
+  // so we prompt the user via a textarea-in-confirm (keeps the existing
+  // dialog API minimal). Empty input cancels.
+  const onPromote = async (skill, toVersion) => {
+    const evidence = window.prompt(
+      `推 ${skill.id} 到 v${toVersion}\n\n输入 evidence（必填，至少一行 — 例如 'bench:phase1 +1.12x'）：`,
+    );
+    if (!evidence || !evidence.trim()) return;
+    try {
+      const r = await apiPost(
+        `/api/v2/skills/${encodeURIComponent(skill.id)}/promote`,
+        { to_version: toVersion, evidence: [evidence.trim()] },
+        token,
+      );
+      toast.success(`已推到 v${r.head_version}`);
+      reload();
+    } catch (e) {
+      toast.error("推送失败：" + (e.message || e));
+    }
+  };
+
+  const onRollback = async (skill, toVersion) => {
+    const reason = window.prompt(
+      `把 ${skill.id} 从 v${skill.head_version} 回滚到 v${toVersion}\n\n输入回滚原因（必填）：`,
+    );
+    if (!reason || !reason.trim()) return;
+    const ok = await confirmDialog({
+      title: `确认回滚 ${skill.id}`,
+      body: `从 v${skill.head_version} → v${toVersion}\n\n原因：${reason.trim()}`,
+      confirmLabel: "回滚",
+      confirmTone: "danger",
+    });
+    if (!ok) return;
+    try {
+      const r = await apiPost(
+        `/api/v2/skills/${encodeURIComponent(skill.id)}/rollback`,
+        { to_version: toVersion, reason: reason.trim() },
+        token,
+      );
+      toast.success(`已回滚到 v${r.head_version}`);
+      reload();
+    } catch (e) {
+      toast.error("回滚失败：" + (e.message || e));
+    }
   };
 
   if (error) {
@@ -260,6 +333,8 @@ export function SkillsPage({ token }) {
                     skill=${s}
                     expanded=${expanded.has(s.id)}
                     onToggle=${() => onToggle(s.id)}
+                    onPromote=${onPromote}
+                    onRollback=${onRollback}
                   />
                 `)}
               </div>
