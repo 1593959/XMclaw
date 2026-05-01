@@ -721,10 +721,15 @@ async def list_providers(request: Request) -> JSONResponse:
 
 @router.get("")
 async def list_memory() -> JSONResponse:
-    """Return filename + size + mtime for every ``*.md`` note.
+    """Return filename + size + mtime + frontmatter for every ``*.md`` note.
 
     Response shape: ``{"files": [...]}``. A missing directory yields
     an empty list — a fresh install is a valid state.
+
+    B-139: also peeks at the first ~500 bytes to extract description
+    + tags so the UI can flag notes missing a description (those are
+    invisible to the LLM-picker — major reason agent-written notes
+    don't get recalled).
     """
     mdir = file_memory_dir()
     files: list[dict[str, Any]] = []
@@ -734,11 +739,35 @@ async def list_memory() -> JSONResponse:
                 stat = md.stat()
             except OSError:
                 continue
+            description = ""
+            tags: list[str] = []
+            try:
+                with md.open("r", encoding="utf-8", errors="replace") as f:
+                    head = f.read(800)
+                if head.lstrip().startswith("---"):
+                    block = head.split("---", 2)
+                    if len(block) >= 3:
+                        for ln in block[1].splitlines():
+                            stripped = ln.strip()
+                            if stripped.lower().startswith("description:"):
+                                description = stripped.split(":", 1)[1].strip()
+                            elif stripped.lower().startswith("tags:"):
+                                raw = stripped.split(":", 1)[1].strip()
+                                if raw.startswith("[") and raw.endswith("]"):
+                                    tags = [
+                                        t.strip().strip("\"'")
+                                        for t in raw[1:-1].split(",")
+                                        if t.strip()
+                                    ]
+            except OSError:
+                pass
             files.append({
                 "name": md.name,
                 "path": str(md),
                 "size": stat.st_size,
                 "mtime": stat.st_mtime,
+                "description": description,
+                "tags": tags,
             })
     return JSONResponse({"files": files})
 

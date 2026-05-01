@@ -194,6 +194,11 @@ export function NotesTab({ token }) {
                   ${files.map((f) => {
                     const name = typeof f === "string" ? f : (f.name || f.filename || f.path);
                     const size = f && f.size != null ? f.size : null;
+                    const desc = f && typeof f === "object" ? (f.description || "") : "";
+                    const tags = f && typeof f === "object" ? (f.tags || []) : [];
+                    const noDesc = !desc && size && size > 50;
+                    // B-139: 文件 ≥ 50B 但 frontmatter 没 description →
+                    // LLM-picker 找不到。挂橙色警告角标提醒用户/agent。
                     const isActive = name === active;
                     return html`
                       <li
@@ -203,9 +208,21 @@ export function NotesTab({ token }) {
                         role="button"
                         onClick=${() => open(name)}
                         onKeyDown=${(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(name); } }}
+                        style="display:flex;flex-direction:column;align-items:flex-start;gap:.15rem"
                       >
-                        <strong>${name}</strong>
-                        ${size != null ? html`<small>${size}B</small>` : null}
+                        <div style="display:flex;align-items:center;gap:.4rem;width:100%">
+                          <strong style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${name}</strong>
+                          ${size != null ? html`<small style="opacity:.6;flex:0 0 auto">${size}B</small>` : null}
+                          ${noDesc
+                            ? html`<span class="xmc-h-badge xmc-h-badge--warn" style="font-size:.55rem;padding:0 .3rem" title="frontmatter 没有 description — LLM-picker 找不到这条笔记">⚠ 无 desc</span>`
+                            : null}
+                        </div>
+                        ${desc
+                          ? html`<small style="font-size:.65rem;color:var(--xmc-fg-muted);line-height:1.3;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${desc}</small>`
+                          : null}
+                        ${tags.length
+                          ? html`<small style="font-size:.6rem;opacity:.55">${tags.map((t) => "#" + t).join(" ")}</small>`
+                          : null}
                       </li>
                     `;
                   })}
