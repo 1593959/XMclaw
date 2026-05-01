@@ -410,6 +410,8 @@ def test_default_registry_builtin_check_order() -> None:
         "skill_runtime",
         "connectivity", "roadmap_lint", "pid_lock", "daemon",
         "backups", "secrets",
+        # Epic #24 Phase 1: residual-path scan + grader-wired-into-loop assertion.
+        "evolution_path_hygiene", "evolution_runtime",
     ]
 
 
@@ -482,6 +484,8 @@ def test_run_doctor_still_returns_old_check_result_type(tmp_path: Path) -> None:
         "skill_runtime",
         "connectivity", "roadmap_lint", "pid_lock", "daemon",
         "backups", "secrets",
+        # Epic #24 Phase 1.
+        "evolution path hygiene", "evolution runtime",
     ]
 
 

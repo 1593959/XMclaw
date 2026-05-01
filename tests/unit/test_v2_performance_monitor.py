@@ -20,7 +20,6 @@ from xmclaw.core.performance_monitor import (
     OperationStats,
     OperationTimer,
     PerformanceMonitor,
-    TokenUsage,
     get_performance_monitor,
 )
 

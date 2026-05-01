@@ -10,9 +10,7 @@ Or flip the auto-skip off by removing the ``importorskip`` line.
 """
 from __future__ import annotations
 
-import asyncio
 import shutil
-import sys
 
 import pytest
 

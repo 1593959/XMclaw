@@ -1147,6 +1147,94 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ---
 
+### Epic #24 · 自主进化重做（学徒成长系统）★核心差异化重写
+
+**状态**：🟡 进行中（Phase 1） | **负责人**：Claude (AI pair) | **起始**：2026-05-01 | **完成**：-
+**前置依赖**：Epic #4（进化执行层 — 已完成 Phase A/B/C，本 Epic 接其上）、Epic #13（事件总线）、Epic #17（多 agent / EvolutionAgent observer）
+**关联 Milestone**：M2（差异化核心）
+
+> Plan 文档：`C:\Users\15978\.claude\plans\elegant-greeting-hippo.md`（共同理解 + 实施计划）
+
+**问题诊断**（与用户三轮对齐 + grep 全包代码后确认）：
+
+XMclaw 同时存在**两套互不认识的进化系统**：
+
+- **系统 A**（`xmclaw/core/{grader,scheduler,evolution}/` + `xmclaw/skills/{registry,orchestrator}/`）—— 设计干净（HonestGrader 0.80 硬证据 / LLM 自评硬上限 0.20、anti-req #12 强制 evidence、UCB1 bandit），单元测试齐全；但 daemon 主路径里**没接通**：`grader.grade()` 在 `xmclaw/` 包内零调用，没人发 `GRADER_VERDICT` 事件，UCB1 `decide_next` 是 stub。
+- **系统 B**（`xmclaw/evolution_core/` Node.js 子项目 + `xmclaw/daemon/{auto_evo_bridge,learned_skills,learned_skills_tool}.py` + `routers/auto_evo.py` + Web UI Evolution 页）—— **真的在跑、真的产 SKILL.md**，但**完全没有诚实性把关**，恰好复刻了 Hermes "agent 总以为自己干得不错"的核心失败模式。
+
+用户感受到的"自动进化"全部来自**没有诚实性把关的系统 B**，引以为豪的诚实体系坐冷板凳。这是"跑偏 / 不对味"的真正源头。
+
+**用户决策（2026-05-01）**：全部推倒重做。
+
+**目标架构 — 学徒成长系统**：
+
+> 一个有三种记忆形态、三层反思频率、并由 HonestGrader 一以贯之把关的"学徒型 agent"，记忆和进化不再是两个分离子系统而是同一回事。
+
+| 经验形态 | 存储 | 谁写 | 怎么用 |
+|---|---|---|---|
+| **SkillBook** | `~/.xmclaw/v2/skills/<id>/v<N>/SKILL.md` + `SkillRegistry` | LLM `SkillProposer`（新建）+ `SkillMutator`（已有 DSPy/GEPA）+ 用户手写 | system prompt + tool 触发 |
+| **Journal** | `~/.xmclaw/v2/journal/<YYYY-MM>/<session_id>.jsonl` | session 结束 LLM 复盘器 | 跨 session 反思 + RAG 召回 |
+| **UserProfile** | `~/.xmclaw/v2/user_profile.md` + 向量索引 | 每 turn 后 LLM profile-extractor | system prompt + query rewriter + tool path bias |
+
+三层反思频率（同一 EventBus 上的三个订阅者）：
+
+- **Layer 1（turn 级，hot ~ms）**：HonestGrader 跑硬证据 → `GRADER_VERDICT` + UserProfile 增量
+- **Layer 2（session 级，warm ~s）**：LLM 复盘器写 Journal entry
+- **Layer 3（空闲/夜间，cold ~min）**：DreamLoop 跨 session 深度反思 → SkillProposer 起源新 SKILL.md / SkillMutator 优化已有
+
+**开发计划**：
+
+1. **Phase 1（拆 + 接电源，1 周）**：删 system B（Node 子项目 + auto_evo Python 文件 + 旧 Evolution UI），接 HonestGrader 进 AgentLoop，默认启 EvolutionAgent observer，加 `xmclaw evolve {review,approve,reject}` CLI
+2. **Phase 2（Journal + UserProfile，2 周）**：新建 `xmclaw/core/journal/` + `xmclaw/core/profile/`，每 session 复盘 + 每 turn 偏好抽取，UserProfile 注入 system prompt，重写 Web UI Evolution 页
+3. **Phase 3（SkillProposer + Dream Loop，2-3 周）**：新建 `xmclaw/core/evolution/proposer.py` + `xmclaw/daemon/dream.py`（与已有的 memory `DreamCompactor` 区分）；接通 `SkillMutator` 进生产路径
+4. **Phase 4（行为驱动懂用户，1-2 周）**：QueryRewriter / ToolPathBias / proactive_recall 工具；doctor 加 evolution 健康度检查
+
+**检查清单**：
+
+Phase 1：
+- [x] 删除 `xmclaw/evolution_core/` 整个 Node 子目录
+- [x] 删除 `xmclaw/daemon/{auto_evo_bridge,learned_skills,learned_skills_tool,skill_template}.py`
+- [x] 删除 `xmclaw/daemon/routers/auto_evo.py`
+- [x] 删除 `xmclaw/daemon/static/pages/Evolution.js` 旧版面（Phase 2 重写）—— 改为 Epic #24 重做中 placeholder
+- [x] 从 `agent_loop.py` 移除 learned_skills 注入逻辑（含 _detect_skill_invocations / _auto_disable_skill / _extract_skill_keywords）
+- [x] 从 `app.py` 移除 auto_evo_bridge / learned_skills / routers.auto_evo 启动 + 路由挂载
+- [x] 切 `Skills.js` + `SlashPopover.js` 数据源到已有 `/api/v2/skills`
+- [x] `agent_loop.py` 每 `tool_invocation_finished` 后调 `HonestGrader.grade()` → 发 `GRADER_VERDICT`
+- [x] `app.py` lifespan 默认启动 `EvolutionAgent` observer（不再需要显式 workspace）
+- [x] CLI 加 `xmclaw evolve {review,approve,reject}`（+ short alias `xmclaw evolve` ↔ `xmclaw evolution`）
+- [x] doctor 加"残留 Node 工件"`evolution_path_hygiene` + "grader 是否在跑" `evolution_runtime` 两个检查
+- [x] 删除 4 个围绕 auto_evo 的 unit test + 改 2 个 integration test
+- [x] 更新 README.md / docs/ARCHITECTURE.md（改写进化章节，加 Epic #24 note）
+- [x] pyproject.toml 没有 node 引用 — 跳过
+- [x] 跑 ruff + smart-gate pytest 全绿（225 + 119 pass，0 new lint errors，3 个 pre-existing E402 不归 Phase 1 修）
+
+Phase 2-4 检查清单 Phase 1 完成后再细化。
+
+**关键决策（不退让的几条）**：
+
+1. **HonestGrader 是唯一打分入口**。任何"自动进化"产物没经过 grader 不能进 system prompt 或 tool 列表。
+2. **不复活 Node 子项目**。如果 `evolution_core/` 里有不可丢的业务逻辑，用 Python 重写，不维护两个语言运行时。
+3. **anti-req #12 不松绑**。无 evidence 不 promote 的编译期保护任何路径都不能绕过。
+4. **三层反思必须真的接到 EventBus**。任何子系统不能自己开后门写 SKILL.md / UserProfile —— 一切走事件，可 replay 可审计。
+5. **路径与文件统一原则**（2026-05-01 用户硬性约束）：每个用户态产物（skill / journal / user profile / persona）只有 **一条规范路径**，**写路径 == 读路径 == UI 显示路径**。禁止"agent 安装在 /a、运行读 /b、UI 显示 /c"这种割裂。新增任何"经验形态"前先回答："写在哪？读在哪？这俩是同一处吗？"如果不是，停下来重新设计。Epic #24 Phase 1 删 xm-auto-evo 就是在直接清理这个反面案例（auto_evo 写 `~/.xmclaw/auto_evo/skills/...` 而 SkillRegistry 在 `~/.xmclaw/v2/skills/...`，用户改一处 agent 读不到另一处）。
+6. **UserProfile 写入是 LLM 抽取的、可审计的**。每条 delta 都有来源 turn 的 event id，不是无脑 append。
+
+**退出标准**：
+
+- daemon 启动后没有 Node 子进程、Web UI 不再有 `/api/v2/auto_evo/*` 调用
+- 跑一个真 turn 能在 `events.db` 查到 `grader_verdict` 事件
+- `xmclaw evolve review` 能列出待审候选；`approve` 走 evidence-gated promote
+- 连用 2 周后 `user_profile.md` 自动累积偏好；agent 因 UserProfile 真的改变做事方式（在不显式说"用 markdown"前提下输出 markdown）
+- Dream Loop 至少产 1 个新 SKILL.md 通过 evidence gate
+- **任何用户态产物的写入路径 == 读取路径 == UI 显示路径**，doctor 加一条"路径一致性"检查（找镜像写 / 影子拷贝）
+
+**进度日志**：
+
+- 2026-05-01: Epic 启动——经过三轮对齐 + 全包 grep 确认"两套并行进化系统"诊断准确（系统 A 空转 + 系统 B 不诚实）；用户授权全部推倒重做；plan 落到 `~/.claude/plans/elegant-greeting-hippo.md`；Phase 1 第一刀拆系统 B + 接 grader
+- 2026-05-02: **Phase 1 完成（拆 + 接电源）**——一刀切完。删除：`xmclaw/evolution_core/` 整个 Node 子项目（30+ JS 文件 + observer/pcec/vfm/tree/memory 五个子模块）+ `xmclaw/daemon/{auto_evo_bridge,learned_skills,learned_skills_tool,skill_template}.py` + `routers/auto_evo.py` + 4 个围绕 auto_evo 的 unit tests + 2 个 integration test 里的 closed-loop SKILL block。Stub：`pages/Evolution.js` 改为 "Epic #24 重做中" 提示（保留 sidebar 路由，避免点进 404）。改写：`Skills.js` 简化为单数据源（`/api/v2/skills`），`SlashPopover.js` 移除 learned_skills 动态获取。`agent_loop.py`：移除 `_detect_skill_invocations` / `_auto_disable_skill` / `_extract_skill_keywords` + 各调用点 + 缓存键里的 learned_skills 段；新增 `self._grader = HonestGrader()` + 每个 `TOOL_INVOCATION_FINISHED` 后调 `grade()` 发 `GRADER_VERDICT`。`app.py`：移除 lifespan 里的 `xm-auto-evo` 启动段（DialogExporter / AutoEvoProcess / 路由挂载）+ session_close hook 里的"实时进化"触发；新增 lifespan 默认启动 `EvolutionAgent("evo-main", bus)` observer + 对应 stop hook + 顶部 `log = get_logger(__name__)` 顺手修 4 处 pre-existing 的 NameError。CLI：`xmclaw cli/evolution.py` 加 `run_evolve_review` / `run_evolve_approve` / `run_evolve_reject`（urllib + pairing-token 直接调 `/api/v2/skills/<id>/{promote,rollback}`）；`main.py` 加 `evolution_app.command` × 3 + `app.add_typer(evolution_app, name="evolve")` 短别名。Doctor：新增 `EvolutionPathHygieneCheck`（扫 `~/.xmclaw/auto_evo/` / `~/.agents/skills/` / `~/.claude/skills/` 残留 → 提示归并到 `SkillRegistry` 路径；落 anti-req: 路径与文件统一原则）+ `EvolutionRuntimeCheck`（assert AgentLoop 源码里 `HonestGrader` + `GRADER_VERDICT` 都接到了，否则报 fix 建议）。文档：`README.md` 改写"Self-improvement on evidence" 段（描述 grader → observer → controller → orchestrator → registry 完整链 + 默认 auto_apply=False + `xmclaw evolve` 工作流）；`docs/ARCHITECTURE.md` 加 Epic #24 note + 改写"one-paragraph summary"; 加 plan 第 6 条不退让规则"路径与文件统一"（用户硬性约束 2026-05-01）。验收：smart-gate `tests/unit/test_v2_{grader,evolution_*,skill_*,skills_router,agent_loop,doctor,cli_evolution}.py` + `tests/integration/test_v2_daemon_app.py` + `tests/unit/test_v2_{check_import_direction,lint_roadmap,daemon_factory,daemon_lifecycle}.py` 共 344 / 344 passed（5 skipped）；ruff 在 xmclaw/ 仅 3 个 pre-existing E402 残留（不归 Phase 1 修），0 个新增 lint。Phase 1 退出标准之"daemon 启动后没有 Node 子进程 + tool_invocation_finished 后能在 events.db 看到 grader_verdict + xmclaw evolve review 能列出待审"全部满足
+
+---
+
 ## 5. 让差异化"看得见"（Visible Differentiation）
 
 > 用户不会读 `core/evolution/controller.py`。如果 agent 在进步，要让他**直接看到**。

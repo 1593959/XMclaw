@@ -5,7 +5,6 @@ the one test that exercises ``complete`` end-to-end on a faked response.
 """
 from __future__ import annotations
 
-import types
 from dataclasses import dataclass
 
 import pytest

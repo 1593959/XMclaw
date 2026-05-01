@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import subprocess
 import sqlite3
 import time
@@ -163,8 +162,9 @@ async def open_ws(sid: str):
 
 
 def baseline() -> dict:
+    """Snapshot key user-state counters. Epic #24 Phase 1 dropped
+    genes_count / capsules_count (lived in /api/v2/auto_evo/*, deleted)."""
     persona_root = Path.home() / ".xmclaw" / "persona" / "profiles" / "default"
-    auto_evo = Path.home() / ".xmclaw" / "auto_evo"
     sidecar = persona_root / ".agent_writes.jsonl"
     return {
         "memory_size": (persona_root / "MEMORY.md").stat().st_size if (persona_root / "MEMORY.md").is_file() else 0,
@@ -172,8 +172,6 @@ def baseline() -> dict:
         "sidecar_lines": len(sidecar.read_text(encoding="utf-8").splitlines()) if sidecar.is_file() else 0,
         "events_count": _events_count(),
         "sessions_count": len(get("/api/v2/sessions?limit=200")["sessions"]),
-        "genes_count": len(get("/api/v2/auto_evo/genes")["genes"]),
-        "capsules_count": len(get("/api/v2/auto_evo/capsules?tail=500")["capsules"]),
     }
 
 
@@ -255,10 +253,10 @@ async def flow_a():
         print(f"  {f}")
 
     # Print actual additions for inspection
-    print(f"\n  USER.md tail (最近 25 行):")
+    print("\n  USER.md tail (最近 25 行):")
     for ln in user_md.splitlines()[-25:]:
         print(f"     {_ascii(ln, 100)}")
-    print(f"\n  MEMORY.md tail (最近 15 行):")
+    print("\n  MEMORY.md tail (最近 15 行):")
     for ln in memory_md.splitlines()[-15:]:
         print(f"     {_ascii(ln, 100)}")
 
@@ -291,82 +289,11 @@ async def flow_a():
 
 
 # ──────────────────────────────────────────────────────────────────
-# FLOW B — closed-loop SKILL execution under realistic trigger
+# FLOW B (Epic #24 Phase 1) — Closed-loop SKILL execution test removed
+# along with the xm-auto-evo `~/.xmclaw/auto_evo/skills/` path. Phase 3
+# reintroduces this as a real `SkillRegistry`-backed test that goes
+# through HonestGrader before anything reaches the agent's prompt.
 # ──────────────────────────────────────────────────────────────────
-
-
-async def flow_b():
-    hr("FLOW B — Closed-loop SKILL execution")
-    skills_dir = Path.home() / ".xmclaw" / "auto_evo" / "skills" / "auto_realflow_b"
-    skills_dir.mkdir(parents=True, exist_ok=True)
-    skill_path = skills_dir / "SKILL.md"
-
-    skill_path.write_text("""---
-name: auto_realflow_b
-description: "项目状态快照 — 当用户请求项目状态报告时执行"
-signals_match:
-  - intent:project_status
-  - "请求项目状态"
----
-
-# auto_realflow_b — 项目状态快照
-
-当用户说"项目状态怎么样"或类似请求时，按以下步骤：
-
-1. 用 `list_dir` 工具列出当前活动 workspace 根的内容
-2. 用 `bash` 跑 `git status` 看变更
-3. 总结：文件总数 + 最近活跃文件 + 当前 git 状态
-
-末尾必须包含字面字符串 `[REALFLOW-B-SKILL-EXECUTED]` 作为完成标记。
-""", encoding="utf-8")
-
-    step("Plant SKILL → verify learned_skills API picks it up immediately")
-    r = get("/api/v2/auto_evo/learned_skills")
-    if any(s["skill_id"] == "auto_realflow_b" for s in r["skills"]):
-        print("  [PASS] /api/v2/auto_evo/learned_skills 立刻看到")
-    else:
-        print(f"  [FAIL] 没看到. ids={[s['skill_id'] for s in r['skills']]}")
-
-    step("Trigger via natural language — agent should follow procedure")
-    sid = f"flow-b-{int(time.time())}"
-    async with await open_ws(sid) as ws:
-        r = await turn(ws, "项目状态怎么样？给我看一下", hop_timeout=120.0)
-
-    text = r["final_text"]
-    tools = [t["name"] for t in r["tool_calls"]]
-    print(f"  reply: {_ascii(text, 240)!r}")
-    print(f"  tools called: {tools}")
-    print(f"  events: {r['events'][:30]}")
-
-    has_marker = "[REALFLOW-B-SKILL-EXECUTED]" in text
-    used_list_dir = "list_dir" in tools
-    used_bash = "bash" in tools
-    # Paraphrase fallback — model may refuse to echo a literal token
-    # but clearly executed the SKILL if it called list_dir+bash and
-    # produced a non-trivial status report.
-    paraphrase_ok = used_list_dir and used_bash and len(text) > 80
-
-    if has_marker:
-        print("  [PASS] SKILL 完成标记出现 — agent 真的读了 SKILL.md 并执行")
-    elif paraphrase_ok:
-        print("  [PASS] SKILL 执行（paraphrase）— 调了 list_dir+bash 并产出状态报告")
-    else:
-        print("  [FAIL] 完成标记缺失 — agent 没按 SKILL 走流程")
-    if used_list_dir:
-        print("  [PASS] 调用了 list_dir")
-    else:
-        print("  [WARN] 没调 list_dir（model 可能换了等价路径）")
-    if used_bash:
-        print("  [PASS] 调用了 bash")
-    else:
-        print("  [WARN] 没调 bash")
-
-    # Cleanup
-    skill_path.unlink(missing_ok=True)
-    try:
-        skills_dir.rmdir()
-    except OSError:
-        pass
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -475,7 +402,7 @@ async def flow_d():
 
 def flow_e():
     hr("FLOW E — Security scanner under realistic attack vectors")
-    from xmclaw.security.prompt_scanner import scan_text, Severity
+    from xmclaw.security.prompt_scanner import scan_text
 
     # Simulate a tool result the agent might receive — e.g., scraped
     # web page with injection, or a malicious file content.
@@ -538,7 +465,7 @@ async def main():
     print("█" * 64)
 
     await flow_a()
-    await flow_b()
+    # flow_b removed (Epic #24 Phase 1 — see note above).
     await flow_c()
     await flow_d()
     flow_e()

@@ -12,7 +12,6 @@ browser binary. The tests cover:
 """
 from __future__ import annotations
 
-import asyncio
 import base64
 from dataclasses import dataclass, field
 from typing import Any

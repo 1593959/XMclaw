@@ -18,7 +18,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from xmclaw.core.bus import EventType, InProcessEventBus
-from xmclaw.daemon.agent_loop import AgentLoop
 from xmclaw.daemon.app import create_app
 
 

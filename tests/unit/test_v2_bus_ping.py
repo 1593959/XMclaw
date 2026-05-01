@@ -4,7 +4,6 @@ If this fails the entire v2 skeleton is broken — nothing else should run.
 """
 from __future__ import annotations
 
-import asyncio
 
 import pytest
 

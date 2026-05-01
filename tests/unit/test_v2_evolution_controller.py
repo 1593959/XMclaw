@@ -6,7 +6,6 @@ it produces when a promotion fires.
 """
 from __future__ import annotations
 
-import pytest
 
 from xmclaw.core.evolution import (
     EvolutionController,

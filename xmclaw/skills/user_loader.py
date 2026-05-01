@@ -2,18 +2,9 @@
 
 B-127. Closes the "I want to install my own skill" gap.
 
-Today users have two ways to give XMclaw a skill:
-
-  1. Drop a ``SKILL.md`` under ``~/.xmclaw/auto_evo/skills/<id>/`` —
-     procedural / text-only. Exposed as ``learned_skill_<id>`` tool by
-     :class:`xmclaw.daemon.learned_skills_tool.LearnedSkillToolProvider`
-     (B-125).
-
-  2. Subclass :class:`Skill` in their own Python and call
-     ``registry.register(...)`` somewhere — but XMclaw has no boot
-     hook for that, so in practice no user has done this.
-
-This loader fills gap #2. Layout:
+Epic #24 Phase 1 made this loader the **single** entry-point for
+user-installed skills (the parallel SKILL.md / xm-auto-evo paths were
+removed). Layout:
 
   ``~/.xmclaw/skills_user/<skill_id>/skill.py``
       Contains exactly one :class:`Skill` subclass (the loader scans

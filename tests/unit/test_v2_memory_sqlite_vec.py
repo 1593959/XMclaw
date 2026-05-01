@@ -6,7 +6,6 @@ stores and retrieves — caller controls prompt stitching).
 """
 from __future__ import annotations
 
-import asyncio
 import sqlite3
 
 import pytest

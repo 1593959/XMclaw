@@ -10,13 +10,11 @@ text fallback works) plus Hermes's <memory-context> fence.
 """
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 
 import pytest
 
 from xmclaw.core.bus import InProcessEventBus
-from xmclaw.core.ir import ToolSpec
 from xmclaw.daemon.agent_loop import AgentLoop
 from xmclaw.providers.llm.base import LLMProvider, LLMResponse, Message, Pricing
 from xmclaw.providers.memory.sqlite_vec import SqliteVecMemory

@@ -24,7 +24,6 @@ from xmclaw.providers.llm.base import (
     Pricing,
 )
 from xmclaw.utils.cost import CostTracker
-from xmclaw.utils.cost import Pricing as CostPricing
 
 
 @dataclass

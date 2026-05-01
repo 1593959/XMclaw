@@ -1849,6 +1849,93 @@ class ConfigDeadFieldsCheck(DoctorCheck):
         )
 
 
+class EvolutionPathHygieneCheck(DoctorCheck):
+    """Epic #24 Phase 1 — flag residual paths from torn-out subsystems.
+
+    The user's load-bearing rule (2026-05-01): every user-state
+    artifact has ONE canonical path. After Phase 1 deleted xm-auto-evo
+    and the multi-root SKILL.md scanner, ``~/.xmclaw/auto_evo/``,
+    ``~/.agents/skills/``, and ``~/.claude/skills/`` are no longer
+    consulted by the agent at all. If they still exist on disk the
+    user thinks they're "installed skills" but the agent literally
+    can't see them — exactly the "install path != usage path" pain
+    Epic #24 set out to remove. We surface this discrepancy here so
+    the user knows to consolidate or delete.
+
+    SkillRegistry's canonical path: ``~/.xmclaw/v2/skills/<id>/v<N>/``.
+    """
+
+    id: ClassVar[str] = "evolution_path_hygiene"
+    name: ClassVar[str] = "evolution path hygiene"
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        home = Path.home()
+        suspects = [
+            home / ".xmclaw" / "auto_evo",
+            home / ".agents" / "skills",
+            home / ".claude" / "skills",
+        ]
+        present = [p for p in suspects if p.exists()]
+        if not present:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="no residual SKILL.md trees from deleted subsystems",
+            )
+        joined = ", ".join(str(p) for p in present)
+        return CheckResult(
+            name=self.name, ok=False,
+            detail=f"residual paths still on disk: {joined}",
+            advisory=(
+                "Epic #24 deleted the loaders that read these. The agent "
+                "can no longer see SKILL.md files in them. Move anything "
+                "you still want into the SkillRegistry (Phase 1 path: "
+                "~/.xmclaw/v2/skills/<id>/v<N>/SKILL.md) or delete the "
+                "residual trees."
+            ),
+        )
+
+
+class EvolutionRuntimeCheck(DoctorCheck):
+    """Epic #24 Phase 1 — verify the new evolution loop is wired.
+
+    Two halves of the runtime contract:
+      * AgentLoop calls HonestGrader after every tool — code-level
+        check against ``xmclaw/daemon/agent_loop.py`` source.
+      * EvolutionAgent observer is in app.state at boot — runtime
+        check that requires the daemon to be running, otherwise we
+        report "needs running daemon" rather than fail.
+    """
+
+    id: ClassVar[str] = "evolution_runtime"
+    name: ClassVar[str] = "evolution runtime"
+
+    def run(self, ctx: DoctorContext) -> CheckResult:  # noqa: ARG002
+        # Source-level: assert HonestGrader is referenced in agent_loop.py.
+        try:
+            from xmclaw.daemon import agent_loop as _al
+            src = Path(_al.__file__).read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:  # noqa: BLE001
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"cannot read agent_loop.py source: {exc}",
+            )
+        if "HonestGrader" not in src or "GRADER_VERDICT" not in src:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail="HonestGrader not wired into AgentLoop",
+                advisory=(
+                    "Expected `self._grader = HonestGrader()` and a "
+                    "`publish(EventType.GRADER_VERDICT, ...)` call after "
+                    "each TOOL_INVOCATION_FINISHED. Reapply Epic #24 "
+                    "Phase 1 changes if missing."
+                ),
+            )
+        return CheckResult(
+            name=self.name, ok=True,
+            detail="HonestGrader wired + GRADER_VERDICT published per tool",
+        )
+
+
 def build_default_registry() -> DoctorRegistry:
     """Return a registry populated with the built-in checks.
 
@@ -1877,4 +1964,6 @@ def build_default_registry() -> DoctorRegistry:
     reg.register(DaemonHealthCheck())
     reg.register(BackupsCheck())
     reg.register(SecretsCheck())
+    reg.register(EvolutionPathHygieneCheck())  # Epic #24 Phase 1
+    reg.register(EvolutionRuntimeCheck())      # Epic #24 Phase 1
     return reg

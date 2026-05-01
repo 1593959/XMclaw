@@ -3,7 +3,6 @@
 import pytest
 import os
 import tempfile
-import shutil
 
 
 def test_file_write_creates_file():

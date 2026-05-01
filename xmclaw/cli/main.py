@@ -69,9 +69,15 @@ app.add_typer(backup_app, name="backup")
 # ``~/.xmclaw/skills/*.jsonl``. Read-only today; Phase B will add the
 # live SKILL_PROMOTED/SKILL_ROLLED_BACK event tap.
 evolution_app = typer.Typer(
-    help="Inspect the SkillRegistry promote/rollback history.",
+    help=(
+        "Inspect / approve / reject SkillRegistry evolution decisions. "
+        "Subcommands: show, review, approve, reject (Epic #24)."
+    ),
 )
 app.add_typer(evolution_app, name="evolution")
+# Epic #24 Phase 1: short alias `xmclaw evolve <sub>` per the plan
+# (less typing, matches the verb in conversation about the feature).
+app.add_typer(evolution_app, name="evolve")
 
 # ``xmclaw approvals <subcommand>`` — Epic #3. List, approve, or deny
 # pending security approvals created by the GuardedToolProvider.
@@ -117,6 +123,58 @@ def evolution_show(
     """
     from xmclaw.cli.evolution import run_evolution_show
     raise typer.Exit(code=run_evolution_show(since))
+
+
+@evolution_app.command("review")
+def evolution_review(
+    as_json: bool = typer.Option(
+        False, "--json",
+        help="Emit pending candidates as JSON (scripting-friendly).",
+    ),
+) -> None:
+    """List pending SKILL_CANDIDATE_PROPOSED entries awaiting human review.
+
+    Epic #24 Phase 1: with ``auto_apply=False`` (default), the daemon's
+    EvolutionAgent observer publishes candidates onto the bus but never
+    moves HEAD — humans approve via ``xmclaw evolve approve <id>``.
+    """
+    from xmclaw.cli.evolution import run_evolve_review
+    raise typer.Exit(code=run_evolve_review(as_json=as_json))
+
+
+@evolution_app.command("approve")
+def evolution_approve(
+    candidate_id: str = typer.Argument(
+        ..., help="Skill / candidate id from `xmclaw evolve review`.",
+    ),
+) -> None:
+    """Approve a pending candidate (routes through evidence-gated promote).
+
+    Forwards the proposal's evidence list to the daemon's
+    ``/api/v2/skills/<id>/promote`` endpoint. Anti-req #12 still enforced
+    at the registry door — the registry refuses without evidence.
+    """
+    from xmclaw.cli.evolution import run_evolve_approve
+    raise typer.Exit(code=run_evolve_approve(candidate_id))
+
+
+@evolution_app.command("reject")
+def evolution_reject(
+    candidate_id: str = typer.Argument(
+        ..., help="Skill / candidate id from `xmclaw evolve review`.",
+    ),
+    reason: str = typer.Option(
+        ..., "--reason", "-r",
+        help="Why this candidate is rejected (required, becomes audit row).",
+    ),
+) -> None:
+    """Record a rejection. Does NOT mutate SkillRegistry — HEAD stays put.
+
+    Writes to ``~/.xmclaw/v2/evolution/evo-main/rejections.jsonl`` so the
+    audit chain reflects both kinds of decisions.
+    """
+    from xmclaw.cli.evolution import run_evolve_reject
+    raise typer.Exit(code=run_evolve_reject(candidate_id, reason))
 
 
 @approvals_app.command("list")

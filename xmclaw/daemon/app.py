@@ -41,6 +41,14 @@ from xmclaw.core.bus import (
     event_as_jsonable,
     make_event,
 )
+from xmclaw.utils.log import get_logger
+
+# Epic #24 Phase 1: module-level logger. Several pre-existing
+# error-path call sites used a bare ``log.warning(...)`` reference
+# without importing one — pure pre-existing NameError bug that
+# would surface on first channel / MCP failure. Defining this here
+# unblocks lint and makes those branches actually log.
+log = get_logger(__name__)
 
 
 _SECRET_KEYS = frozenset({
@@ -187,30 +195,11 @@ async def _run_session_reflection(
             extra={"session_id": session_id, "err": str(exc)},
         )
 
-    # B-19 real-time evolution: after the reflection has had a chance
-    # to update MEMORY.md / USER.md, fire a one-shot xm-auto-evo
-    # observe→learn→evolve cycle. This collapses the worst-case
-    # observation latency from "next 30-min heartbeat" down to
-    # "right after this session ended" — meaning a recurring pattern
-    # in conversation N can become a SKILL.md visible to conversation
-    # N+1, not N+1+30min.
-    try:
-        state = _LAST_APP_STATE
-        proc = getattr(state, "auto_evo_process", None) if state else None
-        if proc is not None:
-            res = await proc.run_once("start")
-            from xmclaw.utils.log import get_logger
-            get_logger(__name__).info(
-                "session.realtime_evolve rc=%s session=%s",
-                res.get("returncode"), session_id,
-            )
-    except Exception as exc:  # noqa: BLE001 — must not break the
-        # session-close path
-        from xmclaw.utils.log import get_logger
-        get_logger(__name__).warning(
-            "session.realtime_evolve_failed",
-            extra={"session_id": session_id, "err": str(exc)},
-        )
+    # Epic #24 Phase 1: removed B-19's "real-time evolution" trigger
+    # (was firing xm-auto-evo's observe→learn→evolve cycle on every
+    # session close). Phase 2 will replace this with the JournalWriter
+    # + UserProfileExtractor pair, which run on the same on_session_end
+    # signal but write through the HonestGrader-gated path.
 
     # B-28 on_session_end hook: fan out to every memory provider so
     # they can do end-of-session fact extraction / summarisation.
@@ -346,92 +335,22 @@ def create_app(
     # the primary AgentLoop's run_turn to execute the job's prompt.
     cron_tick = None
 
-    # B-16 evolution core: xm-auto-evo (Node.js) is XMclaw's autonomous
-    # evolution heart, not a plugin or skill. The daemon manages it as
-    # a first-class subsystem — lifespan starts the heartbeat, the
-    # DialogExporter pipes session activity to it, and the
-    # /api/v2/auto_evo router surfaces it in the Web UI Evolution page.
-    auto_evo_proc: Any = None
-    dialog_exporter_unsub: Any = None
+    # Epic #24 Phase 1: 删除了 xm-auto-evo (Node.js) 子系统及其 DialogExporter
+    # / AutoEvoProcess / `/api/v2/auto_evo` 路由。原因：和 `xmclaw/core/grader/`
+    # 的 HonestGrader 体系并行存在，且 auto-evo 路径**完全没有诚实性把关**，
+    # 复刻了 Hermes "agent 总以为自己干得不错"的核心失败模式。重做后唯一的
+    # 进化路径走 grader → scheduler → controller → orchestrator，所有 SKILL
+    # 提案都过 evidence-gated promote。详情见 Epic #24 / plan
+    # `~/.claude/plans/elegant-greeting-hippo.md`。
 
     @asynccontextmanager
     async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        nonlocal cron_tick, auto_evo_proc, dialog_exporter_unsub
+        nonlocal cron_tick
         if sweep_task is not None:
             await sweep_task.start()
         if backup_scheduler is not None:
             await backup_scheduler.start()
 
-        # ── xm-auto-evo evolution core ──────────────────────────────
-        # Always-on subsystem (per user, "system level, not plugin").
-        # Two halves:
-        #   1. DialogExporter subscribes to the bus and writes session
-        #      activity to <auto_evo_workspace>/dialog/YYYY-MM-DD.jsonl
-        #      in XMclaw native format (the patched signals.js reads it).
-        #   2. AutoEvoProcess spawns ``node index.js heartbeat`` as a
-        #      managed subprocess so observation/learning/evolution
-        #      runs at the configured interval without manual triggers.
-        # Disabled by setting evolution.auto_evo.enabled=false in config
-        # for users who don't have Node installed; defaults to enabled
-        # because this IS the evolution core, not an optional add-on.
-        try:
-            from xmclaw.daemon.auto_evo_bridge import (
-                DialogExporter,
-                AutoEvoProcess,
-                auto_evo_repo_path,
-                auto_evo_workspace,
-            )
-            evo_section = (config or {}).get("evolution", {}).get("auto_evo", {})
-            evo_enabled = evo_section.get("enabled", True)
-            if evo_enabled:
-                workspace = auto_evo_workspace()
-                workspace.mkdir(parents=True, exist_ok=True)
-
-                exporter = DialogExporter(workspace)
-                # Subscribe to USER_MESSAGE / LLM_RESPONSE / TOOL_*
-                # events only — exporter doesn't care about lifecycle
-                # or chunk events (LLM_CHUNK fires per token).
-                _exporter_types = {
-                    EventType.USER_MESSAGE,
-                    EventType.LLM_RESPONSE,
-                    EventType.TOOL_CALL_EMITTED,
-                    EventType.TOOL_INVOCATION_FINISHED,
-                }
-                dialog_exporter_unsub = bus.subscribe(
-                    lambda e: e.type in _exporter_types,
-                    exporter.on_event,
-                )
-                _app.state.dialog_exporter = exporter
-
-                repo = auto_evo_repo_path(config or {})
-                interval = int(evo_section.get("interval_min", 30))
-                auto_evo_proc = AutoEvoProcess(
-                    repo, workspace, interval_min=interval,
-                )
-                _app.state.auto_evo_process = auto_evo_proc
-
-                # Auto-start on boot unless explicitly disabled.
-                if evo_section.get("autostart", True):
-                    res = await auto_evo_proc.start()
-                    if not res.get("ok"):
-                        from xmclaw.utils.log import get_logger
-                        get_logger(__name__).warning(
-                            "auto_evo.start_failed",
-                            extra={"err": res.get("error")},
-                        )
-            else:
-                _app.state.auto_evo_process = None
-                _app.state.dialog_exporter = None
-        except Exception as exc:  # noqa: BLE001 — auto_evo failures
-            # must NEVER block daemon boot. The agent itself still works
-            # without the evolution core; users without Node installed
-            # see "wired:false" in the Evolution page.
-            from xmclaw.utils.log import get_logger
-            get_logger(__name__).warning(
-                "auto_evo.init_failed", extra={"err": str(exc)},
-            )
-            _app.state.auto_evo_process = None
-            _app.state.dialog_exporter = None
         # Cron tick: only start once the primary agent is live; without
         # it run_turn would have nowhere to land. Wraps a per-tick
         # session_id ('cron:<job_id>:<ts>') so cron output is searchable
@@ -653,6 +572,29 @@ def create_app(
             except Exception:  # noqa: BLE001
                 pass
 
+        # Epic #24 Phase 1: default-start a single EvolutionAgent
+        # observer subscribed to GRADER_VERDICT (no longer requires
+        # an explicit ``POST /workspaces`` with ``kind="evolution"``).
+        # The observer aggregates per (skill_id, version) and writes
+        # PROMOTE / ROLLBACK proposals through SKILL_CANDIDATE_PROPOSED
+        # events; the orchestrator above (auto_apply=False by default)
+        # publishes them but does NOT mutate HEAD until a human / CLI
+        # approves. This wires the closed loop without giving the
+        # agent unsupervised authority over its own version pointer.
+        # Failures must not block boot.
+        _app.state.evolution_observer = None
+        try:
+            from xmclaw.daemon.evolution_agent import EvolutionAgent
+            evo_agent = EvolutionAgent("evo-main", bus)
+            await evo_agent.start()
+            _app.state.evolution_observer = evo_agent
+        except Exception as exc:  # noqa: BLE001
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).warning(
+                "evolution_observer.start_failed err=%s", exc,
+            )
+            _app.state.evolution_observer = None
+
         # B-145: channel adapters (飞书 / 钉钉 / 企微 / Telegram).
         # Each enabled channel gets a long-running adapter that listens
         # for inbound messages + dispatches them through the same
@@ -782,22 +724,6 @@ def create_app(
                     await _cw.stop()
                 except Exception:  # noqa: BLE001
                     pass
-            # Stop xm-auto-evo subsystem.
-            if auto_evo_proc is not None:
-                try:
-                    await auto_evo_proc.stop()
-                except Exception:  # noqa: BLE001
-                    pass
-            if dialog_exporter_unsub is not None:
-                try:
-                    # Bus subscribers return either an awaitable cancel
-                    # or just None; we tolerate both.
-                    if hasattr(dialog_exporter_unsub, "cancel"):
-                        dialog_exporter_unsub.cancel()
-                    elif callable(dialog_exporter_unsub):
-                        dialog_exporter_unsub()
-                except Exception:  # noqa: BLE001
-                    pass
             # Epic #17 Phase 7: stop all workspace background work
             # before tearing down the bus + memory store. Evolution
             # observers cancel their subscriptions here; LLM workspaces
@@ -813,6 +739,13 @@ def create_app(
             if orchestrator is not None:
                 try:
                     await orchestrator.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            # Epic #24 Phase 1: stop the default EvolutionAgent observer.
+            _evo_obs = getattr(_app.state, "evolution_observer", None)
+            if _evo_obs is not None:
+                try:
+                    await _evo_obs.stop()
                 except Exception:  # noqa: BLE001
                     pass
             if memory is not None and hasattr(memory, "close"):
@@ -866,7 +799,9 @@ def create_app(
     from xmclaw.daemon.routers import workspaces as _workspaces_router
     from xmclaw.daemon.routers import journal as _journal_router
     from xmclaw.daemon.routers import system as _system_router
-    from xmclaw.daemon.routers import auto_evo as _auto_evo_router
+    # Epic #24 Phase 1: removed `routers.auto_evo` along with the rest of
+    # xm-auto-evo. `/api/v2/skills` (already mounted below) is the
+    # canonical surface for skill listing / promote / rollback now.
     from xmclaw.daemon.routers import backup as _backup_router  # B-103
     from xmclaw.daemon.routers import secrets as _secrets_router  # B-104
     from xmclaw.daemon.routers import channels as _channels_router  # B-147
@@ -884,7 +819,6 @@ def create_app(
     app.include_router(_workspaces_router.router)
     app.include_router(_journal_router.router)
     app.include_router(_system_router.router)
-    app.include_router(_auto_evo_router.router)
     app.include_router(_backup_router.router)
     app.include_router(_secrets_router.router)
     app.include_router(_channels_router.router)  # B-147
@@ -982,36 +916,22 @@ def create_app(
             IntegrationsTools((config or {}).get("integrations")),
         )
 
-        # B-124: bridge SkillRegistry HEAD entries into the tool surface.
-        # Until now, registered Skill subclasses were dead from the
-        # agent's perspective — only LearnedSkill (SKILL.md) text made
-        # it into the prompt. This makes registered skills first-class
-        # tools the LLM picks like any other.
+        # B-124 + Epic #24: bridge SkillRegistry HEAD entries into the
+        # tool surface. After Epic #24 ripped out the xm-auto-evo
+        # SKILL.md path, this is the **only** way a skill becomes
+        # callable by the LLM — and every version exposed here passed
+        # through evidence-gated promote (anti-req #12).
         if orchestrator is not None:
             from xmclaw.skills.tool_bridge import SkillToolProvider
             _skill_tools = SkillToolProvider(orchestrator.registry)
             agent._tools = CompositeToolProvider(agent._tools, _skill_tools)
 
-        # B-125: bridge LearnedSkill (SKILL.md) procedures into the
-        # tool surface. Each becomes a `learned_skill_<id>` tool that
-        # returns the full procedure body when invoked. Lets the LLM
-        # explicitly opt in to following a learned skill (deterministic
-        # SKILL_INVOKED replacing B-122's heuristic detection).
-        try:
-            from xmclaw.daemon.learned_skills import (
-                default_learned_skills_loader,
-            )
-            from xmclaw.daemon.learned_skills_tool import (
-                LearnedSkillToolProvider,
-            )
-            _learned_loader = default_learned_skills_loader()
-            _learned_tools = LearnedSkillToolProvider(
-                _learned_loader, bus=bus,
-                agent_id=getattr(agent, "_agent_id", "agent"),
-            )
-            agent._tools = CompositeToolProvider(agent._tools, _learned_tools)
-        except Exception:  # noqa: BLE001 — never block agent boot
-            pass
+        # Epic #24 Phase 1: removed B-125's LearnedSkillToolProvider
+        # bridge. `~/.xmclaw/auto_evo/skills/<auto>/SKILL.md` were
+        # produced by the now-deleted xm-auto-evo Node subsystem with no
+        # honesty gate. Going forward all tool-callable skills come from
+        # `SkillToolProvider(orchestrator.registry)` above, which only
+        # exposes versions that passed evidence-gated promote.
 
     app.state.agent = agent
     # Module-level handle so factory-time callbacks (the persona

@@ -1,10 +1,8 @@
 """Tests for Phase 6 — cron + ACP manifest + Canvas host."""
 from __future__ import annotations
 
-import asyncio
 import json
 import time
-from pathlib import Path
 
 import pytest
 

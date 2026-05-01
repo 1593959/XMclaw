@@ -16,7 +16,6 @@ import statistics
 import pytest
 
 from xmclaw.core.bus import EventType, InProcessEventBus, make_event
-from xmclaw.core.bus.memory import accept_all
 from xmclaw.core.grader import HonestGrader
 from xmclaw.core.scheduler.online import Candidate, OnlineScheduler
 from xmclaw.skills.demo.read_and_summarize import (

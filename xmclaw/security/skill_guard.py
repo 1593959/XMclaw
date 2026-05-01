@@ -3,10 +3,13 @@ in the agent's system prompt.
 
 Hermes' ``tools/skills_guard.py`` does this for community-installed
 skills; we adapt the pattern for **agent-generated** SKILL.md files.
-xm-auto-evo is autonomous, so in principle it could emit a SKILL.md
-that tells the agent to ``rm -rf /`` or to ``curl ... | bash`` or to
-hand over the user's API key. We scan defensively before the loader
-returns content for prompt injection.
+Epic #24 Phase 3's ``SkillProposer`` will be an autonomous skill
+author, so in principle it could emit a SKILL.md that tells the agent
+to ``rm -rf /`` or to ``curl ... | bash`` or to hand over the user's
+API key. We scan defensively before the loader returns content for
+prompt injection. Currently this module has no production caller
+(Phase 1 ripped out the xm-auto-evo path that used to feed it); kept
+as the verification entry point Phase 3 will plug back in.
 
 Two layers:
 
@@ -43,7 +46,7 @@ class Verdict(str, Enum):
 class TrustLevel(str, Enum):
     BUILTIN = "builtin"          # Bundled with XMclaw — always trust
     TRUSTED = "trusted"          # User explicitly installed from a known source
-    AGENT_CREATED = "agent-created"  # auto_evo wrote it
+    AGENT_CREATED = "agent-created"  # agent / Phase 3 SkillProposer authored it
     COMMUNITY = "community"      # External / unverified
 
 

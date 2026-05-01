@@ -120,7 +120,6 @@ async def test_todo_listener_fires_on_write() -> None:
 async def test_todo_write_emits_bus_event_via_agent_loop() -> None:
     """Integration within AgentLoop: TODO_UPDATED event fires on the bus
     with the items payload whenever the model calls todo_write."""
-    import asyncio
     from collections.abc import AsyncIterator
     from dataclasses import dataclass, field
 
@@ -129,7 +128,7 @@ async def test_todo_write_emits_bus_event_via_agent_loop() -> None:
     from xmclaw.core.ir import ToolCall, ToolCallShape
     from xmclaw.daemon.agent_loop import AgentLoop
     from xmclaw.providers.llm.base import (
-        LLMChunk, LLMProvider, LLMResponse, Message, Pricing,
+        LLMChunk, LLMProvider, LLMResponse, Pricing,
     )
 
     @dataclass

@@ -593,8 +593,7 @@ _AGENT_STATUS_SPEC = ToolSpec(
         "Self-introspection — returns the daemon's current state in "
         "one shot: indexer (running? last tick? chunks indexed?), "
         "cron (job count + next fire), memory layer (provider list, "
-        "vector count when known), auto_evo (heartbeat running? PID?), "
-        "config snapshot.\n\n"
+        "vector count when known), config snapshot.\n\n"
         "Use BEFORE answering questions like 'are you indexing my "
         "notes?', 'what cron jobs are scheduled?', 'is the evolution "
         "subsystem running?'. Pure read — no side effects.\n\n"
@@ -2594,16 +2593,10 @@ class BuiltinTools(ToolProvider):
             else:
                 out["indexer"] = {"wired": False}
 
-            # Auto-evo
-            ae = getattr(state, "auto_evo_process", None)
-            if ae is not None:
-                out["auto_evo"] = {
-                    "wired": True,
-                    "running": getattr(ae, "is_running", False),
-                    "pid": getattr(ae, "pid", None),
-                }
-            else:
-                out["auto_evo"] = {"wired": False}
+            # Epic #24 Phase 1: removed auto_evo subsystem status —
+            # `app.state.auto_evo_process` no longer exists. Phase 2
+            # will surface the EvolutionAgent observer's running state
+            # here through `app.state.evolution_observer` instead.
 
             # Bus event count proxy via the events DB row count when
             # the daemon's running. Cheap query.

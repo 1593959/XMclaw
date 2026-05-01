@@ -49,6 +49,7 @@ from xmclaw.core.bus import (
     InProcessEventBus,
     make_event,
 )
+from xmclaw.core.grader.verdict import HonestGrader
 from xmclaw.daemon.llm_registry import LLMRegistry
 from xmclaw.daemon.session_store import SessionStore
 from xmclaw.providers.llm.base import LLMProvider, Message
@@ -109,35 +110,34 @@ def _default_system_prompt() -> str:
         f"  - bash: run shell commands. {shell_hint}\n"
         "  - web_fetch: GET a URL and read its content\n"
         "  - web_search: search the web when a fact needs looking up\n"
-        "  - skill_*: user-installed Python skills (callable code)\n"
-        "  - learned_skill_*: procedures the system has learned from "
-        "watching the user; calling one returns the full step-by-step "
-        "to follow on the next turn\n\n"
-        "Skill installation (B-162 — 路径只有一个):\n"
-        "  XMclaw 的技能目录就一个：``~/.xmclaw/auto_evo/skills/<name>/``。\n"
-        "  装新技能时**必须**落进这里，否则 XMclaw 找不到。\n"
-        "    - **正确**：``mkdir -p ~/.xmclaw/auto_evo/skills/<name> && \n"
-        "      git clone <url> ~/.xmclaw/auto_evo/skills/<name>/`` (或 \n"
-        "      copy SKILL.md 进去)\n"
-        "    - **错误**：``npx skills add <pkg>`` —— 这条命令默认装到\n"
-        "      ``~/.agents/skills/``，那是 skills.sh 共享目录，**XMclaw\n"
-        "      不扫**。装了等于没装。\n"
-        "  如果用户问'安装某 skill'，先想一下源在哪：\n"
-        "    - GitHub repo → ``git clone <url> ~/.xmclaw/auto_evo/skills/<name>/``\n"
-        "    - skills.sh 注册的包 → 找它的 git repo url，git clone 而\n"
-        "      不是 npx skills add\n"
-        "    - 单文件 SKILL.md → ``mkdir + curl/cat >`` 直接落到\n"
-        "      ``~/.xmclaw/auto_evo/skills/<name>/SKILL.md``\n"
-        "  装完后告诉用户具体路径 + 提示重启 daemon (loader 30s 内自动\n"
-        "  picks up，agent 下一轮 prompt 即可使用，不用真重启)。\n\n"
-        "New-skill onboarding (B-161 — 4-step learning workflow):\n"
+        "  - skill_*: skills registered in SkillRegistry (Python class "
+        "+ optional manifest). Built-in (xmclaw.skills.*) and user-"
+        "installed are the only two sources; every version has passed "
+        "evidence-gated promote (anti-req #12).\n\n"
+        "Skill installation (Epic #24 Phase 1 — 路径只有一个):\n"
+        "  XMclaw 的用户技能目录就一个：``~/.xmclaw/skills_user/<skill_id>/``。\n"
+        "  目录里：``skill.py``（一个 Skill 子类）+ 可选 ``manifest.json``。\n"
+        "  装新技能**必须**落进这里，否则 XMclaw 找不到。\n"
+        "    - **正确**：``mkdir -p ~/.xmclaw/skills_user/<skill_id> && \n"
+        "      cp <repo>/skill.py ~/.xmclaw/skills_user/<skill_id>/`` \n"
+        "      （记得带 manifest.json 如果有）。\n"
+        "    - **错误**：``npx skills add <pkg>`` 装到\n"
+        "      ``~/.agents/skills/`` —— 那是 skills.sh 共享目录，\n"
+        "      Phase 1 起 XMclaw **不再扫**。装了等于没装。\n"
+        "    - **错误**：丢 SKILL.md 到 ``~/.xmclaw/auto_evo/skills/`` ——\n"
+        "      Phase 1 起 auto_evo 整套已下线，那个目录无人扫描。\n"
+        "  装完后告诉用户具体路径 + 重启 daemon（user_loader 在 boot 时\n"
+        "  扫一次注册到 SkillRegistry，重启即生效）。Phase 3 起 SkillProposer\n"
+        "  会自己往这条路径产 candidate，evidence-gated promote 后才入库。\n\n"
+        "New-skill onboarding (4-step learning workflow):\n"
         "  When you encounter a skill you've never used before — either "
         "newly-installed by the user or one that just appeared in the "
         "tool list this turn — DON'T rush into invoking it blindly. "
         "Walk through these 4 steps in order:\n"
-        "    1. **Read** — call the matching `learned_skill_<id>` tool "
-        "(or read the file directly via `file_read` on the SKILL.md "
-        "path) to load the procedure.\n"
+        "    1. **Read** — invoke the `skill_<id>` tool with introspection "
+        "args, or `file_read` the source under "
+        "``~/.xmclaw/skills_user/<skill_id>/skill.py`` (and "
+        "``manifest.json`` for declared inputs / outputs / side-effects).\n"
         "    2. **Understand the core** — answer to yourself in one "
         "sentence each:\n"
         "         · 这个技能做什么？\n"
@@ -429,29 +429,9 @@ _TOKEN_EN_RE = re.compile(r"[A-Za-z][A-Za-z_-]{4,29}")
 _TOKEN_CN_RE = re.compile(r"[一-鿿]{3,15}")
 
 
-def _extract_skill_keywords(body: str, *, max_tokens: int = 24) -> list[str]:
-    """Extract distinctive lowercase tokens from a SKILL.md body."""
-    if not body:
-        return []
-    seen: list[str] = []
-    seen_set: set[str] = set()
-    for m in _TOKEN_EN_RE.finditer(body):
-        tok = m.group(0).lower()
-        if tok in _KEYWORD_NOISE_EN or tok in seen_set:
-            continue
-        seen.append(tok)
-        seen_set.add(tok)
-        if len(seen) >= max_tokens:
-            break
-    for m in _TOKEN_CN_RE.finditer(body):
-        tok = m.group(0)
-        if tok in _KEYWORD_NOISE_CN or tok in seen_set:
-            continue
-        seen.append(tok)
-        seen_set.add(tok)
-        if len(seen) >= max_tokens:
-            break
-    return seen
+# Epic #24 Phase 1: removed _extract_skill_keywords — was used only by
+# the now-deleted _detect_skill_invocations heuristic over xm-auto-evo
+# SKILL.md bodies.
 
 
 # (``re`` imported at top of module — module-level regex compiles
@@ -460,9 +440,9 @@ def _extract_skill_keywords(body: str, *, max_tokens: int = 24) -> list[str]:
 
 # ── System-prompt frozen-snapshot cache (B-25, Hermes parity) ────────
 #
-# Without this, every turn re-rendered learned_skills + appended time
+# Without this, every turn re-renders system prompt + appends time
 # fresh — meaning the LLM provider's prompt cache rarely hits, because
-# the "static" section was technically a brand-new string every call.
+# the "static" section is technically a brand-new string every call.
 # Hermes freezes its system prompt at session start and keeps it
 # stable for the whole session. Time / dynamic content rides on the
 # user message instead (or in our case: appended AFTER the frozen
@@ -471,6 +451,11 @@ def _extract_skill_keywords(body: str, *, max_tokens: int = 24) -> list[str]:
 # Cache key: session_id. Bumped to invalidate all sessions when
 # persona writeback fires (the agent OR user just edited a persona
 # file → next turn must re-render).
+#
+# Epic #24 Phase 1: removed the learned_skills section that used to
+# be appended here from the now-deleted xm-auto-evo SKILL.md path.
+# Phase 2 will reintroduce a UserProfile injection block (走
+# HonestGrader-gated 路径，与已删的 system B 不同).
 
 _PROMPT_FREEZE_GENERATION = 0
 
@@ -512,10 +497,10 @@ def _with_fresh_time(system_prompt: str) -> str:
         f"Trust this over your training-time clock."
     )
 
-    # Strip a prior "## 当前时刻" / "## 已学习的技能" block if present.
-    # Both are re-rendered fresh on every turn (time obviously, learned
-    # skills because the auto-evo subsystem may have just generated a
-    # new SKILL.md and we want it picked up on the very next turn).
+    # Strip a prior "## 当前时刻" block (re-rendered fresh on every turn)
+    # and a "## 已学习的技能" block left over from the xm-auto-evo path
+    # we deleted in Epic #24 Phase 1 — the strip lets old persona files
+    # that still embed that header roundtrip cleanly.
     for hdr in ("## 当前时刻", "## 已学习的技能（XMclaw 自主进化产出）"):
         if hdr in system_prompt:
             lines = system_prompt.split("\n")
@@ -534,21 +519,11 @@ def _with_fresh_time(system_prompt: str) -> str:
                 out.append(line)
             system_prompt = "\n".join(out).rstrip()
 
-    # B-17: append learned-skills block (the closed-loop product of
-    # xm-auto-evo). Empty string when no skills exist yet, so this is
-    # a no-op for fresh installs.
-    learned_block = ""
-    try:
-        from xmclaw.daemon.learned_skills import default_learned_skills_loader
-        learned_block = default_learned_skills_loader().render_section()
-    except Exception:  # noqa: BLE001 — never let learned-skills loading
-        # break the agent's main path
-        learned_block = ""
-
-    suffix = "\n\n" + block
-    if learned_block:
-        suffix = "\n\n" + learned_block + suffix
-    return system_prompt + suffix
+    # Epic #24 Phase 1: removed B-17's learned-skills block injection
+    # (was reading from the now-deleted xm-auto-evo SKILL.md tree).
+    # Phase 2 will reintroduce a HonestGrader-gated UserProfile block
+    # that also rides on this path.
+    return system_prompt + "\n\n" + block
 
 
 @dataclass
@@ -604,10 +579,12 @@ class AgentLoop:
         self._tools = tools
         self._system_prompt = system_prompt
         # B-25 Hermes parity: per-session frozen snapshot of the
-        # static system-prompt portion (= base prompt + learned_skills,
-        # NO time). Time is appended fresh on every turn; the rest is
+        # static system-prompt portion (= base prompt + persona, NO
+        # time). Time is appended fresh on every turn; the rest is
         # stable across a session, which is what the LLM provider's
         # prompt cache wants.
+        # Epic #24 Phase 1: removed the learned_skills section that
+        # used to ride this cache; persona / agent identity remain.
         self._frozen_prompts: dict[str, tuple[int, str]] = {}
         # B-30: per-session deferred-LLM-compression queue. When
         # _persist_history detects history overflow it drops the
@@ -615,22 +592,17 @@ class AgentLoop:
         # dropped messages here so the NEXT run_turn can do an async
         # LLM upgrade. Eliminates the sync→async bridge risk.
         self._pending_llm_compression: dict[str, dict[str, Any]] = {}
-        # B-32: per-(session_id, skill_id) cooldown — last-fired
-        # timestamp. Suppresses SKILL_INVOKED events for the same
-        # skill within ``_skill_cooldown_s`` seconds in a session.
-        # Stops a body-keyword like "test" matching every dev-loop
-        # message and inflating the invocation_count metric.
-        self._skill_last_fired: dict[tuple[str, str], float] = {}
-        self._skill_cooldown_s = 60.0
-        # B-36: per-skill consecutive-error tally. After
-        # ``_skill_auto_disable_threshold`` consecutive ``error``
-        # verdicts, the skill auto-parks (disabled:true gets written
-        # to its frontmatter). Reset on any non-error verdict. This
-        # is the self-healing loop: a skill that keeps causing
-        # max_hops crashes silently parks itself instead of polluting
-        # every subsequent turn.
-        self._skill_consecutive_errors: dict[str, int] = {}
-        self._skill_auto_disable_threshold = 3
+        # Epic #24 Phase 1: removed _skill_last_fired / _skill_cooldown_s
+        # / _skill_consecutive_errors / _skill_auto_disable_threshold —
+        # the heuristic SKILL_INVOKED detection + auto-disable side
+        # channel they backed are gone with the xm-auto-evo path.
+        # Epic #24 Phase 1: HonestGrader runs on every
+        # tool_invocation_finished event before it gets persisted to
+        # history. The verdict is published as a paired GRADER_VERDICT
+        # event, which the EvolutionAgent observer subscribes to.
+        # Stateless / pure — keeping a single instance is purely an
+        # allocation optimization.
+        self._grader = HonestGrader()
         # B-38: per-session cancellation flag. WS handler sets this
         # via ``cancel_session`` when the user clicks Stop in Chat;
         # ``run_turn`` checks at hop boundaries (cheap, doesn't
@@ -764,232 +736,14 @@ class AgentLoop:
         ev.set()
         return True
 
-    async def _detect_skill_invocations(
-        self,
-        publish: Any,
-        session_id: str,
-        user_message: str,
-        assistant_text: str,
-        tool_calls: list[dict[str, Any]],
-        *,
-        verdict: str = "success",
-        hops: int = 0,
-        tool_errors: int = 0,
-    ) -> None:
-        """Heuristic detection: emit SKILL_INVOKED events when a
-        learned SKILL.md appears to have driven this turn.
-
-        Signals (any one is enough):
-          * agent reply mentions the skill_id literally
-          * user message includes a trigger pattern from the skill's
-            ``signals_match`` frontmatter
-          * agent's tool calls include a tool the SKILL specifically
-            instructs (we keep this loose — list_dir/bash get used a
-            lot for unrelated reasons)
-
-        The first two are strong; the third is weak and only counted
-        when at least one of the other two holds.
-
-        Per-event payload feeds the Evolution UI's per-skill usage
-        chart so users see auto_repair_v9 had 3 invocations vs v8's
-        12 — real comparative quality data.
-        """
-        try:
-            from xmclaw.daemon.learned_skills import default_learned_skills_loader
-            skills = default_learned_skills_loader().list_skills()
-        except Exception:  # noqa: BLE001
-            return
-        if not skills:
-            return
-
-        text_blob = f"{user_message}\n{assistant_text}".lower()
-        assistant_blob_lower = assistant_text.lower()
-
-        # B-122: list-context guard. When assistant_text mentions 3+
-        # distinct skill_ids, the agent is enumerating skills (e.g.
-        # answering "what skills do you have?") rather than invoking
-        # them. Suppress detection entirely for this turn — every skill
-        # would match its own ID and inflate the invocation_count
-        # metric across the board.
-        #
-        # Word-boundary check (\b) so skill_id "git_status" doesn't
-        # match the literal phrase "git status" in unrelated git
-        # answers. \b is ASCII-class-based in Python's re; learned
-        # skill_ids are conventionally snake_case Latin so this is the
-        # right tool for that field. Title/trigger matching below stays
-        # substring-based because titles often contain CJK chars.
-        import re as _re_b122
-        listed_ids: set[str] = set()
-        for _sk in skills:
-            sid = (_sk.skill_id or "").lower()
-            if not sid or len(sid) < 3:
-                continue
-            if _re_b122.search(
-                r"\b" + _re_b122.escape(sid) + r"\b",
-                assistant_blob_lower,
-            ):
-                listed_ids.add(sid)
-                if len(listed_ids) >= 3:
-                    return
-
-        for sk in skills:
-            evidence = ""
-            trigger_match: str | None = None
-
-            sid_l = (sk.skill_id or "").lower()
-            # Strongest signal: skill_id mentioned with word boundaries
-            # — drops the "git_status matches 'git status'" false
-            # positive that pure substring matching produced.
-            if sid_l and len(sid_l) >= 3 and _re_b122.search(
-                r"\b" + _re_b122.escape(sid_l) + r"\b", text_blob,
-            ):
-                evidence = "skill_id"
-            # Title mention (less specific but more natural). Bumped
-            # min length 4→6 to reduce 4-char titles like "code" / "test"
-            # firing on every dev-loop message.
-            elif (
-                sk.title and len(sk.title) >= 6
-                and sk.title.lower() in text_blob
-            ):
-                evidence = "title"
-            else:
-                # Trigger keyword scan — lighter than full regex.
-                for trig in sk.triggers:
-                    t_lower = trig.strip().lower()
-                    if not t_lower or len(t_lower) < 4:
-                        continue
-                    # Strip common signal-prefix forms from trigger
-                    # ("intent:foo" → "foo") for natural-language match.
-                    bare = t_lower.split(":", 1)[-1]
-                    if bare and bare in text_blob:
-                        evidence = "trigger"
-                        trigger_match = trig
-                        break
-                # Body keyword scan — extract distinctive 3+ char tokens
-                # from the SKILL body and check if any appear in the
-                # exchange. Catches cases where triggers are signal-IDs
-                # ("intent:project_status") but the body uses the
-                # natural-language phrase the user actually types
-                # ("项目状态" / "git status").
-                if not evidence and sk.body:
-                    body_tokens = _extract_skill_keywords(sk.body)
-                    for tok in body_tokens:
-                        if tok in text_blob:
-                            evidence = "body_keyword"
-                            trigger_match = tok
-                            break
-
-            if not evidence:
-                continue
-
-            # B-32: per-(session, skill) cooldown gate. Drop repeats
-            # within the cooldown window — keeps the metric honest
-            # without losing legitimate multi-turn use (turns 1+5
-            # both legitimately invoking are still both counted).
-            import time as _t
-            now = _t.time()
-            cool_key = (session_id, sk.skill_id)
-            last = self._skill_last_fired.get(cool_key, 0.0)
-            if now - last < self._skill_cooldown_s:
-                continue
-            self._skill_last_fired[cool_key] = now
-
-            try:
-                await publish(EventType.SKILL_INVOKED, {
-                    "skill_id": sk.skill_id,
-                    "evidence": evidence,
-                    "trigger_match": trigger_match,
-                    "session_id": session_id,
-                    "tool_count": len(tool_calls),
-                })
-            except Exception:  # noqa: BLE001
-                pass
-
-            # B-35: paired SKILL_OUTCOME — turn-level verdict for the
-            # skill that just fired. Same cooldown gate as INVOKED so
-            # we never get OUTCOME without the matching INVOKED.
-            try:
-                await publish(EventType.SKILL_OUTCOME, {
-                    "skill_id": sk.skill_id,
-                    "session_id": session_id,
-                    "verdict": verdict,
-                    "hops": hops,
-                    "tool_errors": tool_errors,
-                })
-            except Exception:  # noqa: BLE001
-                pass
-
-            # B-36: consecutive-error → auto-disable. Reset on any
-            # non-error verdict. At threshold, write disabled:true
-            # to the SKILL.md frontmatter + bump the prompt-freeze
-            # generation so live sessions stop seeing the skill on
-            # the next turn. Best-effort — observability never
-            # blocks the main path.
-            if verdict == "error":
-                streak = self._skill_consecutive_errors.get(sk.skill_id, 0) + 1
-                self._skill_consecutive_errors[sk.skill_id] = streak
-                if streak >= self._skill_auto_disable_threshold:
-                    self._skill_consecutive_errors[sk.skill_id] = 0
-                    try:
-                        await self._auto_disable_skill(
-                            sk.skill_id, publish, streak,
-                        )
-                    except Exception:  # noqa: BLE001
-                        pass
-            else:
-                # Reset streak on any non-error (success / partial).
-                self._skill_consecutive_errors.pop(sk.skill_id, None)
-
-    async def _auto_disable_skill(
-        self, skill_id: str, publish: Any, streak: int,
-    ) -> None:
-        """B-36: park a misbehaving skill by writing ``disabled: true``
-        to its SKILL.md frontmatter + bumping the prompt-freeze
-        generation so running sessions stop seeing it next turn.
-
-        Reuses the same frontmatter mutator the manual /disable
-        endpoint uses, so the on-disk shape is identical whether the
-        user or the agent parked the skill. Emits a SKILL_INVOKED
-        event with evidence='auto_disabled' so the trace + invocation
-        count visibly mark the auto-park (a fresh signal that's not a
-        real new invocation, useful for the UI badge).
-        """
-        from xmclaw.daemon.learned_skills import default_learned_skills_loader
-        from xmclaw.daemon.routers.auto_evo import _set_frontmatter_key
-
-        loader = default_learned_skills_loader()
-        # Path-traversal hardening even though skill_id came from disk.
-        safe_id = skill_id.replace("\\", "/").split("/")[-1].strip()
-        if not safe_id or safe_id.startswith("."):
-            return
-        skill_md = loader.skills_root / safe_id / "SKILL.md"
-        if not skill_md.is_file():
-            return
-        try:
-            text = skill_md.read_text(encoding="utf-8", errors="replace")
-            new_text = _set_frontmatter_key(text, "disabled", "true")
-            if new_text != text:
-                skill_md.write_text(new_text, encoding="utf-8")
-        except OSError:
-            return
-        # Drop loader cache + bump generation.
-        loader._cache_key = None  # type: ignore[attr-defined]
-        try:
-            bump_prompt_freeze_generation()
-        except Exception:  # noqa: BLE001
-            pass
-        # Telemetry — emit a SKILL_OUTCOME with verdict="auto_disabled"
-        # so the Trace page shows the self-park and Evolution can count
-        # it. Using OUTCOME (not INVOKED) preserves the meaning: the
-        # skill didn't fire, it got benched.
-        try:
-            await publish(EventType.SKILL_OUTCOME, {
-                "skill_id": safe_id,
-                "verdict": "auto_disabled",
-                "consecutive_errors": streak,
-            })
-        except Exception:  # noqa: BLE001
-            pass
+    # Epic #24 Phase 1: removed _detect_skill_invocations() and
+    # _auto_disable_skill() — both were heuristic post-hoc analysis
+    # over the now-deleted xm-auto-evo SKILL.md tree (B-122 / B-32 /
+    # B-35 / B-36). Replacement in Phase 2 will be deterministic:
+    # SkillToolProvider already routes registered skills as real tool
+    # calls, so SKILL_INVOKED becomes the actual tool_invocation_started
+    # event for skill-bridged tools — no text-pattern matching, no
+    # cooldown hacks, no auto-disable side-channel.
 
     def _build_compression_summary(
         self, session_id: str, dropped: list[Message],
@@ -1639,15 +1393,15 @@ class AgentLoop:
                 _log_memory_failure(exc)
 
         # B-25: frozen system-prompt snapshot per session.
-        # _with_fresh_time builds (base + learned_skills + time). Cache
-        # the (base + learned_skills) part keyed by (session_id,
-        # generation); only re-render when the global generation is
-        # bumped (persona write triggers it). Time still updates each
-        # turn but is appended after the cached prefix, so the
-        # provider's prompt-cache prefix stays stable.
+        # _with_fresh_time builds (base + time). Cache the base part
+        # keyed by (session_id, generation); only re-render when the
+        # global generation is bumped (persona write triggers it).
+        # Time still updates each turn but is appended after the cached
+        # prefix, so the provider's prompt-cache prefix stays stable.
         cache_entry = self._frozen_prompts.get(session_id)
         if cache_entry is None or cache_entry[0] != _PROMPT_FREEZE_GENERATION:
-            # Render once: include learned_skills but NOT time.
+            # Render once. (Epic #24 Phase 1 stripped the legacy
+            # learned_skills layer that used to land here.)
             static_with_skills = _with_fresh_time(self._system_prompt)
             # Strip the trailing "## 当前时刻" block we just appended —
             # we'll add a fresh one right below. This is a tiny waste
@@ -1917,15 +1671,42 @@ class AgentLoop:
                                 "items": items,
                                 "count": len(items),
                             })
-                    await publish(EventType.TOOL_INVOCATION_FINISHED, {
-                        "call_id": result.call_id,
-                        "name": call.name,
-                        "result": result.content,
-                        "error": result.error,
-                        "latency_ms": result.latency_ms,
-                        "expected_side_effects": list(result.side_effects),
-                        "ok": result.ok,
-                    })
+                    finished_event = await publish(
+                        EventType.TOOL_INVOCATION_FINISHED, {
+                            "call_id": result.call_id,
+                            "name": call.name,
+                            "result": result.content,
+                            "error": result.error,
+                            "latency_ms": result.latency_ms,
+                            "expected_side_effects": list(result.side_effects),
+                            "ok": result.ok,
+                        },
+                    )
+
+                    # Epic #24 Phase 1: HonestGrader runs on the
+                    # finished event and publishes a paired
+                    # GRADER_VERDICT for downstream subscribers
+                    # (EvolutionAgent observer aggregates per
+                    # (skill_id, version) and proposes promotions).
+                    # Failures here MUST NOT block the tool loop —
+                    # the agent's main path keeps going regardless.
+                    try:
+                        verdict = await self._grader.grade(finished_event)
+                        await publish(EventType.GRADER_VERDICT, {
+                            "call_id": result.call_id,
+                            "tool_name": call.name,
+                            "score": verdict.score,
+                            "ran": verdict.ran,
+                            "returned": verdict.returned,
+                            "type_matched": verdict.type_matched,
+                            "side_effect_observable": verdict.side_effect_observable,
+                            "evidence": list(verdict.evidence),
+                        })
+                    except Exception:  # noqa: BLE001 — observability
+                        # never blocks execution; bus subscribers see
+                        # gaps instead of crashes.
+                        pass
+
                     tool_calls_made.append({
                         "name": call.name,
                         "args": call.args,
@@ -2087,25 +1868,11 @@ class AgentLoop:
             # B-29 SKILL invocation detection. Heuristic: a learned
             # SKILL.md is "invoked" when the agent's final response or
             # tool calls reference the skill's id, title, or trigger
-            # keywords. Emit a SKILL_INVOKED event so the Evolution UI
-            # can show real per-skill usage counts (auto_repair_v9 vs
-            # v8 — actual quality signal beyond the version counter).
-            #
-            # B-35: also pair with SKILL_OUTCOME — turn-level verdict
-            # (success / partial / error) so evolution can weight
-            # skills by whether they actually helped vs broke turns.
-            tool_errors = sum(
-                1 for tc in tool_calls_made if not tc.get("ok", True)
-            )
-            verdict = "success" if tool_errors == 0 else "partial"
-            try:
-                await self._detect_skill_invocations(
-                    publish, session_id, user_message, response.content,
-                    tool_calls_made,
-                    verdict=verdict, hops=hop + 1, tool_errors=tool_errors,
-                )
-            except Exception:  # noqa: BLE001 — telemetry never blocks
-                pass
+            # Epic #24 Phase 1: removed B-122/B-32/B-35/B-36's heuristic
+            # SKILL_INVOKED detection — was matching agent text against
+            # the now-deleted xm-auto-evo SKILL.md tree. Phase 2 will
+            # replace with deterministic SkillToolProvider invocation
+            # tracking (already-real tool calls become SKILL_INVOKED).
 
             return AgentTurnResult(
                 ok=True, text=response.content, hops=hop + 1,
@@ -2118,21 +1885,8 @@ class AgentLoop:
             "message": f"agent loop hit max_hops={self._max_hops} without terminal text",
             "hops": self._max_hops,
         })
-        # B-35: any skill that fired in this turn earns an "error" verdict
-        # since we never reached terminal text. Tool error count
-        # contributes — multi-fail loops are worse than a single fizzle.
-        tool_errors_final = sum(
-            1 for tc in tool_calls_made if not tc.get("ok", True)
-        )
-        try:
-            await self._detect_skill_invocations(
-                publish, session_id, user_message, "",
-                tool_calls_made,
-                verdict="error", hops=self._max_hops,
-                tool_errors=tool_errors_final,
-            )
-        except Exception:  # noqa: BLE001 — telemetry never blocks
-            pass
+        # Epic #24 Phase 1: removed B-35's hop-limit SKILL_INVOKED
+        # emission (heuristic detection over xm-auto-evo skills, deleted).
         return AgentTurnResult(
             ok=False, text="",
             hops=self._max_hops,

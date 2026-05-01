@@ -10,10 +10,8 @@ Pins:
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 
 from xmclaw.daemon.app import create_app
@@ -123,8 +121,6 @@ def test_indexer_picks_up_bare_sqlitevec_state_memory(tmp_path, monkeypatch) -> 
     returned zero matches against a bare SqliteVecMemory.
     """
     from xmclaw.providers.memory.sqlite_vec import SqliteVecMemory
-    from fastapi import FastAPI
-    from starlette.types import Scope
 
     db = tmp_path / "memory.db"
     vec = SqliteVecMemory(db)

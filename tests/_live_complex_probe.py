@@ -97,9 +97,9 @@ async def main() -> None:
             low = reply.lower()
             # Light sanity checks -- human should still eyeball output.
             if i == 3 and "24" not in reply:
-                failures.append(f"t3: halving 48 should yield 24 (reply lacks '24')")
+                failures.append("t3: halving 48 should yield 24 (reply lacks '24')")
             if i == 5 and "48" not in reply:
-                failures.append(f"t5: lost the 48 PB fact")
+                failures.append("t5: lost the 48 PB fact")
             if i == 7:
                 if "slate" not in low:
                     failures.append("t7: should say slate (post-correction)")

@@ -22,11 +22,26 @@ A single long-lived **FastAPI + WebSocket daemon** hosts one `AgentLoop`
 per session. Every observable step (LLM call, tool invocation, skill
 execution, grader verdict, todo update, prompt-injection hit, …) is
 broadcast as a `BehavioralEvent` over an `EventBus`. Subscribers
-(`HonestGrader`, `SkillScheduler`, `MemoryManager`, `CostTracker`,
-WebSocket UI) only consume events — they never call each other. This
-one-way data flow is the **evolution-as-runtime** substrate: skills
-promote / demote based on graded evidence rather than LLM
-self-assessment.
+(`EvolutionAgent` observer, `MemoryManager`, `CostTracker`, WebSocket
+UI) only consume events — they never call each other. This one-way
+data flow is the **evolution-as-runtime** substrate: after every tool
+call, `AgentLoop` invokes the `HonestGrader` to score on hard signals
+(ran / returned / type_matched / side_effect_observable, sum 0.80;
+LLM self-rating capped at 0.20) and publishes a paired `GRADER_VERDICT`.
+The `EvolutionAgent` observer aggregates verdicts per `(skill_id,
+version)` and emits `SKILL_CANDIDATE_PROPOSED` once promotion gates
+clear; the orchestrator forwards the proposal through evidence-gated
+`SkillRegistry.promote(evidence=…)` (default `auto_apply=False` —
+human approves via `xmclaw evolve approve`). Skills never reach the
+agent's prompt or tool list except through this path.
+
+> **Epic #24 (2026-05-01) note**: an earlier "xm-auto-evo" Node.js
+> subsystem ran in parallel and wrote SKILL.md files directly into
+> the agent's system prompt without going through the grader.
+> Phase 1 deleted it (`xmclaw/evolution_core/`,
+> `xmclaw/daemon/{auto_evo_bridge,learned_skills,…}.py`,
+> `routers/auto_evo.py`) so the only path is the one described above.
+> See [DEV_ROADMAP.md Epic #24](DEV_ROADMAP.md#epic-24--自主进化重做学徒成长系统-核心差异化重写).
 
 ## Topology
 

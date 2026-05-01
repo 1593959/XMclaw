@@ -117,7 +117,7 @@ async def run_turn(prompt: str, *, label: str, idle_timeout_s: float = 60) -> di
                     _log(label, f"   ┌── content ({len(content)} chars) ──┐\n")
                     for line in content.splitlines() or [content]:
                         _log(label, f"   │ {line}\n")
-                    _log(label, f"   └─────────────────────────┘\n")
+                    _log(label, "   └─────────────────────────┘\n")
                 if ok and tc == 0:
                     break  # turn complete
             elif etype == "LLM_REQUEST":

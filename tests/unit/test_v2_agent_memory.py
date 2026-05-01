@@ -13,7 +13,6 @@ follow an ``role="assistant"`` message that emitted that tool_call.
 """
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 

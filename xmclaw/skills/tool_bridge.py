@@ -1,11 +1,11 @@
 """SkillToolProvider — expose registered Skills as first-class tools.
 
-Closes the gap the user kept hitting: SKILL.md (LearnedSkill) text is
-already injected into the system prompt, but executable Skill subclasses
-(SkillRegistry HEAD entries) had no way for the agent to actually CALL
-them. Today the only path was prompt injection ("here is a procedure,
-follow it"); there was no way for the LLM to autonomously decide
-"invoke skill X with args Y" the way it picks `bash` or `file_read`.
+After Epic #24 Phase 1 ripped out the xm-auto-evo SKILL.md prompt
+injection path, **this is the only way a skill becomes callable by the
+agent**. ``SkillRegistry`` HEAD entries (each one having passed
+evidence-gated promote — anti-req #12) get bridged to tools the LLM
+picks like any other (``bash`` / ``file_read`` / etc.). Direct text
+injection of skill bodies into the system prompt is no longer a path.
 
 This module makes any Skill registered at HEAD show up as a tool named
 ``skill_<skill_id>``, with a permissive object schema so the LLM can

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from xmclaw.providers.memory.file_index import (
     MemoryFileEntry,

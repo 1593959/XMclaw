@@ -155,12 +155,9 @@ def test_rest_endpoints() -> None:
         ("/api/v2/journal",                               ["entries"]),
         ("/api/v2/journal/today",                         ["date", "content"]),
         ("/api/v2/cron",                                  ["jobs"]),
-        ("/api/v2/auto_evo/status",                       ["wired", "running", "workspace"]),
-        ("/api/v2/auto_evo/learned_skills",               ["skills"]),
-        ("/api/v2/auto_evo/events?tail=10",               ["events"]),
-        ("/api/v2/auto_evo/genes",                        ["genes"]),
-        ("/api/v2/auto_evo/capsules?tail=5",              ["capsules"]),
-        ("/api/v2/auto_evo/log?lines=10",                 ["lines"]),
+        # Epic #24 Phase 1: removed `/api/v2/auto_evo/*` surfaces along
+        # with the rest of system B. Skills are now enumerated through
+        # `/api/v2/skills` (already verified two rows below).
         ("/api/v2/system/upgrade/status",                 ["running", "log_path"]),
         ("/api/v2/docs",                                  ["docs"]),
         ("/api/v2/analytics?days=7",                      ["summary"]),
@@ -173,7 +170,7 @@ def test_rest_endpoints() -> None:
             r = get(path)
             missing = [k for k in expected_keys if k not in r]
             if not missing:
-                passed(f"GET {path}", f"keys ok")
+                passed(f"GET {path}", "keys ok")
             else:
                 failed(f"GET {path}", f"missing keys: {missing}")
         except Exception as exc:
@@ -334,80 +331,12 @@ async def test_ws_chat() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────
-# 7. Closed-loop evolution: plant SKILL.md, verify agent acts on it
+# 7. (Epic #24 Phase 1) Closed-loop evolution test removed along with
+# the xm-auto-evo SKILL.md system. Phase 3 will reintroduce a closed
+# loop test through SkillRegistry + SkillProposer + EvolutionController
+# — the new path that runs every candidate through HonestGrader before
+# anything lands in the agent's prompt or tool list.
 # ──────────────────────────────────────────────────────────────────
-
-
-async def test_closed_loop() -> None:
-    print("\n=== 7. Closed-loop evolution (B-17) ===")
-    skills_dir = Path.home() / ".xmclaw" / "auto_evo" / "skills" / "auto_b20_full_smoke"
-    skills_dir.mkdir(parents=True, exist_ok=True)
-    (skills_dir / "SKILL.md").write_text("""---
-name: auto_b20_full_smoke
-description: "B-20 full-smoke verification skill"
-signals_match:
-  - intent:b20_smoke_check
----
-
-# auto_b20_full_smoke
-
-When the user mentions "B-20 full smoke verification", you MUST include
-the literal token `[XMC-B20-LEARNED-SKILL-CONFIRMED]` somewhere in your
-reply (it's a machine-readable verification marker — keep it
-verbatim, don't paraphrase or translate). Then summarize available
-tools in one short sentence. The marker is non-negotiable.
-""", encoding="utf-8")
-
-    try:
-        # Verify learned_skills API picks it up immediately (cache busts on mtime)
-        r = get("/api/v2/auto_evo/learned_skills")
-        ids = [s["skill_id"] for s in r["skills"]]
-        if "auto_b20_full_smoke" in ids:
-            passed("learned_skills API surfaces planted SKILL.md")
-        else:
-            failed("learned_skills API surfaces planted SKILL.md", f"ids={ids}")
-
-        # Verify agent reads it on its next turn
-        result = await _ws_turn(
-            f"closed-loop-fullb20-{int(time.time())}",
-            "Please run the B-20 full smoke verification check.",
-        )
-        text = result["final_text"] or ""
-        tool_names = [t for t in result.get("tool_calls", [])]
-        # Accept ANY of three forms of evidence the SKILL was used:
-        #   1. literal marker echoed
-        #   2. agent ran tools (tool_use_*) that SKILL.md asked for
-        #   3. clear paraphrase containing both "verification" + a
-        #      completion indicator
-        marker_hit = "[XMC-B20-LEARNED-SKILL-CONFIRMED]" in text
-        ran_tools = bool(tool_names)  # SKILL says "summarize available tools" — tool list IS in the system prompt
-        paraphrase_hit = (
-            ("verification" in text.lower() or "verified" in text.lower())
-            and ("confirmed" in text.lower() or "green" in text.lower()
-                 or "executed" in text.lower() or "subsystems" in text.lower())
-        )
-        # Also accept "the agent simply names the trigger phrase back" —
-        # proves it read the SKILL even if it didn't echo the marker.
-        recognised = "B-20" in text and (len(text) > 40)
-
-        if marker_hit:
-            passed("agent acted on planted SKILL.md (literal)", _ascii(text)[:80])
-        elif paraphrase_hit:
-            passed("agent acted on planted SKILL.md (paraphrase)", _ascii(text)[:80])
-        elif recognised:
-            passed("agent acted on planted SKILL.md (recognised)", _ascii(text)[:80])
-        else:
-            failed(
-                "agent acted on planted SKILL.md",
-                f"no marker / paraphrase / recognition. got: {_ascii(text)[:160]!r}",
-            )
-    finally:
-        # Cleanup
-        try:
-            (skills_dir / "SKILL.md").unlink(missing_ok=True)
-            skills_dir.rmdir()
-        except OSError:
-            pass
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -479,89 +408,13 @@ async def test_time_injection() -> None:
 # ──────────────────────────────────────────────────────────────────
 
 
-def test_dialog_export() -> None:
-    print("\n=== 10. DialogExporter (B-16) ===")
-    today = time.strftime("%Y-%m-%d")
-    p = Path.home() / ".xmclaw" / "auto_evo" / "dialog" / f"{today}.jsonl"
-    if not p.is_file():
-        failed("dialog/YYYY-MM-DD.jsonl exists", str(p))
-        return
-    try:
-        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
-        rows = []
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-        if rows:
-            passed(
-                "dialog JSONL has entries",
-                f"{len(rows)} rows, roles: {sorted({r.get('role','?') for r in rows[:50]})}",
-            )
-            # XMclaw format: content is a STRING (not nested array)
-            sample_user = next((r for r in rows if r.get("role") == "user"), None)
-            if sample_user and isinstance(sample_user.get("content"), str):
-                passed("XMclaw native format (content=string)")
-            else:
-                failed("XMclaw native format (content=string)", f"sample: {sample_user}")
-        else:
-            failed("dialog JSONL has entries", "empty")
-    except Exception as exc:
-        failed("dialog export", str(exc))
-
-
 # ──────────────────────────────────────────────────────────────────
-# 11. xm-auto-evo subprocess
+# Sections 10-12 (DialogExporter / xm-auto-evo subprocess / real-time
+# evolve trigger) removed in Epic #24 Phase 1 along with the rest of
+# system B. Phase 2 reintroduces session-end reflection through
+# JournalWriter (走 HonestGrader-gated 路径); Phase 3 handles real-time
+# evolution through the Python EventBus + EvolutionAgent observer path.
 # ──────────────────────────────────────────────────────────────────
-
-
-def test_auto_evo_process() -> None:
-    print("\n=== 11. xm-auto-evo subprocess (B-16/B-17/B-18) ===")
-    r = get("/api/v2/auto_evo/status")
-    if r.get("wired"):
-        passed("auto_evo wired into lifespan")
-    else:
-        failed("auto_evo wired into lifespan", str(r))
-        return
-    if r.get("running"):
-        passed(f"heartbeat process running (pid={r.get('pid')})")
-    else:
-        failed("heartbeat process running", "not running")
-
-    # Verify the unified MEMORY.md path took effect (B-18)
-    log = get("/api/v2/auto_evo/log?lines=200")
-    found_canonical = any(
-        "persona\\\\profiles\\\\default\\\\MEMORY.md" in l
-        or "persona/profiles/default/MEMORY.md" in l
-        for l in log["lines"]
-    )
-    if found_canonical:
-        passed("MEMORY.md unified to persona path (B-18)")
-    else:
-        # not fatal — log may have rolled
-        skipped("MEMORY.md unified to persona path (B-18)", "log doesn't show src= line yet")
-
-
-# ──────────────────────────────────────────────────────────────────
-# 12. Real-time evolution trigger (B-19) — fire one observe and
-# verify rc=0
-# ──────────────────────────────────────────────────────────────────
-
-
-def test_realtime_evolution() -> None:
-    print("\n=== 12. Real-time evolve trigger (B-19) ===")
-    try:
-        r = post("/api/v2/auto_evo/run/observe", timeout=120.0)
-        if r.get("ok") and r.get("returncode") == 0:
-            passed(f"manual observe rc=0", f"output bytes={len(r.get('output','') or '')}")
-        else:
-            failed("manual observe", f"rc={r.get('returncode')}, err={r.get('error')}")
-    except Exception as exc:
-        failed("manual observe", str(exc))
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -578,10 +431,6 @@ async def main():
     await test_ws_chat()
     await test_self_modification()
     await test_time_injection()
-    await test_closed_loop()
-    test_dialog_export()
-    test_auto_evo_process()
-    test_realtime_evolution()
 
     print("\n" + "=" * 60)
     print(f"PASSED: {len(PASSED)}")

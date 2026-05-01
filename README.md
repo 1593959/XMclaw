@@ -39,7 +39,7 @@ xmclaw doctor                 # 21 health checks, 5 auto-fixable
 xmclaw stop
 ```
 
-Python ≥ 3.10. Cross-platform (Windows is a first-class target). No Node.js required — the web UI is plain ESM served by FastAPI.
+Python ≥ 3.10. Cross-platform (Windows is a first-class target). The web UI is plain ESM served by FastAPI — no Node.js build step or runtime needed.
 
 ---
 
@@ -47,7 +47,7 @@ Python ≥ 3.10. Cross-platform (Windows is a first-class target). No Node.js re
 
 | | |
 |---|---|
-| **Self-improvement on evidence, not vibes** | Every LLM call, tool result, and skill execution becomes a typed `BehavioralEvent`. The Honest Grader scores outcomes on hard signals — *did the tool actually run? was a side-effect produced?* — and the controller promotes or rolls back skill versions automatically. LLM self-rating gets at most 0.2 weight. |
+| **Self-improvement on evidence, not vibes** | Every LLM call, tool result, and skill execution becomes a typed `BehavioralEvent`. After each tool call the **HonestGrader** runs four ground-truth checks (did it actually run? did it return? does the type match? is the side-effect observable?) and emits a `GRADER_VERDICT` event; LLM self-rating is hard-capped at 0.20. The `EvolutionAgent` observer aggregates verdicts per `(skill_id, version)` and proposes promotions through `SKILL_CANDIDATE_PROPOSED`. The controller (default `auto_apply=False`) lets you review with `xmclaw evolve review` and approve via `xmclaw evolve approve <id>` — every promotion goes through evidence-gated `SkillRegistry.promote(evidence=…)` (anti-req #12 enforced at the registry door). |
 | **Local-first, all of it** | Events, vector memory, pairing token, persona files, daily logs all live in `~/.xmclaw/v2/` (SQLite WAL + sqlite-vec). `XMC_DATA_DIR` moves the whole workspace in one lever. No cloud, no telemetry, no upload. |
 | **Cross-session memory that compacts itself** | An always-on file provider (MEMORY.md / USER.md / daily journal) plus an embedded vector index. A nightly **Auto-Dream** pass uses an LLM to dedupe, crystallize, and evict stale bullets — so memory stays useful instead of bloating into noise. |
 | **Replayable everything** | Reconnect a WebSocket and the daemon re-emits the session's events so the UI rehydrates without re-hitting the LLM. `GET /api/v2/events` supports session/since/types filters + FTS5 search across payloads. Audit any decision months later. |
@@ -90,7 +90,7 @@ XMclaw treats anything it didn't generate as untrusted. Defenses in depth:
 
 ## 🧱 Architecture, briefly
 
-A single FastAPI daemon hosts an **AgentLoop** that composes pluggable providers: LLM (Anthropic / OpenAI / OpenAI-compatible), Tool (`builtin` / `browser` / `mcp_bridge` / composite), Memory (`builtin_file` + `sqlite_vec` + optional Hindsight / Mem0 / Supermemory), Channel (WS today, channel adapters next). A streaming **EventBus** (in-process + SQLite WAL + FTS5) connects everything; the **HonestGrader → SkillScheduler → EvolutionController** pipeline rides the same bus to drive skill version promotion.
+A single FastAPI daemon hosts an **AgentLoop** that composes pluggable providers: LLM (Anthropic / OpenAI / OpenAI-compatible), Tool (`builtin` / `browser` / `mcp_bridge` / composite), Memory (`builtin_file` + `sqlite_vec` + optional Hindsight / Mem0 / Supermemory), Channel (WS today, channel adapters next). A streaming **EventBus** (in-process + SQLite WAL + FTS5) connects everything; the **HonestGrader → EvolutionAgent observer → EvolutionController → EvolutionOrchestrator → SkillRegistry** pipeline rides the same bus to drive skill version promotion. Every step is evidence-gated; nothing reaches the agent's prompt or tool list without passing through it.
 
 Authoritative design — including data flows, wire protocol, and event contract — in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Per-directory contracts under `xmclaw/<subdir>/AGENTS.md`.
 

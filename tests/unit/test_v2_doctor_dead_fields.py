@@ -12,7 +12,6 @@ Pins:
 """
 from __future__ import annotations
 
-import pytest
 
 from xmclaw.cli.doctor_registry import (
     ConfigDeadFieldsCheck,

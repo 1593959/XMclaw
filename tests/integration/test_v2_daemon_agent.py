@@ -7,7 +7,6 @@ mock LLMs (no network, no API key) to exercise the full plumbing.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -23,7 +22,6 @@ from xmclaw.providers.llm.base import (
     LLMChunk,
     LLMProvider,
     LLMResponse,
-    Message,
     Pricing,
 )
 from xmclaw.providers.tool.base import ToolProvider

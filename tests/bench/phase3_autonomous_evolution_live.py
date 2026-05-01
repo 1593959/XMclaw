@@ -39,13 +39,10 @@ This bench skips cleanly on CI when no API key is set.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import statistics
-import tempfile
-from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -56,7 +53,6 @@ from xmclaw.core.evolution.controller import CandidateEvaluation, PromotionThres
 from xmclaw.core.grader import HonestGrader
 from xmclaw.core.grader.domain import SummaryQualityGrader
 from xmclaw.core.grader.domain.summary import SummaryTask
-from xmclaw.core.ir import ToolCallShape, ToolSpec
 from xmclaw.core.scheduler.online import Candidate, OnlineScheduler
 from xmclaw.providers.llm.anthropic import AnthropicLLM
 from xmclaw.providers.llm.base import LLMProvider, Message

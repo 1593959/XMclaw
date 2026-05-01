@@ -6,7 +6,6 @@ lives in a smoke test you run manually with the [lsp] extra installed.
 """
 from __future__ import annotations
 
-import asyncio
 import sys
 
 import pytest

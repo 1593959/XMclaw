@@ -6,7 +6,6 @@ import asyncio
 import pytest
 
 from xmclaw.core.evolution import (
-    ConstraintReport,
     EvalDataset,
     EvalExample,
     MutationResult,

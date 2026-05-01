@@ -10,7 +10,6 @@ import json
 import os
 from pathlib import Path
 
-import pytest
 from typer.testing import CliRunner
 
 from xmclaw.cli.main import app

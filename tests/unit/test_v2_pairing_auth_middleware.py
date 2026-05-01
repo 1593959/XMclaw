@@ -11,7 +11,6 @@ Covers four concerns:
 """
 from __future__ import annotations
 
-from typing import Awaitable
 
 import pytest
 from fastapi.testclient import TestClient

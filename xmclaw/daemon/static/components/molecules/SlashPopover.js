@@ -65,63 +65,18 @@ function _navigate(to) {
   window.dispatchEvent(new PopStateEvent("popstate"));
 }
 
-// B-24: dynamically-loaded "learned skills" (xm-auto-evo's
-// auto-generated SKILL.md files). Fetched in the background so users
-// can type ``/repair`` and see all auto_repair_* variants. Cached for
-// 30s so we don't hammer the API on every keystroke.
-let _LEARNED_CACHE = { ts: 0, list: [] };
-const _LEARNED_TTL_MS = 30_000;
-
-async function _refreshLearnedSkills(token) {
-  const now = Date.now();
-  if (now - _LEARNED_CACHE.ts < _LEARNED_TTL_MS) return _LEARNED_CACHE.list;
-  try {
-    const url = "/api/v2/auto_evo/learned_skills" +
-      (token ? `?token=${encodeURIComponent(token)}` : "");
-    const r = await fetch(url);
-    const d = await r.json();
-    const list = (d.skills || []).map((s) => {
-      // Slug: agent-friendly name. e.g. "auto_repair_xxx_v9" → "/auto-repair-xxx-v9"
-      const slug = String(s.skill_id || "")
-        .toLowerCase()
-        .replace(/[^a-z0-9_-]/g, "-")
-        .replace(/_/g, "-")
-        .replace(/-+/g, "-")
-        .replace(/^-+|-+$/g, "");
-      const display = "/" + slug;
-      return {
-        display,
-        text: display + " ",
-        meta: (s.title || s.skill_id) + (s.description ? " — " + s.description.slice(0, 60) : ""),
-        action: {
-          kind: "send",
-          // Send a message that explicitly invokes the SKILL by its
-          // canonical id. The agent sees this as a normal user message
-          // and looks up the SKILL.md content from system prompt.
-          text: `请按照已学技能 \`${s.skill_id}\` 的步骤执行。`,
-        },
-      };
-    });
-    _LEARNED_CACHE = { ts: now, list };
-    return list;
-  } catch (_) {
-    return _LEARNED_CACHE.list;
-  }
-}
-
-function _learnedSync() {
-  return _LEARNED_CACHE.list;
-}
+// Epic #24 Phase 1: dynamically-loaded "learned skills" suggestions
+// (B-24, was reading from xm-auto-evo's `/api/v2/auto_evo/learned_skills`)
+// removed along with system B. Phase 2 will reintroduce skill-as-slash
+// suggestions backed by `SkillRegistry` (only HEAD versions of skills
+// that passed evidence-gated promote). Static `SLASH_COMMANDS` keep
+// working as before.
 
 function filterCommands(input) {
   if (!input.startsWith("/")) return [];
   const q = input.slice(1).toLowerCase().trim();
-  // Static (canonical) + dynamic (learned skill) commands. Static comes
-  // first so the most-common ``/new`` etc. don't get drowned by
-  // auto-generated skill variants.
-  const all = SLASH_COMMANDS.concat(_learnedSync());
-  if (!q) return all;
-  return all.filter((c) =>
+  if (!q) return SLASH_COMMANDS;
+  return SLASH_COMMANDS.filter((c) =>
     c.display.toLowerCase().includes(q) ||
     (c.meta || "").toLowerCase().includes(q)
   );
@@ -158,29 +113,13 @@ function ChevIcon({ active }) {
  * is a `usePopoverApi` hook returning `{ render, handleKey }` so the
  * Composer can call handleKey from its onKeyDown without lifting state.
  */
-export function usePopoverApi({ input, onApply, store, token }) {
+export function usePopoverApi({ input, onApply, store, token: _token }) {
   const [selected, setSelected] = useState(0);
-  // Bump when learned-skills cache refresh completes so filterCommands
-  // re-runs and surfaces the new entries. Without this, the first
-  // popover-open shows static commands only until the user types
-  // something else.
-  const [tick, setTick] = useState(0);
   const items = useMemo(
     () => filterCommands(input || ""),
-    [input, tick]
+    [input]
   );
   const visible = items.length > 0 && (input || "").startsWith("/");
-
-  // When the popover is about to open, refresh the learned-skill list
-  // (cached, so this is cheap most of the time).
-  useEffect(() => {
-    if (!(input || "").startsWith("/")) return;
-    let cancelled = false;
-    _refreshLearnedSkills(token).then(() => {
-      if (!cancelled) setTick((t) => t + 1);
-    });
-    return () => { cancelled = true; };
-  }, [input, token]);
 
   // Reset selection when the items list shrinks past the active index.
   useEffect(() => {

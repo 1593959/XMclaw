@@ -16,7 +16,6 @@ import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
-import pytest
 from fastapi.testclient import TestClient
 
 from xmclaw.core.bus import EventType, InProcessEventBus

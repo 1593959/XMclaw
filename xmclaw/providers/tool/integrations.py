@@ -660,7 +660,9 @@ class IntegrationsTools(ToolProvider):
         # Optional signature (机器人开了 '签名校验' 安全设置时必填)
         secret = cfg.get("secret", "").strip()
         if secret:
-            import base64, hashlib, hmac
+            import base64
+            import hashlib
+            import hmac
             ts = str(int(time.time()))
             string_to_sign = f"{ts}\n{secret}"
             sign = base64.b64encode(
@@ -748,7 +750,9 @@ class IntegrationsTools(ToolProvider):
         secret = cfg.get("secret", "").strip()
         send_url = url
         if secret:
-            import base64, hashlib, hmac
+            import base64
+            import hashlib
+            import hmac
             from urllib.parse import quote_plus
             ts = str(round(time.time() * 1000))
             string_to_sign = f"{ts}\n{secret}"
