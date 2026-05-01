@@ -369,6 +369,131 @@ function SkillEventsPanel({ token }) {
   `;
 }
 
+// ── B-129: live skill invocation panel ─────────────────────────────
+//
+// Pulls skill_invoked + skill_outcome events and shows them as a
+// time-ordered tail. Pairs each invoked with its matching outcome
+// when both arrive within the same window. evidence='tool_call'
+// (B-125 deterministic) is marked distinctly from evidence=heuristic
+// (B-122 substring fallback).
+
+const INVOCATION_TYPES = "skill_invoked,skill_outcome";
+
+function SkillInvocationLive({ token }) {
+  const [events, setEvents] = useState(null);
+  const [error, setError] = useState(null);
+
+  const load = useCallback(() => {
+    apiGet(`/api/v2/events?limit=120&types=${INVOCATION_TYPES}`, token)
+      .then((d) => setEvents(d.events || []))
+      .catch((e) => setError(String(e.message || e)));
+  }, [token]);
+
+  useEffect(() => {
+    load();
+    const id = setInterval(load, 5_000);
+    return () => clearInterval(id);
+  }, [load]);
+
+  if (error) return html`<p class="xmc-datapage__error">${error}</p>`;
+  if (!events) return html`<p class="xmc-datapage__hint">加载技能事件流…</p>`;
+
+  // Pair invoked with the next outcome for the same (session, skill).
+  const invoked = events.filter((e) => e.type === "skill_invoked");
+  const outcomes = events.filter((e) => e.type === "skill_outcome");
+  const rows = invoked
+    .slice()
+    .sort((a, b) => (b.ts || 0) - (a.ts || 0))
+    .slice(0, 30)
+    .map((inv) => {
+      const sid = inv.payload?.skill_id;
+      const sess = inv.payload?.session_id || inv.session_id;
+      const matched = outcomes.find(
+        (o) => o.payload?.skill_id === sid
+          && (o.payload?.session_id || o.session_id) === sess
+          && o.ts >= inv.ts
+          && o.ts - inv.ts < 60,
+      );
+      return { inv, out: matched };
+    });
+
+  // Counters for the headline numbers (last 24h).
+  const now = Date.now() / 1000;
+  const dayAgo = now - 86400;
+  const todayInvocations = invoked.filter((e) => e.ts >= dayAgo);
+  const toolCallCount = todayInvocations.filter(
+    (e) => e.payload?.evidence === "tool_call",
+  ).length;
+  const heuristicCount = todayInvocations.length - toolCallCount;
+  const okCount = outcomes.filter(
+    (e) => e.ts >= dayAgo && e.payload?.verdict === "success",
+  ).length;
+  const errCount = outcomes.filter(
+    (e) => e.ts >= dayAgo && e.payload?.verdict === "error",
+  ).length;
+
+  return html`
+    <div>
+      <div style="display:flex;gap:.5rem;margin-bottom:.5rem;flex-wrap:wrap">
+        <div class="xmc-datapage__row" style="flex:1;min-width:90px">
+          <small>24h 调用</small>
+          <strong style="font-size:1.2rem">${todayInvocations.length}</strong>
+          <small style="color:var(--xmc-fg-muted)">
+            ${toolCallCount} 工具调用 · ${heuristicCount} 启发式
+          </small>
+        </div>
+        <div class="xmc-datapage__row" style="flex:1;min-width:90px">
+          <small>24h 成功</small>
+          <strong style="font-size:1.2rem;color:var(--color-success,#3a8)">${okCount}</strong>
+        </div>
+        <div class="xmc-datapage__row" style="flex:1;min-width:90px">
+          <small>24h 失败</small>
+          <strong style="font-size:1.2rem;color:var(--color-error,#c66)">${errCount}</strong>
+        </div>
+      </div>
+      ${rows.length === 0
+        ? html`<p class="xmc-datapage__empty">暂无技能调用 — agent 触发或 tool-call 任意 skill 后会出现在这里</p>`
+        : html`
+            <ul class="xmc-datapage__list">
+              ${rows.map(({ inv, out }) => {
+                const ts = inv.ts ? new Date(inv.ts * 1000).toLocaleTimeString() : "";
+                const sid = inv.payload?.skill_id || "?";
+                const evidence = inv.payload?.evidence || "?";
+                const isToolCall = evidence === "tool_call";
+                const verdict = out?.payload?.verdict;
+                const verdictTone = verdict === "success" ? "success"
+                  : verdict === "partial" ? "warn"
+                  : verdict === "error" ? "error"
+                  : verdict === "auto_disabled" ? "error"
+                  : "muted";
+                return html`
+                  <li class="xmc-datapage__row" key=${inv.id}>
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:.4rem;flex-wrap:wrap">
+                      <span style="display:flex;gap:.4rem;align-items:center">
+                        <strong style="font-family:var(--xmc-font-mono);font-size:.85rem">${sid}</strong>
+                        ${isToolCall
+                          ? html`<${Badge} tone="success" title="agent 显式 tool-call (B-125 确定性路径)">⚙ tool</${Badge}>`
+                          : html`<${Badge} tone="muted" title=${`启发式匹配: evidence=${evidence}`}>~ ${evidence}</${Badge}>`}
+                        ${verdict
+                          ? html`<${Badge} tone=${verdictTone}>${verdict}</${Badge}>`
+                          : html`<${Badge} tone="muted">pending</${Badge}>`}
+                      </span>
+                      <small style="color:var(--xmc-fg-muted)">${ts} · ${formatRelative(inv.ts)}</small>
+                    </div>
+                    <small style="display:block;margin-top:.2rem;color:var(--xmc-fg-muted);font-size:.7rem">
+                      session: <code>${(inv.payload?.session_id || inv.session_id || "?").slice(0, 12)}</code>
+                      ${out ? html` · 反馈延迟 ${Math.round((out.ts - inv.ts) * 1000)}ms` : null}
+                      ${inv.payload?.trigger_match ? html` · trigger: <code>${inv.payload.trigger_match}</code>` : null}
+                    </small>
+                  </li>
+                `;
+              })}
+            </ul>
+          `}
+    </div>
+  `;
+}
+
 // ── shell ──────────────────────────────────────────────────────────
 
 export function EvolutionPage({ token }) {
@@ -378,10 +503,17 @@ export function EvolutionPage({ token }) {
         <h2 id="evo-title">进化 ★</h2>
         <p class="xmc-datapage__subtitle">
           XMclaw 的自主进化系统。上方是 <strong>xm-auto-evo</strong>（系统级进化心脏 —
-          自动观察、模式识别、Gene/Skill 自动生成）；下方是 SkillRegistry 的晋升/回滚事件。
+          自动观察、模式识别、Gene/Skill 自动生成）；中间是 <strong>实时技能调用流</strong>（agent 自主选取的每一次触发）；
+          下方是 SkillRegistry 的晋升/回滚事件。
         </p>
       </header>
       <${AutoEvoPanel} token=${token} />
+      <h3 style="margin:1.5rem 0 .5rem">实时技能调用 ⚡</h3>
+      <p class="xmc-datapage__subtitle" style="margin-bottom:.5rem">
+        每 5 秒刷新。<code>⚙ tool</code> = agent 通过 tool-call 显式调用 (B-125)；
+        <code>~ heuristic</code> = 事后字符串匹配 (B-122 fallback)。
+      </p>
+      <${SkillInvocationLive} token=${token} />
       <h3 style="margin:1.5rem 0 .5rem">技能注册中心事件</h3>
       <${SkillEventsPanel} token=${token} />
     </section>
