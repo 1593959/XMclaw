@@ -247,8 +247,16 @@ class LearnedSkillsLoader:
         inline_shell_enabled: bool = False,
         workspace_provider: "object | None" = None,
         profile_dir_provider: "object | None" = None,
+        extra_roots: "list[Path] | None" = None,
     ) -> None:
         self._root = skills_root
+        # B-149: extra roots — secondary directories to ALSO scan.
+        # Lets XMclaw pick up Anthropic Agent Skills installed via
+        # ``npx skills add ...`` (lands in ``~/.agents/skills/``) or
+        # Claude Code (``~/.claude/skills/``) without forcing the user
+        # to copy / symlink. Same SKILL.md format on disk, multiple
+        # ecosystems share the standard.
+        self._extra_roots: list[Path] = list(extra_roots or [])
         self._inline_shell_enabled = bool(inline_shell_enabled)
         self._workspace_provider = workspace_provider
         self._profile_dir_provider = profile_dir_provider
@@ -281,24 +289,39 @@ class LearnedSkillsLoader:
     def skills_root(self) -> Path:
         return self._root
 
+    @property
+    def all_roots(self) -> list[Path]:
+        """Every directory this loader scans, in order. Primary first,
+        then extras (B-149: skills.sh / Claude Code shared paths)."""
+        return [self._root, *self._extra_roots]
+
     def _scan(self) -> list[LearnedSkill]:
-        if not self._root.is_dir():
-            return []
         skills: list[LearnedSkill] = []
-        try:
-            entries = sorted(self._root.iterdir())
-        except OSError:
-            return []
-        for entry in entries:
-            if not entry.is_dir():
+        seen_ids: set[str] = set()
+        for root in self.all_roots:
+            if not root.is_dir():
                 continue
-            sk = _load_one(
-                entry,
-                inline_shell_enabled=self._inline_shell_enabled,
-                template_ctx=self._template_ctx(entry),
-            )
-            if sk is not None:
-                skills.append(sk)
+            try:
+                entries = sorted(root.iterdir())
+            except OSError:
+                continue
+            for entry in entries:
+                if not entry.is_dir():
+                    continue
+                # B-149: skill_id-level dedup across roots so the same
+                # skill installed in two ecosystems (e.g. ~/.agents/
+                # skills/find-skills AND ~/.claude/skills/find-skills)
+                # appears once. Primary root wins (ours).
+                if entry.name in seen_ids:
+                    continue
+                sk = _load_one(
+                    entry,
+                    inline_shell_enabled=self._inline_shell_enabled,
+                    template_ctx=self._template_ctx(entry),
+                )
+                if sk is not None:
+                    skills.append(sk)
+                    seen_ids.add(entry.name)
         return skills
 
     def _fingerprint(self, skills: list[LearnedSkill]) -> tuple:
@@ -410,18 +433,25 @@ class LearnedSkillsLoader:
                 "body_preview": s.body[:300],
                 "disabled": False,
             })
-        if not include_disabled or not self._root.is_dir():
+        if not include_disabled:
             return out
 
-        # Walk root once more, surface skills _load_one rejected because
-        # of the disabled flag. Other rejection reasons (skill_guard
-        # block, bad path, etc.) stay hidden — the UI can't usefully
-        # toggle a guard-blocked skill.
-        try:
-            entries = sorted(self._root.iterdir())
-        except OSError:
+        # B-149: walk every scanned root, not just the primary, so
+        # disabled SKILL.md from skills.sh / Claude Code paths also
+        # show up in the UI as parked entries.
+        roots_to_scan = [r for r in self.all_roots if r.is_dir()]
+        if not roots_to_scan:
             return out
-        for entry in entries:
+
+        # Walk every root once more, surface skills _load_one rejected
+        # because of the disabled flag.
+        all_entries: list[Path] = []
+        for r in roots_to_scan:
+            try:
+                all_entries.extend(sorted(r.iterdir()))
+            except OSError:
+                continue
+        for entry in all_entries:
             if not entry.is_dir() or entry.name in active_ids:
                 continue
             skill_md = entry / "SKILL.md"
@@ -506,11 +536,34 @@ def default_learned_skills_loader() -> LearnedSkillsLoader:
             except Exception:  # noqa: BLE001
                 return None
 
+        # B-149: standard cross-agent SKILL.md install paths.
+        # `npx skills add ...` (skills.sh CLI) writes to ~/.agents/skills/;
+        # Claude Code uses ~/.claude/skills/. By auto-scanning these
+        # paths XMclaw recognises skills the user installed via any
+        # peer ecosystem without manual copy/symlink.
+        from pathlib import Path as _Path
+        _extra_roots = [
+            _Path.home() / ".agents" / "skills",  # skills.sh / OpenClaw
+            _Path.home() / ".claude" / "skills",  # Claude Code
+        ]
+        # Plus project-local: <workspace>/.agents/skills, .claude/skills
+        try:
+            ws_path = _ws_provider()
+            if ws_path is not None:
+                ws_p = _Path(str(ws_path))
+                _extra_roots.extend([
+                    ws_p / ".agents" / "skills",
+                    ws_p / ".claude" / "skills",
+                ])
+        except Exception:  # noqa: BLE001
+            pass
+
         _default_loader = LearnedSkillsLoader(
             auto_evo_workspace() / "skills",
             inline_shell_enabled=inline_enabled,
             workspace_provider=_ws_provider,
             profile_dir_provider=_profile_provider,
+            extra_roots=_extra_roots,
         )
     return _default_loader
 

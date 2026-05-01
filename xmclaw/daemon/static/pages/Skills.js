@@ -121,9 +121,16 @@ function SkillCard({ skill, expanded, onToggle, onPromote, onRollback }) {
 
 export function SkillsPage({ token }) {
   const [skills, setSkills] = useState(null);
+  // B-150: also pull SKILL.md learned skills (auto-evo + skills.sh +
+  // Claude Code) so the user sees ALL their installed skills here.
+  // Pre-B-150 this page only showed Python Skill subclasses, leaving
+  // SKILL.md skills hidden under the Evolution page.
+  const [learned, setLearned] = useState(null);
+  const [scannedRoots, setScannedRoots] = useState([]);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
-  const [view, setView] = useState("all"); // "all" | "built-in" | "user"
+  // view: "all" | "built-in" | "user" | "learned"
+  const [view, setView] = useState("all");
   const [expanded, setExpanded] = useState(new Set());
 
   useEffect(() => {
@@ -131,13 +138,32 @@ export function SkillsPage({ token }) {
     apiGet("/api/v2/skills", token)
       .then((d) => { if (!cancelled) setSkills(d.skills || []); })
       .catch((e) => { if (!cancelled) setError(String(e.message || e)); });
+    apiGet("/api/v2/auto_evo/learned_skills?include_disabled=1", token)
+      .then((d) => {
+        if (cancelled) return;
+        setLearned(d.skills || []);
+        setScannedRoots(d.scanned_roots || []);
+      })
+      .catch(() => { if (!cancelled) setLearned([]); });
     return () => { cancelled = true; };
   }, [token]);
 
-  const filtered = useMemo(() => {
+  // B-150: classify each learned skill by its disk path so the user
+  // can see WHERE every skill came from (auto-evo / skills.sh /
+  // Claude Code / project-local). Helps answer "我都安装了哪些技能".
+  const classifyLearnedOrigin = (sk) => {
+    const p = (sk.source_path || sk.path || "").replace(/\\/g, "/").toLowerCase();
+    if (p.includes("/.xmclaw/auto_evo/skills/")) return { kind: "auto-evo", label: "🤖 自动学的" };
+    if (p.includes("/.agents/skills/")) return { kind: "skills.sh", label: "🌐 skills.sh" };
+    if (p.includes("/.claude/skills/")) return { kind: "claude-code", label: "🪶 Claude Code" };
+    return { kind: "other", label: "📁 其他" };
+  };
+
+  const filteredRegistry = useMemo(() => {
     if (!skills) return [];
     const q = search.trim().toLowerCase();
     return skills.filter((s) => {
+      if (view === "learned") return false;
       if (view !== "all" && s.source !== view) return false;
       if (!q) return true;
       if (s.id.toLowerCase().includes(q)) return true;
@@ -149,17 +175,32 @@ export function SkillsPage({ token }) {
     });
   }, [skills, search, view]);
 
+  const filteredLearned = useMemo(() => {
+    if (!learned) return [];
+    if (view !== "all" && view !== "learned") return [];
+    const q = search.trim().toLowerCase();
+    return learned.filter((s) => {
+      if (!q) return true;
+      return (
+        (s.skill_id || "").toLowerCase().includes(q) ||
+        (s.title || "").toLowerCase().includes(q) ||
+        (s.description || "").toLowerCase().includes(q)
+      );
+    });
+  }, [learned, search, view]);
+
   const counts = useMemo(() => {
-    if (!skills) return { all: 0, "built-in": 0, user: 0 };
-    return skills.reduce(
-      (acc, s) => {
-        acc.all++;
-        acc[s.source] = (acc[s.source] || 0) + 1;
-        return acc;
-      },
-      { all: 0, "built-in": 0, user: 0 },
-    );
-  }, [skills]);
+    const base = { all: 0, "built-in": 0, user: 0, learned: 0 };
+    for (const s of skills || []) {
+      base.all++;
+      base[s.source] = (base[s.source] || 0) + 1;
+    }
+    for (const _ of learned || []) {
+      base.all++;
+      base.learned++;
+    }
+    return base;
+  }, [skills, learned]);
 
   const onToggle = (sid) => {
     setExpanded((prev) => {
@@ -253,16 +294,34 @@ export function SkillsPage({ token }) {
         <div class="xmc-h-page__heading">
           <h2 id="skills-title" class="xmc-h-page__title">技能</h2>
           <p class="xmc-h-page__subtitle">
-            内置 + 用户安装技能（来自 SkillRegistry）。HEAD 版本随
-            EvolutionController 的 promotion gate 自动切换。
+            统一视图：你装的所有技能 + agent 自学的技能。
+            <strong>${counts.all}</strong> 个总计 ·
+            <strong>${counts.learned}</strong> 个 SKILL.md ·
+            <strong>${counts["built-in"] + counts.user}</strong> 个 Python Skill。
           </p>
         </div>
         <div class="xmc-h-page__actions">
-          <span class="xmc-h-badge">${counts.all} 个 / ${
-            (skills || []).reduce((a, s) => a + s.versions.length, 0)
-          } 版本</span>
+          <span class="xmc-h-badge">${counts.all} 个</span>
         </div>
       </header>
+
+      ${scannedRoots.length ? html`
+        <details style="margin:.5rem 0;padding:.5rem .7rem;border:1px solid var(--color-border);border-radius:6px;background:color-mix(in srgb, var(--midground) 4%, transparent)">
+          <summary style="cursor:pointer;font-size:.85rem">
+            <strong>📂 扫描路径</strong> <small style="opacity:.7">(B-149 — 多目录扫描，自动识别 skills.sh / Claude Code 安装的 SKILL.md)</small>
+          </summary>
+          <ul style="list-style:none;padding:.4rem 0 0;margin:0;font-size:.78rem">
+            ${scannedRoots.map((r) => html`
+              <li key=${r.path} style="display:flex;gap:.5rem;align-items:center;padding:.15rem 0">
+                ${r.exists
+                  ? html`<span class="xmc-h-badge xmc-h-badge--success">✓ 存在</span>`
+                  : html`<span class="xmc-h-badge xmc-h-badge--muted">未创建</span>`}
+                <code style="font-size:.72rem">${r.path}</code>
+              </li>
+            `)}
+          </ul>
+        </details>
+      ` : null}
 
       <div class="xmc-h-page__body xmc-h-skills__body">
         <aside class="xmc-h-skills__panel" aria-label="过滤">
@@ -287,10 +346,17 @@ export function SkillsPage({ token }) {
             />
             <${PanelItem}
               icon=${I_SPARKLES}
-              label="用户"
+              label="用户 (Python)"
               count=${counts.user || 0}
               active=${view === "user"}
               onClick=${() => setView("user")}
+            />
+            <${PanelItem}
+              icon=${I_SPARKLES}
+              label="已学 (SKILL.md)"
+              count=${counts.learned || 0}
+              active=${view === "learned"}
+              onClick=${() => setView("learned")}
             />
           </div>
         </aside>
@@ -319,15 +385,24 @@ export function SkillsPage({ token }) {
               : null}
           </div>
 
-          ${filtered.length === 0
+          ${(filteredRegistry.length + filteredLearned.length) === 0
             ? html`<div class="xmc-h-empty">${
                 search ? "没有匹配的技能。" :
                 view !== "all" ? `这个分类下还没有技能。` :
-                "SkillRegistry 还没注册技能。"
+                html`<div style="line-height:1.7">
+                  <p style="margin:0 0 .5rem"><strong>还没有任何技能。</strong></p>
+                  <p style="margin:0;font-size:.85rem">三种方式安装：</p>
+                  <ul style="font-size:.8rem;margin:.3rem 0 0;line-height:1.6">
+                    <li><code>npx skills add &lt;url&gt; --skill &lt;name&gt;</code> → 装到 <code>~/.agents/skills/</code> (skills.sh 标准)</li>
+                    <li>丢 <code>SKILL.md</code> 到 <code>~/.xmclaw/auto_evo/skills/&lt;name&gt;/</code> (auto-evo 路径)</li>
+                    <li>写 Python 类丢 <code>~/.xmclaw/skills_user/&lt;id&gt;/skill.py</code> (B-127 SkillRegistry)</li>
+                  </ul>
+                  <p style="margin:.5rem 0 0;font-size:.78rem;opacity:.7">改完 <strong>重启 daemon</strong> 后页面刷新即可看到。</p>
+                </div>`
               }</div>`
             : html`
               <div class="xmc-h-skill-card__list">
-                ${filtered.map((s) => html`
+                ${filteredRegistry.map((s) => html`
                   <${SkillCard}
                     key=${s.id}
                     skill=${s}
@@ -337,6 +412,44 @@ export function SkillsPage({ token }) {
                     onRollback=${onRollback}
                   />
                 `)}
+                ${filteredLearned.map((sk) => {
+                  const origin = classifyLearnedOrigin(sk);
+                  const writes30 = sk.invocation_count_30d || 0;
+                  const writesAll = sk.invocation_count || 0;
+                  const usable = !sk.disabled;
+                  return html`
+                    <div class="xmc-h-skill-card" key=${"L-" + sk.skill_id}>
+                      <div class="xmc-h-skill-card__head" style="cursor:default;display:flex;align-items:baseline;gap:.5rem;flex-wrap:wrap">
+                        <code class="xmc-h-skill-card__id">${sk.skill_id}</code>
+                        <span class="xmc-h-badge xmc-h-badge--muted">SKILL.md</span>
+                        <span class="xmc-h-badge xmc-h-badge--info" title="技能来源 (B-149)">${origin.label}</span>
+                        ${usable
+                          ? html`<span class="xmc-h-badge xmc-h-badge--success" title="agent 可调用">✓ 可用</span>`
+                          : html`<span class="xmc-h-badge xmc-h-badge--warn" title="frontmatter disabled:true">⏸ 暂停</span>`}
+                        ${writesAll > 0
+                          ? html`<span class="xmc-h-badge xmc-h-badge--success">⚡ ${writesAll} 调用</span>`
+                          : html`<span class="xmc-h-badge xmc-h-badge--muted">0 调用</span>`}
+                        ${writes30 > 0 && writes30 !== writesAll ? html`<small style="opacity:.7">(30d: ${writes30})</small>` : null}
+                      </div>
+                      <div class="xmc-h-skill-card__body" style="padding:.4rem .8rem .6rem">
+                        ${sk.title && sk.title !== sk.skill_id
+                          ? html`<div style="font-size:.85rem;margin-bottom:.2rem"><strong>${sk.title}</strong></div>`
+                          : null}
+                        ${sk.description
+                          ? html`<small style="display:block;color:var(--xmc-fg-muted);margin-bottom:.3rem">${sk.description.slice(0, 200)}</small>`
+                          : null}
+                        <small style="display:block;font-size:.7rem;opacity:.6;font-family:var(--xmc-font-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title=${sk.source_path || ""}>
+                          📁 ${sk.source_path || "(unknown)"}
+                        </small>
+                        ${(sk.triggers || []).length
+                          ? html`<div style="margin-top:.3rem;display:flex;gap:.3rem;flex-wrap:wrap">
+                              ${sk.triggers.slice(0, 5).map((t) => html`<code style="font-size:.65rem;background:color-mix(in srgb, var(--color-primary) 10%, transparent);padding:1px 5px;border-radius:3px" key=${t}>${t}</code>`)}
+                            </div>`
+                          : null}
+                      </div>
+                    </div>
+                  `;
+                })}
               </div>
             `}
         </div>

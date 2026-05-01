@@ -355,8 +355,23 @@ async def learned_skills(include_disabled: bool = False) -> JSONResponse:
             s["auto_disabled_ts"] = auto_disabled_last_ts[sid]
             s["auto_disabled_streak"] = auto_disabled_streak.get(sid, 0)
 
+    # B-149: also surface every scanned root so the UI can show
+    # users where SKILL.md is being looked for. Helpful diagnostic
+    # when a user installed via `npx skills add ...` (skills.sh
+    # → ~/.agents/skills/) or Claude Code (~/.claude/skills/) and
+    # wonders why the skill doesn't show up.
+    all_roots = []
+    try:
+        for r in loader.all_roots:
+            all_roots.append({
+                "path": str(r),
+                "exists": r.is_dir(),
+            })
+    except Exception:  # noqa: BLE001
+        all_roots = [{"path": str(loader.skills_root), "exists": loader.skills_root.is_dir()}]
     return JSONResponse({
         "skills_root": str(loader.skills_root),
+        "scanned_roots": all_roots,  # B-149
         "skills": skills,
     })
 
