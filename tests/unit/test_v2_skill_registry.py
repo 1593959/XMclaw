@@ -274,3 +274,59 @@ def test_persistence_writes_jsonl_per_skill(tmp_path: Path) -> None:
     assert promote_rec["evidence"] == ["bench.ratio=1.12"]
     assert rollback_rec["kind"] == "rollback"
     assert rollback_rec["reason"] == "flaky on weekend traffic"
+
+
+# ── B-121: source tag (manual / controller / system) ──────────────────
+
+
+def test_promote_defaults_source_to_manual() -> None:
+    """Direct promote() calls without an explicit source default to
+    'manual' — explicit calls are treated as human-driven."""
+    reg = SkillRegistry()
+    reg.register(_skill("s", 1), _manifest("s", 1))
+    reg.register(_skill("s", 2), _manifest("s", 2))
+    rec = reg.promote("s", 2, evidence=["bench.ratio=1.12"])
+    assert rec.source == "manual"
+
+
+def test_promote_records_controller_source_when_passed() -> None:
+    """Auto-evolution path tags records with source='controller'."""
+    reg = SkillRegistry()
+    reg.register(_skill("s", 1), _manifest("s", 1))
+    reg.register(_skill("s", 2), _manifest("s", 2))
+    rec = reg.promote(
+        "s", 2,
+        evidence=["candidate=s mean=0.78 plays=20"],
+        source="controller",
+    )
+    assert rec.source == "controller"
+
+
+def test_rollback_records_source_field() -> None:
+    """Rollback also carries source — auto-rollbacks via the controller
+    path are distinguishable from human emergency rollbacks."""
+    reg = SkillRegistry()
+    reg.register(_skill("s", 1), _manifest("s", 1))
+    reg.register(_skill("s", 2), _manifest("s", 2))
+    reg.promote("s", 2, evidence=["e"])
+    rec = reg.rollback("s", 1, reason="head regressed", source="controller")
+    assert rec.source == "controller"
+
+    rec2 = reg.rollback("s", 1, reason="user clicked the button")
+    # ^ default — manual override after auto-rollback already moved HEAD
+    # to v1; second rollback to v1 still records as a manual entry.
+    assert rec2.source == "manual"
+
+
+def test_persisted_record_includes_source_field(tmp_path: Path) -> None:
+    """JSONL audit log carries source so downstream readers can filter
+    'all controller promotes in the last 24h' without guessing."""
+    reg = SkillRegistry(history_dir=tmp_path)
+    reg.register(_skill("s", 1), _manifest("s", 1))
+    reg.register(_skill("s", 2), _manifest("s", 2))
+    reg.promote("s", 2, evidence=["e"], source="controller")
+
+    import json
+    log = tmp_path / "s.jsonl"
+    rec = json.loads(log.read_text(encoding="utf-8").strip())
+    assert rec["source"] == "controller"

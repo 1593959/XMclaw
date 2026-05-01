@@ -146,6 +146,7 @@ class EvolutionOrchestrator:
         evidence: list[str],
         session_id: str = "_system",
         agent_id: str | None = None,
+        source: str = "manual",
     ) -> PromotionRecord:
         """Move HEAD and broadcast a ``SKILL_PROMOTED`` event.
 
@@ -154,9 +155,15 @@ class EvolutionOrchestrator:
         refuses (empty evidence, unknown version), the exception
         propagates and NO event is emitted, so subscribers never see a
         phantom promotion.
+
+        B-121: ``source`` is forwarded to the registry so the audit
+        log records who-decided. Defaults to ``"manual"`` because the
+        public method is what manual callers (REPL, scripts, future
+        admin CLIs) reach for; ``_on_proposal`` overrides to
+        ``"controller"`` for the auto-evolution path.
         """
         record = self._registry.promote(
-            skill_id, to_version, evidence=evidence,
+            skill_id, to_version, evidence=evidence, source=source,
         )
         await self._emit(
             record,
@@ -174,10 +181,11 @@ class EvolutionOrchestrator:
         reason: str,
         session_id: str = "_system",
         agent_id: str | None = None,
+        source: str = "manual",
     ) -> PromotionRecord:
         """Move HEAD back and broadcast a ``SKILL_ROLLED_BACK`` event."""
         record = self._registry.rollback(
-            skill_id, to_version, reason=reason,
+            skill_id, to_version, reason=reason, source=source,
         )
         await self._emit(
             record,
@@ -228,6 +236,7 @@ class EvolutionOrchestrator:
                     reason=reason,
                     session_id=event.session_id,
                     agent_id=event.agent_id,
+                    source="controller",
                 )
                 return
             evidence = list(payload.get("evidence", []))
@@ -243,6 +252,7 @@ class EvolutionOrchestrator:
                 evidence=evidence,
                 session_id=event.session_id,
                 agent_id=event.agent_id,
+                source="controller",
             )
         except (UnknownSkillError, ValueError) as exc:
             # Registry rejected — propagate as a log line, not a crash.
@@ -273,6 +283,7 @@ class EvolutionOrchestrator:
             "to_version": record.to_version,
             "ts": record.ts,
             "evidence": list(record.evidence),
+            "source": record.source,  # B-121
         }
         if record.reason is not None:
             payload["reason"] = record.reason

@@ -347,3 +347,79 @@ async def test_stop_unsubscribes_auto_apply(
 
     # HEAD untouched because we unsubscribed.
     assert registry.active_version("s") == 1
+
+
+# ── B-121: source tag — controller vs manual ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_manual_promote_records_source_manual(
+    bus: InProcessEventBus, registry: SkillRegistry,
+) -> None:
+    """Public orch.promote() defaults to source='manual' — UI / REPL
+    callers don't need to remember to tag every promotion."""
+    captured = await _collect_events(bus)
+    orch = EvolutionOrchestrator(registry, bus)
+    record = await orch.promote("s", 2, evidence=["bench"])
+    await bus.drain()
+    assert record.source == "manual"
+
+    promoted = [e for e in captured if e.type == EventType.SKILL_PROMOTED]
+    assert promoted[0].payload["source"] == "manual"
+
+
+@pytest.mark.asyncio
+async def test_auto_apply_records_source_controller(
+    bus: InProcessEventBus, registry: SkillRegistry,
+) -> None:
+    """Auto path through _on_proposal must tag the record + bus payload
+    with source='controller' so audit consumers can filter it."""
+    captured = await _collect_events(bus)
+    orch = EvolutionOrchestrator(registry, bus, auto_apply=True)
+    await orch.start()
+
+    await _publish_proposal(
+        bus, skill_id="s", version=2,
+        evidence=["plays=12", "mean=0.78"],
+    )
+    await bus.drain()
+
+    hist = registry.history("s")
+    assert hist[-1].source == "controller"
+    promoted = [e for e in captured if e.type == EventType.SKILL_PROMOTED]
+    assert promoted[0].payload["source"] == "controller"
+
+
+@pytest.mark.asyncio
+async def test_auto_rollback_records_source_controller(
+    bus: InProcessEventBus, registry: SkillRegistry,
+) -> None:
+    """B-119 rollback proposals also flow through _on_proposal — the
+    resulting record must be tagged 'controller' for symmetry with the
+    promote case."""
+    captured = await _collect_events(bus)
+    orch = EvolutionOrchestrator(registry, bus, auto_apply=True)
+    await orch.start()
+
+    # Bring HEAD up first via a manual promote so we have something to
+    # roll back from.
+    await orch.promote("s", 2, evidence=["bench"])
+    await bus.drain()
+
+    await bus.publish(make_event(
+        session_id="evolution:evo-1", agent_id="evo-1",
+        type=EventType.SKILL_CANDIDATE_PROPOSED,
+        payload={
+            "decision": "rollback",
+            "winner_candidate_id": "s",
+            "winner_version": 1,
+            "evidence": ["head_mean=0.55", "target_mean=0.78"],
+            "reason": "HEAD regressed",
+        },
+    ))
+    await bus.drain()
+
+    assert registry.active_version("s") == 1
+    rolled = [e for e in captured if e.type == EventType.SKILL_ROLLED_BACK]
+    assert rolled[-1].payload["source"] == "controller"
+    assert registry.history("s")[-1].source == "controller"

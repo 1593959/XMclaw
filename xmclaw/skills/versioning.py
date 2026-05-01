@@ -18,7 +18,21 @@ from typing import Literal
 
 @dataclass(frozen=True, slots=True)
 class PromotionRecord:
-    """An entry in a skill's history log — one per promote/rollback event."""
+    """An entry in a skill's history log — one per promote/rollback event.
+
+    B-121: ``source`` distinguishes the *origin* of the decision, not
+    the content of the evidence. Audit consumers care about this when
+    answering "did the controller decide this on its own, or did a
+    human force it?":
+
+      * ``"manual"`` — UI button, HTTP API, REPL command, test setup
+        (default — explicit calls are manual unless flagged otherwise)
+      * ``"controller"`` — :class:`EvolutionController` produced a
+        ``PROMOTE`` / ``ROLLBACK`` decision and the orchestrator's
+        proposal subscriber applied it
+      * ``"system"`` — boot-time defaults, migrations, registry
+        bootstrapping
+    """
 
     kind: Literal["promote", "rollback"]
     skill_id: str
@@ -27,6 +41,7 @@ class PromotionRecord:
     ts: float
     evidence: tuple[str, ...] = field(default_factory=tuple)
     reason: str | None = None  # usually set on rollback; optional for promote
+    source: str = "manual"      # B-121: "manual" | "controller" | "system"
 
 
 def now_ts() -> float:

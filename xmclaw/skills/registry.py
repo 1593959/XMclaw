@@ -171,12 +171,20 @@ class SkillRegistry:
         to_version: int,
         *,
         evidence: list[str],
+        source: str = "manual",
     ) -> PromotionRecord:
         """Move HEAD to ``to_version``.
 
         Anti-req #12: ``evidence`` MUST be non-empty. An empty evidence
         list raises ``ValueError`` — callers cannot silently promote.
         The returned record is also appended to the history.
+
+        B-121: ``source`` defaults to ``"manual"`` — every direct call
+        is treated as human-driven unless the caller explicitly tags it
+        as ``"controller"`` (auto-evolution path) or ``"system"`` (boot
+        / migrations). This makes the audit log answer "who decided?"
+        without the consumer having to reverse-engineer it from the
+        evidence strings.
         """
         if not evidence:
             raise ValueError(
@@ -200,6 +208,7 @@ class SkillRegistry:
             to_version=to_version,
             ts=now_ts(),
             evidence=tuple(evidence),
+            source=source,
         )
         self._history[skill_id].append(record)
         self._persist(record)
@@ -211,11 +220,13 @@ class SkillRegistry:
         to_version: int,
         *,
         reason: str,
+        source: str = "manual",
     ) -> PromotionRecord:
         """Move HEAD back to an earlier version.
 
         Reason is mandatory — rollbacks without reasons are the
         mirror-image anti-pattern to promotions without evidence.
+        ``source`` follows the same B-121 convention as ``promote``.
         """
         if not reason:
             raise ValueError(
@@ -237,6 +248,7 @@ class SkillRegistry:
             to_version=to_version,
             ts=now_ts(),
             reason=reason,
+            source=source,
         )
         self._history[skill_id].append(record)
         self._persist(record)

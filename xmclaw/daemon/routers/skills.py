@@ -112,6 +112,7 @@ def _record_to_dict(r: Any) -> dict[str, Any]:
         "from_version": getattr(r, "from_version", 0),
         "to_version": getattr(r, "to_version", 0),
         "ts": getattr(r, "ts", 0),
+        "source": getattr(r, "source", "manual"),  # B-121
     }
     if getattr(r, "evidence", None):
         base["evidence"] = list(r.evidence)
