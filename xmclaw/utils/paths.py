@@ -146,6 +146,21 @@ def evolution_dir() -> Path:
     return v2_workspace_dir() / "evolution"
 
 
+def journal_dir() -> Path:
+    """Per-session journal — ``<data>/v2/journal/<YYYY-MM>/<session_id>.jsonl``.
+
+    Epic #24 Phase 2.1: :class:`xmclaw.core.journal.JournalWriter`
+    writes a single mechanical-metadata row here on every
+    ``SESSION_LIFECYCLE phase=destroy`` event. Path policy is the
+    user's 2026-05-01 unified-paths anti-req: write path == read path.
+    :class:`xmclaw.core.journal.JournalReader` reads exactly the same
+    files; no shadow indexes or mirrored stores. Subdirectories are
+    created lazily on first write. Sits under v2/ so a workspace
+    wipe clears journal alongside events.db / evolution audit.
+    """
+    return v2_workspace_dir() / "journal"
+
+
 def file_memory_dir() -> Path:
     """User-editable markdown memory — ``<data>/memory/*.md``.
 
