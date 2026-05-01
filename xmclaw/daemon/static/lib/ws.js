@@ -31,18 +31,24 @@ function backoff(attempt) {
   return Math.max(0, withJitter(raw));
 }
 
-export function buildWsUrl(sessionId, token, location = window.location) {
+export function buildWsUrl(sessionId, token, location = window.location, agentId = null) {
   const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
   const url = new URL(
     wsProto + "//" + location.host + "/agent/v2/" + encodeURIComponent(sessionId)
   );
   if (token) url.searchParams.set("token", token);
+  // B-133: route the WS to a specific sub-agent when the user picked one.
+  // Daemon falls back to ``main`` when the param is missing or "main".
+  if (agentId && agentId !== "main") {
+    url.searchParams.set("agent_id", agentId);
+  }
   return url.toString();
 }
 
 export function createWsClient({
   sessionId,
   token,
+  agentId,  // B-133: optional sub-agent id; null/undefined → primary 'main'
   onEvent,
   onStatus,
   // Test seam: factory used to create the underlying socket. Defaults to
@@ -90,7 +96,7 @@ export function createWsClient({
   function open() {
     if (closedByUser) return;
     setStatus("connecting");
-    const url = buildWsUrl(sessionId, token);
+    const url = buildWsUrl(sessionId, token, window.location, agentId);
     let s;
     try {
       s = socketFactory(url);

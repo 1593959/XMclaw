@@ -19,7 +19,7 @@ import { ModelPicker } from "../components/molecules/ModelPicker.js";
 import { ChatSidebar } from "../components/molecules/ChatSidebar.js";
 import { Badge } from "../components/atoms/badge.js";
 
-export function ChatPage({ chat, session, connection, token, onSend, onCancel, onAnswerQuestion, onChangeDraft, onTogglePlan, onToggleUltrathink, onNewSession, onChangeModel, slashStore }) {
+export function ChatPage({ chat, session, connection, token, onSend, onCancel, onAnswerQuestion, onChangeDraft, onTogglePlan, onToggleUltrathink, onNewSession, onChangeModel, onSwitchAgent, slashStore }) {
   const canSend =
     connection.status === "connected" &&
     chat.composerDraft.trim().length > 0;
@@ -55,6 +55,22 @@ export function ChatPage({ chat, session, connection, token, onSend, onCancel, o
             <code class="xmc-chat__sid">${sid}</code>
           </div>
           <div class="xmc-chat__meta">
+            ${(session.agents || []).length > 1 || (session.activeAgentId && session.activeAgentId !== "main")
+              ? html`
+                  <select
+                    class="xmc-h-btn xmc-h-btn--ghost"
+                    style="font-size:.72rem;padding:.18rem .35rem"
+                    value=${session.activeAgentId || "main"}
+                    onChange=${(e) => onSwitchAgent && onSwitchAgent(e.target.value)}
+                    title="切换对话目标 agent (B-133)"
+                  >
+                    <option value="main">🤖 main (主)</option>
+                    ${(session.agents || [])
+                      .filter((a) => a.agent_id !== "main")
+                      .map((a) => html`<option value=${a.agent_id}>🤝 ${a.agent_id}${a.model ? ` · ${a.model.split("/").pop()}` : ""}</option>`)}
+                  </select>
+                `
+              : null}
             <${ModelPicker}
               token=${token}
               value=${chat.llmProfileId}

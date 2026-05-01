@@ -1,16 +1,4 @@
-// XMclaw — app entry
-//
-// Phase 1 wires:
-//   * pairing-token fetch (lib/auth.js)
-//   * WS client at /agent/v2/{sid} (lib/ws.js)
-//   * chat reducer that maps BehavioralEvent envelopes into chat slice
-//     mutations (lib/chat_reducer.js)
-//   * real Chat page replacing the Phase 0 placeholder for /chat
-//
-// Other sidebar pages (Agents / Skills / Memory / …) still render a
-// placeholder — those are Phase 2-4 work. By keeping the layout the same,
-// the user can already navigate and see the new design system everywhere
-// while only Chat is live.
+// XMclaw — app entry. Wires pairing, WS client, chat reducer, page routes.
 
 const { h, render } = window.__xmc.preact;
 const html = window.__xmc.htm.bind(h);
@@ -19,8 +7,13 @@ import {
   app as store,
   persistActiveSid,
   persistSidList,
+  persistActiveAgentId,
   newSid,
 } from "./store.js";
+import {
+  fetchAgentsForPicker,
+  switchAgentAction,
+} from "./lib/agent_picker.js";
 import { installRouter } from "./router.js";
 import { fetchPairingToken } from "./lib/auth.js";
 import { createWsClient } from "./lib/ws.js";
@@ -176,15 +169,15 @@ async function rehydratePendingQuestions(token) {
   }
 }
 
-function connectFor(sid, token) {
+function connectFor(sid, token, agentId) {
   disposeWs();
-  // Fire-and-forget rehydrate; WS connect proceeds in parallel so a
-  // slow restore never blocks the live channel.
+  // Fire-and-forget rehydrate; WS connect proceeds in parallel.
   hydrateChatHistory(sid, token);
   rehydratePendingQuestions(token);
   wsHandle = createWsClient({
     sessionId: sid,
     token,
+    agentId,  // B-133: route to sub-agent when switched
     onEvent: (envelope) => {
       store.setState((s) => ({
         chat: applyEvent(s.chat, envelope),
@@ -232,9 +225,13 @@ async function boot() {
     session: { ...store.getState().session, activeSid: sid, sids },
   });
 
-  // 3. Connect.
-  connectFor(sid, auth.token);
+  // 3. Connect with the persisted active agent (defaults to 'main').
+  connectFor(sid, auth.token, store.getState().session.activeAgentId || "main");
+  fetchAgentsForPicker(store, auth.token);  // B-133: load picker list
 }
+
+const switchAgent = (agentId) =>
+  switchAgentAction(store, agentId, persistActiveAgentId, connectFor);
 
 // ── Action helpers (bound into the page tree) ─────────────────────────
 
@@ -428,6 +425,7 @@ const routes = {
       onToggleUltrathink=${toggleUltrathink}
       onNewSession=${startNewSession}
       onChangeModel=${setLlmProfile}
+      onSwitchAgent=${switchAgent}
       slashStore=${CHAT_ACTIONS}
     />
   `,

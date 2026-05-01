@@ -61,12 +61,33 @@ export function createStore(initial) {
 
 const ACTIVE_SID_KEY = "xmc.active_sid";
 const SID_LIST_KEY = "xmc.sids";
+const ACTIVE_AGENT_ID_KEY = "xmc.active_agent_id";  // B-133
 
 function readActiveSid() {
   try {
     return localStorage.getItem(ACTIVE_SID_KEY) || null;
   } catch (_) {
     return null;
+  }
+}
+
+function readActiveAgentId() {
+  try {
+    return localStorage.getItem(ACTIVE_AGENT_ID_KEY) || "main";
+  } catch (_) {
+    return "main";
+  }
+}
+
+export function persistActiveAgentId(agentId) {
+  try {
+    if (agentId && agentId !== "main") {
+      localStorage.setItem(ACTIVE_AGENT_ID_KEY, agentId);
+    } else {
+      localStorage.removeItem(ACTIVE_AGENT_ID_KEY);
+    }
+  } catch (_) {
+    /* skip */
   }
 }
 
@@ -112,10 +133,14 @@ export const app = createStore({
 
   // Session slice — populated from localStorage on boot, then by user
   // creating new sessions or switching via the sidebar.
+  // B-133: activeAgentId routes the WS to a specific sub-agent. Default
+  // 'main' = primary config-built agent.
   session: {
     activeSid: readActiveSid(),
     sids: readSidList(),
     lifecycle: "idle",
+    activeAgentId: readActiveAgentId(),
+    agents: [],  // populated from /api/v2/agents — for the picker
   },
 
   // Connection slice (WS lifecycle).
