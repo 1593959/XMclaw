@@ -412,6 +412,8 @@ def test_default_registry_builtin_check_order() -> None:
         "backups", "secrets",
         # Epic #24 Phase 1: residual-path scan + grader-wired-into-loop assertion.
         "evolution_path_hygiene", "evolution_runtime",
+        # Epic #24 Phase 4.3: 4-observer + LLM-extractor wiring scan.
+        "evolution_pipeline",
     ]
 
 
@@ -486,6 +488,8 @@ def test_run_doctor_still_returns_old_check_result_type(tmp_path: Path) -> None:
         "backups", "secrets",
         # Epic #24 Phase 1.
         "evolution path hygiene", "evolution runtime",
+        # Epic #24 Phase 4.3.
+        "evolution pipeline wiring",
     ]
 
 

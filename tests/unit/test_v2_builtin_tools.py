@@ -68,6 +68,7 @@ def test_list_tools_schemas_well_formed() -> None:
         "todo_read", "agent_status", "memory_compact",
         "enter_worktree", "exit_worktree",
         "journal_recall",
+        "recall_user_preferences",  # Epic #24 Phase 4.2
     }
     for spec in BuiltinTools().list_tools():
         assert spec.parameters_schema["type"] == "object"

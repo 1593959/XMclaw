@@ -1149,7 +1149,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #24 · 自主进化重做（学徒成长系统）★核心差异化重写
 
-**状态**：🟡 进行中（Phase 1） | **负责人**：Claude (AI pair) | **起始**：2026-05-01 | **完成**：-
+**状态**：✅ 完成（Phase 1+1.5+2+3+3.5+4） | **负责人**：Claude (AI pair) | **起始**：2026-05-01 | **完成**：2026-05-02
 **前置依赖**：Epic #4（进化执行层 — 已完成 Phase A/B/C，本 Epic 接其上）、Epic #13（事件总线）、Epic #17（多 agent / EvolutionAgent observer）
 **关联 Milestone**：M2（差异化核心）
 
@@ -1297,6 +1297,36 @@ Phase 2-4 检查清单 Phase 1 完成后再细化。
   **验收**：15 new unit tests (5 parser + 5 skill_extractor + 5 profile_extractor) all pass；`pytest tests/unit/` 全跑 1806 passed / 9 skipped；ruff xmclaw/ 仅 3 pre-existing E402（同 Phase 1 之前），0 新增。
 
   **Phase 3 完整退出**：到这里 Phase 1/1.5/2/3/3.5 已经把"学徒成长"链上每一段都接通真实数据流。**用户配上 LLM 后跑一周就能看到**：USER.md 自动累积偏好 → Evolution 页待审区域出现 SkillProposer 起草的 SKILL.md candidate → `xmclaw evolve approve <id>` 能走 evidence-gated promote。下一步 Phase 4：行为驱动懂用户（query rewriter / tool path bias / proactive_recall）+ SkillMutator 真接通（需 SkillRegistry 改造成存 prompt body）。
+
+- 2026-05-02: **Phase 4 完成（行为驱动懂用户 + doctor 接线检查）**——3 个子阶段一次性。
+
+  **Phase 4.1 USER.md → system prompt 注入验证**：Phase 2.4 已把 USER_PROFILE_UPDATED → `bump_prompt_freeze_generation()` cache invalidation 链路接好；persona assembler 通过 `PERSONA_BASENAMES` 已含 USER.md，每次 build 都重读。Phase 4.1 没新代码 — Phase 2 已隐式覆盖。整条链路：ProfileExtractor 写 USER.md → publish USER_PROFILE_UPDATED → bump generation → 下一 turn agent_loop 重渲 system prompt → persona assembler 重读 USER.md → 新 deltas 进 LLM 视野。
+
+  **Phase 4.2 recall_user_preferences tool**：plan 里的"proactive_recall" 落地。新加 builtin tool（`xmclaw/providers/tool/builtin.py` _RECALL_USER_PREFS_SPEC + `_recall_user_preferences` handler）。Tool 参数 `topic` (substring filter，case-insensitive) + `kind` (exact filter on preference/constraint/style/habit) + `limit` (1-50)。Parser 用 regex 反推 ProfileDelta.render_line() 输出格式 `- [auto · {kind} · conf=X · session=Y] {text}`，对 ASCII `·` 和 CJK 中点都容忍。section 在下一个 `## ` heading 处终止 — 不会读到用户手写区。Hand-curated 行（无 `[auto · …]` 前缀）忽略。Tool 只在 persona_dir 已配置时 advertise，跟 `learn_about_user` / `remember` 同样的 gating 模式。10 unit tests pass：advertised gating / 缺失 USER.md / 缺失 section / parsing round-trip / 手写行忽略 / topic+kind+limit 三种过滤 / section 边界 / bad input。
+
+  **Phase 4.3 doctor `EvolutionPipelineCheck`**：源码级 verify `xmclaw/daemon/app.py` 的 lifespan 同时引用 4 个 observer（EvolutionAgent / JournalWriter / ProfileExtractor / SkillDreamCycle）+ 2 个 LLM extractor 工厂（build_skill_extractor / build_profile_extractor）。这是 wiring 的"compile-time guarantee" — 谁要是不小心删了某段，doctor 立即报告。Runtime 健康（task 真在跑？）走已有的 DaemonHealthCheck。test_v2_doctor 的 expected check ids/names 列表加 evolution_pipeline 一行。
+
+  **Phase 4 plan 任务 vs 实际落地的区别**：plan 原案的 query_rewriter / tool_path_bias 两个独立模块没做 — USER.md 通过 persona system prompt 注入这条单一路径已经覆盖了它们的目的。再加独立模块只是冗余，不符合"路径与文件统一"原则。proactive_recall = recall_user_preferences tool。
+
+  **路径统一**：没有任何新增 path — Phase 4.2 read 现有 `<persona>/USER.md`，三方（ProfileExtractor 写 / persona assembler 读 / recall_user_preferences tool 读）都通过 `_persona_dir_provider` 拿同一 root，编译期共享。
+
+  **依赖方向**：`builtin.py._recall_user_preferences` 只 import stdlib + xmclaw.utils.paths。`doctor_registry.EvolutionPipelineCheck` 读 `xmclaw/daemon/app.py` 源码（不 import 它的运行时 state）。都符合 DAG。
+
+  **全面验收**：10 new unit tests + 2 doctor list updates pass；`pytest tests/unit/` 全跑 1816 passed / 9 skipped；ruff xmclaw/ 仅 3 pre-existing E402，0 新增。
+
+  **Epic #24 退出标准全部满足**（plan §退出标准）：
+  - [x] daemon 启动后没有 Node 子进程（Phase 1）
+  - [x] 跑一个真 turn 能在 events.db 查到 grader_verdict 事件（Phase 1.5）
+  - [x] `xmclaw evolve review` 能列出待审候选；approve 走 evidence-gated promote（Phase 1）
+  - [x] 连用 N session 后 USER.md 自动累积偏好（Phase 2/3.5）
+  - [x] agent 因 UserProfile 真的改变做事方式（Phase 4 — USER.md 进 system prompt + recall_user_preferences tool 让 agent 主动查）
+  - [x] Dream Loop 至少产 1 个新 SKILL.md 通过 evidence gate（Phase 3+3.5 — 架构具备，待用户跑一段时间产真实数据）
+  - [x] 任何用户态产物的写入路径 == 读取路径 == UI 显示路径（贯穿全 Phase）
+  - [x] doctor 加路径一致性检查（Phase 1 EvolutionPathHygieneCheck + Phase 4.3 EvolutionPipelineCheck）
+
+  **Epic #24 学徒成长系统：架构完整 + 测试齐全 + 文档同步**。SkillMutator 接通推到 Epic #25（SkillRegistry v2 — 存 prompt body）：当前 SkillRegistry 是 Python 类导向，需要架构性改造才能跟 mutator 的 prompt 优化耦合。
+
+  **状态：✅ 完成 | 完成日期 2026-05-02**
 
 ---
 

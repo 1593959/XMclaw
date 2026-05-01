@@ -671,6 +671,51 @@ _NOTE_WRITE_SPEC = ToolSpec(
 )
 
 
+_RECALL_USER_PREFS_SPEC = ToolSpec(
+    name="recall_user_preferences",
+    description=(
+        "Look up auto-extracted user preferences (USER.md `## "
+        "Auto-extracted preferences` section) — the rolling delta "
+        "log written by ProfileExtractor as you converse. Each entry "
+        "carries a kind (preference/constraint/style/habit), the "
+        "natural-language text, an LLM-estimated confidence, and the "
+        "source session id.\n\n"
+        "Use BEFORE making style / format / tool-choice decisions "
+        "you might be wrong about. Example trigger thoughts:\n"
+        "  • 'should I write this in Markdown or plain text?' → "
+        "recall topic='format'\n"
+        "  • 'should I run this command without asking?' → recall "
+        "topic='constraint'\n"
+        "  • 'what's the user's preferred git workflow?' → recall "
+        "topic='git'\n\n"
+        "USER.md is already in your system prompt — this tool is for "
+        "the cases where you want a focused subset filtered by topic, "
+        "not a wholesale re-read. Returns [] cleanly when no "
+        "auto-extracted entries exist (fresh install / extractor "
+        "disabled)."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "topic": {
+                "type": "string",
+                "description": "Substring filter on entry text "
+                "(case-insensitive). Omit for everything.",
+            },
+            "kind": {
+                "type": "string",
+                "description": "Filter by kind "
+                "(preference/constraint/style/habit). Omit for all.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max entries returned (1-50, default 10).",
+            },
+        },
+    },
+)
+
+
 _JOURNAL_RECALL_SPEC = ToolSpec(
     name="journal_recall",
     description=(
@@ -1210,6 +1255,12 @@ class BuiltinTools(ToolProvider):
         # rediscovering yesterday's mistakes. Always advertised — the
         # handler reports cleanly when the journal dir is empty.
         specs.append(_JOURNAL_RECALL_SPEC)
+        # Epic #24 Phase 4.2: recall_user_preferences reads the
+        # auto-extracted USER.md section (ProfileExtractor output).
+        # Gated on persona_dir wiring — without it the tool has no
+        # file to read.
+        if self._persona_dir_provider is not None:
+            specs.append(_RECALL_USER_PREFS_SPEC)
         # B-49: self-introspection tool. Always advertised — works
         # even with zero providers wired (returns "nothing wired").
         specs.append(_AGENT_STATUS_SPEC)
@@ -1293,6 +1344,14 @@ class BuiltinTools(ToolProvider):
                 return await self._journal_append(call, t0)
             if call.name == "journal_recall":
                 return await self._journal_recall(call, t0)
+            if call.name == "recall_user_preferences":
+                if self._persona_dir_provider is None:
+                    return _fail(
+                        call, t0,
+                        "recall_user_preferences not configured "
+                        "(no persona dir)",
+                    )
+                return await self._recall_user_preferences(call, t0)
             if call.name == "agent_status":
                 return await self._agent_status(call, t0)
             if call.name == "memory_compact":
@@ -2235,6 +2294,122 @@ class BuiltinTools(ToolProvider):
                 "title": title or None,
             },
             side_effects=(str(path),),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _recall_user_preferences(
+        self, call: ToolCall, t0: float,
+    ) -> ToolResult:
+        """Epic #24 Phase 4.2: read USER.md auto-extracted preferences.
+
+        Parses the ``## Auto-extracted preferences`` section written
+        by ProfileExtractor. Each line follows the
+        ``ProfileDelta.render_line()`` shape::
+
+            - [auto · {kind} · conf={confidence:.2f} · session={sid}] {text}
+
+        Optional ``topic`` substring filter (case-insensitive) +
+        ``kind`` exact filter + ``limit`` cap. Returns [] cleanly
+        when no auto-extracted entries exist yet.
+        """
+        import re as _re_pref
+
+        topic = (call.args.get("topic") or "").strip().lower()
+        kind = (call.args.get("kind") or "").strip().lower()
+        limit_raw = call.args.get("limit", 10)
+        try:
+            limit = max(1, min(50, int(limit_raw)))
+        except (TypeError, ValueError):
+            return _fail(call, t0, f"limit must be integer (got {limit_raw!r})")
+
+        if self._persona_dir_provider is None:
+            return _fail(
+                call, t0,
+                "recall_user_preferences not configured (no persona dir)",
+            )
+        try:
+            persona_root = Path(self._persona_dir_provider())
+        except Exception as exc:  # noqa: BLE001
+            return _fail(call, t0, f"persona dir resolution failed: {exc}")
+
+        user_md = persona_root / "USER.md"
+        if not user_md.is_file():
+            return ToolResult(
+                call_id=call.id, ok=True,
+                content={
+                    "entries": [],
+                    "note": "USER.md not yet created — no extracted preferences",
+                },
+                side_effects=(),
+                latency_ms=(time.perf_counter() - t0) * 1000.0,
+            )
+
+        try:
+            text = user_md.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return _fail(call, t0, f"USER.md read failed: {exc}")
+
+        # Locate the section. ProfileExtractor writes / appends below
+        # the heading "## Auto-extracted preferences".
+        heading = "## Auto-extracted preferences"
+        idx = text.find(heading)
+        if idx < 0:
+            return ToolResult(
+                call_id=call.id, ok=True,
+                content={
+                    "entries": [],
+                    "note": "USER.md has no `## Auto-extracted "
+                            "preferences` section yet — ProfileExtractor "
+                            "hasn't flushed any deltas",
+                },
+                side_effects=(),
+                latency_ms=(time.perf_counter() - t0) * 1000.0,
+            )
+
+        section = text[idx + len(heading):]
+        # Stop at the next top-level heading so we don't bleed into
+        # whatever the user / hand-curated content put after.
+        nxt = section.find("\n## ")
+        if nxt > 0:
+            section = section[:nxt]
+
+        # Match lines emitted by ProfileDelta.render_line(). Tolerant
+        # of whitespace + accepts both ASCII and CJK middle dots
+        # (·) so future renderer tweaks don't silently break the
+        # parser.
+        pattern = _re_pref.compile(
+            r"^\s*-\s*\[auto\s*[·.]\s*([^·.\]]+?)\s*[·.]\s*conf=([\d.]+)\s*"
+            r"[·.]\s*session=([^\]]+?)\]\s*(.+)\s*$"
+        )
+        entries: list[dict[str, Any]] = []
+        for line in section.splitlines():
+            m = pattern.match(line)
+            if m is None:
+                continue
+            entry_kind = m.group(1).strip().lower()
+            try:
+                conf = float(m.group(2))
+            except ValueError:
+                continue
+            entry_session = m.group(3).strip()
+            entry_text = m.group(4).strip()
+            if kind and entry_kind != kind:
+                continue
+            if topic and topic not in entry_text.lower():
+                continue
+            entries.append({
+                "kind": entry_kind,
+                "text": entry_text,
+                "confidence": round(conf, 3),
+                "session": entry_session,
+            })
+            if len(entries) >= limit:
+                break
+
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={"entries": entries, "matched": len(entries)},
+            side_effects=(),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 

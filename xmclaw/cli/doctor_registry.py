@@ -1936,6 +1936,63 @@ class EvolutionRuntimeCheck(DoctorCheck):
         )
 
 
+class EvolutionPipelineCheck(DoctorCheck):
+    """Epic #24 Phase 4.3 — the four observers + LLM extractor wiring.
+
+    Source-level verification: ``xmclaw/daemon/app.py`` lifespan must
+    construct + start each of the four observers Phase 1-3 introduced
+    (EvolutionAgent / JournalWriter / ProfileExtractor /
+    SkillDreamCycle), AND must wire the LLM-backed extractor when an
+    LLM is available (Phase 3.5 ``build_skill_extractor`` /
+    ``build_profile_extractor``).
+
+    Failure here means a regression unwound part of the chain — e.g.
+    someone deleted the ProfileExtractor block thinking it was dead
+    code. Reapply Epic #24 Phase 2 / Phase 3.5 changes.
+
+    This is a *static* check; runtime health (is the task actually
+    running?) needs the daemon up. ``DaemonHealthCheck`` covers that.
+    """
+
+    id: ClassVar[str] = "evolution_pipeline"
+    name: ClassVar[str] = "evolution pipeline wiring"
+
+    REQUIRED_TOKENS: ClassVar[tuple[str, ...]] = (
+        "EvolutionAgent",       # Phase 1
+        "JournalWriter",        # Phase 2.1
+        "ProfileExtractor",     # Phase 2.2
+        "SkillDreamCycle",      # Phase 3.2
+        "build_skill_extractor",   # Phase 3.5 — LLM extractor wired in
+        "build_profile_extractor",
+    )
+
+    def run(self, ctx: DoctorContext) -> CheckResult:  # noqa: ARG002
+        try:
+            from xmclaw.daemon import app as _app_mod
+            src = Path(_app_mod.__file__).read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:  # noqa: BLE001
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"cannot read daemon/app.py source: {exc}",
+            )
+        missing = [tok for tok in self.REQUIRED_TOKENS if tok not in src]
+        if missing:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"daemon/app.py missing wiring for: {', '.join(missing)}",
+                advisory=(
+                    "Each of these tokens names an observer / LLM-extractor "
+                    "factory the lifespan should reference. Restore the "
+                    "Epic #24 wiring (search docs/DEV_ROADMAP.md for the "
+                    "Phase that introduced the missing token)."
+                ),
+            )
+        return CheckResult(
+            name=self.name, ok=True,
+            detail="4 observers + LLM-backed extractor factories all wired",
+        )
+
+
 def build_default_registry() -> DoctorRegistry:
     """Return a registry populated with the built-in checks.
 
@@ -1966,4 +2023,5 @@ def build_default_registry() -> DoctorRegistry:
     reg.register(SecretsCheck())
     reg.register(EvolutionPathHygieneCheck())  # Epic #24 Phase 1
     reg.register(EvolutionRuntimeCheck())      # Epic #24 Phase 1
+    reg.register(EvolutionPipelineCheck())     # Epic #24 Phase 4.3
     return reg
