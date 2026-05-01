@@ -26,5 +26,5 @@ MANIFEST = PluginManifest(
         "app_secret": "secret (required)",
         "verification_token": "secret (optional, only for webhook fallback)",
     },
-    implementation_status="scaffold",  # B-38: adapter module not yet implemented
+    implementation_status="ready",  # B-145: real adapter at .adapter:FeishuAdapter
 )

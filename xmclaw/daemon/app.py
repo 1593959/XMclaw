@@ -653,6 +653,50 @@ def create_app(
             except Exception:  # noqa: BLE001
                 pass
 
+        # B-145: channel adapters (飞书 / 钉钉 / 企微 / Telegram).
+        # Each enabled channel gets a long-running adapter that listens
+        # for inbound messages + dispatches them through the same
+        # AgentLoop as web-UI sessions. Reads
+        # ``config.channels.<channel_id>.{enabled, ...creds}``.
+        channel_dispatcher = None
+        try:
+            from xmclaw.daemon.channel_dispatcher import ChannelDispatcher
+            from xmclaw.providers.channel.registry import discover as _ch_discover
+            channels_cfg = (config or {}).get("channels") or {}
+            if isinstance(channels_cfg, dict) and channels_cfg and agent is not None:
+                manifests = _ch_discover(include_scaffolds=False)
+                channel_dispatcher = ChannelDispatcher(agent)
+                for ch_id, ch_cfg in channels_cfg.items():
+                    if not isinstance(ch_cfg, dict) or not ch_cfg.get("enabled"):
+                        continue
+                    manifest = manifests.get(ch_id)
+                    if manifest is None:
+                        log.warning("channel.unknown id=%s", ch_id)
+                        continue
+                    try:
+                        # adapter_factory_path = "module:Class"
+                        modpath, clsname = manifest.adapter_factory_path.split(":")
+                        mod = __import__(modpath, fromlist=[clsname])
+                        AdapterCls = getattr(mod, clsname)
+                        adapter_inst = AdapterCls(ch_cfg)
+                        channel_dispatcher.add(adapter_inst)
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning(
+                            "channel.build_failed id=%s err=%s",
+                            ch_id, exc,
+                        )
+                if channel_dispatcher._adapters:
+                    await channel_dispatcher.start_all()
+                    _app.state.channel_dispatcher = channel_dispatcher
+                else:
+                    _app.state.channel_dispatcher = None
+                    channel_dispatcher = None
+            else:
+                _app.state.channel_dispatcher = None
+        except Exception as exc:  # noqa: BLE001
+            log.warning("channel.dispatcher_init_failed err=%s", exc)
+            _app.state.channel_dispatcher = None
+
         # B-142: MCP Hub. Reads ``config.mcp_servers`` (Claude-Desktop
         # shape) + spawns each stdio server as a subprocess. Tools land
         # under name ``<server>__<tool>`` and compose into agent._tools
@@ -713,6 +757,15 @@ def create_app(
             if _mcp is not None:
                 try:
                     await _mcp.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            # B-145: stop every channel adapter (飞书 WS, 钉钉 stream,
+            # telegram poll loop). Same try-each posture so a hanging
+            # SDK shutdown doesn't strand the others.
+            _chdisp = getattr(_app.state, "channel_dispatcher", None)
+            if _chdisp is not None:
+                try:
+                    await _chdisp.stop_all()
                 except Exception:  # noqa: BLE001
                     pass
             # B-51: stop the dream cron.

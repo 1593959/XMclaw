@@ -102,6 +102,17 @@
     "name_prefix": "auto-"
   },
   "mcp_servers": {},
+  "channels": {
+    "_comment": "B-145 双向聊天接入。enabled=true 后 daemon 启动时拉起 adapter，在群里 @机器人 即可对话。Tools 集成 (integrations.feishu) 是出站通知，channels 是双向对话。",
+    "feishu": {
+      "enabled": false,
+      "_help": "飞书开放平台 → 应用 → 创建应用 → 启用 '机器人' 能力 + '订阅事件 (im.message.receive_v1)' → 复制 app_id / app_secret 填这里。WebSocket 长连模式无需公网 IP。",
+      "app_id": "",
+      "app_secret": "",
+      "encrypt_key": "",
+      "verify_token": ""
+    }
+  },
   "integrations": {
     "slack":    { "enabled": false, "bot_token": "", "app_token": "", "channel": "" },
     "discord":  { "enabled": false, "bot_token": "", "channel_id": "" },
