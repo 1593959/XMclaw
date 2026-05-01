@@ -417,10 +417,17 @@ export function SkillsPage({ token }) {
                   const writes30 = sk.invocation_count_30d || 0;
                   const writesAll = sk.invocation_count || 0;
                   const usable = !sk.disabled;
+                  // B-158: same base_id 多版本时，标题用 base_id，
+                  // 显示 v<N> + 旧版本数 badge
+                  const olderCount = (sk.older_versions || []).length;
+                  const displayId = sk.base_id && sk.version != null ? sk.base_id : sk.skill_id;
                   return html`
                     <div class="xmc-h-skill-card" key=${"L-" + sk.skill_id}>
                       <div class="xmc-h-skill-card__head" style="cursor:default;display:flex;align-items:baseline;gap:.5rem;flex-wrap:wrap">
-                        <code class="xmc-h-skill-card__id">${sk.skill_id}</code>
+                        <code class="xmc-h-skill-card__id">${displayId}</code>
+                        ${sk.version != null
+                          ? html`<span class="xmc-h-badge xmc-h-badge--info" title=${`当前最新版本 v${sk.version}${olderCount > 0 ? `；磁盘上还有 ${olderCount} 个旧版本被去重 (B-158)` : ""}`}>v${sk.version}${olderCount > 0 ? ` · +${olderCount} 旧版` : ""}</span>`
+                          : null}
                         <span class="xmc-h-badge xmc-h-badge--muted">SKILL.md</span>
                         <span class="xmc-h-badge xmc-h-badge--info" title="技能来源 (B-149)">${origin.label}</span>
                         ${usable

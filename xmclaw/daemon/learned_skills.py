@@ -43,6 +43,49 @@ from xmclaw.utils.log import get_logger
 _log = get_logger(__name__)
 
 
+_VERSION_SUFFIX_RE = re.compile(r"^(?P<base>.+)_v(?P<n>\d+)$")
+
+
+def _split_versioned(skill_id: str) -> tuple[str, int | None]:
+    """B-158: split ``auto_repair_bdf153_v38`` → ('auto_repair_bdf153', 38).
+
+    Returns ``(skill_id, None)`` when the id doesn't end in ``_v<N>``.
+    Used by both the loader (dedup-by-base) and list_for_api (so the
+    UI can group versions of the same conceptual skill).
+    """
+    m = _VERSION_SUFFIX_RE.match(skill_id or "")
+    if m is None:
+        return skill_id, None
+    return m.group("base"), int(m.group("n"))
+
+
+def _dedupe_versioned(skills: "list[LearnedSkill]") -> "list[LearnedSkill]":
+    """B-158: keep only the highest ``_v<N>`` per base_id.
+
+    Skills without a ``_v<N>`` suffix pass through untouched (single-
+    version SKILL.md from the user / skills.sh). The auto-evo writer
+    appends ``_v<N>`` on every iteration so this drops stale versions
+    that would otherwise pollute the agent's prompt with overlapping
+    procedures.
+    """
+    # Group by base_id.
+    by_base: dict[str, list[tuple[int, LearnedSkill]]] = {}
+    no_version: list[LearnedSkill] = []
+    for sk in skills:
+        base, n = _split_versioned(sk.skill_id)
+        if n is None:
+            no_version.append(sk)
+        else:
+            by_base.setdefault(base, []).append((n, sk))
+    out: list[LearnedSkill] = list(no_version)
+    for base, entries in by_base.items():
+        entries.sort(key=lambda t: t[0], reverse=True)
+        # Keep only the latest. The rest are dropped from runtime view
+        # (still on disk for audit / rollback).
+        out.append(entries[0][1])
+    return out
+
+
 @dataclass(frozen=True, slots=True)
 class LearnedSkill:
     """One skill loaded from a SKILL.md file."""
@@ -322,7 +365,13 @@ class LearnedSkillsLoader:
                 if sk is not None:
                     skills.append(sk)
                     seen_ids.add(entry.name)
-        return skills
+        # B-158: dedupe by base_id when skill_id ends with _v<N>.
+        # xm-auto-evo writes a fresh dir per iteration (auto_repair_v37
+        # → auto_repair_v38 → ...) and prior to B-158 BOTH got loaded,
+        # injecting two competing procedures into the agent's prompt.
+        # Now: keep only the highest version per base_id, drop the rest.
+        # Same machinery for any user that adopts the _v<N> convention.
+        return _dedupe_versioned(skills)
 
     def _fingerprint(self, skills: list[LearnedSkill]) -> tuple:
         return tuple(sorted((s.skill_id, s.mtime) for s in skills))
@@ -421,8 +470,35 @@ class LearnedSkillsLoader:
         """
         active = self.list_skills()
         active_ids = {s.skill_id for s in active}
+        # B-158: count older versions on disk that got deduped, so the
+        # UI can show "v38 (latest, +5 older versions)".
+        older_versions: dict[str, list[dict]] = {}
+        for root in self.all_roots:
+            if not root.is_dir():
+                continue
+            try:
+                for entry in sorted(root.iterdir()):
+                    if not entry.is_dir():
+                        continue
+                    base, n = _split_versioned(entry.name)
+                    if n is None:
+                        continue
+                    if entry.name in active_ids:
+                        continue
+                    older_versions.setdefault(base, []).append({
+                        "skill_id": entry.name,
+                        "version": n,
+                        "path": str(entry / "SKILL.md"),
+                    })
+            except OSError:
+                continue
+        # Sort each base's older versions descending by N.
+        for base in older_versions:
+            older_versions[base].sort(key=lambda d: d["version"], reverse=True)
+
         out: list[dict] = []
         for s in active:
+            base, n = _split_versioned(s.skill_id)
             out.append({
                 "skill_id": s.skill_id,
                 "title": s.title,
@@ -432,6 +508,10 @@ class LearnedSkillsLoader:
                 "mtime": s.mtime,
                 "body_preview": s.body[:300],
                 "disabled": False,
+                # B-158: expose version metadata
+                "base_id": base,
+                "version": n,
+                "older_versions": older_versions.get(base, []) if n is not None else [],
             })
         if not include_disabled:
             return out

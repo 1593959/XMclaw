@@ -108,8 +108,10 @@ function ChannelCard({ ch, token, onSaved }) {
           </small>`
         : null}
       ${!isReady
-        ? html`<div style="margin-top:.5rem;padding:.4rem .55rem;border-radius:4px;background:color-mix(in srgb, gold 6%, transparent);font-size:.75rem">
-            <strong>scaffold:</strong> manifest 已注册但 adapter 模块未实现 — 配置可保存，但启动 daemon 不会拉起 adapter。
+        ? html`<div style="margin-top:.5rem;padding:.5rem .65rem;border:1px solid color-mix(in srgb, var(--color-destructive, #c66) 50%, transparent);border-radius:4px;background:color-mix(in srgb, var(--color-destructive, #c66) 8%, transparent);font-size:.78rem">
+            <strong>⚠ 未实现</strong> — manifest 已注册但 adapter Python 模块还没写。
+            填配置无意义：启动 daemon 不会拉起 adapter，群里 @bot 也不会回话。
+            等 ${ch.id} 升级为 ready 状态后再来配。
           </div>`
         : null}
 
@@ -150,8 +152,16 @@ function ChannelCard({ ch, token, onSaved }) {
         })}
       </div>
 
-      <div style="margin-top:.6rem;display:flex;gap:.4rem">
-        <button class="xmc-h-btn" onClick=${onSave} disabled=${busy}>${busy ? "保存中…" : "保存"}</button>
+      <div style="margin-top:.6rem;display:flex;gap:.4rem;align-items:center">
+        <button
+          class="xmc-h-btn"
+          onClick=${onSave}
+          disabled=${busy || !isReady}
+          title=${isReady ? "保存配置 (重启 daemon 生效)" : "scaffold 状态无法保存 — adapter 还没实现"}
+        >${busy ? "保存中…" : (isReady ? "保存" : "保存 (已禁用)")}</button>
+        ${!isReady
+          ? html`<small style="opacity:.7;font-size:.7rem">${ch.id} adapter 升级为 ready 前，保存按钮禁用以免误以为生效。</small>`
+          : null}
       </div>
     </article>
   `;

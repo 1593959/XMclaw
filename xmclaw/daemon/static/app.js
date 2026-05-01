@@ -44,7 +44,6 @@ import { AgentsPage } from "./pages/Agents.js";
 import { ChannelsPage } from "./pages/Channels.js";
 import { MemoryPage } from "./pages/Memory.js";
 import { SecurityPage } from "./pages/Security.js";
-import { InsightsPage } from "./pages/Insights.js";
 import { SkillsPage } from "./pages/Skills.js";
 import { EvolutionPage } from "./pages/Evolution.js";
 import { BackupPage } from "./pages/Backup.js";
@@ -53,7 +52,6 @@ import { SessionsPage } from "./pages/Sessions.js";
 import { CronPage } from "./pages/Cron.js";
 import { ConfigPage } from "./pages/Config.js";
 import { LogsPage } from "./pages/Logs.js";
-import { EnvPage } from "./pages/Env.js";
 import { AnalyticsPage } from "./pages/Analytics.js";
 import { DocsPage } from "./pages/Docs.js";
 import { TracePage } from "./pages/Trace.js";
@@ -434,8 +432,8 @@ const routes = {
   "/cron": (state) => html`<${CronPage} token=${state.auth.token} />`,
   "/config": (state) => html`<${ConfigPage} token=${state.auth.token} />`,
   "/logs":      (state) => html`<${LogsPage}      token=${state.auth.token} />`,
-  // B-137: /env 合入 /settings；route 留兼容性给旧书签。
-  "/env":       (state) => html`<${EnvPage}       token=${state.auth.token} />`,
+  // B-157: /env 路由删除 (B-137 已合入 /settings)。旧书签 → "未找到"
+  // 路由由通配符兜底，不会 404。EnvPage 文件也一并删了。
   "/analytics": (state) => html`<${AnalyticsPage} token=${state.auth.token} />`,
   "/docs":      ()      => html`<${DocsPage} />`,
   "/trace":     (state) => html`<${TracePage} token=${state.auth.token} />`,
@@ -449,7 +447,7 @@ const routes = {
   "/security": (state) => html`<${SecurityPage} token=${state.auth.token} />`,
   "/backup": (state) => html`<${BackupPage} token=${state.auth.token} />`,
   "/doctor": (state) => html`<${DoctorPage} token=${state.auth.token} />`,
-  "/insights": (state) => html`<${InsightsPage} token=${state.auth.token} />`,
+  // B-159: /insights 整合到 /trace。route 留通配符兜底，不再注册。
   "/settings": (state) => html`<${SettingsPage} token=${state.auth.token} />`,
   "*": () => html`<${Placeholder} title="未找到" subtitle="未匹配的路由" />`,
 };

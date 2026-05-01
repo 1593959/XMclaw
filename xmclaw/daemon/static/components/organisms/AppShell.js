@@ -121,10 +121,10 @@ const NAV_GROUPS = [
   {
     id: "observe", label: "观察", icon: "Eye",
     items: [
+      // B-159: /insights 删 (pure subset of /trace)
       { path: "/trace",     label: "思考", icon: "Activity" },
       { path: "/logs",      label: "日志", icon: "FileText" },
       { path: "/analytics", label: "分析", icon: "BarChart3" },
-      { path: "/insights",  label: "洞察", icon: "Eye" },
     ],
   },
   {
