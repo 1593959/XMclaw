@@ -39,6 +39,8 @@ export const PHASE_1_EVENT_TYPES = [
   "cost_tick",              // B-107
   "anti_req_violation",
   "session_lifecycle",
+  "skill_invoked",          // B-130: heuristic-path skill detections
+  "skill_outcome",          // B-130: turn-level verdict for the skill
 ];
 
 function genId() {
@@ -418,6 +420,56 @@ export function applyEvent(chat, envelope) {
             tc.id === callId ? { ...tc, status, result } : tc
           ),
         })),
+      };
+    }
+
+    case "skill_invoked": {
+      // B-130: heuristic-path detection — the agent didn't go through
+      // a tool-call but agent_loop._detect_skill_invocations matched
+      // the skill_id / trigger / body keyword to the turn. Render as
+      // an inline marker on the assistant bubble so the user SEES the
+      // detection without leaving the chat.
+      // Tool-call path (evidence='tool_call') already shows up via
+      // toolCalls + ToolCard, so skip it here to avoid duplicate UI.
+      if ((payload.evidence || "") === "tool_call") return chat;
+      const aid = corr;
+      const idx = chat.messages.findIndex((m) => m.id === aid);
+      if (idx === -1) return chat;
+      const note = {
+        skill_id: payload.skill_id || "?",
+        evidence: payload.evidence || "?",
+        trigger_match: payload.trigger_match || null,
+        verdict: null,
+      };
+      return {
+        ...chat,
+        messages: upsertById(chat.messages, aid, (m) => ({
+          ...m,
+          skillNotes: (m.skillNotes || []).concat(note),
+        })),
+      };
+    }
+
+    case "skill_outcome": {
+      // B-130: pair the verdict back onto the most recent skillNote
+      // for the same skill_id on this assistant turn.
+      const aid = corr;
+      const idx = chat.messages.findIndex((m) => m.id === aid);
+      if (idx === -1) return chat;
+      const sid = payload.skill_id;
+      return {
+        ...chat,
+        messages: upsertById(chat.messages, aid, (m) => {
+          const notes = (m.skillNotes || []).slice();
+          // Patch the LAST note with this skill_id (most recent wins).
+          for (let i = notes.length - 1; i >= 0; i--) {
+            if (notes[i].skill_id === sid && !notes[i].verdict) {
+              notes[i] = { ...notes[i], verdict: payload.verdict || "?" };
+              break;
+            }
+          }
+          return { ...m, skillNotes: notes };
+        }),
       };
     }
 

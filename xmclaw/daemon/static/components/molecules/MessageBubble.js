@@ -50,16 +50,35 @@ function ToolCard({ call }) {
     }
   })();
   const openByDefault = call.status === "error";
+
+  // B-130: detect skill tool-calls so the user can SEE in-chat when
+  // the agent autonomously picked a skill (vs reaching for a generic
+  // bash / file_read). `skill_*` = registered Skill subclass (B-124);
+  // `learned_skill_*` = SKILL.md procedure (B-125).
+  const isSkillTool = (call.name || "").startsWith("skill_");
+  const isLearnedSkill = (call.name || "").startsWith("learned_skill_");
+  const isAnySkill = isSkillTool || isLearnedSkill;
+  const skillLabel = isLearnedSkill ? "📖 已学技能" : isSkillTool ? "🎯 注册技能" : "";
+  const displayName = isLearnedSkill
+    ? call.name.slice("learned_skill_".length)
+    : isSkillTool
+      ? call.name.slice("skill_".length)
+      : call.name;
+
   return html`
     <details
-      class=${"xmc-toolcard xmc-toolcard--" + call.status}
+      class=${"xmc-toolcard xmc-toolcard--" + call.status
+        + (isAnySkill ? " xmc-toolcard--skill" : "")}
       open=${openByDefault}
     >
       <summary
         class=${"xmc-toolcard__summary" + (call.status === "running" ? " is-running" : "")}
       >
-        <span class="xmc-toolcard__bullet" aria-hidden="true">●</span>
-        <code class="xmc-toolcard__name">${call.name}</code>
+        <span class="xmc-toolcard__bullet" aria-hidden="true">${isAnySkill ? "⚡" : "●"}</span>
+        ${isAnySkill
+          ? html`<${Badge} tone="success" title=${`${skillLabel} — agent 自主选取的`}>${skillLabel}</${Badge}>`
+          : null}
+        <code class="xmc-toolcard__name">${displayName}</code>
         <${Badge} tone=${tone}>${label}</${Badge}>
         ${call.status === "running"
           ? html`<${Spinner} size="sm" label="running" />`
@@ -393,6 +412,34 @@ export function MessageBubble({ message, onAnswerQuestion }) {
       ${(message.toolCalls || []).map(
         (call) => html`<${ToolCard} key=${call.id} call=${call} />`
       )}
+      ${(message.skillNotes || []).map((note, i) => html`
+        <${SkillNote} key=${"sn_" + i} note=${note} />
+      `)}
     </article>
+  `;
+}
+
+// B-130: inline marker for heuristic-path SKILL_INVOKED events that
+// did NOT go through a tool-call. Tool-call invocations already render
+// via ToolCard (golden tint); this is the substring-match fallback so
+// the user still sees in-chat that a skill was detected.
+function SkillNote({ note }) {
+  const tone = note.verdict === "success" ? "success"
+    : note.verdict === "error" ? "error"
+    : note.verdict === "partial" ? "warn"
+    : note.verdict === "auto_disabled" ? "error"
+    : "muted";
+  const verdictLabel = note.verdict || "pending";
+  return html`
+    <div class="xmc-skill-note" title=${`heuristic detection (B-122) · evidence=${note.evidence}`}>
+      <span class="xmc-skill-note__icon" aria-hidden="true">⚡</span>
+      <span class="xmc-skill-note__label">触发已学技能</span>
+      <code class="xmc-skill-note__id">${note.skill_id}</code>
+      <${Badge} tone="muted">~ ${note.evidence}</${Badge}>
+      <${Badge} tone=${tone}>${verdictLabel}</${Badge}>
+      ${note.trigger_match
+        ? html`<small style="opacity:.7">trigger: <code>${note.trigger_match}</code></small>`
+        : null}
+    </div>
   `;
 }

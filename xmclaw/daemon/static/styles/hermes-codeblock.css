@@ -93,6 +93,50 @@
   background: color-mix(in srgb, var(--color-destructive) 4%, transparent);
 }
 
+/* B-130: skill tool-calls (skill_* / learned_skill_*) get a distinct
+   golden tint so the user can SEE in-chat that the agent autonomously
+   picked a skill — not just a generic tool. Border color overrides the
+   per-status one above, but background stays status-driven so a failed
+   skill call still reads red. */
+.xmc-toolcard--skill {
+  border-left: 3px solid color-mix(in srgb, gold 70%, var(--color-primary) 30%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, gold 18%, transparent) inset;
+}
+.xmc-toolcard--skill .xmc-toolcard__bullet {
+  color: color-mix(in srgb, gold 70%, var(--color-primary) 30%);
+  font-size: 0.95em;
+}
+
+/* B-130: inline marker for heuristic-path skill detections (B-122
+   substring fallback). Smaller and quieter than ToolCard — it's an
+   observation, not a primary chat action. */
+.xmc-skill-note {
+  margin: 0.3rem 0;
+  padding: 0.3rem 0.55rem;
+  border-radius: var(--radius-md);
+  border: 1px dashed color-mix(in srgb, gold 50%, var(--color-primary) 30%);
+  background: color-mix(in srgb, gold 6%, transparent);
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+}
+.xmc-skill-note__icon {
+  color: color-mix(in srgb, gold 75%, var(--color-primary) 25%);
+}
+.xmc-skill-note__label {
+  font-weight: 500;
+  color: var(--xmc-fg-muted, var(--color-fg-muted));
+}
+.xmc-skill-note__id {
+  font-family: var(--xmc-font-mono);
+  font-size: 0.78rem;
+  background: color-mix(in srgb, var(--midground) 6%, transparent);
+  padding: 0 0.3rem;
+  border-radius: 3px;
+}
+
 .xmc-toolcard__summary {
   display: flex;
   align-items: center;
