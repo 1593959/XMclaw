@@ -433,6 +433,8 @@ const routes = {
   "/cron": (state) => html`<${CronPage} token=${state.auth.token} />`,
   "/config": (state) => html`<${ConfigPage} token=${state.auth.token} />`,
   "/logs":      (state) => html`<${LogsPage}      token=${state.auth.token} />`,
+  // B-137: /env (旧"密钥"页) 合入 /settings。route 留兼容性 →
+  // 仍然渲染 EnvPage，但导航里不再露出。书签 + 旧 URL 不会 404。
   "/env":       (state) => html`<${EnvPage}       token=${state.auth.token} />`,
   "/analytics": (state) => html`<${AnalyticsPage} token=${state.auth.token} />`,
   "/docs":      ()      => html`<${DocsPage} />`,

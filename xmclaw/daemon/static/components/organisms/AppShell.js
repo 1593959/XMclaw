@@ -96,9 +96,13 @@ const NAV_ITEMS = [
   { path: "/trace",     label: "思考",   icon: "Activity" },
   { path: "/logs",      label: "日志",   icon: "FileText" },
   { path: "/analytics", label: "分析",   icon: "BarChart3" },
-  { path: "/config",    label: "配置",   icon: "Settings" },
+  // B-137: 三页合并 → 两页。原本"配置"+"设置"+"密钥"严重重叠
+  // (三处都能改 LLM API key 的，密钥页是设置页的纯子集)。
+  // 现在：设置 = LLM/profiles/audio 的友好编辑（含密钥）；
+  // 配置 = JSON-级 power-user 编辑器，覆盖 memory/security/MCP/插件等
+  // 设置不管的字段。/env 路由保留兼容性但不再出现在导航里。
   { path: "/settings",  label: "设置",   icon: "Settings" },
-  { path: "/env",       label: "密钥",   icon: "KeyRound" },
+  { path: "/config",    label: "高级配置", icon: "Settings" },
   // B-101: these pages were registered in app.js routes but not nav-
   // visible — users had to type the URL by hand to reach them.
   { path: "/doctor",    label: "诊断",   icon: "Heart" },

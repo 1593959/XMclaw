@@ -293,7 +293,7 @@ export function ConfigPage({ token }) {
     return html`
       <section class="xmc-h-page" aria-labelledby="config-title">
         <header class="xmc-h-page__header">
-          <h2 id="config-title" class="xmc-h-page__title">配置</h2>
+          <h2 id="config-title" class="xmc-h-page__title">高级配置</h2>
         </header>
         <div class="xmc-h-page__body"><div class="xmc-h-error">${error}</div></div>
       </section>
@@ -303,7 +303,7 @@ export function ConfigPage({ token }) {
     return html`
       <section class="xmc-h-page" aria-labelledby="config-title">
         <header class="xmc-h-page__header">
-          <h2 id="config-title" class="xmc-h-page__title">配置</h2>
+          <h2 id="config-title" class="xmc-h-page__title">高级配置</h2>
         </header>
         <div class="xmc-h-page__body"><div class="xmc-h-loading">载入中…</div></div>
       </section>
@@ -316,11 +316,13 @@ export function ConfigPage({ token }) {
     <section class="xmc-h-page" aria-labelledby="config-title">
       <header class="xmc-h-page__header">
         <div class="xmc-h-page__heading">
-          <h2 id="config-title" class="xmc-h-page__title">配置</h2>
+          <h2 id="config-title" class="xmc-h-page__title">高级配置</h2>
           <p class="xmc-h-page__subtitle">
-            daemon/config.json 的形式编辑器。改完点保存；LLM / runtime
-            类改动需要重启 daemon 才会生效。<strong>留空 secret 字段</strong>
-            （显示为 redacted）则保留现有值。
+            daemon/config.json 的字段级编辑器（power user）。LLM key / 模型 /
+            音频 用 <a href="#/settings">设置</a> 更友好。这里覆盖
+            memory / security / MCP / 插件 / 工具权限等设置 没管的字段。
+            <strong>留空 secret 字段</strong>（显示为 redacted）则保留现有值；
+            LLM/runtime 改动需重启 daemon。
           </p>
         </div>
         <div class="xmc-h-page__actions">

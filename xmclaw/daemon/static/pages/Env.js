@@ -312,7 +312,12 @@ export function EnvPage({ token }) {
     <section class="xmc-h-page" aria-labelledby="env-title">
       <header class="xmc-h-page__header">
         <div class="xmc-h-page__heading">
-          <h2 id="env-title" class="xmc-h-page__title">密钥</h2>
+          <h2 id="env-title" class="xmc-h-page__title">密钥（已合并）</h2>
+          <div style="margin:.4rem 0;padding:.5rem .7rem;border:1px solid color-mix(in srgb, gold 50%, var(--color-primary) 30%);border-radius:6px;background:color-mix(in srgb, gold 5%, transparent);font-size:.85rem">
+            <strong>B-137 提示：</strong>这个页面已合并到 <a href="#/settings" style="font-weight:600">设置</a> —
+            那边一处管 provider / API key / base_url / default_model / 多模型 profiles / 音频。
+            此页保留兼容旧书签，仍可用，但设置更全。
+          </div>
           <p class="xmc-h-page__subtitle">
             LLM 提供商凭据。<strong>API key 字段留空</strong>则保留现有值；要清空必须显式输入空格再清掉。
             其他字段（base_url / default_model）会立即覆盖到 daemon/config.json。

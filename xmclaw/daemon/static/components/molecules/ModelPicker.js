@@ -38,10 +38,14 @@ export function ModelPicker({ token, value, onChange }) {
     return () => { cancelled = true; };
   }, [token]);
 
-  // Hide entirely until we know what the daemon offers — saves a flash
-  // of an empty dropdown for users on the legacy single-block setup
-  // who would never use this widget.
-  if (!loaded || profiles.length <= 1) return null;
+  if (!loaded) return null;
+  // B-137: even with zero / one profile, show the picker so the user
+  // can SEE the current model and click "..." to open the 2-stage
+  // dialog (which also catalogs every model the daemon advertises).
+  // Pre-B-137 this returned null for ≤1 profile — the picker was
+  // invisible to anyone who hadn't set up named profiles yet, which
+  // is exactly the user who needs the affordance most.
+  const empty = profiles.length === 0;
 
   return html`
     <label class="xmc-chat__model" title="本会话使用的模型 profile">
@@ -50,8 +54,10 @@ export function ModelPicker({ token, value, onChange }) {
         class="xmc-chat__model-select"
         value=${value || ""}
         onChange=${(e) => onChange(e.target.value || null)}
+        disabled=${empty}
+        title=${empty ? "没有命名 profile — 点 ⚙ 进设置创建" : null}
       >
-        <option value="">默认 (${defaultId || "未配置"})</option>
+        <option value="">${empty ? "(未配置)" : `默认 (${defaultId || "未配置"})`}</option>
         ${profiles.map((p) => html`
           <option key=${p.id} value=${p.id}>
             ${p.label || p.id} · ${p.model}
@@ -62,8 +68,14 @@ export function ModelPicker({ token, value, onChange }) {
         type="button"
         class="xmc-chat__model-browse"
         onClick=${() => setDialogOpen(true)}
-        title="2-stage modal: provider → model"
+        title=${empty ? "打开模型目录 / 创建第一个 profile" : "浏览所有可用 model"}
       >…</button>
+      <a
+        href="#/settings"
+        class="xmc-chat__model-browse"
+        style="text-decoration:none"
+        title="去设置加 profile"
+      >⚙</a>
       ${dialogOpen
         ? html`<${ModelPickerDialog}
             token=${token}
