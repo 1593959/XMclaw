@@ -309,3 +309,142 @@ async def test_user_message_always_published_even_on_immediate_failure() -> None
     user_events = [e for e in result.events if e.type == EventType.USER_MESSAGE]
     assert len(user_events) == 1
     assert user_events[0].payload["content"] == "hello"
+
+
+# ── Epic #24 Phase 1.5: HonestGrader → GRADER_VERDICT plumbing ─────────
+
+
+@pytest.mark.asyncio
+async def test_grader_verdict_published_after_tool_invocation() -> None:
+    """Every TOOL_INVOCATION_FINISHED must be paired with a GRADER_VERDICT
+    so the EvolutionAgent observer has data to aggregate (Epic #24)."""
+    bus = InProcessEventBus()
+    llm = _ScriptedLLM(script=[
+        LLMResponse(
+            content="",
+            tool_calls=(ToolCall(
+                name="bash", args={"cmd": "echo hi"},
+                provenance="anthropic", id="tc-1",
+            ),),
+        ),
+        LLMResponse(content="done", tool_calls=()),
+    ])
+    tools = _StubToolProvider(
+        specs=[ToolSpec(
+            name="bash", description="run shell",
+            parameters_schema={"type": "object"},
+        )],
+        results={
+            "bash": ToolResult(
+                call_id="", ok=True, content="hi",
+                side_effects=(),
+            ),
+        },
+    )
+    agent = AgentLoop(llm=llm, bus=bus, tools=tools)
+    result = await agent.run_turn("sess", "run echo")
+    await bus.drain()
+
+    verdicts = [e for e in result.events if e.type == EventType.GRADER_VERDICT]
+    assert len(verdicts) == 1, "exactly one GRADER_VERDICT per tool call"
+    p = verdicts[0].payload
+    assert p["call_id"] == "tc-1"
+    assert p["tool_name"] == "bash"
+    assert p["ran"] is True
+    assert p["returned"] is True
+    assert isinstance(p["score"], float)
+    assert 0.0 <= p["score"] <= 1.0
+    # Non-skill tool: skill_id / version not stamped.
+    assert "skill_id" not in p
+
+
+@pytest.mark.asyncio
+async def test_grader_verdict_carries_skill_id_for_skill_prefixed_tools() -> None:
+    """When the tool name comes from SkillToolProvider (``skill_<id>``
+    with ``__`` for ``.``), the verdict payload must reverse the encoding
+    and stamp ``skill_id`` so EvolutionAgent's _ingest can aggregate.
+    Without this, Phase 1's evolution feedback loop is silently empty."""
+    bus = InProcessEventBus()
+    llm = _ScriptedLLM(script=[
+        LLMResponse(
+            content="",
+            tool_calls=(ToolCall(
+                # demo.read_and_summarize → skill_demo__read_and_summarize
+                name="skill_demo__read_and_summarize",
+                args={}, provenance="anthropic", id="tc-skill",
+            ),),
+        ),
+        LLMResponse(content="summarized", tool_calls=()),
+    ])
+    tools = _StubToolProvider(
+        specs=[ToolSpec(
+            name="skill_demo__read_and_summarize",
+            description="bridged skill",
+            parameters_schema={"type": "object"},
+        )],
+        results={
+            "skill_demo__read_and_summarize": ToolResult(
+                call_id="", ok=True, content="ok",
+                side_effects=(),
+            ),
+        },
+    )
+    agent = AgentLoop(llm=llm, bus=bus, tools=tools)
+    result = await agent.run_turn("sess", "do skill")
+    await bus.drain()
+
+    verdicts = [e for e in result.events if e.type == EventType.GRADER_VERDICT]
+    assert len(verdicts) == 1
+    p = verdicts[0].payload
+    assert p["skill_id"] == "demo.read_and_summarize"
+    assert p["version"] == 0  # Phase 1.5 default; Phase 3 fans out
+
+
+@pytest.mark.asyncio
+async def test_evolution_agent_observer_receives_skill_verdicts() -> None:
+    """End-to-end: AgentLoop → GRADER_VERDICT → EvolutionAgent._ingest.
+    Verifies the closed loop the Phase 1.5 patch was specifically
+    written to fix — observer's per (skill_id, version) aggregate
+    actually accumulates plays + reward when a skill_-prefixed tool
+    runs."""
+    from xmclaw.daemon.evolution_agent import EvolutionAgent
+
+    bus = InProcessEventBus()
+    observer = EvolutionAgent("evo-test", bus)
+    await observer.start()
+    try:
+        llm = _ScriptedLLM(script=[
+            LLMResponse(
+                content="",
+                tool_calls=(ToolCall(
+                    name="skill_summary", args={},
+                    provenance="anthropic", id="tc-1",
+                ),),
+            ),
+            LLMResponse(content="ok", tool_calls=()),
+        ])
+        tools = _StubToolProvider(
+            specs=[ToolSpec(
+                name="skill_summary", description="bridged",
+                parameters_schema={"type": "object"},
+            )],
+            results={
+                "skill_summary": ToolResult(
+                    call_id="", ok=True, content="result",
+                    side_effects=(),
+                ),
+            },
+        )
+        agent = AgentLoop(llm=llm, bus=bus, tools=tools)
+        await agent.run_turn("sess", "go")
+        await bus.drain()
+
+        evals = observer.snapshot()
+        assert len(evals) == 1, "observer aggregated exactly one arm"
+        e = evals[0]
+        assert e.candidate_id == "summary"
+        assert e.version == 0
+        assert e.plays == 1
+        assert e.mean_score > 0.0  # ran=True/returned=True yields positive score
+    finally:
+        await observer.stop()

@@ -1690,9 +1690,23 @@ class AgentLoop:
                     # (skill_id, version) and proposes promotions).
                     # Failures here MUST NOT block the tool loop —
                     # the agent's main path keeps going regardless.
+                    #
+                    # Phase 1.5: when the tool is a skill bridged
+                    # through SkillToolProvider (name prefix
+                    # ``skill_``, with ``__`` reversed back to ``.``
+                    # for the namespace separator), pull the skill_id
+                    # + HEAD version off the orchestrator's registry
+                    # and stamp them on the verdict — without this,
+                    # the observer's `_ingest` immediately returns and
+                    # the entire evolution feedback loop is silently
+                    # empty. Non-skill tools (bash / file_read / etc.)
+                    # still emit the verdict but skip the registry
+                    # lookup; observer treats them as unkeyed and
+                    # ignores them, which is the correct semantics
+                    # (no skill version to evolve).
                     try:
                         verdict = await self._grader.grade(finished_event)
-                        await publish(EventType.GRADER_VERDICT, {
+                        verdict_payload: dict[str, Any] = {
                             "call_id": result.call_id,
                             "tool_name": call.name,
                             "score": verdict.score,
@@ -1701,7 +1715,27 @@ class AgentLoop:
                             "type_matched": verdict.type_matched,
                             "side_effect_observable": verdict.side_effect_observable,
                             "evidence": list(verdict.evidence),
-                        })
+                        }
+                        if call.name.startswith("skill_"):
+                            # Reverse SkillToolProvider's mapping
+                            # (xmclaw/skills/tool_bridge.py:_to_tool_name).
+                            # ``__`` was the namespace-separator escape
+                            # for ``.`` — restore it. Other invalid
+                            # chars were squashed to ``_`` and aren't
+                            # reversible, but skill_ids that survive
+                            # the round-trip 1:1 are the common case
+                            # (snake_case + dotted namespace).
+                            sid = call.name[len("skill_"):].replace("__", ".")
+                            verdict_payload["skill_id"] = sid
+                            # Phase 1.5: version defaults to 0 — the
+                            # observer aggregates per (skill_id, 0)
+                            # which is enough to *prove* the closed
+                            # loop. Phase 3's SkillProposer will fan
+                            # out across real version axes; until then
+                            # the orchestrator's HEAD-pointer history
+                            # is the authoritative version trail.
+                            verdict_payload["version"] = 0
+                        await publish(EventType.GRADER_VERDICT, verdict_payload)
                     except Exception:  # noqa: BLE001 — observability
                         # never blocks execution; bus subscribers see
                         # gaps instead of crashes.
