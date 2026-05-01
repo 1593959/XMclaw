@@ -296,3 +296,90 @@ def test_orchestrator_startup_failure_does_not_block_daemon(
     # stop() is still called on exit even though start() raised —
     # symmetric cleanup, even if redundant for a broken object.
     assert _BrokenOrch.stopped is True
+
+
+# ── Epic #24 Phase 1-3 lifespan observers ──────────────────────────
+
+
+def test_lifespan_starts_evolution_observer(bus: InProcessEventBus) -> None:
+    """Phase 1: EvolutionAgent observer must be in app.state after boot.
+
+    Without this the GRADER_VERDICT events emitted by AgentLoop have
+    nowhere to land and the entire evolution feedback loop is silent.
+    """
+    app = create_app(bus=bus)
+    with TestClient(app):
+        evo = getattr(app.state, "evolution_observer", None)
+        assert evo is not None, "EvolutionAgent observer not started"
+        assert evo.is_running()
+        assert evo.agent_id == "evo-main"
+
+
+def test_lifespan_starts_journal_writer(bus: InProcessEventBus) -> None:
+    """Phase 2.1: JournalWriter must be in app.state and subscribed."""
+    app = create_app(bus=bus)
+    with TestClient(app):
+        jw = getattr(app.state, "journal_writer", None)
+        assert jw is not None, "JournalWriter not started"
+        assert jw.is_running()
+
+
+def test_lifespan_starts_profile_extractor(bus: InProcessEventBus) -> None:
+    """Phase 2.2: ProfileExtractor must be in app.state and subscribed."""
+    app = create_app(bus=bus)
+    with TestClient(app):
+        pe = getattr(app.state, "profile_extractor", None)
+        assert pe is not None, "ProfileExtractor not started"
+        assert pe.is_running()
+
+
+def test_lifespan_starts_skill_dream(bus: InProcessEventBus) -> None:
+    """Phase 3.2: SkillDreamCycle must be in app.state and running."""
+    app = create_app(bus=bus)
+    with TestClient(app):
+        sd = getattr(app.state, "skill_dream", None)
+        assert sd is not None, "SkillDreamCycle not started"
+        assert sd.is_running()
+        assert sd.agent_id == "skill-dream"
+
+
+def test_lifespan_skill_dream_disabled_via_config(bus: InProcessEventBus) -> None:
+    """``evolution.skill_dream.enabled=false`` keeps SkillDreamCycle out."""
+    cfg = {"evolution": {"skill_dream": {"enabled": False}}}
+    app = create_app(bus=bus, config=cfg)
+    with TestClient(app):
+        sd = getattr(app.state, "skill_dream", None)
+        # Disabled = state attr exists but is None (not constructed).
+        assert sd is None
+
+
+def test_lifespan_subscribes_user_profile_updated_handler(
+    bus: InProcessEventBus,
+) -> None:
+    """Phase 2.4 wiring: lifespan must register a subscription that
+    listens for USER_PROFILE_UPDATED → ``bump_prompt_freeze_generation``.
+
+    Without this hook, the persona assembler keeps serving cached
+    system prompts and new auto-extracted preferences never reach the
+    agent until daemon restart. We don't need to dispatch the event
+    here — just assert at least one subscription exists for the type
+    after lifespan boots."""
+    app = create_app(bus=bus)
+    with TestClient(app):
+        # InProcessEventBus exposes ``_handlers`` as a mapping of
+        # subscriptions; we count the ones whose filter accepts a
+        # USER_PROFILE_UPDATED event.
+        from xmclaw.core.bus.events import EventType, make_event
+        sample = make_event(
+            session_id="probe", agent_id="probe",
+            type=EventType.USER_PROFILE_UPDATED,
+            payload={},
+        )
+        # ``_subs`` is the live subscription list inside InProcessEventBus.
+        subs = getattr(bus, "_subs", None)
+        assert subs is not None, "InProcessEventBus shape changed"
+        matched = [s for s in subs if s.predicate(sample)]
+        assert len(matched) >= 1, (
+            "no subscription registered for USER_PROFILE_UPDATED — "
+            "Phase 2.4 prompt cache invalidation hook missing"
+        )

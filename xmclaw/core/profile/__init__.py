@@ -21,10 +21,11 @@ factory once an LLM provider is available.
 """
 from __future__ import annotations
 
-from xmclaw.core.profile.extractor import ProfileExtractor
+from xmclaw.core.profile.extractor import ProfileExtractor, noop_extractor
 from xmclaw.core.profile.models import ProfileDelta
 
 __all__ = [
     "ProfileDelta",
     "ProfileExtractor",
+    "noop_extractor",
 ]

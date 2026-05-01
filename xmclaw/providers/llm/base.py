@@ -17,13 +17,13 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from xmclaw.core.ir import ToolCall, ToolCallShape, ToolSpec
+
 OnChunkCallback = Callable[[str], Awaitable[None]]
 # B-91: separate channel for reasoning / extended-thinking deltas.
 # Same signature as OnChunkCallback so callers can wire either or
 # both. Distinct alias to make the call-site intent obvious.
 OnThinkingChunkCallback = Callable[[str], Awaitable[None]]
-
-from xmclaw.core.ir import ToolCall, ToolCallShape, ToolSpec
 
 
 @dataclass(frozen=True, slots=True)

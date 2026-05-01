@@ -38,6 +38,8 @@ objects produced by the provider's translator. A response whose
 from __future__ import annotations
 
 import asyncio
+import re
+import re as _re_mem
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -288,9 +290,9 @@ _DEFAULT_SYSTEM = _default_system_prompt()
 #      embedded in the next turn's history, which then gets recalled
 #      again, etc.
 # Hermes' memory_manager.sanitize_context strips this. We mirror it.
-
-import re
-import re as _re_mem
+# (``re`` and ``re as _re_mem`` imported at top of module — moved
+# there to satisfy E402; the alias is kept so the regex variable
+# names below stay self-documenting.)
 
 _MEMORY_FENCE_BLOCK_RE = _re_mem.compile(
     r"<\s*memory-context\s*>[\s\S]*?</\s*memory-context\s*>",
