@@ -270,33 +270,89 @@ export function WorkspacePage({ token }) {
       </div>
 
       ${wsState && wsState.roots && wsState.roots.length
-        ? html`
-          <h3 style="margin:1.5rem 0 .5rem">已注册工作区（daemon 持久化在 ~/.xmclaw/state.json）</h3>
-          <ul class="xmc-datapage__list">
-            ${wsState.roots.map((r, i) => {
-              const isPrimary = (wsState.primary_index || 0) === i;
-              return html`
-                <li class="xmc-datapage__row" key=${r.path} style="display:flex;align-items:center;gap:.5rem">
-                  <strong style="flex:0 0 auto;font-size:.95rem">${r.name}</strong>
-                  ${isPrimary ? html`<span class="xmc-h-badge xmc-h-badge--success">活动</span>` : null}
-                  ${r.vcs === "git" ? html`<span class="xmc-h-badge">git</span>` : null}
-                  <code style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.path}</code>
-                  ${!isPrimary
-                    ? html`<button type="button" onClick=${() => onSetPrimary(i)} disabled=${busy} title="设为活动">设为活动</button>`
+        ? (() => {
+            // B-152: surface stale + temp counts so the user sees
+            // they have polluted state, plus a one-button cleanup.
+            const stale = wsState.roots.filter((r) => r.exists === false).length;
+            const temp = wsState.roots.filter((r) => r.looks_temp).length;
+            const onPrune = async (includeTemp) => {
+              const ok = await confirmDialog({
+                title: includeTemp ? "清理失效 + 临时工作区" : "清理失效工作区",
+                body: includeTemp
+                  ? "删除所有路径不存在 + pytest/Temp 等临时位置的注册项。"
+                  : "删除所有路径在磁盘上已不存在的注册项。",
+                confirmLabel: "清理",
+                confirmTone: "danger",
+              });
+              if (!ok) return;
+              setBusy(true);
+              try {
+                const res = await fetch(
+                  "/api/v2/workspace" + (token ? `?token=${encodeURIComponent(token)}` : ""),
+                  {
+                    method: "PUT",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ action: "prune_missing", include_temp: includeTemp }),
+                  }
+                );
+                const data = await res.json();
+                if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+                setWsState(data);
+                toast.success(`已清理 ${(data.pruned || []).length} 条`);
+              } catch (e) {
+                toast.error("清理失败：" + (e.message || e));
+              } finally {
+                setBusy(false);
+              }
+            };
+            return html`
+              <header style="margin:1.5rem 0 .5rem;display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:.5rem">
+                <h3 style="margin:0">已注册工作区 (${wsState.roots.length})</h3>
+                <div style="display:flex;gap:.4rem;flex-wrap:wrap">
+                  ${stale > 0
+                    ? html`<button type="button" onClick=${() => onPrune(false)} disabled=${busy} class="xmc-h-btn" title="移除路径不存在的工作区">🧹 清理失效 (${stale})</button>`
                     : null}
-                  <button
-                    type="button"
-                    onClick=${() => onRemove(r.path)}
-                    disabled=${busy}
-                    title="移除"
-                    class="xmc-h-btn--danger"
-                    style="background:color-mix(in srgb,var(--color-destructive) 14%,transparent);color:var(--color-destructive)"
-                  >移除</button>
-                </li>
-              `;
-            })}
-          </ul>
-        `
+                  ${temp > 0
+                    ? html`<button type="button" onClick=${() => onPrune(true)} disabled=${busy} class="xmc-h-btn xmc-h-btn--ghost" title="额外移除 pytest / Temp 临时路径">+ 包括 ${temp} 临时</button>`
+                    : null}
+                </div>
+              </header>
+              ${stale + temp > 0
+                ? html`<p class="xmc-datapage__subtitle" style="margin:0 0 .5rem;font-size:.78rem">
+                    <strong style="color:var(--color-warning, #d97)">⚠ 检测到 ${stale} 个失效路径${temp > 0 ? ` + ${temp} 个临时路径 (pytest / Temp)` : ""}</strong>
+                    — 通常是测试运行后残留 (B-152 已加自动检测)。
+                  </p>`
+                : null}
+              <ul class="xmc-datapage__list">
+                ${wsState.roots.map((r, i) => {
+                  const isPrimary = (wsState.primary_index || 0) === i;
+                  const exists = r.exists !== false;
+                  const looksTemp = !!r.looks_temp;
+                  return html`
+                    <li class="xmc-datapage__row" key=${r.path} style="display:flex;align-items:center;gap:.5rem;${!exists ? "opacity:.6" : ""}">
+                      <strong style="flex:0 0 auto;font-size:.95rem">${r.name}</strong>
+                      ${isPrimary ? html`<span class="xmc-h-badge xmc-h-badge--success">活动</span>` : null}
+                      ${r.vcs === "git" ? html`<span class="xmc-h-badge">git</span>` : null}
+                      ${!exists ? html`<span class="xmc-h-badge xmc-h-badge--error" title="路径在磁盘上不存在">🚫 失效</span>` : null}
+                      ${looksTemp ? html`<span class="xmc-h-badge xmc-h-badge--warn" title="临时路径 (pytest / Temp) — 测试残留">🧪 临时</span>` : null}
+                      <code style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.path}</code>
+                      ${!isPrimary && exists
+                        ? html`<button type="button" onClick=${() => onSetPrimary(i)} disabled=${busy} title="设为活动">设为活动</button>`
+                        : null}
+                      <button
+                        type="button"
+                        onClick=${() => onRemove(r.path)}
+                        disabled=${busy}
+                        title="移除"
+                        class="xmc-h-btn--danger"
+                        style="background:color-mix(in srgb,var(--color-destructive) 14%,transparent);color:var(--color-destructive)"
+                      >移除</button>
+                    </li>
+                  `;
+                })}
+              </ul>
+            `;
+          })()
         : null}
 
       <h3 style="margin:1.5rem 0 .5rem">这个工作区的配置块</h3>

@@ -27,9 +27,33 @@ _manager = WorkspaceManager()
 
 
 def _state_payload() -> dict[str, Any]:
+    """B-152: per-root ``exists`` + ``looks_temp`` flags so the UI can
+    visibly mark stale entries (path doesn't exist on disk anymore)
+    and pytest-/Temp- artifacts (test runs that registered workspaces
+    and didn't clean up).
+    """
+    from pathlib import Path
     state = _manager.get()
+    roots: list[dict[str, Any]] = []
+    for r in state.roots:
+        d = r.to_dict()
+        path_str = str(d.get("path", ""))
+        try:
+            d["exists"] = Path(path_str).is_dir()
+        except (OSError, ValueError):
+            d["exists"] = False
+        # Detect well-known transient locations so the UI can show
+        # a warning + offer cleanup. Both Windows and POSIX shapes.
+        norm = path_str.replace("\\", "/").lower()
+        d["looks_temp"] = (
+            "/pytest-of-" in norm
+            or "/appdata/local/temp/" in norm
+            or norm.startswith("/tmp/")
+            or "/.claude/worktrees/" in norm  # ephemeral worktrees
+        )
+        roots.append(d)
     return {
-        "roots": [r.to_dict() for r in state.roots],
+        "roots": roots,
         "primary_index": state.primary_index,
     }
 
@@ -88,6 +112,39 @@ async def update_workspace(
             return JSONResponse({"error": str(exc)}, status_code=500)
         body = _state_payload()
         body["moved"] = bool(moved)
+        return JSONResponse(body)
+
+    if action == "prune_missing":
+        # B-152: bulk-remove every registered root whose path doesn't
+        # exist on disk anymore. Optional ``include_temp=true`` also
+        # strips pytest-of-* / AppData/Local/Temp/ entries even when
+        # they happen to still exist (test cleanup didn't fire).
+        from pathlib import Path
+        include_temp = bool(payload.get("include_temp"))
+        state = _manager.get()
+        removed_paths: list[str] = []
+        for r in list(state.roots):
+            path_str = str(r.path)
+            missing = False
+            try:
+                missing = not Path(path_str).is_dir()
+            except (OSError, ValueError):
+                missing = True
+            norm = path_str.replace("\\", "/").lower()
+            looks_temp = (
+                "/pytest-of-" in norm
+                or "/appdata/local/temp/" in norm
+                or norm.startswith("/tmp/")
+                or "/.claude/worktrees/" in norm
+            )
+            if missing or (include_temp and looks_temp):
+                try:
+                    if _manager.remove(path_str):
+                        removed_paths.append(path_str)
+                except OSError:
+                    continue
+        body = _state_payload()
+        body["pruned"] = removed_paths
         return JSONResponse(body)
 
     return JSONResponse(

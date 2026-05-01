@@ -82,35 +82,84 @@ function Icon({ name, className }) {
 }
 
 // Built-in nav (mirrors Hermes BUILTIN_NAV_REST + CHAT_NAV_ITEM).
-const NAV_ITEMS = [
-  { path: "/chat",      label: "对话",   icon: "Terminal" },
-  { path: "/sessions",  label: "会话",   icon: "MessageSquare" },
-  { path: "/agents",    label: "智能体", icon: "Heart" },
-  { path: "/channels",  label: "聊天接入", icon: "MessageSquare" },
-  { path: "/skills",    label: "技能",   icon: "Package" },
-  { path: "/evolution", label: "进化",   icon: "Sparkles", accent: true },
-  { path: "/tools",     label: "工具",   icon: "Wrench" },
-  { path: "/memory",    label: "记忆",   icon: "Database" },
-  { path: "/workspace", label: "工作区", icon: "FileText" },
-  { path: "/security",  label: "安全",   icon: "Shield" },
-  { path: "/cron",      label: "Cron",  icon: "Clock" },
-  { path: "/trace",     label: "思考",   icon: "Activity" },
-  { path: "/logs",      label: "日志",   icon: "FileText" },
-  { path: "/analytics", label: "分析",   icon: "BarChart3" },
-  // B-137: 三页合并 → 两页。原本"配置"+"设置"+"密钥"严重重叠
-  // (三处都能改 LLM API key 的，密钥页是设置页的纯子集)。
-  // 现在：设置 = LLM/profiles/audio 的友好编辑（含密钥）；
-  // 配置 = JSON-级 power-user 编辑器，覆盖 memory/security/MCP/插件等
-  // 设置不管的字段。/env 路由保留兼容性但不再出现在导航里。
-  { path: "/settings",  label: "设置",   icon: "Settings" },
-  { path: "/config",    label: "高级配置", icon: "Settings" },
-  // B-101: these pages were registered in app.js routes but not nav-
-  // visible — users had to type the URL by hand to reach them.
-  { path: "/doctor",    label: "诊断",   icon: "Heart" },
-  { path: "/backup",    label: "备份",   icon: "Database" },
-  { path: "/insights",  label: "洞察",   icon: "Eye" },
-  { path: "/docs",      label: "文档",   icon: "BookOpen" },
+// B-151: nav 5 分组 + 折叠
+//
+// 之前 20 项平铺在侧栏，新手扫一眼眼花。按用途归 5 组:
+//   💬 对话/通信  对话 / 会话 / 智能体 / 聊天接入
+//   🧠 能力       技能 / 工具 / 记忆 / 进化
+//   ⏱ 自动化     Cron / 工作区
+//   👁 观察       思考 / 日志 / 分析 / 洞察
+//   ⚙ 系统       设置 / 高级配置 / 安全 / 诊断 / 备份 / 文档
+//
+// 每组可折叠，活跃路由的组自动展开。状态存 localStorage。
+const NAV_GROUPS = [
+  {
+    id: "comm", label: "对话与通信", icon: "Terminal",
+    items: [
+      { path: "/chat",      label: "对话",     icon: "Terminal" },
+      { path: "/sessions",  label: "会话",     icon: "MessageSquare" },
+      { path: "/agents",    label: "智能体",   icon: "Heart" },
+      { path: "/channels",  label: "聊天接入", icon: "MessageSquare" },
+    ],
+  },
+  {
+    id: "capabilities", label: "能力", icon: "Sparkles",
+    items: [
+      { path: "/skills",    label: "技能", icon: "Package" },
+      { path: "/tools",     label: "工具", icon: "Wrench" },
+      { path: "/memory",    label: "记忆", icon: "Database" },
+      { path: "/evolution", label: "进化", icon: "Sparkles", accent: true },
+    ],
+  },
+  {
+    id: "automation", label: "自动化", icon: "Clock",
+    items: [
+      { path: "/cron",      label: "Cron",   icon: "Clock" },
+      { path: "/workspace", label: "工作区", icon: "FileText" },
+    ],
+  },
+  {
+    id: "observe", label: "观察", icon: "Eye",
+    items: [
+      { path: "/trace",     label: "思考", icon: "Activity" },
+      { path: "/logs",      label: "日志", icon: "FileText" },
+      { path: "/analytics", label: "分析", icon: "BarChart3" },
+      { path: "/insights",  label: "洞察", icon: "Eye" },
+    ],
+  },
+  {
+    id: "system", label: "系统", icon: "Settings",
+    items: [
+      { path: "/settings",  label: "设置",     icon: "Settings" },
+      { path: "/security",  label: "安全",     icon: "Shield" },
+      { path: "/doctor",    label: "诊断",     icon: "Heart" },
+      { path: "/backup",    label: "备份",     icon: "Database" },
+      { path: "/config",    label: "高级配置", icon: "Settings" },
+      { path: "/docs",      label: "文档",     icon: "BookOpen" },
+    ],
+  },
 ];
+
+// Flat list for backward-compat (tests that read NAV_ITEMS for icon
+// coverage). Generated from the grouped structure.
+const NAV_ITEMS = NAV_GROUPS.flatMap((g) => g.items);
+
+const NAV_COLLAPSE_KEY = "xmc.nav.collapsed_groups";
+
+function readCollapsedGroups() {
+  try {
+    const raw = localStorage.getItem(NAV_COLLAPSE_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? new Set(arr) : new Set();
+  } catch (_) { return new Set(); }
+}
+
+function persistCollapsedGroups(set) {
+  try {
+    localStorage.setItem(NAV_COLLAPSE_KEY, JSON.stringify([...set]));
+  } catch (_) { /* private mode — skip */ }
+}
 
 function NavLink({ item, active, onClick }) {
   return html`
@@ -128,6 +177,69 @@ function NavLink({ item, active, onClick }) {
           ? html`<span aria-hidden="true" class="xmc-h-nav__active-bar blend-lighter"></span>`
           : null}
       </a>
+    </li>
+  `;
+}
+
+// B-151: stateful root that owns per-group collapse, persisted to
+// localStorage so the user's chosen layout survives reloads.
+function NavRoot({ activePath, onItemClick }) {
+  const [collapsed, setCollapsed] = useState(readCollapsedGroups);
+  const toggle = (gid) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(gid)) next.delete(gid); else next.add(gid);
+      persistCollapsedGroups(next);
+      return next;
+    });
+  };
+  return html`
+    <ul class="xmc-h-nav__list" style="margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:.15rem">
+      ${NAV_GROUPS.map((g) => html`
+        <${NavGroup}
+          key=${g.id}
+          group=${g}
+          activePath=${activePath}
+          collapsed=${collapsed.has(g.id)}
+          onToggle=${() => toggle(g.id)}
+          onItemClick=${onItemClick}
+        />
+      `)}
+    </ul>
+  `;
+}
+
+// B-151: collapsible group section. Always-expanded when an item
+// inside is the current route (so the user sees what's active).
+function NavGroup({ group, activePath, collapsed, onToggle, onItemClick }) {
+  const containsActive = group.items.some((it) => it.path === activePath);
+  const isCollapsed = collapsed && !containsActive;
+  return html`
+    <li class="xmc-h-nav__group">
+      <button
+        type="button"
+        class=${"xmc-h-nav__group-head" + (isCollapsed ? " is-collapsed" : "")}
+        onClick=${onToggle}
+        aria-expanded=${!isCollapsed}
+        title=${isCollapsed ? "展开" : "折叠"}
+        style="display:flex;align-items:center;gap:.4rem;width:100%;padding:.4rem .5rem;background:transparent;border:0;color:var(--xmc-fg-muted);font-size:.7rem;letter-spacing:.05em;text-transform:uppercase;cursor:pointer;border-radius:4px"
+      >
+        <${Icon} name=${group.icon} className="xmc-h-nav__group-icon" />
+        <span style="flex:1 1 auto;text-align:left">${group.label}</span>
+        <span aria-hidden="true" style="opacity:.6;transform:${isCollapsed ? "rotate(-90deg)" : "rotate(0)"};transition:transform .15s">▾</span>
+      </button>
+      ${!isCollapsed
+        ? html`<ul class="xmc-h-nav__list" style="margin:0;padding:0;list-style:none">
+            ${group.items.map((item) => html`
+              <${NavLink}
+                key=${item.path}
+                item=${item}
+                active=${activePath === item.path}
+                onClick=${onItemClick}
+              />
+            `)}
+          </ul>`
+        : null}
     </li>
   `;
 }
@@ -519,18 +631,10 @@ export function AppShell({ activePath, brand = "XMclaw", subBrand = "Agent", tok
           <${ContextStrip} status=${status} tokenUsage=${tokenUsage} />
 
           <nav class="xmc-h-nav" aria-label="primary navigation">
-            <ul class="xmc-h-nav__list">
-              ${NAV_ITEMS.map(
-                (item) => html`
-                  <${NavLink}
-                    key=${item.path}
-                    item=${item}
-                    active=${activePath === item.path || (activePath === "/" && item.path === "/sessions")}
-                    onClick=${closeMobile}
-                  />
-                `
-              )}
-            </ul>
+            <${NavRoot}
+              activePath=${activePath === "/" ? "/sessions" : activePath}
+              onItemClick=${closeMobile}
+            />
           </nav>
 
           <${SidebarSystemActions} token=${token} />
