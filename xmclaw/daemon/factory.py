@@ -931,7 +931,7 @@ def build_agent_from_config(
     cfg: dict[str, Any],
     bus: InProcessEventBus,
     *,
-    max_hops: int = 20,
+    max_hops: int | None = None,
     approval_service: Any | None = None,
 ) -> AgentLoop | None:
     """Assemble an AgentLoop from config. Returns None if no LLM is set.
@@ -944,7 +944,24 @@ def build_agent_from_config(
     Epic #14: ``security.prompt_injection`` (string: ``detect_only`` /
     ``redact`` / ``block``) is read here and handed to the loop. Missing
     or unrecognised values fall back to ``detect_only``.
+
+    B-190: ``max_hops`` is now configurable via ``cfg.agent.max_hops``
+    (default 40). Audit-style tasks that fan out to many list_dir /
+    file_read calls were silently capped at the old default of 20 and
+    crashed with empty text. Explicit ``max_hops`` kwarg still wins
+    over the config (used by tests).
     """
+    if max_hops is None:
+        agent_cfg = cfg.get("agent")
+        if isinstance(agent_cfg, Mapping):
+            try:
+                max_hops = int(agent_cfg.get("max_hops", 40))
+            except (TypeError, ValueError):
+                max_hops = 40
+        else:
+            max_hops = 40
+        if max_hops < 1:
+            max_hops = 40
     registry = build_llm_registry_from_config(cfg)
     default_profile = registry.default()
     llm = default_profile.llm if default_profile is not None else None

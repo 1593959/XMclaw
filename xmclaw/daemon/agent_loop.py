@@ -392,7 +392,7 @@ def _is_vague_continuation(text: str) -> bool:
     return s in _CONTINUATION_TOKENS
 
 
-def _prior_ended_without_synthesis(prior: list) -> bool:
+def _prior_ended_without_synthesis(prior: list[Any]) -> bool:
     """True when the most recent assistant message in ``prior`` is a
     tool-calling turn with empty (or whitespace-only) text content.
 
@@ -425,7 +425,7 @@ def _prior_ended_without_synthesis(prior: list) -> bool:
     return False
 
 
-def _continuation_anchor(prior: list, user_message: str) -> str:
+def _continuation_anchor(prior: list[Any], user_message: str) -> str:
     """If the new user message is a vague continuation AND the prior
     assistant turn never synthesised a final answer, prepend a
     routing hint that tells the LLM to keep working on the same
@@ -501,7 +501,7 @@ def _is_transient_tool_error(err: str) -> bool:
     return any(p.lower() in low for p in _TRANSIENT_PATTERNS)
 
 
-def _estimate_history_tokens(history: list) -> int:
+def _estimate_history_tokens(history: list[Any]) -> int:
     """B-31: char/4 token approximation for the compression gate.
 
     Sums ``len(content)`` across messages and divides by 4. Cheap
@@ -829,7 +829,7 @@ class AgentLoop:
         # standard ExtractMemoriesHook.
         self._cfg = cfg or {}
         self._post_sampling_registry = post_sampling_registry
-        self._post_sampling_bg: set[asyncio.Task] = set()
+        self._post_sampling_bg: set[asyncio.Task[Any]] = set()
 
     def clear_session(self, session_id: str) -> None:
         """Drop a session's conversation history. Called by the WS gateway
@@ -2122,15 +2122,32 @@ class AgentLoop:
                 events=events,
             )
 
-        # 5. Hit the hop limit.
+        # 5. Hit the hop limit. B-190: don't return empty text (UI
+        # rendered as silent crash). Surface a user-readable message
+        # naming the cap, the work done so far, and the config knob to
+        # raise it. The ANTI_REQ_VIOLATION event still fires for
+        # observability; this is the human-facing fallback.
+        tool_summary = (
+            ", ".join(sorted({c.get("name", "?") for c in tool_calls_made}))
+            or "(none)"
+        )
+        truncation_text = (
+            f"⚠️ Hit the agent's tool-call budget at "
+            f"{self._max_hops} hops without producing a final answer.\n\n"
+            f"Tools I called this turn: {tool_summary}\n\n"
+            f"This usually means the task is too complex for the current "
+            f"limit. Raise `agent.max_hops` in `daemon/config.json` "
+            f"(currently {self._max_hops}) and ask me again."
+        )
         await publish(EventType.ANTI_REQ_VIOLATION, {
             "message": f"agent loop hit max_hops={self._max_hops} without terminal text",
             "hops": self._max_hops,
+            "tools_used": sorted({c.get("name", "?") for c in tool_calls_made}),
         })
         # Epic #24 Phase 1: removed B-35's hop-limit SKILL_INVOKED
         # emission (heuristic detection over xm-auto-evo skills, deleted).
         return AgentTurnResult(
-            ok=False, text="",
+            ok=False, text=truncation_text,
             hops=self._max_hops,
             tool_calls=tool_calls_made,
             events=events,

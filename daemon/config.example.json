@@ -78,6 +78,10 @@
     "host": "127.0.0.1",
     "port": 8765
   },
+  "agent": {
+    "_comment_b190": "B-190: agent loop limits. max_hops caps the LLM⇄tool round-trips per turn (default 40). Audit-style tasks calling many list_dir/file_read may need 60-80; set higher and restart the daemon. Hitting the cap returns a friendly truncation message rather than a silent crash.",
+    "max_hops": 40
+  },
   "security": {
     "_comment": "Epic #14: prompt-injection policy applied to untrusted tool output before it re-enters the LLM context. Accepts: 'detect_only' (log, pass through), 'redact' (replace matched spans with [redacted:<pattern_id>]), 'block' (abort the turn with ANTI_REQ_VIOLATION). Defaults to 'detect_only'.",
     "prompt_injection": "detect_only",

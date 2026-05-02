@@ -507,6 +507,56 @@ def test_build_agent_uses_configured_agent_id() -> None:
     assert agent._agent_id == "my-custom-agent"
 
 
+def test_build_agent_default_max_hops_is_40() -> None:
+    """B-190: bumped default from 20 → 40. Audit-style work calling
+    many list_dir/file_read used to hit the cap silently."""
+    bus = InProcessEventBus()
+    agent = build_agent_from_config({
+        "llm": {"anthropic": {"api_key": "k"}},
+    }, bus)
+    assert agent is not None
+    assert agent._max_hops == 40
+
+
+def test_build_agent_reads_max_hops_from_agent_block() -> None:
+    """B-190: ``cfg.agent.max_hops`` overrides the default."""
+    bus = InProcessEventBus()
+    agent = build_agent_from_config({
+        "llm": {"anthropic": {"api_key": "k"}},
+        "agent": {"max_hops": 80},
+    }, bus)
+    assert agent is not None
+    assert agent._max_hops == 80
+
+
+def test_build_agent_max_hops_kwarg_wins_over_config() -> None:
+    """Explicit kwarg (used by tests) bypasses the config lookup."""
+    bus = InProcessEventBus()
+    agent = build_agent_from_config(
+        {
+            "llm": {"anthropic": {"api_key": "k"}},
+            "agent": {"max_hops": 80},
+        },
+        bus,
+        max_hops=5,
+    )
+    assert agent is not None
+    assert agent._max_hops == 5
+
+
+def test_build_agent_max_hops_invalid_falls_back_to_default() -> None:
+    """Garbage values (negative, non-numeric) silently default to 40
+    so a hand-edited config can't brick the agent."""
+    bus = InProcessEventBus()
+    for bad in [-1, 0, "lots", None]:
+        agent = build_agent_from_config({
+            "llm": {"anthropic": {"api_key": "k"}},
+            "agent": {"max_hops": bad},
+        }, bus)
+        assert agent is not None
+        assert agent._max_hops == 40, f"bad value {bad!r} should fall back"
+
+
 # ── build_tools_from_config ──────────────────────────────────────────────
 
 

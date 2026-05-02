@@ -286,12 +286,18 @@ async def test_hop_limit_terminates_and_emits_violation() -> None:
     assert result.ok is False
     assert "max_hops" in result.error
     assert result.hops == 3
+    # B-190: graceful truncation — text MUST be non-empty so the UI
+    # shows something instead of silently rendering a blank assistant
+    # bubble. Should also point at the config knob to raise.
+    assert result.text
+    assert "agent.max_hops" in result.text
     violations = [
         e for e in result.events
         if e.type == EventType.ANTI_REQ_VIOLATION
     ]
     assert len(violations) == 1
     assert "max_hops" in violations[0].payload["message"]
+    assert "tools_used" in violations[0].payload
 
 
 # ── user message is always published ─────────────────────────────────────
