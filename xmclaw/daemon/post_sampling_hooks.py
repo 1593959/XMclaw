@@ -189,26 +189,39 @@ async def _write_facts_to_memory(
                 kind, exc,
             )
 
+    # B-197 Phase 2: prefer upsert_fact so repeats strengthen one row
+    # (evidence_count++) instead of stacking duplicates. Falls back to
+    # put() for providers that don't expose upsert_fact yet.
+    upsert = getattr(ctx.memory_provider, "upsert_fact", None)
+
     for fact, emb in zip(facts, embeddings):
+        md: dict[str, Any] = {
+            "kind": kind,
+            "session_id": ctx.session_id,
+            "agent_id": ctx.agent_id,
+            "evidence_count": 1,
+            "ts": _t.time(),
+        }
+        if bucket is not None:
+            md["bucket"] = bucket
         try:
-            md: dict[str, Any] = {
-                "kind": kind,
-                "session_id": ctx.session_id,
-                "agent_id": ctx.agent_id,
-                "evidence_count": 1,
-                "ts": _t.time(),
-            }
-            if bucket is not None:
-                md["bucket"] = bucket
-            item = MemoryItem(
-                id=_uuid.uuid4().hex,
-                layer="working",  # B-197: extracted facts start here
-                text=fact,
-                metadata=md,
-                embedding=tuple(emb) if emb else None,
-                ts=_t.time(),
-            )
-            await ctx.memory_provider.put("working", item)
+            if upsert is not None:
+                await upsert(
+                    text=fact,
+                    embedding=emb,
+                    layer="working",
+                    metadata=md,
+                )
+            else:
+                item = MemoryItem(
+                    id=_uuid.uuid4().hex,
+                    layer="working",
+                    text=fact,
+                    metadata=md,
+                    embedding=tuple(emb) if emb else None,
+                    ts=_t.time(),
+                )
+                await ctx.memory_provider.put("working", item)
         except Exception as exc:  # noqa: BLE001
             _log.warning(
                 "post_sampling.db_write_failed kind=%s err=%s",

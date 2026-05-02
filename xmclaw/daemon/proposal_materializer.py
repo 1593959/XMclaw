@@ -355,22 +355,31 @@ class ProposalMaterializer:
                     skill_id, exc,
                 )
 
+        # B-197 Phase 2: skills come into the world stable + curated
+        # (already gated by evidence + grader), so they go straight to
+        # layer=long. We still route through put() rather than upsert
+        # because the deterministic id "procedure:{skill_id}" gives us
+        # idempotent re-registration without semantic-merge ambiguity:
+        # two skills with the same id ARE the same skill (overwrite),
+        # while two near-paraphrase skill descriptions might still be
+        # legitimately distinct (different IDs in the registry).
+        metadata = {
+            "kind": "procedure",
+            "skill_id": skill_id,
+            "title": title,
+            "description": description,
+            "triggers": list(triggers),
+            "evidence_count": evidence_n,
+            "confidence": confidence,
+            "skill_path": skill_path,
+            "ts": time.time(),
+        }
         try:
             item = MemoryItem(
-                id=f"procedure:{skill_id}",   # deterministic — Phase 2 upsert keys here
-                layer="long",                 # skills are durable from day one
+                id=f"procedure:{skill_id}",
+                layer="long",
                 text=text,
-                metadata={
-                    "kind": "procedure",
-                    "skill_id": skill_id,
-                    "title": title,
-                    "description": description,
-                    "triggers": list(triggers),
-                    "evidence_count": evidence_n,
-                    "confidence": confidence,
-                    "skill_path": skill_path,
-                    "ts": time.time(),
-                },
+                metadata=metadata,
                 embedding=tuple(emb) if emb else None,
                 ts=time.time(),
             )

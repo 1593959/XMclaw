@@ -643,3 +643,290 @@ def test_memory_provider_has_no_auto_inject_method() -> None:
     methods = {m for m in dir(cls) if not m.startswith("_")}
     overlap = methods & banned
     assert not overlap, f"anti-req #2 violated: found auto-inject methods {overlap}"
+
+
+# ── B-197 Phase 2: upsert_fact ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_b197_upsert_fact_inserts_new_row_when_no_neighbour() -> None:
+    """First call with a fresh fact creates a row, returns its id +
+    was_strengthened=False."""
+    mem = SqliteVecMemory(":memory:")
+    rid, strengthened = await mem.upsert_fact(
+        text="user prefers Chinese",
+        embedding=None,
+        layer="working",
+        metadata={"kind": "preference", "confidence": 0.9},
+    )
+    assert rid
+    assert strengthened is False
+
+    # Row landed with evidence_count=1 (initial)
+    cur = mem._conn.cursor()
+    row = cur.execute(
+        "SELECT evidence_count, layer FROM memory_items WHERE id=?", (rid,),
+    ).fetchone()
+    assert row["evidence_count"] == 1
+    assert row["layer"] == "working"
+
+
+@pytest.mark.asyncio
+async def test_b197_upsert_fact_strengthens_exact_text_match() -> None:
+    """Without an embedding (fallback path), exact-text match within
+    the same kind triggers strengthening — evidence_count++."""
+    mem = SqliteVecMemory(":memory:")
+    rid1, _ = await mem.upsert_fact(
+        text="user prefers Chinese",
+        embedding=None,
+        layer="working",
+        metadata={"kind": "preference"},
+    )
+    rid2, strengthened = await mem.upsert_fact(
+        text="user prefers Chinese",
+        embedding=None,
+        layer="working",
+        metadata={"kind": "preference"},
+    )
+    assert rid2 == rid1
+    assert strengthened is True
+
+    cur = mem._conn.cursor()
+    row = cur.execute(
+        "SELECT evidence_count FROM memory_items WHERE id=?", (rid1,),
+    ).fetchone()
+    assert row["evidence_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_b197_upsert_fact_promotes_at_threshold() -> None:
+    """Auto-promotion: working → long when evidence_count >= 3 +
+    confidence >= 0.7. The 3rd upsert triggers it."""
+    mem = SqliteVecMemory(":memory:")
+    rid, _ = await mem.upsert_fact(
+        text="late-night work",
+        embedding=None,
+        layer="working",
+        metadata={"kind": "preference", "confidence": 0.9},
+    )
+    # Evidence #2 — still working
+    await mem.upsert_fact(
+        text="late-night work",
+        embedding=None,
+        layer="working",
+        metadata={"kind": "preference"},
+    )
+    cur = mem._conn.cursor()
+    row = cur.execute(
+        "SELECT layer FROM memory_items WHERE id=?", (rid,),
+    ).fetchone()
+    assert row["layer"] == "working"
+
+    # Evidence #3 — promote!
+    await mem.upsert_fact(
+        text="late-night work",
+        embedding=None,
+        layer="working",
+        metadata={"kind": "preference"},
+    )
+    row = cur.execute(
+        "SELECT layer, evidence_count FROM memory_items WHERE id=?", (rid,),
+    ).fetchone()
+    assert row["layer"] == "long"
+    assert row["evidence_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_b197_upsert_fact_does_not_collapse_across_kinds() -> None:
+    """Same text but different kind should remain separate rows.
+    Otherwise lessons could absorb preferences and vice versa."""
+    mem = SqliteVecMemory(":memory:")
+    rid_pref, _ = await mem.upsert_fact(
+        text="be terse",
+        embedding=None,
+        layer="working",
+        metadata={"kind": "preference"},
+    )
+    rid_lesson, was_strengthened = await mem.upsert_fact(
+        text="be terse",
+        embedding=None,
+        layer="working",
+        metadata={"kind": "lesson"},
+    )
+    assert rid_pref != rid_lesson
+    assert was_strengthened is False
+
+
+@pytest.mark.asyncio
+async def test_b197_upsert_fact_below_promotion_confidence_stays_working() -> None:
+    """Even with evidence_count >= 3, low confidence keeps the row
+    in working — promotion needs BOTH gates."""
+    mem = SqliteVecMemory(":memory:")
+    rid, _ = await mem.upsert_fact(
+        text="maybe-pref",
+        embedding=None,
+        layer="working",
+        metadata={"kind": "preference", "confidence": 0.5},
+    )
+    for _ in range(5):
+        await mem.upsert_fact(
+            text="maybe-pref",
+            embedding=None,
+            layer="working",
+            metadata={"kind": "preference"},
+        )
+    cur = mem._conn.cursor()
+    row = cur.execute(
+        "SELECT layer, evidence_count FROM memory_items WHERE id=?", (rid,),
+    ).fetchone()
+    assert row["layer"] == "working"
+    assert row["evidence_count"] == 6  # observed 6 times, just not promoted
+
+
+@pytest.mark.asyncio
+async def test_b197_query_bumps_retrieval_count() -> None:
+    """B-197 Phase 2: every row a query returns gets retrieval_count++.
+    Feeds the demoter — rows that are *touched* survive longer than
+    rows that just sit unused."""
+    mem = SqliteVecMemory(":memory:")
+    rid, _ = await mem.upsert_fact(
+        text="be terse",
+        embedding=None,
+        layer="working",
+        metadata={"kind": "preference"},
+    )
+    # First query — should bump from 0 → 1
+    await mem.query("working", text="terse", k=5)
+    cur = mem._conn.cursor()
+    row = cur.execute(
+        "SELECT retrieval_count FROM memory_items WHERE id=?", (rid,),
+    ).fetchone()
+    assert row["retrieval_count"] == 1
+
+    # Second query — bumps again
+    await mem.query("working", text="terse", k=5)
+    row = cur.execute(
+        "SELECT retrieval_count FROM memory_items WHERE id=?", (rid,),
+    ).fetchone()
+    assert row["retrieval_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_b197_archive_stale_archives_old_unused_rows() -> None:
+    """B-197 Phase 2 demoter: long-layer rows with last_seen >
+    stale_days ago AND retrieval_count == 0 get superseded_by='__stale__'.
+    Recent or used rows survive."""
+    import time as _t
+    mem = SqliteVecMemory(":memory:")
+    # Stale: last_seen 2 years ago, never retrieved
+    rid_stale, _ = await mem.upsert_fact(
+        text="ancient pref",
+        embedding=None,
+        layer="long",
+        metadata={"kind": "preference"},
+    )
+    cur = mem._conn.cursor()
+    cur.execute(
+        "UPDATE memory_items SET last_seen = ? WHERE id = ?",
+        (_t.time() - 730 * 86400, rid_stale),
+    )
+    # Recent: last_seen now, never retrieved
+    rid_recent, _ = await mem.upsert_fact(
+        text="fresh pref",
+        embedding=None,
+        layer="long",
+        metadata={"kind": "preference"},
+    )
+    # Stale-time but recently retrieved (counts as "still useful")
+    rid_used, _ = await mem.upsert_fact(
+        text="frequently retrieved",
+        embedding=None,
+        layer="long",
+        metadata={"kind": "preference"},
+    )
+    cur.execute(
+        "UPDATE memory_items SET last_seen = ?, retrieval_count = 5 "
+        "WHERE id = ?",
+        (_t.time() - 730 * 86400, rid_used),
+    )
+    mem._conn.commit()
+
+    n = await mem.archive_stale(stale_days=365)
+    assert n == 1
+
+    rows = {
+        r["id"]: r["superseded_by"]
+        for r in cur.execute(
+            "SELECT id, superseded_by FROM memory_items"
+        ).fetchall()
+    }
+    assert rows[rid_stale] == "__stale__"
+    assert rows[rid_recent] is None
+    assert rows[rid_used] is None
+
+
+@pytest.mark.asyncio
+async def test_b197_archived_rows_skip_upsert_match() -> None:
+    """Once a row is archived (superseded_by != NULL), upsert_fact
+    must not match against it — otherwise a stale fact would absorb
+    the new evidence and fail to revive into a fresh row."""
+    mem = SqliteVecMemory(":memory:")
+    rid_old, _ = await mem.upsert_fact(
+        text="be terse",
+        embedding=None,
+        layer="long",
+        metadata={"kind": "preference"},
+    )
+    cur = mem._conn.cursor()
+    cur.execute(
+        "UPDATE memory_items SET superseded_by = '__stale__' WHERE id = ?",
+        (rid_old,),
+    )
+    mem._conn.commit()
+
+    # Same text → should insert NEW row, not match the archived one.
+    rid_new, was_strengthened = await mem.upsert_fact(
+        text="be terse",
+        embedding=None,
+        layer="working",
+        metadata={"kind": "preference"},
+    )
+    assert was_strengthened is False
+    assert rid_new != rid_old
+
+
+@pytest.mark.asyncio
+async def test_b197_schema_columns_present_on_existing_db(tmp_path) -> None:
+    """B-197 migration: adding the upsert columns to a DB with the
+    pre-Phase-2 schema must not fail. Critical for upgrades."""
+    db = tmp_path / "old.db"
+    # Build the legacy schema by hand (no upsert columns).
+    conn = sqlite3.connect(str(db))
+    conn.execute("""
+        CREATE TABLE memory_items (
+            id TEXT PRIMARY KEY,
+            layer TEXT NOT NULL,
+            text TEXT NOT NULL,
+            metadata TEXT,
+            ts REAL NOT NULL,
+            has_embedding INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    conn.execute(
+        "INSERT INTO memory_items (id, layer, text, ts) VALUES (?, ?, ?, ?)",
+        ("legacy1", "long", "old fact", 1700000000.0),
+    )
+    conn.commit()
+    conn.close()
+
+    # Open with B-197 SqliteVecMemory — should auto-migrate.
+    mem = SqliteVecMemory(str(db))
+    cur = mem._conn.cursor()
+    row = cur.execute(
+        "SELECT evidence_count, last_seen, retrieval_count, superseded_by "
+        "FROM memory_items WHERE id='legacy1'"
+    ).fetchone()
+    assert row["evidence_count"] == 1  # default
+    assert row["last_seen"] == 1700000000.0  # backfilled from ts
+    assert row["retrieval_count"] == 0
+    assert row["superseded_by"] is None

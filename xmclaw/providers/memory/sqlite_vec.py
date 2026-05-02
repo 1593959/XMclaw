@@ -151,6 +151,33 @@ class SqliteVecMemory(MemoryProvider):
             "CREATE INDEX IF NOT EXISTS memory_items_layer_ts "
             "ON memory_items(layer, ts)"
         )
+        # B-197 Phase 2: upsert / promote / demote columns. ALTER TABLE
+        # ADD COLUMN is idempotent if we catch the duplicate-column
+        # error — works for fresh installs AND existing rows. Defaults
+        # backfill old rows sensibly: evidence_count=1 (we saw it
+        # once), confidence=1.0 (no signal yet), last_seen=ts (best
+        # available proxy for "when did I last touch this"),
+        # retrieval_count=0, superseded_by NULL.
+        for col_name, col_ddl in [
+            ("evidence_count", "INTEGER NOT NULL DEFAULT 1"),
+            ("confidence", "REAL NOT NULL DEFAULT 1.0"),
+            ("last_seen", "REAL NOT NULL DEFAULT 0"),
+            ("retrieval_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("superseded_by", "TEXT"),
+        ]:
+            try:
+                cur.execute(
+                    f"ALTER TABLE memory_items ADD COLUMN {col_name} {col_ddl}"
+                )
+            except sqlite3.OperationalError as exc:
+                # Already-exists is the only sane reason this fails;
+                # any other error should surface.
+                if "duplicate column name" not in str(exc).lower():
+                    raise
+        # Backfill last_seen for legacy rows where the default 0 sits.
+        cur.execute(
+            "UPDATE memory_items SET last_seen = ts WHERE last_seen = 0"
+        )
         self._conn.commit()
 
     def _ensure_vec_table(self, dim: int) -> None:
@@ -238,6 +265,172 @@ class SqliteVecMemory(MemoryProvider):
         self._conn.commit()
         return item_id
 
+    # ── B-197 Phase 2: upsert / promote / demote ──
+
+    async def upsert_fact(
+        self,
+        *,
+        text: str,
+        embedding: list[float] | None,
+        layer: Layer,
+        metadata: dict[str, Any],
+        distance_threshold: float = 0.4,
+        promote_evidence_threshold: int = 3,
+        promote_confidence_threshold: float = 0.7,
+    ) -> tuple[str, bool]:
+        """B-197 Phase 2: insert or strengthen-existing.
+
+        Searches for the nearest neighbour of the same ``kind`` (across
+        working + long layers, prefers long when both match). If found
+        within ``distance_threshold`` (sqlite-vec L2² distance — for
+        normalised embeddings ~0.4 ≈ cosine sim ≥ 0.8), strengthens
+        the existing row (evidence_count + 1, last_seen=now) and
+        auto-promotes working → long when the (evidence_count,
+        confidence) thresholds are met. Otherwise inserts a fresh row.
+
+        Returns ``(item_id, was_strengthened)``. ``was_strengthened=True``
+        means the caller's text matched an existing fact and merged
+        instead of creating a new row.
+
+        Without an embedding (or no vec support) this falls back to
+        an exact-text match via the keyword path. Better than nothing
+        for setups without a working embedder.
+        """
+        kind = (metadata or {}).get("kind", "")
+        match_id = await self._find_near_neighbour(
+            embedding=embedding,
+            text=text,
+            kind=kind,
+            distance_threshold=distance_threshold,
+        )
+        if match_id:
+            await self._strengthen(
+                match_id,
+                promote_evidence_threshold=promote_evidence_threshold,
+                promote_confidence_threshold=promote_confidence_threshold,
+            )
+            return match_id, True
+
+        # No match → fresh insert via the existing put path.
+        new_id = uuid.uuid4().hex
+        item = MemoryItem(
+            id=new_id, layer=layer, text=text,
+            metadata=metadata or {},
+            embedding=tuple(embedding) if embedding else None,
+            ts=time.time(),
+        )
+        await self.put(layer, item)
+        # Stamp last_seen + confidence on the new row from metadata so
+        # promotion math has the values it needs.
+        confidence = float((metadata or {}).get("confidence", 1.0) or 1.0)
+        cur = self._conn.cursor()
+        cur.execute(
+            "UPDATE memory_items SET last_seen = ?, confidence = ? "
+            "WHERE id = ?",
+            (time.time(), confidence, new_id),
+        )
+        self._conn.commit()
+        return new_id, False
+
+    async def _find_near_neighbour(
+        self,
+        *,
+        embedding: list[float] | None,
+        text: str,
+        kind: str,
+        distance_threshold: float,
+    ) -> str | None:
+        """Find the closest existing row of the same ``kind`` that's
+        either within ``distance_threshold`` (vec) or text-equals
+        (fallback). Returns the row id or None."""
+        cur = self._conn.cursor()
+
+        # Vec path — only when embedding + vec support + dim match.
+        if (
+            embedding is not None
+            and self._vec_supported
+            and self._embedding_dim
+            and len(embedding) == self._embedding_dim
+        ):
+            import struct
+            qblob = struct.pack(f"{len(embedding)}f", *embedding)
+            # Search across both working + long layers; prefer long
+            # when both are within threshold (let promoted facts win).
+            sql = """
+                SELECT m.id, m.layer, v.distance
+                FROM memory_vec v
+                JOIN memory_items m ON m.id = v.item_id
+                WHERE v.embedding MATCH ?
+                  AND k = 5
+                  AND (m.layer = 'working' OR m.layer = 'long')
+                  AND m.superseded_by IS NULL
+                  AND json_extract(m.metadata, '$.kind') = ?
+                ORDER BY v.distance
+            """
+            try:
+                rows = cur.execute(sql, (qblob, kind)).fetchall()
+            except sqlite3.OperationalError:
+                rows = []
+            within = [
+                r for r in rows
+                if r["distance"] is not None
+                and float(r["distance"]) <= distance_threshold
+            ]
+            if within:
+                # Prefer long > working when both within threshold.
+                long_hits = [r for r in within if r["layer"] == "long"]
+                if long_hits:
+                    return str(long_hits[0]["id"])
+                return str(within[0]["id"])
+
+        # Fallback: exact-text match within the same kind. Catches the
+        # "literally identical fact written twice" case even when the
+        # embedder is down.
+        try:
+            row = cur.execute(
+                "SELECT id FROM memory_items "
+                "WHERE text = ? "
+                "  AND superseded_by IS NULL "
+                "  AND json_extract(metadata, '$.kind') = ? "
+                "  AND (layer = 'working' OR layer = 'long') "
+                "LIMIT 1",
+                (text, kind),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            row = None
+        if row:
+            return str(row["id"])
+        return None
+
+    async def _strengthen(
+        self,
+        item_id: str,
+        *,
+        promote_evidence_threshold: int = 3,
+        promote_confidence_threshold: float = 0.7,
+    ) -> None:
+        """Increment evidence_count + last_seen on an existing row.
+        Auto-promote working → long when threshold met."""
+        cur = self._conn.cursor()
+        now = time.time()
+        cur.execute(
+            "UPDATE memory_items "
+            "SET evidence_count = evidence_count + 1, last_seen = ? "
+            "WHERE id = ?",
+            (now, item_id),
+        )
+        # Promote when ready — single UPDATE keeps the operation
+        # atomic (no read-then-write race against concurrent upserts).
+        cur.execute(
+            "UPDATE memory_items SET layer = 'long' "
+            "WHERE id = ? "
+            "  AND layer = 'working' "
+            "  AND evidence_count >= ? "
+            "  AND confidence >= ?",
+            (item_id, promote_evidence_threshold, promote_confidence_threshold),
+        )
+        self._conn.commit()
+
     async def query(
         self,
         layer: Layer,
@@ -310,7 +503,13 @@ class SqliteVecMemory(MemoryProvider):
             """
             rows = cur.execute(sql, (layer, *filter_params, k)).fetchall()
 
-        return [self._row_to_item(r) for r in rows]
+        items = [self._row_to_item(r) for r in rows]
+        # B-197 Phase 2: bump retrieval_count on every hit so the
+        # demoter knows which rows are actually being used. Best-effort
+        # — failure to update doesn't poison the read result.
+        if items:
+            self._bump_retrieval_count([i.id for i in items])
+        return items
 
     async def hybrid_query(
         self,
@@ -696,3 +895,75 @@ class SqliteVecMemory(MemoryProvider):
             embedding=None,  # embedding is not re-fetched (stays in vec table)
             ts=row["ts"],
         )
+
+    def _bump_retrieval_count(self, item_ids: list[str]) -> None:
+        """B-197 Phase 2: increment ``retrieval_count`` on every row
+        that came back from a query — feeds the demoter (long-term
+        rows that haven't been retrieved in a year are candidates for
+        archival).
+
+        Best-effort: a write failure here MUST NOT poison the read
+        result we're about to return to the agent.
+        """
+        if not item_ids:
+            return
+        try:
+            placeholders = ",".join(["?"] * len(item_ids))
+            cur = self._conn.cursor()
+            cur.execute(
+                f"UPDATE memory_items "
+                f"SET retrieval_count = retrieval_count + 1 "
+                f"WHERE id IN ({placeholders})",
+                item_ids,
+            )
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            # Concurrent writer or unmigrated DB — skip silently.
+            pass
+
+    # ── B-197 Phase 2: demoter ──
+
+    async def archive_stale(
+        self,
+        *,
+        stale_days: int = 365,
+        require_zero_retrieval: bool = True,
+    ) -> int:
+        """Archive long-layer rows that haven't been touched in
+        ``stale_days`` and have no retrieval activity (when
+        ``require_zero_retrieval=True``).
+
+        "Archive" = set the row's ``superseded_by='__stale__'`` so it
+        becomes invisible to upsert / query without losing the data
+        (audit trail). Returns the number of rows archived.
+
+        Designed to be called periodically (cron / lifespan-shutdown
+        / manual) — NOT inside the read path. Cheap when nothing is
+        stale (single UPDATE returning rowcount).
+        """
+        cutoff = time.time() - stale_days * 86400
+        cur = self._conn.cursor()
+        if require_zero_retrieval:
+            cur.execute(
+                "UPDATE memory_items "
+                "SET superseded_by = '__stale__' "
+                "WHERE layer = 'long' "
+                "  AND last_seen > 0 "
+                "  AND last_seen < ? "
+                "  AND retrieval_count = 0 "
+                "  AND superseded_by IS NULL",
+                (cutoff,),
+            )
+        else:
+            cur.execute(
+                "UPDATE memory_items "
+                "SET superseded_by = '__stale__' "
+                "WHERE layer = 'long' "
+                "  AND last_seen > 0 "
+                "  AND last_seen < ? "
+                "  AND superseded_by IS NULL",
+                (cutoff,),
+            )
+        n = cur.rowcount
+        self._conn.commit()
+        return int(n if n and n > 0 else 0)

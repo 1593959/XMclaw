@@ -660,24 +660,44 @@ def create_app(
                 async def _fact_writer_impl(  # type: ignore[no-redef]
                     text: str, metadata: dict,  # noqa: ANN001
                 ) -> None:
-                    import uuid as _uuid
-                    import time as _t
-                    from xmclaw.providers.memory.base import MemoryItem
+                    # B-197 Phase 2: route through upsert_fact so
+                    # repeated facts strengthen an existing row
+                    # (evidence_count++) instead of stacking new ones.
+                    # The auto-promote rule (working → long after
+                    # evidence_count >= 3 + confidence >= 0.7) lives
+                    # inside upsert_fact / _strengthen.
                     emb = None
                     if _embed is not None:
                         try:
                             vecs = await _embed.embed([text])
                             if vecs and vecs[0]:
-                                emb = tuple(vecs[0])
+                                emb = list(vecs[0])
                         except Exception:  # noqa: BLE001
                             emb = None
                     layer_name = str(metadata.get("layer") or "working")
+                    upsert = getattr(_vec, "upsert_fact", None)
+                    if upsert is not None:
+                        try:
+                            await upsert(
+                                text=text,
+                                embedding=emb,
+                                layer=layer_name,
+                                metadata=metadata,
+                            )
+                            return
+                        except Exception:  # noqa: BLE001
+                            pass
+                    # Fallback: legacy put for providers that don't
+                    # implement upsert_fact yet.
+                    import uuid as _uuid
+                    import time as _t
+                    from xmclaw.providers.memory.base import MemoryItem
                     item = MemoryItem(
                         id=_uuid.uuid4().hex,
                         layer=layer_name,
                         text=text,
                         metadata=metadata,
-                        embedding=emb,
+                        embedding=tuple(emb) if emb else None,
                         ts=_t.time(),
                     )
                     await _vec.put(layer_name, item)
