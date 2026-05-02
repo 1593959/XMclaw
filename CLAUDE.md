@@ -98,11 +98,11 @@ Dev env is Windows-first; scripts use `.bat` / `.ps1`. Use `bash` syntax on Git 
 
 ## Git Workflow
 
-- Main branch is `main`. Do not push directly to it.
-- Create a feature branch: `git checkout -b feat/...` / `fix/...` / `docs/...`.
-- Open a PR: `gh pr create`. PR CI runs the smart-gate; push-to-main runs the full suite.
-- Keep commit messages in English. Conventional Commits encouraged (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`).
-- Epic-touching PRs must cite the Epic number (`Epic #11:`, `Epic #14 partial:`, etc). See the 开发纪律 section above.
+- Main branch is `main`. **Direct push to `main` is the default for this repo** (single-author project; the user has explicitly opted out of PR review for routine work as of 2026-04-26). Push as soon as a commit is ready — do NOT spin up a feature branch + `gh pr create` for normal changes.
+- The exception is when the user explicitly says "open a PR" / "use a branch" / "需要 review" — then create `feat/...` / `fix/...` / `docs/...` and run `gh pr create`.
+- Push-to-main runs the full smart-gate via CI; that's the safety net, not pre-merge review.
+- Keep commit messages in English (or Chinese — both fine; user is bilingual). Conventional Commits encouraged (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`).
+- Epic-touching commits must cite the Epic number (`Epic #11:`, `Epic #14 partial:`, etc). See the 开发纪律 section above.
 
 ## Releasing
 
