@@ -542,6 +542,7 @@ def scan_text(
     text: str,
     *,
     severity_threshold: Severity = Severity.LOW,
+    suppress_patterns: frozenset[str] | None = None,
 ) -> ScanResult:
     """Scan ``text`` for prompt-injection patterns.
 
@@ -549,6 +550,19 @@ def scan_text(
     default threshold (LOW) returns everything; callsites that want to
     suppress chatter about documentation of attack phrases can pass
     ``MEDIUM`` or ``HIGH``.
+
+    B-187: ``suppress_patterns`` lets a callsite drop pattern_ids that
+    are known false positives for that source. Specifically:
+    ``memory_recall`` carries past conversation transcripts that
+    legitimately contain ``\\nAssistant:`` / ``\\nHuman:`` markers
+    (the role-prefix style was the conversation format itself, not
+    a forgery attempt). Pre-B-187 every recall hit
+    ``anthropic_human_tag`` and emitted a noise-grade
+    ``prompt_injection_detected`` event — joint audit found 20
+    such events in events.db, all from memory-recall, no real
+    attacks. The fix is callsite-targeted suppression, not weakening
+    the pattern itself (which still catches real role-forgery
+    attempts in tool outputs / web fetches).
     """
     if not text:
         return ScanResult(scanned_length=0)
@@ -556,6 +570,8 @@ def scan_text(
     findings: list[Finding] = []
     for spec in _ALL_PATTERNS:
         if not _sev_ge(spec.severity, severity_threshold):
+            continue
+        if suppress_patterns and spec.pattern_id in suppress_patterns:
             continue
         for m in spec.regex.finditer(text):
             findings.append(Finding(

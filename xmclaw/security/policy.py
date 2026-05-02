@@ -41,6 +41,21 @@ SOURCE_MEMORY_RECALL = "memory_recall"
 SOURCE_WEB_FETCH = "web_fetch"
 
 
+# B-187: per-source false-positive suppressions. memory_recall
+# pulls past conversation transcripts that legitimately contain
+# ``\nAssistant:`` / ``\nHuman:`` role markers (the format of past
+# conversations, not a forgery attempt). Pre-B-187 every recall
+# tripped ``anthropic_human_tag`` and emitted noise — joint audit
+# (2026-05-02) found 20/24 prompt_injection events were exactly
+# this false positive. We suppress the role-forgery pattern only
+# for memory_recall; tool_result / web_fetch / agent_profile keep
+# the strict rules because external content really might forge a
+# system role to inject.
+_SOURCE_SUPPRESSIONS: dict[str, frozenset[str]] = {
+    SOURCE_MEMORY_RECALL: frozenset({"anthropic_human_tag", "inst_block"}),
+}
+
+
 @dataclass(frozen=True, slots=True)
 class PolicyDecision:
     """What a callsite needs after applying the policy.
@@ -84,8 +99,15 @@ def apply_policy(
     Called hundreds of times per session if a tool loop is chatty, so the
     hot path stays cheap: a single ``scan_text`` call, a few dict
     constructions only when findings exist, no copies otherwise.
+
+    B-187 source-targeted suppressions: certain patterns generate
+    false positives on certain trusted sources. We suppress them
+    inline so the scanner stays strict on truly untrusted inputs
+    (tool_result, web_fetch) without polluting events.db with
+    role-prefix matches on memory recall content.
     """
-    scan = scan_text(text)
+    suppress = _SOURCE_SUPPRESSIONS.get(source)
+    scan = scan_text(text, suppress_patterns=suppress)
 
     if not scan.any_findings:
         # Fast path: nothing to emit, nothing to redact. Return the
