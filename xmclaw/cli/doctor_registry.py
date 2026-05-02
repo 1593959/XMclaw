@@ -1852,19 +1852,30 @@ class ConfigDeadFieldsCheck(DoctorCheck):
 class EvolutionPathHygieneCheck(DoctorCheck):
     """Flag legacy ``~/.xmclaw/auto_evo/`` orphans.
 
-    History: Epic #24 Phase 1 deleted the xm-auto-evo loader, leaving
-    ``~/.xmclaw/auto_evo/skills/`` skills invisible to the agent. The
-    pre-B-163 version of this check ALSO flagged ``~/.agents/skills/``
-    and ``~/.claude/skills/`` as residual — but B-163 made the
-    user_loader scan those by default (zero-config integration with
-    the skills.sh ecosystem and Claude Code), so they're now FIRST-
-    CLASS scanned roots, not orphans.
+    History:
+      * Epic #24 Phase 1 deleted the xm-auto-evo loader, leaving
+        ``~/.xmclaw/auto_evo/skills/`` skills invisible to the agent.
+      * Pre-B-163 this check ALSO flagged ``~/.agents/skills/`` and
+        ``~/.claude/skills/`` as residual — but B-163 made the
+        user_loader scan those by default (zero-config integration
+        with the skills.sh ecosystem and Claude Code), so they're now
+        FIRST-CLASS scanned roots, not orphans.
+      * B-171 added ``xmclaw evolve migrate-auto-evo`` which copies
+        salvageable lineages from auto_evo into
+        ``~/.xmclaw/skills_user/<auto-kebab-id>/``. The source tree
+        stays put (copy, not move), so afterwards ``auto_evo`` is
+        cluttered but harmless.
+      * Pre-this-rev the check just counted SKILL.md files in
+        ``auto_evo/skills/`` — so a fully-migrated user still got
+        "9 skill dir(s) waiting" because the source tree existed.
+        Now the check cross-references ``skills_user/`` to tell
+        "actually pending" from "already moved, source still on disk".
 
-    Today the only true orphan is ``~/.xmclaw/auto_evo/``: still
-    present on user machines from the pre-Phase-1 days, no longer
-    read by anything. ``xmclaw evolve migrate-auto-evo`` (B-171)
-    salvages the useful ones into ``~/.xmclaw/skills_user/<id>/``;
-    after that the dir is safe to ``rm -rf``.
+    Outcomes:
+      * No ``auto_evo/`` tree at all → ok=True, no advisory.
+      * All lineages already in ``skills_user/`` → ok=True with
+        ``rm -rf`` advisory (cleanup is optional, not a fault).
+      * Some pending → ok=False with ``migrate-auto-evo`` advisory.
     """
 
     id: ClassVar[str] = "evolution_path_hygiene"
@@ -1872,36 +1883,85 @@ class EvolutionPathHygieneCheck(DoctorCheck):
 
     def run(self, ctx: DoctorContext) -> CheckResult:
         home = Path.home()
-        # Only the truly-orphaned tree gets flagged. The two ecosystem
-        # roots (~/.agents/skills, ~/.claude/skills) are scanned by
-        # SkillsWatcher per B-163 + B-173 — flagging them as residual
-        # would be a contradiction.
         auto_evo = home / ".xmclaw" / "auto_evo"
         if not auto_evo.exists():
             return CheckResult(
                 name=self.name, ok=True,
                 detail="no legacy auto_evo tree on disk",
             )
-        # Look for any skill-bearing subdirs to give the user a count.
-        skills_root = auto_evo / "skills"
-        n_skills = 0
-        if skills_root.is_dir():
-            n_skills = sum(
-                1 for d in skills_root.iterdir()
-                if d.is_dir() and (d / "SKILL.md").is_file()
-                and d.name != "xm-auto-evo"
+
+        # Lazy-import the migrator so doctor_registry stays importable
+        # in environments where the migrator hasn't loaded yet.
+        try:
+            from xmclaw.cli.migrate_auto_evo import discover_candidates
+            from xmclaw.utils.paths import user_skills_dir
+        except Exception:  # noqa: BLE001 — defensive
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"legacy auto_evo tree still present at {auto_evo}",
+                advisory=(
+                    "Run `xmclaw evolve migrate-auto-evo --dry-run` to "
+                    "preview what will move into ~/.xmclaw/skills_user/."
+                ),
             )
-        msg = f"legacy auto_evo tree still present at {auto_evo}"
-        if n_skills:
-            msg += f" ({n_skills} skill dir(s) waiting to migrate)"
+
+        candidates = discover_candidates(auto_evo / "skills")
+        target_root = user_skills_dir()
+        pending = [
+            c for c in candidates
+            if not (target_root / c.target_id).exists()
+        ]
+        migrated = [
+            c for c in candidates
+            if (target_root / c.target_id).exists()
+        ]
+
+        if not pending and not migrated:
+            # auto_evo dir exists but nothing salvageable — empty
+            # subdirs, JS-only skills, missing-name frontmatter, etc.
+            # The tree's harmless but worth deleting.
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=(
+                    f"legacy auto_evo tree at {auto_evo} has no "
+                    "salvageable skills"
+                ),
+                advisory=(
+                    f"safe to delete: `rm -rf {auto_evo}` — "
+                    "no migration needed"
+                ),
+            )
+
+        if not pending:
+            # The good case: everything's been migrated. Source tree
+            # is just clutter.
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=(
+                    f"all {len(migrated)} auto_evo lineage(s) already "
+                    f"migrated to skills_user/; source tree at "
+                    f"{auto_evo} is safe to delete"
+                ),
+                advisory=f"`rm -rf {auto_evo}` — agent reads the new path",
+            )
+
+        # Some lineages still pending.
+        pending_ids = ", ".join(c.target_id for c in pending[:5])
+        if len(pending) > 5:
+            pending_ids += ", ..."
+        msg = (
+            f"{len(pending)} auto_evo lineage(s) not yet migrated: "
+            f"{pending_ids}"
+        )
+        if migrated:
+            msg += f" ({len(migrated)} already migrated)"
         return CheckResult(
             name=self.name, ok=False,
             detail=msg,
             advisory=(
                 "Run `xmclaw evolve migrate-auto-evo --dry-run` to "
-                "preview what will move into ~/.xmclaw/skills_user/, "
-                "then drop --dry-run to execute. After migration the "
-                f"{auto_evo} tree is safe to delete."
+                "preview, then drop --dry-run to execute. After "
+                f"that the {auto_evo} tree is safe to delete."
             ),
         )
 

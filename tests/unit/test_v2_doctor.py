@@ -2004,3 +2004,130 @@ def test_secrets_check_honors_file_path_override(
     assert r.ok is True
     assert "no secrets file" in r.detail
     assert str(path) in r.detail
+
+
+# ── EvolutionPathHygieneCheck (B-171 follow-up): cross-reference
+#    skills_user/ to distinguish "pending migration" from "already
+#    migrated, source still on disk" ─────────────────────────────────
+
+
+def _legacy_skill(
+    auto_evo_skills: Path, dirname: str, *, name: str,
+) -> None:
+    sd = auto_evo_skills / dirname
+    sd.mkdir(parents=True)
+    (sd / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: 'legacy'\n---\n\n# body\n",
+        encoding="utf-8",
+    )
+
+
+def _migrated_target(skills_user: Path, target_id: str) -> None:
+    sd = skills_user / target_id
+    sd.mkdir(parents=True)
+    (sd / "SKILL.md").write_text(
+        f"---\nname: {target_id}\n---\n", encoding="utf-8",
+    )
+
+
+def _hygiene_ctx(
+    home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> "DoctorContext":  # type: ignore[name-defined]
+    """Patch Path.home() and the canonical user-skills root for the
+    hygiene check. Both feed off Path.home() so a single override is
+    enough — but we also patch user_skills_dir defensively in case
+    it lazy-resolves elsewhere."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text("{}", encoding="utf-8")
+    return DoctorContext(config_path=cfg, probe_daemon=False)
+
+
+def test_path_hygiene_no_auto_evo_dir_is_ok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fresh user, no legacy tree → ok=True, no advisory."""
+    from xmclaw.cli.doctor_registry import EvolutionPathHygieneCheck
+
+    home = tmp_path / "home"
+    home.mkdir()
+    ctx = _hygiene_ctx(home, monkeypatch, tmp_path)
+    r = EvolutionPathHygieneCheck().run(ctx)
+    assert r.ok is True
+    assert "no legacy" in r.detail.lower()
+
+
+def test_path_hygiene_all_migrated_is_ok_with_delete_advisory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The case the user actually hit: 9 dirs in auto_evo, all of
+    them already copied to skills_user/auto-* — should not block
+    doctor green, but should advise rm -rf for cleanup."""
+    from xmclaw.cli.doctor_registry import EvolutionPathHygieneCheck
+
+    home = tmp_path / "home"
+    auto_evo_skills = home / ".xmclaw" / "auto_evo" / "skills"
+    auto_evo_skills.mkdir(parents=True)
+    skills_user = home / ".xmclaw" / "skills_user"
+    skills_user.mkdir(parents=True)
+
+    # Two lineages with multiple dirs each.
+    _legacy_skill(auto_evo_skills, "auto_repair_v37", name="repair")
+    _legacy_skill(auto_evo_skills, "auto_repair_v38", name="repair")
+    _legacy_skill(auto_evo_skills, "auto_entity_v29", name="entity_reference")
+    # Already migrated (target dirs in skills_user/).
+    _migrated_target(skills_user, "auto-repair")
+    _migrated_target(skills_user, "auto-entity-reference")
+
+    ctx = _hygiene_ctx(home, monkeypatch, tmp_path)
+    r = EvolutionPathHygieneCheck().run(ctx)
+    assert r.ok is True
+    assert "already migrated" in r.detail
+    assert r.advisory is not None
+    assert "rm -rf" in r.advisory
+
+
+def test_path_hygiene_some_pending_fails_with_migrate_advisory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from xmclaw.cli.doctor_registry import EvolutionPathHygieneCheck
+
+    home = tmp_path / "home"
+    auto_evo_skills = home / ".xmclaw" / "auto_evo" / "skills"
+    auto_evo_skills.mkdir(parents=True)
+    skills_user = home / ".xmclaw" / "skills_user"
+    skills_user.mkdir(parents=True)
+
+    _legacy_skill(auto_evo_skills, "auto_a_v1", name="alpha")
+    _legacy_skill(auto_evo_skills, "auto_b_v1", name="beta")
+    # Only alpha is migrated.
+    _migrated_target(skills_user, "auto-alpha")
+
+    ctx = _hygiene_ctx(home, monkeypatch, tmp_path)
+    r = EvolutionPathHygieneCheck().run(ctx)
+    assert r.ok is False
+    assert "auto-beta" in r.detail
+    assert "1 already migrated" in r.detail
+    assert r.advisory is not None
+    assert "migrate-auto-evo" in r.advisory
+
+
+def test_path_hygiene_empty_auto_evo_dir_is_ok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """auto_evo/ exists but no salvageable skills (empty subdirs,
+    just xm-auto-evo, etc.) — ok with delete advisory."""
+    from xmclaw.cli.doctor_registry import EvolutionPathHygieneCheck
+
+    home = tmp_path / "home"
+    auto_evo_skills = home / ".xmclaw" / "auto_evo" / "skills"
+    auto_evo_skills.mkdir(parents=True)
+    (auto_evo_skills / "xm-auto-evo").mkdir()  # the deleted Node project
+    (auto_evo_skills / "empty_dir").mkdir()    # no SKILL.md
+
+    ctx = _hygiene_ctx(home, monkeypatch, tmp_path)
+    r = EvolutionPathHygieneCheck().run(ctx)
+    assert r.ok is True
+    assert "no salvageable" in r.detail
+    assert r.advisory is not None
+    assert "rm -rf" in r.advisory
