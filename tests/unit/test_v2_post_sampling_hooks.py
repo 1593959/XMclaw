@@ -23,6 +23,7 @@ from xmclaw.daemon.post_sampling_hooks import (
     HookContext,
     HookRegistry,
     PostSamplingHook,
+    _strip_leading_date,
     build_default_registry,
 )
 
@@ -320,3 +321,57 @@ def test_default_registry_has_both_hooks() -> None:
     reg = build_default_registry()
     ids = {h.id for h in reg.hooks()}
     assert ids == {"extract_memories", "extract_lessons"}
+
+
+# ── B-179 _strip_leading_date helper ────────────────────────────────
+
+
+def test_strip_leading_date_removes_iso_prefix() -> None:
+    assert _strip_leading_date("2026-05-02: real content") == "real content"
+    assert _strip_leading_date("2026-05-02 real content") == "real content"
+
+
+def test_strip_leading_date_handles_double_prefix() -> None:
+    """The exact bug joint audit caught: LLM extractor includes its
+    own date inside the lesson string, then we prepend ours. Without
+    stripping the result is '- 2026-05-02: 2026-05-02: foo'."""
+    assert (
+        _strip_leading_date("2026-05-02: 2026-05-02: foo bar")
+        == "foo bar"
+    )
+
+
+def test_strip_leading_date_handles_parenthetical_tag() -> None:
+    """LLM has been seen producing '2026-05-02 (精炼): real content'."""
+    assert (
+        _strip_leading_date("2026-05-02 (精炼): real content")
+        == "real content"
+    )
+
+
+def test_strip_leading_date_preserves_non_dated_text() -> None:
+    assert _strip_leading_date("regular lesson text") == "regular lesson text"
+    assert _strip_leading_date("") == ""
+
+
+@pytest.mark.asyncio
+async def test_lessons_double_date_prefix_collapses(tmp_path: Path) -> None:
+    """End-to-end: LLM returns lessons that include a ``YYYY-MM-DD:``
+    prefix in the value. The hook must strip it so the on-disk bullet
+    has only one date prefix (the canonical one we prepend)."""
+    payload = _lessons_payload(
+        workflow=["2026-05-02: this is the actual lesson body"],
+    )
+    llm = _StubLLM(payload)
+    ctx = _ctx(tmp_path, llm=llm)
+    hook = ExtractLessonsHook()
+    await hook.run(ctx)
+    text = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+    # Exactly ONE date prefix per bullet line.
+    bullet_lines = [
+        ln for ln in text.splitlines() if ln.startswith("- ")
+    ]
+    for line in bullet_lines:
+        # Count "2026-" occurrences in the bullet — must be 1.
+        assert line.count("2026-") == 1, f"double-date in: {line}"
+    assert "this is the actual lesson body" in text

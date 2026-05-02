@@ -29,10 +29,40 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import re
 from dataclasses import dataclass
 from typing import Any
 
 from xmclaw.utils.log import get_logger
+
+
+# B-179 (joint audit fix): the LLM extractor sometimes includes a
+# leading "YYYY-MM-DD:" inside the lesson text — when we then prepend
+# our own date, MEMORY.md ends up with "- 2026-05-02: 2026-05-02: ..."
+# duplicates that the joint audit caught. Strip any leading date /
+# colon prefix from the LLM string before prepending our canonical
+# one.
+_LEADING_DATE_RE = re.compile(
+    r"^\s*\d{4}-\d{2}-\d{2}\s*[:：]?\s*"
+    r"(\(?[^)]{0,30}\)?\s*[:：]\s*)?",  # optional "(精炼):" parenthetical
+)
+
+
+def _strip_leading_date(text: str) -> str:
+    """Strip ``YYYY-MM-DD:`` (and optional parenthetical tag) prefixes
+    from LLM-extracted bullet text so the caller's own date prefix
+    isn't doubled."""
+    if not text:
+        return text
+    out = text
+    # Strip up to 3 leading date prefixes — the LLM has been observed
+    # producing "2026-05-02: 2026-05-02 (精炼): ..." in evidence dumps.
+    for _ in range(3):
+        m = _LEADING_DATE_RE.match(out)
+        if m is None or m.end() == 0:
+            break
+        out = out[m.end():]
+    return out.strip()
 
 _log = get_logger(__name__)
 
@@ -205,7 +235,10 @@ class ExtractMemoriesHook(PostSamplingHook):
                 import time as _t
                 date = _t.strftime("%Y-%m-%d")
                 for fact in facts[:5]:  # cap per-turn yield
-                    bullet = f"- {date}: {fact.replace(chr(10), ' ').strip()}"
+                    cleaned = _strip_leading_date(
+                        fact.replace(chr(10), " ").strip()
+                    )
+                    bullet = f"- {date}: {cleaned}"
                     new_text = _append_under_section(
                         new_text,
                         section_header="## Auto-extracted",
@@ -392,10 +425,10 @@ class ExtractLessonsHook(PostSamplingHook):
                     )
                     new_text = existing
                     for section, lesson in entries:
-                        bullet = (
-                            f"- {date}: "
-                            f"{lesson.replace(chr(10), ' ').strip()}"
+                        cleaned = _strip_leading_date(
+                            lesson.replace(chr(10), " ").strip()
                         )
+                        bullet = f"- {date}: {cleaned}"
                         new_text = _append_under_section(
                             new_text,
                             section_header=section,

@@ -49,6 +49,45 @@ DEFAULT_SCENARIOS = [
 ]
 
 
+# B-178 joint audit scenarios — agent self-introspection.
+# Each prompt is structured so the agent answers from its own
+# perspective; the probe captures that answer for later cross-check
+# against ground truth (events.db, registry, journal, source).
+JOINT_AUDIT_SCENARIOS = [
+    ("skills_used",
+        "翻一下你最近 10 个 session 的 journal,告诉我你装的所有 skill"
+        "里哪些被你真实调用过,哪些虽然注册了但你从来没碰过。要数据,"
+        "不要猜。"),
+    ("evolution_quality",
+        "看看你 ~/.xmclaw/skills_user/ 里 created_by=evolved 的那些"
+        "skill,逐个看 SKILL.md 内容,告诉我哪些是真有价值的、哪些只"
+        "是噪音模式被错误抽出来。"),
+    ("self_critique",
+        "扫 xmclaw/daemon/agent_loop.py 的 system prompt 那一段。"
+        "找出你觉得**实际上在干扰你工作**的指令(被你忽略的、互相矛盾的、"
+        "不够清晰的)。给具体行号 + 你的吐槽。"),
+]
+
+
+# B-179 joint audit round 2 — deeper dimensions.
+JOINT_AUDIT_ROUND_2 = [
+    ("memory_hygiene",
+        "翻你 persona dir 里的 MEMORY.md / USER.md / AGENTS.md / TOOLS.md "
+        "四个文件。逐个文件给我评估:哪些条目其实是 (a) 过时不准确的、"
+        "(b) 重复冗余的、(c) 自动抽取写入但低质量噪音的、(d) 你从来没"
+        "用上过的死信息。给具体行号或引用,不要泛泛。"),
+    ("dead_tools",
+        "你装了大概 60 个非 skill 工具。基于 events.db 里的 "
+        "tool_invocation_started 事件,告诉我哪些工具**真的**被你用过 "
+        "(用 sqlite_query 查 group by name 计数),哪些只是装饰品没人调。"
+        "对没用的那些,给个删/留判断 + 理由。"),
+    ("dead_modules",
+        "扫 xmclaw/ 整个包,找 3 个你觉得**架构上有问题**的模块——可能是"
+        "过度设计、bug 多发、或你从来不碰的死区。给文件路径 + 一句话理由 + "
+        "建议(重写/精简/删除)。要敢说,这是体检不是表扬。"),
+]
+
+
 def _load_token() -> str:
     return TOKEN_PATH.read_text(encoding="utf-8").strip()
 
@@ -119,6 +158,7 @@ async def probe_one(name: str, prompt: str, timeout: float = 90.0) -> dict:
             pass
 
     elapsed = time.time() - start
+    full_response = final_response or "".join(llm_chunks)
     return {
         "scenario": name,
         "prompt": prompt,
@@ -130,8 +170,9 @@ async def probe_one(name: str, prompt: str, timeout: float = 90.0) -> dict:
             sum(grader_scores) / len(grader_scores), 2,
         ) if grader_scores else None,
         "grader_n": len(grader_scores),
-        "response_chars": len(final_response),
-        "response_excerpt": (final_response or "".join(llm_chunks))[:200].replace("\n", " "),
+        "response_chars": len(full_response),
+        "response_excerpt": full_response[:200].replace("\n", " "),
+        "response_full": full_response,
         "crashed": crashed,
         "crash_reason": crash_reason,
     }
@@ -200,16 +241,26 @@ async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("prompt", nargs="?", help="custom prompt (else --batch).")
     ap.add_argument("--batch", action="store_true", help="run default scenarios.")
+    ap.add_argument("--audit", action="store_true",
+                    help="run B-178 joint-audit self-introspection scenarios.")
+    ap.add_argument("--audit2", action="store_true",
+                    help="run B-179 joint-audit round 2 (memory/tools/arch).")
     ap.add_argument("--timeout", type=float, default=90.0)
     ap.add_argument("--report-file", type=str, default=None)
     args = ap.parse_args()
 
-    if args.prompt and not args.batch:
+    if args.prompt and not args.batch and not args.audit and not args.audit2:
         reports = [await probe_one("custom", args.prompt, timeout=args.timeout)]
     else:
         reports = []
-        for name, prompt in DEFAULT_SCENARIOS:
-            print(f"[probe] running {name!r}: {prompt}", flush=True)
+        if args.audit2:
+            scenarios = JOINT_AUDIT_ROUND_2
+        elif args.audit:
+            scenarios = JOINT_AUDIT_SCENARIOS
+        else:
+            scenarios = DEFAULT_SCENARIOS
+        for name, prompt in scenarios:
+            print(f"[probe] running {name!r}: {prompt[:60]}...", flush=True)
             r = await probe_one(name, prompt, timeout=args.timeout)
             reports.append(r)
             print(f"  done in {r['elapsed_s']}s, "
