@@ -177,6 +177,67 @@ def evolution_reject(
     raise typer.Exit(code=run_evolve_reject(candidate_id, reason))
 
 
+@evolution_app.command("migrate-auto-evo")
+def evolution_migrate_auto_evo(
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="List what would be migrated without writing anything.",
+    ),
+) -> None:
+    """B-171: salvage skills the deleted xm-auto-evo Node subsystem
+    left orphaned in ``~/.xmclaw/auto_evo/skills/``.
+
+    Picks the highest version per lineage, rewrites frontmatter
+    (drops auto_created/level/created_at, renames signals_match →
+    triggers, injects created_by=evolved + migrated_from), and
+    copies to ``~/.xmclaw/skills_user/<auto-kebab-id>/SKILL.md``
+    so the boot-time user_loader registers them like any other
+    user-installed skill. Existing targets in skills_user are
+    NEVER clobbered.
+
+    Use ``--dry-run`` first to see the plan before committing.
+    """
+    from xmclaw.cli.migrate_auto_evo import migrate
+    from xmclaw.utils.paths import data_dir, user_skills_dir
+
+    auto_evo_root = data_dir() / "auto_evo" / "skills"
+    target_root = user_skills_dir()
+
+    typer.echo(f"  source: {auto_evo_root}")
+    typer.echo(f"  target: {target_root}")
+    if dry_run:
+        typer.echo("  (dry-run — no files will be written)")
+    typer.echo("")
+
+    results = migrate(auto_evo_root, target_root, dry_run=dry_run)
+    if not results:
+        typer.echo("Nothing to migrate (auto_evo dir empty or missing).")
+        raise typer.Exit(code=0)
+
+    for r in results:
+        if r.skipped:
+            tag = "[skip]"
+        elif r.ok:
+            tag = "[ok]  "
+        else:
+            tag = "[FAIL]"
+        src = r.source_dir.name if r.source_dir else "?"
+        typer.echo(f"  {tag} {r.target_id:<32} ← {src:<40} {r.reason}")
+
+    n_migrated = sum(1 for r in results if r.ok and not r.skipped)
+    n_skipped = sum(1 for r in results if r.skipped)
+    n_failed = sum(1 for r in results if not r.ok)
+    typer.echo("")
+    typer.echo(
+        f"Done: {n_migrated} migrated, "
+        f"{n_skipped} skipped (target exists), "
+        f"{n_failed} failed."
+    )
+    if n_migrated and not dry_run:
+        typer.echo("Restart the daemon (xmclaw restart) for skills to register.")
+    raise typer.Exit(code=0 if n_failed == 0 else 1)
+
+
 @approvals_app.command("list")
 def approvals_list() -> None:
     """List all pending security approvals."""
