@@ -1968,6 +1968,15 @@ class EvolutionPipelineCheck(DoctorCheck):
         "ProposalMaterializer",      # B-167 — propose → SKILL.md + register
     )
 
+    #: Tokens the post-sampling hook chain (different module) must
+    #: reference. ``ExtractMemoriesHook`` (B-112) and ``ExtractLessonsHook``
+    #: (B-168) both register in :func:`build_default_registry`. We
+    #: read that file too so a refactor doesn't quietly drop a hook.
+    REQUIRED_HOOK_TOKENS: ClassVar[tuple[str, ...]] = (
+        "ExtractMemoriesHook",  # B-112
+        "ExtractLessonsHook",   # B-168
+    )
+
     def run(self, ctx: DoctorContext) -> CheckResult:  # noqa: ARG002
         try:
             from xmclaw.daemon import app as _app_mod
@@ -1978,20 +1987,43 @@ class EvolutionPipelineCheck(DoctorCheck):
                 detail=f"cannot read daemon/app.py source: {exc}",
             )
         missing = [tok for tok in self.REQUIRED_TOKENS if tok not in src]
+
+        # B-168: also verify post_sampling_hooks.build_default_registry
+        # registers the hook classes the lifespan relies on. Different
+        # module, same regression risk.
+        try:
+            from xmclaw.daemon import post_sampling_hooks as _hooks_mod
+            hook_src = Path(_hooks_mod.__file__).read_text(
+                encoding="utf-8", errors="replace",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"cannot read daemon/post_sampling_hooks.py: {exc}",
+            )
+        missing_hooks = [
+            tok for tok in self.REQUIRED_HOOK_TOKENS if tok not in hook_src
+        ]
+        missing.extend(missing_hooks)
+
         if missing:
             return CheckResult(
                 name=self.name, ok=False,
-                detail=f"daemon/app.py missing wiring for: {', '.join(missing)}",
+                detail=f"daemon wiring missing tokens: {', '.join(missing)}",
                 advisory=(
                     "Each of these tokens names an observer / LLM-extractor "
-                    "factory the lifespan should reference. Restore the "
-                    "Epic #24 wiring (search docs/DEV_ROADMAP.md for the "
-                    "Phase that introduced the missing token)."
+                    "factory / post-sampling hook the daemon should "
+                    "reference. Restore the Epic #24 / B-168 wiring "
+                    "(search docs/DEV_ROADMAP.md for the Phase or B-id "
+                    "that introduced the missing token)."
                 ),
             )
         return CheckResult(
             name=self.name, ok=True,
-            detail="4 observers + LLM-backed extractor factories all wired",
+            detail=(
+                "4 observers + LLM-backed extractor factories + "
+                "2 post-sampling hooks all wired"
+            ),
         )
 
 

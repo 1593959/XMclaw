@@ -3558,6 +3558,12 @@ def _append_under_section(
 PERSONA_CHAR_CAPS: dict[str, int] = {
     "MEMORY.md": 2200,
     "USER.md":   1375,
+    # B-168: AGENTS.md / TOOLS.md gain auto-extracted lesson buckets,
+    # so they need a cap too — same heuristic (LRU evict oldest dated
+    # bullets when over budget). Slightly bigger than USER because a
+    # workflow lesson tends to be one paragraph not one phrase.
+    "AGENTS.md": 2000,
+    "TOOLS.md":  1800,
     # Other persona files are user-authored and not subject to LRU.
 }
 

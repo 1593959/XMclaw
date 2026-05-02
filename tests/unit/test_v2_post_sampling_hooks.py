@@ -7,6 +7,9 @@ Pins:
   * ExtractMemoriesHook respects ``extract_memories.enabled`` gate
   * extracted facts land under ## Auto-extracted in MEMORY.md
   * empty / malformed LLM response → no write
+  * B-168 ExtractLessonsHook routes three buckets to three files,
+    default ON, respects per-bucket cap, and falls through cleanly
+    on malformed payloads.
 """
 from __future__ import annotations
 
@@ -15,10 +18,12 @@ from pathlib import Path
 import pytest
 
 from xmclaw.daemon.post_sampling_hooks import (
+    ExtractLessonsHook,
     ExtractMemoriesHook,
     HookContext,
     HookRegistry,
     PostSamplingHook,
+    build_default_registry,
 )
 
 
@@ -162,3 +167,156 @@ async def test_extract_malformed_llm_response_no_write(tmp_path: Path) -> None:
     hook = ExtractMemoriesHook()
     await hook.run(ctx)
     assert not (tmp_path / "MEMORY.md").exists()
+
+
+# ── ExtractLessonsHook (B-168) ────────────────────────────────────────
+
+
+def _lessons_payload(
+    *, workflow=None, tool_quirks=None, failure_modes=None,
+) -> str:
+    import json
+    return json.dumps({
+        "workflow": workflow or [],
+        "tool_quirks": tool_quirks or [],
+        "failure_modes": failure_modes or [],
+    })
+
+
+@pytest.mark.asyncio
+async def test_lessons_default_enabled_with_persona(tmp_path: Path) -> None:
+    """B-168: unlike ExtractMemoriesHook, this hook is ON by default —
+    that's the whole point of the user complaint that prompted it
+    (经验教训自己总结)."""
+    hook = ExtractLessonsHook()
+    ctx = _ctx(tmp_path, cfg={})
+    assert hook.is_enabled(ctx) is True
+
+
+@pytest.mark.asyncio
+async def test_lessons_disabled_without_persona() -> None:
+    hook = ExtractLessonsHook()
+    ctx = _ctx(None)
+    assert hook.is_enabled(ctx) is False
+
+
+@pytest.mark.asyncio
+async def test_lessons_disabled_via_config(tmp_path: Path) -> None:
+    hook = ExtractLessonsHook()
+    cfg = {"evolution": {"memory": {"extract_lessons": {"enabled": False}}}}
+    ctx = _ctx(tmp_path, cfg=cfg)
+    assert hook.is_enabled(ctx) is False
+
+
+@pytest.mark.asyncio
+async def test_lessons_routes_to_three_files(tmp_path: Path) -> None:
+    """One LLM call → three files updated based on bucket key."""
+    payload = _lessons_payload(
+        workflow=["grep first to narrow scope, then read"],
+        tool_quirks=["ruff lints static/ JS, pass --type=python"],
+        failure_modes=["build always breaks if setuptools missing"],
+    )
+    llm = _StubLLM(payload)
+    ctx = _ctx(tmp_path, llm=llm)
+    hook = ExtractLessonsHook()
+    await hook.run(ctx)
+
+    assert llm.call_count == 1
+
+    agents = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+    assert "## Auto-extracted" in agents
+    assert "grep first to narrow scope" in agents
+
+    tools = (tmp_path / "TOOLS.md").read_text(encoding="utf-8")
+    assert "## Auto-extracted" in tools
+    assert "ruff lints static/" in tools
+
+    memory = (tmp_path / "MEMORY.md").read_text(encoding="utf-8")
+    assert "## Failure Modes" in memory
+    assert "build always breaks" in memory
+
+
+@pytest.mark.asyncio
+async def test_lessons_per_bucket_cap_enforced(tmp_path: Path) -> None:
+    """A spammy LLM dumping 10 'workflow' lessons → only first 3 kept."""
+    payload = _lessons_payload(
+        workflow=[f"lesson #{i}" for i in range(10)],
+    )
+    llm = _StubLLM(payload)
+    ctx = _ctx(tmp_path, llm=llm)
+    hook = ExtractLessonsHook()
+    await hook.run(ctx)
+
+    text = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+    kept = sum(1 for i in range(10) if f"lesson #{i}" in text)
+    assert kept == hook.MAX_PER_BUCKET == 3
+
+
+@pytest.mark.asyncio
+async def test_lessons_empty_payload_no_write(tmp_path: Path) -> None:
+    llm = _StubLLM(_lessons_payload())
+    ctx = _ctx(tmp_path, llm=llm)
+    hook = ExtractLessonsHook()
+    await hook.run(ctx)
+    assert not (tmp_path / "AGENTS.md").exists()
+    assert not (tmp_path / "TOOLS.md").exists()
+    assert not (tmp_path / "MEMORY.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_lessons_malformed_json_no_write(tmp_path: Path) -> None:
+    llm = _StubLLM("not even json")
+    ctx = _ctx(tmp_path, llm=llm)
+    hook = ExtractLessonsHook()
+    await hook.run(ctx)
+    assert not (tmp_path / "AGENTS.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_lessons_strips_json_fence(tmp_path: Path) -> None:
+    """LLM might wrap output in ```json ... ``` — strip and parse."""
+    payload = "```json\n" + _lessons_payload(
+        workflow=["wrapped fine"],
+    ) + "\n```"
+    llm = _StubLLM(payload)
+    ctx = _ctx(tmp_path, llm=llm)
+    hook = ExtractLessonsHook()
+    await hook.run(ctx)
+    agents = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+    assert "wrapped fine" in agents
+
+
+@pytest.mark.asyncio
+async def test_lessons_partial_buckets_only_writes_used(tmp_path: Path) -> None:
+    """Only ``workflow`` populated → only AGENTS.md should appear."""
+    payload = _lessons_payload(workflow=["only workflow today"])
+    llm = _StubLLM(payload)
+    ctx = _ctx(tmp_path, llm=llm)
+    hook = ExtractLessonsHook()
+    await hook.run(ctx)
+    assert (tmp_path / "AGENTS.md").is_file()
+    assert not (tmp_path / "TOOLS.md").exists()
+    assert not (tmp_path / "MEMORY.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_lessons_llm_failure_no_crash(tmp_path: Path) -> None:
+    class _Boom:
+        async def complete(self, messages, tools=None):
+            raise RuntimeError("upstream LLM dead")
+    ctx = _ctx(tmp_path, llm=_Boom())
+    hook = ExtractLessonsHook()
+    # Must NOT raise — chain integrity comes first.
+    await hook.run(ctx)
+    assert not (tmp_path / "AGENTS.md").exists()
+
+
+# ── default registry wiring ───────────────────────────────────────────
+
+
+def test_default_registry_has_both_hooks() -> None:
+    """B-168: build_default_registry must include both extractors so
+    the daemon's lifespan picks them up automatically."""
+    reg = build_default_registry()
+    ids = {h.id for h in reg.hooks()}
+    assert ids == {"extract_memories", "extract_lessons"}

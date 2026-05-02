@@ -1344,6 +1344,29 @@ Phase 2-4 检查清单 Phase 1 完成后再细化。
 
   **路径统一**：B-167 写入路径 == B-163 第一扫描根（`~/.xmclaw/skills_user/`）== UserSkillsLoader 默认路径。同一文件被 ProposalMaterializer 写、被 user_loader 读、被技能页显示、被 SkillToolProvider 暴露给 agent。零分裂。
 
+  **Phase 6.2 自我总结链路（B-168，2026-05-02 同日）**：用户问"经验教训也会自己总结的对吧？"——回答时发现 UI label 把 AGENTS.md 写作 "playbook 与失败教训"，但实际**没有任何自动写**：
+  - USER.md 已经被 `ProfileExtractor` 自动总结
+  - MEMORY.md 有 `ExtractMemoriesHook`，但 `evolution.memory.extract_memories.enabled` 默认 OFF
+  - AGENTS.md / TOOLS.md / MEMORY.md `## Failure Modes` 全靠 agent 自己调 `update_persona`，LLM 几乎不会主动调
+
+  新增 [`ExtractLessonsHook`](xmclaw/daemon/post_sampling_hooks.py)（B-168），追平 `ExtractMemoriesHook` 的模板但语义不同：
+  - LLM prompt 专门问三类**操作型经验**：`workflow`（工作流规则）/ `tool_quirks`（工具坑）/ `failure_modes`（失败模式）
+  - 三个 bucket 自动路由：`workflow → AGENTS.md ## Auto-extracted` / `tool_quirks → TOOLS.md ## Auto-extracted` / `failure_modes → MEMORY.md ## Failure Modes`
+  - **默认 ON**（`evolution.memory.extract_lessons.enabled` 默认 true）——这次的痛点核心是"agent 不会自己总结"，关掉就废了 hook
+  - 每 bucket 单轮 cap 3 条，防 LLM 喷
+  - 字符 cap：`PERSONA_CHAR_CAPS` 加 `AGENTS.md=2000` / `TOOLS.md=1800`，超 cap 用 `enforce_char_cap` LRU 驱逐最早 dated bullets
+  - `build_default_registry()` 注册两个 hook：`ExtractMemoriesHook` + `ExtractLessonsHook`
+  - 失败隔离：LLM call 异常 / 烂 JSON / 空 payload 全部 swallow，不杀链
+  - JSON fence (`​```json…````) 自动剥离
+
+  `agent_loop.py` 系统提示加一段说明 hook 在自动跑，让 agent 知道"忘了调 update_persona 也没关系，hook 会兜底"，但仍鼓励高置信度的事手动写。
+
+  `doctor_registry.EvolutionPipelineCheck`：扩展为同时验证 `daemon/post_sampling_hooks.py` 注册了 `ExtractMemoriesHook` + `ExtractLessonsHook`，未来 refactor 误删任何一个 doctor 立报。
+
+  **测试**：`test_v2_post_sampling_hooks.py` 加 11 个新单测覆盖默认 ON / persona 缺失则 OFF / config 关闭 / 三 bucket 路由 / per-bucket cap / 空 payload / 烂 JSON / JSON fence 剥离 / 部分 bucket 只写命中文件 / LLM 失败不崩 / `build_default_registry` 双 hook。19/19 pass。192 cross-module tests 全过。
+
+  **anti-req #5/#12 兼容**：写入文件这件事不需要 evidence；ExtractLessonsHook 写的是 persona 文件（agent 自身经验），不是 SkillRegistry 注册（那才需要 evidence gate）。两条道，规则不冲突。
+
 ---
 
 ## 5. 让差异化"看得见"（Visible Differentiation）

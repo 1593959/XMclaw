@@ -221,10 +221,201 @@ class ExtractMemoriesHook(PostSamplingHook):
                 return
 
 
+# ── ExtractLessonsHook (B-168) ────────────────────────────────────────
+
+
+_LESSONS_PROMPT = (
+    "You are reviewing the chat turn that just ended between a user "
+    "and the XMclaw agent. Extract DURABLE operational lessons the "
+    "agent should remember for future tasks. Three buckets, each only "
+    "for things that fit precisely:\n\n"
+    "  - \"workflow\": multi-step procedure rules or sequencing the "
+    "agent discovered. Examples: 'grep first to narrow scope before "
+    "reading large files'; 'always run tests before committing on this "
+    "repo'; 'check the AGENTS.md in a subdir before editing it'.\n"
+    "  - \"tool_quirks\": environment-specific tool gotchas. Examples: "
+    "'ruff check on this repo lints static/ JS files and reports 1000+ "
+    "false errors — pass --type=python or list .py files explicitly'; "
+    "'pytest tmp_path under Windows %TEMP% breaks the temp-path "
+    "detection assertion'.\n"
+    "  - \"failure_modes\": recurring breakage patterns. Examples: "
+    "'build always breaks when setuptools is missing'; 'GitHub HTTPS "
+    "push intermittently fails with Connection reset, retry usually "
+    "works'.\n\n"
+    "Skip:\n"
+    "  - One-off facts about THIS specific request (those are not "
+    "operational lessons — they're context).\n"
+    "  - User preferences about communication style or tools "
+    "(ProfileExtractor handles those — different bucket).\n"
+    "  - Status reports / restated context / 'I just did X' summaries.\n"
+    "  - Things the agent already knew before this turn.\n\n"
+    "Output strict JSON: {\"workflow\": [\"...\"], \"tool_quirks\": [\"...\"], "
+    "\"failure_modes\": [\"...\"]}. Empty arrays when nothing fits. No prose."
+)
+
+
+_LESSON_BUCKETS: dict[str, tuple[str, str]] = {
+    # bucket name → (target file, section header)
+    "workflow":      ("AGENTS.md", "## Auto-extracted"),
+    "tool_quirks":   ("TOOLS.md",  "## Auto-extracted"),
+    "failure_modes": ("MEMORY.md", "## Failure Modes"),
+}
+
+
+class ExtractLessonsHook(PostSamplingHook):
+    """B-168: each turn end, ask the LLM what *operational lessons*
+    showed up in the just-finished exchange and route them to the
+    persona file that owns that kind of knowledge.
+
+    Distinct from :class:`ExtractMemoriesHook` which targets MEMORY.md
+    durable facts (decisions, prior conversations). This one is
+    **specifically** about how the agent works — workflows, tool
+    quirks, failure modes — the stuff the agent_loop system prompt
+    tells the agent to record in AGENTS.md / TOOLS.md / MEMORY.md but
+    which the agent rarely remembers to log proactively.
+
+    Three buckets, three target files, one LLM call per turn:
+      * ``workflow`` → ``AGENTS.md`` ``## Auto-extracted``
+      * ``tool_quirks`` → ``TOOLS.md`` ``## Auto-extracted``
+      * ``failure_modes`` → ``MEMORY.md`` ``## Failure Modes``
+
+    Default ON — closes the gap the user flagged: "经验教训也会自己
+    总结的对吧？" (right, lessons get auto-summarized too?). Pre-B-168
+    answer was "no, only USER.md, and only manually for AGENTS.md".
+
+    Cap per turn: 3 lessons per bucket so a chatty LLM can't spam.
+    Char caps in :data:`PERSONA_CHAR_CAPS` evict the oldest bullets
+    when files outgrow their budget.
+
+    Gate: ``evolution.memory.extract_lessons.enabled`` — flip to false
+    if the extra LLM call per turn isn't worth the latency for this
+    particular agent.
+    """
+
+    id = "extract_lessons"
+
+    #: Per-turn cap so a verbose LLM can't dump 20 vague "lessons".
+    MAX_PER_BUCKET: int = 3
+
+    def is_enabled(self, ctx: HookContext) -> bool:
+        if ctx.persona_dir is None:
+            return False
+        section = (
+            ((ctx.cfg.get("evolution") or {}).get("memory") or {})
+            .get("extract_lessons") or {}
+        )
+        return bool(section.get("enabled", True))
+
+    async def run(self, ctx: HookContext) -> None:
+        import json
+        from pathlib import Path
+
+        from xmclaw.providers.llm.base import Message
+
+        excerpt = (
+            f"User: {ctx.user_message[:1000]}\n\n"
+            f"Assistant: {ctx.assistant_response[:1500]}"
+        )
+        messages = [
+            Message(role="system", content=_LESSONS_PROMPT),
+            Message(role="user", content=excerpt),
+        ]
+        try:
+            resp = await ctx.llm.complete(messages, tools=None)
+        except Exception:  # noqa: BLE001 — never let a hook kill the chain
+            return
+        raw = (getattr(resp, "content", None) or "").strip()
+        if not raw:
+            return
+
+        # Strip a leading ```json fence if the LLM wrapped its output.
+        if raw.startswith("```"):
+            raw = raw.strip("`")
+            if raw.lower().startswith("json"):
+                raw = raw[4:].lstrip()
+
+        try:
+            obj = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return
+        if not isinstance(obj, dict):
+            return
+
+        buckets: dict[str, list[str]] = {}
+        for key in _LESSON_BUCKETS:
+            raw_list = obj.get(key)
+            if not isinstance(raw_list, list):
+                continue
+            cleaned: list[str] = []
+            for item in raw_list[: self.MAX_PER_BUCKET]:
+                s = str(item).strip()
+                if s:
+                    cleaned.append(s)
+            if cleaned:
+                buckets[key] = cleaned
+
+        if not buckets:
+            return
+
+        try:
+            from xmclaw.providers.tool.builtin import (
+                PERSONA_CHAR_CAPS,
+                _append_under_section,
+                enforce_char_cap,
+            )
+            from xmclaw.utils.fs_locks import atomic_write_text, get_lock
+        except Exception:  # noqa: BLE001 — startup-order safety, log only
+            return
+
+        pdir = Path(str(ctx.persona_dir))
+        pdir.mkdir(parents=True, exist_ok=True)
+
+        # Group lessons by destination file so we take one lock per
+        # file, not one per bullet — fewer atomic writes, fewer races.
+        per_file: dict[str, list[tuple[str, str]]] = {}
+        for bucket, lessons in buckets.items():
+            target_file, section = _LESSON_BUCKETS[bucket]
+            per_file.setdefault(target_file, []).extend(
+                (section, lesson) for lesson in lessons
+            )
+
+        import time as _t
+        date = _t.strftime("%Y-%m-%d")
+
+        for target_file, entries in per_file.items():
+            mfile = pdir / target_file
+            async with get_lock(mfile):
+                try:
+                    existing = (
+                        mfile.read_text(encoding="utf-8")
+                        if mfile.is_file() else ""
+                    )
+                    new_text = existing
+                    for section, lesson in entries:
+                        bullet = (
+                            f"- {date}: "
+                            f"{lesson.replace(chr(10), ' ').strip()}"
+                        )
+                        new_text = _append_under_section(
+                            new_text,
+                            section_header=section,
+                            bullet=bullet,
+                            placeholder_title=f"{target_file} — auto-extracted lessons",
+                        )
+                    cap = PERSONA_CHAR_CAPS.get(target_file)
+                    if cap is not None and len(new_text) > cap:
+                        new_text = enforce_char_cap(new_text, cap)
+                    if new_text != existing:
+                        atomic_write_text(mfile, new_text)
+                except OSError:
+                    continue
+
+
 def build_default_registry() -> HookRegistry:
     """Default hook chain shipped with the daemon."""
     reg = HookRegistry()
     reg.register(ExtractMemoriesHook())
+    reg.register(ExtractLessonsHook())
     return reg
 
 
@@ -233,5 +424,6 @@ __all__ = [
     "PostSamplingHook",
     "HookRegistry",
     "ExtractMemoriesHook",
+    "ExtractLessonsHook",
     "build_default_registry",
 ]
