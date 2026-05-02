@@ -164,13 +164,43 @@ def _version_from_dirname(dirname: str) -> int:
 # ── discovery ──────────────────────────────────────────────────────
 
 
+# B-178: shell-skill detector. Pre-Epic-#24-Phase-1 the auto_evo
+# system synthesised SKILL.md bodies whose only "implementation" was
+# "调用 <name> 的主要函数...具体函数取决于 index.js 中的导出". After
+# Phase 1 ripped out the Node project, those index.js files are gone
+# — so the skills are just text shells pointing at deleted code. Joint
+# audit (probe `evolution_quality`) found 6 of these silently
+# pollute the registry. Filter them at migration time so re-runs
+# don't recreate them.
+_SHELL_BODY_RE = re.compile(
+    r"index\.js|具体函数取决于|调用.*主要函数|"
+    r"specialword|magicstring",  # b29 test artifact
+    re.IGNORECASE,
+)
+
+
+def _is_shell_body(body_after_frontmatter: str) -> bool:
+    """True when the body is one of the known auto_evo placeholder
+    patterns (references to deleted index.js, b29 test stub, etc.).
+    Caller skips these skills rather than copying them forward."""
+    if not body_after_frontmatter or len(body_after_frontmatter.strip()) < 30:
+        # Empty or trivially short bodies — also shells.
+        return True
+    if _SHELL_BODY_RE.search(body_after_frontmatter):
+        return True
+    return False
+
+
 def discover_candidates(
     auto_evo_skills_root: Path,
 ) -> list[MigrationCandidate]:
     """Walk ``auto_evo_skills_root`` and pick one winner per lineage.
 
     Returns an empty list when the root doesn't exist or holds no
-    salvageable directories.
+    salvageable directories. B-178: directories whose SKILL.md body
+    matches a known shell pattern (referencing the deleted index.js
+    Node project) are skipped — they migrated as zombies pre-B-178
+    and cluttered the registry without ever doing useful work.
     """
     if not auto_evo_skills_root.is_dir():
         return []
@@ -194,6 +224,16 @@ def discover_candidates(
         fm = _parse_frontmatter(text)
         name = fm.get("name")
         if not isinstance(name, str) or not name.strip():
+            continue
+        # B-178: skip shells.
+        m = _FRONTMATTER_RE.match(text)
+        body_after = text[m.end():] if m is not None else text
+        if _is_shell_body(body_after):
+            _log.info(
+                "migrate_auto_evo.shell_skipped dir=%s — body references "
+                "deleted index.js / placeholder pattern",
+                entry.name,
+            )
             continue
         version = _version_from_dirname(entry.name)
         lineages.setdefault(name.strip(), []).append((entry, version))

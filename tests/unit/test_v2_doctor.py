@@ -2016,8 +2016,15 @@ def _legacy_skill(
 ) -> None:
     sd = auto_evo_skills / dirname
     sd.mkdir(parents=True)
+    # B-178: body must pass the migrator's shell-detector, otherwise
+    # discover_candidates skips the dir and these doctor tests count
+    # candidates as 0. A short procedure body is enough.
+    body = (
+        "# Procedure\n\n"
+        "Step 1: read input. Step 2: process. Step 3: write output.\n"
+    )
     (sd / "SKILL.md").write_text(
-        f"---\nname: {name}\ndescription: 'legacy'\n---\n\n# body\n",
+        f"---\nname: {name}\ndescription: 'legacy'\n---\n\n{body}",
         encoding="utf-8",
     )
 

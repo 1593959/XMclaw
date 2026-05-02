@@ -22,8 +22,16 @@ from xmclaw.cli.migrate_auto_evo import (
 )
 
 
+_DEFAULT_NON_SHELL_BODY = (
+    "# Procedure\n\n"
+    "Step 1: read the input. Step 2: process. Step 3: emit output.\n"
+    "Use grep / file_read directly — no external dependency.\n"
+)
+
+
 def _write_legacy_skill(
-    root: Path, dirname: str, *, frontmatter: str, body: str = "# body\n",
+    root: Path, dirname: str, *, frontmatter: str,
+    body: str = _DEFAULT_NON_SHELL_BODY,
 ) -> Path:
     sd = root / dirname
     sd.mkdir(parents=True)
@@ -116,7 +124,10 @@ def test_migrate_rewrites_frontmatter(tmp_path: Path) -> None:
             'signals_match:\n'
             '  - "category:entity_reference"\n'
         ),
-        body="# entity_reference\n\nSteps...\n",
+        body=(
+            "# entity_reference\n\n"
+            "Step 1: parse the entity. Step 2: resolve the reference.\n"
+        ),
     )
     results = migrate(src, target)
     assert len(results) == 1
@@ -148,7 +159,10 @@ def test_migrate_does_not_clobber_existing_target(tmp_path: Path) -> None:
     _write_legacy_skill(
         src, "auto_repair_v38",
         frontmatter='name: repair\ndescription: "from migrator"\n',
-        body="MIGRATED BODY\n",
+        body=(
+            "MIGRATED BODY\n\n"
+            "Step 1: pull. Step 2: build. Step 3: test. Step 4: ship.\n"
+        ),
     )
     # User already has a hand-installed `auto-repair` — must NOT
     # be overwritten.
@@ -230,6 +244,73 @@ def test_migrate_users_actual_dataset_pattern(tmp_path: Path) -> None:
         target / "auto-entity-reference" / "SKILL.md"
     ).read_text(encoding="utf-8")
     assert "v29" in er_text
+
+
+def test_migrate_skips_shell_skills_referencing_index_js(tmp_path: Path) -> None:
+    """B-178: SKILL.md bodies pointing at the deleted ``index.js`` Node
+    project are auto_evo placeholders that fail at runtime — refuse to
+    migrate them so re-running the tool doesn't keep recreating the
+    noise the joint audit just deleted from the user's machine."""
+    src = tmp_path / "auto_evo" / "skills"
+    target = tmp_path / "skills_user"
+
+    # Shell body — references index.js, the classic auto_evo placeholder.
+    _write_legacy_skill(
+        src, "auto_repair_v38",
+        frontmatter='name: repair\ndescription: "v38"\n',
+        body=(
+            "# 使用时机\n\n"
+            "当系统检测到该模式时触发：error_feedback\n\n"
+            "# 使用方法\n\n"
+            "直接调用 repair 的主要函数，传入对应的上下文参数。"
+            "具体函数取决于 index.js 中的导出。\n"
+        ),
+    )
+    # Real body — should still migrate fine.
+    _write_legacy_skill(
+        src, "auto_real_v1",
+        frontmatter='name: realwork\ndescription: "ok"\n',
+        body=(
+            "# Procedure\n\n"
+            "Step 1: read the input. Step 2: do the work. Step 3: emit.\n"
+        ),
+    )
+    results = migrate(src, target)
+    target_ids = sorted(r.target_id for r in results if r.ok)
+    assert target_ids == ["auto-realwork"]
+    assert not (target / "auto-repair").exists()
+
+
+def test_migrate_skips_b29_test_artifact(tmp_path: Path) -> None:
+    """The B-29 test stub ('mention specialword/magicstring') is also a
+    noise body even though it doesn't reference index.js."""
+    src = tmp_path / "auto_evo" / "skills"
+    target = tmp_path / "skills_user"
+    _write_legacy_skill(
+        src, "auto_b29_invoke_test",
+        frontmatter='name: auto_b29_invoke_test\n',
+        body=(
+            "# auto_b29_invoke_test\n\n"
+            "When the user mentions 'specialword' or 'magicstring', "
+            "simply confirm receipt.\n"
+        ),
+    )
+    results = migrate(src, target)
+    assert results == []
+
+
+def test_migrate_skips_short_body(tmp_path: Path) -> None:
+    """A SKILL.md with a body that's effectively empty (< 30 chars
+    after frontmatter) is also a shell — skip."""
+    src = tmp_path / "auto_evo" / "skills"
+    target = tmp_path / "skills_user"
+    _write_legacy_skill(
+        src, "auto_tiny",
+        frontmatter='name: tiny\n',
+        body="# tiny\n",  # 7 chars after stripping
+    )
+    results = migrate(src, target)
+    assert results == []
 
 
 def test_migrate_handles_already_auto_prefixed_name(tmp_path: Path) -> None:
