@@ -357,7 +357,7 @@ class ContentTools(ToolProvider):
 
     async def _docx_read(self, call: ToolCall, t0: float) -> ToolResult:
         try:
-            import docx  # type: ignore
+            import docx
         except ImportError:
             return _fail(call, t0, (
                 "docx_read needs ``python-docx``. "
@@ -460,7 +460,7 @@ class ContentTools(ToolProvider):
 
     async def _clipboard_write(self, call: ToolCall, t0: float) -> ToolResult:
         try:
-            import pyperclip  # type: ignore
+            import pyperclip
         except ImportError:
             return _fail(call, t0, (
                 "clipboard_write needs ``pyperclip``. "

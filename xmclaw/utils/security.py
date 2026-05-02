@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+from typing import Any, Callable
 
 from xmclaw.utils.paths import BASE_DIR
 
@@ -96,7 +97,7 @@ class AuditEntry:
     tool_category: str
     risk_score: int     # 0-100
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "timestamp": self.timestamp,
             "event": self.event,
@@ -123,7 +124,7 @@ class PermissionManager:
         # proceed with tool execution
     """
 
-    def __init__(self, config: dict | None = None):
+    def __init__(self, config: dict[str, Any] | None = None):
         self.config = config or {}
 
         # Permission overrides per tool: tool_name -> PermissionLevel
@@ -140,10 +141,10 @@ class PermissionManager:
         self._audit_lock = asyncio.Lock()
 
         # Network access control
-        self._network_allowed_patterns: list[re.Pattern] = []
+        self._network_allowed_patterns: list[re.Pattern[str]] = []
         self._load_network_patterns()
 
-    def _load_config(self, config: dict | None) -> None:
+    def _load_config(self, config: dict[str, Any] | None) -> None:
         """Load permissions from config dict."""
         if not config:
             return
@@ -168,7 +169,7 @@ class PermissionManager:
             except re.error:
                 self._compile_pattern(patterns[0])  # fallback to allow all
 
-    def _compile_pattern(self, p: str) -> re.Pattern:
+    def _compile_pattern(self, p: str) -> re.Pattern[str]:
         compiled = re.compile(p, re.IGNORECASE)
         self._network_allowed_patterns.append(compiled)
         return compiled
@@ -176,7 +177,7 @@ class PermissionManager:
     # ── Tool permission checks ────────────────────────────────────────────────
 
     def check_tool(self, tool_name: str, user: str = "default",
-                   context: dict | None = None) -> SecurityDecision:
+                   context: dict[str, Any] | None = None) -> SecurityDecision:
         """Check if a tool is permitted to run.
 
         Args:
@@ -370,7 +371,7 @@ class PermissionManager:
             )
         )
 
-    def list_permissions(self) -> dict[str, dict]:
+    def list_permissions(self) -> dict[str, dict[str, Any]]:
         """Return current permission state for all known tools."""
         result = {}
         for tool in TOOL_CATEGORIES:
@@ -392,7 +393,7 @@ class PermissionManager:
             entries = [e for e in entries if e.event == event_filter]
         return entries
 
-    def get_audit_summary(self) -> dict:
+    def get_audit_summary(self) -> dict[str, Any]:
         """Get a summary of security events."""
         events: dict[str, int] = {}
         blocked_paths = 0
@@ -412,14 +413,14 @@ class PermissionManager:
             "top_blocked_tools": self._top_blocked_tools(),
         }
 
-    def _top_blocked_tools(self) -> list[dict]:
+    def _top_blocked_tools(self) -> list[tuple[str, int]]:
         counts: dict[str, int] = {}
         for e in self._audit_log:
             if e.event == "BLOCKED":
                 counts[e.tool] = counts.get(e.tool, 0) + 1
         return sorted(counts.items(), key=lambda x: -x[1])[:5]
 
-    def export_permissions_config(self) -> dict:
+    def export_permissions_config(self) -> dict[str, Any]:
         """Export current permission config for saving to config.json."""
         return {
             "tool_permissions": {
@@ -431,7 +432,9 @@ class PermissionManager:
 
 # ── Decorator for tool permission checks ──────────────────────────────────────
 
-def require_permission(level: PermissionLevel = PermissionLevel.ALLOW):
+def require_permission(
+    level: PermissionLevel = PermissionLevel.ALLOW,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator: enforce permission check before tool execution.
 
     Usage:
@@ -440,14 +443,14 @@ def require_permission(level: PermissionLevel = PermissionLevel.ALLOW):
             async def execute(self, ...):
                 ...
     """
-    def decorator(func):
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @functools.wraps(func)
-        def sync_wrapper(self, *args, **kwargs):
+        def sync_wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
             # For sync wrappers, we can't do async here — handled in execute()
             return func(self, *args, **kwargs)
 
         @functools.wraps(func)
-        async def async_wrapper(self, *args, **kwargs):
+        async def async_wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
             # Get tool name from self
             tool_name = getattr(self, "name", func.__name__)
             pm = get_permission_manager()

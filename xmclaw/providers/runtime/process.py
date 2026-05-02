@@ -62,7 +62,7 @@ from xmclaw.skills.manifest import SkillManifest
 def _worker_entry(
     skill_pickle: bytes,
     args: dict[str, Any],
-    result_queue: mp.Queue,
+    result_queue: mp.Queue[Any],
 ) -> None:
     """Runs inside the child process. Unpickles the skill, runs it, ships
     the SkillOutput (or an error envelope) back via the queue."""
@@ -100,7 +100,7 @@ def _worker_entry(
 class _Slot:
     handle: SkillHandle
     process: mp.Process
-    queue: mp.Queue
+    queue: mp.Queue[Any]
     manifest: SkillManifest
     started_at: float = field(default_factory=time.monotonic)
     output: SkillOutput | None = None
@@ -174,7 +174,7 @@ class ProcessSkillRuntime(SkillRuntime):
             )
             return handle
 
-        queue: mp.Queue = self._ctx.Queue()
+        queue: mp.Queue[Any] = self._ctx.Queue()
         proc = self._ctx.Process(
             target=_worker_entry, args=(skill_pickle, args, queue),
         )
@@ -329,7 +329,7 @@ _CLOSED = object()
 
 
 def _await_queue(
-    queue: mp.Queue, process: mp.Process, timeout: float | None,
+    queue: mp.Queue[Any], process: mp.Process, timeout: float | None,
 ) -> Any:  # noqa: ANN401
     """Synchronous queue poll — safe to run under asyncio.to_thread.
 

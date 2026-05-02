@@ -81,7 +81,7 @@ class FeishuAdapter(ChannelAdapter):
         # Lazy: build inside start() so the heavy lark-oapi import
         # doesn't fire until the user actually enables this channel.
         self._client: Any = None
-        self._ws_task: asyncio.Task | None = None
+        self._ws_task: asyncio.Task[Any] | None = None
         self._handlers: list[Callable[[InboundMessage], Awaitable[None]]] = []
 
     # ── public API ──────────────────────────────────────────────

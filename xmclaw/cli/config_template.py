@@ -14,8 +14,10 @@ minimum the daemon needs to boot: ``llm``, ``gateway``, and the
 """
 from __future__ import annotations
 
+from typing import Any
 
-def default_config_template() -> dict:
+
+def default_config_template() -> dict[str, Any]:
     """Fresh dict on every call -- callers may mutate to inject api keys."""
     return {
         "llm": {

@@ -8,6 +8,7 @@ each other's view.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,7 +47,7 @@ class ProfileDelta:
     source_event_id: str
     ts: float
 
-    def to_jsonable(self) -> dict:
+    def to_jsonable(self) -> dict[str, Any]:
         return {
             "kind": self.kind,
             "text": self.text,

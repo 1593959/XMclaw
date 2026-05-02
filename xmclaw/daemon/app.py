@@ -1900,10 +1900,11 @@ def create_app(
         # above doesn't catch (rare; mostly directory-style URLs) still
         # resolve. We subclass to inject no-store + the same import
         # rewriting so the BOOT_VERSION reaches every served module.
+        from starlette.responses import Response
         from starlette.types import Scope
 
         class _BootStampingStaticFiles(StaticFiles):
-            async def get_response(self, path: str, scope: Scope):  # type: ignore[override]
+            async def get_response(self, path: str, scope: Scope) -> Response:
                 resp = await super().get_response(path, scope)
                 for k, v in _NO_STORE_HEADERS.items():
                     resp.headers[k] = v

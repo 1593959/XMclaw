@@ -41,6 +41,7 @@ Design notes:
 """
 from __future__ import annotations
 
+from typing import Any
 from urllib.parse import parse_qs
 
 # Phase 6: the ContextVar + accessors moved to ``xmclaw/core/`` so tool
@@ -62,7 +63,7 @@ __all__ = [
 ]
 
 
-def _extract_agent_id_from_scope(scope: dict) -> str | None:
+def _extract_agent_id_from_scope(scope: dict[str, Any]) -> str | None:
     """Pull ``X-Agent-Id`` header or ``agent_id`` query param off an ASGI scope.
 
     Header wins over query param — headers are the canonical form and

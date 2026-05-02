@@ -2991,7 +2991,7 @@ class BuiltinTools(ToolProvider):
         used_mode = "keyword"
         if self._embedder is not None:
             try:
-                vecs = await self._embedder.embed([query])  # type: ignore[union-attr]
+                vecs = await self._embedder.embed([query])
                 if vecs and vecs[0]:
                     embedding = list(vecs[0])
                     used_mode = "semantic"

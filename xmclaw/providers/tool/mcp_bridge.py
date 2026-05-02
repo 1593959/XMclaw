@@ -54,7 +54,7 @@ class MCPError(RuntimeError):
 
 @dataclass
 class _PendingCall:
-    future: asyncio.Future
+    future: asyncio.Future[Any]
     method: str
 
 
@@ -254,7 +254,7 @@ class MCPBridge(ToolProvider):
         """Send one request, await the matching response, return its result."""
         req_id = self._next_id
         self._next_id += 1
-        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        future: asyncio.Future[Any] = asyncio.get_event_loop().create_future()
         self._pending[req_id] = _PendingCall(future=future, method=method)
 
         msg = {

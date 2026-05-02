@@ -215,7 +215,7 @@ class DoctorRegistry:
             eps = entry_points(group=self.ENTRY_POINT_GROUP)
         except TypeError:
             # Python 3.9 fallback (we target 3.10+ but be defensive).
-            eps = entry_points().get(self.ENTRY_POINT_GROUP, [])  # type: ignore[assignment]
+            eps = entry_points().get(self.ENTRY_POINT_GROUP, [])
 
         for ep in eps:
             try:

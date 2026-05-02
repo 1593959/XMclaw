@@ -6,6 +6,7 @@ subscribers / readers can treat it as immutable.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +54,7 @@ class JournalEntry:
     anti_req_violations: int = 0
     schema_version: int = 1
 
-    def to_jsonable(self) -> dict:
+    def to_jsonable(self) -> dict[str, Any]:
         return {
             "session_id": self.session_id,
             "agent_id": self.agent_id,
@@ -74,7 +75,7 @@ class JournalEntry:
         }
 
     @classmethod
-    def from_jsonable(cls, data: dict) -> "JournalEntry":
+    def from_jsonable(cls, data: dict[str, Any]) -> "JournalEntry":
         tool_calls = tuple(
             ToolCallSummary(
                 name=str(t.get("name", "")),

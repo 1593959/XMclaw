@@ -19,6 +19,7 @@ contaminating each other.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from fastapi import APIRouter, Request
 from starlette.responses import JSONResponse
@@ -45,13 +46,15 @@ def _manager(request: Request) -> MultiAgentManager | None:
     return getattr(request.app.state, "agents", None)
 
 
-def _workspace_summary(agent_id: str, ws, *, is_primary: bool) -> dict:
+def _workspace_summary(
+    agent_id: str, ws: Any, *, is_primary: bool,
+) -> dict[str, Any]:
     """B-131: enrich the agent row with what UIs need to make sense of it.
 
     Returns kind / model / tool_count / system_prompt preview so the
     UI doesn't show 8 rows of indistinguishable agent_ids.
     """
-    base: dict = {
+    base: dict[str, Any] = {
         "agent_id": agent_id,
         "ready": ws.is_ready() if ws is not None else True,
         "primary": is_primary,
@@ -63,7 +66,8 @@ def _workspace_summary(agent_id: str, ws, *, is_primary: bool) -> dict:
     base["kind"] = kind
     cfg = getattr(ws, "config", None) or {}
     if isinstance(cfg, dict):
-        llm_cfg = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
+        _llm_raw = cfg.get("llm")
+        llm_cfg: dict[str, Any] = _llm_raw if isinstance(_llm_raw, dict) else {}
         # Pick the most informative model name we can find. config.llm
         # has both "provider" + "model" — show "provider/model" so a
         # row showing two skills with the same model name still
@@ -90,14 +94,14 @@ def _workspace_summary(agent_id: str, ws, *, is_primary: bool) -> dict:
     return base
 
 
-def _primary_summary(request: Request) -> dict:
+def _primary_summary(request: Request) -> dict[str, Any]:
     """B-131: synthesise the same enriched row for the primary agent.
 
     The primary lives on ``app.state.agent`` instead of the manager —
     pull config / model from there so 'main' shows up in the UI with
     parity to user-launched agents.
     """
-    base: dict = {
+    base: dict[str, Any] = {
         "agent_id": "main",
         "ready": True,
         "primary": True,
@@ -108,7 +112,8 @@ def _primary_summary(request: Request) -> dict:
         return base
     cfg = getattr(request.app.state, "config", None) or {}
     if isinstance(cfg, dict):
-        llm_cfg = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
+        _llm_raw = cfg.get("llm")
+        llm_cfg: dict[str, Any] = _llm_raw if isinstance(_llm_raw, dict) else {}
         provider = llm_cfg.get("provider") or ""
         model = llm_cfg.get("model") or ""
         if provider and model:
@@ -136,7 +141,7 @@ async def list_agents(request: Request) -> JSONResponse:
     without a special-case branch on the client side.
     """
     manager = _manager(request)
-    items: list[dict] = []
+    items: list[dict[str, Any]] = []
 
     # Synthetic entry for the primary agent, if one exists.
     primary = getattr(request.app.state, "agent", None)

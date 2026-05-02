@@ -26,7 +26,7 @@ from __future__ import annotations
 import platform
 import time
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from xmclaw.core.persona.bootstrap import bootstrap_prefix
 from xmclaw.core.persona.loader import (
@@ -122,10 +122,10 @@ def _persona_section(files: list[PersonaFile]) -> str:
     return "\n".join(lines).rstrip()
 
 
-def _fingerprint(files: list[PersonaFile]) -> tuple:
+def _fingerprint(files: list[PersonaFile]) -> tuple[Any, ...]:
     """Mtime-based cache key. Built-in templates fingerprint as their content
     hash so edits to ``templates.py`` invalidate caches across reloads."""
-    fp: list[tuple] = []
+    fp: list[tuple[Any, ...]] = []
     for f in files:
         if f.layer == "builtin":
             fp.append((f.basename, "builtin", hash(f.content)))
@@ -139,7 +139,7 @@ def _fingerprint(files: list[PersonaFile]) -> tuple:
 
 
 # Cache by (profile_dir str, workspace_dir str | None, fingerprint, tools tuple).
-_CACHE: dict[tuple, str] = {}
+_CACHE: dict[tuple[Any, ...], str] = {}
 
 
 def build_system_prompt(

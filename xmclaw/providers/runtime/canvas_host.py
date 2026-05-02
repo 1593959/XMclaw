@@ -67,7 +67,7 @@ class CanvasHost:
         self._port = port if port is not None else default_canvas_port()
         self._host = host
         self._html: str = "<!doctype html><title>XMclaw Canvas</title>"
-        self._connections: set[Any] = set()  # type: ignore[type-arg]
+        self._connections: set[Any] = set()
         self._server_task: asyncio.Task[None] | None = None
         self._app: Any = None
         self._server: Any = None

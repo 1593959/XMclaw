@@ -70,7 +70,7 @@ class Mem0MemoryProvider(MemoryProvider):
         # B-69: hold strong refs to fire-and-forget prefetch tasks
         # so asyncio's weak-ref tracking can't GC them mid-flight.
         import asyncio as _asyncio_init
-        self._bg_tasks: set[_asyncio_init.Task] = set()
+        self._bg_tasks: set[_asyncio_init.Task[Any]] = set()
 
     def is_available(self) -> bool:
         return bool(self._api_key)
@@ -226,7 +226,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._bg_tasks.add(bg)
         bg.add_done_callback(self._bg_tasks.discard)
 
-    def on_pre_compress(self, messages: list) -> str:
+    def on_pre_compress(self, messages: list[Any]) -> str:
         if not messages:
             return ""
         return (

@@ -61,7 +61,7 @@ _RESTART_BOUND_KEYS: frozenset[str] = frozenset({
 })
 
 
-def _diff_keys(old: dict, new: dict, prefix: str = "") -> list[str]:
+def _diff_keys(old: dict[str, Any], new: dict[str, Any], prefix: str = "") -> list[str]:
     """Return dotted keys that differ between two config dicts.
 
     Recurses into nested dicts; reports leaf-level paths. Lists and
@@ -96,7 +96,7 @@ class ConfigFileWatcher:
         self._cfg = cfg
         self._bus = bus
         self._poll_s = max(1.0, float(poll_interval_s))
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[Any] | None = None
         self._stopped = asyncio.Event()
         try:
             self._last_mtime = (

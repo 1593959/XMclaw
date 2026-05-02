@@ -36,7 +36,7 @@ def current_agent_id() -> str:
     return _current_agent_id.get()
 
 
-def set_current_agent_id(agent_id: str) -> Token:
+def set_current_agent_id(agent_id: str) -> Token[str]:
     """Set the contextvar; return the token so caller can reset.
 
     Typical use is via :func:`AgentContext` rather than this raw API,
@@ -45,7 +45,7 @@ def set_current_agent_id(agent_id: str) -> Token:
     return _current_agent_id.set(agent_id or "main")
 
 
-def reset_current_agent_id(token: Token) -> None:
+def reset_current_agent_id(token: Token[str]) -> None:
     _current_agent_id.reset(token)
 
 

@@ -39,6 +39,7 @@ import logging
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 from xmclaw.skills.base import Skill
 from xmclaw.skills.manifest import SkillManifest
@@ -151,7 +152,7 @@ class UserSkillsLoader:
                     error="importlib could not build a module spec",
                 )
             module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)  # type: ignore[union-attr]
+            spec.loader.exec_module(module)
         except Exception as exc:  # noqa: BLE001 — surface to caller as LoadResult
             return LoadResult(
                 skill_id=skill_id, ok=False, skill_path=skill_py,
@@ -407,7 +408,7 @@ class UserSkillsLoader:
         # Permission/limit fields land verbatim. Tuple-of-str shapes
         # come back as list[str] from json; SkillManifest is a
         # frozen dataclass with tuple-typed fields, so coerce.
-        def _as_tuple(key: str) -> tuple:
+        def _as_tuple(key: str) -> tuple[str, ...]:
             v = data.get(key) or ()
             if isinstance(v, (list, tuple)):
                 return tuple(str(x) for x in v)
@@ -438,7 +439,7 @@ _FRONTMATTER_BLOCK_RE = re.compile(
 
 
 def resolve_skill_roots(
-    config: dict | None = None,
+    config: dict[str, Any] | None = None,
 ) -> tuple[Path, list[Path]]:
     """B-173: shared root-resolution so cli/main.py boot-time loader
     and daemon/skills_watcher.py runtime watcher agree on what to

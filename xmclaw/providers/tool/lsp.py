@@ -102,8 +102,8 @@ class LSPTools(ToolProvider):
         self._root = Path(root).resolve()
         self._startup_timeout_s = startup_timeout_s
         self._proc: asyncio.subprocess.Process | None = None
-        self._reader_task: asyncio.Task | None = None
-        self._pending: dict[int, asyncio.Future] = {}
+        self._reader_task: asyncio.Task[Any] | None = None
+        self._pending: dict[int, asyncio.Future[Any]] = {}
         self._next_id = 1
         self._boot_lock = asyncio.Lock()
 

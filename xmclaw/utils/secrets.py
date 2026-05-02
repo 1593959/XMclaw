@@ -134,7 +134,7 @@ def _keyring_module():
     case where the user isn't using it.
     """
     try:
-        import keyring  # type: ignore
+        import keyring
 
         return keyring
     except ImportError:
@@ -189,7 +189,7 @@ def _fernet_module():
       we don't want every ``import xmclaw.utils.secrets`` to pay it.
     """
     try:
-        from cryptography.fernet import Fernet  # type: ignore
+        from cryptography.fernet import Fernet
 
         return Fernet
     except ImportError:

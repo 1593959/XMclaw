@@ -1,6 +1,8 @@
 """GuardedToolProvider — wraps a ToolProvider with pre-invocation security."""
 from __future__ import annotations
 
+from typing import Any
+
 from xmclaw.core.ir import ToolCall, ToolResult
 from xmclaw.providers.tool.base import ToolProvider
 from xmclaw.security.approval_service import ApprovalService
@@ -52,7 +54,7 @@ class GuardedToolProvider(ToolProvider):
         self._approval_service = approval_service
         self._policy = policy or GuardianPolicy()
 
-    def list_tools(self) -> list:
+    def list_tools(self) -> list[Any]:
         return self._inner.list_tools()
 
     async def invoke(self, call: ToolCall) -> ToolResult:
@@ -122,7 +124,7 @@ class GuardedToolProvider(ToolProvider):
         return await self._inner.invoke(call)
 
 
-def _format_findings_summary(findings: list) -> str:
+def _format_findings_summary(findings: list[Any]) -> str:
     lines: list[str] = [_("guard.scan_summary_header", count=len(findings))]
     for f in findings:
         lines.append(

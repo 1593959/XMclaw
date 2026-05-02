@@ -22,6 +22,7 @@ import json
 import sqlite3
 import time
 from pathlib import Path
+from typing import Any
 
 from xmclaw.core.ir import ToolCall
 from xmclaw.providers.llm.base import Message
@@ -39,7 +40,7 @@ CREATE INDEX IF NOT EXISTS idx_session_history_updated
 """
 
 
-def _toolcall_to_dict(tc: ToolCall) -> dict:
+def _toolcall_to_dict(tc: ToolCall) -> dict[str, Any]:
     return {
         "name": tc.name,
         "args": tc.args,
@@ -50,7 +51,7 @@ def _toolcall_to_dict(tc: ToolCall) -> dict:
     }
 
 
-def _toolcall_from_dict(d: dict) -> ToolCall:
+def _toolcall_from_dict(d: dict[str, Any]) -> ToolCall:
     return ToolCall(
         name=d["name"],
         args=d.get("args", {}) or {},
@@ -61,7 +62,7 @@ def _toolcall_from_dict(d: dict) -> ToolCall:
     )
 
 
-def _message_to_dict(m: Message) -> dict:
+def _message_to_dict(m: Message) -> dict[str, Any]:
     return {
         "role": m.role,
         "content": m.content,
@@ -70,7 +71,7 @@ def _message_to_dict(m: Message) -> dict:
     }
 
 
-def _message_from_dict(d: dict) -> Message:
+def _message_from_dict(d: dict[str, Any]) -> Message:
     return Message(
         role=d["role"],
         content=d.get("content", "") or "",
@@ -135,7 +136,7 @@ class SessionStore:
                 (session_id,),
             )
 
-    def list_recent(self, limit: int = 20) -> list[dict]:
+    def list_recent(self, limit: int = 20) -> list[dict[str, Any]]:
         """Return [{session_id, message_count, updated_at, preview}], newest first.
 
         The ``preview`` field is a short string derived from the first
@@ -154,7 +155,7 @@ class SessionStore:
                 """,
                 (max(1, int(limit)),),
             ).fetchall()
-        out: list[dict] = []
+        out: list[dict[str, Any]] = []
         for sid, count, updated, hjson in rows:
             preview = ""
             try:

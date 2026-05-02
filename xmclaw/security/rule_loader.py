@@ -15,7 +15,7 @@ from pathlib import Path
 try:
     import yaml
 except ImportError:  # pragma: no cover
-    yaml = None  # type: ignore[assignment]
+    yaml = None
 
 
 class Severity(Enum):

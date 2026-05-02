@@ -374,7 +374,7 @@ class AutomationTools(ToolProvider):
 
     async def _process_kill(self, call: ToolCall, t0: float) -> ToolResult:
         try:
-            import psutil  # type: ignore
+            import psutil
         except ImportError:
             return _fail(call, t0, (
                 "process_kill needs ``psutil``. "

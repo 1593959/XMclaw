@@ -18,7 +18,7 @@ class InboundMessage:
     target: ChannelTarget
     user_ref: str
     content: str
-    raw: dict | None = None
+    raw: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)

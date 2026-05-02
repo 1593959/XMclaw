@@ -159,7 +159,7 @@ def format_event(event: dict[str, Any]) -> RenderedLine | None:
 
 async def _read_loop(
     ws: Any,
-    inbox: asyncio.Queue,
+    inbox: asyncio.Queue[Any],
     stop: asyncio.Event,
 ) -> None:
     """Drain WS messages into an asyncio.Queue. Signals stop on close."""
@@ -177,7 +177,7 @@ async def _read_loop(
 
 
 async def _drain_until_quiet(
-    inbox: asyncio.Queue,
+    inbox: asyncio.Queue[Any],
     *,
     quiet: float = QUIET_MS,
     overall_timeout: float = 60.0,
@@ -241,7 +241,7 @@ async def _chat_loop(url: str, session_id: str) -> int:
         print("  is the daemon running? try `xmclaw serve` in another terminal.")
         return 1
 
-    inbox: asyncio.Queue = asyncio.Queue()
+    inbox: asyncio.Queue[Any] = asyncio.Queue()
     stop = asyncio.Event()
     reader = asyncio.create_task(_read_loop(ws, inbox, stop))
 

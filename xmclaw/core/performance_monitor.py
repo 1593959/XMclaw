@@ -72,8 +72,8 @@ class PerformanceMonitor:
         self._event_counts: dict[str, int] = defaultdict(int)
 
         # Conversation tracking
-        self._active_conversations: dict[str, dict] = {}
-        self._conversation_history: list[dict] = []
+        self._active_conversations: dict[str, dict[str, Any]] = {}
+        self._conversation_history: list[dict[str, Any]] = []
 
         # Timing context
         self._timing_stack: list[tuple[str, float]] = []
@@ -309,7 +309,7 @@ class PerformanceMonitor:
             "conversations": self.get_conversation_summary(),
         }
 
-    def _stats_to_dict(self, category: str, name: str, stats: OperationStats) -> dict:
+    def _stats_to_dict(self, category: str, name: str, stats: OperationStats) -> dict[str, Any]:
         return {
             "category": category,
             "name": name,

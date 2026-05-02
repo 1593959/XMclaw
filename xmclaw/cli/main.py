@@ -1655,7 +1655,7 @@ def config_migrate_secrets(
     typer.echo(f"  conflicts:      {result['skipped_conflict']}")
     if result["conflicts"]:
         typer.echo("  conflicting names (unresolved — edit + retry):")
-        for name in result["conflicts"]:  # type: ignore[union-attr]
+        for name in result["conflicts"]:
             typer.echo(f"    - {name}")
         raise typer.Exit(code=1)
     if result["wiped_plaintext"]:

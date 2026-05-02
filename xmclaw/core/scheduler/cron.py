@@ -379,7 +379,7 @@ class CronTickTask:
         self._store = store
         self._runner = runner
         self._tick_s = tick_interval_s
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[Any] | None = None
         self._stop = asyncio.Event()
 
     @property

@@ -82,8 +82,8 @@ async def restart_daemon() -> JSONResponse:
         # working directory mustn't tie it back. CREATE_NO_WINDOW keeps
         # a console from flashing on Windows.
         creationflags = (
-            subprocess.DETACHED_PROCESS  # type: ignore[attr-defined]
-            | subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+            subprocess.DETACHED_PROCESS
+            | subprocess.CREATE_NEW_PROCESS_GROUP
             | 0x08000000  # CREATE_NO_WINDOW
         )
         start_new_session = False

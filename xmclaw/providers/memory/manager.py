@@ -57,14 +57,14 @@ class MemoryManager:
     async def _emit(
         self, op: str, *, provider: str, session_id: str | None = None,
         elapsed_ms: float = 0.0, k: int | None = None,
-        hits: int | None = None, extra: dict | None = None,
+        hits: int | None = None, extra: dict[str, Any] | None = None,
     ) -> None:
         """Emit a MEMORY_OP event. Best-effort; never raises."""
         if self._bus is None:
             return
         try:
             from xmclaw.core.bus import EventType, make_event
-            payload: dict = {
+            payload: dict[str, Any] = {
                 "provider": provider, "op": op,
                 "session_id": session_id, "elapsed_ms": elapsed_ms,
             }

@@ -79,7 +79,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # populated forever and subsequent prefetch calls become
         # silent no-ops.
         import asyncio as _asyncio_init
-        self._bg_tasks: set[_asyncio_init.Task] = set()
+        self._bg_tasks: set[_asyncio_init.Task[Any]] = set()
 
     def is_available(self) -> bool:
         return bool(self._api_key)
@@ -239,11 +239,11 @@ class HindsightMemoryProvider(MemoryProvider):
         bg.add_done_callback(self._bg_tasks.discard)
 
     async def on_session_end(
-        self, *, session_id: str, messages: list,
+        self, *, session_id: str, messages: list[Any],
     ) -> None:
         await self._post("/flush", {"session_id": session_id})
 
-    def on_pre_compress(self, messages: list) -> str:
+    def on_pre_compress(self, messages: list[Any]) -> str:
         """Returns the running entity-resolve digest. Best-effort:
         synchronous-only since the compressor seam is sync — we
         just emit a stub line that says we have a backend, and rely

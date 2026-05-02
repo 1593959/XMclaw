@@ -288,7 +288,7 @@ class BrowserTools(ToolProvider):
             if self._browser is not None:
                 return
             try:
-                from playwright.async_api import async_playwright  # type: ignore
+                from playwright.async_api import async_playwright
             except ImportError as exc:
                 raise _PlaywrightMissing(
                     "playwright not installed -- run "

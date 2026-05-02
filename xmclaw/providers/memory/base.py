@@ -118,11 +118,11 @@ class MemoryProvider(abc.ABC):
             pass
 
     async def on_session_end(
-        self, *, session_id: str, messages: list,
+        self, *, session_id: str, messages: list[Any],
     ) -> None:
         """Session-end summary hook. Default no-op."""
 
-    def on_pre_compress(self, messages: list) -> str:
+    def on_pre_compress(self, messages: list[Any]) -> str:
         """Pre-compression fact extraction. Default: empty contribution."""
         return ""
 
