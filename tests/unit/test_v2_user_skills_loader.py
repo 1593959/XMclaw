@@ -226,3 +226,112 @@ def test_hidden_dirs_skipped(tmp_path: Path) -> None:
     _write_skill(tmp_path, "real", version=1)
     results = UserSkillsLoader(SkillRegistry(), tmp_path).load_all()
     assert {r.skill_id for r in results} == {"real"}
+
+
+# ── B-170 SKILL.md frontmatter → manifest.description ─────────────────
+
+
+def _write_skill_md(
+    root: Path, skill_id: str, *, body: str,
+) -> Path:
+    sd = root / skill_id
+    sd.mkdir(parents=True)
+    (sd / "SKILL.md").write_text(body, encoding="utf-8")
+    return sd
+
+
+def test_skill_md_frontmatter_populates_manifest(tmp_path: Path) -> None:
+    """skills.sh-style SKILL.md → manifest carries description, title,
+    triggers (so /api/v2/skills can ship them to the UI)."""
+    md = (
+        "---\n"
+        "name: git-commit\n"
+        "description: Execute git commit with conventional commit "
+        "message analysis.\n"
+        "triggers: ['/commit', 'commit changes']\n"
+        "---\n\n"
+        "# Git Commit\n\n"
+        "Standardised commits using Conventional Commits.\n"
+    )
+    _write_skill_md(tmp_path, "git-commit", body=md)
+    reg = SkillRegistry()
+    UserSkillsLoader(reg, tmp_path).load_all()
+
+    m = reg.ref("git-commit").manifest
+    assert m.title == "git-commit"
+    assert "conventional commit message" in m.description.lower()
+    assert m.triggers == ("/commit", "commit changes")
+
+
+def test_skill_md_no_frontmatter_uses_h1_and_first_para(tmp_path: Path) -> None:
+    """Plain SKILL.md without frontmatter → fallback heuristic
+    (first H1 → title, first paragraph → description)."""
+    md = (
+        "# Brainstorming Session\n\n"
+        "Walk the user through a structured brainstorming session "
+        "with divergent then convergent passes.\n\n"
+        "## Steps\n"
+        "1. ...\n"
+    )
+    _write_skill_md(tmp_path, "brainstorming", body=md)
+    reg = SkillRegistry()
+    UserSkillsLoader(reg, tmp_path).load_all()
+
+    m = reg.ref("brainstorming").manifest
+    assert m.title == "Brainstorming Session"
+    assert "structured brainstorming" in m.description
+
+
+def test_skill_md_partial_frontmatter_fills_missing_from_h1(
+    tmp_path: Path,
+) -> None:
+    """Frontmatter has only ``description`` → title still comes from H1."""
+    md = (
+        "---\n"
+        "description: Help draft pull-request descriptions.\n"
+        "---\n\n"
+        "# Documentation Writer\n\n"
+        "Body...\n"
+    )
+    _write_skill_md(tmp_path, "documentation-writer", body=md)
+    reg = SkillRegistry()
+    UserSkillsLoader(reg, tmp_path).load_all()
+
+    m = reg.ref("documentation-writer").manifest
+    assert m.title == "Documentation Writer"
+    assert m.description == "Help draft pull-request descriptions."
+
+
+def test_skill_md_quoted_description_unwraps(tmp_path: Path) -> None:
+    """Single-quoted multi-clause description (skills.sh style) →
+    quotes stripped."""
+    md = (
+        "---\n"
+        "name: enhance-prompt\n"
+        "description: 'Improve prompts iteratively. Use when user "
+        "asks for prompt feedback.'\n"
+        "---\n\n"
+        "# Enhance Prompt\n\nBody.\n"
+    )
+    _write_skill_md(tmp_path, "enhance-prompt", body=md)
+    reg = SkillRegistry()
+    UserSkillsLoader(reg, tmp_path).load_all()
+
+    m = reg.ref("enhance-prompt").manifest
+    assert m.description.startswith("Improve prompts iteratively")
+    assert "'" not in m.description.split(".")[0]  # leading quote stripped
+
+
+def test_manifest_to_dict_round_trips_description(tmp_path: Path) -> None:
+    """Sanity: SkillManifest.to_dict() puts description in JSON output
+    so /api/v2/skills can ship it to the UI (the gap that produced the
+    'all skills show —' bug)."""
+    from xmclaw.skills.manifest import SkillManifest
+    m = SkillManifest(
+        id="x", version=1, title="X", description="does x",
+        triggers=("a", "b"),
+    )
+    d = m.to_dict()
+    assert d["description"] == "does x"
+    assert d["title"] == "X"
+    assert d["triggers"] == ["a", "b"]  # tuple → list for JSON

@@ -14,7 +14,6 @@ Locks the contract:
 """
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
@@ -25,6 +24,7 @@ from xmclaw.core.evolution.proposer import _Pattern
 from xmclaw.core.journal import JournalEntry, ToolCallSummary
 from xmclaw.core.profile import ProfileDelta
 from xmclaw.daemon.llm_extractors import (
+    _normalize_skill_id,
     _parse_json_array,
     build_profile_extractor,
     build_skill_extractor,
@@ -137,7 +137,7 @@ async def test_skill_extractor_happy_path() -> None:
     llm = _ScriptedLLM(script=["""
 [
   {
-    "skill_id": "git.status",
+    "skill_id": "auto-git-status-check",
     "title": "Git Status Workflow",
     "description": "Check git status before any code changes",
     "body": "step 1: bash git status\\nstep 2: review changes",
@@ -155,7 +155,7 @@ async def test_skill_extractor_happy_path() -> None:
 
     assert len(result) == 1
     assert isinstance(result[0], ProposedSkill)
-    assert result[0].skill_id == "git.status"
+    assert result[0].skill_id == "auto-git-status-check"
     assert result[0].confidence == 0.85
     assert result[0].evidence == ("sess-1", "sess-2")
 
@@ -182,20 +182,20 @@ async def test_skill_extractor_empty_patterns_skips_llm() -> None:
 async def test_skill_extractor_drops_invalid_entries() -> None:
     llm = _ScriptedLLM(script=["""
 [
-  {"skill_id": "good", "evidence": ["s1"], "confidence": 0.9},
+  {"skill_id": "auto-good-thing", "evidence": ["s1"], "confidence": 0.9},
   {"missing_skill_id": true},
   "not even a dict",
-  {"skill_id": "no_evidence", "evidence": [], "confidence": 0.9}
+  {"skill_id": "auto-no-evidence", "evidence": [], "confidence": 0.9}
 ]
 """])
     extractor = build_skill_extractor(llm)
     patterns = [_pattern("x", ("s1",))]
     result = await extractor(patterns, [])
-    # Only the first ("good") survives. "no_evidence" fails the
-    # ABI-level evidence-non-empty check inside ProposedSkill;
-    # "missing_skill_id" lacks required field; string isn't a dict.
+    # Only the first ("auto-good-thing") survives. "auto-no-evidence"
+    # fails the ABI-level evidence-non-empty check; "missing_skill_id"
+    # lacks required field; string isn't a dict.
     assert len(result) == 1
-    assert result[0].skill_id == "good"
+    assert result[0].skill_id == "auto-good-thing"
 
 
 @pytest.mark.asyncio
@@ -211,13 +211,103 @@ async def test_skill_extractor_llm_exception_isolated() -> None:
 async def test_skill_extractor_handles_fenced_response() -> None:
     llm = _ScriptedLLM(script=[
         "Here are the proposals:\n```json\n["
-        '{"skill_id": "fenced", "evidence": ["s1"], "confidence": 0.7}'
+        '{"skill_id": "auto-fenced-skill", "evidence": ["s1"], "confidence": 0.7}'
         "]\n```\nDone!",
     ])
     extractor = build_skill_extractor(llm)
     result = await extractor([_pattern("x", ("s1",))], [])
     assert len(result) == 1
-    assert result[0].skill_id == "fenced"
+    assert result[0].skill_id == "auto-fenced-skill"
+
+
+# ── B-169 skill_id normalisation ─────────────────────────────────────
+
+
+def test_normalize_canonical_form_kept() -> None:
+    assert _normalize_skill_id("auto-bash-review") == "auto-bash-review"
+    assert _normalize_skill_id("auto-summarise-test-failures") == "auto-summarise-test-failures"
+
+
+def test_normalize_dotted_to_kebab() -> None:
+    """LLM still slips into dotted convention → coerce to kebab."""
+    assert _normalize_skill_id("auto.bash.review") == "auto-bash-review"
+    assert _normalize_skill_id("auto.bash_review") == "auto-bash-review"
+
+
+def test_normalize_underscore_to_kebab() -> None:
+    assert _normalize_skill_id("auto_bash_review") == "auto-bash-review"
+
+
+def test_normalize_uppercase_to_lower() -> None:
+    assert _normalize_skill_id("Auto-Bash-Review") == "auto-bash-review"
+
+
+def test_normalize_strips_skill_prefix() -> None:
+    """LLM emits ``skill_<x>`` / ``skill-<x>`` → strip then add auto-."""
+    assert _normalize_skill_id("skill_bash_review") == "auto-bash-review"
+    assert _normalize_skill_id("skill-bash-review") == "auto-bash-review"
+
+
+def test_normalize_rejects_single_segment() -> None:
+    """Single segment after auto- (``auto-bash``) is too vague."""
+    assert _normalize_skill_id("auto-bash") is None
+    assert _normalize_skill_id("bash") is None
+
+
+def test_normalize_rejects_empty_or_non_string() -> None:
+    assert _normalize_skill_id("") is None
+    assert _normalize_skill_id(None) is None
+    assert _normalize_skill_id(12345) is None
+
+
+def test_normalize_rejects_too_long() -> None:
+    long = "auto-" + "-".join(["seg"] * 30)
+    assert _normalize_skill_id(long) is None
+
+
+def test_normalize_strips_special_chars() -> None:
+    assert _normalize_skill_id("auto-bash!review@check") == "auto-bashreviewcheck" or \
+           _normalize_skill_id("auto-bash!review@check") is None
+
+
+def test_normalize_collapses_repeating_separators() -> None:
+    assert _normalize_skill_id("auto--bash---review") == "auto-bash-review"
+    assert _normalize_skill_id("auto..bash..review") == "auto-bash-review"
+
+
+@pytest.mark.asyncio
+async def test_skill_extractor_normalises_dotted_id_from_llm() -> None:
+    """Round-trip via the extractor — LLM gives dotted, we get kebab."""
+    llm = _ScriptedLLM(script=["""
+[
+  {
+    "skill_id": "auto.bash_review",
+    "evidence": ["sess-1"],
+    "confidence": 0.8,
+    "body": "do the thing"
+  }
+]
+"""])
+    extractor = build_skill_extractor(llm)
+    result = await extractor([_pattern("bash", ("sess-1",))], [])
+    assert len(result) == 1
+    assert result[0].skill_id == "auto-bash-review"
+
+
+@pytest.mark.asyncio
+async def test_skill_extractor_drops_uncoerceable_id() -> None:
+    """LLM emits ``auto-x`` (one segment after prefix) → reject; the
+    other valid entry still passes."""
+    llm = _ScriptedLLM(script=["""
+[
+  {"skill_id": "auto-x", "evidence": ["s1"], "confidence": 0.9, "body": "ok"},
+  {"skill_id": "auto-good-thing", "evidence": ["s1"], "confidence": 0.9, "body": "ok"}
+]
+"""])
+    extractor = build_skill_extractor(llm)
+    result = await extractor([_pattern("x", ("s1",))], [])
+    assert len(result) == 1
+    assert result[0].skill_id == "auto-good-thing"
 
 
 # ── profile extractor ───────────────────────────────────────────────

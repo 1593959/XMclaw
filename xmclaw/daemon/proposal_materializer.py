@@ -266,8 +266,11 @@ class ProposalMaterializer:
         manifest = SkillManifest(
             id=skill_id,
             version=1,
+            title=title,
+            description=description,
             created_by="evolved",
             evidence=tuple(evidence),
+            triggers=tuple(triggers),
         )
         try:
             self._registry.register(skill, manifest, set_head=True)

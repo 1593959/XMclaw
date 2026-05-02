@@ -36,6 +36,7 @@ import importlib.util
 import inspect
 import json
 import logging
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -257,9 +258,17 @@ class UserSkillsLoader:
                 error=f"SKILL.md read failed: {exc}",
             )
 
+        # B-170: parse SKILL.md frontmatter (skills.sh ecosystem
+        # standard: ``description``, ``name`` / ``title``,
+        # optional ``allowed-tools``) so the manifest carries the
+        # one-line description the Skills page renders. Pre-B-170 the
+        # manifest was empty → UI showed "—" for every skill.
+        title, description, triggers = _parse_skill_md_frontmatter(body)
+
         skill = MarkdownProcedureSkill(id=skill_id, body=body, version=1)
         manifest = SkillManifest(
             id=skill_id, version=1, created_by="user",
+            title=title, description=description, triggers=triggers,
         )
         try:
             self._registry.register(skill, manifest, set_head=True)
@@ -351,6 +360,8 @@ class UserSkillsLoader:
         return SkillManifest(
             id=skill_id,
             version=ver,
+            title=str(data.get("title", "") or ""),
+            description=str(data.get("description", "") or ""),
             permissions_fs=_as_tuple("permissions_fs"),
             permissions_net=_as_tuple("permissions_net"),
             permissions_subprocess=_as_tuple("permissions_subprocess"),
@@ -358,4 +369,96 @@ class UserSkillsLoader:
             max_memory_mb=int(data.get("max_memory_mb", 512)),
             created_by=str(data.get("created_by", "user")),
             evidence=_as_tuple("evidence"),
+            triggers=_as_tuple("triggers"),
         )
+
+
+# ── B-170 SKILL.md frontmatter parser ──────────────────────────────
+
+
+_FRONTMATTER_BLOCK_RE = re.compile(
+    r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL,
+)
+
+
+def _parse_skill_md_frontmatter(
+    body: str,
+) -> tuple[str, str, tuple[str, ...]]:
+    """Pull ``title`` / ``description`` / ``triggers`` from SKILL.md.
+
+    The skills.sh ecosystem (``npx skills add``) and Claude Code share
+    a YAML-frontmatter convention at the top of SKILL.md: ``name``,
+    ``description``, optional ``triggers``. We don't pull a full YAML
+    parser dep just for these — a flat-key scan covers the dialect we
+    care about, and falls back to first-h1 / first-paragraph
+    heuristics when frontmatter is absent.
+
+    Returns ``(title, description, triggers)``. Each is empty when the
+    file gives no signal — caller is expected to handle the empty
+    case (the UI already does, displaying "—").
+
+    Multi-line YAML scalars (``> | folded blocks``) are not supported
+    because the ecosystem's typical SKILL.md keeps these one-liners.
+    The bracketed-list form ``triggers: [a, b]`` *is* recognised so
+    skills.sh templates round-trip cleanly.
+    """
+    title = ""
+    description = ""
+    triggers: tuple[str, ...] = ()
+
+    m = _FRONTMATTER_BLOCK_RE.match(body or "")
+    if m is not None:
+        for raw in m.group(1).splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" not in line:
+                continue
+            key, _, val = line.partition(":")
+            key = key.strip().lower()
+            val = val.strip()
+            # Strip surrounding quotes.
+            if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+                val = val[1:-1]
+            if key in ("name", "title") and not title:
+                title = val
+            elif key == "description" and not description:
+                description = val
+            elif key in ("triggers", "trigger") and not triggers:
+                if val.startswith("[") and val.endswith("]"):
+                    inner = val[1:-1]
+                    parts = [
+                        p.strip().strip("'\"")
+                        for p in inner.split(",")
+                    ]
+                    triggers = tuple(p for p in parts if p)
+                elif val:
+                    triggers = (val,)
+
+    # Fallback: no frontmatter description → first heading + first
+    # paragraph. Cheap, often surprisingly good — most SKILL.md open
+    # with "# Foo\n\nFoo does …".
+    if not title or not description:
+        # Skip frontmatter block if any.
+        rest = body
+        if m is not None:
+            rest = body[m.end():]
+        if not title:
+            for line in rest.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("# "):
+                    title = stripped[2:].strip()
+                    break
+                if stripped:
+                    # Hit non-heading content first → no h1, give up.
+                    break
+        if not description:
+            # First non-blank non-heading paragraph (single line).
+            for line in rest.splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                description = stripped[:280]
+                break
+
+    return title, description, triggers

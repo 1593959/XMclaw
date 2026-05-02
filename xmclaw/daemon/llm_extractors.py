@@ -106,7 +106,7 @@ _SKILL_SYSTEM_PROMPT = (
     "array. NO PROSE, NO MARKDOWN FENCES. Each element MUST have "
     "the exact shape:\n"
     "{\n"
-    '  "skill_id": "lowercase.dotted.id",\n'
+    '  "skill_id": "auto-<verb>-<noun>[-<more>]",\n'
     '  "title": "short human title",\n'
     '  "description": "one-line description",\n'
     '  "body": "step-by-step procedure body",\n'
@@ -115,10 +115,75 @@ _SKILL_SYSTEM_PROMPT = (
     '  "evidence": ["session_id1", "session_id2"],\n'
     '  "source_pattern": "tool X used in 4 sessions"\n'
     "}\n"
+    "B-169 skill_id naming rules (HARD):\n"
+    "  - Starts with literal ``auto-`` so users can tell evolution-"
+    "produced skills apart from curated/skills.sh ones.\n"
+    "  - Kebab-case after the prefix: lowercase a-z, digits 0-9, "
+    "hyphens only. NO dots, NO underscores, NO uppercase, NO spaces.\n"
+    "  - At least TWO segments after ``auto-`` (verb + noun). "
+    "``auto-bash`` is rejected; ``auto-bash-review`` is accepted.\n"
+    "  - 12-60 chars total. Prefer verb-noun structure naming WHAT "
+    "the skill DOES, not which tool it uses.\n"
+    "  - Good: ``auto-summarise-failures``, ``auto-clean-pyc-files``, "
+    "``auto-extract-flask-routes``, ``auto-write-pytest-fixtures``.\n"
+    "  - Bad (rejected): ``auto.bash_review`` (dots/underscores), "
+    "``BashReview`` (case + missing prefix), ``auto-bash`` (single "
+    "segment), ``auto-do-it`` (vague), ``skill_42`` (no prefix).\n"
     "Confidence ∈ [0, 1]. Evidence MUST list at least one source "
     "session_id. If the patterns don't justify any new skill, return "
     "[]."
 )
+
+
+# B-169: enforce auto-kebab-case skill_id so evolution-produced skills
+# read consistently with the skills.sh ecosystem (git-commit, find-skills,
+# skill-creator). The dotted namespace lives in built-in Python skills
+# (demo.read_and_summarize) and is a Python module convention; LLM-drafted
+# Markdown skills should follow the dominant kebab look instead.
+_AUTO_SKILL_ID_RE = re.compile(
+    r"^auto-[a-z0-9]+(?:-[a-z0-9]+){1,5}$",
+)
+_SKILL_ID_MIN = 12
+_SKILL_ID_MAX = 60
+
+
+def _normalize_skill_id(raw: Any) -> str | None:
+    """Coerce an LLM's ``skill_id`` to the ``auto-kebab-case`` convention.
+
+    Strategy:
+      1. Lowercase + strip.
+      2. Strip common scheme prefixes the LLM might emit
+         (``skill_``, ``skill-``, ``skill.``, ``auto_``, ``auto.``).
+      3. Replace dots / underscores / whitespace with hyphens.
+      4. Drop everything outside ``[a-z0-9-]``.
+      5. Collapse repeated hyphens; trim leading/trailing.
+      6. Re-prepend ``auto-``.
+      7. Validate against :data:`_AUTO_SKILL_ID_RE` + length bounds.
+
+    Returns ``None`` when the input can't be coerced to a valid id —
+    the caller drops that proposal rather than registering a phantom.
+    """
+    if not isinstance(raw, str):
+        return None
+    s = raw.strip().lower()
+    if not s:
+        return None
+    # Common LLM slips — strip schemey prefixes before normalising.
+    for prefix in ("skill_", "skill-", "skill.", "auto_", "auto.", "auto-"):
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+            break
+    s = re.sub(r"[\s._]+", "-", s)
+    s = re.sub(r"[^a-z0-9-]", "", s)
+    s = re.sub(r"-+", "-", s).strip("-")
+    if not s:
+        return None
+    candidate = f"auto-{s}"
+    if not (_SKILL_ID_MIN <= len(candidate) <= _SKILL_ID_MAX):
+        return None
+    if not _AUTO_SKILL_ID_RE.match(candidate):
+        return None
+    return candidate
 
 
 def _format_patterns_for_prompt(
@@ -148,7 +213,14 @@ def _format_patterns_for_prompt(
 
 
 def _coerce_proposed_skill(raw: Any) -> ProposedSkill | None:
-    """Convert one LLM JSON object into ProposedSkill or None."""
+    """Convert one LLM JSON object into ProposedSkill or None.
+
+    B-169: ``skill_id`` runs through :func:`_normalize_skill_id` before
+    accepting the proposal. Slips like ``auto.bash_review`` get
+    rewritten to ``auto-bash-review``; un-fixable ids (single segment,
+    no alphanumerics, way too long, missing `auto-` after stripping)
+    drop the proposal so we don't pollute the registry namespace.
+    """
     if not isinstance(raw, dict):
         return None
     try:
@@ -158,9 +230,17 @@ def _coerce_proposed_skill(raw: Any) -> ProposedSkill | None:
         triggers = raw.get("triggers") or []
         if not isinstance(triggers, list):
             triggers = []
+        sid = _normalize_skill_id(raw.get("skill_id"))
+        if sid is None:
+            _log.info(
+                "llm_extractor.skill_id_rejected raw=%s — drops the "
+                "proposal; LLM will retry on next dream tick.",
+                str(raw.get("skill_id"))[:60],
+            )
+            return None
         return ProposedSkill(
-            skill_id=str(raw["skill_id"]),
-            title=str(raw.get("title") or raw["skill_id"]),
+            skill_id=sid,
+            title=str(raw.get("title") or sid),
             description=str(raw.get("description") or ""),
             body=str(raw.get("body") or ""),
             triggers=tuple(str(t) for t in triggers),
