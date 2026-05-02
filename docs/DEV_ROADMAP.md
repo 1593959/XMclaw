@@ -1335,6 +1335,15 @@ Phase 2-4 检查清单 Phase 1 完成后再细化。
 
   **路径统一**：B-163 是直面"路径与文件统一原则"的退让——共享路径事实上是其他工具系统的写路径，XMclaw 默认读它换"零 config"换"路径分裂"。原则没破：写还是写到 `~/.xmclaw/skills_user/`（规范路径），扫描多三个 read source 是 *最终用户已经在用* 的目录，不是 XMclaw 自己写的。
 
+  **Phase 6.1 收尾（B-165 + B-166 + B-167，2026-05-02 同日）**：用户继续测，又踩到三个问题。
+  - **B-165 索引文件不挂"无 desc"红警**：`~/.xmclaw/memory/MEMORY.md` 是被 system prompt 直接加载的索引，本来就不走 LLM-picker，UI 却给它挂 "⚠ 无 desc" 红色警告。`Memory-NotesJournal.js` 加 `/^(memory|readme)\.md$/i` 索引匹配，索引文件改挂中性 "📌 索引" 角标。
+  - **B-166 SKILL.md 装的技能被错打 BUILT-IN**：用户把 `~/.agents/skills/` 11 个技能（git-commit / find-skills 等）装好后，技能页全部被打上 `BUILT-IN` 绿牌。根因：`daemon/routers/skills.py::_classify_source` 只看 Python 模块路径，所有 SKILL.md 都被 `UserSkillsLoader` 包成 `MarkdownProcedureSkill`（住在 `xmclaw.skills.markdown_skill`）→ 路径前缀匹配 → 标 built-in。修：分类器优先看 `manifest.created_by`（user / evolved / llm / human），回退到模块路径。`Skills.js` 加 `SOURCE_META` 表给四种来源独立 badge + 文案；filter "用户" 视图折进 user/evolved/llm 三类。3 个新单测 lock 行为。
+  - **B-167 进化产 SKILL.md 真接到 SkillRegistry**：用户问"进化系统现在如何产生技能，到哪里"，回答时发现链路断了——`SkillProposer` 起草 `ProposedSkill` → 发 `SKILL_CANDIDATE_PROPOSED(winner_version=0)` → orchestrator 试着 `registry.promote(id, 0)` 立即失败因为 v0 没注册。即"草稿生成 → 可用技能"中间缺一步。新增 `xmclaw/daemon/proposal_materializer.py::ProposalMaterializer`：订阅 `decision="propose"` 事件，拿 `payload.draft.body` → 渲染 YAML frontmatter（description / triggers / created_by=evolved / evidence / confidence / source_pattern / materialized_at）→ 写到 `~/.xmclaw/skills_user/<id>/SKILL.md` → 包 `MarkdownProcedureSkill` → `registry.register(set_head=True)` → 立即可用，**无需手动 approve**。Idempotent：同 id 重发跳过；空 body / 无 evidence 拒绝写入（anti-req #12 精神保留）。`Evolution.js` 拿掉 `xmclaw evolve approve` 提示，改为 "已自动激活 → 见技能页 / 不喜欢就 rollback"；副标题更新为"四件套"（HonestGrader · EvolutionAgent · SkillDreamCycle · ProposalMaterializer）。`doctor_registry.EvolutionPipelineCheck` 必需 token 列表加 `RealtimeEvolutionTrigger` + `ProposalMaterializer`。配置：`evolution.materialize.enabled` 默认 ON；想退回手动审批写 false。12 个新单测 + 110 个 doctor 测试全过。
+
+  **anti-req #12 维护**：`SkillRegistry.register()` 本来就不强制 evidence；`promote()` 强制。B-167 走 register 直入 HEAD（新技能没有 prev version 可"promote"），把 evidence 写入 `manifest.evidence` 字段——审计语义保留，未来回放也能拿到。回滚 / 后续 v2 mutate 仍然走 `promote()`，evidence 强制点没改。
+
+  **路径统一**：B-167 写入路径 == B-163 第一扫描根（`~/.xmclaw/skills_user/`）== UserSkillsLoader 默认路径。同一文件被 ProposalMaterializer 写、被 user_loader 读、被技能页显示、被 SkillToolProvider 暴露给 agent。零分裂。
+
 ---
 
 ## 5. 让差异化"看得见"（Visible Differentiation）

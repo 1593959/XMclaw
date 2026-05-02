@@ -1964,6 +1964,8 @@ class EvolutionPipelineCheck(DoctorCheck):
         "SkillDreamCycle",      # Phase 3.2
         "build_skill_extractor",   # Phase 3.5 — LLM extractor wired in
         "build_profile_extractor",
+        "RealtimeEvolutionTrigger",  # B-164 — per-turn proposer pokes
+        "ProposalMaterializer",      # B-167 — propose → SKILL.md + register
     )
 
     def run(self, ctx: DoctorContext) -> CheckResult:  # noqa: ARG002

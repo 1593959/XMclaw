@@ -751,6 +751,38 @@ def create_app(
             _app.state.skill_dream = None
             _app.state.realtime_evolution = None
 
+        # B-167: ProposalMaterializer — closes the missing link between
+        # SkillProposer drafts (decision="propose") and SkillRegistry.
+        # Pre-B-167 a draft sat in proposals.jsonl + events.db and the
+        # "approve" button forwarded to /promote, which 404'd because
+        # winner_version=0 was never registered. Now: every proposal
+        # writes ~/.xmclaw/skills_user/<id>/SKILL.md + register +
+        # set_head — the agent uses it on the next turn, no manual
+        # gate. Disable via ``evolution.materialize.enabled = false``
+        # if the user prefers the old (broken) approve-first flow.
+        _app.state.proposal_materializer = None
+        if orchestrator is not None:
+            try:
+                from xmclaw.daemon.proposal_materializer import (
+                    ProposalMaterializer,
+                )
+                pm_cfg = (
+                    ((config or {}).get("evolution") or {}).get("materialize")
+                    or {}
+                )
+                pm_enabled = bool(pm_cfg.get("enabled", True))
+                if pm_enabled:
+                    materializer = ProposalMaterializer(
+                        orchestrator.registry, bus, enabled=True,
+                    )
+                    await materializer.start()
+                    _app.state.proposal_materializer = materializer
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "proposal_materializer.start_failed err=%s", exc,
+                )
+                _app.state.proposal_materializer = None
+
         # B-145: channel adapters (飞书 / 钉钉 / 企微 / Telegram).
         # Each enabled channel gets a long-running adapter that listens
         # for inbound messages + dispatches them through the same
@@ -925,6 +957,15 @@ def create_app(
             if _rt is not None:
                 try:
                     await _rt.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            # B-167: stop the proposal materializer so it doesn't try
+            # to register skills mid-shutdown when the registry is
+            # about to go away with the orchestrator.
+            _pm = getattr(_app.state, "proposal_materializer", None)
+            if _pm is not None:
+                try:
+                    await _pm.stop()
                 except Exception:  # noqa: BLE001
                     pass
             # Epic #24 Phase 3.2: stop the skill_dream periodic task.

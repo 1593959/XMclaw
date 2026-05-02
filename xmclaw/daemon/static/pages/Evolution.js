@@ -73,13 +73,19 @@ function ProposalCard({ ev }) {
   const evidence = (p.evidence || []).slice(0, 5);
   const ts = ev.ts;
   const conf = draft.confidence;
+  // B-167: "propose" decisions are auto-materialized by
+  // ProposalMaterializer into ~/.xmclaw/skills_user/<id>/SKILL.md +
+  // SkillRegistry on receipt. The UI no longer shows an approve
+  // button — by the time you read this card, the skill is already
+  // active. Rollback / unregister via 技能 page.
+  const isPropose = (p.decision || "propose") === "propose";
   return html`
     <div class="xmc-h-skill-card" style="padding:.6rem .8rem">
       <div style="display:flex;align-items:baseline;gap:.5rem;flex-wrap:wrap;margin-bottom:.4rem">
         <code class="xmc-h-skill-card__id">${p.winner_candidate_id || "?"}</code>
         ${p.decision === "rollback"
           ? html`<span class="xmc-h-badge xmc-h-badge--warning">回滚提议</span>`
-          : html`<span class="xmc-h-badge xmc-h-badge--info">新技能提议</span>`}
+          : html`<span class="xmc-h-badge xmc-h-badge--success">已自动激活</span>`}
         ${conf != null
           ? html`<span class="xmc-h-badge xmc-h-badge--muted">conf ${(conf).toFixed(2)}</span>`
           : null}
@@ -102,9 +108,14 @@ function ProposalCard({ ev }) {
             evidence: ${evidence.map((e) => html`<code style="font-size:.65rem;margin-right:.3rem" key=${e}>${e}</code>`)}
           </div>`
         : null}
-      <div style="margin-top:.5rem;font-size:.72rem;opacity:.7">
-        审批：终端跑 <code>xmclaw evolve approve ${p.winner_candidate_id || "&lt;id&gt;"}</code>
-      </div>
+      ${isPropose
+        ? html`<div style="margin-top:.5rem;font-size:.72rem;opacity:.7">
+            已写入 <code>~/.xmclaw/skills_user/${p.winner_candidate_id || "&lt;id&gt;"}/SKILL.md</code> · agent 下一轮可调用 ·
+            不喜欢？去技能页 rollback / 删目录
+          </div>`
+        : html`<div style="margin-top:.5rem;font-size:.72rem;opacity:.7">
+            回滚提议由 controller 处理（auto_apply=true 时立即生效）
+          </div>`}
     </div>
   `;
 }
@@ -207,8 +218,9 @@ export function EvolutionPage({ token }) {
         <div class="xmc-h-page__heading">
           <h2 id="evo-title" class="xmc-h-page__title">进化</h2>
           <p class="xmc-h-page__subtitle">
-            HonestGrader · EvolutionAgent observer · SkillDreamCycle 三件套的可视面板。
-            候选只提议，approve 走 <code>xmclaw evolve approve &lt;id&gt;</code> CLI（anti-req #12 在 SkillRegistry 入口强制）。
+            HonestGrader · EvolutionAgent observer · SkillDreamCycle · ProposalMaterializer 四件套。
+            B-167 起新技能提议<strong>自动落到 SKILL.md 并注册</strong>，无需手动 approve；
+            evidence 仍随 manifest 写入审计（anti-req #12 借 manifest.evidence 满足）。
           </p>
         </div>
       </header>
@@ -247,13 +259,15 @@ export function EvolutionPage({ token }) {
           <h3 style="margin:0 0 .5rem;font-size:1.05rem">待审进化提议</h3>
           ${proposals.length === 0
             ? html`<div class="xmc-h-empty" style="padding:1rem;font-size:.85rem;line-height:1.6">
-                <p style="margin:0 0 .4rem"><strong>暂无待审提议。</strong></p>
-                <p style="margin:0 0 .3rem;opacity:.8">B-164 起进化是<strong>实时</strong>的：
-                每轮对话结束 ~15s 后 SkillProposer 会扫最近的 journal，
-                找重复出现的 tool 模式，让 LLM 起草新 SKILL.md 候选。
-                还会兜底跑 30 分钟周期任务以防漏掉空闲时段的演化机会。</p>
-                <p style="margin:0;opacity:.7;font-size:.78rem">想关实时触发？<code>daemon/config.json</code> 加
-                <code>"evolution":{"realtime":{"enabled":false}}</code>。</p>
+                <p style="margin:0 0 .4rem"><strong>暂无近期进化记录。</strong></p>
+                <p style="margin:0 0 .3rem;opacity:.8">B-164 + B-167 起进化是<strong>实时 + 自动激活</strong>的：
+                每轮对话结束 ~15s 后 SkillProposer 扫最近的 journal，
+                找重复出现的 tool 模式，让 LLM 起草新 SKILL.md，
+                ProposalMaterializer 收到草稿 → 写到 <code>~/.xmclaw/skills_user/&lt;id&gt;/SKILL.md</code> +
+                注册到 SkillRegistry，下一轮即可被 agent 调用。</p>
+                <p style="margin:0;opacity:.7;font-size:.78rem">想退回手动审批？
+                <code>daemon/config.json</code> 加 <code>"evolution":{"materialize":{"enabled":false}}</code>；
+                想关实时触发：<code>"realtime":{"enabled":false}</code>。</p>
               </div>`
             : html`<div style="display:grid;gap:.5rem">
                 ${proposals.map((ev) => html`<${ProposalCard} key=${ev.id} ev=${ev} />`)}
