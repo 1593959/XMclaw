@@ -30,24 +30,86 @@ def _call(name: str, args: dict | None = None) -> ToolCall:
 # ── tool list ─────────────────────────────────────────────────────
 
 
-def test_list_tools_always_advertises_twelve() -> None:
+def test_list_tools_no_config_only_universals() -> None:
+    """B-180: with no config the LLM only sees the always-on
+    universals (webhook_send + rss_fetch). The 10 service-specific
+    tools stay hidden — joint audit (events.db) showed agent
+    never tries unconfigured ones, so listing them was just
+    spec-bloat."""
     names = {s.name for s in IntegrationsTools().list_tools()}
-    assert names == {
-        "webhook_send", "email_send", "rss_fetch",
-        "slack_send", "telegram_send", "discord_send",
-        "github_create_issue", "notion_create_page",
-        # B-144 国内主流聊天工具
-        "feishu_send", "wecom_send", "dingtalk_send", "qq_send",
+    assert names == {"webhook_send", "rss_fetch"}
+
+
+def test_list_tools_exposes_only_configured_services() -> None:
+    """Configure slack + telegram → those two appear, others stay
+    hidden. github stays hidden because token is unset."""
+    cfg = {
+        "slack": {"enabled": True, "bot_token": "xoxb-real"},
+        "telegram": {"enabled": True, "bot_token": "12345:abc"},
+        "github": {"enabled": True, "token": ""},  # empty == not configured
+        "discord": {"enabled": True},  # no creds at all
     }
+    names = {s.name for s in IntegrationsTools(cfg).list_tools()}
+    assert "slack_send" in names
+    assert "telegram_send" in names
+    assert "github_create_issue" not in names
+    assert "discord_send" not in names
+    # Universals always there.
+    assert "webhook_send" in names
+    assert "rss_fetch" in names
 
 
-def test_list_tools_unchanged_when_config_present() -> None:
-    """Hiding tools on missing config would make the LLM guess we
-    don't have them and reach for clumsier paths. Always advertise."""
-    cfg = {"slack": {"bot_token": "xoxb-fake"}}
-    names_with    = {s.name for s in IntegrationsTools(cfg).list_tools()}
-    names_without = {s.name for s in IntegrationsTools().list_tools()}
-    assert names_with == names_without
+def test_list_tools_treats_stub_values_as_unconfigured() -> None:
+    """Config wizard writes ``YOUR_TOKEN_HERE`` placeholders. Those
+    must NOT count as 'configured' — would re-bloat the spec for
+    fresh installs that never edited config."""
+    cfg = {
+        "slack": {"enabled": True, "bot_token": "YOUR_BOT_TOKEN"},
+        "telegram": {"enabled": True, "bot_token": "changeme"},
+        "github": {"enabled": True, "token": "tbd"},
+        "notion": {"enabled": True, "api_key": "TODO"},
+    }
+    names = {s.name for s in IntegrationsTools(cfg).list_tools()}
+    assert "slack_send" not in names
+    assert "telegram_send" not in names
+    assert "github_create_issue" not in names
+    assert "notion_create_page" not in names
+
+
+def test_list_tools_explicit_disabled_hides_even_with_creds() -> None:
+    """Explicit ``enabled: false`` overrides credential presence —
+    user might keep tokens for later but want the tool off now."""
+    cfg = {
+        "slack": {"enabled": False, "bot_token": "xoxb-real-token"},
+    }
+    names = {s.name for s in IntegrationsTools(cfg).list_tools()}
+    assert "slack_send" not in names
+
+
+def test_list_tools_email_gated_on_smtp_host() -> None:
+    cfg_off = {"email": {"enabled": True, "smtp_host": ""}}
+    assert "email_send" not in {s.name for s in IntegrationsTools(cfg_off).list_tools()}
+    cfg_on = {"email": {"enabled": True, "smtp_host": "smtp.gmail.com"}}
+    assert "email_send" in {s.name for s in IntegrationsTools(cfg_on).list_tools()}
+
+
+def test_list_tools_real_user_config_exposes_zero_integrations() -> None:
+    """Reproduce the user's actual config from joint audit: 5 sections
+    with `enabled` + stub values (bot_token: '' etc). Pre-B-180 this
+    would advertise 12 tools; post-B-180 advertises 0 service tools
+    (only webhook + rss universals)."""
+    cfg = {
+        "slack":    {"enabled": True, "bot_token": "", "channel": ""},
+        "discord":  {"enabled": True, "bot_token": "", "channel_id": ""},
+        "telegram": {"enabled": True, "bot_token": "", "chat_id": ""},
+        "github":   {"enabled": True, "token": "", "repo": ""},
+        "notion":   {"enabled": True, "api_key": "", "database_id": ""},
+    }
+    names = {s.name for s in IntegrationsTools(cfg).list_tools()}
+    service_tools = names - {"webhook_send", "rss_fetch"}
+    assert service_tools == set(), (
+        f"unconfigured services leaked into tool list: {service_tools}"
+    )
 
 
 # ── unconfigured services return actionable errors ──────────────

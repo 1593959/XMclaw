@@ -348,26 +348,88 @@ class IntegrationsTools(ToolProvider):
         s = self._cfg.get(key)
         return s if isinstance(s, dict) else {}
 
+    @staticmethod
+    def _has_real_value(d: dict[str, Any], *keys: str) -> bool:
+        """One of ``keys`` is set to a non-stub value.
+
+        Stub markers we've seen on disk:
+          * empty string
+          * ``"YOUR_*"`` placeholders the config wizard writes
+          * literal ``"changeme"`` / ``"todo"``
+        """
+        for k in keys:
+            v = d.get(k)
+            if not isinstance(v, str):
+                continue
+            v = v.strip()
+            if not v:
+                continue
+            low = v.lower()
+            if low.startswith("your_") or low in ("changeme", "todo", "tbd"):
+                continue
+            return True
+        return False
+
+    def _is_enabled(self, section: str, *credential_keys: str) -> bool:
+        """B-180: integration is exposed only when ``enabled: true``
+        AND at least one credential key holds a real (non-stub) value.
+
+        Pre-B-180 the provider unconditionally listed all 12 tools so
+        the agent could "discover and try them." Real-data audit
+        (events.db) showed the agent never tries unconfigured ones —
+        it just routes around them. Net effect was 12 stubs cluttering
+        the LLM's tool spec on every turn for zero benefit.
+        """
+        sec = self._section(section)
+        if not sec:
+            return False
+        if not bool(sec.get("enabled", True)):
+            # Explicit `enabled: false` hides regardless of creds.
+            return False
+        return self._has_real_value(sec, *credential_keys)
+
     def list_tools(self) -> list[ToolSpec]:
-        # Always advertise — even when the user hasn't configured a
-        # service, the LLM gets a clear "configure first" error if it
-        # tries. Hiding tools just makes the agent guess we don't have
-        # them and reach for clumsier paths.
-        return [
+        """B-180: tool list is gated by configured credentials.
+
+        Always-on (no per-service config required):
+          * ``webhook_send`` — URL is always per-call; no auth needed
+            in the tool itself (caller passes Authorization header
+            verbatim if their endpoint wants one)
+          * ``rss_fetch`` — URL per-call, anonymous fetch
+
+        Config-gated (only listed when the user has actually
+        configured the credentials):
+          * email_send / slack_send / telegram_send / discord_send /
+            github_create_issue / notion_create_page / feishu_send /
+            wecom_send / dingtalk_send / qq_send
+        """
+        out: list[ToolSpec] = [
             _WEBHOOK_SEND_SPEC,
-            _EMAIL_SEND_SPEC,
             _RSS_FETCH_SPEC,
-            _SLACK_SEND_SPEC,
-            _TELEGRAM_SEND_SPEC,
-            _DISCORD_SEND_SPEC,
-            _GITHUB_CREATE_ISSUE_SPEC,
-            _NOTION_CREATE_PAGE_SPEC,
-            # B-144: 国内主流聊天工具
-            _FEISHU_SEND_SPEC,
-            _WECOM_SEND_SPEC,
-            _DINGTALK_SEND_SPEC,
-            _QQ_SEND_SPEC,
         ]
+
+        if self._is_enabled("email", "smtp_host"):
+            out.append(_EMAIL_SEND_SPEC)
+        if self._is_enabled("slack", "bot_token", "webhook_url"):
+            out.append(_SLACK_SEND_SPEC)
+        if self._is_enabled("telegram", "bot_token"):
+            out.append(_TELEGRAM_SEND_SPEC)
+        if self._is_enabled("discord", "bot_token", "webhook_url"):
+            out.append(_DISCORD_SEND_SPEC)
+        if self._is_enabled("github", "token"):
+            out.append(_GITHUB_CREATE_ISSUE_SPEC)
+        if self._is_enabled("notion", "api_key"):
+            out.append(_NOTION_CREATE_PAGE_SPEC)
+        # B-144: 国内主流聊天工具
+        if self._is_enabled("feishu", "app_id", "webhook_url"):
+            out.append(_FEISHU_SEND_SPEC)
+        if self._is_enabled("wecom", "webhook_url", "corp_id"):
+            out.append(_WECOM_SEND_SPEC)
+        if self._is_enabled("dingtalk", "webhook_url", "access_token"):
+            out.append(_DINGTALK_SEND_SPEC)
+        if self._is_enabled("qq", "bot_url", "webhook_url"):
+            out.append(_QQ_SEND_SPEC)
+        return out
 
     async def invoke(self, call: ToolCall) -> ToolResult:
         t0 = time.perf_counter()
