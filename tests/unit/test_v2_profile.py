@@ -338,3 +338,188 @@ async def test_async_extractor_callable(
         await ex.stop()
 
     assert "async delta" in user_md.read_text(encoding="utf-8")
+
+
+# ── B-179 dedup ───────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_dedup_drops_identical_text_same_kind(
+    bus: InProcessEventBus, user_md: Path,
+) -> None:
+    """The exact joint-audit pain: '用中文' written 4 times across
+    different sessions. Each session's flush passes its own delta
+    list; the dedup logic must drop incoming deltas whose
+    (kind, fingerprint) already appear in the file."""
+    ex = ProfileExtractor(
+        bus=bus, persona_user_md_provider=_provider(user_md),
+        extractor_callable=lambda *_, **__: [
+            _delta("Always responds in Chinese"),
+        ],
+        flush_threshold=1, min_confidence=0.0,
+    )
+    await ex.start()
+    try:
+        # Fire 4 separate flushes — each invocation extracts the same
+        # delta (worst case: ProfileExtractor + LLM keep recovering
+        # the same fact every session that mentioned it).
+        for sid in ("s1", "s2", "s3", "s4"):
+            await bus.publish(make_event(
+                session_id=sid, agent_id="agent",
+                type=EventType.USER_MESSAGE, payload={"content": "嗨"},
+            ))
+            await bus.drain()
+    finally:
+        await ex.stop()
+
+    text = user_md.read_text(encoding="utf-8")
+    # Only ONE auto-extract line for that fact, despite 4 flushes.
+    occurrences = text.count("Always responds in Chinese")
+    assert occurrences == 1, (
+        f"dedup failed; line appears {occurrences}× in:\n{text}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_dedup_normalises_whitespace_and_punctuation(
+    bus: InProcessEventBus, user_md: Path,
+) -> None:
+    """'uses Python.' / 'Uses Python' / 'uses Python  ' should all
+    collapse via the fingerprint normaliser."""
+    variants = [
+        _delta("uses Python."),
+        _delta("Uses Python"),
+        _delta("uses  Python"),
+        _delta("uses Python\n"),  # trailing newline normalises away
+    ]
+    call_idx = {"i": 0}
+
+    def gen(*_a, **_k):
+        out = [variants[call_idx["i"]]]
+        call_idx["i"] += 1
+        return out
+
+    ex = ProfileExtractor(
+        bus=bus, persona_user_md_provider=_provider(user_md),
+        extractor_callable=gen,
+        flush_threshold=1, min_confidence=0.0,
+    )
+    await ex.start()
+    try:
+        for sid in ("a", "b", "c", "d"):
+            await bus.publish(make_event(
+                session_id=sid, agent_id="agent",
+                type=EventType.USER_MESSAGE, payload={"content": "..."},
+            ))
+            await bus.drain()
+    finally:
+        await ex.stop()
+
+    text = user_md.read_text(encoding="utf-8")
+    # Count any line with "python" (case-insensitive).
+    py_lines = sum(1 for line in text.splitlines()
+                   if line.startswith("- [auto") and "python" in line.lower())
+    assert py_lines == 1, (
+        f"normalising-dedup failed; {py_lines} variants survived:\n{text}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_dedup_preserves_different_kinds_with_same_text(
+    bus: InProcessEventBus, user_md: Path,
+) -> None:
+    """A 'preference' and a 'constraint' with identical text are
+    different observations — must NOT collapse."""
+    deltas = [
+        _delta("Use Python", kind="preference"),
+        _delta("Use Python", kind="constraint"),
+    ]
+    yielded = {"once": False}
+
+    def gen(*_a, **_k):
+        if yielded["once"]:
+            return []
+        yielded["once"] = True
+        return deltas
+
+    ex = ProfileExtractor(
+        bus=bus, persona_user_md_provider=_provider(user_md),
+        extractor_callable=gen,
+        flush_threshold=1, min_confidence=0.0,
+    )
+    await ex.start()
+    try:
+        await bus.publish(make_event(
+            session_id="x", agent_id="agent",
+            type=EventType.USER_MESSAGE, payload={"content": "..."},
+        ))
+        await bus.drain()
+    finally:
+        await ex.stop()
+
+    text = user_md.read_text(encoding="utf-8")
+    pref_lines = sum(1 for ln in text.splitlines() if "preference" in ln and "Use Python" in ln)
+    cons_lines = sum(1 for ln in text.splitlines() if "constraint" in ln and "Use Python" in ln)
+    assert pref_lines == 1
+    assert cons_lines == 1
+
+
+@pytest.mark.asyncio
+async def test_dedup_no_write_when_all_duplicates(
+    bus: InProcessEventBus, user_md: Path,
+) -> None:
+    """If every incoming delta is already represented, the file
+    mtime stays — keeps audit log clean and avoids unnecessary
+    USER_PROFILE_UPDATED events."""
+    user_md.parent.mkdir(parents=True, exist_ok=True)
+    user_md.write_text(
+        "## Auto-extracted preferences\n\n"
+        "- [auto · preference · conf=0.9 · session=old] Use Python\n",
+        encoding="utf-8",
+    )
+    ex = ProfileExtractor(
+        bus=bus, persona_user_md_provider=_provider(user_md),
+        extractor_callable=lambda *_, **__: [_delta("Use Python")],
+        flush_threshold=1, min_confidence=0.0,
+    )
+    await ex.start()
+    try:
+        await bus.publish(make_event(
+            session_id="dup", agent_id="agent",
+            type=EventType.USER_MESSAGE, payload={"content": "..."},
+        ))
+        await bus.drain()
+    finally:
+        await ex.stop()
+
+    # Content unchanged: only the original line remains.
+    text = user_md.read_text(encoding="utf-8")
+    assert text.count("Use Python") == 1
+
+
+# ── B-179 fingerprint helper unit tests ──────────────────────────
+
+
+def test_fingerprint_normalises_case_and_whitespace() -> None:
+    from xmclaw.core.profile.extractor import _fingerprint
+    assert _fingerprint("Use Python") == _fingerprint("use python")
+    assert _fingerprint("uses  Python.") == _fingerprint("uses python")
+    assert _fingerprint("'用中文'") == _fingerprint("用中文")
+
+
+def test_existing_fingerprints_parses_auto_lines_only() -> None:
+    """Hand-written lines outside the [auto · ...] format don't
+    contribute to the dedup set — manual edits stay manual."""
+    from xmclaw.core.profile.extractor import _existing_fingerprints
+    text = (
+        "# USER.md\n\n"
+        "- This is a manual note about the user, no auto prefix\n"
+        "## Auto-extracted preferences\n\n"
+        "- [auto · preference · conf=0.9 · session=s1] Use Python\n"
+        "- [auto · habit · conf=0.8 · session=s2] Late-night work\n"
+    )
+    fps = _existing_fingerprints(text)
+    assert ("preference", "use python") in fps
+    assert ("habit", "late-night work") in fps
+    # Manual line not included.
+    assert all("manual note" not in fp for _, fp in fps)

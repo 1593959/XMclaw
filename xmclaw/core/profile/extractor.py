@@ -35,6 +35,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import unicodedata
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -309,6 +311,14 @@ class ProfileExtractor:
         :func:`atomic_write_text` (tmp + ``os.replace``) so a SIGKILL
         mid-flush leaves either the old or new file, never a
         truncated one.
+
+        B-179 dedup: every incoming delta gets fingerprinted against
+        the existing ``## Auto-extracted preferences`` block. If a
+        line with the same ``(kind, fingerprint)`` already exists,
+        the new delta is dropped — pre-B-179 the joint audit found
+        "用中文" written 4× / "Python" written 3× / "ruff + pytest"
+        written 2× because every session that mentioned them produced
+        a fresh delta and nothing collapsed them.
         """
         lock = get_lock(target)
         async with lock:
@@ -319,6 +329,22 @@ class ProfileExtractor:
                     existing = target.read_text(encoding="utf-8", errors="replace")
                 except OSError:
                     existing = ""
+
+            # B-179: build a set of (kind, fingerprint) pairs already
+            # in the file so we can drop incoming duplicates.
+            seen = _existing_fingerprints(existing)
+            keep: list[ProfileDelta] = []
+            for d in deltas:
+                fp = _fingerprint(d.text)
+                key = (d.kind, fp)
+                if key in seen:
+                    continue
+                keep.append(d)
+                seen.add(key)
+            if not keep:
+                # Every incoming delta was already represented; nothing
+                # to write. Avoids touching the file (mtime stable).
+                return
 
             section_header = "\n\n## Auto-extracted preferences\n\n"
             if "## Auto-extracted preferences" in existing:
@@ -334,13 +360,13 @@ class ProfileExtractor:
                 head = existing[:eol + 1]
                 tail = existing[eol + 1:]
                 new_block = (
-                    "\n".join(d.render_line() for d in deltas) + "\n"
+                    "\n".join(d.render_line() for d in keep) + "\n"
                 )
                 new_text = head + new_block + tail
             else:
                 new_block = (
                     section_header
-                    + "\n".join(d.render_line() for d in deltas) + "\n"
+                    + "\n".join(d.render_line() for d in keep) + "\n"
                 )
                 # Trim trailing whitespace before appending the new
                 # section so we don't accumulate blank lines on each
@@ -348,3 +374,60 @@ class ProfileExtractor:
                 new_text = existing.rstrip() + new_block
 
             atomic_write_text(target, new_text)
+
+
+# B-179: dedup helpers — keep here (not in models.py) because they
+# are extractor-side concerns: USER.md is the canonical persistence
+# format, and the fingerprint definition is tied to the rendered
+# line shape. ProfileDelta itself stays a pure data class.
+
+# Same shape ``ProfileDelta.render_line()`` produces. Tolerant of
+# the ASCII vs CJK middle-dot variants we've actually seen on disk
+# (the rest of the parsers in builtin.py already handle both).
+_AUTO_LINE_RE = re.compile(
+    r"^- \[auto\s*[·•・]\s*([^\s·•・]+)\s*[·•・]\s*conf=[^\s]+\s*"
+    r"[·•・]\s*session=[^\]]+\]\s*(.+)$",
+)
+
+
+def _normalize_for_fp(text: str) -> str:
+    """Lowercase, strip surrounding whitespace, collapse internal
+    whitespace, drop punctuation that doesn't change semantics so
+    near-duplicates ('uses Python.' vs 'uses Python') collapse."""
+    if not text:
+        return ""
+    # NFKC handles full-width vs half-width and other compatibility
+    # forms — important for Chinese punctuation.
+    text = unicodedata.normalize("NFKC", text).lower()
+    # Strip common terminal punctuation that often varies:
+    text = text.rstrip("。.!！?？")
+    # Collapse internal whitespace to single space.
+    text = re.sub(r"\s+", " ", text).strip()
+    # Drop quotes / parentheses that wrap-or-don't-wrap inconsistently.
+    text = text.strip("\"'`「」『』()（）[]【】")
+    return text
+
+
+def _fingerprint(text: str) -> str:
+    """Cheap fingerprint for dedup. Currently the normalised text
+    itself — short enough that `set` membership is fine. We don't
+    hash because we want deterministic equality-on-content; if two
+    deltas with the SAME text differ only in confidence / session,
+    they should still collapse to the same fingerprint."""
+    return _normalize_for_fp(text)
+
+
+def _existing_fingerprints(file_text: str) -> set[tuple[str, str]]:
+    """Walk ``file_text`` line by line, find every ``[auto · ...]``
+    line, and return ``(kind, fingerprint)`` pairs. Lines outside
+    the auto-extracted format (hand-written, headings, etc.) are
+    ignored — dedup only applies between auto-extract entries."""
+    out: set[tuple[str, str]] = set()
+    for line in file_text.splitlines():
+        m = _AUTO_LINE_RE.match(line.strip())
+        if m is None:
+            continue
+        kind = m.group(1).strip().lower()
+        text = m.group(2).strip()
+        out.add((kind, _fingerprint(text)))
+    return out
