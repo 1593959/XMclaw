@@ -42,6 +42,7 @@ from pathlib import Path
 
 from xmclaw.core.bus import InProcessEventBus
 from xmclaw.core.bus.events import BehavioralEvent, EventType, make_event
+from xmclaw.core.bus.memory import Subscription
 from xmclaw.core.evolution.dataset import build_dataset_from_history
 from xmclaw.core.evolution.mutator import SkillMutator
 from xmclaw.skills.markdown_skill import MarkdownProcedureSkill
@@ -147,7 +148,7 @@ class MutationOrchestrator:
         self._cooldown_s = max(0.0, float(cooldown_s))
         self._score_delta = max(0.0, float(score_delta))
         self._enabled = bool(enabled)
-        self._subscription = None
+        self._subscription: Subscription | None = None
         self._stats: dict[tuple[str, int], _SkillStats] = {}
         self._decisions: list[MutationDecision] = []  # for tests/telemetry
 

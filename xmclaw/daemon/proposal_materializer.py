@@ -49,6 +49,7 @@ from pathlib import Path
 
 from xmclaw.core.bus import InProcessEventBus
 from xmclaw.core.bus.events import BehavioralEvent, EventType
+from xmclaw.core.bus.memory import Subscription
 from xmclaw.skills.markdown_skill import MarkdownProcedureSkill
 from xmclaw.skills.manifest import SkillManifest
 from xmclaw.skills.registry import SkillRegistry
@@ -73,7 +74,7 @@ def _render_frontmatter(
     this skill came from. We never embed the journal text itself —
     just the session IDs — because journals can contain user PII.
     """
-    def _yaml_list(items) -> str:
+    def _yaml_list(items: list[str] | tuple[str, ...]) -> str:
         if not items:
             return "[]"
         return "[" + ", ".join(repr(str(x)) for x in items) + "]"
@@ -130,7 +131,7 @@ class ProposalMaterializer:
         self._bus = bus
         self._root = skills_root if skills_root is not None else user_skills_dir()
         self._enabled = bool(enabled)
-        self._subscription = None
+        self._subscription: Subscription | None = None
         self._materialized_count: int = 0
         self._skipped_count: int = 0
 

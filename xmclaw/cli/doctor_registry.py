@@ -1850,19 +1850,21 @@ class ConfigDeadFieldsCheck(DoctorCheck):
 
 
 class EvolutionPathHygieneCheck(DoctorCheck):
-    """Epic #24 Phase 1 — flag residual paths from torn-out subsystems.
+    """Flag legacy ``~/.xmclaw/auto_evo/`` orphans.
 
-    The user's load-bearing rule (2026-05-01): every user-state
-    artifact has ONE canonical path. After Phase 1 deleted xm-auto-evo
-    and the multi-root SKILL.md scanner, ``~/.xmclaw/auto_evo/``,
-    ``~/.agents/skills/``, and ``~/.claude/skills/`` are no longer
-    consulted by the agent at all. If they still exist on disk the
-    user thinks they're "installed skills" but the agent literally
-    can't see them — exactly the "install path != usage path" pain
-    Epic #24 set out to remove. We surface this discrepancy here so
-    the user knows to consolidate or delete.
+    History: Epic #24 Phase 1 deleted the xm-auto-evo loader, leaving
+    ``~/.xmclaw/auto_evo/skills/`` skills invisible to the agent. The
+    pre-B-163 version of this check ALSO flagged ``~/.agents/skills/``
+    and ``~/.claude/skills/`` as residual — but B-163 made the
+    user_loader scan those by default (zero-config integration with
+    the skills.sh ecosystem and Claude Code), so they're now FIRST-
+    CLASS scanned roots, not orphans.
 
-    SkillRegistry's canonical path: ``~/.xmclaw/v2/skills/<id>/v<N>/``.
+    Today the only true orphan is ``~/.xmclaw/auto_evo/``: still
+    present on user machines from the pre-Phase-1 days, no longer
+    read by anything. ``xmclaw evolve migrate-auto-evo`` (B-171)
+    salvages the useful ones into ``~/.xmclaw/skills_user/<id>/``;
+    after that the dir is safe to ``rm -rf``.
     """
 
     id: ClassVar[str] = "evolution_path_hygiene"
@@ -1870,27 +1872,36 @@ class EvolutionPathHygieneCheck(DoctorCheck):
 
     def run(self, ctx: DoctorContext) -> CheckResult:
         home = Path.home()
-        suspects = [
-            home / ".xmclaw" / "auto_evo",
-            home / ".agents" / "skills",
-            home / ".claude" / "skills",
-        ]
-        present = [p for p in suspects if p.exists()]
-        if not present:
+        # Only the truly-orphaned tree gets flagged. The two ecosystem
+        # roots (~/.agents/skills, ~/.claude/skills) are scanned by
+        # SkillsWatcher per B-163 + B-173 — flagging them as residual
+        # would be a contradiction.
+        auto_evo = home / ".xmclaw" / "auto_evo"
+        if not auto_evo.exists():
             return CheckResult(
                 name=self.name, ok=True,
-                detail="no residual SKILL.md trees from deleted subsystems",
+                detail="no legacy auto_evo tree on disk",
             )
-        joined = ", ".join(str(p) for p in present)
+        # Look for any skill-bearing subdirs to give the user a count.
+        skills_root = auto_evo / "skills"
+        n_skills = 0
+        if skills_root.is_dir():
+            n_skills = sum(
+                1 for d in skills_root.iterdir()
+                if d.is_dir() and (d / "SKILL.md").is_file()
+                and d.name != "xm-auto-evo"
+            )
+        msg = f"legacy auto_evo tree still present at {auto_evo}"
+        if n_skills:
+            msg += f" ({n_skills} skill dir(s) waiting to migrate)"
         return CheckResult(
             name=self.name, ok=False,
-            detail=f"residual paths still on disk: {joined}",
+            detail=msg,
             advisory=(
-                "Epic #24 deleted the loaders that read these. The agent "
-                "can no longer see SKILL.md files in them. Move anything "
-                "you still want into the SkillRegistry (Phase 1 path: "
-                "~/.xmclaw/v2/skills/<id>/v<N>/SKILL.md) or delete the "
-                "residual trees."
+                "Run `xmclaw evolve migrate-auto-evo --dry-run` to "
+                "preview what will move into ~/.xmclaw/skills_user/, "
+                "then drop --dry-run to execute. After migration the "
+                f"{auto_evo} tree is safe to delete."
             ),
         )
 

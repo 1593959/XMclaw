@@ -106,7 +106,7 @@ class SkillsWatcher:
         self._extra_roots = list(extra_roots or [])
         self._interval_s = max(1.0, float(interval_s))
         self._enabled = bool(enabled)
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
         self._tick_count: int = 0
         self._new_skill_count: int = 0
