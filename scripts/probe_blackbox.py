@@ -27,12 +27,25 @@ import websockets
 TOKEN_PATH = Path.home() / ".xmclaw" / "v2" / "pairing_token.txt"
 WS_BASE = "ws://127.0.0.1:8765/agent/v2"
 
+
+
 # Black-box scenarios — vague prompts the agent has to figure out.
+# Targeting *self-contained markdown* skills (no missing scripts/data
+# subdirs that would force the agent to bail). Each prompt deliberately
+# does NOT name the skill — we want to see autonomous routing.
 DEFAULT_SCENARIOS = [
-    ("commit",  "帮我把当前改动提交了"),
-    ("ui_ux",   "帮我设计一下登录页的 UI 思路"),
-    ("filesys", "看一下我桌面上有什么文件"),
-    ("recall",  "我之前跟你说过我偏好什么编程语言?"),
+    # → expected: skill_brainstorming
+    ("brainstorm", "我有个新想法，能不能帮我做一轮系统的发散和收敛"),
+    # → expected: skill_writing-plans
+    ("plan",       "帮我把'给 XMclaw 加 RAG 检索'这个需求拆成多步骤开发计划"),
+    # → expected: skill_enhance-prompt
+    ("prompt",     "我写了个 prompt 想让你帮我优化迭代一下"),
+    # → expected: skill_find-skills
+    ("find",       "你都有哪些技能?能帮我罗列一下你能做啥"),
+    # → expected: skill_git-commit
+    ("commit",     "帮我把当前改动提交了"),
+    # → expected: skill_refactor (or stay-as-tools, observe choice)
+    ("refactor",   "重构一下 xmclaw/skills/tool_bridge.py 让代码更清晰"),
 ]
 
 
