@@ -41,6 +41,7 @@ import asyncio
 import json
 import logging
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -83,6 +84,13 @@ class FeishuAdapter(ChannelAdapter):
         self._client: Any = None
         self._ws_task: asyncio.Task[Any] | None = None
         self._handlers: list[Callable[[InboundMessage], Awaitable[None]]] = []
+        # B-196: Lark's WS uses at-least-once event delivery — on
+        # reconnect / network blip the same message_id can land twice
+        # (or more). Without dedup the agent runs the turn N times and
+        # the user sees duplicate replies. LRU keyed by message_id; cap
+        # at 512 keeps memory bounded while covering ~hours of busy chat.
+        self._seen_msg_ids: OrderedDict[str, float] = OrderedDict()
+        self._seen_cap = 512
 
     # ── public API ──────────────────────────────────────────────
 
@@ -279,6 +287,17 @@ class FeishuAdapter(ChannelAdapter):
 
         chat_id = getattr(msg, "chat_id", "") or ""
         msg_id = getattr(msg, "message_id", "") or ""
+        # B-196: drop duplicate deliveries by message_id. Lark's WS may
+        # redeliver the same event on reconnect; we'd otherwise process
+        # it twice and the user sees N copies of the same reply.
+        if msg_id and msg_id in self._seen_msg_ids:
+            _log.info("feishu.duplicate_skipped msg_id=%s", msg_id)
+            return
+        if msg_id:
+            self._seen_msg_ids[msg_id] = time.time()
+            # Trim from the front (oldest) when over cap.
+            while len(self._seen_msg_ids) > self._seen_cap:
+                self._seen_msg_ids.popitem(last=False)
         user_id = (
             getattr(getattr(sender, "sender_id", None), "open_id", "")
             or getattr(getattr(sender, "sender_id", None), "user_id", "")
