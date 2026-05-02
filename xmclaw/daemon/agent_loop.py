@@ -261,6 +261,16 @@ def _default_system_prompt() -> str:
         "EVOLVE them — not just MEMORY.md and USER.md. Use the "
         "`update_persona` tool freely. Don't ask permission to record "
         "a lesson; just write it.\n"
+        "  ★ Path note (B-186): the persona files live under "
+        "``~/.xmclaw/persona/profiles/<active_profile>/`` (e.g. "
+        "``profiles/default/MEMORY.md``) — NOT directly under "
+        "``~/.xmclaw/persona/``. **You almost never need to file_read "
+        "them yourself**: their contents are already injected into "
+        "your system prompt every turn. Reach for tools (`remember` / "
+        "`learn_about_user` / `update_persona` / `recall_user_"
+        "preferences`) instead of guessing paths — those tools "
+        "auto-resolve the active profile and won't fail with "
+        "'file not found' on a path mistake.\n"
         "    - MEMORY.md — long-term facts, decisions. (`remember` is "
         "the shortcut.)\n"
         "    - USER.md — what you've learned about the user. "
@@ -357,6 +367,90 @@ _MEMORY_SYS_NOTE_RE = _re_mem.compile(
     r"context[^\]]*\]\s*",
     _re_mem.IGNORECASE,
 )
+
+
+# B-186: vague-continuation messages that should pin to the prior
+# turn's topic rather than letting the LLM forage MEMORY.md for
+# salient items. Curated short list, not a regex — these are the
+# words that genuinely mean "keep going" rather than "do a new thing".
+_CONTINUATION_TOKENS = frozenset({
+    "继续", "接着", "下一步", "go on", "continue", "keep going",
+    "go ahead", "proceed", "next", "and?", "so?", "ok",
+})
+
+
+def _is_vague_continuation(text: str) -> bool:
+    """Short user message that reads as 'pick up where you left off'
+    rather than introducing new work."""
+    if not text:
+        return False
+    s = text.strip().lower()
+    if not s:
+        return False
+    if len(s) > 12:
+        return False
+    return s in _CONTINUATION_TOKENS
+
+
+def _prior_ended_without_synthesis(prior: list) -> bool:
+    """True when the most recent assistant message in ``prior`` is a
+    tool-calling turn with empty (or whitespace-only) text content.
+
+    Walks back from the end skipping ``tool`` (tool-result) messages
+    until it hits the assistant turn that originated them. That turn's
+    content tells us whether the agent had time to summarise before
+    the previous turn ended. If ``content`` is empty, the agent never
+    closed the loop — the next user message should pin to that work.
+    """
+    for m in reversed(prior):
+        role = getattr(m, "role", None)
+        content = getattr(m, "content", "") or ""
+        if role == "tool":
+            continue
+        if role == "assistant":
+            if isinstance(content, list):
+                # Some providers stream content as a list of
+                # text/tool_use blocks. Concatenate text parts.
+                text = "".join(
+                    getattr(part, "text", "") or
+                    (part.get("text", "") if isinstance(part, dict) else "")
+                    for part in content
+                )
+            else:
+                text = str(content)
+            return not text.strip()
+        # User / system message hit before assistant: prior assistant
+        # already finished cleanly, no anchor needed.
+        return False
+    return False
+
+
+def _continuation_anchor(prior: list, user_message: str) -> str:
+    """If the new user message is a vague continuation AND the prior
+    assistant turn never synthesised a final answer, prepend a
+    routing hint that tells the LLM to keep working on the same
+    topic — not to forage MEMORY.md / system prompt for new tasks.
+    Otherwise empty string (no-op).
+
+    Frame matches the existing ``[System note: ...]`` style used
+    by memory injection so the persistence sanitiser already
+    strips it before it lands in long-term history.
+    """
+    if not _is_vague_continuation(user_message):
+        return ""
+    if not _prior_ended_without_synthesis(prior):
+        return ""
+    return (
+        "[System note: your previous turn made tool calls but did "
+        "NOT produce a final synthesis (LLM provider may have "
+        "hung, or you ran out of hops). The user's '"
+        + user_message.strip()
+        + "' means CONTINUE THAT INVESTIGATION — read the tool "
+        "results in your context above and produce the answer the "
+        "user originally asked for. Do NOT pick up unrelated "
+        "tasks from MEMORY.md or persona — those are background "
+        "context, not active TODOs.]\n\n"
+    )
 
 
 def _sanitize_memory_context(text: str) -> str:
@@ -1208,6 +1302,27 @@ class AgentLoop:
 
         prior = self._histories.get(session_id, [])
 
+        # B-186: continuation-anchor for vague resume messages.
+        #
+        # Real-data finding (chat-59bb7a7a, 2026-05-02): the user
+        # asked the agent to self-audit; it made 12 tool calls then
+        # the LLM provider hung at hop 6 (no llm_response, no
+        # max_hops fire — just silence). 10 minutes later the user
+        # typed "继续". The new turn started with history full of
+        # tool results + 5 empty LLM responses + the audit user
+        # message. Because "继续" is ambiguous, the LLM picked the
+        # most salient thing in its context, which was an MEMORY.md
+        # ``Decisions`` entry about a future welcome page — and
+        # promptly switched topics, infuriating the user.
+        #
+        # Fix: when the new user message is short / vague AND the
+        # immediately-prior assistant message was a tool-using turn
+        # without a final synthesis, prepend a **system note** to
+        # the user's message that pins the resumption to the
+        # in-flight topic. Doesn't pollute prompt cache (rides on
+        # the user content the same way memory_ctx_block does).
+        continuation_anchor = _continuation_anchor(prior, user_message)
+
         # Cross-session memory prefetch + inject. Mirrors open-webui
         # chat_memory_handler (middleware.py:1473-1505) wrapped in
         # Hermes's <memory-context> fence (memory_manager.py:66-81). The
@@ -1474,7 +1589,12 @@ class AgentLoop:
             *prior,
             Message(
                 role="user",
-                content=user_message + memory_ctx_block + memory_files_block,
+                content=(
+                    continuation_anchor
+                    + user_message
+                    + memory_ctx_block
+                    + memory_files_block
+                ),
             ),
         ]
         tool_specs = self._tools.list_tools() if self._tools else None
