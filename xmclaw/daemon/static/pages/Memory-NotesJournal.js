@@ -196,10 +196,16 @@ export function NotesTab({ token }) {
                     const size = f && f.size != null ? f.size : null;
                     const desc = f && typeof f === "object" ? (f.description || "") : "";
                     const tags = f && typeof f === "object" ? (f.tags || []) : [];
-                    const noDesc = !desc && size && size > 50;
                     // B-139: 文件 ≥ 50B 但 frontmatter 没 description →
                     // LLM-picker 找不到。挂橙色警告角标提醒用户/agent。
+                    // B-165: 索引文件（MEMORY.md / README.md）是被 system prompt
+                    // 直接读的，不走 LLM-picker，挂"无 desc"是误报 — 跳过。
+                    const isIndexFile = /^(memory|readme)\.md$/i.test(name || "");
+                    const noDesc = !desc && size && size > 50 && !isIndexFile;
                     const isActive = name === active;
+                    const indexBadge = isIndexFile
+                      ? html`<span class="xmc-h-badge" style="font-size:.55rem;padding:0 .3rem;opacity:.7" title="索引文件，被 system prompt 直接加载，无需 description">📌 索引</span>`
+                      : null;
                     return html`
                       <li
                         class="xmc-datapage__row xmc-datapage__row--clickable ${isActive ? "is-active" : ""}"
@@ -213,6 +219,7 @@ export function NotesTab({ token }) {
                         <div style="display:flex;align-items:center;gap:.4rem;width:100%">
                           <strong style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${name}</strong>
                           ${size != null ? html`<small style="opacity:.6;flex:0 0 auto">${size}B</small>` : null}
+                          ${indexBadge}
                           ${noDesc
                             ? html`<span class="xmc-h-badge xmc-h-badge--warn" style="font-size:.55rem;padding:0 .3rem" title="frontmatter 没有 description — LLM-picker 找不到这条笔记">⚠ 无 desc</span>`
                             : null}
