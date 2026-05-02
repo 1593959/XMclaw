@@ -751,6 +751,37 @@ def create_app(
             _app.state.skill_dream = None
             _app.state.realtime_evolution = None
 
+        # B-173: SkillsWatcher — periodic user_loader.load_all() so
+        # `npx skills add` / `git clone <url> ~/.xmclaw/skills_user/<name>` /
+        # manual SKILL.md drops appear without a daemon restart. ~10s
+        # tick is cheap (UserSkillsLoader is idempotent on already-
+        # registered (id, version) pairs).
+        # Configurable via ``evolution.skills_watcher.{enabled,interval_s}``.
+        _app.state.skills_watcher = None
+        if orchestrator is not None:
+            try:
+                from xmclaw.daemon.skills_watcher import SkillsWatcher
+                from xmclaw.skills.user_loader import resolve_skill_roots
+                sw_cfg = (
+                    ((config or {}).get("evolution") or {})
+                    .get("skills_watcher") or {}
+                )
+                sw_enabled = bool(sw_cfg.get("enabled", True))
+                sw_interval = float(sw_cfg.get("interval_s", 10.0))
+                if sw_enabled:
+                    canonical, extras = resolve_skill_roots(config)
+                    watcher = SkillsWatcher(
+                        orchestrator.registry, canonical,
+                        extra_roots=extras,
+                        interval_s=sw_interval,
+                        enabled=True,
+                    )
+                    await watcher.start()
+                    _app.state.skills_watcher = watcher
+            except Exception as exc:  # noqa: BLE001
+                log.warning("skills_watcher.start_failed err=%s", exc)
+                _app.state.skills_watcher = None
+
         # B-167: ProposalMaterializer — closes the missing link between
         # SkillProposer drafts (decision="propose") and SkillRegistry.
         # Pre-B-167 a draft sat in proposals.jsonl + events.db and the
@@ -966,6 +997,14 @@ def create_app(
             if _pm is not None:
                 try:
                     await _pm.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            # B-173: stop the skills watcher so a tick doesn't fire
+            # mid-shutdown.
+            _sw = getattr(_app.state, "skills_watcher", None)
+            if _sw is not None:
+                try:
+                    await _sw.stop()
                 except Exception:  # noqa: BLE001
                     pass
             # Epic #24 Phase 3.2: stop the skill_dream periodic task.

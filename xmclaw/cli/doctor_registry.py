@@ -1966,6 +1966,7 @@ class EvolutionPipelineCheck(DoctorCheck):
         "build_profile_extractor",
         "RealtimeEvolutionTrigger",  # B-164 — per-turn proposer pokes
         "ProposalMaterializer",      # B-167 — propose → SKILL.md + register
+        "SkillsWatcher",             # B-173 — hot-reload skills_user
     )
 
     #: Tokens the post-sampling hook chain (different module) must

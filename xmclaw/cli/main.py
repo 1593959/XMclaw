@@ -546,7 +546,7 @@ def serve(
         if ev_cfg.get("enabled", True):
             from xmclaw.skills.orchestrator import EvolutionOrchestrator
             from xmclaw.skills.registry import SkillRegistry
-            from xmclaw.utils.paths import skills_dir, user_skills_dir
+            from xmclaw.utils.paths import skills_dir
             registry = SkillRegistry(history_dir=skills_dir())
             auto_apply = bool(ev_cfg.get("auto_apply", False))
             orchestrator = EvolutionOrchestrator(
@@ -555,30 +555,17 @@ def serve(
             mode = "auto-apply" if auto_apply else "observe-only"
             typer.echo(f"  [ok]  evolution orchestrator: {mode}")
 
-            # B-127 + Epic #24 Phase 5 + B-163: scan
-            # ``~/.xmclaw/skills_user/<id>/`` for skill.py / SKILL.md.
-            # Plus zero-config defaults for the two ecosystem dirs so
-            # users who muscle-memory'd ``npx skills add`` (writes to
-            # ``~/.agents/skills``) or already have Claude Code skills
-            # under ``~/.claude/skills/`` get them visible without
-            # editing config. User can override / disable via
-            # ``evolution.skill_paths.extra`` (set to ``[]`` to opt
-            # out of the shared-dir scan entirely).
-            from xmclaw.skills.user_loader import UserSkillsLoader
-            user_root = user_skills_dir()
-            sp_cfg = ev_cfg.get("skill_paths")
-            if isinstance(sp_cfg, dict) and "extra" in sp_cfg:
-                # Explicit user choice — respect it, even if empty.
-                extra_raw = sp_cfg.get("extra") or []
-            else:
-                # B-163 default: pick up the two ecosystem dirs.
-                extra_raw = ["~/.agents/skills", "~/.claude/skills"]
-            extra_roots: list[Path] = []
-            for raw in extra_raw if isinstance(extra_raw, list) else []:
-                try:
-                    extra_roots.append(Path(str(raw)).expanduser())
-                except Exception:  # noqa: BLE001
-                    continue
+            # B-127 + Epic #24 Phase 5 + B-163 + B-173: roots resolved
+            # via the shared :func:`resolve_skill_roots` helper so
+            # boot-time loader and the runtime SkillsWatcher agree on
+            # what to scan. Canonical path
+            # (``~/.xmclaw/skills_user/``) plus zero-config extras
+            # (``~/.agents/skills``, ``~/.claude/skills``) unless
+            # ``evolution.skill_paths.extra`` overrides.
+            from xmclaw.skills.user_loader import (
+                UserSkillsLoader, resolve_skill_roots,
+            )
+            user_root, extra_roots = resolve_skill_roots(cfg)
             results = UserSkillsLoader(
                 registry, user_root, extra_roots=extra_roots,
             ).load_all()

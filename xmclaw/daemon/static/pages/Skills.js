@@ -341,8 +341,8 @@ export function SkillsPage({ token }) {
                 html`<div style="line-height:1.7">
                   <p style="margin:0 0 .5rem"><strong>还没有任何技能。</strong></p>
                   <p style="margin:0 0 .5rem;font-size:.85rem">
-                    daemon 启动时会自动扫这三个目录，谁先匹配 skill_id 谁先入库——
-                    <strong>零 config</strong>，重启即生效：
+                    daemon 自动扫这三个目录，谁先匹配 skill_id 谁先入库——
+                    <strong>零 config，~10s 内即生效（B-173 起无需重启）</strong>：
                   </p>
                   <ul style="margin:.2rem 0;padding-left:1.2rem;font-size:.82rem">
                     <li><code>~/.xmclaw/skills_user/&lt;skill_id&gt;/</code> ← 规范路径（首选）</li>

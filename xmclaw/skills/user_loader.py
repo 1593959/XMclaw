@@ -381,6 +381,39 @@ _FRONTMATTER_BLOCK_RE = re.compile(
 )
 
 
+def resolve_skill_roots(
+    config: dict | None = None,
+) -> tuple[Path, list[Path]]:
+    """B-173: shared root-resolution so cli/main.py boot-time loader
+    and daemon/skills_watcher.py runtime watcher agree on what to
+    scan. Returns ``(canonical_root, extra_roots)``.
+
+    * ``canonical_root`` is always ``user_skills_dir()``
+      (``~/.xmclaw/skills_user/``).
+    * ``extra_roots`` defaults to ``[~/.agents/skills, ~/.claude/skills]``
+      (B-163 zero-config) UNLESS the config explicitly sets
+      ``evolution.skill_paths.extra`` — then the config wins (an
+      empty list disables shared-dir scanning entirely).
+    """
+    from xmclaw.utils.paths import user_skills_dir
+    canonical = user_skills_dir()
+    cfg = config or {}
+    ev_cfg = cfg.get("evolution") or {}
+    sp_cfg = ev_cfg.get("skill_paths")
+    if isinstance(sp_cfg, dict) and "extra" in sp_cfg:
+        extra_raw = sp_cfg.get("extra") or []
+    else:
+        extra_raw = ["~/.agents/skills", "~/.claude/skills"]
+    extras: list[Path] = []
+    if isinstance(extra_raw, list):
+        for raw in extra_raw:
+            try:
+                extras.append(Path(str(raw)).expanduser())
+            except Exception:  # noqa: BLE001
+                continue
+    return canonical, extras
+
+
 def _parse_skill_md_frontmatter(
     body: str,
 ) -> tuple[str, str, tuple[str, ...]]:
