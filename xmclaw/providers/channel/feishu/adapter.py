@@ -142,10 +142,31 @@ class FeishuAdapter(ChannelAdapter):
         # ws_client.start() is BLOCKING (lark-oapi's design — it
         # internally runs an asyncio event loop). Run it in a worker
         # thread so we don't block the daemon's main loop.
+        #
+        # B-194: lark-oapi 1.4.x captures `loop = asyncio.get_event_loop()`
+        # at module import time (lark_oapi/ws/client.py L25-29). When
+        # daemon imports lark from inside its async context, that
+        # module-level `loop` becomes the daemon's main loop. Then
+        # `Client.start()` does `loop.run_until_complete(...)` on it —
+        # the main loop is already running, so we get
+        # "This event loop is already running" + the WS never connects
+        # (silent failure: adapter shows running=True but no events).
+        # Fix: in the worker thread, give lark its own dedicated event
+        # loop by overriding the module global before calling start().
+        def _start_in_thread() -> None:
+            import asyncio as _asyncio
+            new_loop = _asyncio.new_event_loop()
+            _asyncio.set_event_loop(new_loop)
+            try:
+                import lark_oapi.ws.client as _lark_ws_client_mod
+                _lark_ws_client_mod.loop = new_loop
+            except ImportError:
+                pass
+            ws_client.start()
+
         async def _runner() -> None:
             try:
-                # ws_client.start() in 1.5.x is sync; wrap in to_thread.
-                await asyncio.to_thread(ws_client.start)
+                await asyncio.to_thread(_start_in_thread)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
