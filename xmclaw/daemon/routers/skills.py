@@ -27,13 +27,38 @@ from starlette.responses import JSONResponse
 router = APIRouter(prefix="/api/v2/skills", tags=["skills"])
 
 
-def _classify_source(skill: Any) -> str:
-    """Tag a skill as 'built-in' / 'user' / 'unknown' from its module path.
+def _classify_source(skill: Any, manifest: Any = None) -> str:
+    """Tag a skill as 'built-in' / 'user' / 'evolved' / 'unknown'.
 
-    A skill class shipped inside the ``xmclaw.skills.*`` package is a
-    built-in (lives in the wheel). Anything else is user-installed
-    (registered at runtime from the user's environment).
+    Priority 1: the manifest's ``created_by`` field. This is the
+    authoritative signal because:
+      * ``UserSkillsLoader`` stamps user-loaded skills with
+        ``created_by="user"`` (skill.py *and* SKILL.md), regardless
+        of which Python class wraps them.
+      * Evolution promotes write ``created_by="evolved"``.
+      * LLM-drafted candidates write ``created_by="llm"``.
+      * Built-in skills shipped with the wheel default to ``"human"``.
+
+    Priority 2 (fallback when no manifest): module-path check. Skills
+    in ``xmclaw.skills.*`` are built-in; anything else is user.
+
+    B-166 fix: pre-B-166 only the module-path check existed, so every
+    SKILL.md a user dropped under ``~/.agents/skills/`` got the
+    ``built-in`` label — they're all wrapped in the
+    ``MarkdownProcedureSkill`` class which lives at
+    ``xmclaw.skills.markdown_skill`` (a built-in module by path),
+    making the filter useless on the most common install method.
     """
+    if manifest is not None:
+        cb = getattr(manifest, "created_by", None)
+        if cb == "user":
+            return "user"
+        if cb == "evolved":
+            return "evolved"
+        if cb == "llm":
+            return "llm"
+        # ``"human"`` or unset → fall through to module-path check.
+
     cls = type(skill)
     mod = getattr(cls, "__module__", "") or ""
     if mod.startswith("xmclaw.skills."):
@@ -80,7 +105,7 @@ async def list_skills(request: Request) -> JSONResponse:
             except Exception:  # noqa: BLE001 — never let one bad row 500 the listing
                 continue
             if source == "unknown":
-                source = _classify_source(skill_obj)
+                source = _classify_source(skill_obj, ref.manifest)
             manifest = ref.manifest
             manifest_dict: dict[str, Any]
             if hasattr(manifest, "to_dict"):

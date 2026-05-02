@@ -7,6 +7,11 @@ Pins:
   * history endpoint returns the records list
   * unknown skill / unregistered version → 400
   * orchestrator missing → 400 with sensible error
+  * B-166: GET /api/v2/skills classifies sources via manifest
+    `created_by`, not Python module path — so a user-installed
+    SKILL.md (wrapped in MarkdownProcedureSkill, which lives at
+    xmclaw.skills.markdown_skill) is reported as ``user``, not
+    ``built-in``.
 """
 from __future__ import annotations
 
@@ -147,3 +152,80 @@ def test_no_orchestrator_returns_400() -> None:
         )
     assert r.status_code == 400
     assert "evolution" in r.json()["error"].lower()
+
+
+# ── B-166: source classification via manifest.created_by ──
+
+
+def test_list_skills_user_via_markdown_skill(tmp_path) -> None:
+    """A SKILL.md loaded by UserSkillsLoader wraps in
+    MarkdownProcedureSkill (xmclaw.skills.markdown_skill module). The
+    pre-B-166 module-path classifier returned 'built-in' for these —
+    the bug the user hit. After the fix the manifest's
+    ``created_by="user"`` wins, and source is reported as 'user'."""
+    from xmclaw.skills.markdown_skill import MarkdownProcedureSkill
+
+    reg = SkillRegistry(history_dir=tmp_path / "history")
+    md_skill = MarkdownProcedureSkill(
+        id="git-commit", body="# step 1\n…", version=1,
+    )
+    reg.register(
+        md_skill,
+        manifest=SkillManifest(id="git-commit", version=1, created_by="user"),
+        set_head=True,
+    )
+
+    a = create_app(config={})
+    a.state.orchestrator = _StubOrchestrator(reg)
+    with TestClient(a) as client:
+        r = client.get("/api/v2/skills")
+    assert r.status_code == 200
+    rows = r.json()["skills"]
+    row = next(s for s in rows if s["id"] == "git-commit")
+    assert row["source"] == "user", (
+        "MarkdownProcedureSkill with manifest.created_by=user must be "
+        "classified as 'user', not 'built-in'"
+    )
+
+
+def test_list_skills_built_in_via_default_manifest(tmp_path) -> None:
+    """A skill with default manifest (created_by='human') AND class
+    in xmclaw.skills.* package → still classified as 'built-in'."""
+    reg = SkillRegistry(history_dir=tmp_path / "history")
+    reg.register(
+        _DemoSkill(),
+        manifest=SkillManifest(id="demo", version=1),  # default created_by="human"
+        set_head=True,
+    )
+    a = create_app(config={})
+    a.state.orchestrator = _StubOrchestrator(reg)
+    with TestClient(a) as client:
+        r = client.get("/api/v2/skills")
+    rows = r.json()["skills"]
+    row = next(s for s in rows if s["id"] == "demo")
+    # _DemoSkill is defined in this test file, NOT under xmclaw.skills.*,
+    # so module-path fallback returns "user". The point of THIS test:
+    # the manifest doesn't override to "user" just because of created_by
+    # being "human" — it falls through to module-path, which is the
+    # legacy behaviour we keep.
+    assert row["source"] == "user"
+
+
+def test_list_skills_evolved_classified_separately(tmp_path) -> None:
+    """Evolution-promoted skills (created_by='evolved') should report
+    as 'evolved' so the UI can badge them distinctly."""
+    from xmclaw.skills.markdown_skill import MarkdownProcedureSkill
+
+    reg = SkillRegistry(history_dir=tmp_path / "history")
+    reg.register(
+        MarkdownProcedureSkill(id="auto.foo", body="…", version=1),
+        manifest=SkillManifest(id="auto.foo", version=1, created_by="evolved"),
+        set_head=True,
+    )
+    a = create_app(config={})
+    a.state.orchestrator = _StubOrchestrator(reg)
+    with TestClient(a) as client:
+        r = client.get("/api/v2/skills")
+    rows = r.json()["skills"]
+    row = next(s for s in rows if s["id"] == "auto.foo")
+    assert row["source"] == "evolved"

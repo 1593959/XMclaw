@@ -59,11 +59,19 @@ function PanelItem({ icon, label, active, onClick, count }) {
   `;
 }
 
+// B-166: source values now include "user" / "evolved" / "llm" /
+// "built-in" / "unknown". Map each to a distinct badge tone + label
+// so the user can see at a glance what produced each skill.
+const SOURCE_META = {
+  "built-in": { tone: "success", label: "BUILT-IN" },
+  "user":     { tone: "warning", label: "USER" },
+  "evolved":  { tone: "info",    label: "EVOLVED" },
+  "llm":      { tone: "info",    label: "LLM-DRAFT" },
+  "unknown":  { tone: "muted",   label: "UNKNOWN" },
+};
+
 function SkillCard({ skill, expanded, onToggle, onPromote, onRollback }) {
-  const sourceTone =
-    skill.source === "built-in" ? "success"
-    : skill.source === "user" ? "warning"
-    : "muted";
+  const meta = SOURCE_META[skill.source] || SOURCE_META.unknown;
   return html`
     <div class="xmc-h-skill-card">
       <button
@@ -73,7 +81,7 @@ function SkillCard({ skill, expanded, onToggle, onPromote, onRollback }) {
         aria-expanded=${expanded ? "true" : "false"}
       >
         <code class="xmc-h-skill-card__id">${skill.id}</code>
-        <span class=${"xmc-h-badge xmc-h-badge--" + sourceTone}>${skill.source}</span>
+        <span class=${"xmc-h-badge xmc-h-badge--" + meta.tone}>${meta.label}</span>
         <span class="xmc-h-skill-card__head-meta">
           ${skill.versions.length} 个版本 · HEAD = v${skill.head_version}
         </span>
@@ -135,7 +143,11 @@ export function SkillsPage({ token }) {
     if (!skills) return [];
     const q = search.trim().toLowerCase();
     return skills.filter((s) => {
-      if (view !== "all" && s.source !== view) return false;
+      // B-166: "user" filter folds evolved/llm/user — they're all
+      // "things XMclaw didn't ship with". Built-in stays its own
+      // bucket.
+      if (view === "built-in" && s.source !== "built-in") return false;
+      if (view === "user" && s.source === "built-in") return false;
       if (!q) return true;
       if (s.id.toLowerCase().includes(q)) return true;
       return (s.versions || []).some((v) => {
@@ -147,10 +159,19 @@ export function SkillsPage({ token }) {
   }, [skills, search, view]);
 
   const counts = useMemo(() => {
-    const base = { all: 0, "built-in": 0, user: 0 };
+    // B-166: "user" lane counts everything that wasn't shipped with
+    // XMclaw — manually-installed (created_by=user), evolution-promoted
+    // (evolved), and LLM-drafted (llm).
+    const base = { all: 0, "built-in": 0, user: 0, evolved: 0, llm: 0 };
     for (const s of skills || []) {
       base.all++;
-      base[s.source] = (base[s.source] || 0) + 1;
+      if (s.source === "built-in") {
+        base["built-in"]++;
+      } else {
+        base.user++;
+        if (s.source === "evolved") base.evolved++;
+        if (s.source === "llm") base.llm++;
+      }
     }
     return base;
   }, [skills]);
@@ -247,7 +268,10 @@ export function SkillsPage({ token }) {
             统一视图：所有 SkillRegistry 注册的技能 ·
             <strong>${counts.all}</strong> 个 ·
             <strong>${counts["built-in"]}</strong> 个内置 ·
-            <strong>${counts.user}</strong> 个用户安装。
+            <strong>${counts.user}</strong> 个用户/进化产出
+            ${counts.evolved
+              ? html`<small style="opacity:.65">（其中 ${counts.evolved} 进化）</small>`
+              : null}。
           </p>
         </div>
         <div class="xmc-h-page__actions">
