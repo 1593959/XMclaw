@@ -1425,11 +1425,28 @@ class AgentLoop:
                 # prompt cost.
                 now_ts = time.time()
                 useful: list[Any] = []
+                # B-197 Phase 4: skip rows whose content is already
+                # injected via persona files (kind=file_chunk are
+                # chunks of MEMORY/USER/TOOLS/AGENTS/LEARNING.md —
+                # the agent already reads those at the top of every
+                # system prompt; surfacing them again wastes budget).
+                # The productive recall surface is the **extracted**
+                # rows: preference / lesson / procedure / principle /
+                # session_summary.
+                _SKIP_KINDS = {"file_chunk"}
                 for h in hits:
                     md = h.metadata or {}
                     if md.get("session_id") == session_id:
                         continue
                     if h.ts and now_ts - h.ts < 60.0:
+                        continue
+                    if md.get("kind") in _SKIP_KINDS:
+                        continue
+                    # Skip archived / superseded rows — sqlite_vec
+                    # filters these in upsert / vec query, but the
+                    # MemoryManager.query path doesn't yet enforce it
+                    # at the SQL level for hybrid mode.
+                    if md.get("superseded_by"):
                         continue
                     useful.append(h)
                     if len(useful) >= self._memory_top_k:
@@ -1474,7 +1491,12 @@ class AgentLoop:
                         if decision.blocked:
                             continue  # drop this chunk, keep filtering
                         snippet = decision.content
-                        line = f"{i}. [{ts}] {snippet}"
+                        # B-197 Phase 4: include kind tag so the agent
+                        # can disambiguate "this is a learned lesson"
+                        # vs "this is a user preference" without
+                        # parsing free text.
+                        kind_tag = (h.metadata or {}).get("kind") or "?"
+                        line = f"{i}. [{ts} · {kind_tag}] {snippet}"
                         if total + len(line) > 2048:
                             break
                         rendered.append(line)

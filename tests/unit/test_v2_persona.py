@@ -54,18 +54,21 @@ def test_context_file_order_matches_openclaw():
     assert CONTEXT_FILE_ORDER["agents.md"] == 10
     assert CONTEXT_FILE_ORDER["soul.md"] == 20
     assert CONTEXT_FILE_ORDER["identity.md"] == 30
+    assert CONTEXT_FILE_ORDER["learning.md"] == 35  # B-197 Phase 4
     assert CONTEXT_FILE_ORDER["user.md"] == 40
     assert CONTEXT_FILE_ORDER["tools.md"] == 50
     assert CONTEXT_FILE_ORDER["bootstrap.md"] == 60
     assert CONTEXT_FILE_ORDER["memory.md"] == 70
 
 
-def test_ensure_default_profile_writes_six_files(profile_dir: Path):
+def test_ensure_default_profile_writes_seven_files(profile_dir: Path):
     written = ensure_default_profile(profile_dir)
-    # 7 templates - BOOTSTRAP (opt-in) = 6 files on disk.
-    assert len(written) == 6
+    # 8 templates - BOOTSTRAP (opt-in) = 7 files on disk
+    # (B-197 Phase 4: LEARNING.md added).
+    assert len(written) == 7
     assert (profile_dir / "SOUL.md").is_file()
     assert (profile_dir / "IDENTITY.md").is_file()
+    assert (profile_dir / "LEARNING.md").is_file()
     assert not (profile_dir / "BOOTSTRAP.md").exists()
 
 

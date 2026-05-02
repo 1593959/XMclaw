@@ -29,6 +29,7 @@ CONTEXT_FILE_ORDER: dict[str, int] = {
     "agents.md": 10,
     "soul.md": 20,
     "identity.md": 30,
+    "learning.md": 35,        # B-197 Phase 4: 本能/进化教材
     "user.md": 40,
     "tools.md": 50,
     "bootstrap.md": 60,
@@ -42,6 +43,7 @@ PERSONA_BASENAMES: tuple[str, ...] = (
     "AGENTS.md",
     "SOUL.md",
     "IDENTITY.md",
+    "LEARNING.md",            # B-197 Phase 4
     "USER.md",
     "TOOLS.md",
     "BOOTSTRAP.md",
