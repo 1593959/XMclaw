@@ -33,6 +33,7 @@ from typing import Any
 
 from xmclaw.skills.base import Skill
 from xmclaw.skills.manifest import SkillManifest
+from xmclaw.skills.markdown_skill import MarkdownProcedureSkill
 from xmclaw.skills.versioning import PromotionRecord, now_ts
 
 
@@ -263,6 +264,73 @@ class SkillRegistry:
         A skill promoted, rolled back, re-promoted shows three entries.
         """
         return list(self._history.get(skill_id, ()))
+
+    # ── B-175: in-place body update for live SKILL.md edits ──
+
+    def update_body(
+        self,
+        skill_id: str,
+        version: int,
+        new_body: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+        triggers: tuple[str, ...] | None = None,
+    ) -> bool:
+        """Replace the in-memory body (and optionally frontmatter
+        fields) of an already-registered Markdown skill.
+
+        Pre-B-175 the only way to make a SKILL.md edit visible to the
+        agent was a daemon restart — UserSkillsLoader's "already
+        registered → idempotent skip" logic deliberately won't
+        re-register the same ``(id, version)``, so the in-memory body
+        never refreshed. The :class:`SkillsWatcher` now calls this
+        when it detects an mtime change.
+
+        Only :class:`MarkdownProcedureSkill` is updateable: Python
+        ``skill.py`` modules are cached by ``importlib`` and a body
+        edit there can't reliably take effect without a full restart.
+        Trying to update a Python skill returns ``False`` (silent
+        no-op) so a heterogeneous registry doesn't crash the watcher.
+
+        Returns ``True`` if the body was actually replaced, ``False``
+        if the skill wasn't a Markdown skill or wasn't registered.
+        Never raises — the watcher path must be exception-free.
+        """
+        key = (skill_id, version)
+        existing = self._skills.get(key)
+        if existing is None:
+            return False
+        if not isinstance(existing, MarkdownProcedureSkill):
+            # Python skill — body lives in source, importlib-cached.
+            return False
+
+        # Construct a fresh instance (dataclass, mutable but cleaner
+        # to replace whole than to set body in place).
+        self._skills[key] = MarkdownProcedureSkill(
+            id=skill_id, body=new_body, version=version,
+        )
+
+        # Refresh the manifest fields the user can edit via SKILL.md
+        # frontmatter. Permissions / max_cpu_seconds / created_by /
+        # evidence stay at whatever the registration set — the YAML
+        # frontmatter parser doesn't surface those, so leaving them
+        # alone is the right call.
+        if any(
+            x is not None for x in (title, description, triggers)
+        ):
+            from dataclasses import replace as _replace
+            old_manifest = self._manifests[key]
+            updates: dict[str, Any] = {}
+            if title is not None:
+                updates["title"] = title
+            if description is not None:
+                updates["description"] = description
+            if triggers is not None:
+                updates["triggers"] = triggers
+            self._manifests[key] = _replace(old_manifest, **updates)
+
+        return True
 
     # ── persistence ──
 

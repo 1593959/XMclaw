@@ -14,6 +14,7 @@ Pins:
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
@@ -204,3 +205,137 @@ def test_resolve_skill_roots_explicit_extras_used() -> None:
     _, extras = resolve_skill_roots(cfg)
     assert len(extras) == 1
     assert "my" in str(extras[0]) and "skills" in str(extras[0])
+
+
+# ── B-175: edit existing SKILL.md propagates without restart ─────
+
+
+def _touch_with_mtime(path: Path, mtime: float) -> None:
+    """Force a file's mtime so we don't depend on filesystem
+    sub-second resolution (CI on FAT/ exFAT can round to 2s)."""
+    os.utime(path, (mtime, mtime))
+
+
+@pytest.mark.asyncio
+async def test_edit_skill_md_propagates_to_registry(tmp_path: Path) -> None:
+    """Drop a skill, tick to register, edit body, tick again →
+    registry.get(id).body shows the new content (no restart)."""
+    reg = SkillRegistry()
+    canonical = tmp_path / "skills_user"
+    canonical.mkdir()
+    skill_path = _drop_skill_md(canonical, "git-commit", body="OLD body\n")
+    _touch_with_mtime(skill_path / "SKILL.md", 1000.0)
+    watcher = SkillsWatcher(reg, canonical, interval_s=3600.0)
+
+    # Tick 1: register + seed mtime cache.
+    await watcher.tick()
+    assert reg.get("git-commit").body.strip().endswith("OLD body")
+
+    # User edits SKILL.md — write new content + bump mtime.
+    new_text = (
+        "---\nname: git-commit\ndescription: 'updated desc'\n---\n\nNEW body\n"
+    )
+    (skill_path / "SKILL.md").write_text(new_text, encoding="utf-8")
+    _touch_with_mtime(skill_path / "SKILL.md", 2000.0)
+
+    # Tick 2: detect mtime change, refresh body.
+    await watcher.tick()
+    assert "NEW body" in reg.get("git-commit").body
+    assert "OLD body" not in reg.get("git-commit").body
+    # Manifest description also refreshed.
+    assert reg.ref("git-commit").manifest.description == "updated desc"
+    assert watcher.updated_body_count == 1
+
+
+@pytest.mark.asyncio
+async def test_edit_unchanged_file_no_update(tmp_path: Path) -> None:
+    """Tick on an unchanged tree must NOT report fake updates."""
+    reg = SkillRegistry()
+    canonical = tmp_path / "skills_user"
+    canonical.mkdir()
+    skill_path = _drop_skill_md(canonical, "stable", body="body\n")
+    _touch_with_mtime(skill_path / "SKILL.md", 1000.0)
+    watcher = SkillsWatcher(reg, canonical, interval_s=3600.0)
+
+    await watcher.tick()  # register + seed
+    await watcher.tick()  # nothing changed
+    await watcher.tick()
+    assert watcher.updated_body_count == 0
+
+
+@pytest.mark.asyncio
+async def test_edit_versions_file_propagates(tmp_path: Path) -> None:
+    """Mutator-archived ``versions/v2.md`` body edits should also flow
+    through (lets a manual reviewer tweak a v2 candidate without
+    restarting)."""
+    reg = SkillRegistry()
+    canonical = tmp_path / "skills_user"
+    canonical.mkdir()
+    skill_path = _drop_skill_md(canonical, "auto-foo", body="v1 body\n")
+    versions = skill_path / "versions"
+    versions.mkdir()
+    v2_file = versions / "v2.md"
+    v2_file.write_text(
+        "---\nname: auto-foo\n---\n\nv2 OLD\n", encoding="utf-8",
+    )
+    _touch_with_mtime(skill_path / "SKILL.md", 1000.0)
+    _touch_with_mtime(v2_file, 1000.0)
+    watcher = SkillsWatcher(reg, canonical, interval_s=3600.0)
+    await watcher.tick()
+    assert reg.list_versions("auto-foo") == [1, 2]
+    assert "v2 OLD" in reg.get("auto-foo", 2).body
+
+    # Edit v2.md.
+    v2_file.write_text(
+        "---\nname: auto-foo\n---\n\nv2 NEW\n", encoding="utf-8",
+    )
+    _touch_with_mtime(v2_file, 2000.0)
+    await watcher.tick()
+    assert "v2 NEW" in reg.get("auto-foo", 2).body
+    # v1 untouched.
+    assert "v1 body" in reg.get("auto-foo", 1).body
+
+
+@pytest.mark.asyncio
+async def test_first_observation_does_not_count_as_update(
+    tmp_path: Path,
+) -> None:
+    """A skill that registered THIS tick must not also count as an
+    update — that would double-count + log noise."""
+    reg = SkillRegistry()
+    canonical = tmp_path / "skills_user"
+    canonical.mkdir()
+    _drop_skill_md(canonical, "fresh", body="body\n")
+    watcher = SkillsWatcher(reg, canonical, interval_s=3600.0)
+    await watcher.tick()
+    assert watcher.new_skill_count == 1
+    assert watcher.updated_body_count == 0
+
+
+@pytest.mark.asyncio
+async def test_update_failure_does_not_crash_tick(tmp_path: Path) -> None:
+    """An mtime change on a file we somehow can't read must be a
+    silent no-op, not a tick crash."""
+    reg = SkillRegistry()
+    canonical = tmp_path / "skills_user"
+    canonical.mkdir()
+    skill_path = _drop_skill_md(canonical, "fragile", body="body\n")
+    _touch_with_mtime(skill_path / "SKILL.md", 1000.0)
+    watcher = SkillsWatcher(reg, canonical, interval_s=3600.0)
+    await watcher.tick()
+
+    # Patch update_body to raise.
+    orig = reg.update_body
+    def _boom(*a, **kw):  # noqa: ANN001
+        raise RuntimeError("simulated registry corruption")
+    reg.update_body = _boom  # type: ignore[assignment]
+    try:
+        (skill_path / "SKILL.md").write_text(
+            "NEW body\n", encoding="utf-8",
+        )
+        _touch_with_mtime(skill_path / "SKILL.md", 2000.0)
+        # Must not raise.
+        await watcher.tick()
+        assert watcher.updated_body_count == 0
+    finally:
+        reg.update_body = orig  # type: ignore[assignment]
