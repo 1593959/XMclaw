@@ -710,6 +710,17 @@ class AgentLoop:
         relevant_files_max_chars: int = 4000,
         cfg: dict[str, Any] | None = None,
         post_sampling_registry: "Any | None" = None,
+        # B-189: wall-clock timeout per LLM call (per hop).
+        # Real-data finding (chat-59bb7a7a, 2026-05-02): hop 6
+        # ``llm.complete_streaming`` hung indefinitely with no
+        # response, no max_hops fire, no exception — agent went
+        # silent for 10 minutes until the user typed "继续".
+        # Defending the boundary here so a stuck provider call
+        # surfaces as a clean error event the WS client renders
+        # rather than a hung task. 120s default fits the slowest
+        # MiniMax / GPT-4 turn we've seen with tool-spec heavy
+        # prompts; users on local Ollama can bump if they want.
+        llm_timeout_s: float = 120.0,
     ) -> None:
         self._llm = llm
         self._bus = bus
@@ -746,6 +757,7 @@ class AgentLoop:
         # interrupt in-flight LLM calls but escapes tool-loop stalls).
         self._cancel_events: dict[str, "asyncio.Event"] = {}
         self._max_hops = max_hops
+        self._llm_timeout_s = max(5.0, float(llm_timeout_s))
         self._agent_id = agent_id
         self._cost_tracker = cost_tracker
         # Multi-model: when set, ``run_turn(llm_profile_id=...)`` looks
@@ -1696,10 +1708,43 @@ class AgentLoop:
                 # B-91: also pass the thinking-chunk callback. Providers
                 # that don't support reasoning streams ignore the kwarg
                 # via the base-class default impl.
-                response = await llm.complete_streaming(
-                    messages, tools=tool_specs, on_chunk=_emit_chunk,
-                    on_thinking_chunk=_emit_thinking_chunk,
-                    cancel=cancel_event,
+                # B-189: wall-clock timeout. Without this a hung
+                # provider call (network stall / model loop) blocks
+                # the turn forever — chat-59bb7a7a went silent for 10
+                # minutes after a hop-6 stall before the user nudged.
+                response = await asyncio.wait_for(
+                    llm.complete_streaming(
+                        messages, tools=tool_specs, on_chunk=_emit_chunk,
+                        on_thinking_chunk=_emit_thinking_chunk,
+                        cancel=cancel_event,
+                    ),
+                    timeout=self._llm_timeout_s,
+                )
+            except asyncio.TimeoutError:
+                latency_ms = (time.perf_counter() - t0) * 1000.0
+                # Tell the bus + the user clearly. The ANTI_REQ event
+                # surfaces in events.db / Trace; the LLM_RESPONSE
+                # carries the visible error text the chat UI renders.
+                await publish(EventType.ANTI_REQ_VIOLATION, {
+                    "message": (
+                        f"LLM provider call exceeded "
+                        f"{self._llm_timeout_s:.0f}s wall-clock at hop {hop} "
+                        "— aborting turn rather than blocking forever."
+                    ),
+                    "hop": hop,
+                    "category": "llm_timeout",
+                })
+                err = (
+                    f"LLM call timed out after {self._llm_timeout_s:.0f}s "
+                    "(hop {hop}). Provider may be overloaded or stuck."
+                ).format(hop=hop)
+                await publish(EventType.LLM_RESPONSE, {
+                    "hop": hop, "ok": False, "error": err,
+                    "latency_ms": latency_ms,
+                }, correlation_id=hop_corr)
+                return AgentTurnResult(
+                    ok=False, text="", hops=hop + 1,
+                    tool_calls=tool_calls_made, events=events, error=err,
                 )
             except Exception as exc:  # noqa: BLE001
                 latency_ms = (time.perf_counter() - t0) * 1000.0

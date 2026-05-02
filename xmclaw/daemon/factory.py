@@ -1201,6 +1201,13 @@ def build_agent_from_config(
     except Exception:  # noqa: BLE001
         _hook_registry = None
 
+    # B-189: per-LLM-call wall-clock timeout. Defaults to 120s; user
+    # can override via ``llm.timeout_s`` in config (e.g. set higher
+    # for slow local models, or lower to fail-fast on flaky cloud).
+    _llm_timeout_s = float(
+        (cfg.get("llm") or {}).get("timeout_s", 120.0)
+    )
+
     return AgentLoop(
         llm=llm, bus=bus, tools=tools,
         system_prompt=system_prompt,
@@ -1217,4 +1224,5 @@ def build_agent_from_config(
         relevant_files_max_chars=_picker_max_chars,
         cfg=cfg,
         post_sampling_registry=_hook_registry,
+        llm_timeout_s=_llm_timeout_s,
     )

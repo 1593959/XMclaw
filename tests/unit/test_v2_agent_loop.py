@@ -448,3 +448,83 @@ async def test_evolution_agent_observer_receives_skill_verdicts() -> None:
         assert e.mean_score > 0.0  # ran=True/returned=True yields positive score
     finally:
         await observer.stop()
+
+
+# ── B-189: LLM provider wall-clock timeout ────────────────────────
+
+
+class _HangingLLM(LLMProvider):
+    """Provider whose ``complete_streaming`` blocks forever — simulates
+    the chat-59bb7a7a hop-6 stall where the cloud LLM stopped
+    responding without raising."""
+
+    model: str = "hanging"
+
+    async def stream(self, messages, tools=None, *, cancel=None):  # noqa: D401, ANN001
+        if False:
+            yield  # type: ignore[unreachable]
+
+    async def complete_streaming(  # noqa: D401, ANN001
+        self, messages, tools=None, *, on_chunk=None,
+        on_thinking_chunk=None, cancel=None,
+    ):
+        await asyncio.Event().wait()  # blocks until cancelled
+
+    async def complete(self, messages, tools=None):  # noqa: D401, ANN001
+        await asyncio.Event().wait()
+
+    @property
+    def tool_call_shape(self) -> ToolCallShape:
+        return ToolCallShape.ANTHROPIC_NATIVE
+
+    @property
+    def pricing(self) -> Pricing:
+        return Pricing()
+
+
+@pytest.mark.asyncio
+async def test_llm_call_timeout_aborts_turn_with_clear_error() -> None:
+    """B-189: hanging provider call must abort within
+    ``llm_timeout_s`` rather than wedge the turn forever. The turn
+    returns an error result; the bus carries one ANTI_REQ_VIOLATION
+    + one LLM_RESPONSE(ok=False)."""
+    bus = InProcessEventBus()
+    captured: list = []
+    bus.subscribe(lambda e: True, lambda e: captured.append(e) or None)
+
+    agent = AgentLoop(
+        llm=_HangingLLM(), bus=bus,
+        llm_timeout_s=0.3,  # tight bound for fast test
+    )
+    out = await agent.run_turn("sess-timeout", "anything")
+    await bus.drain()
+
+    assert out.ok is False
+    assert "timed out" in (out.error or "").lower()
+
+    # Bus must reflect both signals.
+    types = [e.type.value for e in captured]
+    assert "anti_req_violation" in types
+    # LLM_RESPONSE event with ok=False carries the error string the
+    # WS client renders to the user.
+    llm_resps = [e for e in captured if e.type.value == "llm_response"]
+    assert any(
+        not r.payload.get("ok") and "timed out" in str(
+            r.payload.get("error", "")
+        ).lower()
+        for r in llm_resps
+    )
+
+
+@pytest.mark.asyncio
+async def test_llm_timeout_min_floor() -> None:
+    """``llm_timeout_s`` floors at 5s so a config typo (0 / negative)
+    can't accidentally disable the safety net."""
+    bus = InProcessEventBus()
+    agent = AgentLoop(
+        llm=_HangingLLM(), bus=bus,
+        llm_timeout_s=0.0,  # caller asked for "no timeout"
+    )
+    # Internal value clamped to 5.0 — we don't want to wait that long
+    # in a test, so just verify the field directly.
+    assert agent._llm_timeout_s >= 5.0  # noqa: SLF001 — pin the floor
