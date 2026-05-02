@@ -782,6 +782,45 @@ def create_app(
                 log.warning("skills_watcher.start_failed err=%s", exc)
                 _app.state.skills_watcher = None
 
+        # B-172: MutationOrchestrator — runs the SkillMutator
+        # (DSPy/GEPA via xmclaw.core.evolution.mutator) when
+        # GRADER_VERDICT EWMA shows a skill is underperforming. Writes
+        # the candidate to ``<id>/versions/v<N>.md`` (so daemon
+        # restart preserves it via user_loader B-172 extension), then
+        # emits SKILL_CANDIDATE_PROPOSED with decision="promote" for
+        # the existing EvolutionOrchestrator to handle. ``set_head=False``
+        # on register means a worse-than-baseline mutation is audited
+        # but never live without explicit promote.
+        # Configurable via ``evolution.mutation.{enabled, threshold,
+        # min_samples, cooldown_s, score_delta, ewma_alpha}``.
+        _app.state.mutation_orchestrator = None
+        if orchestrator is not None:
+            try:
+                from xmclaw.daemon.mutation_orchestrator import (
+                    MutationOrchestrator,
+                )
+                m_cfg = (
+                    ((config or {}).get("evolution") or {}).get("mutation")
+                    or {}
+                )
+                if bool(m_cfg.get("enabled", True)):
+                    mut_orch = MutationOrchestrator(
+                        orchestrator.registry, bus,
+                        ewma_alpha=float(m_cfg.get("ewma_alpha", 0.2)),
+                        threshold=float(m_cfg.get("threshold", 0.5)),
+                        min_samples=int(m_cfg.get("min_samples", 5)),
+                        cooldown_s=float(m_cfg.get("cooldown_s", 3600.0)),
+                        score_delta=float(m_cfg.get("score_delta", 0.05)),
+                        enabled=True,
+                    )
+                    await mut_orch.start()
+                    _app.state.mutation_orchestrator = mut_orch
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "mutation_orchestrator.start_failed err=%s", exc,
+                )
+                _app.state.mutation_orchestrator = None
+
         # B-167: ProposalMaterializer — closes the missing link between
         # SkillProposer drafts (decision="propose") and SkillRegistry.
         # Pre-B-167 a draft sat in proposals.jsonl + events.db and the
@@ -1005,6 +1044,14 @@ def create_app(
             if _sw is not None:
                 try:
                     await _sw.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            # B-172: stop the mutation orchestrator so an in-flight
+            # DSPy compile doesn't keep the loop busy past shutdown.
+            _mo = getattr(_app.state, "mutation_orchestrator", None)
+            if _mo is not None:
+                try:
+                    await _mo.stop()
                 except Exception:  # noqa: BLE001
                     pass
             # Epic #24 Phase 3.2: stop the skill_dream periodic task.

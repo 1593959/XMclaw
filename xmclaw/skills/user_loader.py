@@ -247,7 +247,13 @@ class UserSkillsLoader:
         self, skill_dir: Path, skill_md: Path,
     ) -> LoadResult:
         """Wrap a SKILL.md file in :class:`MarkdownProcedureSkill` and
-        register it under the directory name."""
+        register it under the directory name.
+
+        B-172: also scan ``<skill_dir>/versions/v<N>.md`` for additional
+        versions produced by the mutation orchestrator. Each version is
+        registered with ``set_head=False`` so HEAD stays at v1 unless
+        an explicit promote event flips it.
+        """
         skill_id = skill_dir.name
         try:
             body = skill_md.read_text(encoding="utf-8", errors="replace")
@@ -273,16 +279,60 @@ class UserSkillsLoader:
         try:
             self._registry.register(skill, manifest, set_head=True)
         except ValueError as exc:
-            if "already registered" in str(exc):
+            if "already registered" not in str(exc):
                 return LoadResult(
-                    skill_id=skill_id, ok=True, skill_path=skill_md,
-                    kind="markdown", version=1,
+                    skill_id=skill_id, ok=False, skill_path=skill_md,
+                    kind="markdown",
+                    error=f"register failed: {exc}",
                 )
-            return LoadResult(
-                skill_id=skill_id, ok=False, skill_path=skill_md,
-                kind="markdown",
-                error=f"register failed: {exc}",
-            )
+            # idempotent re-load — fall through to versions/ scan
+            # so a fresh mutation v<N> file landed since last boot
+            # still gets registered.
+
+        # B-172: scan ``<skill_dir>/versions/v<N>.md`` for archived
+        # mutation outputs. Each archived version registers as a
+        # separate (id, version) pair with set_head=False — HEAD stays
+        # at v1 until SKILL_PROMOTED flips it. On daemon restart this
+        # is what makes mutation outputs survive.
+        versions_dir = skill_dir / "versions"
+        if versions_dir.is_dir():
+            for vfile in sorted(versions_dir.glob("v*.md")):
+                v_match = re.match(r"^v(\d+)\.md$", vfile.name)
+                if v_match is None:
+                    continue
+                ver = int(v_match.group(1))
+                if ver == 1:
+                    continue  # v1 is already the SKILL.md above
+                try:
+                    v_body = vfile.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                v_title, v_desc, v_triggers = _parse_skill_md_frontmatter(v_body)
+                v_skill = MarkdownProcedureSkill(
+                    id=skill_id, body=v_body, version=ver,
+                )
+                v_manifest = SkillManifest(
+                    id=skill_id, version=ver,
+                    created_by="evolved",  # versions/ is mutator territory
+                    title=v_title or title,
+                    description=v_desc or description,
+                    triggers=v_triggers or triggers,
+                )
+                try:
+                    self._registry.register(
+                        v_skill, v_manifest, set_head=False,
+                    )
+                except ValueError as exc:
+                    if "already registered" in str(exc):
+                        continue
+                    log.warning(
+                        "user_skill.version_register_failed",
+                        extra={
+                            "skill_id": skill_id, "version": ver,
+                            "error": str(exc),
+                        },
+                    )
+
         return LoadResult(
             skill_id=skill_id, ok=True, skill_path=skill_md,
             kind="markdown", version=1,
