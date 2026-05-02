@@ -33,6 +33,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from xmclaw.daemon.extractor_prompts import load_prompt
 from xmclaw.utils.log import get_logger
 
 
@@ -187,7 +188,10 @@ class ExtractMemoriesHook(PostSamplingHook):
             f"Assistant: {ctx.assistant_response[:1500]}"
         )
         messages = [
-            Message(role="system", content=_EXTRACT_PROMPT),
+            Message(
+                role="system",
+                content=load_prompt("extract_memories", _EXTRACT_PROMPT),
+            ),
             Message(role="user", content=excerpt),
         ]
         try:
@@ -350,7 +354,10 @@ class ExtractLessonsHook(PostSamplingHook):
             f"Assistant: {ctx.assistant_response[:1500]}"
         )
         messages = [
-            Message(role="system", content=_LESSONS_PROMPT),
+            Message(
+                role="system",
+                content=load_prompt("extract_lessons", _LESSONS_PROMPT),
+            ),
             Message(role="user", content=excerpt),
         ]
         try:

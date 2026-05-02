@@ -41,6 +41,7 @@ from xmclaw.core.evolution import ProposedSkill
 from xmclaw.core.evolution.proposer import _Pattern
 from xmclaw.core.journal import JournalEntry
 from xmclaw.core.profile import ProfileDelta
+from xmclaw.daemon.extractor_prompts import load_prompt
 from xmclaw.providers.llm.base import LLMProvider, Message
 
 _log = logging.getLogger(__name__)
@@ -295,8 +296,16 @@ def build_skill_extractor(
         user_prompt = _format_patterns_for_prompt(patterns, entries)
         try:
             t0 = time.perf_counter()
+            # B-182: prompt is loaded fresh from disk each call so
+            # the user can edit ``~/.xmclaw/v2/extractor_prompts/
+            # skill_extractor.md`` without restarting the daemon.
+            # Cache invalidates on mtime change; default below seeds
+            # the file on first run.
             resp = await llm.complete([
-                Message(role="system", content=_SKILL_SYSTEM_PROMPT),
+                Message(
+                    role="system",
+                    content=load_prompt("skill_extractor", _SKILL_SYSTEM_PROMPT),
+                ),
                 Message(role="user", content=user_prompt),
             ])
             elapsed = (time.perf_counter() - t0) * 1000.0
@@ -400,8 +409,14 @@ def build_profile_extractor(
         user_prompt = _format_messages_for_profile_prompt(messages)
         try:
             t0 = time.perf_counter()
+            # B-182: same disk-backed pattern as skill_extractor.
             resp = await llm.complete([
-                Message(role="system", content=_PROFILE_SYSTEM_PROMPT),
+                Message(
+                    role="system",
+                    content=load_prompt(
+                        "profile_extractor", _PROFILE_SYSTEM_PROMPT,
+                    ),
+                ),
                 Message(role="user", content=user_prompt),
             ])
             elapsed = (time.perf_counter() - t0) * 1000.0
