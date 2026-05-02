@@ -415,3 +415,61 @@ async def test_bad_extractor_return_drops_cleanly(tmp_path: Path) -> None:
         min_pattern_count=3,
     )
     assert await proposer_mixed.propose() == []
+
+
+# ── B-184 generic-primitive filter ────────────────────────────────
+
+
+def test_pattern_detection_skips_generic_primitives(tmp_path: Path) -> None:
+    """B-184: bash/list_dir/file_read etc. are generic — wrapping
+    them in 'auto-explore-files' / 'auto-run-shell-commands' skills
+    adds no value. Joint audit found 19+ such redundant proposals
+    in real-data MEMORY.db. The proposer now drops them at pattern
+    detection so the LLM extractor never even sees them."""
+    reader = JournalReader(root=tmp_path)
+    proposer = SkillProposer(reader, min_pattern_count=2)
+
+    entries = [
+        _entry("s1", tools=["bash", "list_dir", "domain.workflow"]),
+        _entry("s2", tools=["bash", "file_read", "domain.workflow"]),
+        _entry("s3", tools=["glob_files", "domain.workflow"]),
+    ]
+    patterns = proposer.detect_patterns(entries)
+    pattern_names = {p.tool_name for p in patterns}
+
+    # Only the domain-specific tool survives; generic primitives are dropped.
+    assert pattern_names == {"domain.workflow"}
+
+
+def test_pattern_detection_keeps_primitives_when_disabled(
+    tmp_path: Path,
+) -> None:
+    """``skip_generic_primitives=False`` restores pre-B-184 behaviour
+    for callers (tests, benches) that explicitly want every pattern
+    surfaced."""
+    reader = JournalReader(root=tmp_path)
+    proposer = SkillProposer(
+        reader, min_pattern_count=2, skip_generic_primitives=False,
+    )
+    entries = [
+        _entry("s1", tools=["bash"]),
+        _entry("s2", tools=["bash"]),
+    ]
+    patterns = proposer.detect_patterns(entries)
+    assert {p.tool_name for p in patterns} == {"bash"}
+
+
+def test_pattern_detection_keeps_skill_tools(tmp_path: Path) -> None:
+    """Skill-prefixed tool names (skill_*) ARE distinct procedures
+    worth proposing wrappers around, so they survive the filter
+    unconditionally even though the LLM might wrap them further."""
+    reader = JournalReader(root=tmp_path)
+    proposer = SkillProposer(reader, min_pattern_count=2)
+    entries = [
+        _entry("s1", tools=["skill_git-commit", "bash"]),
+        _entry("s2", tools=["skill_git-commit", "list_dir"]),
+    ]
+    patterns = proposer.detect_patterns(entries)
+    pattern_names = {p.tool_name for p in patterns}
+    # Generic primitives dropped, custom skill tool kept.
+    assert pattern_names == {"skill_git-commit"}

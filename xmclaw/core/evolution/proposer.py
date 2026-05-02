@@ -118,6 +118,31 @@ def noop_extractor(
     return []
 
 
+# B-184: tools whose pattern alone shouldn't trigger a skill proposal.
+# These are generic primitives — wrapping them in an "auto-explore-files"
+# / "auto-run-shell-commands" skill adds nothing the LLM didn't already
+# have. Real-data audit caught the proposer producing 19+ variants of
+# this exact mistake (auto-explore-*, auto-search-*, auto-grep-and-read,
+# auto-run-shell-commands, ...) — every one of them was the LLM
+# "discovering" a built-in tool. Skill proposals should reflect
+# multi-step workflows or domain-specific procedures, not solo tool use.
+_GENERIC_PRIMITIVE_TOOLS = frozenset({
+    "bash",
+    "list_dir",
+    "file_read",
+    "file_write",
+    "file_delete",
+    "glob_files",
+    "grep_files",
+    "apply_patch",
+    "sqlite_query",
+    "web_fetch",
+    "web_search",
+    "todo_write",
+    "todo_read",
+})
+
+
 @dataclass
 class SkillProposer:
     """Walks Journal history → finds tool-use patterns → drafts
@@ -142,6 +167,14 @@ class SkillProposer:
         be worth the LLM call.
     min_confidence : float, default 0.5
         Drafts below this confidence are dropped before returning.
+    skip_generic_primitives : bool, default True
+        B-184: when True, single-tool patterns where the tool is a
+        generic built-in primitive (bash / list_dir / file_read / etc.)
+        are excluded from pattern detection. Real-data audit found
+        the LLM extractor kept proposing wrapper skills for these
+        ("auto-explore-file-system" = list_dir + bash ls) which
+        registered as zero-call clutter. Domain-specific patterns
+        and multi-tool patterns still flow through.
     """
 
     reader: JournalReader
@@ -149,6 +182,7 @@ class SkillProposer:
     history_window: int = 50
     min_pattern_count: int = 3
     min_confidence: float = 0.5
+    skip_generic_primitives: bool = True
 
     # ── pattern discovery ────────────────────────────────────────────
 
@@ -178,6 +212,16 @@ class SkillProposer:
         out: list[_Pattern] = []
         for tool_name, sids in sessions_by_tool.items():
             if len(sids) < self.min_pattern_count:
+                continue
+            # B-184: drop solo-primitive patterns. The LLM extractor
+            # was treating every common-built-in usage as a "skill
+            # opportunity" and producing redundant wrappers. If a
+            # workflow is genuinely worth a skill, it'll show up as
+            # a multi-tool sequence (covered separately by future
+            # phases) or as a non-primitive tool repeating.
+            if self.skip_generic_primitives and (
+                tool_name in _GENERIC_PRIMITIVE_TOOLS
+            ):
                 continue
             scores = score_by_tool.get(tool_name) or []
             avg = sum(scores) / len(scores) if scores else None
