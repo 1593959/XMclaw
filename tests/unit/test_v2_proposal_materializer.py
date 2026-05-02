@@ -109,7 +109,7 @@ async def test_skill_runs_after_materialization(tmp_path: Path) -> None:
     from xmclaw.skills.base import SkillInput
     out = await skill.run(SkillInput(args={}))
     assert out.ok
-    assert "step A" in out.result["body"]
+    assert "step A" in out.result["instructions"]
     await pm.stop()
 
 
