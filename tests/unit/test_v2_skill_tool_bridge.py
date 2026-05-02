@@ -242,3 +242,54 @@ async def test_composite_dynamic_discovery_for_late_registered_skill() -> None:
     ))
     assert result.ok is True
     assert result.content == {"echoed": {"x": 9}, "version": 1}
+
+
+# ── B-176: tool description carries manifest body ─────────────────
+
+
+def test_list_tools_description_includes_manifest_body() -> None:
+    """B-176: pre-fix the LLM saw only "Skill: id v1 (created_by=user)".
+    Post-fix the rich frontmatter description + triggers come through
+    so the model can actually decide whether to pick the skill."""
+    reg = SkillRegistry()
+    reg.register(
+        _EchoSkill("git-commit"),
+        SkillManifest(
+            id="git-commit", version=1, created_by="user",
+            title="Git Commit Workflow",
+            description=(
+                "Execute git commit with conventional commit message "
+                "analysis. Use when the user asks to commit changes."
+            ),
+            triggers=("/commit", "git commit", "提交"),
+        ),
+    )
+    bridge = SkillToolProvider(reg)
+    specs = bridge.list_tools()
+    assert len(specs) == 1
+    desc = specs[0].description
+    # Body description shows up.
+    assert "conventional commit message analysis" in desc
+    # Triggers shown so the LLM can keyword-match.
+    assert "/commit" in desc and "提交" in desc
+    # Title surfaces too.
+    assert "Git Commit Workflow" in desc
+    # Provenance still present (audit trail) but not the headline.
+    assert "created_by=user" in desc
+
+
+def test_list_tools_description_minimal_when_no_frontmatter() -> None:
+    """A skill with empty manifest description still gets a valid
+    (terse) tool spec — just the id + version + provenance, same
+    pre-B-176 behaviour as the floor."""
+    reg = SkillRegistry()
+    reg.register(
+        _EchoSkill("bare"),
+        SkillManifest(id="bare", version=1, created_by="evolved"),
+    )
+    bridge = SkillToolProvider(reg)
+    specs = bridge.list_tools()
+    assert len(specs) == 1
+    desc = specs[0].description
+    assert "bare" in desc and "v1" in desc
+    assert "created_by=evolved" in desc

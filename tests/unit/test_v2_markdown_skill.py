@@ -35,7 +35,11 @@ async def test_markdown_skill_run_returns_body() -> None:
     assert out.ok
     assert out.result["kind"] == "markdown_procedure"
     assert out.result["skill_id"] == "demo.md"
-    assert "Read file" in out.result["body"]
+    # B-176 renamed ``body`` → ``instructions`` so the LLM treats
+    # the response as authoritative input rather than a meta-note.
+    assert "Read file" in out.result["instructions"]
+    # ``guidance`` field frames the response as success + actionable.
+    assert "successfully" in out.result["guidance"].lower()
     assert out.side_effects == []
 
 
@@ -50,8 +54,8 @@ async def test_markdown_skill_strips_frontmatter() -> None:
     )
     s = MarkdownProcedureSkill(id="x", body=body)
     out = await s.run(SkillInput(args={}))
-    assert "name: foo" not in out.result["body"]
-    assert "Body starts here" in out.result["body"]
+    assert "name: foo" not in out.result["instructions"]
+    assert "Body starts here" in out.result["instructions"]
 
 
 # ── UserSkillsLoader SKILL.md branch ────────────────────────────────

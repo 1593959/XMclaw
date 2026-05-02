@@ -269,11 +269,17 @@ class UserSkillsLoader:
         # optional ``allowed-tools``) so the manifest carries the
         # one-line description the Skills page renders. Pre-B-170 the
         # manifest was empty → UI showed "—" for every skill.
+        # B-176: also parse ``created_by`` so migrated / evolution-
+        # produced SKILL.md (which write ``created_by: evolved`` in
+        # frontmatter) keep their EVOLVED tag across daemon restart.
+        # Pre-B-176 this loader hardcoded "user" regardless of what
+        # the file said, masking 6 of the 6 migrated lineages as USER.
         title, description, triggers = _parse_skill_md_frontmatter(body)
+        created_by = _parse_skill_md_created_by(body) or "user"
 
         skill = MarkdownProcedureSkill(id=skill_id, body=body, version=1)
         manifest = SkillManifest(
-            id=skill_id, version=1, created_by="user",
+            id=skill_id, version=1, created_by=created_by,
             title=title, description=description, triggers=triggers,
         )
         try:
@@ -545,3 +551,24 @@ def _parse_skill_md_frontmatter(
                 break
 
     return title, description, triggers
+
+
+# B-176: pull just ``created_by`` from frontmatter so the loader can
+# preserve "evolved" / "llm" / "user" tags written by the proposal
+# materializer + auto-evo migrator. Returning None means "no
+# created_by line" — caller defaults to "user" for back-compat.
+_CREATED_BY_RE = re.compile(
+    r"^created_by:\s*['\"]?([a-zA-Z_][a-zA-Z_0-9]*)['\"]?\s*$",
+    re.MULTILINE,
+)
+
+
+def _parse_skill_md_created_by(body: str) -> str | None:
+    m = _FRONTMATTER_BLOCK_RE.match(body or "")
+    if m is None:
+        return None
+    block = m.group(1)
+    cb = _CREATED_BY_RE.search(block)
+    if cb is None:
+        return None
+    return cb.group(1).lower()

@@ -55,20 +55,27 @@ class MarkdownProcedureSkill(Skill):
         return _FRONTMATTER_RE.sub("", self.body, count=1).strip()
 
     async def run(self, inp: SkillInput) -> SkillOutput:
-        # Agent invokes the tool; we hand back the procedure text so
-        # the next LLM turn can actually follow it. ``side_effects``
-        # is empty because this skill only *describes* what to do — it
-        # doesn't execute side-effecty code itself.
+        # B-176 (real-data finding): the original ``note`` ("This is
+        # a procedure — read the body above and execute the steps
+        # using your normal tools...") was misread by the LLM as a
+        # FAILURE message ("the skill didn't actually do anything")
+        # — black-box probe caught the agent saying "skill 还没实际
+        # 装进来" right after a successful invocation. Rephrased to
+        # frame the response as the skill's INSTRUCTIONS for THIS
+        # turn, so the LLM treats the body as authoritative input
+        # rather than a meta-hint.
         return SkillOutput(
             ok=True,
             result={
                 "kind": "markdown_procedure",
                 "skill_id": self.id,
-                "body": self.stripped_body,
-                "note": (
-                    "This is a procedure — read the body above and "
-                    "execute the steps using your normal tools "
-                    "(file_read / bash / etc) on the next turn."
+                "instructions": self.stripped_body,
+                "guidance": (
+                    f"Skill {self.id!r} loaded successfully. The "
+                    "'instructions' field above is the authoritative "
+                    "playbook for this user request — follow each step "
+                    "directly using your other tools (bash / file_read "
+                    "/ etc) and produce the final answer when done."
                 ),
             },
             side_effects=[],

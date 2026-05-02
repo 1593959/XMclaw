@@ -87,16 +87,37 @@ class SkillToolProvider:
         except UnknownSkillError:
             return None
         manifest = ref.manifest
-        # Manifest doesn't currently carry a description or input schema.
-        # Use a permissive object schema so the LLM can pass whatever
-        # makes sense; future manifest fields can tighten this without
-        # touching the bridge.
-        description = (
-            f"{self._description_prefix}{skill_id} v{ref.version} "
-            f"(created_by={manifest.created_by})"
-        )
+
+        # B-176: surface the rich frontmatter description (B-170)
+        # PLUS triggers list to the LLM. Pre-B-176 the bridge only
+        # told the model "Skill: git-commit v1 (created_by=user)" —
+        # that's what the LLM sees in the tool list, and it carries
+        # zero signal about what the skill *does*. End result:
+        # sitting next to ``bash`` / ``file_read`` (which DO carry
+        # rich descriptions), every skill_* looked uninformative,
+        # so the model never picked them. The black-box probe in
+        # scripts/probe_blackbox.py confirmed 0/4 scenarios used a
+        # skill before this fix.
+        body = manifest.description.strip() if manifest.description else ""
+        title = manifest.title.strip() if manifest.title else ""
+
+        head_line = f"{self._description_prefix}{skill_id} v{ref.version}"
+        if title and title != skill_id:
+            head_line += f" — {title}"
+
+        parts: list[str] = [head_line]
+        if body:
+            parts.append(body)
+        if manifest.triggers:
+            parts.append(
+                "triggers: " + ", ".join(manifest.triggers)
+            )
+        # Provenance + evidence go last so they don't dilute the
+        # first-impression description the LLM scans most carefully.
+        parts.append(f"(created_by={manifest.created_by})")
         if manifest.evidence:
-            description += f" — evidence: {'; '.join(manifest.evidence)}"
+            parts.append("evidence: " + "; ".join(manifest.evidence))
+        description = "\n".join(parts)
         return ToolSpec(
             name=_to_tool_name(skill_id),
             description=description,
