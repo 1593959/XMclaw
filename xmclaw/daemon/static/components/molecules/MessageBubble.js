@@ -429,7 +429,9 @@ export function MessageBubble({ message, onAnswerQuestion }) {
       />
       ${message.content
         ? html`<${MarkdownBody} content=${message.content} />`
-        : null}
+        : (role === "assistant" && thinking
+            ? html`<div class="xmc-msg__placeholder" style="opacity:.65;font-size:.85em">🌸 收到啦，正在思考中...</div>`
+            : null)}
       ${(message.toolCalls || []).map(
         (call) => html`<${ToolCard} key=${call.id} call=${call} />`
       )}

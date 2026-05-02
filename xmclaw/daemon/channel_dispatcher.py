@@ -50,15 +50,16 @@ class ChannelDispatcher:
                so this module doesn't import xmclaw.daemon.agent_loop.
     """
 
-    def __init__(self, agent: Any, *, ack_delay_s: float = 2.0) -> None:
+    def __init__(self, agent: Any, *, ack_delay_s: float = 0.0) -> None:
         self._agent = agent
         self._adapters: list[ChannelAdapter] = []
         # In-flight per-(channel, chat) lock so two messages in the
         # same chat don't trample each other's turns.
         self._chat_locks: dict[str, asyncio.Lock] = {}
         # B-195: how long to wait before sending the "thinking..."
-        # placeholder. Overridable for tests so they don't have to
-        # wait 2 real seconds.
+        # placeholder. Default 0 — user wants immediate ack on every
+        # message ("不要两秒，要立刻"). Set >0 to suppress ack on
+        # fast turns, or for tests that don't want the placeholder.
         self._ack_delay_s = ack_delay_s
 
     def add(self, adapter: ChannelAdapter) -> None:

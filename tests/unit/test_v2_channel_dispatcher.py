@@ -127,7 +127,9 @@ async def test_inbound_drives_run_turn_with_stable_session_id() -> None:
 @pytest.mark.asyncio
 async def test_assistant_reply_sent_back_via_adapter() -> None:
     agent = _FakeAgent(reply="hi back")
-    disp = ChannelDispatcher(agent)
+    # ack_delay_s=99 suppresses the B-195 placeholder so this test
+    # focuses solely on the final-reply-routing path.
+    disp = ChannelDispatcher(agent, ack_delay_s=99.0)
     adapter = _FakeAdapter()
     disp.add(adapter)
 
@@ -147,7 +149,7 @@ async def test_two_messages_same_chat_serialise() -> None:
     """Per-chat lock means two messages in the same chat don't run in
     parallel — the second must wait for the first's run_turn to finish."""
     agent = _FakeAgent(reply="x")
-    disp = ChannelDispatcher(agent)
+    disp = ChannelDispatcher(agent, ack_delay_s=99.0)
     adapter = _FakeAdapter()
     disp.add(adapter)
 
@@ -166,7 +168,7 @@ async def test_two_messages_same_chat_serialise() -> None:
 async def test_two_messages_different_chats_parallel_ok() -> None:
     """Different chats get separate locks — they CAN run in parallel."""
     agent = _FakeAgent(reply="x")
-    disp = ChannelDispatcher(agent)
+    disp = ChannelDispatcher(agent, ack_delay_s=99.0)
     adapter = _FakeAdapter()
     disp.add(adapter)
 
@@ -269,9 +271,10 @@ class _SlowAgent(_FakeAgent):
 
 
 @pytest.mark.asyncio
-async def test_fast_turn_skips_ack() -> None:
-    """B-195: turn finishes before ack_delay_s — no placeholder spam.
-    Reason: 不发占位条不打扰 fast 回复；占位只在真慢时出现。"""
+async def test_ack_delay_above_zero_skips_ack_on_fast_turn() -> None:
+    """B-195: when ack_delay_s > 0, fast turns finish before the timer
+    fires → no placeholder. (Default behaviour is delay=0, see
+    test_default_ack_fires_immediately.)"""
     agent = _SlowAgent(reply="quick", sleep_s=0.01)
     disp = ChannelDispatcher(agent, ack_delay_s=0.5)
     adapter = _FakeAdapter()
@@ -282,6 +285,28 @@ async def test_fast_turn_skips_ack() -> None:
     # Just the final reply — no "🌸 思考中" message.
     assert len(adapter.sent) == 1
     assert adapter.sent[0][1].content == "quick"
+
+
+@pytest.mark.asyncio
+async def test_default_ack_fires_immediately() -> None:
+    """B-195 update (用户要求"立刻"): default ack_delay_s=0 sends the
+    placeholder on EVERY message, even fast ones. Trade-off: every
+    message gets two bot replies, but the user always knows the
+    daemon got their message — no more 'did it go through?' anxiety."""
+    agent = _SlowAgent(reply="ok", sleep_s=0.01)
+    disp = ChannelDispatcher(agent)  # default ack_delay_s = 0
+    adapter = _FakeAdapter()
+    disp.add(adapter)
+
+    await adapter.emit(_msg("ping", msg_id="usr-1"))
+
+    # ack + final
+    assert len(adapter.sent) == 2
+    ack_payload = adapter.sent[0][1]
+    final_payload = adapter.sent[1][1]
+    assert "思考" in ack_payload.content or "🌸" in ack_payload.content
+    assert ack_payload.reply_to == "usr-1"
+    assert final_payload.content == "ok"
 
 
 @pytest.mark.asyncio
