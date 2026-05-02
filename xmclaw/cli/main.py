@@ -587,6 +587,39 @@ def serve(
                         err=True,
                     )
 
+            # B-174: replay promote/rollback audit log so HEAD pointers
+            # survive daemon restart. Without this, a mutator-promoted
+            # v2 silently reverted to v1 on every restart.
+            try:
+                replayed = registry.replay_history()
+            except Exception as exc:  # noqa: BLE001
+                typer.echo(
+                    f"  [!]   skill HEAD replay failed: {exc}", err=True,
+                )
+                replayed = {}
+            if replayed:
+                head_msg = ", ".join(
+                    f"{sid}=v{ver}" for sid, ver in sorted(replayed.items())
+                )
+                typer.echo(
+                    f"  [ok]  skill HEAD replayed for "
+                    f"{len(replayed)} skill(s): {head_msg}"
+                )
+
+            # B-174 #1: surface a hint when DSPy isn't installed so the
+            # user knows MutationOrchestrator will silently no-op.
+            try:
+                from xmclaw.core.evolution.mutator import SkillMutator
+                if not SkillMutator().is_available:
+                    typer.echo(
+                        "  [i]   skill mutator: DSPy not installed — "
+                        "MutationOrchestrator will register but never "
+                        "produce v2. Install with `pip install dspy-ai` "
+                        "to enable iteration."
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+
     typer.echo(f"xmclaw v{__version__} -- binding ws://{host}:{port}")
     typer.echo(f"  health:  http://{host}:{port}/health")
     typer.echo(f"  session: ws://{host}:{port}/agent/v2/<session_id>")

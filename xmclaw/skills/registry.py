@@ -275,3 +275,95 @@ class SkillRegistry:
             # tuple → list for json
             payload["evidence"] = list(record.evidence)
             f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+    # ── boot-time replay (B-174) ──
+
+    def replay_history(
+        self, *, skill_id: str | None = None,
+    ) -> dict[str, int]:
+        """Restore HEAD pointers from the persisted promote/rollback log.
+
+        Pre-B-174 the registry persisted promote / rollback records to
+        ``~/.xmclaw/skills/<id>.jsonl`` but **never replayed them at
+        boot**. Symptom: agent runs for a week, mutator promotes
+        ``auto-repair`` v1 → v2 → v3 (auto_apply=true), user restarts
+        daemon → HEAD silently reverts to v1 because that was the
+        first ``register(set_head=True)`` call. All evolution work
+        looked retained on disk + UI but the agent quietly used the
+        worst version.
+
+        Boot order required: register every (id, version) FIRST (so
+        the records can resolve their target versions), THEN call
+        ``replay_history()``. Records pointing at a version that no
+        longer exists in the registry (skill was deleted between
+        sessions) are skipped silently — replay never raises.
+
+        Returns: ``{skill_id: replayed_head_version}`` for the skills
+        whose HEAD actually moved, useful for boot-log telemetry.
+
+        Note: ``rollback`` reasons + ``promote`` evidence stay in the
+        in-memory history list verbatim — replay re-appends them so
+        ``history(skill_id)`` returns the same chronological view as
+        before the restart.
+        """
+        if self._history_dir is None or not self._history_dir.is_dir():
+            return {}
+
+        if skill_id is not None:
+            paths = [self._history_dir / f"{skill_id}.jsonl"]
+        else:
+            paths = sorted(self._history_dir.glob("*.jsonl"))
+
+        replayed_heads: dict[str, int] = {}
+        for path in paths:
+            if not path.is_file():
+                continue
+            sid = path.stem
+            records: list[PromotionRecord] = []
+            try:
+                with path.open("r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            obj = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        rec = self._record_from_dict(obj)
+                        if rec is not None:
+                            records.append(rec)
+            except OSError:
+                continue
+            if not records:
+                continue
+
+            # Apply chronologically. Skip records whose to_version was
+            # never re-registered this boot (deleted skill).
+            for rec in sorted(records, key=lambda r: r.ts):
+                if (sid, rec.to_version) not in self._skills:
+                    continue
+                self._head[sid] = rec.to_version
+                self._history[sid].append(rec)
+                replayed_heads[sid] = rec.to_version
+        return replayed_heads
+
+    def _record_from_dict(self, obj: dict[str, Any]) -> PromotionRecord | None:
+        """Reverse of ``_persist`` payload shape. Tolerates partial
+        rows so a corrupt JSONL line drops one record, not the file."""
+        try:
+            kind = str(obj.get("kind") or "promote")
+            if kind not in ("promote", "rollback"):
+                return None
+            return PromotionRecord(
+                kind=kind,  # type: ignore[arg-type]
+                skill_id=str(obj["skill_id"]),
+                from_version=int(obj.get("from_version", 0) or 0),
+                to_version=int(obj["to_version"]),
+                ts=float(obj.get("ts", 0.0) or 0.0),
+                evidence=tuple(str(e) for e in (obj.get("evidence") or ())),
+                reason=obj.get("reason"),
+                source=str(obj.get("source") or "manual"),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None

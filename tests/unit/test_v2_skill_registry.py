@@ -330,3 +330,128 @@ def test_persisted_record_includes_source_field(tmp_path: Path) -> None:
     log = tmp_path / "s.jsonl"
     rec = json.loads(log.read_text(encoding="utf-8").strip())
     assert rec["source"] == "controller"
+
+
+# ── B-174: replay_history restores HEAD across daemon restart ──────────
+
+
+def test_replay_restores_head_after_promote(tmp_path: Path) -> None:
+    """Daemon-1 promotes to v2; daemon-2 boots with same history dir
+    and replay must lift HEAD back to v2 (not the implicit v1 from
+    register order)."""
+    # Daemon 1 — write history.
+    reg1 = SkillRegistry(history_dir=tmp_path)
+    reg1.register(_skill("s", 1), _manifest("s", 1))
+    reg1.register(_skill("s", 2), _manifest("s", 2))
+    reg1.promote("s", 2, evidence=["e"])
+    assert reg1.active_version("s") == 2
+
+    # Daemon 2 — fresh registry, same history dir, re-register skills.
+    reg2 = SkillRegistry(history_dir=tmp_path)
+    reg2.register(_skill("s", 1), _manifest("s", 1))
+    reg2.register(_skill("s", 2), _manifest("s", 2))
+    assert reg2.active_version("s") == 1  # set_head=True default → v1
+
+    replayed = reg2.replay_history()
+    assert replayed == {"s": 2}
+    assert reg2.active_version("s") == 2
+
+
+def test_replay_applies_chronologically(tmp_path: Path) -> None:
+    """Multiple records: promote v2 → rollback v1 → promote v3.
+    Final HEAD must be v3."""
+    reg1 = SkillRegistry(history_dir=tmp_path)
+    reg1.register(_skill("s", 1), _manifest("s", 1))
+    reg1.register(_skill("s", 2), _manifest("s", 2))
+    reg1.register(_skill("s", 3), _manifest("s", 3))
+    reg1.promote("s", 2, evidence=["a"])
+    reg1.rollback("s", 1, reason="bad")
+    reg1.promote("s", 3, evidence=["c"])
+
+    reg2 = SkillRegistry(history_dir=tmp_path)
+    reg2.register(_skill("s", 1), _manifest("s", 1))
+    reg2.register(_skill("s", 2), _manifest("s", 2))
+    reg2.register(_skill("s", 3), _manifest("s", 3))
+    reg2.replay_history()
+    assert reg2.active_version("s") == 3
+    # History list is also re-populated so audit calls work.
+    assert [r.kind for r in reg2.history("s")] == [
+        "promote", "rollback", "promote",
+    ]
+
+
+def test_replay_skips_records_for_unregistered_versions(
+    tmp_path: Path,
+) -> None:
+    """Original session promoted v3 → daemon restart finds only v1, v2
+    (someone deleted v3 between sessions) → replay must skip v3 and
+    leave HEAD at whatever the surviving record points to (v2 here)."""
+    reg1 = SkillRegistry(history_dir=tmp_path)
+    reg1.register(_skill("s", 1), _manifest("s", 1))
+    reg1.register(_skill("s", 2), _manifest("s", 2))
+    reg1.register(_skill("s", 3), _manifest("s", 3))
+    reg1.promote("s", 2, evidence=["a"])
+    reg1.promote("s", 3, evidence=["b"])
+
+    reg2 = SkillRegistry(history_dir=tmp_path)
+    reg2.register(_skill("s", 1), _manifest("s", 1))
+    reg2.register(_skill("s", 2), _manifest("s", 2))
+    # NOTE: v3 NOT re-registered in this boot.
+
+    replayed = reg2.replay_history()
+    assert replayed == {"s": 2}  # v3 record skipped
+    assert reg2.active_version("s") == 2
+
+
+def test_replay_with_no_history_dir_returns_empty() -> None:
+    """No history_dir configured → replay is a graceful no-op."""
+    reg = SkillRegistry()
+    reg.register(_skill("s", 1), _manifest("s", 1))
+    assert reg.replay_history() == {}
+
+
+def test_replay_with_empty_history_dir_returns_empty(tmp_path: Path) -> None:
+    reg = SkillRegistry(history_dir=tmp_path)
+    reg.register(_skill("s", 1), _manifest("s", 1))
+    assert reg.replay_history() == {}
+
+
+def test_replay_tolerates_corrupt_jsonl_lines(tmp_path: Path) -> None:
+    """One malformed line shouldn't lose the file's surviving records."""
+    # Write good record, garbage line, good record manually.
+    log = tmp_path / "s.jsonl"
+    log.write_text(
+        '{"kind": "promote", "skill_id": "s", "from_version": 0, '
+        '"to_version": 2, "ts": 1.0, "evidence": ["a"], "source": "manual"}\n'
+        'NOT JSON\n'
+        '{"kind": "promote", "skill_id": "s", "from_version": 2, '
+        '"to_version": 3, "ts": 2.0, "evidence": ["b"], "source": "manual"}\n',
+        encoding="utf-8",
+    )
+    reg = SkillRegistry(history_dir=tmp_path)
+    reg.register(_skill("s", 1), _manifest("s", 1))
+    reg.register(_skill("s", 2), _manifest("s", 2))
+    reg.register(_skill("s", 3), _manifest("s", 3))
+    replayed = reg.replay_history()
+    assert replayed == {"s": 3}
+
+
+def test_replay_per_skill_id_filter(tmp_path: Path) -> None:
+    """``replay_history(skill_id="x")`` only touches one skill's log."""
+    reg1 = SkillRegistry(history_dir=tmp_path)
+    reg1.register(_skill("a", 1), _manifest("a", 1))
+    reg1.register(_skill("a", 2), _manifest("a", 2))
+    reg1.register(_skill("b", 1), _manifest("b", 1))
+    reg1.register(_skill("b", 2), _manifest("b", 2))
+    reg1.promote("a", 2, evidence=["x"])
+    reg1.promote("b", 2, evidence=["y"])
+
+    reg2 = SkillRegistry(history_dir=tmp_path)
+    reg2.register(_skill("a", 1), _manifest("a", 1))
+    reg2.register(_skill("a", 2), _manifest("a", 2))
+    reg2.register(_skill("b", 1), _manifest("b", 1))
+    reg2.register(_skill("b", 2), _manifest("b", 2))
+    replayed = reg2.replay_history(skill_id="a")
+    assert replayed == {"a": 2}
+    assert reg2.active_version("a") == 2
+    assert reg2.active_version("b") == 1  # b's history NOT replayed
