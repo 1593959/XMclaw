@@ -247,3 +247,81 @@ async def test_start_failure_does_not_crash_others() -> None:
 
     await disp.start_all()  # must not raise
     assert good.started is True
+
+
+# ── B-195 delayed-ack ─────────────────────────────────────────────
+
+
+class _SlowAgent(_FakeAgent):
+    """Run-turn deliberately slow so the ack timer fires."""
+
+    def __init__(self, reply: str = "ok", *, sleep_s: float = 0.1) -> None:
+        super().__init__(reply=reply)
+        self._sleep_s = sleep_s
+
+    async def run_turn(self, session_id: str, content: str) -> None:
+        await asyncio.sleep(self._sleep_s)
+        self.calls.append((session_id, content))
+        self._histories.setdefault(session_id, []).append({
+            "role": "assistant",
+            "content": self._reply,
+        })
+
+
+@pytest.mark.asyncio
+async def test_fast_turn_skips_ack() -> None:
+    """B-195: turn finishes before ack_delay_s — no placeholder spam.
+    Reason: 不发占位条不打扰 fast 回复；占位只在真慢时出现。"""
+    agent = _SlowAgent(reply="quick", sleep_s=0.01)
+    disp = ChannelDispatcher(agent, ack_delay_s=0.5)
+    adapter = _FakeAdapter()
+    disp.add(adapter)
+
+    await adapter.emit(_msg("ping"))
+
+    # Just the final reply — no "🌸 思考中" message.
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0][1].content == "quick"
+
+
+@pytest.mark.asyncio
+async def test_slow_turn_sends_ack_then_final() -> None:
+    """B-195: turn slower than ack_delay_s — placeholder fires + final.
+    Without this the user thinks daemon dropped their message and
+    retries, producing the 'duplicate reply' complaint."""
+    agent = _SlowAgent(reply="final answer", sleep_s=0.15)
+    disp = ChannelDispatcher(agent, ack_delay_s=0.05)
+    adapter = _FakeAdapter()
+    disp.add(adapter)
+
+    await adapter.emit(_msg("slow ping", msg_id="usr-1"))
+
+    # Two outbound: the ack, then the final.
+    assert len(adapter.sent) == 2
+    ack_target, ack_payload = adapter.sent[0]
+    assert "思考" in ack_payload.content or "🌸" in ack_payload.content
+    assert ack_payload.reply_to == "usr-1"
+    final_target, final_payload = adapter.sent[1]
+    assert final_payload.content == "final answer"
+    assert final_payload.reply_to == "usr-1"
+
+
+@pytest.mark.asyncio
+async def test_ack_timer_cancelled_on_run_turn_failure() -> None:
+    """If run_turn raises after ack already fired, dispatcher must
+    still clean up gracefully (no unhandled task warning, no second
+    final send)."""
+    class _FailSlow(_FakeAgent):
+        async def run_turn(self, sid: str, content: str) -> None:
+            await asyncio.sleep(0.1)
+            raise RuntimeError("simulated late failure")
+
+    agent = _FailSlow()
+    disp = ChannelDispatcher(agent, ack_delay_s=0.05)
+    adapter = _FakeAdapter()
+    disp.add(adapter)
+
+    await adapter.emit(_msg("doomed"))
+    # Ack was sent (turn was slow enough), but no final reply.
+    assert len(adapter.sent) == 1
+    assert "思考" in adapter.sent[0][1].content or "🌸" in adapter.sent[0][1].content

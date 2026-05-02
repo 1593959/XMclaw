@@ -50,12 +50,16 @@ class ChannelDispatcher:
                so this module doesn't import xmclaw.daemon.agent_loop.
     """
 
-    def __init__(self, agent: Any) -> None:
+    def __init__(self, agent: Any, *, ack_delay_s: float = 2.0) -> None:
         self._agent = agent
         self._adapters: list[ChannelAdapter] = []
         # In-flight per-(channel, chat) lock so two messages in the
         # same chat don't trample each other's turns.
         self._chat_locks: dict[str, asyncio.Lock] = {}
+        # B-195: how long to wait before sending the "thinking..."
+        # placeholder. Overridable for tests so they don't have to
+        # wait 2 real seconds.
+        self._ack_delay_s = ack_delay_s
 
     def add(self, adapter: ChannelAdapter) -> None:
         """Register an adapter + subscribe to its inbound stream."""
@@ -102,27 +106,64 @@ class ChannelDispatcher:
             _log.warning("channel.no_agent_wired channel=%s", msg.target.channel)
             return
 
+        adapter = next(
+            (a for a in self._adapters if a.name == msg.target.channel),
+            None,
+        )
+        reply_to = (msg.raw or {}).get("message_id") if msg.raw else None
+
+        # B-195: delayed acknowledgement. Long-running turns
+        # (web search + multi-hop LLM) can take 30s-2min in IM
+        # channels — without feedback the user retries, then we get
+        # duplicate-reply confusion. If the turn finishes in <2s,
+        # we cancel the ack and just send the final answer; only
+        # genuinely slow turns trigger the placeholder.
+        async def _delayed_ack() -> None:
+            await asyncio.sleep(self._ack_delay_s)
+            if adapter is None:
+                return
+            try:
+                await adapter.send(
+                    msg.target,
+                    OutboundMessage(
+                        content="🌸 收到啦，正在思考中...",
+                        reply_to=reply_to,
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                _log.warning(
+                    "channel.ack_failed channel=%s err=%s",
+                    msg.target.channel, exc,
+                )
+
+        ack_task = asyncio.create_task(
+            _delayed_ack(), name=f"channel-ack-{session_id[:32]}",
+        )
+
         # Run a turn. agent.run_turn streams events to the bus AND
         # records the assistant's final text in agent._histories[sid].
         try:
             await agent.run_turn(session_id, msg.content)
         except Exception as exc:  # noqa: BLE001
             _log.warning("channel.run_turn_failed err=%s", exc)
+            ack_task.cancel()
             return
+        finally:
+            ack_task.cancel()
+            # Swallow the cancelled task cleanly so it doesn't surface
+            # as an unhandled exception warning.
+            try:
+                await ack_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
 
         # Pull the most recent assistant text from history.
         reply_text = self._extract_last_assistant(agent, session_id)
         if not reply_text:
             return
 
-        # Find the adapter for this channel and send the reply.
-        adapter = next(
-            (a for a in self._adapters if a.name == msg.target.channel),
-            None,
-        )
         if adapter is None:
             return
-        reply_to = (msg.raw or {}).get("message_id") if msg.raw else None
         try:
             await adapter.send(
                 msg.target,
