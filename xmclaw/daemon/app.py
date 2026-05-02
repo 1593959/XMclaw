@@ -445,6 +445,14 @@ def create_app(
                     "sqlite_vec 未挂载（memory.enabled=false 或构造失败 — "
                     "检查 memory.* 节）"
                 )
+            # B-197: stash on app.state so post-sampling extractors
+            # (ProfileExtractor / ExtractLessonsHook / ProposalMaterializer)
+            # can dual-write facts to the vec store. Both may be None
+            # when the indexer didn't start — extractor side handles
+            # that gracefully.
+            _app.state.embedder = embedder
+            _app.state.vec_provider = vec_provider
+
             if embedder is not None and vec_provider is not None:
                 # Resolve persona dir lazily — same path the agent's
                 # remember tool writes to.
@@ -641,8 +649,44 @@ def create_app(
                     "falling back to noop", exc,
                 )
 
+            # B-197: build a fact_writer callback that translates
+            # (text, metadata) → MemoryItem + embed + put. Kept as a
+            # callback so xmclaw/core/ stays free of providers/
+            # imports per the layering rule.
+            _vec = getattr(_app.state, "vec_provider", None)
+            _embed = getattr(_app.state, "embedder", None)
+            _fact_writer = None
+            if _vec is not None:
+                async def _fact_writer_impl(  # type: ignore[no-redef]
+                    text: str, metadata: dict,  # noqa: ANN001
+                ) -> None:
+                    import uuid as _uuid
+                    import time as _t
+                    from xmclaw.providers.memory.base import MemoryItem
+                    emb = None
+                    if _embed is not None:
+                        try:
+                            vecs = await _embed.embed([text])
+                            if vecs and vecs[0]:
+                                emb = tuple(vecs[0])
+                        except Exception:  # noqa: BLE001
+                            emb = None
+                    layer_name = str(metadata.get("layer") or "working")
+                    item = MemoryItem(
+                        id=_uuid.uuid4().hex,
+                        layer=layer_name,
+                        text=text,
+                        metadata=metadata,
+                        embedding=emb,
+                        ts=_t.time(),
+                    )
+                    await _vec.put(layer_name, item)
+                _fact_writer = _fact_writer_impl
+
             pe = ProfileExtractor(
-                bus, _user_md_path, extractor_callable=extractor,
+                bus, _user_md_path,
+                extractor_callable=extractor,
+                fact_writer=_fact_writer,
             )
             await pe.start()
             _app.state.profile_extractor = pe
@@ -842,8 +886,15 @@ def create_app(
                 )
                 pm_enabled = bool(pm_cfg.get("enabled", True))
                 if pm_enabled:
+                    # B-197: hand vec store + embedder so each
+                    # newly-materialized skill lands as a DB row
+                    # (kind=procedure) for memory_search retrieval.
                     materializer = ProposalMaterializer(
                         orchestrator.registry, bus, enabled=True,
+                        memory_provider=getattr(
+                            _app.state, "vec_provider", None,
+                        ),
+                        embedder=getattr(_app.state, "embedder", None),
                     )
                     await materializer.start()
                     _app.state.proposal_materializer = materializer

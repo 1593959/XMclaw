@@ -135,8 +135,33 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         # legacy models / non-OpenAI shims may ignore it (harmless).
         if self.dim:
             body["dimensions"] = self.dim
-        resp = await self._post("/embeddings", body)
+
+        # B-197: retry transient failures. Pre-B-197 audit found 86%
+        # of memory.db rows had has_embedding=0 — many because the
+        # embedder hit single-attempt failures (Ollama briefly busy,
+        # network blip, model warmup). 2 retries with linear backoff
+        # captures the cheap recoveries; persistent failures still
+        # return empty and the caller logs.
+        import asyncio as _asyncio
+        resp = None
+        for attempt in range(3):
+            resp = await self._post("/embeddings", body)
+            if resp:
+                break
+            if attempt < 2:
+                # 0.2s, 0.5s backoff. Total worst-case added latency
+                # for a doomed call: 0.7s.
+                await _asyncio.sleep(0.2 + 0.3 * attempt)
+                _log.info(
+                    "embedding.retry attempt=%d batch_size=%d model=%s",
+                    attempt + 2, len(batch), self._model,
+                )
         if not resp:
+            _log.warning(
+                "embedding.persistent_failure model=%s batch_size=%d "
+                "after_retries=2",
+                self._model, len(batch),
+            )
             return [[] for _ in batch]
         data = resp.get("data") or []
         out: list[list[float]] = []

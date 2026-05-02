@@ -46,6 +46,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
+from typing import Any
 
 from xmclaw.core.bus import InProcessEventBus
 from xmclaw.core.bus.events import BehavioralEvent, EventType
@@ -126,6 +127,8 @@ class ProposalMaterializer:
         *,
         skills_root: Path | None = None,
         enabled: bool = True,
+        memory_provider: Any | None = None,
+        embedder: Any | None = None,
     ) -> None:
         self._registry = registry
         self._bus = bus
@@ -134,6 +137,13 @@ class ProposalMaterializer:
         self._subscription: Subscription | None = None
         self._materialized_count: int = 0
         self._skipped_count: int = 0
+        # B-197: dual-write skill metadata as DB row (kind=procedure,
+        # layer=long) so skills are vector-searchable in the same
+        # store as preferences/lessons. Without this, skills sit in
+        # SKILL.md files + tool registry but the agent can't recall
+        # "what skills do I have for git workflow" via memory_search.
+        self._memory_provider = memory_provider
+        self._embedder = embedder
 
     # ── observability ───────────────────────────────────────────────
 
@@ -291,3 +301,82 @@ class ProposalMaterializer:
             "skill_id=%s confidence=%.2f evidence_n=%d path=%s",
             skill_id, confidence, len(evidence), skill_path,
         )
+
+        # B-197: dual-write skill metadata to memory provider as DB
+        # row (kind=procedure, layer=long) so skills are recallable
+        # via memory_search alongside preferences / lessons. The body
+        # itself stays in SKILL.md (lazy-loaded by SkillToolProvider);
+        # the row carries title + description + when-to-use signal.
+        await self._write_procedure_to_memory(
+            skill_id=skill_id,
+            title=title,
+            description=description,
+            triggers=tuple(triggers),
+            evidence_n=len(evidence),
+            confidence=confidence,
+            skill_path=str(skill_path),
+        )
+
+    async def _write_procedure_to_memory(
+        self, *,
+        skill_id: str,
+        title: str,
+        description: str,
+        triggers: tuple[str, ...],
+        evidence_n: int,
+        confidence: float,
+        skill_path: str,
+    ) -> None:
+        """B-197: persist skill metadata as a DB row keyed by skill_id."""
+        if self._memory_provider is None:
+            return
+        try:
+            from xmclaw.providers.memory.base import MemoryItem
+        except Exception:  # noqa: BLE001
+            return
+
+        # Compose the searchable text: title + description + triggers
+        # so vector search on "git commit workflow" surfaces this row
+        # via title/description embedding.
+        text_parts = [title, description]
+        if triggers:
+            text_parts.append("Triggers: " + ", ".join(triggers))
+        text = "\n".join(p for p in text_parts if p)
+
+        emb: list[float] | None = None
+        if self._embedder is not None and text:
+            try:
+                vecs = await self._embedder.embed([text])
+                if vecs and vecs[0]:
+                    emb = list(vecs[0])
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "proposal_materializer.embed_failed skill_id=%s err=%s",
+                    skill_id, exc,
+                )
+
+        try:
+            item = MemoryItem(
+                id=f"procedure:{skill_id}",   # deterministic — Phase 2 upsert keys here
+                layer="long",                 # skills are durable from day one
+                text=text,
+                metadata={
+                    "kind": "procedure",
+                    "skill_id": skill_id,
+                    "title": title,
+                    "description": description,
+                    "triggers": list(triggers),
+                    "evidence_count": evidence_n,
+                    "confidence": confidence,
+                    "skill_path": skill_path,
+                    "ts": time.time(),
+                },
+                embedding=tuple(emb) if emb else None,
+                ts=time.time(),
+            )
+            await self._memory_provider.put("long", item)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "proposal_materializer.db_write_failed skill_id=%s err=%s",
+                skill_id, exc,
+            )

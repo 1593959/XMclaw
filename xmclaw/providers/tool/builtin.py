@@ -503,7 +503,14 @@ _MEMORY_SEARCH_SPEC = ToolSpec(
         "Hits are merged across providers — the external (vector) "
         "provider's results come first when present, builtin "
         "(keyword) bullets fill in. Each row carries the originating "
-        "provider in metadata so you can tell."
+        "provider in metadata so you can tell.\n\n"
+        "B-197: pass ``kind`` to restrict by record type — "
+        "``preference`` for user style/format/language facts, "
+        "``lesson`` for learned failure modes, ``principle`` for "
+        "explicit user decisions, ``procedure`` for skill metadata, "
+        "``identity`` for stable user-told facts, ``file_chunk`` for "
+        "persona file content, ``session_summary`` for cross-session "
+        "history. Omit ``kind`` to search across everything (default)."
     ),
     parameters_schema={
         "type": "object",
@@ -521,6 +528,16 @@ _MEMORY_SEARCH_SPEC = ToolSpec(
                 "type": "string",
                 "enum": ["short", "working", "long"],
                 "description": "Memory layer (default 'long').",
+            },
+            "kind": {
+                "type": "string",
+                "enum": [
+                    "preference", "lesson", "principle", "procedure",
+                    "identity", "file_chunk", "session_summary",
+                    "curriculum",
+                ],
+                "description": "B-197: restrict to records of this kind. "
+                "Omit to search across all kinds.",
             },
             "max_chars": {
                 "type": "integer",
@@ -2985,6 +3002,17 @@ class BuiltinTools(ToolProvider):
         if layer not in ("short", "working", "long"):
             return _fail(call, t0, f"unknown layer: {layer!r}")
 
+        # B-197: optional kind filter — agent narrows to one record
+        # type (preference / lesson / principle / etc.) instead of
+        # searching across the whole store. Implemented as a metadata
+        # filter forwarded to MemoryProvider.query — sqlite_vec already
+        # supports `filters={"kind": ...}` on both vector and keyword
+        # paths via _filter_sql.
+        kind_filter = (call.args.get("kind") or "").strip() or None
+        filters: dict[str, Any] | None = (
+            {"kind": kind_filter} if kind_filter else None
+        )
+
         # B-42: try semantic via the embedder; fall back to keyword on
         # any failure so an embedding outage degrades gracefully.
         embedding: list[float] | None = None
@@ -3004,11 +3032,12 @@ class BuiltinTools(ToolProvider):
             # for providers that don't implement hybrid_query.
             hits = await self._memory_manager.query(  # type: ignore[union-attr]
                 layer, text=query, embedding=embedding, k=k, hybrid=True,
+                filters=filters,
             )
         except TypeError:
             # Older MemoryManager without hybrid kwarg — still works.
             hits = await self._memory_manager.query(  # type: ignore[union-attr]
-                layer, text=query, embedding=embedding, k=k,
+                layer, text=query, embedding=embedding, k=k, filters=filters,
             )
         except Exception as exc:  # noqa: BLE001
             return _fail(call, t0, f"memory_search failed: {exc}")
@@ -3041,6 +3070,7 @@ class BuiltinTools(ToolProvider):
                 "id": getattr(h, "id", ""),
                 "text": text,
                 "ts": getattr(h, "ts", 0.0),
+                "kind": md.get("kind") or "?",  # B-197: surface kind
                 "provider": md.get("provider") or md.get("backend") or md.get("file") or "?",
                 "metadata": md,
             })

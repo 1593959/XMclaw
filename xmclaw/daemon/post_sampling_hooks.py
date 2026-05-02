@@ -74,6 +74,11 @@ class HookContext:
 
     Hooks must NOT mutate the history list — it's the live one
     AgentLoop uses for the next turn. Read-only by convention.
+
+    B-197: ``memory_provider`` and ``embedder`` let extractor hooks
+    dual-write facts (kind=lesson / kind=preference) to the vector
+    store in addition to the persona markdown files. Both default
+    None for legacy / test setups without a vec store wired.
     """
 
     session_id: str
@@ -84,6 +89,8 @@ class HookContext:
     llm: Any
     persona_dir: Any   # Path | None
     cfg: dict[str, Any]
+    memory_provider: Any = None  # MemoryProvider | None
+    embedder: Any = None         # EmbeddingProvider | None
 
 
 class PostSamplingHook(abc.ABC):
@@ -139,6 +146,74 @@ async def _safe_run(hook: PostSamplingHook, ctx: HookContext) -> None:
             "post_sampling_hook.run_failed id=%s err=%s",
             getattr(hook, "id", type(hook).__name__), exc,
         )
+
+
+async def _write_facts_to_memory(
+    ctx: HookContext,
+    facts: list[str],
+    *,
+    kind: str,
+    bucket: str | None = None,
+) -> None:
+    """B-197: dual-write extracted facts to the memory provider as DB
+    rows so they're vector-searchable + filterable by kind.
+
+    Called by ExtractMemoriesHook / ExtractLessonsHook after their
+    markdown append succeeds. Failure here is logged but never
+    propagated — markdown stays the user-visible surface, DB is
+    best-effort indexing.
+    """
+    if ctx.memory_provider is None or not facts:
+        return
+
+    try:
+        import time as _t
+        import uuid as _uuid
+        from xmclaw.providers.memory.base import MemoryItem
+    except Exception:  # noqa: BLE001
+        return
+
+    # Embed in one batch when an embedder is wired (cheaper than
+    # per-row roundtrips, graceful degradation when down).
+    embeddings: list[list[float] | None] = [None] * len(facts)
+    if ctx.embedder is not None:
+        try:
+            vecs = await ctx.embedder.embed(list(facts))
+            if vecs:
+                embeddings = [
+                    list(v) if v is not None else None for v in vecs
+                ]
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "post_sampling.embedder_failed kind=%s err=%s",
+                kind, exc,
+            )
+
+    for fact, emb in zip(facts, embeddings):
+        try:
+            md: dict[str, Any] = {
+                "kind": kind,
+                "session_id": ctx.session_id,
+                "agent_id": ctx.agent_id,
+                "evidence_count": 1,
+                "ts": _t.time(),
+            }
+            if bucket is not None:
+                md["bucket"] = bucket
+            item = MemoryItem(
+                id=_uuid.uuid4().hex,
+                layer="working",  # B-197: extracted facts start here
+                text=fact,
+                metadata=md,
+                embedding=tuple(emb) if emb else None,
+                ts=_t.time(),
+            )
+            await ctx.memory_provider.put("working", item)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "post_sampling.db_write_failed kind=%s err=%s",
+                kind, exc,
+            )
 
 
 # ── ExtractMemoriesHook (B-112 reference impl) ────────────────────────
@@ -256,6 +331,13 @@ class ExtractMemoriesHook(PostSamplingHook):
                     atomic_write_text(mfile, new_text)
             except OSError:
                 return
+
+        # B-197: also write each fact as a DB row (kind=lesson, bucket=
+        # durable_fact). Markdown stays the user-edit surface, DB makes
+        # them vector-searchable + filterable for retrieval.
+        await _write_facts_to_memory(
+            ctx, facts[:5], kind="lesson", bucket="durable_fact",
+        )
 
 
 # ── ExtractLessonsHook (B-168) ────────────────────────────────────────
@@ -449,6 +531,15 @@ class ExtractLessonsHook(PostSamplingHook):
                         atomic_write_text(mfile, new_text)
                 except OSError:
                     continue
+
+        # B-197: dual-write per-bucket lessons to DB rows (kind=lesson,
+        # bucket=workflow|tool_quirks|failure_modes). One row per
+        # lesson — Phase 2 adds upsert by (kind, bucket, semantic
+        # match) so repeats merge into evidence_count++.
+        for bucket_name, lessons in buckets.items():
+            await _write_facts_to_memory(
+                ctx, lessons, kind="lesson", bucket=bucket_name,
+            )
 
 
 def build_default_registry() -> HookRegistry:

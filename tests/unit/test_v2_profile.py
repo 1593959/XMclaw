@@ -523,3 +523,131 @@ def test_existing_fingerprints_parses_auto_lines_only() -> None:
     assert ("habit", "late-night work") in fps
     # Manual line not included.
     assert all("manual note" not in fp for _, fp in fps)
+
+
+# ── B-197: dual-write via fact_writer callback ───────────────────────
+
+
+@pytest.mark.asyncio
+async def test_b197_dual_write_calls_fact_writer(
+    bus: InProcessEventBus, user_md: Path,
+) -> None:
+    """B-197: when fact_writer callback is wired, accepted deltas are
+    handed to it with kind=preference metadata. Daemon side then
+    builds the MemoryItem + persists — keeps core/ free of providers/
+    imports per the layering rule."""
+
+    # Real LLM extractors use meta.last_user_event_id to avoid
+    # re-extracting on subsequent flushes; our stub returns deltas
+    # only on the first call.
+    fired = {"n": 0}
+    def extractor(_msgs, _meta):
+        fired["n"] += 1
+        if fired["n"] > 1:
+            return []
+        return [_delta("用中文", conf=0.9), _delta("late-night work", conf=0.85)]
+
+    writes: list[tuple[str, dict]] = []
+    async def _fact_writer(text: str, metadata: dict) -> None:
+        writes.append((text, metadata))
+
+    pe = ProfileExtractor(
+        bus, _provider(user_md),
+        extractor_callable=extractor,
+        flush_threshold=1,
+        fact_writer=_fact_writer,
+    )
+    await pe.start()
+    try:
+        await bus.publish(make_event(
+            session_id="sess", agent_id="a",
+            type=EventType.USER_MESSAGE,
+            payload={"content": "hi"},
+        ))
+        await bus.publish(make_event(
+            session_id="sess", agent_id="a",
+            type=EventType.LLM_RESPONSE,
+            payload={"content": "hello"},
+        ))
+        await bus.drain()
+    finally:
+        await pe.stop()
+
+    assert len(writes) == 2, writes
+    kinds = {md.get("kind") for _, md in writes}
+    assert kinds == {"preference"}
+    for _, md in writes:
+        assert md.get("evidence_count") == 1
+        assert md.get("source_session_id") == "sess"
+        assert md.get("delta_kind") in ("preference", "habit", "style", "constraint")
+
+
+@pytest.mark.asyncio
+async def test_b197_no_fact_writer_keeps_legacy_path(
+    bus: InProcessEventBus, user_md: Path,
+) -> None:
+    """fact_writer=None keeps the markdown-only behaviour unchanged.
+    Tests / installs without a vec store must still work."""
+
+    def extractor(_msgs, _meta):
+        return [_delta("用中文", conf=0.9)]
+
+    pe = ProfileExtractor(
+        bus, _provider(user_md),
+        extractor_callable=extractor,
+        flush_threshold=1,
+        # fact_writer explicitly None
+    )
+    await pe.start()
+    try:
+        await bus.publish(make_event(
+            session_id="s1", agent_id="a",
+            type=EventType.USER_MESSAGE, payload={"content": "ping"},
+        ))
+        await bus.publish(make_event(
+            session_id="s1", agent_id="a",
+            type=EventType.LLM_RESPONSE, payload={"content": "pong"},
+        ))
+        await bus.drain()
+    finally:
+        await pe.stop()
+
+    body = user_md.read_text(encoding="utf-8")
+    assert "用中文" in body
+
+
+@pytest.mark.asyncio
+async def test_b197_fact_writer_failure_does_not_break_markdown(
+    bus: InProcessEventBus, user_md: Path,
+) -> None:
+    """If fact_writer raises, the markdown path must still have happened.
+    DB is best-effort indexing; markdown is the user-visible surface."""
+
+    async def _broken_writer(text: str, metadata: dict) -> None:
+        raise RuntimeError("simulated DB failure")
+
+    def extractor(_msgs, _meta):
+        return [_delta("用中文", conf=0.9)]
+
+    pe = ProfileExtractor(
+        bus, _provider(user_md),
+        extractor_callable=extractor,
+        flush_threshold=1,
+        fact_writer=_broken_writer,
+    )
+    await pe.start()
+    try:
+        await bus.publish(make_event(
+            session_id="sx", agent_id="a",
+            type=EventType.USER_MESSAGE, payload={"content": "hi"},
+        ))
+        await bus.publish(make_event(
+            session_id="sx", agent_id="a",
+            type=EventType.LLM_RESPONSE, payload={"content": "yo"},
+        ))
+        await bus.drain()
+    finally:
+        await pe.stop()
+
+    # Even though writer blew up, the markdown got the delta.
+    assert "用中文" in user_md.read_text(encoding="utf-8")

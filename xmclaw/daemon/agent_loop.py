@@ -2094,6 +2094,12 @@ class AgentLoop:
                         llm=llm,
                         persona_dir=pdir,
                         cfg=self._cfg or {},
+                        # B-197: hand the memory manager + embedder so
+                        # extractor hooks can dual-write facts to the
+                        # vec store. Manager fans out to all wired
+                        # providers; embedder is best-effort.
+                        memory_provider=self._memory_manager,
+                        embedder=self._embedder,
                     )
                     # Fire-and-forget — don't await, the next turn must
                     # not wait for hooks. Strong ref via add() / discard

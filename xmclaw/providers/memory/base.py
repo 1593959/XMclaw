@@ -96,26 +96,26 @@ class MemoryProvider(abc.ABC):
         self, *, session_id: str, agent_id: str,
         user_content: str, assistant_content: str,
     ) -> None:
-        """End-of-turn ingest. Default: store the (user, assistant)
-        exchange via ``put`` so simple providers don't need to override."""
-        import time as _t
-        import uuid as _uuid
-        text = f"User: {user_content}\nAssistant: {assistant_content}"
-        try:
-            await self.put(
-                "long",
-                MemoryItem(
-                    id=_uuid.uuid4().hex, layer="long", text=text,
-                    metadata={
-                        "session_id": session_id,
-                        "agent_id": agent_id,
-                        "kind": "turn",
-                    },
-                    ts=_t.time(),
-                ),
-            )
-        except Exception:  # noqa: BLE001 — manager isolates failures
-            pass
+        """End-of-turn ingest. **Default: no-op** (B-197 / Phase 1).
+
+        Pre-B-197 this method dumped every (user, assistant) turn into
+        the provider as ``kind=turn`` with no embedding. Audit on
+        2026-05-03 found this produced 86% of memory.db rows — all
+        unembedded, all unsearched, polluting the vec index for the
+        14% of legitimate ``kind=file_chunk`` content. Raw conversation
+        turns belong in ``sessions.db`` + ``events.db``; the memory
+        provider should only carry **extracted facts** (preferences /
+        lessons / procedures / file_chunks), not transcripts.
+
+        Subclasses that genuinely need turn-level capture (e.g. external
+        plugins like hindsight that build their own summarisation
+        pipeline on top) keep overriding this hook — the abstract
+        method signature is preserved.
+
+        See `docs/MEMORY_ARCHITECTURE.md` §3 for the new write
+        discipline (mem0-style upsert via extractors).
+        """
+        return
 
     async def on_session_end(
         self, *, session_id: str, messages: list[Any],

@@ -108,6 +108,15 @@ class ProfileExtractor:
         fires. Session destroy always flushes regardless of count.
     min_confidence : float, default 0.5
         Deltas below this confidence are dropped before writing.
+    fact_writer : optional async callable
+        B-197: when provided, each accepted delta also gets written
+        as a DB row via this callback ``(text, metadata) -> awaitable``.
+        The callback's job is to construct a memory item, embed it
+        (if applicable), and persist — kept as a callable so this
+        ``core/`` module stays free of ``providers/`` imports per
+        the layering rule. ``None`` keeps legacy markdown-only
+        behaviour for tests / installs without a vec store. Wired by
+        the daemon's lifespan; see ``xmclaw/daemon/app.py``.
     """
 
     def __init__(
@@ -118,6 +127,7 @@ class ProfileExtractor:
         extractor_callable: ExtractorCallable = noop_extractor,
         flush_threshold: int = 3,
         min_confidence: float = 0.5,
+        fact_writer: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._bus = bus
         self._provider = persona_user_md_provider
@@ -127,6 +137,9 @@ class ProfileExtractor:
         self._buffers: dict[str, _SessionBuffer] = {}
         self._lock = asyncio.Lock()
         self._sub: Subscription | None = None
+        # B-197: optional DB sink supplied by daemon side as a callable
+        # to keep this module free of providers/ imports.
+        self._fact_writer = fact_writer
 
     # ── public lifecycle ─────────────────────────────────────────────
 
@@ -261,6 +274,18 @@ class ProfileExtractor:
             )
             return
 
+        # B-197: dual-write to memory provider (DB rows) so deltas are
+        # vector-searchable + filterable by kind=preference. Failure
+        # here is logged but does not block the markdown path —
+        # markdown stays the user-facing surface; DB is the indexing
+        # layer.
+        if self._fact_writer is not None:
+            await self._write_deltas_via_writer(
+                accepted,
+                session_id=session_id,
+                agent_id=buf.agent_id or "agent",
+            )
+
         # Broadcast so the system-prompt cache can invalidate.
         try:
             await self._bus.publish(make_event(
@@ -300,6 +325,41 @@ class ProfileExtractor:
         except Exception as exc:  # noqa: BLE001
             _log.warning("profile.extractor_failed err=%s", exc)
             return []
+
+    async def _write_deltas_via_writer(
+        self, deltas: list[ProfileDelta], *,
+        session_id: str, agent_id: str,
+    ) -> None:
+        """B-197: hand each accepted delta to the daemon-supplied
+        ``fact_writer`` callback so it can land as a DB row with
+        ``kind=preference``. The callback knows about MemoryItem +
+        embedding; this module stays import-direction-clean.
+
+        Failure here MUST NOT break the markdown path — markdown
+        stays the user-visible surface, DB is best-effort indexing.
+        """
+        if self._fact_writer is None:
+            return
+        import time as _t
+        for delta in deltas:
+            try:
+                metadata: dict[str, Any] = {
+                    "kind": "preference",
+                    "delta_kind": delta.kind,
+                    "confidence": delta.confidence,
+                    "source_session_id": delta.source_session_id,
+                    "source_event_id": delta.source_event_id,
+                    "session_id": session_id,
+                    "agent_id": agent_id,
+                    "evidence_count": 1,
+                    "ts": _t.time(),
+                }
+                await self._fact_writer(delta.text, metadata)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "profile.db_write_failed session=%s err=%s",
+                    session_id, exc,
+                )
 
     async def _append_deltas(
         self, target: Path, deltas: list[ProfileDelta],
