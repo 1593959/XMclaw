@@ -46,10 +46,16 @@ function ChannelCard({ ch, token, onSaved }) {
   const initialValues = () => {
     const v = {};
     for (const key of Object.keys(ch.config_schema || {})) {
+      const meta = parseSchemaEntry((ch.config_schema || {})[key]);
       const cur = (ch.config || {})[key];
-      v[key] = (typeof cur === "string" || typeof cur === "number" || typeof cur === "boolean")
+      const curStr = (typeof cur === "string" || typeof cur === "number" || typeof cur === "boolean")
         ? String(cur)
         : "";
+      // Secret fields with a redacted-on-disk value (contains "…") start
+      // empty so the user can type fresh — the placeholder hints "已设置".
+      // Empty submission is filtered in onSave to preserve the existing
+      // value. Non-redacted secrets and plain fields show their value.
+      v[key] = (meta.isSecret && curStr.includes("…")) ? "" : curStr;
     }
     if (typeof (ch.config || {}).enabled === "boolean") {
       v.__enabled = ch.config.enabled;
@@ -141,7 +147,7 @@ function ChannelCard({ ch, token, onSaved }) {
               </span>
               <input
                 type=${meta.isSecret ? "password" : "text"}
-                value=${meta.isSecret ? "" : (values[key] || "")}
+                value=${values[key] || ""}
                 placeholder=${placeholder}
                 onInput=${(e) => setValues({ ...values, [key]: e.target.value })}
                 style="padding:.3rem .45rem;font-family:var(--xmc-font-mono);font-size:.75rem;border:1px solid var(--color-border);border-radius:4px;background:var(--color-card);color:var(--color-fg)"
