@@ -3451,6 +3451,12 @@ class BuiltinTools(ToolProvider):
 _BULLET_DATE_RE = re.compile(
     r"^\s*-\s*\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2}:\d{2})?(?:\s+[A-Z]{2,5})?\s*[:：]?\s*"
 )
+# B-183: bare date prefix (no leading "-") for the SECOND strip pass —
+# legacy "- 2026-05-02: 2026-05-02: ..." rows produced by pre-B-179
+# extractors land with the inner date naked after the first strip.
+_BARE_DATE_RE = re.compile(
+    r"^\s*\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2}:\d{2})?(?:\s+[A-Z]{2,5})?\s*[:：]?\s*"
+)
 
 
 def _bullet_core(line: str) -> str:
@@ -3460,15 +3466,85 @@ def _bullet_core(line: str) -> str:
     surrounding whitespace, then lowercases and collapses internal
     whitespace. Two bullets compare equal iff they say the same thing
     regardless of when they were written.
+
+    B-183: also strips a bare second date prefix to handle legacy
+    "- 2026-05-02: 2026-05-02: real content" entries that appeared
+    on disk before B-179 fixed the LLM-extracted leading-date bug.
     """
     cleaned = _BULLET_DATE_RE.sub("", line.strip())
     # Some entries got nested ``YYYY-MM-DD: YYYY-MM-DD: ...`` from
-    # earlier dedup-less runs — strip a second date prefix too.
-    cleaned = _BULLET_DATE_RE.sub("", cleaned).strip()
+    # earlier dedup-less runs — strip a bare second date prefix too
+    # (no leading "-" since the first pass already removed the bullet
+    # marker).
+    cleaned = _BARE_DATE_RE.sub("", cleaned).strip()
     # Normalise punctuation/whitespace.
     cleaned = re.sub(r"\s+", " ", cleaned).lower()
     # Strip trailing punctuation that doesn't change semantics.
     return cleaned.rstrip(".。,，!！?？")
+
+
+# B-183 fuzzy dedup: when the LLM paraphrases an existing fact, the
+# strict ``_bullet_core`` exact match doesn't catch it (real example
+# from MEMORY.md: "events.db tool_invocation_started 的 name 在
+# payload JSON" vs "events.db tool name 存在 payload JSON 里" — same
+# fact, prose rewritten, identical SQL). Token-set Jaccard catches
+# these without needing an LLM call.
+_TOKEN_RE = re.compile(r"[\w]+", re.UNICODE)
+# Common Chinese + English glue words that appear in many bullets but
+# carry no signal — drop from the token set so two prose styles with
+# different fillers can still match on content tokens.
+_BULLET_STOPWORDS = frozenset({
+    "the", "a", "an", "is", "are", "was", "were", "be", "been",
+    "of", "in", "to", "for", "on", "at", "by", "with", "from",
+    "and", "or", "but", "if", "as", "that", "this", "these",
+    "have", "has", "had", "do", "does", "did", "will", "would",
+    "can", "could", "should", "it", "its", "into", "than",
+    "的", "了", "和", "在", "是", "也", "要", "对", "把", "让",
+    "可以", "应该", "已经", "需要", "我们", "他们", "如果",
+    "或者", "不是", "里", "上", "下", "时", "中", "就", "都",
+    "又", "再", "其他", "这个", "那个", "什么", "哪个",
+})
+# Minimum token-set Jaccard overlap to consider two bullets duplicates.
+# 0.7 caught the events.db SQL paraphrase case in real-data testing
+# without false-positiving on bullets that share a common technical
+# topic but say different things.
+_FUZZY_DUP_JACCARD = 0.7
+
+
+def _bullet_token_set(line: str) -> frozenset[str]:
+    """Tokenise a bullet's core text into a stopword-stripped set,
+    suitable for Jaccard comparison against another bullet."""
+    core = _bullet_core(line)
+    if not core:
+        return frozenset()
+    tokens: set[str] = set()
+    for tok in _TOKEN_RE.findall(core):
+        tok = tok.lower()
+        if len(tok) <= 1:
+            continue  # single-char tokens are too noisy
+        if tok in _BULLET_STOPWORDS:
+            continue
+        tokens.add(tok)
+    return frozenset(tokens)
+
+
+def _is_fuzzy_duplicate(
+    incoming: frozenset[str], existing: frozenset[str],
+    *, threshold: float = _FUZZY_DUP_JACCARD,
+) -> bool:
+    """Jaccard(incoming, existing) >= threshold and both sets non-trivial.
+
+    Trivial-set guard: bullets with fewer than 4 unique content tokens
+    are too small to make Jaccard meaningful — skip the fuzzy check
+    for them and rely on exact match only.
+    """
+    if len(incoming) < 4 or len(existing) < 4:
+        return False
+    intersection = len(incoming & existing)
+    union = len(incoming | existing)
+    if union == 0:
+        return False
+    return (intersection / union) >= threshold
 
 
 def _append_under_section(
@@ -3508,14 +3584,26 @@ def _append_under_section(
     # + normalisation) already appears in the file. We compare against
     # ALL bullets, not just the target section, because the agent
     # sometimes files things under different headings on different days.
+    # B-183: also catch fuzzy duplicates — paraphrased restatements with
+    # high token-set Jaccard overlap. The strict exact-match path runs
+    # first (fast); fuzzy is the fallback for prose-rewritten facts.
     incoming_core = _bullet_core(bullet)
+    incoming_tokens = _bullet_token_set(bullet)
     if incoming_core:
         for ln in lines:
             stripped = ln.strip()
             if not stripped or not stripped.startswith("-"):
                 continue
-            if _bullet_core(stripped) == incoming_core:
-                # Already there — return file unchanged.
+            existing_core = _bullet_core(stripped)
+            if existing_core == incoming_core:
+                # Already there — exact match, return unchanged.
+                return existing if existing.endswith("\n") else existing + "\n"
+            if _is_fuzzy_duplicate(
+                incoming_tokens, _bullet_token_set(stripped),
+            ):
+                # Paraphrased restatement of an existing fact — skip
+                # silently. B-183 caught real cases like the same SQL
+                # query rewritten with different prose lead-in.
                 return existing if existing.endswith("\n") else existing + "\n"
 
     # Locate the section.
