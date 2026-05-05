@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import Any
 
 from xmclaw.core.bus import InProcessEventBus
-from xmclaw.core.bus.events import BehavioralEvent, EventType
+from xmclaw.core.bus.events import BehavioralEvent, EventType, make_event
 from xmclaw.core.bus.memory import Subscription
 from xmclaw.skills.markdown_skill import MarkdownProcedureSkill
 from xmclaw.skills.manifest import SkillManifest
@@ -244,6 +244,45 @@ class ProposalMaterializer:
             )
             return
 
+        # B-201: near-duplicate check against existing kind=procedure
+        # rows. The probe-b200 dogfood run produced 11 auto-* skills
+        # in 72 minutes, of which 4-5 were near-duplicates
+        # (auto-find-duplicate-strings vs auto-detect-duplicate-strings,
+        # auto-analyze-python-code vs auto-analyze-python-functions,
+        # etc.) — proposer was firing on every fresh probe session
+        # without checking if a similar skill already covered the
+        # pattern. Cap the bleed: vec-search procedure rows for
+        # semantic match before materializing; if hit, skip + log.
+        existing_match = await self._find_near_duplicate_procedure(
+            title=title,
+            description=description,
+            triggers=tuple(triggers),
+        )
+        if existing_match:
+            _log.info(
+                "proposal_materializer.near_duplicate_skipped "
+                "skill_id=%s existing=%s — refusing to register a "
+                "near-duplicate procedure; raise the candidate's "
+                "evidence count via existing skill instead",
+                skill_id, existing_match,
+            )
+            self._skipped_count += 1
+            try:
+                await self._bus.publish(make_event(
+                    session_id="_system",
+                    agent_id="proposal_materializer",
+                    type=EventType.SKILL_CANDIDATE_PROPOSED,
+                    payload={
+                        "skill_id": skill_id,
+                        "rejected": True,
+                        "reason": "near_duplicate_of_existing",
+                        "existing_skill_id": existing_match,
+                    },
+                ))
+            except Exception:  # noqa: BLE001 — observability only
+                pass
+            return
+
         # Compose the on-disk SKILL.md. Frontmatter first so the
         # user_loader on next boot reads the same metadata.
         frontmatter = _render_frontmatter(
@@ -357,12 +396,11 @@ class ProposalMaterializer:
 
         # B-197 Phase 2: skills come into the world stable + curated
         # (already gated by evidence + grader), so they go straight to
-        # layer=long. We still route through put() rather than upsert
-        # because the deterministic id "procedure:{skill_id}" gives us
-        # idempotent re-registration without semantic-merge ambiguity:
-        # two skills with the same id ARE the same skill (overwrite),
-        # while two near-paraphrase skill descriptions might still be
-        # legitimately distinct (different IDs in the registry).
+        # layer=long. Use put() (not upsert_fact) — the deterministic id
+        # "procedure:{skill_id}" gives idempotent re-registration; two
+        # skills with the same id ARE the same skill (overwrite), while
+        # two near-paraphrase descriptions might be legitimately
+        # distinct (B-201 rejects them at materialize time, not here).
         metadata = {
             "kind": "procedure",
             "skill_id": skill_id,
@@ -389,3 +427,101 @@ class ProposalMaterializer:
                 "proposal_materializer.db_write_failed skill_id=%s err=%s",
                 skill_id, exc,
             )
+
+    async def _find_near_duplicate_procedure(
+        self,
+        *,
+        title: str,
+        description: str,
+        triggers: tuple[str, ...],
+        distance_threshold: float = 0.4,
+    ) -> str | None:
+        """B-201: vec-search existing kind=procedure rows for a near-
+        match against the candidate's signature (title + description +
+        triggers). Returns the matching skill_id if any row is within
+        the L2² distance threshold, else None.
+
+        Threshold matches the upsert_fact default (0.4 ≈ cosine sim
+        ≥ 0.8 for normalised embeddings) so the same "this is the
+        same fact" intuition applies to skills.
+
+        No memory provider / no embedder = no dedup possible → return
+        None and let the materialize proceed (back-compat with tests
+        that wire only the registry).
+        """
+        if self._memory_provider is None or self._embedder is None:
+            return None
+
+        # Same composition the row gets at write time so the embedding
+        # spaces align (title + description + triggers).
+        text_parts = [title, description]
+        if triggers:
+            text_parts.append("Triggers: " + ", ".join(triggers))
+        candidate_text = "\n".join(p for p in text_parts if p)
+        if not candidate_text:
+            return None
+
+        try:
+            vecs = await self._embedder.embed([candidate_text])
+            if not vecs or not vecs[0]:
+                return None
+            embedding = list(vecs[0])
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "proposal_materializer.dedup_embed_failed err=%s", exc,
+            )
+            return None
+
+        # Use SqliteVecMemory's _find_near_neighbour directly so we
+        # get distance-based filtering. Fall back to None if the
+        # underlying provider lacks the helper (mem0 / hindsight
+        # adapters likely don't).
+        finder = getattr(self._memory_provider, "_find_near_neighbour", None)
+        if finder is None:
+            # External provider — fall back to a vec search via
+            # the generic query() and treat top-1 as a maybe.
+            try:
+                hits = await self._memory_provider.query(
+                    "long",
+                    embedding=embedding,
+                    k=1,
+                    filters={"kind": "procedure"},
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "proposal_materializer.dedup_query_failed err=%s", exc,
+                )
+                return None
+            if not hits:
+                return None
+            md = getattr(hits[0], "metadata", {}) or {}
+            return md.get("skill_id") or None
+
+        try:
+            match_id = await finder(
+                embedding=embedding,
+                text=candidate_text,
+                kind="procedure",
+                distance_threshold=distance_threshold,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "proposal_materializer.dedup_finder_failed err=%s", exc,
+            )
+            return None
+        if not match_id:
+            return None
+
+        # match_id is the row id (e.g. "procedure:auto-foo"); pull the
+        # metadata.skill_id off the row so the caller logs the
+        # human-readable name, not the row PK.
+        try:
+            hits = await self._memory_provider.query(
+                "long", text=None, k=1,
+                filters={"skill_id": ""},
+            )  # placeholder — fall through to direct text fetch
+        except Exception:  # noqa: BLE001
+            hits = []
+        if match_id.startswith("procedure:"):
+            return match_id[len("procedure:"):]
+        return match_id

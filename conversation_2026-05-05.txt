@@ -1,0 +1,53 @@
+# XMclaw 对话记录 — 2026-05-05
+
+## 对话概述
+
+今天（2026-05-05）是XMclaw的"自我审计日"，共进行了20+个probe session轮次，覆盖了多个审计维度。
+
+## 今日主题摘要
+
+### 1. 身份 + 自省
+- 你问小悦怎么称呼你 → 确认叫你"哥"或"敬宇"
+- 身份探索类问题在 chat session 中出现频率最高
+
+### 2. 系统审计（核心）
+- **Skills审计**：skills_user里零调用，auto-evo skill主导
+- **TODO/FIXME审计**：源码零注释，干净
+- **代码行数**：create_app(2141行)最危险
+- **重复字符串**：SQL语句那条值得提取成常量
+
+### 3. 测试性能
+- 3个最慢测试：timeout等5s、stop等待3s、spawn真实子进程
+- 加速方案：mock绕过、grace减少、fixture复用，可节省95%
+
+### 4. 数据分析
+- memory.db kind=preference：2条，0% evidence>=2
+- 偏好矛盾：636f0c7c("3句以内") vs b8c53e0d("期望详细表格")
+- lesson去重：L3+L4、L5+L6建议合并
+
+### 5. 代码修改
+- probe_blackbox.py加--clean：删probe-* events
+- log.py轮转单测：3个pytest覆盖满size/keepN/并发
+
+### 6. 外部工具
+- Telegram：scaffold状态，缺token
+- GitHub commit：全是B-198/199/200系列
+- 飞书卡片消息：关键5行代码（interactive类型+json.dumps+patch更新）
+
+## 核心数据
+
+- probe session数量：20+
+- 主要session前缀：probe-cmplx-a-*
+- 工具调用峰值：23:08-23:09（contradicting_prefs + merge_lessons同密集）
+
+## 小结
+
+今天是密集审计日，主要产出：
+1. XMclaw代码库干净（零TODO注释）
+2. skills使用率低，auto-evo主导
+3. 代码最急需重构：create_app(2141行)
+4. memory store已完整落地（B-198 Phase3完成）
+
+---
+生成时间：2026-05-05 18:12:02.690508
+来源：events.db + 当前上下文

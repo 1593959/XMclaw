@@ -266,3 +266,132 @@ async def test_start_stop_idempotent(tmp_path: Path) -> None:
     await pm.stop()
     await pm.stop()  # second call no-op
     assert not pm.is_active
+
+
+# ── B-201: near-duplicate dedup ───────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_b201_near_duplicate_skipped(tmp_path: Path) -> None:
+    """B-201: when a candidate is semantically near an already-
+    registered procedure (vec distance below threshold), the
+    materializer must skip the second registration. The probe-b200
+    dogfood produced 11 auto-* skills in 72min, of which 4-5 were
+    near-dups — this guard caps that bleed."""
+
+    class _StubMem:
+        """Minimal SqliteVecMemory-shaped stub. _find_near_neighbour
+        always returns a hit so the materializer treats every
+        candidate as a duplicate. Production providers do the actual
+        vec search; we just verify the materializer respects the
+        return value."""
+        def __init__(self) -> None:
+            self.queries: list[dict] = []
+            self.put_calls: list = []
+
+        async def _find_near_neighbour(self, *, embedding, text, kind,
+                                        distance_threshold):  # noqa: ANN001
+            self.queries.append({"kind": kind, "threshold": distance_threshold})
+            return "procedure:already-exists"  # always-near-dup
+
+        async def query(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return []
+
+        async def put(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            self.put_calls.append((args, kwargs))
+            return ""
+
+    class _StubEmb:
+        async def embed(self, texts):  # noqa: ANN001
+            return [[0.1] * 1024 for _ in texts]
+
+    bus = InProcessEventBus()
+    reg = SkillRegistry(history_dir=tmp_path / "history")
+    mem = _StubMem()
+    pm = ProposalMaterializer(
+        reg, bus, skills_root=tmp_path / "skills",
+        memory_provider=mem, embedder=_StubEmb(),
+    )
+    await pm.start()
+
+    await bus.publish(_propose_event(skill_id="auto.dup_candidate"))
+    await bus.drain()
+
+    # Skill must NOT have been registered (near-dup rejected).
+    # SkillRegistry.get() raises UnknownSkillError when no HEAD —
+    # that's the desired state: the skill never got promoted.
+    from xmclaw.skills.registry import UnknownSkillError
+    with pytest.raises(UnknownSkillError):
+        reg.get("auto.dup_candidate")
+    # The dedup query did fire.
+    assert mem.queries and mem.queries[0]["kind"] == "procedure"
+    # No row was put (write_procedure_to_memory never called for skipped).
+    assert mem.put_calls == []
+    # Skipped count incremented for observability.
+    assert pm.skipped_count == 1
+
+    await pm.stop()
+
+
+@pytest.mark.asyncio
+async def test_b201_no_dedup_when_no_existing_procedures(
+    tmp_path: Path,
+) -> None:
+    """First-of-its-kind candidate (no near-neighbour found) must
+    materialize normally."""
+    class _StubMem:
+        async def _find_near_neighbour(self, **kwargs):  # noqa: ANN003
+            return None  # no match
+
+        async def query(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return []
+
+        async def put(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return ""
+
+    class _StubEmb:
+        async def embed(self, texts):  # noqa: ANN001
+            return [[0.1] * 1024 for _ in texts]
+
+    bus = InProcessEventBus()
+    reg = SkillRegistry(history_dir=tmp_path / "history")
+    pm = ProposalMaterializer(
+        reg, bus, skills_root=tmp_path / "skills",
+        memory_provider=_StubMem(), embedder=_StubEmb(),
+    )
+    await pm.start()
+
+    await bus.publish(_propose_event(skill_id="auto.unique_candidate"))
+    await bus.drain()
+
+    # Materialized successfully — no dup hit.
+    skill = reg.get("auto.unique_candidate")
+    assert skill is not None
+    assert pm.materialized_count == 1
+    assert pm.skipped_count == 0
+
+    await pm.stop()
+
+
+@pytest.mark.asyncio
+async def test_b201_dedup_disabled_without_memory_provider(
+    tmp_path: Path,
+) -> None:
+    """Tests that wire only the registry (no memory_provider /
+    embedder) MUST still materialize — dedup is best-effort, not a
+    blocking dependency. Back-compat with the 12 existing
+    proposal_materializer tests."""
+    bus = InProcessEventBus()
+    reg = SkillRegistry(history_dir=tmp_path / "history")
+    pm = ProposalMaterializer(reg, bus, skills_root=tmp_path / "skills")
+    # No memory_provider / no embedder.
+    await pm.start()
+
+    await bus.publish(_propose_event(skill_id="auto.no_dedup_path"))
+    await bus.drain()
+
+    skill = reg.get("auto.no_dedup_path")
+    assert skill is not None  # materialized despite no dedup wiring
+    assert pm.materialized_count == 1
+
+    await pm.stop()
