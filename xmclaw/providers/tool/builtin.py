@@ -1071,6 +1071,112 @@ _UPDATE_PERSONA_SPEC = ToolSpec(
 )
 
 
+_PROPOSE_CURRICULUM_EDIT_SPEC = ToolSpec(
+    name="propose_curriculum_edit",
+    description=(
+        "B-200 / Phase 5 — propose a change to your **learning rules** "
+        "themselves (LEARNING.md). Distinct from ``update_persona``: "
+        "that one is for direct memory writes (lessons / preferences) "
+        "you can make on your own. THIS one is for changes to **how "
+        "you learn / when you trust yourself** — meta-rules — and "
+        "REQUIRES user approval before taking effect.\n\n"
+        "Why a separate gate: LEARNING.md is read every turn into "
+        "your system prompt. A bad rule self-amplifies (you'd start "
+        "applying it before realising it was wrong). The user has to "
+        "see the diff first.\n\n"
+        "When to use:\n"
+        "  • You catch yourself doing the same wrong thing twice and "
+        "want to write a 'never do X' rule (e.g. 'never refuse without "
+        "investigating, ref chat 17:51' — exactly the B-199 case).\n"
+        "  • You discover a META-pattern: 'when user asks about Y, "
+        "always try Z first'.\n"
+        "  • An existing principle is misfiring and you want to soften "
+        "it (e.g. promote threshold too aggressive).\n\n"
+        "When NOT to use:\n"
+        "  • Logging a one-off lesson — use ``update_persona`` "
+        "(write directly to AGENTS.md / MEMORY.md).\n"
+        "  • Recording a user preference — that's auto-extracted; or "
+        "use ``learn_about_user``.\n\n"
+        "After you call this, the proposal is queued; the user reviews "
+        "via ``xmclaw curriculum list`` / ``approve`` / ``reject``. "
+        "Approved proposals apply immediately + show up in your next "
+        "system prompt. **Don't call this for trivial wording tweaks** "
+        "— gate is for substantive rule changes."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "target_file": {
+                "type": "string",
+                "enum": ["LEARNING.md"],
+                "description": "Which curriculum file to edit. v0 "
+                "supports LEARNING.md only; future versions may open "
+                "SOUL.md / IDENTITY.md.",
+            },
+            "operation": {
+                "type": "string",
+                "enum": ["add_principle"],
+                "description": "v0 supports ``add_principle`` only — "
+                "append a new bullet under an existing section. "
+                "modify / remove will arrive when the diff parser is "
+                "robust enough not to lose user edits.",
+            },
+            "section": {
+                "type": "string",
+                "description": "Section heading the bullet goes under "
+                "(e.g. '怀疑自己', '记忆操作的纪律'). Match must "
+                "be exact — copy from the LEARNING.md you read at "
+                "turn start.",
+            },
+            "content": {
+                "type": "string",
+                "description": "The new bullet text (markdown; will be "
+                "prefixed with '- ' if not already). Keep it tight: "
+                "one principle per bullet, sub-points indented.",
+            },
+            "rationale": {
+                "type": "string",
+                "description": "REQUIRED — why this rule needs to "
+                "exist. The user reads this when deciding whether to "
+                "approve. 1-3 sentences. Lazy rationale = guaranteed "
+                "rejection.",
+            },
+            "evidence": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional list of session_ids / event "
+                "references that motivated this rule. Anchors the "
+                "proposal in real history (vs. theoretical).",
+            },
+        },
+        "required": [
+            "target_file", "operation", "section", "content", "rationale",
+        ],
+    },
+)
+
+
+_CURRICULUM_LIST_SPEC = ToolSpec(
+    name="list_curriculum_proposals",
+    description=(
+        "B-200 — list the curriculum-edit proposals you've filed plus "
+        "their status (pending / approved / rejected). Use to check "
+        "whether the user has reviewed your past proposals before "
+        "filing a new similar one. Returns the most recent 20."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": ["pending", "approved", "rejected", "all"],
+                "description": "Filter by status. Default: pending.",
+            },
+        },
+    },
+)
+
+
 _MAX_WEB_BYTES = 200_000
 _BASH_DEFAULT_TIMEOUT = 30.0
 _BASH_MAX_OUTPUT = 100_000
@@ -1259,6 +1365,14 @@ class BuiltinTools(ToolProvider):
         # the provider; production wiring (factory.py) supplies it.
         if self._persona_dir_provider is not None:
             specs.extend([_REMEMBER_SPEC, _LEARN_ABOUT_USER_SPEC, _UPDATE_PERSONA_SPEC])
+        # B-200 / Phase 5: curriculum self-edit proposal tools. Gated
+        # on persona_store_provider — the proposal storage uses the
+        # same memory.db, so without it we'd have nowhere to queue.
+        if self._persona_store_provider is not None:
+            specs.extend([
+                _PROPOSE_CURRICULUM_EDIT_SPEC,
+                _CURRICULUM_LIST_SPEC,
+            ])
         # schedule_followup is always available — it doesn't need any
         # constructor wiring; the cron store is a process-wide singleton.
         specs.append(_SCHEDULE_FOLLOWUP_SPEC)
@@ -1356,6 +1470,20 @@ class BuiltinTools(ToolProvider):
                 if self._persona_dir_provider is None:
                     return _fail(call, t0, "update_persona tool not configured (no persona dir)")
                 return await self._update_persona(call, t0)
+            if call.name == "propose_curriculum_edit":
+                if self._persona_store_provider is None:
+                    return _fail(
+                        call, t0,
+                        "propose_curriculum_edit not configured (no persona store)",
+                    )
+                return await self._propose_curriculum_edit(call, t0)
+            if call.name == "list_curriculum_proposals":
+                if self._persona_store_provider is None:
+                    return _fail(
+                        call, t0,
+                        "list_curriculum_proposals not configured (no persona store)",
+                    )
+                return await self._list_curriculum_proposals(call, t0)
             if call.name == "schedule_followup":
                 return await self._schedule_followup(call, t0)
             if call.name == "sqlite_query":
@@ -3419,6 +3547,174 @@ class BuiltinTools(ToolProvider):
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except OSError:
             pass
+
+    # ── B-200 / Phase 5: curriculum-edit proposal flow ──────────────
+
+    async def _propose_curriculum_edit(
+        self, call: ToolCall, t0: float,
+    ) -> ToolResult:
+        """B-200: file a curriculum (LEARNING.md) edit proposal that
+        requires user approval before applying.
+
+        Stores the proposal as ``kind=curriculum_proposal`` in
+        memory.db. The user runs ``xmclaw curriculum approve <id>`` /
+        ``reject`` to act on it; approve invokes the same store
+        write path as ``update_persona`` after applying the edit.
+        """
+        target_file = str(call.args.get("target_file") or "").strip()
+        operation = str(call.args.get("operation") or "").strip()
+        section = str(call.args.get("section") or "").strip()
+        content = str(call.args.get("content") or "").strip()
+        rationale = str(call.args.get("rationale") or "").strip()
+        evidence = call.args.get("evidence") or []
+
+        if target_file != "LEARNING.md":
+            return _fail(call, t0, "v0 supports target_file=LEARNING.md only")
+        if operation != "add_principle":
+            return _fail(call, t0, "v0 supports operation=add_principle only")
+        if not section:
+            return _fail(call, t0, "missing 'section'")
+        if not content:
+            return _fail(call, t0, "missing 'content'")
+        if not rationale or len(rationale) < 20:
+            return _fail(
+                call, t0,
+                "rationale must be at least 20 chars (lazy rationale = "
+                "guaranteed rejection)",
+            )
+        if not isinstance(evidence, list):
+            evidence = []
+
+        if self._persona_store_provider is None:
+            return _fail(call, t0, "persona_store not wired")
+        store = self._persona_store_provider()
+        if store is None:
+            return _fail(call, t0, "persona_store unavailable at call time")
+
+        # Verify the section actually exists in the current file —
+        # propose-anchor must be real or the apply step has nowhere
+        # to land the bullet.
+        try:
+            current_manual = await store.read_manual(target_file)
+        except Exception as exc:  # noqa: BLE001
+            return _fail(call, t0, f"read LEARNING.md failed: {exc}")
+        if section.startswith("##"):
+            section_norm = section
+        else:
+            section_norm = f"## {section.lstrip('# ').strip()}"
+        if section_norm not in current_manual:
+            return _fail(
+                call, t0,
+                f"section {section_norm!r} not found in {target_file}; "
+                f"copy a section heading verbatim from the file you "
+                f"read at turn start",
+            )
+
+        proposal_id = "curriculum_proposal:" + uuid.uuid4().hex
+        now = time.time()
+        metadata: dict[str, Any] = {
+            "kind": "curriculum_proposal",
+            "target_file": target_file,
+            "operation": operation,
+            "section": section_norm,
+            "content": content,
+            "rationale": rationale,
+            "evidence": list(evidence),
+            "status": "pending",
+            "proposed_by": call.session_id or "agent",
+            "proposed_ts": now,
+        }
+
+        try:
+            await store.add_fact(
+                kind="curriculum_proposal",
+                text=content,
+                metadata=metadata,
+                layer="long",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _fail(call, t0, f"proposal write failed: {exc}")
+
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "proposal_id": proposal_id,
+                "status": "pending",
+                "target_file": target_file,
+                "operation": operation,
+                "section": section_norm,
+                "review_cmd": "xmclaw curriculum list",
+                "approve_cmd": f"xmclaw curriculum approve {proposal_id}",
+                "note": (
+                    "Proposal queued for user review. "
+                    "Will appear in your system prompt only after "
+                    "user runs `xmclaw curriculum approve`."
+                ),
+            },
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _list_curriculum_proposals(
+        self, call: ToolCall, t0: float,
+    ) -> ToolResult:
+        """List recent curriculum-edit proposals + their status."""
+        status_filter = str(call.args.get("status") or "pending").strip()
+        if status_filter not in ("pending", "approved", "rejected", "all"):
+            return _fail(call, t0, f"unknown status filter: {status_filter!r}")
+
+        if self._persona_store_provider is None:
+            return _fail(call, t0, "persona_store not wired")
+        store = self._persona_store_provider()
+        if store is None:
+            return _fail(call, t0, "persona_store unavailable at call time")
+
+        # Reach into the store's underlying provider to query —
+        # PersonaStore doesn't expose "list rows of kind X" yet, but
+        # we can use the same memory_provider it's holding.
+        mem = getattr(store, "_mem", None)
+        if mem is None:
+            return _fail(call, t0, "persona_store has no memory provider")
+
+        try:
+            hits = await mem.query(
+                "long", text=None, k=50,
+                filters={"kind": "curriculum_proposal"},
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _fail(call, t0, f"proposal query failed: {exc}")
+
+        rows: list[dict[str, Any]] = []
+        for h in hits:
+            md = getattr(h, "metadata", {}) or {}
+            row_status = md.get("status", "pending")
+            if status_filter != "all" and row_status != status_filter:
+                continue
+            rows.append({
+                "id": getattr(h, "id", ""),
+                "target_file": md.get("target_file"),
+                "operation": md.get("operation"),
+                "section": md.get("section"),
+                "content_preview": (h.text or "")[:200],
+                "rationale_preview": (md.get("rationale") or "")[:200],
+                "status": row_status,
+                "proposed_ts": md.get("proposed_ts"),
+                "decided_ts": md.get("decided_ts"),
+                "user_reason": md.get("user_reason"),
+            })
+            if len(rows) >= 20:
+                break
+
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "filter": status_filter,
+                "count": len(rows),
+                "proposals": rows,
+            },
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
 
     async def _append_persona(
         self, call: ToolCall, t0: float, *,
