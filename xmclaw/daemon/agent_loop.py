@@ -2075,14 +2075,64 @@ class AgentLoop:
                 # provider call (network stall / model loop) blocks
                 # the turn forever — chat-59bb7a7a went silent for 10
                 # minutes after a hop-6 stall before the user nudged.
-                response = await asyncio.wait_for(
-                    llm.complete_streaming(
-                        messages, tools=tool_specs, on_chunk=_emit_chunk,
-                        on_thinking_chunk=_emit_thinking_chunk,
-                        cancel=cancel_event,
-                    ),
-                    timeout=self._llm_timeout_s,
+                # B-227: classify-and-retry around LLM call. Pre-B-227
+                # any provider exception killed the turn outright;
+                # ~10% of real-data failures were transient
+                # rate_limit / overloaded that succeed on retry.
+                # Reasons that should be retried get a per-reason
+                # backoff schedule from ``backoff_schedule``.
+                from xmclaw.utils.error_classifier import (
+                    classify_api_error, backoff_schedule,
                 )
+                _b227_attempts = 0
+                _b227_last_classified: Any = None
+                while True:
+                    try:
+                        response = await asyncio.wait_for(
+                            llm.complete_streaming(
+                                messages, tools=tool_specs, on_chunk=_emit_chunk,
+                                on_thinking_chunk=_emit_thinking_chunk,
+                                cancel=cancel_event,
+                            ),
+                            timeout=self._llm_timeout_s,
+                        )
+                        break  # success
+                    except asyncio.TimeoutError:
+                        # Re-raise into the original timeout handler
+                        # below (separate path with its own user msg).
+                        raise
+                    except Exception as _exc:  # noqa: BLE001
+                        ce = classify_api_error(
+                            _exc,
+                            provider=getattr(llm, "__class__", type(llm)).__name__,
+                            model=getattr(llm, "model", "") or "",
+                        )
+                        _b227_last_classified = ce
+                        schedule = backoff_schedule(ce.reason)
+                        if (
+                            not ce.retryable
+                            or _b227_attempts >= len(schedule)
+                            or cancel_event.is_set()
+                        ):
+                            # Out of retries (or non-retryable) — let
+                            # the outer except path surface the error
+                            # in LLM_RESPONSE with the classified
+                            # reason as category.
+                            raise
+                        sleep_ms = schedule[_b227_attempts]
+                        try:
+                            from xmclaw.utils.log import get_logger
+                            get_logger(__name__).warning(
+                                "agent_loop.llm_retry hop=%d reason=%s "
+                                "attempt=%d sleep_ms=%d msg=%s",
+                                hop, ce.reason.value, _b227_attempts + 1,
+                                sleep_ms, ce.message[:120],
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                        await asyncio.sleep(sleep_ms / 1000.0)
+                        _b227_attempts += 1
+                        # Loop and retry with same kwargs.
             except asyncio.TimeoutError:
                 latency_ms = (time.perf_counter() - t0) * 1000.0
                 # Tell the bus + the user clearly. The ANTI_REQ event
