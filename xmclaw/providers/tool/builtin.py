@@ -3362,6 +3362,20 @@ class BuiltinTools(ToolProvider):
                             f" — available tables in '{db_choice}': "
                             f"{', '.join(names)}"
                         )
+                    # B-205 cross-tie: if the user is querying memory.db
+                    # and the table didn't exist, the question is almost
+                    # always semantic ("what does the agent know about X")
+                    # — point them at memory_search so they don't keep
+                    # guessing schema. This is the recovery path B-205's
+                    # prompt change was nudging for; surface it from the
+                    # error itself too in case the prompt nudge misses.
+                    if db_choice == "memory":
+                        schema_hint += (
+                            ". For 'what does the agent remember about "
+                            "<topic>' queries, use ``memory_search(query, "
+                            "kind=?)`` instead of raw SQL — it's faster "
+                            "and won't fail with 'no such table'."
+                        )
                 elif "no such column" in low:
                     # Try to extract the table name from the SQL
                     # ("FROM <table>") to point at its real columns.

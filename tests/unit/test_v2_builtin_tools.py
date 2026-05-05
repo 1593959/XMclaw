@@ -729,6 +729,47 @@ async def test_sqlite_query_no_such_table_lists_available_tables(
     assert "events" in (result.error or "")
     assert "sessions" in (result.error or "")
     assert "available tables" in (result.error or "")
+    # B-205: events.db queries should NOT get the memory_search
+    # redirect (that's only relevant for memory.db).
+    assert "memory_search" not in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_sqlite_query_memory_db_redirects_to_memory_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B-205 cross-tie: when an unknown-table error fires on
+    memory.db (vs events.db), surface the memory_search redirect
+    in addition to the table list. Most "no such table: memories"
+    style errors come from agents trying to do semantic recall via
+    raw SQL — point them at the right tool right inside the error."""
+    import sqlite3
+
+    fake_root = tmp_path / "fake_home"
+    (fake_root / "v2").mkdir(parents=True)
+    db_path = fake_root / "v2" / "memory.db"
+    con = sqlite3.connect(db_path)
+    con.execute("CREATE TABLE memory_items (id TEXT, text TEXT)")
+    con.commit()
+    con.close()
+
+    monkeypatch.setattr(
+        "xmclaw.utils.paths.data_dir",
+        lambda: fake_root,
+    )
+
+    tools = BuiltinTools()
+    call = _call("sqlite_query", {
+        "db": "memory", "sql": "SELECT * FROM memories",
+    })
+    result = await tools.invoke(call)
+
+    assert result.ok is False
+    err = result.error or ""
+    # Both signals present: table list + redirect.
+    assert "memory_items" in err
+    assert "memory_search" in err
+    assert "kind" in err  # the redirect mentions kind filter
 
 
 @pytest.mark.asyncio
