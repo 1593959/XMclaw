@@ -215,71 +215,72 @@ export function applyEvent(chat, envelope) {
     }
 
     case "tool_invocation_started": {
-      // B-219: under the flat-sibling layout, tool_use is its own
-      // message keyed by callId. tool_call_emitted already sets
-      // status=running so this is a no-op patch — kept around in
-      // case providers emit started without emitted (some MCP
-      // shims do this).
+      // B-43: bubble phase update. The matching tool_call_emitted case
+      // (below) already adds the ToolCard with status=pending; this
+      // event flips it to 'running' AND tags the bubble's phase so the
+      // header reads "正在执行工具" instead of "正在思考".
+      const id = corr;
       const callId = payload.call_id || payload.id;
-      const idx = chat.messages.findIndex(
-        (m) => m.kind === "tool_use" && m.id === callId,
-      );
-      if (idx === -1) return chat;
       return {
         ...chat,
-        messages: upsertById(chat.messages, callId, (m) => ({
+        messages: upsertById(chat.messages, id, (m) => ({
           ...m,
-          status: m.status === "running" ? m.status : "running",
+          phase: "tool_running",
+          toolCalls: (m.toolCalls || []).map((tc) =>
+            tc.id === callId ? { ...tc, status: "running" } : tc,
+          ),
         })),
       };
     }
 
     case "llm_chunk": {
-      // B-219: peer-pattern flat sibling layout (OpenClaw chat-log.ts +
-      // free-code Messages.tsx confirmed via desktop source read).
-      // Each event = independent top-level message. A turn produces
-      // multiple sibling messages (text / thinking / tool_use) in
-      // arrival order, NOT one mega-bubble per hop.
-      //
-      // For ``llm_chunk``: append delta to the trailing assistant_text
-      // message IF it belongs to the same correlation_id AND no
-      // tool_use / thinking sibling has interrupted; otherwise spawn a
-      // fresh assistant_text message (post-tool-result narration).
+      // Streaming token delta. Use correlation_id (turn id) as the
+      // assistant message id so subsequent chunks merge into the same
+      // bubble. Create the bubble lazily on the first chunk.
+      const id = corr;
       const delta = typeof payload.delta === "string"
         ? payload.delta
         : typeof payload.content === "string"
           ? payload.content
           : "";
-      const cleaned = _finalizeAbandoned(chat.messages, corr);
-      const last = cleaned[cleaned.length - 1];
-      const canAppend =
-        last
-        && last.kind === "assistant_text"
-        && last.correlationId === corr
-        && last.status === "streaming";
-      if (canAppend) {
+      // B-89: stop any prior abandoned-streaming bubble before this
+      // turn starts producing chunks. Some providers skip llm_request
+      // and start straight from llm_chunk, so we need this guard here
+      // too.
+      const cleaned = _finalizeAbandoned(chat.messages, id);
+      const idx = cleaned.findIndex((m) => m.id === id);
+      if (idx === -1) {
         return {
           ...chat,
-          pendingAssistantId: last.id,
-          messages: upsertById(cleaned, last.id, (m) => ({
-            ...m,
-            content: (m.content || "") + delta,
-          })),
+          pendingAssistantId: id,
+          messages: cleaned.concat({
+            id,
+            role: "assistant",
+            content: delta,
+            status: "streaming",
+            ts,
+            toolCalls: [],
+            // B-218: chronological event timeline. Each entry =
+            // one rendered row in MessageBubble. Mirrors what
+            // OpenClaw / CoPaw / Hermes show: thinking-row →
+            // tool-row → text-row in the order events arrived.
+            events: [{ type: "text", id: id + ":t0", content: delta }],
+          }),
         };
       }
-      const id = `${corr}:text:${cleaned.length}`;
       return {
         ...chat,
         pendingAssistantId: id,
-        messages: cleaned.concat({
-          id,
-          kind: "assistant_text",
-          role: "assistant",
-          correlationId: corr,
-          content: delta,
+        messages: upsertById(cleaned, id, (m) => ({
+          ...m,
+          content: m.content + delta,
           status: "streaming",
-          ts,
-        }),
+          // B-218: append to the trailing text event when the last
+          // event is text; otherwise start a new text event after
+          // the most recent thinking / tool block. Keeps things
+          // grouped naturally.
+          events: _appendTextEvent(m.events || [], id, delta),
+        })),
       };
     }
 
@@ -296,40 +297,36 @@ export function applyEvent(chat, envelope) {
         ? payload.delta
         : "";
       if (!delta) return chat;
-      // B-219: flat-sibling layout. Same logic as llm_chunk but for
-      // a separate kind=assistant_thinking row. Tool / text in
-      // between starts a fresh thinking block; consecutive thinking
-      // chunks merge into one.
-      const cleaned = _finalizeAbandoned(chat.messages, corr);
-      const last = cleaned[cleaned.length - 1];
-      const canAppend =
-        last
-        && last.kind === "assistant_thinking"
-        && last.correlationId === corr
-        && last.status === "streaming";
-      if (canAppend) {
+      const cleaned = _finalizeAbandoned(chat.messages, id);
+      const idx = cleaned.findIndex((m) => m.id === id);
+      if (idx === -1) {
         return {
           ...chat,
-          pendingAssistantId: last.id,
-          messages: upsertById(cleaned, last.id, (m) => ({
-            ...m,
-            content: (m.content || "") + delta,
-          })),
+          pendingAssistantId: id,
+          messages: cleaned.concat({
+            id,
+            role: "assistant",
+            content: "",
+            thinking: delta,
+            status: "thinking",
+            phase: "calling_llm",
+            ts,
+            toolCalls: [],
+            events: [{ type: "thinking", id: id + ":k0", content: delta }],
+          }),
         };
       }
-      const id = `${corr}:think:${cleaned.length}`;
       return {
         ...chat,
         pendingAssistantId: id,
-        messages: cleaned.concat({
-          id,
-          kind: "assistant_thinking",
-          role: "assistant",
-          correlationId: corr,
-          content: delta,
-          status: "streaming",
-          ts,
-        }),
+        messages: upsertById(cleaned, id, (m) => ({
+          ...m,
+          thinking: (m.thinking || "") + delta,
+          // B-218: append to trailing thinking event OR open a new
+          // thinking block when the last event is tool/text. This
+          // is what gives us the per-block rendering peers have.
+          events: _appendThinkingEvent(m.events || [], id, delta),
+        })),
       };
     }
 
@@ -425,40 +422,59 @@ export function applyEvent(chat, envelope) {
     }
 
     case "tool_call_emitted": {
-      // B-219: each tool invocation is its OWN top-level message
-      // (kind=tool_use). The previous bubble-aggregation pattern is
-      // gone; this matches OpenClaw chat-log.ts startTool() and
-      // free-code AssistantToolUseMessage layout.
+      const aid = corr;
       const callId = payload.tool_call_id || payload.id || genId();
-      const cleanedTC = _finalizeAbandoned(chat.messages, corr);
-      // Mark any open assistant_text bubble in this run as complete
-      // — once a tool fires, that text run is finalised.
-      const finalised = cleanedTC.map((m) =>
-        m.kind === "assistant_text"
-          && m.correlationId === corr
-          && m.status === "streaming"
-          ? { ...m, status: "complete" }
-          : m,
-      );
+      const tc = {
+        id: callId,
+        name: payload.name || payload.tool_name || "tool",
+        args: payload.args || payload.arguments || {},
+        status: "running",
+        result: null,
+      };
+      // B-218: also represent this tool invocation as a chronological
+      // event in ``events[]``. Carries the SAME id as ``tc.id`` so
+      // the matching tool_invocation_finished handler can update
+      // BOTH structures by id.
+      const toolEvent = {
+        type: "tool",
+        id: callId,
+        name: tc.name,
+        args: tc.args,
+        status: "running",
+        result: null,
+      };
+      // B-89: tool_call_emitted can be the FIRST event for a turn when
+      // the LLM goes straight to a tool without prefacing prose. Same
+      // abandoned-bubble guard as llm_request / llm_chunk.
+      const cleanedTC = _finalizeAbandoned(chat.messages, aid);
+      const idx = cleanedTC.findIndex((m) => m.id === aid);
+      if (idx === -1) {
+        // No assistant bubble yet — create one with the tool card attached.
+        return {
+          ...chat,
+          messages: cleanedTC.concat({
+            id: aid,
+            role: "assistant",
+            content: "",
+            status: "streaming",
+            ts,
+            toolCalls: [tc],
+            events: [toolEvent],
+          }),
+        };
+      }
       return {
         ...chat,
-        messages: finalised.concat({
-          id: callId,
-          kind: "tool_use",
-          role: "assistant",
-          correlationId: corr,
-          name: payload.name || payload.tool_name || "tool",
-          args: payload.args || payload.arguments || {},
-          status: "running",
-          result: null,
-          ts,
-        }),
+        messages: upsertById(cleanedTC, aid, (m) => ({
+          ...m,
+          toolCalls: (m.toolCalls || []).concat(tc),
+          events: (m.events || []).concat(toolEvent),
+        })),
       };
     }
 
     case "tool_invocation_finished": {
-      // B-219: tool_use is now its own top-level message — find by
-      // the tool_call_id and patch in place.
+      const aid = corr;
       const callId = payload.tool_call_id || payload.id;
       const status = payload.error ? "error" : "ok";
       const result = payload.error
@@ -466,16 +482,21 @@ export function applyEvent(chat, envelope) {
         : (typeof payload.result === "string"
             ? payload.result
             : JSON.stringify(payload.result || {}, null, 2));
-      const idx = chat.messages.findIndex(
-        (m) => m.kind === "tool_use" && m.id === callId,
-      );
+      const idx = chat.messages.findIndex((m) => m.id === aid);
       if (idx === -1) return chat;
       return {
         ...chat,
-        messages: upsertById(chat.messages, callId, (m) => ({
+        messages: upsertById(chat.messages, aid, (m) => ({
           ...m,
-          status,
-          result,
+          toolCalls: (m.toolCalls || []).map((tc) =>
+            tc.id === callId ? { ...tc, status, result } : tc
+          ),
+          // B-218: mirror update onto the matching event row.
+          events: (m.events || []).map((ev) =>
+            ev.type === "tool" && ev.id === callId
+              ? { ...ev, status, result }
+              : ev
+          ),
         })),
       };
     }
