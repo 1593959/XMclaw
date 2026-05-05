@@ -132,7 +132,7 @@ function ToolCard({ call }) {
           : null}
         <${Badge} tone=${tone}>${label}</${Badge}>
         ${call.status === "running"
-          ? html`<${Spinner} size="sm" label="running" />`
+          ? html`<${Spinner} size="sm" label="running" hideLabel=${true} />`
           : null}
       </summary>
       <div class="xmc-toolcard__body">
@@ -375,6 +375,27 @@ export function MessageBubble({ message, onAnswerQuestion }) {
         <${ToolCard} call=${message} />
       </article>
     `;
+  }
+
+  // B-224: hide empty assistant bubbles. When a hop is tool-only
+  // (no text content streamed, B-220 moved toolCalls into sibling
+  // tool_use messages), the placeholder bubble created by
+  // llm_request → llm_response was left with content="" + empty
+  // toolCalls + no thinking — but its header still rendered
+  // "assistant", so a 50-hop turn produced 50 stacked "assistant"
+  // labels in the transcript with nothing under them. Now we
+  // collapse such ghost bubbles entirely. Streaming bubbles
+  // (in-flight) still render so the user sees the spinner.
+  if (
+    (message.role === "assistant" || !message.role)
+    && !message.kind
+    && message.status !== "streaming"
+    && message.status !== "thinking"
+    && !(message.content && String(message.content).trim())
+    && !(message.thinking && String(message.thinking).trim())
+    && !((message.toolCalls || []).length)
+  ) {
+    return null;
   }
   const role = message.role || "system";
   const isUser = role === "user";
