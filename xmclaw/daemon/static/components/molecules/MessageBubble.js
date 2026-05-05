@@ -363,6 +363,27 @@ export function MessageBubble({ message, onAnswerQuestion }) {
       </article>
     `;
   }
+
+  // B-219: peer-pattern flat sibling layout. The reducer now emits
+  // each event as its OWN top-level message:
+  //   kind=assistant_thinking → ThinkingMessage row
+  //   kind=tool_use           → ToolUseMessage row
+  //   kind=assistant_text     → plain text row (falls through below)
+  // Mirrors OpenClaw chat-log.ts and free-code Messages.tsx layout.
+  if (message.kind === "tool_use") {
+    return html`
+      <article class="xmc-msg xmc-msg--assistant xmc-msg--row" data-msg-id=${message.id}>
+        <${ToolCard} call=${message} />
+      </article>
+    `;
+  }
+  if (message.kind === "assistant_thinking") {
+    return html`
+      <article class="xmc-msg xmc-msg--assistant xmc-msg--row" data-msg-id=${message.id}>
+        <${ThinkingRow} ev=${{ ...message, content: message.content || "" }} />
+      </article>
+    `;
+  }
   const role = message.role || "system";
   const isUser = role === "user";
   const isSystem = role === "system";
