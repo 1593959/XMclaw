@@ -85,6 +85,23 @@ def test_default_prompt_mentions_tool_aggressiveness() -> None:
     assert "use them aggressively rather than refusing" in p
 
 
+def test_b210_code_chunk_search_routing_present() -> None:
+    """B-210: when workspace code is indexed, the agent must KNOW to
+    pass ``kind='code_chunk'`` to memory_search for code questions —
+    otherwise persona facts and code chunks share recall budget and
+    the ranking degrades. Pin the routing nudge."""
+    p = _DEFAULT_SYSTEM
+    assert "code_chunk" in p
+    # Must be associated with memory_search (not just dropped randomly).
+    mem_idx = p.find("memory_search")
+    code_idx = p.find("code_chunk")
+    assert mem_idx > 0 and code_idx > 0
+    assert abs(code_idx - mem_idx) < 1500, (
+        "B-210: code_chunk routing nudge must live near the memory_search "
+        "section, otherwise the LLM doesn't link them as a workflow."
+    )
+
+
 def test_b208_active_problem_solving_rule_present() -> None:
     """B-208: B-199 (don't refuse without trying) wasn't enough — user
     fed back the agent was still saying 'I can't send images' even

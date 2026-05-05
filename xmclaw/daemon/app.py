@@ -509,12 +509,27 @@ def create_app(
                     ((_cfg.get("evolution") or {}).get("memory") or {})
                     .get("indexer") or {}
                 )
+                # B-210: optional workspace code paths to also index.
+                # Lives under ``evolution.memory.workspace_paths`` (list
+                # of dir strings). Empty / missing → indexer behaves as
+                # before (persona/journal only). Each path is filtered
+                # by the indexer's denylist + extension allowlist so
+                # ``node_modules`` / ``.git`` / build outputs don't end
+                # up in the vector store.
+                _ws_paths_raw = (
+                    ((_cfg.get("evolution") or {}).get("memory") or {})
+                    .get("workspace_paths") or []
+                )
+                _workspace_paths = [
+                    str(p) for p in _ws_paths_raw if isinstance(p, str)
+                ]
                 memory_indexer = MemoryFileIndexer(
                     persona_dir_provider=_pdir,
                     sqlite_vec=vec_provider,
                     embedder=embedder,
                     poll_interval_s=float(_idx_section.get("poll_interval_s", 10.0)),
                     bus=bus,
+                    workspace_paths=_workspace_paths,
                 )
                 await memory_indexer.start()
                 _app.state.memory_indexer = memory_indexer

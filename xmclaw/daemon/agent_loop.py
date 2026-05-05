@@ -259,6 +259,17 @@ def _default_system_prompt() -> str:
         "on memory.db** — semantic recall beats raw SQL every time, "
         "and probe data showed agent sweeping memory.db with hand-"
         "rolled WHERE clauses instead of just calling memory_search.\n"
+        "      ★ B-210: when the user asks about CODE (a function "
+        "they wrote, a file in the codebase, 'how is X implemented'), "
+        "call ``memory_search(query=...query..., kind='code_chunk')`` "
+        "FIRST. Workspace source files are indexed into the same "
+        "vector store and tagged ``code_chunk``; querying without "
+        "``kind`` will mix them with persona facts and dilute the "
+        "ranking. ``code_chunk`` results carry ``source_path`` + "
+        "``start_line`` / ``end_line`` so you can cite or `file_read` "
+        "the exact range. If the answer needs a file you didn't get "
+        "back from memory_search, then `file_read` it directly — "
+        "the index isn't a 100% mirror.\n"
         "    - `ask_user_question(question, options)` — when the user's "
         "intent is ambiguous, DON'T guess. Pause the turn, present 2-5 "
         "options, wait for their click. Better than 3 wrong tool calls "
@@ -1618,7 +1629,14 @@ class AgentLoop:
                 # The productive recall surface is the **extracted**
                 # rows: preference / lesson / procedure / principle /
                 # session_summary.
-                _SKIP_KINDS = {"file_chunk"}
+                # B-210: also skip ``code_chunk`` from auto-injection.
+                # Workspace code chunks are valuable for *targeted*
+                # recall (agent calls memory_search with kind=code_chunk),
+                # but injecting them every turn would drown the persona
+                # facts in low-signal pattern matches across a giant
+                # codebase. The agent has tools to query them when
+                # they're actually needed.
+                _SKIP_KINDS = {"file_chunk", "code_chunk"}
                 for h in hits:
                     md = h.metadata or {}
                     if md.get("session_id") == session_id:

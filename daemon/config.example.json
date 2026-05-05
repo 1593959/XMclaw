@@ -46,7 +46,9 @@
       },
       "indexer": {
         "poll_interval_s": 10
-      }
+      },
+      "_comment_b210": "B-210 workspace code indexing — list of directories to chunk and embed alongside persona/journal. Each path is filtered by the indexer's denylist (.git / node_modules / __pycache__ / .venv / dist / build) and an extension allowlist (.py .js .ts .md .rs .go .java .json .toml .yaml .sql + others). Empty / missing → no code indexing. memory_search(kind='code_chunk') retrieves these.",
+      "workspace_paths": []
     }
   },
   "memory": {

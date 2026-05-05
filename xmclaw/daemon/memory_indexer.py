@@ -56,7 +56,86 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from xmclaw.utils.log import get_logger
-from xmclaw.utils.text_chunk import MarkdownChunk, chunk_markdown
+from xmclaw.utils.text_chunk import MarkdownChunk, chunk_code, chunk_markdown
+
+
+# B-210: workspace code-indexing scope. The persona/journal indexer
+# only needs to skip ``journal/`` (handled inline). Code workspaces
+# are noisier — vendored libs, build outputs, lockfiles. Hard-coded
+# denylist + extension allowlist keeps the index focused on
+# user-authored source.
+_CODE_DIR_DENYLIST = frozenset({
+    ".git", ".hg", ".svn",
+    "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache",
+    ".ruff_cache", ".tox",
+    ".venv", "venv", "env",
+    "dist", "build", "target", "out",
+    ".next", ".nuxt", ".cache", ".parcel-cache",
+    "coverage", ".coverage", "htmlcov",
+    ".idea", ".vscode",
+    # XMclaw-specific scratch
+    ".claude",
+})
+
+_CODE_FILE_EXTENSIONS = frozenset({
+    # Python
+    ".py", ".pyi",
+    # JS / TS
+    ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    # Web
+    ".html", ".css", ".scss",
+    # Systems
+    ".rs", ".go", ".c", ".h", ".cpp", ".hpp", ".cc", ".cxx",
+    # JVM
+    ".java", ".kt", ".scala",
+    # Other common
+    ".rb", ".php", ".swift", ".lua", ".sh", ".ps1",
+    # Markdown / config (often part of code repos and useful for recall)
+    ".md", ".rst", ".toml", ".yaml", ".yml", ".json",
+    # SQL / queries
+    ".sql",
+})
+
+# Per-file size cap. Above this we skip — embedding a 1MB minified
+# JS bundle just wastes the API call and pollutes recall.
+_CODE_FILE_MAX_BYTES = 256 * 1024
+
+
+def _is_code_path_allowed(path: Path) -> bool:
+    """B-210: filter for ``_iter_workspace_files``. False ⇒ skip."""
+    if path.suffix.lower() not in _CODE_FILE_EXTENSIONS:
+        return False
+    # Any parent directory in the denylist disqualifies.
+    for part in path.parts:
+        if part in _CODE_DIR_DENYLIST:
+            return False
+    try:
+        if path.stat().st_size > _CODE_FILE_MAX_BYTES:
+            return False
+    except OSError:
+        return False
+    return True
+
+
+def _iter_workspace_files(roots: list[Path]):
+    """B-210: yield code files under the configured workspace roots."""
+    seen: set[Path] = set()
+    for root in roots:
+        if not root or not root.is_dir():
+            continue
+        for entry in root.rglob("*"):
+            if not entry.is_file():
+                continue
+            try:
+                resolved = entry.resolve()
+            except OSError:
+                continue
+            if resolved in seen:
+                continue
+            if not _is_code_path_allowed(resolved):
+                continue
+            seen.add(resolved)
+            yield resolved
 
 if TYPE_CHECKING:
     from xmclaw.providers.memory.embedding import EmbeddingProvider
@@ -91,12 +170,37 @@ class MemoryFileIndexer:
         poll_interval_s: float = 10.0,
         layer: str = "long",
         bus: "Any | None" = None,
+        # B-210: optional workspace code paths. When non-empty, the
+        # indexer also walks these dirs every tick and chunks any
+        # source file (allowed extension + not in denylist) into the
+        # vector store as ``kind=code_chunk``. memory_search can
+        # filter on this kind to do code-aware recall; the auto-
+        # injected ``<memory-context>`` block skips it by default
+        # (would otherwise drown persona facts in code).
+        workspace_paths: list[str] | None = None,
     ) -> None:
         self._persona_dir_provider = persona_dir_provider
         self._vec = sqlite_vec
         self._embedder = embedder
         self._poll_s = max(1.0, float(poll_interval_s))
         self._layer = layer
+        # B-210: resolve workspace_paths into Path objects once;
+        # filter out paths that don't exist so we don't spam
+        # warnings every tick.
+        self._workspace_roots: list[Path] = []
+        for raw in (workspace_paths or []):
+            try:
+                p = Path(raw).expanduser().resolve()
+            except (OSError, ValueError):
+                continue
+            if p.is_dir():
+                self._workspace_roots.append(p)
+            else:
+                _log.warning(
+                    "memory_indexer.workspace_path_missing path=%s "
+                    "(skipped — create the directory or remove from config)",
+                    raw,
+                )
         # Per-file mtime cache so we skip unchanged files.
         self._mtime_cache: dict[str, float] = {}
         # In-memory set of paths we've indexed at least once. After
@@ -198,7 +302,11 @@ class MemoryFileIndexer:
         gone = self._known_paths - live_paths
         for missing in list(gone):
             try:
-                removed = await self._drop_path(missing)
+                # Try both kinds — _drop_path is idempotent and
+                # the missing path could have been a code file or
+                # a persona/journal file.
+                removed = await self._drop_path(missing, kind="file_chunk")
+                removed += await self._drop_path(missing, kind="code_chunk")
                 counters["chunks_deleted"] += removed
                 counters["files_removed"] += 1
             except Exception as exc:  # noqa: BLE001
@@ -268,6 +376,31 @@ class MemoryFileIndexer:
                     if entry.is_file():
                         yield entry
 
+        # 3. Workspace code roots (B-210). Yields source files that
+        # pass the extension allowlist + denylist filter. Tagged via
+        # ``_is_code_file()`` so ``_index_file`` knows to use the
+        # sliding-window code chunker + ``kind=code_chunk``.
+        for code_path in _iter_workspace_files(self._workspace_roots):
+            yield code_path
+
+    def _classify_path(self, path: Path) -> str:
+        """B-210: 'file_chunk' for persona/journal/.md notes,
+        'code_chunk' for workspace source files. The kind dimension
+        becomes the source axis without needing a schema migration."""
+        # Workspace roots: any file inside one of the configured
+        # workspace dirs that passed the allowlist is code.
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+        for root in self._workspace_roots:
+            try:
+                resolved.relative_to(root)
+                return "code_chunk"
+            except ValueError:
+                continue
+        return "file_chunk"
+
     async def _index_file(self, path: Path) -> tuple[int, int, int]:
         """Index one file. Returns (added, deleted, unchanged)."""
         try:
@@ -275,12 +408,16 @@ class MemoryFileIndexer:
         except OSError:
             return (0, 0, 0)
 
-        new_chunks = chunk_markdown(text)
+        kind = self._classify_path(path)
+        if kind == "code_chunk":
+            new_chunks = chunk_code(text)
+        else:
+            new_chunks = chunk_markdown(text)
         new_by_id: dict[str, MarkdownChunk] = {
             _chunk_id(str(path), c.start_line): c for c in new_chunks
         }
 
-        existing = await self._existing_chunk_ids(str(path))
+        existing = await self._existing_chunk_ids(str(path), kind=kind)
         existing_ids: set[str] = set(existing.keys())
         new_ids: set[str] = set(new_by_id.keys())
 
@@ -346,7 +483,7 @@ class MemoryFileIndexer:
                     layer=self._layer,  # type: ignore[arg-type]
                     text=chunk.text,
                     metadata={
-                        "kind": "file_chunk",
+                        "kind": kind,
                         "source_path": str(path),
                         "start_line": chunk.start_line,
                         "end_line": chunk.end_line,
@@ -360,14 +497,19 @@ class MemoryFileIndexer:
             added += 1
         return (added, len(to_drop), len(unchanged_ids))
 
-    async def _existing_chunk_ids(self, source_path: str) -> dict[str, str]:
+    async def _existing_chunk_ids(
+        self, source_path: str, *, kind: str = "file_chunk",
+    ) -> dict[str, str]:
         """Return ``{chunk_id: chunk_hash}`` for chunks whose
-        ``metadata.source_path`` matches ``source_path``."""
+        ``metadata.source_path`` matches ``source_path``. ``kind``
+        defaults to ``file_chunk`` (persona/journal); B-210 passes
+        ``code_chunk`` for workspace files so the diff doesn't get
+        confused if the same path is somehow indexed under both."""
         rows = await self._vec.query(
             self._layer,  # type: ignore[arg-type]
             text=None,
             k=10000,  # effectively all chunks for this file
-            filters={"source_path": source_path, "kind": "file_chunk"},
+            filters={"source_path": source_path, "kind": kind},
         )
         out: dict[str, str] = {}
         for r in rows:
@@ -376,10 +518,10 @@ class MemoryFileIndexer:
                 out[r.id] = chunk_hash
         return out
 
-    async def _drop_path(self, source_path: str) -> int:
+    async def _drop_path(self, source_path: str, *, kind: str = "file_chunk") -> int:
         """Delete every chunk whose ``source_path`` equals the given
         path (used when the source file is gone). Returns the count."""
-        existing = await self._existing_chunk_ids(source_path)
+        existing = await self._existing_chunk_ids(source_path, kind=kind)
         for cid in existing:
             await self._vec.forget(cid)
         return len(existing)

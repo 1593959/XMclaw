@@ -534,10 +534,14 @@ _MEMORY_SEARCH_SPEC = ToolSpec(
                 "enum": [
                     "preference", "lesson", "principle", "procedure",
                     "identity", "file_chunk", "session_summary",
-                    "curriculum",
+                    "curriculum", "code_chunk",
                 ],
-                "description": "B-197: restrict to records of this kind. "
-                "Omit to search across all kinds.",
+                "description": "B-197/B-210: restrict to records of "
+                "this kind. ``code_chunk`` searches indexed workspace "
+                "source files (set via ``evolution.memory."
+                "workspace_paths``). Omit to search across all kinds, "
+                "but for code-specific questions pass ``code_chunk`` "
+                "to focus recall and avoid persona-fact noise.",
             },
             "max_chars": {
                 "type": "integer",

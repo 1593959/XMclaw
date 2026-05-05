@@ -153,4 +153,75 @@ def chunk_markdown(
     return chunks
 
 
-__all__ = ["MarkdownChunk", "chunk_markdown"]
+def chunk_code(
+    text: str,
+    *,
+    max_lines: int = 200,
+    overlap_lines: int = 30,
+) -> list[MarkdownChunk]:
+    """B-210: split source code into overlapping line-range chunks.
+
+    Like :func:`chunk_markdown` but for arbitrary source files —
+    no markdown structure, just sliding-window line slicing. Tries
+    to land chunk boundaries on blank lines (natural function /
+    class breaks) when one is available within ±10 lines of the
+    target boundary; otherwise hard-cuts.
+
+    Returns the same ``MarkdownChunk`` shape so downstream code
+    (indexer, search) doesn't need a new type. The "Markdown" in
+    the name is misleading at this point — kept for backward
+    compat; treat it as "TextChunk".
+    """
+    if not text or not text.strip():
+        return []
+    lines = text.splitlines()
+    n = len(lines)
+    if n == 0:
+        return []
+    if n <= max_lines:
+        body = "\n".join(lines).rstrip()
+        if not body:
+            return []
+        return [MarkdownChunk(
+            start_line=1,
+            end_line=n,
+            text=body,
+            hash=_hash_text(body),
+        )]
+
+    chunks: list[MarkdownChunk] = []
+    start = 0
+    while start < n:
+        target_end = min(start + max_lines, n)
+        # Try to land on a blank line within ±10 of target_end so
+        # we don't slice mid-function. Search BACKWARD first (prefer
+        # cutting a chunk slightly short over slightly long).
+        end = target_end
+        if end < n:
+            for delta in range(0, 11):
+                # backward
+                back = target_end - delta
+                if back > start and back < n and not lines[back].strip():
+                    end = back
+                    break
+                # forward
+                fwd = target_end + delta
+                if fwd < n and not lines[fwd].strip():
+                    end = fwd
+                    break
+        body = "\n".join(lines[start:end]).rstrip()
+        if body:
+            chunks.append(MarkdownChunk(
+                start_line=start + 1,
+                end_line=end,
+                text=body,
+                hash=_hash_text(body),
+            ))
+        if end >= n:
+            break
+        # Slide: keep ``overlap_lines`` for context continuity.
+        start = max(end - overlap_lines, start + 1)
+    return chunks
+
+
+__all__ = ["MarkdownChunk", "chunk_markdown", "chunk_code"]
