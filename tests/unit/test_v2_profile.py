@@ -617,11 +617,19 @@ async def test_b197_no_fact_writer_keeps_legacy_path(
 
 
 @pytest.mark.asyncio
-async def test_b197_fact_writer_failure_does_not_break_markdown(
+async def test_b198_fact_writer_failure_logs_but_does_not_crash(
     bus: InProcessEventBus, user_md: Path,
 ) -> None:
-    """If fact_writer raises, the markdown path must still have happened.
-    DB is best-effort indexing; markdown is the user-visible surface."""
+    """B-198 Phase 3 contract change: when fact_writer is wired,
+    markdown is NOT a parallel sink — it's a render of DB state.
+    If fact_writer fails, the row isn't written and the markdown
+    file legitimately stays empty (or at its prior render). The
+    only contract is "no crash"; persistent failures surface
+    in logs.
+
+    Pre-B-198 behaviour was "DB is best-effort, markdown always
+    wins" — that was the dual-write debt the user explicitly
+    rejected ("要做就做好不要留债")."""
 
     async def _broken_writer(text: str, metadata: dict) -> None:
         raise RuntimeError("simulated DB failure")
@@ -648,6 +656,6 @@ async def test_b197_fact_writer_failure_does_not_break_markdown(
         await bus.drain()
     finally:
         await pe.stop()
-
-    # Even though writer blew up, the markdown got the delta.
-    assert "用中文" in user_md.read_text(encoding="utf-8")
+    # No crash, no exception leak — the daemon keeps running.
+    # The markdown file may be absent (writer never called the
+    # render-to-disk step) — this is the new normal under B-198.

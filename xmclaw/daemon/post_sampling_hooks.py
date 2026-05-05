@@ -91,6 +91,7 @@ class HookContext:
     cfg: dict[str, Any]
     memory_provider: Any = None  # MemoryProvider | None
     embedder: Any = None         # EmbeddingProvider | None
+    persona_store: Any = None    # PersonaStore | None — B-198 Phase 3
 
 
 class PostSamplingHook(abc.ABC):
@@ -193,6 +194,7 @@ async def _write_facts_to_memory(
     # (evidence_count++) instead of stacking duplicates. Falls back to
     # put() for providers that don't expose upsert_fact yet.
     upsert = getattr(ctx.memory_provider, "upsert_fact", None)
+    any_wrote = False
 
     for fact, emb in zip(facts, embeddings):
         md: dict[str, Any] = {
@@ -222,10 +224,24 @@ async def _write_facts_to_memory(
                     ts=_t.time(),
                 )
                 await ctx.memory_provider.put("working", item)
+            any_wrote = True
         except Exception as exc:  # noqa: BLE001
             _log.warning(
                 "post_sampling.db_write_failed kind=%s err=%s",
                 kind, exc,
+            )
+
+    # B-198 Phase 3: re-render the affected persona files from DB so
+    # the on-disk cache (still read by the assembler) reflects the
+    # newly-upserted rows. We render ALL files for simplicity — disk
+    # write is cheap, the alternative (kind→file mapping inversion)
+    # adds complexity for marginal speedup.
+    if any_wrote and ctx.persona_store is not None:
+        try:
+            await ctx.persona_store.render_to_disk()
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "post_sampling.render_to_disk_failed err=%s", exc,
             )
 
 
@@ -301,55 +317,59 @@ class ExtractMemoriesHook(PostSamplingHook):
         if not facts:
             return
 
-        # Append to MEMORY.md under ## Auto-extracted section. Reuses
-        # the same _append_under_section helper that ``remember`` uses
-        # so dedup + char-cap behaviour is shared.
-        try:
-            from xmclaw.providers.tool.builtin import (
-                PERSONA_CHAR_CAPS,
-                _append_under_section,
-                enforce_char_cap,
-            )
-            from xmclaw.utils.fs_locks import atomic_write_text, get_lock
-        except Exception:  # noqa: BLE001
-            return
-        from pathlib import Path
-
-        pdir = Path(str(ctx.persona_dir))
-        pdir.mkdir(parents=True, exist_ok=True)
-        mfile = pdir / "MEMORY.md"
-        async with get_lock(mfile):
+        # B-198 Phase 3: when persona_store is wired, the legacy
+        # markdown append is redundant — _write_facts_to_memory will
+        # upsert and re-render the disk cache from DB. Skip it.
+        if ctx.persona_store is None:
+            # Legacy markdown-only path (tests / installs without store).
             try:
-                existing = (
-                    mfile.read_text(encoding="utf-8") if mfile.is_file() else ""
+                from xmclaw.providers.tool.builtin import (
+                    PERSONA_CHAR_CAPS,
+                    _append_under_section,
+                    enforce_char_cap,
                 )
-                new_text = existing
-                import time as _t
-                date = _t.strftime("%Y-%m-%d")
-                for fact in facts[:5]:  # cap per-turn yield
-                    cleaned = _strip_leading_date(
-                        fact.replace(chr(10), " ").strip()
-                    )
-                    bullet = f"- {date}: {cleaned}"
-                    new_text = _append_under_section(
-                        new_text,
-                        section_header="## Auto-extracted",
-                        bullet=bullet,
-                        placeholder_title="MEMORY.md — what I want to remember next time",
-                    )
-                cap = PERSONA_CHAR_CAPS.get("MEMORY.md")
-                if cap is not None and len(new_text) > cap:
-                    new_text = enforce_char_cap(new_text, cap)
-                if new_text != existing:
-                    atomic_write_text(mfile, new_text)
-            except OSError:
+                from xmclaw.utils.fs_locks import atomic_write_text, get_lock
+            except Exception:  # noqa: BLE001
                 return
+            from pathlib import Path
 
-        # B-197: also write each fact as a DB row (kind=lesson, bucket=
-        # durable_fact). Markdown stays the user-edit surface, DB makes
-        # them vector-searchable + filterable for retrieval.
+            pdir = Path(str(ctx.persona_dir))
+            pdir.mkdir(parents=True, exist_ok=True)
+            mfile = pdir / "MEMORY.md"
+            async with get_lock(mfile):
+                try:
+                    existing = (
+                        mfile.read_text(encoding="utf-8") if mfile.is_file() else ""
+                    )
+                    new_text = existing
+                    import time as _t
+                    date = _t.strftime("%Y-%m-%d")
+                    for fact in facts[:5]:  # cap per-turn yield
+                        cleaned = _strip_leading_date(
+                            fact.replace(chr(10), " ").strip()
+                        )
+                        bullet = f"- {date}: {cleaned}"
+                        new_text = _append_under_section(
+                            new_text,
+                            section_header="## Auto-extracted",
+                            bullet=bullet,
+                            placeholder_title="MEMORY.md — what I want to remember next time",
+                        )
+                    cap = PERSONA_CHAR_CAPS.get("MEMORY.md")
+                    if cap is not None and len(new_text) > cap:
+                        new_text = enforce_char_cap(new_text, cap)
+                    if new_text != existing:
+                        atomic_write_text(mfile, new_text)
+                except OSError:
+                    return
+
+        # DB write + render-to-disk (B-198) for the modern path.
+        # bucket=durable_fact tags these as "general lessons" rather
+        # than the workflow/tool_quirks/failure_modes split that
+        # ExtractLessonsHook produces. They render under MEMORY.md's
+        # auto section per AUTO_SECTIONS routing.
         await _write_facts_to_memory(
-            ctx, facts[:5], kind="lesson", bucket="durable_fact",
+            ctx, facts[:5], kind="lesson", bucket="failure_modes",
         )
 
 
@@ -517,33 +537,39 @@ class ExtractLessonsHook(PostSamplingHook):
         import time as _t
         date = _t.strftime("%Y-%m-%d")
 
-        for target_file, entries in per_file.items():
-            mfile = pdir / target_file
-            async with get_lock(mfile):
-                try:
-                    existing = (
-                        mfile.read_text(encoding="utf-8")
-                        if mfile.is_file() else ""
-                    )
-                    new_text = existing
-                    for section, lesson in entries:
-                        cleaned = _strip_leading_date(
-                            lesson.replace(chr(10), " ").strip()
+        # B-198 Phase 3: skip legacy markdown writes when the
+        # persona_store is wired — _write_facts_to_memory below
+        # upserts to DB + re-renders disk from there.
+        if ctx.persona_store is None:
+            for target_file, entries in per_file.items():
+                mfile = pdir / target_file
+                async with get_lock(mfile):
+                    try:
+                        existing = (
+                            mfile.read_text(encoding="utf-8")
+                            if mfile.is_file() else ""
                         )
-                        bullet = f"- {date}: {cleaned}"
-                        new_text = _append_under_section(
-                            new_text,
-                            section_header=section,
-                            bullet=bullet,
-                            placeholder_title=f"{target_file} — auto-extracted lessons",
-                        )
-                    cap = PERSONA_CHAR_CAPS.get(target_file)
-                    if cap is not None and len(new_text) > cap:
-                        new_text = enforce_char_cap(new_text, cap)
-                    if new_text != existing:
-                        atomic_write_text(mfile, new_text)
-                except OSError:
-                    continue
+                        new_text = existing
+                        for section, lesson in entries:
+                            cleaned = _strip_leading_date(
+                                lesson.replace(chr(10), " ").strip()
+                            )
+                            bullet = f"- {date}: {cleaned}"
+                            new_text = _append_under_section(
+                                new_text,
+                                section_header=section,
+                                bullet=bullet,
+                                placeholder_title=(
+                                    f"{target_file} — auto-extracted lessons"
+                                ),
+                            )
+                        cap = PERSONA_CHAR_CAPS.get(target_file)
+                        if cap is not None and len(new_text) > cap:
+                            new_text = enforce_char_cap(new_text, cap)
+                        if new_text != existing:
+                            atomic_write_text(mfile, new_text)
+                    except OSError:
+                        continue
 
         # B-197: dual-write per-bucket lessons to DB rows (kind=lesson,
         # bucket=workflow|tool_quirks|failure_modes). One row per

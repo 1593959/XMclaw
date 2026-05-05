@@ -265,21 +265,22 @@ class ProfileExtractor:
             )
             return
 
-        try:
-            await self._append_deltas(target, accepted)
-        except Exception as exc:  # noqa: BLE001
-            _log.warning(
-                "profile.flush_failed session=%s path=%s err=%s",
-                session_id, target, exc,
-            )
-            return
-
-        # B-197: dual-write to memory provider (DB rows) so deltas are
-        # vector-searchable + filterable by kind=preference. Failure
-        # here is logged but does not block the markdown path —
-        # markdown stays the user-facing surface; DB is the indexing
-        # layer.
-        if self._fact_writer is not None:
+        # B-198 Phase 3: when fact_writer is wired, the daemon renders
+        # USER.md from DB after every fact write — so the legacy
+        # markdown append is redundant (and would briefly produce
+        # stale content between append and re-render). Skip it.
+        # Tests / installs without a fact_writer fall back to the
+        # legacy markdown-only path.
+        if self._fact_writer is None:
+            try:
+                await self._append_deltas(target, accepted)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "profile.flush_failed session=%s path=%s err=%s",
+                    session_id, target, exc,
+                )
+                return
+        else:
             await self._write_deltas_via_writer(
                 accepted,
                 session_id=session_id,

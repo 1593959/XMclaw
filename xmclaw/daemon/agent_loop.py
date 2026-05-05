@@ -829,6 +829,11 @@ class AgentLoop:
         # standard ExtractMemoriesHook.
         self._cfg = cfg or {}
         self._post_sampling_registry = post_sampling_registry
+        # B-198 Phase 3: optional PersonaStore set post-construction
+        # by the daemon lifespan (the store is built AFTER the agent
+        # in app.py because it depends on vec_provider). Hook chain
+        # uses this to render-to-disk after fact upserts.
+        self._persona_store: Any = None
         self._post_sampling_bg: set[asyncio.Task[Any]] = set()
 
     def clear_session(self, session_id: str) -> None:
@@ -2122,6 +2127,9 @@ class AgentLoop:
                         # providers; embedder is best-effort.
                         memory_provider=self._memory_manager,
                         embedder=self._embedder,
+                        # B-198 Phase 3: persona_store rendered as
+                        # disk cache after each fact upsert.
+                        persona_store=self._persona_store,
                     )
                     # Fire-and-forget — don't await, the next turn must
                     # not wait for hooks. Strong ref via add() / discard

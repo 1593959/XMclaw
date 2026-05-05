@@ -481,6 +481,15 @@ def create_app(
                         "persona_store.migrated profile=%s files=%s",
                         _persona_pdir.name, dict(report),
                     )
+                    # Hand the store to the primary AgentLoop so
+                    # post-sampling hooks can render-to-disk after
+                    # fact upserts. AgentLoop was constructed earlier
+                    # in the lifespan (factory build); we attach via
+                    # attribute since the constructor signature was
+                    # locked before this Phase 3 work landed.
+                    _agent_obj = getattr(_app.state, "agent", None)
+                    if _agent_obj is not None:
+                        _agent_obj._persona_store = _persona_store
                 except Exception as exc:  # noqa: BLE001
                     log.warning(
                         "persona_store.bootstrap_failed err=%s — "
@@ -687,8 +696,16 @@ def create_app(
             # (text, metadata) → MemoryItem + embed + put. Kept as a
             # callback so xmclaw/core/ stays free of providers/
             # imports per the layering rule.
+            #
+            # B-198 Phase 3: after writing the row, route through
+            # PersonaStore.render_to_disk(USER.md) so the on-disk
+            # file becomes a fresh render of the DB. Disk is now a
+            # cache; DB is truth. (We default to USER.md because
+            # ProfileExtractor exclusively produces kind=preference
+            # which lives in USER.md per AUTO_SECTIONS.)
             _vec = getattr(_app.state, "vec_provider", None)
             _embed = getattr(_app.state, "embedder", None)
+            _store = getattr(_app.state, "persona_store", None)
             _fact_writer = None
             if _vec is not None:
                 async def _fact_writer_impl(  # type: ignore[no-redef]
@@ -710,6 +727,7 @@ def create_app(
                             emb = None
                     layer_name = str(metadata.get("layer") or "working")
                     upsert = getattr(_vec, "upsert_fact", None)
+                    wrote_ok = False
                     if upsert is not None:
                         try:
                             await upsert(
@@ -718,23 +736,37 @@ def create_app(
                                 layer=layer_name,
                                 metadata=metadata,
                             )
-                            return
+                            wrote_ok = True
                         except Exception:  # noqa: BLE001
-                            pass
-                    # Fallback: legacy put for providers that don't
-                    # implement upsert_fact yet.
-                    import uuid as _uuid
-                    import time as _t
-                    from xmclaw.providers.memory.base import MemoryItem
-                    item = MemoryItem(
-                        id=_uuid.uuid4().hex,
-                        layer=layer_name,
-                        text=text,
-                        metadata=metadata,
-                        embedding=tuple(emb) if emb else None,
-                        ts=_t.time(),
-                    )
-                    await _vec.put(layer_name, item)
+                            wrote_ok = False
+                    if not wrote_ok:
+                        # Fallback: legacy put for providers without
+                        # upsert (mostly tests / non-default backends).
+                        import uuid as _uuid
+                        import time as _t
+                        from xmclaw.providers.memory.base import MemoryItem
+                        item = MemoryItem(
+                            id=_uuid.uuid4().hex,
+                            layer=layer_name,
+                            text=text,
+                            metadata=metadata,
+                            embedding=tuple(emb) if emb else None,
+                            ts=_t.time(),
+                        )
+                        await _vec.put(layer_name, item)
+                    # B-198 Phase 3: re-render USER.md from DB so the
+                    # on-disk file (still read by the persona
+                    # assembler each turn) reflects the new row. Best
+                    # effort — render failure logs but doesn't poison
+                    # the write.
+                    if _store is not None:
+                        try:
+                            await _store.render_to_disk("USER.md")
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning(
+                                "persona_store.render_after_write_failed "
+                                "file=USER.md err=%s", exc,
+                            )
                 _fact_writer = _fact_writer_impl
 
             pe = ProfileExtractor(
