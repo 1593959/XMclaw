@@ -80,16 +80,31 @@ export function ChatSidebar({
 
   useEffect(() => {
     load();
-    // B-160: 5 秒一次 (was 30s) — 30s 太慢，用户在 Sessions 页删除
-    // 后能等半分钟看到边栏才刷新，期间还能点跳转到死会话
-    const id = setInterval(load, 5_000);
+    // B-221: poll bumped 5s→30s. Real-data audit showed 12 sessions
+    // requests per port in rapid succession (poll + WS-driven
+    // xmc:sessions:changed bursts); the 5s cadence was the main
+    // culprit behind "every page loads forever". The apiGet
+    // in-flight cache (lib/api.js B-221) absorbs the redundancy
+    // for tighter intervals, but cutting the base poll itself
+    // keeps the daemon log uncluttered too.
+    const id = setInterval(load, 30_000);
     // B-160: cross-page invalidation. Sessions page (or any page) can
     // dispatch ``xmc:sessions:changed`` to force every listener to
     // reload immediately instead of waiting for the next poll tick.
-    const onChanged = () => load();
+    // B-221: debounce — bursts of changed events (rapid
+    // create/delete) collapse to one load.
+    let debounceId = null;
+    const onChanged = () => {
+      if (debounceId) clearTimeout(debounceId);
+      debounceId = setTimeout(() => {
+        debounceId = null;
+        load();
+      }, 250);
+    };
     window.addEventListener("xmc:sessions:changed", onChanged);
     return () => {
       clearInterval(id);
+      if (debounceId) clearTimeout(debounceId);
       window.removeEventListener("xmc:sessions:changed", onChanged);
     };
   }, [load]);

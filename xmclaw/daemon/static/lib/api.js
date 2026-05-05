@@ -26,20 +26,55 @@ export class TokenNotReadyError extends Error {
   }
 }
 
+// B-221: in-flight de-dup. Multiple callers hitting the same URL
+// within ~2 seconds share ONE fetch promise. Real-data audit:
+// daemon.log showed 12 GET /api/v2/sessions from a single port in
+// rapid succession — ChatSidebar's 5s poll + xmc:sessions:changed
+// event-driven reloads + page mount fetches all racing. Result was
+// "page loads forever" feel. This cache holds promises (resolved
+// or pending) for 2s after they settle, so a burst of duplicate
+// callers gets one round-trip.
+const _inflight = new Map(); // url -> { promise, until }
+const _INFLIGHT_TTL_MS = 2000;
+
+function _cacheKey(path, token) {
+  // Token is part of the URL but identity-stable for the session.
+  // Including it just keeps things correct if a token rotates mid-page.
+  return `${path}::${token || ""}`;
+}
+
 export async function apiGet(path, token) {
   if (!token) throw new TokenNotReadyError();
-  const res = await fetch(withToken(path, token));
-  if (!res.ok) {
-    let detail = "";
-    try {
-      const j = await res.json();
-      detail = j.detail || j.error || "";
-    } catch (_) {
-      /* ignore */
-    }
-    throw new Error(`${res.status} ${res.statusText}${detail ? `: ${detail}` : ""}`);
+  const key = _cacheKey(path, token);
+  const now = Date.now();
+  const entry = _inflight.get(key);
+  if (entry && entry.until > now) {
+    return entry.promise;
   }
-  return res.json();
+  const promise = (async () => {
+    const res = await fetch(withToken(path, token));
+    if (!res.ok) {
+      let detail = "";
+      try {
+        const j = await res.json();
+        detail = j.detail || j.error || "";
+      } catch (_) {
+        /* ignore */
+      }
+      throw new Error(`${res.status} ${res.statusText}${detail ? `: ${detail}` : ""}`);
+    }
+    return res.json();
+  })();
+  _inflight.set(key, { promise, until: now + _INFLIGHT_TTL_MS });
+  // Always extend cache window once the fetch settles (success or fail)
+  // so the very next caller still gets the cached value.
+  promise.finally(() => {
+    const e = _inflight.get(key);
+    if (e && e.promise === promise) {
+      e.until = Date.now() + _INFLIGHT_TTL_MS;
+    }
+  });
+  return promise;
 }
 
 export async function apiSend(method, path, body, token) {
