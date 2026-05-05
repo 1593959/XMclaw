@@ -30,6 +30,10 @@ const I_HASH    = "M4 9h16 M4 15h16 M10 3 8 21 M16 3l-2 18";
 const I_CPU     = "M4 4h16v16H4z M9 9h6v6H9z M9 1v3 M15 1v3 M9 20v3 M15 20v3 M20 9h3 M20 14h3 M1 9h3 M1 14h3";
 const I_BRAIN   = "M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3 2.5 2.5 0 0 1 2.46-2.04Z M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3 2.5 2.5 0 0 0-2.46-2.04Z";
 const I_REFRESH = "M3 12a9 9 0 0 1 15-6.7L21 8 M21 3v5h-5 M21 12a9 9 0 0 1-15 6.7L3 16 M3 21v-5h5";
+const I_TOOL    = "M14.7 6.3a4 4 0 0 1 0 5.66l-1.4 1.42-5.66-5.66 1.42-1.41a4 4 0 0 1 5.65 0Z M3 21l5.66-5.66 M9.36 13l-5.65 5.66 M21 3l-7 7";
+const I_GLOBE   = "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z M2 12h20 M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10Z";
+const I_CLOCK   = "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z M12 6v6l4 2";
+const I_LIST    = "M8 6h13 M8 12h13 M8 18h13 M3 6h.01 M3 12h.01 M3 18h.01";
 
 const PERIODS = [
   { label: "7d",  days: 7 },
@@ -153,6 +157,184 @@ function ModelTable({ models }) {
   `;
 }
 
+// ── Tools / Platforms / Activity / Top sessions (B-228) ─────────
+
+const PLATFORM_LABELS = {
+  web:     "Web UI (chat-)",
+  feishu:  "飞书",
+  reflect: "Reflect 自反思",
+  dream:   "Dream 离线训练",
+  probe:   "Probe / E2E",
+  other:   "其他",
+};
+
+const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"];
+
+function formatRelativeTime(ts) {
+  if (!ts) return "—";
+  const diff = Math.floor(Date.now() / 1000 - ts);
+  if (diff < 60) return "刚刚";
+  if (diff < 3600) return Math.floor(diff / 60) + "m ago";
+  if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
+  return Math.floor(diff / 86400) + "d ago";
+}
+
+function ToolsTable({ tools }) {
+  if (!tools || tools.length === 0) return null;
+  const max = Math.max(1, ...tools.map((t) => t.calls));
+  return html`
+    <div class="xmc-h-card">
+      <h3 class="xmc-h-card__title">
+        <${Icon} d=${I_TOOL} className="xmc-h-icon" />
+        工具调用 (Top ${tools.length})
+      </h3>
+      <ul class="xmc-h-modeltbl">
+        ${tools.map((t) => {
+          const w = (t.calls / max) * 100;
+          const pct = ((t.error_rate || 0) * 100).toFixed(1);
+          return html`
+            <li class="xmc-h-modeltbl__row" key=${t.name}>
+              <div class="xmc-h-modeltbl__head">
+                <code class="xmc-h-modeltbl__name">${t.name}</code>
+                <span class="xmc-h-modeltbl__calls">${t.calls} calls</span>
+                <span class="xmc-h-modeltbl__tot">
+                  ${t.errors > 0 ? `${t.errors} err · ${pct}%` : "0 err"}
+                </span>
+              </div>
+              <div class="xmc-h-modeltbl__track">
+                <div class="xmc-h-modeltbl__fill" style=${"width:" + w + "%"}></div>
+              </div>
+            </li>
+          `;
+        })}
+      </ul>
+    </div>
+  `;
+}
+
+function PlatformsTable({ platforms }) {
+  if (!platforms || platforms.length === 0) return null;
+  const max = Math.max(1, ...platforms.map((p) => p.calls));
+  return html`
+    <div class="xmc-h-card">
+      <h3 class="xmc-h-card__title">
+        <${Icon} d=${I_GLOBE} className="xmc-h-icon" />
+        来源渠道
+      </h3>
+      <ul class="xmc-h-modeltbl">
+        ${platforms.map((p) => {
+          const total = (p.input_tokens || 0) + (p.output_tokens || 0);
+          const w = (p.calls / max) * 100;
+          const label = PLATFORM_LABELS[p.platform] || p.platform;
+          return html`
+            <li class="xmc-h-modeltbl__row" key=${p.platform}>
+              <div class="xmc-h-modeltbl__head">
+                <code class="xmc-h-modeltbl__name">${label}</code>
+                <span class="xmc-h-modeltbl__calls">${p.calls} calls</span>
+                <span class="xmc-h-modeltbl__tot">${formatTokens(total)} tokens</span>
+              </div>
+              <div class="xmc-h-modeltbl__track">
+                <div class="xmc-h-modeltbl__fill" style=${"width:" + w + "%"}></div>
+              </div>
+              <div class="xmc-h-modeltbl__split">
+                <span><span class="xmc-h-chart__swatch xmc-h-chart__swatch--in"></span>
+                in: ${formatTokens(p.input_tokens || 0)}</span>
+                <span><span class="xmc-h-chart__swatch xmc-h-chart__swatch--out"></span>
+                out: ${formatTokens(p.output_tokens || 0)}</span>
+              </div>
+            </li>
+          `;
+        })}
+      </ul>
+    </div>
+  `;
+}
+
+function ActivityChart({ activity }) {
+  if (!activity) return null;
+  const wd = activity.by_weekday || [];
+  const hr = activity.by_hour || [];
+  if (wd.length === 0 && hr.length === 0) return null;
+  const wdMax = Math.max(1, ...wd);
+  const hrMax = Math.max(1, ...hr);
+  return html`
+    <div class="xmc-h-card">
+      <h3 class="xmc-h-card__title">
+        <${Icon} d=${I_CLOCK} className="xmc-h-icon" />
+        活跃分布
+      </h3>
+      <div style="font-size:12px;opacity:.6;margin:4px 0 6px">按星期 (UTC)</div>
+      <div class="xmc-h-chart__bars" style="height:80px;display:flex;align-items:flex-end;gap:6px;margin-bottom:16px">
+        ${wd.map((c, i) => {
+          const hh = (c / wdMax) * 100;
+          return html`
+            <div class="xmc-h-chart__col" key=${"wd-" + i} title=${`周${WEEKDAY_LABELS[i]} · ${c} calls`}>
+              <div class="xmc-h-chart__bar">
+                <div class="xmc-h-chart__seg xmc-h-chart__seg--in" style=${"height:" + hh + "%"}></div>
+              </div>
+              <span class="xmc-h-chart__label">${WEEKDAY_LABELS[i]}</span>
+            </div>
+          `;
+        })}
+      </div>
+      <div style="font-size:12px;opacity:.6;margin:4px 0 6px">按小时 (UTC, 0-23)</div>
+      <div class="xmc-h-chart__bars" style="height:80px;display:flex;align-items:flex-end;gap:3px">
+        ${hr.map((c, i) => {
+          const hh = (c / hrMax) * 100;
+          return html`
+            <div class="xmc-h-chart__col" key=${"hr-" + i} title=${`${i}:00 · ${c} calls`}>
+              <div class="xmc-h-chart__bar">
+                <div class="xmc-h-chart__seg xmc-h-chart__seg--in" style=${"height:" + hh + "%"}></div>
+              </div>
+              <span class="xmc-h-chart__label">${i % 6 === 0 ? String(i) : ""}</span>
+            </div>
+          `;
+        })}
+      </div>
+    </div>
+  `;
+}
+
+function TopSessionsTable({ sessions }) {
+  if (!sessions || sessions.length === 0) return null;
+  const max = Math.max(1, ...sessions.map((s) => s.total_tokens || 0));
+  return html`
+    <div class="xmc-h-card">
+      <h3 class="xmc-h-card__title">
+        <${Icon} d=${I_LIST} className="xmc-h-icon" />
+        Top sessions (按 token 消耗)
+      </h3>
+      <ul class="xmc-h-modeltbl">
+        ${sessions.map((s) => {
+          const total = s.total_tokens || 0;
+          const w = (total / max) * 100;
+          const sid = s.session_id || "";
+          const display = sid.length > 40 ? sid.slice(0, 40) + "…" : sid;
+          const platLabel = PLATFORM_LABELS[s.platform] || s.platform;
+          return html`
+            <li class="xmc-h-modeltbl__row" key=${sid}>
+              <div class="xmc-h-modeltbl__head">
+                <code class="xmc-h-modeltbl__name" title=${sid}>${display}</code>
+                <span class="xmc-h-modeltbl__calls">${platLabel} · ${s.calls} calls</span>
+                <span class="xmc-h-modeltbl__tot">${formatTokens(total)} · ${formatRelativeTime(s.last_ts)}</span>
+              </div>
+              <div class="xmc-h-modeltbl__track">
+                <div class="xmc-h-modeltbl__fill" style=${"width:" + w + "%"}></div>
+              </div>
+              <div class="xmc-h-modeltbl__split">
+                <span><span class="xmc-h-chart__swatch xmc-h-chart__swatch--in"></span>
+                in: ${formatTokens(s.input_tokens || 0)}</span>
+                <span><span class="xmc-h-chart__swatch xmc-h-chart__swatch--out"></span>
+                out: ${formatTokens(s.output_tokens || 0)}</span>
+              </div>
+            </li>
+          `;
+        })}
+      </ul>
+    </div>
+  `;
+}
+
 // ── Page ────────────────────────────────────────────────────────
 
 export function AnalyticsPage({ token }) {
@@ -248,6 +430,11 @@ export function AnalyticsPage({ token }) {
 
             <${TokenBarChart} daily=${data.daily} />
             <${ModelTable} models=${data.models} />
+            <!-- B-228: extended dimensions (tools / platforms / activity / top_sessions) -->
+            ${(data.tools || []).length > 0 ? html`<${ToolsTable} tools=${data.tools} />` : null}
+            ${(data.platforms || []).length > 0 ? html`<${PlatformsTable} platforms=${data.platforms} />` : null}
+            ${data.activity ? html`<${ActivityChart} activity=${data.activity} />` : null}
+            ${(data.top_sessions || []).length > 0 ? html`<${TopSessionsTable} sessions=${data.top_sessions} />` : null}
           `}
       </div>
     </section>
