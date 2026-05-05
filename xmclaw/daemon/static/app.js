@@ -1,7 +1,50 @@
 // XMclaw — app entry. Wires pairing, WS client, chat reducer, page routes.
 
-const { h, render } = window.__xmc.preact;
+const { h, render, Component } = window.__xmc.preact;
 const html = window.__xmc.htm.bind(h);
+
+// B-223: top-level error boundary. Pre-B-223 a throw anywhere in the
+// component tree (reducer-derived bad state, missing field on a route
+// component, etc) bubbled past every layer and Preact unmounted the
+// whole DOM → user saw a fully-black tab. The B-220 BubbleBoundary
+// only protected individual MessageBubble rows; errors from MessageList
+// / a route page / App itself reached the root unguarded.
+//
+// This boundary catches anything below <App>. On error we render a
+// full-page panel with the stack + recovery actions instead of going
+// black. Reload-from-here keeps localStorage (active session, prefs)
+// so the user doesn't lose context.
+class AppErrorBoundary extends Component {
+  constructor() {
+    super();
+    this.state = { err: null, info: null };
+  }
+  componentDidCatch(err, info) {
+    // eslint-disable-next-line no-console
+    console.error("[xmc] App-level crash:", err, info);
+    this.setState({ err, info });
+  }
+  render() {
+    if (this.state.err) {
+      const e = this.state.err;
+      const msg = String((e && e.message) || e);
+      const stack = String((e && e.stack) || "");
+      return html`
+        <div style="min-height:100vh;padding:2rem;font-family:var(--xmc-font-mono);background:#0d1212;color:#e0e0e0">
+          <h1 style="color:#c66;margin:0 0 .5rem">XMclaw UI 渲染崩溃</h1>
+          <p style="opacity:.85">页面树抛出未捕获错误。这通常是某个组件 bug — 不是后端问题。</p>
+          <pre style="background:#1a1f1f;padding:1rem;border-radius:6px;overflow:auto;font-size:.78rem;line-height:1.4;max-height:50vh;color:#fbb">${msg}\n\n${stack.slice(0, 4000)}</pre>
+          <div style="display:flex;gap:.5rem;margin-top:1rem">
+            <button onClick=${() => window.location.reload()} style="padding:.5rem 1rem;background:#193;color:#fff;border:none;border-radius:4px;cursor:pointer">重新加载</button>
+            <button onClick=${() => { try { localStorage.clear(); } catch (_) {} window.location.reload(); }} style="padding:.5rem 1rem;background:#933;color:#fff;border:none;border-radius:4px;cursor:pointer">清 localStorage 后加载</button>
+          </div>
+          <p style="margin-top:1.5rem;opacity:.6;font-size:.78rem">把上面的错误堆栈截给开发者,能精确定位 bug。</p>
+        </div>
+      `;
+    }
+    return this.props.children;
+  }
+}
 
 import {
   app as store,
@@ -485,7 +528,9 @@ const root = document.getElementById("root");
 root.removeAttribute("aria-busy");
 
 function renderApp() {
-  render(html`<${App} state=${store.getState()} />`, root);
+  // B-223: wrap in top-level error boundary. Any throw inside <App>
+  // surfaces as a recovery panel instead of blacking the whole tab.
+  render(html`<${AppErrorBoundary}><${App} state=${store.getState()} /></${AppErrorBoundary}>`, root);
 }
 
 installRouter(store, routes);
