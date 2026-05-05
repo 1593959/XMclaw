@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import re
 from typing import Any
 
 from xmclaw.providers.channel.base import (
@@ -165,10 +167,22 @@ class ChannelDispatcher:
 
         if adapter is None:
             return
+
+        # B-199: scan the assistant's reply for local image paths and
+        # auto-attach them. Triggered the chat-2026-05-03 17:51 issue
+        # where the agent saved a screenshot, told the user the path,
+        # but didn't actually send the image — the channel had no way
+        # to "send a file". OutboundMessage.attachments has been there
+        # all along; this just extracts paths the agent already named.
+        attachments = _extract_local_image_paths(reply_text)
         try:
             await adapter.send(
                 msg.target,
-                OutboundMessage(content=reply_text, reply_to=reply_to),
+                OutboundMessage(
+                    content=reply_text,
+                    reply_to=reply_to,
+                    attachments=tuple(attachments),
+                ),
             )
         except Exception as exc:  # noqa: BLE001
             _log.warning(
@@ -206,3 +220,53 @@ class ChannelDispatcher:
             if isinstance(content, str) and content.strip():
                 return content
         return ""
+
+
+# B-199: scan reply text for local image paths and surface them as
+# OutboundMessage.attachments. Triggered by the chat-2026-05-03 17:51
+# bug — agent took a screenshot, named the path in its reply, then
+# refused to "send" because the channel adapter only knew how to
+# emit text. The fix is two-sided: adapter learns to send images
+# (FeishuAdapter.send accepts attachments), dispatcher learns to
+# detect implicit attachments in reply text.
+
+_IMAGE_PATH_RE = re.compile(
+    r"""
+    (?P<path>
+        (?:[A-Za-z]:)?              # optional Windows drive
+        [\\/][\w\-./\\: ]+           # at least one separator + path body
+        \.(?:png|jpg|jpeg|gif|webp|bmp)
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _extract_local_image_paths(text: str, *, max_paths: int = 4) -> list[str]:
+    """Pull existing local image file paths out of ``text``.
+
+    Returns up to ``max_paths`` deduplicated paths that exist on
+    disk and are images by extension. Hardens against:
+    - paths inside backticks / quotes (the regex matches the path
+      content, callers already saw the markup)
+    - duplicated mentions (dedup preserves first-seen order)
+    - non-existent paths (skipped — agent might be hallucinating)
+
+    Defensive size cap so a malicious reply can't try to attach
+    100 files.
+    """
+    if not text:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in _IMAGE_PATH_RE.finditer(text):
+        raw = (m.group("path") or "").strip().strip("`'\" ")
+        if not raw or raw in seen:
+            continue
+        if not os.path.isfile(raw):
+            continue
+        seen.add(raw)
+        out.append(raw)
+        if len(out) >= max_paths:
+            break
+    return out

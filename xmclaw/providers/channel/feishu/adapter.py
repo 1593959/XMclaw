@@ -194,6 +194,57 @@ class FeishuAdapter(ChannelAdapter):
         self._ws_task = None
         _log.info("feishu.stopped")
 
+    async def _upload_image(self, image_path: str) -> str:
+        """B-199: upload a local image to Lark, return image_key.
+
+        Used by ``send`` when ``OutboundMessage.attachments`` carries
+        local image paths. The image_key returned is what the IM API
+        wants in ``content.image_key`` for a ``msg_type=image``
+        message. Lark's image upload is a separate call from the
+        message send.
+
+        Raises ``FileNotFoundError`` / ``RuntimeError`` so callers
+        can surface a meaningful error instead of swallowing into a
+        polite "我没办法" — the original failure mode that triggered
+        this fix (chat-2026-05-03 17:51 sequence).
+        """
+        if self._client is None:
+            raise RuntimeError("feishu adapter not started")
+        from lark_oapi.api.im.v1 import (
+            CreateImageRequest, CreateImageRequestBody,
+        )
+        from pathlib import Path
+
+        path = Path(image_path)
+        if not path.is_file():
+            raise FileNotFoundError(f"image not found: {image_path}")
+
+        def _do_upload() -> Any:
+            with path.open("rb") as f:
+                req = (
+                    CreateImageRequest.builder()
+                    .request_body(
+                        CreateImageRequestBody.builder()
+                        .image_type("message")
+                        .image(f)
+                        .build()
+                    )
+                    .build()
+                )
+                return self._client.im.v1.image.create(req)
+
+        resp = await asyncio.to_thread(_do_upload)
+        if not resp.success():
+            raise RuntimeError(
+                f"feishu image upload failed: code={resp.code} msg={resp.msg}"
+            )
+        image_key = getattr(getattr(resp, "data", None), "image_key", "") or ""
+        if not image_key:
+            raise RuntimeError(
+                f"feishu image upload returned no image_key: {resp!r}"
+            )
+        return image_key
+
     async def send(
         self, target: ChannelTarget, payload: OutboundMessage,
     ) -> str:
@@ -204,8 +255,51 @@ class FeishuAdapter(ChannelAdapter):
             ReplyMessageRequest, ReplyMessageRequestBody,
         )
 
+        # B-199: image attachments. Each path in ``attachments`` is
+        # uploaded then sent as its own ``msg_type=image`` message.
+        # Order is attachments first, then the main text message —
+        # mirrors Slack/Discord conventions where images appear in-
+        # line above the text. Failures upload-side surface as
+        # exceptions; the caller (ChannelDispatcher) decides whether
+        # to fall through to text-only or surface the error.
+        last_msg_id = ""
+        for att in (payload.attachments or ()):
+            try:
+                image_key = await self._upload_image(att)
+            except (FileNotFoundError, RuntimeError) as exc:
+                _log.warning("feishu.image_upload_failed path=%s err=%s", att, exc)
+                continue
+            img_content = json.dumps({"image_key": image_key}, ensure_ascii=False)
+            img_req = (
+                CreateMessageRequest.builder()
+                .receive_id_type("chat_id")
+                .request_body(
+                    CreateMessageRequestBody.builder()
+                    .receive_id(target.ref)
+                    .content(img_content)
+                    .msg_type("image")
+                    .build()
+                )
+                .build()
+            )
+            try:
+                img_resp = await asyncio.to_thread(
+                    self._client.im.v1.message.create, img_req,
+                )
+                if img_resp.success() and getattr(img_resp, "data", None) is not None:
+                    last_msg_id = (
+                        getattr(img_resp.data, "message_id", "") or last_msg_id
+                    )
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("feishu.image_send_failed key=%s err=%s", image_key, exc)
+
         # Feishu requires JSON-serialised content. Plain text uses
-        # {"text": "..."} shape.
+        # {"text": "..."} shape. Skip the text send entirely when
+        # content is empty AND we already sent images — caller asked
+        # for image-only delivery (e.g. "screenshot please").
+        if not payload.content.strip() and last_msg_id:
+            return last_msg_id
+
         content_str = json.dumps({"text": payload.content}, ensure_ascii=False)
 
         if payload.reply_to:
