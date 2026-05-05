@@ -453,6 +453,40 @@ def create_app(
             _app.state.embedder = embedder
             _app.state.vec_provider = vec_provider
 
+            # B-198 Phase 3 step 2: construct PersonaStore + migrate
+            # existing markdown into DB on first boot. The store
+            # becomes the single source of truth for persona content
+            # in subsequent steps; for now it's wired but not yet
+            # consulted by the assembler (legacy markdown reads still
+            # serve the system prompt). Migration is idempotent — re-
+            # running after rows exist is a no-op.
+            _app.state.persona_store = None
+            if vec_provider is not None:
+                try:
+                    from xmclaw.core.persona.store import PersonaStore
+                    from xmclaw.daemon.factory import (
+                        _resolve_persona_profile_dir,
+                    )
+                    from xmclaw.providers.memory.base import MemoryItem
+
+                    _persona_pdir = _resolve_persona_profile_dir(config or {})
+                    _persona_pdir.mkdir(parents=True, exist_ok=True)
+                    _persona_store = PersonaStore(
+                        vec_provider, _persona_pdir,
+                        item_factory=MemoryItem,
+                    )
+                    report = await _persona_store.migrate_from_disk()
+                    _app.state.persona_store = _persona_store
+                    log.info(
+                        "persona_store.migrated profile=%s files=%s",
+                        _persona_pdir.name, dict(report),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "persona_store.bootstrap_failed err=%s — "
+                        "falling back to legacy markdown reads", exc,
+                    )
+
             if embedder is not None and vec_provider is not None:
                 # Resolve persona dir lazily — same path the agent's
                 # remember tool writes to.
