@@ -253,29 +253,68 @@ class AnthropicLLM(LLMProvider):
         tool_defs = self._tools_to_anthropic(tools)
         if tool_defs:
             kwargs["tools"] = tool_defs
+        # B-216: opt into extended thinking when the model name
+        # advertises it. Anthropic's claude-{opus,sonnet} 4.x and
+        # claude-haiku-4-5 all support thinking blocks; MiniMax /
+        # Kimi Coding-Plan / other Anthropic-compat endpoints
+        # generally accept the same kwarg shape (and silently
+        # ignore when unsupported, per Anthropic's compat spec).
+        # Caller can disable via ``self._extended_thinking=False``
+        # when constructing the provider, but the default is ON
+        # so PhaseCard finally has thinking content to show.
+        if getattr(self, "_extended_thinking", True):
+            # max_tokens must exceed budget_tokens for the API to
+            # accept the request. We bump max_tokens to 8192 when
+            # thinking is on so the model has visible-content room
+            # AFTER the 5000-token thinking budget.
+            kwargs["max_tokens"] = max(int(kwargs.get("max_tokens", 4096)), 8192)
+            kwargs["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": 5000,
+            }
 
         text_parts: list[str] = []
         cancelled = False
         t0 = time.perf_counter()
         try:
             async with client.messages.stream(**kwargs) as stream:
-                async for delta in stream.text_stream:
-                    # B-39: bail out mid-stream if cancel fires. We
-                    # break the inner loop but still let the context
-                    # manager close cleanly so the SDK can release
-                    # the underlying HTTP/2 stream.
+                # B-216: iterate the raw event stream (not just
+                # ``stream.text_stream``) so we catch
+                # ``thinking_delta`` events alongside ``text_delta``.
+                # Pre-B-216 only text_stream was consumed → the
+                # ``on_thinking_chunk`` callback was accepted but
+                # never invoked → PhaseCard's "thinking" slot stayed
+                # empty for every Anthropic / Anthropic-compat call,
+                # even when extended thinking was enabled. Peers
+                # (OpenClaw / CoPaw / Hermes) do this lower-level
+                # iteration; we just hadn't yet.
+                async for event in stream:
                     if cancel is not None and cancel.is_set():
                         cancelled = True
                         break
-                    if not delta:
+                    etype = getattr(event, "type", None)
+                    if etype != "content_block_delta":
                         continue
-                    text_parts.append(delta)
-                    if on_chunk is not None:
-                        await on_chunk(delta)
+                    delta_obj = getattr(event, "delta", None)
+                    if delta_obj is None:
+                        continue
+                    delta_type = getattr(delta_obj, "type", None)
+                    if delta_type == "text_delta":
+                        text = getattr(delta_obj, "text", "") or ""
+                        if not text:
+                            continue
+                        text_parts.append(text)
+                        if on_chunk is not None:
+                            await on_chunk(text)
+                    elif delta_type == "thinking_delta":
+                        # Extended thinking — yield to the dedicated
+                        # callback so the UI shows it in PhaseCard's
+                        # "思考过程" slot, not mixed with assistant
+                        # text. Field name in the SDK: ``thinking``.
+                        thought = getattr(delta_obj, "thinking", "") or ""
+                        if thought and on_thinking_chunk is not None:
+                            await on_thinking_chunk(thought)
                 if cancelled:
-                    # Don't wait for get_final_message — we might be
-                    # holding a long stream that hasn't sent the
-                    # closing frame yet. Synthesise a partial final.
                     return LLMResponse(
                         content="".join(text_parts),
                         tool_calls=(),
