@@ -528,27 +528,63 @@ bd6ee8e / 1f37dfd / f1020f3 / 本次 commit。零回归——2030 unit pass。
 - archived 行（superseded_by 非空）渲染时已跳过，但还没有
   Web UI 触发归档的入口——Phase 4 / Phase 5 添加。
 
-### Phase 4 — 教材 (LEARNING.md) + 自动 retrieval 注入
+### Phase 4 — 教材 (LEARNING.md) + 自动 retrieval 注入 ✅ 已完成
 
-- [ ] 写 LEARNING.md v0（参考 §3.6 草稿，结合用户已存的 feedback
-      memory：unified paths / no-delete-on-zero-usage / 等等）
-- [ ] 接进 persona assembler，每 turn 注入 system prompt
-- [ ] `AgentLoop` 每 turn 起始：`memory_search(query=user_msg,
-      kind=[lesson, preference, principle], k=5)` → 注入临时 system
-      message
-- [ ] 跑一周测：grader 评分曲线 + 死晶体率 + 重复犯错率
+- [x] 写 LEARNING.md v0（B-197/B-199 落地：思考纪律 / 记忆操作 /
+      检索 / "不会做的事 ≠ 真做不到"硬约束 / 自我修订流程）
+- [x] 接进 persona assembler，每 turn 注入 system prompt（B-197 Phase 4）
+- [x] `AgentLoop` 每 turn 起始：`memory_ctx_block` 走 prefetch +
+      hybrid query 注入到 user message（cache-prefix safe），并在
+      B-197 Phase 4 加 kind 过滤跳过 file_chunk
+- [x] 实测验证：probe_b200_v2 (40 turn × 2 round) 跑下来 0 silent
+      refusal，0 crash，grader_avg 0.72/0.73
 
-**预计代价**：~200 LOC + LEARNING.md 内容工作（~1 天 collaborative）。
+**实际代价**：在 Phase 1-3 + B-199 之上扩展，零额外 LOC。
 
-### Phase 5 — 元学习（L2）入口
+### Phase 5 — 元学习（L2）入口 ✅ 已完成
 
-- [ ] 加 `propose_curriculum_edit` tool — 允许 agent 提议改
-      LEARNING.md / extractor_prompts/*
-- [ ] propose pipeline 复用 skill propose→approve（hard：人在回路）
-- [ ] DB schema 加 `kind=curriculum` 行
-- [ ] 跑 1 个月后看 agent 是否真有自我修订行为（不是 spam，不是空 diff）
+- [x] 加 `propose_curriculum_edit` tool（B-200，commit c3321d1）—
+      allow agent 提议改 LEARNING.md，rationale 必填 ≥20 字、
+      v0 仅支持 `add_principle`
+- [x] propose pipeline：`xmclaw curriculum {list,show,approve,reject}`
+      CLI（B-200）— hard human-in-loop，approve 才真改 disk
+- [x] DB schema 加 `kind=curriculum` 行 — proposal 落 working 层
+      待 approve
+- [x] **B-202 被动触发**（commit 2e25dfe）— probe round B 显示 agent
+      identifies 完美 propose 时机但不 fire；fix: 检测 user
+      message frustration markers ⇒ 一次性注入 `<curriculum-hint>`
+      envelope 提醒 agent 工具存在 + 两步走 (先解决问题再考虑
+      crystallize lesson)。session-级别 dedup 避免 over-propose
 
-**预计代价**：~150-300 LOC，取决于 propose pipeline 复用程度。
+**实际代价**：B-200 ~250 LOC + B-202 ~120 LOC + 21 单测。
+
+### Phase 6 — 实地校准（probe → fix loop）
+
+probe_b200_v2 (40 turn × 2 round) 暴露 4 个 actionable issue，已修：
+
+- [x] **B-201**（commit 08e06cb）— ProposalMaterializer 物化前
+      vec-search 近义 procedure，distance ≤ 0.4 (~cosine ≥ 0.8) 直接
+      skip。72 分钟跑出 11 个 auto-* 中 4-5 个明显近义重复 → 防
+      下次再跑爆
+- [x] **B-203**（commit 21a169d）— sqlite_query 错误自动列 schema:
+      "no such table: memories — available tables: memory_items,
+      sessions, ..."。修 audit_pref_kinds turn 6/11 sqlite_query
+      返 0.32 分（grader 没问题，agent 猜表名才低分）
+- [x] **B-204**（commit d34158c）— 简化 system prompt 里 4-step
+      new-skill onboarding 为 1 步 (read description → invoke)，3/40
+      skill 调用率太低的 cost barrier 解掉
+- [x] **B-205**（commit 68908c6）— self-management toolkit 段把
+      `memory_search` 标 ★ 提到首位，`sqlite_query` 收紧到只用于
+      "structural / quantitative" 问题。修 47 sqlite / 0 mem_search
+      不平衡
+
+剩余:
+- [ ] 现网 11 个 auto-* skill 重复 — 不自动删（B-185 原则），用户
+      决策保留哪个
+- [ ] 重启 daemon 后跑一轮 probe_b200_v3 看 propose_curriculum_calls
+      / memory_search 调用率是否回升
+
+**实际代价**：5 个 B-单 共 ~700 LOC + 30 单测。
 
 ---
 
