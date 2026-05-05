@@ -276,19 +276,76 @@ class AnthropicLLM(LLMProvider):
         text_parts: list[str] = []
         cancelled = False
         t0 = time.perf_counter()
+        # B-219: one-shot raw event dump — diagnose "peer sees thinking
+        # on same endpoint but we don't". The first 100 events of the
+        # NEXT request are written to ``~/.xmclaw/v2/anthropic_dump.json``
+        # so we can see the actual SSE frame shape (do thinking_delta
+        # events appear? does Kimi-coding use a non-standard event
+        # type? etc.). Toggle on by ``touch ~/.xmclaw/v2/dump_next``;
+        # toggle file is consumed (deleted) so the dump runs exactly
+        # once. Self-removing → no risk of perpetual logging.
+        from xmclaw.utils.paths import data_dir as _ddir
+        _dump_flag = _ddir() / "v2" / "dump_next"
+        _dump_path = _ddir() / "v2" / "anthropic_dump.json"
+        _do_dump = _dump_flag.exists()
+        _dumped: list[dict] = []
+        if _do_dump:
+            try:
+                _dump_flag.unlink()  # consume the toggle
+            except OSError:
+                pass
+
         try:
             async with client.messages.stream(**kwargs) as stream:
+                # B-225: watchdog task — close the stream the MOMENT
+                # cancel_event fires, instead of waiting for the next
+                # event-loop tick to land in `async for event`. Real
+                # bug report: user clicked Stop at 29s, daemon got
+                # the cancel frame and called set(), but
+                # `async for event in stream` was suspended waiting
+                # for the SERVER's next chunk (Kimi-coding takes ~30s
+                # to inference before sending first event), so the
+                # in-loop ``if cancel.is_set()`` check never reached.
+                # The watchdog forces stream closure as soon as
+                # cancel fires; the consume loop then exits with
+                # whatever text accumulated so far.
+                _cancel_watchdog: asyncio.Task | None = None
+                if cancel is not None:
+                    async def _watch_cancel():
+                        try:
+                            await cancel.wait()
+                            try:
+                                await stream.close()
+                            except Exception:  # noqa: BLE001
+                                pass
+                        except asyncio.CancelledError:
+                            pass
+                    _cancel_watchdog = asyncio.create_task(_watch_cancel())
                 # B-216: iterate the raw event stream (not just
                 # ``stream.text_stream``) so we catch
                 # ``thinking_delta`` events alongside ``text_delta``.
-                # Pre-B-216 only text_stream was consumed → the
-                # ``on_thinking_chunk`` callback was accepted but
-                # never invoked → PhaseCard's "thinking" slot stayed
-                # empty for every Anthropic / Anthropic-compat call,
-                # even when extended thinking was enabled. Peers
-                # (OpenClaw / CoPaw / Hermes) do this lower-level
-                # iteration; we just hadn't yet.
                 async for event in stream:
+                    # B-219 raw dump (first 100 events): capture the
+                    # full attribute surface as JSON — we want to know
+                    # what fields the endpoint actually sends, not
+                    # what the SDK chooses to expose as attrs.
+                    if _do_dump and len(_dumped) < 100:
+                        try:
+                            row = {
+                                "event_type": getattr(event, "type", None),
+                                "model_dump": (
+                                    event.model_dump()
+                                    if hasattr(event, "model_dump")
+                                    else None
+                                ),
+                                "attrs": [
+                                    a for a in dir(event)
+                                    if not a.startswith("_")
+                                ][:30],
+                            }
+                            _dumped.append(row)
+                        except Exception as _exc:  # noqa: BLE001
+                            _dumped.append({"_dump_error": str(_exc)[:200]})
                     if cancel is not None and cancel.is_set():
                         cancelled = True
                         break
@@ -314,6 +371,20 @@ class AnthropicLLM(LLMProvider):
                         thought = getattr(delta_obj, "thinking", "") or ""
                         if thought and on_thinking_chunk is not None:
                             await on_thinking_chunk(thought)
+                # B-225: watchdog may have closed the stream when cancel
+                # fired — detect that case so the response we synthesise
+                # is "cancelled, here's what we got" not "stream
+                # finished naturally".
+                if cancel is not None and cancel.is_set():
+                    cancelled = True
+                # Stop the watchdog now that the loop has exited
+                # (whether by natural completion or cancel-close).
+                if _cancel_watchdog is not None:
+                    _cancel_watchdog.cancel()
+                    try:
+                        await _cancel_watchdog
+                    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                        pass
                 if cancelled:
                     return LLMResponse(
                         content="".join(text_parts),

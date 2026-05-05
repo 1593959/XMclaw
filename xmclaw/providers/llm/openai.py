@@ -248,6 +248,26 @@ class OpenAILLM(LLMProvider):
             stream = await client.chat.completions.create(**kwargs)
         except Exception:
             return await self.complete(messages, tools)
+
+        # B-225: watchdog — close the stream the MOMENT cancel_event
+        # fires. Without this, ``async for chunk in stream`` was
+        # suspended waiting for the server's next chunk (a slow LLM
+        # could keep us waiting 30+ seconds before any chunk lands)
+        # and the in-loop ``cancel.is_set()`` check never reached.
+        # Stop button now actually works mid-call.
+        _cancel_watchdog: asyncio.Task | None = None
+        if cancel is not None:
+            async def _watch_cancel():
+                try:
+                    await cancel.wait()
+                    try:
+                        await stream.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                except asyncio.CancelledError:
+                    pass
+            _cancel_watchdog = asyncio.create_task(_watch_cancel())
+
         async for chunk in stream:
             # B-39: bail mid-stream when the WS-side cancel event fires.
             # We close the SDK's underlying iterator by returning early.
@@ -319,6 +339,17 @@ class OpenAILLM(LLMProvider):
                     getattr(usage, "completion_tokens", 0) or completion_tokens
                 )
         latency_ms = (time.perf_counter() - t0) * 1000.0
+
+        # B-225: detect watchdog-driven cancel (stream closed BEFORE
+        # the in-loop check could fire) and stop the watchdog cleanly.
+        if cancel is not None and cancel.is_set():
+            cancelled = True
+        if _cancel_watchdog is not None:
+            _cancel_watchdog.cancel()
+            try:
+                await _cancel_watchdog
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
 
         # B-39: when cancelled mid-stream, return what we accumulated
         # without parsing any partial tool-call deltas (a half-built
