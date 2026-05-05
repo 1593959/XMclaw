@@ -459,10 +459,20 @@ const routes = {
 // pane. Theme + language switch lives inside the sidebar footer.
 
 function App({ state }) {
+  // B-214: gate route rendering on auth fetched. Pre-B-214 the
+  // route children mounted with token=undefined → their useEffect
+  // hooks fired apiGet immediately, daemon returned 401 → page
+  // showed "401 Unauthorized" or got stuck in a TokenNotReady
+  // catch loop. Now we hold the route children until boot()'s
+  // fetchPairingToken resolves (auth.fetched=true), so when they
+  // mount the token is already real.
   const route = routes[state.route.path] || routes["*"];
+  const ready = !!state.auth.fetched;
   return html`
     <${HermesAppShell} activePath=${state.route.path} token=${state.auth.token} tokenUsage=${state.chat.tokenUsage}>
-      ${route(state)}
+      ${ready
+        ? route(state)
+        : html`<div class="xmc-h-loading" style="padding:2rem;text-align:center;color:var(--xmc-fg-muted)">正在初始化…</div>`}
       <${ToastViewport} />
       <${DialogViewport} />
     </${HermesAppShell}>

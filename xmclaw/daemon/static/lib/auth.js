@@ -16,25 +16,39 @@
 
 const PAIR_ENDPOINT = "/api/v2/pair";
 
-export async function fetchPairingToken() {
-  try {
-    const resp = await fetch(PAIR_ENDPOINT, {
-      method: "GET",
-      credentials: "same-origin",
-      headers: { Accept: "application/json" },
-    });
-    if (!resp.ok) {
-      return {
-        token: null,
-        fetched: false,
-        error: `pair endpoint returned ${resp.status}`,
-      };
-    }
-    const data = await resp.json();
-    // Endpoint returns { token: "<hex>" | null }. A null token means
-    // "auth disabled" — the daemon will accept the WS upgrade either way.
-    return { token: data && data.token ? data.token : null, fetched: true };
-  } catch (err) {
-    return { token: null, fetched: false, error: String(err) };
+// B-214: retry the pair fetch a few times. The daemon restarts often
+// during dev (config reloads, hot fixes) — without retry, the browser
+// catches the daemon mid-restart, gets ECONNREFUSED, and then ALL
+// downstream pages stay forever in "loading" state because they think
+// auth fetch failed. Caps total wait at ~6s before giving up.
+const RETRY_DELAYS_MS = [0, 250, 500, 1000, 2000, 2000];
+
+async function _fetchOnce() {
+  const resp = await fetch(PAIR_ENDPOINT, {
+    method: "GET",
+    credentials: "same-origin",
+    headers: { Accept: "application/json" },
+  });
+  if (!resp.ok) {
+    throw new Error(`pair endpoint returned ${resp.status}`);
   }
+  const data = await resp.json();
+  return { token: data && data.token ? data.token : null, fetched: true };
+}
+
+function _sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+export async function fetchPairingToken() {
+  let lastErr = null;
+  for (const delay of RETRY_DELAYS_MS) {
+    if (delay > 0) await _sleep(delay);
+    try {
+      return await _fetchOnce();
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  return { token: null, fetched: false, error: String(lastErr || "unknown") };
 }
