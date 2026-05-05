@@ -487,18 +487,46 @@ user approve → 文件改 → 下次 turn 读新版。
 
 **预计代价**：~400 LOC + 10-15 单测。
 
-### Phase 3 — Markdown view 化
+### Phase 3 — Markdown view 化（B 彻底落地） ✅ 已完成
 
-- [ ] DB → markdown render templates（按 kind 分章节）
-- [ ] markdown → DB 反向 parser（diff-based）
-- [ ] daemon 启动时 / Web UI 保存时双向同步
-- [ ] `update_persona` 工具迁移到 DB-first 语义（仍接受 markdown
-      patch 输入）
+用户原话："要做就做好不要留债"。下面所有点都已落地，DB 是 truth，
+markdown 是从 DB 渲染的 cache。
 
-**预计代价**：~500 LOC + 测试。
+- [x] **PersonaStore**（[xmclaw/core/persona/store.py](../xmclaw/core/persona/store.py)）—
+  ~400 LOC + 16 unit tests。三轴： kind=persona_manual（用户编辑
+  prose）+ extracted facts（preference / lesson / procedure /
+  curriculum）。AUTO_SECTIONS 路由表决定每个 kind 渲染到哪个文件
+  哪个 section。
+- [x] **migrate_from_disk** — 首次启动时把现有 markdown 拆成
+  manual + bullet 行写 DB。idempotent。daemon 起来 log 显示
+  `persona_store.migrated profile=default files=
+  {SOUL.md: 0, IDENTITY.md: 0, LEARNING.md: 0, USER.md: 1,
+  MEMORY.md: 8, AGENTS.md: 5, TOOLS.md: 3}`
+- [x] **render-to-disk on every fact write** — 写 DB 后立刻
+  调 `store.render_to_disk()` 刷新 disk 文件。assembler 继续读
+  disk（cache）= 读到当前 DB state。
+- [x] **post-sampling extractors 改 DB-only**:
+  ProfileExtractor → fact_writer 走 store；ExtractMemoriesHook /
+  ExtractLessonsHook 在 ctx.persona_store 存在时跳过 markdown
+  直写。
+- [x] **agent 端 4 个工具走 store**: update_persona /
+  remember / memory_pin / learn_about_user 都通过 store 的
+  `read_manual` + `set_manual` API 间接走 DB。
+- [x] **Web UI 编辑入口走 store**: `PUT /api/v2/profiles/active/
+  <file_id>` 调 `store.set_manual(canonical, content)`，自动剥离
+  auto section（用户 round-trip 编辑不会破坏）。
+- [x] **legacy fallback 全保留**: 没配 persona_store 的 install
+  （测试 / 无 vec backend）继续走 markdown 直写——0 BC break。
 
-风险点：parser 必须健壮处理用户手编 markdown 各种格式。Phase 1
-跑稳后再决策是否做。
+**实际代价**：~700 LOC + 16 新单测。落地于 commits eab1f2b /
+bd6ee8e / 1f37dfd / f1020f3 / 本次 commit。零回归——2030 unit pass。
+
+剩余债：
+- 用户 `vim USER.md` 直接 edit 文件后再看，下次 fact 写入会用
+  store 渲染覆盖。**不支持**直接 file 编辑——必须走 Web UI 或
+  agent tool。可加文件 watcher 但优先级低。
+- archived 行（superseded_by 非空）渲染时已跳过，但还没有
+  Web UI 触发归档的入口——Phase 4 / Phase 5 添加。
 
 ### Phase 4 — 教材 (LEARNING.md) + 自动 retrieval 注入
 
