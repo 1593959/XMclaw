@@ -85,6 +85,35 @@ def test_default_prompt_mentions_tool_aggressiveness() -> None:
     assert "use them aggressively rather than refusing" in p
 
 
+def test_b208_active_problem_solving_rule_present() -> None:
+    """B-208: B-199 (don't refuse without trying) wasn't enough — user
+    fed back the agent was still saying 'I can't send images' even
+    after the rule landed. The fix is reframing from REACTIVE
+    ('before refusing, do X') to PROACTIVE ('default action when
+    stuck = self-modify the codebase'). Pin the harder rule so a
+    refactor doesn't accidentally drop us back to the weaker version.
+    """
+    p = _DEFAULT_SYSTEM
+    # The 4-star marker distinguishes this rule from the regular
+    # ★ HARD RULE (skill-first dispatch) — it sits ABOVE that one
+    # in priority because refusing is worse than picking the wrong tool.
+    assert "★★ HARDER RULE" in p
+    assert "Active problem-solving" in p
+    # The "self-modifying agent" framing is load-bearing. Without
+    # it the rule degrades to "try harder" which has no concrete
+    # action verb attached.
+    assert "self-modifying agent" in p
+    # The 4-step active-solving loop must be enumerated explicitly —
+    # if it gets compressed to one line the LLM treats it as advice
+    # not procedure.
+    assert "Decompose" in p
+    assert "Locate the gap" in p
+    # The chat-2026-05-03 17:51 case is the concrete anchor; the
+    # screenshot incident is what the user reported. Pin the
+    # citation.
+    assert "chat-2026-05-03" in p
+
+
 def test_b206_narration_discipline_present() -> None:
     """B-206: probe data showed MiniMax M2.7 / OpenAI-compat models
     emit empty content on intermediate hops, leaving the user staring
