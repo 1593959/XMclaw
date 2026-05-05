@@ -534,3 +534,169 @@ async def test_llm_timeout_min_floor() -> None:
     # Internal value clamped to 5.0 — we don't want to wait that long
     # in a test, so just verify the field directly.
     assert agent._llm_timeout_s >= 5.0  # noqa: SLF001 — pin the floor
+
+
+# ── B-202: curriculum-edit hint passive trigger ──────────────────────────
+
+
+@dataclass
+class _CapturingLLM(LLMProvider):
+    """Records the user-message content the agent sent it on each call."""
+
+    response_text: str = "ok"
+    captured_messages: list[list[Message]] = field(default_factory=list)
+    model: str = "capturing"
+
+    async def stream(  # pragma: no cover — not used
+        self,
+        messages: list[Message],
+        tools: list[ToolSpec] | None = None,
+        *,
+        cancel: asyncio.Event | None = None,
+    ) -> AsyncIterator[LLMChunk]:
+        if False:
+            yield  # type: ignore[unreachable]
+
+    async def complete(
+        self,
+        messages: list[Message],
+        tools: list[ToolSpec] | None = None,
+    ) -> LLMResponse:
+        # Snapshot the messages the agent sent.
+        self.captured_messages.append(list(messages))
+        return LLMResponse(content=self.response_text, tool_calls=())
+
+    @property
+    def tool_call_shape(self) -> ToolCallShape:
+        return ToolCallShape.ANTHROPIC_NATIVE
+
+    @property
+    def pricing(self) -> Pricing:
+        return Pricing()
+
+
+def _last_user_message(messages: list[Message]) -> str:
+    """Return the trailing user message body the LLM saw."""
+    for m in reversed(messages):
+        if m.role == "user":
+            content = m.content
+            return content if isinstance(content, str) else str(content)
+    return ""
+
+
+@pytest.mark.asyncio
+async def test_b202_frustration_injects_curriculum_hint_when_tool_present() -> None:
+    """Frustration markers + tool wired ⇒ hint block lands in the user
+    message the LLM sees."""
+    bus = InProcessEventBus()
+    llm = _CapturingLLM()
+    tools = _StubToolProvider(
+        specs=[ToolSpec(
+            name="propose_curriculum_edit",
+            description="propose a curriculum lesson",
+            parameters_schema={"type": "object"},
+        )],
+        results={},
+    )
+    agent = AgentLoop(llm=llm, bus=bus, tools=tools)
+    await agent.run_turn("sess-b202-1", "为什么你又这样做？错了！")
+    await bus.drain()
+
+    sent = _last_user_message(llm.captured_messages[-1])
+    assert "<curriculum-hint>" in sent
+    assert "propose_curriculum_edit" in sent
+
+
+@pytest.mark.asyncio
+async def test_b202_no_hint_when_tool_not_wired() -> None:
+    """Without ``propose_curriculum_edit`` registered we must NOT
+    surface the hint — would be misleading and waste tokens."""
+    bus = InProcessEventBus()
+    llm = _CapturingLLM()
+    tools = _StubToolProvider(
+        specs=[ToolSpec(
+            name="echo", description="",
+            parameters_schema={"type": "object"},
+        )],
+        results={},
+    )
+    agent = AgentLoop(llm=llm, bus=bus, tools=tools)
+    await agent.run_turn("sess-b202-2", "为什么你又这样做？")
+    await bus.drain()
+
+    sent = _last_user_message(llm.captured_messages[-1])
+    assert "<curriculum-hint>" not in sent
+
+
+@pytest.mark.asyncio
+async def test_b202_no_hint_on_neutral_message() -> None:
+    """Neutral message ⇒ hint stays silent (false-positive guard)."""
+    bus = InProcessEventBus()
+    llm = _CapturingLLM()
+    tools = _StubToolProvider(
+        specs=[ToolSpec(
+            name="propose_curriculum_edit",
+            description="propose",
+            parameters_schema={"type": "object"},
+        )],
+        results={},
+    )
+    agent = AgentLoop(llm=llm, bus=bus, tools=tools)
+    await agent.run_turn("sess-b202-3", "Please write me a haiku.")
+    await bus.drain()
+
+    sent = _last_user_message(llm.captured_messages[-1])
+    assert "<curriculum-hint>" not in sent
+
+
+@pytest.mark.asyncio
+async def test_b202_hint_dedup_within_session() -> None:
+    """Once-per-session: hint fires on turn 1, NOT on turn 2 even when
+    the user shows frustration again. Repeating the hint every turn
+    would tilt the agent toward over-proposing curriculum edits and
+    dilute the signal."""
+    bus = InProcessEventBus()
+    llm = _CapturingLLM()
+    tools = _StubToolProvider(
+        specs=[ToolSpec(
+            name="propose_curriculum_edit",
+            description="propose",
+            parameters_schema={"type": "object"},
+        )],
+        results={},
+    )
+    agent = AgentLoop(llm=llm, bus=bus, tools=tools)
+    await agent.run_turn("sess-b202-4", "你不要又错！")  # turn 1, frustrated
+    await agent.run_turn("sess-b202-4", "为什么还是错？")  # turn 2, still frustrated
+    await bus.drain()
+
+    turn1 = _last_user_message(llm.captured_messages[0])
+    turn2 = _last_user_message(llm.captured_messages[1])
+    assert "<curriculum-hint>" in turn1
+    assert "<curriculum-hint>" not in turn2
+
+
+@pytest.mark.asyncio
+async def test_b202_hint_resets_on_clear_session() -> None:
+    """After ``clear_session`` the dedup flag drops — a fresh
+    session should be eligible for the hint again."""
+    bus = InProcessEventBus()
+    llm = _CapturingLLM()
+    tools = _StubToolProvider(
+        specs=[ToolSpec(
+            name="propose_curriculum_edit",
+            description="propose",
+            parameters_schema={"type": "object"},
+        )],
+        results={},
+    )
+    agent = AgentLoop(llm=llm, bus=bus, tools=tools)
+    await agent.run_turn("sess-b202-5", "为什么又错")
+    agent.clear_session("sess-b202-5")
+    await agent.run_turn("sess-b202-5", "你看看，错了")
+    await bus.drain()
+
+    turn1 = _last_user_message(llm.captured_messages[0])
+    turn_after_reset = _last_user_message(llm.captured_messages[1])
+    assert "<curriculum-hint>" in turn1
+    assert "<curriculum-hint>" in turn_after_reset

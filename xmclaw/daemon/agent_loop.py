@@ -367,6 +367,18 @@ _MEMORY_SYS_NOTE_RE = _re_mem.compile(
     r"context[^\]]*\]\s*",
     _re_mem.IGNORECASE,
 )
+# B-202: curriculum-edit hint also rides on the user message and
+# must be stripped before persistence — otherwise the on-disk
+# history records a "[System note: ...]" framing as if the user
+# typed it, and worse, the next turn would re-recall the hint
+# block as memory.
+_CURRICULUM_HINT_BLOCK_RE = _re_mem.compile(
+    r"<\s*curriculum-hint\s*>[\s\S]*?</\s*curriculum-hint\s*>",
+    _re_mem.IGNORECASE,
+)
+_CURRICULUM_HINT_TAG_RE = _re_mem.compile(
+    r"</?\s*curriculum-hint\s*>", _re_mem.IGNORECASE,
+)
 
 
 # B-186: vague-continuation messages that should pin to the prior
@@ -453,6 +465,83 @@ def _continuation_anchor(prior: list[Any], user_message: str) -> str:
     )
 
 
+# B-202: frustration / pushback markers in the user's current message.
+# When detected we inject a one-shot system hint suggesting the agent
+# call ``propose_curriculum_edit`` after resolving the immediate issue.
+# Background:
+#   probe_b200_v2 round B observed the agent identifying a perfect
+#   curriculum-edit case (self_review_recent scenario) but never firing
+#   the tool — the LLM forgets the existence of dormant evolution tools
+#   when no contextual cue appears. Mirrors how memory_ctx_block fixed
+#   "agent ignores past sessions" by surfacing relevant items at the
+#   right moment.
+#
+# Coverage:
+#   - Chinese: 为什么 (why), 别 / 不要 (don't), 你看看 (look at this),
+#     不是这样 (that's not it), 错了 (wrong), 我没问 (I didn't ask),
+#     我之前说过 (I already told you), 我都说了 (I already said),
+#     你不要 (you shouldn't), 太离谱 (too absurd)
+#   - English: why are you, i didn't ask, that's not, that is not,
+#     that's wrong, you keep, you always, i told you, you don't listen,
+#     stop doing
+#
+# Bias: false-positive on "为什么" is fine — it just makes the agent
+# slightly more likely to crystallise a lesson. False-negative is
+# costly (the original bug). Matched on lowercased text + raw text
+# for Chinese.
+_FRUSTRATION_MARKERS_EN = (
+    "why are you",
+    "why do you",
+    "why did you",
+    "i didn't ask",
+    "i did not ask",
+    "that's not it",
+    "that is not it",
+    "that's not what",
+    "that is not what",
+    "that's wrong",
+    "you keep",
+    "you always",
+    "i told you",
+    "i already told you",
+    "i already said",
+    "you don't listen",
+    "you do not listen",
+    "stop doing",
+    "you shouldn't",
+    "you should not",
+)
+
+_FRUSTRATION_MARKERS_CN = (
+    "为什么", "别", "不要", "你看看", "不是这样", "错了",
+    "我没问", "我之前说过", "我都说了", "你不要", "太离谱",
+    "你怎么", "你又", "我说过", "你听不懂", "听不懂",
+)
+
+
+def _detect_frustration_signal(text: str) -> bool:
+    """Heuristic: does the current user message read as pushback /
+    frustration / correction?
+
+    Used to decide whether to inject a one-shot system hint about
+    ``propose_curriculum_edit``. False-positive cost is low (one
+    extra hint string in one user message), false-negative cost is
+    high (lost crystallisation opportunity), so the markers err on
+    the inclusive side.
+    """
+    if not text:
+        return False
+    s = text.strip()
+    if not s:
+        return False
+    low = s.lower()
+    if any(m in low for m in _FRUSTRATION_MARKERS_EN):
+        return True
+    if any(m in s for m in _FRUSTRATION_MARKERS_CN):
+        return True
+    return False
+
+
 def _sanitize_memory_context(text: str) -> str:
     """Remove ``<memory-context>...</memory-context>`` blocks and the
     "[System note: ...]" framing from a string. Used before persisting
@@ -462,10 +551,13 @@ def _sanitize_memory_context(text: str) -> str:
         return text
     out = _MEMORY_FENCE_BLOCK_RE.sub("", text)
     out = _MEMORY_FILES_BLOCK_RE.sub("", out)
+    # B-202: drop curriculum-hint envelope from history too.
+    out = _CURRICULUM_HINT_BLOCK_RE.sub("", out)
     # Catch orphaned tags (e.g. block was malformed and only one tag
     # made it through) and orphaned system notes.
     out = _MEMORY_FENCE_TAG_RE.sub("", out)
     out = _MEMORY_FILES_TAG_RE.sub("", out)
+    out = _CURRICULUM_HINT_TAG_RE.sub("", out)
     out = _MEMORY_SYS_NOTE_RE.sub("", out)
     return out.rstrip()
 
@@ -835,12 +927,21 @@ class AgentLoop:
         # uses this to render-to-disk after fact upserts.
         self._persona_store: Any = None
         self._post_sampling_bg: set[asyncio.Task[Any]] = set()
+        # B-202: per-session "curriculum-edit hint already injected"
+        # marker. We surface the hint once per session when the user
+        # shows frustration markers, then back off — repeating the
+        # hint every turn would tilt the agent toward over-proposing
+        # curriculum edits and dilute the signal.
+        self._curriculum_hint_fired: dict[str, bool] = {}
 
     def clear_session(self, session_id: str) -> None:
         """Drop a session's conversation history. Called by the WS gateway
         on SESSION_LIFECYCLE destroy, or by a ``/reset`` user intent."""
         self._histories.pop(session_id, None)
         self._cancel_events.pop(session_id, None)
+        # B-202: reset the once-per-session curriculum hint dedup so a
+        # fresh session starts eligible for the hint again.
+        self._curriculum_hint_fired.pop(session_id, None)
         if self._session_store is not None:
             self._session_store.delete(session_id)
 
@@ -1589,6 +1690,56 @@ class AgentLoop:
             except Exception as exc:  # noqa: BLE001 — best-effort
                 _log_memory_failure(exc)
 
+        # B-202: passive trigger for ``propose_curriculum_edit``.
+        # Probe round B observed the agent identifying the perfect
+        # curriculum-edit case (self_review_recent scenario) but never
+        # firing the tool — dormant evolution tools fade from the
+        # LLM's working set without a contextual cue. When the
+        # current user message shows frustration / pushback markers
+        # AND we haven't already nudged this session, surface a
+        # one-shot system hint reminding the agent the tool exists
+        # and what the criteria are. The hint rides on the user
+        # message (same trick as memory_ctx_block) so it doesn't
+        # bust the system-prompt cache.
+        curriculum_hint_block = ""
+        if (
+            user_message
+            and not self._curriculum_hint_fired.get(session_id, False)
+            and _detect_frustration_signal(user_message)
+        ):
+            # Only inject when the tool is actually wired — saving a
+            # hint string for sessions where the tool isn't reachable
+            # would be misleading and waste tokens.
+            tool_specs_check = (
+                self._tools.list_tools() if self._tools else []
+            )
+            has_propose_tool = any(
+                getattr(t, "name", "") == "propose_curriculum_edit"
+                or (isinstance(t, dict) and t.get("name") == "propose_curriculum_edit")
+                for t in (tool_specs_check or [])
+            )
+            if has_propose_tool:
+                curriculum_hint_block = (
+                    "\n\n<curriculum-hint>\n"
+                    "[System note: the user's current message contains "
+                    "frustration / pushback signals. Two-step response:\n"
+                    "  1. FIRST, address the immediate request — do not "
+                    "lecture the user about the meta-process.\n"
+                    "  2. AFTER the immediate issue is resolved, consider "
+                    "whether this turn surfaced a recurring pattern or "
+                    "rule worth crystallising. If yes, call "
+                    "``propose_curriculum_edit`` with a one-line lesson "
+                    "(written as a hard rule the future-you should "
+                    "follow). Examples that warrant a proposal: 'I keep "
+                    "refusing X without trying', 'I should pin Y to "
+                    "memory the first time', 'tool Z fails when condition "
+                    "W'. The proposal is queued for human approval — it "
+                    "does not auto-edit LEARNING.md, so over-proposing is "
+                    "cheap; missing a real lesson is costly.]\n"
+                    "</curriculum-hint>"
+                )
+                self._curriculum_hint_fired[session_id] = True
+
         # B-25: frozen system-prompt snapshot per session.
         # _with_fresh_time builds (base + time). Cache the base part
         # keyed by (session_id, generation); only re-render when the
@@ -1633,6 +1784,7 @@ class AgentLoop:
                     + user_message
                     + memory_ctx_block
                     + memory_files_block
+                    + curriculum_hint_block
                 ),
             ),
         ]
