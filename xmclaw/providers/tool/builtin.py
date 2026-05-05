@@ -1162,6 +1162,7 @@ class BuiltinTools(ToolProvider):
         workspace_root_provider: "object | None" = None,
         persona_dir_provider: "object | None" = None,
         persona_writeback: "object | None" = None,
+        persona_store_provider: "object | None" = None,
         memory_manager: "object | None" = None,
         embedder: "object | None" = None,
     ) -> None:
@@ -1181,6 +1182,14 @@ class BuiltinTools(ToolProvider):
         # immediately and the agent picks up its own update on the next
         # turn (no daemon restart needed). Signature: ``(basename) -> None``.
         self._persona_writeback = persona_writeback
+        # B-198 Phase 3: optional callable () -> PersonaStore | None.
+        # When wired, persona-mutating tools (``update_persona`` /
+        # ``remember`` / ``memory_pin`` / ``learn_about_user``) route
+        # writes through the store (DB-as-truth) instead of touching
+        # markdown directly. Render-to-disk happens inside the store
+        # so external readers see the new state immediately. Without
+        # the provider these tools fall back to legacy markdown writes.
+        self._persona_store_provider = persona_store_provider
         # Optional callable () -> Path | None returning the daemon's
         # active workspace root (driven by ~/.xmclaw/state.json via
         # WorkspaceManager). When the LLM omits an explicit `cwd` arg
@@ -3252,27 +3261,60 @@ class BuiltinTools(ToolProvider):
             return _fail(call, t0, f"could not create persona dir: {exc}")
         target = pdir / canonical
 
+        # B-198 Phase 3: prefer PersonaStore when wired — DB is truth,
+        # disk is rendered cache. The store's set_manual handles
+        # atomic write + render-to-disk + auto-section preservation.
+        # Falls back to legacy direct-markdown writes when no store
+        # provider is configured (tests / B-198-disabled installs).
+        store = None
+        if self._persona_store_provider is not None:
+            try:
+                store = self._persona_store_provider()
+            except Exception:  # noqa: BLE001
+                store = None
+
         # B-63: serialise concurrent writes through the per-path lock
         # so an in-flight append_section (read-modify-write) doesn't
         # race with a sibling delete or replace.
         async with self._fs_lock(target):
             try:
                 if mode == "delete":
-                    if target.is_file():
-                        target.unlink()
+                    if store is not None:
+                        # In B-198 land, "delete" = clear manual row.
+                        # Auto-extracted facts are independent — they
+                        # stay (use forget_fact / archive separately).
+                        await store.set_manual(canonical, "")
                         written_size = 0
-                        summary = f"deleted {canonical}"
+                        summary = f"deleted manual portion of {canonical}"
                     else:
-                        summary = f"{canonical} did not exist (no-op)"
-                        written_size = 0
+                        if target.is_file():
+                            target.unlink()
+                            written_size = 0
+                            summary = f"deleted {canonical}"
+                        else:
+                            summary = f"{canonical} did not exist (no-op)"
+                            written_size = 0
                 elif mode == "replace":
                     content = call.args.get("content")
                     if not isinstance(content, str):
                         return _fail(call, t0, "'content' required for replace mode")
-                    from xmclaw.utils.fs_locks import atomic_write_text
-                    atomic_write_text(target, content)
-                    written_size = len(content.encode("utf-8"))
-                    summary = f"replaced {canonical} ({written_size} bytes)"
+                    if store is not None:
+                        # store.set_manual strips the auto section
+                        # if the caller round-tripped a render — the
+                        # manual row stays clean.
+                        await store.set_manual(canonical, content)
+                        written_size = len(content.encode("utf-8"))
+                        summary = (
+                            f"replaced manual portion of {canonical} "
+                            f"({written_size} bytes)"
+                        )
+                    else:
+                        from xmclaw.utils.fs_locks import atomic_write_text
+                        atomic_write_text(target, content)
+                        written_size = len(content.encode("utf-8"))
+                        summary = (
+                            f"replaced {canonical} ({written_size} bytes)"
+                        )
                 else:  # append_section
                     section = call.args.get("section")
                     content = call.args.get("content")
@@ -3282,27 +3324,48 @@ class BuiltinTools(ToolProvider):
                         return _fail(call, t0, "'content' required for append_section mode")
                     section_clean = section.strip().lstrip("#").strip()
                     section_header = f"## {section_clean}"
-                    existing = (
-                        target.read_text(encoding="utf-8") if target.is_file() else ""
-                    )
-                    new_text = _append_under_section(
-                        existing,
-                        section_header=section_header,
-                        bullet=content,  # caller decides whether to lead with "-"
-                        placeholder_title=f"{canonical} — agent-curated",
-                    )
-                    # B-25 char cap (Hermes parity). Only enforced for
-                    # the auto-curated files (MEMORY.md / USER.md) where
-                    # bloat from many reflection runs is the failure mode.
-                    cap = PERSONA_CHAR_CAPS.get(canonical)
-                    if cap is not None and len(new_text) > cap:
-                        new_text = enforce_char_cap(new_text, cap)
-                    from xmclaw.utils.fs_locks import atomic_write_text
-                    atomic_write_text(target, new_text)
-                    written_size = len(new_text.encode("utf-8"))
+                    if store is not None:
+                        # Read manual portion, append-under-section in
+                        # memory, write back. Auto sections are
+                        # preserved (rendered fresh by the store).
+                        existing_manual = await store.read_manual(canonical)
+                        new_manual = _append_under_section(
+                            existing_manual,
+                            section_header=section_header,
+                            bullet=content,
+                            placeholder_title=f"{canonical} — agent-curated",
+                        )
+                        cap = PERSONA_CHAR_CAPS.get(canonical)
+                        if cap is not None and len(new_manual) > cap:
+                            new_manual = enforce_char_cap(new_manual, cap)
+                        await store.set_manual(canonical, new_manual)
+                        written_size = len(new_manual.encode("utf-8"))
+                    else:
+                        existing = (
+                            target.read_text(encoding="utf-8")
+                            if target.is_file() else ""
+                        )
+                        new_text = _append_under_section(
+                            existing,
+                            section_header=section_header,
+                            bullet=content,
+                            placeholder_title=f"{canonical} — agent-curated",
+                        )
+                        cap = PERSONA_CHAR_CAPS.get(canonical)
+                        if cap is not None and len(new_text) > cap:
+                            new_text = enforce_char_cap(new_text, cap)
+                        from xmclaw.utils.fs_locks import atomic_write_text
+                        atomic_write_text(target, new_text)
+                        written_size = len(new_text.encode("utf-8"))
                     summary = f"appended to {canonical} under {section_header}"
             except OSError as exc:
                 return _fail(call, t0, f"write failed: {exc}")
+            except ValueError as exc:
+                # store.set_manual rejects unknown basenames — already
+                # validated above via _PERSONA_BASENAMES_LOOKUP, so
+                # surface this as an internal error rather than a
+                # bad-input fail.
+                return _fail(call, t0, f"persona_store rejected: {exc}")
 
         # Sidecar log so the Memory UI can show "agent wrote this" badges.
         snippet = ""
@@ -3386,40 +3449,71 @@ class BuiltinTools(ToolProvider):
             return _fail(call, t0, f"could not create persona dir: {exc}")
         target = pdir / basename
 
+        # B-198 Phase 3: prefer PersonaStore when wired — write goes
+        # through the manual row, store renders disk after. Fallback
+        # to legacy direct-markdown writes when no store provider.
+        store = None
+        if self._persona_store_provider is not None:
+            try:
+                store = self._persona_store_provider()
+            except Exception:  # noqa: BLE001
+                store = None
+
         evicted = 0
         async with self._fs_lock(target):
-            try:
-                existing = (
-                    target.read_text(encoding="utf-8") if target.is_file() else ""
-                )
-            except OSError as exc:
-                return _fail(call, t0, f"read failed: {exc}")
-
             today = _date.today().isoformat()
             bullet = f"- {today}: {entry}"
             section_header = f"## {section}"
 
-            new_text = _append_under_section(
-                existing,
-                section_header=section_header,
-                bullet=bullet,
-                placeholder_title=placeholder_title,
-            )
+            if store is not None:
+                # Read manual portion, append-under-section in memory,
+                # write back. Auto-extracted sections are preserved
+                # (rendered from facts on next read).
+                try:
+                    existing_manual = await store.read_manual(basename)
+                except Exception as exc:  # noqa: BLE001
+                    return _fail(call, t0, f"store read failed: {exc}")
+                new_text = _append_under_section(
+                    existing_manual,
+                    section_header=section_header,
+                    bullet=bullet,
+                    placeholder_title=placeholder_title,
+                )
+                cap = PERSONA_CHAR_CAPS.get(basename)
+                if cap is not None and len(new_text) > cap:
+                    before_len = len(new_text)
+                    new_text = enforce_char_cap(new_text, cap)
+                    evicted = before_len - len(new_text)
+                try:
+                    await store.set_manual(basename, new_text)
+                except (OSError, ValueError) as exc:
+                    return _fail(call, t0, f"store write failed: {exc}")
+            else:
+                try:
+                    existing = (
+                        target.read_text(encoding="utf-8")
+                        if target.is_file() else ""
+                    )
+                except OSError as exc:
+                    return _fail(call, t0, f"read failed: {exc}")
+                new_text = _append_under_section(
+                    existing,
+                    section_header=section_header,
+                    bullet=bullet,
+                    placeholder_title=placeholder_title,
+                )
+                # B-25: enforce char cap (LRU eviction) — Hermes parity.
+                cap = PERSONA_CHAR_CAPS.get(basename)
+                if cap is not None and len(new_text) > cap:
+                    before_len = len(new_text)
+                    new_text = enforce_char_cap(new_text, cap)
+                    evicted = before_len - len(new_text)
 
-            # B-25: enforce char cap (LRU eviction) — Hermes parity. Stops
-            # MEMORY.md / USER.md from growing unbounded across many
-            # reflection runs. Caps from PERSONA_CHAR_CAPS.
-            cap = PERSONA_CHAR_CAPS.get(basename)
-            if cap is not None and len(new_text) > cap:
-                before_len = len(new_text)
-                new_text = enforce_char_cap(new_text, cap)
-                evicted = before_len - len(new_text)
-
-            from xmclaw.utils.fs_locks import atomic_write_text
-            try:
-                atomic_write_text(target, new_text)
-            except OSError as exc:
-                return _fail(call, t0, f"write failed: {exc}")
+                from xmclaw.utils.fs_locks import atomic_write_text
+                try:
+                    atomic_write_text(target, new_text)
+                except OSError as exc:
+                    return _fail(call, t0, f"write failed: {exc}")
 
         # Sidecar log: this write came from the agent (vs. user via
         # Memory page). Powers the diff badge in the UI.

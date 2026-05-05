@@ -678,6 +678,18 @@ def build_tools_from_config(
         except Exception:  # noqa: BLE001
             return None
 
+    # B-198 Phase 3: tools also route through PersonaStore when
+    # available so user/agent-driven persona edits update the DB
+    # (truth) before the disk file (cache). Provider is a callable
+    # so tools fetch the latest store reference each call — the
+    # store is created in lifespan AFTER the agent, so a static
+    # capture would be None.
+    def _persona_store_provider() -> Any:
+        st = _app_state_holder()
+        if st is None:
+            return None
+        return st.get("persona_store")
+
     builtins = BuiltinTools(
         allowed_dirs=allowed_dirs,
         enable_bash=bool(enable_bash),
@@ -685,6 +697,7 @@ def build_tools_from_config(
         workspace_root_provider=_workspace_root_provider(),
         persona_dir_provider=_persona_dir_provider(cfg),
         persona_writeback=_persona_writeback(_app_state_holder),
+        persona_store_provider=_persona_store_provider,
     )
     children: list[ToolProvider] = [builtins]
 

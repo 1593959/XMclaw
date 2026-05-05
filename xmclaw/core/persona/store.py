@@ -204,6 +204,13 @@ class PersonaStore:
             return manual.rstrip("\n") + "\n\n" + auto
         return manual or auto or ""
 
+    async def read_manual(self, basename: str) -> str:
+        """Public accessor: just the manual portion of ``basename``,
+        without the auto-extracted block. Useful for tools that need
+        to read-modify-write the user-curated content (e.g.
+        ``update_persona append_section`` mode)."""
+        return await self._read_manual(basename)
+
     async def list_files(self) -> list[str]:
         """Return the canonical persona files this store knows about."""
         return list(AUTO_SECTIONS.keys())
