@@ -3335,7 +3335,55 @@ class BuiltinTools(ToolProvider):
             rows = cur.fetchmany(n)
             cols = [d[0] for d in (cur.description or [])]
         except sqlite3.Error as exc:
-            return _fail(call, t0, f"query failed: {exc}")
+            # B-203: probe data showed 6/11 sqlite_query calls in
+            # one audit_pref_kinds turn failed with "no such table:
+            # memories" — agent guessed a name that doesn't exist
+            # and re-tried multiple times instead of introspecting.
+            # When the error is a schema-shape error, surface the
+            # actual available tables (or columns of the named
+            # table) alongside the error so the next hop has the
+            # info to recover without a second tool call.
+            err_str = str(exc)
+            schema_hint = ""
+            try:
+                low = err_str.lower()
+                # Re-disable authorizer for the meta-query so
+                # sqlite_master access is allowed (it's a read,
+                # but using the authorizer adds noise here).
+                con.set_authorizer(lambda *_: sqlite3.SQLITE_OK)
+                if "no such table" in low:
+                    meta = con.execute(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type='table' ORDER BY name"
+                    ).fetchall()
+                    names = [r[0] for r in meta if r[0]]
+                    if names:
+                        schema_hint = (
+                            f" — available tables in '{db_choice}': "
+                            f"{', '.join(names)}"
+                        )
+                elif "no such column" in low:
+                    # Try to extract the table name from the SQL
+                    # ("FROM <table>") to point at its real columns.
+                    import re as _re
+                    m = _re.search(r"FROM\s+([A-Za-z_][A-Za-z_0-9]*)", cleaned, _re.IGNORECASE)
+                    if m:
+                        tbl = m.group(1)
+                        try:
+                            meta = con.execute(
+                                f"PRAGMA table_info({tbl})"
+                            ).fetchall()
+                            names = [r[1] for r in meta if r[1]]
+                            if names:
+                                schema_hint = (
+                                    f" — columns of '{tbl}': "
+                                    f"{', '.join(names)}"
+                                )
+                        except sqlite3.Error:
+                            pass
+            except sqlite3.Error:
+                pass
+            return _fail(call, t0, f"query failed: {err_str}{schema_hint}")
         finally:
             con.close()
 

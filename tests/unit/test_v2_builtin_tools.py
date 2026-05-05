@@ -686,3 +686,123 @@ async def test_failed_tool_content_is_error_string_not_None_str() -> None:
     )
     # And critically: no longer the string "None".
     assert body != "None"
+
+
+# ── B-203 sqlite_query schema-hint on error ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_sqlite_query_no_such_table_lists_available_tables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """probe_b200_v2 audit_pref_kinds turn: 6/11 sqlite_query calls
+    failed with "no such table: memories" because the agent guessed.
+    Tool must surface the real schema in the error so the next hop
+    can recover without a second tool call."""
+    import sqlite3
+
+    # Build a fake events.db with a couple of real tables, then
+    # redirect data_dir() so the tool sees it.
+    fake_root = tmp_path / "fake_home"
+    (fake_root / "v2").mkdir(parents=True)
+    db_path = fake_root / "v2" / "events.db"
+    con = sqlite3.connect(db_path)
+    con.execute("CREATE TABLE events (id TEXT, ts REAL, type TEXT)")
+    con.execute("CREATE TABLE sessions (id TEXT, started REAL)")
+    con.commit()
+    con.close()
+
+    monkeypatch.setattr(
+        "xmclaw.utils.paths.data_dir",
+        lambda: fake_root,
+    )
+
+    tools = BuiltinTools()
+    call = _call("sqlite_query", {
+        "db": "events", "sql": "SELECT * FROM memories",
+    })
+    result = await tools.invoke(call)
+
+    assert result.ok is False
+    assert "no such table" in (result.error or "")
+    # B-203: schema hint must enumerate real tables.
+    assert "events" in (result.error or "")
+    assert "sessions" in (result.error or "")
+    assert "available tables" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_sqlite_query_no_such_column_lists_columns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the table exists but the column doesn't, surface the
+    real columns of that table — same recovery affordance, one
+    level deeper."""
+    import sqlite3
+
+    fake_root = tmp_path / "fake_home"
+    (fake_root / "v2").mkdir(parents=True)
+    db_path = fake_root / "v2" / "memory.db"
+    con = sqlite3.connect(db_path)
+    con.execute(
+        "CREATE TABLE memory_items "
+        "(id TEXT, text TEXT, kind TEXT, evidence_count INTEGER)"
+    )
+    con.commit()
+    con.close()
+
+    monkeypatch.setattr(
+        "xmclaw.utils.paths.data_dir",
+        lambda: fake_root,
+    )
+
+    tools = BuiltinTools()
+    call = _call("sqlite_query", {
+        "db": "memory",
+        "sql": "SELECT bogus_col FROM memory_items",
+    })
+    result = await tools.invoke(call)
+
+    assert result.ok is False
+    assert "no such column" in (result.error or "")
+    # Schema-hint enumerates real columns of memory_items.
+    err = result.error or ""
+    assert "memory_items" in err
+    assert "evidence_count" in err
+    assert "kind" in err
+
+
+@pytest.mark.asyncio
+async def test_sqlite_query_unrelated_error_no_schema_noise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hint must ONLY appear for schema-shape errors; a syntax error
+    should not get a tables list dump."""
+    import sqlite3
+
+    fake_root = tmp_path / "fake_home"
+    (fake_root / "v2").mkdir(parents=True)
+    db_path = fake_root / "v2" / "events.db"
+    con = sqlite3.connect(db_path)
+    con.execute("CREATE TABLE events (id TEXT)")
+    con.commit()
+    con.close()
+
+    monkeypatch.setattr(
+        "xmclaw.utils.paths.data_dir",
+        lambda: fake_root,
+    )
+
+    tools = BuiltinTools()
+    # Genuine syntax error — incomplete WHERE clause. Not "no such
+    # table" / "no such column", so the schema-hint must NOT fire.
+    call = _call("sqlite_query", {
+        "db": "events", "sql": "SELECT * FROM events WHERE",
+    })
+    result = await tools.invoke(call)
+
+    assert result.ok is False
+    err = result.error or ""
+    assert "syntax error" in err.lower() or "incomplete" in err.lower()
+    assert "available tables" not in err
+    assert "columns of" not in err
