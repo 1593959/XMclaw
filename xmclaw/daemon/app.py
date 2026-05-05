@@ -474,6 +474,10 @@ def create_app(
                     _persona_store = PersonaStore(
                         vec_provider, _persona_pdir,
                         item_factory=MemoryItem,
+                        # B-211: pass the embedder so set_manual writes
+                        # are vectorised — pre-B-211 audit showed 0%
+                        # embedding coverage on persona_manual rows.
+                        embedder=embedder,
                     )
                     report = await _persona_store.migrate_from_disk()
                     _app.state.persona_store = _persona_store

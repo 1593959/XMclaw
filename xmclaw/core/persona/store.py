@@ -175,10 +175,19 @@ class PersonaStore:
         profile_dir: Path,
         *,
         item_factory: Any = None,
+        embedder: Any = None,
     ) -> None:
         self._mem = memory_provider
         self._profile_dir = Path(profile_dir)
         self._item_factory = item_factory
+        # B-211: optional embedder so manual rows (user-edited persona
+        # content via Web UI / agent ``update_persona``) actually
+        # land in the vector index. Pre-B-211 audit found 7/7
+        # persona_manual rows with has_embedding=0 → memory_search
+        # could never recall them. The embedder is best-effort:
+        # when None or it raises, we still write the row (text
+        # search degrades but doesn't break).
+        self._embedder = embedder
         # Module-level write lock per file so parallel set_manual /
         # add_fact don't trample render_to_disk mid-flight.
         self._render_locks: dict[str, Any] = {}
@@ -256,6 +265,25 @@ class PersonaStore:
         """
         md = dict(metadata or {})
         md.setdefault("kind", kind)
+        # B-211: when caller didn't pre-embed (the common case for
+        # migrate_from_disk + ExtractLessonsHook write paths), embed
+        # locally before persisting. Pre-B-211 audit: 16/145 lesson
+        # rows from migrate_from_disk shipped with has_embedding=0
+        # because this function passed embedding=None straight into
+        # upsert_fact. Same root cause as the persona_manual 0%
+        # gap; centralise the fix here so every call site benefits.
+        if embedding is None and self._embedder is not None and text and text.strip():
+            try:
+                snippet = text[:6000]
+                vecs = await self._embedder.embed([snippet])
+                if vecs and vecs[0]:
+                    embedding = list(vecs[0])
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "persona_store.embed_fact_failed kind=%s err=%s "
+                    "(falling back to text-only row)",
+                    kind, exc,
+                )
         upsert = getattr(self._mem, "upsert_fact", None)
         try:
             if upsert is not None:
@@ -404,6 +432,26 @@ class PersonaStore:
             )
             return
         item_id = f"persona_manual:{basename}"
+        # B-211: embed the manual text before writing so memory_search
+        # can recall it. Pre-B-211 audit showed 100% of persona_manual
+        # rows shipped with has_embedding=0 — agent literally couldn't
+        # find anything the user typed via Web UI / update_persona.
+        embedding: tuple[float, ...] | None = None
+        if self._embedder is not None and text and text.strip():
+            try:
+                # Truncate runaway content to keep one embed call cheap.
+                # qwen3-embedding-0.6b max ctx ~8k tokens; 6k chars
+                # is a safe upper bound across CJK + ASCII mix.
+                snippet = text[:6000]
+                vecs = await self._embedder.embed([snippet])
+                if vecs and vecs[0]:
+                    embedding = tuple(vecs[0])
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "persona_store.embed_manual_failed file=%s err=%s "
+                    "(falling back to text-only row)",
+                    basename, exc,
+                )
         try:
             item = self._item_factory(
                 id=item_id,
@@ -414,7 +462,7 @@ class PersonaStore:
                     "file": basename,
                     "ts": time.time(),
                 },
-                embedding=None,
+                embedding=embedding,
                 ts=time.time(),
             )
             await self._mem.put("long", item)
