@@ -204,21 +204,35 @@ class AnthropicLLM(LLMProvider):
         # Extract text + tool calls from the content blocks.
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
+        # B-229: same truncation guard as the streaming path.
+        stop_reason = str(getattr(response, "stop_reason", "") or "")
+        truncated_partial = 0
         for block in getattr(response, "content", []) or []:
             btype = getattr(block, "type", None)
             if btype == "text":
                 text_parts.append(getattr(block, "text", ""))
             elif btype == "tool_use":
+                block_input = getattr(block, "input", {}) or {}
+                if stop_reason == "max_tokens" and not block_input:
+                    truncated_partial += 1
+                    continue
                 # Normalize the SDK's block to a dict so the translator can parse.
                 block_dict = {
                     "type": "tool_use",
                     "id": getattr(block, "id", ""),
                     "name": getattr(block, "name", ""),
-                    "input": getattr(block, "input", {}),
+                    "input": block_input,
                 }
                 parsed = translator.decode_from_provider(block_dict)
                 if parsed is not None:
                     tool_calls.append(parsed)
+
+        if truncated_partial > 0:
+            text_parts.append(
+                f"\n\n[output truncated by max_tokens limit — "
+                f"{truncated_partial} partial tool call(s) dropped. "
+                "Ask me to continue and I'll pick up the call.]"
+            )
 
         usage = getattr(response, "usage", None)
         return LLMResponse(
@@ -227,6 +241,7 @@ class AnthropicLLM(LLMProvider):
             prompt_tokens=getattr(usage, "input_tokens", 0) or 0,
             completion_tokens=getattr(usage, "output_tokens", 0) or 0,
             latency_ms=latency_ms,
+            stop_reason=stop_reason,
         )
 
     async def complete_streaming(
@@ -414,19 +429,44 @@ class AnthropicLLM(LLMProvider):
             return await self.complete(messages, tools)
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
+        # B-229: capture stop_reason so the agent loop can detect
+        # mid-output truncation. ``max_tokens`` here means the model
+        # was cut off mid-stream — partial ``tool_use`` blocks have
+        # empty ``input={}`` because the SDK never received a
+        # ``content_block_stop`` event with parsed args.
+        stop_reason = str(getattr(final, "stop_reason", "") or "")
+
         tool_calls: list[ToolCall] = []
+        truncated_partial = 0
         for block in getattr(final, "content", []) or []:
             btype = getattr(block, "type", None)
             if btype == "tool_use":
+                block_input = getattr(block, "input", {}) or {}
+                # B-229: drop tool_use blocks whose args never arrived
+                # (max_tokens cut-off mid-stream). Distinguishable from
+                # a legitimate zero-args call only via stop_reason — a
+                # complete tool_use with no params still has
+                # input={}, but stop_reason would be "tool_use" or
+                # "end_turn", not "max_tokens".
+                if stop_reason == "max_tokens" and not block_input:
+                    truncated_partial += 1
+                    continue
                 block_dict = {
                     "type": "tool_use",
                     "id": getattr(block, "id", ""),
                     "name": getattr(block, "name", ""),
-                    "input": getattr(block, "input", {}),
+                    "input": block_input,
                 }
                 parsed = translator.decode_from_provider(block_dict)
                 if parsed is not None:
                     tool_calls.append(parsed)
+
+        if truncated_partial > 0:
+            text_parts.append(
+                f"\n\n[output truncated by max_tokens limit — "
+                f"{truncated_partial} partial tool call(s) dropped. "
+                "Ask me to continue and I'll pick up the call.]"
+            )
 
         usage = getattr(final, "usage", None)
         return LLMResponse(
@@ -435,6 +475,7 @@ class AnthropicLLM(LLMProvider):
             prompt_tokens=getattr(usage, "input_tokens", 0) or 0,
             completion_tokens=getattr(usage, "output_tokens", 0) or 0,
             latency_ms=latency_ms,
+            stop_reason=stop_reason,
         )
 
     @property

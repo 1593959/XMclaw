@@ -184,6 +184,8 @@ class OpenAILLM(LLMProvider):
             return LLMResponse(content="", tool_calls=(), latency_ms=latency_ms)
         msg = choices[0].message
         text = getattr(msg, "content", "") or ""
+        # B-229: forward finish_reason so callers can detect truncation.
+        finish_reason = str(getattr(choices[0], "finish_reason", "") or "")
 
         tool_calls: list[ToolCall] = []
         raw_tool_calls = getattr(msg, "tool_calls", None) or []
@@ -209,6 +211,7 @@ class OpenAILLM(LLMProvider):
             prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
             completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
             latency_ms=latency_ms,
+            stop_reason=finish_reason,
         )
 
     async def complete_streaming(
@@ -239,6 +242,9 @@ class OpenAILLM(LLMProvider):
         prompt_tokens = 0
         completion_tokens = 0
         cancelled = False
+        # B-229: capture finish_reason of the last chunk so we can detect
+        # max_tokens truncation and drop partial tool calls.
+        finish_reason = ""
         t0 = time.perf_counter()
         try:
             stream = await client.chat.completions.create(**kwargs)
@@ -338,6 +344,14 @@ class OpenAILLM(LLMProvider):
                 completion_tokens = (
                     getattr(usage, "completion_tokens", 0) or completion_tokens
                 )
+            # B-229: capture finish_reason of the LAST chunk that carries
+            # one. The OpenAI streaming spec puts it on the final delta;
+            # OpenAI-compat shims sometimes attach it earlier when no
+            # more chunks will follow.
+            if choices:
+                fr = getattr(choices[0], "finish_reason", None)
+                if fr:
+                    finish_reason = str(fr)
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
         # B-225: detect watchdog-driven cancel (stream closed BEFORE
@@ -361,7 +375,32 @@ class OpenAILLM(LLMProvider):
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 latency_ms=latency_ms,
+                stop_reason=finish_reason or "cancelled",
             )
+
+        # B-229: when finish_reason is "length" (max_tokens), drop any
+        # tool_acc entry whose ``arguments`` is empty STRING — that's
+        # the initial accumulator state and only persists when the
+        # stream truncated before ANY argument chunk landed. A
+        # legitimate zero-args call serialises as ``"{}"`` not ``""``.
+        # Without this filter the translator emits ``ToolCall(args={})``
+        # and the agent loop dispatches a malformed invocation
+        # (the ``code_python({})`` ghost call the user reported).
+        truncated_partial = 0
+        if finish_reason == "length":
+            for idx in list(tool_acc.keys()):
+                fn = tool_acc[idx].get("function") or {}
+                args_str = fn.get("arguments", "")
+                name = fn.get("name", "")
+                if not args_str or not name:
+                    del tool_acc[idx]
+                    truncated_partial += 1
+            if truncated_partial > 0:
+                text_parts.append(
+                    f"\n\n[output truncated by max_tokens limit — "
+                    f"{truncated_partial} partial tool call(s) dropped. "
+                    "Ask me to continue and I'll pick up the call.]"
+                )
 
         tool_calls: list[ToolCall] = []
         for idx in sorted(tool_acc):
@@ -375,6 +414,7 @@ class OpenAILLM(LLMProvider):
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             latency_ms=latency_ms,
+            stop_reason=finish_reason,
         )
 
     @property

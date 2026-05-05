@@ -142,20 +142,45 @@ async def test_clear_session_drops_history() -> None:
 @pytest.mark.asyncio
 async def test_failed_turn_does_not_poison_history() -> None:
     """If the LLM raises on turn 2, turn 3 must still see turn 1's history
-    cleanly -- not a truncated mess or an empty state."""
+    cleanly -- not a truncated mess or an empty state.
+
+    B-227 update: the classifier now retries unknown-reason errors with
+    a backoff schedule of length 2. The fixture fails ALL three attempts
+    (initial + 2 retries) so the classify-and-retry path exhausts and
+    the turn legitimately fails — exercising the actual poison-prevention
+    path the test is named for.
+    """
 
     @dataclass
     class _FailsOnCall(_RecordingLLM):
-        """Fail on Nth call, don't consume a script slot for failures
-        so the happy-path script stays aligned."""
+        """Fail on Nth user-turn call, AND every retry attempt that
+        follows for the same in-flight call. After the failed turn's
+        retries exhaust, the next happy-path call uses the next script
+        slot."""
         fail_on_call_idx: int = -1
         _calls: int = 0
+        _seen_failure_user_marker: str = ""
 
         async def complete(self, messages, tools=None):  # noqa: ANN001
             self.seen_messages.append(list(messages))
             call_idx = self._calls
             self._calls += 1
+            # Identify the failing user turn by its user message text;
+            # all retry attempts within that turn carry the same text
+            # (they're the same in-flight ``run_turn``). Once we see it
+            # we keep failing until run_turn moves on.
+            # Use the LAST user message — that's the one driving THIS
+            # turn. The first user message is the head of history and
+            # the same across turn 2 and turn 3.
+            user_msgs = [m for m in messages if m.role == "user"]
+            user_marker = user_msgs[-1].content if user_msgs else ""
             if call_idx == self.fail_on_call_idx:
+                self._seen_failure_user_marker = user_marker
+                raise RuntimeError("simulated upstream failure")
+            if (self._seen_failure_user_marker
+                    and user_marker == self._seen_failure_user_marker):
+                # B-227 retry of the failing call — keep failing so the
+                # backoff schedule exhausts and the turn surfaces error.
                 raise RuntimeError("simulated upstream failure")
             resp = self.script[self._i]
             self._i += 1
@@ -166,7 +191,7 @@ async def test_failed_turn_does_not_poison_history() -> None:
             LLMResponse(content="turn 1 response"),
             LLMResponse(content="turn 3 response"),
         ],
-        fail_on_call_idx=1,  # 2nd complete() call raises
+        fail_on_call_idx=1,  # 2nd complete() call raises (and retries also raise)
     )
     agent = AgentLoop(llm=llm, bus=InProcessEventBus())
 
@@ -176,9 +201,10 @@ async def test_failed_turn_does_not_poison_history() -> None:
     r3 = await agent.run_turn("s1", "turn 3 user")
     assert r3.ok
 
-    # The LLM's third call (index 2 in seen_messages) should contain the
-    # turn-1 exchange but NOT the failed turn-2 user message.
-    turn3_msgs = llm.seen_messages[2]
+    # B-227 update: with retry budget, turn 2 generates 1+2=3 LLM
+    # calls (initial + 2 backoff retries) before giving up. So the
+    # turn-3 call is the LAST entry in seen_messages, not index 2.
+    turn3_msgs = llm.seen_messages[-1]
     user_msgs = [m for m in turn3_msgs if m.role == "user"]
     assert any("turn 1" in (m.content or "") for m in user_msgs)
     # Turn 2 failed, so its user message should not have been persisted.

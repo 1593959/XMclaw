@@ -107,9 +107,23 @@ def test_decode_accepts_dict_arguments_from_compat_endpoint() -> None:
     assert decoded.args == {"k": 1}
 
 
-def test_decode_accepts_empty_arguments_string() -> None:
+def test_decode_rejects_empty_arguments_string() -> None:
+    """B-229: empty STRING ``""`` only appears as the initial state of
+    the streaming accumulator — when it persists into a finalised
+    response the stream got truncated mid-tool-call. A legitimate
+    zero-args call serialises as ``"{}"``, never ``""``. Returning
+    ``None`` here is what stops the ``code_python({})`` ghost-call
+    bug from reaching the agent loop's invocation step."""
     decoded = translator.decode_from_provider(
         {"id": "x", "type": "function", "function": {"name": "f", "arguments": ""}},
+    )
+    assert decoded is None
+
+
+def test_decode_accepts_empty_dict_arguments_string() -> None:
+    """A legitimate zero-args call (``"{}"``) still parses as before."""
+    decoded = translator.decode_from_provider(
+        {"id": "x", "type": "function", "function": {"name": "f", "arguments": "{}"}},
     )
     assert decoded is not None
     assert decoded.args == {}

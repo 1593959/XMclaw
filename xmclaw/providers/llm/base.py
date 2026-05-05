@@ -50,6 +50,13 @@ class LLMResponse:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     latency_ms: float = 0.0
+    # B-229 / B-230: surface the provider's stop reason so the agent loop
+    # can detect mid-output truncation and either drop partial tool calls
+    # or auto-continue the response. Normalised values: ``"end_turn"`` /
+    # ``"max_tokens"`` / ``"tool_use"`` / ``"stop_sequence"`` (Anthropic);
+    # ``"stop"`` / ``"length"`` / ``"tool_calls"`` (OpenAI). Empty string
+    # = provider didn't report one (some compat shims).
+    stop_reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)

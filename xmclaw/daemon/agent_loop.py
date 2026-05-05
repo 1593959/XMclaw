@@ -1398,7 +1398,7 @@ class AgentLoop:
         # need to expose here.
         if len(history) > 6:
             try:
-                from xmclaw.utils.tool_result_prune import (
+                from xmclaw.context.tool_result_prune import (
                     prune_old_tool_results,
                 )
                 history, _ = prune_old_tool_results(
@@ -2086,53 +2086,122 @@ class AgentLoop:
                 )
                 _b227_attempts = 0
                 _b227_last_classified: Any = None
-                while True:
-                    try:
-                        response = await asyncio.wait_for(
-                            llm.complete_streaming(
-                                messages, tools=tool_specs, on_chunk=_emit_chunk,
-                                on_thinking_chunk=_emit_thinking_chunk,
-                                cancel=cancel_event,
-                            ),
-                            timeout=self._llm_timeout_s,
-                        )
-                        break  # success
-                    except asyncio.TimeoutError:
-                        # Re-raise into the original timeout handler
-                        # below (separate path with its own user msg).
-                        raise
-                    except Exception as _exc:  # noqa: BLE001
-                        ce = classify_api_error(
-                            _exc,
-                            provider=getattr(llm, "__class__", type(llm)).__name__,
-                            model=getattr(llm, "model", "") or "",
-                        )
-                        _b227_last_classified = ce
-                        schedule = backoff_schedule(ce.reason)
-                        if (
-                            not ce.retryable
-                            or _b227_attempts >= len(schedule)
-                            or cancel_event.is_set()
-                        ):
-                            # Out of retries (or non-retryable) — let
-                            # the outer except path surface the error
-                            # in LLM_RESPONSE with the classified
-                            # reason as category.
+                # B-230: auto-continue when ``stop_reason=max_tokens``
+                # cuts the response mid-output. Without this the user
+                # has to type "继续" and the LLM tends to RESTART from
+                # scratch instead of appending — losing the partial
+                # output and burning tokens. We append the partial
+                # assistant text + a continuation prompt and re-call
+                # up to N times before giving up.
+                _B230_MAX_CONTINUES = 3
+                _b230_continue_count = 0
+                _b230_acc_content = ""
+                while True:  # outer = B-230 auto-continue
+                    while True:  # inner = B-227 classify-and-retry
+                        try:
+                            response = await asyncio.wait_for(
+                                llm.complete_streaming(
+                                    messages, tools=tool_specs, on_chunk=_emit_chunk,
+                                    on_thinking_chunk=_emit_thinking_chunk,
+                                    cancel=cancel_event,
+                                ),
+                                timeout=self._llm_timeout_s,
+                            )
+                            break  # inner: success
+                        except asyncio.TimeoutError:
+                            # Re-raise into the original timeout handler
+                            # below (separate path with its own user msg).
                             raise
-                        sleep_ms = schedule[_b227_attempts]
+                        except Exception as _exc:  # noqa: BLE001
+                            ce = classify_api_error(
+                                _exc,
+                                provider=getattr(llm, "__class__", type(llm)).__name__,
+                                model=getattr(llm, "model", "") or "",
+                            )
+                            _b227_last_classified = ce
+                            schedule = backoff_schedule(ce.reason)
+                            if (
+                                not ce.retryable
+                                or _b227_attempts >= len(schedule)
+                                or cancel_event.is_set()
+                            ):
+                                # Out of retries (or non-retryable) — let
+                                # the outer except path surface the error
+                                # in LLM_RESPONSE with the classified
+                                # reason as category.
+                                raise
+                            sleep_ms = schedule[_b227_attempts]
+                            try:
+                                from xmclaw.utils.log import get_logger
+                                get_logger(__name__).warning(
+                                    "agent_loop.llm_retry hop=%d reason=%s "
+                                    "attempt=%d sleep_ms=%d msg=%s",
+                                    hop, ce.reason.value, _b227_attempts + 1,
+                                    sleep_ms, ce.message[:120],
+                                )
+                            except Exception:  # noqa: BLE001
+                                pass
+                            await asyncio.sleep(sleep_ms / 1000.0)
+                            _b227_attempts += 1
+                            # Loop and retry with same kwargs.
+
+                    # B-230: did the response get truncated by max_tokens?
+                    # Anthropic emits ``stop_reason="max_tokens"``;
+                    # OpenAI emits ``finish_reason="length"`` (forwarded
+                    # as stop_reason by our wrapper). Auto-continue ONLY
+                    # when there are no tool_calls (those finish a
+                    # different way) and content is non-trivial (>50
+                    # chars — small partial likely indicates a different
+                    # failure mode).
+                    _stop = (response.stop_reason or "").lower()
+                    truncated = _stop in ("max_tokens", "length")
+                    if (
+                        truncated
+                        and not response.tool_calls
+                        and response.content
+                        and len(response.content) > 50
+                        and _b230_continue_count < _B230_MAX_CONTINUES
+                        and not cancel_event.is_set()
+                    ):
+                        _b230_acc_content += response.content
+                        messages = list(messages) + [
+                            Message(role="assistant", content=_b230_acc_content),
+                            Message(
+                                role="user",
+                                content=(
+                                    "[B-230 auto-continue] Your previous "
+                                    "reply was truncated by max_tokens. "
+                                    "Continue from EXACTLY where you "
+                                    "stopped — do NOT repeat anything "
+                                    "you've already written, just append "
+                                    "the rest."
+                                ),
+                            ),
+                        ]
+                        _b230_continue_count += 1
+                        _b227_attempts = 0  # reset per-call retry budget
                         try:
                             from xmclaw.utils.log import get_logger
-                            get_logger(__name__).warning(
-                                "agent_loop.llm_retry hop=%d reason=%s "
-                                "attempt=%d sleep_ms=%d msg=%s",
-                                hop, ce.reason.value, _b227_attempts + 1,
-                                sleep_ms, ce.message[:120],
+                            get_logger(__name__).info(
+                                "agent_loop.b230_auto_continue "
+                                "session=%s hop=%d count=%d acc_chars=%d",
+                                session_id, hop, _b230_continue_count,
+                                len(_b230_acc_content),
                             )
                         except Exception:  # noqa: BLE001
                             pass
-                        await asyncio.sleep(sleep_ms / 1000.0)
-                        _b227_attempts += 1
-                        # Loop and retry with same kwargs.
+                        continue  # outer: re-issue LLM call
+
+                    # Done. Merge accumulated content (if any) into the
+                    # final response so persisted history reflects the
+                    # whole answer rather than just the last chunk.
+                    if _b230_acc_content:
+                        import dataclasses as _dc
+                        response = _dc.replace(
+                            response,
+                            content=_b230_acc_content + response.content,
+                        )
+                    break  # outer: real success
             except asyncio.TimeoutError:
                 latency_ms = (time.perf_counter() - t0) * 1000.0
                 # Tell the bus + the user clearly. The ANTI_REQ event

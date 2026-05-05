@@ -59,8 +59,18 @@ def decode_from_provider(item: dict[str, Any]) -> ToolCall | None:
     if isinstance(raw_args, dict):
         args = raw_args
     elif isinstance(raw_args, str):
+        # B-229: empty STRING ``""`` is the initial state of the streaming
+        # accumulator — it only persists into a finalised response when
+        # the stream got truncated by ``max_tokens`` BEFORE the first
+        # ``arguments`` chunk arrived. A legitimate zero-args call
+        # serialises as ``"{}"`` (literal JSON object), not ``""``.
+        # Returning a ToolCall with ``args={}`` here would let the agent
+        # loop dispatch a malformed tool invocation; the user sees a
+        # ``code_python({})`` ghost call that fails with "code required".
+        if not raw_args:
+            return None
         try:
-            parsed = json.loads(raw_args) if raw_args else {}
+            parsed = json.loads(raw_args)
         except json.JSONDecodeError:
             return None
         if not isinstance(parsed, dict):
