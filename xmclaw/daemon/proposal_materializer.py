@@ -434,16 +434,22 @@ class ProposalMaterializer:
         title: str,
         description: str,
         triggers: tuple[str, ...],
-        distance_threshold: float = 0.4,
+        distance_threshold: float = 0.20,
     ) -> str | None:
-        """B-201: vec-search existing kind=procedure rows for a near-
-        match against the candidate's signature (title + description +
-        triggers). Returns the matching skill_id if any row is within
+        """B-201 / B-222: vec-search existing kind=procedure rows for a
+        near-match against the candidate's signature (title + description
+        + triggers). Returns the matching skill_id if any row is within
         the L2² distance threshold, else None.
 
-        Threshold matches the upsert_fact default (0.4 ≈ cosine sim
-        ≥ 0.8 for normalised embeddings) so the same "this is the
-        same fact" intuition applies to skills.
+        B-222 tightens the threshold from 0.4 → 0.20 (cosine 0.8 → 0.9).
+        Real-data dogfood (5-5): 12 SKILL_CANDIDATE_PROPOSED events
+        all rejected as "near_duplicate_of_existing" → 0 new SKILL.md
+        landed on disk → user's evolution page stuck displaying 5-2's
+        11 auto-* skills. Investigation: short-text procedure
+        descriptions ("explore file system with bash" vs "review git
+        commits") routinely hit cosine 0.8+ for unrelated topics
+        because the embedding picks up shared command-line vocabulary.
+        0.9 cosine actually requires near-identical wording.
 
         No memory provider / no embedder = no dedup possible → return
         None and let the materialize proceed (back-compat with tests
@@ -478,8 +484,15 @@ class ProposalMaterializer:
         # adapters likely don't).
         finder = getattr(self._memory_provider, "_find_near_neighbour", None)
         if finder is None:
-            # External provider — fall back to a vec search via
-            # the generic query() and treat top-1 as a maybe.
+            # B-222 fix: pre-fix this branch returned top-1.skill_id
+            # *unconditionally* — any indexed procedure caused a dedup
+            # skip even when the candidate was unrelated. With a hop
+            # back to threshold-aware comparison we now require a
+            # positive distance signal before declaring a duplicate.
+            # When the underlying provider doesn't expose distance
+            # (mem0 / hindsight via the generic query() interface),
+            # we conservatively return None — false-negative bias on
+            # de-dup is better than the 100%-skip bias.
             try:
                 hits = await self._memory_provider.query(
                     "long",
@@ -494,7 +507,24 @@ class ProposalMaterializer:
                 return None
             if not hits:
                 return None
-            md = getattr(hits[0], "metadata", {}) or {}
+            top = hits[0]
+            md = getattr(top, "metadata", {}) or {}
+            # Only treat as a duplicate when the provider exposes a
+            # distance and it's tighter than the threshold. Distance
+            # may be on the row itself, in metadata, or a separate
+            # ``score`` field depending on provider.
+            dist = (
+                getattr(top, "distance", None)
+                if hasattr(top, "distance")
+                else md.get("distance")
+            )
+            if dist is None:
+                return None  # B-222: no distance signal → don't skip
+            try:
+                if float(dist) > distance_threshold:
+                    return None
+            except (TypeError, ValueError):
+                return None
             return md.get("skill_id") or None
 
         try:
