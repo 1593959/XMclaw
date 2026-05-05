@@ -9,7 +9,25 @@ function withToken(url, token) {
   return `${url}${sep}token=${encodeURIComponent(token)}`;
 }
 
+// B-214: sentinel for "token not ready" — pages mount BEFORE
+// fetchPairingToken() resolves, so the first useEffect fire goes
+// out with token=undefined. Pre-B-214 the daemon then returned 401
+// and the page rendered "401 Unauthorized: missing or invalid
+// pairing token", even though the *next* render with the real
+// token would have succeeded. Now apiGet/apiSend short-circuit
+// with this error class; pages catch it via `err.tokenNotReady`
+// and stay in their "loading" state without polluting the UI or
+// the daemon log with spurious 401s.
+export class TokenNotReadyError extends Error {
+  constructor() {
+    super("pairing token not ready yet");
+    this.name = "TokenNotReadyError";
+    this.tokenNotReady = true;
+  }
+}
+
 export async function apiGet(path, token) {
+  if (!token) throw new TokenNotReadyError();
   const res = await fetch(withToken(path, token));
   if (!res.ok) {
     let detail = "";
@@ -25,6 +43,7 @@ export async function apiGet(path, token) {
 }
 
 export async function apiSend(method, path, body, token) {
+  if (!token) throw new TokenNotReadyError();
   const res = await fetch(withToken(path, token), {
     method,
     headers: { "Content-Type": "application/json" },

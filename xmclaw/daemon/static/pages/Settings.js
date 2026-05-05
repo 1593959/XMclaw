@@ -282,9 +282,14 @@ export function SettingsPage({ token }) {
   const [showWizard, setShowWizard] = useState(false);
 
   const load = useCallback(() => {
+    if (!token) return;  // B-214: wait until token has hydrated
+    setError(null);  // clear any stale error from previous attempts
     apiGet("/api/v2/llm/profiles", token)
       .then(setData)
-      .catch((e) => setError(String(e.message || e)));
+      .catch((e) => {
+        if (e && e.tokenNotReady) return;  // B-214: race-condition retry
+        setError(String(e.message || e));
+      });
   }, [token]);
 
   useEffect(load, [load]);

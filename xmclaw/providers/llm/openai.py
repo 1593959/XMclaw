@@ -258,19 +258,37 @@ class OpenAILLM(LLMProvider):
             if choices:
                 delta = getattr(choices[0], "delta", None)
                 if delta is not None:
-                    # B-91: surface reasoning / extended-thinking deltas
-                    # before the visible content. Three field names are in
-                    # the wild:
+                    # B-91 / B-214: surface reasoning / extended-thinking
+                    # deltas before the visible content. Three field
+                    # names in the wild:
                     #   * ``reasoning_content`` — MiniMax M2 / Moonshot /
                     #     DashScope / Qwen / GLM (most "reasoning" Chinese
                     #     providers settled on this)
                     #   * ``reasoning`` — OpenAI o1 / o3 / o4 native
                     #   * ``thinking`` — some forks
-                    # Try each in order; only fire the callback when a
-                    # non-empty delta is present.
+                    # Pre-B-214 we only used getattr(delta, ...). The
+                    # openai SDK's ChatCompletionChunk is a pydantic
+                    # model that DOESN'T expose unknown fields as
+                    # attributes — they land in ``model_extra``
+                    # (pydantic v2) / ``__fields_set__`` extras. Audit
+                    # showed 0 thinking events ever fired across 1024
+                    # MiniMax requests despite the provider streaming
+                    # reasoning_content. Fix: also probe the extras
+                    # bag.
                     if on_thinking_chunk is not None:
+                        # Build a single lookup dict from both attr and
+                        # extras so the precedence stays explicit.
+                        extra_bag: dict = {}
+                        try:
+                            me = getattr(delta, "model_extra", None)
+                            if isinstance(me, dict):
+                                extra_bag.update(me)
+                        except Exception:  # noqa: BLE001
+                            pass
                         for attr in ("reasoning_content", "reasoning", "thinking"):
                             think_delta = getattr(delta, attr, None)
+                            if not (isinstance(think_delta, str) and think_delta):
+                                think_delta = extra_bag.get(attr)
                             if isinstance(think_delta, str) and think_delta:
                                 await on_thinking_chunk(think_delta)
                                 break
