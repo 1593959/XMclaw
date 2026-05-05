@@ -85,6 +85,23 @@ def test_default_prompt_mentions_tool_aggressiveness() -> None:
     assert "use them aggressively rather than refusing" in p
 
 
+def test_b206_narration_discipline_present() -> None:
+    """B-206: probe data showed MiniMax M2.7 / OpenAI-compat models
+    emit empty content on intermediate hops, leaving the user staring
+    at silent tool cards between hop 0 narration and the final
+    synthesis. Fix is a hard system-prompt rule. This test pins the
+    rule so a refactor doesn't silently delete it."""
+    p = _DEFAULT_SYSTEM
+    assert "Narration discipline" in p
+    # Must explicitly call out the OpenAI-compat model class —
+    # Anthropic users don't need this rule, but the rule must
+    # survive even if the user runs Claude (it's a no-op there).
+    assert "OpenAI-compatible" in p or "MiniMax" in p
+    # The "before next tool call" framing is the load-bearing part;
+    # without it the rule degrades to "narrate sometimes".
+    assert "BEFORE emitting the next tool call" in p
+
+
 def test_default_prompt_size_bounded() -> None:
     """Cheap sanity bound — the prompt is appended to every system
     message. If a refactor accidentally bloats it past ~30k chars

@@ -284,6 +284,38 @@ function PhaseCard({ message, baseLabel, elapsedS, stalled, isWorking }) {
   `;
 }
 
+// B-207: silent-bubble placeholder. When MiniMax / Qwen / GLM emit a
+// tool-call response with empty content (the model variant for
+// intermediate hops doesn't narrate between tool calls — we ship a
+// system-prompt rule about this in B-206 but the model isn't always
+// compliant), the assistant bubble would render with NOTHING above
+// the tool cards. That visually breaks the conversation flow.
+//
+// This soft fallback synthesises a one-line italic "调用了 X" label
+// so the UI is never silent — but only AFTER the bubble is settled
+// (status=complete + tools no longer running). While streaming /
+// running we let the spinner / tool card phase do the work.
+function _shouldShowSilentBubblePlaceholder(message) {
+  if (message.status !== "complete") return false;
+  if (message.content) return false;
+  const tcs = message.toolCalls || [];
+  if (tcs.length === 0) return false;
+  // Don't show during the brief moment a tool is still running —
+  // the tool card itself already has a spinner.
+  if (tcs.some((c) => c.status === "running")) return false;
+  return true;
+}
+
+function _silentBubbleLabel(toolCalls) {
+  const names = (toolCalls || [])
+    .map((c) => c.name || "tool")
+    .filter((n, i, arr) => arr.indexOf(n) === i);  // dedup
+  if (names.length === 0) return "(调用了工具)";
+  if (names.length === 1) return `(直接调用了 ${names[0]})`;
+  if (names.length <= 3) return `(直接调用了 ${names.join(" / ")})`;
+  return `(直接调用了 ${names.slice(0, 3).join(" / ")} 等 ${names.length} 个工具)`;
+}
+
 export function MessageBubble({ message, onAnswerQuestion }) {
   // B-92: question-kind bubbles render as QuestionCard, not as
   // markdown text. The reducer creates these on AGENT_ASKED_QUESTION
@@ -431,7 +463,11 @@ export function MessageBubble({ message, onAnswerQuestion }) {
         ? html`<${MarkdownBody} content=${message.content} />`
         : (role === "assistant" && thinking
             ? html`<div class="xmc-msg__placeholder" style="opacity:.65;font-size:.85em">🌸 收到啦，正在思考中...</div>`
-            : null)}
+            : (role === "assistant"
+                && (message.toolCalls || []).length > 0
+                && _shouldShowSilentBubblePlaceholder(message)
+                ? html`<div class="xmc-msg__placeholder xmc-msg__placeholder--silent" style="opacity:.55;font-size:.85em;font-style:italic">${_silentBubbleLabel(message.toolCalls)}</div>`
+                : null))}
       ${(message.toolCalls || []).map(
         (call) => html`<${ToolCard} key=${call.id} call=${call} />`
       )}
