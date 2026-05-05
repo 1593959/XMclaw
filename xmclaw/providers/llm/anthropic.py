@@ -253,20 +253,20 @@ class AnthropicLLM(LLMProvider):
         tool_defs = self._tools_to_anthropic(tools)
         if tool_defs:
             kwargs["tools"] = tool_defs
-        # B-216: opt into extended thinking when the model name
-        # advertises it. Anthropic's claude-{opus,sonnet} 4.x and
-        # claude-haiku-4-5 all support thinking blocks; MiniMax /
-        # Kimi Coding-Plan / other Anthropic-compat endpoints
-        # generally accept the same kwarg shape (and silently
-        # ignore when unsupported, per Anthropic's compat spec).
-        # Caller can disable via ``self._extended_thinking=False``
-        # when constructing the provider, but the default is ON
-        # so PhaseCard finally has thinking content to show.
-        if getattr(self, "_extended_thinking", True):
-            # max_tokens must exceed budget_tokens for the API to
-            # accept the request. We bump max_tokens to 8192 when
-            # thinking is on so the model has visible-content room
-            # AFTER the 5000-token thinking budget.
+        # B-216: optionally request extended thinking. Was default-ON
+        # in the first cut, but real-data trace (turn 65f9ec, kimi
+        # k2.6 via api.kimi.com/coding/) showed hop 0 streaming OK
+        # then hops 1-9 ALL hitting the streaming fallback path —
+        # the Kimi Coding-Plan endpoint rejects ``thinking`` kwarg
+        # once a tool_use block is in the conversation history.
+        # Made opt-in via ``self._extended_thinking`` (default
+        # False) so streaming always works; users with a real
+        # Claude-on-Anthropic-direct endpoint can flip the flag
+        # to surface thinking content. The thinking_delta event
+        # iteration below is unconditional — if the endpoint
+        # ever sends one, we'll catch it with or without the
+        # opt-in flag.
+        if getattr(self, "_extended_thinking", False):
             kwargs["max_tokens"] = max(int(kwargs.get("max_tokens", 4096)), 8192)
             kwargs["thinking"] = {
                 "type": "enabled",
@@ -323,10 +323,23 @@ class AnthropicLLM(LLMProvider):
                         latency_ms=(time.perf_counter() - t0) * 1000.0,
                     )
                 final = await stream.get_final_message()
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
             # Some Anthropic-compat shims (MiniMax, Qwen via /anthropic) don't
             # implement the streaming endpoint. Fall back to non-streaming so
             # the user still gets an answer — they just lose live-typing UX.
+            # B-216 bugfix: log so silent fallbacks don't blind us. Real-data
+            # showed hops 1-9 all silently falling back when thinking kwarg
+            # was on; we ONLY noticed by counting llm_chunk events in
+            # events.db. Log the type so future regressions surface fast.
+            try:
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).warning(
+                    "anthropic.stream_failed → fallback to complete: "
+                    "%s: %s",
+                    type(exc).__name__, str(exc)[:200],
+                )
+            except Exception:  # noqa: BLE001
+                pass
             return await self.complete(messages, tools)
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
