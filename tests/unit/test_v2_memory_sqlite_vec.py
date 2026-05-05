@@ -80,7 +80,16 @@ async def test_put_stores_metadata_roundtrip() -> None:
     mem = SqliteVecMemory(":memory:")
     await mem.put("short", _item("x", metadata={"tag": "note", "score": 0.5}))
     [got] = await mem.query("short")
-    assert got.metadata == {"tag": "note", "score": 0.5}
+    # Original metadata round-trips...
+    assert got.metadata["tag"] == "note"
+    assert got.metadata["score"] == 0.5
+    # ...AND B-198 lifts column-backed Phase 2 fields into metadata so
+    # callers see live counts (evidence_count etc.) instead of stale
+    # JSON copies.
+    assert got.metadata["evidence_count"] == 1
+    assert got.metadata["confidence"] == 1.0
+    assert "last_seen" in got.metadata
+    assert "retrieval_count" in got.metadata
     mem.close()
 
 

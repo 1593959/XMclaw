@@ -467,9 +467,14 @@ class SqliteVecMemory(MemoryProvider):
             import struct
             qblob = struct.pack(f"{len(embedding)}f", *embedding)
             # vec0 KNN: join to memory_items, constrain layer.
+            # B-198: include Phase 2 columns so _row_to_item can lift
+            # them into metadata (live evidence_count etc, not the
+            # stale insert-time JSON copy).
             sql = f"""
                 SELECT m.id, m.layer, m.text, m.metadata, m.ts,
-                       m.has_embedding, v.distance
+                       m.has_embedding, v.distance,
+                       m.evidence_count, m.confidence, m.last_seen,
+                       m.retrieval_count, m.superseded_by
                 FROM memory_vec v
                 JOIN memory_items m ON m.id = v.item_id
                 WHERE v.embedding MATCH ?
@@ -481,7 +486,9 @@ class SqliteVecMemory(MemoryProvider):
             rows = cur.execute(sql, (qblob, k, layer, *filter_params)).fetchall()
         elif text:
             sql = f"""
-                SELECT id, layer, text, metadata, ts, has_embedding
+                SELECT id, layer, text, metadata, ts, has_embedding,
+                       evidence_count, confidence, last_seen,
+                       retrieval_count, superseded_by
                 FROM memory_items
                 WHERE layer = ?
                   AND text LIKE ?
@@ -494,7 +501,9 @@ class SqliteVecMemory(MemoryProvider):
             ).fetchall()
         else:
             sql = f"""
-                SELECT id, layer, text, metadata, ts, has_embedding
+                SELECT id, layer, text, metadata, ts, has_embedding,
+                       evidence_count, confidence, last_seen,
+                       retrieval_count, superseded_by
                 FROM memory_items
                 WHERE layer = ?
                   {filter_clause}
@@ -887,6 +896,21 @@ class SqliteVecMemory(MemoryProvider):
     @staticmethod
     def _row_to_item(row: sqlite3.Row) -> MemoryItem:
         meta = json.loads(row["metadata"]) if row["metadata"] else {}
+        # B-198: surface column-backed Phase 2 fields into metadata so
+        # callers see the live counts (upsert/_strengthen mutate the
+        # COLUMNS but the JSON `metadata` blob stays at its insert-time
+        # value — without this lift the renderer / dedup logic would
+        # always see evidence_count=1 even after multiple strengthens).
+        try:
+            row_keys = row.keys()
+        except (TypeError, AttributeError):
+            row_keys = []
+        for col_name in (
+            "evidence_count", "confidence", "last_seen",
+            "retrieval_count", "superseded_by",
+        ):
+            if col_name in row_keys and row[col_name] is not None:
+                meta[col_name] = row[col_name]
         return MemoryItem(
             id=row["id"],
             layer=row["layer"],
