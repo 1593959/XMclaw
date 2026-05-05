@@ -7,8 +7,8 @@
 //
 // Hermes wires through gw.request("model.options"). XMclaw uses
 // /api/v2/llm/profiles which already returns LLMProfile objects with
-// {id, label, provider_name, model}. We group those by
-// provider_name into the same {providers: [{slug, name, models[],
+// {id, label, provider, model}. We group those by
+// provider into the same {providers: [{slug, name, models[],
 // is_current}]} shape ModelPickerDialog expects.
 
 const { h } = window.__xmc.preact;
@@ -156,7 +156,7 @@ export function ModelPickerDialog({ token, sessionId, currentProfileId, onClose,
         setProfiles(list);
         const byProv = new Map();
         for (const p of list) {
-          const slug = p.provider_name || "unknown";
+          const slug = p.provider || "unknown";
           const bucket = byProv.get(slug) || { slug, name: slug, models: [], profileIds: [] };
           if (!bucket.models.includes(p.model)) bucket.models.push(p.model);
           bucket.profileIds.push(p.id);
@@ -164,7 +164,7 @@ export function ModelPickerDialog({ token, sessionId, currentProfileId, onClose,
           byProv.set(slug, bucket);
         }
         const cur = list.find((p) => p.id === currentProfileId);
-        const initialSlug = (cur && cur.provider_name) || (list[0] && list[0].provider_name) || "";
+        const initialSlug = (cur && cur.provider) || (list[0] && list[0].provider) || "";
         setSelectedSlug(initialSlug);
         setSelectedModel(cur ? cur.model : "");
         setLoading(false);
@@ -188,7 +188,7 @@ export function ModelPickerDialog({ token, sessionId, currentProfileId, onClose,
   const providers = useMemo(() => {
     const byProv = new Map();
     for (const p of profiles) {
-      const slug = p.provider_name || "unknown";
+      const slug = p.provider || "unknown";
       const bucket = byProv.get(slug) || { slug, name: slug, models: [], profileIds: [] };
       if (!bucket.models.includes(p.model)) bucket.models.push(p.model);
       bucket.profileIds.push(p.id);
@@ -221,13 +221,13 @@ export function ModelPickerDialog({ token, sessionId, currentProfileId, onClose,
 
   const currentProfile = profiles.find((p) => p.id === currentProfileId);
   const currentModel = currentProfile ? currentProfile.model : "";
-  const currentProvSlug = currentProfile ? currentProfile.provider_name : "";
+  const currentProvSlug = currentProfile ? currentProfile.provider : "";
 
   const canConfirm = !!selectedSlug && !!selectedModel;
 
   const confirm = () => {
     const target = profiles.find(
-      (p) => p.provider_name === selectedSlug && p.model === selectedModel
+      (p) => p.provider === selectedSlug && p.model === selectedModel
     );
     if (!target) {
       toast.error("找不到对应 profile（可能 profile 列表已变化，请重打开）");

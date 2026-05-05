@@ -176,6 +176,19 @@ function AddModelWizard({ token, existingIds, onClose, onCreated }) {
             </label>
 
             <label style="display:flex;flex-direction:column;gap:.15rem;font-size:.78rem;margin-bottom:.4rem">
+              <span>协议 (Provider Protocol) <small style="opacity:.6">— 默认从预设来；同 endpoint 走 Anthropic 协议时改这里</small></span>
+              <select value=${providerKind} onChange=${(e) => setProviderKind(e.target.value)} style="padding:.3rem .45rem;font-family:var(--xmc-font-mono);font-size:.78rem">
+                <option value="anthropic">anthropic — Claude / MiniMax 海螺 / Kimi Coding Plan / 任何 Anthropic-兼容</option>
+                <option value="openai">openai — OpenAI / DeepSeek / 普通 Kimi / GLM / Qwen / Ollama / 任何 OpenAI-兼容</option>
+              </select>
+              ${providerKind !== preset?.provider_kind ? html`
+                <small style="font-size:.65rem;color:var(--xmc-fg-muted)">
+                  ⚠️ 已覆盖预设默认 (<code>${preset?.provider_kind}</code>) — 仅当你确定该 endpoint 真用 ${providerKind} 协议时再改。
+                </small>
+              ` : null}
+            </label>
+
+            <label style="display:flex;flex-direction:column;gap:.15rem;font-size:.78rem;margin-bottom:.4rem">
               <span>ID <span style="color:var(--color-error,#c66)">*</span> <small style="opacity:.6">小写字母 / 数字 / -_, 全局唯一</small></span>
               <input type="text" value=${modelId} onInput=${(e) => setModelId(e.target.value)} required style="padding:.3rem .45rem;font-family:var(--xmc-font-mono);font-size:.78rem" />
             </label>
