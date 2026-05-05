@@ -1,4 +1,5 @@
-"""B-226: tool-result pruning, ported from Hermes context_compressor.py.
+"""B-226 + P0-1 Phase-1: tool-result pruning, ported from Hermes
+``context_compressor.py``.
 
 Pre-B-226 XMclaw's _persist_history just dropped old turns when over
 the message-count / token cap. Long conversations with big tool
@@ -10,15 +11,18 @@ needs the full file content from 30 turns ago — a 1-line summary
 This module preserves the most recent N tokens worth of tool results
 intact, and replaces older ones with informative 1-line summaries.
 Same algorithm as Hermes ``_prune_old_tool_results`` — just adapted
-to XMclaw's Message dataclass + tool registry.
+to XMclaw's Message + ToolCall dataclasses.
 
 Three passes:
   1. **Dedup**: identical tool result content (same file read 5 times)
      keeps only the newest full copy; older duplicates → "[Duplicate]"
   2. **Summarize old**: tool messages outside protected tail get
      replaced with ``_summarize_tool_result(name, args, content)``
-  3. **Truncate large args**: assistant tool_calls with > 500 char
-     args (write_file with 50KB content, etc) get JSON-aware shrunk
+  3. **Truncate large args** (P0-1): assistant tool_calls with > 500 char
+     args (file_write with 50KB content, apply_patch with a giant diff)
+     get JSON-aware shrunk — long string values inside the JSON struct
+     are clipped to 200 chars while the JSON shape stays valid. Without
+     this a 50KB file_write call survives pruning entirely.
 
 Hermes source: ``hermes-agent/agent/context_compressor.py:113-522``.
 """
@@ -30,10 +34,82 @@ import json
 import re
 from typing import Any
 
+# B-229 follow-up: relocated from ``xmclaw/utils/`` to
+# ``xmclaw/context/`` so the runtime ``Message`` import satisfies the
+# import-direction DAG. ``utils/`` cannot import from ``providers/``
+# (utils is a leaf below providers); ``context/`` sits above providers
+# and is allowed.
 from xmclaw.providers.llm.base import Message
 
 # Same default chars/4 ≈ token estimate as Hermes + agent_loop.
 _CHARS_PER_TOKEN = 4
+
+# Pass 3: tool_call argument truncation. Args longer than this get
+# the JSON-aware shrink applied to long string leaves.
+_TOOL_ARGS_TRUNCATE_THRESHOLD = 500
+_TOOL_ARGS_LEAF_HEAD = 200
+
+
+def _shrink_long_strings(obj: Any, head_chars: int = _TOOL_ARGS_LEAF_HEAD) -> Any:
+    """Recursively clip long string leaves in a parsed JSON value.
+
+    Keeps the JSON structure intact (all dict keys / list lengths
+    preserved) so the result re-serialises into well-formed JSON.
+    Non-string values (paths, ints, booleans, nulls) pass through.
+    """
+    if isinstance(obj, str):
+        if len(obj) > head_chars:
+            return obj[:head_chars] + "...[truncated]"
+        return obj
+    if isinstance(obj, dict):
+        return {k: _shrink_long_strings(v, head_chars) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_shrink_long_strings(v, head_chars) for v in obj]
+    return obj
+
+
+def _truncate_tool_call_args(args: Any) -> tuple[Any, bool]:
+    """Shrink long string values inside a tool-call args structure.
+
+    Hermes ``_truncate_tool_call_args_json`` operates on a JSON string
+    (OpenAI-style ``function.arguments``). XMclaw's ``ToolCall.args``
+    is already a parsed dict, so we shrink the parsed structure
+    directly. JSON-string args (rare) are parsed first.
+
+    Returns ``(new_args, modified)``. ``modified=False`` means the
+    args were under the threshold or non-shrinkable — caller should
+    keep the original to avoid pointless rewrites.
+    """
+    if args is None:
+        return args, False
+
+    parsed: Any
+    if isinstance(args, str):
+        try:
+            parsed = json.loads(args)
+        except (json.JSONDecodeError, TypeError):
+            # Non-JSON tool args (some local backends use bare strings) —
+            # leave alone. Rewriting them risks worse parsing downstream.
+            if len(args) > _TOOL_ARGS_TRUNCATE_THRESHOLD:
+                return args[:_TOOL_ARGS_LEAF_HEAD] + "...[truncated]", True
+            return args, False
+        # Round-trip via JSON so we serialise back as a string of the
+        # same shape Hermes uses for the OpenAI tool-call format.
+        original_str = args
+    elif isinstance(args, (dict, list)):
+        parsed = args
+        original_str = json.dumps(args, ensure_ascii=False)
+    else:
+        return args, False
+
+    if len(original_str) <= _TOOL_ARGS_TRUNCATE_THRESHOLD:
+        return args, False
+
+    shrunken = _shrink_long_strings(parsed)
+    if isinstance(args, str):
+        # ensure_ascii=False preserves CJK/emoji rather than \uXXXX
+        return json.dumps(shrunken, ensure_ascii=False), True
+    return shrunken, True
 
 
 def _summarize_tool_result(name: str, args: Any, content: str) -> str:
@@ -240,6 +316,30 @@ def prune_old_tool_results(
         summary = _summarize_tool_result(name, args, content)
         result[i] = dataclasses.replace(m, content=summary)
         pruned += 1
+
+    # Pass 3 (P0-1): JSON-aware truncation of large tool_call args in
+    # old assistant messages. A single 50KB file_write or apply_patch
+    # call survives passes 1+2 entirely without this — Pass 2 only
+    # touches role=tool RESULT messages, not the assistant tool_call
+    # that emitted them. Walk the prune zone and shrink long string
+    # leaves inside ``ToolCall.args`` while keeping the JSON shape
+    # valid (downstream providers 400 on malformed args).
+    for i in range(prune_boundary):
+        m = result[i]
+        if m.role != "assistant" or not m.tool_calls:
+            continue
+        new_calls: list[Any] = []
+        modified = False
+        for tc in m.tool_calls:
+            args = getattr(tc, "args", None)
+            shrunken, did_shrink = _truncate_tool_call_args(args)
+            if did_shrink:
+                new_calls.append(dataclasses.replace(tc, args=shrunken))
+                modified = True
+            else:
+                new_calls.append(tc)
+        if modified:
+            result[i] = dataclasses.replace(m, tool_calls=tuple(new_calls))
 
     return result, pruned
 

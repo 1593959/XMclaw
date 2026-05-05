@@ -11,7 +11,7 @@ import json
 
 from xmclaw.core.ir import ToolCall
 from xmclaw.providers.llm.base import Message
-from xmclaw.utils.tool_result_prune import (
+from xmclaw.context.tool_result_prune import (
     _summarize_tool_result,
     prune_old_tool_results,
 )
