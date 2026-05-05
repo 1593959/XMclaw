@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re as _re_md
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
@@ -54,6 +55,73 @@ from xmclaw.providers.channel.base import (
 
 
 _log = logging.getLogger(__name__)
+
+
+# B-209: detect markdown in outbound text. When present, send as
+# msg_type=interactive (card with markdown element) so feishu actually
+# RENDERS bold / lists / code blocks instead of showing the raw chars.
+# Plain text replies stay msg_type=text — cards add chrome that's
+# overkill for "OK 收到" one-liners.
+#
+# Heuristic: any of these markers triggers card-mode.
+#   **bold**, *italic*, __underline__, _italic_
+#   `code`, ```fence```
+#   # heading (line start)
+#   - bullet, * bullet, 1. ordered (line start)
+#   > quote (line start)
+#   [text](url) link
+#   --- horizontal rule (line start)
+#   | table | row |
+_MARKDOWN_MARKERS = _re_md.compile(
+    r"(\*\*[^\n*]+\*\*"          # **bold**
+    r"|`[^\n`]+`"                # `inline code`
+    r"|```"                      # fenced code block
+    r"|^\s*#{1,6}\s+\S"          # # heading
+    r"|^\s*[-*]\s+\S"            # - bullet  / * bullet
+    r"|^\s*\d+\.\s+\S"           # 1. ordered list
+    r"|^\s*>\s+\S"               # > quote
+    r"|\[[^\]\n]+\]\([^)\n]+\)"  # [link](url)
+    r"|^\s*-{3,}\s*$"            # --- hr
+    r"|^\s*\|.+\|\s*$)",         # | table | row |
+    _re_md.MULTILINE,
+)
+
+# Lark interactive cards have a server-side size cap (~30k chars in
+# practice). Stay well under so big tool dumps still go through as
+# plain text rather than fail the card POST.
+_CARD_MAX_CHARS = 24_000
+
+
+def _looks_like_markdown(text: str) -> bool:
+    """B-209: True when ``text`` has at least one common markdown
+    marker. Used to route outbound replies between text and card."""
+    if not text:
+        return False
+    return bool(_MARKDOWN_MARKERS.search(text))
+
+
+def _build_lark_markdown_card(content: str) -> dict[str, Any]:
+    """Wrap markdown text in a Lark interactive-card payload.
+
+    Card schema reference:
+      https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/feishu-cards/card-content-component/markdown
+    """
+    return {
+        "config": {
+            # wide_screen_mode True = use full conversation width;
+            # better for tabular tool output.
+            "wide_screen_mode": True,
+        },
+        "elements": [
+            {
+                "tag": "markdown",
+                "content": content,
+                # text_align defaults left; explicit so future Lark
+                # changes don't surprise us.
+                "text_align": "left",
+            },
+        ],
+    }
 
 
 class FeishuAdapter(ChannelAdapter):
@@ -300,7 +368,26 @@ class FeishuAdapter(ChannelAdapter):
         if not payload.content.strip() and last_msg_id:
             return last_msg_id
 
-        content_str = json.dumps({"text": payload.content}, ensure_ascii=False)
+        # B-209: route markdown replies through msg_type=interactive
+        # (card with markdown element) so feishu renders **bold** /
+        # `code` / ## headers / lists properly instead of showing
+        # raw characters. Plain text stays msg_type=text — cards
+        # add chrome that's overkill for "OK 收到" one-liners.
+        # Oversized payloads (> _CARD_MAX_CHARS) fall back to text
+        # so we don't fail the card POST on a huge tool dump.
+        use_card = (
+            _looks_like_markdown(payload.content)
+            and len(payload.content) <= _CARD_MAX_CHARS
+        )
+        if use_card:
+            card = _build_lark_markdown_card(payload.content)
+            content_str = json.dumps(card, ensure_ascii=False)
+            msg_type = "interactive"
+        else:
+            content_str = json.dumps(
+                {"text": payload.content}, ensure_ascii=False,
+            )
+            msg_type = "text"
 
         if payload.reply_to:
             req = (
@@ -309,7 +396,7 @@ class FeishuAdapter(ChannelAdapter):
                 .request_body(
                     ReplyMessageRequestBody.builder()
                     .content(content_str)
-                    .msg_type("text")
+                    .msg_type(msg_type)
                     .build()
                 )
                 .build()
@@ -327,7 +414,7 @@ class FeishuAdapter(ChannelAdapter):
                     CreateMessageRequestBody.builder()
                     .receive_id(target.ref)
                     .content(content_str)
-                    .msg_type("text")
+                    .msg_type(msg_type)
                     .build()
                 )
                 .build()
