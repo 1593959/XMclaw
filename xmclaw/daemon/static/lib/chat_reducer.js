@@ -47,6 +47,48 @@ function genId() {
   return "m_" + Math.random().toString(16).slice(2, 10);
 }
 
+// B-218: per-row event timeline helpers. Each message can carry an
+// ``events: []`` ordered list — chat-bubble UIs that prefer linear
+// per-block rendering (CoPaw / OpenClaw style) read this; the legacy
+// ``message.toolCalls`` + ``message.thinking`` aggregates stay as
+// they are for back-compat with components that still rely on them.
+//
+// Boundary rule:
+//   * llm_thinking_chunk → append to trailing thinking event, OR
+//     start a new thinking block when the last event is text/tool.
+//   * llm_chunk          → same logic for text events.
+//   * tool_call_emitted  → always pushes a fresh tool event (each
+//     tool invocation is one row).
+function _appendThinkingEvent(events, mid, delta) {
+  const arr = events ? [...events] : [];
+  const last = arr[arr.length - 1];
+  if (last && last.type === "thinking") {
+    arr[arr.length - 1] = { ...last, content: (last.content || "") + delta };
+  } else {
+    arr.push({
+      type: "thinking",
+      id: mid + ":k" + arr.length,
+      content: delta,
+    });
+  }
+  return arr;
+}
+
+function _appendTextEvent(events, mid, delta) {
+  const arr = events ? [...events] : [];
+  const last = arr[arr.length - 1];
+  if (last && last.type === "text") {
+    arr[arr.length - 1] = { ...last, content: (last.content || "") + delta };
+  } else {
+    arr.push({
+      type: "text",
+      id: mid + ":t" + arr.length,
+      content: delta,
+    });
+  }
+  return arr;
+}
+
 function upsertById(messages, id, patcher) {
   const idx = messages.findIndex((m) => m.id === id);
   if (idx === -1) return messages;
@@ -218,6 +260,11 @@ export function applyEvent(chat, envelope) {
             status: "streaming",
             ts,
             toolCalls: [],
+            // B-218: chronological event timeline. Each entry =
+            // one rendered row in MessageBubble. Mirrors what
+            // OpenClaw / CoPaw / Hermes show: thinking-row →
+            // tool-row → text-row in the order events arrived.
+            events: [{ type: "text", id: id + ":t0", content: delta }],
           }),
         };
       }
@@ -228,17 +275,23 @@ export function applyEvent(chat, envelope) {
           ...m,
           content: m.content + delta,
           status: "streaming",
+          // B-218: append to the trailing text event when the last
+          // event is text; otherwise start a new text event after
+          // the most recent thinking / tool block. Keeps things
+          // grouped naturally.
+          events: _appendTextEvent(m.events || [], id, delta),
         })),
       };
     }
 
     case "llm_thinking_chunk": {
-      // B-91: reasoning / extended-thinking token delta. Accumulate
-      // onto ``message.thinking`` (separate from message.content) so
-      // the PhaseCard body can render it without polluting the main
-      // bubble text. Bubble is created lazily on the first thinking
-      // chunk so a model that emits reasoning before any visible
-      // content still gets a card to attach to.
+      // B-91 / B-218: reasoning / extended-thinking token delta.
+      // Pre-B-218 accumulated into a single ``message.thinking``
+      // string, rendered in PhaseCard above the bubble. Now ALSO
+      // appended into ``message.events`` so MessageBubble can show
+      // each thinking BLOCK as its own collapsible row inline with
+      // the tool calls — matches the per-row layout users see in
+      // CoPaw / OpenClaw screenshots.
       const id = corr;
       const delta = typeof payload.delta === "string"
         ? payload.delta
@@ -259,6 +312,7 @@ export function applyEvent(chat, envelope) {
             phase: "calling_llm",
             ts,
             toolCalls: [],
+            events: [{ type: "thinking", id: id + ":k0", content: delta }],
           }),
         };
       }
@@ -268,6 +322,10 @@ export function applyEvent(chat, envelope) {
         messages: upsertById(cleaned, id, (m) => ({
           ...m,
           thinking: (m.thinking || "") + delta,
+          // B-218: append to trailing thinking event OR open a new
+          // thinking block when the last event is tool/text. This
+          // is what gives us the per-block rendering peers have.
+          events: _appendThinkingEvent(m.events || [], id, delta),
         })),
       };
     }
@@ -373,6 +431,18 @@ export function applyEvent(chat, envelope) {
         status: "running",
         result: null,
       };
+      // B-218: also represent this tool invocation as a chronological
+      // event in ``events[]``. Carries the SAME id as ``tc.id`` so
+      // the matching tool_invocation_finished handler can update
+      // BOTH structures by id.
+      const toolEvent = {
+        type: "tool",
+        id: callId,
+        name: tc.name,
+        args: tc.args,
+        status: "running",
+        result: null,
+      };
       // B-89: tool_call_emitted can be the FIRST event for a turn when
       // the LLM goes straight to a tool without prefacing prose. Same
       // abandoned-bubble guard as llm_request / llm_chunk.
@@ -389,6 +459,7 @@ export function applyEvent(chat, envelope) {
             status: "streaming",
             ts,
             toolCalls: [tc],
+            events: [toolEvent],
           }),
         };
       }
@@ -397,6 +468,7 @@ export function applyEvent(chat, envelope) {
         messages: upsertById(cleanedTC, aid, (m) => ({
           ...m,
           toolCalls: (m.toolCalls || []).concat(tc),
+          events: (m.events || []).concat(toolEvent),
         })),
       };
     }
@@ -418,6 +490,12 @@ export function applyEvent(chat, envelope) {
           ...m,
           toolCalls: (m.toolCalls || []).map((tc) =>
             tc.id === callId ? { ...tc, status, result } : tc
+          ),
+          // B-218: mirror update onto the matching event row.
+          events: (m.events || []).map((ev) =>
+            ev.type === "tool" && ev.id === callId
+              ? { ...ev, status, result }
+              : ev
           ),
         })),
       };

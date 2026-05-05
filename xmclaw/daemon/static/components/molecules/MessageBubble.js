@@ -33,6 +33,36 @@ import {
   getAudioPrefs,
 } from "../../lib/audio.js";
 
+// B-218: per-block Thinking row. One row per continuous thinking
+// segment (terminated by a tool call or text emission). Collapses
+// the body by default like the ToolCard does — match peer (CoPaw /
+// OpenClaw / Hermes) layout where 💡 Thinking shows as a compact
+// row alongside 🔧 tool rows.
+function ThinkingRow({ ev }) {
+  const body = (ev && ev.content) || "";
+  const hasBody = body.trim().length > 0;
+  return html`
+    <details class="xmc-toolcard xmc-toolcard--ok xmc-toolcard--thinking">
+      <summary class="xmc-toolcard__summary">
+        <span class="xmc-toolcard__bullet" aria-hidden="true">💡</span>
+        <code class="xmc-toolcard__name">Thinking</code>
+        ${hasBody
+          ? html`<small style="color:var(--xmc-fg-muted);margin-left:.3em">${body.length} chars</small>`
+          : null}
+      </summary>
+      ${hasBody
+        ? html`
+            <div class="xmc-toolcard__body">
+              <div class="xmc-toolcard__section">
+                <pre class="xmc-phasecard__thinking-body" style="white-space:pre-wrap;font-size:.85em;line-height:1.5">${body}</pre>
+              </div>
+            </div>
+          `
+        : null}
+    </details>
+  `;
+}
+
 function ToolCard({ call }) {
   // Hermes ToolCall.tsx pattern: status-tinted card with bullet ●
   // (running/done/error tones), auto-expand on error, user can override.
@@ -461,18 +491,38 @@ export function MessageBubble({ message, onAnswerQuestion }) {
         stalled=${stalled}
         isWorking=${isWorking}
       />
-      ${message.content
-        ? html`<${MarkdownBody} content=${message.content} />`
-        : (role === "assistant" && thinking
-            ? html`<div class="xmc-msg__placeholder" style="opacity:.65;font-size:.85em">🌸 收到啦，正在思考中...</div>`
-            : (role === "assistant"
-                && (message.toolCalls || []).length > 0
-                && _shouldShowSilentBubblePlaceholder(message)
-                ? html`<div class="xmc-msg__placeholder xmc-msg__placeholder--silent" style="opacity:.55;font-size:.85em;font-style:italic">${_silentBubbleLabel(message.toolCalls)}</div>`
-                : null))}
-      ${(message.toolCalls || []).map(
-        (call) => html`<${ToolCard} key=${call.id} call=${call} />`
-      )}
+      ${role === "assistant" && (message.events || []).length > 0
+        ? html`
+            <!-- B-218: linear event-stream rendering. Each thinking
+                 block + each tool call + each text segment renders
+                 as its own row in chronological order, matching the
+                 layout in CoPaw / OpenClaw / Hermes screenshots. -->
+            ${(message.events || []).map((ev) => {
+              if (ev.type === "thinking") {
+                return html`<${ThinkingRow} key=${ev.id} ev=${ev} />`;
+              }
+              if (ev.type === "tool") {
+                return html`<${ToolCard} key=${ev.id} call=${ev} />`;
+              }
+              // text
+              return html`<${MarkdownBody} key=${ev.id} content=${ev.content || ""} />`;
+            })}
+          `
+        : html`
+            <!-- legacy back-compat path: content + toolCalls aggregates -->
+            ${message.content
+              ? html`<${MarkdownBody} content=${message.content} />`
+              : (role === "assistant" && thinking
+                  ? html`<div class="xmc-msg__placeholder" style="opacity:.65;font-size:.85em">🌸 收到啦，正在思考中...</div>`
+                  : (role === "assistant"
+                      && (message.toolCalls || []).length > 0
+                      && _shouldShowSilentBubblePlaceholder(message)
+                      ? html`<div class="xmc-msg__placeholder xmc-msg__placeholder--silent" style="opacity:.55;font-size:.85em;font-style:italic">${_silentBubbleLabel(message.toolCalls)}</div>`
+                      : null))}
+            ${(message.toolCalls || []).map(
+              (call) => html`<${ToolCard} key=${call.id} call=${call} />`
+            )}
+          `}
       ${(message.skillNotes || []).map((note, i) => html`
         <${SkillNote} key=${"sn_" + i} note=${note} />
       `)}
