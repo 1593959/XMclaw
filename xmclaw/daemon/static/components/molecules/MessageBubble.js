@@ -261,7 +261,9 @@ function PhaseCard({ message, baseLabel, elapsedS, stalled, isWorking }) {
           <div class="xmc-phasecard__hint">
             ${stalled
               ? "若一直卡在这里，去 Trace 页看是否后端真的还在调用，或者 Stop 后重发。"
-              : "等待 LLM 第一个 token —— 完整 thinking 内容尚未在事件流里。"}
+              : isWorking
+                ? "正在生成回复…"
+                : "本轮模型未提供独立 reasoning 流（meta 信息见上）。"}
           </div>
         `}
         ${history.length > 1 ? html`

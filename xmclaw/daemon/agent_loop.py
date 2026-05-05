@@ -1572,10 +1572,32 @@ class AgentLoop:
                 if not prefetch_block:
                     q_embedding: list[float] | None = None
                     if self._embedder is not None and user_message:
+                        # B-215: hard 2s wall-clock cap on embedding the
+                        # user query. Without this, a busy embedder
+                        # (e.g. local Ollama swamped by the workspace
+                        # indexer's batch backfill after B-210 ingest)
+                        # blocks the turn for 4-30s per real-data trace
+                        # (chat-4fbd1d07: 4027ms gap user_message →
+                        # llm_request, all of it embed wait). 2s is way
+                        # more than a healthy embed call needs (~80-200
+                        # ms for qwen3-0.6b on local Ollama); past that
+                        # we degrade gracefully to keyword-only recall
+                        # instead of stalling the user-visible turn.
                         try:
-                            vecs = await self._embedder.embed([user_message])
+                            vecs = await asyncio.wait_for(
+                                self._embedder.embed([user_message]),
+                                timeout=2.0,
+                            )
                             if vecs and vecs[0]:
                                 q_embedding = list(vecs[0])
+                        except asyncio.TimeoutError:
+                            _log_memory_failure(
+                                Exception(
+                                    "embed timeout (>2s) — falling back "
+                                    "to keyword-only recall this turn"
+                                )
+                            )
+                            q_embedding = None
                         except Exception:  # noqa: BLE001
                             q_embedding = None
                     try:

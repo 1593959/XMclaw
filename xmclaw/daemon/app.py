@@ -1444,6 +1444,16 @@ def create_app(
             "bus": type(bus).__name__,
         })
 
+    # B-215: silence favicon.ico 404 noise. We don't ship one (the
+    # branding work is in /ui/ds-assets/) and every browser tab pollutes
+    # daemon.log + the user's DevTools console with the 404. Empty 204
+    # is the canonical "no favicon" response.
+    from starlette.responses import Response as _PlainResponse
+
+    @app.get("/favicon.ico")
+    async def favicon() -> _PlainResponse:
+        return _PlainResponse(status_code=204)
+
     # ── /api/v2/pair ──
     # Returns the pairing token (or null in --no-auth mode) to the UI
     # so users don't have to paste the token from disk. Security posture:
