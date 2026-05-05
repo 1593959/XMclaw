@@ -1388,6 +1388,27 @@ class AgentLoop:
                 cleaned_history.append(m)
         history = cleaned_history
 
+        # B-226: prune old tool results FIRST (before deciding to
+        # drop turns). Most context bloat is huge tool outputs (file
+        # reads, web fetches, grep results) that the model doesn't
+        # need verbatim 30 turns later. Replacing them with 1-line
+        # summaries often gets us back under the token cap without
+        # losing any turn boundaries. Returns (new_history, count) —
+        # count is logged at debug level inside the prune helper, no
+        # need to expose here.
+        if len(history) > 6:
+            try:
+                from xmclaw.utils.tool_result_prune import (
+                    prune_old_tool_results,
+                )
+                history, _ = prune_old_tool_results(
+                    history,
+                    protect_tail_tokens=6000,
+                    protect_tail_count_floor=6,
+                )
+            except Exception:  # noqa: BLE001 — never fail a turn over compression
+                pass
+
         # Decide whether compression should fire. Two independent gates:
         #   1) message-count: classic ``history_cap``
         #   2) token-budget: ``compression_token_cap`` (B-31, opt-in)
