@@ -85,6 +85,32 @@ def test_default_prompt_mentions_tool_aggressiveness() -> None:
     assert "use them aggressively rather than refusing" in p
 
 
+def test_b217_plan_first_phased_reports_present() -> None:
+    """B-217: peers (OpenClaw / CoPaw / Hermes) feel responsive
+    because they plan up-front and report progress phase by phase.
+    XMclaw used to silently run N hops then dump a wall of text.
+    The fix is a hard rule that mandates Phase 1 plan / Phase 2
+    checkpoint / Phase 3 synthesis. Pin the rule so a refactor
+    doesn't drop us back to the silent-hop posture."""
+    p = _DEFAULT_SYSTEM
+    # The rule must be at HARDER level (★★), same priority tier
+    # as Active problem-solving (B-208) — neither yields to the
+    # other; both are non-negotiable.
+    assert "★★ HARDER RULE — Plan-first" in p
+    # The 3 phases must be enumerated explicitly. Pin each phase
+    # name so a refactor can't accidentally compress them.
+    assert "Phase 1: PLAN" in p
+    assert "Phase 2: PROGRESS" in p
+    assert "Phase 3: SYNTHESIS" in p
+    # The "✓" checkpoint marker is the visible signal users see —
+    # losing it makes the rule feel verbal-only. Pin it.
+    assert "✓" in p
+    # The chat-4fbd1d07 counter-example is the concrete anchor.
+    # Same pattern as B-208's chat-2026-05-03 anchor: real-data
+    # incident → don't let a refactor drop the citation.
+    assert "chat-4fbd1d07" in p or "11 hops" in p
+
+
 def test_b210_code_chunk_search_routing_present() -> None:
     """B-210: when workspace code is indexed, the agent must KNOW to
     pass ``kind='code_chunk'`` to memory_search for code questions —
