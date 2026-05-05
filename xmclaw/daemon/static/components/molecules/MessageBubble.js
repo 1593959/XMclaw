@@ -363,6 +363,19 @@ export function MessageBubble({ message, onAnswerQuestion }) {
       </article>
     `;
   }
+
+  // B-220: tool_use is a top-level sibling row (peer pattern from
+  // OpenClaw chat-log.ts). The reducer emits each tool invocation
+  // as its own message keyed by callId; we just render ToolCard
+  // directly. Wrapping <article> keeps it on the same vertical
+  // flow as user / assistant bubbles.
+  if (message.kind === "tool_use") {
+    return html`
+      <article class="xmc-msg xmc-msg--assistant xmc-msg--tool-row" data-msg-id=${message.id}>
+        <${ToolCard} call=${message} />
+      </article>
+    `;
+  }
   const role = message.role || "system";
   const isUser = role === "user";
   const isSystem = role === "system";

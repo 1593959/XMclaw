@@ -215,20 +215,20 @@ export function applyEvent(chat, envelope) {
     }
 
     case "tool_invocation_started": {
-      // B-43: bubble phase update. The matching tool_call_emitted case
-      // (below) already adds the ToolCard with status=pending; this
-      // event flips it to 'running' AND tags the bubble's phase so the
-      // header reads "正在执行工具" instead of "正在思考".
-      const id = corr;
+      // B-220: with tool_use as its own sibling message, started
+      // is largely redundant (emitted already created with
+      // status=running). Keep as defensive no-op patch in case some
+      // MCP shim emits started without emitted.
       const callId = payload.call_id || payload.id;
+      const idx = chat.messages.findIndex(
+        (m) => m.kind === "tool_use" && m.id === callId,
+      );
+      if (idx === -1) return chat;
       return {
         ...chat,
-        messages: upsertById(chat.messages, id, (m) => ({
+        messages: upsertById(chat.messages, callId, (m) => ({
           ...m,
-          phase: "tool_running",
-          toolCalls: (m.toolCalls || []).map((tc) =>
-            tc.id === callId ? { ...tc, status: "running" } : tc,
-          ),
+          status: m.status === "running" ? m.status : "running",
         })),
       };
     }
@@ -422,59 +422,32 @@ export function applyEvent(chat, envelope) {
     }
 
     case "tool_call_emitted": {
-      const aid = corr;
+      // B-220: tool_use is now its OWN top-level sibling message —
+      // matches OpenClaw chat-log.ts (each tool execution is its own
+      // child of the linear chat container). The previous bubble's
+      // toolCalls aggregator is gone; tool_invocation_finished still
+      // finds the entry by callId because we use callId as message.id.
       const callId = payload.tool_call_id || payload.id || genId();
-      const tc = {
-        id: callId,
-        name: payload.name || payload.tool_name || "tool",
-        args: payload.args || payload.arguments || {},
-        status: "running",
-        result: null,
-      };
-      // B-218: also represent this tool invocation as a chronological
-      // event in ``events[]``. Carries the SAME id as ``tc.id`` so
-      // the matching tool_invocation_finished handler can update
-      // BOTH structures by id.
-      const toolEvent = {
-        type: "tool",
-        id: callId,
-        name: tc.name,
-        args: tc.args,
-        status: "running",
-        result: null,
-      };
-      // B-89: tool_call_emitted can be the FIRST event for a turn when
-      // the LLM goes straight to a tool without prefacing prose. Same
-      // abandoned-bubble guard as llm_request / llm_chunk.
-      const cleanedTC = _finalizeAbandoned(chat.messages, aid);
-      const idx = cleanedTC.findIndex((m) => m.id === aid);
-      if (idx === -1) {
-        // No assistant bubble yet — create one with the tool card attached.
-        return {
-          ...chat,
-          messages: cleanedTC.concat({
-            id: aid,
-            role: "assistant",
-            content: "",
-            status: "streaming",
-            ts,
-            toolCalls: [tc],
-            events: [toolEvent],
-          }),
-        };
-      }
+      const cleanedTC = _finalizeAbandoned(chat.messages, corr);
       return {
         ...chat,
-        messages: upsertById(cleanedTC, aid, (m) => ({
-          ...m,
-          toolCalls: (m.toolCalls || []).concat(tc),
-          events: (m.events || []).concat(toolEvent),
-        })),
+        messages: cleanedTC.concat({
+          id: callId,
+          kind: "tool_use",
+          role: "assistant",
+          correlationId: corr,
+          name: payload.name || payload.tool_name || "tool",
+          args: payload.args || payload.arguments || {},
+          status: "running",
+          result: null,
+          ts,
+        }),
       };
     }
 
     case "tool_invocation_finished": {
-      const aid = corr;
+      // B-220: find the tool_use sibling by its message.id (= callId)
+      // and patch in place. The old bubble.toolCalls path is gone.
       const callId = payload.tool_call_id || payload.id;
       const status = payload.error ? "error" : "ok";
       const result = payload.error
@@ -482,21 +455,16 @@ export function applyEvent(chat, envelope) {
         : (typeof payload.result === "string"
             ? payload.result
             : JSON.stringify(payload.result || {}, null, 2));
-      const idx = chat.messages.findIndex((m) => m.id === aid);
+      const idx = chat.messages.findIndex(
+        (m) => m.kind === "tool_use" && m.id === callId,
+      );
       if (idx === -1) return chat;
       return {
         ...chat,
-        messages: upsertById(chat.messages, aid, (m) => ({
+        messages: upsertById(chat.messages, callId, (m) => ({
           ...m,
-          toolCalls: (m.toolCalls || []).map((tc) =>
-            tc.id === callId ? { ...tc, status, result } : tc
-          ),
-          // B-218: mirror update onto the matching event row.
-          events: (m.events || []).map((ev) =>
-            ev.type === "tool" && ev.id === callId
-              ? { ...ev, status, result }
-              : ev
-          ),
+          status,
+          result,
         })),
       };
     }

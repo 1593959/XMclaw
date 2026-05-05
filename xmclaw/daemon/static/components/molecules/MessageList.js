@@ -12,10 +12,38 @@
 // scrolls up — once pinned, we stop forcing the scroll. The pin clears when
 // they scroll back to the bottom.
 
-const { h } = window.__xmc.preact;
+const { h, Component } = window.__xmc.preact;
 const html = window.__xmc.htm.bind(h);
 
 import { MessageBubble } from "./MessageBubble.js";
+
+// B-220: per-bubble error boundary. Pre-B-220 a single bad render
+// (e.g. message shape mismatched MessageBubble's expectations) blew
+// up the entire React/Preact tree → user saw a fully-black tab.
+// Wrapping each row in a boundary isolates the failure: the broken
+// bubble shows a small red placeholder; everything else still renders.
+class BubbleBoundary extends Component {
+  constructor() {
+    super();
+    this.state = { err: null };
+  }
+  componentDidCatch(err) {
+    // eslint-disable-next-line no-console
+    console.error("[xmc] MessageBubble crash:", err);
+    this.setState({ err });
+  }
+  render() {
+    if (this.state.err) {
+      const msg = String((this.state.err && this.state.err.message) || this.state.err);
+      return html`
+        <article class="xmc-msg xmc-msg--system" style="color:#c66;font-size:.78rem;font-family:var(--xmc-font-mono);padding:.4rem .8rem;border-left:2px solid #c66">
+          [bubble render error] ${msg.slice(0, 200)}
+        </article>
+      `;
+    }
+    return this.props.children;
+  }
+}
 
 const SCROLL_PIN_THRESHOLD = 32; // px from bottom
 
@@ -58,7 +86,11 @@ export function MessageList({ messages, onAnswerQuestion }) {
             </div>
           `
         : messages.map(
-            (m) => html`<${MessageBubble} key=${m.id} message=${m} onAnswerQuestion=${onAnswerQuestion} />`
+            (m) => html`
+              <${BubbleBoundary} key=${m.id}>
+                <${MessageBubble} message=${m} onAnswerQuestion=${onAnswerQuestion} />
+              </${BubbleBoundary}>
+            `
           )}
     </div>
   `;
