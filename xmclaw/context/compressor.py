@@ -85,12 +85,56 @@ _TOOL_ARGS_HEAD = 1_200
 # ── Token estimation ─────────────────────────────────────────────────
 
 
-def estimate_messages_tokens_rough(messages: list[Message]) -> int:
-    """Rough token count: chars/4 + ~10 overhead per message + tool args.
+# B-233: CJK-aware density. Modern tokenisers (Anthropic / OpenAI / Kimi
+# / Qwen / GLM) all tokenise Han characters and full-width punctuation at
+# roughly 1.5 chars/token — vs ~4 chars/token for ASCII. Hermes's
+# original chars/4 estimate ported directly was the right call for an
+# English-only codebase but DRASTICALLY undercounts XMclaw's real load
+# (Chinese-heavy conversations + Chinese commit messages + Chinese
+# system prompt addenda). Real-data: chat-18e1711d hit 289 069 actual
+# tokens while estimate_messages_tokens_rough returned ~85K — a 3.4×
+# under-count. Threshold = 100K ⇒ proactive compress never fired,
+# session walked off the cliff. CJK weight at 2/3 (≈ 1.5 chars/token).
+_CJK_RATIO = (2, 3)  # numerator, denominator — len(cjk_chars) * 2 // 3 ≈ tokens
 
-    Match Hermes's heuristic so threshold values port directly. Real
-    tokenisation is provider-specific and too expensive to run on
-    every turn.
+
+def _count_tokens_in_text(text: str) -> int:
+    """Heuristic token count, CJK-aware.
+
+    English / code: chars / 4
+    Han / full-width punct / hiragana / katakana / hangul: chars * 2 / 3
+    """
+    if not text:
+        return 0
+    cjk = 0
+    for c in text:
+        # Han ideographs + Han compat + Bopomofo + full-width forms +
+        # CJK punctuation + Hiragana + Katakana + Hangul. Wide-coverage
+        # range — hits everything that pays the dense-token tax.
+        cp = ord(c)
+        if (
+            0x3000 <= cp <= 0x303F or          # CJK punctuation
+            0x3040 <= cp <= 0x309F or          # Hiragana
+            0x30A0 <= cp <= 0x30FF or          # Katakana
+            0x3400 <= cp <= 0x4DBF or          # CJK Ext A
+            0x4E00 <= cp <= 0x9FFF or          # CJK Unified
+            0xAC00 <= cp <= 0xD7AF or          # Hangul
+            0xF900 <= cp <= 0xFAFF or          # CJK Compat
+            0xFF00 <= cp <= 0xFFEF             # full-width forms
+        ):
+            cjk += 1
+    ascii_chars = len(text) - cjk
+    return (ascii_chars // _CHARS_PER_TOKEN) + (cjk * _CJK_RATIO[0] // _CJK_RATIO[1])
+
+
+def estimate_messages_tokens_rough(messages: list[Message]) -> int:
+    """Rough token count, CJK-aware (B-233).
+
+    Real tokenisation is provider-specific and too expensive to run on
+    every turn. This heuristic over-estimates ASCII-heavy content
+    slightly (still chars/4) and properly weights CJK at ~1.5
+    chars/token so the threshold gate fires AT the threshold, not 3×
+    past it.
     """
     total = 0
     for m in messages:
@@ -99,16 +143,25 @@ def estimate_messages_tokens_rough(messages: list[Message]) -> int:
             text = "".join(p.get("text", "") for p in content if isinstance(p, dict))
         else:
             text = str(content)
-        total += len(text) // _CHARS_PER_TOKEN + 10
+        total += _count_tokens_in_text(text) + 10
         for tc in m.tool_calls or ():
             args = getattr(tc, "args", {}) or {}
             if isinstance(args, dict):
-                # Fast path: estimate via the JSON-serialised length.
-                # Avoid actually serialising — sum nested string lengths.
-                total += _estimate_args_chars(args) // _CHARS_PER_TOKEN
+                total += _estimate_args_tokens_cjk(args)
             elif isinstance(args, str):
-                total += len(args) // _CHARS_PER_TOKEN
+                total += _count_tokens_in_text(args)
     return total
+
+
+def _estimate_args_tokens_cjk(args: Any) -> int:
+    """Walk a parsed JSON value, summing CJK-aware token counts of string leaves."""
+    if isinstance(args, str):
+        return _count_tokens_in_text(args)
+    if isinstance(args, dict):
+        return sum(_estimate_args_tokens_cjk(v) for v in args.values())
+    if isinstance(args, list):
+        return sum(_estimate_args_tokens_cjk(v) for v in args)
+    return 0
 
 
 def _estimate_args_chars(args: Any) -> int:
@@ -138,6 +191,11 @@ class _SessionState:
     last_savings_pct: float = 100.0
     ineffective_count: int = 0
     failure_cooldown_until: float = 0.0
+    # B-233: most recent prompt_tokens count from a successful LLM
+    # response. Ground truth — used in preference to chars/4 estimate
+    # for the threshold check so proactive compression fires when the
+    # PROVIDER thinks we're heavy, not just when our estimator thinks so.
+    last_prompt_tokens: int = 0
 
 
 # ── Compressor ───────────────────────────────────────────────────────
@@ -174,7 +232,7 @@ class ContextCompressor:
         model: str,
         summarize_call: Callable[[str, int], Awaitable[Optional[str]]],
         *,
-        threshold_percent: float = 0.50,
+        threshold_percent: float = 0.40,  # B-233: was 0.50, lowered for safety margin
         protect_first_n: int = 3,
         protect_last_n: int = 20,
         summary_target_ratio: float = 0.20,
@@ -220,18 +278,35 @@ class ContextCompressor:
         """Drop all per-session compaction state for ``session_id``."""
         self._states.pop(session_id, None)
 
+    def update_from_response(
+        self, prompt_tokens: int, *, session_id: str = "",
+    ) -> None:
+        """Record the GROUND-TRUTH prompt_tokens from a successful LLM
+        response. The compressor prefers this over its chars-based
+        estimate when deciding whether to fire (B-233).
+        """
+        if prompt_tokens > 0:
+            self._state(session_id).last_prompt_tokens = int(prompt_tokens)
+
     def should_compress(
         self, prompt_tokens: int, *, session_id: str = "",
     ) -> bool:
         """Decide whether compression should fire for this turn.
 
         Returns False when:
-          * ``prompt_tokens < threshold_tokens`` — no need yet
+          * Effective tokens < threshold — no need yet
           * Last 2 compressions saved < 10% — anti-thrashing back-off
+
+        The ``prompt_tokens`` arg is typically the chars-based estimate;
+        we take ``max(estimate, last_actual)`` so threshold fires when
+        EITHER signal says heavy. This stops the case where the
+        chars/4 estimator under-counts CJK content by 3× and the
+        proactive gate stays closed all the way to the cliff.
         """
-        if prompt_tokens < self.threshold_tokens:
-            return False
         st = self._state(session_id)
+        effective = max(int(prompt_tokens), st.last_prompt_tokens)
+        if effective < self.threshold_tokens:
+            return False
         if st.ineffective_count >= 2:
             if not self.quiet_mode:
                 logger.warning(
@@ -252,6 +327,7 @@ class ContextCompressor:
         session_id: str = "",
         current_tokens: Optional[int] = None,
         focus_topic: Optional[str] = None,
+        force: bool = False,
     ) -> list[Message]:
         """Run the 5-phase pipeline. Returns a new ``list[Message]``.
 
@@ -331,10 +407,20 @@ class ContextCompressor:
             saved = display_tokens - new_estimate
             savings_pct = (saved / display_tokens * 100) if display_tokens > 0 else 0
             st.last_savings_pct = savings_pct
-            if savings_pct < 10:
-                st.ineffective_count += 1
-            else:
-                st.ineffective_count = 0
+            # B-233: only count ineffective compactions when this was a
+            # PROACTIVE / threshold-driven run. Reactive force=True calls
+            # are run AFTER the LLM already rejected the request — they
+            # are recovery, not strategy. Counting them here was the
+            # death-spiral root: 2 small-savings compactions tripped
+            # ineffective_count=2, then should_compress permanently
+            # returned False, and the next reactive force=True call
+            # incremented again. Session walked off the cliff with the
+            # brake permanently engaged.
+            if not force:
+                if savings_pct < 10:
+                    st.ineffective_count += 1
+                else:
+                    st.ineffective_count = 0
 
             self.compression_count += 1
             if not self.quiet_mode:

@@ -1171,8 +1171,18 @@ class AgentLoop:
             cc = self._get_compressor()
             est = estimate_messages_tokens_rough(messages)
             if force or cc.should_compress(est, session_id=session_id):
+                # B-233: pass force through so anti-thrashing's
+                # ineffective_count counter doesn't tick during recovery
+                # compactions (the reactive path runs AFTER the provider
+                # rejected the payload — by definition we have to try
+                # SOMETHING; getting to "<10% savings → permanent skip"
+                # turns the brake into a guaranteed crash on the next
+                # token-budget breach).
                 new_msgs = await cc.compress(
-                    messages, session_id=session_id, current_tokens=est,
+                    messages,
+                    session_id=session_id,
+                    current_tokens=est,
+                    force=force,
                 )
                 return new_msgs, len(new_msgs) != len(messages)
         except Exception as exc:  # noqa: BLE001
@@ -2413,6 +2423,20 @@ class AgentLoop:
                 "completion_tokens": response.completion_tokens,
                 "latency_ms": latency_ms,
             }, correlation_id=hop_corr)
+
+            # B-233: feed the GROUND-TRUTH prompt_tokens to the
+            # compressor's per-session state. The threshold check then
+            # uses ``max(estimate, last_actual)`` so kimi sessions whose
+            # CJK content under-counts via chars/4 still trigger
+            # proactive compression at the right moment. Best-effort —
+            # the compressor isn't required for the loop to function.
+            if response.prompt_tokens > 0 and self._compressor is not None:
+                try:
+                    self._compressor.update_from_response(
+                        response.prompt_tokens, session_id=session_id,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
 
             # Anti-req #6 cont'd: record the call's usage against the
             # budget right after we see it. check_budget on the NEXT

@@ -1181,7 +1181,13 @@ _CURRICULUM_LIST_SPEC = ToolSpec(
 )
 
 
-_MAX_WEB_BYTES = 200_000
+# B-233: lowered from 200_000 to 50_000. With chars/4 estimate that's
+# ~12K tokens per fetch — still useful for normal pages, but no longer
+# enough that two fetches push a kimi-k2.6 session past its 262K limit
+# (real-data: chat-18e1711d hit the wall on hop 15 because earlier
+# fetches dumped HTML lists ~150K each into history). Callers can
+# raise per-call via the ``max_chars`` arg when they really need more.
+_MAX_WEB_BYTES = 50_000
 _BASH_DEFAULT_TIMEOUT = 30.0
 _BASH_MAX_OUTPUT = 100_000
 _VALID_TODO_STATUSES = {"pending", "in_progress", "done"}
@@ -2063,7 +2069,20 @@ class BuiltinTools(ToolProvider):
                     "User-Agent": "XMclaw/2.x (+local)",
                 })
         except httpx.HTTPError as exc:
-            return _fail(call, t0, f"http error: {exc}")
+            # B-233: ``str(exc)`` is EMPTY for several httpx exception
+            # types (ConnectError without a wrapped OSError, ProtocolError,
+            # certain TLS handshake aborts). Pre-B-233 the agent saw
+            # ``http error: `` with nothing after the colon and kept
+            # retrying the same URL, eating context — real-data
+            # (chat-18e1711d) had 5+ identical empty-error retries
+            # adding up to a 262K-token request. Always include the
+            # exception class name; fall back to ``repr(exc)`` when
+            # ``str()`` returns empty so SOMETHING surfaces.
+            err_msg = str(exc) or repr(exc)
+            return _fail(
+                call, t0,
+                f"http error: {type(exc).__name__}: {err_msg}",
+            )
         text = r.text
         truncated = False
         if len(text) > max_chars:
@@ -2104,7 +2123,12 @@ class BuiltinTools(ToolProvider):
                     headers={"User-Agent": "Mozilla/5.0 XMclaw/2.x"},
                 )
         except httpx.HTTPError as exc:
-            return _fail(call, t0, f"search error: {exc}")
+            # B-233: same empty-str(exc) trap as web_fetch.
+            err_msg = str(exc) or repr(exc)
+            return _fail(
+                call, t0,
+                f"search error: {type(exc).__name__}: {err_msg}",
+            )
         if r.status_code != 200:
             return _fail(call, t0, f"search returned HTTP {r.status_code}")
         results = _parse_ddg_html(r.text, max_results)
