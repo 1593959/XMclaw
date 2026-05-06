@@ -441,7 +441,18 @@ export function applyEvent(chat, envelope) {
       if (_UI_SUPPRESSED_TOOLS.has(toolName)) {
         return chat;
       }
-      const callId = payload.tool_call_id || payload.id || genId();
+      // B-232: the daemon's BehavioralEvent payload key is ``call_id``
+      // (snake_case, with underscore — see agent_loop.py:2467/2473/2519).
+      // Pre-B-232 the reducer only checked ``tool_call_id`` / ``id``,
+      // both undefined → fell through to ``genId()`` which assigned
+      // a fresh random id. Then ``tool_invocation_finished`` couldn't
+      // match the message because it had been keyed under the random
+      // id, NOT the real call_id. End result: every tool_use bubble
+      // stuck at "running" forever (list_agents was the most visible
+      // case because it returns instantly, so the gap between
+      // emitted and finished is microseconds — the user expected to
+      // see ✓ but saw a perpetual ⏳).
+      const callId = payload.call_id || payload.tool_call_id || payload.id || genId();
       const cleanedTC = _finalizeAbandoned(chat.messages, corr);
       return {
         ...chat,
@@ -462,7 +473,10 @@ export function applyEvent(chat, envelope) {
     case "tool_invocation_finished": {
       // B-220: find the tool_use sibling by its message.id (= callId)
       // and patch in place. The old bubble.toolCalls path is gone.
-      const callId = payload.tool_call_id || payload.id;
+      // B-232: same payload-key bug as tool_call_emitted — the daemon
+      // emits ``call_id`` not ``tool_call_id``. Reading the wrong key
+      // here was the second half of the "stuck at running" bug.
+      const callId = payload.call_id || payload.tool_call_id || payload.id;
       const status = payload.error ? "error" : "ok";
       const result = payload.error
         ? String(payload.error)
