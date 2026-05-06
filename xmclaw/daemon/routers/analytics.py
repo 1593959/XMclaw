@@ -46,6 +46,49 @@ def _date_str(epoch: float) -> str:
     return strftime("%Y-%m-%d", gmtime(epoch))
 
 
+# P0 wrap-up: rough cost-per-million-tokens table for the most common
+# model families. Adapted from xmclaw_port/insights.py — heuristic
+# only, real pricing varies by provider tier and changes over time.
+# When a model isn't in the table we fall back to a generic "small
+# OSS model" rate so a number is always shown.
+_MODEL_COST_PER_MTOK_USD: tuple[tuple[str, float, float], ...] = (
+    # (substring_match, input_per_mtok, output_per_mtok)
+    ("gpt-4o",     2.50,  10.00),
+    ("gpt-4",     30.00,  60.00),
+    ("gpt-3.5",    0.50,   1.50),
+    ("o1-",       15.00,  60.00),
+    ("o3-",       15.00,  60.00),
+    ("claude-3-opus",   15.00, 75.00),
+    ("claude-opus",     15.00, 75.00),
+    ("claude-3-sonnet",  3.00, 15.00),
+    ("claude-sonnet",    3.00, 15.00),
+    ("claude-3-haiku",   0.25,  1.25),
+    ("claude-haiku",     0.25,  1.25),
+    ("claude",           3.00, 15.00),
+    ("gemini-1.5-pro",   1.25,  5.00),
+    ("gemini-pro",       0.50,  1.50),
+    ("kimi",             0.30,  1.20),
+    ("moonshot",         0.30,  1.20),
+    ("qwen",             0.30,  1.20),
+    ("glm",              0.30,  1.20),
+    ("minimax",          0.20,  0.80),
+    ("deepseek",         0.14,  0.28),
+    ("llama",            0.20,  0.60),
+)
+_DEFAULT_COST_PER_MTOK = (0.50, 1.50)
+
+
+def _estimate_cost_usd(model: str, in_tok: int, out_tok: int) -> float:
+    """Heuristic per-call cost in USD. Best-effort — see comment above."""
+    name = (model or "").lower()
+    rates = _DEFAULT_COST_PER_MTOK
+    for key, in_rate, out_rate in _MODEL_COST_PER_MTOK_USD:
+        if key in name:
+            rates = (in_rate, out_rate)
+            break
+    return (in_tok * rates[0] + out_tok * rates[1]) / 1_000_000.0
+
+
 def _platform_of(session_id: str | None) -> str:
     """Classify session origin from its id prefix.
 
@@ -85,6 +128,8 @@ async def get_analytics(days: int = _DEFAULT_DAYS) -> JSONResponse:
                 "total_prompt_tokens": 0,
                 "total_completion_tokens": 0,
                 "total_calls": 0,
+                "total_failed_calls": 0,    # P0 wrap-up
+                "total_cost_usd": 0,        # P0 wrap-up
                 "models_used": 0,
             },
             "daily": [],
@@ -96,6 +141,7 @@ async def get_analytics(days: int = _DEFAULT_DAYS) -> JSONResponse:
                 "by_hour": [0] * 24,
             },
             "top_sessions": [],   # B-228
+            "top_errors": [],     # P0 wrap-up
         })
 
     daily_in: dict[str, int] = defaultdict(int)
@@ -105,6 +151,12 @@ async def get_analytics(days: int = _DEFAULT_DAYS) -> JSONResponse:
     model_out: dict[str, int] = defaultdict(int)
     model_calls: dict[str, int] = defaultdict(int)
     total_in = total_out = total_calls = 0
+    # P0 wrap-up: cost rollup + error-type aggregation.
+    daily_cost: dict[str, float] = defaultdict(float)
+    model_cost: dict[str, float] = defaultdict(float)
+    total_cost = 0.0
+    total_failed_calls = 0
+    error_count: dict[str, int] = defaultdict(int)
     # B-228 new aggregates
     platform_in: dict[str, int] = defaultdict(int)
     platform_out: dict[str, int] = defaultdict(int)
@@ -150,7 +202,14 @@ async def get_analytics(days: int = _DEFAULT_DAYS) -> JSONResponse:
         except (json.JSONDecodeError, TypeError):
             continue
         if payload.get("ok") is False:
-            # Failed turns count toward call total but have no useful tokens.
+            # Failed turns count toward call total + error rollup but
+            # have no useful tokens.
+            total_failed_calls += 1
+            err = payload.get("error") or "unknown"
+            # Trim long stack traces — first line is usually enough to
+            # identify the error class for aggregation.
+            err_short = str(err).splitlines()[0][:120] if err else "unknown"
+            error_count[err_short] += 1
             continue
         pt = int(payload.get("prompt_tokens") or 0)
         ct = int(payload.get("completion_tokens") or 0)
@@ -165,6 +224,11 @@ async def get_analytics(days: int = _DEFAULT_DAYS) -> JSONResponse:
         total_in    += pt
         total_out   += ct
         total_calls += 1
+        # P0 wrap-up: per-call cost using the heuristic table.
+        cost = _estimate_cost_usd(model, pt, ct)
+        daily_cost[date]   += cost
+        model_cost[model]  += cost
+        total_cost         += cost
         # B-228 new tallies
         platform = _platform_of(session_id)
         platform_in[platform]    += pt
@@ -204,6 +268,7 @@ async def get_analytics(days: int = _DEFAULT_DAYS) -> JSONResponse:
             "input_tokens":  daily_in[d],
             "output_tokens": daily_out[d],
             "calls":         daily_calls[d],
+            "cost_usd":      round(daily_cost[d], 4),
         }
         for d in sorted(daily_in.keys())
     ]
@@ -214,12 +279,20 @@ async def get_analytics(days: int = _DEFAULT_DAYS) -> JSONResponse:
                 "input_tokens":  model_in[m],
                 "output_tokens": model_out[m],
                 "calls":         model_calls[m],
+                "cost_usd":      round(model_cost[m], 4),
             }
             for m in model_in.keys()
         ],
         key=lambda r: r["input_tokens"] + r["output_tokens"],
         reverse=True,
     )
+    # P0 wrap-up: top-N error types (by frequency) for the Trace
+    # / Analytics page. Helps spot recurring failure modes.
+    top_errors = sorted(
+        [{"error": err, "count": n} for err, n in error_count.items()],
+        key=lambda r: r["count"],
+        reverse=True,
+    )[:10]
     # B-228 — extended dimensions
     tools = sorted(
         [
@@ -273,6 +346,8 @@ async def get_analytics(days: int = _DEFAULT_DAYS) -> JSONResponse:
             "total_prompt_tokens":     total_in,
             "total_completion_tokens": total_out,
             "total_calls":             total_calls,
+            "total_failed_calls":      total_failed_calls,
+            "total_cost_usd":          round(total_cost, 4),
             "models_used":             len(models),
         },
         "daily":  daily,
@@ -285,4 +360,75 @@ async def get_analytics(days: int = _DEFAULT_DAYS) -> JSONResponse:
             "by_hour":    hour_calls,
         },
         "top_sessions": top_sessions,
+        # P0 wrap-up: cost rollups + error-type aggregation.
+        "top_errors": top_errors,
     })
+
+
+@router.get("/report.md")
+async def get_analytics_markdown(days: int = _DEFAULT_DAYS):
+    """Markdown export of the same analytics report.
+
+    Useful when piping the numbers into a bug report, weekly digest,
+    or pasting into a chat. Reuses ``get_analytics`` so the JSON +
+    markdown views never drift.
+    """
+    from starlette.responses import PlainTextResponse
+    resp = await get_analytics(days=days)
+    # ``JSONResponse.body`` is the serialised bytes; decode + reparse.
+    data = json.loads(bytes(resp.body).decode("utf-8"))
+
+    s = data.get("summary", {})
+    lines: list[str] = [
+        f"# XMclaw Analytics ({data.get('period_days', days)} days)",
+        f"_Generated: {strftime('%Y-%m-%d %H:%M UTC', gmtime(time()))}_",
+        "",
+        "## Overview",
+        f"- **Calls (success)**: {s.get('total_calls', 0)}",
+        f"- **Calls (failed)**: {s.get('total_failed_calls', 0)}",
+        f"- **Input tokens**: {s.get('total_prompt_tokens', 0):,}",
+        f"- **Output tokens**: {s.get('total_completion_tokens', 0):,}",
+        f"- **Est. cost (USD, heuristic)**: ${s.get('total_cost_usd', 0):.4f}",
+        f"- **Models used**: {s.get('models_used', 0)}",
+        "",
+        "## Models",
+        "| Model | Calls | Input | Output | Cost (USD) |",
+        "|-------|-------|-------|--------|------------|",
+    ]
+    for m in data.get("models", []):
+        lines.append(
+            f"| {m.get('model', '?')} | {m.get('calls', 0)} | "
+            f"{m.get('input_tokens', 0):,} | {m.get('output_tokens', 0):,} | "
+            f"${m.get('cost_usd', 0):.4f} |"
+        )
+    lines += ["", "## Tools", "| Tool | Calls | Errors | Error rate |",
+              "|------|-------|--------|------------|"]
+    for t in data.get("tools", []):
+        lines.append(
+            f"| {t.get('name', '?')} | {t.get('calls', 0)} | "
+            f"{t.get('errors', 0)} | {t.get('error_rate', 0)*100:.1f}% |"
+        )
+    lines += ["", "## Platforms", "| Platform | Calls | Input | Output |",
+              "|----------|-------|-------|--------|"]
+    for p in data.get("platforms", []):
+        lines.append(
+            f"| {p.get('platform', '?')} | {p.get('calls', 0)} | "
+            f"{p.get('input_tokens', 0):,} | {p.get('output_tokens', 0):,} |"
+        )
+    if data.get("top_errors"):
+        lines += ["", "## Top errors", "| Error | Count |",
+                  "|-------|-------|"]
+        for e in data["top_errors"]:
+            lines.append(f"| {e.get('error', '?')} | {e.get('count', 0)} |")
+    if data.get("top_sessions"):
+        lines += ["", "## Top sessions (by total tokens)",
+                  "| Session | Platform | Calls | Total tokens |",
+                  "|---------|----------|-------|--------------|"]
+        for sess in data["top_sessions"]:
+            sid = sess.get("session_id", "?")
+            sid_short = sid[:36] + "…" if len(sid) > 36 else sid
+            lines.append(
+                f"| {sid_short} | {sess.get('platform', '?')} | "
+                f"{sess.get('calls', 0)} | {sess.get('total_tokens', 0):,} |"
+            )
+    return PlainTextResponse("\n".join(lines), media_type="text/markdown")

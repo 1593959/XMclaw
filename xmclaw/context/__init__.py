@@ -17,6 +17,14 @@ from xmclaw.context.compressor import (
     SUMMARY_PREFIX,
     estimate_messages_tokens_rough,
 )
+from xmclaw.context.engine import (
+    AssembleResult,
+    BootstrapResult,
+    CompactResult,
+    ContextEngine,
+    IngestResult,
+    SimpleContextEngine,
+)
 from xmclaw.context.tool_result_prune import (
     _summarize_tool_result,
     prune_old_tool_results,
@@ -28,4 +36,11 @@ __all__ = [
     "estimate_messages_tokens_rough",
     "prune_old_tool_results",
     "_summarize_tool_result",
+    # Engine ABC + reference impl (P0 wrap-up)
+    "ContextEngine",
+    "SimpleContextEngine",
+    "BootstrapResult",
+    "IngestResult",
+    "AssembleResult",
+    "CompactResult",
 ]

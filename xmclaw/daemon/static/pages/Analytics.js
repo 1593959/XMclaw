@@ -34,6 +34,8 @@ const I_TOOL    = "M14.7 6.3a4 4 0 0 1 0 5.66l-1.4 1.42-5.66-5.66 1.42-1.41a4 4 
 const I_GLOBE   = "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z M2 12h20 M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10Z";
 const I_CLOCK   = "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z M12 6v6l4 2";
 const I_LIST    = "M8 6h13 M8 12h13 M8 18h13 M3 6h.01 M3 12h.01 M3 18h.01";
+const I_DOLLAR  = "M12 1v22 M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6";
+const I_ALERT   = "M12 9v4 M12 17h.01 M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z";
 
 const PERIODS = [
   { label: "7d",  days: 7 },
@@ -295,6 +297,45 @@ function ActivityChart({ activity }) {
   `;
 }
 
+function formatCost(usd) {
+  if (!usd && usd !== 0) return "—";
+  if (usd < 0.01) return "$" + usd.toFixed(4);
+  if (usd < 1) return "$" + usd.toFixed(3);
+  if (usd < 100) return "$" + usd.toFixed(2);
+  return "$" + Math.round(usd).toLocaleString();
+}
+
+function TopErrorsTable({ errors }) {
+  if (!errors || errors.length === 0) return null;
+  const max = Math.max(1, ...errors.map((e) => e.count));
+  return html`
+    <div class="xmc-h-card">
+      <h3 class="xmc-h-card__title">
+        <${Icon} d=${I_ALERT} className="xmc-h-icon" />
+        Top errors (按频率)
+      </h3>
+      <ul class="xmc-h-modeltbl">
+        ${errors.map((e) => {
+          const w = (e.count / max) * 100;
+          const errStr = e.error || "unknown";
+          const display = errStr.length > 80 ? errStr.slice(0, 80) + "…" : errStr;
+          return html`
+            <li class="xmc-h-modeltbl__row" key=${errStr}>
+              <div class="xmc-h-modeltbl__head">
+                <code class="xmc-h-modeltbl__name" title=${errStr}>${display}</code>
+                <span class="xmc-h-modeltbl__tot">${e.count} 次</span>
+              </div>
+              <div class="xmc-h-modeltbl__track">
+                <div class="xmc-h-modeltbl__fill" style=${"width:" + w + "%"}></div>
+              </div>
+            </li>
+          `;
+        })}
+      </ul>
+    </div>
+  `;
+}
+
 function TopSessionsTable({ sessions }) {
   if (!sessions || sessions.length === 0) return null;
   const max = Math.max(1, ...sessions.map((s) => s.total_tokens || 0));
@@ -426,6 +467,20 @@ export function AnalyticsPage({ token }) {
                 value=${data.summary.models_used}
                 sub=${(data.models[0]?.model || "—").slice(0, 24) + "…"}
               />
+              <${SummaryCard}
+                icon=${I_DOLLAR}
+                label="估算成本"
+                value=${formatCost(data.summary.total_cost_usd || 0)}
+                sub="按公开价目, heuristic"
+              />
+              ${(data.summary.total_failed_calls || 0) > 0 ? html`
+                <${SummaryCard}
+                  icon=${I_ALERT}
+                  label="失败调用"
+                  value=${data.summary.total_failed_calls}
+                  sub="LLM 报错次数"
+                />
+              ` : null}
             </div>
 
             <${TokenBarChart} daily=${data.daily} />
@@ -435,6 +490,8 @@ export function AnalyticsPage({ token }) {
             ${(data.platforms || []).length > 0 ? html`<${PlatformsTable} platforms=${data.platforms} />` : null}
             ${data.activity ? html`<${ActivityChart} activity=${data.activity} />` : null}
             ${(data.top_sessions || []).length > 0 ? html`<${TopSessionsTable} sessions=${data.top_sessions} />` : null}
+            <!-- P0 wrap-up: cost + top_errors aggregation -->
+            ${(data.top_errors || []).length > 0 ? html`<${TopErrorsTable} errors=${data.top_errors} />` : null}
           `}
       </div>
     </section>
