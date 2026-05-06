@@ -427,6 +427,20 @@ export function applyEvent(chat, envelope) {
       // child of the linear chat container). The previous bubble's
       // toolCalls aggregator is gone; tool_invocation_finished still
       // finds the entry by callId because we use callId as message.id.
+      const toolName = payload.name || payload.tool_name || "tool";
+      // B-231: ``ask_user_question`` and friends own their dedicated
+      // UI surface (QuestionCard for ask_user_question via the
+      // ``agent_asked_question`` event). Rendering a generic ToolCard
+      // alongside dumps the raw args JSON in the chat AND leaves it
+      // stuck at "running" (the result lands when the user clicks an
+      // option — but the question ITSELF is already the user-facing
+      // affordance, the tool_use card is redundant noise). Skip
+      // ToolCard creation for these tools; tool_invocation_finished
+      // will not find a matching entry and become a clean no-op.
+      const _UI_SUPPRESSED_TOOLS = new Set(["ask_user_question"]);
+      if (_UI_SUPPRESSED_TOOLS.has(toolName)) {
+        return chat;
+      }
       const callId = payload.tool_call_id || payload.id || genId();
       const cleanedTC = _finalizeAbandoned(chat.messages, corr);
       return {
@@ -436,7 +450,7 @@ export function applyEvent(chat, envelope) {
           kind: "tool_use",
           role: "assistant",
           correlationId: corr,
-          name: payload.name || payload.tool_name || "tool",
+          name: toolName,
           args: payload.args || payload.arguments || {},
           status: "running",
           result: null,
