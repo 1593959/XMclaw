@@ -81,9 +81,11 @@ class SkillsWatcher:
     skills_root
         Canonical user-skills directory (``~/.xmclaw/skills_user/``).
     extra_roots
-        Additional roots to scan for SKILL.md / skill.py
-        (``~/.agents/skills``, ``~/.claude/skills`` by default per
-        B-163). Same list the boot-time loader uses.
+        Additional roots to scan for SKILL.md / skill.py. Default is
+        just ``~/.agents/skills`` (the open agent-skills marketplace).
+        B-234 dropped ``~/.claude/skills`` from the default — that's
+        Claude Code's user-level config space, not XMclaw's territory.
+        Same list the boot-time loader uses.
     interval_s
         Seconds between scans. Default 10s — short enough that a
         ``npx skills add`` install feels instant, long enough that

@@ -187,10 +187,16 @@ async def test_loop_runs_at_least_one_tick(tmp_path: Path) -> None:
 
 
 def test_resolve_skill_roots_default_includes_shared() -> None:
+    """B-234 dropped ``~/.claude/skills`` from the default — that's
+    Claude Code's user-level config space, not XMclaw's. Default extras
+    is now just ``~/.agents/skills`` (the open agent-skills marketplace
+    where ``npx skills add`` writes). Users who want to share skills
+    with Claude Code can opt in via ``evolution.skill_paths.extra``."""
     canonical, extras = resolve_skill_roots(None)
     extra_strs = [str(p) for p in extras]
     assert any(".agents" in s and "skills" in s for s in extra_strs)
-    assert any(".claude" in s and "skills" in s for s in extra_strs)
+    # B-234: ``.claude/skills`` is NOT in the default any more.
+    assert not any(".claude" in s and "skills" in s for s in extra_strs)
 
 
 def test_resolve_skill_roots_explicit_empty_disables_shared() -> None:

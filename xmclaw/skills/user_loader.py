@@ -447,9 +447,13 @@ def resolve_skill_roots(
 
     * ``canonical_root`` is always ``user_skills_dir()``
       (``~/.xmclaw/skills_user/``).
-    * ``extra_roots`` defaults to ``[~/.agents/skills, ~/.claude/skills]``
-      (B-163 zero-config) UNLESS the config explicitly sets
-      ``evolution.skill_paths.extra`` — then the config wins (an
+    * ``extra_roots`` defaults to ``[~/.agents/skills]`` — the open
+      agent-skills marketplace (``npx skills add ...`` writes here).
+      B-234 dropped ``~/.claude/skills`` from the default: that
+      directory is Claude Code's user-level config space and is NOT
+      XMclaw's territory. Users who explicitly want to share skills
+      between Claude Code and XMclaw can opt in via
+      ``config.evolution.skill_paths.extra`` (the config wins; an
       empty list disables shared-dir scanning entirely).
     """
     from xmclaw.utils.paths import user_skills_dir
@@ -460,7 +464,7 @@ def resolve_skill_roots(
     if isinstance(sp_cfg, dict) and "extra" in sp_cfg:
         extra_raw = sp_cfg.get("extra") or []
     else:
-        extra_raw = ["~/.agents/skills", "~/.claude/skills"]
+        extra_raw = ["~/.agents/skills"]
     extras: list[Path] = []
     if isinstance(extra_raw, list):
         for raw in extra_raw:

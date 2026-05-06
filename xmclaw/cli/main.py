@@ -627,13 +627,15 @@ def serve(
             mode = "auto-apply" if auto_apply else "observe-only"
             typer.echo(f"  [ok]  evolution orchestrator: {mode}")
 
-            # B-127 + Epic #24 Phase 5 + B-163 + B-173: roots resolved
-            # via the shared :func:`resolve_skill_roots` helper so
-            # boot-time loader and the runtime SkillsWatcher agree on
-            # what to scan. Canonical path
-            # (``~/.xmclaw/skills_user/``) plus zero-config extras
-            # (``~/.agents/skills``, ``~/.claude/skills``) unless
-            # ``evolution.skill_paths.extra`` overrides.
+            # B-127 + Epic #24 Phase 5 + B-163 + B-173 + B-234: roots
+            # resolved via the shared :func:`resolve_skill_roots` helper
+            # so boot-time loader and the runtime SkillsWatcher agree on
+            # what to scan. Canonical path (``~/.xmclaw/skills_user/``)
+            # plus the open-agent-skills marketplace
+            # (``~/.agents/skills``) unless
+            # ``evolution.skill_paths.extra`` overrides. B-234 dropped
+            # ``~/.claude/skills`` — that's Claude Code's user-level
+            # config space, not XMclaw's.
             from xmclaw.skills.user_loader import (
                 UserSkillsLoader, resolve_skill_roots,
             )
