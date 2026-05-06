@@ -1067,6 +1067,11 @@ class AgentLoop:
         # hint every turn would tilt the agent toward over-proposing
         # curriculum edits and dilute the signal.
         self._curriculum_hint_fired: dict[str, bool] = {}
+        # P0-1: ContextCompressor lazy-init slot. Created on first use
+        # (so tests / callers that never trip the threshold pay zero
+        # cost). Per-process singleton — per-session state lives
+        # inside the compressor keyed by session_id.
+        self._compressor: Any = None
 
     def clear_session(self, session_id: str) -> None:
         """Drop a session's conversation history. Called by the WS gateway
@@ -1076,8 +1081,110 @@ class AgentLoop:
         # B-202: reset the once-per-session curriculum hint dedup so a
         # fresh session starts eligible for the hint again.
         self._curriculum_hint_fired.pop(session_id, None)
+        # P0-1: drop compressor's per-session state too (anti-thrashing
+        # counter, previous_summary). Keeping it would mean a /reset
+        # session inherits stale "compressions are ineffective" gates.
+        if self._compressor is not None:
+            try:
+                self._compressor.on_session_reset(session_id)
+            except Exception:  # noqa: BLE001
+                pass
         if self._session_store is not None:
             self._session_store.delete(session_id)
+
+    # ── P0-1 Context compression integration ────────────────────────
+
+    async def _summarize_for_compressor(
+        self, prompt: str, max_tokens: int,
+    ) -> str | None:
+        """Compressor's summarise_call adapter — wraps ``self._llm.complete``.
+
+        Wall-clock-bounded so a stuck summary call doesn't add latency
+        on top of an already-pressured turn. Returns None on any error
+        so the compressor falls back to the static "summary unavailable"
+        notice rather than failing the user turn.
+        """
+        try:
+            msgs = [Message(role="user", content=prompt)]
+            resp = await asyncio.wait_for(
+                self._llm.complete(msgs, tools=None),
+                timeout=60.0,
+            )
+            content = (resp.content or "").strip()
+            return content or None
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — never fail a turn over summary
+            return None
+
+    def _get_compressor(self):
+        """Lazy-init the ContextCompressor on first use.
+
+        Uses ``self._llm`` for both:
+          * model name (display only — drives logging not tokenisation)
+          * summarise_call (wraps ``llm.complete``)
+
+        Default tunables match Hermes:
+          * 200K context window (Anthropic Sonnet baseline)
+          * 50% threshold (compress when prompt > 100K tokens)
+          * 3 head messages protected
+          * 20 tail messages floor (token-budget overrides)
+          * 20% of threshold reserved for summary output
+        """
+        if self._compressor is not None:
+            return self._compressor
+        from xmclaw.context.compressor import ContextCompressor
+        model = getattr(self._llm, "model", "") or "unknown"
+        # Pull context_length from LLM if it exposes one; else 200K default.
+        ctx_len = int(getattr(self._llm, "context_length", 200_000) or 200_000)
+        self._compressor = ContextCompressor(
+            model=model,
+            summarize_call=self._summarize_for_compressor,
+            threshold_percent=0.50,
+            protect_first_n=3,
+            protect_last_n=20,
+            summary_target_ratio=0.20,
+            context_length=ctx_len,
+            quiet_mode=False,
+        )
+        return self._compressor
+
+    async def _maybe_compress_messages(
+        self,
+        messages: list[Message],
+        session_id: str,
+        *,
+        force: bool = False,
+    ) -> tuple[list[Message], bool]:
+        """Run the compressor when threshold breached (or force=True).
+
+        Returns ``(messages, did_compress)``. The ``did_compress`` flag
+        lets the caller emit a ``CONTEXT_COMPRESSED`` event for the
+        Trace UI without re-checking. Compressor errors are swallowed —
+        original messages returned unchanged. Context compression
+        NEVER fails a user turn.
+        """
+        try:
+            from xmclaw.context.compressor import (
+                estimate_messages_tokens_rough,
+            )
+            cc = self._get_compressor()
+            est = estimate_messages_tokens_rough(messages)
+            if force or cc.should_compress(est, session_id=session_id):
+                new_msgs = await cc.compress(
+                    messages, session_id=session_id, current_tokens=est,
+                )
+                return new_msgs, len(new_msgs) != len(messages)
+        except Exception as exc:  # noqa: BLE001
+            try:
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).warning(
+                    "agent_loop.compress_failed session=%s err=%s",
+                    session_id, exc,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return messages, False
 
     def pop_last_turn(self, session_id: str) -> dict[str, Any]:
         """B-106: drop the last user/assistant pair from a session's
@@ -2084,6 +2191,30 @@ class AgentLoop:
                 from xmclaw.utils.error_classifier import (
                     classify_api_error, backoff_schedule,
                 )
+                # P0-1: proactive compression — once per hop, BEFORE
+                # the LLM call. Cheap when threshold not breached
+                # (token estimate + comparison). When breached it
+                # runs the 5-phase pipeline (prune → head/tail
+                # protect → LLM summary → assemble + sanitize).
+                # Replaces the simple greedy-drop in _persist_history
+                # for the "context too long" case while keeping that
+                # path as the fallback in case compression fails.
+                _did_compress, _did_emit = False, False
+                try:
+                    _new_msgs, _did_compress = await self._maybe_compress_messages(
+                        messages, session_id,
+                    )
+                    if _did_compress:
+                        messages = _new_msgs
+                        await publish(EventType.CONTEXT_COMPRESSED, {
+                            "hop": hop,
+                            "trigger": "proactive_threshold",
+                            "session_id": session_id,
+                        })
+                        _did_emit = True
+                except Exception:  # noqa: BLE001
+                    pass
+
                 _b227_attempts = 0
                 _b227_last_classified: Any = None
                 # B-230: auto-continue when ``stop_reason=max_tokens``
@@ -2141,6 +2272,28 @@ class AgentLoop:
                                 )
                             except Exception:  # noqa: BLE001
                                 pass
+                            # P0-1 + P0-2 wire-up: when classifier flagged
+                            # context_overflow / payload_too_large /
+                            # long_context_tier (all set should_compress),
+                            # actually run the compressor before sleeping
+                            # + retrying. Without this the retry sends the
+                            # same too-big payload again and just dies the
+                            # same way. Force=True bypasses the threshold
+                            # check — provider already told us it's too big.
+                            if ce.should_compress:
+                                try:
+                                    _new_msgs, _did_force = await self._maybe_compress_messages(
+                                        messages, session_id, force=True,
+                                    )
+                                    if _did_force:
+                                        messages = _new_msgs
+                                        await publish(EventType.CONTEXT_COMPRESSED, {
+                                            "hop": hop,
+                                            "trigger": "reactive_" + ce.reason.value,
+                                            "session_id": session_id,
+                                        })
+                                except Exception:  # noqa: BLE001
+                                    pass
                             await asyncio.sleep(sleep_ms / 1000.0)
                             _b227_attempts += 1
                             # Loop and retry with same kwargs.
