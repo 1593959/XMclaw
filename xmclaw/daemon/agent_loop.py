@@ -2124,20 +2124,6 @@ class AgentLoop:
         )
         system_content = cache_entry[1] + "\n\n" + time_block
 
-        messages: list[Message] = [
-            Message(role="system", content=system_content),
-            *prior,
-            Message(
-                role="user",
-                content=(
-                    continuation_anchor
-                    + user_message
-                    + memory_ctx_block
-                    + memory_files_block
-                    + curriculum_hint_block
-                ),
-            ),
-        ]
         tool_specs = self._tools.list_tools() if self._tools else None
 
         # B-238: skill prefilter. Real-data: 404 skills installed →
@@ -2149,7 +2135,13 @@ class AgentLoop:
         # always pass through. Below ``min_skills_to_filter`` skills
         # (default 30) the prefilter is a no-op — small setups don't
         # have the noise problem.
+        registry_total = 0
         if tool_specs:
+            registry_total = sum(
+                1 for s in tool_specs
+                if (s.name or "").startswith("skill_")
+                and s.name != "skill_browse"
+            )
             try:
                 from xmclaw.skills.prefilter import select_relevant_skills
                 tool_specs = select_relevant_skills(
@@ -2157,6 +2149,60 @@ class AgentLoop:
                 )
             except Exception:  # noqa: BLE001 — never break a turn over routing
                 pass
+
+        # B-300: turn-local skill_browse nudge.
+        #
+        # Empirical: with B-299's static system-prompt mention,
+        # 0/4 vague CJK queries against 404 installed skills
+        # actually triggered skill_browse — the LLM defaulted to
+        # bash / list_dir / generic exploration even though the
+        # static prompt told it to call skill_browse first. The
+        # static rule sits inside an 8K-token system prompt; by
+        # the time the LLM gets to tool selection it's been
+        # diluted by everything else.
+        #
+        # Better: when the prefilter actually drops all real
+        # skills (registry has skills, but none scored > 0
+        # against this query), augment the user message with a
+        # short, specific hint pointing at skill_browse. Fires
+        # only on the exact case where it matters; on queries
+        # the prefilter succeeded for, no hint (lean tool list +
+        # matched skill is its own signal).
+        skill_browse_hint = ""
+        if tool_specs and registry_total > 0:
+            survived_real_skills = sum(
+                1 for s in tool_specs
+                if (s.name or "").startswith("skill_")
+                and s.name != "skill_browse"
+            )
+            if survived_real_skills == 0:
+                skill_browse_hint = (
+                    "\n\n[turn hint] 你的本地 "
+                    f"{registry_total} 个技能里没有一个匹配本次"
+                    "查询的关键词。如果用户的诉求像 '怎么写X' / "
+                    "'帮我做Y' / '审视一下 Z' 这种潜在需要专门技能"
+                    "的, 请优先调用 ``skill_browse(query=\"<你对意图"
+                    "的简短理解>\")`` 看注册表里有没有相关技能, "
+                    "再决定用真技能还是回退到 bash / file_* / "
+                    "web_search. 该提示仅在本回合; 后续回合若用户"
+                    "继续提问, 系统会重新评估。"
+                )
+
+        messages: list[Message] = [
+            Message(role="system", content=system_content),
+            *prior,
+            Message(
+                role="user",
+                content=(
+                    continuation_anchor
+                    + user_message
+                    + memory_ctx_block
+                    + memory_files_block
+                    + curriculum_hint_block
+                    + skill_browse_hint
+                ),
+            ),
+        ]
 
         # Per-hop turn id so every LLM_CHUNK + LLM_RESPONSE event in this
         # hop shares a correlation_id. The chat reducer keys the assistant
