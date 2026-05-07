@@ -653,6 +653,7 @@ def create_app(
         # agent unsupervised authority over its own version pointer.
         # Failures must not block boot.
         _app.state.evolution_observer = None
+        _app.state.evolution_evaluation_trigger = None
         try:
             from xmclaw.daemon.evolution_agent import EvolutionAgent
             evo_agent = EvolutionAgent("evo-main", bus)
@@ -664,6 +665,40 @@ def create_app(
                 "evolution_observer.start_failed err=%s", exc,
             )
             _app.state.evolution_observer = None
+            evo_agent = None  # type: ignore[assignment]
+
+        # B-294: wire the evaluation trigger. Phase 3.1 left ``evaluate()``
+        # implemented but UNCALLED in production — verdicts accumulated
+        # in EWMA forever, never turning into proposals. Without this
+        # block the "self-evolving agent" loop is dead from observer
+        # onwards. Fires evaluate() ~30s after a verdict-burst settles,
+        # capped at 1 fire / 5min, with min 10 new verdicts to skip
+        # tiny bursts.
+        if evo_agent is not None:
+            try:
+                from xmclaw.daemon.evolution_evaluation_trigger import (
+                    EvolutionEvaluationTrigger,
+                )
+                _eval_cfg = (
+                    (config or {}).get("evolution", {}).get("evaluation", {})
+                )
+                eval_trigger = EvolutionEvaluationTrigger(
+                    evo_agent, bus,
+                    debounce_s=float(_eval_cfg.get("debounce_s", 30.0)),
+                    cooldown_s=float(_eval_cfg.get("cooldown_s", 300.0)),
+                    min_new_verdicts=int(
+                        _eval_cfg.get("min_new_verdicts", 10),
+                    ),
+                    enabled=bool(_eval_cfg.get("enabled", True)),
+                )
+                await eval_trigger.start()
+                _app.state.evolution_evaluation_trigger = eval_trigger
+            except Exception as exc:  # noqa: BLE001
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).warning(
+                    "evolution_evaluation_trigger.start_failed err=%s", exc,
+                )
+                _app.state.evolution_evaluation_trigger = None
 
         # Epic #24 Phase 2.3: default-start JournalWriter + Profile
         # Extractor. JournalWriter buffers session events and writes
@@ -1153,6 +1188,15 @@ def create_app(
             if orchestrator is not None:
                 try:
                     await orchestrator.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            # B-294: stop the evaluation trigger BEFORE the observer so
+            # any in-flight debounce timer doesn't try to call .evaluate()
+            # on a stopped observer.
+            _eval_trig = getattr(_app.state, "evolution_evaluation_trigger", None)
+            if _eval_trig is not None:
+                try:
+                    await _eval_trig.stop()
                 except Exception:  # noqa: BLE001
                     pass
             # Epic #24 Phase 1: stop the default EvolutionAgent observer.
