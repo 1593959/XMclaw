@@ -111,13 +111,28 @@ class BuiltinFileMemoryProvider(MemoryProvider):
         filters: dict[str, Any] | None = None,
     ) -> list[MemoryItem]:
         """Substring search across MEMORY.md + USER.md. Embeddings
-        ignored — this provider is keyword-only by design."""
+        ignored — this provider is keyword-only by design.
+
+        B-277: ``filters`` (e.g. ``{"file": "MEMORY.md"}`` or
+        ``{"section": "Decisions"}``) is now honored. Pre-B-277 the
+        param was accepted but **ignored** — every match returned all
+        bullets across both files regardless of filter intent. Real-data:
+        callers passing ``filters={"session_id": "..."}`` to scope a
+        query were silently getting cross-session results back.
+
+        Match rules:
+          * filter key matches a metadata key on the candidate item
+          * value comparison is exact equality (after str-coerce)
+          * filter on a key the bullet doesn't have → exclude (strict)
+          * empty filters dict → no filter
+        """
         if not text and not filters:
-            # Nothing to match against; return all bullets, newest-first
             return self._all_bullets(k)
         needle = (text or "").strip().lower()
-        if not needle:
-            return self._all_bullets(k)
+        # When only filters are provided (no text), still run the full
+        # scan + apply filters. Pre-B-277 this case fell through to
+        # _all_bullets unfiltered.
+        scan_all = not needle
         hits: list[MemoryItem] = []
         pdir = self._persona_dir()
         for fname in ("MEMORY.md", "USER.md"):
@@ -136,21 +151,45 @@ class BuiltinFileMemoryProvider(MemoryProvider):
                     continue
                 if not stripped.startswith("-"):
                     continue
-                if needle in stripped.lower():
-                    hits.append(MemoryItem(
-                        id=f"{fname}:{stripped[:40]}",
-                        layer=layer,
-                        text=stripped.lstrip("-").strip(),
-                        metadata={
-                            "file": fname,
-                            "section": section_header,
-                            "kind": "persona_bullet",
-                        },
-                        ts=path.stat().st_mtime,
-                    ))
-                    if len(hits) >= k:
-                        return hits
+                if not scan_all and needle not in stripped.lower():
+                    continue
+                metadata = {
+                    "file": fname,
+                    "section": section_header,
+                    "kind": "persona_bullet",
+                }
+                # B-277: apply filters strictly — every requested key
+                # must match. Filters that don't apply to this provider's
+                # metadata model (e.g. ``session_id``) will not match
+                # any bullet, which is the correct behaviour: builtin_file
+                # bullets aren't session-scoped, so a session-filter
+                # query SHOULD return zero hits, not the whole file.
+                if filters and not self._matches_filters(metadata, filters):
+                    continue
+                hits.append(MemoryItem(
+                    id=f"{fname}:{stripped[:40]}",
+                    layer=layer,
+                    text=stripped.lstrip("-").strip(),
+                    metadata=metadata,
+                    ts=path.stat().st_mtime,
+                ))
+                if len(hits) >= k:
+                    return hits
         return hits
+
+    @staticmethod
+    def _matches_filters(
+        metadata: dict[str, Any], filters: dict[str, Any],
+    ) -> bool:
+        """B-277: strict equality match for each filter key against
+        candidate metadata. Missing key → no match (strict)."""
+        for fk, fv in filters.items():
+            actual = metadata.get(fk)
+            if actual is None:
+                return False
+            if str(actual) != str(fv):
+                return False
+        return True
 
     async def forget(self, item_id: str) -> None:
         """No-op — the file format doesn't have stable item ids

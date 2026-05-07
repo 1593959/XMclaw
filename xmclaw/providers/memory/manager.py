@@ -24,6 +24,13 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+
+class MemoryPutError(Exception):
+    """B-276: raised when ``MemoryManager.put`` exhausted every
+    registered provider without a successful write. Distinct from
+    "no providers registered" (returns None) so callers can choose
+    whether to surface to the user."""
+
 from xmclaw.providers.memory.base import Layer, MemoryItem, MemoryProvider
 from xmclaw.utils.log import get_logger
 
@@ -118,12 +125,26 @@ class MemoryManager:
 
     async def put(self, layer: Layer, item: MemoryItem) -> str | None:
         """Write to the first provider that accepts. External provider
-        first (it's the "active recall" surface), builtin last."""
+        first (it's the "active recall" surface), builtin last.
+
+        B-276: when **all** providers fail, raise ``MemoryPutError``
+        instead of returning ``None``. Pre-B-276 the manager logged a
+        warning and returned None silently — the caller (``tool: remember``
+        + post-sampling hooks) didn't check the return value, so writes
+        could silently disappear on transient DB lock / FS error /
+        embedder downtime. Real-data: agent invokes ``remember(..)``
+        with a critical fact, fact never lands, no error surfaces, fact
+        is gone forever. Now an explicit failure tells the caller it
+        needs to retry / surface to the user.
+        """
         import time as _t
         # Iterate external first, then builtin, so the EXTERNAL provider
         # gets writes if both are registered. The builtin is a fallback
         # when nothing else is wired.
+        last_exc: Exception | None = None
+        attempted = 0
         for p in self._iter_external_first():
+            attempted += 1
             t0 = _t.perf_counter()
             try:
                 rid = await p.put(layer, item)
@@ -135,12 +156,21 @@ class MemoryManager:
                 )
                 return rid
             except Exception as exc:  # noqa: BLE001
+                last_exc = exc
                 _log.warning(
                     "memory.put_failed provider=%s err=%s",
                     getattr(p, "name", "?"), exc,
                 )
                 continue
-        return None
+        # B-276: differentiate "no providers registered" (None — caller
+        # might legitimately have no memory backend wired) from "all
+        # registered providers failed" (raise — that's a real error).
+        if attempted == 0:
+            return None
+        raise MemoryPutError(
+            f"all {attempted} memory provider(s) failed; "
+            f"last error: {last_exc!r}"
+        )
 
     async def query(
         self,
@@ -152,17 +182,26 @@ class MemoryManager:
         filters: dict[str, Any] | None = None,
         hybrid: bool = False,
     ) -> list[MemoryItem]:
-        """Query first provider that returns results. Returns empty
-        list if all providers fail.
+        """Query providers in order, top-up partial results from
+        subsequent providers.
 
         B-50: when ``hybrid=True`` AND both ``text`` and ``embedding``
         are supplied AND the provider implements ``hybrid_query``,
         route through that path instead — Reciprocal Rank Fusion of
         the vector + keyword candidate lists. Falls back to plain
         ``query()`` when the provider doesn't support hybrid.
+
+        B-279: pre-B-279 returned the first non-empty result list
+        without checking length. If external returned 5 hits and k=10
+        was requested, builtin was never queried for the missing 5 —
+        the agent thought it got a complete result set. Now we
+        accumulate hits across providers up to k, deduping by id,
+        until the budget fills.
         """
         import time as _t
         sid = (filters or {}).get("session_id") if filters else None
+        accumulated: list[MemoryItem] = []
+        seen_ids: set[str] = set()
         for p in self._iter_external_first():
             t0 = _t.perf_counter()
             try:
@@ -186,15 +225,23 @@ class MemoryManager:
                     elapsed_ms=(_t.perf_counter() - t0) * 1000.0,
                     k=k, hits=len(hits),
                 )
-                if hits:
-                    return hits
+                # B-279: dedupe + accumulate. Provider order matters
+                # (external first wins ties).
+                for h in hits:
+                    hid = getattr(h, "id", None) or id(h)
+                    if hid in seen_ids:
+                        continue
+                    seen_ids.add(hid)
+                    accumulated.append(h)
+                    if len(accumulated) >= k:
+                        return accumulated
             except Exception as exc:  # noqa: BLE001
                 _log.warning(
                     "memory.query_failed provider=%s err=%s",
                     getattr(p, "name", "?"), exc,
                 )
                 continue
-        return []
+        return accumulated
 
     async def forget(self, item_id: str) -> None:
         for p in self._providers:
