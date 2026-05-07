@@ -57,6 +57,15 @@ class LLMResponse:
     # ``"stop"`` / ``"length"`` / ``"tool_calls"`` (OpenAI). Empty string
     # = provider didn't report one (some compat shims).
     stop_reason: str = ""
+    # B-245: prompt-cache observability. Anthropic returns
+    # ``cache_creation_input_tokens`` (cost: 1.25× normal) for the
+    # first request that populates a cache slot, and
+    # ``cache_read_input_tokens`` (cost: 0.10× normal) for subsequent
+    # hits on the same cached prefix. Both 0 when caching is unused
+    # or the provider doesn't expose the stats. Lets Analytics
+    # report a hit rate + actual token savings.
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
 
 @dataclass(frozen=True, slots=True)

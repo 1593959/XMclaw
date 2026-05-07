@@ -17,11 +17,17 @@ from xmclaw.providers.llm.base import Message
 # ── pure transforms ────────────────────────────────────────────────────────
 
 def test_messages_to_anthropic_splits_system() -> None:
+    """B-245 update: system is now emitted as a list of content blocks
+    with cache_control on the single text block (was: plain string).
+    Anthropic SDK accepts both shapes; we always send blocks now to
+    enable prompt caching."""
     system, msgs = AnthropicLLM._messages_to_anthropic([
         Message(role="system", content="you are a helper"),
         Message(role="user", content="hi"),
     ])
-    assert system == "you are a helper"
+    assert isinstance(system, list)
+    assert system[0]["text"] == "you are a helper"
+    assert system[0]["cache_control"] == {"type": "ephemeral"}
     assert len(msgs) == 1
     assert msgs[0]["role"] == "user"
 

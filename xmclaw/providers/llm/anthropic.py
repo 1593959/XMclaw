@@ -80,13 +80,25 @@ class AnthropicLLM(LLMProvider):
     @staticmethod
     def _messages_to_anthropic(
         messages: list[Message],
-    ) -> tuple[str, list[dict[str, Any]]]:
+    ) -> tuple[Any, list[dict[str, Any]]]:
         """Split out the system prompt and convert other messages.
 
         Anthropic wants ``system`` as a top-level parameter; everything else
         is in ``messages`` as alternating user/assistant. We emit blocks
         (``type: text`` / ``type: tool_use`` / ``type: tool_result``) so
         callers can round-trip tool-call history without loss.
+
+        B-245: returns ``system`` as a **list of content blocks** when
+        non-empty, with ``cache_control: {"type": "ephemeral"}`` on the
+        single text block. Anthropic's prompt cache hashes everything
+        BEFORE this marker (system + tools, in a single 5-minute TTL
+        ephemeral slot). XMclaw's system prompt is ~3500 tokens and
+        nearly identical across hops within a turn → cache hit rate
+        ≈ 100% after the first request, every following call gets a
+        90% discount on the prefix. Anthropic SDK accepts both string
+        and list shapes for ``system`` since 2024-08; clients without
+        caching support degrade gracefully because the block list is
+        a strict superset of the string form.
         """
         system_parts: list[str] = []
         converted: list[dict[str, Any]] = []
@@ -125,13 +137,31 @@ class AnthropicLLM(LLMProvider):
                     "input": tc.args,
                 })
             converted.append({"role": m.role, "content": blocks})
-        return "\n\n".join(system_parts), converted
+        # B-245: emit system as a single text block carrying the
+        # cache_control breakpoint. Empty system → empty list (caller
+        # checks ``if system:`` and omits the param entirely).
+        system_text = "\n\n".join(system_parts).strip()
+        if system_text:
+            system_blocks: list[dict[str, Any]] = [{
+                "type": "text",
+                "text": system_text,
+                "cache_control": {"type": "ephemeral"},
+            }]
+            return system_blocks, converted
+        return "", converted
 
     @staticmethod
     def _tools_to_anthropic(tools: list[ToolSpec] | None) -> list[dict[str, Any]]:
+        # B-245: cache the tools array. Marking cache_control on the
+        # LAST tool sets a cache breakpoint that includes every
+        # preceding tool def in one cache slot. Tool descriptions
+        # rarely change within a session — caching saves ~5-15K
+        # tokens per call when the agent has 30+ tools (the post-B-238
+        # prefilter trims to ~25 but each description is still ~200
+        # tokens). Empty list returns empty (no breakpoint).
         if not tools:
             return []
-        return [
+        out = [
             {
                 "name": t.name,
                 "description": t.description,
@@ -139,6 +169,8 @@ class AnthropicLLM(LLMProvider):
             }
             for t in tools
         ]
+        out[-1]["cache_control"] = {"type": "ephemeral"}
+        return out
 
     # ── public API ──
 
@@ -242,6 +274,13 @@ class AnthropicLLM(LLMProvider):
             completion_tokens=getattr(usage, "output_tokens", 0) or 0,
             latency_ms=latency_ms,
             stop_reason=stop_reason,
+            # B-245: surface cache stats from Anthropic's usage block.
+            cache_creation_input_tokens=getattr(
+                usage, "cache_creation_input_tokens", 0,
+            ) or 0,
+            cache_read_input_tokens=getattr(
+                usage, "cache_read_input_tokens", 0,
+            ) or 0,
         )
 
     async def complete_streaming(
@@ -476,6 +515,13 @@ class AnthropicLLM(LLMProvider):
             completion_tokens=getattr(usage, "output_tokens", 0) or 0,
             latency_ms=latency_ms,
             stop_reason=stop_reason,
+            # B-245: cache stats (streaming path).
+            cache_creation_input_tokens=getattr(
+                usage, "cache_creation_input_tokens", 0,
+            ) or 0,
+            cache_read_input_tokens=getattr(
+                usage, "cache_read_input_tokens", 0,
+            ) or 0,
         )
 
     @property
