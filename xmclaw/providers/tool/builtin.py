@@ -3030,8 +3030,20 @@ class BuiltinTools(ToolProvider):
         if bus is not None:
             try:
                 from xmclaw.core.bus import EventType, make_event
+                # B-237: use the REAL session_id (set by AgentLoop on
+                # the ToolCall before invoke). Pre-B-237 this was
+                # hardcoded to ``"_question"`` — a placeholder that
+                # never matches the front-end's WS session
+                # subscription, so the event silently dropped on the
+                # gateway floor. The QuestionCard only became visible
+                # after page refresh because the rehydrate path
+                # (``GET /api/v2/pending_questions``) is HTTP and
+                # session-agnostic. Live path was broken since B-92.
+                # Fall back to ``"_question"`` only for defensive
+                # callers that build a ToolCall without a session_id.
+                sid = call.session_id or "_question"
                 ev = make_event(
-                    session_id="_question",
+                    session_id=sid,
                     agent_id="main",
                     type=EventType.AGENT_ASKED_QUESTION,
                     payload={
