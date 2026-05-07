@@ -139,6 +139,160 @@ function MutationRow({ ev }) {
 }
 
 
+// B-301: live evolution-chain status. Renders the in-memory state
+// users can otherwise only see by SSH-ing into the daemon — _arms
+// per-skill progress towards min_plays / min_mean, trigger fire
+// counter, variant-selector UCB1 arm count, and the most recent
+// SkillDreamCycle audit lines. Polls /api/v2/evolution/snapshot
+// every 30s alongside the rest of the page.
+function ArmProgressBar({ progress, label }) {
+  const pct = Math.round((progress || 0) * 100);
+  const tone = pct >= 100 ? "success" : pct >= 50 ? "warning" : "muted";
+  return html`
+    <div style="display:flex;align-items:center;gap:.4rem;font-size:.72rem">
+      <span style="min-width:3.5rem;opacity:.7">${label}</span>
+      <div style="flex:1;height:6px;background:color-mix(in srgb, var(--midground) 12%, transparent);border-radius:3px;overflow:hidden">
+        <div style=${`height:100%;width:${pct}%;background:var(--xmc-${tone}, currentColor);opacity:.7`}></div>
+      </div>
+      <span style="min-width:3rem;text-align:right;opacity:.7">${pct}%</span>
+    </div>
+  `;
+}
+
+
+function LiveStatusPanel({ token }) {
+  const [snap, setSnap] = useState(null);
+  const [error, setError] = useState(null);
+
+  const load = () => {
+    if (!token) return;
+    apiGet("/api/v2/evolution/snapshot", token)
+      .then((d) => { setError(null); setSnap(d); })
+      .catch((e) => setError(String(e.message || e)));
+  };
+
+  useEffect(() => {
+    if (!token) return;
+    load();
+    const id = setInterval(load, 30_000);
+    return () => clearInterval(id);
+  }, [token]);
+
+  if (error) {
+    return html`<div class="xmc-h-skill-card" style="padding:.7rem .8rem">
+      <small style="opacity:.7">🔬 实时进化状态</small>
+      <div style="font-size:.85rem;color:var(--xmc-warning);margin-top:.3rem">加载失败：${error}</div>
+    </div>`;
+  }
+  if (!snap) {
+    return html`<div class="xmc-h-skill-card" style="padding:.7rem .8rem">
+      <small style="opacity:.7">🔬 实时进化状态</small>
+      <div style="font-size:.85rem;opacity:.6;margin-top:.3rem">载入中…</div>
+    </div>`;
+  }
+
+  const obs = snap.observer;
+  const trig = snap.trigger;
+  const sel = snap.variant_selector;
+  const sd = snap.skill_dream || {};
+
+  if (!obs) {
+    return html`<div class="xmc-h-skill-card" style="padding:.7rem .8rem">
+      <small style="opacity:.7">🔬 实时进化状态</small>
+      <div style="font-size:.85rem;opacity:.7;margin-top:.3rem">
+        进化链未启用（echo-mode 或 <code>evolution.enabled=false</code>）
+      </div>
+    </div>`;
+  }
+
+  const arms = obs.arms || [];
+  const recent = sd.recent_proposals || [];
+
+  return html`
+    <div class="xmc-h-skill-card" style="padding:.8rem 1rem">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:.6rem">
+        <strong style="font-size:.95rem">🔬 实时进化状态</strong>
+        <small style="opacity:.6">
+          observer=${obs.is_running ? "✓" : "✗"} ·
+          trigger=${trig?.is_active ? "✓" : "✗"} ·
+          selector=${sel?.is_active ? "✓" : "✗"}
+        </small>
+      </div>
+
+      <!-- Top-line: observer summary -->
+      <div style="font-size:.82rem;line-height:1.6;margin-bottom:.6rem">
+        <strong>EvolutionAgent observer</strong>:
+        正在跟踪 ${obs.tracked_skill_count} 个 (skill_id, version)
+        ${obs.ready_to_propose_count > 0
+          ? html`， <span style="color:var(--xmc-success);font-weight:600">
+              ${obs.ready_to_propose_count} 个达到提议阈值
+            </span>`
+          : html`，<span style="opacity:.7">尚无达阈值（min_plays=10 / min_mean=0.65）</span>`}
+        ${trig
+          ? html`<br/><span style="opacity:.7">
+              evaluate trigger fired ${trig.fire_count} 次，
+              ${trig.verdicts_since_last_fire > 0
+                ? `已积 ${trig.verdicts_since_last_fire} 个新 verdict（阈值 ${trig.min_new_verdicts}）`
+                : "本轮无新 verdict"}
+            </span>`
+          : null}
+      </div>
+
+      <!-- Arms table -->
+      ${arms.length === 0
+        ? html`<div style="font-size:.78rem;opacity:.6;padding:.4rem 0">
+            还没有 skill_* 调用产生 grader_verdict。让 agent 实际调用一个 <code>skill_*</code> 工具，
+            它就会出现在这里并开始累积 plays。
+          </div>`
+        : html`<div style="display:grid;gap:.4rem">
+            ${arms.map((a) => html`
+              <div key=${`${a.skill_id}-${a.version}`}
+                   style=${`padding:.4rem .5rem;border-radius:4px;background:${a.progress.ready_to_propose
+                     ? "color-mix(in srgb, var(--xmc-success) 8%, transparent)"
+                     : "color-mix(in srgb, var(--midground) 4%, transparent)"};border:1px solid var(--color-border)`}>
+                <div style="display:flex;align-items:baseline;gap:.5rem;flex-wrap:wrap;margin-bottom:.3rem">
+                  <code style="font-size:.78rem;font-weight:600">${a.skill_id}</code>
+                  <small style="opacity:.7">v${a.version}</small>
+                  ${a.progress.ready_to_propose
+                    ? html`<span class="xmc-h-badge xmc-h-badge--success">达阈值，可提议</span>`
+                    : html`<span class="xmc-h-badge xmc-h-badge--muted">accumulating</span>`}
+                  <small style="margin-left:auto;opacity:.6">
+                    plays ${a.plays}/10 · mean ${(a.mean_score ?? 0).toFixed(2)}
+                  </small>
+                </div>
+                <${ArmProgressBar} progress=${a.progress.plays_progress} label="plays" />
+                <${ArmProgressBar} progress=${a.progress.mean_progress} label="mean" />
+              </div>
+            `)}
+          </div>`}
+
+      <!-- skill_dream recent audit -->
+      ${recent.length > 0
+        ? html`<details style="margin-top:.7rem">
+            <summary style="cursor:pointer;font-size:.78rem;opacity:.8">
+              SkillDreamCycle 最近 ${recent.length} 条 audit（最新在前）
+            </summary>
+            <ul style="list-style:none;padding:.4rem 0 0;margin:0;font-size:.74rem">
+              ${recent.map((r, i) => html`
+                <li key=${i} style="padding:.2rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+                  <code>${r.skill_id || "?"}</code>
+                  ${r.confidence != null
+                    ? html`<small style="opacity:.6">conf ${(r.confidence).toFixed(2)}</small>`
+                    : null}
+                  ${r.title
+                    ? html`<small style="opacity:.7">${r.title}</small>`
+                    : null}
+                  <small style="margin-left:auto;opacity:.5">${fmtIsoLocal(r.ts)}</small>
+                </li>
+              `)}
+            </ul>
+          </details>`
+        : null}
+    </div>
+  `;
+}
+
+
 export function EvolutionPage({ token }) {
   const [proposals, setProposals] = useState(null);
   const [verdicts, setVerdicts] = useState(null);
@@ -253,6 +407,9 @@ export function EvolutionPage({ token }) {
             <small style="opacity:.6">${summary?.verdictCount ?? 0} verdicts</small>
           </div>
         </div>
+
+        <!-- Section 1.5 (B-301): live state of the in-memory chain. -->
+        <${LiveStatusPanel} token=${token} />
 
         <!-- Section 2: Pending proposals -->
         <div>
