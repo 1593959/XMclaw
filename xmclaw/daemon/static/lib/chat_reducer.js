@@ -675,6 +675,156 @@ export function applyEvent(chat, envelope) {
       };
     }
 
+    // B-266: previously-unhandled events. Each one was being silently
+    // dropped at the ``default`` branch — meaning entire subsystems
+    // (grading, evolution, todos, context compression, security alerts)
+    // produced ZERO UI feedback in the chat panel even though the
+    // daemon was emitting them. Frontend audit (2026-05-07) found
+    // 13+ event types in this state. The handlers below are a focused
+    // subset — they hook into the activity-feed channels that the UI
+    // already renders (toolCalls / tokenUsage / system-tagged
+    // bubbles) without requiring new components. The rest are still
+    // in the ``default`` branch but available via the Trace page,
+    // which subscribes to the raw event stream.
+
+    case "context_compressed": {
+      // B-266: agent_loop's ContextCompressor (proactive or reactive)
+      // just shrank the message history. Surface as a thin system
+      // bubble so the user knows the LLM saw a summary, not the raw
+      // earlier turns. Doesn't change any other state.
+      const trigger = payload.trigger || "compressed";
+      const id = "ctxcomp_" + corr + "_" + (payload.hop ?? 0);
+      return {
+        ...chat,
+        messages: chat.messages.concat({
+          id,
+          role: "system",
+          kind: "context_compressed",
+          content: `🗜️ 上下文被压缩 (${trigger})`,
+          status: "complete",
+          ts,
+          collapsed: true,
+        }),
+      };
+    }
+
+    case "todo_updated": {
+      // B-266: todo_write tool just updated the task list. Mirror
+      // count + items into chat state so a TodoPanel (or inline
+      // checklist) can render them without re-fetching.
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      return {
+        ...chat,
+        todos: {
+          items,
+          count: typeof payload.count === "number"
+            ? payload.count
+            : items.length,
+          ts,
+        },
+      };
+    }
+
+    case "grader_verdict": {
+      // B-266 + B-294: HonestGrader fired on a tool result. We
+      // already surface the per-skill verdict via skill_outcome;
+      // this handler aggregates the LATEST verdict score into a
+      // session-level slot for diagnostic widgets (e.g. "average
+      // grader score this session"). No bubble created — too noisy
+      // for chat (every tool call fires one).
+      const score = typeof payload.score === "number"
+        ? payload.score
+        : null;
+      const prev = chat.graderStats || { count: 0, sum: 0, lastScore: null };
+      return {
+        ...chat,
+        graderStats: {
+          count: prev.count + 1,
+          sum: prev.sum + (score == null ? 0 : score),
+          lastScore: score,
+          lastSkillId: payload.skill_id || null,
+          lastTs: ts,
+        },
+      };
+    }
+
+    case "skill_candidate_proposed": {
+      // B-266 + B-294: EvolutionAgent.evaluate (now actually firing
+      // post-B-294) has emitted a promote/rollback proposal. Attach
+      // to a session-level proposals queue so the Evolution page can
+      // poll without round-tripping events.db every render. Cap at
+      // 50 entries (most-recent first) to keep the slot bounded.
+      const decision = payload.decision || "promote";
+      const next = {
+        ts,
+        decision,
+        skill_id: payload.skill_id || payload.candidate_id || "?",
+        from_version: payload.from_version,
+        to_version: payload.to_version,
+        evidence: payload.evidence || [],
+      };
+      const prev = chat.skillProposals || [];
+      return {
+        ...chat,
+        skillProposals: [next, ...prev].slice(0, 50),
+      };
+    }
+
+    case "skill_promoted":
+    case "skill_rolled_back": {
+      // B-266: SkillRegistry actually moved HEAD. Strong UI signal —
+      // surface as a celebration / warning system bubble so the user
+      // sees their agent just learned (or rolled back).
+      const promoted = t === "skill_promoted";
+      const sid = payload.skill_id || "?";
+      const to = payload.to_version ?? "?";
+      const id = (promoted ? "promo_" : "roll_") + corr;
+      const text = promoted
+        ? `🌱 技能 ${sid} 升级到 v${to}`
+        : `🔁 技能 ${sid} 回滚到 v${to}`;
+      return {
+        ...chat,
+        messages: chat.messages.concat({
+          id,
+          role: "system",
+          kind: "skill_lifecycle",
+          content: text,
+          status: "complete",
+          ts,
+        }),
+        // Drop matching proposal from the queue (it's resolved).
+        skillProposals: (chat.skillProposals || []).filter(
+          (p) => p.skill_id !== sid,
+        ),
+      };
+    }
+
+    case "prompt_injection_detected": {
+      // B-266 + B-273: scanner caught injection-shaped content in
+      // a tool result / sub-agent reply / channel inbound / skill body.
+      // Surface as a warning system bubble. Severity drives the
+      // visual emphasis the UI applies (not implemented here — just
+      // pass through).
+      const severity = payload.severity || "low";
+      const source = payload.source || "?";
+      const id = "inj_" + corr + "_" + (payload.tool_call_id || "x");
+      const findings = Array.isArray(payload.findings)
+        ? payload.findings.map((f) => f.pattern_id || "?").join(", ")
+        : "";
+      return {
+        ...chat,
+        messages: chat.messages.concat({
+          id,
+          role: "system",
+          kind: "security_alert",
+          severity,
+          content: `🛡️ Prompt 注入检测 (源: ${source})${findings ? " — " + findings : ""}`,
+          status: "complete",
+          ts,
+        }),
+      };
+    }
+
     default:
       return chat;
   }
