@@ -256,16 +256,33 @@ function LiveStatusPanel({ token }) {
     </details>`;
   }
 
-  // B-301 followup #3: ``.xmc-h-skill-card`` has ``overflow:hidden``
-  // in hermes-skills.css. Normally fine — cards grow to fit content
-  // and overflow doesn't matter. But user screenshots showed the
-  // second arm card + progress bars getting clipped at a hard line.
-  // Whatever the upstream constraint is (page-level grid row hint?
-  // window-resize race?), forcing ``overflow:visible`` inline is the
-  // surgical fix that doesn't touch the shared CSS class others
-  // depend on for hover/border masking.
+  // B-301 followup #4: dropping ``min-height`` + ``overflow`` overrides
+  // entirely on the success-state root.
+  //
+  // Story: followup #3 added ``overflow:visible`` to undo the shared
+  // ``.xmc-h-skill-card`` class's ``overflow:hidden`` (which was
+  // clipping arm cards). User reported the next section then
+  // *overlapped* the panel — which means the grid row was being
+  // sized to the panel's ``min-height:8rem`` instead of its natural
+  // content height, and ``overflow:visible`` let the rendered arm
+  // cards paint past the row boundary into the next row's space.
+  //
+  // Two changes:
+  // 1. Drop ``min-height`` on success state — content (header +
+  //    summary lines + N arm cards) is naturally taller than 8rem,
+  //    so the floor was redundant. Without it, the grid row grows
+  //    to fit the actual content, no overflow needed.
+  // 2. Drop ``overflow:visible`` — with row height now matching
+  //    content, the class's default ``overflow:hidden`` no longer
+  //    clips anything (nothing exceeds the box). Letting the class's
+  //    behaviour rule keeps consistency with the surrounding
+  //    skill-card components (hover overlay, border-radius mask).
+  //
+  // Loading / error / disabled-chain states keep ``min-height:6rem``
+  // because their content is just one short line — the floor stops
+  // the page from jumping when the snapshot resolves.
   return html`
-    <div class="xmc-h-skill-card" style="padding:.8rem 1rem;min-height:8rem;overflow:visible">
+    <div class="xmc-h-skill-card" style="padding:.8rem 1rem">
       <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:.6rem;flex-wrap:wrap;gap:.4rem">
         <strong style="font-size:.95rem">🔬 实时进化状态</strong>
         <small style="opacity:.6">
