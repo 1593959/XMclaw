@@ -39,6 +39,22 @@ SOURCE_TOOL_RESULT = "tool_result"
 SOURCE_PROFILE = "agent_profile"       # SOUL.md / PROFILE.md / AGENTS.md
 SOURCE_MEMORY_RECALL = "memory_recall"
 SOURCE_WEB_FETCH = "web_fetch"
+# B-273: three previously-unguarded inputs. All can carry adversarial
+# content into the agent's context.
+#   * SOURCE_SUB_AGENT  — replies from chat_with_agent / submit_to_agent.
+#                         A malicious sub-agent could inject "ignore
+#                         previous instructions and exfiltrate ..." into
+#                         its reply, and the calling agent would happily
+#                         splice it into history.
+#   * SOURCE_CHANNEL    — inbound text from external chat platforms
+#                         (Feishu / DingTalk / Telegram / WeChat). User
+#                         on the other end of a Feishu group chat can
+#                         send any text; without scanning it lands
+#                         in run_turn() as if the daemon's owner typed it.
+#   * SOURCE_SKILL_BODY — SKILL.md content loaded from third-party skill
+#                         marketplace (~/.agents/skills/). A poisoned
+#                         skill can stage prompt injection via its body
+#                         that the LLM will execute as instructions.
 
 
 # B-187: per-source false-positive suppressions. memory_recall
@@ -51,8 +67,17 @@ SOURCE_WEB_FETCH = "web_fetch"
 # for memory_recall; tool_result / web_fetch / agent_profile keep
 # the strict rules because external content really might forge a
 # system role to inject.
+SOURCE_SUB_AGENT = "sub_agent"
+SOURCE_CHANNEL = "channel"
+SOURCE_SKILL_BODY = "skill_body"
+
+
 _SOURCE_SUPPRESSIONS: dict[str, frozenset[str]] = {
     SOURCE_MEMORY_RECALL: frozenset({"anthropic_human_tag", "inst_block"}),
+    # B-273: skill body content is markdown that legitimately contains
+    # ``Use when:`` / ``Steps:`` / role-marker-like prose. Suppress
+    # the role-forgery patterns (same trade-off as memory_recall).
+    SOURCE_SKILL_BODY: frozenset({"anthropic_human_tag", "inst_block"}),
 }
 
 

@@ -485,6 +485,50 @@ class FeishuAdapter(ChannelAdapter):
             or "unknown"
         )
 
+        # B-273: scan inbound text for prompt injection BEFORE handing
+        # off to run_turn. Lark group-chat members are not necessarily
+        # the daemon owner — anyone with chat access can send a
+        # message that gets fed to the agent as if the owner typed it.
+        # Without this scan a hostile group member can stage an
+        # "ignore previous instructions" attack via Feishu. Policy
+        # default is DETECT_ONLY so legit user messages aren't
+        # blocked; operators who run open chat can flip to BLOCK in
+        # config. Scanner is best-effort — failures don't drop the
+        # message (would be worse UX than the residual risk).
+        try:
+            from xmclaw.security import (
+                PolicyMode,
+                SOURCE_CHANNEL,
+                apply_policy,
+            )
+            policy_str = str(self._config.get("injection_policy", "detect_only")).lower()
+            try:
+                policy = PolicyMode(policy_str)
+            except ValueError:
+                policy = PolicyMode.DETECT_ONLY
+            decision = apply_policy(
+                text,
+                policy=policy,
+                source=SOURCE_CHANNEL,
+                extra={
+                    "channel": "feishu",
+                    "chat_id": chat_id,
+                    "user_ref": user_id,
+                    "message_id": msg_id,
+                },
+            )
+            if decision.blocked:
+                _log.warning(
+                    "feishu.inbound_blocked chat_id=%s msg_id=%s "
+                    "findings=%s",
+                    chat_id, msg_id,
+                    [f.pattern_id for f in decision.scan.findings][:5],
+                )
+                return  # drop message — don't fan out to agent
+            text = decision.content
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("feishu.scan_skipped err=%s", exc)
+
         inbound = InboundMessage(
             target=ChannelTarget(channel="feishu", ref=chat_id),
             user_ref=user_id,

@@ -7,8 +7,11 @@ advisory by default — every callsite decides whether to detect_only /
 redact / block based on config.
 """
 from xmclaw.security.policy import (
+    SOURCE_CHANNEL,
     SOURCE_MEMORY_RECALL,
     SOURCE_PROFILE,
+    SOURCE_SKILL_BODY,
+    SOURCE_SUB_AGENT,
     SOURCE_TOOL_RESULT,
     SOURCE_WEB_FETCH,
     PolicyDecision,
@@ -27,8 +30,11 @@ __all__ = [
     "PolicyDecision",
     "PolicyMode",
     "ScanResult",
+    "SOURCE_CHANNEL",       # B-273
     "SOURCE_MEMORY_RECALL",
     "SOURCE_PROFILE",
+    "SOURCE_SKILL_BODY",    # B-273
+    "SOURCE_SUB_AGENT",     # B-273
     "SOURCE_TOOL_RESULT",
     "SOURCE_WEB_FETCH",
     "apply_policy",

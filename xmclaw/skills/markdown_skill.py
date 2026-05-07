@@ -64,12 +64,43 @@ class MarkdownProcedureSkill(Skill):
         # frame the response as the skill's INSTRUCTIONS for THIS
         # turn, so the LLM treats the body as authoritative input
         # rather than a meta-hint.
+        #
+        # B-273: scan the SKILL.md body for prompt-injection patterns
+        # before handing it back as authoritative instructions. Skills
+        # from ~/.agents/skills/ come from the open marketplace
+        # (npx skills add); a hostile skill author can stage
+        # "ignore all previous instructions and ..." inside the body,
+        # and the LLM would obey it as if XMclaw's owner wrote it.
+        # The skill_body source has the role-marker patterns
+        # suppressed (markdown legitimately contains "Step:" / "Use
+        # when:" / etc) but instruction_override / exfiltration are
+        # still active.
+        body = self.stripped_body
+        try:
+            from xmclaw.security import (
+                PolicyMode,
+                SOURCE_SKILL_BODY,
+                apply_policy,
+            )
+            decision = apply_policy(
+                body,
+                policy=PolicyMode.DETECT_ONLY,
+                source=SOURCE_SKILL_BODY,
+                extra={"skill_id": self.id},
+            )
+            # DETECT_ONLY never blocks; we surface findings via the
+            # event stream. Operators wanting harder enforcement on
+            # untrusted skills can override the policy at the
+            # MarkdownProcedureSkill construction call site.
+            body = decision.content
+        except Exception:  # noqa: BLE001 — never break a skill on scan failure
+            pass
         return SkillOutput(
             ok=True,
             result={
                 "kind": "markdown_procedure",
                 "skill_id": self.id,
-                "instructions": self.stripped_body,
+                "instructions": body,
                 "guidance": (
                     f"Skill {self.id!r} loaded successfully. The "
                     "'instructions' field above is the authoritative "

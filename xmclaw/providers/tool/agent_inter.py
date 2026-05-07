@@ -342,7 +342,36 @@ class AgentInterTools(ToolProvider):
         stamped = _prepend_caller_marker(content, caller)
         await loop.run_turn(session_id, stamped)
         reply = _extract_last_assistant(loop, session_id)
-        return reply
+        # B-273: scan the sub-agent's reply for prompt injection before
+        # returning it as a tool result. Without this a malicious /
+        # compromised sub-agent could inject "ignore previous
+        # instructions and ..." into its reply, the calling agent
+        # would splice it into history as a regular tool_result, and
+        # the owner agent would obey it. The scan policy is taken
+        # from the calling AgentLoop; default DETECT_ONLY (logs but
+        # doesn't block); operators who run a multi-agent setup
+        # across trust boundaries should set policy=BLOCK.
+        try:
+            from xmclaw.security import (
+                PolicyMode,
+                SOURCE_SUB_AGENT,
+                apply_policy,
+            )
+            policy = getattr(loop, "_injection_policy", PolicyMode.DETECT_ONLY)
+            decision = apply_policy(
+                reply,
+                policy=policy,
+                source=SOURCE_SUB_AGENT,
+                extra={"caller": caller, "callee": agent_id},
+            )
+            if decision.blocked:
+                return (
+                    "[B-273 sub-agent reply blocked by prompt-injection "
+                    "policy — see PROMPT_INJECTION_DETECTED event]"
+                )
+            return decision.content
+        except Exception:  # noqa: BLE001 — never block on scanner failure
+            return reply
 
     # ── submit_to_agent (async) ──────────────────────────────────────
 
