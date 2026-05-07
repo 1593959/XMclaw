@@ -336,10 +336,31 @@ function setLlmProfile(profileId) {
 // B-38: send a cancel frame so the daemon's WS handler signals the
 // running run_turn to bail at its next hop boundary. No-op when no
 // turn is in flight (the server happily processes a stray cancel).
+//
+// B-269: also mark the in-flight turn id as "cancelled" in client
+// state. The reducer's llm_chunk / llm_thinking_chunk cases consult
+// this set and silently drop late-arriving chunks. Without this the
+// provider's buffered chunks (which were already in flight when
+// cancel was sent) keep appending to the assistant bubble for a
+// few more seconds after the user clicks Stop — looks like the
+// stop button didn't work.
 function cancelComposer() {
   if (!wsHandle) {
     toast.error("WS 未连接");
     return;
+  }
+  // Mark the current turn cancelled BEFORE sending the WS frame.
+  // Even if the WS send fails, we want to stop appending chunks.
+  const currentTurnId = store.getState().chat?.pendingAssistantId;
+  if (currentTurnId) {
+    store.setState((s) => {
+      const cancelled = new Set(s.chat.cancelledTurnIds || []);
+      cancelled.add(currentTurnId);
+      return {
+        ...s,
+        chat: { ...s.chat, cancelledTurnIds: cancelled },
+      };
+    });
   }
   const result = wsHandle.send({ type: "cancel" });
   if (result && !result.ok) {
@@ -394,6 +415,10 @@ function startNewSession() {
       messages: [],
       pendingAssistantId: null,
       composerDraft: "",
+      // B-269: drop cancelled-turn tracking on session switch — stale
+      // ids would just leak memory + confuse a future turn that
+      // happens to reuse a correlation_id.
+      cancelledTurnIds: new Set(),
     },
     session: { ...s.session, activeSid: sid, sids },
   });
@@ -404,7 +429,10 @@ function startNewSession() {
 // SlashPopover's /clear command.
 function clearChat() {
   store.setState((s) => ({
-    chat: { ...s.chat, messages: [], pendingAssistantId: null },
+    chat: {
+      ...s.chat, messages: [], pendingAssistantId: null,
+      cancelledTurnIds: new Set(),  // B-269
+    },
   }));
   toast.info("已清空本地 chat 面板（daemon 历史保留）");
 }

@@ -238,6 +238,15 @@ export function applyEvent(chat, envelope) {
       // assistant message id so subsequent chunks merge into the same
       // bubble. Create the bubble lazily on the first chunk.
       const id = corr;
+      // B-269: drop chunks for turns the user cancelled. Provider
+      // streams have buffered chunks already in flight when cancel
+      // hits; without this guard text keeps appending after Stop is
+      // clicked, defeating the user's intent. The cancelledTurnIds
+      // set is populated by ``cancelComposer`` (app.js) the moment
+      // Stop fires, BEFORE the WS frame travels.
+      if (chat.cancelledTurnIds && chat.cancelledTurnIds.has(id)) {
+        return chat;
+      }
       const delta = typeof payload.delta === "string"
         ? payload.delta
         : typeof payload.content === "string"
@@ -293,6 +302,12 @@ export function applyEvent(chat, envelope) {
       // the tool calls — matches the per-row layout users see in
       // CoPaw / OpenClaw screenshots.
       const id = corr;
+      // B-269: same cancel guard as llm_chunk — provider's reasoning
+      // stream also buffers, drop late thinking-deltas for cancelled
+      // turns.
+      if (chat.cancelledTurnIds && chat.cancelledTurnIds.has(id)) {
+        return chat;
+      }
       const delta = typeof payload.delta === "string"
         ? payload.delta
         : "";
@@ -453,6 +468,28 @@ export function applyEvent(chat, envelope) {
       // emitted and finished is microseconds — the user expected to
       // see ✓ but saw a perpetual ⏳).
       const callId = payload.call_id || payload.tool_call_id || payload.id || genId();
+      // B-267: if tool_invocation_finished arrived FIRST (race), we
+      // already created a bubble at this id with status="ok|error"
+      // and a real result. Don't trample it with status="running"
+      // — patch in name/args metadata if missing, leave finished state.
+      const existingIdx = chat.messages.findIndex(
+        (m) => m.kind === "tool_use" && m.id === callId,
+      );
+      if (existingIdx !== -1) {
+        return {
+          ...chat,
+          messages: upsertById(chat.messages, callId, (m) => ({
+            ...m,
+            // Only fill in missing/placeholder fields. NEVER overwrite
+            // status or result — those came from the finished event.
+            name: m.name && m.name !== "tool" ? m.name : toolName,
+            args: m.args && Object.keys(m.args).length > 0
+              ? m.args
+              : (payload.args || payload.arguments || {}),
+            correlationId: m.correlationId || corr,
+          })),
+        };
+      }
       const cleanedTC = _finalizeAbandoned(chat.messages, corr);
       return {
         ...chat,
@@ -486,7 +523,33 @@ export function applyEvent(chat, envelope) {
       const idx = chat.messages.findIndex(
         (m) => m.kind === "tool_use" && m.id === callId,
       );
-      if (idx === -1) return chat;
+      if (idx === -1) {
+        // B-267: tool_invocation_finished arrived BEFORE tool_call_emitted
+        // (WS multiplexing reorders, fast tools like list_agents
+        // complete in 0.022ms — emit and finish events race to the
+        // client). Pre-B-267 we ``return chat`` and dropped the result
+        // forever; the bubble (when emit eventually arrived) stayed
+        // "running" with no way to recover. Now we synthesise the
+        // bubble in finished state, carrying the result. If
+        // tool_call_emitted later arrives with the same callId, the
+        // existing upsertById path patches name/args onto this bubble
+        // (id collision = same message). Net: no race-induced data
+        // loss, regardless of arrival order.
+        return {
+          ...chat,
+          messages: chat.messages.concat({
+            id: callId,
+            kind: "tool_use",
+            role: "assistant",
+            correlationId: corr,
+            name: payload.name || payload.tool_name || "tool",
+            args: payload.args || payload.arguments || {},
+            status,
+            result,
+            ts,
+          }),
+        };
+      }
       return {
         ...chat,
         messages: upsertById(chat.messages, callId, (m) => ({

@@ -177,6 +177,12 @@ export const app = createStore({
     // Multi-model: which configured LLM profile this session routes to.
     // null → daemon picks the registry default (legacy single-LLM block).
     llmProfileId: null,
+    // B-269: ids of turns the user clicked Stop on. Reducer's llm_chunk
+    // / llm_thinking_chunk handlers consult this set and silently drop
+    // late-arriving deltas for cancelled turns. Without it the
+    // provider's already-buffered chunks keep appending after Stop is
+    // clicked, defeating the user's intent.
+    cancelledTurnIds: new Set(),
   },
 
   // UI prefs (Phase 5 settings page will bind here).
