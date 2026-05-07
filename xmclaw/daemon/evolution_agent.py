@@ -162,15 +162,30 @@ class EvolutionAgent:
         *,
         thresholds: PromotionThresholds | None = None,
         audit_dir: Path | None = None,
+        registry: Any = None,
     ) -> None:
         self._agent_id = agent_id
         self._bus = bus
         self._controller = EvolutionController(thresholds)
         base = audit_dir if audit_dir is not None else evolution_dir()
         self._audit_path = base / agent_id / "decisions.jsonl"
+        # B-297: persistent EWMA state. Pre-B-297 ``_arms`` lived only
+        # in process memory; daemon restart wiped every accumulated
+        # play. Production: 9 restarts in one day = 9 cold starts =
+        # the controller's ``min_plays`` threshold (default 5) was
+        # never cleared on most skills. Now we save to JSON on every
+        # update via the lock, load on __init__ — restart-safe.
+        self._state_path = base / agent_id / "state.json"
         self._arms: dict[tuple[str, int], _ArmAggregate] = {}
         self._lock = asyncio.Lock()
         self._subscription: Subscription | None = None
+        # B-296: registry handle so evaluate() can ask "what's HEAD
+        # for skill X" per-skill instead of treating ALL arms as if
+        # they share one HEAD pointer (which is wrong — that's the
+        # cross-skill promotion bug). None for tests / bench harness
+        # that don't need real registry lookups.
+        self._registry = registry
+        self._load_state()
 
     # ── public lifecycle ─────────────────────────────────────────────
 
@@ -287,6 +302,9 @@ class EvolutionAgent:
                 self._arms[key] = arm
             # B-118: route through .update() so EWMA gets recomputed too.
             arm.update(float(score))
+            # B-297: persist immediately. Cheap (small dict, atomic
+            # write); restart safety > write throughput.
+            self._save_state_locked()
 
     # ── decision ─────────────────────────────────────────────────────
 
@@ -295,31 +313,93 @@ class EvolutionAgent:
         *,
         head_version: int | None = None,
         head_mean: float | None = None,
-    ) -> EvolutionReport:
-        """Call the controller with the current aggregate + log the decision.
+    ) -> list[EvolutionReport]:
+        """B-296: per-skill evaluation. Returns ONE report per skill_id
+        in ``_arms`` so the controller compares same-skill versions
+        against same-skill HEAD. Pre-B-296 dumped ALL arms across ALL
+        skills into a single controller call — controller's ranking
+        then picked "best" across-skill (e.g. "skill_A v3 beats skill_B
+        v1") which is meaningless. Now: iterate skill_ids, gather just
+        that skill's arms, look up its HEAD via registry, call
+        controller per skill, accumulate per-skill reports.
 
-        On PROMOTE, publishes a :data:`EventType.SKILL_CANDIDATE_PROPOSED`
-        event carrying the evidence verbatim. The main agent's turn loop
-        (or whatever is watching) decides whether to actually promote;
-        the observer never writes to the :class:`SkillRegistry` — that
-        would violate anti-req #12's structural enforcement (the
-        evidence list must pass through registry.promote, not around it).
+        ``head_version`` / ``head_mean`` overrides remain for tests
+        and bench harness that pre-supply HEAD info; production goes
+        through the registry lookup.
         """
         async with self._lock:
-            evaluations = self.snapshot()
-        report = self._controller.consider_promotion(
-            evaluations, head_version=head_version, head_mean=head_mean,
-        )
-        self._append_audit(report, evaluations, head_version=head_version)
-        # B-119: publish a proposal for both PROMOTE and ROLLBACK. The
-        # orchestrator subscribes to both and routes through the same
-        # registry methods (anti-req #12 evidence gate stays active for
-        # promote; reason gate stays for rollback).
-        if report.decision in (EvolutionDecision.PROMOTE, EvolutionDecision.ROLLBACK):
-            await self._emit_proposal(report)
-        return report
+            # Group arms by skill_id.
+            per_skill: dict[str, list[_ArmAggregate]] = {}
+            for arm in self._arms.values():
+                per_skill.setdefault(arm.skill_id, []).append(arm)
 
-    async def _emit_proposal(self, report: EvolutionReport) -> None:
+        reports: list[EvolutionReport] = []
+        for skill_id, arms in per_skill.items():
+            # Resolve HEAD info per skill. Caller-supplied overrides
+            # win (tests / bench); else ask registry.
+            sk_head_v = head_version
+            sk_head_m = head_mean
+            if sk_head_v is None and self._registry is not None:
+                try:
+                    sk_head_v = self._registry.active_version(skill_id)
+                except Exception:  # noqa: BLE001
+                    sk_head_v = None
+            if sk_head_m is None and sk_head_v is not None:
+                # Compute HEAD's measured mean from its own arm if we
+                # have one; this is what controller's gap-over-head
+                # logic compares candidates against.
+                head_arm = self._arms.get((skill_id, sk_head_v))
+                if head_arm and head_arm.plays > 0:
+                    warm = max(5, int(2.0 / max(1e-3, head_arm.ewma_alpha)))
+                    sk_head_m = (
+                        head_arm.ewma_mean if head_arm.plays >= warm
+                        else head_arm.mean
+                    )
+
+            evaluations = [self._make_eval(arm) for arm in arms]
+            report = self._controller.consider_promotion(
+                evaluations,
+                head_version=sk_head_v,
+                head_mean=sk_head_m,
+            )
+            self._append_audit(report, evaluations, head_version=sk_head_v)
+            if report.decision in (
+                EvolutionDecision.PROMOTE, EvolutionDecision.ROLLBACK,
+            ):
+                await self._emit_proposal(report, skill_id=skill_id)
+            reports.append(report)
+
+        if not reports:
+            # No arms at all — return a single NO_CHANGE so callers
+            # always get a non-empty list to log.
+            empty = self._controller.consider_promotion(
+                [], head_version=None, head_mean=None,
+            )
+            reports.append(empty)
+        return reports
+
+    def _make_eval(self, arm: "_ArmAggregate") -> CandidateEvaluation:
+        """Convert one arm to a CandidateEvaluation. Same logic as
+        snapshot() but for one arm — kept here so per-skill iteration
+        doesn't allocate the full snapshot."""
+        warm_threshold = max(5, int(2.0 / max(1e-3, arm.ewma_alpha)))
+        use_ewma = arm.plays >= warm_threshold
+        score = arm.ewma_mean if use_ewma else arm.mean
+        notes = dict(arm.notes)
+        notes["score_mode"] = "ewma" if use_ewma else "mean"
+        notes["lifetime_mean"] = arm.mean
+        notes["ewma_mean"] = arm.ewma_mean
+        return CandidateEvaluation(
+            candidate_id=arm.skill_id,
+            version=arm.version,
+            plays=arm.plays,
+            mean_score=score,
+            notes=notes,
+        )
+
+    async def _emit_proposal(
+        self, report: EvolutionReport, *, skill_id: str | None = None,
+    ) -> None:
         """Publish a candidate event for PROMOTE or ROLLBACK.
 
         Session id is synthetic — the observer runs outside any WS
@@ -331,19 +411,107 @@ class EvolutionAgent:
         type with payload ``decision: "rollback"`` so the orchestrator
         + UI can branch on it without a parallel event lane.
         """
+        payload = {
+            "decision": report.decision.value,  # "promote" | "rollback"
+            "winner_candidate_id": report.winner_candidate_id,
+            "winner_version": report.winner_version,
+            "evidence": list(report.evidence),
+            "reason": report.reason,
+        }
+        # B-296: stamp the resolved skill_id onto the proposal payload
+        # so the orchestrator's promote/rollback dispatch knows which
+        # skill to act on. Pre-B-296 the proposal carried winner_candidate_id
+        # but evolutionary calls used it ambiguously; now skill_id is
+        # explicit + canonical.
+        if skill_id is not None:
+            payload["skill_id"] = skill_id
         event = make_event(
             session_id=f"evolution:{self._agent_id}",
             agent_id=self._agent_id,
             type=EventType.SKILL_CANDIDATE_PROPOSED,
-            payload={
-                "decision": report.decision.value,  # "promote" | "rollback"
-                "winner_candidate_id": report.winner_candidate_id,
-                "winner_version": report.winner_version,
-                "evidence": list(report.evidence),
-                "reason": report.reason,
-            },
+            payload=payload,
         )
         await self._bus.publish(event)
+
+    # ── persistent state (B-297) ──────────────────────────────────
+
+    def _save_state_locked(self) -> None:
+        """Persist ``_arms`` to disk. CALLER MUST HOLD ``self._lock``.
+
+        Uses atomic ``os.replace`` so a SIGKILL mid-write doesn't
+        leave a torn JSON. Failures (FS full, permissions) are
+        warning-logged but never raise — observability MUST NOT block
+        ingestion.
+        """
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._state_path.with_suffix(".json.tmp")
+            data = {
+                "version": 1,
+                "ts": time.time(),
+                "agent_id": self._agent_id,
+                "arms": [
+                    {
+                        "skill_id": arm.skill_id,
+                        "version": arm.version,
+                        "plays": arm.plays,
+                        "total_reward": arm.total_reward,
+                        "ewma_reward": arm.ewma_reward,
+                        "ewma_alpha": arm.ewma_alpha,
+                        "notes": arm.notes,
+                    }
+                    for arm in self._arms.values()
+                ],
+            }
+            tmp.write_text(json.dumps(data), encoding="utf-8")
+            import os as _os
+            _os.replace(str(tmp), str(self._state_path))
+        except OSError as exc:
+            log.warning(
+                "evolution.state_save_failed agent=%s err=%s",
+                self._agent_id, exc,
+            )
+
+    def _load_state(self) -> None:
+        """Restore ``_arms`` from disk on __init__. Silent no-op when
+        file missing or unreadable — fresh start is the correct
+        fallback (the controller's thresholds enforce min_plays
+        anyway, so a partial reset is safer than corrupted load)."""
+        if not self._state_path.exists():
+            return
+        try:
+            data = json.loads(
+                self._state_path.read_text(encoding="utf-8"),
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            log.warning(
+                "evolution.state_load_failed agent=%s err=%s — starting empty",
+                self._agent_id, exc,
+            )
+            return
+        for entry in data.get("arms", []):
+            try:
+                arm = _ArmAggregate(
+                    skill_id=str(entry["skill_id"]),
+                    version=int(entry["version"]),
+                    plays=int(entry.get("plays", 0)),
+                    total_reward=float(entry.get("total_reward", 0.0)),
+                    ewma_reward=float(entry.get("ewma_reward", 0.0)),
+                    ewma_alpha=float(entry.get("ewma_alpha", 0.1)),
+                    notes=dict(entry.get("notes", {})),
+                )
+                key = (arm.skill_id, arm.version)
+                self._arms[key] = arm
+            except (KeyError, ValueError, TypeError) as exc:
+                log.warning(
+                    "evolution.state_arm_skipped err=%s entry=%r",
+                    exc, entry,
+                )
+        if self._arms:
+            log.info(
+                "evolution.state_loaded agent=%s arms=%d",
+                self._agent_id, len(self._arms),
+            )
 
     # ── audit ─────────────────────────────────────────────────────────
 

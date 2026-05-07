@@ -177,7 +177,11 @@ async def test_evaluate_no_change_when_under_min_plays(
         await _publish_verdict(bus, skill_id="summary", version=2, score=0.9)
     await bus.drain()
 
-    report = await agent.evaluate(head_version=1, head_mean=0.5)
+    # B-296: evaluate() now returns list[EvolutionReport] (one per skill).
+    # Single-skill test fixture → list of length 1. Take the first.
+    reports = await agent.evaluate(head_version=1, head_mean=0.5)
+    assert isinstance(reports, list)
+    report = reports[0]
     assert report.decision == EvolutionDecision.NO_CHANGE
     assert agent.audit_path.exists()
     line = agent.audit_path.read_text(encoding="utf-8").splitlines()
@@ -214,8 +218,9 @@ async def test_evaluate_promote_publishes_candidate_proposed(
         await _publish_verdict(bus, skill_id="summary", version=2, score=0.95)
     await bus.drain()
 
-    report = await agent.evaluate(head_version=1, head_mean=0.5)
+    reports = await agent.evaluate(head_version=1, head_mean=0.5)
     await bus.drain()
+    report = reports[0]
     assert report.decision == EvolutionDecision.PROMOTE
     assert report.winner_candidate_id == "summary"
     assert report.winner_version == 2
@@ -247,8 +252,9 @@ async def test_evaluate_no_promote_emits_no_event(
     for _ in range(2):
         await _publish_verdict(bus, skill_id="summary", version=2, score=0.6)
     await bus.drain()
-    report = await agent.evaluate(head_version=1, head_mean=0.5)
+    reports = await agent.evaluate(head_version=1, head_mean=0.5)
     await bus.drain()
+    report = reports[0]
     assert report.decision == EvolutionDecision.NO_CHANGE
     assert proposals == []
 

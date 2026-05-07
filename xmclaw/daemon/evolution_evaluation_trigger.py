@@ -10,7 +10,7 @@ Phase 3.1 left the self-improvement chain critically half-wired:
 
 ``EvolutionAgent.evaluate()`` is fully implemented (evolution_agent.py:293-320)
 and is the ONLY way to turn an aggregated EWMA snapshot into a
-``SKILL_CANDIDATE_PROPOSED`` event. But ``grep -rn "\.evaluate("`` against
+``SKILL_CANDIDATE_PROPOSED`` event. But ``grep -rn "\\.evaluate("`` against
 the production daemon code returns zero matches — only tests + the bench
 harness call it. Production daemon ``app.py:656-666`` does
 ``await evo_agent.start()`` then **never touches the agent again**. Verdicts
@@ -213,9 +213,15 @@ class EvolutionEvaluationTrigger:
     async def _fire(self) -> None:
         """Call evaluate() and bookkeep. Errors are swallowed +
         logged — a misbehaving controller MUST NOT bring down the
-        agent loop's verdict producer."""
+        agent loop's verdict producer.
+
+        B-296: ``evaluate()`` now returns ``list[EvolutionReport]``
+        (one per skill_id in the aggregate). We summarise across
+        skills for the log line + count promote/rollback decisions
+        separately; per-skill audit is in ``decisions.jsonl``.
+        """
         try:
-            report = await self._evo_agent.evaluate()
+            reports = await self._evo_agent.evaluate()
         except Exception as exc:  # noqa: BLE001
             log.warning(
                 "evolution_eval.fire_failed err=%s "
@@ -231,11 +237,20 @@ class EvolutionEvaluationTrigger:
         verdicts_consumed = self._verdicts_since_last_fire
         self._verdicts_since_last_fire = 0
 
+        # B-296: handle both legacy single-report and new list shape
+        # so an old EvolutionAgent test fixture doesn't break this.
+        if not isinstance(reports, list):
+            reports = [reports]
+        decisions = [
+            getattr(r.decision, "value", str(r.decision))
+            for r in reports
+        ]
+        from collections import Counter
+        decision_counts = Counter(decisions)
         log.info(
-            "evolution_eval.fired count=%d decision=%s "
-            "verdicts_consumed=%d",
-            self._fire_count,
-            getattr(report.decision, "value", str(report.decision)),
+            "evolution_eval.fired count=%d skills=%d "
+            "decisions=%s verdicts_consumed=%d",
+            self._fire_count, len(reports), dict(decision_counts),
             verdicts_consumed,
         )
 

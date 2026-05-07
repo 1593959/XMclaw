@@ -656,7 +656,23 @@ def create_app(
         _app.state.evolution_evaluation_trigger = None
         try:
             from xmclaw.daemon.evolution_agent import EvolutionAgent
-            evo_agent = EvolutionAgent("evo-main", bus)
+            # B-296: pass the SkillRegistry so evaluate() can iterate
+            # per-skill_id and look up HEAD per skill (vs the legacy
+            # mixed-skill controller call). We dig the registry out
+            # of the agent's tool stack — same path the variant
+            # selector uses below.
+            _evo_registry = None
+            try:
+                _candidate = getattr(agent, "_tools", None)
+                _kids = getattr(_candidate, "_providers", None) or [_candidate]
+                for kid in _kids:
+                    reg = getattr(kid, "_registry", None)
+                    if reg is not None and hasattr(reg, "list_skill_ids"):
+                        _evo_registry = reg
+                        break
+            except Exception:  # noqa: BLE001
+                _evo_registry = None
+            evo_agent = EvolutionAgent("evo-main", bus, registry=_evo_registry)
             await evo_agent.start()
             _app.state.evolution_observer = evo_agent
         except Exception as exc:  # noqa: BLE001
