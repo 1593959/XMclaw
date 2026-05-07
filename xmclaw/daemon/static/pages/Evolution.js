@@ -256,8 +256,16 @@ function LiveStatusPanel({ token }) {
     </details>`;
   }
 
+  // B-301 followup #3: ``.xmc-h-skill-card`` has ``overflow:hidden``
+  // in hermes-skills.css. Normally fine — cards grow to fit content
+  // and overflow doesn't matter. But user screenshots showed the
+  // second arm card + progress bars getting clipped at a hard line.
+  // Whatever the upstream constraint is (page-level grid row hint?
+  // window-resize race?), forcing ``overflow:visible`` inline is the
+  // surgical fix that doesn't touch the shared CSS class others
+  // depend on for hover/border masking.
   return html`
-    <div class="xmc-h-skill-card" style="padding:.8rem 1rem;min-height:8rem">
+    <div class="xmc-h-skill-card" style="padding:.8rem 1rem;min-height:8rem;overflow:visible">
       <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:.6rem;flex-wrap:wrap;gap:.4rem">
         <strong style="font-size:.95rem">🔬 实时进化状态</strong>
         <small style="opacity:.6">
