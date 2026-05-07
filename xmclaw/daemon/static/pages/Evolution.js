@@ -178,32 +178,32 @@ function LiveStatusPanel({ token }) {
     return () => clearInterval(id);
   }, [token]);
 
-  if (error) {
-    return html`<div class="xmc-h-skill-card" style="padding:.7rem .8rem">
-      <small style="opacity:.7">🔬 实时进化状态</small>
-      <div style="font-size:.85rem;color:var(--xmc-warning);margin-top:.3rem">加载失败：${error}</div>
-    </div>`;
-  }
-  if (!snap) {
-    return html`<div class="xmc-h-skill-card" style="padding:.7rem .8rem">
-      <small style="opacity:.7">🔬 实时进化状态</small>
-      <div style="font-size:.85rem;opacity:.6;margin-top:.3rem">载入中…</div>
-    </div>`;
+  // Loading / error / disabled-chain states all share the same outer
+  // shell so the section's height stays stable across state transitions
+  // (otherwise the page jumps when the snapshot resolves).
+  if (error || !snap || !snap.observer) {
+    let body;
+    if (error) {
+      body = html`<div style="color:var(--xmc-warning)">加载失败：${error}</div>`;
+    } else if (!snap) {
+      body = html`<div style="opacity:.6">载入中… <span style="opacity:.4">(GET /api/v2/evolution/snapshot)</span></div>`;
+    } else {
+      body = html`<div style="opacity:.7">
+        进化链未启用（echo-mode 或 <code>evolution.enabled=false</code>）
+      </div>`;
+    }
+    return html`
+      <div class="xmc-h-skill-card" style="padding:.8rem 1rem;min-height:6rem">
+        <strong style="font-size:.95rem;display:block;margin-bottom:.4rem">🔬 实时进化状态</strong>
+        <div style="font-size:.85rem">${body}</div>
+      </div>
+    `;
   }
 
   const obs = snap.observer;
   const trig = snap.trigger;
   const sel = snap.variant_selector;
   const sd = snap.skill_dream || {};
-
-  if (!obs) {
-    return html`<div class="xmc-h-skill-card" style="padding:.7rem .8rem">
-      <small style="opacity:.7">🔬 实时进化状态</small>
-      <div style="font-size:.85rem;opacity:.7;margin-top:.3rem">
-        进化链未启用（echo-mode 或 <code>evolution.enabled=false</code>）
-      </div>
-    </div>`;
-  }
 
   const arms = obs.arms || [];
   const recent = sd.recent_proposals || [];
