@@ -135,14 +135,21 @@ async def probe_turn(
                 continue
             t = ev.get("type")
             p = ev.get("payload") or {}
-            if t == "tool_invocation_started":
+            if t == "tool_call_emitted":
+                # B-300 followup: ``tool_invocation_started`` strips
+                # args for security/size reasons, but
+                # ``tool_call_emitted`` carries the LLM's full call
+                # payload — read browse query from there.
+                tn = p.get("name") or "?"
+                if tn == "skill_browse":
+                    args = p.get("args") or {}
+                    browse_calls.append({
+                        "query": str(args.get("query", ""))[:80],
+                        "top_k": args.get("top_k"),
+                    })
+            elif t == "tool_invocation_started":
                 tn = p.get("name") or "?"
                 tools_invoked.append(tn)
-                if tn == "skill_browse":
-                    browse_calls.append({
-                        "query": (p.get("args") or {}).get("query", "")[:80],
-                        "top_k": (p.get("args") or {}).get("top_k"),
-                    })
                 if tn.startswith("skill_") and tn != "skill_browse":
                     skills_invoked.append(tn)
             elif t == "tool_invocation_finished":
