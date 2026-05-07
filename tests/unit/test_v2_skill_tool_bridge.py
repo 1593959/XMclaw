@@ -21,7 +21,23 @@ from xmclaw.providers.tool.composite import CompositeToolProvider
 from xmclaw.skills.base import Skill, SkillInput, SkillOutput
 from xmclaw.skills.manifest import SkillManifest
 from xmclaw.skills.registry import SkillRegistry
-from xmclaw.skills.tool_bridge import SkillToolProvider, _to_tool_name
+from xmclaw.skills.tool_bridge import (
+    META_BROWSE_TOOL_NAME,
+    SkillToolProvider,
+    _to_tool_name,
+)
+
+
+def _registered_skill_specs(bridge: SkillToolProvider) -> list:
+    """Return only the registry-backed skill specs.
+
+    B-299 added a synthesised ``skill_browse`` meta-tool that's
+    always present at the head of ``list_tools()``. Tests that
+    pre-date the meta-tool care about *registered* skills, so we
+    filter that one out here. New tests covering meta-tool
+    behaviour use ``list_tools()`` directly.
+    """
+    return [s for s in bridge.list_tools() if s.name != META_BROWSE_TOOL_NAME]
 
 
 # ── fixtures ────────────────────────────────────────────────────────
@@ -91,7 +107,9 @@ def test_list_tools_exposes_registered_skills() -> None:
         (_EchoSkill("simple", 2), _manifest("simple", 2)),
     )
     bridge = SkillToolProvider(reg)
-    names = sorted(s.name for s in bridge.list_tools())
+    # B-299: meta-tool is always exposed; filter for the registry-backed
+    # specs we care about in this test.
+    names = sorted(s.name for s in _registered_skill_specs(bridge))
     assert names == ["skill_demo__echo", "skill_simple"]
 
 
@@ -105,7 +123,7 @@ def test_list_tools_description_carries_provenance() -> None:
                       evidence=("bench:1.12x",)),
     )
     bridge = SkillToolProvider(reg)
-    spec = bridge.list_tools()[0]
+    spec = _registered_skill_specs(bridge)[0]
     # New compact trailer.
     assert "[skill:x v1, by=evolved]" in spec.description
     # Evidence preserved (audit trail).
@@ -117,10 +135,11 @@ def test_list_tools_is_dynamic_after_promotion() -> None:
     on the next list_tools() call — no restart required."""
     reg = SkillRegistry()
     bridge = SkillToolProvider(reg)
-    assert bridge.list_tools() == []
+    # B-299: meta-tool is always present; use the helper to ignore it.
+    assert _registered_skill_specs(bridge) == []
 
     reg.register(_EchoSkill("late"), _manifest("late", 1))
-    names = [s.name for s in bridge.list_tools()]
+    names = [s.name for s in _registered_skill_specs(bridge)]
     assert names == ["skill_late"]
 
 
@@ -269,7 +288,7 @@ def test_list_tools_description_leads_with_body() -> None:
         ),
     )
     bridge = SkillToolProvider(reg)
-    specs = bridge.list_tools()
+    specs = _registered_skill_specs(bridge)
     assert len(specs) == 1
     desc = specs[0].description
     # Body description leads (no "Skill:" prefix at byte 0).
@@ -293,7 +312,7 @@ def test_list_tools_description_falls_back_to_title_when_no_body() -> None:
         ),
     )
     bridge = SkillToolProvider(reg)
-    specs = bridge.list_tools()
+    specs = _registered_skill_specs(bridge)
     desc = specs[0].description
     assert desc.startswith("Generate code from spec")
 
@@ -308,7 +327,7 @@ def test_list_tools_description_minimal_when_no_frontmatter() -> None:
         SkillManifest(id="bare", version=1, created_by="evolved"),
     )
     bridge = SkillToolProvider(reg)
-    specs = bridge.list_tools()
+    specs = _registered_skill_specs(bridge)
     assert len(specs) == 1
     desc = specs[0].description
     # Trailer carries id + provenance.

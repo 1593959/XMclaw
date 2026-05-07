@@ -317,6 +317,23 @@ def _default_system_prompt() -> str:
         "  Net effect: most skills get the same one-shot treatment "
         "as `bash` / `web_search`. The deep audit kicks in only when "
         "you have a concrete reason — not as default ceremony.\n\n"
+        "  **B-299 — discovery via `skill_browse`**: your tool list each "
+        "turn is filtered by token-overlap (B-238 prefilter) to ~12 "
+        "skills. Real-data: 404 skills installed, but a CJK query "
+        "against English skill descriptions hits zero token overlap "
+        "and you see ZERO `skill_*` tools — even though the right one "
+        "is sitting in the registry. When the user's intent feels like "
+        "'someone could have written a skill for this' and you don't "
+        "see an obvious `skill_*` match, **call `skill_browse(query="
+        "<plain description>)` BEFORE falling back to bash / "
+        "web_search / file_***. It scans the full registry (no "
+        "token-overlap floor), returns top matches with descriptions, "
+        "and on your next turn the matched `skill_<id>` will be in "
+        "your tool list to invoke directly. Cost: one cheap "
+        "in-process scan, no I/O. Skip when the ask is obviously "
+        "'just run bash' / 'just read this file' — discovery is for "
+        "specialised tasks where a purpose-built skill would beat "
+        "raw tools.\n\n"
         # B-178: B-128 'Skill-first dispatch' section was a near-duplicate
         # of the ★ HARD RULE block above and used conflicting scope
         # ('ANY non-trivial' vs 'EVERY task'). Joint audit caught the

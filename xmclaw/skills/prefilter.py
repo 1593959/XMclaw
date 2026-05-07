@@ -148,14 +148,24 @@ def select_relevant_skills(
 
     On empty / pathological query: returns the input list unchanged.
     """
-    # Partition: skills vs non-skills. Non-skills (bash / file_read /
-    # web_fetch / etc) ALWAYS pass through — those are the workhorse
-    # tools every turn might need.
+    # B-299: meta-discovery tool is ALWAYS exposed (regardless of
+    # token match) so the LLM has an out-of-band path to find skills
+    # the prefilter would have dropped. Without this, a CJK query
+    # against English skill descriptions returns 0 skill_* tools —
+    # the LLM literally can't see they exist.
+    from xmclaw.skills.tool_bridge import META_BROWSE_TOOL_NAME
+
+    # Partition: skills vs non-skills vs the always-on meta-tool.
+    # Non-skills (bash / file_read / web_fetch / etc) ALWAYS pass
+    # through — those are the workhorse tools every turn might need.
     skills: list[Any] = []
     others: list[Any] = []
+    meta: list[Any] = []
     for spec in skill_specs:
         name = getattr(spec, "name", "") or ""
-        if name.startswith("skill_"):
+        if name == META_BROWSE_TOOL_NAME:
+            meta.append(spec)
+        elif name.startswith("skill_"):
             skills.append(spec)
         else:
             others.append(spec)
@@ -173,14 +183,22 @@ def select_relevant_skills(
     scored.sort(key=lambda x: x[0], reverse=True)
     # Drop zero-score skills entirely. With 400 skills and 12-slot
     # budget, anything that didn't match a single token isn't worth
-    # the LLM's attention this turn.
+    # the LLM's attention this turn — but the LLM still has the
+    # always-on ``skill_browse`` meta-tool (kept in ``meta`` above)
+    # to discover them on demand if it suspects one exists. B-299:
+    # before the meta-tool was added, this branch left the LLM with
+    # ZERO skill exposure; CJK queries against English-described
+    # skills hit this every turn.
     keep_skills = [
         spec for score, spec in scored if score > 0
     ][:top_k]
 
-    # Stable order: non-skills first (they're the always-available
-    # workhorses), then the relevant skills.
-    return others + keep_skills
+    # Stable order: non-skills first (workhorses), then the meta
+    # discovery tool, then matched skills. Meta sits AFTER the
+    # workhorse tools so the LLM doesn't burn attention on it when
+    # a strong skill_* match is available — but BEFORE matched
+    # skills so it's seen on the way down the list.
+    return others + meta + keep_skills
 
 
 __all__ = ["select_relevant_skills"]

@@ -47,6 +47,15 @@ from xmclaw.skills.registry import SkillRegistry, UnknownSkillError
 
 _VALID_NAME = re.compile(r"[^a-zA-Z0-9_-]")
 
+# B-299: meta-tool name for the LLM's on-demand skill discovery loop.
+# Stays inside the ``skill_`` namespace so the LLM grasps "skills are
+# tools, here is one that finds you more". Special-cased in the
+# prefilter (xmclaw/skills/prefilter.py) so it ALWAYS passes through
+# even when the query has zero token overlap with anything in the
+# registry — that's the whole point: when prefilter would have
+# returned 0 skills, this is the LLM's fallback discovery affordance.
+META_BROWSE_TOOL_NAME = "skill_browse"
+
 
 def _to_tool_name(skill_id: str) -> str:
     """Convert a skill_id to a wire-safe tool name.
@@ -93,6 +102,12 @@ class SkillToolProvider:
 
     def list_tools(self) -> list[ToolSpec]:
         specs = []
+        # B-299: prepend the meta-discovery tool so the LLM can ask
+        # "is there a skill for X?" out-of-band when the prefilter's
+        # token-overlap match misses (CJK queries hitting English
+        # skill descs is the canonical 0-result case). The prefilter
+        # special-cases this name to always pass through.
+        specs.append(self._browse_spec())
         for skill_id in self._registry.list_skill_ids():
             spec = self._spec_for(skill_id)
             if spec is not None:
@@ -107,6 +122,13 @@ class SkillToolProvider:
         this channel so it can reason about them, not crash the turn.
         """
         t0 = time.perf_counter()
+
+        # B-299: meta-tool short-circuit. ``skill_browse`` is synthesised
+        # in ``list_tools`` and isn't a registry-backed Skill, so route
+        # it before the registry lookup that would otherwise return
+        # ``unknown skill tool``.
+        if call.name == META_BROWSE_TOOL_NAME:
+            return self._invoke_browse(call, t0)
 
         skill_id = self._tool_name_to_skill_id(call.name)
         if skill_id is None:
@@ -169,6 +191,183 @@ class SkillToolProvider:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    # ── B-299 meta-discovery ────────────────────────────────────────
+
+    def _browse_spec(self) -> ToolSpec:
+        """ToolSpec for the always-exposed ``skill_browse`` meta-tool.
+
+        Description is short on purpose — the LLM only needs to know
+        WHEN to call it, not how. Argument schema is one ``query``
+        string + optional ``top_k``. The tool always returns a JSON
+        list ``[{id, version, description, score}, ...]`` so the
+        next-turn LLM can read it like any other tool result.
+        """
+        skill_count = 0
+        try:
+            skill_count = len(self._registry.list_skill_ids())
+        except Exception:  # noqa: BLE001
+            skill_count = 0
+        description = (
+            f"Discover skills available to you. {skill_count} skill(s) are "
+            "registered locally; only the most query-relevant ~12 are "
+            "shown to you each turn (via a token-overlap prefilter "
+            "that DROPS to zero on CJK queries against English skill "
+            "descriptions, or any time keyword overlap is weak). "
+            "When you suspect a specialised skill might exist for the "
+            "user's intent and you don't see one in your current tool "
+            "list, call this BEFORE falling back to bash / web_search / "
+            "file_*. Returns id + description + score for the top "
+            "matches; on a follow-up turn the matched ``skill_<id>`` "
+            "tool will be in your tool list and you can invoke it "
+            "directly. Free, fast, no side effects."
+        )
+        return ToolSpec(
+            name=META_BROWSE_TOOL_NAME,
+            description=description,
+            parameters_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["query"],
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Plain-language description of what you "
+                            "want a skill to do. Multilingual OK; "
+                            "the matcher handles CJK + ASCII tokens "
+                            "and falls back to substring on the "
+                            "concatenated id+description corpus."
+                        ),
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": (
+                            "Max matches to return (default 8, hard "
+                            "cap at 25). Keep small — wider lists "
+                            "burn your context for nothing."
+                        ),
+                        "minimum": 1,
+                        "maximum": 25,
+                    },
+                },
+            },
+        )
+
+    def _invoke_browse(self, call: ToolCall, t0: float) -> ToolResult:
+        """Synchronous handler — does an in-memory scan of the registry,
+        no I/O. Returns a JSON-serialisable list the LLM reads.
+        """
+        args = dict(call.args or {})
+        query = args.get("query", "")
+        if not isinstance(query, str) or not query.strip():
+            return self._error_result(
+                call.id,
+                "skill_browse requires a non-empty 'query' string",
+                t0,
+            )
+        try:
+            top_k = int(args.get("top_k", 8))
+        except (TypeError, ValueError):
+            top_k = 8
+        top_k = max(1, min(25, top_k))
+
+        # Pull every skill_id (NOT subject to the prefilter), score
+        # against the query, return top matches. Reuses the
+        # prefilter's tokenizer so the matching semantics agree with
+        # the auto-prefilter — but augments it with a substring pass
+        # so multilingual / mixed-language queries don't tie all
+        # scores at 0.
+        from xmclaw.skills.prefilter import _tokenize, _STOPWORDS, _score_skill
+
+        all_skill_specs = []
+        for sid in self._registry.list_skill_ids():
+            sp = self._spec_for(sid)
+            if sp is not None:
+                all_skill_specs.append(sp)
+
+        query_tokens = _tokenize(query) - _STOPWORDS
+        q_lower = query.lower().strip()
+
+        # Combined scoring: token-overlap (primary) + literal-substring
+        # (secondary, weight 1.5 per matched token). Substring catches
+        # the cases where the tokenizer split a useful CJK fragment
+        # ("天气" → ["天", "气"]) but the actual literal "天气"
+        # never appears in any English skill description, so token
+        # overlap goes to 0 and we'd otherwise return alphabetical
+        # noise. The substring pass also rewards exact id matches
+        # (a query "deploy-vercel" hits "skill_deploy-vercel" via
+        # both signals).
+        scored: list[tuple[float, Any]] = []
+        for sp in all_skill_specs:
+            base = _score_skill(query_tokens, sp) if query_tokens else 0.0
+            sub = 0.0
+            if q_lower:
+                hay = (sp.name + " " + (sp.description or "")).lower()
+                if q_lower in hay:
+                    # Whole-query substring → strongest signal. Pre-
+                    # empts the token sum so a literal id match
+                    # always wins over a partial token overlap.
+                    sub += 5.0
+                # Per-token substring as a fallback for the
+                # tokenizer-misses-literal case described above.
+                for tok in query_tokens:
+                    if len(tok) >= 2 and tok in hay:
+                        sub += 1.5
+            scored.append((base + sub, sp))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        # Unlike the auto-prefilter, we DON'T drop score=0 — the
+        # whole point of skill_browse is to show the LLM what's
+        # there even when overlap is weak. We do hard-cap at top_k
+        # though, and tag scores so the LLM can read confidence.
+        ranked = scored[:top_k]
+
+        # Cheap structured payload — no markdown, no truncation; the
+        # LLM reads JSON natively.
+        out_list: list[dict[str, Any]] = []
+        for score, sp in ranked:
+            out_list.append({
+                "tool_name": sp.name,
+                "score": round(float(score), 3),
+                "description": sp.description or "",
+            })
+
+        latency = self._elapsed_ms(t0)
+        if not out_list:
+            return ToolResult(
+                call_id=call.id,
+                ok=True,
+                content={
+                    "matches": [],
+                    "note": (
+                        f"No skills matched the query {query!r}. "
+                        f"Total registered: {len(all_skill_specs)}. "
+                        "Either fall back to bash / web_search / "
+                        "file_* or rephrase the query with more "
+                        "specific keywords (skill names + "
+                        "descriptions are mostly English)."
+                    ),
+                },
+                error=None,
+                latency_ms=latency,
+            )
+        return ToolResult(
+            call_id=call.id,
+            ok=True,
+            content={
+                "matches": out_list,
+                "note": (
+                    f"Showing top {len(out_list)} of "
+                    f"{len(all_skill_specs)} skills. To invoke one, "
+                    "call its ``tool_name`` directly on the next turn — "
+                    "it will be in your tool list."
+                ),
+            },
+            error=None,
+            latency_ms=latency,
+        )
+
+    # ── registry-backed skill spec/invoke ──────────────────────────
 
     def _spec_for(self, skill_id: str) -> ToolSpec | None:
         try:
