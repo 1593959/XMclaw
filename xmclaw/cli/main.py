@@ -529,6 +529,22 @@ def serve(
         default_token_path, load_or_create_token, validate_token,
     )
 
+    # B-298: production daemon must call setup_logging() exactly once at
+    # startup. Pre-B-298 ``log.info(...)`` calls from B-294/295/296/297
+    # modules (evolution_agent, evolution_evaluation_trigger,
+    # variant_selector) all routed through ``logging.getLogger(__name__)``
+    # against a root logger with NO handlers — every event silently
+    # dropped on the floor. This made it indistinguishable whether the
+    # evolution chain was firing, failing, or never reached. With
+    # ``setup_logging()`` wired here, the structlog JSON file at
+    # ``<data>/logs/xmclaw.log`` becomes the canonical audit trail; the
+    # ``daemon.log`` subprocess stdout capture remains as the uvicorn
+    # access log. Idempotent; safe to call before the typer.echo lines
+    # below since those go to stdout (caught by daemon.log) not through
+    # the structlog pipeline.
+    from xmclaw.utils.log import setup_logging
+    setup_logging()
+
     # Epic #13: persistent event log. Subscribers only see events after
     # the row is on disk, so a crash mid-publish can't silently desync the
     # agent loop from what the UI replays on reconnect.
