@@ -201,94 +201,124 @@ function LiveStatusPanel({ token }) {
   }
 
   const obs = snap.observer;
-  const trig = snap.trigger;
-  const sel = snap.variant_selector;
+  const trig = snap.trigger || {};
+  const sel = snap.variant_selector || {};
   const sd = snap.skill_dream || {};
-
   const arms = obs.arms || [];
   const recent = sd.recent_proposals || [];
 
+  // B-301 followup: rewrote success-state with min-height + flat
+  // structure (no nested ${} interpolation in template, no <br/>) so
+  // a single template-parse glitch can't squash the body. The earlier
+  // version used heavy nesting + <br/> and the user reported the
+  // panel rendered ONLY the header strip — body content silently
+  // dropped. Pre-rendering each section into local variables avoids
+  // the ambiguity.
+
+  const observerLine = obs.ready_to_propose_count > 0
+    ? html`正在跟踪 ${obs.tracked_skill_count} 个 (skill_id, version) ·
+        <strong style="color:var(--xmc-success)">
+          ${obs.ready_to_propose_count} 个达到提议阈值
+        </strong>`
+    : html`正在跟踪 ${obs.tracked_skill_count} 个 (skill_id, version) ·
+        <span style="opacity:.7">尚无达阈值（min_plays=10 / min_mean=0.65）</span>`;
+
+  const triggerLine = trig.is_active
+    ? html`<span style="opacity:.7">
+        evaluate trigger fired ${trig.fire_count || 0} 次 ·
+        ${(trig.verdicts_since_last_fire || 0) > 0
+          ? `积 ${trig.verdicts_since_last_fire} 个新 verdict（阈值 ${trig.min_new_verdicts}）`
+          : "本轮无新 verdict"}
+      </span>`
+    : null;
+
+  let armsBlock;
+  if (arms.length === 0) {
+    armsBlock = html`<div style="font-size:.78rem;opacity:.6;padding:.4rem 0">
+      还没有 skill_* 调用产生 grader_verdict。让 agent 实际调用一个 <code>skill_*</code> 工具，
+      它就会出现在这里并开始累积 plays。
+    </div>`;
+  } else {
+    armsBlock = html`<div style="display:grid;gap:.4rem">
+      ${arms.map((a) => html`<${ArmCard} key=${`${a.skill_id}-${a.version}`} arm=${a} />`)}
+    </div>`;
+  }
+
+  let dreamBlock = null;
+  if (recent.length > 0) {
+    dreamBlock = html`<details style="margin-top:.7rem">
+      <summary style="cursor:pointer;font-size:.78rem;opacity:.8">
+        SkillDreamCycle 最近 ${recent.length} 条 audit（最新在前）
+      </summary>
+      <ul style="list-style:none;padding:.4rem 0 0;margin:0;font-size:.74rem">
+        ${recent.map((r, i) => html`<${DreamRow} key=${i} row=${r} />`)}
+      </ul>
+    </details>`;
+  }
+
   return html`
-    <div class="xmc-h-skill-card" style="padding:.8rem 1rem">
-      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:.6rem">
+    <div class="xmc-h-skill-card" style="padding:.8rem 1rem;min-height:8rem">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:.6rem;flex-wrap:wrap;gap:.4rem">
         <strong style="font-size:.95rem">🔬 实时进化状态</strong>
         <small style="opacity:.6">
           observer=${obs.is_running ? "✓" : "✗"} ·
-          trigger=${trig?.is_active ? "✓" : "✗"} ·
-          selector=${sel?.is_active ? "✓" : "✗"}
+          trigger=${trig.is_active ? "✓" : "✗"} ·
+          selector=${sel.is_active ? "✓" : "✗"}
         </small>
       </div>
-
-      <!-- Top-line: observer summary -->
-      <div style="font-size:.82rem;line-height:1.6;margin-bottom:.6rem">
-        <strong>EvolutionAgent observer</strong>:
-        正在跟踪 ${obs.tracked_skill_count} 个 (skill_id, version)
-        ${obs.ready_to_propose_count > 0
-          ? html`， <span style="color:var(--xmc-success);font-weight:600">
-              ${obs.ready_to_propose_count} 个达到提议阈值
-            </span>`
-          : html`，<span style="opacity:.7">尚无达阈值（min_plays=10 / min_mean=0.65）</span>`}
-        ${trig
-          ? html`<br/><span style="opacity:.7">
-              evaluate trigger fired ${trig.fire_count} 次，
-              ${trig.verdicts_since_last_fire > 0
-                ? `已积 ${trig.verdicts_since_last_fire} 个新 verdict（阈值 ${trig.min_new_verdicts}）`
-                : "本轮无新 verdict"}
-            </span>`
-          : null}
+      <div style="font-size:.82rem;line-height:1.7;margin-bottom:.6rem">
+        <div><strong>EvolutionAgent observer</strong>: ${observerLine}</div>
+        ${triggerLine ? html`<div>${triggerLine}</div>` : null}
       </div>
-
-      <!-- Arms table -->
-      ${arms.length === 0
-        ? html`<div style="font-size:.78rem;opacity:.6;padding:.4rem 0">
-            还没有 skill_* 调用产生 grader_verdict。让 agent 实际调用一个 <code>skill_*</code> 工具，
-            它就会出现在这里并开始累积 plays。
-          </div>`
-        : html`<div style="display:grid;gap:.4rem">
-            ${arms.map((a) => html`
-              <div key=${`${a.skill_id}-${a.version}`}
-                   style=${`padding:.4rem .5rem;border-radius:4px;background:${a.progress.ready_to_propose
-                     ? "color-mix(in srgb, var(--xmc-success) 8%, transparent)"
-                     : "color-mix(in srgb, var(--midground) 4%, transparent)"};border:1px solid var(--color-border)`}>
-                <div style="display:flex;align-items:baseline;gap:.5rem;flex-wrap:wrap;margin-bottom:.3rem">
-                  <code style="font-size:.78rem;font-weight:600">${a.skill_id}</code>
-                  <small style="opacity:.7">v${a.version}</small>
-                  ${a.progress.ready_to_propose
-                    ? html`<span class="xmc-h-badge xmc-h-badge--success">达阈值，可提议</span>`
-                    : html`<span class="xmc-h-badge xmc-h-badge--muted">accumulating</span>`}
-                  <small style="margin-left:auto;opacity:.6">
-                    plays ${a.plays}/10 · mean ${(a.mean_score ?? 0).toFixed(2)}
-                  </small>
-                </div>
-                <${ArmProgressBar} progress=${a.progress.plays_progress} label="plays" />
-                <${ArmProgressBar} progress=${a.progress.mean_progress} label="mean" />
-              </div>
-            `)}
-          </div>`}
-
-      <!-- skill_dream recent audit -->
-      ${recent.length > 0
-        ? html`<details style="margin-top:.7rem">
-            <summary style="cursor:pointer;font-size:.78rem;opacity:.8">
-              SkillDreamCycle 最近 ${recent.length} 条 audit（最新在前）
-            </summary>
-            <ul style="list-style:none;padding:.4rem 0 0;margin:0;font-size:.74rem">
-              ${recent.map((r, i) => html`
-                <li key=${i} style="padding:.2rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
-                  <code>${r.skill_id || "?"}</code>
-                  ${r.confidence != null
-                    ? html`<small style="opacity:.6">conf ${(r.confidence).toFixed(2)}</small>`
-                    : null}
-                  ${r.title
-                    ? html`<small style="opacity:.7">${r.title}</small>`
-                    : null}
-                  <small style="margin-left:auto;opacity:.5">${fmtIsoLocal(r.ts)}</small>
-                </li>
-              `)}
-            </ul>
-          </details>`
-        : null}
+      ${armsBlock}
+      ${dreamBlock}
     </div>
+  `;
+}
+
+
+// B-301 followup: extracted from inline template so the parent's
+// .map() doesn't have to embed a multi-line html template literal
+// (which seemed to confuse htm's parser when the user's browser
+// had partial cache). Pure pres-component.
+function ArmCard({ arm }) {
+  const a = arm;
+  const ready = a.progress.ready_to_propose;
+  const bg = ready
+    ? "color-mix(in srgb, var(--xmc-success) 8%, transparent)"
+    : "color-mix(in srgb, var(--midground) 4%, transparent)";
+  return html`
+    <div style=${`padding:.4rem .5rem;border-radius:4px;background:${bg};border:1px solid var(--color-border)`}>
+      <div style="display:flex;align-items:baseline;gap:.5rem;flex-wrap:wrap;margin-bottom:.3rem">
+        <code style="font-size:.78rem;font-weight:600">${a.skill_id}</code>
+        <small style="opacity:.7">v${a.version}</small>
+        <span class=${`xmc-h-badge xmc-h-badge--${ready ? "success" : "muted"}`}>
+          ${ready ? "达阈值，可提议" : "accumulating"}
+        </span>
+        <small style="margin-left:auto;opacity:.6">
+          plays ${a.plays}/10 · mean ${(a.mean_score ?? 0).toFixed(2)}
+        </small>
+      </div>
+      <${ArmProgressBar} progress=${a.progress.plays_progress} label="plays" />
+      <${ArmProgressBar} progress=${a.progress.mean_progress} label="mean" />
+    </div>
+  `;
+}
+
+
+function DreamRow({ row }) {
+  const r = row;
+  return html`
+    <li style="padding:.2rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+      <code>${r.skill_id || "?"}</code>
+      ${r.confidence != null
+        ? html`<small style="opacity:.6">conf ${(r.confidence).toFixed(2)}</small>`
+        : null}
+      ${r.title
+        ? html`<small style="opacity:.7">${r.title}</small>`
+        : null}
+      <small style="margin-left:auto;opacity:.5">${fmtIsoLocal(r.ts)}</small>
+    </li>
   `;
 }
 
