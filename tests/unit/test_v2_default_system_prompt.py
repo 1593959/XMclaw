@@ -174,6 +174,37 @@ def test_b206_narration_discipline_present() -> None:
     assert "BEFORE emitting the next tool call" in p
 
 
+def test_b302_honesty_rule_about_memory_claims_present() -> None:
+    """B-302: real chat (chat-c5b94ed6) showed agent saying ``这个信息
+    我记下了`` after user shared 'I run a gaming-companion club',
+    without actually calling ``remember`` or ``learn_about_user``.
+    Next turn user asked '记录到哪里了' and agent had to admit
+    nothing was persisted. That's the canonical
+    'claim-action-without-tool' honesty failure.
+
+    The fix is prompt-only: explicit rule that memory claims (记下了 /
+    记住了 / 已记录) require an actual tool invocation. This test pins
+    the rule's presence so a future prompt refactor doesn't drop it."""
+    p = _DEFAULT_SYSTEM
+    # Rule header must be present and tagged with B-302.
+    assert "B-302" in p, "B-302 honesty rule header missing"
+    # Must name the offending phrases the agent had been saying so
+    # the LLM has concrete patterns to avoid (not just abstract
+    # 'don't lie' guidance).
+    assert "记下了" in p
+    assert "记住了" in p
+    # Must enumerate the tools that close the gap — without naming
+    # them the LLM might conclude the rule is general "be honest"
+    # (which doesn't change behaviour).
+    assert "remember" in p
+    assert "learn_about_user" in p
+    # Must include both a positive example (tool-then-speak) AND a
+    # negative example (speak-only). The probe-driven prompt fixes
+    # learned that examples > rules for behaviour change.
+    assert "正例" in p or "正例:" in p
+    assert "反例" in p
+
+
 def test_default_prompt_size_bounded() -> None:
     """Cheap sanity bound — the prompt is appended to every system
     message. If a refactor accidentally bloats it past ~30k chars
