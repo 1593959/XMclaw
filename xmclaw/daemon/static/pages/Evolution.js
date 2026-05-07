@@ -466,9 +466,20 @@ export function EvolutionPage({ token }) {
         <!-- Section 1.5 (B-301): live state of the in-memory chain. -->
         <${LiveStatusPanel} token=${token} />
 
-        <!-- Section 2: Pending proposals -->
-        <div>
-          <h3 style="margin:0 0 .5rem;font-size:1.05rem">待审进化提议</h3>
+        <!-- Section 2: Pending proposals.
+             B-301 followup #5: wrapped in <details> default-collapsed +
+             scrollable max-height on the inner list. The earlier flat
+             rendering let 50+ proposal cards push everything else
+             below the fold and (with the LiveStatusPanel injected
+             above) caused odd layout interactions where the panel got
+             squashed into a thin strip on some browsers. Collapsing
+             by default makes the in-memory live status the visual
+             priority + lets the user explicitly drill into proposals
+             when they want to. -->
+        <details open=${proposals.length === 0}>
+          <summary style="cursor:pointer;font-size:1.05rem;font-weight:600;padding:.4rem 0;user-select:none">
+            待审进化提议 <small style="opacity:.6;font-weight:400;font-size:.78rem">(${proposals.length} 条 · 点开展开)</small>
+          </summary>
           ${proposals.length === 0
             ? html`<div class="xmc-h-empty" style="padding:1rem;font-size:.85rem;line-height:1.6">
                 <p style="margin:0 0 .4rem"><strong>暂无近期进化记录。</strong></p>
@@ -481,10 +492,10 @@ export function EvolutionPage({ token }) {
                 <code>daemon/config.json</code> 加 <code>"evolution":{"materialize":{"enabled":false}}</code>；
                 想关实时触发：<code>"realtime":{"enabled":false}</code>。</p>
               </div>`
-            : html`<div style="display:grid;gap:.5rem">
+            : html`<div style="display:grid;gap:.5rem;max-height:60vh;overflow-y:auto;padding:.4rem .2rem;border:1px solid var(--color-border);border-radius:4px">
                 ${proposals.map((ev) => html`<${ProposalCard} key=${ev.id} ev=${ev} />`)}
               </div>`}
-        </div>
+        </details>
 
         <!-- Section 3: Grader histogram -->
         <div>
