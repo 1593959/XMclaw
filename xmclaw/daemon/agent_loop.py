@@ -2650,7 +2650,24 @@ class AgentLoop:
                             "side_effect_observable": verdict.side_effect_observable,
                             "evidence": list(verdict.evidence),
                         }
-                        if call.name.startswith("skill_"):
+                        # B-299: ``skill_browse`` is the synthesised
+                        # meta-discovery tool, NOT a registry-backed
+                        # skill — its invocations carry no skill_id
+                        # signal. If we let the generic skill_-prefix
+                        # branch below stamp ``skill_id="browse"`` on
+                        # the verdict, EvolutionAgent's _ingest would
+                        # accumulate plays/EWMA for a phantom
+                        # "browse" arm, and VariantSelector would
+                        # eventually try to UCB1-select a version
+                        # for a skill that doesn't exist. Skip the
+                        # stamping; the verdict still publishes
+                        # (other observers may want it) but lands
+                        # un-keyed so EvolutionAgent's early-return-
+                        # on-missing-skill_id path drops it.
+                        if (
+                            call.name.startswith("skill_")
+                            and call.name != "skill_browse"
+                        ):
                             # Reverse SkillToolProvider's mapping
                             # (xmclaw/skills/tool_bridge.py:_to_tool_name).
                             # ``__`` was the namespace-separator escape

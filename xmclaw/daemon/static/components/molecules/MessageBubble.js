@@ -84,10 +84,14 @@ function ToolCard({ call }) {
   // B-130: detect skill tool-calls so the user can SEE in-chat when
   // the agent autonomously picked a skill (vs reaching for a generic
   // bash / file_read). `skill_*` = registered Skill subclass (B-124);
-  // `learned_skill_*` = SKILL.md procedure (B-125).
-  const isSkillTool = (call.name || "").startsWith("skill_");
+  // `learned_skill_*` = SKILL.md procedure (B-125); `skill_browse`
+  // (B-299) is the synthesised meta-discovery tool — visually
+  // distinct so the user sees "agent is browsing the catalog" vs
+  // "agent invoked a real skill".
+  const isBrowseMeta = call.name === "skill_browse";
+  const isSkillTool = !isBrowseMeta && (call.name || "").startsWith("skill_");
   const isLearnedSkill = (call.name || "").startsWith("learned_skill_");
-  const isAnySkill = isSkillTool || isLearnedSkill;
+  const isAnySkill = isSkillTool || isLearnedSkill || isBrowseMeta;
   // B-132: detect agent-inter tools (Epic #17) so multi-agent
   // delegations are visually distinct from "bash" or "file_read".
   // The 6 tools agent_inter.py exposes are a fixed set.
@@ -96,14 +100,17 @@ function ToolCard({ call }) {
     "list_agent_tasks", "stop_agent_task", "check_agent_task",
   ]);
   const isAgentTool = AGENT_INTER_TOOLS.has(call.name);
-  const skillLabel = isLearnedSkill ? "📖 已学技能"
+  const skillLabel = isBrowseMeta ? "🔍 技能发现"
+    : isLearnedSkill ? "📖 已学技能"
     : isSkillTool ? "🎯 注册技能"
     : isAgentTool ? "🤝 子 agent 协作" : "";
-  const displayName = isLearnedSkill
-    ? call.name.slice("learned_skill_".length)
-    : isSkillTool
-      ? call.name.slice("skill_".length)
-      : call.name;
+  const displayName = isBrowseMeta
+    ? "browse"
+    : isLearnedSkill
+      ? call.name.slice("learned_skill_".length)
+      : isSkillTool
+        ? call.name.slice("skill_".length)
+        : call.name;
   // Pull the target agent_id out of args for chat/submit/check/stop
   // so the user sees "→ code_reviewer" inline rather than having to
   // expand the card to read JSON.

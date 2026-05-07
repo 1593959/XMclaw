@@ -407,6 +407,58 @@ async def test_grader_verdict_carries_skill_id_for_skill_prefixed_tools() -> Non
 
 
 @pytest.mark.asyncio
+async def test_b299_browse_meta_tool_does_not_stamp_skill_id() -> None:
+    """B-299: ``skill_browse`` is the synthesised meta-discovery tool,
+    not a registry-backed skill. The agent_loop verdict path used to
+    blindly stamp ``skill_id = call.name.removeprefix("skill_")`` for
+    every ``skill_*`` tool — which would have created a phantom
+    ``skill_id="browse"`` arm in EvolutionAgent + VariantSelector
+    every time the LLM used the discovery tool. This test pins that
+    skill_browse calls publish a verdict WITHOUT a skill_id so the
+    observer's empty-skill_id early return drops them."""
+    bus = InProcessEventBus()
+    llm = _ScriptedLLM(script=[
+        LLMResponse(
+            content="",
+            tool_calls=(ToolCall(
+                name="skill_browse",
+                args={"query": "find me a git skill"},
+                provenance="anthropic", id="tc-browse",
+            ),),
+        ),
+        LLMResponse(content="ok", tool_calls=()),
+    ])
+    tools = _StubToolProvider(
+        specs=[ToolSpec(
+            name="skill_browse",
+            description="meta discovery",
+            parameters_schema={"type": "object"},
+        )],
+        results={
+            "skill_browse": ToolResult(
+                call_id="", ok=True,
+                content={"matches": [], "note": "no results"},
+                side_effects=(),
+            ),
+        },
+    )
+    agent = AgentLoop(llm=llm, bus=bus, tools=tools)
+    result = await agent.run_turn("sess", "find a skill")
+    await bus.drain()
+
+    verdicts = [e for e in result.events if e.type == EventType.GRADER_VERDICT]
+    assert len(verdicts) == 1, "verdict still emitted (other observers want it)"
+    p = verdicts[0].payload
+    # The whole point: NO skill_id stamping, so EvolutionAgent ignores it.
+    assert "skill_id" not in p, (
+        "skill_browse must NOT stamp skill_id — that would inject a "
+        "phantom 'browse' arm into the bandit/EWMA"
+    )
+    assert "version" not in p
+    assert p["tool_name"] == "skill_browse"
+
+
+@pytest.mark.asyncio
 async def test_evolution_agent_observer_receives_skill_verdicts() -> None:
     """End-to-end: AgentLoop → GRADER_VERDICT → EvolutionAgent._ingest.
     Verifies the closed loop the Phase 1.5 patch was specifically

@@ -62,6 +62,33 @@ the whole point of the daemon/client split.
 
 - `app.py:69` — `create_app()` builds the FastAPI instance;
   every route, middleware, and lifespan hook is wired there.
+  Lifespan also boots the evolution chain: `EvolutionAgent`
+  observer (B-296 takes `registry=` for per-skill HEAD lookup),
+  `EvolutionEvaluationTrigger` (B-294 closes the
+  verdict→evaluate loop), `VariantSelector` (B-295 UCB1 over
+  variants). Use `_find_skill_provider(agent._tools)` (B-298,
+  module-scope) to pull the live `SkillRegistry` out of nested
+  CompositeToolProviders — DO NOT hand-walk children, the tool
+  stack is multi-level (Composite(Composite(SkillTool, ...),
+  MemoryBridge)) and a single-level lookup silently returns
+  `None`. `cli/main.py serve` calls `setup_logging()` before
+  `uvicorn.run` so structlog actually goes to
+  `~/.xmclaw/logs/xmclaw.log` (pre-B-298 it didn't, and every
+  `log.info` from the chain modules silently dropped).
+- `evolution_agent.py` — `EvolutionAgent`: bus-subscribed
+  observer that ingests `GRADER_VERDICT`, aggregates per
+  `(skill_id, version)` via EWMA, and on `evaluate()` returns
+  `list[EvolutionReport]` (one per skill_id — B-296). State
+  persists to `~/.xmclaw/v2/evolution/<agent_id>/state.json`
+  via atomic `os.replace` writes inside the ingest lock
+  (B-297).
+- `evolution_evaluation_trigger.py` — B-294: subscribes to
+  `GRADER_VERDICT`, debounces 30s (config:
+  `evolution.evaluation.debounce_s`), cooldowns 300s, fires
+  `evo_agent.evaluate()` only after `min_new_verdicts=10`
+  accumulate. Skips internal session prefixes (`_system`,
+  `skill-dream`, `dream:`, `evolution:`, `reflect:`) so
+  background workspaces don't drive HEAD movement.
 - `agent_loop.py:122` — `AgentLoop` class. The single place
   per-turn orchestration lives. Read this before adding new
   tool-call flow logic.

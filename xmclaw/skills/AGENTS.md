@@ -45,4 +45,24 @@ mutation not to produce silent nonsense.
 - `manifest.py` — pydantic model for `skill.yaml` / `skill.json`.
 - `registry.py` — lookup, filter, list. Used by the scheduler.
 - `versioning.py` — bump rules + changelog semantics.
+- `tool_bridge.py` — `SkillToolProvider`: bridges registry HEAD
+  entries into LLM-callable tools as `skill_<id>`. Hosts the
+  always-exposed `skill_browse` meta-tool (B-299) — synthesised at
+  index 0 in `list_tools()`, takes `query: str` + optional
+  `top_k`, returns top matches via combined token+substring
+  scoring. The prefilter has a hard whitelist for
+  `META_BROWSE_TOOL_NAME` so it ALWAYS reaches the LLM, even on
+  zero-token-overlap queries (CJK against English skill descs).
+- `prefilter.py` — B-238 token-overlap top-K filter that narrows
+  ~404 installed skills to ~12 per turn. Non-skill tools and
+  `skill_browse` always pass through; skills below
+  `min_skills_to_filter=30` skip filtering entirely.
+- `variant_selector.py` — B-295 UCB1 over `(skill_id, version)`
+  arms. Subscribes to `GRADER_VERDICT`, exposes
+  `pick_version(skill_id) -> int | None` consulted by
+  `SkillToolProvider.invoke` when the daemon wires it in.
+- `user_loader.py` — boot-time scan of `~/.xmclaw/skills_user/`
+  + `~/.agents/skills/` (+ extras from
+  `evolution.skill_paths.extra`). Loaded once at startup;
+  runtime updates handled by `xmclaw/daemon/skills_watcher.py`.
 - `demo/` — example skills that double as integration fixtures.
