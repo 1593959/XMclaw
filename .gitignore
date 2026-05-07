@@ -82,6 +82,10 @@ tests/bench/_phase3_live_log.jsonl
 
 # Claude / Copilot
 .claude/
+# B-235: XMclaw-managed git worktrees (created by ``enter_worktree`` tool).
+# Pre-B-235 these lived under .claude/worktrees/ — covered by the .claude/
+# rule above. New ones live in their own namespace.
+.xmworktrees/
 
 # Node / Frontend
 node_modules/

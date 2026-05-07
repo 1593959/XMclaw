@@ -49,7 +49,8 @@ def _state_payload() -> dict[str, Any]:
             "/pytest-of-" in norm
             or "/appdata/local/temp/" in norm
             or norm.startswith("/tmp/")
-            or "/.claude/worktrees/" in norm  # ephemeral worktrees
+            or "/.xmworktrees/" in norm        # B-235: new ephemeral worktrees
+            or "/.claude/worktrees/" in norm   # legacy back-compat
         )
         roots.append(d)
     return {
@@ -135,7 +136,8 @@ async def update_workspace(
                 "/pytest-of-" in norm
                 or "/appdata/local/temp/" in norm
                 or norm.startswith("/tmp/")
-                or "/.claude/worktrees/" in norm
+                or "/.xmworktrees/" in norm        # B-235
+                or "/.claude/worktrees/" in norm   # legacy back-compat
             )
             if missing or (include_temp and looks_temp):
                 try:

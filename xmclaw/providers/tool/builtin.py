@@ -877,8 +877,10 @@ _ENTER_WORKTREE_SPEC = ToolSpec(
         "agreed to the experiment). For everyday branching, use plain "
         "git commands.\n\n"
         "Behaviour:\n"
-        "  • Creates a worktree under ``.claude/worktrees/<name>/`` "
-        "(matching free-code's convention).\n"
+        "  • Creates a worktree under ``.xmworktrees/<name>/`` "
+        "(B-235: XMclaw-native namespace; older worktrees still living "
+        "under ``.claude/worktrees/`` are accepted by ``exit_worktree`` "
+        "for back-compat).\n"
         "  • Creates a fresh branch based on the current HEAD (or the "
         "given ``base_branch``).\n"
         "  • Updates WorkspaceManager so the next bash / file_* call "
@@ -918,9 +920,10 @@ _EXIT_WORKTREE_SPEC = ToolSpec(
     description=(
         "Leave a worktree previously entered via ``enter_worktree`` "
         "and return the session's primary workspace to the original "
-        "repo. Refuses to run when the current primary isn't a "
-        "worktree under ``.claude/worktrees/`` (so you can't "
-        "accidentally remove the user's main checkout).\n\n"
+        "repo. Refuses to run when the current primary isn't a worktree "
+        "under ``.xmworktrees/`` (or legacy ``.claude/worktrees/`` from "
+        "pre-B-235 sessions) — so you can't accidentally remove the "
+        "user's main checkout.\n\n"
         "Default: removes the worktree directory + the branch it "
         "carried. Pass ``keep=true`` to keep both on disk so the user "
         "can inspect them later."
@@ -2709,13 +2712,22 @@ class BuiltinTools(ToolProvider):
         )
 
     async def _enter_worktree(self, call: ToolCall, t0: float) -> ToolResult:
-        """B-94: create ``.claude/worktrees/<name>/`` + new branch and
+        """B-94 + B-235: create ``.xmworktrees/<name>/`` + new branch and
         switch the daemon's primary workspace into it.
 
         Refuses when:
           * not inside a git repo (``git rev-parse`` fails)
-          * already inside a worktree (path under .claude/worktrees/)
+          * already inside a worktree (path under .xmworktrees/ OR the
+            legacy .claude/worktrees/ — both checked for back-compat)
         Both check messages tell the agent what to do next.
+
+        B-235 path migration: pre-B-235 worktrees lived under
+        ``.claude/worktrees/<name>/`` — Claude Code's project-level
+        namespace. ``enter_worktree`` now writes to ``.xmworktrees/``
+        instead so XMclaw stays out of other agents' territory.
+        ``exit_worktree`` accepts both paths for back-compat — users
+        with in-flight ``.claude/worktrees/`` worktrees can still wind
+        them down without the daemon refusing.
         """
         from xmclaw.core.workspace import WorkspaceManager
 
@@ -2732,7 +2744,20 @@ class BuiltinTools(ToolProvider):
         original_root = state.primary.path
         # Reject if already in a worktree — nesting just creates
         # confusion and the cleanup path can't tell what to undo.
-        if ".claude" in original_root.parts and "worktrees" in original_root.parts:
+        # B-235: detect both new (.xmworktrees) AND legacy
+        # (.claude/worktrees) layouts so the "already in a worktree"
+        # guard still fires for users still inside a pre-B-235 worktree.
+        _root_parts = original_root.parts
+        _in_xm_worktree = (
+            "xmworktrees" in _root_parts
+            and any(
+                p == ".xmworktrees" for p in _root_parts
+            )
+        )
+        _in_legacy_worktree = (
+            ".claude" in _root_parts and "worktrees" in _root_parts
+        )
+        if _in_xm_worktree or _in_legacy_worktree:
             return _fail(
                 call, t0,
                 "already inside a worktree — call ``exit_worktree`` "
@@ -2768,7 +2793,9 @@ class BuiltinTools(ToolProvider):
                 f"{_rnd.choice(adjectives)}-{_rnd.choice(nouns)}-"
                 f"{uuid.uuid4().hex[:6]}"
             )
-        wt_path = original_root / ".claude" / "worktrees" / raw_name
+        # B-235: write to <repo>/.xmworktrees/<name>/ instead of
+        # <repo>/.claude/worktrees/<name>/.
+        wt_path = original_root / ".xmworktrees" / raw_name
         if wt_path.exists():
             return _fail(
                 call, t0,
@@ -2831,15 +2858,19 @@ class BuiltinTools(ToolProvider):
         if state.primary is None:
             return _fail(call, t0, "no primary workspace registered")
         wt_path = state.primary.path
-        # Worktree directory must live under .claude/worktrees/. This is
-        # the cheap heuristic that prevents an accidental
+        # B-235: worktree directory must live under .xmworktrees/ (new
+        # default) OR .claude/worktrees/ (legacy, back-compat). The
+        # check is the cheap heuristic that prevents an accidental
         # ``exit_worktree`` from wiping the user's main checkout.
-        wt_str = str(wt_path).replace("\\", "/")
-        if "/.claude/worktrees/" not in wt_str + "/":
+        wt_str = str(wt_path).replace("\\", "/") + "/"
+        _under_xm = "/.xmworktrees/" in wt_str
+        _under_legacy = "/.claude/worktrees/" in wt_str
+        if not (_under_xm or _under_legacy):
             return _fail(
                 call, t0,
                 "current primary is not a worktree under "
-                ".claude/worktrees/ — refusing to act",
+                ".xmworktrees/ (or legacy .claude/worktrees/) — "
+                "refusing to act",
             )
 
         # Look up the origin we recorded on enter. Fall back to git's
@@ -2856,12 +2887,20 @@ class BuiltinTools(ToolProvider):
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
             if origin is None:
-                # Walk up: a worktree under <repo>/.claude/worktrees/<name>
-                # has the original repo at <repo>.
-                # parents: name → worktrees → .claude → repo
-                if len(wt_path.parts) >= 4 and wt_path.parts[-3:] == (
-                    ".claude", "worktrees", wt_path.name,
-                ) or wt_path.parents[1].name == "worktrees":
+                # B-235: walk up to recover origin repo.
+                # New layout: <repo>/.xmworktrees/<name> → parents
+                #   [0]=.xmworktrees, [1]=<repo>; origin = parents[1]
+                # Legacy:    <repo>/.claude/worktrees/<name> → parents
+                #   [0]=worktrees, [1]=.claude, [2]=<repo>; origin = parents[2]
+                _parts = wt_path.parts
+                if len(_parts) >= 3 and _parts[-2] == ".xmworktrees":
+                    origin = wt_path.parents[1]
+                elif len(_parts) >= 4 and _parts[-3:-1] == (
+                    ".claude", "worktrees",
+                ):
+                    origin = wt_path.parents[2]
+                elif wt_path.parents[1].name == "worktrees":
+                    # Defensive fallback for unusual layouts.
                     origin = wt_path.parents[2]
         if origin is None or not origin.exists():
             return _fail(
