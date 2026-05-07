@@ -1,0 +1,77 @@
+{
+  "arms_before": 2,
+  "arms_after": 2,
+  "total_elapsed_s": 192.8899643421173,
+  "buckets": {
+    "C — 复杂多步任务": [
+      {
+        "prompt": "看一下 README.md 写得怎么样,提 3 条改进建议",
+        "elapsed_s": 90.0,
+        "tool_count": 3,
+        "tools": [
+          "file_read",
+          "glob_files",
+          "file_read"
+        ],
+        "browse_calls": [],
+        "browse_results": [],
+        "skills_invoked": [],
+        "grader_scores": [
+          0.32,
+          0.8,
+          0.8
+        ],
+        "grader_n": 3,
+        "grader_avg": 0.64,
+        "grader_skill_ids": [],
+        "response_chars": 579,
+        "response_excerpt": "哥，README.md 写得挺全的，信息密度很高。三条改进建议：  **1. \"What's different\" 表格太宽，阅读负担重** 第一列的 feature name 和第二列的 description 挤在一张表里，导致每行都是大段文字。建议把表格拆成 `###` 小标题 + 段落，或者至少给每行加个 emoji/icon 做视觉锚点，让人扫一眼就能定位到感兴趣的点。  **2. Qu",
+        "scenario": "complex_review",
+        "session_id": "b299-probe-581220-complex_review-48581220"
+      },
+      {
+        "prompt": "检查 xmclaw/skills/ 下面有没有 import 方向违规",
+        "elapsed_s": 90.0,
+        "tool_count": 12,
+        "tools": [
+          "grep_files",
+          "list_dir",
+          "glob_files",
+          "grep_files",
+          "list_dir",
+          "file_read",
+          "file_read",
+          "file_read",
+          "file_read",
+          "file_read",
+          "file_read",
+          "file_read"
+        ],
+        "browse_calls": [],
+        "browse_results": [],
+        "skills_invoked": [],
+        "grader_scores": [
+          0.8,
+          0.8,
+          0.8,
+          0.8,
+          0.8,
+          0.8,
+          0.8,
+          0.8,
+          0.8,
+          0.8,
+          0.8,
+          0.8
+        ],
+        "grader_n": 12,
+        "grader_avg": 0.8,
+        "grader_skill_ids": [],
+        "response_chars": 187,
+        "response_excerpt": "好，找到了所有 import。现在分析违规方向。  **\"import 方向违规\"** 通常指： 1. **下层 import 上层**（如 skills 层 import core 层以上的东西） 2. **同级循环 import**（A import B，B import A） 3. **跨层反向依赖**（如底层 import 业务层）  让我先看下项目整体架构分层：",
+        "scenario": "complex_audit",
+        "session_id": "b299-probe-581220-complex_audit-48682091"
+      }
+    ]
+  }
+}

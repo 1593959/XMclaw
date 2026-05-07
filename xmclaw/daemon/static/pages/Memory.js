@@ -20,8 +20,8 @@ const html = window.__xmc.htm.bind(h);
 import { apiGet } from "../lib/api.js";
 import { toast } from "../lib/toast.js";
 import { confirmDialog } from "../lib/dialog.js";
-import { NotesTab, JournalTab } from "./Memory-NotesJournal.js";
-import { IdentityTab } from "./Memory-Identity.js";
+import { NotesTab, JournalTab } from "./_panels/memory_notes_journal.js";
+import { IdentityTab } from "./_panels/memory_identity.js";
 
 // ── shared ────────────────────────────────────────────────────────────
 
@@ -741,12 +741,11 @@ function ProvidersTab({ token }) {
   `;
 }
 
-// IdentityTab moved to ./Memory-Identity.js (B-52)
-
-
-
-// NotesTab + JournalTab live in ./Memory-NotesJournal.js (split out
-// in B-49 to keep this file under the 500-line UI scaffold budget).
+// IdentityTab + NotesTab + JournalTab live in ./_panels/ subtree —
+// renamed from Memory-Identity.js / Memory-NotesJournal.js (B-308) to
+// make it clear these are sub-panels of MemoryPage, not top-level
+// routable pages. The original B-49 + B-52 splits keep individual
+// files under the 500-line scaffold budget.
 
 // ── shell ─────────────────────────────────────────────────────────────
 

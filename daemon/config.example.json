@@ -1,8 +1,7 @@
 {
   "_comment": "XMclaw Daemon Configuration — copy to config.json and fill in your API keys",
   "llm": {
-    "_comment": "default_provider + openai/anthropic blocks define the 'default' profile that the daemon picks when a chat session doesn't specify one. profiles[] adds named alternatives — chat header dropdown lets the user route each session through one of them. Add as many as needed; restart the daemon after editing.",
-    "default_provider": "anthropic",
+    "_comment": "openai/anthropic blocks define the 'default' profile (id='default') the daemon picks when a chat session doesn't specify one. The first block with an api_key wins (anthropic preferred, then openai). profiles[] adds named alternatives — chat header dropdown lets the user route each session through one of them. Restart the daemon after editing. ('default_provider' field was removed B-304: factory.py auto-detects from filled api_keys; setting it had no effect since B-146.)",
     "openai": {
       "api_key": "",
       "base_url": "https://api.openai.com/v1",
@@ -76,7 +75,9 @@
     "_comment": "Epic #3: which SkillRuntime executes forked skills. 'local' = in-process asyncio task + CPU-timeout; good for dev + conformance tests. 'process' = separate OS process via multiprocessing.spawn; real SIGKILL + import isolation + crash containment; fs/net/memory are still advisory (see providers/runtime/process.py). Default is 'local'; production should set 'process'.",
     "backend": "local"
   },
+  "_consumer_note": "B-304 sections below ('backup', 'mcp_servers', 'channels', 'integrations', 'gateway') are read by daemon lifespan + adapter loaders, NOT by xmclaw/daemon/factory.py. Keys here are descriptive; real validation happens in the consuming subsystem at startup. Daemon restart required for any of these.",
   "gateway": {
+    "_consumer": "lifespan (uvicorn host/port binding); also where the daemon picks --port if --port flag not passed (B-305).",
     "host": "127.0.0.1",
     "port": 8765
   },
@@ -101,14 +102,18 @@
     }
   },
   "backup": {
+    "_consumer": "lifespan (BackupSchedulerTask); not in factory.py.",
     "_comment": "Epic #20 Phase 2: daemon runs a daily workspace backup when auto_daily=true. Prefix-scoped prune keeps only the newest `keep` auto backups (manual `xmclaw backup create <name>` entries are never touched). Disabled by default — the daemon stays cost-free for users who don't opt in. interval_s is the wait between backups in seconds (86400 = 24h).",
     "auto_daily": false,
     "interval_s": 86400,
     "keep": 7,
     "name_prefix": "auto-"
   },
-  "mcp_servers": {},
+  "mcp_servers": {
+    "_consumer": "lifespan (MCP registry); not in factory.py. On Windows: requires `npx` on PATH for official @modelcontextprotocol/server-* packages — install Node.js first."
+  },
   "channels": {
+    "_consumer": "lifespan (ChannelDispatcher + per-channel adapter); not in factory.py. Currently READY: feishu + ws (internal). Scaffolds (DingTalk/WeCom/WeChat/Telegram) accept config but their adapter modules don't exist yet — daemon logs `adapter.start_failed` and skips.",
     "_comment": "B-145 双向聊天接入。enabled=true 后 daemon 启动时拉起 adapter，在群里 @机器人 即可对话。Tools 集成 (integrations.feishu) 是出站通知，channels 是双向对话。",
     "feishu": {
       "enabled": false,
@@ -120,6 +125,7 @@
     }
   },
   "integrations": {
+    "_consumer": "lifespan (BuiltinTools.integrations.py wires *_send tools); not in factory.py. These are OUTBOUND-only (agent tools to send notifications); for INBOUND chat use 'channels' section.",
     "slack":    { "enabled": false, "bot_token": "", "app_token": "", "channel": "" },
     "discord":  { "enabled": false, "bot_token": "", "channel_id": "" },
     "telegram": { "enabled": false, "bot_token": "", "chat_id": "" },

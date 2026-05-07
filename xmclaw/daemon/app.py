@@ -246,11 +246,11 @@ async def _run_session_reflection(
             extra={"session_id": session_id, "err": str(exc)},
         )
 
-    # Epic #24 Phase 1: removed B-19's "real-time evolution" trigger
-    # (was firing xm-auto-evo's observe→learn→evolve cycle on every
-    # session close). Phase 2 will replace this with the JournalWriter
-    # + UserProfileExtractor pair, which run on the same on_session_end
-    # signal but write through the HonestGrader-gated path.
+    # Real-time evolution now flows through JournalWriter +
+    # ProfileExtractor + RealtimeEvolutionTrigger (post-LLM_RESPONSE
+    # debounced) — all event-driven via the bus, all gated by
+    # HonestGrader. This anonymous reflection task focuses purely on
+    # session-end memory curation.
 
     # B-28 on_session_end hook: fan out to every memory provider so
     # they can do end-of-session fact extraction / summarisation.
@@ -386,13 +386,30 @@ def create_app(
     # the primary AgentLoop's run_turn to execute the job's prompt.
     cron_tick = None
 
-    # Epic #24 Phase 1: 删除了 xm-auto-evo (Node.js) 子系统及其 DialogExporter
-    # / AutoEvoProcess / `/api/v2/auto_evo` 路由。原因：和 `xmclaw/core/grader/`
-    # 的 HonestGrader 体系并行存在，且 auto-evo 路径**完全没有诚实性把关**，
-    # 复刻了 Hermes "agent 总以为自己干得不错"的核心失败模式。重做后唯一的
-    # 进化路径走 grader → scheduler → controller → orchestrator，所有 SKILL
-    # 提案都过 evidence-gated promote。详情见 Epic #24 / plan
-    # `~/.claude/plans/elegant-greeting-hippo.md`。
+    # 进化路径设计原则: 所有 skill 提案都必须过 HonestGrader 的
+    # 0.80 hard-evidence 评分 (ran/returned/type_matched/side_effect)
+    # + 0.20 LLM cap, 然后通过 EvolutionAgent → controller →
+    # orchestrator → SkillRegistry.promote(evidence=...) 的链路落地.
+    # anti-req #12 在 registry 门口强制 evidence 非空, 杜绝 "agent
+    # 总以为自己干得不错" 的失败模式。
+
+    # B-309: events.db retention. Deletes events older than N days
+    # daily + runs incremental vacuum so the file doesn't grow
+    # monotonically. Skipped when bus doesn't support prune (echo
+    # mode or non-Sqlite bus).
+    events_retention_task = None
+    try:
+        from xmclaw.daemon.events_retention import EventsRetentionTask
+        _retention_cfg = (config or {}).get("events_retention", {}) or {}
+        events_retention_task = EventsRetentionTask(
+            bus,
+            max_age_days=float(_retention_cfg.get("max_age_days", 30.0)),
+            interval_hours=float(_retention_cfg.get("interval_hours", 24.0)),
+            enabled=bool(_retention_cfg.get("enabled", True)),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("events_retention.build_failed err=%s", exc)
+        events_retention_task = None
 
     @asynccontextmanager
     async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -401,6 +418,11 @@ def create_app(
             await sweep_task.start()
         if backup_scheduler is not None:
             await backup_scheduler.start()
+        if events_retention_task is not None:
+            try:
+                await events_retention_task.start()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("events_retention.start_failed err=%s", exc)
 
         # Cron tick: only start once the primary agent is live; without
         # it run_turn would have nowhere to land. Wraps a per-tick
@@ -618,6 +640,105 @@ def create_app(
                 )
                 await cw.start()
                 _app.state.config_watcher = cw
+
+                # B-314: live-apply runtime-only config slices on
+                # CONFIG_RELOADED. Pre-B-314 the watcher published the
+                # event but no subscriber existed for the runtime
+                # sections (tools.allowed_dirs, security.guardians.*,
+                # logging.level), so users had to restart the daemon
+                # for ANY config change. Now: tools/security/logging
+                # take effect within ~5s of the file save.
+                async def _on_config_reloaded(ev: Any) -> None:
+                    payload = getattr(ev, "payload", {}) or {}
+                    top_changed = set(payload.get("top_changed") or [])
+                    # logging level — immediate
+                    if "logging" in top_changed:
+                        try:
+                            from xmclaw.utils.log import set_log_level
+                            level_str = (
+                                (config.get("logging") or {}).get("level")
+                            )
+                            set_log_level(level_str)
+                            log.info("config_reloaded.logging applied")
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning(
+                                "config_reloaded.logging_failed err=%s", exc,
+                            )
+                    # tools.allowed_dirs — push to BuiltinTools if
+                    # present in the agent's tool stack
+                    if "tools" in top_changed and agent is not None:
+                        try:
+                            new_dirs = (
+                                (config.get("tools") or {}).get("allowed_dirs")
+                            )
+                            if new_dirs is not None:
+                                from xmclaw.providers.tool.builtin import (
+                                    BuiltinTools,
+                                )
+                                # Walk composite tree to find BuiltinTools.
+                                def _walk(p):
+                                    yield p
+                                    kids = (
+                                        getattr(p, "children", None)
+                                        or getattr(p, "_children", None)
+                                        or []
+                                    )
+                                    for k in kids:
+                                        yield from _walk(k)
+                                for node in _walk(getattr(agent, "_tools", None)):
+                                    if isinstance(node, BuiltinTools):
+                                        try:
+                                            node._allowed_dirs = list(new_dirs)
+                                            log.info(
+                                                "config_reloaded.tools.allowed_dirs "
+                                                "applied count=%d",
+                                                len(new_dirs),
+                                            )
+                                        except Exception:  # noqa: BLE001
+                                            pass
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning(
+                                "config_reloaded.tools_failed err=%s", exc,
+                            )
+                    # security.guardians.policy — push to GuardedToolProvider
+                    if "security" in top_changed:
+                        try:
+                            from xmclaw.providers.tool.guarded import (
+                                GuardedToolProvider,
+                            )
+                            new_policy = (
+                                ((config.get("security") or {})
+                                 .get("guardians") or {}).get("policy")
+                            )
+                            if new_policy is not None and agent is not None:
+                                def _walk(p):
+                                    yield p
+                                    kids = (
+                                        getattr(p, "children", None)
+                                        or getattr(p, "_children", None)
+                                        or []
+                                    )
+                                    for k in kids:
+                                        yield from _walk(k)
+                                for node in _walk(getattr(agent, "_tools", None)):
+                                    if isinstance(node, GuardedToolProvider):
+                                        try:
+                                            node._policy_dict = dict(new_policy)
+                                            log.info(
+                                                "config_reloaded.security."
+                                                "guardians applied",
+                                            )
+                                        except Exception:  # noqa: BLE001
+                                            pass
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning(
+                                "config_reloaded.security_failed err=%s", exc,
+                            )
+
+                bus.subscribe(
+                    lambda e: e.type == EventType.CONFIG_RELOADED,
+                    _on_config_reloaded,
+                )
         except Exception as exc:  # noqa: BLE001 — best-effort
             from xmclaw.utils.log import get_logger
             get_logger(__name__).warning(
@@ -1232,6 +1353,11 @@ def create_app(
                     await backup_scheduler.stop()
                 except Exception:  # noqa: BLE001
                     pass
+            if events_retention_task is not None:
+                try:
+                    await events_retention_task.stop()
+                except Exception:  # noqa: BLE001
+                    pass
             if cron_tick is not None:
                 try:
                     await cron_tick.stop()
@@ -1423,9 +1549,9 @@ def create_app(
     from xmclaw.daemon.routers import workspaces as _workspaces_router
     from xmclaw.daemon.routers import journal as _journal_router
     from xmclaw.daemon.routers import system as _system_router
-    # Epic #24 Phase 1: removed `routers.auto_evo` along with the rest of
-    # xm-auto-evo. `/api/v2/skills` (already mounted below) is the
-    # canonical surface for skill listing / promote / rollback now.
+    # ``/api/v2/skills`` is the canonical surface for skill listing +
+    # promote/rollback; ``/api/v2/evolution/snapshot`` (B-301) for
+    # the live in-memory chain status. No legacy routers.
     from xmclaw.daemon.routers import backup as _backup_router  # B-103
     from xmclaw.daemon.routers import secrets as _secrets_router  # B-104
     from xmclaw.daemon.routers import channels as _channels_router  # B-147
@@ -1542,22 +1668,14 @@ def create_app(
             IntegrationsTools((config or {}).get("integrations")),
         )
 
-        # B-124 + Epic #24: bridge SkillRegistry HEAD entries into the
-        # tool surface. After Epic #24 ripped out the xm-auto-evo
-        # SKILL.md path, this is the **only** way a skill becomes
-        # callable by the LLM — and every version exposed here passed
-        # through evidence-gated promote (anti-req #12).
+        # B-124: bridge SkillRegistry HEAD entries into the tool surface.
+        # SkillToolProvider is the **only** way a skill becomes callable
+        # by the LLM — every version exposed here passed through
+        # evidence-gated promote() (anti-req #12 enforced at registry).
         if orchestrator is not None:
             from xmclaw.skills.tool_bridge import SkillToolProvider
             _skill_tools = SkillToolProvider(orchestrator.registry)
             agent._tools = CompositeToolProvider(agent._tools, _skill_tools)
-
-        # Epic #24 Phase 1: removed B-125's LearnedSkillToolProvider
-        # bridge. `~/.xmclaw/auto_evo/skills/<auto>/SKILL.md` were
-        # produced by the now-deleted xm-auto-evo Node subsystem with no
-        # honesty gate. Going forward all tool-callable skills come from
-        # `SkillToolProvider(orchestrator.registry)` above, which only
-        # exposes versions that passed evidence-gated promote.
 
     app.state.agent = agent
     # Module-level handle so factory-time callbacks (the persona

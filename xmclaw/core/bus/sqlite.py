@@ -26,6 +26,7 @@ import asyncio
 import json
 import sqlite3
 import threading
+import time
 from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -187,6 +188,19 @@ class SqliteEventBus(InProcessEventBus):
         c.execute("PRAGMA journal_mode=WAL;")
         c.execute("PRAGMA synchronous=NORMAL;")
         c.execute("PRAGMA foreign_keys=ON;")
+        # B-309: incremental auto_vacuum so prune() actually reclaims
+        # disk space. Without this, deleting old rows just marks
+        # pages free; the file size stays monotonic until a manual
+        # full VACUUM (which is expensive + locks). With INCREMENTAL,
+        # ``prune_older_than()`` can free space in chunks (cheap +
+        # non-blocking).
+        # NOTE: ``PRAGMA auto_vacuum`` is only honored on a brand-new
+        # database (before the first table is created). For existing
+        # databases this is a no-op; switching them requires
+        # ``VACUUM;`` which we explicitly invoke from
+        # ``vacuum_full()``. The PRAGMA here makes future fresh
+        # databases auto-vacuum-ready.
+        c.execute("PRAGMA auto_vacuum=INCREMENTAL;")
 
     def _run_migrations(self) -> None:
         cur = self._conn.execute("PRAGMA user_version;")
@@ -213,6 +227,51 @@ class SqliteEventBus(InProcessEventBus):
             self._conn.close()
         except sqlite3.Error:
             pass
+
+    # ---- retention / vacuum (B-309) -------------------------------------- #
+
+    def prune_older_than(self, max_age_seconds: float) -> int:
+        """Delete events older than ``max_age_seconds`` and run an
+        incremental vacuum to reclaim disk space.
+
+        Returns the number of rows deleted. Safe to call concurrently
+        with publish() — uses BEGIN IMMEDIATE for the delete batch +
+        a separate connection-level pragma for the vacuum step. The
+        FTS5 trigger keeps the search index in sync automatically.
+
+        Default policy (called from a daily cron in lifespan): drop
+        events older than 30 days. Operators can tune via
+        ``cfg.events_retention.max_age_days``.
+        """
+        if max_age_seconds <= 0:
+            return 0
+        cutoff = time.time() - max_age_seconds
+        with self._txn():
+            cur = self._conn.execute(
+                "DELETE FROM events WHERE ts < ?;", (cutoff,),
+            )
+            deleted = cur.rowcount
+        if deleted > 0:
+            try:
+                # Reclaim freed pages (auto_vacuum=INCREMENTAL gives us
+                # non-blocking incremental vacuum; default chunk size).
+                self._conn.execute("PRAGMA incremental_vacuum;")
+            except sqlite3.Error:
+                # If auto_vacuum wasn't set on this legacy DB, the
+                # PRAGMA is a no-op (file stays the same size). The
+                # delete still drops rows from the index.
+                pass
+        return deleted
+
+    def vacuum_full(self) -> None:
+        """One-shot full VACUUM — only run from doctor --fix or
+        manual maintenance. Locks the database for the duration; OK
+        on a stopped daemon, not OK while live writers are active.
+        Use this once on legacy databases (created before
+        auto_vacuum=INCREMENTAL was added) to convert them.
+        """
+        # Cannot run inside a transaction.
+        self._conn.execute("VACUUM;")
 
     # ---- write path ------------------------------------------------------ #
 

@@ -258,12 +258,15 @@ class TestGuardedProviderI18n:
         self, rule_engine: ToolGuardEngine, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """``NEEDS_APPROVAL:<id>`` is a protocol marker, not user copy.
-        agent_loop dispatches on this prefix — locale must not touch it."""
+        agent_loop dispatches on this prefix — locale must not touch it.
+        B-306: ``rm -rf /`` now CRITICAL (DENY, no approval); use
+        non-root path so we still hit HIGH (APPROVE).
+        """
         provider = GuardedToolProvider(DummyProvider(), rule_engine)
         call = ToolCall(
             id="c1",
             name="execute_shell_command",
-            args={"command": "rm -rf /"},
+            args={"command": "rm -rf /home/user/old_project"},
             provenance="synthetic",
         )
         for lang in ("en", "zh"):

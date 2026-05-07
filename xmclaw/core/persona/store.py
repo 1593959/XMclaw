@@ -78,14 +78,21 @@ _log = logging.getLogger(__name__)
 # metadata.bucket. None entries (e.g. SOUL.md) mean "manual only — no
 # auto append".
 AUTO_SECTIONS: dict[str, tuple[str, str, str | None] | None] = {
-    "SOUL.md":      None,
     "IDENTITY.md":  None,
-    "LEARNING.md":  None,
     "BOOTSTRAP.md": None,
     "USER.md":      ("## Auto-extracted preferences", "preference", None),
     "MEMORY.md":    ("## Failure Modes",              "lesson",     "failure_modes"),
     "AGENTS.md":    ("## Auto-extracted",             "lesson",     "workflow"),
     "TOOLS.md":     ("## Auto-extracted",             "lesson",     "tool_quirks"),
+    # B-303: previously SOUL.md / LEARNING.md were "manual only — no
+    # auto append" because the legacy ExtractLessonsHook only routed
+    # workflow / tool_quirks / failure_modes. Empirical: 4-of-7 persona
+    # files sat permanently empty for that reason. ExtractLessonsHook
+    # in B-303 added "values" + "rules" buckets that target these
+    # files; this mapping closes the write path so the hook actually
+    # lands its output instead of silently dropping it.
+    "SOUL.md":      ("## Auto-extracted",             "lesson",     "values"),
+    "LEARNING.md":  ("## Auto-extracted",             "lesson",     "rules"),
 }
 
 # Marker used on persona_manual rows so the migration / lookup queries

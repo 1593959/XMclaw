@@ -175,12 +175,17 @@ async def test_extract_malformed_llm_response_no_write(tmp_path: Path) -> None:
 
 def _lessons_payload(
     *, workflow=None, tool_quirks=None, failure_modes=None,
+    values=None, rules=None,
 ) -> str:
     import json
     return json.dumps({
         "workflow": workflow or [],
         "tool_quirks": tool_quirks or [],
         "failure_modes": failure_modes or [],
+        # B-303: extended buckets — empty by default keeps existing
+        # tests valid (they don't pass values/rules so they stay []).
+        "values": values or [],
+        "rules": rules or [],
     })
 
 

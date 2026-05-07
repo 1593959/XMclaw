@@ -18,9 +18,10 @@ like any other.
 The wrapper is intentionally tiny: it does NOT try to interpret the
 procedure. The agent reads the body as instructions and executes them
 using its existing tools (file_read / bash / etc.) on its next turn.
-This is the same execution model the deleted xm-auto-evo path used —
-just without the multi-root scanning, the ungated "auto-promote"
-behaviour, and the silent-fail when files landed in the wrong dir.
+Auto-promote is gated through evidence-based ``SkillRegistry.promote()``
+(anti-req #12) — no path goes from "agent wrote a SKILL.md" to "agent
+runs it next turn" without passing through the grader-driven
+controller decision.
 """
 from __future__ import annotations
 

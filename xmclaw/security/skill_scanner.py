@@ -23,8 +23,9 @@ The scanner runs two layers over a skill's Python source:
   ``telnetlib``.  These are intentionally narrow — false positives
   here block real work.
 
-Pure library: no daemon state, no bus, no network.  CLI (`xmclaw
-security scan`) and SkillForge both call it the same way.
+Pure library: no daemon state, no bus, no network.  Callers today:
+``xmclaw security scan`` (CLI) and ``ProposalMaterializer`` (when
+gating SKILL.md drafts before registry insert).
 """
 from __future__ import annotations
 

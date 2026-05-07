@@ -412,7 +412,43 @@ class AgentInterTools(ToolProvider):
         record.status = "running"
         try:
             await loop.run_turn(record.session_id, record.content)
-            record.reply = _extract_last_assistant(loop, record.session_id)
+            raw_reply = _extract_last_assistant(loop, record.session_id)
+            # B-307: parity with chat_with_agent's B-273 scan. The
+            # earlier behaviour scanned only the synchronous
+            # chat_with_agent reply; submit_to_agent's async result
+            # bypassed the scanner and, when the caller polled it via
+            # check_agent_task, an injected reply landed in history
+            # unfiltered. Apply the same policy here so both paths are
+            # symmetric.
+            try:
+                from xmclaw.security import (
+                    PolicyMode,
+                    SOURCE_SUB_AGENT,
+                    apply_policy,
+                )
+                policy = getattr(
+                    loop, "_injection_policy", PolicyMode.DETECT_ONLY,
+                )
+                decision = apply_policy(
+                    raw_reply,
+                    policy=policy,
+                    source=SOURCE_SUB_AGENT,
+                    extra={
+                        "caller": self._resolve_caller_id(),
+                        "callee": record.agent_id,
+                        "task_id": record.task_id,
+                        "async": True,
+                    },
+                )
+                if decision.blocked:
+                    record.reply = (
+                        "[B-307 sub-agent reply blocked by prompt-injection "
+                        "policy — see PROMPT_INJECTION_DETECTED event]"
+                    )
+                else:
+                    record.reply = decision.content
+            except Exception:  # noqa: BLE001 — never block result on scanner failure
+                record.reply = raw_reply
             record.status = "done"
         except Exception as exc:  # noqa: BLE001 — must land in record, not crash daemon
             record.error = f"{type(exc).__name__}: {exc}"

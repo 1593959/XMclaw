@@ -22,7 +22,7 @@ import { Badge } from "../components/atoms/badge.js";
 import { apiGet, apiPut } from "../lib/api.js";
 import { confirmDialog } from "../lib/dialog.js";
 import { toast } from "../lib/toast.js";
-import { AudioSection } from "./Settings-audio.js";
+import { AudioSection } from "./_panels/settings_audio.js";
 import { PROVIDER_PRESETS, findPreset, presetIdFromProfile } from "../lib/model_presets.js";
 
 async function postJson(path, token, body) {

@@ -54,12 +54,35 @@ class EventType(str, Enum):
     TOOL_CALL_EMITTED = "tool_call_emitted"
     TOOL_INVOCATION_STARTED = "tool_invocation_started"
     TOOL_INVOCATION_FINISHED = "tool_invocation_finished"
+    # NOTE: SKILL_EXEC_STARTED / SKILL_EXEC_FINISHED have no current
+    # publishers (legacy from a removed sandboxed-runtime path). Skill
+    # execution today uses TOOL_INVOCATION_STARTED / TOOL_INVOCATION_FINISHED
+    # with name="skill_<id>". Kept in the enum to avoid breaking the
+    # frontend reducer's case map; clean up when the frontend stops
+    # listening.
     SKILL_EXEC_STARTED = "skill_exec_started"
     SKILL_EXEC_FINISHED = "skill_exec_finished"
     GRADER_VERDICT = "grader_verdict"
     COST_TICK = "cost_tick"
     SESSION_LIFECYCLE = "session_lifecycle"
+    # SKILL_CANDIDATE_PROPOSED carries 3 different semantics distinguished
+    # by ``payload.decision``:
+    #   "propose"  → a NEW skill draft (from SkillDreamCycle / SkillProposer)
+    #   "promote"  → upgrade an existing skill version (from EvolutionAgent
+    #                 + MutationOrchestrator after evidence threshold cleared)
+    #   "rollback" → revert to an older version (from EvolutionAgent on
+    #                 controller verdict)
+    # The 3 semantics are operationally different but historically share
+    # one event type. B-318 added 3 explicit aliases (DRAFTED /
+    # PROMOTION_RECOMMENDED / ROLLBACK_RECOMMENDED) for code that wants
+    # to subscribe to one specific path without payload-discriminating.
+    # The old name keeps emitting for backwards compatibility with the
+    # frontend reducer + ProposalMaterializer + EvolutionOrchestrator;
+    # new emitters can ALSO publish the specific alias.
     SKILL_CANDIDATE_PROPOSED = "skill_candidate_proposed"
+    SKILL_DRAFTED = "skill_drafted"  # B-318: alias for decision="propose"
+    SKILL_PROMOTION_RECOMMENDED = "skill_promotion_recommended"  # B-318
+    SKILL_ROLLBACK_RECOMMENDED = "skill_rollback_recommended"  # B-318
     SKILL_PROMOTED = "skill_promoted"
     SKILL_ROLLED_BACK = "skill_rolled_back"
     ANTI_REQ_VIOLATION = "anti_req_violation"
@@ -98,23 +121,16 @@ class EventType(str, Enum):
     # Surfaced in the Trace page so users can see memory-layer activity.
     MEMORY_OP = "memory_op"
 
-    # B-29: emitted heuristically when the agent appears to be acting
-    # on a learned SKILL.md (i.e. its reply mentions the skill's
-    # title or trigger keywords). Payload:
-    # {"skill_id": str, "trigger_match": str | None,
-    #  "session_id": str, "evidence": "title" | "trigger"}
-    # Used by the Evolution UI to show per-skill usage counts so
-    # auto_repair_v9 can be compared with v8 by real invocation rate.
+    # NOTE: SKILL_INVOKED / SKILL_OUTCOME have no current publishers.
+    # The original B-29/B-35 heuristic detection (matching agent text
+    # against skill titles/triggers) was removed when SkillToolProvider
+    # made skill execution deterministic — every skill_<id> tool call
+    # now produces TOOL_INVOCATION_STARTED + TOOL_INVOCATION_FINISHED +
+    # GRADER_VERDICT events with the proper skill_id stamp. Kept in
+    # the enum because the frontend reducer (chat_reducer.js) and
+    # Trace.js still register handlers; clean up when the frontend
+    # stops listening.
     SKILL_INVOKED = "skill_invoked"
-
-    # B-35: emitted alongside SKILL_INVOKED with a verdict for the
-    # whole turn the skill rode. Payload:
-    # {"skill_id": str, "session_id": str,
-    #  "verdict": "success" | "partial" | "error",
-    #  "hops": int, "tool_errors": int}
-    # Closes the evolution feedback loop: invocation count alone
-    # treats every fire as equal; the outcome lets the optimizer
-    # weight skills by whether they actually helped vs broke turns.
     SKILL_OUTCOME = "skill_outcome"
 
     # B-51: emitted when DreamCompactor successfully rewrites

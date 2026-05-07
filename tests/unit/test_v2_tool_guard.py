@@ -47,7 +47,9 @@ class TestToolGuardEngine:
         ])
         result = engine.guard("execute_shell_command", {"command": "rm -rf /"})
         assert not result.is_safe
-        assert result.max_severity == GuardSeverity.HIGH
+        # B-306: rm -rf at filesystem root is CRITICAL (was HIGH).
+        # Irreversible data loss; agent never has legitimate need.
+        assert result.max_severity == GuardSeverity.CRITICAL
 
 
 # ---------------------------------------------------------------------------
@@ -207,11 +209,13 @@ class TestGuardedToolProvider:
 
     @pytest.mark.anyio
     async def test_needs_approval_high_finding(self, inner, engine):
+        # B-306: ``rm -rf /`` is now CRITICAL (DENY); use a non-root
+        # path to still trigger the HIGH-severity broad rm rule.
         provider = GuardedToolProvider(inner, engine)
         call = ToolCall(
             id="c1",
             name="execute_shell_command",
-            args={"command": "rm -rf /"},
+            args={"command": "rm -rf /home/user/old_project"},
             provenance="synthetic",
         )
         result = await provider.invoke(call)

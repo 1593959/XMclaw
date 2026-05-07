@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -55,12 +56,48 @@ def _scrub_secrets(logger: Any, method_name: str, event_dict: dict[str, Any]) ->
     return event_dict
 
 
-def setup_logging() -> structlog.stdlib.BoundLogger:
+_VALID_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+
+
+def _resolve_log_level(cfg_level: str | None = None) -> int:
+    """B-311: log level resolution priority.
+
+    1. ``XMC_LOG_LEVEL`` env var (highest — debug knob for shell sessions)
+    2. ``cfg_level`` argument (from config.json ``logging.level``)
+    3. ``INFO`` (default)
+
+    Accepts case-insensitive strings: DEBUG / INFO / WARNING / ERROR /
+    CRITICAL. Unknown values fall back to INFO with a one-line stderr
+    note (don't crash daemon over a typo).
+    """
+    candidates = [
+        os.environ.get("XMC_LOG_LEVEL"),
+        cfg_level,
+    ]
+    for raw in candidates:
+        if not raw:
+            continue
+        norm = str(raw).strip().upper()
+        if norm in _VALID_LEVELS:
+            return getattr(logging, norm)
+        sys.stderr.write(
+            f"[xmclaw.log] WARNING: ignoring invalid log level "
+            f"{raw!r} (expected one of {sorted(_VALID_LEVELS)})\n",
+        )
+    return logging.INFO
+
+
+def setup_logging(cfg_level: str | None = None) -> structlog.stdlib.BoundLogger:
     """Idempotent structlog + stdlib-logging configuration.
 
     Returns the root bound logger. Calling a second time is a no-op — we
     don't want a test that touches logging to keep stacking handlers onto
     the root logger.
+
+    B-311: ``cfg_level`` (optional) reads ``logging.level`` from
+    config.json. Override priority: ``XMC_LOG_LEVEL`` env > cfg_level
+    > INFO. Idempotent on the level too — a second setup_logging call
+    won't change level (call site picks the level once at boot).
     """
     global _CONFIGURED
     if _CONFIGURED:
@@ -73,7 +110,7 @@ def setup_logging() -> structlog.stdlib.BoundLogger:
     # Wipe any handlers a previous (mis)configuration may have left; we own
     # the file + stream handlers here and want exactly one of each.
     root.handlers.clear()
-    root.setLevel(logging.INFO)
+    root.setLevel(_resolve_log_level(cfg_level))
     root.addHandler(
         RotatingFileHandler(
             log_dir / "xmclaw.log",
@@ -110,6 +147,16 @@ def setup_logging() -> structlog.stdlib.BoundLogger:
 
     _CONFIGURED = True
     return structlog.get_logger()
+
+
+def set_log_level(cfg_level: str | None = None) -> None:
+    """B-311: live-adjust the root logger level.
+
+    Use after ``setup_logging()`` once config.json is parsed. Safe to
+    call multiple times; just sets ``logging.getLogger().level``. Does
+    NOT touch handlers or processors.
+    """
+    logging.getLogger().setLevel(_resolve_log_level(cfg_level))
 
 
 def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:

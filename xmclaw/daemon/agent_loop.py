@@ -870,11 +870,6 @@ _TOKEN_EN_RE = re.compile(r"[A-Za-z][A-Za-z_-]{4,29}")
 _TOKEN_CN_RE = re.compile(r"[一-鿿]{3,15}")
 
 
-# Epic #24 Phase 1: removed _extract_skill_keywords — was used only by
-# the now-deleted _detect_skill_invocations heuristic over xm-auto-evo
-# SKILL.md bodies.
-
-
 # (``re`` imported at top of module — module-level regex compiles
 # above need it loaded before the helper class bodies.)
 
@@ -892,11 +887,6 @@ _TOKEN_CN_RE = re.compile(r"[一-鿿]{3,15}")
 # Cache key: session_id. Bumped to invalidate all sessions when
 # persona writeback fires (the agent OR user just edited a persona
 # file → next turn must re-render).
-#
-# Epic #24 Phase 1: removed the learned_skills section that used to
-# be appended here from the now-deleted xm-auto-evo SKILL.md path.
-# Phase 2 will reintroduce a UserProfile injection block (走
-# HonestGrader-gated 路径，与已删的 system B 不同).
 
 _PROMPT_FREEZE_GENERATION = 0
 
@@ -939,9 +929,11 @@ def _with_fresh_time(system_prompt: str) -> str:
     )
 
     # Strip a prior "## 当前时刻" block (re-rendered fresh on every turn)
-    # and a "## 已学习的技能" block left over from the xm-auto-evo path
-    # we deleted in Epic #24 Phase 1 — the strip lets old persona files
-    # that still embed that header roundtrip cleanly.
+    # and a legacy "## 已学习的技能" block — that header lived in
+    # persona files when learned-skill markdown was injected into the
+    # prompt; today skills go through SkillToolProvider exclusively, so
+    # any residual header in user-edited persona files would just bloat
+    # the prompt without effect. Strip on the way in to roundtrip cleanly.
     for hdr in ("## 当前时刻", "## 已学习的技能（XMclaw 自主进化产出）"):
         if hdr in system_prompt:
             lines = system_prompt.split("\n")
@@ -960,10 +952,6 @@ def _with_fresh_time(system_prompt: str) -> str:
                 out.append(line)
             system_prompt = "\n".join(out).rstrip()
 
-    # Epic #24 Phase 1: removed B-17's learned-skills block injection
-    # (was reading from the now-deleted xm-auto-evo SKILL.md tree).
-    # Phase 2 will reintroduce a HonestGrader-gated UserProfile block
-    # that also rides on this path.
     return system_prompt + "\n\n" + block
 
 
@@ -1044,16 +1032,11 @@ class AgentLoop:
         # dropped messages here so the NEXT run_turn can do an async
         # LLM upgrade. Eliminates the sync→async bridge risk.
         self._pending_llm_compression: dict[str, dict[str, Any]] = {}
-        # Epic #24 Phase 1: removed _skill_last_fired / _skill_cooldown_s
-        # / _skill_consecutive_errors / _skill_auto_disable_threshold —
-        # the heuristic SKILL_INVOKED detection + auto-disable side
-        # channel they backed are gone with the xm-auto-evo path.
-        # Epic #24 Phase 1: HonestGrader runs on every
-        # tool_invocation_finished event before it gets persisted to
-        # history. The verdict is published as a paired GRADER_VERDICT
-        # event, which the EvolutionAgent observer subscribes to.
-        # Stateless / pure — keeping a single instance is purely an
-        # allocation optimization.
+        # HonestGrader runs on every tool_invocation_finished event
+        # before persistence. The verdict is published as a paired
+        # GRADER_VERDICT event consumed by EvolutionAgent observer.
+        # Stateless / pure — keeping a single instance is allocation
+        # optimization, nothing more.
         self._grader = HonestGrader()
         # B-38: per-session cancellation flag. WS handler sets this
         # via ``cancel_session`` when the user clicks Stop in Chat;
@@ -1320,14 +1303,13 @@ class AgentLoop:
         ev.set()
         return True
 
-    # Epic #24 Phase 1: removed _detect_skill_invocations() and
-    # _auto_disable_skill() — both were heuristic post-hoc analysis
-    # over the now-deleted xm-auto-evo SKILL.md tree (B-122 / B-32 /
-    # B-35 / B-36). Replacement in Phase 2 will be deterministic:
-    # SkillToolProvider already routes registered skills as real tool
-    # calls, so SKILL_INVOKED becomes the actual tool_invocation_started
-    # event for skill-bridged tools — no text-pattern matching, no
-    # cooldown hacks, no auto-disable side-channel.
+    # Skill invocation tracking is fully deterministic now:
+    # SkillToolProvider routes registered skills as real ToolCalls, so
+    # tool_invocation_started/finished events with name="skill_<id>"
+    # are the canonical signal. No text-pattern heuristics, no
+    # cooldowns, no post-hoc auto-disable — grader emits a verdict
+    # per call, EvolutionAgent aggregates per (skill_id, version),
+    # and the controller decides promotion.
 
     def _build_compression_summary(
         self, session_id: str, dropped: list[Message],
@@ -2590,6 +2572,17 @@ class AgentLoop:
                     prompt_tokens=response.prompt_tokens,
                     completion_tokens=response.completion_tokens,
                 )
+                # B-316: surface Anthropic prompt-cache stats on
+                # COST_TICK so the UI can show hit-rate (and so users
+                # see whether B-245 is actually saving them money).
+                # Falls back to 0 for OpenAI / Kimi / etc. (no cache
+                # support yet) — UI distinguishes via numeric > 0.
+                _cache_creation = int(getattr(
+                    response, "cache_creation_input_tokens", 0,
+                ) or 0)
+                _cache_read = int(getattr(
+                    response, "cache_read_input_tokens", 0,
+                ) or 0)
                 await publish(EventType.COST_TICK, {
                     "hop": hop,
                     "cost_usd": cost,
@@ -2602,6 +2595,9 @@ class AgentLoop:
                     "prompt_tokens": response.prompt_tokens,
                     "completion_tokens": response.completion_tokens,
                     "model": getattr(llm, "model", "") or "",
+                    # B-316: cache stats (Anthropic only; 0 elsewhere).
+                    "cache_creation_input_tokens": _cache_creation,
+                    "cache_read_input_tokens": _cache_read,
                 })
 
             # 3. If the model made tool calls, execute them and feed
@@ -2936,14 +2932,9 @@ class AgentLoop:
                 except Exception as exc:  # noqa: BLE001
                     _log_memory_failure(exc)
 
-            # B-29 SKILL invocation detection. Heuristic: a learned
-            # SKILL.md is "invoked" when the agent's final response or
-            # tool calls reference the skill's id, title, or trigger
-            # Epic #24 Phase 1: removed B-122/B-32/B-35/B-36's heuristic
-            # SKILL_INVOKED detection — was matching agent text against
-            # the now-deleted xm-auto-evo SKILL.md tree. Phase 2 will
-            # replace with deterministic SkillToolProvider invocation
-            # tracking (already-real tool calls become SKILL_INVOKED).
+            # Skill invocation tracking is fully deterministic via
+            # tool_invocation_started events (skill_<id> tools), no
+            # heuristic SKILL_INVOKED emission needed.
 
             return AgentTurnResult(
                 ok=True, text=response.content, hops=hop + 1,
@@ -2973,8 +2964,6 @@ class AgentLoop:
             "hops": self._max_hops,
             "tools_used": sorted({c.get("name", "?") for c in tool_calls_made}),
         })
-        # Epic #24 Phase 1: removed B-35's hop-limit SKILL_INVOKED
-        # emission (heuristic detection over xm-auto-evo skills, deleted).
         return AgentTurnResult(
             ok=False, text=truncation_text,
             hops=self._max_hops,

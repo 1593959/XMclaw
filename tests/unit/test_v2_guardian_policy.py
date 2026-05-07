@@ -145,13 +145,16 @@ class TestGuardedToolProviderPolicy:
 
     @pytest.mark.anyio
     async def test_tightened_policy_blocks_high(self, inner, engine):
-        """HIGH severity + policy HIGH=DENY → block instead of approval."""
+        """HIGH severity + policy HIGH=DENY → block instead of approval.
+        B-306: ``rm -rf /`` is now CRITICAL (irreversible root wipe);
+        use a non-root path so we still hit only the broad rm HIGH rule.
+        """
         policy = GuardianPolicy(high=GuardianAction.DENY)
         provider = GuardedToolProvider(inner, engine, policy=policy)
         call = ToolCall(
             id="c1",
             name="execute_shell_command",
-            args={"command": "rm -rf /"},
+            args={"command": "rm -rf /home/user/old_project"},
             provenance="synthetic",
         )
         result = await provider.invoke(call)
@@ -185,13 +188,16 @@ class TestGuardedToolProviderPolicy:
 
     @pytest.mark.anyio
     async def test_loosened_policy_allows_high(self, inner, engine):
-        """HIGH + policy HIGH=ALLOW → tool runs (dev-mode override)."""
+        """HIGH + policy HIGH=ALLOW → tool runs (dev-mode override).
+        B-306: ``rm -rf /`` is now CRITICAL; using non-root path here
+        so the test still exercises the HIGH path.
+        """
         policy = GuardianPolicy(high=GuardianAction.ALLOW)
         provider = GuardedToolProvider(inner, engine, policy=policy)
         call = ToolCall(
             id="c1",
             name="execute_shell_command",
-            args={"command": "rm -rf /"},
+            args={"command": "rm -rf /home/user/old_project"},
             provenance="synthetic",
         )
         result = await provider.invoke(call)
@@ -233,10 +239,12 @@ class TestGuardedToolProviderPolicy:
         assert critical_result.ok is False
         assert "CRITICAL" in critical_result.error
 
+        # B-306: ``rm -rf /`` is now CRITICAL (denies); use non-root
+        # to still hit the HIGH-severity broad rm rule.
         high_call = ToolCall(
             id="c2",
             name="execute_shell_command",
-            args={"command": "rm -rf /"},
+            args={"command": "rm -rf /home/user/old_project"},
             provenance="synthetic",
         )
         high_result = await provider.invoke(high_call)

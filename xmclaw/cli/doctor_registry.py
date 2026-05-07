@@ -691,9 +691,12 @@ class EventsDbCheck(DoctorCheck):
             return CheckResult(
                 name=self.name, ok=False,
                 detail=f"cannot open {path.name}: {exc}",
-                advisory="check that no other process has the DB locked; "
-                         "if the file is corrupt, back it up and let the "
-                         "daemon recreate it on next start",
+                advisory=(
+                    "run 'xmclaw doctor --fix' to quarantine the broken "
+                    "file (.broken-<ts>); daemon recreates fresh on "
+                    "next start. History is lost."
+                ),
+                fix_available=True,
             )
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
@@ -703,8 +706,10 @@ class EventsDbCheck(DoctorCheck):
             return CheckResult(
                 name=self.name, ok=False,
                 detail=f"events.db looks malformed: {exc}",
-                advisory="back up and remove the file; the daemon "
-                         "will recreate it on next start",
+                advisory=(
+                    "run 'xmclaw doctor --fix' to quarantine + rebuild"
+                ),
+                fix_available=True,
             )
         conn.close()
         if user_version > SCHEMA_VERSION:
@@ -720,6 +725,49 @@ class EventsDbCheck(DoctorCheck):
             name=self.name, ok=True,
             detail=f"events.db v{user_version} at {path}",
         )
+
+    # B-313: --fix support. Two repair paths:
+    #   1. If the DB file is corrupt (PRAGMA integrity_check fails) or
+    #      can't be opened at all, rename it to events.db.broken-<ts>
+    #      and let the daemon recreate fresh on next start. Loses
+    #      event history but restores writability.
+    #   2. If integrity_check passes but file was created before
+    #      auto_vacuum=INCREMENTAL (B-309), run a one-shot VACUUM to
+    #      convert + reclaim space.
+    fix_available = True
+
+    def fix(self, ctx: DoctorContext) -> bool:
+        path = self._target(ctx)
+        if not path.exists():
+            return True  # nothing to fix
+        import sqlite3
+        import time as _t
+        # First try integrity check via read-only conn.
+        try:
+            conn_ro = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            row = conn_ro.execute("PRAGMA integrity_check;").fetchone()
+            conn_ro.close()
+            integrity_ok = bool(row) and row[0] == "ok"
+        except sqlite3.Error:
+            integrity_ok = False
+        if not integrity_ok:
+            quarantine = path.with_suffix(
+                f".db.broken-{int(_t.time())}",
+            )
+            try:
+                path.rename(quarantine)
+                return True
+            except OSError:
+                return False
+        # Integrity OK — run VACUUM to reclaim space + enable auto_vacuum.
+        try:
+            conn_rw = sqlite3.connect(str(path))
+            conn_rw.execute("PRAGMA auto_vacuum=INCREMENTAL;")
+            conn_rw.execute("VACUUM;")
+            conn_rw.close()
+            return True
+        except sqlite3.Error:
+            return False
 
 
 class MemoryDbCheck(DoctorCheck):
@@ -794,9 +842,11 @@ class MemoryDbCheck(DoctorCheck):
             return CheckResult(
                 name=self.name, ok=False,
                 detail=f"cannot open {path.name}: {exc}",
-                advisory="check that no other process has the DB locked; "
-                         "if the file is corrupt, back it up and let the "
-                         "daemon recreate it on next start",
+                advisory=(
+                    "run 'xmclaw doctor --fix' to quarantine + rebuild "
+                    "(daemon's MemoryFileIndexer recreates from persona)."
+                ),
+                fix_available=True,
             )
         try:
             row = conn.execute(
@@ -883,6 +933,53 @@ class MemoryDbCheck(DoctorCheck):
             name=self.name, ok=True,
             detail=f"memory.db healthy at {path} ({count} item(s){dim_label})",
         )
+
+    # B-313: --fix support — same shape as EventsDbCheck. Quarantine if
+    # corrupt; VACUUM if healthy. Memory loss on quarantine is more
+    # painful than for events.db (loses learned facts) so prefer the
+    # backup-then-rebuild path: rename to .broken-<ts>, daemon rebuilds
+    # vector store from persona files via MemoryFileIndexer on next
+    # boot. Most facts come back; pinned items might not.
+    fix_available = True
+
+    def fix(self, ctx: DoctorContext) -> bool:
+        path = self._target(ctx)
+        if path is None or not path.exists():
+            return True
+        import sqlite3
+        import time as _t
+        try:
+            conn_ro = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            row = conn_ro.execute("PRAGMA integrity_check;").fetchone()
+            conn_ro.close()
+            integrity_ok = bool(row) and row[0] == "ok"
+        except sqlite3.Error:
+            integrity_ok = False
+        if not integrity_ok:
+            quarantine = path.with_suffix(
+                f".db.broken-{int(_t.time())}",
+            )
+            try:
+                path.rename(quarantine)
+                # Also move sidecar files so daemon's full rebuild
+                # doesn't reuse partial state.
+                for suffix in ("-shm", "-wal"):
+                    sidecar = Path(str(path) + suffix)
+                    if sidecar.exists():
+                        sidecar.rename(
+                            Path(str(quarantine) + suffix),
+                        )
+                return True
+            except OSError:
+                return False
+        try:
+            conn_rw = sqlite3.connect(str(path))
+            conn_rw.execute("PRAGMA auto_vacuum=INCREMENTAL;")
+            conn_rw.execute("VACUUM;")
+            conn_rw.close()
+            return True
+        except sqlite3.Error:
+            return False
 
 
 class MemoryProviderCheck(DoctorCheck):

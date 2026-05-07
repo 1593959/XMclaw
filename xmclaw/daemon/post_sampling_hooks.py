@@ -378,39 +378,59 @@ class ExtractMemoriesHook(PostSamplingHook):
 
 _LESSONS_PROMPT = (
     "You are reviewing the chat turn that just ended between a user "
-    "and the XMclaw agent. Extract DURABLE operational lessons the "
-    "agent should remember for future tasks. Three buckets, each only "
-    "for things that fit precisely:\n\n"
-    "  - \"workflow\": multi-step procedure rules or sequencing the "
-    "agent discovered. Examples: 'grep first to narrow scope before "
-    "reading large files'; 'always run tests before committing on this "
-    "repo'; 'check the AGENTS.md in a subdir before editing it'.\n"
-    "  - \"tool_quirks\": environment-specific tool gotchas. Examples: "
-    "'ruff check on this repo lints static/ JS files and reports 1000+ "
-    "false errors — pass --type=python or list .py files explicitly'; "
-    "'pytest tmp_path under Windows %TEMP% breaks the temp-path "
-    "detection assertion'.\n"
-    "  - \"failure_modes\": recurring breakage patterns. Examples: "
-    "'build always breaks when setuptools is missing'; 'GitHub HTTPS "
-    "push intermittently fails with Connection reset, retry usually "
-    "works'.\n\n"
+    "and the XMclaw agent. Extract anything *future-you* would benefit "
+    "from remembering. Be GENEROUS — pre-B-303 the bar was 'DURABLE "
+    "lesson only' which produced empty buckets nearly every turn, so "
+    "AGENTS.md / TOOLS.md / LEARNING.md / SOUL.md sat empty for weeks. "
+    "Now lower the bar: ANY observation, technique, or principle that "
+    "could plausibly help a future turn counts. Five buckets:\n\n"
+    "  - \"workflow\": procedure / sequencing observations. Anything "
+    "from 'grep before reading huge files' to 'when user asks 怎么 X, "
+    "first list_dir to confirm context'. Smaller hints are fine — "
+    "future-you can dedupe via Auto-Dream. Goes to AGENTS.md.\n"
+    "  - \"tool_quirks\": tool gotchas, surprises, hidden flags, "
+    "unexpected output formats. Even 'memory_search returns dicts not "
+    "strings' or 'bash on Windows runs Git Bash, not PowerShell' "
+    "qualifies. Goes to TOOLS.md.\n"
+    "  - \"failure_modes\": breakage patterns, error shapes, retry "
+    "strategies, things that didn't work. Goes to MEMORY.md (Failure "
+    "Modes).\n"
+    "  - \"values\" (B-303 new): character / values / aesthetic the "
+    "agent expressed or chose. Examples: 'prefer surgical edits over "
+    "rewrites', 'be honest when uncertain', '能动手就别让用户动手', "
+    "'reject ASCII boxart in commit messages'. Goes to SOUL.md.\n"
+    "  - \"rules\" (B-303 new): explicit if-then heuristics for future "
+    "behaviour. Examples: 'if user asks for time, do not just compute "
+    "from training-cutoff — read ## 当前时刻 block', 'if 0 skill_* "
+    "match a query, call skill_browse before bash'. Goes to "
+    "LEARNING.md.\n\n"
     "Skip:\n"
-    "  - One-off facts about THIS specific request (those are not "
-    "operational lessons — they're context).\n"
-    "  - User preferences about communication style or tools "
-    "(ProfileExtractor handles those — different bucket).\n"
-    "  - Status reports / restated context / 'I just did X' summaries.\n"
-    "  - Things the agent already knew before this turn.\n\n"
-    "Output strict JSON: {\"workflow\": [\"...\"], \"tool_quirks\": [\"...\"], "
-    "\"failure_modes\": [\"...\"]}. Empty arrays when nothing fits. No prose."
+    "  - User-specific preferences about communication / tools "
+    "(ProfileExtractor → USER.md handles those, different bucket).\n"
+    "  - Pure status restatements ('I just did X', 'opening file Y').\n"
+    "  - Information already in the system prompt.\n\n"
+    "It's BETTER to extract a small/imperfect bullet than to skip — "
+    "Auto-Dream consolidates duplicates, and the cap of 3 per bucket "
+    "stops verbose LLMs from spamming. Output strict JSON: "
+    "{\"workflow\": [\"...\"], \"tool_quirks\": [\"...\"], "
+    "\"failure_modes\": [\"...\"], \"values\": [\"...\"], "
+    "\"rules\": [\"...\"]}. Empty arrays only when truly nothing fits. "
+    "No prose."
 )
 
 
 _LESSON_BUCKETS: dict[str, tuple[str, str]] = {
     # bucket name → (target file, section header)
-    "workflow":      ("AGENTS.md", "## Auto-extracted"),
-    "tool_quirks":   ("TOOLS.md",  "## Auto-extracted"),
-    "failure_modes": ("MEMORY.md", "## Failure Modes"),
+    "workflow":      ("AGENTS.md",   "## Auto-extracted"),
+    "tool_quirks":   ("TOOLS.md",    "## Auto-extracted"),
+    "failure_modes": ("MEMORY.md",   "## Failure Modes"),
+    # B-303: extend to SOUL.md + LEARNING.md so all 7 persona files
+    # get auto-coverage instead of just AGENTS / TOOLS / MEMORY +
+    # USER (via ProfileExtractor). Pre-B-303 SOUL.md / LEARNING.md
+    # were strictly manual-write — agent rarely did, so they sat
+    # empty even after 100+ turns.
+    "values":        ("SOUL.md",     "## Auto-extracted"),
+    "rules":         ("LEARNING.md", "## Auto-extracted"),
 }
 
 

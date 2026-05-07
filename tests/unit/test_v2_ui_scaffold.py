@@ -46,7 +46,9 @@ REQUIRED_FILES = [
     "components/atoms/atoms.css",
     "components/atoms/button.js",
     "components/atoms/badge.js",
-    "components/atoms/icon.js",
+    # B-303: components/atoms/icon.js was deleted (zero call sites).
+    # If a future page imports an Icon atom, restore the file + add
+    # back to this list.
     "components/atoms/avatar.js",
     "components/atoms/spinner.js",
 ]
@@ -54,7 +56,6 @@ REQUIRED_FILES = [
 ATOM_MODULES = [
     "components/atoms/button.js",
     "components/atoms/badge.js",
-    "components/atoms/icon.js",
     "components/atoms/avatar.js",
     "components/atoms/spinner.js",
 ]

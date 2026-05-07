@@ -442,9 +442,12 @@ def build_llm_profiles_from_config(cfg: dict[str, Any]) -> list[LLMProfile]:
 def build_llm_registry_from_config(cfg: dict[str, Any]) -> LLMRegistry:
     """Build the per-session-pickable LLMRegistry.
 
-    The legacy single-block (``llm.default_provider`` + ``llm.openai`` /
-    ``llm.anthropic``) becomes a synthesised profile with id
-    ``"default"``. New named entries from ``llm.profiles`` follow.
+    The single-block (``llm.openai`` / ``llm.anthropic``) becomes a
+    synthesised profile with id ``"default"`` — provider auto-picked
+    from the first block with a non-empty ``api_key`` (anthropic
+    preferred). New named entries from ``llm.profiles`` follow.
+    (Pre-B-304: the obsolete ``llm.default_provider`` field had no
+    effect since B-146; it was removed from config.example.json.)
 
     Default selection order (B-146):
       1. ``llm.default_profile_id`` if it points to an existing profile.
@@ -1238,6 +1241,24 @@ def build_agent_from_config(
         (cfg.get("llm") or {}).get("timeout_s", 120.0)
     )
 
+    # B-312: daemon-level CostTracker injection. anti-req #6 calls
+    # for a hard cap on token cost; pre-B-312 the AgentLoop accepted
+    # ``cost_tracker`` but factory never instantiated one, leaving
+    # CLI-driven instantiation (which never happens). Now: read
+    # ``cfg.cost.budget_usd`` (default 0 = unlimited, matches legacy
+    # behaviour) and build a daemon-scoped tracker the agent_loop
+    # checks pre-LLM-call. BudgetExceeded → ANTI_REQ_VIOLATION event,
+    # AgentLoop returns a friendly error to the user.
+    _cost_tracker = None
+    try:
+        from xmclaw.utils.cost import CostTracker
+        _cost_cfg = (cfg.get("cost") or {})
+        _budget_usd = float(_cost_cfg.get("budget_usd", 0.0))
+        if _budget_usd > 0 or _cost_cfg.get("track", False):
+            _cost_tracker = CostTracker(budget_usd=_budget_usd)
+    except Exception:  # noqa: BLE001 — never block boot on cost config
+        _cost_tracker = None
+
     return AgentLoop(
         llm=llm, bus=bus, tools=tools,
         system_prompt=system_prompt,
@@ -1255,4 +1276,5 @@ def build_agent_from_config(
         cfg=cfg,
         post_sampling_registry=_hook_registry,
         llm_timeout_s=_llm_timeout_s,
+        cost_tracker=_cost_tracker,
     )

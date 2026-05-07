@@ -132,10 +132,13 @@ class TestGuardedToolProviderWithApproval:
     @pytest.mark.anyio
     async def test_creates_pending_on_needs_approval(self, inner, engine, svc):
         provider = GuardedToolProvider(inner, engine, approval_service=svc)
+        # B-306: ``rm -rf /`` is now CRITICAL (denies, no approval);
+        # use a non-root path so we still hit HIGH and the
+        # NEEDS_APPROVAL branch.
         call = ToolCall(
             id="c1",
             name="execute_shell_command",
-            args={"command": "rm -rf /"},
+            args={"command": "rm -rf /home/user/old_project"},
             provenance="synthetic",
             session_id="sess-2",
         )

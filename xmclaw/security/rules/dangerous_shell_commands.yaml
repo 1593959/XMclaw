@@ -14,7 +14,25 @@
 #                                   enforced by the surrounding ToolGuard/approval workflow when available).
 # See GuardThreatCategory for the full threat taxonomy.
 
-# ── rm: file / directory removal ──────────────────────────────────────
+# ── rm -rf at filesystem root: CRITICAL (B-306, no recovery) ──────────
+- id: TOOL_CMD_RM_RF_ROOT
+  tools: [execute_shell_command]
+  params: [command]
+  category: command_injection
+  severity: CRITICAL
+  patterns:
+    # rm -rf / (with optional flags between)
+    - "\\brm\\s+(-[a-zA-Z]*[rRfF][a-zA-Z]*\\s+)+(/$|/\\s|/\\*)"
+    - "\\brm\\s+(-[a-zA-Z]*[rRfF][a-zA-Z]*\\s+)+~/?\\s*$"
+    # PowerShell variants
+    - "\\bRemove-Item\\b.*-Recurse.*-Force.*\\bC:\\\\?\\s*$"
+    - "\\bRemove-Item\\b.*-Recurse.*-Force.*\\b\\$HOME"
+    # del /S /Q at root (cmd.exe)
+    - "\\bdel\\s+/[sS]\\s+/[qQ]\\s+(C:\\\\?$|\\$HOME|/$)"
+  description: "Recursive delete of filesystem root or home directory — irreversible data loss"
+  remediation: "Block immediately. Such a command would wipe the user's machine; agent never has legitimate need."
+
+# ── rm: general file / directory removal ──────────────────────────────
 - id: TOOL_CMD_DANGEROUS_RM
   tools: [execute_shell_command]
   params: [command]

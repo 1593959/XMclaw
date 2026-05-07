@@ -494,7 +494,14 @@ def ping() -> None:
 @app.command()
 def serve(
     host: str = typer.Option("127.0.0.1", help="Bind address."),
-    port: int = typer.Option(8765, help="Port to bind."),
+    port: int = typer.Option(
+        0,
+        help=(
+            "Port to bind. 0 = read XMC_DAEMON_PORT env (default 8765). "
+            "B-315: set explicitly (e.g. --port 8766) to run multiple "
+            "worktrees side-by-side without colliding on 8765."
+        ),
+    ),
     config: str = typer.Option(
         "daemon/config.json",
         help=("Path to config JSON (read for LLM provider key). "
@@ -542,8 +549,19 @@ def serve(
     # access log. Idempotent; safe to call before the typer.echo lines
     # below since those go to stdout (caught by daemon.log) not through
     # the structlog pipeline.
-    from xmclaw.utils.log import setup_logging
+    from xmclaw.utils.log import setup_logging, set_log_level
     setup_logging()
+
+    # B-315: resolve port. --port 0 (default) → XMC_DAEMON_PORT env →
+    # 8765 fallback. Lets multiple worktrees coexist without colliding
+    # on 8765 by setting env per-worktree (e.g. ``XMC_DAEMON_PORT=8766
+    # xmclaw start``).
+    if port == 0:
+        import os as _os
+        try:
+            port = int(_os.environ.get("XMC_DAEMON_PORT", "8765"))
+        except ValueError:
+            port = 8765
 
     # Epic #13: persistent event log. Subscribers only see events after
     # the row is on disk, so a crash mid-publish can't silently desync the
@@ -597,6 +615,14 @@ def serve(
     if cfg_path.exists():
         try:
             cfg = load_config(cfg_path)
+            # B-311: now that cfg is parsed, apply user-configured log
+            # level (overridden by XMC_LOG_LEVEL env if set).
+            try:
+                set_log_level(
+                    (cfg.get("logging") or {}).get("level"),
+                )
+            except Exception:  # noqa: BLE001
+                pass
             agent = build_agent_from_config(cfg, bus)
             if agent is None:
                 typer.echo(

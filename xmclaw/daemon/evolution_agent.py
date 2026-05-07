@@ -565,3 +565,14 @@ class EvolutionAgent:
     def reset(self) -> None:
         """Clear all aggregated stats. Tests only."""
         self._arms.clear()
+
+
+# B-317: alias hint for new code. ``EvolutionAggregator`` is the role
+# this class plays — it AGGREGATES grader verdicts into per-(skill_id,
+# version) EWMA stats and decides when the controller should evaluate.
+# It does NOT *execute* evolution (that's EvolutionOrchestrator); it
+# does NOT *decide* what to promote (that's EvolutionController). The
+# old ``EvolutionAgent`` name kept for backwards compatibility with
+# existing tests and lifespan callers; new code should prefer
+# ``EvolutionAggregator``.
+EvolutionAggregator = EvolutionAgent
