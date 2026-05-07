@@ -2644,14 +2644,16 @@ class AgentLoop:
                             # (snake_case + dotted namespace).
                             sid = call.name[len("skill_"):].replace("__", ".")
                             verdict_payload["skill_id"] = sid
-                            # Phase 1.5: version defaults to 0 — the
-                            # observer aggregates per (skill_id, 0)
-                            # which is enough to *prove* the closed
-                            # loop. Phase 3's SkillProposer will fan
-                            # out across real version axes; until then
-                            # the orchestrator's HEAD-pointer history
-                            # is the authoritative version trail.
-                            verdict_payload["version"] = 0
+                            # B-295: read the actual dispatched version from
+                            # the ToolResult.metadata side-channel SkillToolProvider
+                            # populates. With VariantSelector wired this is the
+                            # version UCB1 picked for THIS call (HEAD or candidate);
+                            # without selector wired it's still HEAD's version
+                            # number (vs the legacy hardcoded 0). EvolutionAgent +
+                            # VariantSelector both bucket by (skill_id, version)
+                            # so this is what closes the bandit feedback loop.
+                            md = getattr(result, "metadata", {}) or {}
+                            verdict_payload["version"] = int(md.get("skill_version", 0))
                         await publish(EventType.GRADER_VERDICT, verdict_payload)
                     except Exception:  # noqa: BLE001 — observability
                         # never blocks execution; bus subscribers see

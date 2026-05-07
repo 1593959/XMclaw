@@ -71,3 +71,11 @@ class ToolResult:
     latency_ms: float = 0.0
     side_effects: tuple[str, ...] = ()
     schema_version: int = 1
+    # B-295: opaque side-channel for tool-specific metadata that
+    # downstream subscribers need but doesn't fit ``content`` /
+    # ``side_effects``. Currently used by SkillToolProvider to surface
+    # ``"skill_version": <int>`` so agent_loop's GRADER_VERDICT
+    # publisher can attribute the verdict to the right (skill_id,
+    # version) arm in EvolutionAgent + VariantSelector. Empty dict by
+    # default — additive, non-breaking for existing tools.
+    metadata: dict[str, Any] = field(default_factory=dict)

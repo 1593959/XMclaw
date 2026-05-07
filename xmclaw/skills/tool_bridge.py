@@ -76,10 +76,16 @@ class SkillToolProvider:
         registry: SkillRegistry,
         *,
         description_prefix: str = "Skill: ",
+        variant_selector: Any = None,
     ) -> None:
         self._registry = registry
         self._description_prefix = description_prefix
         self._tool_name_cache: dict[str, str] | None = None
+        # B-295: opt-in variant selector for UCB1 over (skill_id, version)
+        # arms. None → always HEAD (legacy behaviour). When wired, each
+        # invocation asks the selector which version to run; stats
+        # accumulate via the selector's own GRADER_VERDICT subscription.
+        self._variant_selector = variant_selector
 
     # ------------------------------------------------------------------
     # Public API
@@ -108,8 +114,20 @@ class SkillToolProvider:
                 call.id, f"unknown skill tool: {call.name!r}", t0
             )
 
+        # B-295: variant selection. If a selector is wired, ask it which
+        # version of the skill to run for this turn. Falls back to HEAD
+        # when selector is None / picks None / errors. The chosen
+        # version is recorded so the agent loop can stamp it onto the
+        # tool_invocation_finished payload (so grader's verdict goes
+        # to the right (skill_id, version) bucket).
+        chosen_version = None
+        if self._variant_selector is not None:
+            try:
+                chosen_version = self._variant_selector.pick_version(skill_id)
+            except Exception:  # noqa: BLE001
+                chosen_version = None
         try:
-            skill = self._registry.get(skill_id)
+            skill = self._registry.get(skill_id, version=chosen_version)
         except UnknownSkillError as exc:
             return self._error_result(
                 call.id, f"skill {skill_id!r} not at HEAD: {exc}", t0
@@ -122,6 +140,22 @@ class SkillToolProvider:
                 call.id, f"{type(exc).__name__}: {exc}", t0
             )
 
+        # B-295: surface the chosen version in metadata so agent_loop's
+        # GRADER_VERDICT publisher attributes the score to the right
+        # arm. Effective version is what registry.get actually returned
+        # — fall back to active_version() so legacy callers without a
+        # selector still get a real version (vs 0 which collapses every
+        # variant onto one bucket).
+        effective_version = chosen_version
+        if effective_version is None:
+            try:
+                effective_version = self._registry.active_version(skill_id)
+            except Exception:  # noqa: BLE001
+                effective_version = None
+        result_metadata: dict[str, Any] = {}
+        if effective_version is not None:
+            result_metadata["skill_version"] = int(effective_version)
+            result_metadata["skill_id"] = skill_id
         return ToolResult(
             call_id=call.id,
             ok=bool(out.ok),
@@ -129,6 +163,7 @@ class SkillToolProvider:
             error=None if out.ok else _coerce_error(out.result),
             latency_ms=self._elapsed_ms(t0),
             side_effects=tuple(out.side_effects or ()),
+            metadata=result_metadata,
         )
 
     # ------------------------------------------------------------------

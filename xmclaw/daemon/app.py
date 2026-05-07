@@ -700,6 +700,55 @@ def create_app(
                 )
                 _app.state.evolution_evaluation_trigger = None
 
+        # B-295: VariantSelector wires UCB1 over (skill_id, version)
+        # arms into the SkillToolProvider's invoke path. Without this,
+        # candidate skill versions never get traffic → never get plays
+        # → controller's ``min_plays`` threshold never clears →
+        # B-294's evaluate() trigger fires but always finds the same
+        # winner (HEAD) and proposes nothing. With this wired, new
+        # variants get explore-traffic via UCB1, accumulate plays,
+        # and the loop closes.
+        # OPT-IN: ``config.evolution.variant_selector.enabled`` (default
+        # True). Operators who want pure HEAD-only behaviour can flip
+        # to False; the SkillToolProvider falls back transparently.
+        _app.state.variant_selector = None
+        try:
+            _vs_cfg = (config or {}).get("evolution", {}).get(
+                "variant_selector", {},
+            )
+            if _vs_cfg.get("enabled", True):
+                # Find the SkillRegistry the agent's tool stack uses.
+                # SkillToolProvider holds a ref; we ask the agent's
+                # composite tool provider for it via duck-typing.
+                _registry = None
+                _stp_ref = None
+                _candidate = getattr(agent, "_tools", None)
+                # CompositeToolProvider stores children in ``_providers``.
+                _kids = getattr(_candidate, "_providers", None) or [_candidate]
+                for kid in _kids:
+                    reg = getattr(kid, "_registry", None)
+                    if reg is not None and hasattr(reg, "list_skill_ids"):
+                        _registry = reg
+                        _stp_ref = kid
+                        break
+                if _registry is not None:
+                    from xmclaw.skills.variant_selector import VariantSelector
+                    selector = VariantSelector(
+                        registry=_registry,
+                        exploration_c=float(_vs_cfg.get("exploration_c", 2.0)),
+                        head_warmup_plays=int(_vs_cfg.get("head_warmup_plays", 5)),
+                    )
+                    await selector.start(bus)
+                    # Inject into the SkillToolProvider so invoke() consults it.
+                    _stp_ref._variant_selector = selector
+                    _app.state.variant_selector = selector
+        except Exception as exc:  # noqa: BLE001
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).warning(
+                "variant_selector.start_failed err=%s", exc,
+            )
+            _app.state.variant_selector = None
+
         # Epic #24 Phase 2.3: default-start JournalWriter + Profile
         # Extractor. JournalWriter buffers session events and writes
         # one mechanical-metadata row per ``SESSION_LIFECYCLE
@@ -1197,6 +1246,15 @@ def create_app(
             if _eval_trig is not None:
                 try:
                     await _eval_trig.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            # B-295: stop the variant selector. Same ordering rationale
+            # as eval_trigger — stop subscribers before the observer
+            # so an in-flight ingest doesn't crash on a torn-down bus.
+            _vs = getattr(_app.state, "variant_selector", None)
+            if _vs is not None:
+                try:
+                    await _vs.stop()
                 except Exception:  # noqa: BLE001
                     pass
             # Epic #24 Phase 1: stop the default EvolutionAgent observer.
