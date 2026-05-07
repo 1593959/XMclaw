@@ -2092,6 +2092,24 @@ class AgentLoop:
         ]
         tool_specs = self._tools.list_tools() if self._tools else None
 
+        # B-238: skill prefilter. Real-data: 404 skills installed →
+        # tool_specs runs ~80K tokens before the user message, LLM's
+        # tool-selection signal-to-noise drops to zero, the agent
+        # reaches for raw bash / file_write instead of routing to the
+        # purpose-built skill. Filter to top-K relevant skills based
+        # on the user's message; non-skill tools (bash, file_*, etc)
+        # always pass through. Below ``min_skills_to_filter`` skills
+        # (default 30) the prefilter is a no-op — small setups don't
+        # have the noise problem.
+        if tool_specs:
+            try:
+                from xmclaw.skills.prefilter import select_relevant_skills
+                tool_specs = select_relevant_skills(
+                    user_message, tool_specs, top_k=12,
+                )
+            except Exception:  # noqa: BLE001 — never break a turn over routing
+                pass
+
         # Per-hop turn id so every LLM_CHUNK + LLM_RESPONSE event in this
         # hop shares a correlation_id. The chat reducer keys the assistant
         # bubble by correlation_id; without this, each chunk would land in
