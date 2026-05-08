@@ -335,3 +335,159 @@ def test_manifest_to_dict_round_trips_description(tmp_path: Path) -> None:
     assert d["description"] == "does x"
     assert d["title"] == "X"
     assert d["triggers"] == ["a", "b"]  # tuple → list for JSON
+
+
+# ── B-328: advisory permissions visibility ────────────────────────────
+
+
+def test_b328_manifest_to_dict_includes_permissions_enforced() -> None:
+    """B-328: ``permissions_enforced`` is shipped on every manifest so
+    the Skills UI can render an "advisory" / "enforced" badge. Default
+    is False — the current Local / Process runtimes can't enforce
+    permissions; a Phase 3.5+ Docker / nsjail runtime would set this
+    True on the manifests it can sandbox."""
+    from xmclaw.skills.manifest import SkillManifest
+    m = SkillManifest(
+        id="x", version=1,
+        permissions_subprocess=("git",),
+    )
+    d = m.to_dict()
+    assert "permissions_enforced" in d
+    assert d["permissions_enforced"] is False
+
+
+def test_b328_permissions_are_meaningful_helper() -> None:
+    """B-328: helper used by the loader to gate the advisory AST scan."""
+    from xmclaw.skills.manifest import SkillManifest
+
+    # Empty across the board → nothing meaningful to cross-check.
+    m_empty = SkillManifest(id="x", version=1)
+    assert m_empty.permissions_are_meaningful() is False
+
+    # Any non-trivial permission claim → cross-check should run.
+    assert SkillManifest(
+        id="x", version=1, permissions_fs=("/tmp",),
+    ).permissions_are_meaningful() is True
+    assert SkillManifest(
+        id="x", version=1, permissions_net=("api.example.com",),
+    ).permissions_are_meaningful() is True
+    assert SkillManifest(
+        id="x", version=1, permissions_subprocess=("git",),
+    ).permissions_are_meaningful() is True
+
+
+_SKILL_USING_SUBPROCESS = """
+import subprocess
+from xmclaw.skills.base import Skill, SkillInput, SkillOutput
+
+class SubSkill(Skill):
+    id = "{skill_id}"
+    version = {version}
+
+    async def run(self, inp: SkillInput) -> SkillOutput:
+        # Calls subprocess despite a manifest that may forbid it.
+        subprocess.run(["echo", "hi"], check=False)
+        return SkillOutput(ok=True, result={{}}, side_effects=[])
+"""
+
+
+def test_b328_advisory_warning_when_no_subprocess_claim_but_source_uses_it(
+    tmp_path: Path, caplog,
+) -> None:
+    """B-328 core regression: a Python skill whose manifest declares
+    ``permissions_subprocess: []`` (empty = "no subprocess allowed",
+    the most natural author intent) but whose source actually calls
+    ``subprocess.run`` must produce a WARNING at load time. Pre-B-328
+    the discrepancy was silent: the SKILL.md ``permissions_subprocess: []``
+    line travelled all the way to the Skills UI as if it were
+    enforced, and operators reading it were misled."""
+    import logging as _logging
+
+    skill_id = "subproc-skill"
+    # Manifest says non-trivial fs constraint (so the helper triggers
+    # the cross-check) AND empty subprocess (claim: not allowed).
+    _write_skill(
+        tmp_path, skill_id, version=1,
+        template=_SKILL_USING_SUBPROCESS,
+        manifest={
+            "id": skill_id, "version": 1,
+            "permissions_fs": ["/tmp/safe"],
+            "permissions_subprocess": [],
+        },
+    )
+    reg = SkillRegistry()
+    with caplog.at_level(
+        _logging.WARNING, logger="xmclaw.skills.user_loader",
+    ):
+        results = UserSkillsLoader(reg, tmp_path).load_all()
+
+    # Load itself MUST succeed — visibility, not behaviour change.
+    assert len(results) == 1
+    assert results[0].ok is True
+
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any(
+        "permissions_advisory_violation" in m and skill_id in m
+        for m in msgs
+    ), f"expected advisory warning for {skill_id}; got: {msgs!r}"
+
+
+def test_b328_no_warning_when_subprocess_is_in_allowlist(
+    tmp_path: Path, caplog,
+) -> None:
+    """When the manifest's ``permissions_subprocess`` is a non-empty
+    allowlist, that's an explicit "subprocess is allowed for these
+    binaries" claim — source using subprocess is consistent, no
+    warning. (We can't actually enforce the allowlist in Local /
+    Process runtimes, but that's a separate gap; this test pins the
+    "consistent claim, no false alarm" half.)"""
+    import logging as _logging
+
+    skill_id = "subproc-allowed"
+    _write_skill(
+        tmp_path, skill_id, version=1,
+        template=_SKILL_USING_SUBPROCESS,
+        manifest={
+            "id": skill_id, "version": 1,
+            "permissions_subprocess": ["echo", "git"],  # non-empty
+        },
+    )
+    reg = SkillRegistry()
+    with caplog.at_level(
+        _logging.WARNING, logger="xmclaw.skills.user_loader",
+    ):
+        UserSkillsLoader(reg, tmp_path).load_all()
+
+    msgs = [r.getMessage() for r in caplog.records]
+    assert not any(
+        "permissions_advisory_violation" in m for m in msgs
+    ), f"unexpected advisory warning: {msgs!r}"
+
+
+def test_b328_no_warning_when_no_meaningful_permissions(
+    tmp_path: Path, caplog,
+) -> None:
+    """A manifest without ``permissions_*`` declarations — i.e. the
+    user didn't try to constrain anything — must not surface advisory
+    warnings even if the source uses subprocess. Otherwise enabling
+    the cross-check would spam every default skill."""
+    import logging as _logging
+
+    skill_id = "subproc-default"
+    _write_skill(
+        tmp_path, skill_id, version=1,
+        template=_SKILL_USING_SUBPROCESS,
+        # No manifest.json → loader synthesises one with all
+        # permissions empty. helper.permissions_are_meaningful()
+        # returns False → cross-check skipped.
+    )
+    reg = SkillRegistry()
+    with caplog.at_level(
+        _logging.WARNING, logger="xmclaw.skills.user_loader",
+    ):
+        UserSkillsLoader(reg, tmp_path).load_all()
+
+    msgs = [r.getMessage() for r in caplog.records]
+    assert not any(
+        "permissions_advisory_violation" in m for m in msgs
+    ), f"synthesised manifests should not trigger advisory: {msgs!r}"

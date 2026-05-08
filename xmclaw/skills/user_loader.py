@@ -212,6 +212,19 @@ class UserSkillsLoader:
                 id=skill_id, version=instance_version, created_by="user",
             )
 
+        # B-328: advisory cross-check. The manifest's ``permissions_*``
+        # fields are NOT enforced by Local / Process runtimes (anti-req
+        # #5 — sandbox is a future-runtime feature). When a user
+        # authors a manifest claiming "no subprocess" but the source
+        # actually calls ``subprocess.run`` / ``os.system`` / ``os.popen``,
+        # the Skills UI would still display the (false) constraint as
+        # if it were enforced. Surface the discrepancy at load time so
+        # operators see the gap in daemon.log instead of silently
+        # trusting a stale claim. Doesn't block load — that's a
+        # behaviour change. Pure visibility.
+        if manifest.permissions_are_meaningful():
+            self._advisory_audit(skill_id, skill_py, manifest)
+
         # Register. set_head=True so the first registration of a
         # given skill_id becomes HEAD immediately — user skills don't
         # need an evidence-bearing promote to be active. Subsequent
@@ -243,6 +256,67 @@ class UserSkillsLoader:
             skill_id=skill_id, ok=True, skill_path=skill_py,
             manifest_path=manifest_path, version=instance_version,
         )
+
+    def _advisory_audit(
+        self,
+        skill_id: str,
+        skill_py: Path,
+        manifest: SkillManifest,
+    ) -> None:
+        """B-328: AST cross-check between declared permissions and
+        actual source. Logs WARNING when a Python skill's source uses
+        subprocess primitives but the manifest claims none allowed —
+        the most common author misconception (operators read SKILL.md
+        permissions like firewall rules, but no current runtime
+        enforces them).
+
+        Best-effort: any failure (unreadable file, syntax error,
+        missing scanner) is swallowed — this is purely visibility,
+        the load path itself MUST not regress to ``ok=False`` on a
+        scan glitch.
+        """
+        try:
+            source = skill_py.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            return
+        try:
+            from xmclaw.security.skill_scanner import scan_source
+        except Exception:  # noqa: BLE001 — scanner optional in old installs
+            return
+
+        try:
+            result = scan_source(source, filename=str(skill_py))
+        except Exception:  # noqa: BLE001
+            return
+
+        # Subprocess discrepancy: manifest declared empty
+        # ``permissions_subprocess`` (interpretable as "no subprocess
+        # allowed") AND source uses subprocess.* / os.system / os.popen.
+        # The scanner already tags these with SKILL_AST_SUBPROCESS_SHELL
+        # (for shell=True) but we want any subprocess use, including
+        # the safe argv form, because the manifest claim is about the
+        # presence of subprocess, not the shell-injection variant.
+        wants_no_subprocess = manifest.permissions_subprocess == ()
+        # Heuristic: source uses subprocess if either an AST-detected
+        # subprocess.* call exists or the scanner flagged any rule
+        # whose pattern_id starts with SKILL_AST_SUBPROCESS_.
+        subprocess_in_source = (
+            "subprocess." in source
+            or "subprocess as " in source
+            or any(
+                f.pattern_id.startswith("SKILL_AST_SUBPROCESS_")
+                or f.pattern_id == "SKILL_AST_OS_SYSTEM"
+                for f in (result.findings or ())
+            )
+        )
+        if wants_no_subprocess and subprocess_in_source:
+            log.warning(
+                "skill.permissions_advisory_violation skill_id=%s "
+                "field=permissions_subprocess "
+                "claim=none_allowed actual=subprocess_used "
+                "note=advisory_only_no_runtime_enforcement",
+                skill_id,
+            )
 
     def _load_markdown(
         self, skill_dir: Path, skill_md: Path,
