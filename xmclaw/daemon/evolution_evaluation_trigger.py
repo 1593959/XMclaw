@@ -41,12 +41,19 @@ Default settings are intentionally conservative:
     ``min_plays`` threshold defaults to 5; below that there's nothing
     to decide.
 
-The trigger does NOT pass ``head_version`` / ``head_mean`` to evaluate()
-— at this layer we don't know what the SkillRegistry's HEAD pointer is.
-``evaluate()`` defaults those to None, which the controller interprets
-as "no incumbent baseline known; promote anything that clears plays +
-mean thresholds". Phase 2 of this work can wire SkillRegistry.head() into
-the trigger to enable gap-vs-head decisions.
+B-327 / B-296 + B-298: HEAD-context lookup is now wired through the
+``EvolutionAgent`` constructor's ``registry=...`` kwarg, not the
+trigger. ``EvolutionAgent.evaluate()`` looks up
+``registry.active_version(skill_id)`` per-skill internally and uses
+that to compute ``head_mean`` from the matching arm. Gap-vs-head and
+rollback decisions DO work in production — but ONLY when the daemon's
+B-298 ``_find_skill_provider`` walker successfully resolves a registry
+to inject. When it doesn't (echo-mode boot, factory edge case where
+the SkillToolProvider isn't in the tool stack), every ``evaluate()``
+falls back to ``head_version=None`` → controller can't gate on HEAD
+and never emits ROLLBACK. The trigger's :meth:`start` now logs a
+WARNING when it sees a registry-less observer, so the half-done case
+is visible in daemon.log instead of silently passing.
 """
 from __future__ import annotations
 
@@ -127,7 +134,13 @@ class EvolutionEvaluationTrigger:
         return self._verdicts_since_last_fire
 
     async def start(self) -> None:
-        """Subscribe to GRADER_VERDICT. Idempotent. No-op when disabled."""
+        """Subscribe to GRADER_VERDICT. Idempotent. No-op when disabled.
+
+        B-327: also yells if the wired EvolutionAgent has no
+        SkillRegistry — that means HEAD-vs-candidate gating + rollback
+        detection are silently degraded (controller can only check
+        absolute thresholds, no relative comparison to the incumbent).
+        """
         if not self._enabled:
             return
         if self._subscription is not None:
@@ -135,11 +148,30 @@ class EvolutionEvaluationTrigger:
         self._subscription = self._bus.subscribe(
             self._predicate, self._on_verdict,
         )
+        # B-327: surface the half-done case where the registry walker
+        # failed and HEAD-context lookup is going to fall through to
+        # None. Pre-B-327 this was silent — promotions still happened
+        # but rollback was unreachable, no log line ever told the
+        # operator why.
+        registry_attached = getattr(self._evo_agent, "_registry", None) is not None
         log.info(
             "evolution_eval.start debounce_s=%.1f cooldown_s=%.1f "
-            "min_new_verdicts=%d",
+            "min_new_verdicts=%d registry_attached=%s",
             self._debounce_s, self._cooldown_s, self._min_new_verdicts,
+            registry_attached,
         )
+        if not registry_attached:
+            log.warning(
+                "evolution_eval.no_registry — HEAD-vs-candidate gating "
+                "and ROLLBACK detection disabled. Either no "
+                "SkillToolProvider was found in the agent's tool stack "
+                "(daemon boot edge case; check B-298 _find_skill_provider) "
+                "or the EvolutionAgent was constructed without "
+                "registry=... (test / bench wiring). Promotions can "
+                "still fire on absolute thresholds (min_plays / "
+                "min_mean) but the controller cannot tell whether a "
+                "candidate beats HEAD."
+            )
 
     async def stop(self) -> None:
         """Cancel subscription + pending debounce. Idempotent."""

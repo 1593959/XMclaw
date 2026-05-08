@@ -342,7 +342,21 @@ class EvolutionAgent:
             if sk_head_v is None and self._registry is not None:
                 try:
                     sk_head_v = self._registry.active_version(skill_id)
-                except Exception:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001
+                    # B-327: surface the lookup failure. Pre-B-327 this
+                    # was silently swallowed → controller got
+                    # head_version=None for that skill → couldn't gate
+                    # on HEAD or detect rollback, with zero signal in
+                    # the log to point at WHY. Common cause: the
+                    # registry doesn't know skill_id (typo, stale
+                    # _arms entry from a previous daemon's skill set
+                    # that was since uninstalled).
+                    logging.getLogger(__name__).debug(
+                        "evolution.head_lookup_failed skill_id=%s err=%s "
+                        "(controller will run without HEAD context for "
+                        "this skill)",
+                        skill_id, exc,
+                    )
                     sk_head_v = None
             if sk_head_m is None and sk_head_v is not None:
                 # Compute HEAD's measured mean from its own arm if we
