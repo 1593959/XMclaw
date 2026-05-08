@@ -214,3 +214,196 @@ async def test_complete_handles_empty_choices() -> None:
     resp = await llm.complete([Message(role="user", content="x")])
     assert resp.content == ""
     assert resp.tool_calls == ()
+
+
+# ── B-320 prompt cache parity ────────────────────────────────────────────
+
+
+def test_b320_messages_no_cache_marker_when_disabled() -> None:
+    """Default OFF: system message stays as a plain string — never
+    decorated with cache_control. This is the conservative behavior
+    for OpenAI proper / DeepSeek / strict-schema compat servers that
+    reject unknown body fields."""
+    msgs = OpenAILLM._messages_to_openai(
+        [
+            Message(role="system", content="you are a helper"),
+            Message(role="user", content="hi"),
+        ],
+        prompt_cache_enabled=False,
+    )
+    assert msgs[0]["content"] == "you are a helper"
+    assert "cache_control" not in str(msgs)
+
+
+def test_b320_messages_decorate_last_system_when_enabled() -> None:
+    """B-320: prompt_cache_enabled=True wraps the LAST system message
+    in an Anthropic-style content-block list with
+    cache_control=ephemeral. The marker covers everything before it
+    (system + tools, hash-stable across hops in a turn) → ~10% list
+    price for cache reads on Moonshot Kimi / Zhipu GLM."""
+    msgs = OpenAILLM._messages_to_openai(
+        [
+            Message(role="system", content="be terse"),
+            Message(role="system", content="answer in english"),
+            Message(role="user", content="hi"),
+        ],
+        prompt_cache_enabled=True,
+    )
+    # First system message stays plain.
+    assert msgs[0]["role"] == "system"
+    assert msgs[0]["content"] == "be terse"
+    # Second (last) system message is decorated.
+    assert msgs[1]["role"] == "system"
+    blocks = msgs[1]["content"]
+    assert isinstance(blocks, list) and len(blocks) == 1
+    assert blocks[0]["type"] == "text"
+    assert blocks[0]["text"] == "answer in english"
+    assert blocks[0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_b320_tools_decorate_last_when_enabled() -> None:
+    """B-320: cache_control on the last tool entry is the breakpoint
+    that covers every preceding tool def in one cache slot. Mirror
+    of AnthropicLLM._tools_to_anthropic."""
+    specs = [
+        ToolSpec(
+            name="a", description="first",
+            parameters_schema={"type": "object", "properties": {}},
+        ),
+        ToolSpec(
+            name="b", description="second",
+            parameters_schema={"type": "object", "properties": {}},
+        ),
+    ]
+    out = OpenAILLM._tools_to_openai(specs, prompt_cache_enabled=True)
+    assert "cache_control" not in out[0]
+    assert out[1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_b320_tools_no_marker_when_disabled() -> None:
+    specs = [
+        ToolSpec(
+            name="a", description="d",
+            parameters_schema={"type": "object", "properties": {}},
+        ),
+    ]
+    out = OpenAILLM._tools_to_openai(specs, prompt_cache_enabled=False)
+    assert all("cache_control" not in t for t in out)
+
+
+@pytest.mark.parametrize("b_url, model, expected", [
+    # OpenAI proper → off (auto cache, no opt-in needed; unknown
+    # fields would cause 400 on stricter shims downstream).
+    (None, "gpt-4o", False),
+    # DeepSeek → off (auto caching, OpenAI-style usage report).
+    ("https://api.deepseek.com/v1", "deepseek-chat", False),
+    # Moonshot Kimi → on (their compat shim accepts the marker).
+    ("https://api.moonshot.cn/v1", "moonshot-v1-128k", True),
+    ("https://api.openai.com/v1", "kimi-k2-0905-preview", True),
+    # Zhipu GLM → on.
+    ("https://open.bigmodel.cn/api/paas/v4", "glm-4.6", True),
+    ("https://api.z.ai/api/paas/v4", "glm-4.6", True),
+    # Generic compat (vLLM / LiteLLM / Ollama) → off, conservative.
+    ("http://localhost:11434/v1", "qwen2.5:7b", False),
+])
+def test_b320_default_prompt_cache_enabled_per_provider(
+    b_url, model, expected,
+) -> None:
+    """B-320: auto-detect picks safe defaults — known cache-supporting
+    OpenAI-compat shims are on, everything else is off.
+
+    NOTE: arg name is ``b_url`` not ``base_url`` because pytest's
+    ``pytest_base_url`` plugin owns the latter as a session-scoped
+    fixture and parametrize would collide.
+    """
+    from xmclaw.providers.llm.openai import _default_prompt_cache_enabled
+    assert _default_prompt_cache_enabled(model, b_url) is expected
+
+
+def test_b320_constructor_override_wins() -> None:
+    """Explicit ``prompt_cache_enabled=False`` on a Moonshot URL
+    disables caching — the user's override wins over auto-detect."""
+    llm = OpenAILLM(
+        api_key="x",
+        model="moonshot-v1-128k",
+        base_url="https://api.moonshot.cn/v1",
+        prompt_cache_enabled=False,
+    )
+    assert llm._prompt_cache_enabled is False
+
+
+def test_b320_constructor_auto_detect_when_none() -> None:
+    """Default: passing None lets auto-detect pick. Moonshot → True."""
+    llm = OpenAILLM(
+        api_key="x",
+        model="moonshot-v1-128k",
+        base_url="https://api.moonshot.cn/v1",
+    )
+    assert llm._prompt_cache_enabled is True
+
+
+def test_b320_extract_cache_tokens_handles_anthropic_style_flat() -> None:
+    """Moonshot / Zhipu mirror Anthropic's flat field names on usage."""
+    @dataclass
+    class _U:
+        cache_creation_input_tokens: int = 0
+        cache_read_input_tokens: int = 0
+
+    cc, cr = OpenAILLM._extract_cache_tokens(_U(123, 456))
+    assert cc == 123
+    assert cr == 456
+
+
+def test_b320_extract_cache_tokens_handles_openai_nested() -> None:
+    """OpenAI / DeepSeek auto cache: ``prompt_tokens_details.cached_tokens``."""
+    @dataclass
+    class _Details:
+        cached_tokens: int = 999
+
+    @dataclass
+    class _U:
+        prompt_tokens_details: _Details
+
+    cc, cr = OpenAILLM._extract_cache_tokens(_U(_Details(789)))
+    assert cc == 0  # OpenAI doesn't bill creation separately
+    assert cr == 789
+
+
+def test_b320_extract_cache_tokens_zeros_when_absent() -> None:
+    """Provider with no cache stats at all — must not crash."""
+    class _U: ...
+    cc, cr = OpenAILLM._extract_cache_tokens(_U())
+    assert (cc, cr) == (0, 0)
+
+
+def test_b320_extract_cache_tokens_handles_none_usage() -> None:
+    """Some compat shims omit usage entirely on certain responses."""
+    cc, cr = OpenAILLM._extract_cache_tokens(None)
+    assert (cc, cr) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_b320_complete_surfaces_cache_tokens() -> None:
+    """End-to-end: faked response with cache tokens → LLMResponse
+    carries them on cache_creation_input_tokens / cache_read_input_tokens."""
+    @dataclass
+    class _CachedUsage:
+        prompt_tokens: int
+        completion_tokens: int
+        cache_creation_input_tokens: int = 0
+        cache_read_input_tokens: int = 0
+
+    fake = _FakeResponse(
+        choices=[_FakeChoice(message=_FakeMessage(content="ok"))],
+        usage=_CachedUsage(
+            prompt_tokens=100,
+            completion_tokens=20,
+            cache_creation_input_tokens=80,
+            cache_read_input_tokens=900,
+        ),
+    )
+    llm = OpenAILLM(api_key="x")
+    llm._client = _FakeClient(fake)
+    resp = await llm.complete([Message(role="user", content="hi")])
+    assert resp.cache_creation_input_tokens == 80
+    assert resp.cache_read_input_tokens == 900

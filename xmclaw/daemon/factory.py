@@ -303,6 +303,13 @@ def build_llm_from_config(cfg: dict[str, Any]) -> LLMProvider | None:
             or _default_model_for(provider_name)
         )
         base_url = pcfg.get("base_url")
+        # B-320: respect a per-provider ``prompt_cache_enabled`` switch.
+        # ``None`` keeps OpenAILLM's auto-detect (Moonshot / Zhipu on,
+        # OpenAI / DeepSeek off); explicit True/False overrides.
+        raw_pc = pcfg.get("prompt_cache_enabled")
+        prompt_cache_enabled: bool | None = (
+            bool(raw_pc) if isinstance(raw_pc, bool) else None
+        )
         if provider_name == "anthropic":
             return AnthropicLLM(
                 api_key=api_key, model=model, base_url=base_url or None,
@@ -310,6 +317,7 @@ def build_llm_from_config(cfg: dict[str, Any]) -> LLMProvider | None:
         if provider_name == "openai":
             return OpenAILLM(
                 api_key=api_key, model=model, base_url=base_url or None,
+                prompt_cache_enabled=prompt_cache_enabled,
             )
 
     return None
@@ -324,7 +332,12 @@ def _default_model_for(provider_name: str) -> str:
 
 
 def _instantiate_llm(
-    provider_name: str, *, api_key: str, model: str, base_url: str | None,
+    provider_name: str,
+    *,
+    api_key: str,
+    model: str,
+    base_url: str | None,
+    prompt_cache_enabled: bool | None = None,
 ) -> LLMProvider | None:
     """Construct one LLMProvider from already-resolved config values.
 
@@ -332,11 +345,18 @@ def _instantiate_llm(
     profiles-array path build providers identically. Returns ``None``
     when ``provider_name`` is unknown — callers skip the entry rather
     than crashing the whole registry.
+
+    ``prompt_cache_enabled`` (B-320): forwarded only to OpenAILLM since
+    AnthropicLLM caches unconditionally (B-245). ``None`` keeps the
+    provider's auto-detect — explicit True/False overrides.
     """
     if provider_name == "anthropic":
         return AnthropicLLM(api_key=api_key, model=model, base_url=base_url or None)
     if provider_name == "openai":
-        return OpenAILLM(api_key=api_key, model=model, base_url=base_url or None)
+        return OpenAILLM(
+            api_key=api_key, model=model, base_url=base_url or None,
+            prompt_cache_enabled=prompt_cache_enabled,
+        )
     return None
 
 
@@ -424,8 +444,23 @@ def build_llm_profiles_from_config(cfg: dict[str, Any]) -> list[LLMProfile]:
                 inherited_url = legacy_pcfg.get("base_url")
                 if isinstance(inherited_url, str) and inherited_url.strip():
                     base_url_str = inherited_url
+        # B-320: per-profile prompt_cache_enabled with legacy-block
+        # inheritance (matches the api_key / base_url pattern). None
+        # means "let OpenAILLM auto-detect from base_url + model".
+        raw_pc_profile = entry.get("prompt_cache_enabled")
+        prompt_cache_enabled: bool | None = (
+            bool(raw_pc_profile) if isinstance(raw_pc_profile, bool) else None
+        )
+        if prompt_cache_enabled is None:
+            legacy_pcfg = llm_section.get(provider_name)
+            if isinstance(legacy_pcfg, dict):
+                raw_inherited = legacy_pcfg.get("prompt_cache_enabled")
+                if isinstance(raw_inherited, bool):
+                    prompt_cache_enabled = raw_inherited
         llm = _instantiate_llm(
-            provider_name, api_key=api_key, model=model, base_url=base_url_str,
+            provider_name, api_key=api_key, model=model,
+            base_url=base_url_str,
+            prompt_cache_enabled=prompt_cache_enabled,
         )
         if llm is None:
             continue

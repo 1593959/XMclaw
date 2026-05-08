@@ -1,4 +1,4 @@
-"""B-112: post-sampling hook framework + ExtractMemoriesHook.
+"""B-112: post-sampling hook framework + Extract*Hook.
 
 Pins:
   * HookRegistry.dispatch fires every enabled hook concurrently
@@ -7,9 +7,14 @@ Pins:
   * ExtractMemoriesHook respects ``extract_memories.enabled`` gate
   * extracted facts land under ## Auto-extracted in MEMORY.md
   * empty / malformed LLM response → no write
-  * B-168 ExtractLessonsHook routes three buckets to three files,
-    default ON, respects per-bucket cap, and falls through cleanly
-    on malformed payloads.
+  * B-168 ExtractLessonsHook routes the original three buckets to
+    three files, default ON, respects per-bucket cap, and falls
+    through cleanly on malformed payloads.
+  * B-303 added ``values`` (SOUL.md) + ``rules`` (LEARNING.md).
+  * B-319 added ``preferences`` (USER.md) and re-exported the hook
+    as :class:`ExtractFactsHook`. The default registry now ships
+    only ``extract_lessons`` (≡ ``extract_facts``); the legacy
+    ``extract_memories`` hook is opt-in.
 """
 from __future__ import annotations
 
@@ -18,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from xmclaw.daemon.post_sampling_hooks import (
+    ExtractFactsHook,
     ExtractLessonsHook,
     ExtractMemoriesHook,
     HookContext,
@@ -175,7 +181,7 @@ async def test_extract_malformed_llm_response_no_write(tmp_path: Path) -> None:
 
 def _lessons_payload(
     *, workflow=None, tool_quirks=None, failure_modes=None,
-    values=None, rules=None,
+    values=None, rules=None, preferences=None,
 ) -> str:
     import json
     return json.dumps({
@@ -186,6 +192,8 @@ def _lessons_payload(
         # tests valid (they don't pass values/rules so they stay []).
         "values": values or [],
         "rules": rules or [],
+        # B-319: ``preferences`` absorbs the USER.md write path.
+        "preferences": preferences or [],
     })
 
 
@@ -320,12 +328,106 @@ async def test_lessons_llm_failure_no_crash(tmp_path: Path) -> None:
 # ── default registry wiring ───────────────────────────────────────────
 
 
-def test_default_registry_has_both_hooks() -> None:
-    """B-168: build_default_registry must include both extractors so
-    the daemon's lifespan picks them up automatically."""
+def test_default_registry_only_has_extract_lessons() -> None:
+    """B-319: build_default_registry now ships ONLY the unified
+    ExtractFactsHook (a.k.a. extract_lessons). The legacy
+    ExtractMemoriesHook is opt-in — its only output (durable
+    failure_modes facts) is now produced by the failure_modes
+    bucket of the unified extractor in the same LLM round-trip,
+    so leaving it default-on costs an extra LLM call for zero
+    new coverage. Pin the change so a future revert lands with a
+    clear failure rather than a silent +1 LLM call per turn."""
     reg = build_default_registry()
     ids = {h.id for h in reg.hooks()}
-    assert ids == {"extract_memories", "extract_lessons"}
+    assert ids == {"extract_lessons"}
+
+
+def test_extract_facts_hook_alias_points_to_extract_lessons() -> None:
+    """B-319: ExtractFactsHook is the forward-compat name. New code
+    should reference it; legacy code keeps working via the alias."""
+    assert ExtractFactsHook is ExtractLessonsHook
+
+
+@pytest.mark.asyncio
+async def test_lessons_routes_preferences_to_user_md(tmp_path: Path) -> None:
+    """B-319: ``preferences`` bucket lands in USER.md under the
+    Auto-extracted preferences heading. Validates the legacy-markdown
+    code path (persona_store=None) — the DB path is exercised by
+    persona_store-level tests."""
+    payload = _lessons_payload(
+        preferences=[
+            "user prefers Chinese for casual chat, English for code",
+            "user wants concise answers, no preamble",
+        ],
+    )
+    llm = _StubLLM(payload)
+    ctx = _ctx(tmp_path, llm=llm)
+    hook = ExtractLessonsHook()
+    await hook.run(ctx)
+
+    user_md = (tmp_path / "USER.md").read_text(encoding="utf-8")
+    assert "## Auto-extracted preferences" in user_md
+    assert "user prefers Chinese for casual chat" in user_md
+    assert "user wants concise answers" in user_md
+
+
+@pytest.mark.asyncio
+async def test_lessons_writes_preferences_with_preference_kind(
+    tmp_path: Path,
+) -> None:
+    """B-319: preferences must be DB-tagged ``kind=preference`` (not
+    ``kind=lesson``) so the persona_store renderer matches USER.md's
+    AUTO_SECTIONS row. We capture the calls to a stub memory provider
+    and assert the kind on the metadata."""
+    payload = _lessons_payload(
+        preferences=["user prefers ruff over black"],
+        workflow=["grep before reading huge files"],
+    )
+
+    captured: list[dict] = []
+
+    class _StubMem:
+        async def upsert_fact(self, *, text, embedding, layer, metadata):
+            captured.append({"text": text, "metadata": dict(metadata)})
+            return ("row-" + str(len(captured)), False)
+
+    llm = _StubLLM(payload)
+    ctx = HookContext(
+        session_id="s",
+        agent_id="main",
+        user_message="hi",
+        assistant_response="hello",
+        history=[],
+        llm=llm,
+        persona_dir=tmp_path,
+        cfg={},
+        memory_provider=_StubMem(),
+    )
+    hook = ExtractLessonsHook()
+    await hook.run(ctx)
+
+    by_kind: dict[str, list[dict]] = {}
+    for c in captured:
+        by_kind.setdefault(c["metadata"]["kind"], []).append(c)
+
+    # Preference row(s) — kind="preference", no bucket field.
+    pref_rows = by_kind.get("preference", [])
+    assert pref_rows, f"no preference rows captured: {captured!r}"
+    assert any("ruff over black" in r["text"] for r in pref_rows)
+    for r in pref_rows:
+        assert "bucket" not in r["metadata"], (
+            "preference rows must NOT carry a bucket field — USER.md's "
+            "AUTO_SECTIONS bucket_filter=None matches unscoped rows"
+        )
+
+    # Lesson row(s) — kind="lesson", bucket="workflow".
+    lesson_rows = by_kind.get("lesson", [])
+    assert lesson_rows
+    assert any(
+        r["metadata"].get("bucket") == "workflow"
+        and "grep before reading" in r["text"]
+        for r in lesson_rows
+    )
 
 
 # ── B-179 _strip_leading_date helper ────────────────────────────────
