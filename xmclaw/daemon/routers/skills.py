@@ -89,8 +89,25 @@ async def list_skills(request: Request) -> JSONResponse:
         }
     """
     orch = getattr(request.app.state, "orchestrator", None)
+    # B-341 (audit pass-2 #6): include the watcher's pending-restart
+    # list so the Skills page can show a banner when an operator
+    # edits a Python skill — pre-B-341 the watcher emitted
+    # SKILL_UPDATE_REQUIRES_RESTART events that nobody consumed.
+    # Empty list when no edits seen this daemon-lifetime.
+    watcher = getattr(request.app.state, "skills_watcher", None)
+    pending_restarts: list[dict[str, object]] = []
+    if watcher is not None:
+        try:
+            pending_restarts = watcher.pending_restarts()
+        except Exception:  # noqa: BLE001 — never let watcher 500 the listing
+            pending_restarts = []
+
     if orch is None:
-        return JSONResponse({"skills": [], "evolution_enabled": False})
+        return JSONResponse({
+            "skills": [],
+            "evolution_enabled": False,
+            "pending_restarts": pending_restarts,
+        })
 
     registry = orch.registry
     rows: list[dict[str, Any]] = []
@@ -125,7 +142,11 @@ async def list_skills(request: Request) -> JSONResponse:
             "source": source,
             "versions": versions,
         })
-    return JSONResponse({"skills": rows, "evolution_enabled": True})
+    return JSONResponse({
+        "skills": rows,
+        "evolution_enabled": True,
+        "pending_restarts": pending_restarts,
+    })
 
 
 def _record_to_dict(r: Any) -> dict[str, Any]:

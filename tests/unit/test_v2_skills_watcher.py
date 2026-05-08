@@ -496,3 +496,93 @@ async def test_b333_no_bus_no_crash(tmp_path: Path) -> None:
     _touch_with_mtime(skill_path / "skill.py", 2000.0)
     # Must not raise.
     await watcher.tick()
+
+
+# ── B-341 (audit pass-2 #6): pending_restarts() public surface ────
+
+
+@pytest.mark.asyncio
+async def test_b341_pending_restarts_starts_empty(tmp_path: Path) -> None:
+    """Fresh watcher → empty list. Mirrors the daemon-restart
+    semantic: a restart picks up the change so the warning becomes
+    irrelevant, and ``pending_restarts()`` correctly reflects "no
+    edits pending"."""
+    reg = SkillRegistry()
+    canonical = tmp_path / "skills_user"
+    canonical.mkdir()
+    watcher = SkillsWatcher(reg, canonical, interval_s=3600.0)
+    assert watcher.pending_restarts() == []
+
+
+@pytest.mark.asyncio
+async def test_b341_pending_restarts_lists_announced_edits(
+    tmp_path: Path,
+) -> None:
+    """After a Python skill edit, ``pending_restarts()`` returns
+    ``[{skill_id, version, path}]``. Pre-B-341 the watcher emitted
+    SKILL_UPDATE_REQUIRES_RESTART to the bus but exposed no public
+    surface for the Skills page banner — the event had zero
+    subscribers and operators saw no warning.
+    """
+    from xmclaw.skills.user_loader import UserSkillsLoader
+
+    reg = SkillRegistry()
+    canonical = tmp_path / "skills_user"
+    canonical.mkdir()
+    skill_path = _drop_python_skill(canonical, "py-skill", tag="v0")
+    UserSkillsLoader(reg, canonical).load_all()
+
+    watcher = SkillsWatcher(reg, canonical, interval_s=3600.0)
+    _touch_with_mtime(skill_path / "skill.py", 1000.0)
+    await watcher.tick()
+    assert watcher.pending_restarts() == [], "seed tick → no entries"
+
+    # Edit + bump mtime → one announced entry.
+    (skill_path / "skill.py").write_text(
+        _PY_SKILL_TEMPLATE.format(skill_id="py-skill", tag="v1"),
+        encoding="utf-8",
+    )
+    _touch_with_mtime(skill_path / "skill.py", 2000.0)
+    await watcher.tick()
+
+    pending = watcher.pending_restarts()
+    assert len(pending) == 1
+    entry = pending[0]
+    assert entry["skill_id"] == "py-skill"
+    assert entry["version"] == 1
+    assert "skill.py" in entry["path"]
+
+
+@pytest.mark.asyncio
+async def test_b341_pending_restarts_one_per_skill_lifetime(
+    tmp_path: Path,
+) -> None:
+    """Two edits to the same skill.py in one daemon-lifetime should
+    produce one banner entry, not two — same dedup posture as the
+    bus-event de-dup. Operators should not see two banner items
+    when iterating fast."""
+    from xmclaw.skills.user_loader import UserSkillsLoader
+
+    reg = SkillRegistry()
+    canonical = tmp_path / "skills_user"
+    canonical.mkdir()
+    skill_path = _drop_python_skill(canonical, "py-skill", tag="v0")
+    UserSkillsLoader(reg, canonical).load_all()
+
+    watcher = SkillsWatcher(reg, canonical, interval_s=3600.0)
+    _touch_with_mtime(skill_path / "skill.py", 1000.0)
+    await watcher.tick()
+
+    for tag, mtime in [("v1", 2000.0), ("v2", 3000.0)]:
+        (skill_path / "skill.py").write_text(
+            _PY_SKILL_TEMPLATE.format(skill_id="py-skill", tag=tag),
+            encoding="utf-8",
+        )
+        _touch_with_mtime(skill_path / "skill.py", mtime)
+        await watcher.tick()
+
+    pending = watcher.pending_restarts()
+    assert len(pending) == 1, (
+        f"expected one entry across two edits, got {len(pending)}: "
+        f"{pending}"
+    )

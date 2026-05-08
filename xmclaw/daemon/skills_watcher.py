@@ -125,12 +125,15 @@ class SkillsWatcher:
         # didn't even look at skill.py mtimes — operators had no
         # signal that their edit wouldn't take effect until restart.
         self._bus = bus
-        # Separate seen-set so we only fire ONE event per (skill_id,
+        # Separate seen-map so we only fire ONE event per (skill_id,
         # version) per daemon-lifetime, even though the mtime check
         # still runs every tick. Resets on daemon restart by design
         # (a restart picks up the change so the warning is no
-        # longer relevant).
-        self._py_restart_announced: set[tuple[str, int]] = set()
+        # longer relevant). B-341 (audit pass-2 #6): keyed map (was
+        # set) so :meth:`pending_restarts` can return the path too —
+        # the Skills page banner needs the file path to surface
+        # which edit triggered the warning.
+        self._py_restart_announced: dict[tuple[str, int], str] = {}
         # Buffer for restart-required event payloads detected during
         # the synchronous executor scan. Drained + published by the
         # async ``_tick`` caller after run_in_executor returns. We
@@ -155,6 +158,33 @@ class SkillsWatcher:
 
     def is_running(self) -> bool:
         return self._task is not None and not self._task.done()
+
+    def pending_restarts(self) -> list[dict[str, object]]:
+        """B-341 (audit pass-2 #6): return the list of skill.py edits
+        the watcher has detected this daemon-lifetime that need a
+        ``xmclaw stop && xmclaw start`` to take effect.
+
+        Each entry is ``{"skill_id": str, "version": int, "path": str}``.
+        Empty list when no python-skill edits have been seen since
+        the daemon started — the natural fresh-process state, since
+        ``importlib`` is now serving the just-imported module.
+
+        Backs the ``/api/v2/skills`` response field consumed by the
+        Skills page banner. Pre-B-341 the watcher emitted
+        :class:`EventType.SKILL_UPDATE_REQUIRES_RESTART` to the bus
+        but no UI subscriber existed, so the warning was effectively
+        invisible — operators kept hitting "edit + nothing happens".
+        """
+        out: list[dict[str, object]] = []
+        for (skill_id, version), path in sorted(
+            self._py_restart_announced.items()
+        ):
+            out.append({
+                "skill_id": skill_id,
+                "version": version,
+                "path": path,
+            })
+        return out
 
     # ── lifecycle ───────────────────────────────────────────────────
 
@@ -413,7 +443,7 @@ class SkillsWatcher:
         key = (skill_id, version)
         if key in self._py_restart_announced:
             return None  # already announced this daemon — don't spam
-        self._py_restart_announced.add(key)
+        self._py_restart_announced[key] = str(file)
         _log.warning(
             "skills_watcher.python_skill_changed_restart_required "
             "skill_id=%s version=%d path=%s",

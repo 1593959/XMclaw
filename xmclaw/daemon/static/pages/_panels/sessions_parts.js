@@ -134,6 +134,171 @@ export function MessageList({ messages, highlight }) {
 }
 
 
+// ── Source-prefix mapping + relative-time helper ──
+//
+// B-341 (audit pass-2 #7): moved out of Sessions.js along with
+// SessionRow so the page stays under the 500-line UI budget after
+// the search-endpoint wiring landed. Pure helpers, no imports.
+
+export const SOURCE_CONFIG = {
+  cli:      { glyph: "▮", label: "CLI" },
+  telegram: { glyph: "✈", label: "Telegram" },
+  discord:  { glyph: "#", label: "Discord" },
+  slack:    { glyph: "≡", label: "Slack" },
+  feishu:   { glyph: "✦", label: "Feishu" },
+  wecom:    { glyph: "❖", label: "WeCom" },
+  cron:     { glyph: "⏱", label: "Cron" },
+  unknown:  { glyph: "○", label: "Unknown" },
+};
+
+export function inferSource(sid) {
+  if (!sid) return "unknown";
+  if (sid.startsWith("tg-") || sid.startsWith("telegram-")) return "telegram";
+  if (sid.startsWith("discord-")) return "discord";
+  if (sid.startsWith("slack-")) return "slack";
+  if (sid.startsWith("feishu-")) return "feishu";
+  if (sid.startsWith("wecom-")) return "wecom";
+  if (sid.startsWith("cron-")) return "cron";
+  if (sid.startsWith("chat-") || sid.startsWith("live-")) return "cli";
+  return "unknown";
+}
+
+export function timeAgo(epoch) {
+  if (!epoch) return "—";
+  const ms = Math.max(0, Date.now() - epoch * 1000);
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + "s ago";
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + "m ago";
+  const h = Math.floor(m / 60);
+  if (h < 48) return h + "h ago";
+  const d = Math.floor(h / 24);
+  if (d < 30) return d + "d ago";
+  const mo = Math.floor(d / 30);
+  return mo + "mo ago";
+}
+
+
+// ── SessionRow — one collapsible card per session ──
+//
+// B-341 (audit pass-2 #7): extracted from Sessions.js. Adds
+// ``matchSnippet`` prop — when the parent's server-side search
+// returned this session, the snippet is rendered as a muted
+// monospace preview under the row so the user sees WHERE the hit
+// landed without expanding the row first. Pre-B-341 the row
+// rendered no snippet; the search box only filtered already-loaded
+// previews and the B-339 endpoint had no caller.
+
+export function SessionRow({
+  session, query, expanded, onToggle, onDelete, onResume,
+  token, isSelected, onToggleSelect, matchSnippet,
+}) {
+  const [messages, setMessages] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const sid = session.session_id;
+  const source = inferSource(sid);
+  const sCfg = SOURCE_CONFIG[source] || SOURCE_CONFIG.unknown;
+
+  useEffect(() => {
+    if (!expanded || messages !== null || loading) return;
+    setLoading(true);
+    apiGet(`/api/v2/sessions/${encodeURIComponent(sid)}`, token)
+      .then((d) => setMessages(d.messages || []))
+      .catch((e) => setError(String(e.message || e)))
+      .finally(() => setLoading(false));
+  }, [expanded, sid, token, messages, loading]);
+
+  return html`
+    <div class=${"xmc-h-srow" + (isSelected ? " is-selected" : "")} key=${sid}
+         style=${"display:flex;align-items:stretch;flex-wrap:wrap;" + (isSelected ? "background:color-mix(in srgb,var(--color-primary,#6aa3f0) 8%,transparent);border-color:color-mix(in srgb,var(--color-primary,#6aa3f0) 50%,transparent);" : "")}>
+      <!-- B-156: 行首 checkbox 触发批量选择，stopPropagation 防止误展开 -->
+      ${onToggleSelect
+        ? html`<label
+            style="display:flex;align-items:center;padding:0 .4rem 0 .6rem;cursor:pointer"
+            onClick=${(e) => e.stopPropagation()}
+            title="勾选用于批量删除"
+          >
+            <input
+              type="checkbox"
+              checked=${!!isSelected}
+              onChange=${onToggleSelect}
+            />
+          </label>`
+        : null}
+      <button
+        type="button"
+        class="xmc-h-srow__head"
+        onClick=${onToggle}
+        aria-expanded=${expanded ? "true" : "false"}
+        style="flex:1 1 auto;min-width:0;width:auto"
+      >
+        <${Icon} d=${expanded ? I_CHEVRON_DOWN : I_CHEVRON_RIGHT} className="xmc-h-srow__chev" />
+        <span class="xmc-h-srow__source" title=${sCfg.label}>${sCfg.glyph}</span>
+        ${session.preview
+          ? html`
+              <span class="xmc-h-srow__preview" title=${sid} style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;color:var(--color-fg)">${session.preview}</span>
+              <code class="xmc-h-srow__sid" style="opacity:.5;font-size:.75em">${sid.slice(0, 12)}</code>
+            `
+          : html`<code class="xmc-h-srow__sid">${sid}</code>`}
+        <span class="xmc-h-srow__count">${session.message_count || 0} 轮</span>
+        <span class="xmc-h-srow__time">${timeAgo(session.updated_at)}</span>
+        <span class="xmc-h-srow__actions">
+          ${onResume
+            ? html`
+              <button
+                type="button"
+                class="xmc-h-btn xmc-h-btn--ghost"
+                onClick=${(e) => { e.stopPropagation(); onResume(sid); }}
+                title="在 Chat 中恢复"
+              >
+                <${Icon} d=${I_PLAY} />
+              </button>
+            `
+            : null}
+          <button
+            type="button"
+            class="xmc-h-btn xmc-h-btn--ghost"
+            onClick=${(e) => { e.stopPropagation(); onDelete(sid); }}
+            title="删除会话"
+          >
+            <${Icon} d=${I_TRASH} />
+          </button>
+        </span>
+      </button>
+      ${expanded
+        ? html`
+          <div class="xmc-h-srow__body" style="flex:0 0 100%;width:100%">
+            ${error
+              ? html`<div class="xmc-h-error">${error}</div>`
+              : loading
+                ? html`<div class="xmc-h-loading">载入中…</div>`
+                : messages && messages.length === 0
+                  ? html`<div class="xmc-h-empty">这个会话还没消息。</div>`
+                  : messages
+                    ? html`<${MessageList} messages=${messages} highlight=${query} />`
+                    : null}
+          </div>
+        `
+        : null}
+      ${!expanded && matchSnippet
+        ? html`
+          <div
+            class="xmc-h-srow__snippet"
+            title="服务端搜索命中片段"
+            style=${"flex:0 0 100%;width:100%;padding:.25rem .8rem .5rem 2.4rem;"
+              + "color:var(--color-fg-muted, rgba(127,127,127,.85));"
+              + "font-family:var(--xmc-mono, monospace);"
+              + "font-size:.78em;line-height:1.45;"
+              + "white-space:pre-wrap;word-break:break-word"}
+          >…${matchSnippet}…</div>
+        `
+        : null}
+    </div>
+  `;
+}
+
+
 // ── DeleteConfirmDialog (port of components/DeleteConfirmDialog.tsx) ──
 
 export function DeleteConfirmDialog({ sid, onCancel, onConfirm, busy }) {

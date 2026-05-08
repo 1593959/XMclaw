@@ -35,159 +35,17 @@ const { useState, useEffect, useMemo } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
 import { apiGet } from "../lib/api.js";
-import { lex, renderTokenHtml } from "../lib/markdown.js";
 import { toast } from "../lib/toast.js";
 import { confirmDialog } from "../lib/dialog.js";
-// B-323: Icon / SVG paths / ToolCallBlock / MessageBubble / MessageList
-// / DeleteConfirmDialog split into pages/_panels/sessions_parts.js so
-// this page stays under the 500-line UI budget (FRONTEND_DESIGN.md §1.4).
+// B-323 + B-341: SessionRow / SOURCE_CONFIG / inferSource / timeAgo
+// + Icon / SVG paths / MessageList / DeleteConfirmDialog all live in
+// pages/_panels/sessions_parts.js. Keeps this page under the
+// 500-line UI budget (FRONTEND_DESIGN.md §1.4).
 import {
-  Icon,
-  I_CHEVRON_DOWN, I_CHEVRON_RIGHT, I_TRASH, I_X, I_PLAY,
-  MessageList,
+  Icon, I_SEARCH,
+  SessionRow,
   DeleteConfirmDialog,
 } from "./_panels/sessions_parts.js";
-
-// Map session-id prefix → source-config (icon glyph + color class).
-// Mirrors hermes SOURCE_CONFIG (SessionsPage.tsx:52-60). Our prefixes:
-//   chat-…   → cli (default Web UI session)
-//   live-…   → cli
-//   tg-…     → telegram
-//   feishu-… → feishu
-//   wecom-…  → wecom
-const SOURCE_CONFIG = {
-  cli:      { glyph: "▮", label: "CLI" },
-  telegram: { glyph: "✈", label: "Telegram" },
-  discord:  { glyph: "#", label: "Discord" },
-  slack:    { glyph: "≡", label: "Slack" },
-  feishu:   { glyph: "✦", label: "Feishu" },
-  wecom:    { glyph: "❖", label: "WeCom" },
-  cron:     { glyph: "⏱", label: "Cron" },
-  unknown:  { glyph: "○", label: "Unknown" },
-};
-
-function inferSource(sid) {
-  if (!sid) return "unknown";
-  if (sid.startsWith("tg-") || sid.startsWith("telegram-")) return "telegram";
-  if (sid.startsWith("discord-")) return "discord";
-  if (sid.startsWith("slack-")) return "slack";
-  if (sid.startsWith("feishu-")) return "feishu";
-  if (sid.startsWith("wecom-")) return "wecom";
-  if (sid.startsWith("cron-")) return "cron";
-  if (sid.startsWith("chat-") || sid.startsWith("live-")) return "cli";
-  return "unknown";
-}
-
-function timeAgo(epoch) {
-  if (!epoch) return "—";
-  const ms = Math.max(0, Date.now() - epoch * 1000);
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return s + "s ago";
-  const m = Math.floor(s / 60);
-  if (m < 60) return m + "m ago";
-  const h = Math.floor(m / 60);
-  if (h < 48) return h + "h ago";
-  const d = Math.floor(h / 24);
-  if (d < 30) return d + "d ago";
-  const mo = Math.floor(d / 30);
-  return mo + "mo ago";
-}
-
-
-// ── SessionRow (one card per session) ─────────────────────────────
-
-function SessionRow({ session, query, expanded, onToggle, onDelete, onResume, token, isSelected, onToggleSelect }) {
-  const [messages, setMessages] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const sid = session.session_id;
-  const source = inferSource(sid);
-  const sCfg = SOURCE_CONFIG[source] || SOURCE_CONFIG.unknown;
-
-  useEffect(() => {
-    if (!expanded || messages !== null || loading) return;
-    setLoading(true);
-    apiGet(`/api/v2/sessions/${encodeURIComponent(sid)}`, token)
-      .then((d) => setMessages(d.messages || []))
-      .catch((e) => setError(String(e.message || e)))
-      .finally(() => setLoading(false));
-  }, [expanded, sid, token, messages, loading]);
-
-  return html`
-    <div class=${"xmc-h-srow" + (isSelected ? " is-selected" : "")} key=${sid}
-         style=${"display:flex;align-items:stretch;flex-wrap:wrap;" + (isSelected ? "background:color-mix(in srgb,var(--color-primary,#6aa3f0) 8%,transparent);border-color:color-mix(in srgb,var(--color-primary,#6aa3f0) 50%,transparent);" : "")}>
-      <!-- B-156: 行首 checkbox 触发批量选择，stopPropagation 防止误展开 -->
-      ${onToggleSelect
-        ? html`<label
-            style="display:flex;align-items:center;padding:0 .4rem 0 .6rem;cursor:pointer"
-            onClick=${(e) => e.stopPropagation()}
-            title="勾选用于批量删除"
-          >
-            <input
-              type="checkbox"
-              checked=${!!isSelected}
-              onChange=${onToggleSelect}
-            />
-          </label>`
-        : null}
-      <button
-        type="button"
-        class="xmc-h-srow__head"
-        onClick=${onToggle}
-        aria-expanded=${expanded ? "true" : "false"}
-        style="flex:1 1 auto;min-width:0;width:auto"
-      >
-        <${Icon} d=${expanded ? I_CHEVRON_DOWN : I_CHEVRON_RIGHT} className="xmc-h-srow__chev" />
-        <span class="xmc-h-srow__source" title=${sCfg.label}>${sCfg.glyph}</span>
-        ${session.preview
-          ? html`
-              <span class="xmc-h-srow__preview" title=${sid} style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;color:var(--color-fg)">${session.preview}</span>
-              <code class="xmc-h-srow__sid" style="opacity:.5;font-size:.75em">${sid.slice(0, 12)}</code>
-            `
-          : html`<code class="xmc-h-srow__sid">${sid}</code>`}
-        <span class="xmc-h-srow__count">${session.message_count || 0} 轮</span>
-        <span class="xmc-h-srow__time">${timeAgo(session.updated_at)}</span>
-        <span class="xmc-h-srow__actions">
-          ${onResume
-            ? html`
-              <button
-                type="button"
-                class="xmc-h-btn xmc-h-btn--ghost"
-                onClick=${(e) => { e.stopPropagation(); onResume(sid); }}
-                title="在 Chat 中恢复"
-              >
-                <${Icon} d=${I_PLAY} />
-              </button>
-            `
-            : null}
-          <button
-            type="button"
-            class="xmc-h-btn xmc-h-btn--ghost"
-            onClick=${(e) => { e.stopPropagation(); onDelete(sid); }}
-            title="删除会话"
-          >
-            <${Icon} d=${I_TRASH} />
-          </button>
-        </span>
-      </button>
-      ${expanded
-        ? html`
-          <div class="xmc-h-srow__body" style="flex:0 0 100%;width:100%">
-            ${error
-              ? html`<div class="xmc-h-error">${error}</div>`
-              : loading
-                ? html`<div class="xmc-h-loading">载入中…</div>`
-                : messages && messages.length === 0
-                  ? html`<div class="xmc-h-empty">这个会话还没消息。</div>`
-                  : messages
-                    ? html`<${MessageList} messages=${messages} highlight=${query} />`
-                    : null}
-          </div>
-        `
-        : null}
-    </div>
-  `;
-}
 
 
 // ── SessionsPage main ────────────────────────────────────────────
@@ -203,6 +61,16 @@ export function SessionsPage({ token }) {
   const [selected, setSelected] = useState(new Set());
   const [showInternal, setShowInternal] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
+  // B-341 (audit pass-2 #7): server-side hits from
+  // /api/v2/sessions/search?q=… keyed by session_id. The local
+  // filter still runs against `sessions` for instant feedback on
+  // already-loaded preview/sid; this map adds sessions whose
+  // *message bodies* (not loaded into the page) contain the query.
+  // Pre-B-341 the search box only filtered the 200-row recent list
+  // by sid + preview, so older or message-body-only matches were
+  // invisible — the B-339 endpoint shipped but had no caller.
+  const [serverHits, setServerHits] = useState({});
+  const [searchBusy, setSearchBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -211,6 +79,41 @@ export function SessionsPage({ token }) {
       .catch((e) => { if (!cancelled) setError(String(e.message || e)); });
     return () => { cancelled = true; };
   }, [token]);
+
+  // B-341 (audit pass-2 #7): debounced server-side message-body search.
+  // Skip queries < 2 chars (too noisy + wastes a round-trip for what
+  // the local filter already covers). 300ms debounce keeps typing
+  // smooth while still feeling immediate by the time the user stops.
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) {
+      setServerHits({});
+      setSearchBusy(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setSearchBusy(true);
+    const timer = setTimeout(() => {
+      apiGet(
+        `/api/v2/sessions/search?q=${encodeURIComponent(q)}&limit=50`,
+        token,
+      )
+        .then((d) => {
+          if (cancelled) return;
+          const next = {};
+          for (const row of d.sessions || []) {
+            if (row.session_id) next[row.session_id] = row;
+          }
+          setServerHits(next);
+        })
+        .catch(() => { if (!cancelled) setServerHits({}); })
+        .finally(() => { if (!cancelled) setSearchBusy(false); });
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [query, token]);
 
   // B-156: identify internal sessions (reflection / dream / etc.) the
   // daemon spawns for self-bookkeeping. Filtering them out by default
@@ -230,15 +133,37 @@ export function SessionsPage({ token }) {
   const filtered = useMemo(() => {
     if (!sessions) return [];
     const q = query.trim().toLowerCase();
-    return sessions.filter((s) => {
+    // B-341 (audit pass-2 #7): merge server-side hits with the
+    // already-loaded recent list. A row counts as "matching" if:
+    //   1. local filter matches (sid / preview), OR
+    //   2. server search returned it (message-body match).
+    // Server hits not in the recent-200 list are appended at the
+    // end so the user can find conversations that aged out of the
+    // initial fetch but still contain their query in the body.
+    const seen = new Set();
+    const out = [];
+    for (const s of sessions) {
       const sid = s.session_id || "";
-      // B-156: hide reflect:/dream:/etc by default; toggle to show.
-      if (!showInternal && isInternalSid(sid)) return false;
-      if (!q) return true;
+      if (!showInternal && isInternalSid(sid)) continue;
       const preview = (s.preview || "").toLowerCase();
-      return sid.toLowerCase().includes(q) || preview.includes(q);
-    });
-  }, [sessions, query, showInternal]);
+      const localMatch = !q
+        || sid.toLowerCase().includes(q)
+        || preview.includes(q);
+      const serverMatch = q && serverHits[sid] !== undefined;
+      if (localMatch || serverMatch) {
+        seen.add(sid);
+        out.push(s);
+      }
+    }
+    if (q) {
+      for (const sid of Object.keys(serverHits)) {
+        if (seen.has(sid)) continue;
+        if (!showInternal && isInternalSid(sid)) continue;
+        out.push(serverHits[sid]);
+      }
+    }
+    return out;
+  }, [sessions, query, showInternal, serverHits]);
 
   // B-156: how many internal sessions are hidden right now (for the
   // toggle's count badge).
@@ -459,6 +384,7 @@ export function SessionsPage({ token }) {
                     token=${token}
                     isSelected=${selected.has(s.session_id)}
                     onToggleSelect=${() => onToggleSelect(s.session_id)}
+                    matchSnippet=${(serverHits[s.session_id] || s).match_snippet || null}
                   />
                 `)}
               </div>

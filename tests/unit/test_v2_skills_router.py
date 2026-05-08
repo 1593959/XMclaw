@@ -229,3 +229,86 @@ def test_list_skills_evolved_classified_separately(tmp_path) -> None:
     rows = r.json()["skills"]
     row = next(s for s in rows if s["id"] == "auto.foo")
     assert row["source"] == "evolved"
+
+
+# ── B-341 (audit pass-2 #6): pending_restarts API surface ──────────
+
+
+class _StubWatcher:
+    """Mimics SkillsWatcher.pending_restarts() for the router test."""
+
+    def __init__(self, items: list[dict]) -> None:
+        self._items = list(items)
+
+    def pending_restarts(self) -> list[dict]:
+        return list(self._items)
+
+
+def test_b341_list_skills_includes_pending_restarts(tmp_path) -> None:
+    """The skills router must surface ``pending_restarts`` so the UI
+    can render a "restart needed" banner. Pre-B-341 the
+    SKILL_UPDATE_REQUIRES_RESTART event hit the bus but no consumer
+    existed; the response had no field for it.
+
+    Note: ``app.state.skills_watcher`` is set INSIDE the TestClient
+    block — lifespan startup explicitly assigns
+    ``_app.state.skills_watcher = None`` so any preset is clobbered.
+    The router reads at request time, so post-lifespan injection
+    works.
+    """
+    reg = SkillRegistry(history_dir=tmp_path / "history")
+    reg.register(_DemoSkill(), manifest=SkillManifest(id="demo", version=1), set_head=True)
+    a = create_app(config={})
+    a.state.orchestrator = _StubOrchestrator(reg)
+    with TestClient(a) as client:
+        client.app.state.skills_watcher = _StubWatcher([
+            {"skill_id": "demo", "version": 1, "path": "/x/demo/skill.py"},
+        ])
+        r = client.get("/api/v2/skills")
+    body = r.json()
+    assert "pending_restarts" in body
+    assert body["pending_restarts"] == [
+        {"skill_id": "demo", "version": 1, "path": "/x/demo/skill.py"},
+    ]
+
+
+def test_b341_list_skills_pending_restarts_empty_without_watcher(
+    tmp_path,
+) -> None:
+    """No watcher attached → empty list (not missing key, not 500).
+    Stable shape lets the frontend always read
+    ``d.pending_restarts || []`` without conditional plumbing."""
+    reg = SkillRegistry(history_dir=tmp_path / "history")
+    reg.register(_DemoSkill(), manifest=SkillManifest(id="demo", version=1), set_head=True)
+    a = create_app(config={})
+    a.state.orchestrator = _StubOrchestrator(reg)
+    with TestClient(a) as client:
+        # Lifespan already set skills_watcher = None (orchestrator
+        # was set on state, but lifespan only reads its OWN local
+        # orchestrator variable, which is None when create_app gets
+        # config={} — so no real watcher is created either way).
+        r = client.get("/api/v2/skills")
+    body = r.json()
+    assert body["pending_restarts"] == []
+
+
+def test_b341_list_skills_no_orchestrator_still_returns_pending(
+    tmp_path,
+) -> None:
+    """Even when evolution is disabled (no orchestrator), the watcher
+    can still announce restart-required edits — the banner must show.
+    Otherwise editing a Python skill while evolution is off produces
+    no UI signal at all."""
+    a = create_app(config={})
+    # No orchestrator set; we'll inject the watcher post-lifespan.
+    with TestClient(a) as client:
+        client.app.state.skills_watcher = _StubWatcher([
+            {"skill_id": "x", "version": 1, "path": "/x/skill.py"},
+        ])
+        r = client.get("/api/v2/skills")
+    body = r.json()
+    assert body["evolution_enabled"] is False
+    assert body["skills"] == []
+    assert body["pending_restarts"] == [
+        {"skill_id": "x", "version": 1, "path": "/x/skill.py"},
+    ]

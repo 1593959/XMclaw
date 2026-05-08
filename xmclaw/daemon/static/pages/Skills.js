@@ -134,11 +134,22 @@ export function SkillsPage({ token }) {
   // view: "all" | "built-in" | "user"
   const [view, setView] = useState("all");
   const [expanded, setExpanded] = useState(new Set());
+  // B-341 (audit pass-2 #6): when the daemon's SkillsWatcher detects
+  // an mtime change on a registered Python ``skill.py`` it can't
+  // hot-reload (importlib cache) — it emits SKILL_UPDATE_REQUIRES_
+  // RESTART on the bus AND now (post-B-341) populates
+  // ``/api/v2/skills.pending_restarts``. Pre-B-341 the bus event
+  // had zero subscribers; this banner is the missing consumer.
+  const [pendingRestarts, setPendingRestarts] = useState([]);
 
   useEffect(() => {
     let cancelled = false;
     apiGet("/api/v2/skills", token)
-      .then((d) => { if (!cancelled) setSkills(d.skills || []); })
+      .then((d) => {
+        if (cancelled) return;
+        setSkills(d.skills || []);
+        setPendingRestarts(d.pending_restarts || []);
+      })
       .catch((e) => { if (!cancelled) setError(String(e.message || e)); });
     return () => { cancelled = true; };
   }, [token]);
@@ -190,7 +201,10 @@ export function SkillsPage({ token }) {
 
   const reload = () => {
     apiGet("/api/v2/skills", token)
-      .then((d) => setSkills(d.skills || []))
+      .then((d) => {
+        setSkills(d.skills || []);
+        setPendingRestarts(d.pending_restarts || []);
+      })
       .catch((e) => toast.error("刷新失败：" + (e.message || e)));
   };
 
@@ -282,6 +296,42 @@ export function SkillsPage({ token }) {
           <span class="xmc-h-badge">${counts.all} 个</span>
         </div>
       </header>
+
+      ${pendingRestarts.length > 0
+        ? html`
+            <div
+              class="xmc-h-banner xmc-h-banner--warning"
+              role="status"
+              aria-live="polite"
+              style=${"margin: 8px 16px; padding: 10px 14px; "
+                + "border-radius: 6px; "
+                + "background: rgba(245, 158, 11, 0.12); "
+                + "border: 1px solid rgba(245, 158, 11, 0.5); "
+                + "color: var(--xmc-text, inherit);"}
+            >
+              <strong>需要重启 daemon 才能生效</strong>
+              <span style="opacity:.8">
+                · 检测到 ${pendingRestarts.length} 个 Python 技能
+                文件被编辑：
+              </span>
+              <ul style="margin: 6px 0 0 18px; padding: 0; opacity: .85">
+                ${pendingRestarts.map(
+                  (it) => html`
+                    <li style="font-family: var(--xmc-mono, monospace); font-size: .85em">
+                      ${it.skill_id} v${it.version}
+                      <span style="opacity: .6"> — ${it.path}</span>
+                    </li>
+                  `,
+                )}
+              </ul>
+              <div style="margin-top: 6px; opacity:.7; font-size:.85em">
+                Python skill 由 importlib 缓存 — 运行
+                <code>xmclaw stop &amp;&amp; xmclaw start</code> 后才会
+                加载新代码（SKILL.md 编辑会自动热更新，无需重启）。
+              </div>
+            </div>
+          `
+        : null}
 
       <div class="xmc-h-page__body xmc-h-skills__body">
         <aside class="xmc-h-skills__panel" aria-label="过滤">
