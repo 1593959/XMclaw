@@ -290,3 +290,86 @@ def test_ui_assets_served_under_ui_mount(
     resp = http_client.get(url)
     assert resp.status_code == 200, f"{url} should be 200; got {resp.status_code}"
     assert needle in resp.text, f"{url} body missing expected marker {needle!r}"
+
+
+# ── B-344 (audit pass-2 follow-up): import-path resolution ────────
+#
+# Static-file paths in ESM imports are resolved relative to the
+# importing module. A panel file at ``pages/_panels/foo.js`` doing
+# ``import x from "../lib/api.js"`` resolves to
+# ``/ui/pages/lib/api.js`` — which doesn't exist; the daemon's SPA
+# fallback returns the index HTML and the browser rejects the
+# import as MIME-mismatched (``application/javascript`` expected,
+# ``text/html`` received). The whole import graph collapses, and
+# the user gets a blank black page with a console full of
+# "Failed to fetch dynamically imported module" errors.
+#
+# This test scans every JS file in static/ for relative-path
+# imports and asserts the target file exists on disk. Catches the
+# kind of bug the line-budget split introduced (B-323 panel
+# extractions where ``../lib/...`` was wrong from one-level-deeper
+# ``_panels/``). Doesn't try to type-check exports — just resolve.
+
+import re
+
+_IMPORT_RE = re.compile(
+    r'(?:^|[\s;,(])import\s+(?:[^"\']*from\s+)?["\']([^"\']+)["\']'
+    r'|(?:^|[\s;,])from\s+["\']([^"\']+)["\']',
+    re.MULTILINE,
+)
+
+
+def _resolve_import(source_file: Path, spec: str) -> Path | None:
+    """Resolve a JS import spec ``./foo.js`` / ``../bar.js`` /
+    ``./qux/index.js`` against ``source_file``'s directory. Returns
+    ``None`` for non-relative specs (CDN URLs, bare module names —
+    those have their own resolution rules)."""
+    if not spec.startswith(("./", "../")):
+        return None
+    # Strip any cache-busting query the runtime appends.
+    spec = spec.split("?", 1)[0]
+    return (source_file.parent / spec).resolve()
+
+
+def _all_js_files() -> list[Path]:
+    return sorted(STATIC_DIR.rglob("*.js"))
+
+
+def test_b344_every_relative_import_resolves_to_a_real_file() -> None:
+    """No JS file in the UI may import a relative path that doesn't
+    exist on disk. Pre-B-344 three panel files (memory_identity.js,
+    memory_notes_journal.js, settings_audio.js) shipped with
+    one-level-too-shallow paths from the B-323 monolith split —
+    ``../lib/api.js`` from ``_panels/`` resolves to a non-existent
+    ``/ui/pages/lib/api.js``. The pages just hadn't been opened
+    until B-341/B-342 and the user got a blank page."""
+    static_root = STATIC_DIR.resolve()
+    bad: list[tuple[str, str, Path]] = []
+    for js in _all_js_files():
+        try:
+            text = js.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for m in _IMPORT_RE.finditer(text):
+            spec = m.group(1) or m.group(2)
+            if not spec:
+                continue
+            target = _resolve_import(js, spec)
+            if target is None:
+                continue  # bare or absolute — skip
+            # Defend against escaping the static root via excessive ``..``.
+            try:
+                target.relative_to(static_root)
+            except ValueError:
+                bad.append((str(js.relative_to(STATIC_DIR)), spec, target))
+                continue
+            if not target.is_file():
+                bad.append((str(js.relative_to(STATIC_DIR)), spec, target))
+    assert not bad, (
+        "Relative imports point at non-existent files (browser will "
+        "reject as MIME-mismatched HTML when the SPA fallback fires):\n  "
+        + "\n  ".join(
+            f"{src}: import {spec!r} → {target}"
+            for src, spec, target in bad
+        )
+    )

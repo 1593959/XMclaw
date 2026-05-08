@@ -10,9 +10,16 @@ const { h } = window.__xmc.preact;
 const { useState, useEffect, useCallback } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
-import { apiGet } from "../lib/api.js";
-import { toast } from "../lib/toast.js";
-import { confirmDialog } from "../lib/dialog.js";
+// B-344 (audit pass-2 follow-up): paths must climb TWO levels —
+// out of ``_panels/`` then out of ``pages/`` — to reach
+// ``static/lib``. ``../lib/...`` from here resolves to
+// ``/ui/pages/lib/...`` which doesn't exist; the daemon's SPA
+// fallback returns the index HTML and the browser rejects the
+// import as MIME-mismatched. The matching pages just hadn't been
+// opened until B-341/B-342 work surfaced the bug.
+import { apiGet } from "../../lib/api.js";
+import { toast } from "../../lib/toast.js";
+import { confirmDialog } from "../../lib/dialog.js";
 
 async function apiPut(path, token, body) {
   const url = path + (token ? `?token=${encodeURIComponent(token)}` : "");

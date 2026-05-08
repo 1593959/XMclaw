@@ -9,8 +9,9 @@ const { h } = window.__xmc.preact;
 const { useState, useEffect, useCallback } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
-import { apiGet } from "../lib/api.js";
-import { toast } from "../lib/toast.js";
+// B-344: see memory_identity.js — same one-level-too-shallow bug.
+import { apiGet } from "../../lib/api.js";
+import { toast } from "../../lib/toast.js";
 
 async function apiPut(path, token, body) {
   const url = path + (token ? `?token=${encodeURIComponent(token)}` : "");

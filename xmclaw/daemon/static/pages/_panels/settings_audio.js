@@ -7,7 +7,9 @@ const { h } = window.__xmc.preact;
 const { useState, useEffect } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
-import { Badge } from "../components/atoms/badge.js";
+// B-344: see memory_identity.js — same one-level-too-shallow bug.
+// Need ``../../`` to escape ``_panels/`` AND ``pages/``.
+import { Badge } from "../../components/atoms/badge.js";
 import {
   sttSupported,
   ttsSupported,
@@ -16,7 +18,7 @@ import {
   getAudioPrefs,
   setAudioPrefs,
   speak,
-} from "../lib/audio.js";
+} from "../../lib/audio.js";
 
 
 export function AudioSection() {
