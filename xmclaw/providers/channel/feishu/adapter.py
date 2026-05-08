@@ -501,7 +501,13 @@ class FeishuAdapter(ChannelAdapter):
                 SOURCE_CHANNEL,
                 apply_policy,
             )
-            policy_str = str(self._config.get("injection_policy", "detect_only")).lower()
+            # B-326: was ``self._config`` — typo against ``self._cfg``
+            # set in __init__. AttributeError was being swallowed by
+            # the broad ``except Exception`` below, so every Feishu
+            # inbound bypassed the injection scanner regardless of the
+            # operator's ``injection_policy`` setting. ``injection_policy:
+            # block`` was a 100% no-op until this fix.
+            policy_str = str(self._cfg.get("injection_policy", "detect_only")).lower()
             try:
                 policy = PolicyMode(policy_str)
             except ValueError:
