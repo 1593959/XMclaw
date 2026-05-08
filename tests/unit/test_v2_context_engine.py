@@ -68,10 +68,10 @@ async def test_simple_engine_assemble_drops_system_when_excluded() -> None:
 
 
 @pytest.mark.asyncio
-async def test_simple_engine_compact_is_noop() -> None:
-    """SimpleContextEngine doesn't actually compact — it just reports
-    the message count. Real impls would delegate to ContextCompressor."""
-    eng = SimpleContextEngine()
+async def test_simple_engine_compact_below_budget_no_op() -> None:
+    """B-334 (audit #6): when below ``max_tokens``, compact() is a
+    no-op — preserves the original "no-op below budget" semantic."""
+    eng = SimpleContextEngine(max_tokens=1_000_000)
     await eng.bootstrap("s1")
     for i in range(5):
         await eng.ingest("s1", {"role": "user", "content": f"q{i}"})
@@ -80,6 +80,47 @@ async def test_simple_engine_compact_is_noop() -> None:
     assert r.success
     assert r.messages_before == 5
     assert r.messages_after == 5
+
+
+@pytest.mark.asyncio
+async def test_b334_simple_engine_compact_force_drops_middle_messages() -> None:
+    """B-334 (audit #6): force=True actually truncates — drops middle
+    messages, keeps system + recent tail. Pre-B-334 even forced
+    compaction was a no-op.
+
+    Uses a small ``max_tokens`` so ``keep_tail = max(8, max_tokens //
+    1024)`` resolves to the floor (8) rather than the default's 125;
+    otherwise 31 messages still fits inside keep-tail and the
+    function correctly returns no-op."""
+    eng = SimpleContextEngine(max_tokens=4096)
+    await eng.bootstrap("s1")
+    await eng.ingest("s1", {"role": "system", "content": "you are X"})
+    for i in range(30):
+        await eng.ingest("s1", {"role": "user", "content": f"q{i}"})
+    r = await eng.compact("s1", force=True)
+    assert r.success
+    assert r.messages_before == 31
+    assert r.messages_after < 31, "force compact must actually drop"
+    survivors = eng._sessions["s1"]
+    assert survivors[0]["role"] == "system"
+    last_user = survivors[-1]
+    assert last_user["content"] == "q29"
+    assert r.summary is not None
+    assert "dropped" in r.summary
+
+
+@pytest.mark.asyncio
+async def test_b334_simple_engine_compact_below_threshold_keeps_all() -> None:
+    """Tiny conversation already fits the keep-tail bucket — force
+    compaction must not drop just because force=True."""
+    eng = SimpleContextEngine()
+    await eng.bootstrap("s1")
+    await eng.ingest("s1", {"role": "system", "content": "S"})
+    for i in range(3):
+        await eng.ingest("s1", {"role": "user", "content": f"q{i}"})
+    r = await eng.compact("s1", force=True)
+    assert r.messages_before == 4
+    assert r.messages_after == 4
 
 
 @pytest.mark.asyncio

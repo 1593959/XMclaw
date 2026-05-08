@@ -397,8 +397,12 @@ class ContextCompressor:
             )
 
             # Phase 5: assemble.
+            # B-334: pass ``st.previous_summary`` so the assembler can
+            # use the last-known-good recap as a fallback prefix when
+            # this round's summarizer failed (audit #20).
             compressed = self._assemble_compressed(
                 messages, compress_start, compress_end, summary,
+                previous_summary=st.previous_summary,
             )
             compressed = self._sanitize_tool_pairs(compressed)
 
@@ -819,9 +823,18 @@ Use this exact structure:
         compress_start: int,
         compress_end: int,
         summary: Optional[str],
+        *,
+        previous_summary: Optional[str] = None,
     ) -> list[Message]:
         """Build head + summary + tail, picking summary role to avoid
         consecutive same-role messages on either side.
+
+        ``previous_summary`` (B-334): the last successful summary for
+        this session, if any. Used as a fallback prefix when
+        ``summary`` is None — see the ``if not summary`` branch below.
+        Kept as a parameter (rather than reading ``self._states`` here)
+        so this method stays a pure transform — easier to unit-test
+        without constructing a full _SessionState.
         """
         n = len(messages)
         compressed: list[Message] = []
@@ -843,15 +856,37 @@ Use this exact structure:
             compressed.append(m)
 
         # Static fallback if summary failed.
+        #
+        # B-334 (audit #20): pre-B-334 every failed-summary compaction
+        # produced the SAME generic placeholder. When a session had
+        # SUCCESSFULLY summarized earlier rounds (so
+        # ``st.previous_summary`` is populated) and a later round
+        # failed, we used to throw away the earlier summary and emit
+        # the bare placeholder — losing a useful breadcrumb for no
+        # reason. Now: when previous_summary exists, prefix it
+        # before the failure note. Operators reviewing old
+        # transcripts get the last-known-good recap PLUS a clear
+        # marker that this round's compaction couldn't be done.
         if not summary:
             n_dropped = compress_end - compress_start
-            summary = (
-                f"{SUMMARY_PREFIX}\n"
-                f"Summary generation was unavailable. {n_dropped} conversation "
-                f"turns were removed to free context space but could not be "
-                f"summarized. Continue based on the recent messages below "
-                f"and the current state of any files or resources."
+            failure_note = (
+                f"Summary generation was unavailable for THIS round. "
+                f"{n_dropped} conversation turns were removed to free "
+                f"context space but could not be summarized. Continue "
+                f"based on the recent messages below and the current "
+                f"state of any files or resources."
             )
+            if previous_summary:
+                # Last-known-good recap + the new failure note. The
+                # SUMMARY_PREFIX is already at the start of
+                # previous_summary so we don't double it.
+                summary = (
+                    f"{previous_summary}\n\n"
+                    f"[Note: subsequent compaction round failed.] "
+                    f"{failure_note}"
+                )
+            else:
+                summary = f"{SUMMARY_PREFIX}\n{failure_note}"
 
         # Pick a summary role that doesn't collide with adjacent messages.
         last_head_role = (

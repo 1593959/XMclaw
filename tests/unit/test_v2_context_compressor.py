@@ -220,6 +220,61 @@ def test_compress_failed_summary_uses_fallback() -> None:
     assert found_fallback
 
 
+def test_b334_failed_summary_reuses_previous_summary_when_present() -> None:
+    """B-334 (audit #20): when a session has previously produced a
+    successful summary AND a later round's summarizer fails, the
+    fallback prefixes the last-known-good recap before the failure
+    note. Pre-B-334 the previous summary was thrown away on every
+    failed round and operators saw only the generic placeholder.
+    """
+    import asyncio
+    from typing import Optional
+
+    # First call succeeds → seeds st.previous_summary; second call
+    # fails → must reuse the seed.
+    call_count = {"n": 0}
+
+    async def _flaky_summarize(prompt: str, max_tokens: int) -> Optional[str]:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return (
+                "## CONVERSATION SUMMARY\n"
+                "Earlier turns covered: setting up project X.\n"
+                "## Active State\n"
+                "User asked about deploying X."
+            )
+        raise RuntimeError("summariser flaked on round 2")
+
+    cc = ContextCompressor(
+        model="t", summarize_call=_flaky_summarize,
+        protect_first_n=2, protect_last_n=2,
+        context_length=20_000, threshold_percent=0.5, quiet_mode=True,
+    )
+    # Round 1: succeeds.
+    msgs1 = _build_long_history(n_user_turns=8, content_chars=600)
+    out1 = asyncio.run(cc.compress(msgs1, session_id="sess-flaky"))
+    assert any(
+        "setting up project X" in (m.content or "") for m in out1
+    ), "round 1's good summary must be in the output"
+
+    # Round 2: same session, longer history → triggers another
+    # compaction; this one fails, must still mention "setting up
+    # project X" (the carried-forward previous_summary) plus the
+    # new failure note.
+    msgs2 = _build_long_history(n_user_turns=14, content_chars=600)
+    out2 = asyncio.run(cc.compress(msgs2, session_id="sess-flaky"))
+    contents = [m.content or "" for m in out2]
+    assert any(
+        "setting up project X" in c for c in contents
+    ), (
+        "B-334: failed-round fallback must carry the last-known-good "
+        f"summary forward; got contents={[c[:80] for c in contents]!r}"
+    )
+    assert any(
+        "subsequent compaction round failed" in c for c in contents
+    ), "B-334: failure note must mark the new round as failed"
+
+
 def test_compress_returns_input_on_internal_error() -> None:
     """Catastrophic exception inside compress → return original messages.
     Context compression NEVER fails a user turn."""

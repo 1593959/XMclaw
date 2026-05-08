@@ -542,16 +542,16 @@ class ProposalMaterializer:
         if not match_id:
             return None
 
-        # match_id is the row id (e.g. "procedure:auto-foo"); pull the
-        # metadata.skill_id off the row so the caller logs the
-        # human-readable name, not the row PK.
-        try:
-            hits = await self._memory_provider.query(
-                "long", text=None, k=1,
-                filters={"skill_id": ""},
-            )  # placeholder — fall through to direct text fetch
-        except Exception:  # noqa: BLE001
-            hits = []
+        # match_id is the row id (e.g. "procedure:auto-foo"); strip
+        # the ``procedure:`` prefix to recover the skill name.
+        #
+        # B-334 (audit #4): pre-B-334 this branch ran a dead memory
+        # query (``filters={"skill_id": ""}`` — empty value, never
+        # matches anything; ``hits`` was captured but never read),
+        # then fell through to the same prefix-strip below. The
+        # comment claimed it was a "placeholder — fall through"; in
+        # reality the query was a wasted memory provider round-trip
+        # on every materialise call. Removed.
         if match_id.startswith("procedure:"):
             return match_id[len("procedure:"):]
         return match_id

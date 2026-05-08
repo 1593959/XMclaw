@@ -218,13 +218,70 @@ class SimpleContextEngine(ContextEngine):
         )
 
     async def compact(self, session_id: str, force: bool = False) -> CompactResult:
-        # No-op compaction in the simple impl. Real implementations
-        # delegate to ``ContextCompressor.compress``.
-        messages = self._sessions.get(session_id, [])
+        """Deterministic compaction without an LLM.
+
+        B-334 (audit #6): pre-B-334 this method was a no-op — it
+        captured ``messages_before`` / ``messages_after`` as the same
+        value, returned ``success=True``, and pretended the compaction
+        ran. Tests using this engine for compaction-path coverage
+        were silently passing on a stub. Production AgentLoop uses
+        ``ContextCompressor.compress`` (LLM-summarised, lossy but
+        semantic); SimpleContextEngine ships dependency-free, so we
+        implement a lightweight deterministic strategy instead:
+
+        * Keep the leading system message (if any) intact — it's the
+          identity / instructions; lossy summarisation here is what
+          breaks agents.
+        * Keep the trailing N messages (default ``max_tokens // 1024``,
+          minimum 8) — recent context is most relevant.
+        * Drop everything in the middle when over budget.
+
+        ``force=True`` runs the truncation regardless of the rough
+        token estimate; otherwise we only act when over ``max_tokens``.
+        Test coverage that relied on the no-op pretense should
+        either pass ``force=False`` (will still no-op below budget)
+        or use the real ``ContextCompressor``.
+        """
+        messages = list(self._sessions.get(session_id, []))
+        before = len(messages)
+        if before == 0:
+            return CompactResult(
+                success=True, messages_before=0, messages_after=0,
+            )
+
+        rough_tokens = len(str(messages)) // 4
+        if not force and rough_tokens < self.max_tokens:
+            # Below budget — preserve the original no-op semantic for
+            # callers that just want to "give it a chance to compact".
+            return CompactResult(
+                success=True, messages_before=before, messages_after=before,
+            )
+
+        # Target message count: keep ~8 most-recent + the system
+        # head if present. Floor at 8 so a 1k-token budget doesn't
+        # collapse the conversation to nothing.
+        keep_tail = max(8, self.max_tokens // 1024)
+        first = messages[0]
+        first_role = (
+            getattr(first, "role", None)
+            or (first.get("role") if isinstance(first, dict) else None)
+        )
+        keep_head = 1 if first_role == "system" else 0
+        if before <= keep_head + keep_tail:
+            return CompactResult(
+                success=True, messages_before=before, messages_after=before,
+            )
+
+        compacted = messages[:keep_head] + messages[-keep_tail:]
+        self._sessions[session_id] = compacted
         return CompactResult(
             success=True,
-            messages_before=len(messages),
-            messages_after=len(messages),
+            messages_before=before,
+            messages_after=len(compacted),
+            summary=(
+                f"dropped {before - len(compacted)} middle messages "
+                f"(deterministic; SimpleContextEngine has no LLM)"
+            ),
         )
 
     async def after_turn(self, session_id: str) -> None:
