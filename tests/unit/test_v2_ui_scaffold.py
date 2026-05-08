@@ -205,16 +205,11 @@ LINE_BUDGET = 500
 # entry MUST cite a follow-up plan. Empty dict = no exceptions, every
 # file under SOURCE_GLOBS must clear the cap.
 KNOWN_OVERSIZED: dict[str, str] = {
-    # ProvidersTab is one giant 600-line component covering vector-
-    # indexer status, Auto-Dream controls, embedding setup form,
-    # pinned-fact CRUD, backups, picker config, and provider switcher
-    # in one render. Sub-component extraction (one panel per section)
-    # is the obvious next pass — it's just a lot of mechanical work
-    # to thread state down without breaking behaviour. Tracked on
-    # the next round of B-323-style splits.
-    "pages/_panels/memory_providers.js":
-        "B-323 grandfather: extracted from Memory.js but still ~700 "
-        "lines; subdivide into per-section panels in a follow-up.",
+    # B-323 follow-up cleared the original entry
+    # ``pages/_panels/memory_providers.js`` (was ~700 lines, now under
+    # 500) by extracting its 5 sub-cards (indexer / dream / pinned /
+    # picker / switcher) into sibling files. Empty by design — every
+    # file under SOURCE_GLOBS now clears the 500-line cap.
 }
 
 

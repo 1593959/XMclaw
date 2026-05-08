@@ -15,21 +15,18 @@ const html = window.__xmc.htm.bind(h);
 import { apiGet } from "../../lib/api.js";
 import { toast } from "../../lib/toast.js";
 import { confirmDialog } from "../../lib/dialog.js";
-
-
-async function apiPut(path, token, body) {
-  const url = path + (token ? `?token=${encodeURIComponent(token)}` : "");
-  const res = await fetch(url, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body || {}),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.error || data.ok === false) {
-    throw new Error(data.error || `HTTP ${res.status}`);
-  }
-  return data;
-}
+// B-323 follow-up: ProvidersTab's 5 sub-cards live in their own files
+// so this panel finally clears the 500-line UI budget. Each card is
+// pure presentation; this parent owns state + async handlers.
+import { VectorIndexerCard } from "./memory_providers_indexer.js";
+import { AutoDreamCard } from "./memory_providers_dream.js";
+import { PinnedCard } from "./memory_providers_pinned.js";
+import { PickerCard } from "./memory_providers_picker.js";
+import {
+  ProviderListSection,
+  ProviderSwitcher,
+  WriteProviderHelp,
+} from "./memory_providers_switcher.js";
 
 
 async function apiPost(path, token, body) {
@@ -374,341 +371,34 @@ export function ProvidersTab({ token }) {
   return html`
     <div>
       <${MemoryActivitySparkline} token=${token} />
-      ${indexer
-        ? html`
-            <div class="xmc-h-card" style="padding:.6rem .8rem;margin:.6rem 0;background:var(--color-bg);border-left:3px solid var(--color-primary, #6aa3f0)">
-              <strong style="font-size:.85rem">向量索引（B-41/B-43）</strong>
-              ${indexer.wired
-                ? html`
-                    <div style="margin-top:.3rem;display:flex;gap:.6rem;flex-wrap:wrap;font-size:.8rem">
-                      <span class="xmc-h-badge xmc-h-badge--${indexer.running ? 'success' : 'warn'}">
-                        ${indexer.running ? '运行中' : '未运行'}
-                      </span>
-                      <span class="xmc-datapage__subtitle">监视文件: <strong>${indexer.watched_count}</strong></span>
-                      <span class="xmc-datapage__subtitle">已索引: <strong>${indexer.known_count}</strong></span>
-                      <span class="xmc-datapage__subtitle">轮询: <strong>${indexer.poll_interval_s}s</strong></span>
-                    </div>
-                  `
-                : html`
-                    <div style="margin-top:.3rem;color:var(--xmc-fg-muted);font-size:.78rem;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
-                      <span>⚠ ${indexer.reason || '未启用'}</span>
-                      <button
-                        type="button"
-                        class="xmc-h-btn xmc-h-btn--ghost"
-                        style="font-size:.7rem;padding:.15rem .5rem"
-                        onClick=${() => setShowEmb((v) => !v)}
-                      >
-                        ${showEmb ? '收起' : '配置 embedding'}
-                      </button>
-                    </div>
-                    ${showEmb ? html`
-                      <div style="margin-top:.6rem;display:grid;grid-template-columns:auto 1fr;gap:.4rem .6rem;align-items:center;font-size:.78rem">
-                        <label>provider</label>
-                        <select
-                          value=${embForm.provider}
-                          onChange=${(e) => setEmbForm({ ...embForm, provider: e.target.value })}
-                          class="xmc-h-input"
-                        >
-                          <option value="openai">openai (covers Ollama / vLLM / DashScope)</option>
-                        </select>
-                        <label>base_url</label>
-                        <input
-                          type="text"
-                          class="xmc-h-input"
-                          value=${embForm.base_url}
-                          placeholder="http://127.0.0.1:11434/v1"
-                          onInput=${(e) => setEmbForm({ ...embForm, base_url: e.target.value })}
-                        />
-                        <label>model</label>
-                        <input
-                          type="text"
-                          class="xmc-h-input"
-                          value=${embForm.model}
-                          placeholder="qwen3-embedding:0.6b"
-                          onInput=${(e) => setEmbForm({ ...embForm, model: e.target.value })}
-                        />
-                        <label>dimensions</label>
-                        <input
-                          type="number"
-                          class="xmc-h-input"
-                          value=${embForm.dimensions}
-                          min="1"
-                          onInput=${(e) => setEmbForm({ ...embForm, dimensions: Number(e.target.value) || 0 })}
-                        />
-                        <label>api_key</label>
-                        <input
-                          type="password"
-                          class="xmc-h-input"
-                          value=${embForm.api_key}
-                          placeholder="（Ollama 本地不需要）"
-                          onInput=${(e) => setEmbForm({ ...embForm, api_key: e.target.value })}
-                        />
-                      </div>
-                      <div style="margin-top:.6rem;display:flex;gap:.4rem;justify-content:flex-end">
-                        <button
-                          type="button"
-                          class="xmc-h-btn xmc-h-btn--ghost"
-                          style="font-size:.75rem"
-                          onClick=${() => setShowEmb(false)}
-                        >取消</button>
-                        <button
-                          type="button"
-                          class="xmc-h-btn xmc-h-btn--primary"
-                          style="font-size:.75rem"
-                          disabled=${embSaving}
-                          onClick=${onSaveEmbedding}
-                        >${embSaving ? '保存中…' : '保存（需重启 daemon）'}</button>
-                      </div>
-                      <div style="margin-top:.4rem;font-size:.7rem;color:var(--xmc-fg-muted)">
-                        提示：dimensions 必须和模型实际输出维度一致——qwen3-embedding:0.6b = 1024，text-embedding-3-small = 1536。
-                      </div>
-                    ` : null}
-                  `}
-            </div>
-          `
-        : null}
-      ${dream
-        ? html`
-            <div class="xmc-h-card" style="padding:.6rem .8rem;margin:.6rem 0;background:var(--color-bg);border-left:3px solid var(--color-primary, #6aa3f0)">
-              <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
-                <strong style="font-size:.85rem">Auto-Dream 压缩（B-51）</strong>
-                ${dream.wired
-                  ? html`<button type="button" class="xmc-h-btn xmc-h-btn--ghost" onClick=${onDreamNow} disabled=${dreamRunning} style="font-size:.7rem">
-                      ${dreamRunning ? '运行中…' : '立刻运行'}
-                    </button>`
-                  : null}
-              </div>
-              ${dream.wired
-                ? html`
-                    <div style="margin-top:.3rem;display:flex;gap:.6rem;flex-wrap:wrap;font-size:.8rem">
-                      <span class="xmc-h-badge xmc-h-badge--${dream.running ? 'success' : 'warn'}">
-                        ${dream.running ? '运行中' : '未运行'}
-                      </span>
-                      <span class="xmc-datapage__subtitle">每日 <strong>${String(dream.hour).padStart(2, '0')}:${String(dream.minute).padStart(2, '0')}</strong></span>
-                      ${dream.last_run_at
-                        ? html`<span class="xmc-datapage__subtitle">最近一次: <strong>${new Date(dream.last_run_at * 1000).toLocaleString('zh-CN')}</strong></span>`
-                        : html`<span class="xmc-datapage__subtitle">尚未运行过</span>`}
-                      ${dream.last_result && dream.last_result.ok
-                        ? html`<span class="xmc-h-badge xmc-h-badge--success">节省 ${dream.last_result.saved_chars}</span>`
-                        : null}
-                      ${dream.last_result && !dream.last_result.ok
-                        ? html`<span class="xmc-h-badge xmc-h-badge--error" title=${dream.last_result.error || ''}>上次失败</span>`
-                        : null}
-                      <button type="button" class="xmc-h-btn xmc-h-btn--ghost" onClick=${onToggleBackups} style="font-size:.7rem;margin-left:auto">
-                        ${showBackups ? '隐藏' : '显示'}备份 ${backups != null ? `(${backups.length})` : ''}
-                      </button>
-                    </div>
-                    ${showBackups
-                      ? html`
-                          <div style="margin-top:.4rem;padding:.4rem .6rem;background:var(--color-card);border:1px solid var(--color-border);border-radius:4px;max-height:240px;overflow-y:auto">
-                            ${backups == null
-                              ? html`<small class="xmc-datapage__subtitle">加载中…</small>`
-                              : backups.length === 0
-                                ? html`<small class="xmc-datapage__subtitle">尚无备份</small>`
-                                : html`
-                                    <ul class="xmc-datapage__list" style="margin:0">
-                                      ${backups.map((b) => html`
-                                        <li class="xmc-datapage__row" key=${b.name} style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;padding:.25rem 0;font-size:.75rem">
-                                          <span style="display:flex;flex-direction:column;gap:.1rem;min-width:0;flex:1 1 auto">
-                                            <code style="font-size:.7rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${b.name}</code>
-                                            <small class="xmc-datapage__subtitle">${b.size}B · ${new Date(b.mtime * 1000).toLocaleString('zh-CN')}</small>
-                                          </span>
-                                          <button type="button" class="xmc-h-btn xmc-h-btn--ghost" onClick=${() => onRestore(b.name)} style="font-size:.7rem;flex:0 0 auto">还原</button>
-                                        </li>
-                                      `)}
-                                    </ul>
-                                  `}
-                          </div>
-                        `
-                      : null}
-                  `
-                : html`
-                    <div style="margin-top:.3rem;color:var(--xmc-fg-muted);font-size:.78rem">
-                      ⚠ ${dream.reason || '未启用'}（需配置 LLM）
-                    </div>
-                  `}
-            </div>
-          `
-        : null}
-      ${pinned !== null
-        ? html`
-            <div class="xmc-h-card" style="padding:.6rem .8rem;margin:.6rem 0;background:var(--color-bg);border-left:3px solid var(--color-success, #6ac88a)">
-              <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
-                <strong style="font-size:.85rem">📌 Pinned（B-98 永不被 Auto-Dream 压缩）</strong>
-                <span class="xmc-h-badge xmc-h-badge--muted" style="font-size:.7rem">
-                  ${pinned.length} 条
-                </span>
-              </div>
-              <div style="margin-top:.3rem;color:var(--xmc-fg-muted);font-size:.78rem;line-height:1.55">
-                ## Pinned 里的 bullet 在 dream 压缩时会被原封不动保留（B-53）。
-                Agent 也可以用 <code>memory_pin</code> 工具往这里写。
-              </div>
-              <div style="margin-top:.5rem;display:flex;gap:.4rem;flex-wrap:wrap">
-                <input
-                  type="text"
-                  class="xmc-h-input"
-                  value=${pinDraft}
-                  placeholder="新 pin 一条（如：永远不要把 .env 提交到 git）"
-                  onInput=${(e) => setPinDraft(e.target.value)}
-                  onKeyDown=${(e) => { if (e.key === "Enter" && pinDraft.trim()) onAddPin(); }}
-                  style="flex:1 1 240px;min-width:0"
-                />
-                <button
-                  type="button"
-                  class="xmc-h-btn xmc-h-btn--primary"
-                  style="font-size:.75rem"
-                  onClick=${onAddPin}
-                  disabled=${pinBusy || !pinDraft.trim()}
-                >Pin</button>
-              </div>
-              ${pinned.length > 0 ? html`
-                <ul style="margin:.5rem 0 0;padding:0;list-style:none">
-                  ${pinned.map((p) => html`
-                    <li
-                      key=${p.line}
-                      style="display:flex;justify-content:space-between;align-items:flex-start;gap:.5rem;padding:.35rem .5rem;border-top:1px dashed rgba(106,200,138,.2)"
-                    >
-                      <span style="flex:1;font-size:.78rem;line-height:1.5">${p.text}</span>
-                      <button
-                        type="button"
-                        class="xmc-h-btn xmc-h-btn--ghost"
-                        style="font-size:.7rem;padding:.1rem .5rem;flex-shrink:0"
-                        onClick=${() => onRemovePin(p.line)}
-                        title="取消 pin"
-                      >×</button>
-                    </li>
-                  `)}
-                </ul>
-              ` : html`
-                <p style="margin:.5rem 0 0;font-size:.74rem;color:var(--xmc-fg-muted);font-style:italic">
-                  暂无 pin 项 — 在上面输入要永久保留的事实后回车。
-                </p>
-              `}
-            </div>
-          `
-        : null}
-      ${picker
-        ? html`
-            <div class="xmc-h-card" style="padding:.6rem .8rem;margin:.6rem 0;background:var(--color-bg);border-left:3px solid var(--color-primary, #6aa3f0)">
-              <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
-                <strong style="font-size:.85rem">LLM 多文件记忆召回（B-93）</strong>
-                <span class="xmc-h-badge xmc-h-badge--${picker.runtime.enabled ? 'success' : 'muted'}" style="font-size:.7rem">
-                  ${picker.runtime.enabled ? '运行中' : '关闭'}
-                </span>
-              </div>
-              <div style="margin-top:.3rem;color:var(--xmc-fg-muted);font-size:.78rem;line-height:1.6">
-                每次回合开始让一个子 LLM 从 <code>~/.xmclaw/memory/*.md</code>
-                里挑出最相关的 top-K 笔记整篇注入。补 <code>memory_search</code>
-                的"段落级向量召回"以"概念级文件召回"。<strong>每回合多一次 LLM 调用</strong>，
-                所以默认关闭。
-              </div>
-              ${picker.restart_pending ? html`
-                <div style="margin-top:.4rem;color:var(--color-warning, #c8a86a);font-size:.75rem">
-                  🔄 配置已修改但未重启 daemon — 当前运行中的设置：enabled=${picker.runtime.enabled}, k=${picker.runtime.k}, max_chars=${picker.runtime.max_chars}
-                </div>
-              ` : null}
-              <div style="margin-top:.6rem;display:grid;grid-template-columns:auto 1fr;gap:.4rem .6rem;align-items:center;font-size:.78rem">
-                <label>开启</label>
-                <label style="display:flex;align-items:center;gap:.4rem;cursor:pointer">
-                  <input
-                    type="checkbox"
-                    checked=${pickerForm.enabled}
-                    onChange=${(e) => setPickerForm({ ...pickerForm, enabled: e.target.checked })}
-                  />
-                  <span style="color:var(--xmc-fg-muted);font-size:.74rem">勾上后每次对话会多一次 LLM 调用挑相关笔记</span>
-                </label>
-                <label>top-K</label>
-                <input
-                  type="number"
-                  class="xmc-h-input"
-                  min="1" max="20"
-                  value=${pickerForm.k}
-                  onInput=${(e) => setPickerForm({ ...pickerForm, k: Number(e.target.value) || 3 })}
-                />
-                <label>max_chars</label>
-                <input
-                  type="number"
-                  class="xmc-h-input"
-                  min="500" max="50000" step="500"
-                  value=${pickerForm.max_chars}
-                  onInput=${(e) => setPickerForm({ ...pickerForm, max_chars: Number(e.target.value) || 4000 })}
-                />
-              </div>
-              <div style="margin-top:.5rem;display:flex;gap:.4rem;justify-content:flex-end">
-                <button
-                  type="button"
-                  class="xmc-h-btn xmc-h-btn--primary"
-                  style="font-size:.75rem"
-                  disabled=${pickerSaving}
-                  onClick=${onSavePicker}
-                >${pickerSaving ? '保存中…' : '保存（需重启 daemon）'}</button>
-              </div>
-            </div>
-          `
-        : null}
-      <p class="xmc-datapage__subtitle" style="margin:.6rem 0 1rem">
-        XMclaw 的内存层是 Hermes-style 可插拔架构（B-25/B-26 完成）：
-        <strong>1 个内置 provider + 至多 1 个外部 provider</strong>。
-        外部 provider 优先（active recall），内置 provider 永远在底（fallback）。
-      </p>
-      <ul class="xmc-datapage__list">
-        ${(data.providers || []).map((p) => html`
-          <li class="xmc-datapage__row" key=${p.name}>
-            <div style="display:flex;justify-content:space-between;align-items:baseline;gap:.5rem;flex-wrap:wrap">
-              <strong style="font-size:1rem">${p.name}</strong>
-              <span class="xmc-h-badge xmc-h-badge--${p.kind === 'builtin' ? 'success' : 'info'}" style="font-size:.7rem">
-                ${p.kind === 'builtin' ? '内置 (永久)' : '外部 (可换)'}
-              </span>
-            </div>
-            <div style="margin-top:.25rem;color:var(--xmc-fg-muted);font-size:.78rem">
-              ${p.tool_count > 0
-                ? html`暴露 ${p.tool_count} 个 LLM 工具: ${(p.tools || []).slice(0, 3).map((t) => html`<code key=${t} style="margin-right:.3rem">${t}</code>`)}`
-                : html`<small>不暴露 LLM 工具</small>`}
-            </div>
-          </li>
-        `)}
-      </ul>
-      <h3 style="margin:1.2rem 0 .5rem">切换外部 provider</h3>
-      ${available && available.length > 0 ? html`
-        <div class="xmc-datapage__row" style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
-          <select
-            value=${selected}
-            onChange=${(e) => onSwitch(e.target.value)}
-            disabled=${busy}
-            style="padding:.4rem .5rem;font-size:.9rem;min-width:220px"
-          >
-            ${available.map((p) => html`
-              <option value=${p.id} key=${p.id}>${p.label}</option>
-            `)}
-          </select>
-          <small class="xmc-datapage__subtitle">切换需重启 daemon 生效</small>
-        </div>
-        ${(() => {
-          const cur = (available || []).find((p) => p.id === selected);
-          if (!cur) return null;
-          return html`
-            <div class="xmc-h-card" style="padding:.5rem .8rem;margin-top:.5rem;background:var(--color-bg)">
-              <small style="color:var(--xmc-fg-muted)">${cur.description}</small>
-              ${(cur.needs || []).length > 0 ? html`
-                <div style="margin-top:.3rem">
-                  <small style="color:var(--xmc-fg-muted)">需要配置：</small>
-                  ${cur.needs.map((n) => html`<code key=${n} style="margin-right:.4rem;font-size:.7rem">${n}</code>`)}
-                </div>
-              ` : null}
-            </div>
-          `;
-        })()}
-      ` : null}
-
-      <h3 style="margin:1.2rem 0 .5rem">如何写一个新 provider</h3>
-      <p class="xmc-datapage__subtitle">
-        实现 <code>xmclaw/providers/memory/base.MemoryProvider</code> ABC（put / query / forget +
-        可选的 prefetch / sync_turn / on_session_end / on_pre_compress / get_tool_schemas /
-        handle_tool_call），放到 <code>xmclaw/providers/memory/&lt;name&gt;.py</code>，
-        在 <code>factory.py</code> 注册即可 — agent_loop 不需修改。
-        参考实现 <code>builtin_file.py</code>（内置）/ <code>sqlite_vec.py</code>（外部）/
-        <code>hindsight.py</code>（云 KG 模板）。
-      </p>
+      <${VectorIndexerCard}
+        indexer=${indexer}
+        showEmb=${showEmb} setShowEmb=${setShowEmb}
+        embForm=${embForm} setEmbForm=${setEmbForm}
+        embSaving=${embSaving} onSaveEmbedding=${onSaveEmbedding}
+      />
+      <${AutoDreamCard}
+        dream=${dream}
+        dreamRunning=${dreamRunning} onDreamNow=${onDreamNow}
+        showBackups=${showBackups} onToggleBackups=${onToggleBackups}
+        backups=${backups} onRestore=${onRestore}
+      />
+      <${PinnedCard}
+        pinned=${pinned}
+        pinDraft=${pinDraft} setPinDraft=${setPinDraft}
+        pinBusy=${pinBusy} onAddPin=${onAddPin} onRemovePin=${onRemovePin}
+      />
+      <${PickerCard}
+        picker=${picker}
+        pickerForm=${pickerForm} setPickerForm=${setPickerForm}
+        pickerSaving=${pickerSaving} onSavePicker=${onSavePicker}
+      />
+      <${ProviderListSection} data=${data} />
+      <${ProviderSwitcher}
+        available=${available} selected=${selected}
+        busy=${busy} onSwitch=${onSwitch}
+      />
+      <${WriteProviderHelp} />
     </div>
   `;
 }

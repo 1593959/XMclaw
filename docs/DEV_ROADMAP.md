@@ -560,6 +560,17 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
     - `test_known_oversized_files_actually_oversized`: 防止 grandfather 文件已经被拆下来后忘了从 list 移除 (会让 future regression 不被抓).
   - 验证: 2325 unit tests passed, 0 failed (上次 2323 passed + 这次 +4 测试 - 1 修测试 = 2325). 全部 17 个前端 .js 文件 (含新拆出来的 9 个) 加起来 5390 行 vs 拆前 7 个超标文件平均 ~625 行 × 7 = 4375 行 — 净增 ~1000 行主要是新文件的注释 + import 头, 实际逻辑 code 量基本持平.
 
+- 2026-05-07: **B-323 follow-up — 把 grandfather 文件 `memory_providers.js` 也拆完**. 上一刀临时把 `pages/_panels/memory_providers.js` 放进 `KNOWN_OVERSIZED` 例外列表 (~700 行 monolith ProvidersTab), 现在做了正式的 sub-component 拆分:
+  * `memory_providers_indexer.js` (110 行) — 向量索引状态卡 + 内嵌 embedding 配置 form
+  * `memory_providers_dream.js` (80 行) — Auto-Dream 状态 + 备份列表
+  * `memory_providers_pinned.js` (72 行) — pinned facts CRUD 卡
+  * `memory_providers_picker.js` (72 行) — top-K LLM relevant-files picker 配置
+  * `memory_providers_switcher.js` (81 行) — 3 个组件：`ProviderListSection` + `ProviderSwitcher` + `WriteProviderHelp`
+  - 每张卡都是 pure presentation, props-driven, 不持有 state. Parent (`memory_providers.js`) 仍然拥有所有 state hooks + async handlers + reload effect, 渲染时把 5 张卡 + ProviderListSection / Switcher / Help 组装起来. 主文件 714 → 404 行.
+  - 顺手清掉了 ProvidersTab 用过但拆完后没人用的死代码: `apiPut` (拆完只有 GET + POST)。
+  - `KNOWN_OVERSIZED` 字典清空（注释说明这是 B-323 follow-up 把唯一 entry 清掉的结果），`test_known_oversized_files_actually_oversized` 自动失效不会误报，`test_known_oversized_files_actually_exist` 也对空 dict 安全.
+  - 验证: 2325 unit tests passed, 0 failed; 前端所有 .js 文件全部 ≤ 500 行 (最大值现在是 `pages/Analytics.js` 499 行, 巧合卡在边界). 现在 lint 真正全覆盖前端代码, 没有 grandfather 例外.
+
 ---
 
 ### Epic #5 · Memory eviction
