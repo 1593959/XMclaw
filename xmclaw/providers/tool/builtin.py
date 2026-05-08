@@ -182,6 +182,7 @@ class BuiltinTools(ToolProvider):
         enable_web: bool = True,
         todo_listener: "object | None" = None,
         workspace_root_provider: "object | None" = None,
+        workspace_manager_provider: "object | None" = None,
         persona_dir_provider: "object | None" = None,
         persona_writeback: "object | None" = None,
         persona_store_provider: "object | None" = None,
@@ -219,6 +220,18 @@ class BuiltinTools(ToolProvider):
         # `pwd` run inside the project the user is actually working
         # on, not wherever the daemon was started from.
         self._workspace_root_provider = workspace_root_provider
+        # B-331: callable () -> WorkspaceManager | None for the
+        # write-path containment audit. When wired, every file_write /
+        # apply_patch logs a WARNING + emits a security event when the
+        # target is outside every configured workspace root. Pre-B-331
+        # WorkspaceManager.resolve_path_to_root had zero callers — the
+        # docstring promised "used by tools to gate writes" but no
+        # tool actually consulted it. Visibility-only: writes still
+        # succeed (anti-req #5 sandbox is a separate epic, needs UX
+        # design for ASK-confirm vs deny). The signal is enough so an
+        # operator reviewing daemon.log can spot the agent escaping
+        # the configured workspace.
+        self._workspace_manager_provider = workspace_manager_provider
         # Per-session todo lists. Key: session_id (falls back to "_default"
         # when a caller doesn't fill in ToolCall.session_id).
         self._todos: dict[str, list[dict[str, str]]] = {}
@@ -555,6 +568,10 @@ class BuiltinTools(ToolProvider):
             )
         path = Path(raw_path)
         self._check_allowed(path)
+        # B-331: visibility signal when the write escapes the
+        # configured workspace roots. Doesn't block — sandboxing is
+        # a separate UX-design epic.
+        self._audit_workspace_containment(path, op="file_write")
         path.parent.mkdir(parents=True, exist_ok=True)
         from xmclaw.utils.fs_locks import atomic_write_text
         atomic_write_text(path, text)
@@ -593,6 +610,8 @@ class BuiltinTools(ToolProvider):
 
         path = Path(raw_path)
         self._check_allowed(path)
+        # B-331: same workspace-containment audit as file_write.
+        self._audit_workspace_containment(path, op="apply_patch")
         if not path.exists() or not path.is_file():
             return _fail(call, t0, f"file does not exist: {path}")
         original = path.read_text(encoding="utf-8")
@@ -827,6 +846,10 @@ class BuiltinTools(ToolProvider):
         except OSError as exc:
             return _fail(call, t0, f"bad path: {exc}")
         self._check_allowed(path)
+        # B-331: workspace-containment audit. file_delete is destructive
+        # so the signal is especially valuable when the agent reaches
+        # outside the configured workspace.
+        self._audit_workspace_containment(path, op="file_delete")
         # B-62 guard: deny deletion when path IS one of the sandbox
         # roots (not just inside them). Apply only when sandbox is on
         # — without sandbox, there's no notion of "root to protect".
@@ -2907,6 +2930,60 @@ class BuiltinTools(ToolProvider):
                 continue
         raise PermissionError(
             f"path {resolved} is outside the sandbox allowlist {self._allowed}"
+        )
+
+    def _audit_workspace_containment(self, path: Path, op: str) -> None:
+        """B-331: log + emit a visibility signal when a write-path
+        op targets a path outside every configured workspace root.
+
+        Visibility-only — does NOT raise. Agents still write
+        successfully; the signal is for daemon.log auditors who want
+        to spot the agent escaping the workspace boundaries the user
+        configured via the Web UI. ASK-confirm / deny is a separate
+        UX-design epic.
+
+        No-op when ``workspace_manager_provider`` isn't wired (tests,
+        echo-mode), when there are zero configured roots (fresh
+        install), or when the path lives inside a configured root
+        (the happy case).
+        """
+        if self._workspace_manager_provider is None:
+            return
+        try:
+            mgr = self._workspace_manager_provider()
+        except Exception:  # noqa: BLE001 — provider is best-effort
+            return
+        if mgr is None:
+            return
+        try:
+            roots = mgr.get().roots
+        except Exception:  # noqa: BLE001
+            return
+        if not roots:
+            # No workspace configured yet — pre-onboard / fresh install.
+            # Don't spam the log on every write before the user has
+            # picked a workspace.
+            return
+        # Reuse the manager's containment helper so the matching logic
+        # stays in one place (cline parity, see WorkspaceManager).
+        try:
+            root = mgr.resolve_path_to_root(path)
+        except Exception:  # noqa: BLE001
+            return
+        if root is not None:
+            return
+        # Outside every configured root — log + emit.
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+        roots_repr = [str(r.path) for r in roots]
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "tool.write_outside_workspace op=%s path=%s "
+            "configured_roots=%s "
+            "note=advisory_only_no_runtime_block",
+            op, resolved, roots_repr,
         )
 
 

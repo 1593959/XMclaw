@@ -557,6 +557,23 @@ def _workspace_root_provider() -> Any:
     return _provider
 
 
+def _workspace_manager_provider() -> Any:
+    """B-331: callable () -> WorkspaceManager | None for the
+    BuiltinTools write-path containment audit. Distinct from
+    :func:`_workspace_root_provider` — that one returns just the
+    primary root's Path (used by bash CWD); this one returns the
+    full manager so the tool can call ``resolve_path_to_root`` to
+    check membership across all configured roots, not only primary.
+    """
+    def _provider():
+        try:
+            from xmclaw.core.workspace import WorkspaceManager
+            return WorkspaceManager()
+        except Exception:  # noqa: BLE001
+            return None
+    return _provider
+
+
 def _persona_dir_provider(cfg_ref: dict[str, Any]) -> Any:
     """Return a callable that yields the agent's active persona profile
     directory.
@@ -733,6 +750,7 @@ def build_tools_from_config(
         enable_bash=bool(enable_bash),
         enable_web=bool(enable_web),
         workspace_root_provider=_workspace_root_provider(),
+        workspace_manager_provider=_workspace_manager_provider(),
         persona_dir_provider=_persona_dir_provider(cfg),
         persona_writeback=_persona_writeback(_app_state_holder),
         persona_store_provider=_persona_store_provider,
