@@ -1106,6 +1106,19 @@ def memory_setup(
     typer.echo("        next: restart the daemon — 'xmclaw restart'")
 
 
-# ── config subcommands ──────────────────────────────────────────────────
-
-
+# ── module entry-point ────────────────────────────────────────────────
+#
+# B-343: restored after B-325. The B-325 monolith split (extracted
+# ``_config_cmds`` etc to sibling files) accidentally truncated the
+# ``# ── config subcommands ──`` heading right when the trailing
+# ``if __name__ == "__main__": app()`` block lived. Without this
+# block, ``python -m xmclaw.cli.main serve …`` (the exact command
+# ``xmclaw.daemon.lifecycle.start_daemon`` spawns) imports the
+# module and exits silently → ``xmclaw start`` reports "daemon
+# exited before becoming healthy" with an empty daemon.log because
+# nothing ever ran. The installed ``xmclaw`` console-script
+# entry-point still worked (pyproject's ``xmclaw =
+# xmclaw.cli.main:app`` calls ``app()`` explicitly) which masked
+# the regression in any test that didn't invoke ``xmclaw start``.
+if __name__ == "__main__":
+    app()
