@@ -112,7 +112,15 @@ class EvolutionEvaluationTrigger:
         self._subscription = None
         self._pending_task: asyncio.Task | None = None
         self._last_run_ts: float = 0.0
-        self._fire_lock = asyncio.Lock()
+        # B-341 (audit pass-2 #15): an asyncio.Lock + the
+        # ``locked()``-then-``async with`` pattern below is TOCTOU:
+        # two tasks both see ``not locked``, both proceed to
+        # ``async with``, second waits, ends up firing serially —
+        # defeating the burst-collapse intent (intended: skip when
+        # busy, NOT queue). Replaced with a plain bool the read /
+        # set pair around ``_fire`` is fully synchronous before any
+        # ``await``, so it's a true skip-if-busy.
+        self._is_firing: bool = False
         self._fire_count: int = 0
         self._verdicts_since_last_fire: int = 0
 
@@ -235,12 +243,23 @@ class EvolutionEvaluationTrigger:
         if self._last_run_ts > 0.0 and elapsed < self._cooldown_s:
             return
 
-        # Serialise concurrent fires (defensive — debounce should already
-        # collapse most bursts, but channel adapters can fire from a
-        # different task without going through the debounce path).
-        if not self._fire_lock.locked():
-            async with self._fire_lock:
-                await self._fire()
+        # B-341 (audit pass-2 #15): skip-if-busy. Pre-B-341 this was
+        # ``if not self._fire_lock.locked(): async with self._fire_lock``,
+        # which races: two callers both observe ``not locked``, both
+        # proceed to ``async with``, second waits, eventually fires →
+        # two fires when one was intended. The bool read/set below is
+        # synchronous (no ``await`` between the check and the set) so
+        # the second caller cleanly returns. A real lock-then-skip
+        # would need ``Lock.acquire(blocking=False)`` semantics, which
+        # asyncio.Lock doesn't expose; the bool flag is the
+        # idiomatic alternative for "skip if a fire is in flight".
+        if self._is_firing:
+            return
+        self._is_firing = True
+        try:
+            await self._fire()
+        finally:
+            self._is_firing = False
 
     async def _fire(self) -> None:
         """Call evaluate() and bookkeep. Errors are swallowed +

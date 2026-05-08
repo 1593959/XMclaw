@@ -5,18 +5,22 @@
 //    evolution_enabled}
 //
 // All skills go through SkillRegistry — built-in (xmclaw.skills.*) and
-// user-installed are the only two sources. After B-163 the user-loader
-// scans three roots by default (zero config): the canonical
-// `~/.xmclaw/skills_user/`, plus `~/.agents/skills/` (skills.sh muscle
-// memory) and `~/.claude/skills/` (Claude Code shared skills). The old
-// xm-auto-evo path was torn out in Phase 1; SkillProposer / SkillDream
-// candidates flow through `SKILL_DRAFTED` bus events →
+// user-installed are the only two sources. The user-loader scans two
+// roots by default (zero config): the canonical
+// `~/.xmclaw/skills_user/` and `~/.agents/skills/` (the open
+// agent-skills marketplace; ``npx skills add ...`` writes here). The
+// old xm-auto-evo path was torn out in Phase 1; SkillProposer /
+// SkillDream candidates flow through `SKILL_DRAFTED` bus events →
 // ProposalMaterializer (B-167) writes SKILL.md to disk +
 // SkillRegistry.register(set_head=True), so this page stays the one
 // place the user goes for "what skills does my agent have?".
 // (B-333 fix: comment used to reference a non-existent
 // `SkillRegistry.add_candidate` method — the real wiring is event +
-// register, not a method on the registry.)
+// register, not a method on the registry. B-341 (audit pass-2 #9)
+// fix: removed the ``~/.claude/skills`` mention; B-234 dropped it
+// from the default — Claude Code's user-level config space is not
+// XMclaw's territory. Users who want to share between the two opt
+// in via ``config.evolution.skill_paths.extra``.)
 //
 // Layout: sticky left filter panel (All / Built-in / User) + content
 // area with version-ladder cards. Promote / rollback land manual
@@ -395,19 +399,19 @@ export function SkillsPage({ token }) {
                 html`<div style="line-height:1.7">
                   <p style="margin:0 0 .5rem"><strong>还没有任何技能。</strong></p>
                   <p style="margin:0 0 .5rem;font-size:.85rem">
-                    daemon 自动扫这三个目录，谁先匹配 skill_id 谁先入库——
+                    daemon 自动扫这两个目录，谁先匹配 skill_id 谁先入库——
                     <strong>零 config，~10s 内即生效（B-173 起无需重启）</strong>：
                   </p>
                   <ul style="margin:.2rem 0;padding-left:1.2rem;font-size:.82rem">
                     <li><code>~/.xmclaw/skills_user/&lt;skill_id&gt;/</code> ← 规范路径（首选）</li>
                     <li><code>~/.agents/skills/&lt;skill_id&gt;/</code> ← <code>npx skills add</code> 默认</li>
-                    <li><code>~/.claude/skills/&lt;skill_id&gt;/</code> ← Claude Code 共享技能</li>
                   </ul>
                   <p style="margin:.4rem 0 .2rem;font-size:.85rem">
                     每个目录里 <code>skill.py</code>（Python 子类）或 <code>SKILL.md</code>（Markdown 步骤）二选一即可。
                   </p>
                   <p style="margin:.4rem 0 0;font-size:.78rem;opacity:.75">
-                    想关共享扫描？<code>daemon/config.json</code> 加 <code>"evolution":{"skill_paths":{"extra":[]}}</code>。
+                    想关共享扫描？<code>daemon/config.json</code> 加 <code>"evolution":{"skill_paths":{"extra":[]}}</code>。<br/>
+                    想加自定义路径（含 <code>~/.claude/skills</code>）？同字段写绝对路径列表。
                   </p>
                 </div>`
               }</div>`

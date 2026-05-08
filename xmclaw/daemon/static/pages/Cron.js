@@ -20,8 +20,12 @@
 //     POSTs and toasts the result.
 //     (B-333 fix: this comment used to claim "not yet wired; calls a
 //     stub that toasts 未实现" — that was true at port time but the
-//     real endpoint landed in B-NN; updated so future readers don't
-//     reimplement it.)
+//     real endpoint landed in the phase-B-9.5 wire-everything-end-
+//     to-end commit (``29fef20 phase B-9.5: wire every Hermes-port
+//     surface end-to-end (no half-finished)``); updated so future
+//     readers don't reimplement it. B-341 (audit pass-2 #10) fix:
+//     dropped the literal ``B-NN`` placeholder the prior B-333
+//     patch left here.)
 
 const { h } = window.__xmc.preact;
 const { useState, useEffect, useCallback } = window.__xmc.preact_hooks;

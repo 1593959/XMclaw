@@ -393,7 +393,30 @@ class ExtractMemoriesHook(PostSamplingHook):
                 except OSError:
                     return
 
-        # DB write + render-to-disk (B-198) for the modern path.
+        # B-341 (audit pass-2 #14): when the unified
+        # ExtractFactsHook is also enabled (the default since B-319)
+        # it already writes to ``bucket="failure_modes"`` from its own
+        # LLM round-trip, so this hook would file SECOND-LLM "memories"
+        # into the SAME bucket → AUTO_SECTIONS renders both extractions
+        # interleaved under the same MEMORY.md heading, defeating the
+        # value of running two extractors. Pre-B-341 the user
+        # explicitly opting both on got mixed-source bullets with no
+        # way to tell them apart.
+        #
+        # If ExtractFactsHook is on, skip the DB write entirely
+        # (legacy markdown above is enough — the failure_modes bucket
+        # is already covered). If ExtractFactsHook is OFF, fall
+        # through to the original DB write so the legacy hook still
+        # works as the sole extractor.
+        memory_cfg = ((ctx.cfg.get("evolution") or {}).get("memory") or {})
+        facts_section = (
+            memory_cfg.get("extract_facts")
+            or memory_cfg.get("extract_lessons")
+            or {}
+        )
+        facts_hook_on = bool(facts_section.get("enabled", True))
+        if facts_hook_on:
+            return
         # bucket=durable_fact tags these as "general lessons" rather
         # than the workflow/tool_quirks/failure_modes split that
         # ExtractLessonsHook produces. They render under MEMORY.md's

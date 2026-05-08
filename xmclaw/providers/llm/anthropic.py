@@ -57,8 +57,12 @@ class AnthropicLLM(LLMProvider):
         self.api_key = api_key
         self.model = model
         self.base_url = base_url
-        # Default Opus 4.7 list prices. Callers override for cheaper models.
-        self._pricing = pricing or Pricing(input_per_mtok=15.0, output_per_mtok=75.0)
+        # B-341 (audit pass-2 #13): keep an explicit-override slot for
+        # back-compat — when a caller passes ``pricing=Pricing(...)``
+        # we honor it. Otherwise the property reads ``lookup_pricing``
+        # so XMclaw has one canonical pricing source post-B-335
+        # (analytics + cost-tracker both go through it).
+        self._pricing_explicit: Pricing | None = pricing
         # The SDK client is created lazily so tests that don't touch it can
         # run without the anthropic dependency installed.
         self._client: Any = None
@@ -530,4 +534,22 @@ class AnthropicLLM(LLMProvider):
 
     @property
     def pricing(self) -> Pricing:
-        return self._pricing
+        """B-341 (audit pass-2 #13): the constructor's ``pricing`` arg
+        + this property are pre-B-335 leftovers. Production cost uses
+        ``xmclaw.utils.cost.lookup_pricing`` directly (the single
+        source of truth post-B-335) so this property had been
+        diverging silently — no caller in production code reads it.
+        Now delegates to ``lookup_pricing(self.model)`` when the
+        caller didn't pass an explicit override at construction
+        (the common case). Explicit override still wins so any
+        legacy caller passing ``pricing=Pricing(...)`` keeps that
+        value.
+        """
+        if self._pricing_explicit is not None:
+            return self._pricing_explicit
+        from xmclaw.utils.cost import lookup_pricing
+        cost_pricing = lookup_pricing(self.model)
+        return Pricing(
+            input_per_mtok=cost_pricing.input_per_mtok,
+            output_per_mtok=cost_pricing.output_per_mtok,
+        )

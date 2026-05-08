@@ -289,14 +289,34 @@ class UserSkillsLoader:
         except Exception:  # noqa: BLE001
             return
 
-        # Subprocess discrepancy: manifest declared empty
-        # ``permissions_subprocess`` (interpretable as "no subprocess
-        # allowed") AND source uses subprocess.* / os.system / os.popen.
-        # The scanner already tags these with SKILL_AST_SUBPROCESS_SHELL
-        # (for shell=True) but we want any subprocess use, including
-        # the safe argv form, because the manifest claim is about the
-        # presence of subprocess, not the shell-injection variant.
-        wants_no_subprocess = manifest.permissions_subprocess == ()
+        # Subprocess discrepancy. Two cases get an advisory warning:
+        #
+        #   (1) The manifest's ``permissions_subprocess`` is empty
+        #       (interpretable as "no subprocess allowed" — the
+        #       caller's gate ``permissions_are_meaningful`` only
+        #       lets us in when SOMETHING in permissions_* is non-
+        #       empty, so the operator HAS engaged with the
+        #       permissions system, just left this field empty
+        #       → meant deny-all) AND the source uses subprocess.* /
+        #       os.system / os.popen.
+        #
+        #   (2) The manifest's ``permissions_subprocess`` lists
+        #       specific commands (an allowlist like ``("git",)``)
+        #       AND the source uses subprocess primitives at all.
+        #       Pre-B-341 this case was silently ignored — the
+        #       check was only ``permissions_subprocess == ()``,
+        #       so an operator who wrote ``permissions_subprocess:
+        #       ["git"]`` and called ``os.system("rm -rf /")`` got
+        #       no warning. The runtime can't actually enforce the
+        #       allowlist anyway (anti-req #5 — sandbox is a
+        #       future-runtime feature) so the warning is the only
+        #       signal.
+        #
+        # The scanner already tags these with SKILL_AST_SUBPROCESS_*
+        # (for various shapes) but we want any subprocess use,
+        # including the safe argv form, because the manifest claim
+        # is about the presence of subprocess, not the shell-
+        # injection variant.
         # Heuristic: source uses subprocess if either an AST-detected
         # subprocess.* call exists or the scanner flagged any rule
         # whose pattern_id starts with SKILL_AST_SUBPROCESS_.
@@ -309,14 +329,26 @@ class UserSkillsLoader:
                 for f in (result.findings or ())
             )
         )
-        if wants_no_subprocess and subprocess_in_source:
-            log.warning(
-                "skill.permissions_advisory_violation skill_id=%s "
-                "field=permissions_subprocess "
-                "claim=none_allowed actual=subprocess_used "
-                "note=advisory_only_no_runtime_enforcement",
-                skill_id,
-            )
+        if subprocess_in_source:
+            if manifest.permissions_subprocess == ():
+                log.warning(
+                    "skill.permissions_advisory_violation skill_id=%s "
+                    "field=permissions_subprocess "
+                    "claim=none_allowed actual=subprocess_used "
+                    "note=advisory_only_no_runtime_enforcement",
+                    skill_id,
+                )
+            else:
+                # B-341 (audit pass-2 #8): allowlist case. The runtime
+                # cannot enforce the per-command filter; the operator
+                # should be aware their list is informational only.
+                log.warning(
+                    "skill.permissions_advisory_violation skill_id=%s "
+                    "field=permissions_subprocess "
+                    "claim=allowlist=%s actual=subprocess_used "
+                    "note=allowlist_advisory_only_no_runtime_enforcement",
+                    skill_id, list(manifest.permissions_subprocess),
+                )
 
     def _load_markdown(
         self, skill_dir: Path, skill_md: Path,

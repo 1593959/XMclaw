@@ -72,20 +72,33 @@ class SkillManifest:
         permission constraint that an operator might mistake for
         actually-enforced security.
 
-        ``permissions_*=()`` is ambiguous (no constraint OR explicit
-        deny-all) and is a more common authoring intent than the
-        explicit-allowlist case, so it counts. The intent here is to
-        catch the "operator wrote a permission, expects it to do
-        something" path; users with truly unset manifests get nothing
-        extra.
+        Returns True when:
+          * any of ``permissions_fs`` / ``permissions_net`` /
+            ``permissions_subprocess`` is non-empty (the operator wrote
+            an allowlist), OR
+          * ``permissions_enforced`` is True (the operator explicitly
+            opted into the runtime-sandbox contract — a strong
+            engagement signal even if every list is empty, in which
+            case "deny-all on empty fields" is the intended reading).
 
-        Used by the loader to decide whether to run the AST cross-
-        check + emit advisory warnings.
+        Pre-B-341 the only signal was a non-empty list — which created
+        a logic gap with :meth:`UserSkillsLoader._advisory_audit`: the
+        audit's interesting case is ``permissions_subprocess == ()``
+        (deny-all + source-uses-subprocess), but
+        ``permissions_are_meaningful`` returned False on bare
+        manifests, so the audit never ran on them. ``permissions_
+        enforced=True`` gives operators a way to say "yes I mean it"
+        without needing to fill an unrelated field.
+
+        Truly unset manifests (every field at default) → False; no
+        cross-check noise for skills that haven't engaged with the
+        permissions system at all.
         """
         return bool(
             self.permissions_fs
             or self.permissions_net
             or self.permissions_subprocess
+            or self.permissions_enforced
         )
 
     def to_dict(self) -> dict[str, Any]:

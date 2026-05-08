@@ -23,8 +23,12 @@
 // selected across refresh, but it's a UI breadcrumb only — the daemon's
 // view is the persisted state file.
 // (B-333 fix: this comment used to claim "Phase 2 will wire" the PUT
-// endpoint — it was wired in B-NN; the stale claim risked the next reader
-// reimplementing.)
+// endpoint — it was wired in the phase-3 multi-agent commit
+// (``d1e9e8d phase 3: workspace API + multi-agent 4 conventions``);
+// the stale claim risked the next reader reimplementing. B-341
+// (audit pass-2 #10) fix: dropped the literal ``B-NN`` placeholder
+// the prior B-333 patch left as a TODO marker — the real reference
+// is the phase-3 commit.)
 
 const { h } = window.__xmc.preact;
 const { useState, useEffect } = window.__xmc.preact_hooks;

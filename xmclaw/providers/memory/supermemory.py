@@ -222,6 +222,54 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._bg_tasks.add(bg)
         bg.add_done_callback(self._bg_tasks.discard)
 
+    async def on_session_end(
+        self, *, session_id: str, messages: list[Any],
+    ) -> None:
+        """B-341 (audit pass-2 #11): ingest the session as a single
+        Supermemory document so the cloud's chunker + embedder can
+        index it. Pre-B-341 this provider only wrote per-call ``put``
+        items; whole-conversation context was lost on session
+        boundary, defeating the "long-term memory across sessions"
+        value proposition. Best-effort: any failure logs WARNING and
+        is swallowed (manager isolates per-provider failures; a
+        session-summary loss is observability, not data).
+
+        Builds a digest by joining user / assistant turns with role
+        prefixes — Supermemory's text endpoint doesn't have a
+        structured ``messages`` shape (mem0-only feature), so the
+        fan-out / formatting happens here.
+        """
+        if not messages or not self.is_available():
+            return
+        parts: list[str] = []
+        for m in messages:
+            role = getattr(m, "role", None) or ""
+            content = getattr(m, "content", "") or ""
+            if role in ("user", "assistant") and content:
+                # Cap each turn to keep the document a reasonable
+                # size — Supermemory bills per token + the chunker
+                # works fine on truncated input.
+                parts.append(f"{role}: {content[:2000]}")
+        if not parts:
+            return
+        digest = "\n\n".join(parts)
+        body = {
+            "content": digest,
+            "container_tag": self._container_tag,
+            "metadata": {
+                "session_id": session_id,
+                "kind": "session_summary",
+                "n_messages": len(parts),
+            },
+        }
+        try:
+            await self._request("POST", "/v3/memories", body)
+        except Exception as exc:  # noqa: BLE001 — visibility, not blocking
+            _log.warning(
+                "supermemory.session_end_failed session_id=%s err=%s",
+                session_id, exc,
+            )
+
     def on_pre_compress(self, messages: list[Any]) -> str:
         if not messages:
             return ""

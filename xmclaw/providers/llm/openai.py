@@ -112,8 +112,12 @@ class OpenAILLM(LLMProvider):
         self.api_key = api_key
         self.model = model
         self.base_url = base_url
-        # gpt-4o list prices (Dec 2024). Callers override for other models.
-        self._pricing = pricing or Pricing(input_per_mtok=2.5, output_per_mtok=10.0)
+        # B-341 (audit pass-2 #13): explicit override wins; the
+        # ``.pricing`` property otherwise delegates to
+        # ``xmclaw.utils.cost.lookup_pricing`` so XMclaw has one
+        # canonical pricing source (post-B-335). Callers passing
+        # ``pricing=Pricing(...)`` still get exactly that value.
+        self._pricing_explicit: Pricing | None = pricing
         self._client: Any = None
         # B-320: explicit override > auto-detect.
         if prompt_cache_enabled is None:
@@ -614,4 +618,14 @@ class OpenAILLM(LLMProvider):
 
     @property
     def pricing(self) -> Pricing:
-        return self._pricing
+        """See ``AnthropicLLM.pricing`` for the B-341 rationale —
+        same delegation: explicit override wins, otherwise the
+        canonical lookup_pricing result is returned."""
+        if self._pricing_explicit is not None:
+            return self._pricing_explicit
+        from xmclaw.utils.cost import lookup_pricing
+        cost_pricing = lookup_pricing(self.model)
+        return Pricing(
+            input_per_mtok=cost_pricing.input_per_mtok,
+            output_per_mtok=cost_pricing.output_per_mtok,
+        )

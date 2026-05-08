@@ -226,6 +226,51 @@ class Mem0MemoryProvider(MemoryProvider):
         self._bg_tasks.add(bg)
         bg.add_done_callback(self._bg_tasks.discard)
 
+    async def on_session_end(
+        self, *, session_id: str, messages: list[Any],
+    ) -> None:
+        """B-341 (audit pass-2 #11): batch-ingest the conversation so
+        Mem0's server-side extraction pipeline can index it. Pre-B-341
+        this provider had ``put`` / ``query`` / ``forget`` but no
+        session-boundary write hook — every conversation was invisible
+        to Mem0 unless the agent explicitly called ``recall_memory``
+        mid-session, which is rare. The base class no-op was inherited
+        silently.
+
+        Mem0's ``/v1/memories`` endpoint accepts a multi-turn
+        ``messages`` array and runs its own dedup + extraction;
+        sending the whole conversation in one batch is the documented
+        idiomatic ingest. Best-effort — failure logs WARNING but does
+        not raise (manager isolates per-provider failures anyway,
+        and a session-summary loss is observability, not data).
+        """
+        if not messages or not self.is_available():
+            return
+        payload: list[dict[str, Any]] = []
+        for m in messages:
+            role = getattr(m, "role", None) or ""
+            content = getattr(m, "content", "") or ""
+            if role in ("user", "assistant", "system") and content:
+                payload.append({"role": role, "content": content[:8000]})
+        if not payload:
+            return
+        body = {
+            "messages": payload,
+            "user_id": self._user_id,
+            "metadata": {
+                "session_id": session_id,
+                "kind": "session_summary",
+                "n_messages": len(payload),
+            },
+        }
+        try:
+            await self._request("POST", "/v1/memories", body)
+        except Exception as exc:  # noqa: BLE001 — visibility, not blocking
+            _log.warning(
+                "mem0.session_end_failed session_id=%s err=%s",
+                session_id, exc,
+            )
+
     def on_pre_compress(self, messages: list[Any]) -> str:
         if not messages:
             return ""

@@ -54,14 +54,15 @@ class EventType(str, Enum):
     TOOL_CALL_EMITTED = "tool_call_emitted"
     TOOL_INVOCATION_STARTED = "tool_invocation_started"
     TOOL_INVOCATION_FINISHED = "tool_invocation_finished"
-    # NOTE: SKILL_EXEC_STARTED / SKILL_EXEC_FINISHED have no current
-    # publishers (legacy from a removed sandboxed-runtime path). Skill
-    # execution today uses TOOL_INVOCATION_STARTED / TOOL_INVOCATION_FINISHED
-    # with name="skill_<id>". Kept in the enum to avoid breaking the
-    # frontend reducer's case map; clean up when the frontend stops
-    # listening.
-    SKILL_EXEC_STARTED = "skill_exec_started"
-    SKILL_EXEC_FINISHED = "skill_exec_finished"
+    # B-341 (audit pass-2 #12): SKILL_EXEC_STARTED / SKILL_EXEC_FINISHED
+    # were removed in this commit. They were carry-over from a removed
+    # sandboxed-runtime path with zero remaining publishers (no Python
+    # code emitted them, no frontend reducer case looked for them, no
+    # test asserted on them — confirmed via grep). The previous comment
+    # said "kept to avoid breaking the frontend reducer's case map" but
+    # the frontend never listened. Skill execution today is observed
+    # via TOOL_INVOCATION_STARTED / TOOL_INVOCATION_FINISHED with
+    # name="skill_<id>".
     GRADER_VERDICT = "grader_verdict"
     COST_TICK = "cost_tick"
     SESSION_LIFECYCLE = "session_lifecycle"

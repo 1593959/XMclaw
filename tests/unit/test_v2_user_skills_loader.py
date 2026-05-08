@@ -376,6 +376,31 @@ def test_b328_permissions_are_meaningful_helper() -> None:
     ).permissions_are_meaningful() is True
 
 
+def test_b341_permissions_enforced_alone_counts_as_meaningful() -> None:
+    """B-341 (audit pass-2 #8): closing the gate gap. Pre-B-341 a
+    manifest with all ``permissions_*`` empty AND
+    ``permissions_enforced: true`` returned False from
+    ``permissions_are_meaningful`` — even though the explicit
+    ``enforced=true`` is the strongest possible "I mean these
+    constraints" signal an operator can give. The advisory cross-
+    check therefore never ran on those manifests, even when their
+    code clearly violated the implied deny-all. Now ``enforced=true``
+    alone flips the gate."""
+    from xmclaw.skills.manifest import SkillManifest
+
+    # All permissions_* empty BUT permissions_enforced opt-in →
+    # treated as "operator engaged with the system" → meaningful.
+    assert SkillManifest(
+        id="x", version=1, permissions_enforced=True,
+    ).permissions_are_meaningful() is True
+
+    # And of course empty + not enforced still returns False (no
+    # operator engagement at all → no cross-check noise).
+    assert SkillManifest(
+        id="x", version=1, permissions_enforced=False,
+    ).permissions_are_meaningful() is False
+
+
 _SKILL_USING_SUBPROCESS = """
 import subprocess
 from xmclaw.skills.base import Skill, SkillInput, SkillOutput
@@ -432,15 +457,19 @@ def test_b328_advisory_warning_when_no_subprocess_claim_but_source_uses_it(
     ), f"expected advisory warning for {skill_id}; got: {msgs!r}"
 
 
-def test_b328_no_warning_when_subprocess_is_in_allowlist(
+def test_b341_warning_when_allowlist_set_but_runtime_cant_enforce(
     tmp_path: Path, caplog,
 ) -> None:
-    """When the manifest's ``permissions_subprocess`` is a non-empty
-    allowlist, that's an explicit "subprocess is allowed for these
-    binaries" claim — source using subprocess is consistent, no
-    warning. (We can't actually enforce the allowlist in Local /
-    Process runtimes, but that's a separate gap; this test pins the
-    "consistent claim, no false alarm" half.)"""
+    """B-341 (audit pass-2 #8): when ``permissions_subprocess`` is a
+    non-empty allowlist (e.g. ``["git"]``) AND source uses subprocess,
+    the cross-check must STILL warn — because no current runtime
+    enforces the allowlist (anti-req #5: sandbox is a future-runtime
+    feature). Pre-B-341 the audit short-circuited unless the field
+    was empty, so an operator who wrote ``permissions_subprocess:
+    ["git"]`` and called ``os.system("rm -rf /")`` got zero feedback.
+    The warning surfaces the gap with a distinct
+    ``allowlist_advisory_only_no_runtime_enforcement`` note so
+    operators understand the list is informational only."""
     import logging as _logging
 
     skill_id = "subproc-allowed"
@@ -449,7 +478,7 @@ def test_b328_no_warning_when_subprocess_is_in_allowlist(
         template=_SKILL_USING_SUBPROCESS,
         manifest={
             "id": skill_id, "version": 1,
-            "permissions_subprocess": ["echo", "git"],  # non-empty
+            "permissions_subprocess": ["echo", "git"],  # non-empty allowlist
         },
     )
     reg = SkillRegistry()
@@ -459,9 +488,17 @@ def test_b328_no_warning_when_subprocess_is_in_allowlist(
         UserSkillsLoader(reg, tmp_path).load_all()
 
     msgs = [r.getMessage() for r in caplog.records]
-    assert not any(
-        "permissions_advisory_violation" in m for m in msgs
-    ), f"unexpected advisory warning: {msgs!r}"
+    advisory = [m for m in msgs if "permissions_advisory_violation" in m]
+    assert advisory, (
+        f"expected advisory warning for non-empty allowlist + "
+        f"subprocess use; got: {msgs!r}"
+    )
+    # Distinct flavour from the deny-all case so log readers know
+    # which discrepancy class fired.
+    assert any(
+        "allowlist_advisory_only_no_runtime_enforcement" in m
+        for m in advisory
+    ), f"expected allowlist-flavour note; got: {advisory!r}"
 
 
 def test_b328_no_warning_when_no_meaningful_permissions(
