@@ -59,6 +59,20 @@ MANIFEST = PluginManifest(
     config_schema={
         "agent_id": "string (which xmclaw agent profile to drive)",
     },
+    # B-330: marked scaffold to match the 4 IM channels
+    # (telegram / dingtalk / wecom / weixin) and the ACPAdapter's
+    # actual state — start() / send() raise NotImplementedError
+    # because the hermes acp_adapter/server.py port hasn't landed
+    # yet (Phase 6.1). Pre-B-330 the manifest's default
+    # ``implementation_status="ready"`` meant the dispatcher would
+    # try to instantiate + start ACP whenever a user enabled it in
+    # config — boot would then crash with NotImplementedError. With
+    # scaffold status the dispatcher's include_scaffolds=False
+    # filter (default) hides this from production startup; the
+    # Channels UI continues to show it grayed-out via
+    # include_scaffolds=True. When the Phase 6.1 port lands, drop
+    # ``implementation_status`` to flip it back to ready.
+    implementation_status="scaffold",
 )
 
 
@@ -95,10 +109,19 @@ class ACPAdapter(ChannelAdapter):
         # Phase 6.1: port hermes acp_adapter/server.py:13-150 into here.
         # The InitializeResponse / PromptResponse / SessionInfo types
         # come from the imported acp module above.
+        # B-330: kept this raise for the rare case someone bypasses the
+        # dispatcher's include_scaffolds=False filter (e.g. tests with
+        # include_scaffolds=True, or future code that lists scaffolds
+        # explicitly). The MANIFEST is now scaffold-flagged so normal
+        # production config can't reach this path.
         raise NotImplementedError(
-            "ACP adapter is registered (manifest exposed) but the "
-            "request handler hasn't been ported yet. Track at "
-            "docs/DEV_PLAN.md §2.1 'Hermes 独家'."
+            "ACPAdapter is a scaffold — the request handler hasn't "
+            "been ported yet. Port reference: "
+            "hermes-agent/acp_adapter/server.py. Tracked at "
+            "docs/DEV_ROADMAP.md §2.1. The dispatcher's default "
+            "include_scaffolds=False filter normally hides this; "
+            "drop implementation_status from the manifest when the "
+            "Phase 6.1 port lands."
         )
 
     async def stop(self) -> None:
@@ -107,7 +130,11 @@ class ACPAdapter(ChannelAdapter):
     async def send(
         self, target: ChannelTarget, payload: OutboundMessage
     ) -> str:
-        raise NotImplementedError("ACP send pending Phase 6.1 port")
+        raise NotImplementedError(
+            "ACPAdapter.send is a scaffold — pending Phase 6.1 port "
+            "of hermes-agent/acp_adapter/server.py. The MANIFEST is "
+            "scaffold-flagged so normal dispatch never reaches here."
+        )
 
     def subscribe(
         self, handler: Callable[[InboundMessage], Awaitable[None]]

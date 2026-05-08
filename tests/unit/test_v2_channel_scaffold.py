@@ -37,6 +37,13 @@ _SCAFFOLD_CHANNELS = [
 ]
 
 
+# B-330: ACP is a scaffold of a slightly different shape (start()
+# raises rather than __init__()) but should be hidden from production
+# dispatch the same way. Tested separately below since the
+# scaffold-pattern instantiation tests above don't apply.
+_ACP_SCAFFOLD = ("acp", "ACPAdapter")
+
+
 @pytest.mark.parametrize("channel_id, class_name, name_substring", _SCAFFOLD_CHANNELS)
 def test_b329_scaffold_module_imports(
     channel_id: str, class_name: str, name_substring: str,
@@ -131,3 +138,59 @@ def test_b329_discover_default_still_filters_scaffolds() -> None:
             f"{ch_id} should appear when include_scaffolds=True so "
             f"the Channels page can render it as scaffold"
         )
+
+
+# ── B-330: ACP joins the scaffold list ─────────────────────────────
+
+
+def test_b330_acp_manifest_marked_scaffold() -> None:
+    """B-330: ACPAdapter.start() raises NotImplementedError because
+    the hermes acp_adapter/server.py port hasn't landed yet, but
+    pre-B-330 the manifest's default ``implementation_status="ready"``
+    let the dispatcher try to instantiate + start ACP whenever a user
+    enabled it in config — boot then crashed. The manifest now
+    declares ``scaffold`` to match the actual state, joining the
+    other 4 IM scaffolds in the dispatcher's default-hidden set."""
+    from xmclaw.providers.channel.acp import MANIFEST
+    assert MANIFEST.implementation_status == "scaffold", (
+        "ACP MANIFEST must be scaffold-flagged until the Phase 6.1 "
+        "hermes port lands; otherwise dispatcher will try to start() "
+        "the adapter and crash on the NotImplementedError"
+    )
+
+
+def test_b330_acp_filtered_by_default_discover() -> None:
+    """B-330: with the manifest scaffold-flagged, the registry's
+    default include_scaffolds=False discovery hides ACP — same way
+    the 4 IM scaffolds are hidden. Production config that enables
+    ACP no longer crashes daemon boot."""
+    from xmclaw.providers.channel.registry import discover
+
+    ready = discover(include_scaffolds=False)
+    assert "acp" not in ready, (
+        f"ACP scaffold must not appear in default discovery; got: "
+        f"{list(ready.keys())}"
+    )
+
+    all_chs = discover(include_scaffolds=True)
+    assert "acp" in all_chs, (
+        "ACP should still surface when include_scaffolds=True so the "
+        "Channels page can render it as 'coming soon'"
+    )
+
+
+@pytest.mark.asyncio
+async def test_b330_acp_start_still_raises_with_explanatory_message() -> None:
+    """If something explicitly bypasses the scaffold filter and
+    instantiates + starts ACP, the error must point at the scaffold
+    state + the port reference + how to flip the status back when
+    the port lands."""
+    from xmclaw.providers.channel.acp import ACPAdapter
+
+    adapter = ACPAdapter(agent_id="main")
+    with pytest.raises(NotImplementedError) as exc:
+        await adapter.start()
+    msg = str(exc.value)
+    assert "scaffold" in msg.lower()
+    assert "hermes" in msg.lower()
+    assert "implementation_status" in msg or "manifest" in msg.lower()

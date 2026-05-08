@@ -18,12 +18,24 @@ from xmclaw.providers.channel.base import PluginManifest
 
 # Canonical channel ids in priority order (Chinese-market first per
 # user's positioning).
+#
+# B-330: ``acp`` joined the list — it lives in ``acp.py`` (single-file
+# package, not a sub-directory) but the discover loop's
+# ``importlib.import_module(f"xmclaw.providers.channel.{cid}")``
+# handles both shapes. Pre-B-330 ACP's MANIFEST was defined but the
+# id wasn't in CHANNEL_IDS, so ``discover()`` never saw it — the
+# ``acp.py`` docstring claiming "the UI shows ACP as available" was
+# stale. Now ACP appears in ``include_scaffolds=True`` output so the
+# Channels page can render it as "coming soon" alongside the 4 IM
+# scaffolds; ``include_scaffolds=False`` (default) hides it because
+# the manifest carries ``implementation_status="scaffold"``.
 CHANNEL_IDS: tuple[str, ...] = (
     "feishu",
     "dingtalk",
     "wecom",
     "weixin",
     "telegram",
+    "acp",
 )
 
 

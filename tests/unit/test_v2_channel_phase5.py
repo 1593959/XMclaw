@@ -23,7 +23,12 @@ from xmclaw.providers.channel.registry import (
 
 def test_canonical_ids_match_dev_plan():
     # Phase 5 ports the 5 channels from QwenPaw docs/DEV_PLAN.md §1.6.
-    assert CHANNEL_IDS == ("feishu", "dingtalk", "wecom", "weixin", "telegram")
+    # B-330: ``acp`` joined as a 6th id (Hermes ACP integration —
+    # scaffold-flagged so it's hidden from default discover, surfaces
+    # on include_scaffolds=True for the UI's "coming soon" rendering).
+    assert CHANNEL_IDS == (
+        "feishu", "dingtalk", "wecom", "weixin", "telegram", "acp",
+    )
 
 
 def test_discover_returns_all_five_manifests():
