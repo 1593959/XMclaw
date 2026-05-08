@@ -578,6 +578,18 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
   * 兼容性: 24 个外部 import 站点 (`post_sampling_hooks.py` / `daemon/app.py` / `daemon/factory.py` / `cli/curriculum.py` / `daemon/routers/{memory,profiles}.py` / `providers/memory/builtin_file.py` / 多个 tests) 全部 import `from xmclaw.providers.tool.builtin import _append_under_section, PERSONA_CHAR_CAPS, ...` — `builtin.py` 用 `from ._specs import X as X` / `from ._helpers import X as X` 显式 re-export 形式（PEP-484 / mypy 认的"explicit re-export"标记，否则 mypy 会报 14 个 `does not explicitly export attribute` errors）。零外部 import 改动.
   - 验证: 2325 unit tests passed, 0 failed; ruff 全绿; mypy 283 errors (上次 commit 同样 283, 拆没引入新 type errors). builtin.py 在剩下 4 个 Python monolith 里仍最大 (2885 行, 后面是 agent_loop.py 2973), 但单文件难度从"打开就让 IDE 卡顿"降到"快速 grep + Read 范围内".
 
+- 2026-05-07: **B-325 — `cli/main.py` 2486 行 monolith 拆 7 个 sub-app**. 同上, 5 个 Python monolith 里这是第 4 大. 内部结构其实清晰: 8 个独立 typer sub-app (memory / config / backup / evolution / approvals / curriculum / security / session) 加上 17 个顶层命令 (version / serve / chat / onboard / doctor / 等). 7 个 sub-app 拆出去后 main.py 只剩顶层命令 + sub-app 注册.
+  * `_evolution_cmds.py` (157 行) — show / review / approve / reject / migrate-auto-evo
+  * `_approvals_cmds.py` (40 行) — list / approve / deny
+  * `_curriculum_cmds.py` (76 行) — list / show / approve / reject
+  * `_security_cmds.py` (41 行) — scan
+  * `_session_cmds.py` (66 行) — report / list
+  * `_config_cmds.py` (731 行) — init / set / set-secret / get-secret / delete-secret / list-secrets / migrate-secrets / unset / get / show + 2 个 module helper (`_default_config_template`, `_parse_dotted_value`)
+  * `_backup_cmds.py` (387 行) — create / list / verify / info / delete / prune / restore + 3 个 module helper (`_default_backup_source`, `_manifest_to_dict`, `_format_bytes`)
+  * `main.py` 2486 → 1078 行 (-57%). 仍然主要是 17 个顶层命令 (serve / start / stop / chat / onboard / doctor / tools / etc), 这些是 daemon 生命周期相关核心功能, 不像 sub-app 那样可以单独拆.
+  - 兼容性: 一个测试 (`test_v2_doctor.py:1184`) 直接 `from xmclaw.cli.main import _default_config_template` — main.py 加 `from xmclaw.cli._config_cmds import _default_config_template as _default_config_template` 显式 re-export 保留兼容. memory_app 没拆出去 (它当前只有未 commit 的 stats 命令在 main.py 1300+ 行附近, 没单独 region).
+  - 验证: 2325 unit tests passed, 0 failed (上 commit 同样 2325); ruff 全绿; CLI smoke test `python -m xmclaw.cli.main --help` 列出全部 8 个 sub-app + 17 个 top-level commands.
+
 ---
 
 ### Epic #5 · Memory eviction
