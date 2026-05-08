@@ -571,6 +571,13 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
   - `KNOWN_OVERSIZED` 字典清空（注释说明这是 B-323 follow-up 把唯一 entry 清掉的结果），`test_known_oversized_files_actually_oversized` 自动失效不会误报，`test_known_oversized_files_actually_exist` 也对空 dict 安全.
   - 验证: 2325 unit tests passed, 0 failed; 前端所有 .js 文件全部 ≤ 500 行 (最大值现在是 `pages/Analytics.js` 499 行, 巧合卡在边界). 现在 lint 真正全覆盖前端代码, 没有 grandfather 例外.
 
+- 2026-05-07: **B-324 — 把 builtin.py 4357 行 monolith 拆掉一刀（specs + helpers）**. 用户要求继续清扫. 5 个 Python monolith 里 `xmclaw/providers/tool/builtin.py` 4357 行最大, 是单文件 LLM 上下文 / grep / refactor 的最大敌人. 风险最低且收益高的拆法是把 module-level 的两个独立子单元（30 个 ToolSpec 定义 + module-level helper 函数）抽出去:
+  * **`_specs.py`** (1159 行, +17 行 module 头): 30 个 ToolSpec 常量, 纯数据, 唯一依赖是 `from xmclaw.core.ir import ToolSpec`. 拆出后 builtin.py 砍 ~1140 行.
+  * **`_helpers.py`** (398 行, +50 行 module 头): bullet/dedup helpers (`_bullet_core` / `_bullet_token_set` / `_is_fuzzy_duplicate` / `_append_under_section`), persona caps (`PERSONA_CHAR_CAPS` / `enforce_char_cap` / `collapse_existing_duplicates` / `_PERSONA_BASENAMES_LOOKUP`), 网络解析 (`_parse_ddg_html`), 工具错误信封 (`_fail`). 拆出后 builtin.py 再砍 ~340 行.
+  * `builtin.py` 4357 → 2885 行 (-1472 行, -34%). BuiltinTools class 主体 (~2750 行) 不动 — 安全拆该 class 是另一个独立 epic.
+  * 兼容性: 24 个外部 import 站点 (`post_sampling_hooks.py` / `daemon/app.py` / `daemon/factory.py` / `cli/curriculum.py` / `daemon/routers/{memory,profiles}.py` / `providers/memory/builtin_file.py` / 多个 tests) 全部 import `from xmclaw.providers.tool.builtin import _append_under_section, PERSONA_CHAR_CAPS, ...` — `builtin.py` 用 `from ._specs import X as X` / `from ._helpers import X as X` 显式 re-export 形式（PEP-484 / mypy 认的"explicit re-export"标记，否则 mypy 会报 14 个 `does not explicitly export attribute` errors）。零外部 import 改动.
+  - 验证: 2325 unit tests passed, 0 failed; ruff 全绿; mypy 283 errors (上次 commit 同样 283, 拆没引入新 type errors). builtin.py 在剩下 4 个 Python monolith 里仍最大 (2885 行, 后面是 agent_loop.py 2973), 但单文件难度从"打开就让 IDE 卡顿"降到"快速 grep + Read 范围内".
+
 ---
 
 ### Epic #5 · Memory eviction
