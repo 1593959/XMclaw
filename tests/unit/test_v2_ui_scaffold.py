@@ -182,8 +182,40 @@ def test_icon_atom_covers_every_sidebar_glyph() -> None:
 # ── file-size guard (FRONTEND_DESIGN.md §1.4) ──────────────────────────
 
 
-SOURCE_GLOBS = ["*.js", "*.css", "*.html", "components/atoms/*.js", "components/atoms/*.css", "styles/*.css"]
+# B-323: glob coverage was previously narrow — only ``*.js`` /
+# ``components/atoms/*.js`` / ``styles/*.css`` were checked, so the
+# 500-line cap silently DIDN'T apply to ``components/molecules/*.js``,
+# ``components/organisms/*.js``, ``pages/*.js``, ``pages/_panels/*.js``,
+# or ``lib/*.js``. Files in those directories had grown to 600-880 lines
+# unchecked. The expanded patterns below close that hole for everyone
+# except the explicit grandfather list (``KNOWN_OVERSIZED``) below.
+SOURCE_GLOBS = [
+    "*.js", "*.css", "*.html",
+    "components/atoms/*.js", "components/atoms/*.css",
+    "components/molecules/*.js",
+    "components/organisms/*.js",
+    "pages/*.js",
+    "pages/_panels/*.js",
+    "lib/*.js",
+    "styles/*.css",
+]
 LINE_BUDGET = 500
+
+# Files we know are over budget but haven't fully split yet — each
+# entry MUST cite a follow-up plan. Empty dict = no exceptions, every
+# file under SOURCE_GLOBS must clear the cap.
+KNOWN_OVERSIZED: dict[str, str] = {
+    # ProvidersTab is one giant 600-line component covering vector-
+    # indexer status, Auto-Dream controls, embedding setup form,
+    # pinned-fact CRUD, backups, picker config, and provider switcher
+    # in one render. Sub-component extraction (one panel per section)
+    # is the obvious next pass — it's just a lot of mechanical work
+    # to thread state down without breaking behaviour. Tracked on
+    # the next round of B-323-style splits.
+    "pages/_panels/memory_providers.js":
+        "B-323 grandfather: extracted from Memory.js but still ~700 "
+        "lines; subdivide into per-section panels in a follow-up.",
+}
 
 
 def test_no_file_exceeds_line_budget() -> None:
@@ -192,13 +224,46 @@ def test_no_file_exceeds_line_budget() -> None:
         for path in STATIC_DIR.glob(pattern):
             if not path.is_file():
                 continue
+            rel = str(path.relative_to(STATIC_DIR)).replace("\\", "/")
+            if rel in KNOWN_OVERSIZED:
+                continue
             count = sum(1 for _ in path.open("r", encoding="utf-8"))
             if count > LINE_BUDGET:
-                offenders.append((str(path.relative_to(STATIC_DIR)), count))
+                offenders.append((rel, count))
     assert not offenders, (
         f"Files exceeding {LINE_BUDGET}-line budget: {offenders}. "
-        "Split into molecules / organisms per FRONTEND_DESIGN.md §1.4."
+        "Split into molecules / organisms per FRONTEND_DESIGN.md §1.4. "
+        "If the file genuinely cannot be split right now, add it to "
+        "KNOWN_OVERSIZED with a one-line follow-up plan — but expect "
+        "review pushback if the list grows."
     )
+
+
+def test_known_oversized_files_actually_exist() -> None:
+    """A KNOWN_OVERSIZED entry that no longer points to a real file
+    is dead weight — clean it out instead of accumulating cruft."""
+    for rel in KNOWN_OVERSIZED:
+        path = STATIC_DIR / rel
+        assert path.is_file(), (
+            f"KNOWN_OVERSIZED references {rel!r} but it no longer "
+            "exists — drop the entry from the dict."
+        )
+
+
+def test_known_oversized_files_actually_oversized() -> None:
+    """Conversely, if a file in KNOWN_OVERSIZED has been split down
+    below the budget, it should be removed from the list — keeping
+    a stale entry is technical debt that hides regressions."""
+    for rel in KNOWN_OVERSIZED:
+        path = STATIC_DIR / rel
+        if not path.is_file():
+            continue  # caught by the previous test
+        count = sum(1 for _ in path.open("r", encoding="utf-8"))
+        assert count > LINE_BUDGET, (
+            f"{rel!r} is now {count} lines (≤ {LINE_BUDGET}) — drop "
+            "it from KNOWN_OVERSIZED so future regressions actually "
+            "trip the budget check."
+        )
 
 
 # ── HTTP reachability via the existing /ui mount ───────────────────────

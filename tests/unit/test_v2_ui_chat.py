@@ -229,8 +229,17 @@ def test_message_bubble_renders_via_dangerouslySetInnerHTML() -> None:
     keyed token has its own div with dangerouslySetInnerHTML) so
     streaming chunks only update the trailing token's DOM. The
     sanitized-HTML injection path is preserved; the per-token import
-    is what changed."""
-    src = read("components/molecules/MessageBubble.js")
+    is what changed.
+
+    B-323: MarkdownBody (the actual owner of the per-token render
+    + dangerouslySetInnerHTML) was split into MessageBubbleParts.js
+    so MessageBubble.js stayed under the 500-line UI budget. Read
+    both files — the assertion holds as long as ONE of them carries
+    the markers (whichever one MarkdownBody currently lives in).
+    """
+    bubble_src = read("components/molecules/MessageBubble.js")
+    parts_src = read("components/molecules/MessageBubbleParts.js")
+    src = bubble_src + "\n" + parts_src
     assert "dangerouslySetInnerHTML" in src
     # Token-keyed render uses lex() + renderTokenHtml() instead of the
     # old renderMarkdown() one-shot.

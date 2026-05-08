@@ -24,6 +24,22 @@
 // messages[] with stable string ids; streaming appends mutate the matching
 // message rather than creating new ones, which keeps Preact's reconciler
 // happy via key={msg.id}.
+//
+// B-323: secondary cases (skill / cost / grader / context_compressed /
+// todo / prompt_injection / anti_req_violation) live in
+// chat_reducer_secondary.js so this file stays under the 500-line UI
+// budget (FRONTEND_DESIGN.md §1.4). The applyEvent below dispatches
+// to the secondary reducer first; falls through to its own switch
+// when not handled.
+
+import {
+  applySecondaryEvent,
+  isSecondaryEventType,
+} from "./chat_reducer_secondary.js";
+import {
+  applyStreamingEvent,
+  isStreamingEventType,
+} from "./chat_reducer_streaming.js";
 
 export const PHASE_1_EVENT_TYPES = [
   "user_message",
@@ -47,47 +63,6 @@ function genId() {
   return "m_" + Math.random().toString(16).slice(2, 10);
 }
 
-// B-218: per-row event timeline helpers. Each message can carry an
-// ``events: []`` ordered list — chat-bubble UIs that prefer linear
-// per-block rendering (CoPaw / OpenClaw style) read this; the legacy
-// ``message.toolCalls`` + ``message.thinking`` aggregates stay as
-// they are for back-compat with components that still rely on them.
-//
-// Boundary rule:
-//   * llm_thinking_chunk → append to trailing thinking event, OR
-//     start a new thinking block when the last event is text/tool.
-//   * llm_chunk          → same logic for text events.
-//   * tool_call_emitted  → always pushes a fresh tool event (each
-//     tool invocation is one row).
-function _appendThinkingEvent(events, mid, delta) {
-  const arr = events ? [...events] : [];
-  const last = arr[arr.length - 1];
-  if (last && last.type === "thinking") {
-    arr[arr.length - 1] = { ...last, content: (last.content || "") + delta };
-  } else {
-    arr.push({
-      type: "thinking",
-      id: mid + ":k" + arr.length,
-      content: delta,
-    });
-  }
-  return arr;
-}
-
-function _appendTextEvent(events, mid, delta) {
-  const arr = events ? [...events] : [];
-  const last = arr[arr.length - 1];
-  if (last && last.type === "text") {
-    arr[arr.length - 1] = { ...last, content: (last.content || "") + delta };
-  } else {
-    arr.push({
-      type: "text",
-      id: mid + ":t" + arr.length,
-      content: delta,
-    });
-  }
-  return arr;
-}
 
 function upsertById(messages, id, patcher) {
   const idx = messages.findIndex((m) => m.id === id);
@@ -127,6 +102,24 @@ export function applyEvent(chat, envelope) {
   const payload = envelope.payload || {};
   const ts = envelope.ts || Date.now() / 1000;
   const corr = envelope.correlation_id || envelope.id || genId();
+
+  // B-323: streaming cases (llm_chunk / llm_thinking_chunk /
+  // llm_response) live in chat_reducer_streaming.js, secondary cases
+  // (cost_tick / grader_verdict / skill_* / anti_req_violation /
+  // context_compressed / todo_updated / prompt_injection_detected)
+  // live in chat_reducer_secondary.js — both keep this file under the
+  // 500-line UI budget. Each sub-reducer returns null when the event
+  // type isn't theirs; we fall through to the main switch below.
+  if (isStreamingEventType(t)) {
+    const next = applyStreamingEvent(chat, envelope, {
+      upsertById, finalizeAbandoned: _finalizeAbandoned,
+    });
+    if (next !== null) return next;
+  }
+  if (isSecondaryEventType(t)) {
+    const next = applySecondaryEvent(chat, envelope, { upsertById });
+    if (next !== null) return next;
+  }
 
   switch (t) {
     case "user_message": {
@@ -233,208 +226,6 @@ export function applyEvent(chat, envelope) {
       };
     }
 
-    case "llm_chunk": {
-      // Streaming token delta. Use correlation_id (turn id) as the
-      // assistant message id so subsequent chunks merge into the same
-      // bubble. Create the bubble lazily on the first chunk.
-      const id = corr;
-      // B-269: drop chunks for turns the user cancelled. Provider
-      // streams have buffered chunks already in flight when cancel
-      // hits; without this guard text keeps appending after Stop is
-      // clicked, defeating the user's intent. The cancelledTurnIds
-      // set is populated by ``cancelComposer`` (app.js) the moment
-      // Stop fires, BEFORE the WS frame travels.
-      if (chat.cancelledTurnIds && chat.cancelledTurnIds.has(id)) {
-        return chat;
-      }
-      const delta = typeof payload.delta === "string"
-        ? payload.delta
-        : typeof payload.content === "string"
-          ? payload.content
-          : "";
-      // B-89: stop any prior abandoned-streaming bubble before this
-      // turn starts producing chunks. Some providers skip llm_request
-      // and start straight from llm_chunk, so we need this guard here
-      // too.
-      const cleaned = _finalizeAbandoned(chat.messages, id);
-      const idx = cleaned.findIndex((m) => m.id === id);
-      if (idx === -1) {
-        return {
-          ...chat,
-          pendingAssistantId: id,
-          messages: cleaned.concat({
-            id,
-            role: "assistant",
-            content: delta,
-            status: "streaming",
-            ts,
-            toolCalls: [],
-            // B-218: chronological event timeline. Each entry =
-            // one rendered row in MessageBubble. Mirrors what
-            // OpenClaw / CoPaw / Hermes show: thinking-row →
-            // tool-row → text-row in the order events arrived.
-            events: [{ type: "text", id: id + ":t0", content: delta }],
-          }),
-        };
-      }
-      return {
-        ...chat,
-        pendingAssistantId: id,
-        messages: upsertById(cleaned, id, (m) => ({
-          ...m,
-          content: m.content + delta,
-          status: "streaming",
-          // B-218: append to the trailing text event when the last
-          // event is text; otherwise start a new text event after
-          // the most recent thinking / tool block. Keeps things
-          // grouped naturally.
-          events: _appendTextEvent(m.events || [], id, delta),
-        })),
-      };
-    }
-
-    case "llm_thinking_chunk": {
-      // B-91 / B-218: reasoning / extended-thinking token delta.
-      // Pre-B-218 accumulated into a single ``message.thinking``
-      // string, rendered in PhaseCard above the bubble. Now ALSO
-      // appended into ``message.events`` so MessageBubble can show
-      // each thinking BLOCK as its own collapsible row inline with
-      // the tool calls — matches the per-row layout users see in
-      // CoPaw / OpenClaw screenshots.
-      const id = corr;
-      // B-269: same cancel guard as llm_chunk — provider's reasoning
-      // stream also buffers, drop late thinking-deltas for cancelled
-      // turns.
-      if (chat.cancelledTurnIds && chat.cancelledTurnIds.has(id)) {
-        return chat;
-      }
-      const delta = typeof payload.delta === "string"
-        ? payload.delta
-        : "";
-      if (!delta) return chat;
-      const cleaned = _finalizeAbandoned(chat.messages, id);
-      const idx = cleaned.findIndex((m) => m.id === id);
-      if (idx === -1) {
-        return {
-          ...chat,
-          pendingAssistantId: id,
-          messages: cleaned.concat({
-            id,
-            role: "assistant",
-            content: "",
-            thinking: delta,
-            status: "thinking",
-            phase: "calling_llm",
-            ts,
-            toolCalls: [],
-            events: [{ type: "thinking", id: id + ":k0", content: delta }],
-          }),
-        };
-      }
-      return {
-        ...chat,
-        pendingAssistantId: id,
-        messages: upsertById(cleaned, id, (m) => ({
-          ...m,
-          thinking: (m.thinking || "") + delta,
-          // B-218: append to trailing thinking event OR open a new
-          // thinking block when the last event is tool/text. This
-          // is what gives us the per-block rendering peers have.
-          events: _appendThinkingEvent(m.events || [], id, delta),
-        })),
-      };
-    }
-
-    case "agent_asked_question": {
-      // B-92: agent stops mid-turn to ask a multi-choice question.
-      // Lives as a system-tagged bubble in the transcript so the user
-      // sees what's being asked alongside any preceding tool calls
-      // and assistant text. The QuestionCard component renders an
-      // interactive UI from message.question.
-      const id = "q_" + (payload.question_id || corr);
-      return {
-        ...chat,
-        messages: chat.messages.concat({
-          id,
-          role: "system",
-          kind: "question",
-          content: "",
-          status: "pending",
-          ts,
-          question: {
-            id: payload.question_id || corr,
-            question: payload.question || "",
-            options: Array.isArray(payload.options) ? payload.options : [],
-            multi_select: !!payload.multi_select,
-            allow_other: payload.allow_other !== false,
-            tool_call_id: payload.tool_call_id || null,
-          },
-        }),
-      };
-    }
-
-    case "user_answered_question": {
-      // B-92: collapse the QuestionCard. We mark the matching bubble
-      // as 'complete' and stash the answer so the card can render a
-      // read-only summary ("you picked: …") instead of disappearing.
-      const id = "q_" + (payload.question_id || corr);
-      const idx = chat.messages.findIndex((m) => m.id === id);
-      if (idx === -1) return chat;
-      return {
-        ...chat,
-        messages: upsertById(chat.messages, id, (m) => ({
-          ...m,
-          status: "complete",
-          answer: payload.value,
-        })),
-      };
-    }
-
-    case "llm_response": {
-      // Final assistant turn. If we never saw chunks (non-streaming model),
-      // create the bubble in one shot.
-      // B-46: an LLM call that errored out emits {ok: false, error: ...}
-      // with no text. Mark the bubble as 'error' (not 'complete') so the
-      // user sees the failure instead of an empty completed bubble, and
-      // clear `phase` so the "正在调用 LLM · Ns" indicator stops ticking.
-      const id = corr;
-      const finalText = typeof payload.content === "string"
-        ? payload.content
-        : (payload.text || "");
-      const ok = payload.ok !== false;
-      const finalStatus = ok ? "complete" : "error";
-      const errBody = !ok ? `LLM 调用失败：${payload.error || "未知"}` : "";
-      const idx = chat.messages.findIndex((m) => m.id === id);
-      if (idx === -1) {
-        return {
-          ...chat,
-          pendingAssistantId: null,
-          messages: chat.messages.concat({
-            id,
-            role: "assistant",
-            content: finalText || errBody,
-            status: finalStatus,
-            phase: null,
-            ts,
-            toolCalls: [],
-          }),
-        };
-      }
-      return {
-        ...chat,
-        pendingAssistantId: null,
-        messages: upsertById(chat.messages, id, (m) => ({
-          ...m,
-          // If the server sent the canonical full text, prefer it over
-          // accumulated chunks — this is how we recover from a dropped
-          // chunk mid-stream.
-          content: finalText || m.content || errBody,
-          status: finalStatus,
-          phase: null,
-          ts,
-        })),
-      };
-    }
 
     case "tool_call_emitted": {
       // B-220: tool_use is now its OWN top-level sibling message —
@@ -557,271 +348,6 @@ export function applyEvent(chat, envelope) {
           status,
           result,
         })),
-      };
-    }
-
-    case "skill_invoked": {
-      // B-130: heuristic-path detection — the agent didn't go through
-      // a tool-call but agent_loop._detect_skill_invocations matched
-      // the skill_id / trigger / body keyword to the turn. Render as
-      // an inline marker on the assistant bubble so the user SEES the
-      // detection without leaving the chat.
-      // Tool-call path (evidence='tool_call') already shows up via
-      // toolCalls + ToolCard, so skip it here to avoid duplicate UI.
-      if ((payload.evidence || "") === "tool_call") return chat;
-      const aid = corr;
-      const idx = chat.messages.findIndex((m) => m.id === aid);
-      if (idx === -1) return chat;
-      const note = {
-        skill_id: payload.skill_id || "?",
-        evidence: payload.evidence || "?",
-        trigger_match: payload.trigger_match || null,
-        verdict: null,
-      };
-      return {
-        ...chat,
-        messages: upsertById(chat.messages, aid, (m) => ({
-          ...m,
-          skillNotes: (m.skillNotes || []).concat(note),
-        })),
-      };
-    }
-
-    case "skill_outcome": {
-      // B-130: pair the verdict back onto the most recent skillNote
-      // for the same skill_id on this assistant turn.
-      const aid = corr;
-      const idx = chat.messages.findIndex((m) => m.id === aid);
-      if (idx === -1) return chat;
-      const sid = payload.skill_id;
-      return {
-        ...chat,
-        messages: upsertById(chat.messages, aid, (m) => {
-          const notes = (m.skillNotes || []).slice();
-          // Patch the LAST note with this skill_id (most recent wins).
-          for (let i = notes.length - 1; i >= 0; i--) {
-            if (notes[i].skill_id === sid && !notes[i].verdict) {
-              notes[i] = { ...notes[i], verdict: payload.verdict || "?" };
-              break;
-            }
-          }
-          return { ...m, skillNotes: notes };
-        }),
-      };
-    }
-
-    case "cost_tick": {
-      // B-107: aggregate per-turn token / cost stats for the live
-      // budget widget. Updates a flat ``tokenUsage`` slot on chat
-      // state — the UI shows running totals across the session.
-      const prev = chat.tokenUsage || {
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        spent_usd: 0,
-        budget_usd: 0,
-        last_model: "",
-        turns: 0,
-      };
-      const pt = Number(payload.prompt_tokens) || 0;
-      const ct = Number(payload.completion_tokens) || 0;
-      // ``spent_usd`` is the daemon-side running total — replace,
-      // don't sum, so we stay in sync if the daemon resets.
-      return {
-        ...chat,
-        tokenUsage: {
-          prompt_tokens: prev.prompt_tokens + pt,
-          completion_tokens: prev.completion_tokens + ct,
-          spent_usd: typeof payload.spent_usd === "number"
-            ? payload.spent_usd : prev.spent_usd,
-          budget_usd: typeof payload.budget_usd === "number"
-            ? payload.budget_usd : prev.budget_usd,
-          last_model: payload.model || prev.last_model,
-          turns: prev.turns + 1,
-        },
-      };
-    }
-
-    case "anti_req_violation": {
-      // Always render as an inline system bubble so the user can see why a
-      // turn was blocked.
-      const id = "antireq_" + corr;
-      // B-38 + B-46: a violation event terminates the turn. Two cleanups:
-      //   1) clear pendingAssistantId so Stop flips back to Send.
-      //   2) flip the in-flight assistant bubble's status from
-      //      'thinking'/'streaming' → 'error' so the "正在调用 LLM · Ns"
-      //      indicator stops ticking. Without (2) the indicator stuck at
-      //      thousands of seconds — the LLM call legitimately ended (the
-      //      anti_req fired), but the bubble never got a terminal status
-      //      because llm_response wasn't emitted (the violation took its
-      //      place).
-      const reason = payload.reason || payload.message || payload.kind || "anti-requirement violation";
-      const haveBubble = chat.messages.findIndex((m) => m.id === corr) !== -1;
-      const messages = chat.messages.concat({
-        id,
-        role: "system",
-        content: "Blocked: " + reason,
-        status: "error",
-        ts,
-      });
-      const finalMessages = haveBubble
-        ? upsertById(messages, corr, (m) => (
-            m.status === "complete" ? m : { ...m, status: "error", phase: null }
-          ))
-        : messages;
-      return {
-        ...chat,
-        pendingAssistantId: null,
-        messages: finalMessages,
-      };
-    }
-
-    // B-266: previously-unhandled events. Each one was being silently
-    // dropped at the ``default`` branch — meaning entire subsystems
-    // (grading, evolution, todos, context compression, security alerts)
-    // produced ZERO UI feedback in the chat panel even though the
-    // daemon was emitting them. Frontend audit (2026-05-07) found
-    // 13+ event types in this state. The handlers below are a focused
-    // subset — they hook into the activity-feed channels that the UI
-    // already renders (toolCalls / tokenUsage / system-tagged
-    // bubbles) without requiring new components. The rest are still
-    // in the ``default`` branch but available via the Trace page,
-    // which subscribes to the raw event stream.
-
-    case "context_compressed": {
-      // B-266: agent_loop's ContextCompressor (proactive or reactive)
-      // just shrank the message history. Surface as a thin system
-      // bubble so the user knows the LLM saw a summary, not the raw
-      // earlier turns. Doesn't change any other state.
-      const trigger = payload.trigger || "compressed";
-      const id = "ctxcomp_" + corr + "_" + (payload.hop ?? 0);
-      return {
-        ...chat,
-        messages: chat.messages.concat({
-          id,
-          role: "system",
-          kind: "context_compressed",
-          content: `🗜️ 上下文被压缩 (${trigger})`,
-          status: "complete",
-          ts,
-          collapsed: true,
-        }),
-      };
-    }
-
-    case "todo_updated": {
-      // B-266: todo_write tool just updated the task list. Mirror
-      // count + items into chat state so a TodoPanel (or inline
-      // checklist) can render them without re-fetching.
-      const items = Array.isArray(payload.items) ? payload.items : [];
-      return {
-        ...chat,
-        todos: {
-          items,
-          count: typeof payload.count === "number"
-            ? payload.count
-            : items.length,
-          ts,
-        },
-      };
-    }
-
-    case "grader_verdict": {
-      // B-266 + B-294: HonestGrader fired on a tool result. We
-      // already surface the per-skill verdict via skill_outcome;
-      // this handler aggregates the LATEST verdict score into a
-      // session-level slot for diagnostic widgets (e.g. "average
-      // grader score this session"). No bubble created — too noisy
-      // for chat (every tool call fires one).
-      const score = typeof payload.score === "number"
-        ? payload.score
-        : null;
-      const prev = chat.graderStats || { count: 0, sum: 0, lastScore: null };
-      return {
-        ...chat,
-        graderStats: {
-          count: prev.count + 1,
-          sum: prev.sum + (score == null ? 0 : score),
-          lastScore: score,
-          lastSkillId: payload.skill_id || null,
-          lastTs: ts,
-        },
-      };
-    }
-
-    case "skill_candidate_proposed": {
-      // B-266 + B-294: EvolutionAgent.evaluate (now actually firing
-      // post-B-294) has emitted a promote/rollback proposal. Attach
-      // to a session-level proposals queue so the Evolution page can
-      // poll without round-tripping events.db every render. Cap at
-      // 50 entries (most-recent first) to keep the slot bounded.
-      const decision = payload.decision || "promote";
-      const next = {
-        ts,
-        decision,
-        skill_id: payload.skill_id || payload.candidate_id || "?",
-        from_version: payload.from_version,
-        to_version: payload.to_version,
-        evidence: payload.evidence || [],
-      };
-      const prev = chat.skillProposals || [];
-      return {
-        ...chat,
-        skillProposals: [next, ...prev].slice(0, 50),
-      };
-    }
-
-    case "skill_promoted":
-    case "skill_rolled_back": {
-      // B-266: SkillRegistry actually moved HEAD. Strong UI signal —
-      // surface as a celebration / warning system bubble so the user
-      // sees their agent just learned (or rolled back).
-      const promoted = t === "skill_promoted";
-      const sid = payload.skill_id || "?";
-      const to = payload.to_version ?? "?";
-      const id = (promoted ? "promo_" : "roll_") + corr;
-      const text = promoted
-        ? `🌱 技能 ${sid} 升级到 v${to}`
-        : `🔁 技能 ${sid} 回滚到 v${to}`;
-      return {
-        ...chat,
-        messages: chat.messages.concat({
-          id,
-          role: "system",
-          kind: "skill_lifecycle",
-          content: text,
-          status: "complete",
-          ts,
-        }),
-        // Drop matching proposal from the queue (it's resolved).
-        skillProposals: (chat.skillProposals || []).filter(
-          (p) => p.skill_id !== sid,
-        ),
-      };
-    }
-
-    case "prompt_injection_detected": {
-      // B-266 + B-273: scanner caught injection-shaped content in
-      // a tool result / sub-agent reply / channel inbound / skill body.
-      // Surface as a warning system bubble. Severity drives the
-      // visual emphasis the UI applies (not implemented here — just
-      // pass through).
-      const severity = payload.severity || "low";
-      const source = payload.source || "?";
-      const id = "inj_" + corr + "_" + (payload.tool_call_id || "x");
-      const findings = Array.isArray(payload.findings)
-        ? payload.findings.map((f) => f.pattern_id || "?").join(", ")
-        : "";
-      return {
-        ...chat,
-        messages: chat.messages.concat({
-          id,
-          role: "system",
-          kind: "security_alert",
-          severity,
-          content: `🛡️ Prompt 注入检测 (源: ${source})${findings ? " — " + findings : ""}`,
-          status: "complete",
-          ts,
-        }),
       };
     }
 

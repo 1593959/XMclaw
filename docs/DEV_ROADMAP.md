@@ -542,6 +542,24 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
   * **B-322 favicon 不进 OpenAPI schema**: `tests/unit/test_v2_web_ui_routers.py::TestRouterRegistration::test_all_four_groups_are_mounted` 触发 `/openapi.json` 时 pydantic 2.12 走到 `/favicon.ico` 路由的 return-type annotation `_PlainResponse` (= `starlette.responses.Response`), 试图给它 build TypeAdapter schema 失败 — `PydanticUserError: ForwardRef('_PlainResponse') is not fully defined`. 加 `include_in_schema=False` + 拿掉 return annotation. favicon 本来就不该进 API surface, 是浏览器关切.
   - 验证: **2323 unit tests passed, 0 failed** (从上次 2319 passed + 4 deselected → 现在全跑全过). 顺便发现 `xmclaw/daemon/static/components/organisms/AppShell.js` 658 行也超 budget 但 `SOURCE_GLOBS` 里没 `components/organisms/*.js` 所以 lint 看不到 — 这个留给后续刀.
 
+- 2026-05-07: **B-323 — UI line-budget hidden offenders 大清扫**. 用户上一刀注意到 lint 的 `SOURCE_GLOBS` 只包了 `*.js` / `components/atoms/*.js` / `styles/*.css`, 漏了 `components/molecules` / `components/organisms` / `pages` / `pages/_panels` / `lib` 五个目录. 一扩 glob 就跳出 7 个超 500 行的隐藏 offender, 全部一次性拆掉:
+  * **SetupBanner.js (501→458)**: `STEP_INFO` map + dismiss localStorage helpers → `lib/setup_banner_data.js` (56 行).
+  * **Evolution.js (519→317)**: `LiveStatusPanel` (B-301 实时进化状态卡片) + `ArmCard` + `DreamRow` + `ArmProgressBar` → `components/molecules/EvolutionLive.js` (190 行).
+  * **MessageBubble.js (597→348)**: `ToolCard` + `MarkdownBody` (token-keyed dangerouslySetInnerHTML) + `ThinkingDots` + `PhaseCard` → `components/molecules/MessageBubbleParts.js` (277 行). 顺手修测试 `test_message_bubble_renders_via_dangerouslySetInnerHTML` 改读两个文件的 union, MarkdownBody 现在住 Parts.
+  * **Sessions.js (607→464)**: `Icon` + 7 个 SVG path 常量 + `ToolCallBlock` + 内部 `MessageBubble` + `MessageList` + `DeleteConfirmDialog` → `pages/_panels/sessions_parts.js` (171 行).
+  * **AppShell.js (658→272)**: `NavLink` + `NavRoot` + `NavGroup` + `ThemeSwitcher` + `LanguageSwitcher` + `SidebarFooter` + `SidebarSystemActions` + `useDaemonStatus` + `ContextStrip` 全部 → `components/organisms/AppShellParts.js` (444 行). `ICONS` map + `Icon` + `NAV_GROUPS` + `NAV_ITEMS` + collapse helpers 留在 AppShell.js 因为 `test_icon_atom_covers_every_sidebar_glyph` 要在该文件里读 ICONS 块. ESM 循环 import (Parts → AppShell ↔ AppShell → Parts) OK 因为每条交叉边都在函数体内, 不在 module-init 阶段消费.
+  * **Memory.js (785→88)**: `ProvidersTab` + `MemoryActivitySparkline` + 三个 helper (apiPut / apiPost / `_diagnoseFetch` / `todayIso`) → `pages/_panels/memory_providers.js` (714 行). 这个 panel 仍超 budget, 进 `KNOWN_OVERSIZED` 例外清单挂 TODO 后续把它再拆 (vector-indexer / Auto-Dream / pinned / backups / picker / provider-switcher 是明显边界).
+  * **chat_reducer.js (881→407)**: 22 个 case 拆成三个 reducer.
+    - 11 个"次级"事件 (skill_invoked / skill_outcome / cost_tick / anti_req_violation / context_compressed / todo_updated / grader_verdict / skill_candidate_proposed / skill_promoted / skill_rolled_back / prompt_injection_detected) → `lib/chat_reducer_secondary.js` (303 行) 走 `applySecondaryEvent(chat, envelope, helpers) → chat | null`.
+    - 3 个"流式"事件 (llm_chunk / llm_thinking_chunk / llm_response) + 两个 `_appendThinkingEvent` / `_appendTextEvent` 辅助函数 → `lib/chat_reducer_streaming.js` (240 行) 走 `applyStreamingEvent(...)`.
+    - `applyEvent` 主路径在大 switch 之前先 try sub-reducer, null 表示"不归我管"再 fall through. 行为 1:1 保留, 没有事件流改动.
+  * 测试侧加的:
+    - `tests/unit/test_v2_ui_scaffold.py::SOURCE_GLOBS` 扩到 5 个目录 (molecules / organisms / pages / _panels / lib).
+    - `KNOWN_OVERSIZED: dict[str, str]` 例外清单, 每条必须带一句"为什么没拆 + 计划". 当前只有 `pages/_panels/memory_providers.js`.
+    - `test_known_oversized_files_actually_exist`: 防止 KNOWN_OVERSIZED 引用了已经不存在的文件.
+    - `test_known_oversized_files_actually_oversized`: 防止 grandfather 文件已经被拆下来后忘了从 list 移除 (会让 future regression 不被抓).
+  - 验证: 2325 unit tests passed, 0 failed (上次 2323 passed + 这次 +4 测试 - 1 修测试 = 2325). 全部 17 个前端 .js 文件 (含新拆出来的 9 个) 加起来 5390 行 vs 拆前 7 个超标文件平均 ~625 行 × 7 = 4375 行 — 净增 ~1000 行主要是新文件的注释 + import 头, 实际逻辑 code 量基本持平.
+
 ---
 
 ### Epic #5 · Memory eviction
