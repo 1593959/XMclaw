@@ -176,7 +176,22 @@ class CostTracker:
                 f"negative token counts: prompt={prompt_tokens}, "
                 f"completion={completion_tokens}"
             )
-        effective = pricing if pricing is not None else self._pricing.get(model)
+        # B-340 (audit pass-2 #3): pre-fix this used raw dict.get
+        # against the exact-match ``self._pricing`` dict. Models with
+        # date-suffixed names (e.g. ``claude-haiku-4-5-20251002``)
+        # or any non-default-named model (kimi / glm / minimax /
+        # deepseek / qwen / etc) returned None → cost stayed 0 →
+        # ``check_budget`` never tripped. Anti-req #6 (hard cost cap)
+        # was bypassed for ~every real Chinese-market model. Now
+        # falls back through ``lookup_pricing`` (substring + default)
+        # which is the same source-of-truth the analytics dashboard
+        # uses post-B-335; the two views can no longer disagree.
+        if pricing is not None:
+            effective: Pricing | None = pricing
+        else:
+            effective = self._pricing.get(model)
+            if effective is None:
+                effective = lookup_pricing(model)
         if effective is None:
             cost = 0.0
         else:

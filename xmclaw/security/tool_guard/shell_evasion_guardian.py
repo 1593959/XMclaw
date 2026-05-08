@@ -38,15 +38,21 @@ _EVASION_CHECKS: list[tuple[str, str, str]] = [
 
 
 class ShellEvasionGuardian(BaseToolGuardian):
-    r"""Scans ``execute_shell_command`` for evasion techniques that bypass
-    simple regex guards (e.g. ``rm`` -> ``r\ m``, ``$(rm)``)."""
+    r"""Scans the ``bash`` tool for evasion techniques that bypass
+    simple regex guards (e.g. ``rm`` -> ``r\ m``, ``$(rm)``).
+
+    B-340 (audit pass-2 #4): the canonical XMclaw shell tool name is
+    ``bash`` (see ``_specs.py:_BASH_SPEC``). Pre-B-340 this guardian
+    short-circuited unless ``tool_name == "execute_shell_command"`` —
+    a name the dispatcher never actually emits → guardian was dead.
+    """
 
     @property
     def name(self) -> str:
         return "shell_evasion"
 
     def guard(self, tool_name: str, params: dict[str, Any]) -> list[GuardFinding]:
-        if tool_name != "execute_shell_command":
+        if tool_name != "bash":
             return []
         cmd = params.get("command", "")
         if not isinstance(cmd, str):

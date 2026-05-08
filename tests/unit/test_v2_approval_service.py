@@ -110,7 +110,7 @@ class TestGuardedToolProviderWithApproval:
         provider = GuardedToolProvider(inner, engine, approval_service=svc)
         call = ToolCall(
             id="c1",
-            name="execute_shell_command",
+            name="bash",
             args={"command": "rm -rf /home/user/old_project"},
             provenance="synthetic",
             session_id="sess-1",
@@ -137,7 +137,7 @@ class TestGuardedToolProviderWithApproval:
         # NEEDS_APPROVAL branch.
         call = ToolCall(
             id="c1",
-            name="execute_shell_command",
+            name="bash",
             args={"command": "rm -rf /home/user/old_project"},
             provenance="synthetic",
             session_id="sess-2",
@@ -150,4 +150,4 @@ class TestGuardedToolProviderWithApproval:
         record = await svc.get(request_id)
         assert record is not None
         assert record.status == "pending"
-        assert record.tool_name == "execute_shell_command"
+        assert record.tool_name == "bash"

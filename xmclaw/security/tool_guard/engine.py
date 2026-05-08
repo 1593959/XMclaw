@@ -14,10 +14,21 @@ from .models import GuardFinding, ToolGuardResult
 _ALWAYS_RUN_GUARDIANS: set[str] = {"file_path"}
 
 # Default tools that trigger full guardian scanning.
+# B-340 (audit pass-2 #4): the canonical XMclaw tool name is ``bash``
+# (see ``xmclaw/providers/tool/_specs.py:_BASH_SPEC``). Pre-B-340 this
+# set listed ``execute_shell_command`` (a name borrowed from the
+# QwenPaw rule set) which never matched any real tool dispatch — so
+# the entire shell-evasion + dangerous-shell-rules + file-guardian
+# path was dead for the most dangerous tool we ship. Browser tool
+# names match their ``ToolSpec`` definitions in ``browser.py``.
+# ``apply_patch`` and ``file_delete`` join the set because they
+# mutate files just as much as ``file_write``.
 _DEFAULT_GUARDED_TOOLS: set[str] = {
-    "execute_shell_command",
+    "bash",
     "file_read",
     "file_write",
+    "file_delete",
+    "apply_patch",
     "browser_open",
     "browser_click",
     "browser_fill",

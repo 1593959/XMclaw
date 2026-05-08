@@ -122,9 +122,28 @@ def load_rules(rules_dir: Path | None = None) -> list[Rule]:
 
 
 def scan_with_rules(
-    text: str, rules: list[Rule] | None = None
+    text: str,
+    rules: list[Rule] | None = None,
+    *,
+    tool_name: str | None = None,
+    param_name: str | None = None,
 ) -> list[Finding]:
-    """Scan *text* against loaded rules and return findings."""
+    """Scan *text* against loaded rules and return findings.
+
+    B-340 (audit pass-2 #4): ``tool_name`` and ``param_name`` are
+    consulted against ``Rule.tools`` and ``Rule.params`` respectively.
+    Pre-B-340 these YAML fields were loaded into the dataclass but
+    never consulted — every shell-scoped rule fired on every tool
+    (file ops included) because there was no per-tool dispatch.
+    Now:
+
+    * ``Rule.tools`` non-empty + ``tool_name`` not in that list → skip.
+    * ``Rule.params`` non-empty + ``param_name`` not in that list → skip.
+    * Either filter empty (the original QwenPaw default) → fire as before.
+    * ``tool_name`` / ``param_name`` themselves ``None`` → no filtering
+      (back-compat for callers that scan free-form text, e.g. agent
+      output, where there's no tool/param dimension).
+    """
     if rules is None:
         rules = load_rules()
     findings: list[Finding] = []
@@ -135,6 +154,23 @@ def scan_with_rules(
             continue
         # skip binary-only rules when scanning plain text
         if rule.file_types == ["binary"]:
+            continue
+        # B-340 (audit pass-2 #4): manifest-only rules (e.g. the
+        # ``SOCIAL_ENG_VAGUE_DESCRIPTION`` ``^.{0,20}$`` catch-all)
+        # are designed for SKILL.md / manifest metadata, not free-
+        # form text or tool params. Pre-B-340 the only file-type
+        # short-circuit was ``["binary"]``; manifest rules leaked
+        # into tool-param scans where their broad regexes false-
+        # positive on every short value. Same skip posture as
+        # binary now.
+        if rule.file_types == ["manifest"]:
+            continue
+        # B-340: per-tool scoping. Empty list means "all tools" (the
+        # YAML default for rules that don't specify); a populated list
+        # is a whitelist. Same for params.
+        if rule.tools and tool_name is not None and tool_name not in rule.tools:
+            continue
+        if rule.params and param_name is not None and param_name not in rule.params:
             continue
         excluded = False
         for exc in rule.exclude_patterns:

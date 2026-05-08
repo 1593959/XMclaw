@@ -701,10 +701,27 @@ def create_app(
                                     )
                                     for k in kids:
                                         yield from _walk(k)
+                                from pathlib import Path as _Path
                                 for node in _walk(getattr(agent, "_tools", None)):
                                     if isinstance(node, BuiltinTools):
                                         try:
-                                            node._allowed_dirs = list(new_dirs)
+                                            # B-340 (audit pass-2 #1):
+                                            # BuiltinTools stores the
+                                            # sandbox in ``self._allowed``
+                                            # (resolved Path list, NOT
+                                            # raw strings). Pre-B-340
+                                            # this wrote
+                                            # ``_allowed_dirs`` — a brand-
+                                            # new attribute nobody read,
+                                            # so the "applied" log line
+                                            # was fiction and the sandbox
+                                            # was unchanged. Match the
+                                            # ctor's resolve-and-list
+                                            # contract.
+                                            node._allowed = (
+                                                [_Path(d).resolve() for d in new_dirs]
+                                                if new_dirs else None
+                                            )
                                             log.info(
                                                 "config_reloaded.tools.allowed_dirs "
                                                 "applied count=%d",
@@ -736,16 +753,37 @@ def create_app(
                                     )
                                     for k in kids:
                                         yield from _walk(k)
+                                from xmclaw.security.tool_guard.models import (
+                                    GuardianPolicy as _GuardianPolicy,
+                                )
                                 for node in _walk(getattr(agent, "_tools", None)):
                                     if isinstance(node, GuardedToolProvider):
                                         try:
-                                            node._policy_dict = dict(new_policy)
+                                            # B-340 (audit pass-2 #2):
+                                            # GuardedToolProvider stores
+                                            # the policy as
+                                            # ``self._policy`` (a
+                                            # GuardianPolicy instance,
+                                            # consulted on every invoke
+                                            # via .action_for(...)).
+                                            # Pre-B-340 this wrote
+                                            # ``_policy_dict`` — a
+                                            # brand-new attribute nobody
+                                            # read; the "applied" log
+                                            # line was fiction.
+                                            node._policy = (
+                                                _GuardianPolicy.from_config(new_policy)
+                                            )
                                             log.info(
                                                 "config_reloaded.security."
                                                 "guardians applied",
                                             )
-                                        except Exception:  # noqa: BLE001
-                                            pass
+                                        except Exception as exc:  # noqa: BLE001
+                                            log.warning(
+                                                "config_reloaded.security."
+                                                "policy_apply_failed err=%s",
+                                                exc,
+                                            )
                         except Exception as exc:  # noqa: BLE001
                             log.warning(
                                 "config_reloaded.security_failed err=%s", exc,

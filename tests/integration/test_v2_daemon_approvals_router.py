@@ -84,7 +84,7 @@ def test_list_returns_serialized_record(client: TestClient) -> None:
     request_id = _seed(
         client,
         session_id="sid-A",
-        tool_name="execute_shell_command",
+        tool_name="bash",
         params={"command": "rm -rf /home/foo"},
         summary="HIGH severity dangerous rm",
     )
@@ -105,7 +105,7 @@ def test_list_returns_serialized_record(client: TestClient) -> None:
     }
     assert rec["request_id"] == request_id
     assert rec["session_id"] == "sid-A"
-    assert rec["tool_name"] == "execute_shell_command"
+    assert rec["tool_name"] == "bash"
     assert rec["status"] == "pending"
     assert rec["findings_summary"] == "HIGH severity dangerous rm"
     assert isinstance(rec["created_at"], (int, float))

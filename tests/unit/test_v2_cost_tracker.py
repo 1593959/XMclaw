@@ -20,15 +20,27 @@ def test_record_known_model_charges_listed_price() -> None:
     assert t.spent_usd == pytest.approx(4.80, abs=1e-6)
 
 
-def test_record_unknown_model_costs_zero_by_default() -> None:
-    """Unknown models shouldn't block — the tracker records usage but
-    attributes zero cost unless the caller provides explicit pricing."""
+def test_record_unknown_model_uses_fallback_pricing() -> None:
+    """B-340 (audit pass-2 #3): unknown models now fall back through
+    ``lookup_pricing`` → ``DEFAULT_FALLBACK_PRICING`` (0.5/1.5 per
+    Mtok) instead of costing zero. Pre-B-340 the tracker silently
+    attributed 0 cost to any model not in the exact-match
+    DEFAULT_PRICING dict — anti-req #6 (hard cost cap) was bypassed
+    for ~every Chinese-market model (kimi/glm/minimax/qwen/etc).
+    Now they get the conservative fallback rate so check_budget()
+    actually fires."""
+    from xmclaw.utils.cost import DEFAULT_FALLBACK_PRICING
     t = CostTracker()
     cost = t.record(
         "custom", "some-unknown-model",
-        prompt_tokens=1000, completion_tokens=1000,
+        prompt_tokens=1_000_000, completion_tokens=1_000_000,
     )
-    assert cost == 0.0
+    # 1M prompt × 0.5 + 1M completion × 1.5 = 2.0 USD
+    expected = (
+        DEFAULT_FALLBACK_PRICING.input_per_mtok
+        + DEFAULT_FALLBACK_PRICING.output_per_mtok
+    )
+    assert cost == pytest.approx(expected, abs=1e-6)
     assert len(t.ledger) == 1
 
 

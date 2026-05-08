@@ -740,10 +740,21 @@ def build_tools_from_config(
     # store is created in lifespan AFTER the agent, so a static
     # capture would be None.
     def _persona_store_provider() -> Any:
+        # B-340 (audit pass-2 #5): ``st`` is Starlette's ``State``
+        # object (supports ``__getattr__`` / ``__setattr__``, NOT a
+        # ``.get`` method). Pre-B-340 ``st.get("persona_store")``
+        # raised AttributeError; the call site in BuiltinTools
+        # wrapped it in try/except → ``store`` was always None →
+        # the entire B-198 Phase-3 PersonaStore (DB-as-truth)
+        # wiring was silently inert in production. Every persona-
+        # mutating tool fell back to the legacy markdown path,
+        # ignoring the rendered-cache + upsert refactor.
+        # ``getattr(..., None)`` matches the sibling
+        # ``_persona_writeback`` helper at line ~609.
         st = _app_state_holder()
         if st is None:
             return None
-        return st.get("persona_store")
+        return getattr(st, "persona_store", None)
 
     builtins = BuiltinTools(
         allowed_dirs=allowed_dirs,
