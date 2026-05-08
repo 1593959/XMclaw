@@ -342,7 +342,7 @@ class AnthropicLLM(LLMProvider):
         _dump_flag = _ddir() / "v2" / "dump_next"
         _dump_path = _ddir() / "v2" / "anthropic_dump.json"
         _do_dump = _dump_flag.exists()
-        _dumped: list[dict] = []
+        _dumped: list[dict[str, Any]] = []
         if _do_dump:
             try:
                 _dump_flag.unlink()  # consume the toggle
@@ -363,9 +363,9 @@ class AnthropicLLM(LLMProvider):
                 # The watchdog forces stream closure as soon as
                 # cancel fires; the consume loop then exits with
                 # whatever text accumulated so far.
-                _cancel_watchdog: asyncio.Task | None = None
+                _cancel_watchdog: asyncio.Task[None] | None = None
                 if cancel is not None:
-                    async def _watch_cancel():
+                    async def _watch_cancel() -> None:
                         try:
                             await cancel.wait()
                             try:

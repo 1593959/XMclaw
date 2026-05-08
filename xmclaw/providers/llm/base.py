@@ -78,13 +78,20 @@ class Pricing:
 
 class LLMProvider(abc.ABC):
     @abc.abstractmethod
-    async def stream(
+    def stream(
         self,
         messages: list[Message],
         tools: list[ToolSpec] | None = None,
         *,
         cancel: asyncio.Event | None = None,
-    ) -> AsyncIterator[LLMChunk]: ...
+    ) -> AsyncIterator[LLMChunk]:
+        # Note: declared as plain ``def`` (not ``async def``) — concrete
+        # impls are async generators (``async def ... yield``) and the
+        # plain-def + AsyncIterator return type is the standard mypy
+        # shape for that pattern (an ``async def`` here would type-check
+        # as a coroutine returning an iterator, not as an iterator
+        # itself, breaking override checking).
+        ...
 
     @abc.abstractmethod
     async def complete(

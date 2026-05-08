@@ -437,9 +437,9 @@ class OpenAILLM(LLMProvider):
         # could keep us waiting 30+ seconds before any chunk lands)
         # and the in-loop ``cancel.is_set()`` check never reached.
         # Stop button now actually works mid-call.
-        _cancel_watchdog: asyncio.Task | None = None
+        _cancel_watchdog: asyncio.Task[None] | None = None
         if cancel is not None:
-            async def _watch_cancel():
+            async def _watch_cancel() -> None:
                 try:
                     await cancel.wait()
                     try:
@@ -480,7 +480,7 @@ class OpenAILLM(LLMProvider):
                     if on_thinking_chunk is not None:
                         # Build a single lookup dict from both attr and
                         # extras so the precedence stays explicit.
-                        extra_bag: dict = {}
+                        extra_bag: dict[str, Any] = {}
                         try:
                             me = getattr(delta, "model_extra", None)
                             if isinstance(me, dict):

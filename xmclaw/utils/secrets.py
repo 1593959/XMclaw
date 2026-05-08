@@ -39,7 +39,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import Any, Iterable, Literal
 
 from xmclaw.utils.paths import data_dir, secret_dir
 
@@ -126,7 +126,7 @@ def _write_file(data: dict[str, str]) -> None:
     os.replace(tmp, path)
 
 
-def _keyring_module():
+def _keyring_module() -> "Any | None":
     """Soft import. Returns the ``keyring`` module or ``None``.
 
     The isolated import avoids paying keyring's startup cost (it
@@ -174,7 +174,7 @@ def _ensure_secret_dir() -> Path:
     return path
 
 
-def _fernet_module():
+def _fernet_module() -> "Any | None":
     """Soft import for ``cryptography.fernet``.
 
     cryptography is a base dep (added in Phase 2), but we keep the
@@ -226,7 +226,7 @@ def _load_or_create_master_key() -> bytes | None:
         return raw
 
     # First use: generate + persist.
-    key = fernet_cls.generate_key()
+    key: bytes = fernet_cls.generate_key()
     _ensure_secret_dir()
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_bytes(key)
@@ -342,6 +342,7 @@ def get_secret(name: str) -> str | None:
 
     kr = _keyring_module()
     if kr is not None:
+        from_keyring: str | None
         try:
             from_keyring = kr.get_password(_KEYRING_SERVICE, name)
         except Exception:

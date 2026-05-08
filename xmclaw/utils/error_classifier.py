@@ -45,6 +45,7 @@ from __future__ import annotations
 import enum
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -106,7 +107,7 @@ class ClassifiedError:
     provider: Optional[str] = None
     model: Optional[str] = None
     message: str = ""
-    error_context: dict = field(default_factory=dict)
+    error_context: dict[str, Any] = field(default_factory=dict)
 
     # Recovery action hints
     retryable: bool = True
@@ -272,8 +273,8 @@ def classify_api_error(
     provider_lower = (provider or "").strip().lower()
     model_lower = (model or "").strip().lower()
 
-    def _result(reason: FailoverReason, **overrides) -> ClassifiedError:
-        defaults = {
+    def _result(reason: FailoverReason, **overrides: Any) -> ClassifiedError:
+        defaults: dict[str, Any] = {
             "reason": reason,
             "status_code": status_code,
             "provider": provider,
@@ -359,11 +360,11 @@ def classify_api_error(
 # ── Status code classification ────────────────────────────────────────
 
 def _classify_by_status(
-    status_code: int, error_msg: str, error_code: str, body: dict,
+    status_code: int, error_msg: str, error_code: str, body: dict[str, Any],
     *,
     provider: str, model: str,
     approx_tokens: int, context_length: int, num_messages: int,
-    result_fn,
+    result_fn: "Callable[..., ClassifiedError]",
 ) -> Optional[ClassifiedError]:
     """Classify by HTTP status code with message-aware refinement."""
 
@@ -456,7 +457,9 @@ def _classify_by_status(
     return None
 
 
-def _classify_402(error_msg: str, result_fn) -> ClassifiedError:
+def _classify_402(
+    error_msg: str, result_fn: "Callable[..., ClassifiedError]",
+) -> ClassifiedError:
     """Disambiguate 402: billing exhaustion vs transient usage limit.
 
     Some providers return "Usage limit, try again in 5 minutes" as a 402
@@ -483,11 +486,11 @@ def _classify_402(error_msg: str, result_fn) -> ClassifiedError:
 
 
 def _classify_400(
-    error_msg: str, error_code: str, body: dict,
+    error_msg: str, error_code: str, body: dict[str, Any],
     *,
     provider: str, model: str,
     approx_tokens: int, context_length: int, num_messages: int,
-    result_fn,
+    result_fn: "Callable[..., ClassifiedError]",
 ) -> ClassifiedError:
     """Classify 400 Bad Request — context_overflow / format_error / generic."""
     if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
@@ -549,7 +552,8 @@ def _classify_400(
 # ── Error code classification ────────────────────────────────────────
 
 def _classify_by_error_code(
-    error_code: str, error_msg: str, result_fn,
+    error_code: str, error_msg: str,
+    result_fn: "Callable[..., ClassifiedError]",
 ) -> Optional[ClassifiedError]:
     """Classify by structured error codes from the response body."""
     code = error_code.lower()
@@ -588,7 +592,7 @@ def _classify_by_message(
     error_msg: str, error_type: str,
     *,
     approx_tokens: int, context_length: int,
-    result_fn,
+    result_fn: "Callable[..., ClassifiedError]",
 ) -> Optional[ClassifiedError]:
     """Classify by message patterns when no HTTP status code is available."""
 
@@ -682,7 +686,7 @@ def _extract_status_code(error: Exception) -> Optional[int]:
     return None
 
 
-def _extract_error_body(error: Exception) -> dict:
+def _extract_error_body(error: Exception) -> dict[str, Any]:
     """Extract the structured error body from an SDK exception."""
     body = getattr(error, "body", None)
     if isinstance(body, dict):
@@ -698,7 +702,7 @@ def _extract_error_body(error: Exception) -> dict:
     return {}
 
 
-def _extract_error_code(body: dict) -> str:
+def _extract_error_code(body: dict[str, Any]) -> str:
     """Extract a structured error code string from the response body."""
     if not body:
         return ""
@@ -713,7 +717,7 @@ def _extract_error_code(body: dict) -> str:
     return ""
 
 
-def _extract_message(error: Exception, body: dict) -> str:
+def _extract_message(error: Exception, body: dict[str, Any]) -> str:
     """Pick the most informative error message available."""
     if body:
         error_obj = body.get("error", {})
@@ -727,7 +731,7 @@ def _extract_message(error: Exception, body: dict) -> str:
     return str(error)
 
 
-def _build_error_message(error: Exception, body: dict) -> str:
+def _build_error_message(error: Exception, body: dict[str, Any]) -> str:
     """Build a comprehensive lowercased message string for pattern matching.
 
     str(error) alone often misses the body (OpenAI SDK's APIStatusError
