@@ -45,10 +45,11 @@ class Pricing:
     output_per_mtok: float
 
 
-# Per-provider / per-model pricing. Kept minimal — Phase 4 expects
-# callers to pass explicit pricing when it matters (CI benches etc.).
+# Per-provider / per-model pricing — exact match table.
 # The defaults are the published list prices as of 2026-04 for the
 # models most likely to be hit by ``xmclaw v2 chat`` out of the box.
+# Use :func:`lookup_pricing` to get a Pricing for a model name with
+# substring fallback for unknown-but-recognised families.
 DEFAULT_PRICING: dict[str, Pricing] = {
     # Anthropic
     "claude-opus-4-7":            Pricing(15.0, 75.0),
@@ -59,6 +60,64 @@ DEFAULT_PRICING: dict[str, Pricing] = {
     "gpt-4o-mini": Pricing(0.15, 0.6),
     "gpt-4.1":     Pricing(2.5, 10.0),
 }
+
+
+# B-335 (audit #17): substring-match patterns. Single source of
+# truth — the analytics router used to ship its OWN parallel table
+# with divergent values (claude-haiku 0.25/1.25 vs cost.py 0.8/4.0).
+# Order matters — first match wins; specific before generic.
+MODEL_PRICING_PATTERNS: tuple[tuple[str, Pricing], ...] = (
+    ("gpt-4o-mini",    Pricing(0.15, 0.6)),
+    ("gpt-4o",         Pricing(2.5,  10.0)),
+    ("gpt-4.1",        Pricing(2.5,  10.0)),
+    ("gpt-4",          Pricing(30.0, 60.0)),
+    ("gpt-3.5",        Pricing(0.5,  1.5)),
+    ("o1-",            Pricing(15.0, 60.0)),
+    ("o3-",            Pricing(15.0, 60.0)),
+    ("claude-haiku-4", Pricing(0.8,  4.0)),
+    ("claude-3-haiku", Pricing(0.25, 1.25)),
+    ("claude-haiku",   Pricing(0.8,  4.0)),
+    ("claude-3-sonnet",Pricing(3.0,  15.0)),
+    ("claude-sonnet",  Pricing(3.0,  15.0)),
+    ("claude-3-opus",  Pricing(15.0, 75.0)),
+    ("claude-opus",    Pricing(15.0, 75.0)),
+    ("claude",         Pricing(3.0,  15.0)),
+    ("gemini-1.5-pro", Pricing(1.25, 5.0)),
+    ("gemini-pro",     Pricing(0.5,  1.5)),
+    ("kimi",           Pricing(0.3,  1.2)),
+    ("moonshot",       Pricing(0.3,  1.2)),
+    ("qwen",           Pricing(0.3,  1.2)),
+    ("glm",            Pricing(0.3,  1.2)),
+    ("minimax",        Pricing(0.2,  0.8)),
+    ("deepseek",       Pricing(0.14, 0.28)),
+    ("llama",          Pricing(0.2,  0.6)),
+)
+
+
+# Conservative fallback when no pattern matches — better than 0
+# (silently hides cost) and better than raising (analytics
+# renders this every page-load).
+DEFAULT_FALLBACK_PRICING: Pricing = Pricing(0.5, 1.5)
+
+
+def lookup_pricing(model: str) -> Pricing:
+    """B-335: single source of truth for model-name → Pricing.
+
+    Resolution order:
+      1. Exact match in DEFAULT_PRICING.
+      2. First substring match in MODEL_PRICING_PATTERNS.
+      3. DEFAULT_FALLBACK_PRICING.
+    """
+    if not model:
+        return DEFAULT_FALLBACK_PRICING
+    direct = DEFAULT_PRICING.get(model)
+    if direct is not None:
+        return direct
+    name = model.lower()
+    for substr, pricing in MODEL_PRICING_PATTERNS:
+        if substr in name:
+            return pricing
+    return DEFAULT_FALLBACK_PRICING
 
 
 @dataclass

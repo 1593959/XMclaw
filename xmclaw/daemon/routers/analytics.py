@@ -46,47 +46,23 @@ def _date_str(epoch: float) -> str:
     return strftime("%Y-%m-%d", gmtime(epoch))
 
 
-# P0 wrap-up: rough cost-per-million-tokens table for the most common
-# model families. Adapted from xmclaw_port/insights.py — heuristic
-# only, real pricing varies by provider tier and changes over time.
-# When a model isn't in the table we fall back to a generic "small
-# OSS model" rate so a number is always shown.
-_MODEL_COST_PER_MTOK_USD: tuple[tuple[str, float, float], ...] = (
-    # (substring_match, input_per_mtok, output_per_mtok)
-    ("gpt-4o",     2.50,  10.00),
-    ("gpt-4",     30.00,  60.00),
-    ("gpt-3.5",    0.50,   1.50),
-    ("o1-",       15.00,  60.00),
-    ("o3-",       15.00,  60.00),
-    ("claude-3-opus",   15.00, 75.00),
-    ("claude-opus",     15.00, 75.00),
-    ("claude-3-sonnet",  3.00, 15.00),
-    ("claude-sonnet",    3.00, 15.00),
-    ("claude-3-haiku",   0.25,  1.25),
-    ("claude-haiku",     0.25,  1.25),
-    ("claude",           3.00, 15.00),
-    ("gemini-1.5-pro",   1.25,  5.00),
-    ("gemini-pro",       0.50,  1.50),
-    ("kimi",             0.30,  1.20),
-    ("moonshot",         0.30,  1.20),
-    ("qwen",             0.30,  1.20),
-    ("glm",              0.30,  1.20),
-    ("minimax",          0.20,  0.80),
-    ("deepseek",         0.14,  0.28),
-    ("llama",            0.20,  0.60),
-)
-_DEFAULT_COST_PER_MTOK = (0.50, 1.50)
+# B-335 (audit #17): pricing lookup uses the single source of
+# truth in xmclaw.utils.cost (lookup_pricing). Pre-B-335 this
+# router shipped its own ~17-row substring table that diverged
+# from cost.py's 6-row exact table — same data, different keys,
+# different values (claude-haiku was 0.25/1.25 here vs 0.8/4.0 in
+# cost.py for the haiku-4-5 case the substring match was catching).
+# Now both call sites resolve through lookup_pricing.
 
 
 def _estimate_cost_usd(model: str, in_tok: int, out_tok: int) -> float:
-    """Heuristic per-call cost in USD. Best-effort — see comment above."""
-    name = (model or "").lower()
-    rates = _DEFAULT_COST_PER_MTOK
-    for key, in_rate, out_rate in _MODEL_COST_PER_MTOK_USD:
-        if key in name:
-            rates = (in_rate, out_rate)
-            break
-    return (in_tok * rates[0] + out_tok * rates[1]) / 1_000_000.0
+    """Heuristic per-call cost in USD via the shared pricing table."""
+    from xmclaw.utils.cost import lookup_pricing
+    pricing = lookup_pricing(model or "")
+    return (
+        in_tok * pricing.input_per_mtok
+        + out_tok * pricing.output_per_mtok
+    ) / 1_000_000.0
 
 
 def _platform_of(session_id: str | None) -> str:

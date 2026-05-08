@@ -132,3 +132,55 @@ def test_remaining_usd_infinite_for_unlimited_budget() -> None:
     assert t.remaining_usd == float("inf")
     t.record("x", "m", 1000, 1000)
     assert t.remaining_usd == float("inf")
+
+
+# ── B-335 (audit #17): lookup_pricing single source of truth ────────
+
+
+def test_b335_lookup_exact_match() -> None:
+    from xmclaw.utils.cost import lookup_pricing, DEFAULT_PRICING
+    p = lookup_pricing("claude-haiku-4-5-20251001")
+    assert p == DEFAULT_PRICING["claude-haiku-4-5-20251001"]
+
+
+def test_b335_lookup_substring_specific_before_generic() -> None:
+    """Pattern order matters — gpt-4o (specific) wins over gpt-4
+    (generic) so gpt-4o doesn't price as legacy gpt-4."""
+    from xmclaw.utils.cost import lookup_pricing
+    p = lookup_pricing("gpt-4o-2025-something")
+    assert p.input_per_mtok == 2.5
+    assert p.output_per_mtok == 10.0
+    p_legacy = lookup_pricing("gpt-4-0613")
+    assert p_legacy.input_per_mtok == 30.0
+
+
+def test_b335_lookup_haiku_4_uses_correct_rate() -> None:
+    """Pre-B-335 the analytics table caught claude-haiku-4-5 with the
+    legacy claude-3-haiku rate (0.25/1.25) because its substring
+    match was loose. Now haiku-4 specific pattern wins."""
+    from xmclaw.utils.cost import lookup_pricing
+    p = lookup_pricing("claude-haiku-4-5")
+    assert p.input_per_mtok == 0.8
+    assert p.output_per_mtok == 4.0
+    # claude-3-haiku still gets the older cheap rate.
+    p_old = lookup_pricing("claude-3-haiku-20240307")
+    assert p_old.input_per_mtok == 0.25
+
+
+def test_b335_lookup_unknown_falls_back_to_default() -> None:
+    """Unknown model → conservative fallback (better than 0)."""
+    from xmclaw.utils.cost import (
+        lookup_pricing, DEFAULT_FALLBACK_PRICING,
+    )
+    assert lookup_pricing("never-seen-model-2099") == DEFAULT_FALLBACK_PRICING
+    assert lookup_pricing("") == DEFAULT_FALLBACK_PRICING
+
+
+def test_b335_analytics_router_uses_shared_table() -> None:
+    """Regression guard: the analytics router's _estimate_cost_usd
+    must read through lookup_pricing. Pre-B-335 it had its own
+    parallel substring table with divergent values."""
+    from xmclaw.daemon.routers import analytics
+    # claude-haiku-4 pattern → 0.8 per Mtok input.
+    cost = analytics._estimate_cost_usd("claude-haiku-4-5", 1_000_000, 0)
+    assert cost == pytest.approx(0.8, abs=1e-6)
