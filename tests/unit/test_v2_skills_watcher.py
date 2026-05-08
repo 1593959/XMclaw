@@ -345,3 +345,154 @@ async def test_update_failure_does_not_crash_tick(tmp_path: Path) -> None:
         assert watcher.updated_body_count == 0
     finally:
         reg.update_body = orig  # type: ignore[assignment]
+
+
+# ── B-333 (audit #19): SKILL_UPDATE_REQUIRES_RESTART for skill.py ──
+
+
+_PY_SKILL_TEMPLATE = '''
+from xmclaw.skills.base import Skill, SkillInput, SkillOutput
+
+class _S(Skill):
+    id = "{skill_id}"
+    version = 1
+    async def run(self, inp: SkillInput) -> SkillOutput:
+        return SkillOutput(ok=True, result={{"v": "{tag}"}}, side_effects=[])
+'''
+
+
+def _drop_python_skill(root: Path, skill_id: str, *, tag: str = "v0") -> Path:
+    sd = root / skill_id
+    sd.mkdir(parents=True, exist_ok=True)
+    (sd / "skill.py").write_text(
+        _PY_SKILL_TEMPLATE.format(skill_id=skill_id, tag=tag),
+        encoding="utf-8",
+    )
+    return sd
+
+
+@pytest.mark.asyncio
+async def test_b333_python_skill_edit_publishes_restart_event(
+    tmp_path: Path,
+) -> None:
+    """B-333 (audit #19): editing a Python skill's source must
+    produce a SKILL_UPDATE_REQUIRES_RESTART bus event so the UI can
+    render a "restart needed" banner. Pre-B-333 the watcher silently
+    no-op'd on skill.py and operators had no signal that their edit
+    wouldn't take effect until restart.
+    """
+    from xmclaw.core.bus import InProcessEventBus, EventType
+    from xmclaw.skills.user_loader import UserSkillsLoader
+
+    reg = SkillRegistry()
+    canonical = tmp_path / "skills_user"
+    canonical.mkdir()
+    skill_path = _drop_python_skill(canonical, "py-skill", tag="v0")
+    UserSkillsLoader(reg, canonical).load_all()
+    assert "py-skill" in reg.list_skill_ids()
+
+    bus = InProcessEventBus()
+    captured: list = []
+    bus.subscribe(
+        lambda e: e.type == EventType.SKILL_UPDATE_REQUIRES_RESTART,
+        lambda e: captured.append(e),
+    )
+
+    watcher = SkillsWatcher(reg, canonical, interval_s=3600.0, bus=bus)
+    # Seed mtime cache (first tick is a no-op for unchanged files —
+    # by design, see _maybe_update_body docstring).
+    _touch_with_mtime(skill_path / "skill.py", 1000.0)
+    await watcher.tick()
+    await bus.drain()
+    assert captured == [], "first tick must seed without firing"
+
+    # Now actually edit the file + bump mtime.
+    (skill_path / "skill.py").write_text(
+        _PY_SKILL_TEMPLATE.format(skill_id="py-skill", tag="v1"),
+        encoding="utf-8",
+    )
+    _touch_with_mtime(skill_path / "skill.py", 2000.0)
+    await watcher.tick()
+    await bus.drain()
+
+    assert len(captured) == 1, (
+        f"expected exactly one restart-required event, got "
+        f"{len(captured)}: {[e.payload for e in captured]}"
+    )
+    payload = captured[0].payload
+    assert payload["skill_id"] == "py-skill"
+    assert payload["version"] == 1
+    assert "skill.py" in payload["path"]
+
+
+@pytest.mark.asyncio
+async def test_b333_python_skill_restart_announced_only_once(
+    tmp_path: Path,
+) -> None:
+    """Multiple edits to the same skill.py within one daemon
+    lifetime should produce ONE event (not N) — otherwise the UI
+    banner would re-fire and the operator gets toast-spam during
+    iterative dev. The seen-set resets on daemon restart, which is
+    the correct semantic (a restart picks up the change so the
+    warning becomes irrelevant).
+    """
+    from xmclaw.core.bus import InProcessEventBus, EventType
+    from xmclaw.skills.user_loader import UserSkillsLoader
+
+    reg = SkillRegistry()
+    canonical = tmp_path / "skills_user"
+    canonical.mkdir()
+    skill_path = _drop_python_skill(canonical, "py-skill", tag="v0")
+    UserSkillsLoader(reg, canonical).load_all()
+
+    bus = InProcessEventBus()
+    captured: list = []
+    bus.subscribe(
+        lambda e: e.type == EventType.SKILL_UPDATE_REQUIRES_RESTART,
+        lambda e: captured.append(e),
+    )
+    watcher = SkillsWatcher(reg, canonical, interval_s=3600.0, bus=bus)
+    _touch_with_mtime(skill_path / "skill.py", 1000.0)
+    await watcher.tick()
+    await bus.drain()
+
+    # Edit twice in succession.
+    for i, (tag, mtime) in enumerate([("v1", 2000.0), ("v2", 3000.0)]):
+        (skill_path / "skill.py").write_text(
+            _PY_SKILL_TEMPLATE.format(skill_id="py-skill", tag=tag),
+            encoding="utf-8",
+        )
+        _touch_with_mtime(skill_path / "skill.py", mtime)
+        await watcher.tick()
+        await bus.drain()
+
+    # Still ONE event despite two edits.
+    assert len(captured) == 1, (
+        f"expected one event across two edits, got {len(captured)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_b333_no_bus_no_crash(tmp_path: Path) -> None:
+    """Backward compat: building SkillsWatcher without ``bus=`` still
+    works (tests / echo-mode). Edit-detection still happens, just no
+    event is published."""
+    from xmclaw.skills.user_loader import UserSkillsLoader
+
+    reg = SkillRegistry()
+    canonical = tmp_path / "skills_user"
+    canonical.mkdir()
+    skill_path = _drop_python_skill(canonical, "py-skill", tag="v0")
+    UserSkillsLoader(reg, canonical).load_all()
+
+    watcher = SkillsWatcher(reg, canonical, interval_s=3600.0)  # no bus
+    _touch_with_mtime(skill_path / "skill.py", 1000.0)
+    await watcher.tick()
+
+    (skill_path / "skill.py").write_text(
+        _PY_SKILL_TEMPLATE.format(skill_id="py-skill", tag="v1"),
+        encoding="utf-8",
+    )
+    _touch_with_mtime(skill_path / "skill.py", 2000.0)
+    # Must not raise.
+    await watcher.tick()

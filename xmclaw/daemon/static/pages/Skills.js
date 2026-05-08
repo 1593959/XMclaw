@@ -9,10 +9,14 @@
 // scans three roots by default (zero config): the canonical
 // `~/.xmclaw/skills_user/`, plus `~/.agents/skills/` (skills.sh muscle
 // memory) and `~/.claude/skills/` (Claude Code shared skills). The old
-// xm-auto-evo path was torn out in Phase 1; the future SkillProposer
-// (Phase 3) registers candidates back through `SkillRegistry.add_candidate`
-// so this page stays the one place the user goes for "what skills does
-// my agent have?".
+// xm-auto-evo path was torn out in Phase 1; SkillProposer / SkillDream
+// candidates flow through `SKILL_DRAFTED` bus events →
+// ProposalMaterializer (B-167) writes SKILL.md to disk +
+// SkillRegistry.register(set_head=True), so this page stays the one
+// place the user goes for "what skills does my agent have?".
+// (B-333 fix: comment used to reference a non-existent
+// `SkillRegistry.add_candidate` method — the real wiring is event +
+// register, not a method on the registry.)
 //
 // Layout: sticky left filter panel (All / Built-in / User) + content
 // area with version-ladder cards. Promote / rollback land manual

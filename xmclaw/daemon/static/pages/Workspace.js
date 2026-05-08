@@ -16,10 +16,15 @@
 //     folder picker is Chromium-only via `showDirectoryPicker()`; manual
 //     entry works everywhere)
 //
-// Phase 2 will wire `PUT /api/v2/workspace` so the daemon honors the new
-// root for subsequent agent turns. For now we persist the user's choice in
-// `localStorage.xmcWorkspaceRoot` so refresh remembers it; the daemon
-// falls back to its config-supplied workspace until the API lands.
+// `PUT /api/v2/workspace` is wired (daemon/routers/workspace.py) — switching
+// roots from this page persists to `~/.xmclaw/state.json` via WorkspaceManager
+// and the next agent turn picks it up. We ALSO keep the user's choice in
+// `localStorage.xmcWorkspaceRoot` so the page itself remembers what was
+// selected across refresh, but it's a UI breadcrumb only — the daemon's
+// view is the persisted state file.
+// (B-333 fix: this comment used to claim "Phase 2 will wire" the PUT
+// endpoint — it was wired in B-NN; the stale claim risked the next reader
+// reimplementing.)
 
 const { h } = window.__xmc.preact;
 const { useState, useEffect } = window.__xmc.preact_hooks;

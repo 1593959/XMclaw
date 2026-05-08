@@ -85,6 +85,15 @@ class EventType(str, Enum):
     SKILL_ROLLBACK_RECOMMENDED = "skill_rollback_recommended"  # B-318
     SKILL_PROMOTED = "skill_promoted"
     SKILL_ROLLED_BACK = "skill_rolled_back"
+    # B-333 (audit #19): emitted when SkillsWatcher detects that a
+    # Python ``skill.py`` file changed but ``SkillRegistry.update_body``
+    # can't apply the change (importlib caches the module — only a
+    # daemon restart picks up the new code). Payload:
+    # ``{"skill_id": str, "version": int, "path": str}``. UI listens
+    # so the Skills page can show "restart needed" banner; pre-B-333
+    # the watcher silently no-op'd and users had no signal that their
+    # SKILL.py edit wouldn't take effect until restart.
+    SKILL_UPDATE_REQUIRES_RESTART = "skill_update_requires_restart"
     ANTI_REQ_VIOLATION = "anti_req_violation"
     # Emitted when the agent calls `todo_write` so the UI can live-render
     # the todo panel without polling. Payload: {"items": [...], "sid": ...}.

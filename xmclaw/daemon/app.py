@@ -1198,6 +1198,11 @@ def create_app(
                         extra_roots=extras,
                         interval_s=sw_interval,
                         enabled=True,
+                        # B-333: bus needed so the watcher can emit
+                        # SKILL_UPDATE_REQUIRES_RESTART when it spots
+                        # a skill.py mtime change (importlib-cached,
+                        # restart needed to pick up).
+                        bus=bus,
                     )
                     await watcher.start()
                     _app.state.skills_watcher = watcher

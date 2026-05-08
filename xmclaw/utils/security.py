@@ -303,10 +303,23 @@ class PermissionManager:
 
     def _compute_risk_score(self, tool: str, category: ToolCategory,
                             allowed: bool) -> int:
-        """Compute a 0-100 risk score for audit logging."""
+        """Compute a 0-100 risk score for audit logging.
+
+        B-333: pre-B-333 the ``if not allowed: return base`` branch
+        returned the SAME value as the fall-through — both branches
+        identical. The audit-log reader couldn't sort
+        blocked-but-attempted calls above merely-allowed ones, even
+        though the former is the higher-signal datum (agent tried
+        something dangerous, the gate caught it). Now we bump
+        blocked attempts by +20 (capped at 100) so they surface
+        when reviewers sort by score.
+        """
         base = {"safe": 10, "moderate": 40, "dangerous": 80}.get(category.value, 30)
         if not allowed:
-            return base  # Risk was detected but blocked
+            # Blocked attempt — interesting datapoint; bump above the
+            # bare base so an auditor sorting risk_score DESC sees
+            # "agent tried X, was refused" before "agent did X normally".
+            return min(100, base + 20)
         return base
 
     async def _audit_log_entry(self, entry: AuditEntry) -> None:

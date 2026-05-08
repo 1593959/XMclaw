@@ -102,6 +102,7 @@ class SkillsWatcher:
         extra_roots: list[Path] | None = None,
         interval_s: float = 10.0,
         enabled: bool = True,
+        bus: "object | None" = None,
     ) -> None:
         self._registry = registry
         self._skills_root = skills_root
@@ -117,6 +118,26 @@ class SkillsWatcher:
         # observation seeds the entry without firing an update (the
         # boot loader already registered the body fresh-read).
         self._mtimes: dict[Path, float] = {}
+        # B-333 (audit #19): when a Python ``skill.py`` file is edited
+        # on disk we can't hot-reload it (importlib cache); instead
+        # emit ``SKILL_UPDATE_REQUIRES_RESTART`` on the bus so the UI
+        # can show a "restart needed" banner. Pre-B-333 the watcher
+        # didn't even look at skill.py mtimes — operators had no
+        # signal that their edit wouldn't take effect until restart.
+        self._bus = bus
+        # Separate seen-set so we only fire ONE event per (skill_id,
+        # version) per daemon-lifetime, even though the mtime check
+        # still runs every tick. Resets on daemon restart by design
+        # (a restart picks up the change so the warning is no
+        # longer relevant).
+        self._py_restart_announced: set[tuple[str, int]] = set()
+        # Buffer for restart-required event payloads detected during
+        # the synchronous executor scan. Drained + published by the
+        # async ``_tick`` caller after run_in_executor returns. We
+        # can't publish from inside the executor thread (no running
+        # event loop) and don't want to add the threadsafe-publish
+        # complexity for a once-per-skill-edit signal.
+        self._pending_restart_events: list[dict] = []
 
     # ── observability ───────────────────────────────────────────────
 
@@ -228,6 +249,33 @@ class SkillsWatcher:
                 "skills_watcher.bodies_updated count=%d", updated,
             )
 
+        # B-333: drain the python-skill-restart event buffer here,
+        # back in the async context where the bus is awaitable.
+        if self._pending_restart_events and self._bus is not None:
+            from xmclaw.core.bus.events import EventType, make_event
+            pending = self._pending_restart_events
+            self._pending_restart_events = []
+            for payload in pending:
+                try:
+                    event = make_event(
+                        session_id="_system",
+                        agent_id="skills-watcher",
+                        type=EventType.SKILL_UPDATE_REQUIRES_RESTART,
+                        payload=payload,
+                    )
+                    await self._bus.publish(event)
+                except Exception as exc:  # noqa: BLE001 — visibility only
+                    _log.warning(
+                        "skills_watcher.publish_restart_event_failed "
+                        "skill_id=%s err=%s",
+                        payload.get("skill_id", "?"), exc,
+                    )
+        elif self._pending_restart_events and self._bus is None:
+            # Bus not wired — clear the buffer so it doesn't grow
+            # unbounded across ticks. The log line in
+            # _maybe_announce_python_restart already covered it.
+            self._pending_restart_events = []
+
         return len(new_ids)
 
     def _refresh_changed_bodies(self) -> int:
@@ -254,6 +302,21 @@ class SkillsWatcher:
                     skill_dir.name, 1, skill_md,
                 ):
                     updated += 1
+
+                # B-333: also watch skill.py for mtime changes. We
+                # can't hot-reload it (importlib cache), but emitting
+                # SKILL_UPDATE_REQUIRES_RESTART lets the UI show a
+                # banner instead of operators wondering why their
+                # edit isn't taking effect. Payloads are collected
+                # here (sync executor thread) and published by the
+                # async ``_tick`` caller.
+                skill_py = skill_dir / "skill.py"
+                if skill_py.is_file():
+                    payload = self._maybe_announce_python_restart(
+                        skill_dir.name, 1, skill_py,
+                    )
+                    if payload is not None:
+                        self._pending_restart_events.append(payload)
 
                 # v2+ live at <skill_dir>/versions/v<N>.md
                 versions_dir = skill_dir / "versions"
@@ -318,3 +381,46 @@ class SkillsWatcher:
                 skill_id, version, file,
             )
         return ok
+
+    def _maybe_announce_python_restart(
+        self, skill_id: str, version: int, file: Path,
+    ) -> "dict | None":
+        """B-333: detect mtime changes on a registered Python skill's
+        ``skill.py``. Returns a payload dict to publish OR None.
+
+        Why "return-don't-publish": ``_refresh_changed_bodies`` runs
+        in a ``run_in_executor`` thread and has no running event
+        loop — calling ``asyncio.create_task(bus.publish(...))``
+        there raises ``RuntimeError: no running event loop``. The
+        async ``_tick`` collects payloads from the executor thread
+        and publishes them itself. Same pattern as the existing
+        body-update count path (returns int, async caller logs it).
+
+        ``importlib`` caches the module so we can't hot-reload, but
+        we CAN tell the user "we noticed your edit; daemon restart
+        needed to pick it up". Pre-B-333 the watcher only watched
+        SKILL.md and was silent on skill.py — operators editing a
+        Python skill saw no feedback at all until they restarted.
+        """
+        try:
+            mtime = file.stat().st_mtime
+        except OSError:
+            return None
+        cached = self._mtimes.get(file)
+        self._mtimes[file] = mtime
+        if cached is None or mtime <= cached:
+            return None  # first sight or unchanged
+        key = (skill_id, version)
+        if key in self._py_restart_announced:
+            return None  # already announced this daemon — don't spam
+        self._py_restart_announced.add(key)
+        _log.warning(
+            "skills_watcher.python_skill_changed_restart_required "
+            "skill_id=%s version=%d path=%s",
+            skill_id, version, file,
+        )
+        return {
+            "skill_id": skill_id,
+            "version": version,
+            "path": str(file),
+        }

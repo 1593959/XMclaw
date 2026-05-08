@@ -15,8 +15,13 @@
 //   - deliver — Hermes routes by channel (local/telegram/discord/slack/
 //     email); our jobs carry `agent_id` instead. UI mirrors the dropdown
 //     anyway so the visual surface is 1:1.
-//   - trigger-now — not yet wired; button kept for visual parity, calls
-//     a stub that toasts "未实现"
+//   - trigger-now — wired through POST /api/v2/cron/<id>/trigger (see
+//     daemon/routers/cron.py:117); the button calls onTrigger() which
+//     POSTs and toasts the result.
+//     (B-333 fix: this comment used to claim "not yet wired; calls a
+//     stub that toasts 未实现" — that was true at port time but the
+//     real endpoint landed in B-NN; updated so future readers don't
+//     reimplement it.)
 
 const { h } = window.__xmc.preact;
 const { useState, useEffect, useCallback } = window.__xmc.preact_hooks;
@@ -215,7 +220,7 @@ function JobRow({ job, onDelete, onToggle, onTrigger, busy }) {
           class="xmc-h-btn xmc-h-btn--ghost"
           onClick=${onTrigger}
           disabled=${busy}
-          title="立即触发（未实现）"
+          title="立即触发"
           aria-label="trigger"
         >
           <${Icon} d=${I_ZAP} />
