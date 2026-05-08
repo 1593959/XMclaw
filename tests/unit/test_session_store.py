@@ -200,3 +200,74 @@ async def test_clear_session_drops_persisted_history(tmp_path) -> None:
 
     agent.clear_session("sess-clear")
     assert store.load("sess-clear") is None
+
+
+# ── B-339 (audit #12): substring search across stored sessions ───────
+
+
+def test_b339_search_finds_substring_match(tmp_path) -> None:
+    """Pre-B-339 the Sessions page filtered client-side over only
+    already-expanded sessions; sessions the user hadn't clicked
+    weren't searchable at all. The new endpoint scans every stored
+    history blob server-side."""
+    from xmclaw.providers.llm.base import Message
+    store = SessionStore(tmp_path / "sessions.db")
+    store.save("sess-a", [
+        Message(role="user", content="how do I deploy this app?"),
+        Message(role="assistant", content="run xmclaw start"),
+    ])
+    store.save("sess-b", [
+        Message(role="user", content="weather today?"),
+    ])
+    store.save("sess-c", [
+        Message(role="user", content="another deploy question"),
+    ])
+
+    hits = store.search_messages("deploy")
+    sids = {h["session_id"] for h in hits}
+    assert sids == {"sess-a", "sess-c"}
+    snippets = {h["session_id"]: h["match_snippet"] for h in hits}
+    assert "deploy" in snippets["sess-a"].lower()
+    assert "deploy" in snippets["sess-c"].lower()
+
+
+def test_b339_search_empty_query_returns_empty(tmp_path) -> None:
+    from xmclaw.providers.llm.base import Message
+    store = SessionStore(tmp_path / "sessions.db")
+    store.save("sess-a", [Message(role="user", content="hi")])
+
+    assert store.search_messages("") == []
+    assert store.search_messages("   ") == []
+
+
+def test_b339_search_case_insensitive(tmp_path) -> None:
+    from xmclaw.providers.llm.base import Message
+    store = SessionStore(tmp_path / "sessions.db")
+    store.save("sess-a", [Message(role="user", content="DEPLOY this NOW")])
+
+    hits = store.search_messages("deploy")
+    assert len(hits) == 1
+    assert hits[0]["session_id"] == "sess-a"
+
+
+def test_b339_search_escapes_sql_wildcards(tmp_path) -> None:
+    """A user query containing ``%`` or ``_`` must be matched as a
+    literal character, not as the SQL LIKE wildcard. Otherwise typing
+    ``%`` in the search box would match every row (DoS / confusion)."""
+    from xmclaw.providers.llm.base import Message
+    store = SessionStore(tmp_path / "sessions.db")
+    store.save("sess-a", [Message(role="user", content="100% sure")])
+    store.save("sess-b", [Message(role="user", content="not at all certain")])
+
+    hits = store.search_messages("100%")
+    sids = {h["session_id"] for h in hits}
+    assert sids == {"sess-a"}, (
+        f"% must be escaped, not used as SQL wildcard; got {sids!r}"
+    )
+
+
+def test_b339_search_no_matches_returns_empty(tmp_path) -> None:
+    from xmclaw.providers.llm.base import Message
+    store = SessionStore(tmp_path / "sessions.db")
+    store.save("sess-a", [Message(role="user", content="hello world")])
+    assert store.search_messages("never-mentioned-token") == []

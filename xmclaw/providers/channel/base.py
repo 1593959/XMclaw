@@ -63,9 +63,15 @@ class PluginManifest:
     * **Inbound**: ``subscribe(handler)`` with at-least-once delivery
     * **Allowlist**: per-sender authorization gate (port of OpenClaw's
       ``security-contract-api`` — keeps multi-tenant agents from
-      accepting commands from any random group-chat member). Phase 4+.
-    * **Pairing**: webhook URL surface for inbound (Phase 5+ when we
-      wire actual SDKs).
+      accepting commands from any random group-chat member). Each
+      adapter implements its own allowlist using vendor-native ids;
+      the Feishu adapter (B-337) reads ``allowed_user_refs: list[str]``
+      from config and drops inbound messages from sender open_ids
+      not in the list. Other adapters' allowlist support arrives as
+      they reach ``implementation_status="ready"``.
+    * **Pairing**: webhook URL surface for inbound (per-adapter when
+      the SDK is wired — Feishu uses Lark WS, no public URL needed;
+      WeCom would need cloudflared auto-start).
 
     Fields:
 

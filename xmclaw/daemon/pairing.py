@@ -8,9 +8,26 @@ Problem closed:
     and cannot read the token file, so its WS connection has no token
     and is rejected.
 
-Phase 4.4 ships a shared-secret-from-file approach. The next step
-(Phase 4.7+) is full ed25519 device pairing with a challenge-response
-handshake; the interface here (``validate_token``) is a drop-in swap.
+What this actually ships (B-338 audit #9 honesty pass): a
+**shared-secret-from-file** approach. 256 random bits in a 0600 file,
+clients read it and pass on connect. Strictly safe on loopback —
+the 0600 perms keep other users out, and a hostile web page in the
+victim's browser can't read the file.
+
+What it does NOT ship (the audit caught the stale promise): full
+ed25519 device pairing with a challenge-response handshake. That
+was advertised in earlier docstrings as "Phase 4.7+" but never
+landed. The shared secret is the only auth layer today.
+
+Implications baked into the daemon:
+
+* ``serve --host`` enforces loopback by default. Non-loopback
+  binds (``--host 0.0.0.0``) are REFUSED unless the operator passes
+  both ``--no-auth`` and ``--allow-non-loopback``, because the
+  shared secret travels in WS query params and shows up in any
+  reverse-proxy log line — useless on a public address.
+* The interface (``validate_token``) is intentionally a drop-in
+  swap if a future commit upgrades to challenge-response.
 
 Token is 256 random bits → 64 hex chars. Regeneration is explicit
 (``rotate_token``) — regenerating on every ``serve`` start would force

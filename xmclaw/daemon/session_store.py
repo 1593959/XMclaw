@@ -179,3 +179,94 @@ class SessionStore:
                 "preview": preview,
             })
         return out
+
+    def search_messages(
+        self, query: str, *, limit: int = 30,
+    ) -> list[dict[str, Any]]:
+        """B-339 (audit #12): substring scan over session history.
+
+        Returns ``[{session_id, message_count, updated_at, preview,
+        match_snippet}]`` where ``match_snippet`` is the first
+        message whose content matches the query (truncated to ~120
+        chars, with ellipses around the match for context).
+
+        Sessions UI (pages/Sessions.js) used to claim "FTS5 search
+        is stubbed — query filters client-side by substring against
+        session_id + loaded message bodies. Phase B-9 will add a
+        real FTS5 search route." That stub meant sessions the user
+        hadn't expanded in the UI weren't searchable AT ALL — making
+        the search box useless for any real history.
+
+        This isn't FTS5 — it's a SQL LIKE scan against the JSON
+        blob, case-insensitive. For a personal-scale daemon
+        (hundreds of sessions, KB-MB each) the scan completes in
+        the low-hundreds-of-ms range; FTS5 with triggers + schema
+        migration is a future optimization. The endpoint
+        ``GET /api/v2/sessions/search?q=...`` calls this.
+
+        Empty / whitespace query returns []; never raises.
+        """
+        q = (query or "").strip()
+        if not q:
+            return []
+        # SQL LIKE — escape % and _ in the user query so they're
+        # treated as literal characters, then wrap in %.
+        escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{escaped}%"
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT session_id, message_count, updated_at, history_json
+                    FROM session_history
+                    WHERE history_json LIKE ? ESCAPE '\\'
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                    """,
+                    (like, max(1, min(int(limit), 200))),
+                ).fetchall()
+        except Exception:  # noqa: BLE001 — search must never crash UI
+            return []
+
+        q_lower = q.lower()
+        out: list[dict[str, Any]] = []
+        for sid, count, updated, hjson in rows:
+            snippet = ""
+            preview = ""
+            try:
+                hist = json.loads(hjson) if hjson else []
+                for entry in hist:
+                    if not isinstance(entry, dict):
+                        continue
+                    body = entry.get("content") or ""
+                    if not isinstance(body, str):
+                        continue
+                    # First user-message → preview (same as
+                    # list_recent for visual consistency).
+                    if not preview and entry.get("role") == "user":
+                        preview = body.strip().split("\n", 1)[0][:80]
+                    # First message whose content contains the
+                    # query → snippet with surrounding context.
+                    if not snippet and q_lower in body.lower():
+                        idx = body.lower().find(q_lower)
+                        start = max(0, idx - 40)
+                        end = min(len(body), idx + len(q) + 40)
+                        prefix = "…" if start > 0 else ""
+                        suffix = "…" if end < len(body) else ""
+                        snippet = (
+                            prefix
+                            + body[start:end].replace("\n", " ")
+                            + suffix
+                        )
+                    if preview and snippet:
+                        break
+            except (json.JSONDecodeError, TypeError):
+                pass
+            out.append({
+                "session_id": sid,
+                "message_count": count,
+                "updated_at": updated,
+                "preview": preview,
+                "match_snippet": snippet,
+            })
+        return out

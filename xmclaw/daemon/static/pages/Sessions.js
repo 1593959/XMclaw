@@ -13,10 +13,22 @@
 //     (user / assistant / system / tool). Each tool_call collapses
 //     into a chevron-toggleable block.
 //
-// Data wiring: hits the new /api/v2/sessions surface
-// (xmclaw/daemon/routers/sessions.py). FTS5 search is stubbed —
-// `query` filters client-side by substring against session_id +
-// loaded message bodies. Phase B-9 will add a real FTS5 search route.
+// Data wiring: hits the /api/v2/sessions surface
+// (xmclaw/daemon/routers/sessions.py).
+//
+// Search:
+//   * /api/v2/sessions/search?q=… (B-339) — substring scan over the
+//     stored history JSON. Returns the same shape as list + a
+//     `match_snippet` field so the UI can show a context window
+//     around the hit. This is a SQL LIKE scan, not FTS5; for
+//     personal-scale daemons (hundreds of sessions, KB-MB each)
+//     latency is low-hundreds-ms. FTS5 with triggers is a future
+//     optimization.
+//   * Local-only filtering still happens for the in-memory
+//     already-loaded message bodies so typing in the search box
+//     gives instant feedback before the server round-trip lands.
+// (Pre-B-339 only the local filter existed; sessions you hadn't
+// expanded weren't searchable at all.)
 
 const { h } = window.__xmc.preact;
 const { useState, useEffect, useMemo } = window.__xmc.preact_hooks;

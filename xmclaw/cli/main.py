@@ -406,6 +406,39 @@ def serve(
             except Exception:  # noqa: BLE001
                 pass
 
+    # B-338 (audit #9): host-binding hardening. The pairing.py docstring
+    # used to promise "Phase 4.7+ ed25519 device pairing" — that work
+    # never landed; what ships is a shared-secret-from-file. That's
+    # safe on loopback (other processes can't read the 0600 file), but
+    # NOT on 0.0.0.0 or LAN-bound hosts where the secret travels in
+    # WS query params + appears in any reverse-proxy log line. Refuse
+    # to bind non-loopback unless the operator explicitly acknowledges
+    # the trade-off via ``--allow-non-loopback``. Pre-B-338 this was
+    # only a docstring warning that nobody read.
+    _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+    if host not in _LOOPBACK_HOSTS:
+        if not no_auth:
+            typer.echo(
+                f"  [REFUSED] host={host} is not loopback. The pairing "
+                f"token is a shared secret (Phase 4.4 — full ed25519 "
+                f"device pairing was promised but never landed); on "
+                f"non-loopback bind it travels in WS query params and "
+                f"shows up in reverse-proxy logs. Either:\n"
+                f"    * bind --host 127.0.0.1 (default; safe), OR\n"
+                f"    * front the daemon with a reverse proxy that adds\n"
+                f"      mTLS / OAuth at the proxy layer, OR\n"
+                f"    * run with --no-auth AND --allow-non-loopback to\n"
+                f"      acknowledge that you accept the risk.\n"
+                f"  Pin a tracking issue before flipping it on."
+            )
+            raise typer.Exit(code=2)
+        typer.echo(
+            f"  [warn] host={host} non-loopback + --no-auth. The "
+            f"daemon's WS endpoint accepts ANY connection. This is the "
+            f"OpenWebUI / Open ChatGPT exposure shape — make sure you "
+            f"know what you're doing."
+        )
+
     typer.echo(f"xmclaw v{__version__} -- binding ws://{host}:{port}")
     typer.echo(f"  health:  http://{host}:{port}/health")
     typer.echo(f"  session: ws://{host}:{port}/agent/v2/<session_id>")

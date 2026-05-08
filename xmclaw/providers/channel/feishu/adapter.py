@@ -535,6 +535,28 @@ class FeishuAdapter(ChannelAdapter):
         except Exception as exc:  # noqa: BLE001
             _log.debug("feishu.scan_skipped err=%s", exc)
 
+        # B-337 (audit #8): allowlist gate. The base.py docstring
+        # promised "Allowlist: per-sender authorization gate ...
+        # Phase 4+." but Phase 4 didn't land — every group-chat
+        # member could drive the agent regardless of the operator's
+        # multi-tenant intent. Now: when ``allowed_user_refs`` is set
+        # in config (a list of open_id / user_id strings), inbound
+        # messages from sender ids NOT in the list are dropped with
+        # a clear log line. Empty / missing config = no restriction
+        # (preserves the current default "any group member can use
+        # the agent" behaviour for solo operators).
+        allowed_users = self._cfg.get("allowed_user_refs")
+        if isinstance(allowed_users, list) and allowed_users:
+            allowed_set = {str(u).strip() for u in allowed_users if str(u).strip()}
+            if user_id not in allowed_set:
+                _log.warning(
+                    "feishu.inbound_dropped_unauthorized "
+                    "chat_id=%s msg_id=%s user_ref=%s "
+                    "allowlist_size=%d",
+                    chat_id, msg_id, user_id, len(allowed_set),
+                )
+                return
+
         inbound = InboundMessage(
             target=ChannelTarget(channel="feishu", ref=chat_id),
             user_ref=user_id,

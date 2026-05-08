@@ -197,3 +197,93 @@ async def test_default_policy_is_detect_only() -> None:
 
     # Default = detect_only → message reaches handler.
     assert len(inbox) == 1
+
+
+# ── B-337 (audit #8): allowed_user_refs gating ──────────────────────
+
+
+@pytest.mark.asyncio
+async def test_b337_allowlist_drops_unauthorized_sender() -> None:
+    """B-337 (audit #8): when ``allowed_user_refs`` is set, inbound
+    messages from sender open_ids NOT in the list are dropped.
+    Pre-B-337 the channel allowlist was a docstring promise with no
+    code path — multi-tenant deployments couldn't actually restrict
+    who could drive the agent."""
+    adapter = FeishuAdapter({
+        "app_id": "x", "app_secret": "y",
+        "allowed_user_refs": ["ou_owner", "ou_teammate"],
+    })
+    inbox: list[str] = []
+
+    async def _handler(msg) -> None:  # type: ignore[no-untyped-def]
+        inbox.append(msg.content)
+
+    adapter.subscribe(_handler)
+    # Stranger — not in allowlist.
+    await adapter._handle_event(
+        _make_event(
+            message_id="om_stranger",
+            text="hi from a stranger",
+            user_id="ou_stranger",
+        ),
+    )
+    assert inbox == [], (
+        "Stranger's message must be dropped under non-empty allowlist"
+    )
+
+
+@pytest.mark.asyncio
+async def test_b337_allowlist_passes_authorized_sender() -> None:
+    """Sender open_id IS in the allowlist → message reaches handler."""
+    adapter = FeishuAdapter({
+        "app_id": "x", "app_secret": "y",
+        "allowed_user_refs": ["ou_owner"],
+    })
+    inbox: list[str] = []
+
+    async def _handler(msg) -> None:  # type: ignore[no-untyped-def]
+        inbox.append(msg.content)
+
+    adapter.subscribe(_handler)
+    await adapter._handle_event(
+        _make_event(
+            message_id="om_owner",
+            text="hi from owner",
+            user_id="ou_owner",
+        ),
+    )
+    assert inbox == ["hi from owner"]
+
+
+@pytest.mark.asyncio
+async def test_b337_no_allowlist_passes_anyone() -> None:
+    """Backward compat: no allowlist (or empty list) → no restriction;
+    behaviour matches pre-B-337 default ("any group member can use
+    the agent" — fine for solo operators)."""
+    adapter = FeishuAdapter({"app_id": "x", "app_secret": "y"})
+    inbox: list[str] = []
+
+    async def _handler(msg) -> None:  # type: ignore[no-untyped-def]
+        inbox.append(msg.content)
+
+    adapter.subscribe(_handler)
+    await adapter._handle_event(
+        _make_event(
+            message_id="om_random",
+            text="hi from anyone",
+            user_id="ou_anyone",
+        ),
+    )
+    assert inbox == ["hi from anyone"]
+
+    # Empty list — same as missing.
+    adapter2 = FeishuAdapter({
+        "app_id": "x", "app_secret": "y",
+        "allowed_user_refs": [],
+    })
+    inbox2: list[str] = []
+    adapter2.subscribe(lambda m: inbox2.append(m.content))
+    await adapter2._handle_event(
+        _make_event(message_id="om2", text="hi", user_id="ou_x"),
+    )
+    assert inbox2 == ["hi"]

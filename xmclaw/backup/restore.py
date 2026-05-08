@@ -1,6 +1,6 @@
 """Restore a previously-created backup.
 
-Restore semantics (Phase 1 — daemon-agnostic):
+Restore semantics (daemon-agnostic by design):
 
 1. Verify the manifest's schema is one we can read.
 2. Re-hash the tarball; reject if it drifted from ``manifest.archive_sha256``.
@@ -9,10 +9,24 @@ Restore semantics (Phase 1 — daemon-agnostic):
    moved aside to ``<target>.prev-<ts>`` — **not** deleted. Roll-forward
    requires keeping the old copy for emergency rollback.
 
-Phase 2 (Epic #20 step 5) will add ``daemon/reloader.py`` to stop the
-daemon before the swap and restart it after. For now, the caller is
-responsible for that — :func:`restore_backup` operates on filesystem
-only. The CLI prints a reminder.
+Daemon lifecycle is intentionally separated. ``restore_backup`` is
+filesystem-only so it can run from a rescue environment where the
+daemon and its providers may be broken (anti-req: a corrupted
+install must be repairable from backup). Restart is the caller's
+job — three idiomatic paths today:
+
+* ``xmclaw restart`` (CLI) — re-exec via PID file, cleanest
+* ``POST /api/v2/system/restart`` — Web UI's "重启 daemon" button
+  (SidebarSystemActions in components/organisms/AppShellParts.js)
+* manual ``xmclaw stop && xmclaw start`` — fallback when the daemon
+  is already in a bad state
+
+B-336 fix: this docstring used to claim "Phase 2 will add
+daemon/reloader.py to stop / restart". The restart functionality
+landed earlier as ``/api/v2/system/restart`` (Web UI) +
+``xmclaw restart`` (CLI), never under the ``reloader.py`` name.
+The stale promise made readers look for a file that doesn't exist;
+removed.
 """
 from __future__ import annotations
 

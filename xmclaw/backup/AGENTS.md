@@ -6,8 +6,16 @@ Single source of truth for packaging the ``~/.xmclaw/`` workspace
 into a portable, verifiable tar.gz + manifest pair, and for
 restoring it back. Does **not** own daemon lifecycle — the caller
 (CLI, operator) must stop the daemon before restore and restart
-after. Phase 2 of Epic #20 adds ``daemon/reloader.py`` to close that
-loop; until then, this directory is filesystem-only.
+after. The restart path is intentionally separate, served by
+either ``xmclaw restart`` (CLI) or ``POST /api/v2/system/restart``
+(Web UI button); this directory stays filesystem-only so a
+corrupted install can still be repaired from a rescue environment
+where the daemon is broken.
+
+(B-336 fix: prior wording claimed "Phase 2 of Epic #20 adds
+``daemon/reloader.py`` to close that loop". The restart
+functionality landed earlier under different names — never as
+``reloader.py``. Stale roadmap claim removed.)
 
 ## 2. 依赖规则（Dependency rules）
 
