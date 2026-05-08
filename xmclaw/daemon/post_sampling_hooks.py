@@ -640,10 +640,15 @@ class ExtractLessonsHook(PostSamplingHook):
                         )
                         new_text = existing
                         for section, fact in entries:
-                            cleaned = _strip_leading_date(
+                            # Renamed from ``cleaned`` to avoid colliding with
+                            # the ``cleaned: list[str]`` accumulator earlier in
+                            # this function (mypy correctly flagged the
+                            # type-shadowing — same name in the same method
+                            # body).
+                            cleaned_line = _strip_leading_date(
                                 fact.replace(chr(10), " ").strip()
                             )
-                            bullet = f"- {date}: {cleaned}"
+                            bullet = f"- {date}: {cleaned_line}"
                             new_text = _append_under_section(
                                 new_text,
                                 section_header=section,

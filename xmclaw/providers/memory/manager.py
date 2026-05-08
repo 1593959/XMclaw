@@ -24,17 +24,17 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from xmclaw.providers.memory.base import Layer, MemoryItem, MemoryProvider
+from xmclaw.utils.log import get_logger
+
+_log = get_logger(__name__)
+
 
 class MemoryPutError(Exception):
     """B-276: raised when ``MemoryManager.put`` exhausted every
     registered provider without a successful write. Distinct from
     "no providers registered" (returns None) so callers can choose
     whether to surface to the user."""
-
-from xmclaw.providers.memory.base import Layer, MemoryItem, MemoryProvider
-from xmclaw.utils.log import get_logger
-
-_log = get_logger(__name__)
 
 
 class MemoryManager:
