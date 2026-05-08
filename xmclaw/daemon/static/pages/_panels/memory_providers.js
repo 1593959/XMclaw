@@ -57,6 +57,17 @@ function _diagnoseFetch(err) {
 }
 
 
+// B-344 (audit pass-2 follow-up): the B-323 monolith split
+// (commit 3cc12dd) extracted ``MemoryActivitySparkline`` from
+// ``pages/Memory.js`` into this file but DROPPED the function
+// header. The body sat at module top-level using ``useState`` /
+// ``useEffect`` / ``return`` outside any function — JavaScript
+// rejected it with ``Uncaught SyntaxError: Illegal return
+// statement`` at parse time, killing the entire panel module
+// import chain and blanking the UI. The same split also dropped
+// the ``export`` so even if the body parsed, no caller could
+// import it. Restored both header + ``export`` here.
+export function MemoryActivitySparkline({ token }) {
   // B-29: poll /api/v2/events?types=memory_op every 5s, plot a 60-second
   // sparkline of provider call rate so users see live memory activity
   // at a glance without dropping into the Trace page.

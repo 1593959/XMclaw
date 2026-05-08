@@ -335,6 +335,142 @@ def _all_js_files() -> list[Path]:
     return sorted(STATIC_DIR.rglob("*.js"))
 
 
+def test_b344_every_js_file_parses_with_node_check() -> None:
+    """Every JS file under ``static/`` must parse as a valid ES module
+    via ``node --check``. The B-344 regression that triggered this
+    test was a B-323 monolith split that lost a function header from
+    ``memory_providers.js`` — leaving ``useState`` /
+    ``useEffect`` / ``return`` calls at module top-level. JavaScript
+    rejected the file with ``Uncaught SyntaxError: Illegal return
+    statement`` only when the browser tried to parse it; the build
+    pipeline (line-budget + import-path tests) didn't catch it
+    because they don't invoke a parser.
+
+    Skips when ``node`` isn't on PATH so contributors without
+    Node.js can still run the suite — the actual frontend doesn't
+    require Node either (no build step). CI must keep Node
+    installed for this test to fire.
+    """
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not on PATH — skipping JS parse check")
+
+    failures: list[tuple[str, str]] = []
+    for js in _all_js_files():
+        rel = str(js.relative_to(STATIC_DIR))
+        try:
+            cp = subprocess.run(
+                [node, "--check", str(js)],
+                capture_output=True, text=True, timeout=20,
+            )
+        except subprocess.TimeoutExpired:
+            failures.append((rel, "node --check timed out"))
+            continue
+        if cp.returncode != 0:
+            # node --check writes errors to stderr; truncate so the
+            # assertion message stays readable.
+            err = (cp.stderr or cp.stdout).strip().splitlines()
+            failures.append((rel, "\n    ".join(err[:6])))
+    assert not failures, (
+        "JS files failed node --check (browser will reject these as "
+        "SyntaxError, blanking the UI):\n  "
+        + "\n  ".join(f"{rel}\n    {msg}" for rel, msg in failures)
+    )
+
+
+def test_b344_full_module_graph_resolves_via_test_client(
+    http_client: TestClient,
+) -> None:
+    """Browser-equivalent module-graph walk via TestClient. Seeds at
+    ``/ui/bootstrap.js`` + ``/ui/app.js`` (the two real entry points),
+    parses every ``import`` / ``from`` spec, fetches each, and asserts
+    every JS module is served with a JS Content-Type — never the SPA
+    fallback HTML that B-344's underlying bug triggered. Catches:
+
+      * ``../foo`` paths that drop one level too few (B-344 panel
+        files: ``../lib`` from ``_panels/`` → ``/ui/pages/lib`` → 404
+        → SPA fallback HTML → MIME mismatch → blank UI).
+      * Files referenced but absent on disk.
+      * MIME-type misconfiguration in the StaticFiles mount.
+
+    The matching ``test_b344_every_relative_import_resolves_to_a_real_file``
+    above does the same check against disk; this one verifies the
+    SERVING layer too — they catch overlapping but different bug
+    classes."""
+    import re
+
+    base = "/ui"
+    seeds = [base + "/bootstrap.js", base + "/app.js"]
+    visited: set[str] = set()
+    failures: list[tuple[str, str]] = []
+
+    import_re = re.compile(
+        r'''import\s*(?:[^"';]*?from\s*)?["']([^"']+)["']'''
+        r'''|import\s*\(\s*["']([^"']+)["']'''
+        r'''|from\s*["']([^"']+)["']''',
+        re.MULTILINE,
+    )
+
+    def _resolve(parent: str, spec: str) -> str | None:
+        if spec.startswith(("http://", "https://", "//")):
+            return None  # CDN — not our problem
+        if not spec.startswith(("./", "../", "/")):
+            return None  # bare module
+        spec = spec.split("?", 1)[0]
+        if spec.startswith("/"):
+            return spec
+        # parent is "/ui/.../foo.js"; resolve relative
+        from posixpath import normpath
+        parent_dir = parent.rsplit("/", 1)[0]
+        return normpath(parent_dir + "/" + spec)
+
+    def walk(url: str, parent: str = "(seed)") -> None:
+        if url in visited:
+            return
+        visited.add(url)
+        resp = http_client.get(url)
+        if resp.status_code != 200:
+            failures.append(
+                (url, f"HTTP {resp.status_code} (parent={parent})")
+            )
+            return
+        ct = resp.headers.get("content-type", "")
+        if "text/html" in ct.lower():
+            failures.append(
+                (url, f"served as HTML ({ct}) — SPA fallback "
+                      f"(parent={parent})")
+            )
+            return
+        if "javascript" not in ct.lower():
+            return  # CSS / JSON / etc — fine, just don't recurse
+        body = resp.text
+        for m in import_re.finditer(body):
+            spec = next((g for g in m.groups() if g), None)
+            if not spec:
+                continue
+            target = _resolve(url, spec)
+            if target is None:
+                continue
+            walk(target, parent=url)
+
+    for seed in seeds:
+        walk(seed)
+
+    assert not failures, (
+        f"Module graph has {len(failures)} failure(s) — browser will "
+        f"reject these with MIME/404 errors → blank UI:\n  "
+        + "\n  ".join(f"{url}: {msg}" for url, msg in failures)
+    )
+    # Sanity floor: a real frontend has dozens of modules.
+    assert len(visited) >= 30, (
+        f"Walked only {len(visited)} modules — graph likely truncated "
+        f"by an early failure that wasn't reported (visited={visited})"
+    )
+
+
 def test_b344_every_relative_import_resolves_to_a_real_file() -> None:
     """No JS file in the UI may import a relative path that doesn't
     exist on disk. Pre-B-344 three panel files (memory_identity.js,
