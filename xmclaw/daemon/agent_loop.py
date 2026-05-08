@@ -1674,6 +1674,7 @@ class AgentLoop:
         self, session_id: str, user_message: str,
         *, user_correlation_id: str | None = None,
         llm_profile_id: str | None = None,
+        tools_allowlist: "set[str] | frozenset[str] | None" = None,
     ) -> AgentTurnResult:
         # B-38: register a fresh per-session cancel event. Cleared via
         # ``cancel_session`` (set by the WS handler when the user clicks
@@ -1689,6 +1690,7 @@ class AgentLoop:
                 user_correlation_id=user_correlation_id,
                 llm_profile_id=llm_profile_id,
                 cancel_event=cancel_event,
+                tools_allowlist=tools_allowlist,
             )
         finally:
             self._cancel_events.pop(session_id, None)
@@ -1698,7 +1700,22 @@ class AgentLoop:
         user_correlation_id: str | None,
         llm_profile_id: str | None,
         cancel_event: asyncio.Event,
+        tools_allowlist: "set[str] | frozenset[str] | None" = None,
     ) -> AgentTurnResult:
+        # B-332: per-call tool-name allowlist. When set, the rest of
+        # this method routes all ``list_tools()`` / ``invoke()``
+        # calls through a ``FilteredToolProvider`` wrapping the
+        # agent's normal tool stack. ``None`` means "no filter — the
+        # agent sees its full tool stack" (the chat-page default).
+        # Cron runs use this to enforce ``CronJob.enabled_toolsets``;
+        # without the kwarg the field had been declarative-only.
+        if tools_allowlist is not None and self._tools is not None:
+            from xmclaw.providers.tool.filtered import FilteredToolProvider
+            effective_tools: "Any | None" = FilteredToolProvider(
+                self._tools, allowed_names=tools_allowlist,
+            )
+        else:
+            effective_tools = self._tools
         events: list[BehavioralEvent] = []
         tool_calls_made: list[dict[str, Any]] = []
         llm = self._resolve_llm(llm_profile_id)
@@ -2072,7 +2089,7 @@ class AgentLoop:
             # hint string for sessions where the tool isn't reachable
             # would be misleading and waste tokens.
             tool_specs_check = (
-                self._tools.list_tools() if self._tools else []
+                effective_tools.list_tools() if effective_tools else []
             )
             has_propose_tool = any(
                 getattr(t, "name", "") == "propose_curriculum_edit"
@@ -2135,7 +2152,7 @@ class AgentLoop:
         )
         system_content = cache_entry[1] + "\n\n" + time_block
 
-        tool_specs = self._tools.list_tools() if self._tools else None
+        tool_specs = effective_tools.list_tools() if effective_tools else None
 
         # B-238: skill prefilter. Real-data: 404 skills installed →
         # tool_specs runs ~80K tokens before the user message, LLM's
@@ -2603,7 +2620,7 @@ class AgentLoop:
             # 3. If the model made tool calls, execute them and feed
             # results back into the conversation.
             if response.tool_calls:
-                if self._tools is None:
+                if effective_tools is None:
                     # Model hallucinated a tool call but we have no
                     # provider — record as anti-req violation and end.
                     await publish(EventType.ANTI_REQ_VIOLATION, {
@@ -2639,7 +2656,7 @@ class AgentLoop:
                     # so we construct a copy via dataclasses.replace.
                     import dataclasses as _dc
                     call_with_sid = _dc.replace(call, session_id=session_id)
-                    result = await self._tools.invoke(call_with_sid)
+                    result = await effective_tools.invoke(call_with_sid)
                     # B-17: retry once on transient failures. We're
                     # narrow about what counts as transient — only
                     # network-shaped errors and timeouts get a second
@@ -2654,7 +2671,7 @@ class AgentLoop:
                     ):
                         import asyncio as _asyncio
                         await _asyncio.sleep(0.5)
-                        retry = await self._tools.invoke(call_with_sid)
+                        retry = await effective_tools.invoke(call_with_sid)
                         if retry.ok:
                             # Tag the retry so the bus event reflects
                             # what happened; the LLM never sees the

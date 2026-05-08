@@ -444,8 +444,24 @@ def create_app(
                 if target_agent is None or not job.wake_agent:
                     return f"# {job.name} fired @ {time_module.strftime('%Y-%m-%d %H:%M:%S')}\n\n(no agent wired)\n"
                 sid = f"cron:{job.id}:{int(time_module.time())}"
+                # B-332: enforce ``CronJob.enabled_toolsets``. Pre-B-332
+                # this field was parsed + persisted + shown in the UI
+                # but no path filtered the agent's tools — a job
+                # claiming "only web_fetch" still got the full stack.
+                # ``[]`` (the default) means "no restriction"; non-
+                # empty list becomes the per-call allowlist passed
+                # to AgentLoop.run_turn, which wraps the agent's
+                # tool provider in FilteredToolProvider for the
+                # duration of THIS turn (no shared mutable state, so
+                # concurrent user chat is unaffected).
+                tools_allowlist = (
+                    set(job.enabled_toolsets) if job.enabled_toolsets else None
+                )
                 try:
-                    res = await target_agent.run_turn(sid, job.prompt)
+                    res = await target_agent.run_turn(
+                        sid, job.prompt,
+                        tools_allowlist=tools_allowlist,
+                    )
                     return (
                         f"# {job.name} @ {time_module.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                         f"## Result\n\n{res.text or '(no text)'}\n\n"
