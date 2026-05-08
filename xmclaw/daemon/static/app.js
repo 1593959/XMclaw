@@ -276,132 +276,28 @@ const switchAgent = (agentId) =>
   switchAgentAction(store, agentId, persistActiveAgentId, connectFor);
 
 // ── Action helpers (bound into the page tree) ─────────────────────────
-
-function sendComposer() {
-  const s = store.getState();
-  const text = (s.chat.composerDraft || "").trim();
-  if (!text) return;
-  if (!wsHandle) {
-    toast.error("WS 未连接，消息未发送 — 请检查 daemon 状态");
-    return;
-  }
-  // B-105: persist this prompt in the up/down history before send.
-  try {
-    appendPromptHistory(text);
-  } catch (_) { /* never block send on history */ }
-
-  // Allow send even when reconnecting; the WS client now queues frames
-  // and flushes them on reconnect (B-13 fix). Without this gate,
-  // pressing Enter during a daemon restart would silently lose the
-  // message — UI showed an optimistic bubble but the server never
-  // got the frame.
-
-  // Optimistic local echo. The daemon will mirror it back as USER_MESSAGE,
-  // and the reducer will dedupe by id.
-  const { id, chat: afterUser } = appendOptimisticUser(s.chat, text, {
-    ultrathink: s.chat.ultrathink,
-  });
-  // Push a "thinking" assistant bubble keyed by `id` so the UI shows
-  // immediate feedback. The reducer's llm_chunk / llm_response cases
-  // upsert by id, transitioning this bubble into streaming/complete.
-  const nextChat = appendThinkingAssistant(afterUser, id);
-  store.setState({ chat: { ...nextChat, composerDraft: "" } });
-
-  const result = wsHandle.send({
-    type: "user",
-    content: text,
-    ultrathink: s.chat.ultrathink || undefined,
-    correlation_id: id,
-    plan_mode: s.chat.planMode || undefined,
-    llm_profile_id: s.chat.llmProfileId || undefined,
-  });
-
-  // Tell the user when the frame is queued vs. sent. Queued frames
-  // ride out the reconnect; rejected frames need to be retyped.
-  if (result && result.queued) {
-    toast.info(
-      `当前未连接 daemon，消息已排队 (#${result.pendingCount}) — 重连后自动发送`,
-    );
-  } else if (result && !result.ok) {
-    toast.error("发送失败：" + (result.reason || "未知"));
-  }
-}
-
-function setLlmProfile(profileId) {
-  store.setState((s) => ({
-    chat: { ...s.chat, llmProfileId: profileId || null },
-  }));
-}
-
-// B-38: send a cancel frame so the daemon's WS handler signals the
-// running run_turn to bail at its next hop boundary. No-op when no
-// turn is in flight (the server happily processes a stray cancel).
 //
-// B-269: also mark the in-flight turn id as "cancelled" in client
-// state. The reducer's llm_chunk / llm_thinking_chunk cases consult
-// this set and silently drop late-arriving chunks. Without this the
-// provider's buffered chunks (which were already in flight when
-// cancel was sent) keep appending to the assistant bubble for a
-// few more seconds after the user clicks Stop — looks like the
-// stop button didn't work.
-function cancelComposer() {
-  if (!wsHandle) {
-    toast.error("WS 未连接");
-    return;
-  }
-  // Mark the current turn cancelled BEFORE sending the WS frame.
-  // Even if the WS send fails, we want to stop appending chunks.
-  const currentTurnId = store.getState().chat?.pendingAssistantId;
-  if (currentTurnId) {
-    store.setState((s) => {
-      const cancelled = new Set(s.chat.cancelledTurnIds || []);
-      cancelled.add(currentTurnId);
-      return {
-        ...s,
-        chat: { ...s.chat, cancelledTurnIds: cancelled },
-      };
-    });
-  }
-  const result = wsHandle.send({ type: "cancel" });
-  if (result && !result.ok) {
-    toast.error("取消请求失败：" + (result.reason || "未知"));
-  } else {
-    toast.info("已请求停止当前回答");
-  }
-}
+// B-321: composer-side helpers (send / cancel / answer / draft / plan
+// / ultrathink toggles + setLlmProfile) live in lib/composer_actions.js
+// to keep app.js under the 500-line UI budget (FRONTEND_DESIGN.md
+// §1.4 hard limit). Same factory pattern as lib/chat_actions.js.
 
-// B-92: forward an answer to the daemon. The QuestionCard built by
-// MessageBubble calls this when the user clicks an option (or types
-// "Other" free text). The daemon's WS handler resolves the in-flight
-// ask_user_question Future and the agent's run_turn loop continues.
-// ``value`` is a string for single-select / Other, or an array for
-// multi-select.
-function answerQuestion(questionId, value) {
-  if (!wsHandle) {
-    toast.error("WS 未连接，无法提交回答");
-    return;
-  }
-  const result = wsHandle.send({
-    type: "answer_question",
-    question_id: questionId,
-    value,
-  });
-  if (result && !result.ok) {
-    toast.error("回答提交失败：" + (result.reason || "未知"));
-  }
-}
-
-function changeDraft(value) {
-  store.setState((s) => ({ chat: { ...s.chat, composerDraft: value } }));
-}
-
-function togglePlan() {
-  store.setState((s) => ({ chat: { ...s.chat, planMode: !s.chat.planMode } }));
-}
-
-function toggleUltrathink() {
-  store.setState((s) => ({ chat: { ...s.chat, ultrathink: !s.chat.ultrathink } }));
-}
+import { createComposerActions } from "./lib/composer_actions.js";
+const _COMPOSER = createComposerActions({
+  store,
+  getWsHandle: () => wsHandle,
+  toast,
+  appendOptimisticUser,
+  appendThinkingAssistant,
+  appendPromptHistory,
+});
+const sendComposer = _COMPOSER.sendComposer;
+const setLlmProfile = _COMPOSER.setLlmProfile;
+const cancelComposer = _COMPOSER.cancelComposer;
+const answerQuestion = _COMPOSER.answerQuestion;
+const changeDraft = _COMPOSER.changeDraft;
+const togglePlan = _COMPOSER.togglePlan;
+const toggleUltrathink = _COMPOSER.toggleUltrathink;
 
 function startNewSession() {
   const sid = newSid();

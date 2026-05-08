@@ -1723,10 +1723,20 @@ def create_app(
     # branding work is in /ui/ds-assets/) and every browser tab pollutes
     # daemon.log + the user's DevTools console with the 404. Empty 204
     # is the canonical "no favicon" response.
+    #
+    # B-322: ``include_in_schema=False`` keeps the route off the OpenAPI
+    # spec. Without it, FastAPI / pydantic 2.12 walks the return-type
+    # annotation through ``TypeAdapter``, and Starlette's ``Response``
+    # isn't a pydantic-compatible model — it raised
+    # ``PydanticUserError: TypeAdapter[ForwardRef('_PlainResponse')] is
+    # not fully defined`` when ``/openapi.json`` was visited (broke the
+    # router-mount integration test). Excluding this trivial 204 from
+    # the schema is also the right semantic — favicon is a browser
+    # concern, not an API surface.
     from starlette.responses import Response as _PlainResponse
 
-    @app.get("/favicon.ico")
-    async def favicon() -> _PlainResponse:
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon():
         return _PlainResponse(status_code=204)
 
     # ── /api/v2/pair ──

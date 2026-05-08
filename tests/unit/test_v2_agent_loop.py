@@ -459,16 +459,27 @@ async def test_b299_browse_meta_tool_does_not_stamp_skill_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_evolution_agent_observer_receives_skill_verdicts() -> None:
+async def test_evolution_agent_observer_receives_skill_verdicts(
+    tmp_path,
+) -> None:
     """End-to-end: AgentLoop → GRADER_VERDICT → EvolutionAgent._ingest.
     Verifies the closed loop the Phase 1.5 patch was specifically
     written to fix — observer's per (skill_id, version) aggregate
     actually accumulates plays + reward when a skill_-prefixed tool
-    runs."""
+    runs.
+
+    B-297 added EWMA state persistence to state.json under
+    ``evolution_dir() / <agent_id>/``. Without an explicit
+    ``audit_dir`` the agent writes to the user's real
+    ``~/.xmclaw/v2/evolution/evo-test/state.json``, accumulating plays
+    across pytest invocations and breaking the ``plays == 1`` assert
+    on the second run onward. Pin ``audit_dir=tmp_path`` so each test
+    runs against a clean state file.
+    """
     from xmclaw.daemon.evolution_agent import EvolutionAgent
 
     bus = InProcessEventBus()
-    observer = EvolutionAgent("evo-test", bus)
+    observer = EvolutionAgent("evo-test", bus, audit_dir=tmp_path)
     await observer.start()
     try:
         llm = _ScriptedLLM(script=[

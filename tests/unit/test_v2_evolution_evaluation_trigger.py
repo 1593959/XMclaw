@@ -34,9 +34,9 @@ def _verdict(skill_id: str = "skill_x", version: int = 0,
 
 
 @pytest.mark.asyncio
-async def test_start_stop_idempotent() -> None:
+async def test_start_stop_idempotent(tmp_path) -> None:
     bus = InProcessEventBus()
-    evo = EvolutionAgent("test", bus)
+    evo = EvolutionAgent("test", bus, audit_dir=tmp_path)
     await evo.start()
     trig = EvolutionEvaluationTrigger(evo, bus, debounce_s=0.05)
     await trig.start()
@@ -49,9 +49,9 @@ async def test_start_stop_idempotent() -> None:
 
 
 @pytest.mark.asyncio
-async def test_disabled_does_nothing() -> None:
+async def test_disabled_does_nothing(tmp_path) -> None:
     bus = InProcessEventBus()
-    evo = EvolutionAgent("test", bus)
+    evo = EvolutionAgent("test", bus, audit_dir=tmp_path)
     await evo.start()
     trig = EvolutionEvaluationTrigger(evo, bus, enabled=False)
     await trig.start()
@@ -60,10 +60,10 @@ async def test_disabled_does_nothing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_burst_collapses_to_one_fire() -> None:
+async def test_burst_collapses_to_one_fire(tmp_path) -> None:
     """20 verdicts in a burst → debounce → exactly 1 evaluate() call."""
     bus = InProcessEventBus()
-    evo = EvolutionAgent("test", bus)
+    evo = EvolutionAgent("test", bus, audit_dir=tmp_path)
     await evo.start()
     trig = EvolutionEvaluationTrigger(
         evo, bus,
@@ -84,10 +84,10 @@ async def test_burst_collapses_to_one_fire() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cooldown_blocks_second_fire_in_window() -> None:
+async def test_cooldown_blocks_second_fire_in_window(tmp_path) -> None:
     """Two bursts within cooldown_s → only first one fires."""
     bus = InProcessEventBus()
-    evo = EvolutionAgent("test", bus)
+    evo = EvolutionAgent("test", bus, audit_dir=tmp_path)
     await evo.start()
     trig = EvolutionEvaluationTrigger(
         evo, bus,
@@ -110,10 +110,10 @@ async def test_cooldown_blocks_second_fire_in_window() -> None:
 
 
 @pytest.mark.asyncio
-async def test_min_new_verdicts_threshold_blocks_tiny_bursts() -> None:
+async def test_min_new_verdicts_threshold_blocks_tiny_bursts(tmp_path) -> None:
     """Bursts smaller than threshold don't fire."""
     bus = InProcessEventBus()
-    evo = EvolutionAgent("test", bus)
+    evo = EvolutionAgent("test", bus, audit_dir=tmp_path)
     await evo.start()
     trig = EvolutionEvaluationTrigger(
         evo, bus,
@@ -138,12 +138,12 @@ async def test_min_new_verdicts_threshold_blocks_tiny_bursts() -> None:
 
 
 @pytest.mark.asyncio
-async def test_internal_session_skip() -> None:
+async def test_internal_session_skip(tmp_path) -> None:
     """Verdicts from evolution: / dream: / reflect: / skill-dream / _system
     sessions are skipped — the trigger only acts on real user-driven
     sessions to avoid recursion."""
     bus = InProcessEventBus()
-    evo = EvolutionAgent("test", bus)
+    evo = EvolutionAgent("test", bus, audit_dir=tmp_path)
     await evo.start()
     trig = EvolutionEvaluationTrigger(
         evo, bus,

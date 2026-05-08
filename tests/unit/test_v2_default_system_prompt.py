@@ -30,15 +30,33 @@ def test_b205_memory_search_appears_before_sqlite_query() -> None:
     The fix was prompt-only — promoting memory_search to first
     position in the self-management toolkit. Order matters because
     the LLM picks the first-listed tool that fits the query.
+
+    Scope is the *self-management toolkit* section specifically —
+    other places in the prompt may reference ``sqlite_query`` first
+    (e.g. B-302 plan-mode-skip list mentions it as a read-only
+    op). A naive ``p.find(...)`` over the whole prompt picks up
+    that earlier mention and reports a false-positive failure. We
+    instead anchor the search inside the dedicated toolkit section
+    so the assertion tracks the routing-order *intent* B-205 fixed.
     """
     p = _DEFAULT_SYSTEM
-    mem_idx = p.find("memory_search")
-    sql_idx = p.find("sqlite_query")
-    assert mem_idx > 0, "memory_search must be referenced in default prompt"
-    assert sql_idx > 0, "sqlite_query must be referenced in default prompt"
+    section_start = p.find("Self-management toolkit")
+    assert section_start > 0, (
+        "Self-management toolkit section must exist in default prompt"
+    )
+    section = p[section_start:]
+    mem_idx = section.find("memory_search")
+    sql_idx = section.find("sqlite_query")
+    assert mem_idx > 0, (
+        "memory_search must be referenced inside self-management toolkit"
+    )
+    assert sql_idx > 0, (
+        "sqlite_query must be referenced inside self-management toolkit"
+    )
     assert mem_idx < sql_idx, (
-        "B-205 invariant: memory_search must appear BEFORE sqlite_query "
-        "in the default prompt — order is what makes the LLM prefer it."
+        "B-205 invariant: within the self-management toolkit section, "
+        "memory_search must appear BEFORE sqlite_query — order is what "
+        "makes the LLM prefer it for 'what do I remember' queries."
     )
 
 
