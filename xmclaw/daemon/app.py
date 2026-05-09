@@ -706,6 +706,13 @@ def create_app(
                 # take effect within ~5s of the file save.
                 async def _on_config_reloaded(ev: Any) -> None:
                     payload = getattr(ev, "payload", {}) or {}
+                    # B-350 (Sprint 1): stash the latest reload summary
+                    # on app.state so /api/v2/setup can surface it. The
+                    # UI shows a "config changed — restart" banner when
+                    # ``restart_required: true``. Without this the user
+                    # writes a new key, sees no UI feedback, and is left
+                    # guessing whether the daemon picked it up.
+                    _app.state.last_config_reload = dict(payload)
                     top_changed = set(payload.get("top_changed") or [])
                     # logging level — immediate
                     if "logging" in top_changed:
@@ -2343,6 +2350,14 @@ def create_app(
             if (st or {}).get("status") == "error"
         ]
 
+        # B-350 (Sprint 1): expose the most recent CONFIG_RELOADED
+        # summary so the UI can show a "config changed — restart" notice
+        # for restart-bound sections. ``last_config_reload`` is None
+        # when the daemon hasn't seen a reload since startup; once a
+        # reload fires the watcher subscriber stashes the summary on
+        # app.state.
+        last_reload = getattr(app.state, "last_config_reload", None)
+
         return JSONResponse({
             "llm_configured": llm_configured,
             "llm_provider": llm_provider_used,
@@ -2354,6 +2369,7 @@ def create_app(
             "dream_running": dream_running,
             "mcp_servers": mcp_servers,
             "mcp_failed": mcp_failed,
+            "last_config_reload": last_reload,
             "missing": missing,
             "ready": len(missing) == 0,
         })

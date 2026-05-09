@@ -184,3 +184,43 @@ def test_ready_true_when_everything_set(tmp_path, monkeypatch) -> None:
     assert body["embedding_configured"] is True
     assert body["missing"] == []
     assert body["ready"] is True
+
+
+# ── B-350 (Sprint 1): last_config_reload exposed in /api/v2/setup ─
+
+
+def test_b350_setup_includes_last_config_reload_field() -> None:
+    """Pre-B-350 the /api/v2/setup payload had no signal that a
+    config edit happened since startup. Users saved a new LLM key,
+    saw no UI feedback, and were left guessing whether the daemon
+    had picked it up. Now the endpoint surfaces the latest
+    CONFIG_RELOADED summary (or None when none happened yet).
+    """
+    app = create_app(config={})
+    with TestClient(app) as client:
+        body = _setup(client)
+    # Field is always present (None when no reload has fired yet).
+    assert "last_config_reload" in body
+    assert body["last_config_reload"] is None
+
+
+def test_b350_last_config_reload_populated_after_state_set() -> None:
+    """The setup endpoint reads ``app.state.last_config_reload``;
+    the watcher's CONFIG_RELOADED subscriber stashes the summary
+    there. Verify that injecting state surfaces correctly without
+    spinning up a real watcher (which needs a config file path).
+    """
+    app = create_app(config={})
+    summary = {
+        "changed_keys": ["llm.anthropic.api_key"],
+        "top_changed": ["llm"],
+        "restart_required": True,
+        "runtime_only": False,
+        "mtime": 1234567890.0,
+    }
+    app.state.last_config_reload = summary
+    with TestClient(app) as client:
+        body = _setup(client)
+    assert body["last_config_reload"] == summary
+    assert body["last_config_reload"]["restart_required"] is True
+    assert body["last_config_reload"]["top_changed"] == ["llm"]

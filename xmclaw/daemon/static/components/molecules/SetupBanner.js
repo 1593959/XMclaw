@@ -36,7 +36,6 @@ export function SetupBanner({ token }) {
   const [dismissed, setDismissed] = useState(_readDismissed);
   // B-83: which inline form (if any) is currently expanded.
   const [openForm, setOpenForm] = useState(null);
-  // Form state for the LLM panel.
   const [llmForm, setLlmForm] = useState({
     provider: "anthropic",
     api_key: "",
@@ -44,9 +43,8 @@ export function SetupBanner({ token }) {
     default_model: "",
   });
   const [llmSaving, setLlmSaving] = useState(false);
-  // B-84: form state for the embedding panel. Defaults are pre-filled
-  // for the local Ollama path (qwen3-embedding:0.6b @ 1024) — same
-  // defaults as the Memory page's inline form (B-76).
+  // B-84: embedding form defaults match Memory page (B-76) — local
+  // Ollama path (qwen3-embedding:0.6b @ 1024).
   const [embForm, setEmbForm] = useState({
     provider: "openai",
     base_url: "http://127.0.0.1:11434/v1",
@@ -78,13 +76,15 @@ export function SetupBanner({ token }) {
     }
   }, [setup, dismissed]);
 
-  // B-86: cfg has the section (embedding_configured) but lifespan
-  // didn't build it (indexer_running=false) → user saved + forgot to
-  // restart. Surface "needs restart" so the next move is obvious.
+  // B-86 + B-350: surface a "needs restart" banner in two cases —
+  // (a) cfg has embedding section but lifespan didn't build it (B-86),
+  // (b) the watcher reported a CONFIG_RELOADED with restart_required
+  //     for sections where live-apply isn't possible (B-350).
   const restartPending =
-    setup &&
-    setup.embedding_configured === true &&
-    setup.indexer_running === false;
+    setup && (
+      (setup.embedding_configured === true && setup.indexer_running === false)
+      || (setup.last_config_reload && setup.last_config_reload.restart_required === true)
+    );
 
   // Banner shows when EITHER there's something missing OR a restart is
   // pending. Once everything is missing-clean AND running, hide.
@@ -461,13 +461,15 @@ export function SetupBanner({ token }) {
                   </div>
                 `;
               })()}
+            ` : (setup.last_config_reload && setup.last_config_reload.restart_required) ? html`
+              <div style="font-weight:600">🔄 config.json 改了 — 重启 daemon 让改动生效</div>
+              <div style="margin-top:.2rem;color:var(--xmc-fg-muted);font-size:.76rem;line-height:1.5">
+                需重启的 section: <code>${(setup.last_config_reload.top_changed || []).join(", ") || "(unknown)"}</code> (logging / tools / guardians 已实时应用)。
+              </div>
             ` : html`
               <div style="font-weight:600">🔄 daemon 未重启 — 已保存的配置还没生效</div>
               <div style="margin-top:.2rem;color:var(--xmc-fg-muted);font-size:.76rem;line-height:1.5">
-                你已经把 embedding 配置写到了磁盘，但 daemon 是冷加载的——
-                它内存里那一份 config 是 <code>xmclaw start</code> 那一刻的快照。
-                在终端跑 <code>xmclaw stop &amp;&amp; xmclaw start</code>
-                之后向量索引会真正启动，本提示自动消失。
+                <code>xmclaw stop &amp;&amp; xmclaw start</code> 后会自动消失。
               </div>
             `}
           </div>
