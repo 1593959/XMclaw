@@ -207,13 +207,29 @@ class FeishuAdapter(ChannelAdapter):
             ).register_p2_im_message_receive_v1(_on_im_message)
         dispatcher = dispatcher_builder.build()
 
-        ws_client = (
-            lark.ws.Client(
+        # B-369 (Sprint 1): reconnect loop. Pre-B-369 the lark-oapi WS
+        # client's ``start()`` returned cleanly when the underlying
+        # transport dropped (NAT timeout / ISP idle prune; daemon.log
+        # showed ``[Lark] receive message loop exit, err: no close
+        # frame received or sent`` 1-3 times/day) and ``_runner`` then
+        # exited, leaving the adapter dead but the daemon convinced
+        # the bot was up. The user discovered hours later when their
+        # 飞书 群 wasn't responding. Now: rebuild the ws_client AND
+        # restart in a retry loop with capped exponential backoff.
+        # Each retry is logged so daemon.log + the SetupBanner can
+        # surface "feishu reconnecting" without ambiguity.
+
+        def _build_ws_client() -> Any:
+            return lark.ws.Client(
                 self._app_id, self._app_secret,
                 event_handler=dispatcher,
                 log_level=lark.LogLevel.WARNING,
             )
-        )
+
+        # Hold the LATEST ws_client on a closure cell so stop() can
+        # call its ._stop / ._exit shape if available (lark-oapi 1.4
+        # private API; we tolerate AttributeError).
+        ws_client_holder: dict[str, Any] = {"client": None}
 
         # ws_client.start() is BLOCKING (lark-oapi's design — it
         # internally runs an asyncio event loop). Run it in a worker
@@ -229,7 +245,7 @@ class FeishuAdapter(ChannelAdapter):
         # (silent failure: adapter shows running=True but no events).
         # Fix: in the worker thread, give lark its own dedicated event
         # loop by overriding the module global before calling start().
-        def _start_in_thread() -> None:
+        def _start_in_thread(client: Any) -> None:
             import asyncio as _asyncio
             new_loop = _asyncio.new_event_loop()
             _asyncio.set_event_loop(new_loop)
@@ -238,17 +254,54 @@ class FeishuAdapter(ChannelAdapter):
                 _lark_ws_client_mod.loop = new_loop
             except ImportError:
                 pass
-            ws_client.start()
+            client.start()
 
         async def _runner() -> None:
-            try:
-                await asyncio.to_thread(_start_in_thread)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                _log.warning("feishu.ws_loop_failed err=%s", exc)
+            # B-369: capped exponential backoff. 1s, 2s, 4s, …, 60s,
+            # 60s, 60s. Reset to 1s after a successful long run (≥60s
+            # uptime suggests the connection was healthy and the drop
+            # is transient — don't punish reconnect speed).
+            backoff_s = 1.0
+            backoff_max_s = 60.0
+            while True:
+                client = _build_ws_client()
+                ws_client_holder["client"] = client
+                started_at = time.monotonic()
+                try:
+                    await asyncio.to_thread(_start_in_thread, client)
+                except asyncio.CancelledError:
+                    raise  # daemon shutdown — propagate
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning(
+                        "feishu.ws_loop_failed err=%s — will reconnect", exc,
+                    )
+                else:
+                    # ``start()`` returned without exception — that's
+                    # the "loop exit, no close frame" path. lark-oapi
+                    # logs the underlying error at ERROR level, we
+                    # log the reconnect intent at WARNING.
+                    _log.warning(
+                        "feishu.ws_loop_returned — connection dropped, "
+                        "will reconnect",
+                    )
+                # Reset backoff if the previous run lasted long enough
+                # to count as "stable session that just got pruned"
+                # rather than "instantly failing with bad credentials".
+                uptime_s = time.monotonic() - started_at
+                if uptime_s >= 60:
+                    backoff_s = 1.0
+                _log.info(
+                    "feishu.reconnecting in=%.1fs uptime=%.1fs",
+                    backoff_s, uptime_s,
+                )
+                try:
+                    await asyncio.sleep(backoff_s)
+                except asyncio.CancelledError:
+                    raise
+                backoff_s = min(backoff_s * 2.0, backoff_max_s)
 
         self._ws_task = loop.create_task(_runner(), name="feishu-ws")
+        self._ws_client_holder = ws_client_holder  # type: ignore[attr-defined]
         _log.info("feishu.started app_id=%s", self._app_id[:8] + "***")
 
     async def stop(self) -> None:
