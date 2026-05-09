@@ -222,9 +222,22 @@ class ReflectiveMutator:
             mainly a safety net against hallucinated overruns.
     """
 
-    def __init__(self, llm: Any, max_per_skill: int = 5) -> None:
+    def __init__(
+        self, llm: Any, max_per_skill: int = 5,
+        evolution_tier: str = "unknown",
+    ) -> None:
         self._llm = llm
         self._max_per_skill = max(1, int(max_per_skill))
+        # Sprint 3 Iron Rule #3: weak-tier models produce noise on
+        # mutation prompts (Live-SWE issue #7). When evolution_tier is
+        # "weak", propose_mutations returns [] immediately. Caller
+        # (factory) does the classification; core/ stays free of
+        # provider imports.
+        self._tier = (
+            evolution_tier
+            if evolution_tier in {"strong", "medium", "weak", "unknown"}
+            else "unknown"
+        )
 
     async def propose_mutations(
         self,
@@ -241,12 +254,21 @@ class ReflectiveMutator:
         Empty failure list short-circuits to ``[]`` — there is nothing
         to reflect on, so we don't burn an LLM call.
 
+        Iron Rule #3: weak-tier models return ``[]`` immediately —
+        mutation prompts are noise on weak models.
+
         Malformed entries (missing ``proposed_source``, non-string
         types, empty source body, non-numeric confidence) are silently
         dropped. The remaining candidates have their ``confidence``
         clamped to ``[0.0, _CONFIDENCE_CAP]``.
         """
         if not recent_failures:
+            return []
+        if self._tier == "weak":
+            _log.info(
+                "reflective_mutator.skipped_weak_tier skill=%s "
+                "failures=%d", skill_id, len(recent_failures),
+            )
             return []
 
         prompt = _build_prompt(head_source, recent_failures)

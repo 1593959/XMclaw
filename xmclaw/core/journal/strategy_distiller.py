@@ -201,9 +201,25 @@ class StrategyDistiller:
         prompt's "3-7" upper bound.
     """
 
-    def __init__(self, llm: Any, max_strategies: int = 7) -> None:
+    def __init__(
+        self, llm: Any, max_strategies: int = 7,
+        evolution_tier: str = "unknown",
+    ) -> None:
         self._llm = llm
         self._max = int(max_strategies)
+        # Sprint 3 Iron Rule #3: ``evolution_tier`` is the result of
+        # classifying the LLM's model id (``classify_model_tier`` in
+        # xmclaw/providers/llm/_provider_profiles.py). When "weak",
+        # distill_from_journal returns [] immediately without burning
+        # an LLM call — Live-SWE-agent issue #7 + community reports
+        # show weak models produce statistically-common phrases, not
+        # useful patterns. Caller (factory) does the classification;
+        # core/ stays free of provider imports.
+        self._tier = (
+            evolution_tier
+            if evolution_tier in {"strong", "medium", "weak", "unknown"}
+            else "unknown"
+        )
 
     async def distill_from_journal(
         self,
@@ -216,8 +232,18 @@ class StrategyDistiller:
         list of mechanical journal rows (already serialisable dicts).
         Empty input short-circuits to ``[]`` without an LLM call so
         the daemon's startup pass on a fresh install stays free.
+
+        Iron Rule #3: weak-tier models return ``[]`` immediately —
+        their strategy output is noise, not pattern. ``"unknown"``
+        + ``"medium"`` + ``"strong"`` all run the LLM call.
         """
         if not journal_window:
+            return []
+        if self._tier == "weak":
+            _log.info(
+                "strategy_distiller.skipped_weak_tier session=%s "
+                "journal_size=%d", session_id, len(journal_window),
+            )
             return []
 
         prompt = _build_prompt(journal_window)
