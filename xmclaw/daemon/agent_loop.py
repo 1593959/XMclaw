@@ -2327,6 +2327,20 @@ class AgentLoop:
         import uuid as _uuid
         turn_uuid = _uuid.uuid4().hex
 
+        # B-397: anti-loop guard. The agent_loop hops up to ``max_hops``
+        # times. Real-world failure (xmclaw-architecture-redesign.md,
+        # 2026-05-09): the LLM hit ``apply_patch.old_text not found``,
+        # got a fix-it hint in the error, ignored the hint, and made
+        # the SAME stale-text edit 40 hops in a row until max_hops
+        # fired. This deque tracks (tool_name, error_signature) tuples
+        # across consecutive failed tool calls; on 3+ identical
+        # consecutive failures we break the hop loop with a synthesized
+        # "stuck in a loop" message rather than burning the rest of
+        # the budget. Cleared on any successful tool call OR any
+        # different (tool_name, error_signature).
+        _stuck_loop_deque: list[tuple[str, str]] = []
+        _STUCK_LOOP_THRESHOLD = 3
+
         for hop in range(self._max_hops):
             hop_corr = f"{turn_uuid}-{hop}"
             # B-38: cancel fence — if the user clicked Stop, bail out
@@ -2928,6 +2942,58 @@ class AgentLoop:
                         "error": result.error,
                         "side_effects": list(result.side_effects),
                     })
+                    # B-397 anti-loop guard: track consecutive identical
+                    # tool failures. ``error_signature`` is the first
+                    # 80 chars of the error so transient differences
+                    # (line numbers, timestamps) don't reset the streak,
+                    # but qualitatively-different errors do.
+                    if result.ok:
+                        _stuck_loop_deque.clear()
+                    else:
+                        sig = (result.error or "")[:80]
+                        key = (call.name, sig)
+                        if _stuck_loop_deque and _stuck_loop_deque[-1] == key:
+                            _stuck_loop_deque.append(key)
+                        else:
+                            _stuck_loop_deque = [key]
+                    # B-397: break early when the agent is clearly stuck
+                    # making the same failed call. Without this, real
+                    # users hit max_hops=40 with 40 identical
+                    # ``apply_patch.old_text not found`` errors and
+                    # XMclaw burned ~$0.50 of LLM budget per stuck turn.
+                    # 3 consecutive identical failures is conservative —
+                    # genuine retries on transient errors typically vary
+                    # by error string OR succeed within 1-2 retries.
+                    if len(_stuck_loop_deque) >= _STUCK_LOOP_THRESHOLD:
+                        stuck_tool, stuck_err = _stuck_loop_deque[-1]
+                        await publish(EventType.ANTI_REQ_VIOLATION, {
+                            "message": (
+                                f"agent stuck — same tool error "
+                                f"{_STUCK_LOOP_THRESHOLD}x in a row"
+                            ),
+                            "tool": stuck_tool,
+                            "error_signature": stuck_err,
+                            "hop": hop,
+                            "kind": "stuck_loop",
+                        })
+                        truncation_text = (
+                            f"⚠️ I appear to be stuck in a loop calling "
+                            f"`{stuck_tool}` with the same error "
+                            f"{_STUCK_LOOP_THRESHOLD} times in a row:\n"
+                            f"  {stuck_err}\n\n"
+                            f"Stopping early to avoid burning the rest "
+                            f"of the {self._max_hops}-hop budget. The "
+                            f"tool's error message likely tells you what "
+                            f"to do differently — please re-read it and "
+                            f"try a different approach next turn."
+                        )
+                        return AgentTurnResult(
+                            ok=False, text=truncation_text,
+                            hops=hop + 1,
+                            tool_calls=tool_calls_made,
+                            events=events,
+                            error=f"stuck_loop tool={stuck_tool}",
+                        )
                     # Tool result message content: on success pass through
                     # the content; on failure pass the structured error
                     # string so the LLM can tell the user what actually

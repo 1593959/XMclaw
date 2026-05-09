@@ -683,10 +683,19 @@ class BuiltinTools(ToolProvider):
         for i, (old_text, new_text) in enumerate(clean):
             count = text.count(old_text)
             if count == 0:
+                # B-397 (Sprint 1 stragglers): pre-fix, the error said
+                # "file may have changed; re-read it before patching" —
+                # the right hint, but real-world LLMs ignored it and
+                # repeated the same stale-text edit until max_hops fired
+                # (real example: xmclaw-architecture-redesign.md, 40
+                # hops, all the same edit). Surface the CURRENT file
+                # content + a fuzzy-match suggestion in the error so
+                # the LLM has the fresh state inline and can rebase
+                # without another file_read round-trip.
+                hint = self._stale_match_hint(text, old_text)
                 return _fail(
                     call, t0,
-                    f"edits[{i}].old_text not found in {path} — "
-                    f"file may have changed; re-read it before patching",
+                    f"edits[{i}].old_text not found in {path}.\n{hint}",
                 )
             if count > 1:
                 return _fail(
@@ -717,6 +726,76 @@ class BuiltinTools(ToolProvider):
             },
             side_effects=(str(path.resolve()),),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    @staticmethod
+    def _stale_match_hint(current_text: str, old_text: str) -> str:
+        """B-397: when ``old_text`` doesn't match the current file,
+        return a hint that gives the LLM enough context to rebase
+        without another file_read round-trip.
+
+        Strategy:
+          1. If the file is small (≤ 4000 chars), return the whole thing
+             — cheaper than guessing.
+          2. Otherwise, find the longest substring of ``old_text`` that
+             DOES appear in current_text and return ±10 lines of context
+             around it. This handles the common case where the edit's
+             anchor is right but a few lines drifted (whitespace, prior
+             edit replaced part of the chunk, etc).
+          3. If nothing of ``old_text`` matches at all, return the first
+             80 lines of current_text — enough for the LLM to recognize
+             it's looking at the right file and re-anchor.
+        """
+        max_inline = 4000
+        if len(current_text) <= max_inline:
+            return (
+                "File may have changed since your last read OR the "
+                "old_text is from a stale view. The CURRENT file content "
+                "is below — re-base your edit and try again WITHOUT "
+                "calling file_read first.\n\n"
+                "=== CURRENT FILE ===\n"
+                f"{current_text}\n"
+                "=== END ==="
+            )
+        # Search for the longest prefix of old_text that occurs in current.
+        # Cheap O(n^2) — old_text is bounded by tool args and current_text
+        # is bounded by max_inline check above.
+        best_anchor = ""
+        for length in range(min(len(old_text), 200), 5, -1):
+            sub = old_text[:length]
+            if sub in current_text:
+                best_anchor = sub
+                break
+        if best_anchor:
+            idx = current_text.index(best_anchor)
+            # ±10 lines of context.
+            before_lines = current_text[:idx].splitlines()[-10:]
+            after_chunk = current_text[idx + len(best_anchor):]
+            after_lines = after_chunk.splitlines()[:10]
+            ctx_lines = (
+                before_lines
+                + [best_anchor.rstrip(), "<<<< drifted from here >>>>"]
+                + after_lines
+            )
+            ctx = "\n".join(ctx_lines)
+            return (
+                "File may have changed; partial match found. Context "
+                "around where your old_text WOULD have anchored "
+                "(±10 lines):\n\n"
+                "=== CONTEXT ===\n"
+                f"{ctx}\n"
+                "=== END ===\n"
+                "Re-base your edit on this context and try again."
+            )
+        # No partial match — show file head.
+        head = "\n".join(current_text.splitlines()[:80])
+        return (
+            "File may have changed and your old_text doesn't appear at "
+            "all. First 80 lines of current file:\n\n"
+            "=== HEAD ===\n"
+            f"{head}\n"
+            "=== END ===\n"
+            "Re-anchor your edit and try again WITHOUT calling file_read."
         )
 
     async def _list_dir(self, call: ToolCall, t0: float) -> ToolResult:
