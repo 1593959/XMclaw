@@ -1157,3 +1157,69 @@ _CURRICULUM_LIST_SPEC = ToolSpec(
         },
     },
 )
+
+
+# B-388 (Sprint 2): voice tools. Advertised conditionally by
+# BuiltinTools.list_tools() based on whether stt_provider / tts_provider
+# are wired. The agent uses these for transcribing user-supplied audio
+# clips and producing TTS replies that channel adapters can attach to
+# their outbound messages.
+_VOICE_TRANSCRIBE_SPEC = ToolSpec(
+    name="voice_transcribe",
+    description=(
+        "Transcribe an audio clip to text using the configured STT "
+        "provider (default: faster-whisper local). Pass exactly ONE of "
+        "``audio_path`` (filesystem path to .wav/.mp3/.m4a/.ogg/etc) or "
+        "``audio_b64`` (base64-encoded audio bytes — useful when the "
+        "channel adapter handed you bytes inline). Returns JSON: "
+        "``{text: <recognized>, audio_bytes: <int>, source: <which arg>}``. "
+        "Errors when no STT provider is configured (operator: pip install "
+        "'xmclaw[voice-stt]' + set ``voice.stt`` in config)."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "audio_path": {
+                "type": "string",
+                "description": "Filesystem path to the audio file.",
+            },
+            "audio_b64": {
+                "type": "string",
+                "description": "Base64-encoded audio bytes.",
+            },
+        },
+    },
+)
+
+
+_VOICE_SYNTHESIZE_SPEC = ToolSpec(
+    name="voice_synthesize",
+    description=(
+        "Synthesize the given text to speech using the configured TTS "
+        "provider (default: Microsoft Edge free TTS, zh-CN-XiaoxiaoNeural). "
+        "Writes the resulting mp3 to ``$XMC_DATA_DIR/v2/audio/<uuid>.mp3`` "
+        "and returns its path. Returns JSON: ``{audio_path: <path>, "
+        "bytes: <int>}``. Errors when no TTS provider is configured "
+        "(operator: pip install 'xmclaw[voice-tts]' + set ``voice.tts`` "
+        "in config)."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "text": {
+                "type": "string",
+                "description": "Text to synthesize. Required.",
+            },
+            "voice": {
+                "type": "string",
+                "description": (
+                    "Optional voice id. Provider-specific — for edge-tts "
+                    "use values like ``zh-CN-XiaoxiaoNeural`` or "
+                    "``en-US-AriaNeural``. Default: ``default`` (provider "
+                    "picks)."
+                ),
+            },
+        },
+        "required": ["text"],
+    },
+)

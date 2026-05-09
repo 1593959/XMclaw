@@ -82,6 +82,8 @@ from xmclaw.providers.tool._specs import (  # noqa: F401
     _TODO_READ_SPEC as _TODO_READ_SPEC,
     _TODO_WRITE_SPEC as _TODO_WRITE_SPEC,
     _UPDATE_PERSONA_SPEC as _UPDATE_PERSONA_SPEC,
+    _VOICE_SYNTHESIZE_SPEC as _VOICE_SYNTHESIZE_SPEC,
+    _VOICE_TRANSCRIBE_SPEC as _VOICE_TRANSCRIBE_SPEC,
     _WEB_FETCH_SPEC as _WEB_FETCH_SPEC,
     _WEB_SEARCH_SPEC as _WEB_SEARCH_SPEC,
 )
@@ -188,6 +190,14 @@ class BuiltinTools(ToolProvider):
         persona_store_provider: "object | None" = None,
         memory_manager: "object | None" = None,
         embedder: "object | None" = None,
+        # B-388 (Sprint 2): optional STT / TTS providers. When wired,
+        # ``voice_transcribe`` / ``voice_synthesize`` are advertised on
+        # list_tools. Each is gated independently (you can ship a
+        # transcribe-only or synthesize-only setup). Providers are duck-
+        # typed: STT must have ``async transcribe(bytes) -> str``; TTS
+        # must have ``async synthesize(text, voice) -> bytes``.
+        stt_provider: "object | None" = None,
+        tts_provider: "object | None" = None,
     ) -> None:
         self._allowed = (
             [Path(d).resolve() for d in allowed_dirs] if allowed_dirs else None
@@ -258,6 +268,27 @@ class BuiltinTools(ToolProvider):
         # factory because EmbeddingProvider is built alongside the
         # indexer (after BuiltinTools).
         self._embedder = embedder
+        # B-388: voice provider handles. Each is advertised on
+        # list_tools when wired, so a daemon without faster-whisper /
+        # edge-tts installed simply doesn't expose those tools.
+        self._stt_provider = stt_provider
+        self._tts_provider = tts_provider
+
+    def set_voice_providers(
+        self,
+        stt: "object | None" = None,
+        tts: "object | None" = None,
+    ) -> None:
+        """B-388: wire voice providers AFTER construction.
+
+        Symmetric with :meth:`set_memory_manager` / :meth:`set_embedder`
+        — the daemon factory may need to wire voice providers AFTER
+        BuiltinTools was built (e.g. when ``config_watcher`` hot-reloads
+        the ``voice`` block). Pass ``None`` to clear; pass an instance
+        to replace.
+        """
+        self._stt_provider = stt
+        self._tts_provider = tts
 
     def set_memory_manager(self, mgr: "object | None") -> None:
         """Wire (or clear) the MemoryManager AFTER construction.
@@ -352,6 +383,14 @@ class BuiltinTools(ToolProvider):
         # share dedup behaviour.
         if self._persona_dir_provider is not None:
             specs.append(_MEMORY_PIN_SPEC)
+        # B-388: voice tools. Each direction gates independently, so
+        # a transcribe-only setup (faster-whisper installed but no
+        # edge-tts) advertises voice_transcribe and hides
+        # voice_synthesize, and vice versa.
+        if self._stt_provider is not None:
+            specs.append(_VOICE_TRANSCRIBE_SPEC)
+        if self._tts_provider is not None:
+            specs.append(_VOICE_SYNTHESIZE_SPEC)
         return specs
 
     async def invoke(self, call: ToolCall) -> ToolResult:
@@ -449,6 +488,27 @@ class BuiltinTools(ToolProvider):
                 return await self._enter_worktree(call, t0)
             if call.name == "exit_worktree":
                 return await self._exit_worktree(call, t0)
+            # B-388: voice tools. Each is gated on its provider being
+            # wired; without the provider the tool returns a clear
+            # "not configured" error pointing at the install hint.
+            if call.name == "voice_transcribe":
+                if self._stt_provider is None:
+                    return _fail(
+                        call, t0,
+                        "voice_transcribe not configured (no STT provider "
+                        "wired — pip install 'xmclaw[voice-stt]' + set "
+                        "voice.stt in config)",
+                    )
+                return await self._voice_transcribe(call, t0)
+            if call.name == "voice_synthesize":
+                if self._tts_provider is None:
+                    return _fail(
+                        call, t0,
+                        "voice_synthesize not configured (no TTS provider "
+                        "wired — pip install 'xmclaw[voice-tts]' + set "
+                        "voice.tts in config)",
+                    )
+                return await self._voice_synthesize(call, t0)
             return _fail(call, t0, f"unknown tool: {call.name!r}")
         except PermissionError as exc:
             return _fail(call, t0, f"permission denied: {exc}")
@@ -2984,6 +3044,122 @@ class BuiltinTools(ToolProvider):
             "configured_roots=%s "
             "note=advisory_only_no_runtime_block",
             op, resolved, roots_repr,
+        )
+
+    # ── voice tools (B-388) ───────────────────────────────────────────
+
+    async def _voice_transcribe(
+        self, call: ToolCall, t0: float,
+    ) -> ToolResult:
+        """B-388: hand audio bytes to the wired STT provider.
+
+        Accepts EXACTLY ONE of ``audio_path`` (filesystem path) or
+        ``audio_b64`` (base64-encoded). Both → reject (the caller's
+        intent is ambiguous). Neither → reject (need an input).
+        """
+        import base64
+        import json
+        args = call.args or {}
+        audio_path = args.get("audio_path")
+        audio_b64 = args.get("audio_b64")
+        has_path = isinstance(audio_path, str) and audio_path
+        has_b64 = isinstance(audio_b64, str) and audio_b64
+        if has_path and has_b64:
+            return _fail(
+                call, t0,
+                "voice_transcribe accepts exactly one of audio_path / audio_b64",
+            )
+        if not (has_path or has_b64):
+            return _fail(call, t0, "voice_transcribe needs an audio source")
+
+        if has_path:
+            try:
+                p = Path(audio_path).expanduser().resolve()
+            except (OSError, RuntimeError) as exc:
+                return _fail(call, t0, f"audio_path resolve failed: {exc}")
+            try:
+                audio_bytes = p.read_bytes()
+            except FileNotFoundError:
+                return _fail(call, t0, f"audio file not found: {audio_path}")
+            except PermissionError as exc:
+                return _fail(call, t0, f"permission denied: {exc}")
+            source = "audio_path"
+        else:
+            try:
+                audio_bytes = base64.b64decode(audio_b64, validate=False)
+            except Exception as exc:  # noqa: BLE001
+                return _fail(call, t0, f"audio_b64 decode failed: {exc}")
+            source = "audio_b64"
+
+        try:
+            text = await self._stt_provider.transcribe(audio_bytes)  # type: ignore[union-attr]
+        except ImportError as exc:
+            return _fail(call, t0, str(exc))
+        except Exception as exc:  # noqa: BLE001
+            return _fail(call, t0, f"{type(exc).__name__}: {exc}")
+
+        payload = json.dumps(
+            {"text": text, "audio_bytes": len(audio_bytes), "source": source},
+            ensure_ascii=False,
+        )
+        return ToolResult(
+            call_id=call.id,
+            ok=True,
+            content=payload,
+            error=None,
+            latency_ms=(time.monotonic() - t0) * 1000.0,
+            side_effects=(),
+        )
+
+    async def _voice_synthesize(
+        self, call: ToolCall, t0: float,
+    ) -> ToolResult:
+        """B-388: text → mp3 via the wired TTS provider.
+
+        Writes the result to ``$XMC_DATA_DIR/v2/audio/<uuid>.mp3`` and
+        records the resolved path on ``side_effects`` so the grader can
+        verify the write actually landed.
+        """
+        import json
+        import os
+        import uuid
+        args = call.args or {}
+        text = args.get("text")
+        voice = args.get("voice", "default")
+        if not isinstance(text, str):
+            return _fail(call, t0, "voice_synthesize: 'text' must be a string")
+        if not isinstance(voice, str):
+            voice = "default"
+
+        try:
+            audio_bytes = await self._tts_provider.synthesize(text, voice=voice)  # type: ignore[union-attr]
+        except ImportError as exc:
+            return _fail(call, t0, str(exc))
+        except Exception as exc:  # noqa: BLE001
+            return _fail(call, t0, f"{type(exc).__name__}: {exc}")
+
+        # Resolve $XMC_DATA_DIR (or fall back to ~/.xmclaw).
+        data_dir_env = os.environ.get("XMC_DATA_DIR")
+        if data_dir_env:
+            base = Path(data_dir_env)
+        else:
+            base = Path.home() / ".xmclaw"
+        audio_dir = base / "v2" / "audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        audio_path = audio_dir / f"{uuid.uuid4().hex}.mp3"
+        audio_path.write_bytes(audio_bytes)
+
+        payload = json.dumps(
+            {"audio_path": str(audio_path), "bytes": len(audio_bytes)},
+            ensure_ascii=False,
+        )
+        return ToolResult(
+            call_id=call.id,
+            ok=True,
+            content=payload,
+            error=None,
+            latency_ms=(time.monotonic() - t0) * 1000.0,
+            side_effects=(f"wrote audio to {audio_path.resolve()}",),
         )
 
 
