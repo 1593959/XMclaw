@@ -30,6 +30,13 @@
     "vfm_threshold": 5.0,
     "max_genes_per_day": 10,
     "auto_rollback": true,
+    "scheduler": {
+      "_comment": "Sprint 3 #3 sleep-time agent (Letta pattern) — when ``idle_aware=true`` the daemon polls the OS idle interface every ``poll_interval_s`` seconds and fires sleep-time tasks (memory dedup at the short edge, skill dream / mutation at the long edge) AFTER the user has stopped working. Heavy compaction never collides with active turns on the SQLite WAL. Cron-based triggers still fire — idle-aware firing layers an additional trigger on top, whichever crosses first. Set false to revert to today's cron-only behaviour. Detector picks: Windows GetLastInputInfo (stdlib ctypes) / macOS IOHIDIdleTime (requires pyobjc — pip install 'xmclaw[idle-macos]') / Linux xprintidle or systemd loginctl IdleHint. Unsupported platforms fall through to ``always idle`` so behaviour matches today.",
+      "idle_aware": true,
+      "idle_short_s": 300,
+      "idle_long_s": 1800,
+      "poll_interval_s": 30
+    },
     "dream": {
       "_comment_b51": "B-51 Auto-Dream — daily LLM-driven MEMORY.md compaction (CoPaw parity). Reads MEMORY.md + last N daily logs, asks the LLM to dedupe + crystallise + drop stale entries, writes back. Backs up old version under <persona>/backup/ first. Off when no LLM is configured. Set enabled=false to skip even with LLM wired.",
       "enabled": true,

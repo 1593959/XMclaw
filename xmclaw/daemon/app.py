@@ -1317,6 +1317,62 @@ def create_app(
             _app.state.skill_dream = None
             _app.state.realtime_evolution = None
 
+        # Sprint 3 #3: Letta-pattern sleep-time agent + OS idle scheduler.
+        # See docs/SLEEP_AGENT.md and docs/EVOLUTION_HONEST_STATE.md
+        # ("Iron Rules"). The SleepWorker polls the OS idle interface
+        # every 30s; when ``idle_short_s`` (default 5min) crosses, it
+        # fires registered "light" tasks (memory sweep / dedup); when
+        # ``idle_long_s`` (default 30min) crosses, it fires "heavy"
+        # tasks (skill dream / mutation evaluation). Cron-based triggers
+        # still work — idle-aware firing layers on top so heavy work
+        # never has to wait for the cron when the user has stopped
+        # working. Configurable via ``evolution.scheduler.idle_aware``
+        # (default True). When false, behaviour is identical to today
+        # (cron only).
+        _app.state.sleep_worker = None
+        try:
+            from xmclaw.daemon.sleep_worker import (
+                SleepWorker,
+                build_idle_detector,
+                make_dream_cycle_task,
+                make_memory_sweep_task,
+                parse_sleep_config,
+            )
+            sched_cfg = (
+                ((config or {}).get("evolution") or {}).get("scheduler")
+                or {}
+            )
+            sleep_cfg = parse_sleep_config(sched_cfg)
+            if sleep_cfg.idle_aware:
+                detector = build_idle_detector()
+                sleep_worker = SleepWorker(
+                    detector, bus,
+                    idle_short_s=sleep_cfg.idle_short_s,
+                    idle_long_s=sleep_cfg.idle_long_s,
+                    poll_interval_s=sleep_cfg.poll_interval_s,
+                )
+                # Register the existing periodic tasks as idle-aware
+                # triggers — they keep their cron loop AND get an extra
+                # idle-edge firing. Migration pattern from
+                # ``docs/SLEEP_AGENT.md`` §Migration.
+                _sd = getattr(_app.state, "skill_dream", None)
+                if _sd is not None:
+                    sleep_worker.register_task(
+                        "skill_dream_cycle", "long",
+                        make_dream_cycle_task(_sd),
+                    )
+                if sweep_task is not None:
+                    sleep_worker.register_task(
+                        "memory_sweep", "short",
+                        make_memory_sweep_task(sweep_task),
+                    )
+                await sleep_worker.start()
+                _app.state.sleep_worker = sleep_worker
+        except Exception as exc:  # noqa: BLE001 — sleep worker failure
+            # must not block daemon boot; cron triggers still fire.
+            log.warning("sleep_worker.start_failed err=%s", exc)
+            _app.state.sleep_worker = None
+
         # B-173: SkillsWatcher — periodic user_loader.load_all() so
         # `npx skills add` / `git clone <url> ~/.xmclaw/skills_user/<name>` /
         # manual SKILL.md drops appear without a daemon restart. ~10s
@@ -1653,6 +1709,18 @@ def create_app(
             if _mo is not None:
                 try:
                     await _mo.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            # Sprint 3 #3: stop the SleepWorker BEFORE skill_dream /
+            # memory_sweep so an in-flight idle-fired task doesn't try
+            # to call ``run_once()`` / ``sweep_once()`` on a stopped
+            # downstream. SleepWorker.stop() cancels the in-flight
+            # task with rollback (SLEEP_INTERRUPTED published) so any
+            # buffered writes are discarded cleanly.
+            _sw = getattr(_app.state, "sleep_worker", None)
+            if _sw is not None:
+                try:
+                    await _sw.stop()
                 except Exception:  # noqa: BLE001
                     pass
             # Epic #24 Phase 3.2: stop the skill_dream periodic task.

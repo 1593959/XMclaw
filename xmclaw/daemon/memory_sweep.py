@@ -16,6 +16,14 @@ Design notes:
     provider's bus hook; the sweep task itself doesn't publish events.
   * Failures inside a tick are caught and logged — one bad tick must
     not kill the daemon.
+
+Sprint 3 #3 layer: ``SleepWorker`` registers ``sweep_once`` as a
+``"short"``-level idle-aware task (see
+``xmclaw.daemon.sleep_worker.make_memory_sweep_task``) so dedup / TTL
+prune fires after the user has been idle ≥5min — without colliding
+with active turns on the SQLite WAL. Migrated via the daemon lifespan
+in ``app.py`` (gated by ``evolution.scheduler.idle_aware``, default
+true); ``sweep_once`` itself is unchanged so legacy paths still work.
 """
 from __future__ import annotations
 

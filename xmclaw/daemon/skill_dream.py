@@ -13,6 +13,16 @@ periodic catches drift the realtime trigger missed (idle gaps, daemon
 restarts), realtime catches the "I just used a tool 5 times this
 turn" pattern within minutes.
 
+Sprint 3 #3 layer: ``SleepWorker`` registers ``run_once`` as a
+``"long"``-level idle-aware sleep task (see
+``xmclaw.daemon.sleep_worker.make_dream_cycle_task``) so heavy LLM-
+driven proposal work fires whenever the user has been idle ≥30min
+— independent of the cron interval. Both triggers coexist;
+whichever crosses first runs the cycle. Migrated via the daemon
+lifespan in ``app.py`` (gated by ``evolution.scheduler.idle_aware``,
+default true); ``run_once`` itself is unchanged so legacy paths still
+work.
+
 Distinct from the **memory dream** (``xmclaw.daemon.dream_compactor``),
 which compacts MEMORY.md on a daily cron. This is the **skill
 dream** — looking back at recent journal history and asking "what
