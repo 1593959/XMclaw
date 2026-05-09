@@ -7,7 +7,6 @@ no DB, no network.
 """
 from __future__ import annotations
 
-import json
 
 from xmclaw.core.ir import ToolCall
 from xmclaw.providers.llm.base import Message

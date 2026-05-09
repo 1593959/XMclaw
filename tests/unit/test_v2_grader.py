@@ -85,10 +85,14 @@ def test_check_type_matched_mismatch() -> None:
     assert ok is False
 
 
-def test_check_type_matched_no_declared_type_passes_with_caveat() -> None:
+def test_check_type_matched_no_declared_type_returns_none_sprint3() -> None:
+    """Sprint 3 Iron Rule #1 tightening: pre-Sprint-3 this returned True
+    with a caveat. Now it returns None ("not applicable") so the grader's
+    weighting layer skips the check entirely instead of awarding free
+    points for a missing declaration."""
     ok, ev = check_type_matched(_finished(result="hi"))
-    assert ok is True
-    assert any("no expected_type" in e for e in ev)
+    assert ok is None
+    assert any("no expected_type declared" in e for e in ev)
 
 
 def test_check_type_matched_dict() -> None:
@@ -128,13 +132,18 @@ def test_side_effect_file_missing() -> None:
     assert v is False
 
 
-def test_side_effect_non_fs_uri_unchecked() -> None:
-    # Phase 1 does not verify http://, redis://, etc. — they're marked unchecked.
+def test_side_effect_non_fs_uri_unverified_sprint3() -> None:
+    """Sprint 3 Iron Rule #1: pre-Sprint-3 silently returned True for
+    http:// / redis:// schemes (no verifier yet). That was a free-points
+    loophole. Now: if EVERY declared side effect is in an unverified
+    scheme, return False so the grader can't take credit for what it
+    can't observe. Schemes ``memory://`` / ``bus://`` ship with
+    verifiers; everything else is "declared but unobservable"."""
     v, ev = check_side_effect_observable(
         _finished(expected_side_effects=["http://example.com/foo"])
     )
-    assert v is True  # no missing fs paths
-    assert any("unchecked" in e for e in ev)
+    assert v is False
+    assert any("unverified scheme" in e for e in ev)
 
 
 # ── HonestGrader.grade (anti-req #4 invariants) ───────────────────────────
@@ -150,29 +159,35 @@ async def test_grader_score_bounds() -> None:
 
 
 @pytest.mark.asyncio
-async def test_grader_perfect_structural_gives_0_80() -> None:
-    """All hard checks pass, no LLM opinion → 0.80 (LLM cap absent)."""
+async def test_grader_perfect_structural_signal_a_only_sprint3() -> None:
+    """Sprint 3 multi-signal: deterministic (Signal A) all-pass with no
+    independent signal applicable → final = deterministic_score = 1.0
+    (Signal A's own range), but ``promote_eligible`` is False because
+    no Signal B fired. Iron Rule #1: never single-signal promote."""
     g = HonestGrader()
     v = await g.grade(_finished(
         call_id="x", result="hi", error=None,
         expected_type="str", expected_side_effects=[],
     ))
-    # Hard checks fill (1 - 0.20) = 0.80 slot; all pass → 0.80 * 1.0 = 0.80.
     assert v.ran and v.returned and v.type_matched
     assert v.side_effect_observable is None
-    assert abs(v.score - 0.80) < 1e-6
+    # Without an independent signal, final == deterministic_score, and
+    # all applicable Signal A checks pass → 1.0 in the new range.
+    assert abs(v.deterministic_score - 1.0) < 1e-6
+    assert abs(v.final_score - 1.0) < 1e-6
+    assert v.independent_score is None
+    assert v.independent_kind == "none"
+    assert v.promote_eligible is False  # Iron Rule #1
 
 
 @pytest.mark.asyncio
-async def test_llm_opinion_capped_even_with_all_hard_failing() -> None:
-    """Anti-req #4: LLM score cannot exceed 0.20 regardless of opinion.
-
-    Scenario: the model emitted text that *looked* like a tool call but
-    wasn't — so the bus records an ``anti_req_violation`` event, not a
-    ``tool_invocation_finished``. Every ground-truth check fails. Even if
-    the model gives itself 1.0 subjective score, the grader must cap the
-    total at 0.20.
-    """
+async def test_llm_self_rating_no_longer_inflates_score_sprint3() -> None:
+    """Sprint 3 Iron Rule #1: pre-Sprint-3, LLM self-rating could push the
+    score to 0.20 even when every hard check failed. Now: LLM self-rating
+    is REMOVED from the new combined score path entirely (its only path
+    in is via :class:`CrossJudgeSignal`, which treats disagreement as
+    NEGATIVE, never as a positive lift). With every hard check failing
+    AND no independent signal applicable, final_score = 0.0."""
     g = HonestGrader()
     violation = make_event(
         session_id="t", agent_id="t", type=EventType.ANTI_REQ_VIOLATION,
@@ -185,9 +200,12 @@ async def test_llm_opinion_capped_even_with_all_hard_failing() -> None:
     v = await g.grade(violation)
     assert not v.ran
     assert not v.returned
-    assert not v.type_matched
-    # Score = 0 * 0.80 + 1.0 * 0.20 = 0.20 — the cap.
-    assert abs(v.score - 0.20) < 1e-6
+    # No expected_type declared → type_matched is None ("not applicable"),
+    # type_matched/side_effect both excluded from the deterministic
+    # weight pool. With ran=False AND returned=False, deterministic = 0.
+    assert v.deterministic_score == 0.0
+    assert v.final_score == 0.0
+    assert v.promote_eligible is False
 
 
 @pytest.mark.asyncio
@@ -207,10 +225,17 @@ async def test_llm_opinion_out_of_range_is_clamped() -> None:
 
 
 @pytest.mark.asyncio
-async def test_evidence_non_empty() -> None:
+async def test_evidence_non_empty_sprint3() -> None:
+    """Sprint 3: ``verdict.evidence`` is now a flat string list summarising
+    the multi-signal verdict (deterministic / independent / final +
+    eligibility). The structured per-check evidence lives in
+    ``deterministic_evidence`` and ``independent_evidence``. This test
+    pins both surfaces are populated."""
     g = HonestGrader()
     v = await g.grade(_finished(
         call_id="c-99", result="hi", expected_type="str", expected_side_effects=[],
     ))
-    assert len(v.evidence) >= 3  # at least one entry per hard check
-    assert any("c-99" in e for e in v.evidence)
+    assert len(v.evidence) >= 3  # det / ind / final summary lines
+    # Per-check structured evidence carries the call_id.
+    ran_ev = v.deterministic_evidence["ran"]["evidence"]
+    assert any("c-99" in e for e in ran_ev)

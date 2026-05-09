@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import pytest
 
-from xmclaw.core.ir import ToolCall, ToolSpec
+from xmclaw.core.ir import ToolCall
 from xmclaw.skills.base import Skill, SkillInput, SkillOutput
 from xmclaw.skills.manifest import SkillManifest
 from xmclaw.skills.prefilter import select_relevant_skills

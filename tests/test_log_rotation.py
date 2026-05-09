@@ -9,7 +9,6 @@ from concurrent.futures import ThreadPoolExecutor
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-import pytest
 
 from xmclaw.utils.log import rotate_if_large
 

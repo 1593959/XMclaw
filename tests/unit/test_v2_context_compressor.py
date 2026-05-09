@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 from typing import Optional
 
-import pytest
 
 from xmclaw.context.compressor import (
     ContextCompressor,
@@ -228,7 +227,6 @@ def test_b334_failed_summary_reuses_previous_summary_when_present() -> None:
     failed round and operators saw only the generic placeholder.
     """
     import asyncio
-    from typing import Optional
 
     # First call succeeds → seeds st.previous_summary; second call
     # fails → must reuse the seed.

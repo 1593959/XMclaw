@@ -6,17 +6,13 @@ the in-memory reference impl behaves sensibly on the happy path.
 """
 from __future__ import annotations
 
-import asyncio
-from typing import Any
 
 import pytest
 
 from xmclaw.context import (
     AssembleResult,
-    BootstrapResult,
     CompactResult,
     ContextEngine,
-    IngestResult,
     SimpleContextEngine,
 )
 

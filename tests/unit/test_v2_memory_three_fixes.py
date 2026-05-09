@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from xmclaw.providers.memory.base import Layer, MemoryItem, MemoryProvider
+from xmclaw.providers.memory.base import MemoryItem, MemoryProvider
 from xmclaw.providers.memory.manager import MemoryManager, MemoryPutError
 
 

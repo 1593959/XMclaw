@@ -28,7 +28,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 
 from xmclaw.daemon.app import _find_skill_provider
 

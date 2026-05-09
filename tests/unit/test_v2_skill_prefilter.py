@@ -14,7 +14,6 @@ turn it into "match everything" or "match nothing". Tests cover:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from xmclaw.skills.prefilter import select_relevant_skills
 

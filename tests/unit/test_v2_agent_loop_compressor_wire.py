@@ -8,9 +8,8 @@ loop calls it at the right moments.
 """
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Optional
 
 import pytest
 
