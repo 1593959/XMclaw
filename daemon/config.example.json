@@ -140,6 +140,18 @@
       "_parse_mode_help": "Telegram 渲染模式：null = 纯文本最稳；'MarkdownV2' / 'HTML' 让 agent 输出粗体/链接，但需要正确转义否则 Telegram 拒收。",
       "parse_mode": null,
       "injection_policy": "detect_only"
+    },
+    "slack": {
+      "enabled": false,
+      "_help": "B-382: api.slack.com/apps → 创建 App → OAuth & Permissions 里复制 'xoxb-...' 填 bot_token；Basic Information → App-Level Tokens 创建带 connections:write scope 的 token (形如 'xapp-...') 填 app_token。Socket Mode 模式无需公网 IP。pip install xmclaw[channels-slack] 装 slack-bolt。",
+      "bot_token": "",
+      "app_token": "",
+      "_allowed_user_ids_help": "非空时只接受列表里 Slack user id (Uxxxxxxxx) 发来的消息。",
+      "allowed_user_ids": [],
+      "_allowed_channel_ids_help": "非空时只接受列表里 channel id 的消息。Cxxx = 公开频道, Gxxx = 私有频道, Dxxx = DM。",
+      "allowed_channel_ids": [],
+      "dispatch_session_id_prefix": "slack-",
+      "injection_policy": "detect_only"
     }
   },
   "integrations": {
