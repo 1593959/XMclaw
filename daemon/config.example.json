@@ -75,7 +75,15 @@
     "_comment": "Optional sandbox + per-family kill-switches. With NO tools section (or this empty shape), the agent gets full user-level filesystem, shell, and web access -- the default local-assistant posture. Add allowed_dirs to restrict filesystem tools to specific paths; set enable_bash / enable_web to false to disable those families.",
     "allowed_dirs": [],
     "enable_bash": true,
-    "enable_web": true
+    "enable_web": true,
+    "_comment_composio": "B-389 (Sprint 2) Composio bridge — 7000+ pre-integrated SaaS tools (Gmail, Slack, GitHub, Notion, Linear, HubSpot, …) exposed as agent tools. enabled=false by default. To use: 1) pip install 'xmclaw[tools-composio]'; 2) sign up at https://app.composio.dev → Settings → API keys → copy the ck_live_... key into api_key; 3) authorise each app (Gmail OAuth / Slack OAuth / …) in the Composio dashboard; 4) list the slug in apps[] (uppercase, e.g. GMAIL / SLACK / GITHUB / NOTION). entity_id='default' for single-user installs. cache_ttl_s caps tool-list refetches to once per N seconds (default 300). XMclaw NEVER initiates OAuth — that's Composio's CLI / dashboard step.",
+    "composio": {
+      "enabled": false,
+      "api_key": "",
+      "entity_id": "default",
+      "apps": ["GMAIL", "SLACK", "GITHUB", "NOTION"],
+      "cache_ttl_s": 300
+    }
   },
   "voice": {
     "_comment": "B-388 voice MVP — STT (speech→text) + TTS (text→speech). Both blocks are optional; omit to disable that direction. Requires the optional extra: pip install 'xmclaw[voice]' (or [voice-stt] / [voice-tts] for half). Default STT is faster-whisper local model 'tiny' (~75 MB, runs on any laptop CPU); default TTS is Microsoft Edge's free voice service (zh-CN-XiaoxiaoNeural, no API key). Synthesized audio lands at ~/.xmclaw/v2/audio/<uuid>.mp3.",

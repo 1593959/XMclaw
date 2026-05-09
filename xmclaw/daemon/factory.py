@@ -819,6 +819,37 @@ def build_tools_from_config(
         except ImportError:
             pass
 
+    # B-389 Sprint 2: optionally bridge Composio's 7000+ pre-integrated
+    # tools (Gmail / Slack / GitHub / Notion / Linear / HubSpot / …) into
+    # the agent's toolset. Block is independently gated; default off so a
+    # user without a Composio account or the optional extra installed
+    # boots cleanly. Missing api_key surfaces as a clear ConfigError —
+    # silently skipping a misconfigured-but-enabled block would hide a
+    # real user mistake. Lazy SDK import: ``composio`` only loads when
+    # the user actually triggers a list_tools / invoke call, so a daemon
+    # with ``enabled=False`` doesn't pull the ``composio-core`` extra.
+    composio_cfg = tools_section.get("composio")
+    if isinstance(composio_cfg, dict) and composio_cfg.get("enabled"):
+        api_key = composio_cfg.get("api_key")
+        if not isinstance(api_key, str) or not api_key.strip():
+            raise ConfigError(
+                "'tools.composio.enabled' is true but "
+                "'tools.composio.api_key' is empty. Get one at "
+                "https://app.composio.dev or set XMC__tools__composio__api_key."
+            )
+        apps_raw = composio_cfg.get("apps") or []
+        if not isinstance(apps_raw, list):
+            raise ConfigError(
+                f"'tools.composio.apps' must be a list, got {type(apps_raw).__name__}"
+            )
+        from xmclaw.providers.tool.composio import ComposioToolProvider
+        children.append(ComposioToolProvider(
+            api_key=api_key,
+            entity_id=str(composio_cfg.get("entity_id") or "default"),
+            apps=[a for a in apps_raw if isinstance(a, str) and a.strip()],
+            cache_ttl_s=float(composio_cfg.get("cache_ttl_s", 300.0)),
+        ))
+
     if len(children) == 1:
         provider = builtins  # no extras wired -- skip the composite wrapper
     else:
