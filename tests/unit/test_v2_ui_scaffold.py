@@ -381,6 +381,143 @@ def test_b344_every_js_file_parses_with_node_check() -> None:
     )
 
 
+def test_b345_chat_reducer_actually_creates_card_via_node() -> None:
+    """B-345 stronger sibling — actually load and run chat_reducer.js
+    in Node and assert the reducer SHAPE: feeding an
+    ``agent_asked_question`` event must yield a ``kind="question"``
+    message; the follow-up ``user_answered_question`` event must
+    flip its ``status`` to ``"complete"`` and stash the answer.
+
+    Skips when ``node`` isn't on PATH. This catches what the
+    regex-only sibling can't: a typo in the payload-key plumbing,
+    a wrong message-id scheme, missing import-graph deps, or a
+    malformed return value.
+    """
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not on PATH")
+
+    static = STATIC_DIR.resolve().as_posix()
+
+    # Inline a Node ESM driver that:
+    #   1. polyfills the ``window.__xmc`` handle the reducer reads
+    #      at module-load time (preact + hooks + htm bind),
+    #   2. dynamic-imports chat_reducer.js,
+    #   3. runs two events through ``applyEvent``,
+    #   4. prints the resulting state as JSON for the test to assert on.
+    driver = f"""
+    const url = "file:///{static}/lib/chat_reducer.js";
+    // Minimum stubs the reducer module reads at top-level. The
+    // streaming + secondary sub-reducers also import preact_hooks /
+    // htm; stub them to no-op return values so module resolution
+    // succeeds without bringing in the whole ecosystem.
+    globalThis.window = globalThis.window || {{}};
+    globalThis.window.__xmc = {{
+      preact: {{ h: () => null }},
+      preact_hooks: {{
+        useState: (init) => [init, () => {{}}],
+        useEffect: () => {{}},
+        useMemo: (fn) => fn(),
+        useCallback: (fn) => fn,
+      }},
+      htm: {{ bind: () => () => null }},
+    }};
+    const mod = await import(url);
+    let state = {{ messages: [] }};
+    state = mod.applyEvent(state, {{
+      type: "agent_asked_question",
+      payload: {{
+        question_id: "Q1",
+        question: "delete N skills?",
+        options: [
+          {{ value: "yes", label: "yes" }},
+          {{ value: "no", label: "no" }},
+        ],
+        multi_select: false,
+        allow_other: true,
+        tool_call_id: "tc-1",
+      }},
+      ts: 1000,
+    }});
+    state = mod.applyEvent(state, {{
+      type: "user_answered_question",
+      payload: {{ question_id: "Q1", value: "yes" }},
+      ts: 1001,
+    }});
+    process.stdout.write(JSON.stringify(state));
+    """
+    cp = subprocess.run(
+        [node, "--input-type=module", "-e", driver],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert cp.returncode == 0, (
+        f"node driver failed: stdout={cp.stdout!r} stderr={cp.stderr!r}"
+    )
+    state = json.loads(cp.stdout)
+    msgs = state.get("messages", [])
+    assert len(msgs) == 1, f"expected one card, got {msgs!r}"
+    card = msgs[0]
+    assert card.get("kind") == "question"
+    assert card.get("status") == "complete"
+    assert card.get("answer") == "yes"
+    q = card.get("question") or {}
+    assert q.get("id") == "Q1"
+    assert q.get("question") == "delete N skills?"
+    assert q.get("multi_select") is False
+    assert q.get("tool_call_id") == "tc-1"
+    assert isinstance(q.get("options"), list) and len(q["options"]) == 2
+
+
+def test_b345_chat_reducer_handles_agent_asked_question() -> None:
+    """B-345: ``chat_reducer.js`` must have an explicit ``case
+    "agent_asked_question":`` branch that builds a question card.
+
+    Pre-B-345 the event was in ``PHASE_1_EVENT_TYPES`` (so the WS
+    layer recognised it) but the reducer's switch had no case — the
+    event silently fell through to ``default`` → no card appeared.
+    The QuestionCard ONLY ever rendered via the recovery path
+    (``rehydratePendingQuestions`` GET against
+    ``/api/v2/pending_questions``), which fires on WS connect — so
+    a question issued mid-session was invisible until the user
+    refreshed the tab.
+
+    Both branches are pinned: ``agent_asked_question`` (live arrival
+    creates the card) and ``user_answered_question`` (post-answer
+    flips the card to read-only). A future refactor that drops
+    either case will fail this test.
+    """
+    src = (STATIC_DIR / "lib" / "chat_reducer.js").read_text(encoding="utf-8")
+    assert 'case "agent_asked_question"' in src, (
+        'chat_reducer.js missing ``case "agent_asked_question"`` — '
+        'live AGENT_ASKED_QUESTION events will silently no-op and '
+        'the QuestionCard will only show after a tab refresh.'
+    )
+    assert 'case "user_answered_question"' in src, (
+        'chat_reducer.js missing ``case "user_answered_question"`` — '
+        'answered cards will not flip to read-only on echo, leaving '
+        'a stale active card the user can submit twice.'
+    )
+    # The agent_asked_question branch must build a ``kind: "question"``
+    # message so MessageBubble routes it to QuestionCard. Find the
+    # branch body by locating the next ``case "...":`` or ``default:``
+    # — must use a quoted-case marker so a literal "case" inside a
+    # comment ("had no case — so …") doesn't mis-truncate the body.
+    aaq_idx = src.index('case "agent_asked_question"')
+    import re as _re
+    next_marker = _re.search(r'(case "|default:)', src[aaq_idx + 1:])
+    next_case = (aaq_idx + 1 + next_marker.start()) if next_marker else len(src)
+    branch_body = src[aaq_idx:next_case]
+    assert 'kind: "question"' in branch_body, (
+        '``agent_asked_question`` branch must produce a message with '
+        '``kind: "question"`` — otherwise MessageBubble won\'t render '
+        'the QuestionCard component.'
+    )
+
+
 def test_b344_full_module_graph_resolves_via_test_client(
     http_client: TestClient,
 ) -> None:

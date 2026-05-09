@@ -351,6 +351,75 @@ export function applyEvent(chat, envelope) {
       };
     }
 
+    case "agent_asked_question": {
+      // B-345: live-render the QuestionCard the moment the daemon
+      // emits AGENT_ASKED_QUESTION. Pre-B-345 the event type was in
+      // PHASE_1_EVENT_TYPES (recognised) but the switch had no case —
+      // so the message-bus event reached the reducer and silently
+      // fell through to ``default``. The QuestionCard only ever
+      // appeared via ``rehydratePendingQuestions`` on WS connect (a
+      // GET against /api/v2/pending_questions). End result: agent
+      // mid-turn ``ask_user_question`` was invisible until the user
+      // refreshed the tab — exactly the bug user reported.
+      //
+      // Payload shape matches the rehydrate path in app.js so a card
+      // built here is interchangeable with one built from the
+      // recovery API. Idempotent: skip when a card with the same
+      // question_id already exists (covers the rare race where
+      // rehydrate ran first then the live event arrived).
+      const qid = payload.question_id;
+      if (!qid) return chat;
+      const exists = chat.messages.some(
+        (m) => m.kind === "question" && m.question && m.question.id === qid,
+      );
+      if (exists) return chat;
+      return {
+        ...chat,
+        messages: chat.messages.concat({
+          id: "q_" + qid,
+          role: "system",
+          kind: "question",
+          content: "",
+          status: "pending",
+          ts,
+          question: {
+            id: qid,
+            question: payload.question || "",
+            options: Array.isArray(payload.options) ? payload.options : [],
+            multi_select: !!payload.multi_select,
+            allow_other: payload.allow_other !== false,
+            tool_call_id: payload.tool_call_id || null,
+          },
+        }),
+      };
+    }
+
+    case "user_answered_question": {
+      // B-345: when the answer comes back (either echoed by the
+      // daemon after the user clicked a card option, OR replayed
+      // from the bus on session resume), mark the matching card as
+      // answered. QuestionCard reads ``message.status === "complete"``
+      // to flip into the read-only summary view and reads
+      // ``message.answer`` for the chosen value — match that exact
+      // shape (NOT ``status="answered"`` or nesting under
+      // ``question.answer``) so the card flips to "已回答" without a
+      // refresh. Without this case a stale active card stayed live
+      // and the user could submit twice.
+      const qid = payload.question_id;
+      if (!qid) return chat;
+      const cardId = "q_" + qid;
+      const idx = chat.messages.findIndex((m) => m.id === cardId);
+      if (idx === -1) return chat;
+      return {
+        ...chat,
+        messages: upsertById(chat.messages, cardId, (m) => ({
+          ...m,
+          status: "complete",
+          answer: payload.value !== undefined ? payload.value : null,
+        })),
+      };
+    }
+
     default:
       return chat;
   }
