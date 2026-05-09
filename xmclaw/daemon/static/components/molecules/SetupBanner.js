@@ -415,12 +415,13 @@ export function SetupBanner({ token }) {
         `;
       })}
       ${(setup.mcp_failed && setup.mcp_failed.length > 0) ? html`
-        <!-- B-368 (Sprint 1): MCP server failure surface. Pre-B-368
-             daemon.log had ``mcp.start_failed name=filesystem err=
-             npx not found`` × 109 over 2 weeks but UI showed nothing.
-             User assumed daemon was fine; the affected tools just
-             silently disappeared from the available list. Now show
-             which servers failed + the error string + a hint. -->
+        <!-- B-368: MCP server failure surface. Pre-B-368 npx-not-found
+             failures repeated daily but the UI showed nothing — daemon
+             looked fine, the affected tools just disappeared from the
+             available list. Now we surface which servers failed + the
+             error string + a hint. (NOTE: backticks are forbidden
+             inside this comment because the whole block lives inside a
+             JS template literal — UI crash B-394 was exactly this.) -->
         <div style="margin-top:.5rem;padding:.5rem .7rem;border-top:1px dashed rgba(231,127,127,.25)">
           <div style="font-weight:600;color:#e77f7f">
             ⚠ ${setup.mcp_failed.length} 个 MCP server 启动失败

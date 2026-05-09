@@ -646,3 +646,60 @@ def test_b344_every_relative_import_resolves_to_a_real_file() -> None:
             for src, spec, target in bad
         )
     )
+
+
+# ── B-394: no double-backticks inside html`...` tagged templates ──
+#
+# htm uses backticks as the JS template-literal delimiter. A single
+# bare backtick inside the body closes the template early; a double
+# backtick (e.g. markdown-style ``code`` formatting in a comment)
+# closes-then-reopens, corrupting the rest of the parse and producing
+# a runtime ``html(...) is not a function`` crash from inside the
+# component's render. The B-368 commit shipped exactly that bug —
+# this guard prevents regressions across every UI source file.
+
+
+def test_b394_no_double_backticks_inside_html_template_bodies() -> None:
+    """``\\`\\``` (two literal backticks) inside an ``html\\``...\\``` body
+    closes the JS template literal early. UI crashed with
+    ``html(...) is not a function`` because of exactly this pattern
+    in a B-368 explanatory HTML comment. Scan every .js source under
+    static/ and refuse to ship if any line inside an html-template
+    body contains ``\\`\\```.
+    """
+    offenders: list[tuple[str, int, str]] = []
+    for js in STATIC_DIR.rglob("*.js"):
+        if "/vendor/" in str(js).replace("\\", "/"):
+            continue  # third-party, not ours
+        src = js.read_text(encoding="utf-8")
+        # Linear scan: track when we're inside an html`...` body.
+        # Naive (doesn't handle nested templates perfectly) but
+        # catches the actual class of bug — markdown ``code`` inside
+        # a JS template literal.
+        in_template = False
+        for idx, line in enumerate(src.splitlines(), start=1):
+            # Open: any line containing ``html`` opens (will also see
+            # closes on same line via the count check below).
+            opens = "html`" in line
+            if opens and not in_template:
+                in_template = True
+            if in_template and "``" in line:
+                offenders.append(
+                    (str(js.relative_to(STATIC_DIR)), idx, line.strip()[:140]),
+                )
+            # Close heuristic: any line with an odd number of `\`` likely
+            # closes the template. This is approximate but good enough
+            # for a regression guard — false positives just mean we
+            # stop scanning early on a file, missing later offenses,
+            # but the test catches the FIRST offense which is what
+            # matters for crash prevention.
+            if in_template and (line.count("`") % 2 == 1) and not opens:
+                in_template = False
+    assert not offenders, (
+        "Found ``...`` (double-backtick) inside an html`...` tagged "
+        "template body. JS parses these as 'close-template + reopen "
+        "template', producing 'html(...) is not a function' at "
+        "render time. Use plain quotes or move the comment outside "
+        "the template:\n  "
+        + "\n  ".join(f"{f}:{ln}: {body}" for f, ln, body in offenders)
+    )
