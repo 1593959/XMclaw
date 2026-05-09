@@ -38,6 +38,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
+from xmclaw.core.evolution.staging import GateBundle
+
 
 class EvolutionDecision(str, Enum):
     PROMOTE = "promote"
@@ -126,6 +128,14 @@ class EvolutionReport:
     # consulted or the candidate was rejected by an earlier gate (so
     # Iron Rule #1 wasn't the proximate cause).
     blocked_by_iron_rule_1: IronRule1Gate | None = None
+    # Sprint 3 Iron Rule #2: when the legacy gates AND iron rule #1
+    # would have promoted but the structural 4-gate staging refused
+    # (e.g. growth >2x HEAD, structure validation found syntax errors,
+    # required holdout test failed), ``decision`` becomes NO_CHANGE
+    # and ``blocked_by_iron_rule_2`` carries the structured bundle.
+    # Callers can listen for it to emit ``SKILL_PROMOTION_HELD`` /
+    # ``SKILL_PROMOTION_REJECTED`` events depending on policy.
+    blocked_by_iron_rule_2: GateBundle | None = None
 
 
 class EvolutionController:
@@ -146,6 +156,7 @@ class EvolutionController:
         head_version: int | None,
         head_mean: float | None = None,
         iron_rule_1: IronRule1Gate | None = None,
+        iron_rule_2: GateBundle | None = None,
     ) -> EvolutionReport:
         """Return a report: PROMOTE / NO_CHANGE / ROLLBACK.
 
@@ -333,6 +344,34 @@ class EvolutionController:
                     f"independent signals; never single-signal promote."
                 ),
                 blocked_by_iron_rule_1=iron_rule_1,
+            )
+
+        # Sprint 3 Iron Rule #2: structural staging gates. When the
+        # caller supplies a GateBundle (size / growth / structure /
+        # holdout) and ``passed_all`` is False, refuse promotion even
+        # though all earlier gates cleared. Caller emits
+        # ``SKILL_PROMOTION_HELD`` (when failures look recoverable —
+        # e.g. holdout skipped under ``require`` policy) or
+        # ``SKILL_PROMOTION_REJECTED`` (when fundamentals failed —
+        # size_limit / structure_validation). Policy decision lives
+        # in ``promotion_policy.decide``; here we only enforce the
+        # "no candidate ever bypasses staging" invariant.
+        if iron_rule_2 is not None and not iron_rule_2.passed_all:
+            failed_gates = [
+                r.name for r in iron_rule_2.results
+                if r.status == "failed"
+            ]
+            return EvolutionReport(
+                decision=EvolutionDecision.NO_CHANGE,
+                evidence=tuple(evidence),
+                reason=(
+                    f"arm {best.candidate_id!r} cleared the four legacy "
+                    f"gates AND Iron Rule #1 BUT Iron Rule #2 BLOCKED "
+                    f"promotion (failed_gates={failed_gates!r}). "
+                    f"Staging contract: candidate must pass size / growth "
+                    f"/ structure / holdout before HEAD moves."
+                ),
+                blocked_by_iron_rule_2=iron_rule_2,
             )
 
         return EvolutionReport(
