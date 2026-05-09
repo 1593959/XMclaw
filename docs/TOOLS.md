@@ -119,6 +119,73 @@ class ToolProvider(abc.ABC):
 支持的 `transport`：`stdio`（默认，subprocess）/ `sse` / `ws`。远程
 工具 spec 在 bridge 启动时从 server 拉取一次，之后透传 `invoke`。
 
+### `composio.py` — Composio 7000+ 预接 SaaS 工具（B-389）
+
+[Composio](https://composio.dev) 是一个 tool-aggregation 服务，把
+Gmail / Slack / GitHub / Notion / Linear / HubSpot 等几百个 SaaS 的
+OAuth + 函数封装统一了。每个 app 暴露一组 action（`GMAIL_SEND_EMAIL`
+/ `SLACK_SENDMESSAGE` / `GITHUB_CREATE_ISSUE` …）。这个 bridge 把它
+们以 `ToolProvider` 形式接入 agent。
+
+```json
+{
+  "tools": {
+    "composio": {
+      "enabled": true,
+      "api_key": "ck_live_...",
+      "entity_id": "default",
+      "apps": ["GMAIL", "SLACK", "GITHUB", "NOTION"],
+      "cache_ttl_s": 300
+    }
+  }
+}
+```
+
+| 字段          | 含义                                                                                       |
+| ------------- | ------------------------------------------------------------------------------------------ |
+| `enabled`     | 默认 false。flip 之前先 `pip install 'xmclaw[tools-composio]'`                             |
+| `api_key`     | https://app.composio.dev → Settings → API keys 拿（`ck_live_...` / `ck_test_...`）         |
+| `entity_id`   | Composio 的 OAuth 身份；单用户安装填 `"default"`                                           |
+| `apps`        | 上行白名单：只暴露列表里 app 的 action。空列表 → 不出任何 Composio 工具                    |
+| `cache_ttl_s` | 工具列表缓存 TTL（秒）。默认 300；0/负值禁用缓存                                            |
+
+热门 app slug（uppercase）：
+
+| 类别       | slug 示例                                                                          |
+| ---------- | ---------------------------------------------------------------------------------- |
+| 邮件       | `GMAIL`, `OUTLOOK`                                                                 |
+| IM         | `SLACK`, `DISCORD`, `TELEGRAM`                                                     |
+| 代码       | `GITHUB`, `GITLAB`, `BITBUCKET`                                                    |
+| 文档/笔记  | `NOTION`, `CONFLUENCE`, `GOOGLE_DOCS`                                              |
+| 任务/PM    | `LINEAR`, `JIRA`, `ASANA`, `TRELLO`, `CLICKUP`                                     |
+| CRM/销售   | `HUBSPOT`, `SALESFORCE`                                                            |
+| 日历/会议  | `GOOGLE_CALENDAR`, `ZOOM`, `CALENDLY`                                              |
+| 文件存储   | `GOOGLE_DRIVE`, `DROPBOX`, `ONEDRIVE`                                              |
+
+完整列表：https://app.composio.dev/apps。
+
+**OAuth 不在 XMclaw 这边做。** Gmail / Slack / GitHub 这些都需要按用户
+做 OAuth 授权 —— 这一步在 Composio dashboard 或 CLI 里完成（`composio
+add gmail` 等）。这个 bridge 只消费**已经授权**的 entity；如果某 app
+没授权，对应 action 调用会拿到 `composio_action_failed` 带
+`INTEGRATION_NOT_FOUND`，提示用户去 dashboard 授权。
+
+错误分类前缀（LLM 可基于此选择重试 / 求助 / 降级）：
+
+| 前缀                           | 含义                                       |
+| ------------------------------ | ------------------------------------------ |
+| `composio_unavailable`         | 没装 `composio-core` 包                    |
+| `composio_init_error`          | toolset 构造失败（一般是凭据格式坏）       |
+| `composio_auth_error`          | 401 / 凭据无效                             |
+| `composio_rate_limited`        | 429 / 配额耗尽                             |
+| `composio_action_not_found`    | action 名拼错或 SDK 版本不识别             |
+| `composio_network_error`       | 网络 / 连接重置 / 超时                     |
+| `composio_action_failed[CODE]` | Composio API 拒绝（`error_code` 在方括号里） |
+| `composio_error`               | 其他无法分类的异常                         |
+
+测试入口：`tests/unit/test_v2_tool_composio.py`（lazy-import / spec 翻译
+/ TTL 缓存 / 错误分类 / factory 装配 30 条单元测试）。
+
 ### `composite.py` — 合并器
 
 daemon factory 的装配顺序决定工具名可见顺序；两个 provider 同名
