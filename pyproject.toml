@@ -97,6 +97,12 @@ content = [
 # CLI / dashboard at https://app.composio.dev — XMclaw consumes
 # already-authorised entities, never initiates OAuth itself.
 tools-composio = ["composio-core>=0.7"]
+# Sprint 4 follow-up: LongMemEval real-corpus adapter pulls
+# ``OpenMOSS/LongMemEval`` from HuggingFace via ``datasets``. Lazy-import
+# inside ``xmclaw.eval.longmemeval_full.LongMemEvalSuite.load_tasks``
+# means base installs without this extra still ``import xmclaw.eval``
+# cleanly — only ``xmclaw eval run longmemeval`` requires it.
+eval-hf = ["datasets>=3.0.0", "huggingface_hub>=0.25.0"]
 all     = [
     "playwright>=1.48.0",
     "python-lsp-server>=1.12.0",
