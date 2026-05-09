@@ -2656,7 +2656,40 @@ class AgentLoop:
                     # so we construct a copy via dataclasses.replace.
                     import dataclasses as _dc
                     call_with_sid = _dc.replace(call, session_id=session_id)
-                    result = await effective_tools.invoke(call_with_sid)
+                    # B-351 (Sprint 1): tool invoke ALWAYS produces a
+                    # ToolResult — even on uncaught exception. Pre-B-351
+                    # if a tool implementation raised something
+                    # ToolProvider didn't catch (e.g. a network exception
+                    # inside an MCP bridge that bubbled past the bridge's
+                    # own try/except, or a contract bug in a custom
+                    # ToolProvider), the ``await invoke()`` call propagated,
+                    # the function below never published
+                    # TOOL_INVOCATION_FINISHED, and the UI's tool_use
+                    # bubble stayed at status="running" forever. The
+                    # ToolProvider contract says it must always return a
+                    # ToolResult, but real-world impls slip — this is
+                    # the belt-and-suspenders that guarantees the UI
+                    # always gets a finish event.
+                    try:
+                        result = await effective_tools.invoke(call_with_sid)
+                    except Exception as _invoke_exc:  # noqa: BLE001
+                        from xmclaw.utils.log import get_logger as _gl
+                        _gl(__name__).warning(
+                            "tool.invoke_uncaught_exception tool=%s err=%s",
+                            call.name, _invoke_exc,
+                        )
+                        from xmclaw.core.ir import ToolResult as _ToolResult
+                        result = _ToolResult(
+                            call_id=call.id,
+                            ok=False,
+                            content=None,
+                            error=(
+                                f"{type(_invoke_exc).__name__}: {_invoke_exc} "
+                                f"(uncaught — ToolProvider contract violation; "
+                                f"the tool's ``invoke`` should have returned "
+                                f"a failed ToolResult instead of raising)"
+                            ),
+                        )
                     # B-17: retry once on transient failures. We're
                     # narrow about what counts as transient — only
                     # network-shaped errors and timeouts get a second
@@ -2671,7 +2704,26 @@ class AgentLoop:
                     ):
                         import asyncio as _asyncio
                         await _asyncio.sleep(0.5)
-                        retry = await effective_tools.invoke(call_with_sid)
+                        # B-351: same defensive wrapper as the first
+                        # invoke — a misbehaving ToolProvider that
+                        # raises uncaught on retry must not propagate
+                        # out of the tool loop and abort the turn. We
+                        # do NOT recurse into another retry from here;
+                        # one retry is the contract.
+                        try:
+                            retry = await effective_tools.invoke(call_with_sid)
+                        except Exception as _retry_exc:  # noqa: BLE001
+                            from xmclaw.core.ir import ToolResult as _ToolResult
+                            retry = _ToolResult(
+                                call_id=call.id,
+                                ok=False,
+                                content=None,
+                                error=(
+                                    f"{type(_retry_exc).__name__}: {_retry_exc} "
+                                    f"(retry also raised uncaught — "
+                                    f"ToolProvider contract violation)"
+                                ),
+                            )
                         if retry.ok:
                             # Tag the retry so the bus event reflects
                             # what happened; the LLM never sees the

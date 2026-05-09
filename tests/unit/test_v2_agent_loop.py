@@ -763,3 +763,70 @@ async def test_b202_hint_resets_on_clear_session() -> None:
     turn_after_reset = _last_user_message(llm.captured_messages[1])
     assert "<curriculum-hint>" in turn1
     assert "<curriculum-hint>" in turn_after_reset
+
+
+# ── B-351 (Sprint 1): tool invoke uncaught exception → synthetic
+#                       failure ToolResult, finish event still fires.
+
+
+class _RaisingToolProvider(ToolProvider):
+    """ToolProvider whose ``invoke`` violates the contract by RAISING
+    instead of returning a ToolResult. Real-world this happens when an
+    MCP bridge has a network exception its own try/except missed, or
+    when a custom ToolProvider has a contract bug.
+    """
+
+    def list_tools(self) -> list[ToolSpec]:
+        return [ToolSpec(name="bad_tool", description="raises", parameters_schema={})]
+
+    async def invoke(self, call: ToolCall) -> ToolResult:
+        raise RuntimeError("simulated upstream connection reset")
+
+
+@pytest.mark.asyncio
+async def test_b351_tool_invoke_uncaught_exception_still_emits_finish() -> None:
+    """Pre-B-351: if ToolProvider.invoke() raised, the agent loop
+    propagated the exception, TOOL_INVOCATION_FINISHED never fired,
+    and the UI's tool_use bubble stayed at status="running" forever
+    with no way to recover.
+    Now: agent_loop wraps invoke in try/except, synthesizes a
+    failed ToolResult on uncaught exception, and STILL publishes
+    TOOL_INVOCATION_FINISHED with the error string. UI flips to
+    "error" instead of stuck-running.
+    """
+    bus = InProcessEventBus()
+    llm = _ScriptedLLM(script=[
+        # First hop: ask for the bad tool.
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="t1", name="bad_tool", args={}, provenance="synthetic"),
+            ),
+        ),
+        # Second hop: terminal text after the synthetic error landed.
+        LLMResponse(content="couldn't run the tool", tool_calls=()),
+    ])
+    tools = _RaisingToolProvider()
+    agent = AgentLoop(llm=llm, bus=bus, tools=tools)
+
+    # Must NOT raise — the uncaught exception inside invoke() is
+    # converted to a failed ToolResult inside the agent loop.
+    result = await agent.run_turn("sess-b351", "trigger bad tool")
+    await bus.drain()
+
+    assert result.ok  # turn-level still OK; tool-level was failed
+    finish_events = [
+        e for e in result.events
+        if e.type == EventType.TOOL_INVOCATION_FINISHED
+    ]
+    assert len(finish_events) == 1, (
+        "TOOL_INVOCATION_FINISHED must fire even when the tool raised"
+    )
+    payload = finish_events[0].payload
+    assert payload["call_id"] == "t1"
+    assert payload["ok"] is False
+    assert payload["error"], "error string must be populated"
+    # The error must mention both the exception type and the
+    # contract-violation note so debug is easy.
+    assert "RuntimeError" in payload["error"]
+    assert "uncaught" in payload["error"].lower() or "contract" in payload["error"].lower()
