@@ -59,6 +59,7 @@ lanes:
       - tests/unit/test_v2_anthropic_translator.py
       - tests/unit/test_v2_openai_provider.py
       - tests/unit/test_v2_openai_translator.py
+      - tests/unit/test_v2_llm_providers_domestic.py
 
   # Tool providers: builtin + mcp + browser + lsp + composite.
   tools:
