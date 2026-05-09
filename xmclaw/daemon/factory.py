@@ -979,10 +979,87 @@ def build_memory_from_config(
     )
 
 
-_RUNTIME_BACKENDS: dict[str, type[SkillRuntime]] = {
-    "local": LocalSkillRuntime,
-    "process": ProcessSkillRuntime,
+_RUNTIME_BACKENDS: dict[str, str] = {
+    "local": "local",
+    "process": "process",
+    "docker": "docker",   # B-385: dispatched via _build_docker_runtime
 }
+
+
+def _build_docker_runtime(rt_section: dict[str, Any]) -> SkillRuntime:
+    """B-385 helper: parse + validate ``runtime.docker.*`` sub-section
+    and construct ``DockerSkillRuntime``. Lazy-imports the runtime so
+    a daemon that doesn't enable docker never has to load the
+    ``xmclaw.providers.runtime.docker`` module (which itself lazy-imports
+    the docker SDK only on first ``fork``).
+    """
+    from xmclaw.providers.runtime.docker import DockerSkillRuntime
+
+    docker_cfg = rt_section.get("docker") or {}
+    if not isinstance(docker_cfg, dict):
+        raise ConfigError(
+            f"'runtime.docker' must be an object, got "
+            f"{type(docker_cfg).__name__}"
+        )
+    kwargs: dict[str, Any] = {}
+
+    def _expect_str(key: str) -> None:
+        if key in docker_cfg:
+            v = docker_cfg[key]
+            if not isinstance(v, str):
+                raise ConfigError(
+                    f"'runtime.docker.{key}' must be a string, got "
+                    f"{type(v).__name__}"
+                )
+            kwargs[key] = v
+
+    def _expect_int(key: str) -> None:
+        if key in docker_cfg:
+            v = docker_cfg[key]
+            # bool is an int subclass — reject explicitly so True/False
+            # don't sneak in as 1/0 microseconds.
+            if isinstance(v, bool) or not isinstance(v, int):
+                raise ConfigError(
+                    f"'runtime.docker.{key}' must be an int, got "
+                    f"{type(v).__name__}"
+                )
+            kwargs[key] = v
+
+    def _expect_bool(key: str) -> None:
+        if key in docker_cfg:
+            v = docker_cfg[key]
+            if not isinstance(v, bool):
+                raise ConfigError(
+                    f"'runtime.docker.{key}' must be a bool, got "
+                    f"{type(v).__name__}"
+                )
+            kwargs[key] = v
+
+    _expect_str("image")
+    _expect_str("network_mode")
+    _expect_str("mem_limit")
+    _expect_int("cpu_quota")
+    _expect_int("cpu_period")
+    _expect_bool("read_only")
+    if "tmpfs" in docker_cfg:
+        v = docker_cfg["tmpfs"]
+        if not isinstance(v, dict) or not all(
+            isinstance(k, str) and isinstance(val, str)
+            for k, val in v.items()
+        ):
+            raise ConfigError(
+                "'runtime.docker.tmpfs' must be a dict of str → str"
+            )
+        kwargs["tmpfs"] = v
+    if "timeout_s" in docker_cfg:
+        v = docker_cfg["timeout_s"]
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ConfigError(
+                f"'runtime.docker.timeout_s' must be a number, got "
+                f"{type(v).__name__}"
+            )
+        kwargs["timeout_s"] = float(v)
+    return DockerSkillRuntime(**kwargs)
 
 
 def build_skill_runtime_from_config(cfg: dict[str, Any]) -> SkillRuntime:
@@ -992,15 +1069,25 @@ def build_skill_runtime_from_config(cfg: dict[str, Any]) -> SkillRuntime:
 
         {
           "runtime": {
-            "backend": "local" | "process"
+            "backend": "local" | "process" | "docker",
+            "docker": {                   # only when backend == "docker"
+              "image": "python:3.10-slim",
+              "network_mode": "none",
+              "mem_limit": "512m",
+              "cpu_quota": 50000,
+              "cpu_period": 100000,
+              "read_only": true,
+              "tmpfs": {"/tmp": "size=100M"},
+              "timeout_s": 30
+            }
           }
         }
 
     Default is ``"local"`` — the in-process runtime is fine for dev and
     for conformance tests that assume a fast startup. Production
-    deployments should set ``"process"`` for real subprocess isolation
-    (see ``xmclaw.providers.runtime.process`` for the honest scope of
-    what that gives you vs a true container sandbox).
+    deployments should set ``"process"`` for subprocess isolation OR
+    ``"docker"`` (B-385) for the first runtime where ``manifest.permissions_*``
+    are kernel-enforced rather than advisory.
 
     Raises ``ConfigError`` on an unknown backend or malformed section.
     There is no ``enabled: false`` switch — a daemon without any skill
@@ -1019,13 +1106,16 @@ def build_skill_runtime_from_config(cfg: dict[str, Any]) -> SkillRuntime:
             f"'runtime.backend' must be a string, got "
             f"{type(backend).__name__}"
         )
-    cls = _RUNTIME_BACKENDS.get(backend)
-    if cls is None:
+    if backend not in _RUNTIME_BACKENDS:
         known = ", ".join(sorted(_RUNTIME_BACKENDS))
         raise ConfigError(
             f"'runtime.backend' must be one of {{{known}}}, got {backend!r}"
         )
-    return cls()
+    if backend == "docker":
+        return _build_docker_runtime(rt_section)
+    if backend == "process":
+        return ProcessSkillRuntime()
+    return LocalSkillRuntime()
 
 
 def _resolve_persona_profile_dir(cfg: dict[str, Any]) -> Path:
