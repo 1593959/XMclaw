@@ -43,9 +43,12 @@ def test_list_carries_implementation_status(app_with_cfg) -> None:
     with TestClient(app) as c:
         r = c.get("/api/v2/channels")
     by_id = {ch["id"]: ch for ch in r.json()["channels"]}
-    # B-145: feishu is now ready, others remain scaffold
+    # B-145: feishu is now ready. B-383: dingtalk graduated to ready
+    # (Stream Mode WS adapter at dingtalk/adapter.py). The remaining
+    # scaffold IM is weixin (no SDK choice yet for individual WeChat).
     assert by_id["feishu"]["implementation_status"] == "ready"
-    assert by_id["dingtalk"]["implementation_status"] == "scaffold"
+    assert by_id["dingtalk"]["implementation_status"] == "ready"
+    assert by_id["weixin"]["implementation_status"] == "scaffold"
 
 
 def test_put_writes_channel_config(app_with_cfg) -> None:

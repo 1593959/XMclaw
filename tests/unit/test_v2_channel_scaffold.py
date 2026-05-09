@@ -31,13 +31,14 @@ import pytest
 
 _SCAFFOLD_CHANNELS = [
     # B-380: telegram graduated from scaffold to ready (real adapter at
-    # telegram/adapter.py). The remaining 3 IM scaffolds keep the same
+    # telegram/adapter.py). B-383: dingtalk graduated (Stream Mode WS
+    # adapter at dingtalk/adapter.py). B-384: wecom graduated to ready
+    # (outbound-only webhook adapter at wecom/adapter.py — inbound
+    # remains out-of-scope). The remaining IM scaffold keeps the same
     # pattern: manifest exists, adapter raises NotImplementedError on
     # construct so dispatcher's include_scaffolds=False filter hides
     # them from production but the registry still surfaces them in the
     # UI's "coming soon" list.
-    ("dingtalk", "DingTalkAdapter", "DingTalk"),
-    ("wecom", "WeComAdapter", "WeCom"),
     ("weixin", "WeChatAdapter", "WeChat"),
 ]
 

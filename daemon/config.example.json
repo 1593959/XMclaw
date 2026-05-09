@@ -154,7 +154,7 @@
     "_consumer": "lifespan (MCP registry); not in factory.py. On Windows: requires `npx` on PATH for official @modelcontextprotocol/server-* packages — install Node.js first."
   },
   "channels": {
-    "_consumer": "lifespan (ChannelDispatcher + per-channel adapter); not in factory.py. Currently READY: feishu, telegram, + ws (internal). Scaffolds (DingTalk/WeCom/WeChat) accept config but their adapter modules raise NotImplementedError — daemon logs `adapter.start_failed` and skips.",
+    "_consumer": "lifespan (ChannelDispatcher + per-channel adapter); not in factory.py. Currently READY: feishu, telegram, slack, dingtalk, wecom (outbound-only via webhook) + ws (internal). Scaffolds (WeChat) accept config but their adapter modules raise NotImplementedError — daemon logs `adapter.start_failed` and skips.",
     "_comment": "B-145 / B-380 双向聊天接入。enabled=true 后 daemon 启动时拉起 adapter，在群里 @机器人 即可对话。Tools 集成 (integrations.*) 是出站通知，channels 是双向对话。",
     "feishu": {
       "enabled": false,
@@ -186,6 +186,52 @@
       "_allowed_channel_ids_help": "非空时只接受列表里 channel id 的消息。Cxxx = 公开频道, Gxxx = 私有频道, Dxxx = DM。",
       "allowed_channel_ids": [],
       "dispatch_session_id_prefix": "slack-",
+      "injection_policy": "detect_only"
+    },
+    "dingtalk": {
+      "enabled": false,
+      "_help": "B-383: open.dingtalk.com → 应用开发 → 凭证与基础信息 → 复制 client_id / client_secret 填这里。robot_code 留空时默认用 client_id（自建应用单 robot 场景）。Stream Mode (WebSocket 长连) 无需公网 IP。pip install xmclaw[channels-dingtalk] 装 dingtalk-stream。",
+      "client_id": "",
+      "client_secret": "",
+      "robot_code": "",
+      "_allowed_user_ids_help": "非空时只接受列表里 sender_staff_id (钉钉工号) 发来的消息。",
+      "allowed_user_ids": [],
+      "_allowed_conversation_ids_help": "非空时只接受列表里 conversation_id 的消息（群 id / 单聊 id）。",
+      "allowed_conversation_ids": [],
+      "injection_policy": "detect_only"
+    },
+    "wecom": {
+      "enabled": false,
+      "_help": "B-384: 企业微信群机器人 webhook (一向出站通知；入站需要自建应用 + 公网 callback URL，v1 不支持)。在企业微信群里 → 群设置 → 群机器人 → 添加 → 复制 webhook URL 填 webhook_url。无需额外 extra (httpx 是默认依赖)。",
+      "webhook_url": "",
+      "_msgtype_help": "text | markdown | image | news | file (默认 markdown)。markdown 渲染规则见 https://developer.work.weixin.qq.com/document/path/91770。",
+      "msgtype": "markdown",
+      "_mentioned_list_help": "userid 列表 @人 (text msgtype only)。'@all' 特殊值代表所有人。markdown 模式想 @-mention 请在 content 里用 <@userid> 行内语法。",
+      "mentioned_list": [],
+      "_mentioned_mobile_list_help": "手机号列表 @人 (text msgtype only)。",
+      "mentioned_mobile_list": []
+    },
+    "email": {
+      "enabled": false,
+      "_comment": "B-393 双向 email channel：IMAP 轮询入站 + SMTP 发出。仅用 stdlib (imaplib / smtplib / email)，pip install xmclaw 即可，无需额外 extra。重要：Gmail / Outlook / 163 / Yahoo 等消费级邮箱必须用 App Password (应用专用密码)，不是账户密码。Gmail App Password 见 https://support.google.com/accounts/answer/185833；163 在邮箱设置 → POP3/SMTP/IMAP 里启用并领授权码。",
+      "_help_imap": "imap_host 例：Gmail = imap.gmail.com:993，Outlook = outlook.office365.com:993，163 = imap.163.com:993，QQ = imap.qq.com:993。imap_password 留空时回落到 secrets store (key: channels.email.imap_password)。imap_processed_folder 设置后已处理的邮件会被移动到该文件夹（而不是仅标记为已读）。",
+      "imap_host": "imap.gmail.com",
+      "imap_port": 993,
+      "imap_user": "",
+      "imap_password": "",
+      "imap_folder": "INBOX",
+      "imap_processed_folder": "",
+      "poll_interval_s": 30,
+      "_help_smtp": "smtp_use_ssl=true (默认) 使用 SMTPS (端口 465)；false 使用 STARTTLS (端口 587)。smtp_password 留空时回落到 secrets store (key: channels.email.smtp_password)。",
+      "smtp_host": "smtp.gmail.com",
+      "smtp_port": 465,
+      "smtp_user": "",
+      "smtp_password": "",
+      "smtp_use_ssl": true,
+      "from_address": "",
+      "from_name": "XMclaw",
+      "_allowed_senders_help": "非空时只接受列表里 sender 地址发来的邮件，比较时大小写不敏感。空 = 任何发件人均可。",
+      "allowed_senders": [],
       "injection_policy": "detect_only"
     }
   },

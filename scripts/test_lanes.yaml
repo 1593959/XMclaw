@@ -207,6 +207,24 @@ lanes:
       - tests/unit/test_v2_local_runtime.py
       - tests/unit/test_v2_process_runtime.py
 
+  # Channel adapters (Epic #1). Triggers on any change under
+  # xmclaw/providers/channel/ — a single dingtalk fix shouldn't run
+  # the whole suite, but it should re-run all channel mock tests
+  # because the dispatcher / queue / scaffold contracts touch every
+  # adapter.
+  channels:
+    triggers:
+      - "xmclaw/providers/channel/**"
+    tests:
+      - tests/unit/test_v2_channels_telegram.py
+      - tests/unit/test_v2_channels_discord.py
+      - tests/unit/test_v2_channels_slack.py
+      - tests/unit/test_v2_channels_dingtalk.py
+      - tests/unit/test_v2_channel_dispatcher.py
+      - tests/unit/test_v2_channel_scaffold.py
+      - tests/unit/test_v2_channel_phase5.py
+      - tests/unit/test_v2_channels_router.py
+
   # Plugin SDK surface (Epic #2). Triggers on any change to the frozen
   # re-export module, any code under xmclaw/plugins/, or the isolation
   # scanner itself. Surface tests are cheap (<1s) so over-triggering
