@@ -78,13 +78,9 @@ export function SetupBanner({ token }) {
     }
   }, [setup, dismissed]);
 
-  // B-86: detect "config saved on disk but daemon hasn't reloaded".
-  // The setup endpoint reports embedding_configured (cfg dict has the
-  // section) AND indexer_running (lifespan actually constructed an
-  // embedder + vec provider). If the first is true but the second is
-  // false, the most common reason is the user edited config.json or
-  // saved via the inline form but forgot to restart the daemon —
-  // surface that explicitly so the next move is obvious.
+  // B-86: cfg has the section (embedding_configured) but lifespan
+  // didn't build it (indexer_running=false) → user saved + forgot to
+  // restart. Surface "needs restart" so the next move is obvious.
   const restartPending =
     setup &&
     setup.embedding_configured === true &&
@@ -96,16 +92,9 @@ export function SetupBanner({ token }) {
   if (setup.ready && !restartPending) return null;
 
   // Filter out items the user has explicitly dismissed.
-  // B-346 (Sprint 1): ``llm`` is UNDISMISSABLE — without LLM the
-  // daemon is in echo mode (replies just echo input back) and that
-  // looks identical to "the agent gave me a weird answer", so users
-  // didn't realize the daemon was broken until they noticed every
-  // reply was their own message verbatim. Pre-B-346 the LLM card
-  // was dismissable like any other; users dismissed it once thinking
-  // "yeah I know I'll fix it later" and then forgot. The banner
-  // never came back so echo-mode silence persisted indefinitely.
-  // Persona / embedding / etc are still dismissable — they're
-  // optional nice-to-haves that don't break the core flow.
+  // B-346: ``llm`` is undismissable — without LLM the daemon falls to
+  // echo mode (silent failure that reads like a bad answer). Persona
+  // / embedding / etc remain dismissable (optional nice-to-haves).
   const visible = (setup.missing || []).filter(
     (m) => m === "llm" || !dismissed.has(m),
   );
@@ -415,13 +404,9 @@ export function SetupBanner({ token }) {
         `;
       })}
       ${(setup.mcp_failed && setup.mcp_failed.length > 0) ? html`
-        <!-- B-368: MCP server failure surface. Pre-B-368 npx-not-found
-             failures repeated daily but the UI showed nothing — daemon
-             looked fine, the affected tools just disappeared from the
-             available list. Now we surface which servers failed + the
-             error string + a hint. (NOTE: backticks are forbidden
-             inside this comment because the whole block lives inside a
-             JS template literal — UI crash B-394 was exactly this.) -->
+        <!-- B-368: surface MCP server failures (pre-B-368 npx-not-found
+             repeated silently for weeks). NOTE: NO backticks in this
+             comment — JS template literal would close early (B-394). -->
         <div style="margin-top:.5rem;padding:.5rem .7rem;border-top:1px dashed rgba(231,127,127,.25)">
           <div style="font-weight:600;color:#e77f7f">
             ⚠ ${setup.mcp_failed.length} 个 MCP server 启动失败
