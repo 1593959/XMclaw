@@ -35,6 +35,7 @@ CHANNEL_IDS: tuple[str, ...] = (
     "wecom",
     "weixin",
     "telegram",
+    "discord",
     "slack",
     "acp",
 )

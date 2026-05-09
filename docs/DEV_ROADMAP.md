@@ -352,7 +352,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - [ ] `xmclaw/plugin_sdk/channel.py` 公开契约（`ChannelBase`, `IncomingMessage`, `OutgoingMessage`）
 - [ ] `tests/conformance/test_channel_conformance.py` 骨架 + 5 类消息用例
 - [ ] `providers/channel/ws.py` 重构到新 ABC
-- [ ] `providers/channel/discord.py` + mock 测试
+- [x] `providers/channel/discord.py` + mock 测试（B-381, 2026-05-09）
 - [ ] `providers/channel/slack.py` + mock 测试
 - [x] `providers/channel/telegram.py` + mock 测试（B-380, 2026-05-09）
 - [ ] `xmclaw channels` CLI 子命令（`list` / `enable` / `disable` / `configure`）
@@ -368,6 +368,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 **进度日志**：
 
 - 2026-05-09: B-380 Telegram channel adapter 真实现 — 替换 19 行 scaffold；python-telegram-bot 长轮询 + allowlist + injection scan + 4096-char chunking + lazy-import；30 条单元测试 (`tests/unit/test_v2_channels_telegram.py`)，pyproject.toml 加 `channels-telegram` 细粒度 extra (commit pending)
+- 2026-05-09: B-381 Discord channel adapter 真实现 — 新建 `providers/channel/discord/` 包（之前不存在）；discord.py>=2 gateway 模式 + intents (message_content + messages + guilds) + B-337 user/channel allowlist + Epic #14 injection scan + 2000-char chunking + lazy-import；35 条单元测试 (`tests/unit/test_v2_channels_discord.py`)；pyproject.toml 加 `channels-discord` 细粒度 extra (commit pending)
 
 ---
 
