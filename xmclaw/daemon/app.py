@@ -377,6 +377,15 @@ def create_app(
     """
     bus = bus or InProcessEventBus()
     memory = None
+    # B-395 (Sprint 1): capture the actual exception when memory build
+    # fails so the SetupBanner can stop guessing. Pre-B-395 the bare
+    # except dropped the error string and the indexer block fell back
+    # to a generic ``memory.enabled=false 或构造失败 — 检查 memory.* 节``
+    # message, which is wrong when ``memory.enabled`` IS true. The
+    # most common real cause on Windows is sqlite_vec unable to load
+    # its native extension; the user followed the wrong fix-list (delete
+    # memory.db) for hours instead of running ``pip install sqlite-vec``.
+    memory_build_error: str | None = None
     sweep_task = None
     backup_scheduler = None
     if config is not None:
@@ -387,8 +396,11 @@ def create_app(
         )
         try:
             memory = build_memory_from_config(config, bus=bus)
-        except Exception:  # noqa: BLE001 — malformed memory config must not block daemon
+        except Exception as exc:  # noqa: BLE001 — malformed memory config must not block daemon
             memory = None
+            memory_build_error = (
+                f"{type(exc).__name__}: {exc}"
+            )
         if memory is not None:
             retention = parse_retention_config(
                 (config.get("memory") or {}).get("retention")
@@ -570,10 +582,56 @@ def create_app(
                     "检查 api_key / base_url / model）"
                 )
             elif vec_provider is None:
-                _app.state.indexer_start_error = (
-                    "sqlite_vec 未挂载（memory.enabled=false 或构造失败 — "
-                    "检查 memory.* 节）"
-                )
+                # B-395: surface the captured memory_build_error with
+                # cause-specific guidance. Pre-B-395 the bare-except at
+                # build time threw the error string away and the banner
+                # fell back to a generic "memory.enabled=false 或构造失败"
+                # message — wrong when memory.enabled IS true and
+                # actively misleading users to delete memory.db (which
+                # makes a "database is locked" failure WORSE because the
+                # next daemon start has to recreate the schema while
+                # another process still holds the WAL).
+                if memory_build_error:
+                    err_lower = memory_build_error.lower()
+                    if "database is locked" in err_lower:
+                        hint = (
+                            "根因：memory.db 在 daemon 启动那一刻被另一进程锁住了。"
+                            "常见来源：(a) 上次 daemon 没干净退出留了 zombie；"
+                            "(b) Windows 杀软 / Defender 在扫文件；(c) 旧 daemon "
+                            "还活着（``xmclaw stop`` 没生效）。\n"
+                            "修法：``xmclaw stop`` → 任务管理器确认 python.exe 真没了 → "
+                            "等 5s → ``xmclaw start``。**不要**删 memory.db — "
+                            "锁是进程 hold 住的，不是文件本身的问题。"
+                        )
+                    elif "sqlite_vec" in err_lower or "no module named" in err_lower:
+                        hint = (
+                            "根因：sqlite-vec Python 包没装。"
+                            "修法：``pip install sqlite-vec`` 后重启 daemon。"
+                        )
+                    elif "enable_load_extension" in err_lower:
+                        hint = (
+                            "根因：当前 Python 的 sqlite3 编译时未启用 "
+                            "load_extension（macOS / 部分 Linux 发行版常见）。"
+                            "修法：换一个支持 extension load 的 Python build "
+                            "（pyenv install 时加 PYTHON_CONFIGURE_OPTS=\"--enable-loadable-sqlite-extensions\"）。"
+                        )
+                    else:
+                        hint = (
+                            "根因不在已识别清单里。看下面 ``原始 error`` "
+                            "的具体类型，或翻 ~/.xmclaw/v2/logs/xmclaw.log 找 "
+                            "更早的 SqliteVecMemory traceback。"
+                        )
+                    _app.state.indexer_start_error = (
+                        f"SqliteVecMemory 构造失败: {memory_build_error}\n{hint}"
+                    )
+                else:
+                    cfg_enabled = (
+                        ((config or {}).get("memory") or {}).get("enabled")
+                    )
+                    _app.state.indexer_start_error = (
+                        f"sqlite_vec 未挂载（memory.enabled={cfg_enabled!r}）。"
+                        "config.json 中 memory.enabled 设为 true 才会构造 vec store。"
+                    )
             # B-197: stash on app.state so post-sampling extractors
             # (ProfileExtractor / ExtractLessonsHook / ProposalMaterializer)
             # can dual-write facts to the vec store. Both may be None

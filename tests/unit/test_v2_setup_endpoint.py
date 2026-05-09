@@ -186,6 +186,100 @@ def test_ready_true_when_everything_set(tmp_path, monkeypatch) -> None:
     assert body["ready"] is True
 
 
+# ── B-395 (Sprint 1): memory build error captured + cause-specific hint ─
+
+
+def test_b395_memory_build_database_locked_error_classified() -> None:
+    """Pre-B-395 the bare except at app.py:389 swallowed the
+    SqliteVecMemory construction exception and the indexer block fell
+    back to ``memory.enabled=false 或构造失败 — 检查 memory.* 节``,
+    which is wrong when memory.enabled IS true. The user spent hours
+    deleting memory.db (the suggested fix) without realising the
+    actual cause was process lock contention. Now: capture the
+    exception, classify by string match (locked / sqlite_vec / load_extension /
+    other), and surface a cause-specific fix.
+
+    Test injects a fake exception via monkeypatch on
+    ``build_memory_from_config`` so the indexer block sees ``memory=None``
+    + ``memory_build_error="OperationalError: database is locked"`` and
+    must produce the locked-specific hint, NOT the legacy generic.
+    """
+    import xmclaw.daemon.app as app_mod
+
+    def _fake_build(_cfg, bus=None):
+        raise __import__("sqlite3").OperationalError("database is locked")
+
+    # Patch BEFORE create_app reads the symbol via the local import.
+    orig = app_mod.create_app
+    # The import inside create_app is ``from xmclaw.daemon.factory
+    # import build_memory_from_config`` — patch that module symbol.
+    import xmclaw.daemon.factory as factory_mod
+    real = factory_mod.build_memory_from_config
+    factory_mod.build_memory_from_config = _fake_build
+    # Also stub the embedding-provider check so the indexer block
+    # doesn't trip the "embedder 未构造" branch (which fires BEFORE
+    # the vec_provider branch where B-395 lives).
+    import xmclaw.providers.memory.embedding as emb_mod
+    real_emb = emb_mod.build_embedding_provider
+    emb_mod.build_embedding_provider = lambda _cfg: object()  # truthy stub
+    try:
+        cfg = {
+            "memory": {"enabled": True},
+            "evolution": {
+                "memory": {"embedding": {"model": "x", "dimensions": 1024}},
+            },
+        }
+        app = orig(config=cfg)
+        with TestClient(app) as client:
+            body = _setup(client)
+    finally:
+        factory_mod.build_memory_from_config = real
+        emb_mod.build_embedding_provider = real_emb
+
+    err = body["indexer_start_error"] or ""
+    # Must include the literal exception text (so user sees ground truth).
+    assert "database is locked" in err
+    # Must NOT use the legacy generic (which the user followed wrong).
+    assert "memory.enabled=false 或构造失败" not in err
+    # Must include the locked-specific hint (don't delete memory.db).
+    assert "不要" in err or "不要删" in err
+    assert "xmclaw stop" in err
+
+
+def test_b395_memory_build_sqlite_vec_missing_classified() -> None:
+    """When the exception text mentions ``sqlite_vec`` (package import
+    failure), the hint should say ``pip install sqlite-vec`` instead of
+    the database-locked guidance."""
+    import xmclaw.daemon.factory as factory_mod
+
+    def _fake_build(_cfg, bus=None):
+        raise ImportError("No module named 'sqlite_vec'")
+
+    real = factory_mod.build_memory_from_config
+    factory_mod.build_memory_from_config = _fake_build
+    import xmclaw.providers.memory.embedding as emb_mod
+    real_emb = emb_mod.build_embedding_provider
+    emb_mod.build_embedding_provider = lambda _cfg: object()
+    try:
+        cfg = {
+            "memory": {"enabled": True},
+            "evolution": {
+                "memory": {"embedding": {"model": "x", "dimensions": 1024}},
+            },
+        }
+        from xmclaw.daemon.app import create_app as _ca
+        app = _ca(config=cfg)
+        with TestClient(app) as client:
+            body = _setup(client)
+    finally:
+        factory_mod.build_memory_from_config = real
+        emb_mod.build_embedding_provider = real_emb
+
+    err = body["indexer_start_error"] or ""
+    assert "sqlite_vec" in err.lower() or "sqlite-vec" in err.lower()
+    assert "pip install sqlite-vec" in err
+
+
 # ── B-350 (Sprint 1): last_config_reload exposed in /api/v2/setup ─
 
 
