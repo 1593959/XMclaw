@@ -214,10 +214,66 @@ class MemoryFileIndexer:
         # when a tick actually changed something so quiet polling
         # doesn't flood the Trace page.
         self._bus = bus
+        # B-361 (Sprint 1): tick-level health tracking. The pre-B-361
+        # ``indexer_start_error`` only captured *startup* failures
+        # (embedder None / vec_provider None / start() exception). It
+        # missed the most common production failure: indexer started
+        # cleanly, but every subsequent ``tick()`` raises
+        # ``OperationalError('database is locked')`` because
+        # PersonaStore.migrate / agent loop tools / ExtractFactsHook
+        # all share ``memory.db`` and contend for the single sqlite
+        # connection. Banner used to say "sqlite_vec 未挂载" — wrong
+        # root cause; user followed the suggested fix (delete
+        # memory.db) and got the same lock contention seconds later.
+        # Now we expose health_status() for the setup endpoint to
+        # consume so the banner can describe the *actual* problem.
+        self._consecutive_tick_failures: int = 0
+        self._total_tick_failures: int = 0
+        self._total_ticks: int = 0
+        self._last_tick_error: str = ""
+        self._last_tick_success_ts: float = 0.0
 
     @property
     def is_running(self) -> bool:
         return self._task is not None and not self._task.done()
+
+    def health_status(self) -> dict:
+        """B-361: machine-readable indexer health for ``/api/v2/setup``.
+
+        Returns a dict with:
+          * ``running`` — bool, the task is alive
+          * ``consecutive_failures`` — int, ticks failed in a row
+            (resets to 0 on any success)
+          * ``total_failures`` / ``total_ticks`` — counters
+          * ``last_error`` — string of the last raised exception
+          * ``last_success_ts`` — epoch of the last successful tick
+          * ``unhealthy_reason`` — one of ``""`` (healthy),
+            ``"db_locked"`` (consecutive_failures >= 3 + last_error
+            mentions ``database is locked``),
+            ``"embed_failing"`` (last_error mentions embedding/HTTP),
+            ``"unknown"`` (other repeated failure)
+
+        The setup endpoint uses ``unhealthy_reason`` to override the
+        startup-time banner text with the truthful message.
+        """
+        unhealthy_reason = ""
+        err = (self._last_tick_error or "").lower()
+        if self._consecutive_tick_failures >= 3:
+            if "database is locked" in err or "operationalerror" in err and "lock" in err:
+                unhealthy_reason = "db_locked"
+            elif "embed" in err or "http" in err or "connect" in err or "timeout" in err:
+                unhealthy_reason = "embed_failing"
+            else:
+                unhealthy_reason = "unknown"
+        return {
+            "running": self.is_running,
+            "consecutive_failures": self._consecutive_tick_failures,
+            "total_failures": self._total_tick_failures,
+            "total_ticks": self._total_ticks,
+            "last_error": self._last_tick_error,
+            "last_success_ts": self._last_tick_success_ts,
+            "unhealthy_reason": unhealthy_reason,
+        }
 
     async def start(self) -> None:
         if self.is_running:
@@ -238,11 +294,22 @@ class MemoryFileIndexer:
         self._task = None
 
     async def _run_loop(self) -> None:
+        import time as _t
         while not self._stopped.is_set():
+            self._total_ticks += 1
             try:
                 await self.tick()
+                # B-361: success — reset consecutive failure counter
+                # so a transient lock or embedder hiccup that
+                # recovered doesn't keep the banner red forever.
+                self._consecutive_tick_failures = 0
+                self._last_tick_error = ""
+                self._last_tick_success_ts = _t.time()
             except Exception as exc:  # noqa: BLE001
                 _log.warning("memory_indexer.tick_failed err=%s", exc)
+                self._consecutive_tick_failures += 1
+                self._total_tick_failures += 1
+                self._last_tick_error = f"{type(exc).__name__}: {exc}"
             try:
                 await asyncio.wait_for(
                     self._stopped.wait(), timeout=self._poll_s,

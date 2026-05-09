@@ -2209,12 +2209,62 @@ def create_app(
 
         # Indexer / dream cron actually running? Lifespan sets these
         # to non-None on success.
-        indexer_running = getattr(app.state, "memory_indexer", None) is not None
+        indexer_obj = getattr(app.state, "memory_indexer", None)
+        indexer_running = indexer_obj is not None
         dream_running = getattr(app.state, "dream_cron", None) is not None
         # B-87: precise reason the indexer isn't running, when applicable.
         # Lets the UI stop guessing "must be a missing restart" when
         # actually the embedder / vec_provider / start() failed.
         indexer_start_error = getattr(app.state, "indexer_start_error", None)
+        # B-361 (Sprint 1): startup-time error capture (above) only
+        # covers embedder/vec_provider/start() failures. The most
+        # common production failure is "started cleanly but every
+        # tick fails" — typically ``OperationalError('database is
+        # locked')`` from PersonaStore.migrate / agent loop tools /
+        # ExtractFactsHook all sharing the single sqlite connection.
+        # Pre-B-361 the banner kept the start-time message and the
+        # user followed the wrong fix (delete memory.db) and got
+        # the same lock contention seconds later. Now we ALSO ask
+        # the indexer for its tick-level health and override the
+        # banner text with the actual root cause when ticks are
+        # consistently failing.
+        indexer_health: dict | None = None
+        if indexer_obj is not None and hasattr(indexer_obj, "health_status"):
+            try:
+                indexer_health = indexer_obj.health_status()
+            except Exception:  # noqa: BLE001 — observability never blocks
+                indexer_health = None
+        # If startup was clean but tick-loop is failing, surface the
+        # truthful reason so the banner stops lying.
+        if (
+            indexer_start_error is None
+            and indexer_health is not None
+            and indexer_health.get("unhealthy_reason")
+        ):
+            reason = indexer_health["unhealthy_reason"]
+            err = indexer_health.get("last_error", "")
+            failures = indexer_health.get("consecutive_failures", 0)
+            if reason == "db_locked":
+                indexer_start_error = (
+                    f"memory.db 多 task 写竞争（连续 {failures} 次 tick "
+                    f"以 ``database is locked`` 失败）— 不是 sqlite_vec 未挂载，"
+                    f"也不是 Ollama / 模型 / 维度问题。根因是 PersonaStore + "
+                    f"indexer + agent 工具共享单一 sqlite connection 抢锁。"
+                    f"B-362/B-363 永久修；临时缓解：xmclaw stop && xmclaw start "
+                    f"后第一次刷新 memory 前等 30s。\n"
+                    f"原始 error: {err}"
+                )
+            elif reason == "embed_failing":
+                indexer_start_error = (
+                    f"embedding 服务连续 {failures} 次 tick 失败。"
+                    f"检查 Ollama / OpenAI / 自部署 endpoint 是否可达。\n"
+                    f"原始 error: {err}"
+                )
+            elif reason == "unknown":
+                indexer_start_error = (
+                    f"indexer 启动 OK 但每次 tick 都失败（连续 {failures} 次）。"
+                    f"原始 error: {err}"
+                )
 
         missing: list[str] = []
         if not llm_configured:
@@ -2231,6 +2281,7 @@ def create_app(
             "embedding_configured": embedding_configured,
             "indexer_running": indexer_running,
             "indexer_start_error": indexer_start_error,
+            "indexer_health": indexer_health,
             "dream_running": dream_running,
             "missing": missing,
             "ready": len(missing) == 0,

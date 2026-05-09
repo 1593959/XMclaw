@@ -28,6 +28,7 @@ import {
   STEP_INFO,
   readDismissed as _readDismissed,
   writeDismissed as _writeDismissed,
+  diagnoseIndexerError,  // B-361: indexer error → adaptive fix-list
 } from "../../lib/setup_banner_data.js";
 
 export function SetupBanner({ token }) {
@@ -407,20 +408,25 @@ export function SetupBanner({ token }) {
         >
           <div style="flex:1;min-width:0">
             ${setup.indexer_start_error ? html`
-              <!-- B-87: indexer try/catch surfaced a concrete reason — show it. -->
-              <div style="font-weight:600;color:#e77f7f">⚠ 向量索引启动失败（daemon 已重启过，但 indexer 起不来）</div>
-              <div style="margin-top:.3rem;font-size:.76rem;line-height:1.5;color:var(--xmc-fg-muted)">
-                <strong style="color:var(--xmc-fg)">原因：</strong>
-                <code style="font-size:.74rem;white-space:pre-wrap">${setup.indexer_start_error}</code>
-              </div>
-              <div style="margin-top:.3rem;font-size:.74rem;line-height:1.55;color:var(--xmc-fg-muted)">
-                常见对应修法：
-                <ul style="margin:.2rem 0 0 1.1rem;padding:0">
-                  <li>Ollama 没起来 → 在终端跑 <code>ollama serve</code>（或检查 base_url）</li>
-                  <li>模型本地没拉 → <code>ollama pull qwen3-embedding:0.6b</code></li>
-                  <li>维度跟历史数据冲突 → 删 <code>~/.xmclaw/v2/memory.db</code> 重启（会丢已有向量索引，不会丢 MEMORY.md）</li>
-                </ul>
-              </div>
+              <!-- B-87 / B-361: indexer surfaced a concrete reason.
+                   Banner adapts "common fixes" to the ACTUAL root
+                   cause via diagnoseIndexerError(). Pre-B-361 we
+                   hard-coded 3 Ollama / 维度 / sqlite_vec 修法
+                   regardless of real error → user followed wrong
+                   path (the screenshot bug). -->
+              ${(() => {
+                const d = diagnoseIndexerError(setup);
+                return html`
+                  <div style="font-weight:600;color:#e77f7f">${d.title}</div>
+                  <div style="margin-top:.3rem;font-size:.76rem;line-height:1.5;color:var(--xmc-fg-muted)">
+                    <strong style="color:var(--xmc-fg)">原因：</strong>
+                    <code style="font-size:.74rem;white-space:pre-wrap">${setup.indexer_start_error}</code>
+                  </div>
+                  <div style="margin-top:.3rem;font-size:.74rem;line-height:1.55;color:var(--xmc-fg-muted)">
+                    常见对应修法：${d.fixes}
+                  </div>
+                `;
+              })()}
             ` : html`
               <div style="font-weight:600">🔄 daemon 未重启 — 已保存的配置还没生效</div>
               <div style="margin-top:.2rem;color:var(--xmc-fg-muted);font-size:.76rem;line-height:1.5">
