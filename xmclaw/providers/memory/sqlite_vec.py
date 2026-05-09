@@ -30,6 +30,7 @@ callers need different-sized embeddings they should use separate
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import time
@@ -107,14 +108,79 @@ class SqliteVecMemory(MemoryProvider):
         self._ensure_schema()
         if embedding_dim is not None:
             self._ensure_vec_table(embedding_dim)
+        # B-363 (Sprint 1): write lock — async-task-aware mutex around
+        # the shared sqlite3 connection. Pre-B-363 daemon.log showed
+        # ~2742 ``OperationalError('database is locked')`` per run
+        # because PersonaStore.migrate / MemoryFileIndexer.tick /
+        # ExtractFactsHook / remember tool all share ``self._conn``
+        # AND Python GIL switches mid-write under asyncio.
+        # ``check_same_thread=True`` (default) would have raised
+        # ProgrammingError immediately — but asyncio runs tasks on
+        # one thread, so SQLite let the writes interleave and the
+        # OS-level write lock gave us the contention error instead.
+        # WAL + busy_timeout + this lock together close the race.
+        # We lock around WRITES only (puts / deletes / DDL); reads
+        # under WAL never need to block writers.
+        try:
+            self._write_lock: asyncio.Lock | None = asyncio.Lock()
+        except RuntimeError:
+            # No running event loop yet (constructor called from
+            # sync context, e.g. tests). Lazy-create on first await.
+            self._write_lock = None
+
+    def _get_write_lock(self) -> asyncio.Lock:
+        """Lazily resolve write lock when first awaited from async ctx."""
+        if self._write_lock is None:
+            self._write_lock = asyncio.Lock()
+        return self._write_lock
 
     # ── setup ──
 
     _vec_supported: bool = False
 
     def _open_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        # B-363 (Sprint 1): ``check_same_thread=False`` is required —
+        # asyncio runs tasks on the same OS thread but SQLite's
+        # default sees task-switching as cross-thread access and
+        # would raise ``ProgrammingError`` on the second ``execute``
+        # in some Python versions. The actual safety comes from
+        # ``self._write_lock`` (asyncio.Lock) above + WAL mode.
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
+        # B-363: enable WAL + busy_timeout BEFORE first write. WAL
+        # = readers don't block writers, writers don't block readers
+        # of older snapshots; busy_timeout = SQLite waits up to 5s
+        # for the lock instead of failing instantly. Together they
+        # eliminate ~99% of "database is locked" under our daemon's
+        # multi-task fan-in (PersonaStore + indexer + agent tools
+        # all writing memory.db). The remaining 1% is the
+        # asyncio.Lock layer above. Also verify WAL actually took
+        # — on NFS / read-only fs / some Windows paths, WAL silently
+        # falls back to default journal mode (BUG-14 from prior
+        # audit).
+        try:
+            conn.execute("PRAGMA journal_mode=WAL").fetchone()
+            actual_mode = conn.execute("PRAGMA journal_mode").fetchone()
+            if actual_mode and actual_mode[0].lower() != "wal":
+                # Surface the silent fallback so ops can see it.
+                # We don't raise — daemon should still come up,
+                # just with worse contention behavior.
+                import logging
+                logging.getLogger(__name__).warning(
+                    "sqlite_vec.wal_unavailable mode=%s path=%s "
+                    "(filesystem doesn't support WAL — expect "
+                    "'database is locked' under contention)",
+                    actual_mode[0], self.db_path,
+                )
+            conn.execute("PRAGMA busy_timeout=5000")
+            # synchronous=NORMAL is safe under WAL and ~2x faster
+            # than FULL; the daemon's own restart recovery handles
+            # the rare last-100ms-of-writes-may-be-lost case.
+            conn.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.OperationalError:
+            # Pragmas can fail on locked / corrupt DB; let
+            # downstream calls surface the real problem.
+            pass
         # Extension loading is a compile-time option in CPython's
         # sqlite3 module. Distributions ship varying levels of support:
         #   * Linux (Ubuntu GitHub runners, most distros): enabled
@@ -247,22 +313,28 @@ class SqliteVecMemory(MemoryProvider):
                     f"configured dim {self._embedding_dim}"
                 )
 
-        cur = self._conn.cursor()
-        cur.execute(
-            "INSERT OR REPLACE INTO memory_items "
-            "(id, layer, text, metadata, ts, has_embedding) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (item_id, layer, item.text, metadata, ts, has_embedding),
-        )
-        if item.embedding:
-            # Serialize vector as little-endian float32 bytes for sqlite-vec.
-            import struct
-            blob = struct.pack(f"{len(item.embedding)}f", *item.embedding)
+        # B-363 (Sprint 1): serialize writes through the lock. WAL +
+        # busy_timeout already cover most contention but inside one
+        # process / one connection, async tasks can interleave between
+        # the INSERT memory_items and INSERT memory_vec — this lock
+        # makes put()/forget()/etc atomic from the agent's POV.
+        async with self._get_write_lock():
+            cur = self._conn.cursor()
             cur.execute(
-                "INSERT OR REPLACE INTO memory_vec (item_id, embedding) VALUES (?, ?)",
-                (item_id, blob),
+                "INSERT OR REPLACE INTO memory_items "
+                "(id, layer, text, metadata, ts, has_embedding) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (item_id, layer, item.text, metadata, ts, has_embedding),
             )
-        self._conn.commit()
+            if item.embedding:
+                # Serialize vector as little-endian float32 bytes for sqlite-vec.
+                import struct
+                blob = struct.pack(f"{len(item.embedding)}f", *item.embedding)
+                cur.execute(
+                    "INSERT OR REPLACE INTO memory_vec (item_id, embedding) VALUES (?, ?)",
+                    (item_id, blob),
+                )
+            self._conn.commit()
         return item_id
 
     # ── B-197 Phase 2: upsert / promote / demote ──
@@ -586,15 +658,19 @@ class SqliteVecMemory(MemoryProvider):
         return [meta_by_id[i] for i in ordered_ids[:k]]
 
     async def forget(self, item_id: str) -> None:
-        cur = self._conn.cursor()
-        cur.execute("DELETE FROM memory_items WHERE id = ?", (item_id,))
-        # memory_vec is separate; remove the vector too if it exists.
-        try:
-            cur.execute("DELETE FROM memory_vec WHERE item_id = ?", (item_id,))
-        except sqlite3.OperationalError:
-            # Vec table doesn't exist yet — nothing to forget there.
-            pass
-        self._conn.commit()
+        # B-363: write lock — see put() for rationale.
+        async with self._get_write_lock():
+            cur = self._conn.cursor()
+            cur.execute("DELETE FROM memory_items WHERE id = ?", (item_id,))
+            # memory_vec is separate; remove the vector too if it exists.
+            try:
+                cur.execute(
+                    "DELETE FROM memory_vec WHERE item_id = ?", (item_id,),
+                )
+            except sqlite3.OperationalError:
+                # Vec table doesn't exist yet — nothing to forget there.
+                pass
+            self._conn.commit()
 
     # ── maintenance (explicit, never silent) ──
 

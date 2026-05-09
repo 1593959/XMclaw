@@ -96,7 +96,19 @@ export function SetupBanner({ token }) {
   if (setup.ready && !restartPending) return null;
 
   // Filter out items the user has explicitly dismissed.
-  const visible = (setup.missing || []).filter((m) => !dismissed.has(m));
+  // B-346 (Sprint 1): ``llm`` is UNDISMISSABLE — without LLM the
+  // daemon is in echo mode (replies just echo input back) and that
+  // looks identical to "the agent gave me a weird answer", so users
+  // didn't realize the daemon was broken until they noticed every
+  // reply was their own message verbatim. Pre-B-346 the LLM card
+  // was dismissable like any other; users dismissed it once thinking
+  // "yeah I know I'll fix it later" and then forgot. The banner
+  // never came back so echo-mode silence persisted indefinitely.
+  // Persona / embedding / etc are still dismissable — they're
+  // optional nice-to-haves that don't break the core flow.
+  const visible = (setup.missing || []).filter(
+    (m) => m === "llm" || !dismissed.has(m),
+  );
   if (visible.length === 0 && !restartPending) return null;
 
   const onDismiss = (key) => {
@@ -402,6 +414,42 @@ export function SetupBanner({ token }) {
           </div>
         `;
       })}
+      ${(setup.mcp_failed && setup.mcp_failed.length > 0) ? html`
+        <!-- B-368 (Sprint 1): MCP server failure surface. Pre-B-368
+             daemon.log had ``mcp.start_failed name=filesystem err=
+             npx not found`` × 109 over 2 weeks but UI showed nothing.
+             User assumed daemon was fine; the affected tools just
+             silently disappeared from the available list. Now show
+             which servers failed + the error string + a hint. -->
+        <div style="margin-top:.5rem;padding:.5rem .7rem;border-top:1px dashed rgba(231,127,127,.25)">
+          <div style="font-weight:600;color:#e77f7f">
+            ⚠ ${setup.mcp_failed.length} 个 MCP server 启动失败
+            <span style="font-weight:400;color:var(--xmc-fg-muted);font-size:.78rem">
+              （这些 server 提供的工具不在可用列表里）
+            </span>
+          </div>
+          <ul style="margin:.3rem 0 .2rem 1.1rem;padding:0;font-size:.76rem;line-height:1.5">
+            ${setup.mcp_failed.map((name) => {
+              const st = (setup.mcp_servers || {})[name] || {};
+              const err = st.last_error || "(无错误信息)";
+              const isNpxMissing = /npx|not found|cannot find/i.test(err);
+              return html`
+                <li>
+                  <strong>${name}</strong>:
+                  <code style="font-size:.72rem;white-space:pre-wrap">${err}</code>
+                  ${isNpxMissing ? html`
+                    <div style="margin-top:.15rem;color:var(--xmc-fg-muted);font-size:.72rem">
+                      → 安装 Node.js（<code>npx</code> 跟着 Node 一起来），或在
+                      <code>config.json</code> 里把这个 server 的
+                      <code>command</code> 改成本机已有的可执行文件
+                    </div>
+                  ` : null}
+                </li>
+              `;
+            })}
+          </ul>
+        </div>
+      ` : null}
       ${restartPending ? html`
         <div
           style="margin-top:.5rem;padding:.5rem .7rem;border-top:1px dashed rgba(200,168,106,.25);display:flex;justify-content:space-between;align-items:center;gap:.6rem;flex-wrap:wrap"

@@ -2274,6 +2274,25 @@ def create_app(
         if not embedding_configured:
             missing.append("embedding")
 
+        # B-368 (Sprint 1): MCP server health. daemon.log shows
+        # ``mcp.start_failed name=filesystem err=npx not found`` × 109
+        # over 2 weeks — UI showed nothing, user assumed daemon was
+        # fine, the affected tool just silently disappeared from the
+        # available list. Now expose per-server status so SetupBanner
+        # can render a "MCP server X failed to start" item with a
+        # concrete error string and a "what does this mean" tooltip.
+        mcp_servers: dict | None = None
+        mcp_hub = getattr(app.state, "mcp_hub", None)
+        if mcp_hub is not None and hasattr(mcp_hub, "status"):
+            try:
+                mcp_servers = mcp_hub.status()
+            except Exception:  # noqa: BLE001 — observability never blocks
+                mcp_servers = None
+        mcp_failed = [
+            name for name, st in (mcp_servers or {}).items()
+            if (st or {}).get("status") == "error"
+        ]
+
         return JSONResponse({
             "llm_configured": llm_configured,
             "llm_provider": llm_provider_used,
@@ -2283,6 +2302,8 @@ def create_app(
             "indexer_start_error": indexer_start_error,
             "indexer_health": indexer_health,
             "dream_running": dream_running,
+            "mcp_servers": mcp_servers,
+            "mcp_failed": mcp_failed,
             "missing": missing,
             "ready": len(missing) == 0,
         })
