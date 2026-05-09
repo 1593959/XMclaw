@@ -591,6 +591,16 @@ _CURRICULUM_HINT_BLOCK_RE = _re_mem.compile(
 _CURRICULUM_HINT_TAG_RE = _re_mem.compile(
     r"</?\s*curriculum-hint\s*>", _re_mem.IGNORECASE,
 )
+# Sprint 3 #6: same scrub pattern as curriculum-hint, applied before
+# persistence so the strategy block doesn't leak into history (which
+# would re-feed the agent's own retrieved strategies on every turn).
+_CURRICULUM_STRATEGIES_BLOCK_RE = _re_mem.compile(
+    r"<\s*curriculum-strategies\s*>[\s\S]*?</\s*curriculum-strategies\s*>",
+    _re_mem.IGNORECASE,
+)
+_CURRICULUM_STRATEGIES_TAG_RE = _re_mem.compile(
+    r"</?\s*curriculum-strategies\s*>", _re_mem.IGNORECASE,
+)
 
 
 # B-186: vague-continuation messages that should pin to the prior
@@ -765,11 +775,17 @@ def _sanitize_memory_context(text: str) -> str:
     out = _MEMORY_FILES_BLOCK_RE.sub("", out)
     # B-202: drop curriculum-hint envelope from history too.
     out = _CURRICULUM_HINT_BLOCK_RE.sub("", out)
+    # Sprint 3 #6: drop curriculum-strategies block from history too.
+    # Without this, the bank-retrieved strategies would be re-fed to
+    # the agent on every subsequent turn as if the user had typed
+    # them, AND the next distill pass would see them as user content.
+    out = _CURRICULUM_STRATEGIES_BLOCK_RE.sub("", out)
     # Catch orphaned tags (e.g. block was malformed and only one tag
     # made it through) and orphaned system notes.
     out = _MEMORY_FENCE_TAG_RE.sub("", out)
     out = _MEMORY_FILES_TAG_RE.sub("", out)
     out = _CURRICULUM_HINT_TAG_RE.sub("", out)
+    out = _CURRICULUM_STRATEGIES_TAG_RE.sub("", out)
     out = _MEMORY_SYS_NOTE_RE.sub("", out)
     return out.rstrip()
 
@@ -1013,6 +1029,16 @@ class AgentLoop:
         # MiniMax / GPT-4 turn we've seen with tool-spec heavy
         # prompts; users on local Ollama can bump if they want.
         llm_timeout_s: float = 120.0,
+        # Sprint 3 #6: optional ReasoningBank-style strategy bank.
+        # When wired, ``run_turn`` calls ``bank.retrieve(user_message,
+        # limit=strategy_top_k)`` at the start of each turn and injects
+        # a ``<curriculum-strategies>`` block into the prompt with
+        # whatever strategies match. ``None`` means strategies are not
+        # consulted — the runtime behaviour is identical to today.
+        # Confidence is capped upstream at 0.6 (CONFIDENCE_CAP); we
+        # don't downweight further here.
+        strategy_bank: Any = None,
+        strategy_top_k: int = 3,
     ) -> None:
         self._llm = llm
         self._bus = bus
@@ -1047,6 +1073,12 @@ class AgentLoop:
         self._llm_timeout_s = max(5.0, float(llm_timeout_s))
         self._agent_id = agent_id
         self._cost_tracker = cost_tracker
+        # Sprint 3 #6: ReasoningBank strategy bank (optional). The
+        # constructor parameter is duck-typed: any object exposing
+        # ``async retrieve(query: str, limit: int) -> list[Strategy]``
+        # works. None → strategy injection is silent no-op.
+        self._strategy_bank = strategy_bank
+        self._strategy_top_k = max(1, int(strategy_top_k))
         # Multi-model: when set, ``run_turn(llm_profile_id=...)`` looks
         # the LLM up here. Unset (or unknown id) → fall back to ``llm``,
         # so single-LLM deployments keep working untouched.
@@ -1556,8 +1588,22 @@ class AgentLoop:
         # user had said it). Hermes does this in its memory_manager.
         import dataclasses as _dc
         cleaned_history: list[Message] = []
+        # Sprint 3 #6: extend the predicate to ALSO catch
+        # ``<curriculum-strategies>`` and ``<curriculum-hint>`` so
+        # those blocks get scrubbed before persistence — same rationale
+        # as the original memory-context scrub.
+        _SCRUB_MARKERS = (
+            "memory-context",
+            "curriculum-hint",
+            "curriculum-strategies",
+            "memory-files",
+        )
         for m in history:
-            if m.role == "user" and isinstance(m.content, str) and "memory-context" in m.content:
+            if (
+                m.role == "user"
+                and isinstance(m.content, str)
+                and any(mk in m.content for mk in _SCRUB_MARKERS)
+            ):
                 cleaned_history.append(_dc.replace(
                     m, content=_sanitize_memory_context(m.content),
                 ))
@@ -2118,6 +2164,46 @@ class AgentLoop:
                 )
                 self._curriculum_hint_fired[session_id] = True
 
+        # Sprint 3 #6: ReasoningBank strategy injection. When a bank is
+        # wired AND the user message is non-empty, retrieve top-K
+        # strategies whose embedded ``when_pattern\\n\\nthen_action`` is
+        # closest to the user's message. Inject as
+        # ``<curriculum-strategies>`` block — the LLM still decides
+        # whether to apply (Iron Rule #2: gate is the LLM, never auto-
+        # mutate). When the bank returns 0 hits or any failure occurs,
+        # the block stays empty — the prompt is identical to today's.
+        # Confidence is shown verbatim (already capped at 0.6 upstream).
+        curriculum_strategies_block = ""
+        if self._strategy_bank is not None and user_message:
+            try:
+                _strategies = await self._strategy_bank.retrieve(
+                    user_message, limit=self._strategy_top_k,
+                )
+            except Exception as _exc:  # noqa: BLE001 — strategy injection
+                # is purely advisory; never fail the turn over it.
+                from xmclaw.utils.log import get_logger as _gl
+                _gl(__name__).warning(
+                    "agent_loop.strategy_retrieve_failed err=%s", _exc,
+                )
+                _strategies = []
+            if _strategies:
+                _lines = ["", "", "<curriculum-strategies>"]
+                _lines.append(
+                    f"Based on patterns from {len(_strategies)} past "
+                    f"session(s), the following strategies have proven "
+                    f"effective. Apply when relevant; ignore when not — "
+                    f"these are advisory, not commands."
+                )
+                for _i, _s in enumerate(_strategies, 1):
+                    _lines.append(
+                        f"  {_i}. WHEN {_s.when_pattern} THEN "
+                        f"{_s.then_action} (evidence: "
+                        f"{_s.evidence_count} traces, conf "
+                        f"{_s.confidence:.2f})"
+                    )
+                _lines.append("</curriculum-strategies>")
+                curriculum_strategies_block = "\n".join(_lines)
+
         # B-25: frozen system-prompt snapshot per session.
         # _with_fresh_time builds (base + time). Cache the base part
         # keyed by (session_id, generation); only re-render when the
@@ -2227,6 +2313,7 @@ class AgentLoop:
                     + memory_ctx_block
                     + memory_files_block
                     + curriculum_hint_block
+                    + curriculum_strategies_block
                     + skill_browse_hint
                 ),
             ),
