@@ -21,7 +21,17 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
+
+if TYPE_CHECKING:
+    # Sprint 3 #5 follow-up: evolution components referenced only by
+    # forward-string annotation in the new builder factories. Importing
+    # under TYPE_CHECKING keeps daemon boot free of core/journal +
+    # core/evolution module loads when the user has reasoning_bank /
+    # reflective_mutator disabled (the default).
+    from xmclaw.core.evolution.reflective_mutator import ReflectiveMutator
+    from xmclaw.core.journal.strategy_bank import StrategyBank
+    from xmclaw.core.journal.strategy_distiller import StrategyDistiller
 
 from xmclaw.core.bus import InProcessEventBus
 from xmclaw.daemon.agent_loop import AgentLoop
@@ -1246,7 +1256,17 @@ def build_agent_from_config(
     from xmclaw.providers.memory.manager import MemoryManager
     from xmclaw.providers.memory.builtin_file import BuiltinFileMemoryProvider
 
-    memory_manager = MemoryManager(bus=bus)
+    # Jarvisification: optional MemoryGraph for relational memory.
+    _cognition_cfg = (cfg or {}).get("cognition") or {}
+    _graph = None
+    if _cognition_cfg.get("enabled", False):
+        try:
+            from xmclaw.cognition.memory_graph import MemoryGraph
+            _graph = MemoryGraph(bus=bus)
+        except Exception:  # noqa: BLE001
+            pass
+
+    memory_manager = MemoryManager(bus=bus, graph=_graph)
     # Builtin file provider — backed by the persona profile dir.
     try:
         memory_manager.add_provider(
@@ -1265,11 +1285,18 @@ def build_agent_from_config(
         (evo_section.get("memory") or {}).get("provider")
         or "sqlite_vec"
     )
+    # Sprint 3 #5 follow-up: retain a reference to the SqliteVecMemory
+    # store so build_strategy_bank_from_config can wire ReasoningBank
+    # against the SAME underlying vec store the agent uses for memory.
+    # Other provider choices (hindsight / supermemory / mem0 / none)
+    # leave ``vec_memory`` as None and the strategy bank stays disabled.
+    vec_memory: SqliteVecMemory | None = None
     if provider_choice == "sqlite_vec":
         try:
             external = build_memory_from_config(cfg, bus=bus)
             if external is not None:
                 memory_manager.add_provider(external)
+                vec_memory = external
         except Exception:  # noqa: BLE001
             pass
     elif provider_choice == "hindsight":
@@ -1469,6 +1496,23 @@ def build_agent_from_config(
     except Exception:  # noqa: BLE001 — never block boot on cost config
         _cost_tracker = None
 
+    # Jarvisification: build a shared CognitiveState when enabled.
+    _cognitive_state = None
+    if _cognition_cfg.get("enabled", False):
+        try:
+            from xmclaw.cognition.state import CognitiveState
+            _cognitive_state = CognitiveState()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Sprint 3 #5 follow-up: optionally build the StrategyBank against
+    # the daemon's SqliteVecMemory + embedder. Off by default (gated on
+    # ``evolution.reasoning_bank.enabled``); silently no-op when the
+    # vec store or embedder is missing — agent_loop tolerates None.
+    strategy_bank = build_strategy_bank_from_config(
+        cfg, memory=vec_memory, embedder=agent_embedder,
+    )
+
     return AgentLoop(
         llm=llm, bus=bus, tools=tools,
         system_prompt=system_prompt,
@@ -1487,4 +1531,82 @@ def build_agent_from_config(
         post_sampling_registry=_hook_registry,
         llm_timeout_s=_llm_timeout_s,
         cost_tracker=_cost_tracker,
+        cognitive_state=_cognitive_state,
+        strategy_bank=strategy_bank,
     )
+
+
+# ── Sprint 3 #5 follow-up: evolution-loop wiring ────────────────────
+#
+# These factories thread the Sprint-3 ReasoningBank components (Strategy
+# Bank, Strategy Distiller, Reflective Mutator) into the daemon. Today
+# only ``build_strategy_bank_from_config`` is consumed by
+# ``build_agent_from_config`` — the agent_loop already knows how to
+# call ``bank.retrieve(...)`` per turn (Sprint 3 #6). The Distiller
+# and Mutator builders are exposed here so the upcoming SleepWorker /
+# scheduler-tick ticket can pick them up without re-deriving the tier
+# classification logic.
+#
+# All three functions are *additive*: returning ``None`` means the
+# corresponding feature stays off. Callers treat None as "no-op", so
+# a config without ``evolution.reasoning_bank.enabled`` keeps the
+# pre-Sprint-3 runtime behaviour byte-for-byte.
+
+
+def build_strategy_bank_from_config(
+    cfg: dict[str, Any],
+    *,
+    memory: SqliteVecMemory | None,
+    embedder: Any,
+) -> "StrategyBank | None":
+    """Build a StrategyBank when ``evolution.reasoning_bank.enabled`` is
+    true AND a vec store + embedder are wired. Returns None when off,
+    when memory store is missing, or when embedder is missing — caller
+    treats None as "no strategy bank, agent_loop runs without it"."""
+    # Lazy-import core to keep top-of-file imports stable.
+    from xmclaw.core.journal.strategy_bank import StrategyBank
+    rb = ((cfg.get("evolution") or {}).get("reasoning_bank")) or {}
+    if not rb.get("enabled"):
+        return None
+    if memory is None or embedder is None:
+        return None
+    return StrategyBank(memory, embedder)
+
+
+def build_strategy_distiller_from_config(
+    cfg: dict[str, Any],
+    *,
+    llm: LLMProvider | None,
+) -> "StrategyDistiller | None":
+    """Build a StrategyDistiller when ``evolution.reasoning_bank.enabled``
+    is true AND an LLM is configured. The distiller's tier is computed
+    from ``llm.model`` via classify_model_tier. Returns None when off
+    or when no LLM is wired (echo mode)."""
+    from xmclaw.core.journal.strategy_distiller import StrategyDistiller
+    from xmclaw.providers.llm._provider_profiles import classify_model_tier
+    rb = ((cfg.get("evolution") or {}).get("reasoning_bank")) or {}
+    if not rb.get("enabled") or llm is None:
+        return None
+    model_id = getattr(llm, "model", None) or ""
+    tier = classify_model_tier(model_id)
+    max_s = int(rb.get("max_strategies") or 7)
+    return StrategyDistiller(llm, max_strategies=max_s, evolution_tier=tier)
+
+
+def build_reflective_mutator_from_config(
+    cfg: dict[str, Any],
+    *,
+    llm: LLMProvider | None,
+) -> "ReflectiveMutator | None":
+    """Build a ReflectiveMutator when ``evolution.reflective_mutator.enabled``
+    is true AND an LLM is configured. Tier-classified via the LLM's
+    ``.model`` attribute."""
+    from xmclaw.core.evolution.reflective_mutator import ReflectiveMutator
+    from xmclaw.providers.llm._provider_profiles import classify_model_tier
+    rm = ((cfg.get("evolution") or {}).get("reflective_mutator")) or {}
+    if not rm.get("enabled") or llm is None:
+        return None
+    model_id = getattr(llm, "model", None) or ""
+    tier = classify_model_tier(model_id)
+    max_per = int(rm.get("max_per_skill") or 5)
+    return ReflectiveMutator(llm, max_per_skill=max_per, evolution_tier=tier)
