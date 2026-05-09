@@ -59,6 +59,7 @@ from xmclaw.cli._evolution_cmds import evolution_app  # noqa: E402
 from xmclaw.cli._security_cmds import security_app  # noqa: E402
 from xmclaw.cli._session_cmds import session_app  # noqa: E402
 from xmclaw.cli.skill_marketplace import skill_app  # noqa: E402  B-390
+from xmclaw.cli.eval import eval_app  # noqa: E402  Sprint 4: A/B harness
 app.add_typer(config_app, name="config")
 app.add_typer(backup_app, name="backup")
 app.add_typer(evolution_app, name="evolution")
@@ -68,6 +69,7 @@ app.add_typer(curriculum_app, name="curriculum")
 app.add_typer(security_app, name="security")
 app.add_typer(session_app, name="session")
 app.add_typer(skill_app, name="skill")  # B-390 (Sprint 2): skill marketplace
+app.add_typer(eval_app, name="eval")  # Sprint 4: A/B benchmark harness
 
 # B-325 back-compat re-exports: tests / external callers used to
 # ``from xmclaw.cli.main import _default_config_template`` etc when
