@@ -141,6 +141,7 @@ def _isolate_secrets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.delenv(key, raising=False)
 
 
+@pytest.mark.real_secrets
 def test_empty_cfg_api_key_falls_back_to_secrets_file(
     _isolate_secrets: None,
 ) -> None:
@@ -160,6 +161,7 @@ def test_empty_cfg_api_key_falls_back_to_secrets_file(
     assert llm.api_key == "sk-ant-from-file"
 
 
+@pytest.mark.real_secrets
 def test_whitespace_cfg_api_key_falls_back_to_secrets(
     _isolate_secrets: None,
 ) -> None:
@@ -175,6 +177,7 @@ def test_whitespace_cfg_api_key_falls_back_to_secrets(
     assert llm.api_key == "sk-openai-fallback"
 
 
+@pytest.mark.real_secrets
 def test_missing_cfg_api_key_falls_back_to_secrets(
     _isolate_secrets: None,
 ) -> None:
@@ -205,6 +208,7 @@ def test_cfg_literal_still_wins_over_secrets(_isolate_secrets: None) -> None:
     assert llm.api_key == "sk-ant-from-cfg"
 
 
+@pytest.mark.real_secrets
 def test_env_var_override_reaches_factory(
     _isolate_secrets: None, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -227,6 +231,7 @@ def test_returns_none_when_cfg_empty_and_no_secret(
     }) is None
 
 
+@pytest.mark.real_secrets
 def test_secrets_fallback_respects_provider_order(
     _isolate_secrets: None,
 ) -> None:
@@ -377,6 +382,7 @@ def test_placeholder_resolver_preserves_empty_containers() -> None:
     assert out == {"channels": {}, "tools": {"allowed_dirs": []}}
 
 
+@pytest.mark.real_secrets
 def test_load_config_resolves_placeholders_end_to_end(
     _isolate_secrets: None, tmp_path: Path,
 ) -> None:
@@ -436,6 +442,7 @@ def test_load_config_resolve_secrets_false_keeps_literal(
     assert cfg["llm"]["anthropic"]["api_key"] == "${secret:whatever}"
 
 
+@pytest.mark.real_secrets
 def test_load_config_env_override_runs_before_secret_resolution(
     _isolate_secrets: None, tmp_path: Path,
 ) -> None:
@@ -847,8 +854,13 @@ def test_build_runtime_rejects_non_string_backend() -> None:
 def test_build_runtime_rejects_unknown_backend() -> None:
     with pytest.raises(ConfigError) as exc:
         build_skill_runtime_from_config(
-            {"runtime": {"backend": "docker"}},
+            # B-385: ``docker`` joined the known set; pick something that
+            # really doesn't exist so the error-message surface stays
+            # exercised.
+            {"runtime": {"backend": "wasm"}},
         )
     # Error message surfaces the known set so the user can pick one.
-    assert "local" in str(exc.value)
-    assert "process" in str(exc.value)
+    msg = str(exc.value)
+    assert "local" in msg
+    assert "process" in msg
+    assert "docker" in msg

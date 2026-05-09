@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "xmclaw"
 version = "1.0.0"
-description = "XMclaw — local-first, self-evolving AI agent runtime"
+description = "XMclaw — local-first AI agent runtime with experimental, opt-in skill evolution"
 requires-python = ">=3.10"
 # Phase 4.10 trimmed dependency list: removed rich / prompt-toolkit /
 # pystray / Pillow (desktop tray deleted), playwright (v1 browser-tool),
@@ -88,6 +88,15 @@ content = [
     # B-143: rss_fetch tool
     "feedparser>=6.0.0",
 ]
+# B-389 (Sprint 2): Composio bridge — 7000+ pre-integrated SaaS tools
+# (Gmail / Slack / GitHub / Notion / Linear / HubSpot / …) exposed as
+# ToolProvider actions. Lazy-import: ``composio_core`` only loads when
+# ``tools.composio.enabled`` flips on AND the agent actually calls a
+# Composio action, so installs without this extra still boot cleanly.
+# Per-app OAuth (Gmail / Slack / etc.) is handled in Composio's own
+# CLI / dashboard at https://app.composio.dev — XMclaw consumes
+# already-authorised entities, never initiates OAuth itself.
+tools-composio = ["composio-core>=0.7"]
 all     = [
     "playwright>=1.48.0",
     "python-lsp-server>=1.12.0",
@@ -97,6 +106,7 @@ all     = [
     "python-docx>=1.1.0",
     "openpyxl>=3.1.0",
     "Pillow>=11.0.0",
+    "composio-core>=0.7",
 ]
 
 [project.scripts]
@@ -133,3 +143,10 @@ strict = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# B-386-followup: tests in tests/unit/ that need the real
+# xmclaw.utils.secrets.get_secret resolver (env / file / keyring lookup
+# fidelity) opt out of the autouse isolation fixture in
+# tests/unit/conftest.py via this marker.
+markers = [
+    "real_secrets: test exercises the real get_secret resolver (opts out of unit-suite secrets isolation)",
+]
