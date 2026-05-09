@@ -119,30 +119,80 @@ def _write_config(
     )
 
 
-def _smoke_test(provider: str) -> tuple[bool, str]:
-    """Quick connectivity check against the provider base URL."""
-    import urllib.request
+def _smoke_test(provider: str, api_key: str | None = None) -> tuple[bool, str]:
+    """Real key-validation smoke test.
 
-    urls = {
-        "anthropic": "https://api.anthropic.com/v1/health",
-        "openai": "https://api.openai.com/v1/models",
-    }
-    url = urls.get(provider, "")
-    if not url:
-        return True, "unknown provider, skipping connectivity check"
-    req = urllib.request.Request(url, method="HEAD")
+    B-347 (Sprint 1): pre-B-347 this was a HEAD request without the
+    api_key in headers, treating 401/403 as "OK, endpoint reachable".
+    That meant onboard ALWAYS passed even when the key was invalid /
+    expired — user finished onboarding, daemon dropped to echo mode,
+    user typed "hello" and got "hello" back, no idea why.
+
+    Now: actually call a 1-token endpoint with the key in headers.
+    200/400 (key valid, payload may be rejected) = OK. 401 = bad key.
+    Network failure / 5xx = endpoint unreachable.
+    """
+    import json as _json
+    import urllib.request
+    import urllib.error
+
+    if not api_key:
+        # No key provided — still skip (user may want to set it later
+        # via env var). But warn instead of declaring success.
+        return True, "no api_key provided — skipping (set XMC__llm.* env vars later or rerun with key)"
+
+    if provider == "anthropic":
+        url = "https://api.anthropic.com/v1/messages"
+        body = _json.dumps({
+            "model": "claude-haiku-4-5",
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ping"}],
+        }).encode("utf-8")
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+    elif provider == "openai":
+        url = "https://api.openai.com/v1/models"
+        body = None
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+        }
+    else:
+        return True, f"unknown provider {provider!r}, skipping connectivity check"
+
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers=headers,
+        method="POST" if body else "GET",
+    )
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            if resp.status < 500:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if resp.status == 200:
                 return True, ""
             return False, f"HTTP {resp.status}"
     except urllib.error.HTTPError as exc:
-        # 401/403 means the endpoint is reachable but auth failed —
-        # that's expected without a real key in the request.
-        if exc.code in (401, 403):
-            return True, ""
+        # 401 = bad key (the user's actual problem). 403 = key valid
+        # but lacks permission for THIS endpoint — still treat as OK
+        # for onboard, the user might be on a tier that can't list
+        # models but can still complete (anthropic has this shape).
+        # 400 = payload rejected but auth passed (anthropic returns
+        # this for missing model on free tier, etc).
+        if exc.code == 401:
+            try:
+                body_text = exc.read().decode("utf-8", errors="replace")[:300]
+            except Exception:  # noqa: BLE001
+                body_text = ""
+            return False, (
+                f"HTTP 401 — API key 被拒。请确认你贴的是当前有效的 key，"
+                f"且对应的 provider 选对了。详情: {body_text}"
+            )
+        if exc.code in (403, 400):
+            return True, f"HTTP {exc.code} — auth passed (endpoint-specific rejection)"
         return False, f"HTTP {exc.code}"
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return False, str(exc)
 
 
@@ -182,9 +232,13 @@ def run_onboard(
     _write_config(path, provider, workspace, tools)
 
     # Step 6: smoke test
+    # B-347: now validates the API key by ACTUALLY hitting the
+    # provider with the key in headers. 401 → fail-fast onboard;
+    # user gets to fix the key NOW instead of discovering at first
+    # message that daemon dropped to echo mode silently.
     if not skip_smoke:
         typer.echo(_("onboard.smoke_test"))
-        ok, err = _smoke_test(provider)
+        ok, err = _smoke_test(provider, api_key=api_key)
         if ok:
             typer.echo(_("onboard.smoke_ok"))
         else:

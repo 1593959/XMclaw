@@ -30,6 +30,7 @@ from xmclaw.daemon.session_store import SessionStore
 from xmclaw.providers.llm.anthropic import AnthropicLLM
 from xmclaw.providers.llm.base import LLMProvider
 from xmclaw.providers.llm.openai import OpenAILLM
+from xmclaw.providers.llm.openrouter import OpenRouterLLM
 from xmclaw.providers.memory.sqlite_vec import SqliteVecMemory
 from xmclaw.providers.runtime import (
     LocalSkillRuntime,
@@ -47,7 +48,12 @@ from xmclaw.utils.paths import (
 
 
 # Recognised provider kinds in the config. Each maps to a constructor.
-_PROVIDER_ORDER: tuple[str, ...] = ("anthropic", "openai")
+# B-386: ``openrouter`` ranks AFTER the two native providers so a user
+# who has both an Anthropic / OpenAI key and an OpenRouter key keeps
+# hitting the native API by default (cheaper + lower latency); they
+# opt into OpenRouter explicitly via the profiles array or by clearing
+# the native api_key.
+_PROVIDER_ORDER: tuple[str, ...] = ("anthropic", "openai", "openrouter")
 
 
 class ConfigError(ValueError):
@@ -319,6 +325,15 @@ def build_llm_from_config(cfg: dict[str, Any]) -> LLMProvider | None:
                 api_key=api_key, model=model, base_url=base_url or None,
                 prompt_cache_enabled=prompt_cache_enabled,
             )
+        if provider_name == "openrouter":
+            # B-386: OpenRouterLLM injects HTTP-Referer + X-Title
+            # attribution headers and falls back to OpenRouter's base
+            # URL when ``base_url`` is empty. Cache auto-detect runs on
+            # the model prefix (anthropic/* + openai/* → on).
+            return OpenRouterLLM(
+                api_key=api_key, model=model, base_url=base_url or None,
+                prompt_cache_enabled=prompt_cache_enabled,
+            )
 
     return None
 
@@ -328,6 +343,9 @@ def _default_model_for(provider_name: str) -> str:
     return {
         "anthropic": "claude-haiku-4-5-20251001",
         "openai": "gpt-4o-mini",
+        # B-386: OpenRouter's sweet spot for coding agents (good
+        # price/quality, broad tool support) as of 2026-Q2.
+        "openrouter": "anthropic/claude-sonnet-4",
     }.get(provider_name, "")
 
 
@@ -354,6 +372,13 @@ def _instantiate_llm(
         return AnthropicLLM(api_key=api_key, model=model, base_url=base_url or None)
     if provider_name == "openai":
         return OpenAILLM(
+            api_key=api_key, model=model, base_url=base_url or None,
+            prompt_cache_enabled=prompt_cache_enabled,
+        )
+    if provider_name == "openrouter":
+        # B-386: same shape as openai but with OpenRouter's base URL
+        # default + HTTP-Referer / X-Title attribution headers.
+        return OpenRouterLLM(
             api_key=api_key, model=model, base_url=base_url or None,
             prompt_cache_enabled=prompt_cache_enabled,
         )

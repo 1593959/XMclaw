@@ -1,7 +1,7 @@
 {
   "_comment": "XMclaw Daemon Configuration — copy to config.json and fill in your API keys",
   "llm": {
-    "_comment": "openai/anthropic blocks define the 'default' profile (id='default') the daemon picks when a chat session doesn't specify one. The first block with an api_key wins (anthropic preferred, then openai). profiles[] adds named alternatives — chat header dropdown lets the user route each session through one of them. Restart the daemon after editing. ('default_provider' field was removed B-304: factory.py auto-detects from filled api_keys; setting it had no effect since B-146.)",
+    "_comment": "openai/anthropic/openrouter blocks define the 'default' profile (id='default') the daemon picks when a chat session doesn't specify one. The first block with an api_key wins (anthropic > openai > openrouter — native APIs first, OpenRouter as the fallback). profiles[] adds named alternatives — chat header dropdown lets the user route each session through one of them. Restart the daemon after editing. ('default_provider' field was removed B-304: factory.py auto-detects from filled api_keys; setting it had no effect since B-146.)",
     "openai": {
       "api_key": "",
       "base_url": "https://api.openai.com/v1",
@@ -12,7 +12,13 @@
       "base_url": "https://api.anthropic.com",
       "default_model": ""
     },
-    "_comment_profiles_schema": "each entry: {id (slug, [a-z0-9][a-z0-9_-]*), label?, provider (anthropic|openai), model, api_key, base_url?}. Empty by default; manage via Settings page or edit here directly.",
+    "_comment_openrouter": "B-386: OpenRouter (https://openrouter.ai) — single key, 200+ models. Model id is '<provider>/<model>' (e.g. 'anthropic/claude-sonnet-4', 'openai/gpt-4o', 'meta-llama/llama-3.1-70b-instruct'). XMclaw automatically attaches HTTP-Referer + X-Title attribution headers so calls show up in your OpenRouter dashboard. Prompt-cache auto-detect: on for anthropic/* + openai/* prefixes, off for everything else.",
+    "openrouter": {
+      "api_key": "",
+      "base_url": "https://openrouter.ai/api/v1",
+      "default_model": "anthropic/claude-sonnet-4"
+    },
+    "_comment_profiles_schema": "each entry: {id (slug, [a-z0-9][a-z0-9_-]*), label?, provider (anthropic|openai|openrouter), model, api_key, base_url?}. Empty by default; manage via Settings page or edit here directly.",
     "profiles": []
   },
   "evolution": {

@@ -127,30 +127,58 @@ class TestAskTools:
 
 class TestSmokeTest:
     def test_unknown_provider_skips(self) -> None:
-        ok, err = _smoke_test("ollama")
+        ok, err = _smoke_test("ollama", api_key="sk-foo")
         assert ok is True
         assert "skipping" in err.lower()
 
-    def test_anthropic_reachable(self) -> None:
-        """Mock a 401 — endpoint reachable, auth missing (expected)."""
+    def test_no_api_key_skips_with_warning(self) -> None:
+        """B-347: no key → skip but flag it ('user may want env var').
+        Pre-B-347 the smoke test ran without keys and treated 401 as
+        'reachable=OK' → onboard silently passed with bad keys."""
+        ok, err = _smoke_test("anthropic", api_key=None)
+        assert ok is True
+        assert "no api_key" in err.lower()
+
+    def test_anthropic_invalid_key_fails(self) -> None:
+        """B-347: 401 with key in headers means the KEY is bad — fail
+        onboard so user fixes it now (vs discovering at first message
+        that daemon dropped to echo mode silently). Pre-B-347 the
+        same 401 was counted as 'reachable=OK'."""
         from urllib.error import HTTPError
 
         with patch("urllib.request.urlopen") as m:
             m.side_effect = HTTPError(
-                url="https://api.anthropic.com/v1/health",
+                url="https://api.anthropic.com/v1/messages",
                 code=401,
                 msg="Unauthorized",
                 hdrs={},
                 fp=None,
             )
-            ok, err = _smoke_test("anthropic")
+            ok, err = _smoke_test("anthropic", api_key="sk-ant-bad")
+            assert ok is False
+            assert "401" in err
+            assert "API key" in err
+
+    def test_anthropic_400_passes(self) -> None:
+        """400 = auth passed, payload-specific rejection. Onboard
+        should still pass — the key works."""
+        from urllib.error import HTTPError
+
+        with patch("urllib.request.urlopen") as m:
+            m.side_effect = HTTPError(
+                url="https://api.anthropic.com/v1/messages",
+                code=400,
+                msg="Bad Request",
+                hdrs={},
+                fp=None,
+            )
+            ok, err = _smoke_test("anthropic", api_key="sk-ant-good")
             assert ok is True
-            assert err == ""
 
     def test_unreachable(self) -> None:
         with patch("urllib.request.urlopen") as m:
             m.side_effect = OSError("network down")
-            ok, err = _smoke_test("openai")
+            ok, err = _smoke_test("openai", api_key="sk-test")
             assert ok is False
             assert "network down" in err
 
