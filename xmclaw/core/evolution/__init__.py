@@ -15,6 +15,7 @@ from xmclaw.core.evolution.constraints import (
 from xmclaw.core.evolution.controller import (
     EvolutionController,
     EvolutionDecision,
+    IronRule1Gate,
     PromotionThresholds,
 )
 from xmclaw.core.evolution.dataset import (
@@ -39,6 +40,7 @@ __all__ = [
     "EvalExample",
     "EvolutionController",
     "EvolutionDecision",
+    "IronRule1Gate",
     "MutationResult",
     "ProposedSkill",
     "PromotionThresholds",

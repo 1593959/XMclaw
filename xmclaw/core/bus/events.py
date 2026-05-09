@@ -86,6 +86,21 @@ class EventType(str, Enum):
     SKILL_ROLLBACK_RECOMMENDED = "skill_rollback_recommended"  # B-318
     SKILL_PROMOTED = "skill_promoted"
     SKILL_ROLLED_BACK = "skill_rolled_back"
+    # Sprint 3 Iron Rule #1: emitted when EvolutionController would
+    # have promoted on legacy thresholds but the multi-signal gate
+    # (``GraderVerdict.promote_eligible``) refused. ``xmclaw evolve
+    # review`` listens so reviewers can see WHY promotion didn't fire
+    # (no independent signal, judge disagreement, deterministic-score
+    # floor, etc.). Payload:
+    #   {"skill_id": str | None,
+    #    "candidate_id": str | None,
+    #    "candidate_version": int | None,
+    #    "head_version": int | None,
+    #    "reason": str,                # "single_signal_only" | "deterministic_floor" | "independent_floor"
+    #    "deterministic_score": float | None,
+    #    "independent_score": float | None,
+    #    "evidence": list[str]}
+    SKILL_PROMOTION_BLOCKED = "skill_promotion_blocked"
     # B-333 (audit #19): emitted when SkillsWatcher detects that a
     # Python ``skill.py`` file changed but ``SkillRegistry.update_body``
     # can't apply the change (importlib caches the module — only a
@@ -179,6 +194,36 @@ class EventType(str, Enum):
     #  "session_id": str,            # source session whose buffer triggered the flush
     #  "deltas": [{kind, text, confidence}, ...]}
     USER_PROFILE_UPDATED = "user_profile_updated"
+
+    # Sprint 3 #3: Letta-pattern sleep-time agent + OS idle scheduler.
+    # See docs/SLEEP_AGENT.md and docs/EVOLUTION_HONEST_STATE.md
+    # ("Iron Rules"). Foreground vs. sleep-time split is the actual
+    # value-add: only sleep agent writes memory, only foreground reads,
+    # so heavy compaction never collides with active turns. The cron-
+    # based dream cycle remains a fallback trigger; idle-detection wins
+    # whichever crosses first.
+    #
+    # SLEEP_IDLE_DETECTED — emitted exactly once per threshold crossing.
+    # Payload: {"level": "short" | "long",  # which threshold tripped
+    #           "idle_seconds": float}      # observed idle at trip time
+    SLEEP_IDLE_DETECTED = "sleep_idle_detected"
+    # SLEEP_TASK_STARTED — emitted right before the registered fn runs.
+    # Payload: {"task_name": str, "level": "short" | "long"}
+    SLEEP_TASK_STARTED = "sleep_task_started"
+    # SLEEP_TASK_FINISHED — emitted after the fn returns (or raises).
+    # Payload: {"task_name": str,
+    #           "ok": bool,                  # False when fn raised
+    #           "duration_ms": float,
+    #           "result": dict[str, Any]}    # whatever fn returned (or
+    #                                         # {"error": "<repr>"}}
+    SLEEP_TASK_FINISHED = "sleep_task_finished"
+    # SLEEP_INTERRUPTED — emitted when the user resumes mid-task and the
+    # SleepWorker cancels-with-rollback (any SleepWorkspace buffered
+    # writes are discarded; foreground sees pre-task state). Payload:
+    # {"task_name": str,
+    #  "partial_progress": dict[str, Any]}   # whatever the task
+    #                                         # checkpoint last set
+    SLEEP_INTERRUPTED = "sleep_interrupted"
 
 
 @dataclass(frozen=True, slots=True)

@@ -78,12 +78,54 @@ class CandidateEvaluation:
 
 
 @dataclass(frozen=True, slots=True)
+class IronRule1Gate:
+    """Sprint 3 Iron Rule #1 input — multi-signal verdict summary.
+
+    Fed alongside the legacy threshold inputs so the controller can
+    refuse promotion even when EWMA + plays + gaps all clear, if the
+    grader didn't gather ≥2 independent signals on the candidate.
+
+    Carries enough info for the controller to emit a structured
+    ``SKILL_PROMOTION_BLOCKED`` event with a machine-readable
+    ``reason`` (which the orchestrator surfaces in
+    ``xmclaw evolve review``).
+
+    Attributes
+    ----------
+    promote_eligible
+        ``True`` only if the grader saw ≥2 independent signals AND
+        each cleared its threshold. ``False`` blocks promotion at the
+        gate regardless of any other input.
+    deterministic_score, independent_score
+        The two signal components — surfaced in the blocked-event
+        payload so reviewers see WHICH signal was missing or low.
+    block_reason
+        ``"single_signal_only"`` | ``"deterministic_floor"`` |
+        ``"independent_floor"`` | ``""`` (when promote_eligible).
+        Stable strings — the UI groups blocked promotions by this.
+    """
+
+    promote_eligible: bool
+    deterministic_score: float | None = None
+    independent_score: float | None = None
+    block_reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class EvolutionReport:
     decision: EvolutionDecision
     winner_candidate_id: str | None = None
     winner_version: int | None = None
     evidence: tuple[str, ...] = field(default_factory=tuple)
     reason: str = ""
+    # Sprint 3 Iron Rule #1: when the legacy gates would have promoted
+    # but the multi-signal gate refused, ``decision`` becomes NO_CHANGE
+    # and ``blocked_by_iron_rule_1`` carries the structured reason.
+    # Callers can listen for it to emit ``SKILL_PROMOTION_BLOCKED``
+    # events. ``None`` means the multi-signal gate was either not
+    # consulted or the candidate was rejected by an earlier gate (so
+    # Iron Rule #1 wasn't the proximate cause).
+    blocked_by_iron_rule_1: IronRule1Gate | None = None
 
 
 class EvolutionController:
@@ -103,6 +145,7 @@ class EvolutionController:
         *,
         head_version: int | None,
         head_mean: float | None = None,
+        iron_rule_1: IronRule1Gate | None = None,
     ) -> EvolutionReport:
         """Return a report: PROMOTE / NO_CHANGE / ROLLBACK.
 
@@ -113,6 +156,17 @@ class EvolutionController:
         ``head_mean`` is the HEAD's measured mean score in this bench
         (if available). If None, gap-over-head is computed against the
         session's overall mean as a less-strict baseline.
+
+        ``iron_rule_1`` (Sprint 3): the multi-signal verdict summary
+        for the candidate being considered. When supplied AND
+        ``promote_eligible`` is False, the controller refuses to
+        promote even if all four threshold gates clear, and returns
+        a NO_CHANGE report whose ``blocked_by_iron_rule_1`` field
+        carries the structured reason (orchestrators surface this as
+        a ``SKILL_PROMOTION_BLOCKED`` event for ``xmclaw evolve
+        review``). When ``iron_rule_1`` is None — typical for legacy
+        callers and the rollback path — the gate is not consulted
+        and behaviour is unchanged.
 
         B-119: also returns ROLLBACK when HEAD's measured mean has
         regressed below an earlier version that beats it by the same
@@ -246,7 +300,13 @@ class EvolutionController:
                     ),
                 )
 
-        # All gates cleared — propose a promotion.
+        # All four legacy gates cleared. Sprint 3 Iron Rule #1: the
+        # multi-signal gate is the FIFTH and final gate. If the
+        # caller supplied an ``iron_rule_1`` summary and it says
+        # ``promote_eligible=False``, we refuse — even though
+        # plays / mean / gaps all passed. The blocked report carries
+        # the structured reason so the orchestrator can emit a
+        # ``SKILL_PROMOTION_BLOCKED`` event.
         evidence = [
             f"candidate={best.candidate_id}",
             f"plays={best.plays}",
@@ -258,6 +318,23 @@ class EvolutionController:
             evidence.append(
                 f"gap_over_second={best.mean_score - second.mean_score:.3f}"
             )
+
+        if iron_rule_1 is not None and not iron_rule_1.promote_eligible:
+            block_reason = iron_rule_1.block_reason or "single_signal_only"
+            return EvolutionReport(
+                decision=EvolutionDecision.NO_CHANGE,
+                evidence=tuple(evidence),
+                reason=(
+                    f"arm {best.candidate_id!r} cleared the four legacy "
+                    f"gates but Iron Rule #1 BLOCKED promotion "
+                    f"(reason={block_reason!r}, det="
+                    f"{iron_rule_1.deterministic_score}, ind="
+                    f"{iron_rule_1.independent_score}). Need ≥2 "
+                    f"independent signals; never single-signal promote."
+                ),
+                blocked_by_iron_rule_1=iron_rule_1,
+            )
+
         return EvolutionReport(
             decision=EvolutionDecision.PROMOTE,
             winner_candidate_id=best.candidate_id,
