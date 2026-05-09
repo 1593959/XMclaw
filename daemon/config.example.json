@@ -22,8 +22,8 @@
     "profiles": []
   },
   "evolution": {
-    "_comment": "Epic #4: evolution visibility + auto-apply. auto_apply=false (default) means the orchestrator observes SKILL_CANDIDATE_PROPOSED events but does not mutate HEAD — users opt-in explicitly. Flip to true after you've watched the pipeline for a while and trust the gates.",
-    "enabled": true,
+    "_comment": "Epic #4 + Sprint 3 honest-disclosure: ``enabled`` defaults to false until Sprint 4 benchmark numbers prove the loop helps more than it costs. Set true to opt into the experimental observers (HonestGrader / JournalWriter / SkillDreamCycle). ``auto_apply=false`` keeps promotion human-gated even when enabled — the orchestrator observes SKILL_CANDIDATE_PROPOSED events but does not mutate HEAD without ``xmclaw evolve approve <id>``. Flip auto_apply to true only after benchmark + user evidence agree.",
+    "enabled": false,
     "auto_apply": false,
     "interval_minutes": 30,
     "daily_review_hour": 22,
@@ -77,9 +77,36 @@
     "enable_bash": true,
     "enable_web": true
   },
+  "voice": {
+    "_comment": "B-388 voice MVP — STT (speech→text) + TTS (text→speech). Both blocks are optional; omit to disable that direction. Requires the optional extra: pip install 'xmclaw[voice]' (or [voice-stt] / [voice-tts] for half). Default STT is faster-whisper local model 'tiny' (~75 MB, runs on any laptop CPU); default TTS is Microsoft Edge's free voice service (zh-CN-XiaoxiaoNeural, no API key). Synthesized audio lands at ~/.xmclaw/v2/audio/<uuid>.mp3.",
+    "stt": {
+      "_comment": "model: tiny | base | small | medium | large-v3 (size order; bigger = more accurate + slower + bigger first-run download). device: cpu | cuda. compute_type: int8 (lightest) | int8_float16 | float16 | float32. language: ISO-639-1 hint (zh / en / ja / …) or null for auto-detect.",
+      "model": "tiny",
+      "device": "cpu",
+      "compute_type": "int8",
+      "language": null
+    },
+    "tts": {
+      "_comment": "voice: any edge-tts voice id. Chinese: zh-CN-XiaoxiaoNeural (female default), zh-CN-YunxiNeural (male), zh-CN-XiaoyiNeural (female warm). English: en-US-AriaNeural, en-US-JennyNeural, en-GB-SoniaNeural. rate / volume: '+0%' = natural; '+15%' = faster, '-25%' = quieter, etc.",
+      "voice": "zh-CN-XiaoxiaoNeural",
+      "rate": "+0%",
+      "volume": "+0%"
+    }
+  },
   "runtime": {
-    "_comment": "Epic #3: which SkillRuntime executes forked skills. 'local' = in-process asyncio task + CPU-timeout; good for dev + conformance tests. 'process' = separate OS process via multiprocessing.spawn; real SIGKILL + import isolation + crash containment; fs/net/memory are still advisory (see providers/runtime/process.py). Default is 'local'; production should set 'process'.",
-    "backend": "local"
+    "_comment": "Epic #3: which SkillRuntime executes forked skills. 'local' = in-process asyncio task + CPU-timeout; good for dev + conformance tests. 'process' = separate OS process via multiprocessing.spawn; real SIGKILL + import isolation + crash containment; fs/net/memory are still advisory (see providers/runtime/process.py). 'docker' (B-385) = container per skill — real fs/net/memory sandbox via kernel cgroups + namespaces; requires `pip install 'xmclaw[sandbox-docker]'` and a running Docker daemon. Default is 'local'; production with trusted skills set 'process'; production running user-evolved / low-trust skills set 'docker'.",
+    "backend": "local",
+    "_comment_docker": "Only read when backend='docker'. All fields optional; defaults are the most-restrictive combination. image: container image ref (default python:3.10-slim, pulled on first fork). network_mode='none' = isolated, 'bridge' = host-attached. mem_limit/cpu_quota/cpu_period are kernel-enforced caps. read_only=true mounts the container fs read-only (skill can only write under tmpfs /tmp). timeout_s is the wall-clock cap; manifest.max_cpu_seconds wins when smaller.",
+    "docker": {
+      "image": "python:3.10-slim",
+      "network_mode": "none",
+      "mem_limit": "512m",
+      "cpu_quota": 50000,
+      "cpu_period": 100000,
+      "read_only": true,
+      "tmpfs": {"/tmp": "size=100M"},
+      "timeout_s": 30
+    }
   },
   "_consumer_note": "B-304 sections below ('backup', 'mcp_servers', 'channels', 'integrations', 'gateway') are read by daemon lifespan + adapter loaders, NOT by xmclaw/daemon/factory.py. Keys here are descriptive; real validation happens in the consuming subsystem at startup. Daemon restart required for any of these.",
   "gateway": {
