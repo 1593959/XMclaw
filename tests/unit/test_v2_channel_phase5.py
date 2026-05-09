@@ -23,11 +23,15 @@ from xmclaw.providers.channel.registry import (
 
 def test_canonical_ids_match_dev_plan():
     # Phase 5 ports the 5 channels from QwenPaw docs/DEV_PLAN.md §1.6.
-    # B-330: ``acp`` joined as a 6th id (Hermes ACP integration —
-    # scaffold-flagged so it's hidden from default discover, surfaces
-    # on include_scaffolds=True for the UI's "coming soon" rendering).
+    # B-330: ``acp`` joined (Hermes ACP integration — scaffold-flagged
+    # so it's hidden from default discover, surfaces on
+    # include_scaffolds=True for the UI's "coming soon" rendering).
+    # B-381: discord. B-382: slack. B-383: dingtalk graduated to ready.
+    # B-384: wecom graduated to ready (outbound webhook). B-393: email
+    # joined as a 9th id (IMAP polling + SMTP send).
     assert CHANNEL_IDS == (
-        "feishu", "dingtalk", "wecom", "weixin", "telegram", "acp",
+        "feishu", "dingtalk", "wecom", "weixin",
+        "telegram", "discord", "slack", "email", "acp",
     )
 
 
@@ -50,14 +54,21 @@ def test_default_discover_filters_scaffolds():
     """B-38: Phantom channel filter — scaffold-only manifests should
     NOT show up in default discover().
 
-    B-145: feishu is ``ready`` (real adapter at feishu/adapter.py).
-    B-380: telegram is ``ready`` (real adapter at telegram/adapter.py).
-    The remaining 3 (dingtalk/wecom/weixin) remain scaffold and stay
-    filtered out, plus acp from B-330."""
+    B-145: feishu is ``ready``. B-380: telegram is ``ready``. B-381:
+    discord is ``ready``. B-382: slack is ``ready``. B-383: dingtalk
+    is ``ready``. B-384: wecom is ``ready`` (outbound-only webhook).
+    The remaining IM scaffold is weixin (no SDK choice yet for
+    individual WeChat). acp stays scaffold from B-330."""
     ready = discover()
-    assert set(ready.keys()) == {"feishu", "telegram"}
-    assert ready["feishu"].implementation_status == "ready"
-    assert ready["telegram"].implementation_status == "ready"
+    expected_ready = {
+        "feishu", "telegram", "discord", "slack", "dingtalk", "wecom",
+    }
+    assert expected_ready.issubset(set(ready.keys()))
+    for cid in expected_ready:
+        assert ready[cid].implementation_status == "ready"
+    # weixin + acp must remain hidden from the production set.
+    assert "weixin" not in ready
+    assert "acp" not in ready
 
 
 def test_feishu_does_not_need_tunnel():
@@ -65,15 +76,26 @@ def test_feishu_does_not_need_tunnel():
     assert m.needs_tunnel is False  # lark-oapi WS long-poll
 
 
-def test_wecom_needs_tunnel():
+def test_wecom_does_not_need_tunnel():
+    """B-384: wecom shipped as outbound-only (internal-bot webhook —
+    the daemon initiates each POST). No public callback URL needed,
+    so needs_tunnel is False. The pre-B-384 manifest had this set to
+    True under the assumption inbound (self-built app callback) would
+    be wired first; that's deferred until the cloudflared bootstrap
+    lands generically.
+    """
     m = discover(include_scaffolds=True)["wecom"]
-    assert m.needs_tunnel is True
+    assert m.needs_tunnel is False
 
 
 def test_needs_tunnel_aggregator():
+    """B-384: wecom dropped its tunnel requirement (outbound webhook
+    only). The aggregator still works — it would still return True for
+    any enabled channel that DOES need a tunnel — but as of B-384 there
+    are no ready channels in the IM set that need tunneling at all."""
     assert needs_tunnel(["feishu"]) is False
     assert needs_tunnel(["feishu", "telegram"]) is False
-    assert needs_tunnel(["feishu", "wecom"]) is True
+    assert needs_tunnel(["feishu", "wecom"]) is False
     assert needs_tunnel([]) is False
 
 
