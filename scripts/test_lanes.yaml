@@ -138,6 +138,7 @@ lanes:
       - tests/unit/test_v2_cli_evolution.py
       - tests/unit/test_v2_session_report.py
       - tests/unit/test_v2_onboard.py
+      - tests/unit/test_v2_skill_marketplace_cli.py  # B-390
 
   # Memory stack.
   memory:
@@ -167,8 +168,10 @@ lanes:
       - tests/unit/test_v2_summary_grader.py
       - tests/unit/test_v2_scheduler.py
       - tests/unit/test_v2_skill_registry.py
+      - tests/unit/test_v2_skill_marketplace_cli.py  # B-390
       - tests/integration/test_v2_autonomous_evolution.py
       - tests/integration/test_v2_tool_aware_skill.py
+      - tests/integration/test_v2_skill_marketplace_router.py  # B-390
 
   # Security: prompt scanner + policy helper + any downstream integration.
   security:

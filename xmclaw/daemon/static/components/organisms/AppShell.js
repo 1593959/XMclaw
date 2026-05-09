@@ -120,6 +120,7 @@ export const NAV_GROUPS = [
     id: "capabilities", label: "能力", icon: "Sparkles",
     items: [
       { path: "/skills",    label: "技能", icon: "Package" },
+      { path: "/marketplace", label: "技能商店", icon: "Package" },
       { path: "/tools",     label: "工具", icon: "Wrench" },
       { path: "/memory",    label: "记忆", icon: "Database" },
       { path: "/evolution", label: "进化", icon: "Sparkles", accent: true },

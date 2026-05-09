@@ -1720,6 +1720,7 @@ def create_app(
     from xmclaw.daemon.routers import secrets as _secrets_router  # B-104
     from xmclaw.daemon.routers import channels as _channels_router  # B-147
     from xmclaw.daemon.routers import evolution as _evolution_router  # B-301
+    from xmclaw.daemon.routers import skill_marketplace as _skill_marketplace_router  # B-390
     app.include_router(_files_router.router)
     app.include_router(_llm_profiles_router.router)
     app.include_router(_memory_router.router)
@@ -1738,6 +1739,7 @@ def create_app(
     app.include_router(_secrets_router.router)
     app.include_router(_channels_router.router)  # B-147
     app.include_router(_evolution_router.router)  # B-301
+    app.include_router(_skill_marketplace_router.router)  # B-390 (Sprint 2)
 
     # Phase 3: ASGI middleware for X-Agent-Id → ContextVar plumbing
     # (QwenPaw multi-agent convention #1). Stays a no-op for the

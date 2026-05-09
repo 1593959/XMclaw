@@ -36,6 +36,8 @@ Prefer a wizard? `xmclaw onboard` walks the same three steps in the terminal.
 xmclaw chat                   # interactive REPL
 xmclaw chat --plan            # plan mode — agent proposes steps, you approve
 xmclaw doctor                 # 21 health checks, 5 auto-fixable
+xmclaw skill list-marketplace # browse the curated skill catalog (B-390)
+xmclaw skill install <id>     # clone + scan + register a community skill
 xmclaw stop
 ```
 
@@ -54,6 +56,7 @@ Python ≥ 3.10. Cross-platform (Windows is a first-class target). The web UI is
 | **MCP + provider model** | Tools compose from `ToolProvider` backends: `builtin` (file / bash / web / vector recall), `browser` (Playwright), `mcp_bridge` (stdio / SSE / WS). Drop in your own with `list_tools()` + `invoke()`. |
 | **Chinese-first by design** | Web UI is Chinese. Built-in prompt-injection scanner covers Chinese patterns (instruction overrides, role forgery, jailbreaks, exfiltration) alongside English. Default config snippet ships pointing at local Ollama (`qwen3-embedding:0.6b`) so 国产模型 just works. |
 | **Secure by default** | Pairing-token auth on both WebSocket AND every `/api/v2/*` HTTP route. 10 MB request body cap. Atomic file writes (tmp + os.replace) — daemon crash mid-write can't truncate your SOUL.md. Filesystem sandbox via `tools.allowed_dirs`. Full prompt-injection scan on tool output, recalled memory, AND persona files. |
+| **Skill marketplace MVP (B-390, Sprint 2)** | A curated GitHub-backed catalog at `docs/skill_marketplace_index.json` lets you discover community skills. `xmclaw skill install <id>` clones into `~/.xmclaw/skills_user/<id>/`, runs the security scanner against every `*.py` (fail-closed on CRITICAL), and registers via the daemon's `UserSkillsLoader` on next boot. Browse + 1-click install from the web UI's "技能商店" page. Trust tiers: `verified` (XMclaw-vetted) / `community` (third-party). Not yet: ratings, reviews, signing — that's Epic #16 territory. |
 
 ---
 

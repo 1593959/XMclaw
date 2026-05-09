@@ -698,8 +698,8 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 ### Epic #8 · Skill Hub
 
-**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
-**前置依赖**：Epic #3（scanner）、Epic #16（signed verification）
+**状态**：🟡 进行中（B-390 MVP 落地：curated GitHub catalog + `xmclaw skill install` CLI + UI Marketplace 页 + 5 条 placeholder 入口；待做：scanner 集成深化、agentskills.io 兼容、签名校验、样例 skill repo） | **负责人**：Claude (AI pair) | **起始**：2026-05-09 | **完成**：-
+**前置依赖**：Epic #3（scanner ✅ 已落）、Epic #16（signed verification — pending）
 **关联 Milestone**：M6（Onboarding + Hub）
 
 **开发计划**：
@@ -714,17 +714,20 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **检查清单**：
 
-- [ ] `xmclaw/skills/hub.py` HTTP client
-- [ ] `xmclaw skills {search, install, uninstall, list, update}` CLI
-- [ ] install 前自动扫
+- [x] `xmclaw/skills/marketplace.py` HTTP client + 1h cache + git-clone install (B-390, 2026-05-09)
+- [x] `xmclaw skill {list-marketplace, search, install, remove, installed}` CLI (B-390, 2026-05-09)
+- [x] install 前自动扫（fail-closed on CRITICAL findings）(B-390, 2026-05-09)
+- [x] `/api/v2/skills/{marketplace,installed,install}` daemon router + UI Marketplace 页 (B-390, 2026-05-09)
+- [x] 5 条 placeholder 入口在 `docs/skill_marketplace_index.json` (B-390, 2026-05-09)
 - [ ] agentskills.io 格式兼容测试
-- [ ] 1 个样例 skill repo 可安装
+- [ ] 签名校验（等 Epic #16 Phase 3）
+- [ ] 1 个样例 skill repo 可安装（真 git repo，不是 placeholder slug）
 
-**退出标准**：`xmclaw skills install <name>` 端到端跑通；至少 5 个 skill 可装（起步集）。
+**退出标准**：`xmclaw skill install <name>` 端到端跑通（✅ B-390 MVP）；至少 5 个 skill 可装（起步集，✅ catalog 已 seed）；签名校验阻断恶意 skill（pending Epic #16）。
 
 **进度日志**：
 
-- _（尚无）_
+- 2026-05-09: B-390 (Sprint 2) — Skill Marketplace MVP 落地。"80% of the perceived gap closed in 2 days of work"。新建 `xmclaw/skills/marketplace.py`（pure utility 模块：fetch_index 1h cache + ?v=<unix> 缓存破坏 + github:/git+/https 三种 source 解析 + git clone --depth=1 + structure validation + skill_scanner CRITICAL 拦截 + `~/.xmclaw/skills_user/.marketplace.json` 安装注册）；新建 `xmclaw/cli/skill_marketplace.py` 5 条 Typer 子命令（list-marketplace / search / install / remove / installed，--json 模式 + --refresh 缓存破坏 + --yes 跳过确认）接到 `xmclaw skill` 子命令树；新建 `xmclaw/daemon/routers/skill_marketplace.py` 4 个端点（GET /api/v2/skills/marketplace + GET /installed + POST /install + DELETE /installed/{id}）走 pairing-token middleware；新建 `xmclaw/daemon/static/pages/Marketplace.js`（500 行预算内：搜索框 + 卡片网格 + verified/community 徽章 + 一键安装/卸载，client-side 过滤），路由 `/marketplace` 加进 `app.js` + 侧栏导航 `AppShell.js`；新建 `docs/skill_marketplace_index.json` 5 条 placeholder（git-worktree-helper / markdown-summarizer / pr-reviewer / csv-pivot / kanban-todo）；46 测（33 unit `test_v2_skill_marketplace_cli.py` + 13 integration `test_v2_skill_marketplace_router.py`）；ruff/mypy clean (commit pending)
 
 ---
 

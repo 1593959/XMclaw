@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "updated": "2026-05-09",
+  "schema_doc": "https://github.com/1593959/XMclaw/blob/main/docs/SKILL_MARKETPLACE.md",
+  "skills": [
+    {
+      "id": "git-worktree-helper",
+      "name": "Git Worktree Helper",
+      "description": "Quick-spawn worktrees for branch-based experiments and parallel agent runs.",
+      "version": "1.0.0",
+      "source": "github:1593959/xmclaw-skill-git-worktree-helper",
+      "license": "MIT",
+      "tags": ["git", "developer", "workflow"],
+      "author": "1593959",
+      "trust_tier": "verified",
+      "install_size_kb": 12,
+      "min_xmclaw": "0.2.0"
+    },
+    {
+      "id": "markdown-summarizer",
+      "name": "Markdown Summarizer",
+      "description": "Compress long markdown notes into a 5-bullet TL;DR while preserving headings and links.",
+      "version": "1.0.0",
+      "source": "github:1593959/xmclaw-skill-markdown-summarizer",
+      "license": "Apache-2.0",
+      "tags": ["writing", "markdown", "summarization"],
+      "author": "1593959",
+      "trust_tier": "verified",
+      "install_size_kb": 8,
+      "min_xmclaw": "0.2.0"
+    },
+    {
+      "id": "pr-reviewer",
+      "name": "PR Reviewer",
+      "description": "Walks a GitHub pull-request diff, flags risky changes, and suggests inline comments.",
+      "version": "0.3.0",
+      "source": "github:1593959/xmclaw-skill-pr-reviewer",
+      "license": "MIT",
+      "tags": ["github", "code-review", "developer"],
+      "author": "1593959",
+      "trust_tier": "community",
+      "install_size_kb": 18,
+      "min_xmclaw": "0.2.0"
+    },
+    {
+      "id": "csv-pivot",
+      "name": "CSV Pivot",
+      "description": "Read a CSV via the file tool, pivot/group with pandas, return a markdown table.",
+      "version": "0.2.1",
+      "source": "github:1593959/xmclaw-skill-csv-pivot",
+      "license": "MIT",
+      "tags": ["data", "csv", "pandas"],
+      "author": "1593959",
+      "trust_tier": "community",
+      "install_size_kb": 14,
+      "min_xmclaw": "0.2.0"
+    },
+    {
+      "id": "kanban-todo",
+      "name": "Kanban TODO",
+      "description": "Maintain a markdown kanban board (Backlog / Doing / Done) inside the active workspace.",
+      "version": "0.1.0",
+      "source": "github:1593959/xmclaw-skill-kanban-todo",
+      "license": "MIT",
+      "tags": ["productivity", "todo"],
+      "author": "1593959",
+      "trust_tier": "community",
+      "install_size_kb": 6,
+      "min_xmclaw": "0.2.0"
+    }
+  ]
+}

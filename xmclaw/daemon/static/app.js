@@ -88,6 +88,7 @@ import { ChannelsPage } from "./pages/Channels.js";
 import { MemoryPage } from "./pages/Memory.js";
 import { SecurityPage } from "./pages/Security.js";
 import { SkillsPage } from "./pages/Skills.js";
+import { MarketplacePage } from "./pages/Marketplace.js";  // B-390 (Sprint 2)
 import { EvolutionPage } from "./pages/Evolution.js";
 import { BackupPage } from "./pages/Backup.js";
 import { WorkspacePage } from "./pages/Workspace.js";
@@ -408,6 +409,7 @@ const routes = {
   "/agents": (state) => html`<${AgentsPage} token=${state.auth.token} />`,
   "/channels": (state) => html`<${ChannelsPage} token=${state.auth.token} />`,
   "/skills": (state) => html`<${SkillsPage} token=${state.auth.token} />`,
+  "/marketplace": (state) => html`<${MarketplacePage} token=${state.auth.token} />`,
   "/evolution": (state) => html`<${EvolutionPage} token=${state.auth.token} />`,
   "/memory": (state) => html`<${MemoryPage} token=${state.auth.token} />`,
   "/tools": (state) => html`<${ToolsPage} token=${state.auth.token} />`,
