@@ -119,8 +119,8 @@
     "_consumer": "lifespan (MCP registry); not in factory.py. On Windows: requires `npx` on PATH for official @modelcontextprotocol/server-* packages — install Node.js first."
   },
   "channels": {
-    "_consumer": "lifespan (ChannelDispatcher + per-channel adapter); not in factory.py. Currently READY: feishu + ws (internal). Scaffolds (DingTalk/WeCom/WeChat/Telegram) accept config but their adapter modules don't exist yet — daemon logs `adapter.start_failed` and skips.",
-    "_comment": "B-145 双向聊天接入。enabled=true 后 daemon 启动时拉起 adapter，在群里 @机器人 即可对话。Tools 集成 (integrations.feishu) 是出站通知，channels 是双向对话。",
+    "_consumer": "lifespan (ChannelDispatcher + per-channel adapter); not in factory.py. Currently READY: feishu, telegram, + ws (internal). Scaffolds (DingTalk/WeCom/WeChat) accept config but their adapter modules raise NotImplementedError — daemon logs `adapter.start_failed` and skips.",
+    "_comment": "B-145 / B-380 双向聊天接入。enabled=true 后 daemon 启动时拉起 adapter，在群里 @机器人 即可对话。Tools 集成 (integrations.*) 是出站通知，channels 是双向对话。",
     "feishu": {
       "enabled": false,
       "_help": "飞书开放平台 → 应用 → 创建应用 → 启用 '机器人' 能力 + '订阅事件 (im.message.receive_v1)' → 复制 app_id / app_secret 填这里。WebSocket 长连模式无需公网 IP。",
@@ -128,6 +128,18 @@
       "app_secret": "",
       "encrypt_key": "",
       "verify_token": ""
+    },
+    "telegram": {
+      "enabled": false,
+      "_help": "B-380: 在 Telegram 里跟 @BotFather 对话 → /newbot → 复制 token (形如 '12345:AAAA...') 填 bot_token。pip install xmclaw[channels] 装 python-telegram-bot。Long-poll 模式无需公网 IP。",
+      "bot_token": "",
+      "_allowed_user_ids_help": "非空时只接受列表里 Telegram user id 发来的消息。@userinfobot 能拿到自己的 user id (整数)。",
+      "allowed_user_ids": [],
+      "_allowed_chat_ids_help": "非空时只接受列表里 chat id (群 id / 私聊 id)。私聊 chat_id == user_id；超级群 chat_id 是负数。",
+      "allowed_chat_ids": [],
+      "_parse_mode_help": "Telegram 渲染模式：null = 纯文本最稳；'MarkdownV2' / 'HTML' 让 agent 输出粗体/链接，但需要正确转义否则 Telegram 拒收。",
+      "parse_mode": null,
+      "injection_policy": "detect_only"
     }
   },
   "integrations": {

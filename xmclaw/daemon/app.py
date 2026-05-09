@@ -285,6 +285,46 @@ async def _run_session_reflection(
         )
 
 
+def _origin_allowed(origin: str | None, cfg: dict) -> bool:
+    """B-355: validate the ``Origin`` header for WebSocket upgrades
+    AND ``/api/v2/*`` mutating HTTP requests. Defense against
+    ClawJacked-style attacks (malicious page in user's browser
+    fetching loopback daemon).
+
+    Allowed by default (returned True):
+      * No origin header at all (CLI / SDK / curl — they don't send
+        Origin)
+      * ``null`` (file://, native shells, sandboxed iframes)
+      * ``http://127.0.0.1:*`` / ``http://localhost:*`` /
+        ``http://[::1]:*`` (loopback browser)
+      * ``https://127.0.0.1:*`` / etc (TLS loopback)
+      * Any origin in ``gateway.allowed_origins`` (config opt-in).
+
+    Everything else (``http://evil.com``, ``http://192.168.x.x:*``)
+    is rejected. Operators wanting to expose to a LAN must
+    explicitly opt in by listing the LAN origin.
+    """
+    if not origin or origin == "null":
+        return True
+    # Parse scheme + host.
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(origin)
+        host = (p.hostname or "").lower()
+    except Exception:  # noqa: BLE001 — malformed origin → reject
+        return False
+    if host in ("127.0.0.1", "localhost", "::1"):
+        return True
+    # Config opt-in.
+    gw_cfg = (cfg or {}).get("gateway") or {}
+    extras = gw_cfg.get("allowed_origins") or []
+    if isinstance(extras, list):
+        for o in extras:
+            if isinstance(o, str) and origin == o.rstrip("/"):
+                return True
+    return False
+
+
 def create_app(
     *,
     bus: InProcessEventBus | None = None,
@@ -2504,6 +2544,26 @@ def create_app(
 
     @app.websocket("/agent/v2/{session_id}")
     async def agent_ws(ws: WebSocket, session_id: str) -> None:
+        # B-355 (Sprint 1): Origin check. Defense-in-depth against
+        # the OpenClaw "ClawJacked" CVE family — a malicious page on
+        # http://evil.com running in the user's browser does
+        # ``new WebSocket("ws://127.0.0.1:8765/agent/v2/foo")``.
+        # Without the Origin check the daemon would happily upgrade
+        # if the attacker can leak the pairing token (XSS in any
+        # page user visits). With it, we reject the upgrade before
+        # accept() if the Origin header doesn't match an allowed
+        # origin. ``null`` Origin (file://, native apps, no-origin
+        # WS) is allowed because browsers send it for legitimate
+        # PWA / desktop tray tools. Loopback origins on any port
+        # are always allowed.
+        if not _origin_allowed(
+            ws.headers.get("origin"), config or {},
+        ):
+            # WebSocket protocol: must accept() before close() to
+            # send a code; bare reject closes with no client signal.
+            await ws.accept()
+            await ws.close(code=4403, reason="origin not allowed")
+            return
         # Anti-req #8 gate. Token arrives either as a query param
         # (browsers can't set WS headers) or an Authorization: Bearer
         # header (CLIs / SDKs). We check both so we don't force one

@@ -1,9 +1,9 @@
-"""Telegram channel adapter — manifest + scaffolding.
+"""Telegram channel adapter — manifest.
 
-Direct port target: ``qwenpaw/src/qwenpaw/app/channels/telegram/``
-which uses ``python-telegram-bot``. Telegram supports both webhook +
-long-poll modes; long-poll works without a public URL, so we default to
-``needs_tunnel=False`` (user can flip to webhook mode in config).
+B-380 (Sprint 2): real adapter at ``adapter:TelegramAdapter`` (was
+B-329 scaffold). Direct port reference: ``qwenpaw/src/qwenpaw/app/
+channels/telegram/`` + Hermes Agent's telegram channel. Uses
+``python-telegram-bot``'s long-poll mode (no public URL needed).
 """
 from xmclaw.providers.channel.base import PluginManifest
 
@@ -12,11 +12,17 @@ MANIFEST = PluginManifest(
     label="Telegram",
     adapter_factory_path="xmclaw.providers.channel.telegram.adapter:TelegramAdapter",
     requires=("python-telegram-bot>=21.0",),
-    needs_tunnel=False,  # default to long-poll mode
+    needs_tunnel=False,  # long-poll mode — no inbound webhook required
     config_schema={
-        "bot_token": "secret (required)",
-        "mode": "string (poll | webhook, default poll)",
-        "public_url": "string (only when mode=webhook)",
+        "bot_token": "secret (required) — get from @BotFather",
+        "allowed_user_ids": "list[int] (optional) — non-empty locks "
+                            "inbound to listed Telegram user ids",
+        "allowed_chat_ids": "list[int] (optional) — non-empty locks "
+                            "inbound to listed chat ids (groups vs DMs)",
+        "injection_policy": "string (optional) — detect_only | redact "
+                            "| block (default detect_only)",
+        "parse_mode": "string (optional) — None | Markdown | "
+                      "MarkdownV2 | HTML (default None = plain text)",
     },
-    implementation_status="scaffold",  # B-38: adapter module not yet implemented
+    implementation_status="ready",  # B-380: real adapter wired
 )

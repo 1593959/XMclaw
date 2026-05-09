@@ -50,14 +50,14 @@ def test_default_discover_filters_scaffolds():
     """B-38: Phantom channel filter — scaffold-only manifests should
     NOT show up in default discover().
 
-    B-145 update: feishu is now ``ready`` (real adapter at
-    feishu/adapter.py), so default discover() returns {feishu}. The
-    other 4 (dingtalk/wecom/weixin/telegram) remain scaffold and
-    stay filtered out."""
+    B-145: feishu is ``ready`` (real adapter at feishu/adapter.py).
+    B-380: telegram is ``ready`` (real adapter at telegram/adapter.py).
+    The remaining 3 (dingtalk/wecom/weixin) remain scaffold and stay
+    filtered out, plus acp from B-330."""
     ready = discover()
-    assert set(ready.keys()) == {"feishu"}
-    # Sanity: feishu manifest carries the ready flag
+    assert set(ready.keys()) == {"feishu", "telegram"}
     assert ready["feishu"].implementation_status == "ready"
+    assert ready["telegram"].implementation_status == "ready"
 
 
 def test_feishu_does_not_need_tunnel():

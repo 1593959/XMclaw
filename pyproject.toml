@@ -57,6 +57,13 @@ lsp     = ["python-lsp-server>=1.12.0"]
 # B-145: 双向聊天 channel adapters (飞书 + 钉钉 + 企微 + telegram)。
 # Each picks lazy: only the channels the user enables in
 # ``config.channels`` actually import their SDK at runtime.
+#
+# Granular per-channel extras (B-380): users running only one IM
+# don't need to install all three SDKs. The aggregate ``channels``
+# extra still pulls everything for convenience / docker images.
+channels-feishu   = ["lark-oapi>=1.4.0"]
+channels-dingtalk = ["dingtalk-stream>=0.20.0"]
+channels-telegram = ["python-telegram-bot>=21.0"]
 channels = [
     "lark-oapi>=1.4.0",        # 飞书
     "dingtalk-stream>=0.20.0", # 钉钉
