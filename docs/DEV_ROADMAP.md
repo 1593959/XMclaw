@@ -331,7 +331,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **目标**：把 `xmclaw/channels/` 从 stubs 变成"Discord/Slack/Telegram 三条可用"。
 
-**状态**：⬜ 未开始 | **负责人**：- | **起始**：- | **完成**：-
+**状态**：🟡 进行中（B-145 飞书 + B-380 Telegram 已落地；Discord/Slack/CLI 子命令 pending） | **负责人**：Claude (AI pair) | **起始**：2026-04-25 | **完成**：-
 **前置依赖**：Epic #2（Plugin SDK 边界）要先定好契约约束
 **关联 Milestone**：M2（三渠道可用）
 
@@ -354,7 +354,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 - [ ] `providers/channel/ws.py` 重构到新 ABC
 - [ ] `providers/channel/discord.py` + mock 测试
 - [ ] `providers/channel/slack.py` + mock 测试
-- [ ] `providers/channel/telegram.py` + mock 测试
+- [x] `providers/channel/telegram.py` + mock 测试（B-380, 2026-05-09）
 - [ ] `xmclaw channels` CLI 子命令（`list` / `enable` / `disable` / `configure`）
 - [ ] `dm_policy` 安全钩子 + 配对码端点
 - [ ] `docs/CHANNELS.md` 写完
@@ -367,7 +367,7 @@ Epic #3 blocked: Docker 运行时需要决策 extras vs 可选子包
 
 **进度日志**：
 
-- _（尚无）_
+- 2026-05-09: B-380 Telegram channel adapter 真实现 — 替换 19 行 scaffold；python-telegram-bot 长轮询 + allowlist + injection scan + 4096-char chunking + lazy-import；30 条单元测试 (`tests/unit/test_v2_channels_telegram.py`)，pyproject.toml 加 `channels-telegram` 细粒度 extra (commit pending)
 
 ---
 

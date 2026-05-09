@@ -48,7 +48,6 @@ backoff loop.
 """
 from __future__ import annotations
 
-import asyncio
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
