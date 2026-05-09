@@ -162,6 +162,17 @@ export function createWsClient({
         setStatus("auth_failed", "pairing token rejected (code " + evt.code + ")");
         return;
       }
+      // B-348: code 4408 = "this tab was superseded by another tab on
+      // the same session". Reconnecting would just supersede THAT
+      // tab in turn, leading to a ping-pong supersede loop. Stop
+      // retrying and let the user explicitly switch tabs.
+      if (evt && evt.code === 4408) {
+        setStatus(
+          "superseded",
+          "another tab opened the same session (code 4408)",
+        );
+        return;
+      }
       if (closedByUser) {
         setStatus("disconnected");
         return;

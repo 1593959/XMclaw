@@ -383,3 +383,94 @@ def test_lifespan_subscribes_user_profile_updated_handler(
             "no subscription registered for USER_PROFILE_UPDATED — "
             "Phase 2.4 prompt cache invalidation hook missing"
         )
+
+
+# ── B-348 (Sprint 1): single-tab-wins per session ─────────────────
+
+
+def _drain_until_supersede(ws, max_frames: int = 20):
+    """Read up to ``max_frames`` frames from ``ws`` and return the
+    first one whose ``type == "superseded"``. Tolerates any
+    intermediate session_replay / session_lifecycle frames the
+    bus forwards before the supersede arrives. Returns None if
+    nothing matched within the budget.
+    """
+    for _ in range(max_frames):
+        try:
+            f = ws.receive_json()
+        except Exception:  # noqa: BLE001 — disconnect mid-drain
+            return None
+        if isinstance(f, dict) and f.get("type") == "superseded":
+            return f
+    return None
+
+
+def test_b348_second_ws_to_same_session_supersedes_first(
+    client: TestClient,
+) -> None:
+    """Pre-B-348 opening tab 2 on the same session_id left BOTH WS
+    subscribed to the bus. The bus fanout doubled (every event
+    delivered twice), and ``cancel`` from either tab cancelled the
+    shared run_turn. Now: tab 2 supersedes tab 1.
+    """
+    sid = "sess-b348-supersede"
+    with client.websocket_connect(f"/agent/v2/{sid}") as ws_first:
+        ws_first.receive_json()  # session_create
+
+        with client.websocket_connect(f"/agent/v2/{sid}") as ws_second:
+            # Tab 1 must receive a supersede frame. Other frames may
+            # arrive first (replay markers, the second-tab session
+            # create that the still-alive sub forwards) so we scan.
+            sup = _drain_until_supersede(ws_first)
+            assert sup is not None, (
+                "first tab did not receive any supersede frame"
+            )
+            assert sup["payload"]["session_id"] == sid
+            assert sup["payload"]["reason"] == "another_tab_connected"
+            # Sanity: second tab is alive and got its own create event
+            # somewhere in the first few frames.
+            saw_create_for_second = False
+            for _ in range(20):
+                try:
+                    f = ws_second.receive_json()
+                except Exception:  # noqa: BLE001
+                    break
+                if (
+                    f.get("type") == "session_lifecycle"
+                    and f.get("payload", {}).get("phase") == "create"
+                    and f.get("session_id") == sid
+                ):
+                    saw_create_for_second = True
+                    break
+            assert saw_create_for_second, (
+                "second tab never received its session_create event"
+            )
+
+
+def test_b348_third_ws_supersedes_second_after_first_disconnects(
+    client: TestClient,
+) -> None:
+    """When tab 1 disconnects AFTER being superseded by tab 2, the
+    finally-block must NOT pop tab 2's registration from the
+    active_ws_for_session map. We can't peek at the dict from the
+    test directly, so we exit tab 1's context (triggering its
+    finally), then open tab 3 and verify tab 2 still receives a
+    supersede frame — proving tab 2 was still the registered owner.
+    """
+    sid = "sess-b348-three-way"
+    # Open tab 1, immediately supersede with tab 2, then exit tab 1.
+    with client.websocket_connect(f"/agent/v2/{sid}") as ws_a:
+        ws_a.receive_json()
+        with client.websocket_connect(f"/agent/v2/{sid}") as ws_b:
+            assert _drain_until_supersede(ws_a) is not None
+            # ws_a's `with` will exit when this inner block continues —
+            # but we want ws_b to outlive ws_a's disconnect. Open ws_c
+            # while still inside ws_b's context.
+            with client.websocket_connect(f"/agent/v2/{sid}") as ws_c:
+                _ = ws_c  # silence unused
+                sup_b = _drain_until_supersede(ws_b)
+                assert sup_b is not None, (
+                    "B-348 dict-cleanup race: tab 2 was already popped "
+                    "from active_ws_for_session before tab 3 connected — "
+                    "likely ws_a's finally clobbered ws_b's registration"
+                )

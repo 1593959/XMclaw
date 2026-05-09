@@ -1798,6 +1798,16 @@ def create_app(
     _SESSION_LOG_CAP = 400  # events per session; ~20 turns of back-and-forth
     session_logs: dict[str, list[BehavioralEvent]] = {}
 
+    # B-348 (Sprint 1): single-tab-wins per session. When a second
+    # browser tab connects to the same session_id, the older tab's
+    # WS gets a "superseded" frame and is closed. Without this, both
+    # tabs subscribe to the bus, both receive every event, and the
+    # bus fanout doubles for every additional tab — turn cancellation
+    # also gets confusing because either tab can fire it. The session
+    # log replay on reconnect already lets the new tab repopulate, so
+    # closing the old WS doesn't lose state — just the live socket.
+    active_ws_for_session: dict[str, WebSocket] = {}
+
     async def _session_log_subscriber(event: BehavioralEvent) -> None:
         buf = session_logs.setdefault(event.session_id, [])
         buf.append(event)
@@ -2607,6 +2617,35 @@ def create_app(
 
         await ws.accept()
 
+        # B-348: if another tab is already on this session, supersede
+        # it. We do this AFTER accept() because the socket needs to be
+        # in OPEN state before we can send a frame or close cleanly.
+        # The supersede frame lets the old tab's UI show a "你在另一
+        # 个标签页打开了同一会话" notice instead of a bare disconnect.
+        old_ws = active_ws_for_session.get(session_id)
+        if old_ws is not None and old_ws is not ws:
+            try:
+                await old_ws.send_text(json.dumps({
+                    "type": "superseded",
+                    "payload": {
+                        "session_id": session_id,
+                        "reason": "another_tab_connected",
+                    },
+                    "session_id": session_id,
+                }))
+            except Exception:  # noqa: BLE001 — old socket may be dead
+                pass
+            try:
+                # 4408 = "request timeout" in app-defined range; we
+                # use it as "connection superseded by newer client".
+                # Close happens after the supersede frame so the UI
+                # has a chance to render the notice before the
+                # transport tears down.
+                await old_ws.close(code=4408, reason="superseded")
+            except Exception:  # noqa: BLE001
+                pass
+        active_ws_for_session[session_id] = ws
+
         # ── replay historical events for this session ─────────
         # If the client is reconnecting to an existing session (browser
         # refresh), feed the prior events first so the chat div
@@ -2870,6 +2909,12 @@ def create_app(
             pass
         finally:
             sub.cancel()
+            # B-348: only deregister if WE are still the registered
+            # active WS for this session. If a newer tab already
+            # superseded us, the dict already points at that tab —
+            # popping would clobber the new owner's registration.
+            if active_ws_for_session.get(session_id) is ws:
+                del active_ws_for_session[session_id]
             # Do NOT wipe session history on disconnect -- browser refresh
             # is a WS close, and the user's prior exchanges must survive
             # it. History stays in the AgentLoop's in-memory dict keyed
