@@ -8,7 +8,75 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-No changes since `1.0.0`.
+### Added — Epic #25 · 贾维斯化 (R1–R6 主动认知 + 多模态感知 + 自主性)
+
+**Framework-level capability jump.** XMclaw was previously a reactive turn-by-turn REPL — user sends message, agent responds. Epic #25 added a continuous cognition layer that keeps thinking, sensing, and proposing while the user is silent. Lifespan now wires up six R-track subsystems by default; Mind page (`/mind`) makes them visible.
+
+- **R1 ReflectionCycle** — `xmclaw/cognition/reflection_cycle.py` runs a 3-bucket schedule (5min hot / 1h warm / 1day cold) + a 60s metacognize tick. Emits `reflection_cycle_ran` events with bucket + summary.
+- **R2 HTNPlanner DAG** — `xmclaw/cognition/planner.py` extended to return task DAGs; `POST /api/v2/cognition/goals/plan` is the user-facing endpoint, wired to the Mind page Goals panel.
+- **R3 MetaCognitionPass** — `xmclaw/core/metacognition/pass_.py` + `reformer.py` + `xmclaw/core/decisions/recorder.py`. Periodically scans recent `DecisionTrace` rows and asks the LLM "what patterns do you see?". Anti-overclaim three-piece kit enforced: `confidence_cap = 0.6` (Iron Rule #2 mirror), `min_evidence ≥ 3`, all-`outcome=ok` evidence rejected. Hits `metacognition_proposal` events the Reformer routes into `curriculum_edit` / `skill` / `preference` proposals. Default ON at 60s interval.
+- **R4 Multi-modal perception** — `xmclaw/cognition/perception/{screen,window,clipboard,calendar}_watcher.py`. Each watcher pushes percepts into the `PerceptionBus`; unsupported platforms / missing optional deps degrade per-watcher without killing siblings. Default ON.
+- **R5 AutonomyPolicy + SuggestionInbox** — `xmclaw/cognition/autonomy.py` (continuous 0–100 level with tier semantics) + `xmclaw/cognition/suggestion_inbox.py` (sqlite-backed pending queue). `GET /api/v2/cognition/suggestions[?status=pending|all]` exposed; default `autonomy_level = 50` (Suggest tier — agent proposes but doesn't execute).
+- **R6 Mind page UI** — `xmclaw/daemon/static/pages/Mind.js` aggregates four panels (InnerMonologue / ReflectionTimeline / Goals / Suggestions). Each panel subscribes to `/api/v2/events` with the appropriate type filters.
+
+### Added — Patch A · Path unification
+
+11 hardcoded `Path.home() / ".xmclaw"` callsites across the codebase (cognitive_state, graph_db, experiments_db, evolution proposals, eval cache, decisions_db, suggestions_db) all routed through new helpers in `xmclaw/utils/paths.py`. Each helper honours `XMC_DATA_DIR` and accepts an optional narrow override (e.g. `XMC_V2_GRAPH_DB_PATH`). New CI lint test (`tests/unit/test_v2_paths_unified.py`) greps non-`paths.py` files for the literal `Path.home() / ".xmclaw"` pattern; future drifts fail the build.
+
+### Added — `/api/v2/evolution/proposals` aggregator
+
+Replaces 3 separate `/api/v2/events?types=...` round-trips that `Evolution.js` was making. Single endpoint returns 4 buckets (`proposals` / `verdicts` / `promotions` / `rollbacks`) from one `events.db` read. Tested in `tests/integration/test_v2_ui_endpoint_smoke.py` UI inventory.
+
+### Changed — Default conservative posture removed (2026-05-09)
+
+User explicitly revoked the "保守隐私姿态" — Jarvisification subsystems now default-on out of the box. `daemon/config.example.json` synced to match the code:
+
+- `cognition.continuous_loop.autonomy_level`: `0` → `50` (Suggest tier)
+- `cognition.metacognize`: hidden → default-on at 60s
+- `cognition.perception.{screen,window,clipboard,calendar}.enabled`: `false` → `true`
+- `cognition.continuous_loop.enabled`: stub → really running
+
+### Changed — Code splitting (-1,800+ LOC across 5 monoliths)
+
+Five large files split into smaller, focused modules. Pure refactors — zero behaviour change, validated by 1791 unit + 15 b298 + 68 agent_loop tests staying green.
+
+- `xmclaw/providers/channel/_shared.py` (NEW, 32 LOC) — extracted shared base from 5 channel adapters (discord/slack/telegram/lark/email); net **-130 LOC**.
+- `xmclaw/providers/llm/streaming_utils.py` (NEW, +66 LOC) — Anthropic + OpenAI streaming common path (cumulative usage / max_tokens truncation handling / chunk merge).
+- `xmclaw/providers/tool/builtin.py` — **3,241 → 592 LOC (-82%)**. Monster split into 8 mixins: `DbMixin` / `FsMixin` / `MemoryMixin` / `PersonaMixin` / `ShellMixin` / `UserMixin` / `VoiceMixin` / `WorktreeMixin`. `BuiltinTools` MRO: `8 mixins → ToolProvider`.
+- `xmclaw/daemon/app.py` — **3,546 → 1,912 LOC (-46%)**. Lifespan body extracted to new `xmclaw/daemon/app_lifespan.py` (1,786 LOC). 24 sites of `except Exception:` (no `as exc`) that referenced `exc` in the body fixed to `except Exception as exc:` to remove latent `UnboundLocalError`s.
+- `xmclaw/daemon/agent_loop.py` — `_run_turn_inner` split into a turn-level setup/teardown wrapper plus a new `_run_hop_loop` for the LLM↔tool inner loop. State boundaries are now clean; per-hop state (`_stuck_loop_deque`) no longer leaks into turn scope.
+
+### Fixed — `core/metacognition/pass_.py` import-direction violation
+
+Module was importing `xmclaw.providers.llm.base.Message` (violates `core cannot import from providers` per `scripts/check_import_direction.py`). Replaced with a tiny local `_Msg` dataclass — the LLM consumer is duck-typed against `role`+`content` attributes anyway.
+
+### Fixed — Silent `except: pass` cleanup (5 sites)
+
+`xmclaw/cognition/file_watcher.py` (3 sites: bus publish, salience push, callback failure), `xmclaw/cognition/graph_extractor.py` (1 site: duplicate edge), and `xmclaw/utils/security.py` (2 sites: audit-log writes) all upgraded from silent swallow to `log.warning(..., exc_info=True)`. Audit-write failures in particular were a compliance gap — quietly losing audit lines is worse than the operation itself failing.
+
+### Fixed — Doctor `EvolutionPipelineCheck` reads both app.py and app_lifespan.py
+
+After the lifespan extraction, most wiring tokens (`HonestGrader` / `EvolutionAgent` / `JournalWriter` / `SkillDreamCycle` / `ProposalMaterializer` / `RealtimeEvolutionTrigger` etc.) live in `app_lifespan.py`. The doctor check now concatenates both files' source before scanning `REQUIRED_TOKENS`, eliminating a false "evolution chain not wired" report.
+
+### Tests
+
+- 23/23 `tests/unit/test_v2_lint_roadmap.py` — Epic #25 entry passes the roadmap lint guard (including `test_shipped_roadmap_passes`).
+- 15/15 `tests/{unit/test_v2_b298_lifespan_wiring,integration/test_v2_b298_evolution_chain_e2e}.py` — B-298 lifespan extraction + import-path fixups verified.
+- 68/68 `tests/unit -k "agent_loop or run_turn or hop"` — agent_loop hop-loop split is regression-clean.
+- 6 new unit tests in `tests/unit/test_v2_paths_unified.py` — Patch A path guards.
+- `tests/integration/test_v2_ui_endpoint_smoke.py` UI inventory extended with R2 / R5 / R6 endpoints + `/api/v2/evolution/proposals`. Every URL the static `pages/*.js` calls now smoke-checks against the real `create_app` (front-back boundary rule, 2026-05-09).
+
+### Docs
+
+- **`docs/architecture/XMclaw_Architecture_Assessment_2026-05-09.md`** (NEW, 670 lines) — full-codebase architecture review (~607K LOC, 4-subsystem deep dive, JARVIS-vision delta scored at ~60%, 4-phase implementation roadmap A→D). Foundation for Epic #25+ priority calls.
+- **`docs/PROJECT_DEFINITION_2026-05-10.md`** (NEW) — code-derived project positioning. One sentence: *本地常驻、跨会话有持续记忆 + 持续认知 + 自主目标分解 + 多模态感知 + 自我进化的"个人贾维斯" runtime*. Author is sole user; not SaaS; not for others.
+- **`docs/UI_FUNCTION_AUDIT_2026-05-10.md`** (NEW) — 22-page + 10-panel audit. Result: **20 ✅ / 8 🟡 / 0 🔴 / 0 P0 / 0 payload drift**. Tool lesson logged: future audits must grep BOTH `routers/*.py` AND `app.py` (the first audit pass missed inline `@app.get/post` endpoints and produced 3 false-alarm P0s).
+- **`docs/DEV_ROADMAP.md`** — Epic #25 章节 added, lint-clean.
+- `pages/ModelProfiles.js` annotated with a deprecation header (0 imports anywhere; Settings.js does its own LLM-profile management directly via `/api/v2/llm/profiles`). Pending `rm` once the sandbox lifts pre-existing-tracked-file removal.
+
+### Removed
+
+- `docs/codebase/.codebase-scan.txt` (the 80KB one-shot scratch dump from the audit run) is now `.gitignore`d. The architecture assessment in `docs/architecture/` is the durable artifact.
 
 ## [1.0.0] — 2026-04-25
 
