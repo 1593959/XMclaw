@@ -1651,7 +1651,13 @@ def create_app(
                         f"## Tool calls\n\n{len(res.tool_calls)} call(s); ok={res.ok}\n"
                     )
 
+                # Phase 5: derive db_path from the event bus so tasks
+                # live in events.db (same WAL, same backup, same prune).
+                _task_db_path = None
+                if hasattr(bus, "db_path"):
+                    _task_db_path = bus.db_path
                 _task_sched = TaskScheduler(
+                    db_path=_task_db_path,
                     bus=bus,
                     max_concurrent=int(_cognition_cfg.get("max_concurrent_tasks", 3)),
                     executor=_task_executor,
@@ -1661,6 +1667,55 @@ def create_app(
             except Exception as exc:  # noqa: BLE001
                 log.warning("cognition.task_scheduler_start_failed err=%s", exc)
                 _app.state.task_scheduler = None
+
+        # Phase 6.7: continuous cognitive daemon. Disabled by default —
+        # opted-in via ``cognition.continuous_loop.enabled = true``.
+        # This commit ships only the consumer side (heartbeat tick
+        # consuming PerceptionBus); percept-source wiring (WS / file /
+        # cron pushing INTO the bus) is a separate follow-up.
+        _cognitive_daemon = None
+        _cont_loop_cfg = ((config or {}).get("cognition") or {}).get(
+            "continuous_loop"
+        ) or {}
+        if _cont_loop_cfg.get("enabled", False):
+            try:
+                from xmclaw.cognition.perception_bus import PerceptionBus
+                from xmclaw.cognition.attention_filter import AttentionFilter
+                from xmclaw.cognition.action_dispatcher import ActionDispatcher
+                from xmclaw.cognition.cognitive_daemon import (
+                    CognitiveDaemon,
+                    CognitiveDaemonConfig,
+                )
+
+                _cd_cfg = CognitiveDaemonConfig(
+                    enabled=True,
+                    autonomy_level=int(_cont_loop_cfg.get("autonomy_level", 0)),
+                    heartbeat_hz=float(_cont_loop_cfg.get("heartbeat_hz", 1.0)),
+                    action_threshold=float(
+                        _cont_loop_cfg.get("action_threshold", 0.6)
+                    ),
+                    top_k_focus=int(_cont_loop_cfg.get("top_k_focus", 7)),
+                )
+                _percept_bus = PerceptionBus()
+                _attention = AttentionFilter(
+                    cognitive_state=_cognitive_state,
+                    bus=_percept_bus,
+                    action_threshold=_cd_cfg.action_threshold,
+                    top_k_focus=_cd_cfg.top_k_focus,
+                )
+                _cognitive_daemon = CognitiveDaemon(
+                    config=_cd_cfg,
+                    bus=_percept_bus,
+                    attention=_attention,
+                    cognitive_state=_cognitive_state,
+                    dispatcher=ActionDispatcher(),
+                )
+                _app.state.perception_bus = _percept_bus
+                await _cognitive_daemon.start()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("cognitive_daemon.start_failed err=%s", exc)
+                _cognitive_daemon = None
+        _app.state.cognitive_daemon = _cognitive_daemon
 
         try:
             yield
@@ -1841,6 +1896,16 @@ def create_app(
             if memory is not None and hasattr(memory, "close"):
                 try:
                     memory.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            # Phase 6.7: stop the continuous cognitive daemon BEFORE
+            # the rest of cognition shuts down, so a final tick can't
+            # try to drain a dying PerceptionBus / call a torn-down
+            # AttentionFilter / dispatcher.
+            _cd = getattr(_app.state, "cognitive_daemon", None)
+            if _cd is not None:
+                try:
+                    await _cd.stop()
                 except Exception:  # noqa: BLE001
                     pass
             # Jarvisification: stop cognitive modules.
