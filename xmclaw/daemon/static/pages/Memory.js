@@ -29,6 +29,7 @@ import { IdentityTab } from "./_panels/memory_identity.js";
 // grandfather list in tests/unit/test_v2_ui_scaffold.py pending
 // another splitting pass.
 import { ProvidersTab } from "./_panels/memory_providers.js";
+import { UnifiedQueryTab } from "./_panels/memory_unified_query.js";
 
 // ── shared ────────────────────────────────────────────────────────────
 // B-323: apiPut / apiPost / _diagnoseFetch / todayIso were used only
@@ -40,6 +41,7 @@ const TAB_LABELS = [
   { id: "identity", label: "标识", hint: "SOUL / AGENTS / USER / MEMORY 等核心人格文件" },
   { id: "notes", label: "笔记", hint: "随手保存的主题笔记（~/.xmclaw/memory/*.md）" },
   { id: "journal", label: "日记", hint: "按日期归档的对话/事件记录" },
+  { id: "unified", label: "统一查询", hint: "语义 × 关系 × 时间 × 层级 多轴检索（架构 §3.3.3）" },
   { id: "providers", label: "Providers", hint: "已挂载的记忆 provider（B-26 Hermes-style 抽象）" },
 ];
 
@@ -82,6 +84,7 @@ export function MemoryPage({ token }) {
       ${tab === "identity" ? html`<${IdentityTab} token=${token} />` : null}
       ${tab === "notes" ? html`<${NotesTab} token=${token} />` : null}
       ${tab === "journal" ? html`<${JournalTab} token=${token} />` : null}
+      ${tab === "unified" ? html`<${UnifiedQueryTab} token=${token} />` : null}
       ${tab === "providers" ? html`<${ProvidersTab} token=${token} />` : null}
     </section>
   `;
