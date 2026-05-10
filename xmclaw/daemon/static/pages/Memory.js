@@ -30,6 +30,11 @@ import { IdentityTab } from "./_panels/memory_identity.js";
 // another splitting pass.
 import { ProvidersTab } from "./_panels/memory_providers.js";
 import { UnifiedQueryTab } from "./_panels/memory_unified_query.js";
+// 2026-05-10 ("agent 自己用记忆" Phase C1): activity timeline showing
+// what the AGENT has read/written via UnifiedMemorySystem since
+// the daemon booted. This is the "view that's actually for the user" —
+// the unified-query tab next to it is now a debug surface.
+import { ActivityTab } from "./_panels/memory_activity.js";
 
 // ── shared ────────────────────────────────────────────────────────────
 // B-323: apiPut / apiPost / _diagnoseFetch / todayIso were used only
@@ -37,11 +42,15 @@ import { UnifiedQueryTab } from "./_panels/memory_unified_query.js";
 // _panels/memory_providers.js so this shell stays small. Kept the
 // section header so future readers know where shared helpers go.
 
+// 2026-05-10 redesign per user feedback "我的目的是给他自己用，不是
+// 光给我用"：把"记忆活动"放在最显眼的位置（agent 自己读写记忆的实时
+// 时间线），把"统一查询"降级成调试工具（顶部 banner 说明）。
 const TAB_LABELS = [
   { id: "identity", label: "标识", hint: "SOUL / AGENTS / USER / MEMORY 等核心人格文件" },
   { id: "notes", label: "笔记", hint: "随手保存的主题笔记（~/.xmclaw/memory/*.md）" },
   { id: "journal", label: "日记", hint: "按日期归档的对话/事件记录" },
-  { id: "unified", label: "统一查询", hint: "语义 × 关系 × 时间 × 层级 多轴检索（架构 §3.3.3）" },
+  { id: "activity", label: "记忆活动", hint: "Agent 自动读/写 UnifiedMemorySystem 的实时时间线" },
+  { id: "unified", label: "统一查询 (调试)", hint: "手填多轴检索 — 仅供开发者验证 agent 内部存了什么；正常使用请看 \"记忆活动\"" },
   { id: "providers", label: "Providers", hint: "已挂载的记忆 provider（B-26 Hermes-style 抽象）" },
 ];
 
@@ -152,6 +161,7 @@ export function MemoryPage({ token }) {
         ${tab === "identity" ? html`<${IdentityTab} token=${token} />` : null}
         ${tab === "notes" ? html`<${NotesTab} token=${token} />` : null}
         ${tab === "journal" ? html`<${JournalTab} token=${token} />` : null}
+        ${tab === "activity" ? html`<${ActivityTab} token=${token} />` : null}
         ${tab === "unified" ? html`<${UnifiedQueryTab} token=${token} />` : null}
         ${tab === "providers" ? html`<${ProvidersTab} token=${token} />` : null}
       <//>

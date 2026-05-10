@@ -97,6 +97,22 @@ export function UnifiedQueryTab({ token }) {
 
   return html`
     <div style="display:grid;gap:1rem;max-width:820px">
+      <!-- 2026-05-10 redesign: this panel is a DEBUG surface, not a
+           product feature. Real users should look at the "记忆活动"
+           tab — that's where the agent's own recall/put trace lives. -->
+      <div style="background:rgba(243,156,18,.08);
+                  border:1px solid rgba(243,156,18,.4);
+                  border-radius:8px;padding:.7rem 1rem;line-height:1.5;
+                  font-size:.85rem">
+        <div style="font-weight:600;color:#f39c12">⚠️ 调试工具 (Debug)</div>
+        <div style="margin-top:.3rem;opacity:.85">
+          这个面板是给开发者验证 <code>UnifiedMemorySystem</code>
+          内部存了什么用的，<strong>正常使用不需要进来</strong>。
+          想看 agent 自己实际在用哪些记忆 → 切换到旁边的
+          <strong>「记忆活动」</strong> tab。
+        </div>
+      </div>
+
       <div style="background:var(--xmc-bg-soft, rgba(255,255,255,.03));
                   border:1px solid var(--color-border);
                   border-radius:8px;padding:1rem;line-height:1.55">
