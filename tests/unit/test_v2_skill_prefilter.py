@@ -172,3 +172,80 @@ def test_trigger_match_adds_score() -> None:
     out = select_relevant_skills("refactor this file", specs, top_k=3)
     out_names = {s.name for s in out}
     assert "skill_target" in out_names
+
+
+# ── Jarvisification Phase 5: salience-based context boost ───────────
+
+
+class _FakeCognitiveState:
+    """Minimal stand-in for CognitiveState — only the fields prefilter reads."""
+
+    def __init__(self, goals=None, attention=None):
+        self.current_goals = goals or []
+        self.attention_focus = attention or []
+
+
+class _FakeGoal:
+    def __init__(self, text):
+        self.text = text
+
+
+class _FakeAttention:
+    def __init__(self, content):
+        self.content = content
+
+
+def test_cognitive_state_boosts_vague_followup() -> None:
+    """When the user message is vague ("how do I push this"), but the
+    active goal mentions "azure deployment", the Azure skill survives
+    the prefilter thanks to the context boost."""
+    specs = (
+        _bulk(*[(f"skill_pad{i}", "unrelated pad skill") for i in range(40)])
+        + [_FakeSpec(name="skill_azure-deploy", description="Deploy to Azure")]
+    )
+    cs = _FakeCognitiveState(
+        goals=[_FakeGoal("deploy app to Azure production")],
+    )
+    out = select_relevant_skills(
+        "how do I push this",
+        specs,
+        top_k=3,
+        cognitive_state=cs,
+    )
+    out_names = {s.name for s in out}
+    assert "skill_azure-deploy" in out_names
+
+
+def test_cognitive_state_attention_focus_boost() -> None:
+    """Attention focus also contributes context tokens."""
+    specs = (
+        _bulk(*[(f"skill_pad{i}", "unrelated pad skill") for i in range(40)])
+        + [_FakeSpec(name="skill_docker-build", description="Build Docker images")]
+    )
+    cs = _FakeCognitiveState(
+        attention=[_FakeAttention("build docker image for API layer")],
+    )
+    out = select_relevant_skills(
+        "what next",
+        specs,
+        top_k=3,
+        cognitive_state=cs,
+    )
+    out_names = {s.name for s in out}
+    assert "skill_docker-build" in out_names
+
+
+def test_cognitive_state_none_is_noop() -> None:
+    """Passing ``cognitive_state=None`` behaves exactly like before."""
+    specs = (
+        _bulk(*[(f"skill_pad{i}", "unrelated pad skill") for i in range(40)])
+        + [_FakeSpec(name="skill_git-commit", description="Commit changes")]
+    )
+    out = select_relevant_skills(
+        "commit my changes",
+        specs,
+        top_k=3,
+        cognitive_state=None,
+    )
+    out_names = {s.name for s in out}
+    assert "skill_git-commit" in out_names
