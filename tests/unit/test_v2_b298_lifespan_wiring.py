@@ -29,7 +29,7 @@ from __future__ import annotations
 from typing import Any
 
 
-from xmclaw.daemon.app import _find_skill_provider
+from xmclaw.daemon.app_lifespan import _find_skill_provider
 
 
 class _FakeRegistry:

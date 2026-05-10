@@ -13,6 +13,10 @@ import asyncio
 import functools
 import re
 from dataclasses import dataclass
+
+from xmclaw.utils.log import get_logger
+
+log = get_logger(__name__)
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -292,7 +296,7 @@ class PermissionManager:
                         entry.detail, entry.tool_category, str(entry.risk_score)
                     ]) + "\n")
             except Exception:
-                pass
+                log.warning("security.audit_write_failed", exc_info=True)
 
         return SecurityDecision(
             allowed=allowed,
@@ -338,7 +342,7 @@ class PermissionManager:
                         entry.detail, entry.tool_category, str(entry.risk_score)
                     ]) + "\n")
             except Exception:
-                pass  # Don't let audit log failures break tool execution
+                log.warning("security.audit_log_persist_failed", exc_info=True)
 
     # ── Confirmation flow ─────────────────────────────────────────────────────
 

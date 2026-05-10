@@ -13,6 +13,10 @@ from __future__ import annotations
 
 import re
 import time
+
+from xmclaw.utils.log import get_logger
+
+log = get_logger(__name__)
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -245,4 +249,4 @@ class GraphExtractor:
                 )
             )
         except Exception:
-            pass  # 重复边会触发 UNIQUE 约束，静默忽略
+            log.warning("graph_extractor.duplicate_edge", exc_info=True)

@@ -2156,6 +2156,15 @@ class EvolutionPipelineCheck(DoctorCheck):
                 name=self.name, ok=False,
                 detail=f"cannot read daemon/app.py source: {exc}",
             )
+        # B-298: lifespan was extracted to app_lifespan.py; tokens may
+        # live in either file.
+        try:
+            from xmclaw.daemon import app_lifespan as _lifespan_mod
+            src += Path(_lifespan_mod.__file__).read_text(
+                encoding="utf-8", errors="replace",
+            )
+        except Exception:  # noqa: BLE001
+            pass
         missing = [tok for tok in self.REQUIRED_TOKENS if tok not in src]
 
         # B-168: also verify post_sampling_hooks.build_default_registry

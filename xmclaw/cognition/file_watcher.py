@@ -13,6 +13,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal
 
+from xmclaw.utils.log import get_logger
+
+log = get_logger(__name__)
+
 PerceptionEventType = Literal["created", "modified", "deleted", "moved"]
 
 
@@ -124,7 +128,7 @@ class FileWatcher:
                         )
                         asyncio.create_task(self._bus.publish(ev))
                     except Exception:
-                        pass
+                        log.warning("file_watcher.publish_failed", exc_info=True)
                 # Register as attention focus when cognitive state is wired.
                 if self._cognitive_state is not None:
                     try:
@@ -145,12 +149,12 @@ class FileWatcher:
                                 )
                             )
                     except Exception:
-                        pass
+                        log.warning("file_watcher.salience_failed", exc_info=True)
                 if self.callback:
                     try:
                         await self.callback(event)
                     except Exception:
-                        pass  # 感知事件处理不应崩溃监控器
+                        log.warning("file_watcher.callback_failed", exc_info=True)
 
     def _take_snapshot(self) -> dict[str, float]:
         """拍摄文件系统快照。"""

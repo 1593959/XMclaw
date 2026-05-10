@@ -36,7 +36,8 @@ from xmclaw.core.bus import (
     EventType, InProcessEventBus, make_event,
 )
 from xmclaw.core.ir.toolcall import ToolSpec
-from xmclaw.daemon.app import create_app, _find_skill_provider
+from xmclaw.daemon.app import create_app
+from xmclaw.daemon.app_lifespan import _find_skill_provider
 from xmclaw.providers.tool.composite import CompositeToolProvider
 from xmclaw.skills.base import Skill, SkillInput, SkillOutput
 from xmclaw.skills.manifest import SkillManifest
