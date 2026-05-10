@@ -16,12 +16,40 @@ Iron rule (per §3.3.4 data consistency):
     write rolls back.
 
 Stage A (READ-side) shipped ``query()``: dedupe by id; assemble
-unified view. Stage B (WRITE-side, this commit) ships ``put()`` and
-``delete()``: every fan-out write stamps the SAME id into every
-index, with best-effort compensation if any single index fails.
-SQLite cross-DB is not transactional, so we surface a clear
-``UnifiedWriteError`` with a ``compensated`` list when rollback can't
-fully restore consistency — that's the contract.
+unified view. Stage B (WRITE-side) ships ``put()`` and ``delete()``:
+every fan-out write stamps the SAME id into every index, with
+best-effort compensation if any single index fails.  SQLite
+cross-DB is not transactional, so we surface a clear
+``UnifiedWriteError`` with a ``compensated`` list when rollback
+can't fully restore consistency — that's the contract.
+
+Failure-mode taxonomy (what can go wrong inside ``put()`` and how the
+caller sees it):
+
+* **Step 1 — graph add_node fails** (e.g. CHECK constraint on
+  ``type``, FK on memory_item_id, schema mismatch). No other write
+  happened. ``UnifiedWriteError.indices_written`` is ``[]``,
+  ``compensated`` is ``[]``. Caller can simply retry with corrected
+  inputs.
+* **Step 2 — vec put fails** (disk full, embedding dim mismatch,
+  WAL unavailable). Graph is rolled back. ``indices_written ==
+  ["graph"]``, ``compensated == ["graph"]`` on a clean rollback —
+  meaning origin store is consistent post-failure.
+* **Step 3 — relation edge fails** (CHECK on ``relation`` literal,
+  duplicate edge). Both prior writes rolled back. Bad relation type
+  is the most common cause; pre-validate against
+  ``MemoryGraph.EdgeType``.
+* **Compensation itself fails** (lock contention during rollback,
+  disk blip mid-delete). ``indices_written`` − ``compensated``
+  identifies the dirty indices. The caller should surface to the
+  operator; manual cleanup or a janitor sweep clears the orphaned
+  rows.
+
+Read-side note: ``query()`` already dedupes by id, so even a dirty
+post-failure store still returns a single unified ``MemoryEntry`` row
+per logical entry — the worst-case observable artefact is a slightly
+stale axis (e.g. graph node missing while vec row stayed) until
+operator cleanup.
 """
 from __future__ import annotations
 
