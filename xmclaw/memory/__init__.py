@@ -21,6 +21,11 @@ are (no migration of data).
 from __future__ import annotations
 
 from xmclaw.memory._id import UnifiedWriteError, mint_unified_id
+from xmclaw.memory.extractor import (
+    ExtractedFact,
+    MemoryExtractor,
+    TriggerKind,
+)
 from xmclaw.memory.unified import (
     MemoryEntry,
     TimeRange,
@@ -28,8 +33,11 @@ from xmclaw.memory.unified import (
 )
 
 __all__ = [
+    "ExtractedFact",
     "MemoryEntry",
+    "MemoryExtractor",
     "TimeRange",
+    "TriggerKind",
     "UnifiedMemorySystem",
     "UnifiedWriteError",
     "mint_unified_id",

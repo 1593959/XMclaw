@@ -146,6 +146,37 @@ class EventType(str, Enum):
     # Surfaced in the Trace page so users can see memory-layer activity.
     MEMORY_OP = "memory_op"
 
+    # 2026-05-10 (Phase A of "agent 自己用记忆"): emitted by AgentLoop
+    # when it auto-queries the UnifiedMemorySystem at the start of a
+    # turn. Distinct from MEMORY_OP (which the legacy MemoryManager
+    # emits for the older recall path) — the unified path crosses
+    # semantic + relation + temporal axes and the UI surfaces it
+    # differently (each hit shows which axes contributed).
+    # Payload: {
+    #   "session_id": str,
+    #   "query": str,                   # user message used as semantic query
+    #   "hits": [{
+    #     "id": str, "text": str, "score": float,
+    #     "matched_axes": list[str],   # subset of ["semantic","relation","temporal"]
+    #     "layer": str,
+    #   }],
+    #   "elapsed_ms": float,
+    #   "limit": int,
+    # }
+    MEMORY_RECALL = "memory_recall"
+    # 2026-05-10 (Phase B): emitted by AgentLoop after a turn when the
+    # MemoryExtractor decides a fact / decision / preference is worth
+    # persisting via UnifiedMemorySystem.put(). Payload:
+    # {
+    #   "session_id": str,
+    #   "id": str,                      # the unified id minted by put()
+    #   "text": str,                    # the stored entry's text
+    #   "layer": str,                   # "long_term" / "short_term" / etc
+    #   "node_type": str,               # "event" / "entity" / "state" / "intent"
+    #   "reason": str,                  # human-readable why the extractor stored it
+    # }
+    MEMORY_PUT_AUTO = "memory_put_auto"
+
     # Jarvisification: cognitive architecture events.
     # Emitted by FileWatcher when filesystem changes are detected.
     FILE_SYSTEM_EVENT = "file_system_event"

@@ -1048,6 +1048,21 @@ class AgentLoop:
         # ``None`` (default) keeps the legacy code path untouched —
         # zero behavior change when continuous_loop is off.
         perception_bus: Any = None,
+        # 2026-05-10 ("agent 自己用记忆" Phase A/B): optional
+        # UnifiedMemorySystem. When wired, ``run_turn`` does a
+        # multi-axis recall (semantic + relation + temporal) at the
+        # start of each turn and a MemoryExtractor-driven put() at
+        # the end. ``None`` is the safe default — pre-2026-05-10
+        # callers see zero behavioural change. The factory wires
+        # this in when ``cfg["memory"]["unified_recall"] = true``
+        # (default true post-2026-05-10).
+        unified_memory: Any = None,
+        unified_recall_top_k: int = 5,
+        # 2026-05-10 Phase B: optional MemoryExtractor for auto-put.
+        # Duck-typed: any object exposing
+        # ``async extract(turn_summary, ctx) -> list[ExtractedFact]``
+        # works. None → auto-put is silent no-op.
+        memory_extractor: Any = None,
     ) -> None:
         self._llm = llm
         self._bus = bus
@@ -1187,6 +1202,13 @@ class AgentLoop:
         else:
             from xmclaw.cognition.state import CognitiveState
             self._cognitive_state = CognitiveState()
+        # 2026-05-10 Phase A/B: UnifiedMemorySystem + MemoryExtractor.
+        # Both optional; None means the unified-recall + auto-put
+        # paths are silent no-ops (legacy memory_ctx_block path still
+        # runs unchanged via self._memory_manager).
+        self._unified_memory = unified_memory
+        self._unified_recall_top_k = max(1, int(unified_recall_top_k))
+        self._memory_extractor = memory_extractor
         # Jarvisification Phase 4: hand embedder to cognitive state so
         # semantic salience computation works.
         if self._embedder is not None and hasattr(self._cognitive_state, "set_embedder"):
@@ -2222,6 +2244,89 @@ class AgentLoop:
             except Exception as exc:  # noqa: BLE001 — best-effort
                 _log_memory_failure(exc)
 
+        # 2026-05-10 Phase A: UnifiedMemorySystem auto-recall.
+        #
+        # Until now ``unified_memory`` was UI-only — a tab in
+        # /ui/memory let the operator hand-type a multi-axis query.
+        # Agent itself never used it. User feedback (literal): "我的
+        # 目的是给他自己用，不是光给我用." This wires the recall side
+        # so EVERY turn the agent benefits from the multi-axis index.
+        #
+        # Why a separate block from ``memory_ctx_block`` (above):
+        #   * memory_ctx_block uses the legacy MemoryManager — pure
+        #     vector + keyword over the working/short/long layers.
+        #   * unified_recall_block uses UnifiedMemorySystem — adds
+        #     the relation + temporal axes, returns ``matched_axes``
+        #     so the LLM can see WHY each hit was retrieved.
+        # Both ride the user-message tail (no system-prompt cache
+        # invalidation). When ``self._unified_memory is None``
+        # (factory didn't wire it / config disabled), this is a
+        # silent no-op and the agent_loop behaves identically to
+        # pre-2026-05-10.
+        unified_recall_block = ""
+        if self._unified_memory is not None and user_message:
+            try:
+                import time as _t
+                _t0 = _t.perf_counter()
+                hits = await self._unified_memory.query(
+                    semantic=user_message,
+                    limit=self._unified_recall_top_k,
+                )
+                elapsed_ms = (_t.perf_counter() - _t0) * 1000.0
+                if hits:
+                    rendered: list[str] = []
+                    for h in hits:
+                        # Each hit shows which axes contributed so the
+                        # LLM can disambiguate "matched semantically AND
+                        # temporally" from "only matched on relation".
+                        axes = "/".join(h.matched_axes) or "?"
+                        rendered.append(
+                            f"[{axes} | score={h.score:.2f}] {h.text}"
+                        )
+                    unified_recall_block = (
+                        "\n\n<unified-recall>\n"
+                        "[System note: the following are recalled "
+                        "memory entries matching your current query "
+                        "across semantic + relation + temporal axes "
+                        "(NOT new user input). Each entry shows the "
+                        "axes it matched on so you can judge "
+                        "relevance.]\n\n"
+                        + "\n".join(rendered)
+                        + "\n</unified-recall>"
+                    )
+                # Always emit the recall event — even when hits=[] —
+                # so the UI's "记忆活动" timeline can show that the
+                # agent DID query (just nothing relevant came back).
+                # NOTE: don't ``from xmclaw.core.bus import ...`` here —
+                # ``EventType`` is already imported at module top, and
+                # a local re-import would shadow it for the whole
+                # ``run_turn`` function (Python local-scope rules) and
+                # break the USER_MESSAGE publish above.
+                await self._bus.publish(make_event(
+                    session_id=session_id,
+                    agent_id=self._agent_id,
+                    type=EventType.MEMORY_RECALL,
+                    payload={
+                        "session_id": session_id,
+                        "query": user_message[:500],
+                        "hits": [
+                            {
+                                "id": h.id,
+                                "text": h.text[:300],
+                                "score": round(h.score, 3),
+                                "matched_axes": list(h.matched_axes),
+                                "layer": h.layer,
+                            }
+                            for h in hits
+                        ],
+                        "elapsed_ms": round(elapsed_ms, 2),
+                        "limit": self._unified_recall_top_k,
+                    },
+                ))
+            except Exception as exc:  # noqa: BLE001
+                # Recall is best-effort; never kill a turn over it.
+                _log_memory_failure(exc)
+
         # B-202: passive trigger for ``propose_curriculum_edit``.
         # Probe round B observed the agent identifying the perfect
         # curriculum-edit case (self_review_recent scenario) but never
@@ -2423,6 +2528,7 @@ class AgentLoop:
                     + user_message
                     + memory_ctx_block
                     + memory_files_block
+                    + unified_recall_block
                     + curriculum_hint_block
                     + curriculum_strategies_block
                     + skill_browse_hint
@@ -3294,6 +3400,68 @@ class AgentLoop:
                     )
                 except Exception:  # noqa: BLE001
                     pass
+
+            # 2026-05-10 Phase B: UnifiedMemorySystem auto-put.
+            #
+            # Heuristic-gated MemoryExtractor decides whether anything
+            # in this turn is worth long-term storage. When yes, we
+            # ``unified_memory.put()`` the distilled fact + emit
+            # MEMORY_PUT_AUTO so the UI's 记忆活动 timeline can show
+            # the agent learning. Same posture as Phase A: fire-and-
+            # forget background task, never blocks turn return, never
+            # fails the turn on extractor / write errors.
+            #
+            # Why background instead of synchronous: the LLM extract
+            # call can take 3-8 s. Adding that to every turn's tail
+            # latency tanks UX. The trade-off is the put isn't visible
+            # until the next turn — acceptable, the user already got
+            # their answer.
+            if (
+                self._memory_extractor is not None
+                and self._unified_memory is not None
+                and response.content
+                and user_message
+            ):
+                async def _bg_extract_and_put() -> None:
+                    try:
+                        fact = await self._memory_extractor.extract(
+                            user_message=user_message,
+                            assistant_response=response.content,
+                        )
+                        if fact is None:
+                            return
+                        new_id = await self._unified_memory.put(
+                            text=fact.text,
+                            layer=fact.layer,
+                            node_type=fact.node_type,
+                            metadata={
+                                "source": "auto_extract",
+                                "session_id": session_id,
+                                "reason": fact.reason,
+                            },
+                        )
+                        await publish(EventType.MEMORY_PUT_AUTO, {
+                            "session_id": session_id,
+                            "id": new_id,
+                            "text": fact.text[:300],
+                            "layer": fact.layer,
+                            "node_type": fact.node_type,
+                            "reason": fact.reason,
+                        })
+                    except Exception as exc:  # noqa: BLE001
+                        _log_memory_failure(exc)
+
+                bg_extract = asyncio.create_task(
+                    _bg_extract_and_put(),
+                    name=f"unified-extract-{session_id[:8]}",
+                )
+                # Reuse the post_sampling_bg set so background hooks
+                # all share one GC-anchor — same shape as the existing
+                # _post_sampling_bg pattern.
+                self._post_sampling_bg.add(bg_extract)
+                bg_extract.add_done_callback(
+                    self._post_sampling_bg.discard,
+                )
 
             return AgentTurnResult(
                 ok=True, text=response.content, hops=hop + 1,

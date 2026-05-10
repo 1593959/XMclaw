@@ -1516,6 +1516,45 @@ def build_agent_from_config(
         cfg, memory=vec_memory, embedder=agent_embedder,
     )
 
+    # 2026-05-10 ("agent 自己用记忆"): wire the UnifiedMemorySystem +
+    # MemoryExtractor so the agent_loop's Phase A (auto-recall on turn
+    # start) and Phase B (auto-put on turn end) actually run. Pre-this
+    # wiring, both the unified system and its UI tab existed but the
+    # agent never called either — user feedback "我的目的是给他自己用，
+    # 不是光给我用" surfaced the gap.
+    #
+    # Default ON (mirrors Phase 6 cognition default): users with a
+    # SqliteVec + MemoryGraph backend (the standard config) get the
+    # auto-memory pipeline for free. Disable via:
+    #   ``cfg["memory"]["unified_recall"]["enabled"] = false``
+    _mem_section = (cfg or {}).get("memory") or {}
+    _unified_cfg = (_mem_section.get("unified_recall") or {})
+    _unified_enabled = _unified_cfg.get("enabled", True)
+    _unified_top_k = max(1, int(_unified_cfg.get("top_k", 5)))
+    _unified_memory = None
+    _memory_extractor = None
+    if _unified_enabled and (vec_memory is not None or _graph is not None):
+        try:
+            from xmclaw.memory import (
+                MemoryExtractor as _MemoryExtractor,
+                UnifiedMemorySystem as _UnifiedSystem,
+            )
+            _unified_memory = _UnifiedSystem(
+                memory_manager=memory_manager,
+                memory_graph=_graph,
+                embedder=agent_embedder,
+            )
+            # Phase B extractor — gated by the same config block but
+            # depends on a working LLM (which we always have at this
+            # point — `llm` is guaranteed non-None in factory).
+            _memory_extractor = _MemoryExtractor(llm=llm)
+        except Exception:  # noqa: BLE001
+            # Best-effort wire-up: if the unified system fails to
+            # construct, fall back to legacy memory_ctx_block path
+            # rather than crashing daemon boot.
+            _unified_memory = None
+            _memory_extractor = None
+
     return AgentLoop(
         llm=llm, bus=bus, tools=tools,
         system_prompt=system_prompt,
@@ -1536,6 +1575,9 @@ def build_agent_from_config(
         cost_tracker=_cost_tracker,
         cognitive_state=_cognitive_state,
         strategy_bank=strategy_bank,
+        unified_memory=_unified_memory,
+        unified_recall_top_k=_unified_top_k,
+        memory_extractor=_memory_extractor,
     )
 
 
