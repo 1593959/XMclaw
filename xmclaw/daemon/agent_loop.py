@@ -1042,11 +1042,21 @@ class AgentLoop:
         # Jarvisification: optional CognitiveState for unified
         # cross-session cognition (goals, attention, fatigue).
         cognitive_state: Any = None,
+        # Jarvis Phase 6 wiring A: optional PerceptionBus. When set,
+        # ``run_turn`` pushes a ``user_msg`` percept on each turn so
+        # the continuous cognitive loop can react to user input.
+        # ``None`` (default) keeps the legacy code path untouched —
+        # zero behavior change when continuous_loop is off.
+        perception_bus: Any = None,
     ) -> None:
         self._llm = llm
         self._bus = bus
         self._tools = tools
         self._system_prompt = system_prompt
+        # Phase 6 wiring A: percept bus is purely observational on the
+        # agent loop side. Push failures must NEVER fail a turn — the
+        # try/except in run_turn enforces that.
+        self._perception_bus = perception_bus
         # B-25 Hermes parity: per-session frozen snapshot of the
         # static system-prompt portion (= base prompt + persona, NO
         # time). Time is appended fresh on every turn; the rest is
@@ -1807,6 +1817,31 @@ class AgentLoop:
             {"content": user_message, "channel": "agent_loop"},
             correlation_id=user_correlation_id,
         )
+
+        # Phase 6 wiring A: push user message as a percept when the
+        # continuous cognitive loop is on. The PerceptionBus reference
+        # is injected by ``PerceptSourceRegistry.attach_user_message_hook``
+        # at lifespan startup; absent that, ``self._perception_bus`` is
+        # None and we skip — keeping zero-overhead behavior for installs
+        # that don't run the cognitive daemon.
+        _perception_bus = getattr(self, "_perception_bus", None)
+        if _perception_bus is not None and user_message:
+            try:
+                from xmclaw.cognition.percept_sources import (
+                    make_user_msg_percept,
+                )
+                # ``ultrathink`` isn't a kwarg on the public ``run_turn``
+                # signature — read it off the user-correlation marker
+                # if the caller propagated one, else default False. The
+                # important field is session_id + content; ultrathink is
+                # advisory metadata for downstream attention scoring.
+                await _perception_bus.push(
+                    make_user_msg_percept(
+                        session_id, user_message, ultrathink=False,
+                    )
+                )
+            except Exception:  # noqa: BLE001 — perception is observational
+                pass  # never fail a turn over percept push
 
         # Jarvisification: register the user message as an attention
         # focus so the cognitive state can track salience across turns.

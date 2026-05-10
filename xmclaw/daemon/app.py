@@ -1711,6 +1711,32 @@ def create_app(
                     dispatcher=ActionDispatcher(),
                 )
                 _app.state.perception_bus = _percept_bus
+                # Phase 6 wiring A: subscribe existing event sources
+                # to the PerceptionBus. Each attach is a per-source
+                # opt-in: the source must already be built (its own
+                # config flag is on) for us to wire it up. Wiring
+                # failures must not kill startup, so the whole block
+                # is wrapped in try/except.
+                _percept_sources: Any = None
+                try:
+                    from xmclaw.cognition.percept_sources import (
+                        PerceptSourceRegistry,
+                    )
+                    _percept_sources = PerceptSourceRegistry(_percept_bus)
+                    _fw = getattr(_app.state, "file_watcher", None)
+                    if _fw is not None:
+                        await _percept_sources.attach_file_watcher(_fw)
+                    _pw = getattr(_app.state, "process_watcher", None)
+                    if _pw is not None:
+                        await _percept_sources.attach_process_watcher(_pw)
+                    if agent is not None:
+                        _percept_sources.attach_user_message_hook(agent)
+                    if cron_tick is not None:
+                        _percept_sources.attach_cron_hook(cron_tick)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("percept_sources.attach_failed err=%s", exc)
+                    _percept_sources = None
+                _app.state.percept_sources = _percept_sources
                 await _cognitive_daemon.start()
             except Exception as exc:  # noqa: BLE001
                 log.warning("cognitive_daemon.start_failed err=%s", exc)
@@ -1906,6 +1932,14 @@ def create_app(
             if _cd is not None:
                 try:
                     await _cd.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            # Phase 6 wiring A: detach percept sources so the upstream
+            # producers stop pushing into a bus we're tearing down.
+            _ps = getattr(_app.state, "percept_sources", None)
+            if _ps is not None:
+                try:
+                    await _ps.detach_all()
                 except Exception:  # noqa: BLE001
                     pass
             # Jarvisification: stop cognitive modules.
