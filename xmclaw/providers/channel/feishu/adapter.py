@@ -160,6 +160,19 @@ class FeishuAdapter(ChannelAdapter):
         self._seen_msg_ids: OrderedDict[str, float] = OrderedDict()
         self._seen_cap = 512
 
+    # ── internal helpers ────────────────────────────────────────
+
+    @staticmethod
+    def _import_lark_modules() -> tuple[Any, Any]:
+        """Heavy ``lark_oapi`` import isolated so ``start()`` can
+        offload it via ``asyncio.to_thread``. The cascade triggers
+        ``pkg_resources.declare_namespace`` which is ~3.75s on cold
+        module cache — far too slow for the daemon's main event loop.
+        Module cache is process-wide so subsequent calls are free."""
+        import lark_oapi as lark
+        from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
+        return lark, P2ImMessageReceiveV1
+
     # ── public API ──────────────────────────────────────────────
 
     def subscribe(
@@ -171,8 +184,22 @@ class FeishuAdapter(ChannelAdapter):
         if self._ws_task is not None:
             return  # idempotent
         # Local import keeps lark-oapi as an optional dep.
-        import lark_oapi as lark
-        from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
+        #
+        # 2026-05-11 perf fix: the synchronous ``import lark_oapi``
+        # cascade triggers ``pkg_resources.declare_namespace`` whose
+        # importlib walk costs ~3.75s on cold module cache (Windows +
+        # antivirus scanning is the worst case). Doing it inline in
+        # this coroutine blocks the entire daemon event loop —
+        # uvicorn can't get back to the "Application startup complete"
+        # log line until it finishes, which pushes /health past the
+        # CLI's wait timeout. Pushing it to a worker thread via
+        # ``asyncio.to_thread`` lets the loop keep running other
+        # coroutines (including uvicorn's own ones) while pkg_resources
+        # cooks. The import is a one-shot and after this point
+        # everything is synchronous Python that's already in cache.
+        lark, P2ImMessageReceiveV1 = await asyncio.to_thread(
+            self._import_lark_modules,
+        )
 
         # lark.Client.builder() is the canonical entry point.
         self._client = (
