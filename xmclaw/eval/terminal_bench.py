@@ -56,7 +56,11 @@ if TYPE_CHECKING:
 # Where we tell HuggingFace to cache the dataset. Using XMclaw's own
 # workspace dir means a fresh laptop only fetches it once and keeps it
 # isolated from the user's global ``~/.cache/huggingface``.
-_HF_CACHE_DIR = Path.home() / ".xmclaw" / "v2" / "eval_cache" / "terminal_bench"
+# Patch A (2026-05-10): backed by paths.eval_cache_dir() so
+# ``XMC_DATA_DIR`` overrides reroute the cache.
+def _hf_cache_dir() -> Path:
+    from xmclaw.utils.paths import eval_cache_dir
+    return eval_cache_dir("terminal_bench")
 
 
 # Error hint when the optional extra isn't installed. Surfacing this from
@@ -160,8 +164,9 @@ class TerminalBenchSuite(BenchmarkSuite):
 
         # Point HF at our cache dir BEFORE importing/calling. Setting the
         # env var also affects the underlying ``huggingface_hub`` client.
-        _HF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        os.environ.setdefault("HF_DATASETS_CACHE", str(_HF_CACHE_DIR))
+        _cache = _hf_cache_dir()
+        _cache.mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault("HF_DATASETS_CACHE", str(_cache))
 
         try:
             from datasets import load_dataset  # type: ignore[import-not-found]
@@ -171,7 +176,7 @@ class TerminalBenchSuite(BenchmarkSuite):
         ds = load_dataset(
             self.UPSTREAM_DATASET,
             split=self.UPSTREAM_SPLIT,
-            cache_dir=str(_HF_CACHE_DIR),
+            cache_dir=str(_cache),
         )
 
         cases: list[TaskCase] = []

@@ -432,7 +432,8 @@ def create_app(
     if _cognition_cfg.get("enabled", True):
         try:
             from xmclaw.cognition.state import CognitiveState
-            _state_path = Path.home() / ".xmclaw" / "v2" / "cognitive_state.json"
+            from xmclaw.utils.paths import default_cognitive_state_path
+            _state_path = default_cognitive_state_path()
             if _state_path.exists():
                 import json
                 _data = json.loads(_state_path.read_text(encoding="utf-8"))
@@ -2104,7 +2105,8 @@ def create_app(
             # Persist cognitive state before shutting down.
             if _cognitive_state is not None:
                 try:
-                    _state_path = Path.home() / ".xmclaw" / "v2" / "cognitive_state.json"
+                    from xmclaw.utils.paths import default_cognitive_state_path
+                    _state_path = default_cognitive_state_path()
                     _state_path.parent.mkdir(parents=True, exist_ok=True)
                     import json
                     _state_path.write_text(

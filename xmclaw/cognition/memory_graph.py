@@ -18,7 +18,11 @@ from typing import Any, Literal
 NodeType = Literal["event", "entity", "state", "intent"]
 EdgeType = Literal["CAUSED_BY", "RELATED_TO", "LEADS_TO", "CONTRADICTS", "PART_OF"]
 
-_DEFAULT_DB_PATH = Path.home() / ".xmclaw" / "v2" / "graph.db"
+# Patch A (2026-05-10): no longer captured at module-import time.
+# graph.db path resolved lazily via paths.default_graph_db_path() in
+# MemoryGraph.__init__ so XMC_DATA_DIR / XMC_V2_GRAPH_DB_PATH overrides
+# actually reroute. Pre-Patch-A this baked Path.home() at import,
+# defeating the unified-paths anti-req.
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +54,10 @@ class MemoryGraph:
         *,
         bus: Any | None = None,
     ) -> None:
-        self.db_path = str(db_path or _DEFAULT_DB_PATH)
+        if db_path is None:
+            from xmclaw.utils.paths import default_graph_db_path
+            db_path = default_graph_db_path()
+        self.db_path = str(db_path)
         self._bus = bus
         self._conn = self._open_conn()
         self._ensure_schema()

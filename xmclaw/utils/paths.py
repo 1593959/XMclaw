@@ -273,6 +273,108 @@ def default_sessions_db_path() -> Path:
     return v2_workspace_dir() / "sessions.db"
 
 
+# ── Patch A (2026-05-10) — unified-paths anti-req closure ───────────────
+#
+# Pre-this-commit 11 sites in xmclaw/ hand-built ``Path.home() /
+# ".xmclaw" / ...``  strings, ignoring ``XMC_DATA_DIR``. That's the
+# user's literal "安装到 /a 跑读 /b" pain point. Helpers below cover
+# every previously-hardcoded path; tests in
+# ``tests/unit/test_v2_paths_unified.py`` walk every ``default_*`` /
+# ``*_dir`` function and assert ``XMC_DATA_DIR`` reroutes them all.
+
+
+def default_cognitive_state_path() -> Path:
+    """CognitiveState persistence — ``<v2>/cognitive_state.json``.
+
+    Written by ``cognition.state.CognitiveState`` snapshots and the
+    daemon lifespan's load/save hooks. Honors narrow
+    ``XMC_V2_COGNITIVE_STATE_PATH`` override so tests can isolate one
+    daemon's state without moving the full workspace.
+    """
+    override = os.environ.get("XMC_V2_COGNITIVE_STATE_PATH")
+    if override:
+        return Path(override)
+    return v2_workspace_dir() / "cognitive_state.json"
+
+
+def default_graph_db_path() -> Path:
+    """MemoryGraph SQLite — ``<v2>/graph.db``.
+
+    Holds the graph index that powers ``UnifiedMemorySystem``'s
+    relation + temporal axes. Honors narrow
+    ``XMC_V2_GRAPH_DB_PATH``.
+    """
+    override = os.environ.get("XMC_V2_GRAPH_DB_PATH")
+    if override:
+        return Path(override)
+    return v2_workspace_dir() / "graph.db"
+
+
+def default_experiments_db_path() -> Path:
+    """SelfExperimentLoop ledger — ``<v2>/experiments.db``.
+
+    R1+R3 self-modification work persists candidate experiments here
+    so reflection cycles can correlate proposals with outcomes.
+    """
+    override = os.environ.get("XMC_V2_EXPERIMENTS_DB_PATH")
+    if override:
+        return Path(override)
+    return v2_workspace_dir() / "experiments.db"
+
+
+def evolution_proposals_dir() -> Path:
+    """EvolutionLoop scratch dir — ``<v2>/proposals/``.
+
+    Stages skill / curriculum proposals before the EvolutionController
+    grader-gates them. Sibling of :func:`evolution_dir` (the audit
+    trail) — proposals get cleared on workspace wipe; the audit
+    trail of past decisions goes through ``evolution_dir`` which
+    writes per-agent into the v2 subtree.
+    """
+    return v2_workspace_dir() / "proposals"
+
+
+def eval_cache_dir(suite: str | None = None) -> Path:
+    """HuggingFace dataset cache for benchmark suites — ``<v2>/eval_cache/[suite/]``.
+
+    Sprint 4 benchmark adapters (LongMemEval / TerminalBench /
+    SWE-bench Verified) cache HF datasets here so a fresh laptop only
+    fetches each suite once. Pass a suite name (``longmemeval`` /
+    ``terminal_bench`` / ``swe_bench_verified``) for the per-suite
+    subdir; pass ``None`` for the parent.
+    """
+    base = v2_workspace_dir() / "eval_cache"
+    if suite:
+        return base / suite
+    return base
+
+
+def default_decisions_db_path() -> Path:
+    """R3 DecisionTraceRecorder — ``<v2>/decisions.db``.
+
+    Append-only trace log feeding R3 metacognition. Sibling of
+    events.db (which is immutable audit) but kept separate so journal
+    retention doesn't accidentally prune metacognition input.
+    """
+    override = os.environ.get("XMC_V2_DECISIONS_DB_PATH")
+    if override:
+        return Path(override)
+    return v2_workspace_dir() / "decisions.db"
+
+
+def default_suggestions_db_path() -> Path:
+    """R5 SuggestionInbox — ``<v2>/suggestions.db``.
+
+    Pending proactive suggestions awaiting operator review. Survives
+    daemon restart so the operator can pick up review where they left
+    off.
+    """
+    override = os.environ.get("XMC_V2_SUGGESTIONS_DB_PATH")
+    if override:
+        return Path(override)
+    return v2_workspace_dir() / "suggestions.db"
+
+
 # ── v1 legacy (do not extend; kept so existing callers keep working) ────
 
 def get_agent_dir(agent_id: str) -> Path:

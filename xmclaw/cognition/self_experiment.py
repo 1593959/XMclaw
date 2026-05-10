@@ -151,7 +151,10 @@ class ExperimentResult:
 
 
 def _default_db_path() -> Path:
-    return Path.home() / ".xmclaw" / "v2" / "experiments.db"
+    # Patch A (2026-05-10): delegate to paths.py so XMC_DATA_DIR /
+    # XMC_V2_EXPERIMENTS_DB_PATH overrides reroute the file.
+    from xmclaw.utils.paths import default_experiments_db_path
+    return default_experiments_db_path()
 
 
 class ExperimentStore:

@@ -88,9 +88,13 @@ class DecisionTraceRecorder:
 
     def __init__(self, db_path: Path | str | None = None) -> None:
         if db_path is None:
-            from xmclaw.utils.paths import default_events_db_path
-            ev_path = Path(default_events_db_path())
-            db_path = ev_path.parent / "decisions.db"
+            # Patch A (2026-05-10): paths.default_decisions_db_path()
+            # so XMC_DATA_DIR / XMC_V2_DECISIONS_DB_PATH overrides
+            # reroute properly. Pre-fix this manually walked from
+            # default_events_db_path's parent which only honored the
+            # events-db env var (wrong knob).
+            from xmclaw.utils.paths import default_decisions_db_path
+            db_path = default_decisions_db_path()
         self.db_path = str(db_path)
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(

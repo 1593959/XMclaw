@@ -82,9 +82,11 @@ class SuggestionInbox:
 
     def __init__(self, db_path: Path | str | None = None) -> None:
         if db_path is None:
-            from xmclaw.utils.paths import default_events_db_path
-            ev_path = Path(default_events_db_path())
-            db_path = ev_path.parent / "suggestions.db"
+            # Patch A (2026-05-10): paths.default_suggestions_db_path()
+            # so XMC_DATA_DIR / XMC_V2_SUGGESTIONS_DB_PATH overrides
+            # reroute properly.
+            from xmclaw.utils.paths import default_suggestions_db_path
+            db_path = default_suggestions_db_path()
         self.db_path = str(db_path)
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(

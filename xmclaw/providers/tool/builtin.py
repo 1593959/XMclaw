@@ -3217,13 +3217,10 @@ class BuiltinTools(ToolProvider):
         except Exception as exc:  # noqa: BLE001
             return _fail(call, t0, f"{type(exc).__name__}: {exc}")
 
-        # Resolve $XMC_DATA_DIR (or fall back to ~/.xmclaw).
-        data_dir_env = os.environ.get("XMC_DATA_DIR")
-        if data_dir_env:
-            base = Path(data_dir_env)
-        else:
-            base = Path.home() / ".xmclaw"
-        audio_dir = base / "v2" / "audio"
+        # Patch A (2026-05-10): paths.data_dir() (avoids duplicating
+        # the XMC_DATA_DIR fallback inline — same logic as paths.py).
+        from xmclaw.utils.paths import data_dir as _xmc_data_dir
+        audio_dir = _xmc_data_dir() / "v2" / "audio"
         audio_dir.mkdir(parents=True, exist_ok=True)
         audio_path = audio_dir / f"{uuid.uuid4().hex}.mp3"
         audio_path.write_bytes(audio_bytes)

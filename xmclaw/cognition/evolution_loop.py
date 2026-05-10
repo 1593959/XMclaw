@@ -210,7 +210,13 @@ class EvolutionLoop:
         interval_seconds: float = 3600.0,  # 默认 1 小时
         agent_loop: Any | None = None,
     ) -> None:
-        self.proposals_dir = Path(proposals_dir or Path.home() / ".xmclaw" / "v2" / "proposals")
+        # Patch A (2026-05-10): paths.evolution_proposals_dir() so
+        # XMC_DATA_DIR overrides reroute (pre-fix this hand-built
+        # the path regardless of env).
+        if proposals_dir is None:
+            from xmclaw.utils.paths import evolution_proposals_dir
+            proposals_dir = evolution_proposals_dir()
+        self.proposals_dir = Path(proposals_dir)
         self.proposals_dir.mkdir(parents=True, exist_ok=True)
         self._bus = bus
         self._interval = interval_seconds
