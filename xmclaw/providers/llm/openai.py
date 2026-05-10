@@ -441,18 +441,8 @@ class OpenAILLM(LLMProvider):
         # could keep us waiting 30+ seconds before any chunk lands)
         # and the in-loop ``cancel.is_set()`` check never reached.
         # Stop button now actually works mid-call.
-        _cancel_watchdog: asyncio.Task[None] | None = None
-        if cancel is not None:
-            async def _watch_cancel() -> None:
-                try:
-                    await cancel.wait()
-                    try:
-                        await stream.close()
-                    except Exception:  # noqa: BLE001
-                        pass
-                except asyncio.CancelledError:
-                    pass
-            _cancel_watchdog = asyncio.create_task(_watch_cancel())
+        from xmclaw.providers.llm.streaming_utils import start_cancel_watchdog
+        _cancel_watchdog = start_cancel_watchdog(cancel, stream.aclose)
 
         async for chunk in stream:
             # B-39: bail mid-stream when the WS-side cancel event fires.
@@ -547,12 +537,8 @@ class OpenAILLM(LLMProvider):
         # the in-loop check could fire) and stop the watchdog cleanly.
         if cancel is not None and cancel.is_set():
             cancelled = True
-        if _cancel_watchdog is not None:
-            _cancel_watchdog.cancel()
-            try:
-                await _cancel_watchdog
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+        from xmclaw.providers.llm.streaming_utils import stop_cancel_watchdog
+        await stop_cancel_watchdog(_cancel_watchdog)
 
         # B-39: when cancelled mid-stream, return what we accumulated
         # without parsing any partial tool-call deltas (a half-built

@@ -367,18 +367,8 @@ class AnthropicLLM(LLMProvider):
                 # The watchdog forces stream closure as soon as
                 # cancel fires; the consume loop then exits with
                 # whatever text accumulated so far.
-                _cancel_watchdog: asyncio.Task[None] | None = None
-                if cancel is not None:
-                    async def _watch_cancel() -> None:
-                        try:
-                            await cancel.wait()
-                            try:
-                                await stream.close()
-                            except Exception:  # noqa: BLE001
-                                pass
-                        except asyncio.CancelledError:
-                            pass
-                    _cancel_watchdog = asyncio.create_task(_watch_cancel())
+                from xmclaw.providers.llm.streaming_utils import start_cancel_watchdog
+                _cancel_watchdog = start_cancel_watchdog(cancel, stream.close)
                 # B-216: iterate the raw event stream (not just
                 # ``stream.text_stream``) so we catch
                 # ``thinking_delta`` events alongside ``text_delta``.
@@ -437,12 +427,8 @@ class AnthropicLLM(LLMProvider):
                     cancelled = True
                 # Stop the watchdog now that the loop has exited
                 # (whether by natural completion or cancel-close).
-                if _cancel_watchdog is not None:
-                    _cancel_watchdog.cancel()
-                    try:
-                        await _cancel_watchdog
-                    except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                        pass
+                from xmclaw.providers.llm.streaming_utils import stop_cancel_watchdog
+                await stop_cancel_watchdog(_cancel_watchdog)
                 if cancelled:
                     return LLMResponse(
                         content="".join(text_parts),
