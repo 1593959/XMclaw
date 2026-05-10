@@ -8,19 +8,32 @@ completion: write files, run commands, satisfy verification scripts.
 Dataset: https://huggingface.co/datasets/laude-institute/terminal-bench.
 Project home: https://www.tbench.ai/.
 
-Why a separate module rather than folding into ``longmemeval_full``:
+Two-tier grading
+================
 
-* TerminalBench's grading needs a sandboxed runtime (Docker / subprocess
-  jail) to actually execute the verification ``tests`` shipped with
-  each task. Wiring that to ``xmclaw/providers/runtime/docker.py`` is
-  tracked separately as B-385.
-* This commit ships a **heuristic** grader so the harness/CLI/registry
-  are exercisable end-to-end today. The heuristic scans the agent's
-  output for "completion signals" (test pass mention, exit-code-zero
-  mention, file-write evidence). It is APPROXIMATE — for production
-  benchmark numbers you must wait for the sandboxed grader follow-up
-  (B-385). The docstring on :meth:`TerminalBenchSuite.grade` repeats
-  this disclaimer so callers can't miss it.
+Mirrors the SWE-bench Verified tier split:
+
+* **Tier 1 (heuristic)** — runs in-process, no Docker. Scans the
+  agent's text for "completion signals" (test pass mention, exit-code-
+  zero mention, file-write evidence). Approximate by construction —
+  fast smoke / regression tests but NOT comparable to published
+  TerminalBench leaderboard numbers.
+* **Tier 2 (sandboxed)** — Sprint 4 follow-up to B-385. Spawns an
+  ephemeral ``ubuntu:22.04`` container, replays the agent's bash, runs
+  the row's verification ``tests``, reports per-test pass/fail. **This
+  is the real TerminalBench number.** Lives in
+  :mod:`xmclaw.eval.terminal_bench_sandbox`. Wire it in via
+  :meth:`TerminalBenchSuite.set_sandboxed_grader` (or set
+  ``XMC_TERMINAL_BENCH_GRADER=sandboxed`` for auto-wire).
+
+**Honest disclosure** (do not delete; CI tests for this string):
+Tier 1 grading is approximate; published TerminalBench numbers come
+from Tier 2 sandboxed evaluation. **Do NOT use Tier 1 scores in
+marketing** claims, release notes, or competitive comparisons — the
+heuristic overestimates "did the agent claim to finish" relative to
+the real per-test signal. Tier 1 is **deprecated for benchmark
+publishing** as of Sprint 4 Tier-2 wire-up; it remains supported for
+development-time smoke tests only.
 
 Lazy-imports ``datasets`` *inside* ``load_tasks`` so the daemon (which
 imports ``xmclaw.eval`` for SUITE_REGISTRY) never pays the import cost —
@@ -28,12 +41,16 @@ only ``xmclaw eval run terminal_bench`` does.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from xmclaw.eval.harness import BenchmarkSuite, TaskCase
+
+if TYPE_CHECKING:
+    from xmclaw.eval.terminal_bench_sandbox import TerminalBenchDockerGrader
 
 
 # Where we tell HuggingFace to cache the dataset. Using XMclaw's own
