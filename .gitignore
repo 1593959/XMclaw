@@ -80,6 +80,10 @@ tests/bench/_phase1_live_log.jsonl
 tests/bench/_phase2_live_log.jsonl
 tests/bench/_phase3_live_log.jsonl
 
+# Codebase scan artifacts (regenerated on demand by audit tooling)
+docs/codebase/.codebase-scan.txt
+docs/codebase/scan_*.txt
+
 # Claude / Copilot
 .claude/
 # B-235: XMclaw-managed git worktrees (created by ``enter_worktree`` tool).
