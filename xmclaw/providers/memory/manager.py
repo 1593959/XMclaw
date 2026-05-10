@@ -47,7 +47,7 @@ class MemoryManager:
 
     BUILTIN_NAME = "builtin"
 
-    def __init__(self, *, bus: Any | None = None) -> None:
+    def __init__(self, *, bus: Any | None = None, graph: Any | None = None) -> None:
         self._providers: list[MemoryProvider] = []
         self._has_external: bool = False
         # B-27: emit MEMORY_OP events for observability so the Trace
@@ -55,6 +55,11 @@ class MemoryManager:
         # anything with ``async publish(event)`` works. None = no
         # emission (used by tests / standalone code).
         self._bus = bus
+        # Jarvisification: optional MemoryGraph for relational memory.
+        # When wired, sync_turn also writes event nodes + intent edges
+        # into the graph so cross-session reasoning can traverse
+        # causality chains.
+        self._graph = graph
 
     def attach_bus(self, bus: Any) -> None:
         """Wire a bus after construction. Tools that build the manager
@@ -288,6 +293,21 @@ class MemoryManager:
                     "memory.sync_failed provider=%s err=%s",
                     getattr(p, "name", "?"), exc,
                 )
+        # Jarvisification: if a MemoryGraph is wired, persist the turn
+        # as an event node + intent edge so cross-session causality
+        # traversal works.
+        # Phase 5: use GraphExtractor for rich automatic graph building.
+        if self._graph is not None:
+            try:
+                from xmclaw.cognition.graph_extractor import GraphExtractor
+                extractor = GraphExtractor(graph=self._graph)
+                await extractor.extract_from_turn(
+                    session_id=session_id,
+                    user_content=user_content,
+                    assistant_content=assistant_content,
+                )
+            except Exception:  # noqa: BLE001 — graph is best-effort
+                pass
 
     async def on_session_end(self, *, session_id: str, messages: list) -> None:
         """Session-end summary hook. Hermes uses this for fact extraction."""

@@ -370,3 +370,70 @@ async def test_load_from_disk_starts_evolution_observers(
     assert ws.kind == "evolution"
     assert ws.observer is not None
     assert ws.observer.is_running() is True
+
+
+# ── Jarvisification Phase 5: shared cognitive state ──────────────────────
+
+
+@pytest.mark.asyncio
+async def test_shared_cognitive_state_across_agents(
+    bus: InProcessEventBus, registry_dir: Path, llm_config: dict[str, object]
+) -> None:
+    """Two sub-agents built by the same manager share one CognitiveState."""
+    from xmclaw.cognition.state import CognitiveState, AttentionFocus
+
+    shared = CognitiveState()
+    manager = MultiAgentManager(
+        bus, registry_dir=registry_dir, cognitive_state=shared,
+    )
+
+    a = await manager.create("agent-a", llm_config)
+    b = await manager.create("agent-b", llm_config)
+
+    assert a.is_ready() is True
+    assert b.is_ready() is True
+
+    cs_a = a.agent_loop._cognitive_state
+    cs_b = b.agent_loop._cognitive_state
+
+    # Same object identity — the substrate is shared.
+    assert cs_a is cs_b
+    assert cs_a is shared
+
+    # Mutation on one side is visible on the other.
+    cs_a.add_focus(
+        AttentionFocus(
+            percept_id="test:shared",
+            content="shared focus",
+            salience_score=0.9,
+        )
+    )
+    assert len(cs_b.attention_focus) == 1
+    assert cs_b.attention_focus[0].percept_id == "test:shared"
+
+    await manager.remove("agent-a")
+    await manager.remove("agent-b")
+
+
+@pytest.mark.asyncio
+async def test_cognitive_state_none_by_default(
+    bus: InProcessEventBus, registry_dir: Path, llm_config: dict[str, object]
+) -> None:
+    """When no cognitive_state is passed, agents get independent states."""
+    manager = MultiAgentManager(bus, registry_dir=registry_dir)
+    a = await manager.create("agent-a", llm_config)
+    b = await manager.create("agent-b", llm_config)
+
+    cs_a = a.agent_loop._cognitive_state
+    cs_b = b.agent_loop._cognitive_state
+
+    # Both agents have a cognitive state (factory auto-creates when enabled
+    # in config, but here cognition is not enabled so they get fresh empty
+    # states created by AgentLoop itself).
+    assert cs_a is not None
+    assert cs_b is not None
+    # Without explicit sharing they are independent objects.
+    assert cs_a is not cs_b
+
+    await manager.remove("agent-a")
+    await manager.remove("agent-b")

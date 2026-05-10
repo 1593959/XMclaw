@@ -1039,6 +1039,9 @@ class AgentLoop:
         # don't downweight further here.
         strategy_bank: Any = None,
         strategy_top_k: int = 3,
+        # Jarvisification: optional CognitiveState for unified
+        # cross-session cognition (goals, attention, fatigue).
+        cognitive_state: Any = None,
     ) -> None:
         self._llm = llm
         self._bus = bus
@@ -1165,6 +1168,19 @@ class AgentLoop:
         # cost). Per-process singleton — per-session state lives
         # inside the compressor keyed by session_id.
         self._compressor: Any = None
+        # Jarvisification: attach a CognitiveState for unified
+        # cross-session cognition.  When None we build a fresh one;
+        # the lifespan can wire a shared instance so multiple agents
+        # participate in the same attention / goal graph.
+        if cognitive_state is not None:
+            self._cognitive_state = cognitive_state
+        else:
+            from xmclaw.cognition.state import CognitiveState
+            self._cognitive_state = CognitiveState()
+        # Jarvisification Phase 4: hand embedder to cognitive state so
+        # semantic salience computation works.
+        if self._embedder is not None and hasattr(self._cognitive_state, "set_embedder"):
+            self._cognitive_state.set_embedder(self._embedder)
 
     def clear_session(self, session_id: str) -> None:
         """Drop a session's conversation history. Called by the WS gateway
@@ -1174,6 +1190,10 @@ class AgentLoop:
         # B-202: reset the once-per-session curriculum hint dedup so a
         # fresh session starts eligible for the hint again.
         self._curriculum_hint_fired.pop(session_id, None)
+        # Jarvisification: clear cognitive state for this session too.
+        if self._cognitive_state is not None:
+            self._cognitive_state.cancel_events.pop(session_id, None)
+            self._cognitive_state.session_flags.pop(session_id, None)
         # P0-1: drop compressor's per-session state too (anti-thrashing
         # counter, previous_summary). Keeping it would mean a /reset
         # session inherits stale "compressions are ineffective" gates.
@@ -1788,6 +1808,29 @@ class AgentLoop:
             correlation_id=user_correlation_id,
         )
 
+        # Jarvisification: register the user message as an attention
+        # focus so the cognitive state can track salience across turns.
+        if self._cognitive_state is not None and user_message:
+            try:
+                salience = await self._cognitive_state.compute_salience(
+                    percept_id=f"msg:{session_id}:{time.time()}",
+                    content=user_message[:200],
+                    urgency=0.6,
+                    # Phase 4: let semantic relevance auto-compute when
+                    # embedder is wired; fallback to heuristic 0.7.
+                    relevance=None,
+                )
+                from xmclaw.cognition.state import AttentionFocus
+                self._cognitive_state.add_focus(
+                    AttentionFocus(
+                        percept_id=f"msg:{session_id}:{time.time()}",
+                        content=user_message[:200],
+                        salience_score=salience,
+                    )
+                )
+            except Exception:  # noqa: BLE001 — cognition is best-effort
+                pass
+
         # Resume prior history for this session; the first turn starts empty.
         # Note: system prompt is prepended fresh each turn (not stored in
         # history) so reprovisioning the agent picks up the new prompt.
@@ -2044,6 +2087,36 @@ class AgentLoop:
             except Exception as exc:  # noqa: BLE001 — memory is best-effort
                 _log_memory_failure(exc)
 
+            # Jarvisification: proactive recall from MemoryGraph.
+            # When a graph is wired, ask it for related historical
+            # memories based on the user's intent.  Results append to
+            # the same <memory-context> block so the LLM sees them
+            # alongside vector-recalled chunks.
+            _mgr = getattr(self, "_memory_manager", None)
+            _graph = getattr(_mgr, "_graph", None) if _mgr is not None else None
+            if _graph is not None and user_message:
+                try:
+                    _graph_recall = await _graph.proactive_recall(
+                        context=user_message,
+                        limit=3,
+                    )
+                    if _graph_recall:
+                        if memory_ctx_block:
+                            memory_ctx_block = (
+                                memory_ctx_block.rstrip()
+                                + "\n\n"
+                                + _graph_recall
+                                + "\n</memory-context>"
+                            )
+                        else:
+                            memory_ctx_block = (
+                                "\n\n<memory-context>\n"
+                                + _graph_recall
+                                + "\n</memory-context>"
+                            )
+                except Exception:  # noqa: BLE001
+                    pass
+
         # B-93: LLM-picked relevant memory files (free-code memdir
         # parity). Disabled by default because it adds one extra LLM
         # call per turn. When enabled (config:
@@ -2259,7 +2332,10 @@ class AgentLoop:
             try:
                 from xmclaw.skills.prefilter import select_relevant_skills
                 tool_specs = select_relevant_skills(
-                    user_message, tool_specs, top_k=12,
+                    user_message,
+                    tool_specs,
+                    top_k=12,
+                    cognitive_state=self._cognitive_state,
                 )
             except Exception:  # noqa: BLE001 — never break a turn over routing
                 pass
@@ -2935,6 +3011,20 @@ class AgentLoop:
                         # gaps instead of crashes.
                         pass
 
+                    # Jarvisification: record tool usage for evolution.
+                    _evo_loop = getattr(self, "_evolution_loop", None)
+                    if _evo_loop is not None:
+                        try:
+                            _evo_loop.record_tool_call(call.name)
+                            if not result.ok:
+                                _evo_loop.record_failure(
+                                    context=f"tool:{call.name}",
+                                    error=result.error or "unknown",
+                                    recovery="retry_or_fallback",
+                                )
+                        except Exception:  # noqa: BLE001
+                            pass
+
                     tool_calls_made.append({
                         "name": call.name,
                         "args": call.args,
@@ -3157,6 +3247,18 @@ class AgentLoop:
             # Skill invocation tracking is fully deterministic via
             # tool_invocation_started events (skill_<id> tools), no
             # heuristic SKILL_INVOKED emission needed.
+
+            # Jarvisification: record successful turn for pattern extraction.
+            _evo_loop = getattr(self, "_evolution_loop", None)
+            if _evo_loop is not None and response.content:
+                try:
+                    _evo_loop.record_success(
+                        task=user_message[:200],
+                        approach="agent_turn",
+                        result=response.content[:500],
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
 
             return AgentTurnResult(
                 ok=True, text=response.content, hops=hop + 1,

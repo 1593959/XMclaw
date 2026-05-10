@@ -1169,6 +1169,7 @@ def build_agent_from_config(
     *,
     max_hops: int | None = None,
     approval_service: Any | None = None,
+    cognitive_state: Any | None = None,
 ) -> AgentLoop | None:
     """Assemble an AgentLoop from config. Returns None if no LLM is set.
 
@@ -1496,9 +1497,11 @@ def build_agent_from_config(
     except Exception:  # noqa: BLE001 — never block boot on cost config
         _cost_tracker = None
 
-    # Jarvisification: build a shared CognitiveState when enabled.
-    _cognitive_state = None
-    if _cognition_cfg.get("enabled", False):
+    # Jarvisification: use provided cognitive_state or build a fresh one
+    # when enabled. MultiAgentManager passes a shared instance so all
+    # sub-agents operate on the same cognitive substrate.
+    _cognitive_state = cognitive_state
+    if _cognitive_state is None and _cognition_cfg.get("enabled", False):
         try:
             from xmclaw.cognition.state import CognitiveState
             _cognitive_state = CognitiveState()

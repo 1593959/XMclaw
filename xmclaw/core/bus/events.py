@@ -146,6 +146,14 @@ class EventType(str, Enum):
     # Surfaced in the Trace page so users can see memory-layer activity.
     MEMORY_OP = "memory_op"
 
+    # Jarvisification: cognitive architecture events.
+    # Emitted by FileWatcher when filesystem changes are detected.
+    FILE_SYSTEM_EVENT = "file_system_event"
+    # Emitted when CognitiveState attention focus shifts.
+    ATTENTION_SHIFT = "attention_shift"
+    # Emitted when TaskScheduler task state changes.
+    TASK_STATE_CHANGED = "task_state_changed"
+
     # NOTE: SKILL_INVOKED / SKILL_OUTCOME have no current publishers.
     # The original B-29/B-35 heuristic detection (matching agent text
     # against skill titles/triggers) was removed when SkillToolProvider

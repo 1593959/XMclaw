@@ -90,6 +90,7 @@ import { SecurityPage } from "./pages/Security.js";
 import { SkillsPage } from "./pages/Skills.js";
 import { MarketplacePage } from "./pages/Marketplace.js";  // B-390 (Sprint 2)
 import { EvolutionPage } from "./pages/Evolution.js";
+import { CognitionPage } from "./pages/Cognition.js";
 import { BackupPage } from "./pages/Backup.js";
 import { WorkspacePage } from "./pages/Workspace.js";
 import { SessionsPage } from "./pages/Sessions.js";
@@ -411,6 +412,7 @@ const routes = {
   "/skills": (state) => html`<${SkillsPage} token=${state.auth.token} />`,
   "/marketplace": (state) => html`<${MarketplacePage} token=${state.auth.token} />`,
   "/evolution": (state) => html`<${EvolutionPage} token=${state.auth.token} />`,
+  "/cognition": (state) => html`<${CognitionPage} token=${state.auth.token} />`,
   "/memory": (state) => html`<${MemoryPage} token=${state.auth.token} />`,
   "/tools": (state) => html`<${ToolsPage} token=${state.auth.token} />`,
   "/security": (state) => html`<${SecurityPage} token=${state.auth.token} />`,

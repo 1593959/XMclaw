@@ -1,0 +1,340 @@
+// XMclaw — CognitionPage (Jarvisification Phase 3).
+//
+// Surfaces the live cognitive architecture state:
+//   - Attention focus (what the system is paying attention to)
+//   - Current goals
+//   - Task queue from TaskScheduler
+//   - Evolution proposals pending review
+//   - MemoryGraph statistics
+
+const { h } = window.__xmc.preact;
+const { useEffect, useState, useRef } = window.__xmc.preact_hooks;
+const html = window.__xmc.htm.bind(h);
+
+import { apiGet, apiPost } from "../lib/api.js";
+
+// Lazy-load Mermaid for DAG visualisation.
+let _mermaidPromise = null;
+function loadMermaid() {
+  if (!_mermaidPromise) {
+    _mermaidPromise = import("https://esm.sh/mermaid@10/dist/mermaid.esm.min.mjs").then((m) => {
+      m.default.initialize({ startOnLoad: false, theme: "dark" });
+      return m.default;
+    });
+  }
+  return _mermaidPromise;
+}
+
+function fmtTs(ts) {
+  if (!ts) return "—";
+  const d = new Date(ts * 1000);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function Card({ title, children }) {
+  return html`
+    <div style="border:1px solid var(--color-border);border-radius:8px;padding:16px;margin-bottom:16px;background:var(--color-surface)">
+      <h3 style="margin:0 0 12px;font-size:1rem;font-weight:600">${title}</h3>
+      ${children}
+    </div>
+  `;
+}
+
+function Badge({ text, tone = "neutral" }) {
+  const colors = {
+    neutral: "#888",
+    success: "#2ecc71",
+    warning: "#f39c12",
+    danger: "#e74c3c",
+    info: "#3498db",
+  };
+  return html`
+    <span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:.75rem;background:${colors[tone] || colors.neutral}22;color:${colors[tone] || colors.neutral};border:1px solid ${colors[tone] || colors.neutral}44">
+      ${text}
+    </span>
+  `;
+}
+
+export function CognitionPage({ token }) {
+  const [state, setState] = useState("loading");
+  const [cogState, setCogState] = useState(null);
+  const [tasks, setTasks] = useState([]);
+  const [proposals, setProposals] = useState([]);
+  const [graphStats, setGraphStats] = useState(null);
+  const [taskGraph, setTaskGraph] = useState(null);
+  const [error, setError] = useState(null);
+  const dagRef = useRef(null);
+
+  async function loadAll() {
+    try {
+      const [s, t, p, g, tg] = await Promise.all([
+        apiGet("/api/v2/cognition/state", token),
+        apiGet("/api/v2/cognition/tasks", token),
+        apiGet("/api/v2/cognition/proposals", token),
+        apiGet("/api/v2/cognition/graph/stats", token),
+        apiGet("/api/v2/cognition/tasks/graph", token),
+      ]);
+      setCogState(s);
+      setTasks(t.tasks || []);
+      setProposals(p.proposals || []);
+      setGraphStats(g);
+      setTaskGraph(tg);
+      setState("ready");
+    } catch (e) {
+      setError(String(e));
+      setState("error");
+    }
+  }
+
+  useEffect(() => {
+    loadAll();
+    const iv = setInterval(loadAll, 5000);
+
+    // Phase 5: real-time cognitive state via WebSocket.
+    // Falls back gracefully to the 5s polling if WS disconnects.
+    let ws = null;
+    try {
+      const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = new URL(wsProto + "//" + window.location.host + "/api/v2/cognition/ws");
+      if (token) wsUrl.searchParams.set("token", token);
+      ws = new WebSocket(wsUrl.toString());
+      ws.onmessage = (ev) => {
+        try {
+          const data = JSON.parse(ev.data);
+          if (!data.error) {
+            setCogState(data);
+          }
+        } catch (_) {
+          /* ignore malformed frames */
+        }
+      };
+      ws.onopen = () => {
+        // WS connected — cognitive state will arrive in real-time.
+        // The 5s polling still refreshes tasks / proposals / graph.
+      };
+    } catch (_) {
+      ws = null;
+    }
+
+    return () => {
+      clearInterval(iv);
+      if (ws) {
+        try { ws.close(); } catch (_) {}
+      }
+    };
+  }, [token]);
+
+  async function onApprove(id) {
+    await apiPost(`/api/v2/cognition/proposals/${id}/approve`, {}, token);
+    loadAll();
+  }
+
+  async function onReject(id) {
+    await apiPost(`/api/v2/cognition/proposals/${id}/reject`, {}, token);
+    loadAll();
+  }
+
+  if (state === "loading") {
+    return html`<div style="padding:40px;text-align:center">加载认知状态…</div>`;
+  }
+  if (state === "error") {
+    return html`
+      <div style="padding:40px;text-align:center">
+        <div style="color:var(--xmc-danger)">加载失败</div>
+        <div style="font-size:.85rem;opacity:.7;margin-top:8px">${error}</div>
+        <button onClick=${loadAll} style="margin-top:16px">重试</button>
+      </div>
+    `;
+  }
+
+  return html`
+    <div style="padding:24px;max-width:960px;margin:0 auto">
+      <h2 style="margin:0 0 20px;font-size:1.4rem;font-weight:600">🧠 认知状态</h2>
+
+      <!-- Attention Focus -->
+      <${Card} title="注意力焦点">
+        ${!cogState?.attention_focus?.length
+          ? html`<div style="opacity:.6;font-size:.9rem">暂无活跃焦点</div>`
+          : html`
+            <div style="display:flex;flex-direction:column;gap:8px">
+              ${cogState.attention_focus.map((f) => html`
+                <div key=${f.percept_id} style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:var(--color-background);border-radius:6px">
+                  <div style="flex:1;font-size:.9rem">${f.content}</div>
+                  <${Badge} text=${`salience ${f.salience_score}`} tone=${f.salience_score > 0.7 ? "danger" : f.salience_score > 0.4 ? "warning" : "neutral"} />
+                </div>
+              `)}
+            </div>
+          `}
+      <//>
+
+      <!-- Goals -->
+      <${Card} title="当前目标">
+        ${!cogState?.goals?.length
+          ? html`<div style="opacity:.6;font-size:.9rem">暂无目标</div>`
+          : html`
+            <div style="display:flex;flex-direction:column;gap:8px">
+              ${cogState.goals.map((g) => html`
+                <div key=${g.id} style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:var(--color-background);border-radius:6px">
+                  <div style="flex:1">
+                    <div style="font-size:.9rem">${g.description}</div>
+                    <div style="font-size:.75rem;opacity:.6">source: ${g.source}</div>
+                  </div>
+                  <${Badge} text=${`P${g.priority}`} tone=${g.priority >= 8 ? "danger" : g.priority >= 5 ? "warning" : "neutral"} />
+                  <${Badge} text=${g.status} tone=${g.status === "active" ? "info" : "success"} />
+                </div>
+              `)}
+            </div>
+          `}
+      <//>
+
+      <!-- Tasks -->
+      <${Card} title="任务队列">
+        ${!tasks.length
+          ? html`<div style="opacity:.6;font-size:.9rem">队列为空</div>`
+          : html`
+            <div style="display:flex;flex-direction:column;gap:8px">
+              ${tasks.map((t) => html`
+                <div key=${t.id} style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:var(--color-background);border-radius:6px">
+                  <div style="flex:1">
+                    <div style="font-size:.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${t.prompt}</div>
+                    <div style="font-size:.75rem;opacity:.6">retries: ${t.retries}/${t.max_retries}</div>
+                  </div>
+                  <${Badge} text=${t.status} tone=${
+                    t.status === "completed" ? "success" :
+                    t.status === "failed" || t.status === "escalated" ? "danger" :
+                    t.status === "running" ? "info" : "neutral"
+                  } />
+                </div>
+              `)}
+            </div>
+          `}
+      <//>
+
+      <!-- Proposals -->
+      <${Card} title="进化提案">
+        ${!proposals.length
+          ? html`<div style="opacity:.6;font-size:.9rem">暂无待审提案</div>`
+          : html`
+            <div style="display:flex;flex-direction:column;gap:8px">
+              ${proposals.map((p) => html`
+                <div key=${p.id} style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:var(--color-background);border-radius:6px">
+                  <div style="flex:1">
+                    <div style="font-size:.85rem">${p.description}</div>
+                    <div style="font-size:.75rem;opacity:.6">target: ${p.target}</div>
+                  </div>
+                  <${Badge} text=${`conf ${p.confidence}`} tone=${p.confidence > 0.7 ? "success" : "warning"} />
+                  <button onClick=${() => onApprove(p.id)} style="font-size:.75rem;padding:4px 8px">批准</button>
+                  <button onClick=${() => onReject(p.id)} style="font-size:.75rem;padding:4px 8px">拒绝</button>
+                </div>
+              `)}
+            </div>
+          `}
+      <//>
+
+      <!-- Graph Stats -->
+      <${Card} title="记忆图谱">
+        ${!graphStats
+          ? html`<div style="opacity:.6;font-size:.9rem">图谱未连接</div>`
+          : html`
+            <div style="display:flex;gap:24px;flex-wrap:wrap">
+              <div>
+                <div style="font-size:1.5rem;font-weight:700">${graphStats.nodes || 0}</div>
+                <div style="font-size:.8rem;opacity:.6">节点</div>
+              </div>
+              <div>
+                <div style="font-size:1.5rem;font-weight:700">${graphStats.edges || 0}</div>
+                <div style="font-size:.8rem;opacity:.6">边</div>
+              </div>
+              ${Object.entries(graphStats.by_type || {}).map(([type, count]) => html`
+                <div key=${type}>
+                  <div style="font-size:1.5rem;font-weight:700">${count}</div>
+                  <div style="font-size:.8rem;opacity:.6">${type}</div>
+                </div>
+              `)}
+            </div>
+          `}
+      <//>
+    </div>
+  `;
+}
+
+
+function TaskDag({ data }) {
+  const ref = useRef(null);
+  const [svg, setSvg] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function render() {
+      const mermaid = await loadMermaid();
+      if (cancelled) return;
+
+      const { nodes, edges } = data;
+      if (!nodes.length) return;
+
+      // Build Mermaid graph definition.
+      const lines = ["graph TD"];
+      const statusShapes = {
+        pending: "((",
+        blocked: "((",
+        running: "[[",
+        completed: "([",
+        failed: "{{",
+        retrying: "{{",
+        escalated: "{{",
+      };
+      const statusShapesEnd = {
+        pending: "))",
+        blocked: "))",
+        running: "]]",
+        completed: "])",
+        failed: "}}",
+        retrying: "}}",
+        escalated: "}}",
+      };
+      const statusColors = {
+        pending: "#888",
+        blocked: "#f39c12",
+        running: "#3498db",
+        completed: "#2ecc71",
+        failed: "#e74c3c",
+        retrying: "#e67e22",
+        escalated: "#9b59b6",
+      };
+
+      for (const n of nodes) {
+        const id = n.id.replace(/[^a-zA-Z0-9]/g, "_");
+        const label = n.label.replace(/"/g, '\\"');
+        const start = statusShapes[n.status] || "((";
+        const end = statusShapesEnd[n.status] || "))";
+        const color = statusColors[n.status] || "#888";
+        lines.push(`    ${id}${start}"${label}"${end}`);
+        lines.push(`    style ${id} fill:${color}22,stroke:${color},stroke-width:2px`);
+      }
+      for (const e of edges) {
+        const s = e.source.replace(/[^a-zA-Z0-9]/g, "_");
+        const t = e.target.replace(/[^a-zA-Z0-9]/g, "_");
+        lines.push(`    ${s} --> ${t}`);
+      }
+
+      const defn = lines.join("\n");
+      try {
+        const { svg: svgCode } = await mermaid.render("task-dag-" + Date.now(), defn);
+        if (!cancelled) setSvg(svgCode);
+      } catch (e) {
+        if (!cancelled) setSvg(`<div style="color:var(--xmc-danger)">渲染失败: ${e.message}</div>`);
+      }
+    }
+    render();
+    return () => { cancelled = true; };
+  }, [data]);
+
+  useEffect(() => {
+    if (ref.current && svg) {
+      ref.current.innerHTML = svg;
+    }
+  }, [svg]);
+
+  return html`<div ref=${ref} style="overflow:auto" />`;
+}

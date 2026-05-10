@@ -424,6 +424,27 @@ def create_app(
                 policy=backup_policy,
             )
 
+    # Jarvisification Phase 5: load shared cognitive state early so
+    # MultiAgentManager can hand it to every sub-agent.  Persistence
+    # happens at lifespan shutdown.
+    _cognition_cfg = (config or {}).get("cognition") or {}
+    _shared_cognitive_state = None
+    if _cognition_cfg.get("enabled", False):
+        try:
+            from xmclaw.cognition.state import CognitiveState
+            _state_path = Path.home() / ".xmclaw" / "v2" / "cognitive_state.json"
+            if _state_path.exists():
+                import json
+                _data = json.loads(_state_path.read_text(encoding="utf-8"))
+                _shared_cognitive_state = CognitiveState.from_dict(_data)
+                log.info("cognition.state_loaded path=%s", _state_path)
+            else:
+                _shared_cognitive_state = CognitiveState()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("cognition.state_load_failed err=%s", exc)
+            from xmclaw.cognition.state import CognitiveState
+            _shared_cognitive_state = CognitiveState()
+
     # Epic #17 Phase 3: multi-agent registry. Constructed eagerly so the
     # routers and WS handler can rely on ``app.state.agents`` being set,
     # but rehydration from disk happens in lifespan so tests that never
@@ -431,7 +452,12 @@ def create_app(
     # B-134: pass the primary config so sub-agents can inherit its llm
     # block when their own preset omits one (persona templates ship
     # only system_prompt; provider/model fall through from main).
-    agents_manager = MultiAgentManager(bus, primary_config=config)
+    # Phase 5: shared cognitive substrate across all agents.
+    agents_manager = MultiAgentManager(
+        bus,
+        primary_config=config,
+        cognitive_state=_shared_cognitive_state,
+    )
 
     # Phase 6 cron: stand up a CronTickTask once the agent is wired so
     # ~/.xmclaw/cron/jobs.json actually fires every 60s. Runner uses
@@ -509,6 +535,21 @@ def create_app(
                 tools_allowlist = (
                     set(job.enabled_toolsets) if job.enabled_toolsets else None
                 )
+
+                # Jarvisification: when TaskScheduler is wired, submit
+                # cron jobs through it so they participate in the
+                # priority queue, dependency graph, and retry logic.
+                _task_sched = getattr(_app.state, "task_scheduler", None)
+                if _task_sched is not None:
+                    from xmclaw.cognition.task_scheduler import Task
+                    _task = Task(
+                        id=f"cron:{job.id}:{int(time_module.time())}",
+                        prompt=job.prompt,
+                        priority=3,
+                    )
+                    await _task_sched.submit(_task)
+                    return f"# {job.name} queued @ {time_module.strftime('%Y-%m-%d %H:%M:%S')}\n\n(task_scheduler)\n"
+
                 try:
                     res = await target_agent.run_turn(
                         sid, job.prompt,
@@ -1554,6 +1595,72 @@ def create_app(
             log.warning("mcp.hub_init_failed err=%s", exc)
             _app.state.mcp_hub = None
 
+        # Jarvisification: start cognitive modules when enabled.
+        # Default OFF — existing installs are unaffected.
+        # Phase 5: the shared cognitive state was loaded before the
+        # manager was built so sub-agents inherit the same substrate.
+        _cognitive_state = _shared_cognitive_state
+        _app.state.file_watcher = None
+        _app.state.evolution_loop = None
+        _app.state.task_scheduler = None
+        if _cognition_cfg.get("enabled", False) and _cognitive_state is not None:
+
+            try:
+                from xmclaw.cognition.file_watcher import FileWatcher
+                _watch_paths = _cognition_cfg.get("watch_paths", [str(Path.home() / "Desktop" / "XMclaw")])
+                _fw = FileWatcher(
+                    watch_paths=_watch_paths,
+                    bus=bus,
+                    cognitive_state=_cognitive_state,
+                )
+                await _fw.start()
+                _app.state.file_watcher = _fw
+            except Exception as exc:  # noqa: BLE001
+                log.warning("cognition.file_watcher_start_failed err=%s", exc)
+                _app.state.file_watcher = None
+
+            try:
+                from xmclaw.cognition.evolution_loop import EvolutionLoop
+                _evo_loop = EvolutionLoop(
+                    bus=bus,
+                    agent_loop=agent,
+                    interval_seconds=float(_cognition_cfg.get("evolution_interval_s", 3600.0)),
+                )
+                await _evo_loop.start()
+                _app.state.evolution_loop = _evo_loop
+                # Wire into AgentLoop so run_turn can feed tool calls +
+                # latencies into the evolution pipeline.
+                if agent is not None:
+                    agent._evolution_loop = _evo_loop
+            except Exception as exc:  # noqa: BLE001
+                log.warning("cognition.evolution_loop_start_failed err=%s", exc)
+                _app.state.evolution_loop = None
+
+            try:
+                from xmclaw.cognition.task_scheduler import TaskScheduler
+
+                async def _task_executor(task):
+                    target_agent = _app.state.agent
+                    if target_agent is None:
+                        return "(no agent wired)"
+                    sid = f"task:{task.id}:{int(time_module.time())}"
+                    res = await target_agent.run_turn(sid, task.prompt)
+                    return (
+                        f"## Result\n\n{res.text or '(no text)'}\n\n"
+                        f"## Tool calls\n\n{len(res.tool_calls)} call(s); ok={res.ok}\n"
+                    )
+
+                _task_sched = TaskScheduler(
+                    bus=bus,
+                    max_concurrent=int(_cognition_cfg.get("max_concurrent_tasks", 3)),
+                    executor=_task_executor,
+                )
+                await _task_sched.start()
+                _app.state.task_scheduler = _task_sched
+            except Exception as exc:  # noqa: BLE001
+                log.warning("cognition.task_scheduler_start_failed err=%s", exc)
+                _app.state.task_scheduler = None
+
         try:
             yield
         finally:
@@ -1735,6 +1842,43 @@ def create_app(
                     memory.close()
                 except Exception:  # noqa: BLE001
                     pass
+            # Jarvisification: stop cognitive modules.
+            # Persist cognitive state before shutting down.
+            if _cognitive_state is not None:
+                try:
+                    _state_path = Path.home() / ".xmclaw" / "v2" / "cognitive_state.json"
+                    _state_path.parent.mkdir(parents=True, exist_ok=True)
+                    import json
+                    _state_path.write_text(
+                        json.dumps(_cognitive_state.to_dict(), indent=2),
+                        encoding="utf-8",
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            _task_sched = getattr(_app.state, "task_scheduler", None)
+            if _task_sched is not None:
+                try:
+                    await _task_sched.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            _evo_loop = getattr(_app.state, "evolution_loop", None)
+            if _evo_loop is not None:
+                try:
+                    await _evo_loop.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            _fw = getattr(_app.state, "file_watcher", None)
+            if _fw is not None:
+                try:
+                    await _fw.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            _graph = getattr(_app.state, "memory_graph", None)
+            if _graph is not None:
+                try:
+                    _graph.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
     app = FastAPI(
         title="XMclaw v2 daemon", version=__version__, lifespan=_lifespan,
@@ -1789,6 +1933,7 @@ def create_app(
     from xmclaw.daemon.routers import channels as _channels_router  # B-147
     from xmclaw.daemon.routers import evolution as _evolution_router  # B-301
     from xmclaw.daemon.routers import skill_marketplace as _skill_marketplace_router  # B-390
+    from xmclaw.daemon.routers import cognition as _cognition_router
     app.include_router(_files_router.router)
     app.include_router(_llm_profiles_router.router)
     app.include_router(_memory_router.router)
@@ -1808,6 +1953,7 @@ def create_app(
     app.include_router(_channels_router.router)  # B-147
     app.include_router(_evolution_router.router)  # B-301
     app.include_router(_skill_marketplace_router.router)  # B-390 (Sprint 2)
+    app.include_router(_cognition_router.router)
 
     # Phase 3: ASGI middleware for X-Agent-Id → ContextVar plumbing
     # (QwenPaw multi-agent convention #1). Stays a no-op for the
@@ -1923,6 +2069,12 @@ def create_app(
     # enumerate live profiles without reaching into AgentLoop internals.
     if agent is not None:
         app.state.llm_registry = getattr(agent, "_llm_registry", None)
+    # Jarvisification: expose memory_graph on app.state so shutdown
+    # can close it cleanly.
+    if agent is not None:
+        _mem_mgr = getattr(agent, "_memory_manager", None)
+        if _mem_mgr is not None:
+            app.state.memory_graph = getattr(_mem_mgr, "_graph", None)
 
     # ── per-session event log (for reconnect replay) ─────────────
     # When a browser refresh disconnects and reconnects to the same

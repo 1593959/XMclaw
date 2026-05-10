@@ -80,6 +80,7 @@ class MultiAgentManager:
         registry_dir: Path | None = None,
         max_hops: int = 20,
         primary_config: dict[str, Any] | None = None,
+        cognitive_state: Any | None = None,
     ) -> None:
         self._bus = bus
         self._dir = registry_dir if registry_dir is not None else agents_registry_dir()
@@ -89,6 +90,10 @@ class MultiAgentManager:
         # template UI ship a one-line system_prompt without forcing the
         # user to re-type the LLM section.
         self._primary_config = primary_config
+        # Jarvisification Phase 5: shared cognitive substrate across
+        # all sub-agents. When enabled, every agent operates on the
+        # same goals, attention focus, and fatigue state.
+        self._cognitive_state = cognitive_state
         self._agents: dict[str, Workspace] = {}
         self._lock = asyncio.Lock()
         self._pending: dict[str, asyncio.Task[Workspace]] = {}
@@ -183,6 +188,7 @@ class MultiAgentManager:
         ws = build_workspace(
             agent_id, config, self._bus, max_hops=self._max_hops,
             primary_config=self._primary_config,  # B-134
+            cognitive_state=self._cognitive_state,
         )
         # Persist before registering: if the disk write fails we don't
         # want a running-but-unpersisted agent that would vanish on

@@ -120,6 +120,7 @@ def build_workspace(
     *,
     max_hops: int = 20,
     primary_config: dict[str, Any] | None = None,
+    cognitive_state: Any | None = None,
 ) -> Workspace:
     """Assemble a :class:`Workspace` from a preset config.
 
@@ -182,7 +183,9 @@ def build_workspace(
         return Workspace(
             agent_id=agent_id, config=merged, kind=kind, observer=observer,
         )
-    loop = build_agent_from_config(merged, bus, max_hops=max_hops)
+    loop = build_agent_from_config(
+        merged, bus, max_hops=max_hops, cognitive_state=cognitive_state,
+    )
     return Workspace(
         agent_id=agent_id, config=merged, agent_loop=loop, kind=kind,
     )
