@@ -65,7 +65,12 @@ const LABEL = {
   memory_dreamed: "记忆蒸馏",
 };
 
+// 2026-05-10 P2 (2): R1+R3+R5+R6 新事件类型必须在 Trace 监听列表里，
+// 否则用户切到 Trace 页看不到 agent 自己反思 / 元认知 / 主动建议的
+// 实时活动。Pre-fix Trace 只看 turn-driven 事件，"贾维斯化"飞轮全是
+// 隐形的。下面新增 7 个 type 把 R1-R6 全部接到时间线上。
 const EVENT_TYPES = [
+  // turn-driven (legacy)
   "user_message",
   "llm_request",
   "llm_response",
@@ -81,6 +86,16 @@ const EVENT_TYPES = [
   "context_compressed",
   "memory_indexed",
   "memory_dreamed",
+  // R1 持续认知 Loop (2026-05-10)
+  "inner_monologue",
+  "reflection_cycle_ran",
+  "memory_consolidated",
+  "goals_groomed",
+  // Phase A/B "agent 自己用记忆"
+  "memory_recall",
+  "memory_put_auto",
+  // R3 元认知
+  "metacognition_proposal",
 ];
 
 function fmtTs(ts) {
@@ -152,6 +167,29 @@ function shortPayload(ev) {
     const after = p.after_chars != null ? p.after_chars : "?";
     const saved = p.saved_chars != null ? p.saved_chars : "?";
     return `${before} → ${after} chars (节省 ${saved})`;
+  }
+  // ── 2026-05-10 P2 (2): R1+R3+R5+R6 新事件渲染 ──
+  if (t === "inner_monologue") {
+    return `${p.kind || "thought"}: ${(p.text || "").slice(0, 120)}`;
+  }
+  if (t === "reflection_cycle_ran") {
+    return `lookback=${p.lookback_n ?? "?"} patterns=${(p.patterns_found || []).length} elapsed=${p.elapsed_ms ?? "?"}ms`;
+  }
+  if (t === "memory_consolidated") {
+    return `+${p.promoted ?? 0} promoted · ~${p.merged ?? 0} merged · ${p.archived ?? 0} archived`;
+  }
+  if (t === "goals_groomed") {
+    return `${p.before ?? "?"} → ${p.after ?? "?"} goals · ${p.completed_archived ?? 0} done · ${p.stuck_replanned ?? 0} replan`;
+  }
+  if (t === "memory_recall") {
+    const hits = (p.hits || []).length;
+    return `query "${(p.query || "").slice(0, 50)}" → ${hits} hits · ${p.elapsed_ms ?? "?"}ms`;
+  }
+  if (t === "memory_put_auto") {
+    return `${p.layer ?? "?"}/${p.node_type ?? "?"}: ${(p.text || "").slice(0, 80)}`;
+  }
+  if (t === "metacognition_proposal") {
+    return `${p.kind ?? "?"} (conf ${p.confidence?.toFixed?.(2) ?? "?"}): ${(p.pattern_summary || "").slice(0, 100)}`;
   }
   return JSON.stringify(p).slice(0, 120);
 }

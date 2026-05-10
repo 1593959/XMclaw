@@ -155,18 +155,24 @@ export function EvolutionPage({ token }) {
   const load = () => {
     if (!token) return;  // wait for store hydration; useEffect re-fires on token change
     const since = (Date.now() - 7 * DAY_MS) / 1000;
-    Promise.all([
-      apiGet(`/api/v2/events?types=skill_candidate_proposed&since=${since}&limit=50`, token),
-      apiGet(`/api/v2/events?types=grader_verdict&limit=50`, token),
-      apiGet(`/api/v2/events?types=skill_promoted,skill_rolled_back&since=${since}&limit=20`, token),
-    ]).then(([p, g, m]) => {
-      // Clear any prior error so a transient 401 during token hydration
-      // doesn't stick on screen forever.
-      setError(null);
-      setProposals(p.events || []);
-      setVerdicts(g.events || []);
-      setMutations(m.events || []);
-    }).catch((e) => setError(String(e.message || e)));
+    // 2026-05-10 P2 (3): single aggregated endpoint instead of 3
+    // separate /api/v2/events fans. Backend does the merge in one
+    // events.db read; client gets 4 pre-bucketed lists.
+    apiGet(`/api/v2/evolution/proposals?since=${since}&limit=50`, token)
+      .then((d) => {
+        setError(null);
+        setProposals(d.proposals || []);
+        setVerdicts(d.verdicts || []);
+        // Frontend's "mutations" bucket is promotions + rollbacks
+        // interleaved (UI doesn't visually distinguish); merge here
+        // and sort newest-first by ts.
+        const mutations = [
+          ...(d.promotions || []),
+          ...(d.rollbacks || []),
+        ].sort((a, b) => (b.ts || 0) - (a.ts || 0));
+        setMutations(mutations);
+      })
+      .catch((e) => setError(String(e.message || e)));
   };
 
   useEffect(() => {

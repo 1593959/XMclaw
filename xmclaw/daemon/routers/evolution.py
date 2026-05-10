@@ -268,3 +268,78 @@ async def evolution_snapshot(request: Request) -> JSONResponse:
         "variant_selector": selector_payload,
         "skill_dream": skill_dream_payload,
     })
+
+
+# 2026-05-10 P2 (3): Evolution.js used to fan 3 separate
+# ``/api/v2/events?types=...&since=...&limit=...`` GETs out (proposals,
+# grader verdicts, promotions/rollbacks) and merge them client-side.
+# That:
+#   * triple-paid the events.db round-trip per page tick (bad as journal grows),
+#   * couldn't sort across kinds — proposals can interleave with their
+#     verdicts and the UI rendered them as separate buckets without
+#     correlating,
+#   * meant any future filter (per-skill, per-tier) needed 3 query
+#     params plumbed across 3 client calls.
+#
+# This endpoint is a thin server-side aggregator: one events.db read,
+# one merge, returned as 4 buckets the UI already wants. Falls back
+# gracefully when the bus isn't SqliteEventBus (test harnesses).
+
+
+@router.get("/proposals")
+async def evolution_proposals(
+    request: Request,
+    since: float | None = None,
+    limit: int = 50,
+) -> JSONResponse:
+    """Aggregated evolution-chain feed.
+
+    Args:
+        since: unix ts to filter from; ``None`` means full history
+            (still capped by ``limit`` per bucket)
+        limit: max rows per bucket. Default 50, capped at 500.
+
+    Returns:
+        ``{
+          "ts": float,
+          "since": float | null,
+          "proposals":  [BehavioralEvent...],
+          "verdicts":   [BehavioralEvent...],
+          "promotions": [BehavioralEvent...],
+          "rollbacks":  [BehavioralEvent...]
+        }``
+    Each list is newest-first. Promotions / rollbacks share their cap
+    (skill_promoted + skill_rolled_back returned in two separate
+    lists for UI layout simplicity).
+    """
+    from xmclaw.core.bus import EventType, SqliteEventBus, event_as_jsonable
+
+    limit = max(1, min(int(limit), 500))
+    bus = request.app.state.bus
+    if not isinstance(bus, SqliteEventBus):
+        return JSONResponse({
+            "ts": time.time(), "since": since,
+            "proposals": [], "verdicts": [],
+            "promotions": [], "rollbacks": [],
+            "warning": "event bus is not SqliteEventBus; "
+                       "in-memory bus has no historical query path",
+        })
+
+    def _q(types: list[EventType]) -> list[dict[str, Any]]:
+        try:
+            rows = bus.query(
+                since=since, types=types, limit=limit, offset=0,
+            )
+        except Exception:  # noqa: BLE001
+            return []
+        # Newest-first (events.db returns ascending by default).
+        return [event_as_jsonable(r) for r in reversed(rows)]
+
+    return JSONResponse({
+        "ts": time.time(),
+        "since": since,
+        "proposals": _q([EventType.SKILL_CANDIDATE_PROPOSED]),
+        "verdicts": _q([EventType.GRADER_VERDICT]),
+        "promotions": _q([EventType.SKILL_PROMOTED]),
+        "rollbacks": _q([EventType.SKILL_ROLLED_BACK]),
+    })

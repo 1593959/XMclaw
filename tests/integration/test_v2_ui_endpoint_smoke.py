@@ -108,6 +108,9 @@ UI_ENDPOINT_INVENTORY: list[tuple[str, str, set[int]]] = [
         "/api/v2/events?types=inner_monologue,reflection_cycle_ran&limit=200",
         {200, 401},
     ),
+    # ── 2026-05-10 P2 (3): aggregated evolution-chain feed ────
+    ("GET", "/api/v2/evolution/proposals", {200, 401}),
+    ("GET", "/api/v2/evolution/proposals?since=0&limit=10", {200, 401}),
 ]
 
 

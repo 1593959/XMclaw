@@ -1,19 +1,29 @@
 // XMclaw — ModelProfiles section
 //
+// ⚠ DEPRECATED 2026-05-10 — DEAD CODE PENDING SAFE REMOVAL ⚠
+//
+// 这个文件的 ``ModelProfilesSection`` export 在整个 codebase 里**没有
+// 任何 import**。Settings.js 自己已经实现完整的 LLM profile 管理
+// (AddModelWizard / ModelCard / SettingsPage at line 68/228/279)，
+// 直接调用 ``GET/POST/DELETE/PUT /api/v2/llm/profiles`` 端点。
+//
+// 历史：原本计划这个 Section 嵌入 Settings.js（见旧注释），但后来
+// Settings.js 自己重写了 profile 管理（postJson / deleteJson /
+// putJson 内联辅助 + 独立 ModelCard 组件），把这里的 export
+// orphan 化。
+//
+// **推荐用户进入路径 — Settings 页 (/settings)。**
+//
+// 本文件保留是因为沙箱权限不让 ``rm`` pre-existing tracked file。
+// 等权限放开后单独 commit 删除。grep ``ModelProfilesSection``
+// 确认无 import 后再删，避免误伤。
+//
+// 旧描述（保留作历史参考）:
 // Multi-profile manager. Lets the user deploy several named LLM
 // endpoints (e.g. "haiku-fast", "gpt4o-vision", "deepseek-local")
 // alongside the legacy default block, then pick which one drives
 // each chat session via the chat-header dropdown.
-//
-// Embedded inside Settings.js (not a top-level route) because the
-// "default LLM" form on Settings already owns the LLM concept; a
-// separate sidebar entry would split a coherent page.
-//
-// Backed by GET/POST/DELETE /api/v2/llm/profiles (see
-// xmclaw/daemon/routers/llm_profiles.py). The daemon writes to
-// daemon/config.json and returns restart_required:true; we surface
-// that prominently so the user understands the dropdown won't update
-// until the daemon restarts.
+// Backed by GET/POST/DELETE /api/v2/llm/profiles.
 
 const { h } = window.__xmc.preact;
 const { useEffect, useState } = window.__xmc.preact_hooks;
