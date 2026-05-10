@@ -155,7 +155,7 @@ def start_daemon(
     port: int,
     config: str,
     no_auth: bool = False,
-    wait_seconds: float = 10.0,
+    wait_seconds: float = 30.0,
 ) -> DaemonStatus:
     """Spawn ``xmclaw serve`` detached, wait for /health, write pid+meta.
 

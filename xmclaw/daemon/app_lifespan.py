@@ -4,6 +4,7 @@ Extracted from app.py to keep the factory under control.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time as time_module
 from collections import deque
@@ -92,6 +93,11 @@ def make_lifespan(
 ) -> Callable[[FastAPI], AsyncIterator[None]]:
     """Build the lifespan context manager with all dependencies wired."""
     async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # 2026-05-11: track lifespan startup duration so future
+        # regressions like the lark_oapi 3.75s import are visible
+        # at boot. Logged right before yield + stamped on app.state
+        # for /api/v2/status to surface.
+        _lifespan_t0 = time_module.perf_counter()
         # cron_tick is now a local variable in the closure
         if sweep_task is not None:
             await sweep_task.start()
@@ -1162,10 +1168,30 @@ def make_lifespan(
                             ch_id, exc,
                         )
                 if channel_dispatcher._adapters:
-                    await channel_dispatcher.start_all()
+                    # 2026-05-11 perf fix: don't await start_all() in
+                    # lifespan critical path. The feishu adapter's
+                    # ``start()`` imports ``lark_oapi``, whose top-level
+                    # ``pkg_resources.declare_namespace`` cascade costs
+                    # ~3.75s (the entire lifespan budget on cold cache).
+                    # Awaiting it serially pushed daemon /health past
+                    # the CLI's 10s ``xmclaw start`` timeout, even though
+                    # the daemon WAS coming up — just slowly. Spawning
+                    # as a background task lets lifespan return in
+                    # ~0.05s; channels are "starting up" in parallel
+                    # and become reachable as their WS / poll loops
+                    # finish handshaking. Each adapter's failures
+                    # already log + skip inside start_all itself, so
+                    # losing the await doesn't change error semantics.
                     _app.state.channel_dispatcher = channel_dispatcher
+                    _app.state.channel_dispatcher_warmup_task = (
+                        asyncio.create_task(
+                            channel_dispatcher.start_all(),
+                            name="channel-dispatcher-warmup",
+                        )
+                    )
                 else:
                     _app.state.channel_dispatcher = None
+                    _app.state.channel_dispatcher_warmup_task = None
                     channel_dispatcher = None
             else:
                 _app.state.channel_dispatcher = None
@@ -1502,6 +1528,23 @@ def make_lifespan(
                 _cognitive_daemon = None
         _app.state.cognitive_daemon = _cognitive_daemon
 
+        # 2026-05-11: log lifespan startup duration. /api/v2/status
+        # surfaces this so the UI can show "daemon ready in 1.2s"
+        # and we can spot regressions (Epic #25 broke this when
+        # feishu's lark_oapi import was on the critical path —
+        # 3.78s startup → /health timeout). The channel adapter
+        # warmup task is intentionally NOT awaited here; if a user
+        # wants to know "are channels ready", that's a separate
+        # status flag we surface via channel_dispatcher_warmup_task.
+        _lifespan_elapsed_s = round(
+            time_module.perf_counter() - _lifespan_t0, 3,
+        )
+        _app.state.lifespan_startup_duration_s = _lifespan_elapsed_s
+        log.info(
+            "lifespan.startup_complete duration_s=%.3f",
+            _lifespan_elapsed_s,
+        )
+
         try:
             yield
         finally:
@@ -1549,6 +1592,20 @@ def make_lifespan(
             # B-145: stop every channel adapter (飞书 WS, 钉钉 stream,
             # telegram poll loop). Same try-each posture so a hanging
             # SDK shutdown doesn't strand the others.
+            # 2026-05-11 perf fix: also cancel the warmup task in
+            # case startup is interrupted before adapters finish
+            # connecting (e.g. fast SIGINT during cold start). Without
+            # this the cancelled lifespan would leave the warmup task
+            # dangling, importing lark_oapi after the bus is gone.
+            _chdisp_warmup = getattr(
+                _app.state, "channel_dispatcher_warmup_task", None,
+            )
+            if _chdisp_warmup is not None and not _chdisp_warmup.done():
+                _chdisp_warmup.cancel()
+                try:
+                    await _chdisp_warmup
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
             _chdisp = getattr(_app.state, "channel_dispatcher", None)
             if _chdisp is not None:
                 try:

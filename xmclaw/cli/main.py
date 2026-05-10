@@ -469,7 +469,7 @@ def start(
         help="DANGEROUS: skip pairing-token validation.",
     ),
     wait: float = typer.Option(
-        10.0, help="Seconds to wait for /health before giving up.",
+        30.0, help="Seconds to wait for /health before giving up.",
     ),
 ) -> None:
     """Spawn the daemon in the background, return once /health answers.
@@ -477,6 +477,13 @@ def start(
     Writes a PID file at ``~/.xmclaw/v2/daemon.pid`` and a log at
     ``~/.xmclaw/v2/daemon.log``. Use ``xmclaw stop`` to kill it, or
     ``xmclaw status`` to check on it.
+
+    The wait timeout defaults to 30s (was 10s pre-2026-05-11). On
+    Windows + cold module cache + Defender scanning, subprocess boot
+    + uvicorn binding + lifespan startup can stretch past 10s even
+    after the lark_oapi-import fix; 30s gives margin without making
+    the user wait noticeably longer when the daemon comes up fast
+    (the loop polls every 0.3s and exits as soon as /health answers).
     """
     from xmclaw.daemon.lifecycle import start_daemon
     try:
@@ -525,9 +532,13 @@ def restart(
     ),
     no_auth: bool = typer.Option(False, "--no-auth"),
     grace: float = typer.Option(5.0),
-    wait: float = typer.Option(10.0),
+    wait: float = typer.Option(30.0),
 ) -> None:
-    """Stop (if running) then start. Idempotent."""
+    """Stop (if running) then start. Idempotent.
+
+    Wait timeout defaults to 30s (was 10s pre-2026-05-11) for the
+    same reason as ``xmclaw start`` — see that command's docstring.
+    """
     from xmclaw.daemon.lifecycle import read_status, start_daemon, stop_daemon
     before = read_status()
     if before.state != "dead":
