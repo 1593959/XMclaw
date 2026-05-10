@@ -32,6 +32,7 @@ from xmclaw.eval.harness import (
 )
 from xmclaw.eval.longmemeval import LongMemEvalMiniSuite
 from xmclaw.eval.longmemeval_full import LongMemEvalSuite
+from xmclaw.eval.terminal_bench import TerminalBenchSuite
 
 # Public registry of suites the CLI can list / run by id. Keep this
 # small and explicit — adding a real LongMemEval / SWE-bench / Terminal
@@ -39,6 +40,7 @@ from xmclaw.eval.longmemeval_full import LongMemEvalSuite
 SUITE_REGISTRY: dict[str, type[BenchmarkSuite]] = {
     LongMemEvalMiniSuite.SUITE_ID: LongMemEvalMiniSuite,
     LongMemEvalSuite.SUITE_ID: LongMemEvalSuite,
+    TerminalBenchSuite.SUITE_ID: TerminalBenchSuite,
 }
 
 
@@ -51,4 +53,5 @@ __all__ = [
     "SuiteResult",
     "TaskCase",
     "TaskResult",
+    "TerminalBenchSuite",
 ]
