@@ -305,3 +305,130 @@ def test_reducer_does_not_genid_when_call_id_is_present() -> None:
         f"id={tool_msgs[0]['id']!r} doesn't match the payload call_id — "
         "reducer fell through to genId despite a valid key being present"
     )
+
+
+# ── B-267: out-of-order frames (finished BEFORE emitted) ──────────
+
+
+def test_reducer_handles_finished_before_emitted_race() -> None:
+    """B-267 race: WS multiplexing can deliver
+    ``tool_invocation_finished`` BEFORE ``tool_call_emitted`` for fast
+    tools (list_agents, current_time complete in <1ms — the two events
+    race to the client). Pre-B-267 the reducer ``return chat``-ed on
+    finished-without-matching-card and the result was lost forever;
+    when emitted eventually landed, the bubble stuck at "running".
+
+    The fix: when finished arrives first, synthesise the bubble in
+    finished state carrying the result. If emitted lands later with
+    the same callId, the upsertById path patches ``name``/``args``
+    onto the existing finished bubble — no data loss either way.
+    """
+    state = _run_reducer([
+        # Finished arrives FIRST (race).
+        {
+            "type": "tool_invocation_finished",
+            "payload": {
+                "call_id": "race-1",
+                "name": "list_agents",
+                "result": "alice,bob",
+            },
+            "ts": 5000,
+        },
+        # Emitted lands LATER.
+        {
+            "type": "tool_call_emitted",
+            "payload": {
+                "call_id": "race-1",
+                "name": "list_agents",
+                "args": {},
+            },
+            "ts": 5001,
+        },
+    ])
+    msgs = state.get("messages", [])
+    tool_msgs = [m for m in msgs if m.get("kind") == "tool_use"]
+    assert len(tool_msgs) == 1, (
+        f"out-of-order race produced {len(tool_msgs)} cards, expected 1 "
+        f"(race-1 should collapse to one bubble): {tool_msgs!r}"
+    )
+    card = tool_msgs[0]
+    assert card["id"] == "race-1"
+    assert card["status"] == "ok", (
+        f"status={card['status']!r} — emitted trampled the finished status. "
+        "B-267 regression: the late-arriving emitted MUST NOT overwrite "
+        "the finished bubble's status back to 'running'."
+    )
+    # Result must survive the late emitted arrival.
+    assert "alice,bob" in str(card.get("result", ""))
+
+
+def test_reducer_late_emitted_does_not_trample_finished_error() -> None:
+    """Same B-267 race but the early finished was an ERROR. The late
+    emitted MUST keep the error state — otherwise an error tool call
+    flickers to "running" then never lands at "error" again because
+    no second finished comes."""
+    state = _run_reducer([
+        {
+            "type": "tool_invocation_finished",
+            "payload": {
+                "call_id": "race-err-1",
+                "error": "tool not found: ghost_tool",
+            },
+            "ts": 6000,
+        },
+        {
+            "type": "tool_call_emitted",
+            "payload": {
+                "call_id": "race-err-1",
+                "name": "ghost_tool",
+                "args": {"x": 1},
+            },
+            "ts": 6001,
+        },
+    ])
+    msgs = state.get("messages", [])
+    tool_msgs = [m for m in msgs if m.get("kind") == "tool_use"]
+    assert len(tool_msgs) == 1
+    card = tool_msgs[0]
+    assert card["status"] == "error", (
+        f"status={card['status']!r} — late emitted trampled the "
+        "error state from the early finished. The user would see "
+        "the tool stuck at 'running' instead of the actual error."
+    )
+    # The late emitted should fill in name+args (which finished
+    # didn't have) — that's the WHOLE point of recombining them.
+    assert card["name"] == "ghost_tool"
+    assert card.get("args") == {"x": 1}
+
+
+def test_reducer_normal_order_emitted_then_finished_still_works() -> None:
+    """Sanity: the normal arrival order MUST still produce one card
+    that goes running → ok. This is the "happy path" B-267 was
+    careful not to break while adding the race-order branch."""
+    state = _run_reducer([
+        {
+            "type": "tool_call_emitted",
+            "payload": {
+                "call_id": "normal-1",
+                "name": "file_read",
+                "args": {"path": "/tmp/x"},
+            },
+            "ts": 7000,
+        },
+        {
+            "type": "tool_invocation_finished",
+            "payload": {
+                "call_id": "normal-1",
+                "result": "file content",
+            },
+            "ts": 7001,
+        },
+    ])
+    msgs = state.get("messages", [])
+    tool_msgs = [m for m in msgs if m.get("kind") == "tool_use"]
+    assert len(tool_msgs) == 1
+    card = tool_msgs[0]
+    assert card["id"] == "normal-1"
+    assert card["name"] == "file_read"
+    assert card["status"] == "ok"
+    assert card.get("args") == {"path": "/tmp/x"}
