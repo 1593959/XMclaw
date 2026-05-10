@@ -6,13 +6,28 @@ file, so FastAPI matched ``/tasks/graph`` to the parameterized route
 with ``task_id="graph"``, looked up the (non-existent) task, and
 returned 404 — masking the existence of the DAG endpoint entirely.
 
-This test pins the registration order: every concrete sub-route
-under a parameterized prefix MUST appear before the parameterized
-route. Specific to the ``/tasks/*`` family today; can be extended
-to ``/graph/*`` if similar collisions are added later.
+**Testing rule (post-2026-05-09)**: every test for a feature that
+spans frontend + backend MUST exercise the full HTTP path the
+frontend actually uses (TestClient.get(real_url)), not just inspect
+internal router state. Pure router inspection misses real-world
+matching bugs (this one), prefix collisions, and request validation
+mismatches.
+
+This file ships TWO layers:
+  1. Router inspection — quick, catches registration-order regressions
+  2. End-to-end TestClient — pings the real URL the UI calls, asserts
+     the response actually reaches the intended handler
 """
 from __future__ import annotations
 
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from fastapi.testclient import TestClient
+
+from xmclaw.core.bus import InProcessEventBus
+from xmclaw.daemon.app import create_app
 from xmclaw.daemon.routers.cognition import router
 
 
@@ -74,3 +89,99 @@ def test_cognition_router_concrete_subpaths_before_param() -> None:
                     f"{param_idx}). Move {p!r} ABOVE the parameterized "
                     f"route."
                 )
+
+
+# ── Layer 2: end-to-end TestClient (frontend's actual request) ──
+
+
+@pytest.fixture
+def client_with_scheduler() -> TestClient:
+    """Build a real app with a fake TaskScheduler attached to
+    ``app.state.task_scheduler`` so the cognition routes resolve.
+    The scheduler is mocked — we don't care about real DAG output,
+    only that the URL routes to the DAG handler (not the
+    parametrized get_task handler that returns 404)."""
+    bus = InProcessEventBus()
+    app = create_app(bus=bus, config={"cognition": {"enabled": True}})
+    fake_scheduler = MagicMock()
+    fake_scheduler.list_tasks = AsyncMock(return_value=[])
+    fake_scheduler.get_task = AsyncMock(return_value=None)
+    app.state.task_scheduler = fake_scheduler
+
+    # CognitiveState too — `/state` route checks app.state.cognitive_state
+    fake_state = MagicMock()
+    fake_state.current_goals = []
+    fake_state.attention_focus = []
+    fake_state.fatigue = {}
+    fake_state.salience_threshold = 0.3
+    fake_state.attention_capacity = 7
+    app.state.cognitive_state = fake_state
+
+    return TestClient(app)
+
+
+def test_cognition_tasks_graph_reaches_dag_handler_not_404(
+    client_with_scheduler: TestClient,
+) -> None:
+    """Hit the SAME url the frontend uses. Response must come from the
+    DAG handler (200 with ``{nodes, edges}``), NOT from the
+    parametrized handler that 404s on missing task_id="graph".
+
+    This is the test that would have caught the original bug at
+    PR-time, before a daemon restart was needed to discover it."""
+    # Pre-bug: this returned 404 ``{"error": "not found"}``.
+    r = client_with_scheduler.get("/api/v2/cognition/tasks/graph")
+    assert r.status_code == 200, (
+        f"GET /api/v2/cognition/tasks/graph returned {r.status_code} "
+        f"(expected 200). Body: {r.text!r}. Most likely cause: route "
+        f"order regression — ``/tasks/graph`` is being shadowed by "
+        f"``/tasks/{{task_id}}``."
+    )
+    body = r.json()
+    assert "nodes" in body, f"missing 'nodes' key — body={body!r}"
+    assert "edges" in body, f"missing 'edges' key — body={body!r}"
+    # No-tasks scheduler → empty DAG, but keys must exist.
+    assert isinstance(body["nodes"], list)
+    assert isinstance(body["edges"], list)
+
+
+def test_cognition_tasks_concrete_task_id_still_works(
+    client_with_scheduler: TestClient,
+) -> None:
+    """Confirm the route-order fix didn't break the parameterized
+    handler — a real task_id like ``my-task-1`` must still hit
+    ``get_task`` (which 404s only because the mocked scheduler returns
+    None, NOT because of route mismatching)."""
+    r = client_with_scheduler.get("/api/v2/cognition/tasks/my-task-1")
+    # This is the EXPECTED 404: the route resolved correctly to
+    # get_task, which couldn't find the (non-existent) task.
+    assert r.status_code == 404
+    assert r.json().get("error") == "not found"
+
+
+def test_cognition_state_endpoint_reachable_from_ui_url(
+    client_with_scheduler: TestClient,
+) -> None:
+    """The frontend Cognition page hits 5 endpoints in parallel
+    (apiGet calls in pages/Cognition.js loadAll). Smoke-check that
+    each routes correctly. This is the front-back integration test
+    that pure router inspection cannot do."""
+    ui_urls = [
+        "/api/v2/cognition/state",
+        "/api/v2/cognition/tasks",
+        "/api/v2/cognition/proposals",
+        "/api/v2/cognition/graph/stats",
+        "/api/v2/cognition/tasks/graph",
+    ]
+    failures: list[tuple[str, int]] = []
+    for url in ui_urls:
+        r = client_with_scheduler.get(url)
+        # Allow 200 (handler ran) OR 503 (handler ran + said "not
+        # wired" — which means the route resolved, just no underlying
+        # subsystem). NOT allowed: 404 (route mismatch — the bug).
+        if r.status_code == 404:
+            failures.append((url, 404))
+    assert not failures, (
+        f"frontend pages/Cognition.js loadAll() URL(s) returned 404 "
+        f"(route mismatch — should never happen): {failures}"
+    )
