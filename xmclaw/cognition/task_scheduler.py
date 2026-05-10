@@ -21,7 +21,13 @@ from typing import Any, Awaitable, Callable, Literal
 
 TaskStatus = Literal["pending", "blocked", "running", "completed", "failed", "retrying", "escalated"]
 
-_DEFAULT_DB_PATH = Path.home() / ".xmclaw" / "v2" / "tasks.db"
+# Jarvisification Phase 5: reuse the events.db file instead of a
+# separate tasks.db.  Task state changes are events — they belong
+# in the same substrate.  The tasks table co-exists with the event
+# bus tables (events, sessions) in the same SQLite WAL.
+from xmclaw.utils.paths import default_events_db_path
+
+_DEFAULT_DB_PATH = default_events_db_path()
 
 
 @dataclass(frozen=True, slots=True)

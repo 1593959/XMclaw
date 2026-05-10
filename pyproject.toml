@@ -103,6 +103,12 @@ tools-composio = ["composio-core>=0.7"]
 # means base installs without this extra still ``import xmclaw.eval``
 # cleanly — only ``xmclaw eval run longmemeval`` requires it.
 eval-hf = ["datasets>=3.0.0", "huggingface_hub>=0.25.0"]
+# Jarvis Phase 6.6: ProcessWatcher uses psutil for PID-level
+# CPU/memory/zombie/exit detection. Lazy-import inside
+# ``ProcessWatcher.start()`` so installs without this extra still
+# ``import xmclaw.cognition.process_watcher`` cleanly — the runtime
+# error at start time has a clear ``pip install psutil`` hint.
+cognition-process = ["psutil>=5.9"]
 all     = [
     "playwright>=1.48.0",
     "python-lsp-server>=1.12.0",

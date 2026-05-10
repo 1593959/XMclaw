@@ -160,6 +160,19 @@
   "mcp_servers": {
     "_consumer": "lifespan (MCP registry); not in factory.py. On Windows: requires `npx` on PATH for official @modelcontextprotocol/server-* packages — install Node.js first."
   },
+  "cognition": {
+    "_comment": "Jarvisification 认知架构 — 默认 enabled=false 完全等价 Phase 5 之前行为。enabled=true 启用 Phase 1-5 mechanics（CognitiveState / MemoryGraph / TaskScheduler / FileWatcher / EvolutionLoop）。continuous_loop.enabled=true 进一步打开 Phase 6（PerceptionBus + AttentionFilter + ReasoningEngine + Planner + GoalGenerator + SelfExperimentLoop + CognitiveDaemon heartbeat）。",
+    "enabled": false,
+    "continuous_loop": {
+      "_comment_phase_6": "Phase 6 持续认知循环。打开 = daemon 持续运转，1Hz 心跳排空 PerceptionBus、计算 salience、按 autonomy_level 决定是否动作。autonomy_level: 0=只观察、50=主动提示不动作、100=full Jarvis（要 double-confirm + audit log）。详见 docs/JARVIS_PHASE_6_DESIGN.md §4 backward compat 矩阵。",
+      "enabled": false,
+      "autonomy_level": 0,
+      "heartbeat_hz": 1.0,
+      "action_threshold": 0.6,
+      "top_k_focus": 7,
+      "max_pending_goals": 16
+    }
+  },
   "channels": {
     "_consumer": "lifespan (ChannelDispatcher + per-channel adapter); not in factory.py. Currently READY: feishu, telegram, slack, dingtalk, wecom (outbound-only via webhook) + ws (internal). Scaffolds (WeChat) accept config but their adapter modules raise NotImplementedError — daemon logs `adapter.start_failed` and skips.",
     "_comment": "B-145 / B-380 双向聊天接入。enabled=true 后 daemon 启动时拉起 adapter，在群里 @机器人 即可对话。Tools 集成 (integrations.*) 是出站通知，channels 是双向对话。",
