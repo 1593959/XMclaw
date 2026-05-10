@@ -74,6 +74,7 @@ from xmclaw.providers.channel.base import (
     InboundMessage,
     OutboundMessage,
 )
+from xmclaw.providers.channel._shared import split_text
 from xmclaw.utils.log import get_logger
 
 
@@ -96,33 +97,6 @@ _INSTALL_HINT = (
     "daemon."
 )
 
-
-def _split_for_dingtalk(text: str, cap: int = _DINGTALK_MAX_CHARS) -> list[str]:
-    """Chunk ``text`` into pieces <= ``cap`` chars each.
-
-    Prefers paragraph / line breaks; falls back to a hard cut when a
-    single line is itself longer than the cap. 钉钉 won't render
-    "..." continuation indicators, so we just emit successive
-    messages and let the user scroll.
-    """
-    if not text:
-        return []
-    if len(text) <= cap:
-        return [text]
-    out: list[str] = []
-    remaining = text
-    while len(remaining) > cap:
-        # Try newline boundary within the cap window.
-        cut = remaining.rfind("\n", 0, cap)
-        if cut <= 0:
-            cut = remaining.rfind(" ", 0, cap)
-        if cut <= 0:
-            cut = cap  # hard cut — no whitespace in the window
-        out.append(remaining[:cut].rstrip())
-        remaining = remaining[cut:].lstrip()
-    if remaining:
-        out.append(remaining)
-    return out
 
 
 def _coerce_str_set(raw: Any, *, key: str) -> set[str]:
@@ -362,7 +336,7 @@ class DingTalkAdapter(ChannelAdapter):
                 "钉钉 replies require an inbound message to bind to."
             )
 
-        chunks = _split_for_dingtalk(payload.content)
+        chunks = split_text(payload.content, _DINGTALK_MAX_CHARS)
         if not chunks:
             # Empty content — nothing to send. 钉钉 rejects empty text
             # so bail quietly.

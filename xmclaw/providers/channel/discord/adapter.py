@@ -56,6 +56,7 @@ from xmclaw.providers.channel.base import (
     InboundMessage,
     OutboundMessage,
 )
+from xmclaw.providers.channel._shared import split_text
 from xmclaw.utils.log import get_logger
 
 
@@ -76,33 +77,6 @@ _INSTALL_HINT = (
     "'discord.py>=2'` directly) and restart the daemon."
 )
 
-
-def _split_for_discord(text: str, cap: int = _DISCORD_MAX_CHARS) -> list[str]:
-    """Chunk ``text`` into pieces <= ``cap`` chars each.
-
-    Prefers paragraph / line breaks; falls back to a hard cut when a
-    single line is itself longer than the cap. Discord won't render
-    "..." continuation indicators, so we just emit successive
-    messages and let the user scroll.
-    """
-    if not text:
-        return []
-    if len(text) <= cap:
-        return [text]
-    out: list[str] = []
-    remaining = text
-    while len(remaining) > cap:
-        # Try newline boundary within the cap window.
-        cut = remaining.rfind("\n", 0, cap)
-        if cut <= 0:
-            cut = remaining.rfind(" ", 0, cap)
-        if cut <= 0:
-            cut = cap  # hard cut — no whitespace in the window
-        out.append(remaining[:cut].rstrip())
-        remaining = remaining[cut:].lstrip()
-    if remaining:
-        out.append(remaining)
-    return out
 
 
 class DiscordAdapter(ChannelAdapter):
@@ -376,7 +350,7 @@ class DiscordAdapter(ChannelAdapter):
         # Discord caps each message at 2000 chars. Chunk longer replies;
         # the reference (reply_to) only attaches to the first chunk so
         # the conversation thread doesn't get muddied.
-        chunks = _split_for_discord(payload.content)
+        chunks = split_text(payload.content, _DISCORD_MAX_CHARS)
         first_reply_to = _to_int_or_none(payload.reply_to)
         last_id = last_msg_id
         for i, chunk in enumerate(chunks):

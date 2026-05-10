@@ -22,10 +22,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from xmclaw.providers.channel.base import ChannelTarget, OutboundMessage
+from xmclaw.providers.channel._shared import split_text
 from xmclaw.providers.channel.telegram.adapter import (
     TelegramAdapter,
     _coerce_id_set,
-    _split_for_telegram,
     _to_int_or_none,
 )
 
@@ -565,13 +565,13 @@ def test_module_imports_without_python_telegram_bot() -> None:
 
 
 def test_split_for_telegram_under_cap() -> None:
-    assert _split_for_telegram("short") == ["short"]
-    assert _split_for_telegram("") == []
+    assert split_text("short", 4096) == ["short"]
+    assert split_text("", 4096) == []
 
 
 def test_split_for_telegram_chunks_at_cap() -> None:
     text = "x" * 5000
-    chunks = _split_for_telegram(text, cap=4096)
+    chunks = split_text(text, cap=4096)
     assert len(chunks) == 2
     assert all(len(c) <= 4096 for c in chunks)
     # Reassembly returns the original.
@@ -583,7 +583,7 @@ def test_split_for_telegram_prefers_newline_boundaries() -> None:
     # not mid-paragraph.
     para = "a" * 1500
     text = "\n\n".join([para, para, para, para])
-    chunks = _split_for_telegram(text, cap=4096)
+    chunks = split_text(text, cap=4096)
     assert all(len(c) <= 4096 for c in chunks)
 
 

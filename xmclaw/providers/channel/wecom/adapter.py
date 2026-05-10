@@ -74,6 +74,7 @@ from xmclaw.providers.channel.base import (
     InboundMessage,
     OutboundMessage,
 )
+from xmclaw.providers.channel._shared import split_text
 from xmclaw.utils.log import get_logger
 
 
@@ -103,33 +104,6 @@ _ALLOWED_MSGTYPES: frozenset[str] = frozenset(
     {"text", "markdown", "image", "news", "file"}
 )
 
-
-def _split_for_wecom(text: str, cap: int = _WECOM_MAX_CHARS) -> list[str]:
-    """Chunk ``text`` into pieces <= ``cap`` chars each.
-
-    Mirrors the Telegram / Slack splitters: prefer paragraph / line /
-    word boundaries; fall back to a hard cut when a single line is
-    itself longer than the cap. WeCom doesn't render continuation
-    indicators between successive posts; we just emit them in order
-    and let the user scroll.
-    """
-    if not text:
-        return []
-    if len(text) <= cap:
-        return [text]
-    out: list[str] = []
-    remaining = text
-    while len(remaining) > cap:
-        cut = remaining.rfind("\n", 0, cap)
-        if cut <= 0:
-            cut = remaining.rfind(" ", 0, cap)
-        if cut <= 0:
-            cut = cap  # hard cut — no whitespace in the window
-        out.append(remaining[:cut].rstrip())
-        remaining = remaining[cut:].lstrip()
-    if remaining:
-        out.append(remaining)
-    return out
 
 
 def _coerce_str_list(raw: Any, *, key: str) -> list[str]:
@@ -330,7 +304,7 @@ class WeComAdapter(ChannelAdapter):
         if self._client is None:
             raise RuntimeError("wecom adapter not started")
 
-        chunks = _split_for_wecom(payload.content)
+        chunks = split_text(payload.content, _WECOM_MAX_CHARS)
         if not chunks:
             # Empty content — nothing to send. WeCom's webhook rejects
             # empty body with errcode 44004; bail quietly to mirror the

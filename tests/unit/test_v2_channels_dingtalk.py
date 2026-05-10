@@ -22,10 +22,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from xmclaw.providers.channel.base import ChannelTarget, OutboundMessage
+from xmclaw.providers.channel._shared import split_text
 from xmclaw.providers.channel.dingtalk.adapter import (
     DingTalkAdapter,
     _coerce_str_set,
-    _split_for_dingtalk,
 )
 
 
@@ -677,13 +677,13 @@ def test_dingtalk_appears_in_registry_discover() -> None:
 
 
 def test_split_for_dingtalk_under_cap() -> None:
-    assert _split_for_dingtalk("short") == ["short"]
-    assert _split_for_dingtalk("") == []
+    assert split_text("short", 4500) == ["short"]
+    assert split_text("", 4500) == []
 
 
 def test_split_for_dingtalk_chunks_at_cap() -> None:
     text = "x" * 6000
-    chunks = _split_for_dingtalk(text, cap=4500)
+    chunks = split_text(text, cap=4500)
     assert len(chunks) >= 2
     assert all(len(c) <= 4500 for c in chunks)
     # Reassembly returns the original.
@@ -693,7 +693,7 @@ def test_split_for_dingtalk_chunks_at_cap() -> None:
 def test_split_for_dingtalk_prefers_newline_boundaries() -> None:
     para = "a" * 1500
     text = "\n\n".join([para, para, para, para])
-    chunks = _split_for_dingtalk(text, cap=4500)
+    chunks = split_text(text, cap=4500)
     assert all(len(c) <= 4500 for c in chunks)
 
 

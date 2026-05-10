@@ -23,10 +23,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from xmclaw.providers.channel.base import ChannelTarget, OutboundMessage
+from xmclaw.providers.channel._shared import split_text
 from xmclaw.providers.channel.discord.adapter import (
     DiscordAdapter,
     _coerce_id_set,
-    _split_for_discord,
     _to_int_or_none,
 )
 
@@ -648,13 +648,13 @@ def test_discover_includes_discord_in_default_set() -> None:
 
 
 def test_split_for_discord_under_cap() -> None:
-    assert _split_for_discord("short") == ["short"]
-    assert _split_for_discord("") == []
+    assert split_text("short", 2000) == ["short"]
+    assert split_text("", 2000) == []
 
 
 def test_split_for_discord_chunks_at_cap() -> None:
     text = "x" * 5000
-    chunks = _split_for_discord(text, cap=2000)
+    chunks = split_text(text, cap=2000)
     assert len(chunks) == 3
     assert all(len(c) <= 2000 for c in chunks)
     # Reassembly returns the original.
@@ -666,7 +666,7 @@ def test_split_for_discord_prefers_newline_boundaries() -> None:
     # not mid-paragraph.
     para = "a" * 800
     text = "\n\n".join([para, para, para, para])
-    chunks = _split_for_discord(text, cap=2000)
+    chunks = split_text(text, cap=2000)
     assert all(len(c) <= 2000 for c in chunks)
 
 

@@ -25,10 +25,10 @@ from xmclaw.providers.channel.base import (
     InboundMessage,
     OutboundMessage,
 )
+from xmclaw.providers.channel._shared import split_text
 from xmclaw.providers.channel.wecom.adapter import (
     WeComAdapter,
     _coerce_str_list,
-    _split_for_wecom,
     _validate_webhook_url,
 )
 
@@ -546,13 +546,13 @@ def test_wecom_appears_in_registry_discover() -> None:
 
 
 def test_split_for_wecom_under_cap() -> None:
-    assert _split_for_wecom("short") == ["short"]
-    assert _split_for_wecom("") == []
+    assert split_text("short", 4096) == ["short"]
+    assert split_text("", 4096) == []
 
 
 def test_split_for_wecom_chunks_at_cap() -> None:
     text = "x" * 5000
-    chunks = _split_for_wecom(text, cap=4096)
+    chunks = split_text(text, cap=4096)
     assert len(chunks) >= 2
     assert all(len(c) <= 4096 for c in chunks)
     # Reassembly returns the original.
@@ -562,7 +562,7 @@ def test_split_for_wecom_chunks_at_cap() -> None:
 def test_split_for_wecom_prefers_newline_boundaries() -> None:
     para = "a" * 2000
     text = "\n\n".join([para, para, para])
-    chunks = _split_for_wecom(text, cap=4096)
+    chunks = split_text(text, cap=4096)
     assert all(len(c) <= 4096 for c in chunks)
 
 

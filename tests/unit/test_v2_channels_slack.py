@@ -21,10 +21,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from xmclaw.providers.channel.base import ChannelTarget, OutboundMessage
+from xmclaw.providers.channel._shared import split_text
 from xmclaw.providers.channel.slack.adapter import (
     SlackAdapter,
     _coerce_str_set,
-    _split_for_slack,
 )
 
 
@@ -660,13 +660,13 @@ def test_slack_appears_in_registry_discover() -> None:
 
 
 def test_split_for_slack_under_cap() -> None:
-    assert _split_for_slack("short") == ["short"]
-    assert _split_for_slack("") == []
+    assert split_text("short", 4000) == ["short"]
+    assert split_text("", 4000) == []
 
 
 def test_split_for_slack_chunks_at_cap() -> None:
     text = "x" * 5000
-    chunks = _split_for_slack(text, cap=3900)
+    chunks = split_text(text, 3900)
     assert len(chunks) >= 2
     assert all(len(c) <= 3900 for c in chunks)
     # Reassembly returns the original.
@@ -676,7 +676,7 @@ def test_split_for_slack_chunks_at_cap() -> None:
 def test_split_for_slack_prefers_newline_boundaries() -> None:
     para = "a" * 1500
     text = "\n\n".join([para, para, para, para])
-    chunks = _split_for_slack(text, cap=3900)
+    chunks = split_text(text, 3900)
     assert all(len(c) <= 3900 for c in chunks)
 
 
