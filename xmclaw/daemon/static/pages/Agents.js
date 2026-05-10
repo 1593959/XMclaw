@@ -13,11 +13,11 @@
 // guess what each agent did.
 
 const { h } = window.__xmc.preact;
-const { useState, useEffect, useCallback } = window.__xmc.preact_hooks;
+const { useState, useEffect } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
 import { Badge } from "../components/atoms/badge.js";
-import { apiGet } from "../lib/api.js";
+import { useSafeFetch } from "../lib/use_safe_fetch.js";
 import { toast } from "../lib/toast.js";
 
 async function postJson(path, token, body) {
@@ -265,21 +265,15 @@ function CreateAgentForm({ token, onCreated }) {
 
 export function AgentsPage({ token }) {
   const [agents, setAgents] = useState(null);
-  const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(() => {
-    apiGet("/api/v2/agents", token)
-      .then((d) => {
-        const list = Array.isArray(d) ? d : (d && d.agents) || [];
-        setAgents(list);
-        setError(null);
-      })
-      .catch((e) => setError(String(e.message || e)));
-  }, [token]);
+  const setAgentsFromResp = (d) => {
+    const list = Array.isArray(d) ? d : (d && d.agents) || [];
+    setAgents(list);
+  };
+  const { error, refresh: load } = useSafeFetch("/api/v2/agents", token, setAgentsFromResp);
 
   useEffect(() => {
-    load();
     const id = setInterval(load, 10_000);
     return () => clearInterval(id);
   }, [load]);
@@ -298,7 +292,7 @@ export function AgentsPage({ token }) {
     }
   };
 
-  if (error) return html`<section class="xmc-datapage"><h2>智能体</h2><p class="xmc-datapage__error">${error}</p></section>`;
+  if (error) return html`<section class="xmc-datapage"><h2>智能体</h2><p class="xmc-datapage__error">${String(error.message || error)}</p></section>`;
   if (!agents) return html`<section class="xmc-datapage"><p>加载中…</p></section>`;
 
   const llmCount = agents.filter((a) => a.kind === "llm" || !a.kind).length;

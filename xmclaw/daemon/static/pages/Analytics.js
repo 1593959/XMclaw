@@ -9,10 +9,10 @@
 // Backend: GET /api/v2/analytics?days=N (xmclaw/daemon/routers/analytics.py).
 
 const { h } = window.__xmc.preact;
-const { useState, useEffect, useCallback, useMemo } = window.__xmc.preact_hooks;
+const { useState, useMemo } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
-import { apiGet } from "../lib/api.js";
+import { useSafeFetch } from "../lib/use_safe_fetch.js";
 
 function Icon({ d, className }) {
   return html`
@@ -380,19 +380,14 @@ function TopSessionsTable({ sessions }) {
 
 export function AnalyticsPage({ token }) {
   const [data, setData] = useState(null);
-  const [error, setError] = useState(null);
   const [days, setDays] = useState(30);
-  const [loading, setLoading] = useState(false);
 
-  const load = useCallback(() => {
-    setLoading(true);
-    apiGet("/api/v2/analytics?days=" + days, token)
-      .then((d) => setData(d))
-      .catch((e) => setError(String(e.message || e)))
-      .finally(() => setLoading(false));
-  }, [days, token]);
-
-  useEffect(() => { load(); }, [load]);
+  const { loading, error, refresh: load } = useSafeFetch(
+    "/api/v2/analytics?days=" + days,
+    token,
+    setData,
+    [days],
+  );
 
   if (error) {
     return html`
@@ -400,7 +395,7 @@ export function AnalyticsPage({ token }) {
         <header class="xmc-h-page__header">
           <h2 id="ana-title" class="xmc-h-page__title">分析</h2>
         </header>
-        <div class="xmc-h-page__body"><div class="xmc-h-error">${error}</div></div>
+        <div class="xmc-h-page__body"><div class="xmc-h-error">${String(error.message || error)}</div></div>
       </section>
     `;
   }

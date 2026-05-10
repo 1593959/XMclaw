@@ -11,7 +11,9 @@ const { h } = window.__xmc.preact;
 const { useEffect, useState, useRef } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
-import { apiGet, apiPost } from "../lib/api.js";
+import { apiGet } from "../lib/api.js";
+import { useSafePost } from "../lib/use_safe_fetch.js";
+import { toast } from "../lib/toast.js";
 
 // Lazy-load Mermaid for DAG visualisation.
 let _mermaidPromise = null;
@@ -65,6 +67,8 @@ export function CognitionPage({ token }) {
   const [taskGraph, setTaskGraph] = useState(null);
   const [error, setError] = useState(null);
   const dagRef = useRef(null);
+  const isMountedRef = useRef(true);
+  const { run: postFn } = useSafePost(token);
 
   async function loadAll() {
     try {
@@ -75,6 +79,7 @@ export function CognitionPage({ token }) {
         apiGet("/api/v2/cognition/graph/stats", token),
         apiGet("/api/v2/cognition/tasks/graph", token),
       ]);
+      if (!isMountedRef.current) return;
       setCogState(s);
       setTasks(t.tasks || []);
       setProposals(p.proposals || []);
@@ -82,12 +87,14 @@ export function CognitionPage({ token }) {
       setTaskGraph(tg);
       setState("ready");
     } catch (e) {
+      if (!isMountedRef.current) return;
       setError(e);
       setState("error");
     }
   }
 
   useEffect(() => {
+    isMountedRef.current = true;
     loadAll();
     const iv = setInterval(loadAll, 5000);
 
@@ -118,6 +125,7 @@ export function CognitionPage({ token }) {
     }
 
     return () => {
+      isMountedRef.current = false;
       clearInterval(iv);
       if (ws) {
         try { ws.close(); } catch (_) {}
@@ -126,13 +134,21 @@ export function CognitionPage({ token }) {
   }, [token]);
 
   async function onApprove(id) {
-    await apiPost(`/api/v2/cognition/proposals/${id}/approve`, {}, token);
-    loadAll();
+    const r = await postFn("POST", `/api/v2/cognition/proposals/${id}/approve`, {});
+    if (r.ok) {
+      loadAll();
+    } else {
+      toast.error(`approve 失败: ${r.error.message || r.error}`);
+    }
   }
 
   async function onReject(id) {
-    await apiPost(`/api/v2/cognition/proposals/${id}/reject`, {}, token);
-    loadAll();
+    const r = await postFn("POST", `/api/v2/cognition/proposals/${id}/reject`, {});
+    if (r.ok) {
+      loadAll();
+    } else {
+      toast.error(`reject 失败: ${r.error.message || r.error}`);
+    }
   }
 
   if (state === "loading") {

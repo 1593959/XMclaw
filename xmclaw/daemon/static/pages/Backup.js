@@ -10,13 +10,14 @@
 // at the CLI but had no router until B-103.
 
 const { h } = window.__xmc.preact;
-const { useState, useEffect, useCallback } = window.__xmc.preact_hooks;
+const { useState, useEffect, useCallback, useRef } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
 import { Badge } from "../components/atoms/badge.js";
-import { apiGet, apiPost, apiDelete } from "../lib/api.js";
+import { apiGet, apiDelete } from "../lib/api.js";
 import { confirmDialog } from "../lib/dialog.js";
 import { toast } from "../lib/toast.js";
+import { useSafePost } from "../lib/use_safe_fetch.js";
 
 function _humanBytes(n) {
   if (!n || n < 1024) return `${n || 0} B`;
@@ -40,6 +41,8 @@ export function BackupPage({ token }) {
   const [busy, setBusy] = useState(null);  // backup name currently being acted on
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
+  const { run: postFn } = useSafePost(token);
+  const isMountedRef = useRef(true);
 
   const reload = useCallback(() => {
     const BACKUP_TYPES = new Set(["backup_started", "backup_finished", "backup_failed"]);
@@ -49,41 +52,46 @@ export function BackupPage({ token }) {
       apiGet("/api/v2/backup", token).catch((e) => ({ backups: [], error: e.message })),
     ])
       .then(([cfg, evs, bks]) => {
+        if (!isMountedRef.current) return;
         setConfig(cfg.config || {});
         setEvents((evs.events || []).filter((e) => BACKUP_TYPES.has(e.type)));
         setBackups(bks.backups || []);
         setError(null);
       })
-      .catch((e) => setError(String(e.message || e)));
+      .catch((e) => { if (isMountedRef.current) setError(String(e.message || e)); });
   }, [token]);
 
-  useEffect(() => { reload(); }, [reload]);
+  useEffect(() => {
+    isMountedRef.current = true;
+    reload();
+    return () => { isMountedRef.current = false; };
+  }, [reload]);
 
   const onCreate = async () => {
     setCreating(true);
-    try {
-      const r = await apiPost("/api/v2/backup", { name: newName.trim() || undefined }, token);
-      toast.success(`已备份：${r.name}（${r.files_count} 个文件 · ${_humanBytes(r.total_bytes)}）`);
+    const r = await postFn("POST", "/api/v2/backup", { name: newName.trim() || undefined });
+    if (r.ok) {
+      const result = r.result;
+      toast.success(`已备份：${result.name}（${result.files_count} 个文件 · ${_humanBytes(result.total_bytes)}）`);
       setNewName("");
       reload();
-    } catch (e) {
-      toast.error("备份失败：" + (e.message || e));
-    } finally {
-      setCreating(false);
+    } else {
+      toast.error("备份失败：" + (r.error.message || r.error));
     }
+    setCreating(false);
   };
 
   const onVerify = async (name) => {
     setBusy(name);
-    try {
-      const r = await apiPost(`/api/v2/backup/${encodeURIComponent(name)}/verify`, {}, token);
-      if (r.verified) toast.success(`${name} 校验通过（sha256 一致）`);
-      else toast.error(`${name} 校验失败：${r.error || "归档已损坏"}`);
-    } catch (e) {
-      toast.error("校验失败：" + (e.message || e));
-    } finally {
-      setBusy(null);
+    const r = await postFn("POST", `/api/v2/backup/${encodeURIComponent(name)}/verify`, {});
+    if (r.ok) {
+      const result = r.result;
+      if (result.verified) toast.success(`${name} 校验通过（sha256 一致）`);
+      else toast.error(`${name} 校验失败：${result.error || "归档已损坏"}`);
+    } else {
+      toast.error("校验失败：" + (r.error.message || r.error));
     }
+    setBusy(null);
   };
 
   const onRestore = async (name) => {
@@ -97,14 +105,13 @@ export function BackupPage({ token }) {
     });
     if (!ok) return;
     setBusy(name);
-    try {
-      await apiPost(`/api/v2/backup/${encodeURIComponent(name)}/restore`, {}, token);
+    const r = await postFn("POST", `/api/v2/backup/${encodeURIComponent(name)}/restore`, {});
+    if (r.ok) {
       toast.success(`${name} 已恢复 — 请重启 daemon`);
-    } catch (e) {
-      toast.error("恢复失败：" + (e.message || e));
-    } finally {
-      setBusy(null);
+    } else {
+      toast.error("恢复失败：" + (r.error.message || r.error));
     }
+    setBusy(null);
   };
 
   const onDelete = async (name) => {
@@ -134,12 +141,12 @@ export function BackupPage({ token }) {
       confirmLabel: "Prune",
     });
     if (!ok) return;
-    try {
-      const r = await apiPost("/api/v2/backup/prune", {}, token);
-      toast.success(`已删除 ${r.removed_count} 个旧备份`);
+    const r = await postFn("POST", "/api/v2/backup/prune", {});
+    if (r.ok) {
+      toast.success(`已删除 ${r.result.removed_count} 个旧备份`);
       reload();
-    } catch (e) {
-      toast.error("Prune 失败：" + (e.message || e));
+    } else {
+      toast.error("Prune 失败：" + (r.error.message || r.error));
     }
   };
 

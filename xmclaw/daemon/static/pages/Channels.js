@@ -12,11 +12,11 @@
 // badge and an empty input — same convention as 设置 / 高级配置).
 
 const { h } = window.__xmc.preact;
-const { useState, useEffect, useCallback } = window.__xmc.preact_hooks;
+const { useState, useEffect } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
 import { Badge } from "../components/atoms/badge.js";
-import { apiGet } from "../lib/api.js";
+import { useSafeFetch } from "../lib/use_safe_fetch.js";
 import { toast } from "../lib/toast.js";
 
 async function putJson(path, token, body) {
@@ -175,17 +175,11 @@ function ChannelCard({ ch, token, onSaved }) {
 
 export function ChannelsPage({ token }) {
   const [channels, setChannels] = useState(null);
-  const [error, setError] = useState(null);
 
-  const load = useCallback(() => {
-    apiGet("/api/v2/channels", token)
-      .then((d) => { setChannels(d.channels || []); setError(null); })
-      .catch((e) => setError(String(e.message || e)));
-  }, [token]);
+  const setChannelsFromResp = (d) => setChannels(d.channels || []);
+  const { error, refresh: load } = useSafeFetch("/api/v2/channels", token, setChannelsFromResp);
 
-  useEffect(load, [load]);
-
-  if (error) return html`<section class="xmc-datapage"><h2>外部聊天接入</h2><p class="xmc-datapage__error">${error}</p></section>`;
+  if (error) return html`<section class="xmc-datapage"><h2>外部聊天接入</h2><p class="xmc-datapage__error">${String(error.message || error)}</p></section>`;
   if (!channels) return html`<section class="xmc-datapage"><p>加载中…</p></section>`;
 
   const readyCount = channels.filter((c) => c.implementation_status === "ready").length;

@@ -28,10 +28,10 @@
 //     patch left here.)
 
 const { h } = window.__xmc.preact;
-const { useState, useEffect, useCallback } = window.__xmc.preact_hooks;
+const { useState } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
-import { apiGet } from "../lib/api.js";
+import { useSafeFetch } from "../lib/use_safe_fetch.js";
 import { toast } from "../lib/toast.js";
 import { confirmDialog } from "../lib/dialog.js";
 
@@ -248,16 +248,10 @@ function JobRow({ job, onDelete, onToggle, onTrigger, busy }) {
 
 export function CronPage({ token }) {
   const [jobs, setJobs] = useState(null);
-  const [error, setError] = useState(null);
   const [busy, setBusy] = useState(null);
 
-  const load = useCallback(() => {
-    apiGet("/api/v2/cron", token)
-      .then((d) => setJobs(d.jobs || []))
-      .catch((e) => setError(String(e.message || e)));
-  }, [token]);
-
-  useEffect(() => { load(); }, [load]);
+  const setJobsFromResp = (d) => setJobs(d.jobs || []);
+  const { error, refresh: load } = useSafeFetch("/api/v2/cron", token, setJobsFromResp);
 
   const onDelete = async (jobId) => {
     const ok = await confirmDialog({
@@ -331,7 +325,7 @@ export function CronPage({ token }) {
           <h2 id="cron-title" class="xmc-h-page__title">Cron</h2>
         </header>
         <div class="xmc-h-page__body">
-          <div class="xmc-h-error">${error}</div>
+          <div class="xmc-h-error">${String(error.message || error)}</div>
         </div>
       </section>
     `;

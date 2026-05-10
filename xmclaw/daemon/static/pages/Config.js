@@ -13,10 +13,10 @@
 // the Hermes shape; the data shape under it is XMclaw config.json.
 
 const { h } = window.__xmc.preact;
-const { useState, useEffect, useMemo, useCallback } = window.__xmc.preact_hooks;
+const { useState, useEffect, useMemo } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
-import { apiGet } from "../lib/api.js";
+import { useSafeFetch } from "../lib/use_safe_fetch.js";
 import { toast } from "../lib/toast.js";
 
 function Icon({ d, className }) {
@@ -196,25 +196,19 @@ function ObjectGroup({ value, onChange, label, path }) {
 export function ConfigPage({ token }) {
   const [config, setConfig] = useState(null);
   const [draft, setDraft] = useState(null);
-  const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
   const [activeCat, setActiveCat] = useState(null);
   const [yamlMode, setYamlMode] = useState(false);
   const [yamlText, setYamlText] = useState("");
   const [saving, setSaving] = useState(false);
 
-  const load = useCallback(() => {
-    apiGet("/api/v2/config", token)
-      .then((d) => {
-        const cfg = d.config || {};
-        setConfig(cfg);
-        setDraft(cfg);
-        setYamlText(JSON.stringify(cfg, null, 2));
-      })
-      .catch((e) => setError(String(e.message || e)));
-  }, [token]);
-
-  useEffect(() => { load(); }, [load]);
+  const setConfigFromResp = (d) => {
+    const cfg = d.config || {};
+    setConfig(cfg);
+    setDraft(cfg);
+    setYamlText(JSON.stringify(cfg, null, 2));
+  };
+  const { error, refresh: load } = useSafeFetch("/api/v2/config", token, setConfigFromResp);
 
   // B-153: hide categories that have a dedicated friendly UI elsewhere.
   // 三处都能改 LLM block 只会让用户懵 — 这里直接砍掉，引导去 设置。
@@ -305,7 +299,7 @@ export function ConfigPage({ token }) {
         <header class="xmc-h-page__header">
           <h2 id="config-title" class="xmc-h-page__title">高级配置</h2>
         </header>
-        <div class="xmc-h-page__body"><div class="xmc-h-error">${error}</div></div>
+        <div class="xmc-h-page__body"><div class="xmc-h-error">${String(error.message || error)}</div></div>
       </section>
     `;
   }
