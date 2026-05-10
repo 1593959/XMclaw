@@ -11,6 +11,7 @@
 // visual 1:1 at the page-chrome level, content stays XMclaw-native.
 
 const { h } = window.__xmc.preact;
+const { useState, useEffect } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
 import { MessageList } from "../components/molecules/MessageList.js";
@@ -19,12 +20,50 @@ import { ModelPicker } from "../components/molecules/ModelPicker.js";
 import { ChatSidebar } from "../components/molecules/ChatSidebar.js";
 import { Badge } from "../components/atoms/badge.js";
 
+// Audit pass-3 B1+B4: Chat now renders an explicit loading state while the
+// WS handshakes and a dismissable error banner when the connection drops
+// or fails. Reads `connection.status / lastError / reconnectAttempt`
+// already tracked by app.js's WS reducer — does NOT add new state to the
+// store. The retry button just calls `window.location.reload()` because
+// the WS client owns its own backoff loop and exposing a manual reconnect
+// hook through the page tree is out of scope for this batch.
+
 export function ChatPage({ chat, session, connection, token, onSend, onCancel, onAnswerQuestion, onChangeDraft, onTogglePlan, onToggleUltrathink, onNewSession, onChangeModel, onSwitchAgent, slashStore }) {
   const canSend =
     connection.status === "connected" &&
     chat.composerDraft.trim().length > 0;
   const busy = !!chat.pendingAssistantId;
   const sid = session.activeSid || "(new)";
+
+  // B1: visible-at-top loading dot during connect/reconnect — kept inline
+  // so the message list stays mounted and the user doesn't lose scroll
+  // position on a transient drop.
+  const isLoading =
+    connection.status === "connecting" || connection.status === "reconnecting";
+
+  // B4: error banner for full disconnect (status === "disconnected" with
+  // a real lastError). `dismissed` is local — once hidden the banner
+  // stays hidden until a NEW disconnect happens (different errKey).
+  const [dismissed, setDismissed] = useState(false);
+  const wsErr = connection.lastError;
+  const errKey = `${connection.status}::${wsErr || ""}`;
+  // Reset dismissal whenever the error identity changes so a fresh
+  // disconnect re-shows the banner. useEffect (post-render) avoids the
+  // setState-during-render footgun.
+  useEffect(() => {
+    setDismissed(false);
+  }, [errKey]);
+  const showError =
+    !dismissed &&
+    connection.status === "disconnected" &&
+    !!wsErr;
+  function onRetry() {
+    // The WS client backs off exponentially on its own; a hard reload is
+    // the simplest user-initiated reconnect that doesn't require plumbing
+    // a new prop through app.js. Acceptable for an error-state retry —
+    // not a steady-state hot path.
+    try { window.location.reload(); } catch (_) { /* no-op in tests */ }
+  }
 
   return html`
     <section class="xmc-h-chat-frame" aria-label="chat workspace">
@@ -81,6 +120,36 @@ export function ChatPage({ chat, session, connection, token, onSend, onCancel, o
             </${Badge}>
           </div>
         </header>
+        ${isLoading ? html`
+          <div
+            class="xmc-h-loading"
+            role="status"
+            aria-live="polite"
+            style="padding:.5rem .75rem;font-size:.72rem"
+          >
+            ${connection.status === "reconnecting"
+              ? `重新连接中… (尝试 ${connection.reconnectAttempt || 1})`
+              : "连接中…"}
+          </div>
+        ` : null}
+        ${showError ? html`
+          <div
+            class="xmc-h-error"
+            role="alert"
+            style="display:flex;gap:.6rem;align-items:center;justify-content:space-between;margin:.4rem .25rem"
+          >
+            <div style="flex:1;min-width:0">
+              <strong>WebSocket 已断开</strong>
+              <div style="font-size:.78rem;opacity:.85;margin-top:2px;word-break:break-word">
+                ${String(wsErr || "未知错误")}
+              </div>
+            </div>
+            <div style="display:flex;gap:.4rem;flex-shrink:0">
+              <button type="button" onClick=${onRetry} class="xmc-h-btn">重试</button>
+              <button type="button" onClick=${() => setDismissed(true)} class="xmc-h-btn xmc-h-btn--ghost" aria-label="关闭">×</button>
+            </div>
+          </div>
+        ` : null}
         <${MessageList} messages=${chat.messages} onAnswerQuestion=${onAnswerQuestion} />
         <${Composer}
           value=${chat.composerDraft}

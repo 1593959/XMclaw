@@ -49,6 +49,13 @@ export function ModelProfilesSection({ token }) {
   const [busy, setBusy] = useState(false);
   const [savedAt, setSavedAt] = useState(null);
   const [form, setForm] = useState(emptyForm());
+  // B3: explicit loading status for the initial /api/v2/llm/profiles
+  // GET so the user sees a placeholder instead of an empty fieldset.
+  // "loading" (first paint) | "ready" (data in) | "error" (load failed).
+  // Stays "ready" on subsequent reloads so the form doesn't flicker
+  // every time the user saves.
+  const [loadStatus, setLoadStatus] = useState("loading");
+  const [loadError, setLoadError] = useState(null);
 
   async function reload() {
     try {
@@ -57,12 +64,19 @@ export function ModelProfilesSection({ token }) {
       setOnDisk(data.on_disk || []);
       setDefaultId(data.default_id || null);
       setError(null);
+      setLoadError(null);
+      setLoadStatus("ready");
     } catch (exc) {
       setError(String(exc.message || exc));
+      setLoadError(exc);
+      setLoadStatus((prev) => (prev === "ready" ? "ready" : "error"));
     }
   }
 
-  useEffect(() => { reload(); }, [token]);
+  useEffect(() => {
+    setLoadStatus("loading");
+    reload();
+  }, [token]);
 
   function setField(name, value) {
     setForm((f) => ({ ...f, [name]: value }));
@@ -137,6 +151,42 @@ export function ModelProfilesSection({ token }) {
   const runtimeIds = new Set(profiles.map((p) => p.id));
   const brokenOnDisk = onDisk.filter((p) => p.id !== "default" && !runtimeIds.has(p.id));
   const namedRuntime = profiles.filter((p) => p.id !== "default");
+
+  // B3: first-paint loading + first-paint error. Either replaces the
+  // entire fieldset until we know what to draw — once we've succeeded
+  // once, status is "ready" and the form renders even if a later
+  // reload fails (the inline `error` Badge above the list takes over).
+  if (loadStatus === "loading") {
+    return html`
+      <fieldset class="xmc-settings__group">
+        <legend>多模型 profiles</legend>
+        <div class="xmc-h-loading" role="status" aria-live="polite">
+          加载 profiles…
+        </div>
+      </fieldset>
+    `;
+  }
+  if (loadStatus === "error") {
+    return html`
+      <fieldset class="xmc-settings__group">
+        <legend>多模型 profiles</legend>
+        <div class="xmc-h-error" role="alert">
+          <strong>加载失败</strong>
+          <div style="font-size:.78rem;opacity:.85;margin-top:4px;word-break:break-word">
+            ${String((loadError && loadError.message) || loadError || "未知错误")}
+          </div>
+          <button
+            type="button"
+            class="xmc-h-btn"
+            style="margin-top:.5rem"
+            onClick=${() => { setLoadStatus("loading"); reload(); }}
+          >
+            重试
+          </button>
+        </div>
+      </fieldset>
+    `;
+  }
 
   return html`
     <fieldset class="xmc-settings__group">

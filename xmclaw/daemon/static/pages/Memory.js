@@ -13,8 +13,8 @@
 //      "Today" loads on tab open; the date list shows past entries with
 //      previews. Empty save deletes the file.
 
-const { h } = window.__xmc.preact;
-const { useState, useMemo } = window.__xmc.preact_hooks;
+const { h, Component } = window.__xmc.preact;
+const { useState, useMemo, useEffect } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
 import { apiGet } from "../lib/api.js";
@@ -52,17 +52,84 @@ const TAB_LABELS = [
 // routable pages. The original B-49 + B-52 splits keep individual
 // files under the 500-line scaffold budget.
 
+// ── shell error boundary (audit pass-3 B5) ────────────────────────────
+//
+// Each tab owns its own data-fetch + error state, but if a sub-panel
+// throws synchronously during render the whole MemoryPage was blanking.
+// This tiny class catches a tab-level throw and renders a recovery
+// block while keeping the shell + tab nav alive — clicking another tab
+// (or Retry) resets the boundary. Preact 10 supports componentDidCatch.
+
+class TabErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { err: null };
+  }
+  componentDidCatch(err) {
+    this.setState({ err });
+  }
+  componentDidUpdate(prev) {
+    // Auto-reset when caller swaps the tab (resetKey changes) so a
+    // good tab isn't masked by a stale error from another one.
+    if (prev.resetKey !== this.props.resetKey && this.state.err) {
+      // eslint-disable-next-line react/no-did-update-set-state
+      this.setState({ err: null });
+    }
+  }
+  render(props, state) {
+    if (state.err) {
+      return h(
+        "div",
+        { class: "xmc-h-error", role: "alert", style: "margin:.5rem 0" },
+        [
+          h("strong", null, "标签页加载失败"),
+          h(
+            "div",
+            { style: "font-size:.78rem;opacity:.85;margin-top:4px;word-break:break-word" },
+            String(state.err && state.err.message || state.err),
+          ),
+          h(
+            "button",
+            {
+              type: "button",
+              class: "xmc-h-btn",
+              style: "margin-top:.5rem",
+              onClick: () => this.setState({ err: null }),
+            },
+            "重试",
+          ),
+        ],
+      );
+    }
+    return props.children;
+  }
+}
+
 // ── shell ─────────────────────────────────────────────────────────────
 
 export function MemoryPage({ token }) {
   const [tab, setTab] = useState("identity");
   const activeMeta = useMemo(() => TAB_LABELS.find((t) => t.id === tab), [tab]);
 
+  // B2: small mounting indicator — flicked on each tab switch and cleared
+  // on the next animation frame after mount. Sub-panels do their own
+  // network-loading UI; this is purely the "shell ack" so the user gets
+  // immediate feedback that the click registered before the tab paints.
+  const [mounting, setMounting] = useState(false);
+  useEffect(() => {
+    setMounting(true);
+    const id = window.requestAnimationFrame(() => setMounting(false));
+    return () => window.cancelAnimationFrame(id);
+  }, [tab]);
+
   return html`
     <section class="xmc-datapage" aria-labelledby="memory-title">
       <header class="xmc-datapage__header">
         <h2 id="memory-title">记忆</h2>
-        <p class="xmc-datapage__subtitle">${activeMeta ? activeMeta.hint : ""}</p>
+        <p class="xmc-datapage__subtitle">
+          ${activeMeta ? activeMeta.hint : ""}
+          ${mounting ? html`<span style="margin-left:.5rem;font-size:.72rem;opacity:.6">· 加载中…</span>` : null}
+        </p>
       </header>
       <nav class="xmc-mem-tabs" role="tablist" aria-label="记忆类别" style="display:flex;gap:.4rem;border-bottom:1px solid var(--color-border);margin-bottom:.8rem;flex-wrap:wrap">
         ${TAB_LABELS.map((t) => {
@@ -81,11 +148,13 @@ export function MemoryPage({ token }) {
           `;
         })}
       </nav>
-      ${tab === "identity" ? html`<${IdentityTab} token=${token} />` : null}
-      ${tab === "notes" ? html`<${NotesTab} token=${token} />` : null}
-      ${tab === "journal" ? html`<${JournalTab} token=${token} />` : null}
-      ${tab === "unified" ? html`<${UnifiedQueryTab} token=${token} />` : null}
-      ${tab === "providers" ? html`<${ProvidersTab} token=${token} />` : null}
+      <${TabErrorBoundary} resetKey=${tab}>
+        ${tab === "identity" ? html`<${IdentityTab} token=${token} />` : null}
+        ${tab === "notes" ? html`<${NotesTab} token=${token} />` : null}
+        ${tab === "journal" ? html`<${JournalTab} token=${token} />` : null}
+        ${tab === "unified" ? html`<${UnifiedQueryTab} token=${token} />` : null}
+        ${tab === "providers" ? html`<${ProvidersTab} token=${token} />` : null}
+      <//>
     </section>
   `;
 }
