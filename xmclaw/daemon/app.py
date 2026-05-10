@@ -1772,6 +1772,44 @@ def create_app(
                             _meta_pass = None
                             _reformer = None
 
+                    # R5: AutonomyPolicy + SuggestionInbox. Even when
+                    # metacognition isn't wired (no LLM), the policy
+                    # + inbox surface for percept-driven suggestions.
+                    try:
+                        from xmclaw.cognition.autonomy import (
+                            AutonomyPolicy,
+                        )
+                        from xmclaw.cognition.suggestion_inbox import (
+                            SuggestionInbox,
+                        )
+                        _autonomy_cfg = (
+                            _cont_loop_cfg.get("autonomy", {}) or {}
+                        )
+                        _autonomy = AutonomyPolicy(
+                            autonomy_level=int(
+                                _cont_loop_cfg.get("autonomy_level", 0),
+                            ),
+                            risk_overrides=dict(
+                                _autonomy_cfg.get(
+                                    "risk_overrides", {},
+                                ) or {},
+                            ),
+                            max_auto_applies_per_hour=int(
+                                _autonomy_cfg.get(
+                                    "max_auto_applies_per_hour", 10,
+                                ),
+                            ),
+                        )
+                        _inbox = SuggestionInbox()
+                        _app.state.autonomy_policy = _autonomy
+                        _app.state.suggestion_inbox = _inbox
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning(
+                            "autonomy.build_failed err=%s", exc,
+                        )
+                        _app.state.autonomy_policy = None
+                        _app.state.suggestion_inbox = None
+
                     _reflection_cycle = ReflectionCycle(
                         llm=_agent_llm,
                         unified_memory=_agent_unified,
@@ -1910,8 +1948,8 @@ def create_app(
             if _chdisp is not None:
                 try:
                     await _chdisp.stop_all()
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             # B-51: stop the dream cron.
             _dream_cron = getattr(_app.state, "dream_cron", None)
             if _dream_cron is not None:

@@ -605,3 +605,88 @@ async def cognition_ws(websocket: WebSocket) -> None:
             await asyncio.sleep(PUSH_INTERVAL_S)
     except WebSocketDisconnect:
         pass
+
+
+# ── R5: Suggestion inbox ─────────────────────────────────────────
+
+
+def _suggestion_inbox(request: Request) -> Any:
+    return getattr(request.app.state, "suggestion_inbox", None)
+
+
+@router.get("/suggestions")
+async def list_suggestions(
+    request: Request, status: str = "pending", limit: int = 50,
+) -> JSONResponse:
+    """List pending (default) or by-status suggestions.
+
+    Query params:
+        status: ``pending`` (default) | ``approved`` | ``rejected``
+                | ``expired`` | ``applied`` | ``all``
+        limit: max rows. Default 50.
+    """
+    inbox = _suggestion_inbox(request)
+    if inbox is None:
+        return _not_wired(request)
+    limit = max(1, min(500, int(limit)))
+    if status == "all":
+        rows = inbox.list_recent(limit=limit)
+    elif status == "pending":
+        rows = inbox.list_pending(limit=limit)
+    else:
+        if status not in (
+            "approved", "rejected", "expired", "applied",
+        ):
+            return JSONResponse(
+                {"error": f"unknown status: {status!r}"},
+                status_code=400,
+            )
+        rows = inbox.list_recent(limit=limit, status=status)
+    return JSONResponse({
+        "suggestions": [
+            {
+                "id": s.id,
+                "ts": s.ts,
+                "kind": s.kind,
+                "source": s.source,
+                "summary": s.summary,
+                "payload": s.payload,
+                "risk": s.risk,
+                "confidence": s.confidence,
+                "verdict": s.verdict,
+                "status": s.status,
+                "decided_at": s.decided_at,
+                "decided_by": s.decided_by,
+                "applied_at": s.applied_at,
+                "applied_outcome": s.applied_outcome,
+            }
+            for s in rows
+        ],
+        "count": len(rows),
+        "pending_total": inbox.count_pending(),
+    })
+
+
+@router.post("/suggestions/{sg_id}/approve")
+async def approve_suggestion(
+    request: Request, sg_id: str,
+) -> JSONResponse:
+    """User approves a pending suggestion. Status flips to
+    ``approved``; actual application is the daemon's job (routes
+    into EvolutionController / PersonaStore / etc)."""
+    inbox = _suggestion_inbox(request)
+    if inbox is None:
+        return _not_wired(request)
+    ok = inbox.decide(sg_id, status="approved")
+    return JSONResponse({"ok": ok, "id": sg_id, "status": "approved"})
+
+
+@router.post("/suggestions/{sg_id}/reject")
+async def reject_suggestion(
+    request: Request, sg_id: str,
+) -> JSONResponse:
+    inbox = _suggestion_inbox(request)
+    if inbox is None:
+        return _not_wired(request)
+    ok = inbox.decide(sg_id, status="rejected")
+    return JSONResponse({"ok": ok, "id": sg_id, "status": "rejected"})
