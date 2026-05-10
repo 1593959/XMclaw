@@ -24,10 +24,11 @@ import { NotesTab, JournalTab } from "./_panels/memory_notes_journal.js";
 import { IdentityTab } from "./_panels/memory_identity.js";
 // B-323: ProvidersTab + MemoryActivitySparkline split into
 // _panels/memory_providers.js so this page stays under the 500-line
-// UI budget (FRONTEND_DESIGN.md §1.4). The panel itself is still
-// over budget (~700 lines) and is on the explicit KNOWN_OVERSIZED
-// grandfather list in tests/unit/test_v2_ui_scaffold.py pending
-// another splitting pass.
+// UI budget (FRONTEND_DESIGN.md §1.4). After B-323's split into the
+// 5 sub-panels (memory_providers_{indexer,dream,pinned,picker,
+// switcher}.js), memory_providers.js itself sits at ~415 LOC — back
+// under the 500-line cap. KNOWN_OVERSIZED grandfather list is now
+// empty per tests/unit/test_v2_ui_scaffold.py.
 import { ProvidersTab } from "./_panels/memory_providers.js";
 import { UnifiedQueryTab } from "./_panels/memory_unified_query.js";
 // 2026-05-10 ("agent 自己用记忆" Phase C1): activity timeline showing
