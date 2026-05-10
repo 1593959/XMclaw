@@ -1711,10 +1711,23 @@ def create_app(
                 # callback reads from the SqliteEventBus when
                 # available — without it reflect_recent silently
                 # skips (no LLM cost on a flat journal).
+                #
+                # R3: also wires a 4th bucket "metacognize" — runs
+                # MetaCognitionPass over recent decision traces, lets
+                # the Reformer turn patterns into proposals (curriculum
+                # _edit / skill_propose / preference_update) emitted as
+                # METACOGNITION_PROPOSAL events. Same heartbeat cadence
+                # as groom (1 day default).
                 _reflection_cycle: Any = None
+                _trace_recorder: Any = None
                 try:
                     from xmclaw.cognition.reflection_cycle import (
                         ReflectionCycle,
+                    )
+                    from xmclaw.core.metacognition import (
+                        DecisionTraceRecorder,
+                        MetaCognitionPass,
+                        Reformer,
                     )
 
                     async def _recent_events(n: int) -> list[Any]:
@@ -1736,12 +1749,37 @@ def create_app(
                         getattr(agent, "_unified_memory", None)
                         if agent else None
                     )
+
+                    # R3: build the metacognition pipeline. Recorder
+                    # owns its own decisions.db (sibling of events.db)
+                    # so journal back-pressure doesn't bleed in.
+                    _meta_pass: Any = None
+                    _reformer: Any = None
+                    if _agent_llm is not None:
+                        try:
+                            _trace_recorder = DecisionTraceRecorder()
+                            _meta_pass = MetaCognitionPass(
+                                llm=_agent_llm,
+                                recorder=_trace_recorder,
+                            )
+                            _reformer = Reformer()
+                            _app.state.trace_recorder = _trace_recorder
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning(
+                                "metacognition.build_failed err=%s", exc,
+                            )
+                            _trace_recorder = None
+                            _meta_pass = None
+                            _reformer = None
+
                     _reflection_cycle = ReflectionCycle(
                         llm=_agent_llm,
                         unified_memory=_agent_unified,
                         cognitive_state=_cognitive_state,
                         bus=bus,
                         recent_events_fn=_recent_events,
+                        metacognition_pass=_meta_pass,
+                        reformer=_reformer,
                     )
                 except Exception as exc:  # noqa: BLE001
                     log.warning(

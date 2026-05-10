@@ -216,6 +216,21 @@ class EventType(str, Enum):
     # }
     GOALS_GROOMED = "goals_groomed"
 
+    # R3 (2026-05-10) — emitted by Reformer when a Pattern from
+    # MetaCognitionPass earns a concrete proposal. The UI renders
+    # these as a "建议" panel where the operator can approve / reject;
+    # approved proposals route into the existing Evolution / Persona
+    # pipelines (curriculum_edit / skill_propose / preference_update).
+    # Payload: {
+    #   "kind": "curriculum_edit" | "skill_propose" | "preference_update"
+    #            | "no_op",
+    #   "pattern_summary": str,
+    #   "payload": dict,           # kind-specific (e.g. {addendum, tag, ...})
+    #   "confidence": float,        # ≤ 0.6 (Iron Rule #2 cap)
+    #   "why": str,                 # one-liner rationale
+    # }
+    METACOGNITION_PROPOSAL = "metacognition_proposal"
+
     # Jarvisification: cognitive architecture events.
     # Emitted by FileWatcher when filesystem changes are detected.
     FILE_SYSTEM_EVENT = "file_system_event"

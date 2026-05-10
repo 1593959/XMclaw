@@ -64,7 +64,7 @@ _DEFAULT_GROOM_STALE_DAYS = 7
 _DEFAULT_GROOM_BLOCKED_HOURS = 24
 
 
-CycleScope = Literal["recent", "consolidate", "groom"]
+CycleScope = Literal["recent", "consolidate", "groom", "metacognize"]
 ThoughtKind = Literal[
     "reflection", "wonder", "concern", "plan", "observation",
 ]
@@ -165,6 +165,13 @@ class ReflectionCycle:
         consolidate_batch: int = _DEFAULT_CONSOLIDATE_BATCH,
         groom_stale_days: int = _DEFAULT_GROOM_STALE_DAYS,
         groom_blocked_hours: int = _DEFAULT_GROOM_BLOCKED_HOURS,
+        # R3 (2026-05-10) — metacognize bucket. ``None`` disables it.
+        # Pass MetaCognitionPass + Reformer to enable; period defaults
+        # to the same as groom (1d) but is independently configurable.
+        metacognition_pass: Any | None = None,
+        reformer: Any | None = None,
+        metacognize_every_ticks: int | None = None,
+        metacognize_lookback: int = 100,
     ) -> None:
         self._llm = llm
         self._unified_memory = unified_memory
@@ -172,6 +179,15 @@ class ReflectionCycle:
         self._bus = bus
         self._recent_events_fn = recent_events_fn
         self._agent_id = agent_id
+        self._metacognition_pass = metacognition_pass
+        self._reformer = reformer
+        self._metacognize_every = max(
+            1,
+            int(metacognize_every_ticks)
+            if metacognize_every_ticks is not None
+            else _DEFAULT_GROOM_EVERY_TICKS,
+        )
+        self._metacognize_lookback = max(1, int(metacognize_lookback))
         self._reflect_every = max(1, int(reflect_every_ticks))
         self._consolidate_every = max(1, int(consolidate_every_ticks))
         self._groom_every = max(1, int(groom_every_ticks))
@@ -185,6 +201,7 @@ class ReflectionCycle:
             "recent": -1,
             "consolidate": -1,
             "groom": -1,
+            "metacognize": -1,
         }
 
     # ── Public dispatch ──────────────────────────────────────────
@@ -207,6 +224,11 @@ class ReflectionCycle:
         if self._is_due(tick, "groom", self._groom_every):
             r = await self.groom_goals(tick=tick)
             self._last_ran["groom"] = tick
+            if r.ran:
+                out.append(r)
+        if self._is_due(tick, "metacognize", self._metacognize_every):
+            r = await self.metacognize(tick=tick)
+            self._last_ran["metacognize"] = tick
             if r.ran:
                 out.append(r)
         return out
@@ -404,6 +426,68 @@ class ReflectionCycle:
         return CycleResult(
             scope="groom", ran=True, summary=summary,
             elapsed_ms=elapsed_ms,
+        )
+
+    # ── Scope 4: metacognize (R3, 2026-05-10) ────────────────────
+
+    async def metacognize(self, *, tick: int) -> CycleResult:
+        """Run a MetaCognitionPass + Reformer.
+
+        Pulls recent decision traces, asks the LLM for behavioural
+        patterns, routes each surviving Pattern through the Reformer
+        into a ReformProposal, and emits METACOGNITION_PROPOSAL
+        events. The proposals themselves are NOT auto-applied — the
+        operator (or, in R5, the AutonomyPolicy) decides whether to
+        approve them.
+
+        Skips when ``metacognition_pass`` or ``reformer`` not wired.
+        """
+        t0 = time.perf_counter()
+        if self._metacognition_pass is None or self._reformer is None:
+            return CycleResult(scope="metacognize", ran=False)
+
+        try:
+            patterns = await self._metacognition_pass.run(
+                lookback=self._metacognize_lookback,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("metacognize.pass_failed err=%s", exc)
+            return CycleResult(
+                scope="metacognize", ran=False,
+                error=f"pass: {exc}",
+                elapsed_ms=(time.perf_counter() - t0) * 1000.0,
+            )
+
+        proposals_emitted = 0
+        kinds: list[str] = []
+        for pat in patterns:
+            try:
+                rp = self._reformer.propose(pat)
+                if rp.kind == "no_op":
+                    continue
+                # Use Reformer.emit if available (static method).
+                emit = getattr(self._reformer, "emit", None)
+                if callable(emit):
+                    await emit(rp, bus=self._bus, agent_id=self._agent_id)
+                proposals_emitted += 1
+                kinds.append(rp.kind)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("metacognize.reform_failed err=%s", exc)
+
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        summary = {
+            "patterns_found": len(patterns),
+            "proposals_emitted": proposals_emitted,
+            "proposal_kinds": kinds,
+            "lookback": self._metacognize_lookback,
+            "elapsed_ms": round(elapsed_ms, 2),
+        }
+        # No dedicated event for the cycle summary — patterns +
+        # proposals already published. Return a CycleResult so the
+        # CognitiveDaemon's tick summary still counts this run.
+        return CycleResult(
+            scope="metacognize", ran=True,
+            summary=summary, elapsed_ms=elapsed_ms,
         )
 
     # ── Internals ─────────────────────────────────────────────────
