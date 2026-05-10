@@ -14,6 +14,11 @@ const html = window.__xmc.htm.bind(h);
 import { apiGet } from "../lib/api.js";
 import { useSafePost } from "../lib/use_safe_fetch.js";
 import { toast } from "../lib/toast.js";
+// R6 (2026-05-10) — 心智可视化新增的两个 panel:
+//   * 内心独白 — 显示 ReflectionCycle (R1) 产生的 INNER_MONOLOGUE 事件
+//   * 建议盒子 — 显示 SuggestionInbox (R5) 待审 / 已审建议
+import { InnerMonologuePanel } from "./_panels/mind_inner_monologue.js";
+import { SuggestionsPanel } from "./_panels/mind_suggestions.js";
 
 // Lazy-load Mermaid for DAG visualisation.
 let _mermaidPromise = null;
@@ -67,6 +72,9 @@ export function CognitionPage({ token }) {
   const [taskGraph, setTaskGraph] = useState(null);
   const [error, setError] = useState(null);
   const dagRef = useRef(null);
+  // R6: which top-level "心智" tab is active. Default = state
+  // (the legacy live-state grid). New tabs: 内心独白 + 建议盒子.
+  const [tab, setTab] = useState("state");
   const isMountedRef = useRef(true);
   const { run: postFn } = useSafePost(token);
 
@@ -216,6 +224,40 @@ export function CognitionPage({ token }) {
     `;
   }
 
+  // R6: tab nav for the three-pane "心智" view.
+  const tabs = [
+    { id: "state", label: "实时状态", hint: "注意力焦点 / 目标 / 任务 / 提案 / 图谱" },
+    { id: "monologue", label: "内心独白", hint: "Agent 的反思 / 计划 / 担忧 (R1 ReflectionCycle)" },
+    { id: "suggestions", label: "建议盒子", hint: "AutonomyPolicy surface 给你审批的主动建议 (R5)" },
+  ];
+  const activeMeta = tabs.find((t) => t.id === tab);
+
+  // Non-state tabs render their own panel; state tab keeps the
+  // legacy grid + WS-pushed live data.
+  if (tab !== "state") {
+    return html`
+      <section class="xmc-datapage" aria-labelledby="cognition-title">
+        <header class="xmc-datapage__header">
+          <h2 id="cognition-title">🧠 认知状态</h2>
+          <p class="xmc-datapage__subtitle">${activeMeta?.hint || ""}</p>
+        </header>
+        <nav class="xmc-mem-tabs" role="tablist" style="display:flex;gap:.4rem;border-bottom:1px solid var(--color-border);margin-bottom:.8rem;flex-wrap:wrap">
+          ${tabs.map((t) => {
+            const isActive = t.id === tab;
+            return html`
+              <button type="button" role="tab" aria-selected=${isActive} key=${t.id} onClick=${() => setTab(t.id)}
+                style=${`appearance:none;background:none;border:none;padding:.5rem .9rem;font:inherit;cursor:pointer;color:${isActive ? "var(--color-primary)" : "var(--xmc-fg-muted)"};border-bottom:2px solid ${isActive ? "var(--color-primary)" : "transparent"};font-weight:${isActive ? "600" : "500"}`}>
+                ${t.label}
+              </button>
+            `;
+          })}
+        </nav>
+        ${tab === "monologue" ? html`<${InnerMonologuePanel} token=${token} />` : null}
+        ${tab === "suggestions" ? html`<${SuggestionsPanel} token=${token} />` : null}
+      </section>
+    `;
+  }
+
   return html`
     <section class="xmc-datapage" aria-labelledby="cognition-title">
       <header class="xmc-datapage__header">
@@ -224,6 +266,17 @@ export function CognitionPage({ token }) {
           注意力焦点 · 当前目标 · 任务队列 · 进化提案 · 记忆图谱（每 2 秒 WS 推送）
         </p>
       </header>
+      <nav class="xmc-mem-tabs" role="tablist" style="display:flex;gap:.4rem;border-bottom:1px solid var(--color-border);margin-bottom:.8rem;flex-wrap:wrap">
+        ${tabs.map((t) => {
+          const isActive = t.id === tab;
+          return html`
+            <button type="button" role="tab" aria-selected=${isActive} key=${t.id} onClick=${() => setTab(t.id)}
+              style=${`appearance:none;background:none;border:none;padding:.5rem .9rem;font:inherit;cursor:pointer;color:${isActive ? "var(--color-primary)" : "var(--xmc-fg-muted)"};border-bottom:2px solid ${isActive ? "var(--color-primary)" : "transparent"};font-weight:${isActive ? "600" : "500"}`}>
+              ${t.label}
+            </button>
+          `;
+        })}
+      </nav>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:14px;align-items:start">
 
       <!-- Attention Focus -->
