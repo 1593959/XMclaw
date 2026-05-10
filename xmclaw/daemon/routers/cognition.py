@@ -376,14 +376,17 @@ async def cognition_ws(websocket: WebSocket) -> None:
             if cs is not None:
                 # Match the shape of GET /state so the frontend can
                 # use one parser for both REST and WS.
+                # Match the shape of GET /state so the frontend can
+                # use one parser for both REST and WS.
                 payload = {
                     "goals": [
                         {
                             "id": g.id,
-                            "text": g.text,
+                            "description": g.description,
                             "priority": g.priority,
-                            "deadline": getattr(g, "deadline", None),
+                            "source": g.source,
                             "created_at": getattr(g, "created_at", None),
+                            "status": g.status,
                         }
                         for g in getattr(cs, "current_goals", [])
                     ],
@@ -391,7 +394,6 @@ async def cognition_ws(websocket: WebSocket) -> None:
                         {
                             "percept_id": a.percept_id,
                             "content": getattr(a, "content", ""),
-                            "percept_type": a.percept_type,
                             "salience_score": round(getattr(a, "salience_score", 0.0), 3),
                             "timestamp": getattr(a, "timestamp", None),
                         }
@@ -399,6 +401,7 @@ async def cognition_ws(websocket: WebSocket) -> None:
                     ],
                     "fatigue": getattr(cs, "fatigue", {}),
                     "salience_threshold": getattr(cs, "salience_threshold", 0.3),
+                    "attention_capacity": getattr(cs, "attention_capacity", 7),
                 }
                 await websocket.send_json(payload)
             else:

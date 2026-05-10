@@ -1600,6 +1600,7 @@ def create_app(
         # Phase 5: the shared cognitive state was loaded before the
         # manager was built so sub-agents inherit the same substrate.
         _cognitive_state = _shared_cognitive_state
+        _app.state.cognitive_state = _cognitive_state
         _app.state.file_watcher = None
         _app.state.evolution_loop = None
         _app.state.task_scheduler = None

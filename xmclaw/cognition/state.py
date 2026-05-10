@@ -234,15 +234,33 @@ class CognitiveState:
             ],
             "fatigue": dict(self.fatigue),
             "last_saved": self.last_saved,
+            "attention_capacity": self.attention_capacity,
+            "salience_threshold": self.salience_threshold,
+            "salience_weights": {
+                "urgency": self.salience_weights.urgency,
+                "relevance": self.salience_weights.relevance,
+                "novelty": self.salience_weights.novelty,
+                "fatigue": self.salience_weights.fatigue,
+            },
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CognitiveState":
         """从字典反序列化。"""
+        w_data = data.get("salience_weights", {})
+        weights = SalienceWeights(
+            urgency=w_data.get("urgency", 0.35),
+            relevance=w_data.get("relevance", 0.35),
+            novelty=w_data.get("novelty", 0.20),
+            fatigue=w_data.get("fatigue", 0.10),
+        )
         state = cls(
             fatigue=data.get("fatigue", {}),
             last_saved=data.get("last_saved", time.time()),
         )
+        state.attention_capacity = data.get("attention_capacity", 7)
+        state.salience_threshold = data.get("salience_threshold", 0.3)
+        state.salience_weights = weights
         for g in data.get("current_goals", []):
             state.current_goals.append(
                 Goal(

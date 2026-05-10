@@ -266,7 +266,8 @@ class MultiAgentManager:
                 continue
             try:
                 ws = build_workspace(
-                    agent_id, config, self._bus, max_hops=self._max_hops
+                    agent_id, config, self._bus, max_hops=self._max_hops,
+                    cognitive_state=self._cognitive_state,
                 )
             except Exception as exc:  # noqa: BLE001 — one bad config shouldn't kill boot
                 log.warning(
