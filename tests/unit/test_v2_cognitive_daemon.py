@@ -1,4 +1,9 @@
-"""Unit tests for Jarvis Phase 6.7: CognitiveDaemon + ActionDispatcher."""
+"""Unit tests for Jarvis Phase 6.7: CognitiveDaemon main loop.
+
+ActionDispatcher tests live in ``tests/unit/test_v2_action_dispatcher.py``
+since the dispatcher gained real routing (LLM / skill / tool / percept-wait)
+in Phase 6 wiring follow-up B.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +12,6 @@ from typing import Any
 
 import pytest
 
-from xmclaw.cognition.action_dispatcher import ActionDispatcher
 from xmclaw.cognition.cognitive_daemon import (
     CognitiveDaemon,
     CognitiveDaemonConfig,
@@ -148,64 +152,9 @@ class FakeExperimentLoop:
         return True
 
 
-# ── ActionDispatcher (stub contract) ──────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_action_dispatcher_execute_step_echoes_expected_outcome() -> None:
-    disp = ActionDispatcher()
-    step = type("S", (), {
-        "id": "step-1",
-        "action_kind": "llm_turn",
-        "expected_outcome": "the answer is 42",
-    })()
-    out = await disp.execute_step(step)
-    assert out["step_id"] == "step-1"
-    assert out["ok"] is True
-    assert out["outcome"] == "the answer is 42"
-    assert out["action_kind"] == "llm_turn"
-    assert out["stub"] is True
-    assert "executed_at" in out
-
-
-@pytest.mark.asyncio
-async def test_action_dispatcher_dispatch_alias_of_execute_step() -> None:
-    disp = ActionDispatcher()
-    step = type("S", (), {"id": "s1", "action_kind": "skill_invoke", "expected_outcome": "ok"})()
-    a = await disp.execute_step(step)
-    b = await disp.dispatch(step)
-    # Same shape, same keys.
-    assert a.keys() == b.keys()
-    assert a["step_id"] == b["step_id"]
-    assert a["ok"] == b["ok"]
-
-
-@pytest.mark.asyncio
-async def test_action_dispatcher_execute_plan_runs_every_step() -> None:
-    disp = ActionDispatcher()
-    plan = FakePlan("plan-1", n_steps=3)
-    out = await disp.execute_plan(plan)
-    assert out["plan_id"] == "plan-1"
-    assert out["status"] == "completed"
-    assert len(out["step_results"]) == 3
-    assert all(r["ok"] for r in out["step_results"])
-
-
-@pytest.mark.asyncio
-async def test_action_dispatcher_execute_plan_handles_step_exception() -> None:
-    """A step that raises is captured into step_results and marks plan failed."""
-    disp = ActionDispatcher()
-    plan = FakePlan("plan-x", n_steps=2)
-
-    async def boom(step: Any) -> dict[str, Any]:
-        raise RuntimeError("boom")
-
-    disp.execute_step = boom  # type: ignore[assignment]
-
-    out = await disp.execute_plan(plan)
-    assert out["status"] == "failed"
-    assert all(not r["ok"] for r in out["step_results"])
-    assert any("boom" in r.get("error", "") for r in out["step_results"])
+# ── ActionDispatcher tests live in tests/unit/test_v2_action_dispatcher.py
+# (the dispatcher's stub-contract tests moved there when the v0 stub was
+# replaced with real routing in Phase 6 wiring follow-up B).
 
 
 # ── CognitiveDaemonConfig ─────────────────────────────────────────────

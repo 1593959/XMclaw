@@ -1,47 +1,121 @@
-"""ActionDispatcher — Jarvis Phase 6.7 minimal stub.
+"""ActionDispatcher — Jarvis Phase 6.7 wiring follow-up B.
 
-Routes plan steps to executors. **v0 (this commit) is a stub**: every
-``PlanStep`` simply gets its ``expected_outcome`` echoed back as a
-success result with no real side effect. Real wiring (call
-``AgentLoop.run_turn``, invoke a registered ``Skill``, dispatch a
-``ToolProvider`` call, suspend on ``wait_for_percept``) is a Phase 6.7
-follow-up commit — this file ships the **interface** so
-:class:`xmclaw.cognition.cognitive_daemon.CognitiveDaemon` has a stable
-contract to call against.
+Routes plan steps to real executors based on ``PlanStep.action_kind``:
 
-Why ship a stub now: the alternative is for ``CognitiveDaemon`` to call
-into ``Any``-typed dispatcher ducks invented case-by-case in tests, and
-each subsequent integration step would have to invent its own. Defining
-the surface here once means the rest of Phase 6.7 (and downstream
-dispatcher tickets) all target the same shape.
+* ``llm_turn``         → ``AgentLoop.run_turn(session_id=goal_id, …)``
+* ``skill_invoke``     → ``SkillRegistry.get(skill_id).run(SkillInput)``
+* ``tool_call``        → ``ToolProvider.invoke(ToolCall)``
+* ``wait_for_percept`` → returns immediately with ``pending=True``;
+  the :class:`xmclaw.cognition.cognitive_daemon.CognitiveDaemon` main
+  loop drives the resumption when the awaited percept arrives.
 
-The dispatcher contract (also satisfied by tests' fakes):
-* ``await dispatcher.execute_plan(plan) -> dict`` — run every step in
-  the plan in order; return aggregate ``{"plan_id", "status", "step_results"}``.
-* ``await dispatcher.execute_step(step) -> dict`` — run one step;
-  return ``{"step_id", "ok", "outcome", ...}``.
-* ``await dispatcher.dispatch(step) -> dict`` — alias of
-  ``execute_step``, kept because :meth:`xmclaw.cognition.planner.Planner.execute`
-  drives steps through ``dispatcher.dispatch(step)``.
+This commit replaces the v0 stub from cab6fb4 (which only echoed
+``expected_outcome``). The :class:`CognitiveDaemon` constructor is
+unchanged — once this lands, the daemon picks up the real impl
+automatically because it constructs ``ActionDispatcher`` by name.
 
-See ``docs/JARVIS_PHASE_6_DESIGN.md`` §3.8.
+**Defensive contract.** Every routing method is best-effort:
+
+* Routes NEVER raise out of :meth:`execute_step` / :meth:`execute_plan` —
+  exceptions become ``StepExecutionResult(ok=False, error=str(exc))``
+  so the caller (Planner / CognitiveDaemon) can apply
+  ``PlanStep.retry_policy`` without a crash.
+* When an executor for the requested ``action_kind`` is *not wired*
+  (e.g. ``agent_loop=None`` because the daemon is running in a
+  pure-cognition test harness), we transparently fall back to
+  :meth:`_stub_execute` which echoes ``expected_outcome`` like the v0
+  stub — so test harnesses and bench mode still work without
+  fabricating real LLM / skill / tool plumbing.
+
+* All collaborator types are duck-typed (``Any``). ``xmclaw/cognition/``
+  is in ``core/`` import-direction territory and MUST NOT import from
+  ``providers/`` or ``daemon/``. Real instances are wired in by
+  ``daemon/factory.py``; tests inject minimal fakes.
+
+See ``docs/JARVIS_PHASE_6_DESIGN.md`` §3.8 for the spec.
 """
 from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+import uuid
+from dataclasses import dataclass, field
+from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
 
-class ActionDispatcher:
-    """Minimal v0 dispatcher — echoes ``expected_outcome`` as success.
+ExecutorRoute = Literal[
+    "llm_turn",
+    "skill_invoke",
+    "tool_call",
+    "wait_for_percept",
+    "stub",
+]
 
-    Real routing (AgentLoop / Skills / Tools / wait_for_percept) is the
-    Phase 6.7 follow-up. This stub is defensive: it never raises, and
-    every method returns a well-shaped dict so the
-    :class:`CognitiveDaemon` summary accounting always works.
+
+# ── Result dataclasses ─────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class StepExecutionResult:
+    """Outcome of a single :class:`PlanStep` dispatch.
+
+    ``route`` records which executor actually ran (``"stub"`` when we
+    fell back because the corresponding collaborator was not wired).
+    ``output`` is the action-specific payload — no schema is enforced
+    across routes because each executor produces fundamentally different
+    shapes (LLM turn summary vs SkillOutput vs ToolResult).
+
+    ``pending=True`` is reserved for ``wait_for_percept``: the step has
+    not failed; it is suspended pending external input. The
+    CognitiveDaemon decides what to do with a pending step (typically
+    parks the plan until the awaited percept lands, then resumes).
+    """
+
+    step_id: str
+    route: ExecutorRoute
+    ok: bool
+    output: dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
+    latency_ms: float = 0.0
+    pending: bool = False
+
+
+@dataclass(frozen=True)
+class PlanExecutionResult:
+    """Aggregate outcome of executing every step in a :class:`Plan`."""
+
+    plan_id: str
+    step_results: tuple[StepExecutionResult, ...]
+    all_ok: bool
+    error: str | None = None
+
+
+# ── Dispatcher ─────────────────────────────────────────────────────────
+
+
+class ActionDispatcher:
+    """Real action routing for Phase 6 plans.
+
+    Constructor parameters are duck-typed:
+
+    * ``agent_loop``     — exposes ``await run_turn(session_id, user_message)``.
+    * ``skill_registry`` — exposes ``get(skill_id, version=None) -> Skill``
+      and raises a LookupError-shaped exception when the id is unknown.
+      A ``SkillInput``-shape (``args: dict``) is constructed by the
+      dispatcher; the registered skill's ``run(SkillInput)`` is awaited
+      and its ``SkillOutput.result`` becomes the step output.
+    * ``tool_provider``  — exposes ``await invoke(ToolCall) -> ToolResult``.
+      The dispatcher synthesises a ``ToolCall`` from the step's payload
+      (``tool_name`` + ``args``) using a lightweight duck-shape so we
+      avoid importing ``xmclaw.core.ir`` from this module. (See
+      :func:`_make_tool_call_shape`.)
+
+    Any of the three may be ``None``; in that case the corresponding
+    route falls through to :meth:`_stub_execute`. This keeps the
+    dispatcher useful in test harnesses and bench mode where wiring
+    the full provider graph is unnecessary.
     """
 
     def __init__(
@@ -50,81 +124,546 @@ class ActionDispatcher:
         skill_registry: Any | None = None,
         tool_provider: Any | None = None,
     ) -> None:
-        # Stored for the follow-up — reading them in v0 stub is fine
-        # but we intentionally do NOT call into them so the contract
-        # of "no side effects in v0" stays honest.
         self._agent_loop = agent_loop
         self._skill_registry = skill_registry
         self._tool_provider = tool_provider
 
-    async def execute_plan(self, plan: Any) -> dict[str, Any]:
-        """Execute every step in the plan, in plan order.
+    # ── Public surface ────────────────────────────────────────────────
 
-        Returns ``{"plan_id", "status", "step_results"}``. Status is
-        ``"completed"`` if all steps return ``ok=True``, ``"failed"``
-        otherwise. Never raises — a step that throws is logged and
-        captured into ``step_results``.
+    async def execute_plan(self, plan: Any) -> PlanExecutionResult:
+        """Execute every step in ``plan`` in order.
+
+        We honour the plan's own topology by reading ``plan.steps`` as
+        the iteration order — the :class:`Planner` already topologically
+        sorts steps before stamping them on the Plan dataclass.
+
+        Stops on first failure UNLESS the failed step's ``retry_policy``
+        sets ``continue_on_failure: True`` (the Planner's own retry
+        loop handles per-step retries; this method only decides whether
+        the **plan as a whole** keeps going past a hard failure).
+
+        ``pending`` results from ``wait_for_percept`` do NOT count as
+        failure but DO halt plan execution — the CognitiveDaemon parks
+        the plan until the awaited percept arrives, then re-invokes
+        ``execute_plan`` (or just the suspended subgraph) to resume.
         """
-        plan_id = getattr(plan, "id", None) or "<no-plan-id>"
-        steps = list(getattr(plan, "steps", ()) or ())
+        plan_id = _attr_str(plan, "id", "<no-plan-id>")
+        steps = list(_attr_iter(plan, "steps"))
 
-        step_results: list[dict[str, Any]] = []
+        results: list[StepExecutionResult] = []
         all_ok = True
+        agg_error: str | None = None
+
         for step in steps:
             try:
                 outcome = await self.execute_step(step)
-            except Exception as exc:  # noqa: BLE001 — never raise from here
+            except Exception as exc:  # noqa: BLE001 — we never propagate
+                # execute_step itself NEVER raises; defence-in-depth.
                 logger.exception(
-                    "ActionDispatcher.execute_step raised for step "
-                    "%s; treating as failure",
-                    getattr(step, "id", "<unknown>"),
+                    "ActionDispatcher.execute_step unexpectedly raised "
+                    "for step %s; converting to failure",
+                    _attr_str(step, "id", "<unknown>"),
                 )
-                outcome = {
-                    "step_id": getattr(step, "id", "<unknown>"),
-                    "ok": False,
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
-            step_results.append(outcome)
-            if not outcome.get("ok", False):
+                outcome = StepExecutionResult(
+                    step_id=_attr_str(step, "id", "<unknown>"),
+                    route="stub",
+                    ok=False,
+                    output={},
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+
+            results.append(outcome)
+
+            if outcome.pending:
+                # Plan is parked, not failed. Caller decides resumption.
+                return PlanExecutionResult(
+                    plan_id=plan_id,
+                    step_results=tuple(results),
+                    all_ok=False,
+                    error=None,
+                )
+
+            if not outcome.ok:
                 all_ok = False
+                if not _retry_policy_continue(step):
+                    agg_error = (
+                        f"step {outcome.step_id} failed: {outcome.error}"
+                    )
+                    return PlanExecutionResult(
+                        plan_id=plan_id,
+                        step_results=tuple(results),
+                        all_ok=False,
+                        error=agg_error,
+                    )
+                # else: retry_policy says continue — record the failure
+                # but proceed with the next step.
 
-        return {
-            "plan_id": plan_id,
-            "status": "completed" if all_ok else "failed",
-            "step_results": step_results,
-        }
+        return PlanExecutionResult(
+            plan_id=plan_id,
+            step_results=tuple(results),
+            all_ok=all_ok,
+            error=None,
+        )
 
-    async def execute_step(self, step: Any) -> dict[str, Any]:
-        """Execute one step. v0: echo ``expected_outcome`` as success.
+    async def execute_step(self, step: Any) -> StepExecutionResult:
+        """Route one step to the executor matching its ``action_kind``.
 
-        Returns ``{"step_id", "ok", "outcome", "action_kind",
-        "stub": True, "executed_at": <ts>}``. The ``stub: True`` flag
-        is critical — downstream consumers (eventually a
-        ``ResultObserver``) can audit which results came from real
-        executors vs the v0 echo and refuse to learn from stubs.
+        Never raises — exceptions in any route are caught and converted
+        to ``StepExecutionResult(ok=False, error=…)``. The latency
+        captured includes all retries / fallbacks taken inside the
+        route, so failure latencies are meaningful for observability.
         """
-        step_id = getattr(step, "id", None) or "<no-step-id>"
-        expected = getattr(step, "expected_outcome", "") or ""
-        action_kind = getattr(step, "action_kind", "llm_turn") or "llm_turn"
-        return {
-            "step_id": step_id,
-            "ok": True,
-            "outcome": expected,
-            "action_kind": action_kind,
-            "stub": True,
-            "executed_at": time.time(),
-        }
+        kind = _attr_str(step, "action_kind", "llm_turn") or "llm_turn"
+
+        try:
+            if kind == "llm_turn":
+                return await self._route_llm_turn(step)
+            if kind == "skill_invoke":
+                return await self._route_skill_invoke(step)
+            if kind == "tool_call":
+                return await self._route_tool_call(step)
+            if kind == "wait_for_percept":
+                return await self._route_wait_for_percept(step)
+            # Unknown action_kind: stub fallback so we never crash.
+            logger.warning(
+                "ActionDispatcher: unknown action_kind %r for step %s; "
+                "falling back to stub",
+                kind,
+                _attr_str(step, "id", "<unknown>"),
+            )
+            return await self._stub_execute(step)
+        except Exception as exc:  # noqa: BLE001 — never propagate
+            logger.exception(
+                "ActionDispatcher: route for action_kind=%r raised on step %s",
+                kind,
+                _attr_str(step, "id", "<unknown>"),
+            )
+            return StepExecutionResult(
+                step_id=_attr_str(step, "id", "<unknown>"),
+                route="stub",
+                ok=False,
+                output={},
+                error=f"{type(exc).__name__}: {exc}",
+            )
 
     async def dispatch(self, step: Any) -> dict[str, Any]:
-        """Alias of :meth:`execute_step` for the Planner's contract.
+        """Compatibility shim for the :class:`Planner.execute` contract.
 
-        :meth:`xmclaw.cognition.planner.Planner.execute` drives steps
-        through ``await dispatcher.dispatch(step)``. Keeping the alias
-        here means a single ``ActionDispatcher`` instance satisfies
-        both the Planner's executor protocol and the CognitiveDaemon's
-        plan-runner protocol without an adapter shim.
+        The Planner calls ``await dispatcher.dispatch(step)`` and treats
+        a returned-dict as success / a raised exception as failure. We
+        therefore turn :class:`StepExecutionResult` into a dict and
+        re-raise on ``ok=False`` so the Planner's own retry budget
+        applies. Pending results are surfaced via the dict — the
+        Planner does not understand ``pending`` natively, so we tag
+        them and let the Planner treat them as completed (the
+        CognitiveDaemon's plan-level orchestration handles real
+        suspension).
         """
-        return await self.execute_step(step)
+        result = await self.execute_step(step)
+        payload: dict[str, Any] = {
+            "step_id": result.step_id,
+            "route": result.route,
+            "ok": result.ok,
+            "output": dict(result.output),
+            "latency_ms": result.latency_ms,
+            "pending": result.pending,
+        }
+        if result.error is not None:
+            payload["error"] = result.error
+        if not result.ok and not result.pending:
+            # Planner.execute uses raises as the failure signal.
+            raise RuntimeError(result.error or "step failed")
+        return payload
+
+    # ── Routes ────────────────────────────────────────────────────────
+
+    async def _route_llm_turn(self, step: Any) -> StepExecutionResult:
+        """Drive an LLM turn via the wired ``AgentLoop``."""
+        if self._agent_loop is None:
+            return await self._stub_execute(step)
+
+        step_id = _attr_str(step, "id", _new_id("step"))
+        payload = _attr_dict(step, "payload")
+        prompt = (
+            payload.get("prompt")
+            or payload.get("intent")
+            or _attr_str(step, "expected_outcome", "")
+        )
+        # Use the goal_id from the step's plan context when present —
+        # the CognitiveDaemon parks the goal_id on the step's payload
+        # under "goal_id" when materialising the plan; we tolerate its
+        # absence and fall back to the step id.
+        session_id = (
+            payload.get("goal_id")
+            or payload.get("session_id")
+            or step_id
+        )
+
+        t0 = time.monotonic()
+        try:
+            result = await self._agent_loop.run_turn(
+                session_id=session_id,
+                user_message=str(prompt),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return StepExecutionResult(
+                step_id=step_id,
+                route="llm_turn",
+                ok=False,
+                output={"session_id": session_id},
+                error=f"{type(exc).__name__}: {exc}",
+                latency_ms=(time.monotonic() - t0) * 1000.0,
+            )
+
+        latency_ms = (time.monotonic() - t0) * 1000.0
+        return StepExecutionResult(
+            step_id=step_id,
+            route="llm_turn",
+            ok=True,
+            output={
+                "session_id": session_id,
+                "agent_result": _coerce_jsonish(result),
+            },
+            latency_ms=latency_ms,
+        )
+
+    async def _route_skill_invoke(self, step: Any) -> StepExecutionResult:
+        """Look up and invoke a registered skill."""
+        if self._skill_registry is None:
+            return await self._stub_execute(step)
+
+        step_id = _attr_str(step, "id", _new_id("step"))
+        payload = _attr_dict(step, "payload")
+        skill_id = (
+            payload.get("skill_id")
+            or payload.get("skill_name")
+            or payload.get("intent")
+        )
+        if not skill_id:
+            return StepExecutionResult(
+                step_id=step_id,
+                route="skill_invoke",
+                ok=False,
+                output={},
+                error="skill_invoke step is missing skill_id in payload",
+            )
+
+        raw_skill_args = payload.get("skill_args")
+        if isinstance(raw_skill_args, dict):
+            skill_args: dict[str, Any] = dict(raw_skill_args)
+        else:
+            fallback = payload.get("args")
+            skill_args = dict(fallback) if isinstance(fallback, dict) else {}
+
+        # Prefer a duck-typed `find` (Planner uses that path) and fall
+        # back to the canonical `get` API on SkillRegistry.
+        skill: Any | None = None
+        find = getattr(self._skill_registry, "find", None)
+        if callable(find):
+            try:
+                skill = find(skill_id)
+            except Exception:  # noqa: BLE001
+                skill = None
+        if skill is None:
+            getter = getattr(self._skill_registry, "get", None)
+            if callable(getter):
+                try:
+                    skill = getter(str(skill_id))
+                except Exception as exc:  # noqa: BLE001
+                    return StepExecutionResult(
+                        step_id=step_id,
+                        route="skill_invoke",
+                        ok=False,
+                        output={"skill_id": skill_id},
+                        error=(
+                            f"skill not found: {skill_id} "
+                            f"({type(exc).__name__}: {exc})"
+                        ),
+                    )
+
+        if skill is None:
+            return StepExecutionResult(
+                step_id=step_id,
+                route="skill_invoke",
+                ok=False,
+                output={"skill_id": skill_id},
+                error=f"skill not found: {skill_id}",
+            )
+
+        # Build a SkillInput-shape duck. We avoid importing the real
+        # SkillInput dataclass (xmclaw/skills/base.py) to keep this
+        # module a leaf — the Skill protocol only requires `.args`.
+        skill_input = _SkillInputDuck(args=skill_args)
+
+        t0 = time.monotonic()
+        try:
+            output = await skill.run(skill_input)
+        except Exception as exc:  # noqa: BLE001
+            return StepExecutionResult(
+                step_id=step_id,
+                route="skill_invoke",
+                ok=False,
+                output={"skill_id": skill_id},
+                error=f"{type(exc).__name__}: {exc}",
+                latency_ms=(time.monotonic() - t0) * 1000.0,
+            )
+
+        latency_ms = (time.monotonic() - t0) * 1000.0
+        ok = bool(getattr(output, "ok", True))
+        result_payload = _coerce_jsonish(getattr(output, "result", output))
+        side_effects = getattr(output, "side_effects", None)
+        return StepExecutionResult(
+            step_id=step_id,
+            route="skill_invoke",
+            ok=ok,
+            output={
+                "skill_id": skill_id,
+                "result": result_payload,
+                "side_effects": list(side_effects) if side_effects else [],
+            },
+            error=None if ok else "skill returned ok=False",
+            latency_ms=latency_ms,
+        )
+
+    async def _route_tool_call(self, step: Any) -> StepExecutionResult:
+        """Invoke a tool via the wired ``ToolProvider``."""
+        if self._tool_provider is None:
+            return await self._stub_execute(step)
+
+        step_id = _attr_str(step, "id", _new_id("step"))
+        payload = _attr_dict(step, "payload")
+        tool_name = (
+            payload.get("tool_name")
+            or payload.get("name")
+            or payload.get("intent")
+        )
+        if not tool_name:
+            return StepExecutionResult(
+                step_id=step_id,
+                route="tool_call",
+                ok=False,
+                output={},
+                error="tool_call step is missing tool_name in payload",
+            )
+
+        raw_tool_args = payload.get("tool_args")
+        if isinstance(raw_tool_args, dict):
+            tool_args: dict[str, Any] = dict(raw_tool_args)
+        else:
+            fallback_args = payload.get("args")
+            tool_args = dict(fallback_args) if isinstance(fallback_args, dict) else {}
+
+        call = _make_tool_call_shape(name=str(tool_name), args=tool_args)
+
+        t0 = time.monotonic()
+        try:
+            result = await self._tool_provider.invoke(call)
+        except Exception as exc:  # noqa: BLE001
+            return StepExecutionResult(
+                step_id=step_id,
+                route="tool_call",
+                ok=False,
+                output={"tool_name": tool_name},
+                error=f"{type(exc).__name__}: {exc}",
+                latency_ms=(time.monotonic() - t0) * 1000.0,
+            )
+
+        latency_ms = (time.monotonic() - t0) * 1000.0
+        ok = bool(getattr(result, "ok", True))
+        content = _coerce_jsonish(getattr(result, "content", result))
+        err = getattr(result, "error", None)
+        return StepExecutionResult(
+            step_id=step_id,
+            route="tool_call",
+            ok=ok,
+            output={
+                "tool_name": tool_name,
+                "content": content,
+                "side_effects": list(getattr(result, "side_effects", ()) or ()),
+            },
+            error=None if ok else (str(err) if err else "tool returned ok=False"),
+            latency_ms=latency_ms,
+        )
+
+    async def _route_wait_for_percept(self, step: Any) -> StepExecutionResult:
+        """Suspend the plan pending a percept.
+
+        Returns immediately with ``pending=True`` and ``ok=True``. The
+        :class:`CognitiveDaemon`'s main loop sees the ``pending`` flag
+        and parks the plan until the awaited percept arrives on the
+        :class:`PerceptionBus`. We do NOT block the dispatcher here —
+        blocking would starve the heartbeat.
+        """
+        step_id = _attr_str(step, "id", _new_id("step"))
+        payload = _attr_dict(step, "payload")
+        wait_for = (
+            payload.get("percept_kind")
+            or payload.get("wait_for")
+            or payload.get("intent")
+            or "any"
+        )
+        return StepExecutionResult(
+            step_id=step_id,
+            route="wait_for_percept",
+            ok=True,
+            output={
+                "percept_kind": wait_for,
+                "expected_outcome": _attr_str(step, "expected_outcome", ""),
+            },
+            pending=True,
+            # Effectively zero — we did no blocking work.
+            latency_ms=0.0,
+        )
+
+    async def _stub_execute(self, step: Any) -> StepExecutionResult:
+        """Fallback used when the matching collaborator is not wired.
+
+        Echoes ``expected_outcome`` like the v0 stub — preserves the
+        bench / pure-cognition test harness behaviour from cab6fb4.
+        Marked ``route="stub"`` so consumers (eventually a
+        ``ResultObserver``) can refuse to learn from non-real results.
+        """
+        step_id = _attr_str(step, "id", _new_id("step"))
+        expected = _attr_str(step, "expected_outcome", "")
+        kind = _attr_str(step, "action_kind", "llm_turn") or "llm_turn"
+        return StepExecutionResult(
+            step_id=step_id,
+            route="stub",
+            ok=True,
+            output={
+                "expected_outcome": expected,
+                "action_kind": kind,
+                "stub": True,
+            },
+            latency_ms=0.0,
+        )
 
 
-__all__ = ["ActionDispatcher"]
+# ── Helpers ────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class _SkillInputDuck:
+    """Minimal SkillInput duck-shape — see :class:`xmclaw.skills.base.SkillInput`.
+
+    Kept local to avoid `cognition → skills` import (skills depend on
+    core/, not the other way round, and we want this module to remain
+    a leaf).
+    """
+
+    args: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _ToolCallDuck:
+    """Minimal ToolCall duck-shape — see :class:`xmclaw.core.ir.ToolCall`.
+
+    Carries the four fields any ``ToolProvider.invoke`` consumer relies
+    on: ``name``, ``args``, ``id``, ``provenance``. Real ToolProviders
+    introspect more (``raw_snippet``, ``schema_version``) but tolerate
+    None / default values; for the dispatcher's synthetic call shape
+    that is the right contract.
+    """
+
+    name: str
+    args: dict[str, Any]
+    id: str
+    provenance: str = "synthetic"
+    raw_snippet: str | None = None
+    session_id: str | None = None
+    schema_version: int = 1
+
+
+def _make_tool_call_shape(*, name: str, args: dict[str, Any]) -> _ToolCallDuck:
+    return _ToolCallDuck(
+        name=name,
+        args=args,
+        id=uuid.uuid4().hex,
+    )
+
+
+def _new_id(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+def _attr_str(obj: Any, name: str, default: str) -> str:
+    """Read ``obj.name`` (or ``obj[name]`` if obj is a dict) as str."""
+    if isinstance(obj, dict):
+        v = obj.get(name)
+    else:
+        v = getattr(obj, name, None)
+    if isinstance(v, str) and v:
+        return v
+    if v is not None:
+        return str(v)
+    return default
+
+
+def _attr_dict(obj: Any, name: str) -> dict[str, Any]:
+    """Read ``obj.name`` as a dict; coerce / default to {} if missing."""
+    if isinstance(obj, dict):
+        v = obj.get(name)
+    else:
+        v = getattr(obj, name, None)
+    if isinstance(v, dict):
+        return v
+    return {}
+
+
+def _attr_iter(obj: Any, name: str) -> tuple[Any, ...]:
+    """Read ``obj.name`` as an iterable; default to empty tuple."""
+    if isinstance(obj, dict):
+        v = obj.get(name)
+    else:
+        v = getattr(obj, name, None)
+    if v is None:
+        return ()
+    try:
+        return tuple(v)
+    except TypeError:
+        return ()
+
+
+def _retry_policy_continue(step: Any) -> bool:
+    """True iff the step's ``retry_policy`` says to continue past failure.
+
+    Honours the ``continue_on_failure: True`` extension key (the
+    Planner preserves unknown retry_policy keys for forward-compat).
+    """
+    if isinstance(step, dict):
+        rp = step.get("retry_policy")
+    else:
+        rp = getattr(step, "retry_policy", None)
+    if not isinstance(rp, dict):
+        return False
+    return bool(rp.get("continue_on_failure", False))
+
+
+def _coerce_jsonish(value: Any) -> Any:
+    """Best-effort coercion of an arbitrary executor return into a
+    JSON-serialisable shape for ``StepExecutionResult.output``.
+
+    We are deliberately not strict — the dispatcher's job is to record
+    *what happened*, not to enforce a schema across heterogeneous
+    executors. The Honest Grader / observer layers do schema policing
+    later. For dicts, lists, primitives we pass through; for anything
+    else we ``repr()`` it so observability still has a string handle.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return repr(value)
+
+
+# Compatibility re-exports — async API and result dataclasses.
+__all__ = [
+    "ActionDispatcher",
+    "ExecutorRoute",
+    "PlanExecutionResult",
+    "StepExecutionResult",
+]
