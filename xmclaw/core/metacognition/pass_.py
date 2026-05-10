@@ -234,10 +234,23 @@ class MetaCognitionPass:
     async def _ask_llm(self, prompt: str) -> Any | None:
         import asyncio
         try:
-            from xmclaw.providers.llm.base import Message
+            # 2026-05-10 import-direction fix: previously imported
+            # ``xmclaw.providers.llm.base.Message`` here, which violates
+            # the ``core cannot import from providers`` rule
+            # (scripts/check_import_direction.py). The LLM consumer is
+            # duck-typed against ``role`` + ``content`` attributes, so
+            # a tiny local dataclass works just as well and keeps
+            # core/ free of provider deps.
+            from dataclasses import dataclass
+
+            @dataclass(frozen=True, slots=True)
+            class _Msg:
+                role: str
+                content: str
+
             resp = await asyncio.wait_for(
                 self._llm.complete([
-                    Message(role="user", content=prompt),
+                    _Msg(role="user", content=prompt),
                 ]),
                 timeout=self._timeout_s,
             )
