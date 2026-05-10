@@ -109,6 +109,11 @@ class CognitiveDaemon:
         process_watcher: Any | None = None,  # ProcessWatcher duck
         cognitive_state: Any | None = None,  # CognitiveState duck (for AutonomyPolicy)
         dispatcher: Any | None = None,    # ActionDispatcher duck
+        # 2026-05-10 R1: ReflectionCycle wires the 3-bucket periodic
+        # introspection (5 min reflect / 1 h consolidate / 1 day groom).
+        # ``None`` disables the entire reflection layer — daemon falls
+        # back to the legacy "react to percepts" loop unchanged.
+        reflection_cycle: Any | None = None,
     ) -> None:
         self._config = config
         self._bus = bus
@@ -120,6 +125,7 @@ class CognitiveDaemon:
         self._process_watcher = process_watcher
         self._state = cognitive_state
         self._dispatcher = dispatcher
+        self._reflection_cycle = reflection_cycle
 
         self._task: asyncio.Task[Any] | None = None
         self._running = False
@@ -288,6 +294,22 @@ class CognitiveDaemon:
                 logger.exception("CognitiveDaemon: self-experiment failed")
                 errors.append(f"self_experiment: {type(exc).__name__}: {exc}")
 
+        # 5. R1: 3-bucket reflection cycle. Each invocation lets the
+        # cycle decide internally which buckets are due (5min/1h/1d
+        # cadence). All three buckets are best-effort + fault-tolerant
+        # at the cycle's level; we just collect the results for the
+        # tick summary.
+        n_reflections = 0
+        if self._reflection_cycle is not None:
+            try:
+                results = await self._reflection_cycle.run_due(tick)
+                n_reflections = len(results)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("CognitiveDaemon: reflection_cycle failed")
+                errors.append(
+                    f"reflection_cycle: {type(exc).__name__}: {exc}",
+                )
+
         return {
             "tick": tick,
             "n_percepts": len(actionable),
@@ -295,6 +317,7 @@ class CognitiveDaemon:
             "n_goals_spawned": n_goals_spawned,
             "n_plans_executed": n_plans_executed,
             "ran_experiment": ran_experiment,
+            "n_reflections": n_reflections,
             "errors": errors,
         }
 

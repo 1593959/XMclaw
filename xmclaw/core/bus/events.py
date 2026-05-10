@@ -177,6 +177,45 @@ class EventType(str, Enum):
     # }
     MEMORY_PUT_AUTO = "memory_put_auto"
 
+    # 2026-05-10 R1 (真持续认知 Loop): emitted by CognitiveDaemon's
+    # InnerMonologue channel — the agent's own running self-talk.
+    # Visible to the user via the Mind page so they can see the
+    # agent's "thought process" outside of user-facing turns.
+    # Payload: {
+    #   "kind": "reflection" | "wonder" | "concern" | "plan" | "observation",
+    #   "text": str,                    # one short paragraph of self-talk
+    #   "tick": int,                    # cognitive_daemon tick number
+    #   "trigger": str,                 # what prompted this thought
+    # }
+    INNER_MONOLOGUE = "inner_monologue"
+    # R1: emitted when the 5-min ReflectionCycle.reflect_recent runs
+    # — surfaces patterns / quality scores / suggestions found by
+    # looking at the last N turns. Payload: {
+    #   "scope": "recent" | "consolidate" | "groom",
+    #   "lookback_n": int,
+    #   "patterns_found": list[str],
+    #   "actions_taken": list[str],     # propose_skill / curriculum_edit / archive_goal
+    #   "elapsed_ms": float,
+    # }
+    REFLECTION_CYCLE_RAN = "reflection_cycle_ran"
+    # R1: emitted when the 1h ConsolidationCycle compresses short-term
+    # memory into long-term. Payload: {
+    #   "promoted": int,                # short → long entries
+    #   "merged": int,                  # near-duplicates merged
+    #   "archived": int,                # stale entries removed
+    #   "elapsed_ms": float,
+    # }
+    MEMORY_CONSOLIDATED = "memory_consolidated"
+    # R1: emitted when the 1d GoalGroomingCycle prunes / advances
+    # the goal queue. Payload: {
+    #   "before": int,
+    #   "after": int,
+    #   "completed_archived": int,
+    #   "stale_dropped": int,
+    #   "stuck_replanned": int,
+    # }
+    GOALS_GROOMED = "goals_groomed"
+
     # Jarvisification: cognitive architecture events.
     # Emitted by FileWatcher when filesystem changes are detected.
     FILE_SYSTEM_EVENT = "file_system_event"

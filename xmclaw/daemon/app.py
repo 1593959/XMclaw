@@ -1703,12 +1703,58 @@ def create_app(
                     action_threshold=_cd_cfg.action_threshold,
                     top_k_focus=_cd_cfg.top_k_focus,
                 )
+                # R1: ReflectionCycle — the 3-bucket periodic
+                # introspection (5 min reflect / 1 h consolidate /
+                # 1 day groom). Wired against the same bus + agent's
+                # LLM + UnifiedMemorySystem + CognitiveState so
+                # nothing extra needs to be built. Recent-events
+                # callback reads from the SqliteEventBus when
+                # available — without it reflect_recent silently
+                # skips (no LLM cost on a flat journal).
+                _reflection_cycle: Any = None
+                try:
+                    from xmclaw.cognition.reflection_cycle import (
+                        ReflectionCycle,
+                    )
+
+                    async def _recent_events(n: int) -> list[Any]:
+                        try:
+                            from xmclaw.core.bus.sqlite import (
+                                SqliteEventBus,
+                            )
+                            if isinstance(bus, SqliteEventBus):
+                                # Latest N events across the whole
+                                # daemon — reflection wants a wide
+                                # mirror, not just one session.
+                                return list(bus.query(limit=n))
+                        except Exception:  # noqa: BLE001
+                            pass
+                        return []
+
+                    _agent_llm = getattr(agent, "_llm", None) if agent else None
+                    _agent_unified = (
+                        getattr(agent, "_unified_memory", None)
+                        if agent else None
+                    )
+                    _reflection_cycle = ReflectionCycle(
+                        llm=_agent_llm,
+                        unified_memory=_agent_unified,
+                        cognitive_state=_cognitive_state,
+                        bus=bus,
+                        recent_events_fn=_recent_events,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "reflection_cycle.build_failed err=%s", exc,
+                    )
+                    _reflection_cycle = None
                 _cognitive_daemon = CognitiveDaemon(
                     config=_cd_cfg,
                     bus=_percept_bus,
                     attention=_attention,
                     cognitive_state=_cognitive_state,
                     dispatcher=ActionDispatcher(),
+                    reflection_cycle=_reflection_cycle,
                 )
                 _app.state.perception_bus = _percept_bus
                 # Phase 6 wiring A: subscribe existing event sources
@@ -1756,29 +1802,29 @@ def create_app(
                 try:
                     await sweep_task.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             if backup_scheduler is not None:
                 try:
                     await backup_scheduler.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             if events_retention_task is not None:
                 try:
                     await events_retention_task.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             if cron_tick is not None:
                 try:
                     await cron_tick.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             # B-41: stop the memory indexer.
             _idx = getattr(_app.state, "memory_indexer", None)
             if _idx is not None:
                 try:
                     await _idx.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             # B-142: stop every MCP subprocess so we don't leak
             # JSON-RPC stdio clients across daemon restarts.
             _mcp = getattr(_app.state, "mcp_hub", None)
@@ -1786,7 +1832,7 @@ def create_app(
                 try:
                     await _mcp.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             # B-145: stop every channel adapter (飞书 WS, 钉钉 stream,
             # telegram poll loop). Same try-each posture so a hanging
             # SDK shutdown doesn't strand the others.
@@ -1802,14 +1848,14 @@ def create_app(
                 try:
                     await _dream_cron.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             # B-109: stop the config-file watcher.
             _cw = getattr(_app.state, "config_watcher", None)
             if _cw is not None:
                 try:
                     await _cw.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             # Epic #17 Phase 7: stop all workspace background work
             # before tearing down the bus + memory store. Evolution
             # observers cancel their subscriptions here; LLM workspaces
@@ -1821,12 +1867,12 @@ def create_app(
                 try:
                     await _ws.stop()
                 except Exception:  # noqa: BLE001 — one bad stop must not abort shutdown
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             if orchestrator is not None:
                 try:
                     await orchestrator.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             # B-294: stop the evaluation trigger BEFORE the observer so
             # any in-flight debounce timer doesn't try to call .evaluate()
             # on a stopped observer.
@@ -1835,7 +1881,7 @@ def create_app(
                 try:
                     await _eval_trig.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             # B-295: stop the variant selector. Same ordering rationale
             # as eval_trigger — stop subscribers before the observer
             # so an in-flight ingest doesn't crash on a torn-down bus.
@@ -1844,14 +1890,14 @@ def create_app(
                 try:
                     await _vs.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             # Epic #24 Phase 1: stop the default EvolutionAgent observer.
             _evo_obs = getattr(_app.state, "evolution_observer", None)
             if _evo_obs is not None:
                 try:
                     await _evo_obs.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             # Epic #24 Phase 2.3: stop the JournalWriter + ProfileExtractor.
             # Both flush in-flight session buffers so SIGINT mid-session
             # doesn't drop the pending journal row / delta lines.
@@ -1860,13 +1906,13 @@ def create_app(
                 try:
                     await _jw.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             _pe = getattr(_app.state, "profile_extractor", None)
             if _pe is not None:
                 try:
                     await _pe.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             # B-164: stop the realtime trigger first so it doesn't
             # try to fire run_once() while skill_dream is shutting down.
             _rt = getattr(_app.state, "realtime_evolution", None)
@@ -1874,7 +1920,7 @@ def create_app(
                 try:
                     await _rt.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             # B-167: stop the proposal materializer so it doesn't try
             # to register skills mid-shutdown when the registry is
             # about to go away with the orchestrator.
@@ -1883,7 +1929,7 @@ def create_app(
                 try:
                     await _pm.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             # B-173: stop the skills watcher so a tick doesn't fire
             # mid-shutdown.
             _sw = getattr(_app.state, "skills_watcher", None)
@@ -1891,7 +1937,7 @@ def create_app(
                 try:
                     await _sw.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             # B-172: stop the mutation orchestrator so an in-flight
             # DSPy compile doesn't keep the loop busy past shutdown.
             _mo = getattr(_app.state, "mutation_orchestrator", None)
@@ -1899,7 +1945,7 @@ def create_app(
                 try:
                     await _mo.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             # Sprint 3 #3: stop the SleepWorker BEFORE skill_dream /
             # memory_sweep so an in-flight idle-fired task doesn't try
             # to call ``run_once()`` / ``sweep_once()`` on a stopped
@@ -1911,14 +1957,14 @@ def create_app(
                 try:
                     await _sw.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             # Epic #24 Phase 3.2: stop the skill_dream periodic task.
             _sd = getattr(_app.state, "skill_dream", None)
             if _sd is not None:
                 try:
                     await _sd.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             if memory is not None and hasattr(memory, "close"):
                 try:
                     memory.close()
@@ -1933,7 +1979,7 @@ def create_app(
                 try:
                     await _cd.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             # Phase 6 wiring A: detach percept sources so the upstream
             # producers stop pushing into a bus we're tearing down.
             _ps = getattr(_app.state, "percept_sources", None)
@@ -1960,19 +2006,19 @@ def create_app(
                 try:
                     await _task_sched.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             _evo_loop = getattr(_app.state, "evolution_loop", None)
             if _evo_loop is not None:
                 try:
                     await _evo_loop.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             _fw = getattr(_app.state, "file_watcher", None)
             if _fw is not None:
                 try:
                     await _fw.stop()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             _graph = getattr(_app.state, "memory_graph", None)
             if _graph is not None:
                 try:
