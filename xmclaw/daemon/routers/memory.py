@@ -928,6 +928,114 @@ async def unified_query(request: Request) -> JSONResponse:
     })
 
 
+@router.post("/unified_put")
+async def unified_put(request: Request) -> JSONResponse:
+    """``xmclaw-architecture-redesign.md §3.3.4`` — atomic write across
+    the three indices (vector / graph / temporal) with a unified id.
+
+    Body shape::
+
+        {
+          "text":      "fact body",            # required
+          "layer":     "long_term",            # optional, default
+          "node_type": "event",                # optional, default
+          "relations": [["target_id","RELATED_TO"], ...],  # optional
+          "metadata":  {...},                  # optional
+          "embedding": [0.1, 0.2, ...]         # optional pre-computed
+        }
+
+    Returns ``{ok: true, id: "<24-hex>"}`` on success. Returns
+    ``{ok: false, error, indices_written, compensated}`` on partial
+    failure with the inconsistency surface from the
+    ``UnifiedWriteError`` so the operator knows what to clean up.
+
+    Route is registered BEFORE ``/{filename}`` (same pitfall as
+    ``/unified_query``) so the catch-all can't shadow it.
+    """
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse(
+            {"ok": False, "error": "invalid json body"},
+            status_code=400,
+        )
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {"ok": False, "error": "body must be an object"},
+            status_code=400,
+        )
+
+    text = body.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return JSONResponse(
+            {"ok": False, "error": "text is required and must be a non-empty string"},
+            status_code=400,
+        )
+
+    layer = body.get("layer", "long_term")
+    if layer not in ("working", "short_term", "long_term", "procedural"):
+        layer = "long_term"
+
+    node_type = body.get("node_type", "event")
+    if node_type not in ("event", "entity", "state", "intent"):
+        node_type = "event"
+
+    raw_relations = body.get("relations") or []
+    relations: list[tuple[str, str]] = []
+    if isinstance(raw_relations, list):
+        for rel in raw_relations:
+            if (
+                isinstance(rel, list | tuple)
+                and len(rel) == 2
+                and isinstance(rel[0], str)
+                and isinstance(rel[1], str)
+            ):
+                relations.append((rel[0], rel[1]))
+
+    metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else None
+    raw_embedding = body.get("embedding")
+    embedding: list[float] | None = None
+    if isinstance(raw_embedding, list) and raw_embedding:
+        try:
+            embedding = [float(x) for x in raw_embedding]
+        except (TypeError, ValueError):
+            embedding = None
+
+    from xmclaw.memory import UnifiedMemorySystem, UnifiedWriteError
+    state = request.app.state
+    system = UnifiedMemorySystem(
+        memory_manager=getattr(state, "memory_manager", None)
+            or getattr(state, "memory", None),
+        memory_graph=getattr(state, "memory_graph", None),
+        embedder=getattr(state, "embedder", None),
+    )
+    try:
+        new_id = await system.put(
+            text=text,
+            layer=layer,
+            node_type=node_type,
+            relations=relations or None,
+            metadata=metadata,
+            embedding=embedding,
+        )
+    except UnifiedWriteError as exc:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": str(exc),
+                "indices_written": exc.indices_written,
+                "compensated": exc.compensated,
+            },
+            status_code=500,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            {"ok": False, "error": f"unexpected error: {exc!s}"},
+            status_code=500,
+        )
+    return JSONResponse({"ok": True, "id": new_id})
+
+
 @router.get("/{filename}")
 async def get_memory_file(filename: str) -> JSONResponse:
     """Return one note's full markdown body."""

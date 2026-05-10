@@ -1,4 +1,4 @@
-"""Unified memory system — ``xmclaw-architecture-redesign.md`` §3.3.3.
+"""Unified memory system — ``xmclaw-architecture-redesign.md`` §3.3.3 / §3.3.4.
 
 Single entry-point combining the three indices (vector / graph /
 temporal) and the four storage layers (working / short-term /
@@ -15,16 +15,60 @@ Iron rule (per §3.3.4 data consistency):
     indices keep them in sync; if any index fails to write, the whole
     write rolls back.
 
-This module enforces the READ side (dedupe by id; assemble unified
-view). The WRITE-side atomicity is the next ticket — for now the
-facade tolerates partial writes (returns whatever each index has).
+Stage A (READ-side) shipped ``query()``: dedupe by id; assemble
+unified view. Stage B (WRITE-side, this commit) ships ``put()`` and
+``delete()``: every fan-out write stamps the SAME id into every
+index, with best-effort compensation if any single index fails.
+SQLite cross-DB is not transactional, so we surface a clear
+``UnifiedWriteError`` with a ``compensated`` list when rollback can't
+fully restore consistency — that's the contract.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from xmclaw.memory._id import UnifiedWriteError, mint_unified_id
+
 Layer = Literal["working", "short_term", "long_term", "procedural"]
+
+
+# Provider-side layer naming uses the legacy short/working/long set
+# (see ``xmclaw.providers.memory.base.Layer``). UnifiedMemorySystem
+# uses the more expressive short_term/working/long_term/procedural
+# naming. Translate at the boundary so callers don't have to know
+# the legacy names exist.
+_LAYER_TO_PROVIDER: dict[str, str] = {
+    "working": "working",
+    "short_term": "short",
+    "long_term": "long",
+    # Procedural memory has no dedicated underlying layer in the
+    # current sqlite_vec schema — store under "long" so the row
+    # survives long-term memory aging policies (procedural facts
+    # SHOULD outlive working/short turns). The metadata.layer field
+    # records the logical layer for any caller that needs to filter.
+    "procedural": "long",
+}
+
+
+_ProviderLayer = Literal["short", "working", "long"]
+
+
+def _to_provider_layer(layer: str) -> _ProviderLayer:
+    """Map a UnifiedMemorySystem ``Layer`` to a legacy provider
+    layer name. Unknown values fall through to ``long`` rather than
+    raising — defensive default since memory-write paths shouldn't
+    reject on a layer typo (we'd rather store and warn than lose).
+    """
+    mapped = _LAYER_TO_PROVIDER.get(layer, "long")
+    # Narrow to the legacy provider's Literal so MemoryItem(layer=…)
+    # type-checks without a downstream cast.
+    if mapped == "short":
+        return "short"
+    if mapped == "working":
+        return "working"
+    return "long"
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,6 +306,294 @@ class UnifiedMemorySystem:
         except Exception:  # noqa: BLE001
             return out
         return out[:k]
+
+    # ── §3.3.4 WRITE side: unified id + atomic fan-out ───────────
+
+    async def put(
+        self,
+        *,
+        text: str,
+        layer: Layer = "long_term",
+        node_type: Literal["event", "entity", "state", "intent"] = "event",
+        relations: list[tuple[str, str]] | None = None,
+        metadata: dict[str, Any] | None = None,
+        embedding: list[float] | None = None,
+    ) -> str:
+        """Mint a unified id, write to all 3 indices atomically.
+
+        Per §3.3.4: every memory entry has a globally-unique id; vec
+        / graph / temporal indices all use the SAME id for the same
+        logical entry. ``put()`` enforces that on the write side.
+
+        Args:
+            text: the entry's content (the human-readable thing).
+            layer: storage layer — ``working`` / ``short_term`` /
+                ``long_term`` (default) / ``procedural``. Mapped
+                internally to the underlying provider's layer naming
+                (the legacy provider uses ``short`` / ``working`` /
+                ``long``).
+            node_type: graph node kind — ``event`` (default for
+                things that happened), ``entity`` (people / projects),
+                ``state`` (current condition), ``intent`` (planned
+                action). Drives proactive recall traversals.
+            relations: optional list of ``(target_id, relation_type)``
+                tuples. Each is written as a graph edge from this
+                new entry → target. Relation types per
+                ``MemoryGraph.EdgeType``: CAUSED_BY, RELATED_TO,
+                LEADS_TO, CONTRADICTS, PART_OF.
+            metadata: arbitrary JSON-serialisable metadata stored
+                alongside the vec entry.
+            embedding: optional pre-computed vector. When omitted,
+                vec store still gets the row (without embedding)
+                so the unified-id lookup works; semantic similarity
+                is unavailable until a re-embed pass runs.
+
+        Returns:
+            The newly-minted unified id (24-char hex string).
+
+        Raises:
+            UnifiedWriteError: when fan-out fails partway. The
+                exception's ``compensated`` attribute lists which
+                indices were rolled back; entries in
+                ``indices_written`` but NOT ``compensated`` are in
+                an inconsistent state and need manual cleanup.
+
+        Atomic-write protocol (best-effort across SQLite databases):
+          1. Mint unified id from (text, ts, uuid4).
+          2. Write graph node FIRST — its schema is the strictest
+             (CHECK constraints on type, FK on edges); most likely
+             to reject bad input → fail early.
+          3. Write vec store with the SAME id (forced via
+             ``MemoryItem.id``; provider auto-mint is bypassed).
+          4. Write any relation edges (each compensation-worthy on
+             its own).
+          5. On any step failure → walk back: delete from already-
+             written indices in reverse insertion order. Anything
+             that fails to compensate is recorded in the raised
+             ``UnifiedWriteError.compensated`` so the caller knows
+             which indices ended up dirty.
+
+        Note: temporal index has no separate write path here — graph
+        nodes carry ``created_at``, so writing the graph node IS the
+        temporal write (per §3.3.2 / §3.3.3 design). Two indices
+        physically, three indices logically.
+        """
+        ts = time.time()
+        new_id = mint_unified_id(text, ts)
+        indices_written: list[str] = []
+
+        # Step 1: graph node (strict-schema; fails earliest if bad).
+        if self._graph is not None:
+            try:
+                from xmclaw.cognition.memory_graph import GraphNode
+                node = GraphNode(
+                    id=new_id,
+                    type=node_type,
+                    content=text,
+                    embedding=tuple(embedding) if embedding else None,
+                    created_at=ts,
+                    memory_item_id=new_id,
+                )
+                await self._graph.add_node(node)
+                indices_written.append("graph")
+            except Exception as exc:  # noqa: BLE001
+                # Nothing written yet — no compensation needed.
+                raise UnifiedWriteError(
+                    f"graph add_node failed: {exc!r}",
+                    indices_written=[],
+                    compensated=[],
+                    original=exc,
+                ) from exc
+
+        # Step 2: vec store with FORCED id via MemoryItem.id.
+        if self._mm is not None:
+            try:
+                # Map unified-system layer naming to the legacy
+                # provider's layer naming. The provider Literal is
+                # short/working/long; UnifiedMemorySystem uses
+                # short_term/working/long_term/procedural. Procedural
+                # has no underlying vec layer — store it under "long"
+                # so it survives, with metadata.layer recording the
+                # logical layer for reads.
+                provider_layer = _to_provider_layer(layer)
+                from xmclaw.providers.memory.base import MemoryItem
+                merged_meta: dict[str, Any] = dict(metadata or {})
+                merged_meta.setdefault("layer", layer)
+                merged_meta.setdefault("node_type", node_type)
+                item = MemoryItem(
+                    id=new_id,
+                    layer=provider_layer,
+                    text=text,
+                    metadata=merged_meta,
+                    embedding=tuple(embedding) if embedding else None,
+                    ts=ts,
+                )
+                await self._mm.put(provider_layer, item)
+                indices_written.append("vec")
+            except Exception as exc:  # noqa: BLE001
+                compensated = await self._compensate(
+                    new_id, indices_written,
+                )
+                raise UnifiedWriteError(
+                    f"vec put failed: {exc!r}",
+                    indices_written=list(indices_written),
+                    compensated=compensated,
+                    original=exc,
+                ) from exc
+
+        # Step 3: relation edges (each one compensable).
+        if relations and self._graph is not None:
+            try:
+                from xmclaw.cognition.memory_graph import GraphEdge
+                edge_ids: list[str] = []
+                for target_id, relation_type in relations:
+                    edge_id = mint_unified_id(
+                        f"{new_id}->{target_id}:{relation_type}", ts,
+                    )
+                    edge = GraphEdge(
+                        id=edge_id,
+                        source_id=new_id,
+                        target_id=str(target_id),
+                        relation=relation_type,  # type: ignore[arg-type]
+                        strength=1.0,
+                        created_at=ts,
+                    )
+                    await self._graph.add_edge(edge)
+                    edge_ids.append(edge_id)
+                # Track edges separately so compensation can target them.
+                if edge_ids:
+                    indices_written.append("edges")
+                    self._last_edge_ids = edge_ids  # internal only
+            except Exception as exc:  # noqa: BLE001
+                compensated = await self._compensate(
+                    new_id, indices_written,
+                )
+                raise UnifiedWriteError(
+                    f"relation edge write failed: {exc!r}",
+                    indices_written=list(indices_written),
+                    compensated=compensated,
+                    original=exc,
+                ) from exc
+
+        return new_id
+
+    async def delete(self, entry_id: str) -> bool:
+        """Remove ``entry_id`` from every index. Best-effort across
+        the fan-out: keep going past per-index "not found" errors so
+        a partially-written entry can still be cleaned up.
+
+        Returns:
+            True iff at least one index actually deleted a record.
+            False when nothing matched anywhere.
+
+        Note: the legacy memory-manager's ``forget`` is silent on
+        whether it found anything (it logs / swallows). We treat
+        success-with-no-rowcount as "no record" — meaning ``delete``
+        called on a stale id returns False rather than raising. The
+        whole point of unified delete is "make sure it's gone" — that
+        contract is satisfied either way.
+        """
+        any_deleted = False
+
+        # Vec / memory-manager side. ``forget`` returns None and
+        # silently swallows; we can't tell from the return whether
+        # anything actually went. Probe with a query first when
+        # possible so we can return a meaningful bool.
+        if self._mm is not None:
+            try:
+                existed = await self._memory_manager_has(entry_id)
+                forget_fn = getattr(self._mm, "forget", None)
+                if forget_fn is not None:
+                    await forget_fn(entry_id)
+                if existed:
+                    any_deleted = True
+            except Exception:  # noqa: BLE001 — best-effort delete
+                pass
+
+        # Graph side. ``remove_node`` cascades to edges via FK ON DELETE.
+        if self._graph is not None:
+            try:
+                existed = await self._graph_has(entry_id)
+                remove_fn = getattr(self._graph, "remove_node", None)
+                if remove_fn is not None:
+                    await remove_fn(entry_id)
+                if existed:
+                    any_deleted = True
+            except Exception:  # noqa: BLE001
+                pass
+
+        return any_deleted
+
+    async def _memory_manager_has(self, entry_id: str) -> bool:
+        """Best-effort 'is this id in the vec store?' check — used
+        only so ``delete()`` can tell the caller whether its id
+        actually matched anything. Returns False on any error so a
+        flaky probe never blocks the delete itself."""
+        if self._mm is None:
+            return False
+        try:
+            # Try every storage layer the manager might know about.
+            for probe_layer in ("long", "working", "short"):
+                hits = await self._mm.query(
+                    probe_layer, text=None, embedding=None, k=1000,
+                )
+                for h in hits:
+                    if getattr(h, "id", None) == entry_id:
+                        return True
+        except Exception:  # noqa: BLE001
+            return False
+        return False
+
+    async def _graph_has(self, entry_id: str) -> bool:
+        """Best-effort 'is this id a graph node?' check — same
+        rationale as ``_memory_manager_has``."""
+        try:
+            get_fn = getattr(self._graph, "get_node", None)
+            if get_fn is None:
+                return False
+            node = await get_fn(entry_id)
+            return node is not None
+        except Exception:  # noqa: BLE001
+            return False
+
+    async def _compensate(
+        self, entry_id: str, written: list[str],
+    ) -> list[str]:
+        """Walk back ``written`` (reverse order) deleting from each
+        index. Returns the list of indices we successfully rolled
+        back. Anything in ``written`` and NOT in the return value
+        is left in an inconsistent state — the caller's
+        ``UnifiedWriteError`` carries that gap."""
+        compensated: list[str] = []
+        for idx in reversed(written):
+            try:
+                if idx == "graph" and self._graph is not None:
+                    remove_fn = getattr(self._graph, "remove_node", None)
+                    if remove_fn is not None:
+                        await remove_fn(entry_id)
+                        compensated.append("graph")
+                elif idx == "vec" and self._mm is not None:
+                    forget_fn = getattr(self._mm, "forget", None)
+                    if forget_fn is not None:
+                        await forget_fn(entry_id)
+                        compensated.append("vec")
+                elif idx == "edges" and self._graph is not None:
+                    # Cascade-delete via the graph node remove if still
+                    # present; otherwise iterate any tracked edge ids.
+                    edge_ids = getattr(self, "_last_edge_ids", []) or []
+                    remove_edge_fn = getattr(self._graph, "remove_edge", None)
+                    if remove_edge_fn is not None:
+                        for eid in edge_ids:
+                            try:
+                                await remove_edge_fn(eid)
+                            except Exception:  # noqa: BLE001
+                                pass
+                    compensated.append("edges")
+            except Exception:  # noqa: BLE001
+                # Compensation itself failed — record the index as
+                # NOT compensated; caller decides what to do.
+                continue
+        return compensated
 
     async def _temporal_query(
         self, tr: TimeRange, k: int,

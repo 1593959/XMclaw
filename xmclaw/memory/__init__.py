@@ -20,6 +20,7 @@ are (no migration of data).
 """
 from __future__ import annotations
 
+from xmclaw.memory._id import UnifiedWriteError, mint_unified_id
 from xmclaw.memory.unified import (
     MemoryEntry,
     TimeRange,
@@ -30,4 +31,6 @@ __all__ = [
     "MemoryEntry",
     "TimeRange",
     "UnifiedMemorySystem",
+    "UnifiedWriteError",
+    "mint_unified_id",
 ]

@@ -296,7 +296,15 @@ class SqliteVecMemory(MemoryProvider):
     # ── public API ──
 
     async def put(self, layer: Layer, item: MemoryItem) -> str:
-        """Store an item. Returns the id (uses ``item.id`` or generates one)."""
+        """Store an item. Returns the id.
+
+        Id resolution: ``item.id`` wins when truthy, else we mint a
+        fresh ``uuid4().hex``. The truthy-wins branch is what
+        ``UnifiedMemorySystem.put`` (``xmclaw-architecture-redesign.md
+        §3.3.4``) relies on to force the same id across the vec /
+        graph / temporal indices. Default-mint behaviour is unchanged
+        for callers that pass ``id=""`` or omit it.
+        """
         item_id = item.id or uuid.uuid4().hex
         ts = item.ts if item.ts else time.time()
         metadata = json.dumps(item.metadata) if item.metadata else None

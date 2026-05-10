@@ -31,7 +31,6 @@ fix is per-URL targeted.
 """
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -69,6 +68,9 @@ UI_ENDPOINT_INVENTORY: list[tuple[str, str, set[int]]] = [
     # POST /unified_query needs a body — empty body 400 is OK; what we
     # check is that the route resolves (no 404 from /{filename} bleed).
     ("POST", "/api/v2/memory/unified_query", {200, 400, 401, 503}),
+    # POST /unified_put — §3.3.4 atomic write. Empty body 400 is OK;
+    # the test guards against /{filename} catch-all shadowing.
+    ("POST", "/api/v2/memory/unified_put", {200, 400, 401, 503}),
     # ── core daemon ────────────────────────────
     ("GET", "/api/v2/status", {200, 401}),
     ("GET", "/api/v2/config", {200, 401}),
