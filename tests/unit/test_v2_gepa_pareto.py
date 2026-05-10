@@ -51,7 +51,16 @@ def _failure(task: str = "do x", note: str = "missed") -> dict:
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # Use ``asyncio.run`` instead of the deprecated
+    # ``get_event_loop().run_until_complete`` pattern. Under
+    # pytest-asyncio auto mode, an earlier asyncio test in the suite
+    # leaves a live event loop on the policy, so ``get_event_loop()``
+    # returns THAT loop and ``run_until_complete`` raises
+    # ``RuntimeError: This event loop is already running``. The
+    # tests pass in isolation but fail in full-suite order — exactly
+    # the symptom we hit. ``asyncio.run`` always creates a fresh
+    # loop, runs the coroutine, tears it down — order-independent.
+    return asyncio.run(coro)
 
 
 # ─────────────────────────────────────────────────────────────────────
