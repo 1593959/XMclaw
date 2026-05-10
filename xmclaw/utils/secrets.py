@@ -221,7 +221,7 @@ def _load_or_create_master_key() -> bytes | None:
         # the check here means the caller can trust the return value.
         try:
             fernet_cls(raw)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return None
         return raw
 
@@ -261,7 +261,7 @@ def _load_encrypted() -> dict[str, str]:
         blob = path.read_bytes()
         plaintext = fernet_cls(key).decrypt(blob)
         data = json.loads(plaintext.decode("utf-8"))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}
     if not isinstance(data, dict):
         return {}
@@ -345,7 +345,7 @@ def get_secret(name: str) -> str | None:
         from_keyring: str | None
         try:
             from_keyring = kr.get_password(_KEYRING_SERVICE, name)
-        except Exception:
+        except Exception:  # noqa: BLE001
             # Keyring raises on misconfigured backends (no D-Bus, no
             # login keyring, etc). A secrets-layer failure must not
             # block the daemon — fall through to None.
@@ -430,7 +430,7 @@ def delete_secret(name: str) -> bool:
         try:
             kr.delete_password(_KEYRING_SERVICE, name)
             removed = True
-        except Exception:
+        except Exception:  # noqa: BLE001
             # Missing entry raises PasswordDeleteError — that's the common
             # case and not actually a failure.
             pass

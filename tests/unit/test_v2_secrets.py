@@ -6,12 +6,25 @@ on any machine including a bare CI worker with no D-Bus / Credential
 Manager. The Fernet layer uses real ``cryptography`` (it's a base dep
 from Phase 2 on) — if the import fails at collection, the Phase 2
 tests skip with a clear reason so Phase 1 coverage still runs.
+
+Audit pass-3 fix (B-386-followup hole, finding A0 in
+``docs/AUDIT_PASS_3_FINDINGS.md``): every test in this file exercises
+the REAL ``get_secret`` resolver. ``tests/unit/conftest.py`` auto-pins
+``xmclaw.utils.secrets.get_secret`` to return ``None`` for the rest of
+the unit suite — without the file-level ``real_secrets`` marker below,
+all tests here see the patched None-returning resolver and fail with
+``assert None == 'sk-abc'``-shaped errors. The marker opts ALL tests
+in this file out of that fixture.
 """
 from __future__ import annotations
 
 import json
 import os
 from pathlib import Path
+
+import pytest
+
+pytestmark = pytest.mark.real_secrets
 
 import pytest
 from typer.testing import CliRunner

@@ -96,7 +96,7 @@ class ToolGuardEngine:
                 continue
             try:
                 batch = g.guard(tool_name, params)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 # Guardian failure must not block the tool call.
                 # Logged by the caller if desired.
                 batch = []

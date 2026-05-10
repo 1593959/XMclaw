@@ -89,7 +89,7 @@ def load_rules(rules_dir: Path | None = None) -> list[Rule]:
     for path in sorted(directory.glob("*.yaml")):
         try:
             data = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception:  # noqa: BLE001
             continue
         if not isinstance(data, list):
             continue

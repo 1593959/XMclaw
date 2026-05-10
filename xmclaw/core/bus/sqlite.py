@@ -216,7 +216,7 @@ class SqliteEventBus(InProcessEventBus):
         self._conn.execute("BEGIN IMMEDIATE;")
         try:
             yield
-        except Exception:
+        except Exception:  # noqa: BLE001
             self._conn.execute("ROLLBACK;")
             raise
         else:

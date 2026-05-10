@@ -432,7 +432,7 @@ class OpenAILLM(LLMProvider):
             # Older SDK without stream_options kwarg — retry without it.
             kwargs.pop("stream_options", None)
             stream = await client.chat.completions.create(**kwargs)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return await self.complete(messages, tools)
 
         # B-225: watchdog — close the stream the MOMENT cancel_event

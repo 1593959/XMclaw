@@ -100,7 +100,7 @@ def _http_healthy(host: str, port: int, timeout: float = 1.0) -> bool:
         import httpx
         r = httpx.get(f"http://{host}:{port}/health", timeout=timeout)
         return r.status_code == 200
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
 
 

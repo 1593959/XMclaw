@@ -314,7 +314,7 @@ class MultiAgentManager:
                 json.dump(config, fh, indent=2, ensure_ascii=False)
                 fh.write("\n")
             tmp_path.replace(target)
-        except Exception:
+        except Exception:  # noqa: BLE001
             tmp_path.unlink(missing_ok=True)
             raise
 

@@ -20,7 +20,7 @@ def _detect_lang() -> str:
         loc = locale.getdefaultlocale()[0] or ""
         if "Chinese" in loc or "zh" in loc.lower():
             return "zh"
-    except Exception:
+    except Exception:  # noqa: BLE001
         pass
     return "en"
 

@@ -384,7 +384,7 @@ def _parse_ddg_html(html: str, max_results: int) -> list[dict[str, str]]:
                 for key in ("uddg", "u"):
                     if key in q:
                         return q[key][0]
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
         return u
 
