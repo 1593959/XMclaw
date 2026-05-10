@@ -1650,13 +1650,22 @@ def test_skill_runtime_process_backend_is_ok(tmp_path: Path) -> None:
 
 
 def test_skill_runtime_unknown_backend_fails_with_known_set(tmp_path: Path) -> None:
-    """A typo should surface with the known-backend list so the user can fix it."""
+    """A typo should surface with the known-backend list so the user can fix it.
+
+    NOTE: ``docker`` was previously the canonical "unknown" sample here,
+    but B-385 (Sprint 2 Docker sandbox runtime) made it a real backend.
+    Switched to ``kubernetes`` — actually-unimplemented backend that
+    won't accidentally become real on the next sprint.
+    """
     from xmclaw.cli.doctor_registry import SkillRuntimeCheck
 
     check = SkillRuntimeCheck()
-    r = check.run(_runtime_ctx(tmp_path, {"runtime": {"backend": "docker"}}))
+    r = check.run(_runtime_ctx(tmp_path, {"runtime": {"backend": "kubernetes"}}))
     assert r.ok is False
-    assert "docker" in r.detail
+    assert "kubernetes" in r.detail
+    # The known list should at minimum mention local + process; we
+    # don't pin "docker" presence so the assertion still works if a
+    # future refactor renames the docker backend.
     assert "local" in r.detail and "process" in r.detail
     assert r.advisory is not None
 
