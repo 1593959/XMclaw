@@ -817,6 +817,117 @@ async def search_memory(request: Request) -> JSONResponse:
     return JSONResponse({"results": results})
 
 
+# ── Unified memory query (xmclaw-architecture-redesign.md §3.3.3) ──
+
+
+@router.post("/unified_query")
+async def unified_query(request: Request) -> JSONResponse:
+    """Multi-axis memory query — semantic / relation / temporal / layer.
+
+    Body shape::
+
+        {
+          "semantic": "数据库优化",       # optional, vector search
+          "relation": "项目X",            # optional, graph anchor
+          "temporal": {                   # optional, time range
+            "since": 1715000000.0,
+            "until": 1715200000.0
+          },
+          "layer": "long_term",           # optional restriction
+          "limit": 10                     # default 10
+        }
+
+    Returns ``{results: [{id, layer, text, score, created_at, metadata,
+    matched_axes}], n: int}``. Empty body or all-None axes → 400 to
+    avoid accidental whole-store scans.
+    """
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse(
+            {"error": "invalid json body"}, status_code=400,
+        )
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {"error": "body must be an object"}, status_code=400,
+        )
+
+    semantic = body.get("semantic")
+    relation = body.get("relation")
+    temporal_raw = body.get("temporal")
+    layer = body.get("layer")
+    limit = int(body.get("limit") or 10)
+
+    # At least one axis required.
+    if not semantic and not relation and not temporal_raw:
+        return JSONResponse(
+            {
+                "error": "at least one of semantic / relation / "
+                         "temporal must be supplied",
+            },
+            status_code=400,
+        )
+
+    from xmclaw.memory import TimeRange, UnifiedMemorySystem
+    tr: TimeRange | None = None
+    if isinstance(temporal_raw, dict):
+        try:
+            tr = TimeRange(
+                since=(
+                    float(temporal_raw["since"])
+                    if temporal_raw.get("since") is not None
+                    else None
+                ),
+                until=(
+                    float(temporal_raw["until"])
+                    if temporal_raw.get("until") is not None
+                    else None
+                ),
+            )
+        except (TypeError, ValueError) as exc:
+            return JSONResponse(
+                {"error": f"bad temporal range: {exc}"},
+                status_code=400,
+            )
+
+    state = request.app.state
+    system = UnifiedMemorySystem(
+        memory_manager=getattr(state, "memory_manager", None)
+            or getattr(state, "memory", None),
+        memory_graph=getattr(state, "memory_graph", None),
+        embedder=getattr(state, "embedder", None),
+    )
+    try:
+        entries = await system.query(
+            semantic=semantic if isinstance(semantic, str) else None,
+            relation=relation if isinstance(relation, str) else None,
+            temporal=tr,
+            layer=layer if layer in ("working", "short_term",
+                                     "long_term", "procedural") else None,
+            limit=limit,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            {"error": f"query failed: {exc!s}"},
+            status_code=500,
+        )
+    return JSONResponse({
+        "n": len(entries),
+        "results": [
+            {
+                "id": e.id,
+                "layer": e.layer,
+                "text": e.text,
+                "score": round(e.score, 4),
+                "created_at": e.created_at,
+                "metadata": e.metadata,
+                "matched_axes": list(e.matched_axes),
+            }
+            for e in entries
+        ],
+    })
+
+
 @router.get("/{filename}")
 async def get_memory_file(filename: str) -> JSONResponse:
     """Return one note's full markdown body."""

@@ -285,6 +285,47 @@ class MemoryGraph:
         ).fetchall()
         return [self._row_to_node(r) for r in rows]
 
+    async def query_by_time_range(
+        self,
+        since: float | None = None,
+        until: float | None = None,
+        *,
+        type: NodeType | None = None,  # noqa: A002
+        limit: int = 50,
+    ) -> list[GraphNode]:
+        """``xmclaw-architecture-redesign.md §3.3.2`` temporal-index API.
+
+        Time-range query — "what events happened between T1 and T2?".
+        ``since`` / ``until`` are unix timestamps; either or both may
+        be omitted (None → unbounded). ``type`` further filters by
+        NodeType (event / entity / state / intent). Results ordered
+        DESC by created_at (newest first); cap at ``limit``.
+
+        Implementation: leverages ``graph_nodes.created_at`` which is
+        already indexed (B-... TODO confirm), so this is O(log n)
+        for the range-scan portion and O(k) for materialization.
+        """
+        cur = self._conn.cursor()
+        clauses: list[str] = []
+        params: list[Any] = []
+        if since is not None:
+            clauses.append("created_at >= ?")
+            params.append(float(since))
+        if until is not None:
+            clauses.append("created_at <= ?")
+            params.append(float(until))
+        if type is not None:
+            clauses.append("type = ?")
+            params.append(type)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(int(limit))
+        rows = cur.execute(
+            f"SELECT * FROM graph_nodes{where} "
+            f"ORDER BY created_at DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return [self._row_to_node(r) for r in rows]
+
     # ── 主动回忆 ──
 
     async def proactive_recall(
