@@ -53,9 +53,26 @@ class FileWatcher:
         self._last_snapshot: dict[str, float] = {}
 
     def _should_ignore(self, path: str) -> bool:
-        """检查路径是否应被忽略。"""
+        """检查路径是否应被忽略。
+
+        匹配规则（修复 2026-05-10 bug：``.git`` 内部所有文件都泄漏到
+        attention focus —— 因为 ``fnmatch.fnmatch(完整路径, ".git")``
+        永远 False，fnmatch 不做子串匹配）：
+
+        1. **路径任意一段** 匹配 pattern → 忽略。这处理 ``.git`` /
+           ``__pycache__`` / ``.xmclaw`` 等出现在中间层的目录。
+        2. **basename** 匹配 pattern → 忽略。这处理 ``*.pyc`` /
+           ``*.tmp`` 等通配符。
+        """
+        p = Path(path)
         for pattern in self.ignore_patterns:
-            if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(Path(path).name, pattern):
+            # Rule 1: any path segment matches the pattern.
+            # Path("C:/.../XMclaw/.git/logs/.../main").parts contains
+            # ".git" → fnmatch(".git", ".git") = True → ignore.
+            if any(fnmatch.fnmatch(part, pattern) for part in p.parts):
+                return True
+            # Rule 2: basename matches (covers wildcards like *.pyc).
+            if fnmatch.fnmatch(p.name, pattern):
                 return True
         return False
 

@@ -234,7 +234,11 @@ export function CognitionPage({ token }) {
             <div style="display:flex;flex-direction:column;gap:8px">
               ${cogState.attention_focus.map((f) => html`
                 <div key=${f.percept_id} style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:var(--color-background);border-radius:6px">
-                  <div style="flex:1;font-size:.9rem">${f.content}</div>
+                  <!-- 修复排版：flex 子项必须有 min-width:0
+                       否则长路径（C:\...\.git\refs\...）撑爆 box，
+                       右侧 salience badge 被推到下一行/中间。
+                       word-break:break-all 让长路径在任意位置软断。 -->
+                  <div style="flex:1;min-width:0;font-size:.9rem;word-break:break-all">${f.content}</div>
                   <${Badge} text=${`salience ${f.salience_score}`} tone=${f.salience_score > 0.7 ? "danger" : f.salience_score > 0.4 ? "warning" : "neutral"} />
                 </div>
               `)}
@@ -250,8 +254,8 @@ export function CognitionPage({ token }) {
             <div style="display:flex;flex-direction:column;gap:8px">
               ${cogState.goals.map((g) => html`
                 <div key=${g.id} style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:var(--color-background);border-radius:6px">
-                  <div style="flex:1">
-                    <div style="font-size:.9rem">${g.description}</div>
+                  <div style="flex:1;min-width:0">
+                    <div style="font-size:.9rem;word-break:break-word">${g.description}</div>
                     <div style="font-size:.75rem;opacity:.6">source: ${g.source}</div>
                   </div>
                   <${Badge} text=${`P${g.priority}`} tone=${g.priority >= 8 ? "danger" : g.priority >= 5 ? "warning" : "neutral"} />
@@ -270,7 +274,7 @@ export function CognitionPage({ token }) {
             <div style="display:flex;flex-direction:column;gap:8px">
               ${tasks.map((t) => html`
                 <div key=${t.id} style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:var(--color-background);border-radius:6px">
-                  <div style="flex:1">
+                  <div style="flex:1;min-width:0">
                     <div style="font-size:.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${t.prompt}</div>
                     <div style="font-size:.75rem;opacity:.6">retries: ${t.retries}/${t.max_retries}</div>
                   </div>
@@ -293,8 +297,8 @@ export function CognitionPage({ token }) {
             <div style="display:flex;flex-direction:column;gap:8px">
               ${proposals.map((p) => html`
                 <div key=${p.id} style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:var(--color-background);border-radius:6px">
-                  <div style="flex:1">
-                    <div style="font-size:.85rem">${p.description}</div>
+                  <div style="flex:1;min-width:0">
+                    <div style="font-size:.85rem;word-break:break-word">${p.description}</div>
                     <div style="font-size:.75rem;opacity:.6">target: ${p.target}</div>
                   </div>
                   <${Badge} text=${`conf ${p.confidence}`} tone=${p.confidence > 0.7 ? "success" : "warning"} />
