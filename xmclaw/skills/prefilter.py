@@ -83,31 +83,47 @@ _STOPWORDS = frozenset({
 
 
 def _score_skill(
-    query_tokens: set[str], spec: Any,
+    query_tokens: set[str],
+    spec: Any,
+    context_tokens: set[str] | None = None,
 ) -> float:
-    """Score a single skill ``ToolSpec`` against the query token set."""
-    if not query_tokens:
+    """Score a single skill ``ToolSpec`` against the query token set.
+
+    Jarvisification Phase 5: when ``context_tokens`` is provided (from
+    active goals / attention focus), skills that match the cognitive
+    context receive a boost even if the current user message doesn't
+    mention them directly.  This prevents "I was working on X, then
+    asked a vague follow-up" from dropping the X-relevant skill.
+    """
+    if not query_tokens and not context_tokens:
         return 0.0
     name = (getattr(spec, "name", "") or "").lower()
     desc = getattr(spec, "description", "") or ""
 
-    # 1. Name-substring overlap (strongest signal: ``skill_git-commit``
-    # contains "git" / "commit" tokens directly).
+    tokens = query_tokens or set()
+    ctx = context_tokens or set()
+
+    # 1. Name-substring overlap (strongest signal).
     name_score = 0.0
-    for tok in query_tokens:
+    for tok in tokens:
         if tok in _STOPWORDS or len(tok) < 2:
             continue
         if tok in name:
             name_score += 2.0
+    # Context boost: weaker but keeps relevant skills alive across
+    # vague follow-ups.
+    for tok in ctx:
+        if tok in _STOPWORDS or len(tok) < 2:
+            continue
+        if tok in name:
+            name_score += 0.8
 
     # 2. Description token overlap.
     desc_tokens = _tokenize(desc)
-    desc_score = float(len(query_tokens & desc_tokens - _STOPWORDS))
+    desc_score = float(len(tokens & desc_tokens - _STOPWORDS))
+    desc_score += 0.3 * float(len(ctx & desc_tokens - _STOPWORDS))
 
-    # 3. Trigger keyword match — ToolSpec's parameters_schema sometimes
-    # carries an explicit ``triggers`` field via the SKILL.md
-    # frontmatter pipeline; reward exact matches there higher than
-    # generic description overlap.
+    # 3. Trigger keyword match.
     trigger_score = 0.0
     schema = getattr(spec, "parameters_schema", None) or {}
     triggers = schema.get("x_triggers") if isinstance(schema, dict) else None
@@ -116,7 +132,8 @@ def _score_skill(
             if not isinstance(trig, str):
                 continue
             tt = _tokenize(trig)
-            trigger_score += 0.5 * len(query_tokens & tt)
+            trigger_score += 0.5 * len(tokens & tt)
+            trigger_score += 0.2 * len(ctx & tt)
 
     return name_score + desc_score + trigger_score
 
@@ -127,6 +144,7 @@ def select_relevant_skills(
     *,
     top_k: int = 12,
     min_skills_to_filter: int = 30,
+    cognitive_state: Any | None = None,
 ) -> list[Any]:
     """Pick the ``top_k`` most query-relevant skill specs.
 
@@ -174,11 +192,23 @@ def select_relevant_skills(
         return list(skill_specs)  # nothing to gain from filtering
 
     query_tokens = _tokenize(query) - _STOPWORDS
-    if not query_tokens:
-        return list(skill_specs)  # query has no signal — don't filter blindly
+
+    # Phase 5: harvest tokens from active goals + attention focus.
+    context_tokens: set[str] = set()
+    if cognitive_state is not None:
+        ctx_parts: list[str] = []
+        for g in getattr(cognitive_state, "current_goals", []):
+            ctx_parts.append(getattr(g, "text", "") or "")
+        for a in getattr(cognitive_state, "attention_focus", []):
+            ctx_parts.append(getattr(a, "content", "") or "")
+        context_tokens = _tokenize(" ".join(ctx_parts)) - _STOPWORDS
+
+    if not query_tokens and not context_tokens:
+        return list(skill_specs)  # no signal — don't filter blindly
 
     scored: list[tuple[float, Any]] = [
-        (_score_skill(query_tokens, spec), spec) for spec in skills
+        (_score_skill(query_tokens, spec, context_tokens), spec)
+        for spec in skills
     ]
     scored.sort(key=lambda x: x[0], reverse=True)
     # Drop zero-score skills entirely. With 400 skills and 12-slot
