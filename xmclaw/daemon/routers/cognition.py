@@ -182,6 +182,35 @@ async def list_tasks(request: Request) -> JSONResponse:
     })
 
 
+@router.get("/tasks/graph")
+async def task_graph(request: Request) -> JSONResponse:
+    """Return task dependency graph (DAG) for visualisation.
+
+    NB: this MUST be registered BEFORE ``/tasks/{task_id}`` because
+    FastAPI matches routes in registration order — otherwise a GET
+    to ``/tasks/graph`` would match ``/tasks/{task_id}`` with
+    task_id="graph" and (correctly) 404.
+    """
+    sched = _task_scheduler(request)
+    if sched is None:
+        return _not_wired(request)
+    tasks = await sched.list_tasks(limit=200)
+    nodes = [
+        {
+            "id": t.id,
+            "label": t.prompt[:40] + "…" if len(t.prompt) > 40 else t.prompt,
+            "status": t.status,
+            "priority": t.priority,
+        }
+        for t in tasks
+    ]
+    edges = []
+    for t in tasks:
+        for dep in t.dependencies:
+            edges.append({"source": dep, "target": t.id})
+    return JSONResponse({"nodes": nodes, "edges": edges})
+
+
 @router.get("/tasks/{task_id}")
 async def get_task(request: Request, task_id: str) -> JSONResponse:
     """Get a single task + progress."""
@@ -375,29 +404,6 @@ async def graph_path(request: Request) -> JSONResponse:
             for e in path
         ],
     })
-
-
-@router.get("/tasks/graph")
-async def task_graph(request: Request) -> JSONResponse:
-    """Return task dependency graph (DAG) for visualisation."""
-    sched = _task_scheduler(request)
-    if sched is None:
-        return _not_wired(request)
-    tasks = await sched.list_tasks(limit=200)
-    nodes = [
-        {
-            "id": t.id,
-            "label": t.prompt[:40] + "…" if len(t.prompt) > 40 else t.prompt,
-            "status": t.status,
-            "priority": t.priority,
-        }
-        for t in tasks
-    ]
-    edges = []
-    for t in tasks:
-        for dep in t.dependencies:
-            edges.append({"source": dep, "target": t.id})
-    return JSONResponse({"nodes": nodes, "edges": edges})
 
 
 # ── real-time websocket push ──────────────────────────────────────
