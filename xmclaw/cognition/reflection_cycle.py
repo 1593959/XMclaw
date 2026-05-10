@@ -55,6 +55,13 @@ logger = logging.getLogger(__name__)
 _DEFAULT_REFLECT_EVERY_TICKS = 300       # 5 min @ 1Hz
 _DEFAULT_CONSOLIDATE_EVERY_TICKS = 3600  # 1 h
 _DEFAULT_GROOM_EVERY_TICKS = 86400       # 1 day
+# 2026-05-10 default flip: metacognize was originally tied to the
+# 1-day groom cadence (cheap, conservative). User asked to "drop the
+# privacy-by-default conservatism" so agent visibly does something on
+# day one. New default = 60 ticks (~1 min @ 1 Hz) so the operator
+# sees R3 metacognition propose things shortly after boot. Ramp back
+# up to 86400 in cfg when feedback loop stabilises.
+_DEFAULT_METACOGNIZE_EVERY_TICKS = 60
 
 # Cap how far back each cycle reaches by default — prevent unbounded
 # work as the journal / memory grows.
@@ -185,7 +192,7 @@ class ReflectionCycle:
             1,
             int(metacognize_every_ticks)
             if metacognize_every_ticks is not None
-            else _DEFAULT_GROOM_EVERY_TICKS,
+            else _DEFAULT_METACOGNIZE_EVERY_TICKS,
         )
         self._metacognize_lookback = max(1, int(metacognize_lookback))
         self._reflect_every = max(1, int(reflect_every_ticks))

@@ -390,34 +390,57 @@ def test_calendar_watcher_unavailable_when_file_missing(
 # ── Factory ──────────────────────────────────────────────────────
 
 
-def test_factory_returns_empty_when_disabled() -> None:
-    cfg = {"cognition": {"perception": {}}}
+def test_factory_returns_empty_when_all_explicitly_disabled() -> None:
+    """2026-05-10 default flip: defaults are now opt-out (enabled=True
+    per source). To get an empty list operator must explicitly disable
+    every source. Pin the explicit-off path."""
+    cfg = {"cognition": {"perception": {
+        "screen":    {"enabled": False},
+        "window":    {"enabled": False},
+        "clipboard": {"enabled": False},
+        "calendar":  {"enabled": False},
+    }}}
     out = build_perception_sources_from_config(cfg, bus=None)
     assert out == []
 
 
-def test_factory_returns_empty_for_no_cfg() -> None:
-    assert build_perception_sources_from_config(None, bus=None) == []
-    assert build_perception_sources_from_config({}, bus=None) == []
+def test_factory_default_on_returns_only_available_sources() -> None:
+    """No-cfg path: factory tries every default-on watcher, but
+    available() filters out any whose optional dep isn't installed.
+    Result is environment-dependent — we only assert it's a list and
+    every member has its deps available."""
+    out = build_perception_sources_from_config(None, bus=None)
+    assert isinstance(out, list)
+    for s in out:
+        assert s.available()
 
 
 def test_factory_only_returns_available_sources() -> None:
     """Even when enabled, factory drops sources whose deps aren't
-    present (avoid trying to start dead ones)."""
+    present (avoid trying to start dead ones). Use a config that
+    explicitly disables ALL but calendar with a bogus path so we
+    test exactly the "enabled but unavailable" filter — independent
+    of what the test box has installed."""
     cfg = {"cognition": {"perception": {
-        # Calendar with bogus path → unavailable.
-        "calendar": {
-            "enabled": True,
-            "ics_path": "/no/such/file.ics",
-        },
+        "screen":    {"enabled": False},
+        "window":    {"enabled": False},
+        "clipboard": {"enabled": False},
+        "calendar":  {"enabled": True, "ics_path": "/no/such/file.ics"},
     }}}
     out = build_perception_sources_from_config(cfg, bus=None)
     assert out == []
 
 
 def test_factory_skips_calendar_without_ics_path() -> None:
+    """Calendar enabled but missing ``ics_path`` is logged + dropped.
+    Disable the other sources so we test the calendar branch only,
+    independent of what the test box has installed for screen/
+    window/clipboard."""
     cfg = {"cognition": {"perception": {
-        "calendar": {"enabled": True},  # missing ics_path
+        "screen":    {"enabled": False},
+        "window":    {"enabled": False},
+        "clipboard": {"enabled": False},
+        "calendar":  {"enabled": True},   # missing ics_path
     }}}
     out = build_perception_sources_from_config(cfg, bus=None)
     assert out == []

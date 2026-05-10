@@ -65,12 +65,15 @@ logger = logging.getLogger(__name__)
 class CognitiveDaemonConfig:
     """Operator-tunable knobs for :class:`CognitiveDaemon`.
 
-    Defaults are conservative: ``enabled=False`` (must be opted into),
-    ``autonomy_level=0`` (no self-generated actions), heartbeat 1 Hz.
+    Defaults (post 2026-05-10 "贾维斯化") are **opt-out**: the daemon
+    runs continuous cognition by default, with ``autonomy_level=50``
+    (suggest tier — proactive proposals surfaced for review but never
+    auto-applied). Operator can dial down to 0 (observe-only) or up
+    to 100 (execute) per their trust level.
     """
 
-    enabled: bool = False
-    autonomy_level: int = 0           # 0..100 (clamped at runtime)
+    enabled: bool = True
+    autonomy_level: int = 50          # 0..100 (clamped at runtime)
     heartbeat_hz: float = 1.0          # ticks per second
     action_threshold: float = 0.6      # passed to AttentionFilter
     top_k_focus: int = 7               # 7 ± 2 working-memory cap

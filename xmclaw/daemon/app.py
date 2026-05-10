@@ -1689,7 +1689,11 @@ def create_app(
 
                 _cd_cfg = CognitiveDaemonConfig(
                     enabled=True,
-                    autonomy_level=int(_cont_loop_cfg.get("autonomy_level", 0)),
+                    # 2026-05-10 default flip: 50 = "suggest" tier
+                    # (proposes things for review, never auto-applies).
+                    # Operator dials down to 0 (observe) or up to 100
+                    # (execute) per their trust level.
+                    autonomy_level=int(_cont_loop_cfg.get("autonomy_level", 50)),
                     heartbeat_hz=float(_cont_loop_cfg.get("heartbeat_hz", 1.0)),
                     action_threshold=float(
                         _cont_loop_cfg.get("action_threshold", 0.6)
@@ -1787,7 +1791,7 @@ def create_app(
                         )
                         _autonomy = AutonomyPolicy(
                             autonomy_level=int(
-                                _cont_loop_cfg.get("autonomy_level", 0),
+                                _cont_loop_cfg.get("autonomy_level", 50),
                             ),
                             risk_overrides=dict(
                                 _autonomy_cfg.get(

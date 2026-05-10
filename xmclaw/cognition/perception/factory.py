@@ -5,26 +5,30 @@ sources to ``start()``. The list may be empty when nothing is
 configured / nothing is available — that's a normal "no extra
 perception" config and not an error.
 
-Config shape:
+Config shape (2026-05-10 default flip — opt-out instead of opt-in):
     cognition:
       perception:
         screen:
-          enabled: false        # default off — privacy-by-default
+          enabled: true         # default ON; auto-skipped when mss missing
           period_s: 30
-          ocr_enabled: false
+          ocr_enabled: false    # OCR still off (heavy + privacy)
           ocr_max_chars: 2000
         window:
-          enabled: false
+          enabled: true
           period_s: 5.0
         clipboard:
-          enabled: false
+          enabled: true         # WARNING: reads clipboard contents
           period_s: 3.0
           preview_chars: 500
         calendar:
-          enabled: false
-          ics_path: "C:/.../my.ics"   # required when enabled
+          enabled: true
+          ics_path: ""          # still skipped without a real path
           window_minutes: 30
           period_s: 60
+
+Operators who want to dial back set ``enabled: false`` per source.
+The watchers without their optional dep installed are a silent no-op
+either way (``available()`` returns False → factory drops them).
 """
 from __future__ import annotations
 
@@ -52,16 +56,19 @@ def build_perception_sources_from_config(
     """Build sources per cfg. Each source's ``available()`` is
     consulted post-construction; unavailable ones are dropped here
     so the lifespan never tries to start them."""
-    if not cfg:
-        return []
-    perc = ((cfg.get("cognition") or {}).get("perception") or {})
-    if not perc:
-        return []
+    # 2026-05-10 default flip: even when ``cfg`` is None or doesn't
+    # have a ``perception`` block, we still try every default-on
+    # watcher. ``available()`` filters out the ones whose deps aren't
+    # installed, so a clean install with zero perception cfg ends up
+    # with whatever the host platform supports.
+    perc: dict[str, Any] = {}
+    if cfg:
+        perc = ((cfg.get("cognition") or {}).get("perception") or {})
 
     sources: list[PerceptionSource] = []
 
     screen_cfg = perc.get("screen") or {}
-    if screen_cfg.get("enabled", False):
+    if screen_cfg.get("enabled", True):
         try:
             sources.append(ScreenWatcher(
                 bus=bus,
@@ -75,7 +82,7 @@ def build_perception_sources_from_config(
             logger.warning("perception.screen.build_failed err=%s", exc)
 
     window_cfg = perc.get("window") or {}
-    if window_cfg.get("enabled", False):
+    if window_cfg.get("enabled", True):
         try:
             sources.append(ActiveWindowWatcher(
                 bus=bus,
@@ -85,7 +92,7 @@ def build_perception_sources_from_config(
             logger.warning("perception.window.build_failed err=%s", exc)
 
     clip_cfg = perc.get("clipboard") or {}
-    if clip_cfg.get("enabled", False):
+    if clip_cfg.get("enabled", True):
         try:
             sources.append(ClipboardWatcher(
                 bus=bus,
@@ -96,7 +103,7 @@ def build_perception_sources_from_config(
             logger.warning("perception.clipboard.build_failed err=%s", exc)
 
     cal_cfg = perc.get("calendar") or {}
-    if cal_cfg.get("enabled", False):
+    if cal_cfg.get("enabled", True):
         ics_path = cal_cfg.get("ics_path")
         if ics_path:
             try:

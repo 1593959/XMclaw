@@ -160,10 +160,14 @@ class FakeExperimentLoop:
 # ── CognitiveDaemonConfig ─────────────────────────────────────────────
 
 
-def test_config_defaults_conservative() -> None:
+def test_config_defaults_proactive() -> None:
+    """2026-05-10 default flip: daemon now ships **opt-out**.
+    enabled=True + autonomy_level=50 (suggest tier — proposes things
+    for review, never auto-applies). Operator dials down to 0
+    (observe) or up to 100 (execute) per their trust level."""
     cfg = CognitiveDaemonConfig()
-    assert cfg.enabled is False
-    assert cfg.autonomy_level == 0
+    assert cfg.enabled is True
+    assert cfg.autonomy_level == 50
     assert cfg.heartbeat_hz == 1.0
     assert cfg.action_threshold == 0.6
     assert cfg.top_k_focus == 7
