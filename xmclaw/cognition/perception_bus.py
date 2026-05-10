@@ -26,7 +26,11 @@ from typing import Any, Awaitable, Callable, Literal
 logger = logging.getLogger(__name__)
 
 
-PerceptSource = Literal["ws", "file", "process", "time", "internal", "network"]
+PerceptSource = Literal[
+    "ws", "file", "process", "time", "internal", "network",
+    # R4 (2026-05-10) — multi-modal perception sources.
+    "screen", "window", "clipboard", "calendar",
+]
 
 
 @dataclass(frozen=True, slots=True)

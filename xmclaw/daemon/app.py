@@ -1821,6 +1821,38 @@ def create_app(
                     log.warning("percept_sources.attach_failed err=%s", exc)
                     _percept_sources = None
                 _app.state.percept_sources = _percept_sources
+
+                # R4 (2026-05-10) — multi-modal perception watchers.
+                # Off by default per privacy posture; operator opts
+                # in via cfg.cognition.perception.{screen,window,
+                # clipboard,calendar}.enabled. Each watcher gracefully
+                # degrades when its optional dep isn't installed —
+                # the factory drops unavailable ones.
+                _multimodal_sources: list = []
+                try:
+                    from xmclaw.cognition.perception import (
+                        build_perception_sources_from_config,
+                    )
+                    _multimodal_sources = (
+                        build_perception_sources_from_config(
+                            config, bus=_percept_bus,
+                        )
+                    )
+                    for src in _multimodal_sources:
+                        try:
+                            await src.start()
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning(
+                                "perception.%s.start_failed err=%s",
+                                getattr(src, "name", "?"), exc,
+                            )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "multimodal_perception.build_failed err=%s",
+                        exc,
+                    )
+                    _multimodal_sources = []
+                _app.state.multimodal_perception = _multimodal_sources
                 await _cognitive_daemon.start()
             except Exception as exc:  # noqa: BLE001
                 log.warning("cognitive_daemon.start_failed err=%s", exc)
@@ -2072,6 +2104,16 @@ def create_app(
                     _graph.close()
                 except Exception:  # noqa: BLE001
                     pass
+            # R4: stop multi-modal perception sources before tearing
+            # down the perception bus.
+            for _src in getattr(_app.state, "multimodal_perception", []) or []:
+                try:
+                    await _src.stop()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "multimodal_perception.%s.stop_failed err=%s",
+                        getattr(_src, "name", "?"), exc,
+                    )
 
     app = FastAPI(
         title="XMclaw v2 daemon", version=__version__, lifespan=_lifespan,
