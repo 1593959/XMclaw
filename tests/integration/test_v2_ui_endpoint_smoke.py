@@ -93,6 +93,21 @@ UI_ENDPOINT_INVENTORY: list[tuple[str, str, set[int]]] = [
     ("GET", "/api/v2/profiles/active", {200, 401, 404}),  # may not be set
     ("GET", "/api/v2/analytics?days=7", {200, 401, 503}),
     ("GET", "/api/v2/logs?file=daemon&lines=20", {200, 401, 404}),
+    # ── R2 HTN + R5 SuggestionInbox + R6 Mind panels (2026-05-10) ──
+    # The plan endpoint requires an LLM; without one wired the test
+    # daemon returns 503 — accept that. With LLM 200; bad body 400.
+    ("POST", "/api/v2/cognition/goals/plan", {200, 400, 503}),
+    ("GET", "/api/v2/cognition/suggestions", {200, 503}),
+    ("GET", "/api/v2/cognition/suggestions?status=pending", {200, 400, 503}),
+    ("GET", "/api/v2/cognition/suggestions?status=all", {200, 503}),
+    # InnerMonologue panel just hits /events with R1+R3 type filters,
+    # already covered above. Duplicate one here so the inventory is
+    # explicit about the R6 mind tab.
+    (
+        "GET",
+        "/api/v2/events?types=inner_monologue,reflection_cycle_ran&limit=200",
+        {200, 401},
+    ),
 ]
 
 
