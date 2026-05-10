@@ -201,8 +201,14 @@ export function CognitionPage({ token }) {
   }
 
   return html`
-    <div style="padding:24px;max-width:960px;margin:0 auto">
-      <h2 style="margin:0 0 20px;font-size:1.4rem;font-weight:600">🧠 认知状态</h2>
+    <section class="xmc-datapage" aria-labelledby="cognition-title">
+      <header class="xmc-datapage__header">
+        <h2 id="cognition-title">🧠 认知状态</h2>
+        <p class="xmc-datapage__subtitle">
+          注意力焦点 · 当前目标 · 任务队列 · 进化提案 · 记忆图谱（每 2 秒 WS 推送）
+        </p>
+      </header>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:14px;align-items:start">
 
       <!-- Attention Focus -->
       <${Card} title="注意力焦点">
@@ -307,7 +313,9 @@ export function CognitionPage({ token }) {
             </div>
           `}
       <//>
-    </div>
+
+      </div>
+    </section>
   `;
 }
 
