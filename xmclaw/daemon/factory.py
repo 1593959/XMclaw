@@ -1260,7 +1260,7 @@ def build_agent_from_config(
     # Jarvisification: optional MemoryGraph for relational memory.
     _cognition_cfg = (cfg or {}).get("cognition") or {}
     _graph = None
-    if _cognition_cfg.get("enabled", False):
+    if _cognition_cfg.get("enabled", True):
         try:
             from xmclaw.cognition.memory_graph import MemoryGraph
             _graph = MemoryGraph(bus=bus)
@@ -1501,7 +1501,7 @@ def build_agent_from_config(
     # when enabled. MultiAgentManager passes a shared instance so all
     # sub-agents operate on the same cognitive substrate.
     _cognitive_state = cognitive_state
-    if _cognitive_state is None and _cognition_cfg.get("enabled", False):
+    if _cognitive_state is None and _cognition_cfg.get("enabled", True):
         try:
             from xmclaw.cognition.state import CognitiveState
             _cognitive_state = CognitiveState()

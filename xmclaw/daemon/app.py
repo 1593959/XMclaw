@@ -429,7 +429,7 @@ def create_app(
     # happens at lifespan shutdown.
     _cognition_cfg = (config or {}).get("cognition") or {}
     _shared_cognitive_state = None
-    if _cognition_cfg.get("enabled", False):
+    if _cognition_cfg.get("enabled", True):
         try:
             from xmclaw.cognition.state import CognitiveState
             _state_path = Path.home() / ".xmclaw" / "v2" / "cognitive_state.json"
@@ -1604,7 +1604,7 @@ def create_app(
         _app.state.file_watcher = None
         _app.state.evolution_loop = None
         _app.state.task_scheduler = None
-        if _cognition_cfg.get("enabled", False) and _cognitive_state is not None:
+        if _cognition_cfg.get("enabled", True) and _cognitive_state is not None:
 
             try:
                 from xmclaw.cognition.file_watcher import FileWatcher
@@ -1677,7 +1677,7 @@ def create_app(
         _cont_loop_cfg = ((config or {}).get("cognition") or {}).get(
             "continuous_loop"
         ) or {}
-        if _cont_loop_cfg.get("enabled", False):
+        if _cont_loop_cfg.get("enabled", True):
             try:
                 from xmclaw.cognition.perception_bus import PerceptionBus
                 from xmclaw.cognition.attention_filter import AttentionFilter
