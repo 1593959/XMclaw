@@ -49,9 +49,52 @@ def _memory_graph(request: Request) -> Any | None:
     return getattr(_state(request), "memory_graph", None)
 
 
-def _not_wired() -> JSONResponse:
+def _not_wired(request: Request | None = None) -> JSONResponse:
+    """503 with structured ``reason`` so the UI can render an
+    actionable "how to enable" panel rather than a bare 503.
+
+    Reason taxonomy:
+      * ``disabled``      — config has cognition.enabled=false (default).
+      * ``failed_startup``— cognition.enabled=true but lifespan caught an
+                            exception while constructing CognitiveState
+                            / MemoryGraph / TaskScheduler.
+      * ``missing_dep``   — placeholder for future dep-missing path
+                            (currently unused; reserved).
+
+    The UI keys off ``reason`` to show the right remediation copy.
+    """
+    reason = "disabled"
+    hint = (
+        "Set ``cognition.enabled = true`` in daemon/config.json and "
+        "restart the daemon (xmclaw stop && xmclaw start)."
+    )
+    if request is not None:
+        cfg = getattr(request.app.state, "config", None) or {}
+        cognition_cfg = (cfg.get("cognition") or {}) if isinstance(cfg, dict) else {}
+        if cognition_cfg.get("enabled"):
+            # Config says yes but state is None → lifespan failed.
+            reason = "failed_startup"
+            hint = (
+                "cognition.enabled=true but the daemon failed to "
+                "construct the cognitive substrate. Check "
+                "~/.xmclaw/v2/logs/xmclaw.log for "
+                "``cognition.state_load_failed`` / ``cognition."
+                "file_watcher_start_failed`` / ``cognition."
+                "evolution_loop_start_failed`` warnings."
+            )
     return JSONResponse(
-        {"error": "cognition not enabled or failed to start"},
+        {
+            "error": "cognition not enabled or failed to start",
+            "reason": reason,
+            "hint": hint,
+            "how_to_enable": [
+                "Open daemon/config.json (path: ~/.xmclaw/v2/ or ./daemon/)",
+                "Set: { \"cognition\": { \"enabled\": true } }",
+                "Optional Phase 6: { \"cognition\": { \"continuous_loop\": { \"enabled\": true, \"autonomy_level\": 0 } } }",
+                "Save → xmclaw stop && xmclaw start",
+                "See docs/JARVIS_PHASE_6_DESIGN.md §4 for autonomy levels 0/50/100",
+            ],
+        },
         status_code=503,
     )
 
@@ -64,7 +107,7 @@ async def get_state(request: Request) -> JSONResponse:
     """Dump the live CognitiveState."""
     cs = _cognitive_state(request)
     if cs is None:
-        return _not_wired()
+        return _not_wired(request)
     return JSONResponse({
         "goals": [
             {
@@ -98,7 +141,7 @@ async def add_goal(request: Request, payload: dict[str, Any]) -> JSONResponse:
     """Add a goal to the cognitive state."""
     cs = _cognitive_state(request)
     if cs is None:
-        return _not_wired()
+        return _not_wired(request)
     description = str(payload.get("description", "")).strip()
     if not description:
         return JSONResponse({"error": "description required"}, status_code=400)
@@ -118,7 +161,7 @@ async def complete_goal(request: Request, goal_id: str) -> JSONResponse:
     """Mark a goal as completed."""
     cs = _cognitive_state(request)
     if cs is None:
-        return _not_wired()
+        return _not_wired(request)
     ok = cs.complete_goal(goal_id)
     return JSONResponse({"ok": ok})
 
@@ -131,7 +174,7 @@ async def list_tasks(request: Request) -> JSONResponse:
     """List tasks from the TaskScheduler."""
     sched = _task_scheduler(request)
     if sched is None:
-        return _not_wired()
+        return _not_wired(request)
     status = request.query_params.get("status")
     tasks = await sched.list_tasks(status=status, limit=100)
     return JSONResponse({
@@ -144,7 +187,7 @@ async def get_task(request: Request, task_id: str) -> JSONResponse:
     """Get a single task + progress."""
     sched = _task_scheduler(request)
     if sched is None:
-        return _not_wired()
+        return _not_wired(request)
     task = await sched.get_task(task_id)
     if task is None:
         return JSONResponse({"error": "not found"}, status_code=404)
@@ -157,7 +200,7 @@ async def submit_task(request: Request, payload: dict[str, Any]) -> JSONResponse
     """Submit a new task."""
     sched = _task_scheduler(request)
     if sched is None:
-        return _not_wired()
+        return _not_wired(request)
     prompt = str(payload.get("prompt", "")).strip()
     if not prompt:
         return JSONResponse({"error": "prompt required"}, status_code=400)
@@ -179,7 +222,7 @@ async def cancel_task(request: Request, task_id: str) -> JSONResponse:
     """Cancel a task."""
     sched = _task_scheduler(request)
     if sched is None:
-        return _not_wired()
+        return _not_wired(request)
     ok = await sched.cancel(task_id)
     return JSONResponse({"ok": ok})
 
@@ -192,7 +235,7 @@ async def list_proposals(request: Request) -> JSONResponse:
     """List pending evolution proposals."""
     evo = _evolution_loop(request)
     if evo is None:
-        return _not_wired()
+        return _not_wired(request)
     proposals = await evo.list_pending()
     return JSONResponse({
         "proposals": [
@@ -215,7 +258,7 @@ async def approve_proposal(request: Request, proposal_id: str) -> JSONResponse:
     """Approve an evolution proposal."""
     evo = _evolution_loop(request)
     if evo is None:
-        return _not_wired()
+        return _not_wired(request)
     ok = await evo.approve(proposal_id)
     return JSONResponse({"ok": ok})
 
@@ -225,7 +268,7 @@ async def reject_proposal(request: Request, proposal_id: str) -> JSONResponse:
     """Reject an evolution proposal."""
     evo = _evolution_loop(request)
     if evo is None:
-        return _not_wired()
+        return _not_wired(request)
     ok = await evo.reject(proposal_id)
     return JSONResponse({"ok": ok})
 
@@ -238,7 +281,7 @@ async def graph_stats(request: Request) -> JSONResponse:
     """Return MemoryGraph statistics."""
     graph = _memory_graph(request)
     if graph is None:
-        return _not_wired()
+        return _not_wired(request)
     stats = await graph.stats()
     return JSONResponse(stats)
 
@@ -248,7 +291,7 @@ async def graph_nodes(request: Request) -> JSONResponse:
     """Query graph nodes by type."""
     graph = _memory_graph(request)
     if graph is None:
-        return _not_wired()
+        return _not_wired(request)
     node_type = request.query_params.get("type", "event")
     limit = int(request.query_params.get("limit", 10))
     nodes = await graph.query_by_type(node_type, limit=limit)  # type: ignore[arg-type]
@@ -270,7 +313,7 @@ async def graph_neighbors(request: Request, node_id: str) -> JSONResponse:
     """Get neighbors of a node (multi-hop supported via ?depth=)."""
     graph = _memory_graph(request)
     if graph is None:
-        return _not_wired()
+        return _not_wired(request)
     depth = int(request.query_params.get("depth", 1))
     relation = request.query_params.get("relation") or None
     min_strength = float(request.query_params.get("min_strength", 0.0))
@@ -308,7 +351,7 @@ async def graph_path(request: Request) -> JSONResponse:
     """
     graph = _memory_graph(request)
     if graph is None:
-        return _not_wired()
+        return _not_wired(request)
     source_id = request.query_params.get("source_id", "")
     target_id = request.query_params.get("target_id", "")
     max_depth = int(request.query_params.get("max_depth", 5))
@@ -339,7 +382,7 @@ async def task_graph(request: Request) -> JSONResponse:
     """Return task dependency graph (DAG) for visualisation."""
     sched = _task_scheduler(request)
     if sched is None:
-        return _not_wired()
+        return _not_wired(request)
     tasks = await sched.list_tasks(limit=200)
     nodes = [
         {

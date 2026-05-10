@@ -82,7 +82,7 @@ export function CognitionPage({ token }) {
       setTaskGraph(tg);
       setState("ready");
     } catch (e) {
-      setError(String(e));
+      setError(e);
       setState("error");
     }
   }
@@ -139,10 +139,62 @@ export function CognitionPage({ token }) {
     return html`<div style="padding:40px;text-align:center">加载认知状态…</div>`;
   }
   if (state === "error") {
+    // 503 with structured "reason" field (from routers/cognition.py
+    // _not_wired) → render the actionable "how to enable" panel.
+    // Other errors still get the bare retry box.
+    const body = error && error.body;
+    const isCognitionOff = error && error.status === 503 && body && body.reason;
+    if (isCognitionOff) {
+      const reason = body.reason;
+      const title = reason === "failed_startup"
+        ? "🛠️ 认知子系统启动失败"
+        : "🌒 认知模块未启用";
+      return html`
+        <div style="padding:32px;max-width:720px;margin:0 auto">
+          <div style="font-size:1.4rem;font-weight:600;margin-bottom:8px">
+            ${title}
+          </div>
+          <div style="opacity:.75;font-size:.95rem;line-height:1.55;margin-bottom:20px">
+            ${body.hint || "Cognition not wired."}
+          </div>
+          <div style="background:var(--xmc-bg-soft, rgba(255,255,255,.03));
+                      border:1px solid var(--xmc-border, rgba(255,255,255,.1));
+                      border-radius:8px;padding:18px 20px">
+            <div style="font-weight:600;margin-bottom:10px">
+              如何打开
+            </div>
+            <ol style="margin:0;padding-left:20px;line-height:1.7;font-size:.92rem">
+              ${(body.how_to_enable || []).map((step) => html`<li>${step}</li>`)}
+            </ol>
+          </div>
+          <div style="margin-top:18px;display:flex;gap:8px">
+            <button onClick=${loadAll}
+                    style="padding:8px 16px;background:var(--xmc-accent);
+                           color:#000;border:none;border-radius:6px;
+                           cursor:pointer;font-weight:500">
+              重试加载
+            </button>
+            <a href="/ui/settings" style="padding:8px 16px;
+                                          border:1px solid var(--xmc-border);
+                                          border-radius:6px;
+                                          text-decoration:none;
+                                          color:var(--xmc-fg)">
+              打开 Settings
+            </a>
+          </div>
+          <details style="margin-top:18px;font-size:.82rem;opacity:.6">
+            <summary style="cursor:pointer">原始错误（debug）</summary>
+            <pre style="margin-top:8px;white-space:pre-wrap;
+                        font-family:var(--xmc-font-mono, monospace);
+                        font-size:.78rem">${String(error)}</pre>
+          </details>
+        </div>
+      `;
+    }
     return html`
       <div style="padding:40px;text-align:center">
         <div style="color:var(--xmc-danger)">加载失败</div>
-        <div style="font-size:.85rem;opacity:.7;margin-top:8px">${error}</div>
+        <div style="font-size:.85rem;opacity:.7;margin-top:8px">${String(error)}</div>
         <button onClick=${loadAll} style="margin-top:16px">重试</button>
       </div>
     `;

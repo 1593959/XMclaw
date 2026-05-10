@@ -55,13 +55,21 @@ export async function apiGet(path, token) {
     const res = await fetch(withToken(path, token));
     if (!res.ok) {
       let detail = "";
+      let body = null;
       try {
-        const j = await res.json();
-        detail = j.detail || j.error || "";
+        body = await res.json();
+        detail = body.detail || body.error || "";
       } catch (_) {
         /* ignore */
       }
-      throw new Error(`${res.status} ${res.statusText}${detail ? `: ${detail}` : ""}`);
+      const err = new Error(`${res.status} ${res.statusText}${detail ? `: ${detail}` : ""}`);
+      // Attach parsed body + status code so callers can render
+      // structured remediation (e.g. /api/v2/cognition/* returns
+      // ``{reason, hint, how_to_enable}`` on 503 — see
+      // routers/cognition.py _not_wired).
+      err.status = res.status;
+      err.body = body;
+      throw err;
     }
     return res.json();
   })();
