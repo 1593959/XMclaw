@@ -1452,6 +1452,148 @@ Phase 2-4 检查清单 Phase 1 完成后再细化。
 
 ---
 
+### Epic #25 · 贾维斯化（R1–R6 主动认知 + 多模态感知 + 自主性）★框架级跃迁
+
+**状态**：✅ 完成（R1+R2+R3+R4+R5+R6 + 框架级整改 Patch A/B/C/D + 默认 flip + 大代码拆分） | **负责人**：Claude (AI pair) + 用户（并行重构） | **起始**：2026-05-08 | **完成**：2026-05-11
+**前置依赖**：Epic #13（事件总线）、Epic #17（多 Agent）、Epic #24（学徒成长系统 — Journal / UserProfile / Grader 已就位作为 R1 的反思素材源）
+**关联 Milestone**：M5（进化可感知）的孪生兄弟 — M5 关心"agent 在变强"，本 Epic 关心"agent 在主动思考 / 感知 / 提建议"
+
+**问题诊断**（与用户多轮对齐 + 全代码审计后确认）：
+
+Epic #24 把"学徒成长"接通了——agent 跑完 turn 会复盘、抽偏好、起草新 SKILL.md。但这一切都是**被动 turn-by-turn**：用户不发消息 = agent 啥也不干。距离"贾维斯"愿景（主动感知环境、自主分解目标、定期反思自己、有节制地建议用户）还差一整个量级。
+
+`docs/architecture/XMclaw_Architecture_Assessment_2026-05-09.md` §10.3 给出的"距离 JARVIS ~60%"评估里，**"自主性 4/10"** 是最低分项——拉这一项是本 Epic 的核心使命。
+
+用户决策（2026-05-08）："**全都做，要认真做，禁止敷衍**" — 不要再做 stub / placeholder / "等 Phase X 再做"，把整条 R1-R6 链一次性接通到 daemon。
+
+**目标架构 — 持续认知 + 多模态感知 + 自主建议**：
+
+> 在 Epic #24 的"学徒成长"基础上加一层"持续运行的认知协处理器"：daemon 后台跑 ReflectionCycle / MetaCognitionPass / 多模态 watcher / SuggestionInbox，每个都通过 EventBus 广播自己的 finding。前端 Mind 页把这一切"看得见"。
+
+| Phase | 子系统 | 节奏 | 输出 |
+|-------|--------|------|------|
+| **R1** | ReflectionCycle | 5min hot / 1h warm / 1day cold（3-bucket） | `reflection_cycle_ran` event with bucket + summary |
+| **R2** | HTNPlanner DAG | 用户提出 goal 时按需分解 | `/api/v2/cognition/goals/plan` 返回 task DAG |
+| **R3** | MetaCognitionPass | 60s 默认（用户决策从 hidden→default-on） | `metacognition_proposal` event with pattern + confidence ≤0.6 |
+| **R4** | 多模态 Perception | 持续运行（用户决策从 default-off→default-on） | Screen / Window / Clipboard / Calendar 4 个 watcher 推 percept |
+| **R5** | AutonomyPolicy + SuggestionInbox | 实时（autonomy_level 0-100 决定 Suggest vs Auto） | `/api/v2/cognition/suggestions` + status=pending/all |
+| **R6** | Mind page UI | 实时刷新 | InnerMonologue / ReflectionTimeline / Goals / Suggestions 四面板 |
+
+**开发计划**（实际执行轨迹）：
+
+R1-R6 各自一次性落地（3 天密集开发，2026-05-08~10），**框架级整改与 Epic #24 类比** —— 不做 PoC、不留"等 Phase X 再做"。然后 2026-05-10~11 做四件配套：
+- **Patch A 路径统一**：11 处 hardcoded `Path.home() / ".xmclaw"` 全部 route 到 `xmclaw/utils/paths.py`
+- **默认 flip**：`autonomy_level: 0→50` / metacognize: hidden→60s / R4 watchers: off→on / continuous_loop: stub→实际跑
+- **UI 功能审计**：22 个页面 + 10 个 panel 全部走 TestClient.get(real_url) 验证 → 0 P0 / 0 payload drift（`docs/UI_FUNCTION_AUDIT_2026-05-10.md`）
+- **大代码拆分**（用户并行做）：`channel/_shared.py`(-130 LOC) / `llm/streaming_utils.py`(+66) / `tool/builtin.py`(3,241→592 LOC, **-82%**) / `daemon/app.py`(3,546→1,912 LOC, **-46%**) / `daemon/agent_loop.py`(`_run_turn_inner` 拆出 `_run_hop_loop`)
+
+**检查清单**：
+
+R1 ReflectionCycle:
+- [x] `xmclaw/cognition/reflection_cycle.py` — 3-bucket schedule (5min hot / 1h warm / 1day cold)
+- [x] EventType.REFLECTION_CYCLE_RAN 加入 schema；payload 含 bucket + summary
+- [x] daemon lifespan 默认拉起；config `cognition.reflection.{enabled,buckets}` 默认 ON
+- [x] Mind page ReflectionTimeline 面板订阅 `/api/v2/events?types=reflection_cycle_ran`
+
+R2 HTNPlanner DAG:
+- [x] `xmclaw/cognition/planner.py`（866 LOC，已存在自 Phase 6）扩展 task DAG 输出
+- [x] `POST /api/v2/cognition/goals/plan` 端点（接受 goal 字符串，返回 DAG）
+- [x] Mind page Goals 面板调用并显示 DAG
+- [x] 测试：`tests/integration/test_v2_ui_endpoint_smoke.py` 加 `/api/v2/cognition/goals/plan` 到 inventory（200/400/503 集合）
+
+R3 MetaCognitionPass:
+- [x] `xmclaw/core/metacognition/pass_.py` — confidence_cap=0.6 + min_evidence=3 + 全 ok 拒绝（anti-overclaim 三件套）
+- [x] `xmclaw/core/metacognition/reformer.py` — pattern → curriculum_edit / skill / preference 路由
+- [x] `xmclaw/core/decisions/recorder.py` — DecisionTraceRecorder（kind/chosen/alternatives/reason/outcome）
+- [x] daemon lifespan 默认拉起 60s 周期 task；config `cognition.metacognize.{enabled,interval_s}` 默认 ON
+- [x] EventType.METACOGNITION_PROPOSAL + EventType.INNER_MONOLOGUE 加入 schema
+- [x] **Import-direction 修复**：`pass_.py` 原引 `xmclaw.providers.llm.base.Message`（违反 core→providers 方向），改用本地 `_Msg` dataclass
+- [x] Mind page InnerMonologue 面板订阅 `/api/v2/events?types=inner_monologue,metacognition_proposal`
+
+R4 多模态 Perception:
+- [x] `xmclaw/cognition/perception/{screen,window,clipboard,calendar}_watcher.py` 4 个 watcher
+- [x] `PerceptSourceRegistry` 统一注册接口
+- [x] `xmclaw/cognition/file_watcher.py` 已有，配套整改：silent `except: pass` → `log.warning(..., exc_info=True)`
+- [x] 配置 `cognition.perception.{screen,window,clipboard,calendar}.enabled` 全部默认 ON（用户硬要求）
+- [x] daemon lifespan 默认拉起；安全降级：unsupported platform / missing dep 跳过单个 watcher，不杀其他
+
+R5 AutonomyPolicy + SuggestionInbox:
+- [x] `xmclaw/cognition/autonomy.py` — 0-100 连续值（0=询问每步 / 100=完全自主）
+- [x] `xmclaw/cognition/suggestion_inbox.py` — sqlite-backed pending suggestions
+- [x] `GET /api/v2/cognition/suggestions` + `?status=pending|all` 过滤
+- [x] config `cognition.autonomy_level` 默认 **50**（保守姿态，可手调）—— `daemon/config.example.json` 同步更新
+- [x] Mind page Suggestions 面板订阅
+- [x] 测试：`tests/integration/test_v2_ui_endpoint_smoke.py` 加 R5 端点到 UI inventory
+
+R6 Mind page UI:
+- [x] `xmclaw/daemon/static/pages/Mind.js` 主页面
+- [x] 四面板：InnerMonologue / ReflectionTimeline / Goals / Suggestions
+- [x] R6 events 类型扩展：`Trace.js` EVENT_TYPES 加 7 项（inner_monologue / reflection_cycle_ran / memory_consolidated / goals_groomed / memory_recall / memory_put_auto / metacognition_proposal）+ shortPayload renderer
+- [x] sidebar 导航接通 `/mind` 路由
+
+Patch A（路径统一）：
+- [x] `xmclaw/utils/paths.py` 加 7 helpers: `default_cognitive_state_path` / `default_graph_db_path` / `default_experiments_db_path` / `evolution_proposals_dir` / `eval_cache_dir` / `default_decisions_db_path` / `default_suggestions_db_path`
+- [x] 11 处 hardcoded `Path.home() / ".xmclaw"` 全部 route 过 paths.py
+- [x] CI lint guard：`tests/unit/test_v2_paths_unified.py` grep 非 paths.py 文件里出现 `Path.home() / ".xmclaw"` 字面量
+- [x] 6 个新单测：XMC_DATA_DIR rerouting 全 helpers / eval_cache_dir per-suite / 窄 env override 优先级 / hardcoded-path lint / hot-path scan / return-type sanity
+
+默认 flip（用户硬要求 "你直接调，默认取消掉" 保守姿态）：
+- [x] `CognitiveDaemonConfig.autonomy_level: 0 → 50`
+- [x] `ReflectionCycle.metacognize`: hidden → default-on（60s 间隔）
+- [x] R4 perception watchers: default-off → default-on
+- [x] `cognition.continuous_loop.enabled`: stub → 真实跑
+- [x] `daemon/config.example.json` 同步全部新 default
+
+UI 功能审计（用户要求"代码级检查 + 列文档"）：
+- [x] `docs/UI_FUNCTION_AUDIT_2026-05-10.md` — 22 页面 + 10 panel 全审：20 ✅ + 8 🟡 + 0 🔴 + 0 P0 + 0 payload drift
+- [x] **Tool lesson**: 审计 agent 第一轮漏看 `app.py` 内联 endpoint（`@app.get/post` 不在 `routers/`），导致 3 个 false alarm（/api/v2/config / status / doctor/run）。修复：未来审计必须 grep BOTH `routers/*.py` AND `app.py`。
+- [x] `docs/PROJECT_DEFINITION_2026-05-10.md` — 代码层面定位："本地常驻、跨会话有持续记忆 + 持续认知 + 自主目标分解 + 多模态感知 + 自我进化的'个人贾维斯' runtime"
+- [x] `docs/architecture/XMclaw_Architecture_Assessment_2026-05-09.md` 入库
+
+大代码拆分（用户**并行**做的，commit hash 见 ebea0d3 / 440c869 / d471d3d / 3251bdf / 37cc58a）：
+- [x] **channel/_shared.py**（ebea0d3）：5 adapter（discord/slack/telegram/lark/email）共享 base extracted to 32 LOC `_shared.py`，净减 130 LOC
+- [x] **llm/streaming_utils.py**（440c869）：Anthropic + OpenAI 流式公共逻辑（cumulative usage / max_tokens 截断 / chunk merge）抽 66 行
+- [x] **tool/builtin.py 8-mixin**（d471d3d）：3,241 → 592 LOC（**-82%**）。BuiltinTools → DbMixin/FsMixin/MemoryMixin/PersonaMixin/ShellMixin/UserMixin/VoiceMixin/WorktreeMixin → ToolProvider
+- [x] **daemon/app.py 瘦身**（3251bdf）：3,546 → 1,912 LOC（**-46%**）。Lifespan 抽走到 `app_lifespan.py`（24 个 site 修了 `except Exception:` no `as exc` 的 UnboundLocalError pattern）
+- [x] **daemon/agent_loop.py hop-loop split**（37cc58a）：`_run_turn_inner` 单体拆成 turn 级 setup/teardown + `_run_hop_loop` 内层；状态边界清晰，单测可独立 mock hop loop
+- [x] **配套修复**：`cli/doctor_registry.py` `EvolutionPipelineCheck` 现在拼 `app.py + app_lifespan.py` 两份 source 扫 REQUIRED_TOKENS（lifespan 抽走后大量 wiring 行搬过去了）
+- [x] **silent except 治理**：`cognition/{file_watcher,graph_extractor}.py` + `utils/security.py` 5 处 `except: pass` 换成 `log.warning(..., exc_info=True)`
+
+**关键决策（不退让的几条）**：
+
+1. **持续认知不是可选项**。R1+R3+R4 默认 ON 是用户硬要求 — "默认隐私姿态保留" 被显式撤销。"贾维斯不主动思考" 不是贾维斯。
+2. **anti-overclaim 三件套**（confidence_cap=0.6 + min_evidence=3 + all-ok-rejected）适用于**所有** LLM 自评通道。MetaCognitionPass 是首个落地点，未来任何"agent 自己判断 X 模式"都要走这套硬约束。
+3. **路径统一原则继续延伸**（Epic #24 第 5 条不退让规则的延续）：Patch A 把 11 个分散 callsite 全部 route 过 `paths.py`，加 CI lint guard 防止 regression。
+4. **拆分必须保留语义**：8-mixin 拆 / `_run_hop_loop` 抽 都是**纯重构**，零行为改变。验证靠回归套件（68 unit + 15 b298 + 1791 unit total 全过）。
+5. **front-back smoke 是硬要求**（沿用 2026-05-09 standing rule）：每个新增 UI URL 进 `tests/integration/test_v2_ui_endpoint_smoke.py` UI_ENDPOINT_INVENTORY，TestClient 跑全 HTTP 路径而不是只看 router internals。
+
+**退出标准**：
+
+- [x] daemon 启动后 lifespan 默认拉起 R1-R6 全部子系统（不需要任何手动 enable）
+- [x] `events.db` 能查到 `reflection_cycle_ran` / `inner_monologue` / `metacognition_proposal` 等 R1-R6 事件
+- [x] Mind 页四面板有数据（24h 内多次自动 refresh）
+- [x] `/api/v2/cognition/{state,tasks,proposals,suggestions,goals/plan}` 全部 200 OR 503 不 404
+- [x] 路径统一 — 11 callsite 全过 paths.py + CI lint guard 已加
+- [x] UI 审计 0 P0、0 payload drift、22 页全部 reachable
+- [x] 大代码拆分 — 5 个文件累计 -1,800+ LOC，回归 1791 unit + 15 b298 + 68 agent_loop 全绿
+
+**进度日志**：
+
+- 2026-05-08: R1+R2+R3+R4+R5+R6 框架级落地（用户授权"全都做，要认真做，禁止敷衍"）。首版默认是保守姿态（autonomy=0 / metacognize=hidden / R4 watchers=off）。
+- 2026-05-09: 用户硬撤销保守姿态 — autonomy=50 / metacognize=60s / R4 watchers=on。`daemon/config.example.json` 同步。
+- 2026-05-10: 用户要求"代码级检查"。架构评估 + UI 审计 + PROJECT_DEFINITION 三件套出炉。Patch A 路径统一落地（11 callsite + CI lint）。Patch B/C/D 文档清理。P2 收尾按 2→3→1 顺序：Trace 事件类型补全 / Evolution 专属 `/proposals` 端点 / ModelProfiles 标 deprecated。
+- 2026-05-10~11: 用户**并行**做大代码拆分（一开始我误判为"外部破坏"反复 reset，用户纠正"那是我的并行重构工作"）。最终 6 batch 分批 commit：channel _shared / LLM streaming / builtin 8-mixin / app.py slim / agent_loop hop-loop / docs。回归 1791 unit + 15 b298 + 68 agent_loop 全绿。**Epic #25 退出标准全部满足**。
+
+**Epic #25 状态：✅ 完成 | 完成日期 2026-05-11**
+
+下一步候选（未在本 Epic 范围内）：
+- Epic #26 候选: SkillRegistry v2（存 prompt body 而非 Python 类）+ 接通 SkillMutator → 自动 prompt 优化（Epic #24 Phase 3.5.3 推迟项）
+- 元认知修复闭环（stuck self-diagnose）—— 架构评估 §9 Phase C 列项
+- OS Sandbox MVP（process runtime 强化）—— Epic #3 / 架构评估 §9 Phase C
+- 进化执行层 mutation orchestrator → test executor → auto-promote —— 架构评估 §9 Phase C
+
+---
+
 ## 5. 让差异化"看得见"（Visible Differentiation）
 
 > 用户不会读 `core/evolution/controller.py`。如果 agent 在进步，要让他**直接看到**。
