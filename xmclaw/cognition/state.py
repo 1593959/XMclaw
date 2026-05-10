@@ -13,14 +13,47 @@ from typing import Any
 
 @dataclass
 class Goal:
-    """一个目标。"""
+    """一个目标。
+
+    R2 (2026-05-10) 升级：从单字段描述扩展到「可被 HTN planner
+    分解 + 调度 + 评估完成度」的结构化对象。原有字段保留语义，
+    新增字段全部带默认值 → 既有调用点零迁移成本。
+
+    新增字段：
+    * ``success_criteria`` — 一段话写完成判定标准 (可被 LLM 评)。
+      ``None`` 表示由 user/agent 主观判断 (legacy behaviour)。
+    * ``deadline`` — Unix 时间戳；超时 GoalGroomingCycle 会重排或
+      drop。``None`` 表示无 deadline。
+    * ``parent_goal_id`` — 父 goal id；HTN 分解出来的 sub-goal
+      用这个串成树。``None`` 是顶层 goal。
+    * ``sub_goal_ids`` — 直接子 goal id 列表 (HTN 分解结果)。
+    * ``task_ids`` — 已绑定到 TaskScheduler 的 Task id 列表。
+    * ``assigned_agent`` — 哪个 sub-agent 负责此 goal。``"main"``
+      表示主 agent；其他值由 MultiAgentManager 解析。
+    * ``estimated_cost_usd`` — HTN 估计的 LLM 成本上限 (美元)。
+      ``None`` 表示未估计。
+    * ``updated_at`` — 最后状态变化时间。GoalGroomingCycle 用它
+      判断 stale。
+    * ``status`` 取值扩展：
+      ``"active"`` (legacy) | ``"completed"`` | ``"abandoned"``
+      | ``"blocked"`` | ``"needs_replan"`` | ``"in_progress"``。
+    """
 
     id: str
     description: str
     priority: int = 5  # 1-10, 10 最高
     source: str = "user"  # "user" | "system" | "inferred"
     created_at: float = field(default_factory=time.time)
-    status: str = "active"  # "active" | "completed" | "abandoned"
+    status: str = "active"
+    # ── R2 additions ───────────────────────────────────────────
+    success_criteria: str | None = None
+    deadline: float | None = None
+    parent_goal_id: str | None = None
+    sub_goal_ids: list[str] = field(default_factory=list)
+    task_ids: list[str] = field(default_factory=list)
+    assigned_agent: str = "main"
+    estimated_cost_usd: float | None = None
+    updated_at: float = field(default_factory=time.time)
 
 
 @dataclass

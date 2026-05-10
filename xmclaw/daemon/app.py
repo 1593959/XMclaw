@@ -2004,9 +2004,18 @@ def create_app(
             _task_sched = getattr(_app.state, "task_scheduler", None)
             if _task_sched is not None:
                 try:
-                    await _task_sched.stop()
-                except Exception:  # noqa: BLE001
-                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
+                    if hasattr(_task_sched, "stop"):
+                        await _task_sched.stop()
+                except Exception as exc:  # noqa: BLE001
+                    # Pre-existing bug fix (R2 follow-up, 2026-05-10):
+                    # ``except Exception:`` (no ``as``) followed by
+                    # ``type(exc).__name__`` raised UnboundLocalError
+                    # — surfaced when a fake scheduler without ``stop``
+                    # was injected for tests, but real-world too.
+                    log.warning(
+                        "task_scheduler stop failed during shutdown: %s",
+                        type(exc).__name__, exc_info=True,
+                    )
             _evo_loop = getattr(_app.state, "evolution_loop", None)
             if _evo_loop is not None:
                 try:

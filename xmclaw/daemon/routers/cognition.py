@@ -138,7 +138,12 @@ async def get_state(request: Request) -> JSONResponse:
 
 @router.post("/goals")
 async def add_goal(request: Request, payload: dict[str, Any]) -> JSONResponse:
-    """Add a goal to the cognitive state."""
+    """Add a goal to the cognitive state.
+
+    R2 (2026-05-10) extended: payload may now carry the new Goal
+    fields (success_criteria / deadline / assigned_agent /
+    estimated_cost_usd). All optional with backward-compat defaults.
+    """
     cs = _cognitive_state(request)
     if cs is None:
         return _not_wired(request)
@@ -146,14 +151,156 @@ async def add_goal(request: Request, payload: dict[str, Any]) -> JSONResponse:
     if not description:
         return JSONResponse({"error": "description required"}, status_code=400)
     from xmclaw.cognition.state import Goal
+    import uuid as _uuid
+    raw_id = payload.get("id")
+    goal_id = (str(raw_id).strip() if raw_id else "") or _uuid.uuid4().hex
     goal = Goal(
-        id=payload.get("id", ""),
+        id=goal_id,
         description=description,
         priority=int(payload.get("priority", 5)),
         source=str(payload.get("source", "user")),
+        success_criteria=(
+            str(payload["success_criteria"]).strip()
+            if payload.get("success_criteria") else None
+        ),
+        deadline=(
+            float(payload["deadline"])
+            if payload.get("deadline") is not None else None
+        ),
+        assigned_agent=str(payload.get("assigned_agent", "main")),
     )
     cs.add_goal(goal)
-    return JSONResponse({"ok": True, "goal": {"id": goal.id, "description": goal.description}})
+    return JSONResponse({
+        "ok": True,
+        "goal": {
+            "id": goal.id,
+            "description": goal.description,
+            "priority": goal.priority,
+            "success_criteria": goal.success_criteria,
+            "assigned_agent": goal.assigned_agent,
+        },
+    })
+
+
+# ── R2: HTN plan + materialize endpoint ──────────────────────────
+
+
+@router.post("/goals/plan")
+async def plan_goal(
+    request: Request, payload: dict[str, Any],
+) -> JSONResponse:
+    """HTN-decompose a goal into a Task DAG and (optionally) submit
+    it to the TaskScheduler.
+
+    Body:
+        {
+          "description": str,           # required
+          "success_criteria": str?,
+          "priority": int? (1-10, default 5),
+          "materialize": bool? (default false)
+                                        # true → submit Tasks to scheduler
+                                        # false → return plan tree only
+                                        #         (preview / dry-run mode)
+          "max_depth": int? (default 3),
+          "max_total_cost_usd": float? (default 1.0),
+        }
+
+    Returns:
+        {
+          "plan": <BoundGoal tree as nested dict>,
+          "leaves": [...]      # flat list of atomic leaves
+          "estimated_cost_usd": float,
+          "task_ids": [...]    # populated only when materialize=true
+        }
+    """
+    description = str(payload.get("description", "")).strip()
+    if not description:
+        return JSONResponse(
+            {"error": "description required"}, status_code=400,
+        )
+
+    # Find the agent's LLM — HTNPlanner needs one and we don't want
+    # to spin a separate one. Pre-2026-05-10 callers without an agent
+    # see a friendly 503.
+    agent = getattr(request.app.state, "agent", None)
+    llm = getattr(agent, "_llm", None) if agent else None
+    if llm is None:
+        return JSONResponse({
+            "error": "no_llm_wired",
+            "hint": "/cognition/goals/plan needs an agent.LLM; "
+                    "ensure llm is configured in daemon/config.json",
+        }, status_code=503)
+
+    from xmclaw.cognition.htn_planner import HTNPlanner
+
+    planner = HTNPlanner(
+        llm=llm,
+        max_depth=int(payload.get("max_depth", 3)),
+        max_sub_goals=int(payload.get("max_sub_goals", 6)),
+        max_total_cost_usd=float(
+            payload.get("max_total_cost_usd", 1.0),
+        ),
+    )
+
+    from xmclaw.cognition.state import Goal
+    import uuid as _uuid
+    raw_id = payload.get("id")
+    goal_id = (str(raw_id).strip() if raw_id else "") or _uuid.uuid4().hex
+    goal = Goal(
+        id=goal_id,
+        description=description,
+        priority=max(1, min(10, int(payload.get("priority", 5)))),
+        success_criteria=(
+            str(payload["success_criteria"]).strip()
+            if payload.get("success_criteria") else None
+        ),
+    )
+
+    bound = await planner.plan(goal)
+
+    # Optionally submit to the scheduler.
+    task_ids: list[str] = []
+    materialize_flag = bool(payload.get("materialize", False))
+    if materialize_flag:
+        scheduler = getattr(request.app.state, "task_scheduler", None)
+        if scheduler is None:
+            return JSONResponse({
+                "error": "no_scheduler_wired",
+                "hint": "task_scheduler not in app.state — "
+                        "cognition.continuous_loop.enabled must be true",
+                "plan": _bound_to_dict(bound),
+            }, status_code=503)
+        task_ids = await planner.materialize(bound, scheduler=scheduler)
+
+    return JSONResponse({
+        "plan": _bound_to_dict(bound),
+        "leaves": [_bound_to_dict(l) for l in bound.atomic_leaves()],
+        "estimated_cost_usd": round(
+            bound.total_estimated_cost_usd(), 4,
+        ),
+        "task_ids": task_ids,
+    })
+
+
+def _bound_to_dict(b: Any) -> dict[str, Any]:
+    """Render a BoundGoal tree as JSON-friendly nested dict."""
+    out = {
+        "goal_id": b.goal_id,
+        "description": b.description,
+        "success_criteria": b.success_criteria,
+        "priority": b.priority,
+        "kind": b.kind,
+        "depth": b.depth,
+    }
+    if b.kind == "atomic":
+        out["task_prompt"] = b.task_prompt
+        out["estimated_cost_usd"] = b.estimated_cost_usd
+        if b.error:
+            out["error"] = b.error
+    else:
+        out["children"] = [_bound_to_dict(c) for c in b.children]
+        out["edges"] = [list(e) for e in b.edges]
+    return out
 
 
 @router.delete("/goals/{goal_id}")
