@@ -20,37 +20,43 @@ Two-tier grading
 
 Real SWE-bench evaluation requires a sandboxed environment: clone the
 repo at ``base_commit``, apply the candidate patch, run pytest, check
-the test transitions. That stack lives behind backlog item **B-385**
-(docker runtime). It is **not** shipped in this commit.
+the test transitions. That stack lives in :mod:`xmclaw.eval.swe_bench_sandbox`
+and is wired through :class:`xmclaw.providers.runtime.docker.DockerSkillRuntime`
+(B-385).
 
-Until B-385 lands we run a **Tier 1 heuristic** grader:
+* **Tier 1 (heuristic)** — runs in-process, no Docker, no network. It
+  extracts a unified diff block from the agent's output, verifies it
+  parses, and checks that at least one file the diff touches also
+  appears in the ground-truth ``test_patch``. Binary 1.0 / 0.0. Useful
+  for fast smoke tests and regression detection during development.
 
-* Extract a unified diff block from ``agent_text``.
-* Verify it parses as a valid unified diff.
-* Verify it touches at least one of the files mentioned in the
-  ground-truth ``test_patch`` (a strong signal the agent at least
-  identified the right files).
-* Score 1.0 / 0.0 binary; ``passed`` reflects the same.
-
-The Tier 2 grader interface is in place — calling
-:meth:`SWEBenchVerifiedSuite.grade_tier2` raises ``NotImplementedError``
-with a hint pointing at B-385 and the docker runtime hook the future
-implementation will plug into.
+* **Tier 2 (sandboxed)** — spawns an ephemeral Docker container,
+  clones the repo at ``base_commit``, applies the agent's patch, runs
+  pytest scoped to FAIL_TO_PASS + PASS_TO_PASS, and reports per-test
+  outcomes. **This is the real SWE-bench number.** Wire it in via
+  :meth:`SWEBenchVerifiedSuite.set_sandboxed_grader` (or set
+  ``XMC_SWE_BENCH_GRADER=sandboxed`` for auto-wire).
 
 **Honest disclosure** (do not delete; CI tests for this string):
 Tier 1 grading is approximate; published SWE-bench numbers come from
 Tier 2 sandboxed evaluation. **Do NOT use Tier 1 scores in marketing**
 claims, release notes, or competitive comparisons — they overestimate
-"file-touch correctness" relative to the real F→P signal.
+"file-touch correctness" relative to the real F→P signal. Tier 1 is
+**deprecated for benchmark publishing** as of Sprint 4 Tier-2 wire-up;
+it remains supported for development-time smoke tests only.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from xmclaw.eval.harness import BenchmarkSuite, TaskCase
+
+if TYPE_CHECKING:
+    from xmclaw.eval.swe_bench_sandbox import SWEBenchDockerGrader
 
 
 # HF cache lives under XMclaw's workspace so it survives across `pip
@@ -91,19 +97,55 @@ class SWEBenchVerifiedSuite(BenchmarkSuite):
     are fast. ``limit`` is honoured before any TaskCase construction so
     a smoke run with ``--limit 5`` doesn't iterate the whole corpus.
 
-    Grading is **Tier 1 heuristic** by default. See module docstring
-    for the honest-disclosure note: Tier 1 numbers are NOT comparable
-    to published SWE-bench leaderboards. **Do NOT use Tier 1 scores in
-    marketing** until B-385 wires up Tier 2 sandboxed evaluation.
+    Grading defaults to **Tier 1 heuristic**: see the module docstring
+    for the honest-disclosure note. Tier 1 numbers are NOT comparable
+    to published SWE-bench leaderboards. For real SWE-bench numbers,
+    wire up Tier 2 via :meth:`set_sandboxed_grader` (which uses the
+    Docker runtime shipped in B-385) and call
+    ``grade(case, agent_text, tier="sandboxed")``.
+
+    Setting ``XMC_SWE_BENCH_GRADER=sandboxed`` in the environment
+    auto-promotes the default tier to sandboxed when a grader is
+    available — useful for CI runs where every grade should hit the
+    real Docker pipeline. **Do NOT use Tier 1 scores in marketing**
+    once Tier 2 is available; Tier 1 is deprecated for benchmark
+    publishing.
     """
 
     SUITE_ID = "swe_bench_verified"
     UPSTREAM_DATASET = "princeton-nlp/SWE-bench_Verified"
     UPSTREAM_SPLIT = "test"
 
+    def __init__(self) -> None:
+        # Optional Tier-2 grader — set via ``set_sandboxed_grader``.
+        # We keep this as a private attribute (rather than a constructor
+        # arg) so the suite continues to satisfy the BenchmarkSuite ABC's
+        # zero-arg construction contract used by SUITE_REGISTRY.
+        self._sandboxed_grader: SWEBenchDockerGrader | None = None
+
     @property
     def suite_id(self) -> str:
         return self.SUITE_ID
+
+    # ── Tier 2 wiring ────────────────────────────────────────────────
+
+    def set_sandboxed_grader(
+        self, grader: "SWEBenchDockerGrader | None",
+    ) -> None:
+        """Attach a Docker-backed Tier-2 grader.
+
+        Pass ``None`` to revert to Tier-1-only operation. Once set,
+        ``grade(case, agent_text, tier="sandboxed")`` routes through
+        :meth:`xmclaw.eval.swe_bench_sandbox.SWEBenchDockerGrader.grade`
+        instead of the heuristic. Default tier remains Tier 1 unless
+        ``XMC_SWE_BENCH_GRADER=sandboxed`` is set in the environment.
+        """
+        self._sandboxed_grader = grader
+
+    def has_sandboxed_grader(self) -> bool:
+        """True iff a Tier-2 grader is wired and ``tier="sandboxed"``
+        will route through it."""
+        return self._sandboxed_grader is not None
 
     def load_tasks(self, limit: int | None = None) -> list[TaskCase]:
         """Fetch the SWE-bench Verified split and convert each row to a
@@ -190,17 +232,45 @@ class SWEBenchVerifiedSuite(BenchmarkSuite):
     def grade(
         self, case: TaskCase, agent_text: str, **extra: Any,
     ) -> tuple[bool, float, dict[str, Any]]:
-        """Tier 1 heuristic grader (default).
+        """Grade an agent's output against the SWE-bench task.
 
-        See class / module docstring for the honest-disclosure note.
-        Tier 1 returns ``(passed, score, meta)`` where ``passed`` is
-        True iff (a) the agent emitted a parseable unified diff and
-        (b) at least one file the diff touches also appears in the
-        ground-truth ``test_patch``. Score is binary 0/1.
+        Two tiers are available:
 
-        ``extra`` is reserved — Tier 2 will accept ``runtime=...`` to
-        receive a docker-backed evaluator.
+        * ``tier="heuristic"`` (default) — Tier 1, in-process, no Docker.
+          Returns ``(passed, score, meta)`` where ``passed`` is True iff
+          the agent emitted a parseable unified diff AND at least one
+          file the diff touches also appears in the ground-truth
+          ``test_patch``. Binary 0/1 score. See the marketing-warning
+          note in the module docstring.
+
+        * ``tier="sandboxed"`` — Tier 2, routes through the
+          Docker-backed grader wired via :meth:`set_sandboxed_grader`.
+          Spawns a container, applies the patch, runs pytest scoped to
+          FAIL_TO_PASS + PASS_TO_PASS, returns per-test verdicts in
+          ``meta``. Raises ``RuntimeError`` if no grader is wired.
+
+        Sandboxed mode also auto-engages when the environment variable
+        ``XMC_SWE_BENCH_GRADER=sandboxed`` is set AND a grader is
+        wired — convenient for CI runs that should always hit the real
+        Docker pipeline.
+
+        ``extra`` is reserved for future tiers (e.g. judge-based grading);
+        unknown keys are ignored.
         """
+        tier = str(extra.get("tier") or "").lower()
+        if not tier and os.environ.get("XMC_SWE_BENCH_GRADER", "").lower() == "sandboxed":
+            tier = "sandboxed"
+
+        if tier == "sandboxed":
+            return self._grade_sandboxed(case, agent_text)
+
+        # tier="heuristic" (default) or any unrecognised tier value.
+        return self._grade_heuristic(case, agent_text)
+
+    def _grade_heuristic(
+        self, case: TaskCase, agent_text: str,
+    ) -> tuple[bool, float, dict[str, Any]]:
+        """Tier 1 grader implementation. See ``grade()`` docstring."""
         if not agent_text or not agent_text.strip():
             return False, 0.0, {
                 "tier": 1,
@@ -254,33 +324,100 @@ class SWEBenchVerifiedSuite(BenchmarkSuite):
         }
 
     def grade_tier2(
-        self, case: TaskCase, agent_text: str, **extra: Any,
+        self, case: TaskCase, agent_text: str, **extra: Any,  # noqa: ARG002
     ) -> tuple[bool, float, dict[str, Any]]:
-        """Tier 2 sandboxed grader — NOT YET IMPLEMENTED.
+        """Tier 2 sandboxed grader — routes through the wired
+        :class:`SWEBenchDockerGrader`.
 
-        The real SWE-bench grader needs to:
+        Equivalent to ``grade(case, agent_text, tier="sandboxed")`` —
+        kept as a separate method so existing callers can continue to
+        spell their intent explicitly. Raises ``RuntimeError`` if no
+        sandboxed grader has been wired via :meth:`set_sandboxed_grader`.
 
-        1. Clone ``case.metadata['repo']`` at ``base_commit`` into a
-           temp workspace (or pull from a pre-built docker image).
-        2. Apply ``case.expected_signals['test_patch']``.
-        3. Apply the candidate patch from ``agent_text``.
-        4. Run pytest scoped to ``FAIL_TO_PASS`` + ``PASS_TO_PASS``.
-        5. Verify FAIL_TO_PASS tests went F→P and PASS_TO_PASS
-           stayed P.
-
-        That requires a docker runtime + image cache, which is tracked
-        as backlog **B-385**. To wire this up: pass a runtime via
-        ``extra['runtime']`` and call its ``run_swebench_eval`` hook.
+        Sprint 4 Tier-2 (B-385 wire-up): the underlying Docker runtime
+        ships in :mod:`xmclaw.providers.runtime.docker`; the
+        :mod:`xmclaw.eval.swe_bench_sandbox` module is the consumer
+        that orchestrates clone → patch-apply → pytest.
         """
-        # TODO(B-385): wire to docker runtime — see module docstring.
-        raise NotImplementedError(
-            "SWE-bench Tier 2 grading is not implemented yet. "
-            "Wire to the docker runtime tracked as B-385; the candidate "
-            "patch must be applied to the repo at base_commit, "
-            "FAIL_TO_PASS / PASS_TO_PASS tests run, and transitions "
-            "verified. Use grade() (Tier 1) for heuristic numbers in "
-            "the meantime — but do NOT publish those as SWE-bench scores."
+        return self._grade_sandboxed(case, agent_text)
+
+    def _grade_sandboxed(
+        self, case: TaskCase, agent_text: str,
+    ) -> tuple[bool, float, dict[str, Any]]:
+        """Tier 2 grader implementation.
+
+        Pulls ``repo`` / ``base_commit`` from ``case.metadata`` and the
+        ``test_patch`` / FAIL_TO_PASS / PASS_TO_PASS lists from
+        ``case.expected_signals``. Runs the wired
+        :class:`SWEBenchDockerGrader` synchronously off the caller's
+        event loop so the suite-Runner pattern (which calls ``grade``
+        from a non-async context) keeps working.
+        """
+        grader = self._sandboxed_grader
+        if grader is None:
+            raise RuntimeError(
+                "SWE-bench Tier 2 (sandboxed) grading requires a "
+                "DockerSkillRuntime-backed grader. Wire one via "
+                "SWEBenchVerifiedSuite.set_sandboxed_grader(...). "
+                "See xmclaw.eval.swe_bench_sandbox.SWEBenchDockerGrader "
+                "(B-385 wire-up). For development-time smoke tests "
+                "use grade(...) (Tier 1 heuristic) — but do NOT "
+                "publish those as SWE-bench scores."
+            )
+
+        repo = str(case.metadata.get("repo") or "")
+        base_commit = str(case.metadata.get("base_commit") or "")
+        es = case.expected_signals or {}
+        test_patch = str(es.get("test_patch") or "")
+        fail_to_pass = list(es.get("fail_to_pass") or [])
+        pass_to_pass = list(es.get("pass_to_pass") or [])
+
+        coro = grader.grade(
+            agent_patch=agent_text,
+            repo=repo,
+            base_commit=base_commit,
+            fail_to_pass=fail_to_pass,
+            pass_to_pass=pass_to_pass,
+            test_patch=test_patch,
         )
+        result = _run_coroutine_sync(coro)
+
+        meta: dict[str, Any] = {
+            "tier": 2,
+            "patch_applied": result.patch_applied,
+            "fail_to_pass_results": result.fail_to_pass_results,
+            "pass_to_pass_results": result.pass_to_pass_results,
+            "container_id": result.container_id,
+            "latency_s": result.latency_s,
+        }
+        if result.error:
+            meta["error"] = result.error
+        return result.passed, result.score, meta
+
+
+def _run_coroutine_sync(coro: Any) -> Any:
+    """Run an awaitable in a fresh loop and return its result.
+
+    The Runner / CLI call ``grade()`` from non-async code, but the
+    Tier-2 grader's ``grade()`` is async (it ``await``s docker calls
+    via ``asyncio.to_thread``). We don't want to require the caller
+    to run inside a loop, so we spin up a fresh one here. If the
+    caller IS already inside a loop (rare for grading), we fall
+    through to ``asyncio.run`` which raises clearly — the right fix
+    is then to call the grader's ``grade()`` directly.
+    """
+    try:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+    except RuntimeError as exc:
+        if "running event loop" in str(exc).lower():
+            # Caller is already inside a loop — let asyncio.run raise
+            # its own clearer message.
+            return asyncio.run(coro)
+        raise
 
 
 def _extract_diff_files(text: str) -> set[str]:

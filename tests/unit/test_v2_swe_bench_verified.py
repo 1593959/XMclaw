@@ -392,15 +392,22 @@ def test_tier1_grade_missing_test_patch_returns_half_score():
 # ── Tier 2 grader ──────────────────────────────────────────────────────
 
 
-def test_tier2_grade_raises_not_implemented_with_b385_hint():
-    """Tier 2 must raise NotImplementedError until B-385 lands and
-    point at the docker-runtime wiring."""
+def test_tier2_grade_without_grader_raises_runtime_error():
+    """Tier 2 must raise a clear RuntimeError pointing at the
+    Sprint 4 Tier-2 wire-up when no grader has been attached.
+
+    The previous behaviour was ``NotImplementedError`` while B-385
+    (docker runtime) was pending; once Sprint 4 Tier-2 lands, the
+    grader is wired through :class:`SWEBenchDockerGrader` and the
+    "not yet" error is replaced with a "wire one up" RuntimeError.
+    """
     suite = SWEBenchVerifiedSuite()
-    with pytest.raises(NotImplementedError) as exc_info:
+    assert suite.has_sandboxed_grader() is False
+    with pytest.raises(RuntimeError) as exc_info:
         suite.grade_tier2(_case(), "any agent text")
     msg = str(exc_info.value)
-    assert "B-385" in msg
-    assert "docker" in msg.lower()
+    assert "set_sandboxed_grader" in msg
+    assert "docker" in msg.lower() or "Docker" in msg
 
 
 # ── Diff parsing helper (covered indirectly above; explicit smoke) ────
