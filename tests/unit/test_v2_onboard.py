@@ -184,6 +184,14 @@ class TestSmokeTest:
 
 
 class TestRunOnboard:
+    # B-386-followup: tests/unit/conftest.py autouse-patches get_secret
+    # to return None across the unit suite. This test stores a secret
+    # via ``run_onboard`` and then reads it back through ``get_secret``,
+    # so it MUST opt out of the patch via ``@pytest.mark.real_secrets``.
+    # Without the marker the round-trip silently breaks (get_secret
+    # returns None even though set_secret succeeded), masking real
+    # regressions in the onboarding wizard's secret-write path.
+    @pytest.mark.real_secrets
     def test_happy_path_writes_config_and_secret(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
