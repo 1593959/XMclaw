@@ -161,11 +161,11 @@
     "_consumer": "lifespan (MCP registry); not in factory.py. On Windows: requires `npx` on PATH for official @modelcontextprotocol/server-* packages — install Node.js first."
   },
   "cognition": {
-    "_comment": "Jarvisification 认知架构 — 默认 enabled=false 完全等价 Phase 5 之前行为。enabled=true 启用 Phase 1-5 mechanics（CognitiveState / MemoryGraph / TaskScheduler / FileWatcher / EvolutionLoop）。continuous_loop.enabled=true 进一步打开 Phase 6（PerceptionBus + AttentionFilter + ReasoningEngine + Planner + GoalGenerator + SelfExperimentLoop + CognitiveDaemon heartbeat）。",
-    "enabled": false,
+    "_comment": "Jarvisification 认知架构 — 现在默认 ON。enabled=true 启用 Phase 1-5 mechanics（CognitiveState / MemoryGraph / TaskScheduler / FileWatcher / EvolutionLoop）。continuous_loop.enabled=true 进一步打开 Phase 6（PerceptionBus + AttentionFilter + ReasoningEngine + Planner + GoalGenerator + SelfExperimentLoop + CognitiveDaemon heartbeat）。autonomy_level=0 默认 = 只观察不动作，UI 看 attention focus；要主动提示翻 50；要自主行动翻 100（要 double-confirm + audit log）。要完全关回 Phase 5 之前行为，把 enabled 设 false。",
+    "enabled": true,
     "continuous_loop": {
-      "_comment_phase_6": "Phase 6 持续认知循环。打开 = daemon 持续运转，1Hz 心跳排空 PerceptionBus、计算 salience、按 autonomy_level 决定是否动作。autonomy_level: 0=只观察、50=主动提示不动作、100=full Jarvis（要 double-confirm + audit log）。详见 docs/JARVIS_PHASE_6_DESIGN.md §4 backward compat 矩阵。",
-      "enabled": false,
+      "_comment_phase_6": "Phase 6 持续认知循环。1Hz 心跳排空 PerceptionBus、计算 salience、按 autonomy_level 决定是否动作。autonomy_level: 0=只观察、50=主动提示不动作、100=full Jarvis。详见 docs/JARVIS_PHASE_6_DESIGN.md §4。",
+      "enabled": true,
       "autonomy_level": 0,
       "heartbeat_hz": 1.0,
       "action_threshold": 0.6,
