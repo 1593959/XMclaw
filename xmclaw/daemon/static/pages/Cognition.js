@@ -70,6 +70,7 @@ export function CognitionPage({ token }) {
   const [proposals, setProposals] = useState([]);
   const [graphStats, setGraphStats] = useState(null);
   const [taskGraph, setTaskGraph] = useState(null);
+  const [daemonHealth, setDaemonHealth] = useState(null);
   const [error, setError] = useState(null);
   const dagRef = useRef(null);
   // R6: which top-level "心智" tab is active. Default = state
@@ -80,12 +81,13 @@ export function CognitionPage({ token }) {
 
   async function loadAll() {
     try {
-      const [s, t, p, g, tg] = await Promise.all([
+      const [s, t, p, g, tg, dh] = await Promise.all([
         apiGet("/api/v2/cognition/state", token),
         apiGet("/api/v2/cognition/tasks", token),
         apiGet("/api/v2/cognition/proposals", token),
         apiGet("/api/v2/cognition/graph/stats", token),
         apiGet("/api/v2/cognition/tasks/graph", token),
+        apiGet("/api/v2/cognition/daemon/health", token).catch(() => null),
       ]);
       if (!isMountedRef.current) return;
       setCogState(s);
@@ -93,6 +95,7 @@ export function CognitionPage({ token }) {
       setProposals(p.proposals || []);
       setGraphStats(g);
       setTaskGraph(tg);
+      setDaemonHealth(dh && dh.ok ? dh : null);
       setState("ready");
     } catch (e) {
       if (!isMountedRef.current) return;
@@ -278,6 +281,47 @@ export function CognitionPage({ token }) {
         })}
       </nav>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:14px;align-items:start">
+
+      <!-- Daemon Health (Phase E) -->
+      <${Card} title="Cognitive Daemon">
+        ${!daemonHealth
+          ? html`<div style="opacity:.6;font-size:.9rem">daemon 未连接</div>`
+          : html`
+            <div style="display:flex;flex-direction:column;gap:10px">
+              <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+                <${Badge} text=${daemonHealth.status.toUpperCase()} tone=${
+                  daemonHealth.status === "healthy" ? "success" :
+                  daemonHealth.status === "degraded" ? "warning" : "danger"
+                } />
+                <span style="font-size:.85rem;opacity:.8">
+                  ticks: <strong>${daemonHealth.tick_count}</strong>
+                </span>
+                ${daemonHealth.memory_mb != null
+                  ? html`<span style="font-size:.85rem;opacity:.8">mem: <strong>${daemonHealth.memory_mb} MB</strong></span>`
+                  : null}
+              </div>
+              ${daemonHealth.last_tick
+                ? html`
+                  <div style="font-size:.8rem;opacity:.7;background:var(--color-background);border-radius:6px;padding:8px 12px">
+                    <div>last tick #${daemonHealth.last_tick.tick}</div>
+                    <div style="margin-top:4px">
+                      ${Object.entries(daemonHealth.last_tick.latency_ms || {}).map(([k, v]) => html`
+                        <span key=${k} style="display:inline-block;margin-right:10px">${k}: ${v}ms</span>
+                      `)}
+                    </div>
+                    ${(daemonHealth.last_tick.errors || []).length
+                      ? html`
+                        <div style="margin-top:6px;color:var(--xmc-danger);font-size:.75rem">
+                          ⚠ ${daemonHealth.last_tick.errors.join("; ")}
+                        </div>
+                      `
+                      : null}
+                  </div>
+                `
+                : null}
+            </div>
+          `}
+      <//>
 
       <!-- Attention Focus -->
       <${Card} title="注意力焦点">
