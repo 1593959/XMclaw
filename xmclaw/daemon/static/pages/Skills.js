@@ -275,7 +275,7 @@ export function SkillsPage({ token }) {
           <h2 id="skills-title" class="xmc-h-page__title">技能</h2>
         </header>
         <div class="xmc-h-page__body">
-          <div class="xmc-h-loading">载入中…</div>
+          <div style="padding:1rem"><${Skeleton} lines=${4} /></div>
         </div>
       </section>
     `;
@@ -412,6 +412,9 @@ export function SkillsPage({ token }) {
                   <p style="margin:.4rem 0 0;font-size:.78rem;opacity:.75">
                     想关共享扫描？<code>daemon/config.json</code> 加 <code>"evolution":{"skill_paths":{"extra":[]}}</code>。<br/>
                     想加自定义路径（含 <code>~/.claude/skills</code>）？同字段写绝对路径列表。
+                  </p>
+                  <p style="margin:.6rem 0 0">
+                    <a href="/ui/marketplace" style="display:inline-block;padding:.4rem .8rem;background:var(--xmc-accent);color:var(--xmc-accent-fg);border-radius:6px;text-decoration:none;font-size:.82rem">去技能商店看看 →</a>
                   </p>
                 </div>`
               }</div>`

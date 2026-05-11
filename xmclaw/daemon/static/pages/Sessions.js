@@ -36,6 +36,7 @@ const html = window.__xmc.htm.bind(h);
 
 import { apiGet } from "../lib/api.js";
 import { toast } from "../lib/toast.js";
+import { Skeleton } from "../components/atoms/skeleton.js";
 import { confirmDialog } from "../lib/dialog.js";
 // B-323 + B-341: SessionRow / SOURCE_CONFIG / inferSource / timeAgo
 // + Icon / SVG paths / MessageList / DeleteConfirmDialog all live in
@@ -362,14 +363,14 @@ export function SessionsPage({ token }) {
           : null}
 
         ${sessions === null
-          ? html`<div class="xmc-h-loading">载入中…</div>`
+          ? html`<div style="padding:1rem"><${Skeleton} lines=${5} /></div>`
           : filtered.length === 0
             ? html`<div class="xmc-h-empty">${
                 query ? "没有匹配的会话。"
                 : (sessions.length > 0 && !showInternal
                     ? "可见会话已过滤完。点击右上角 '显示内部' 看 reflect:/dream: 等。"
-                    : "还没有保存的会话 — 在 Chat 页发条消息试试。")
-              }</div>`
+                    : html`<div style="text-align:center;padding:2rem"><div style="font-size:1.1rem;margin-bottom:.5rem">💬 还没有会话</div><div style="font-size:.85rem;opacity:.7;margin-bottom:1rem">在 Chat 页发条消息，会话会自动保存到这里。</div><a href="/ui/chat" style="display:inline-block;padding:.5rem 1rem;background:var(--xmc-accent);color:var(--xmc-accent-fg);border-radius:6px;text-decoration:none;font-size:.85rem">去对话 →</a></div>`)
+              </div>`
             : html`
               <div class="xmc-h-srow__list">
                 ${filtered.map((s) => html`

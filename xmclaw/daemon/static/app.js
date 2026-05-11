@@ -100,6 +100,8 @@ import { LogsPage } from "./pages/Logs.js";
 import { AnalyticsPage } from "./pages/Analytics.js";
 import { DocsPage } from "./pages/Docs.js";
 import { TracePage } from "./pages/Trace.js";
+import { FilesPage } from "./pages/Files.js";
+import { DashboardPage } from "./pages/Dashboard.js";
 
 // ── WS handle (singleton) ─────────────────────────────────────────────
 
@@ -272,6 +274,9 @@ async function boot() {
   // 3. Connect with the persisted active agent (defaults to 'main').
   connectFor(sid, auth.token, store.getState().session.activeAgentId || "main");
   fetchAgentsForPicker(store, auth.token);  // B-133: load picker list
+
+  // Iteration 2: start global event-banner polling.
+  if (auth.token) startEventBanner(auth.token);
 }
 
 const switchAgent = (agentId) =>
@@ -339,6 +344,7 @@ function clearChat() {
 // to keep app.js under the 500-line UI budget). Bind to our store +
 // wsHandle here.
 import { createChatActions } from "./lib/chat_actions.js";
+import { startEventBanner } from "./lib/event_banner.js";
 const _CHAT_HELPERS = createChatActions({
   store, getWsHandle: () => wsHandle,
 });
@@ -352,19 +358,17 @@ const CHAT_ACTIONS = {
   clearChat,
   retryLast,
   undoLast,
-  togglePlan: (force) => {
-    if (typeof force === "boolean") {
-      store.setState((s) => ({ chat: { ...s.chat, planMode: force } }));
-    } else {
-      togglePlan();
-    }
-  },
-  toggleDebug: () => {
-    toast.info("Debug 模式 toggle (Phase B-9.x): 当前是 toast-only");
-  },
+  togglePlan: (force) => typeof force === "boolean"
+    ? store.setState((s) => ({ chat: { ...s.chat, planMode: force } }))
+    : togglePlan(),
+  toggleDebug: () => toast.info("Debug 模式 toggle (Phase B-9.x): 当前是 toast-only"),
 };
 
 // ── Routes ────────────────────────────────────────────────────────────
+
+const { useEffect } = window.__xmc.preact_hooks;
+
+let _navigate = null;
 
 function Placeholder({ title, subtitle }) {
   return html`
@@ -372,10 +376,19 @@ function Placeholder({ title, subtitle }) {
       <h2 id="placeholder-title">${title}</h2>
       <p class="xmc-placeholder__subtitle">${subtitle}</p>
       <p class="xmc-placeholder__hint">
-        即将上线 — 见 <code>docs/FRONTEND_DESIGN.md §4</code>。
+        即将上线 — 见 <code>docs/FRONTEND_REWORK.md</code>。
       </p>
     </section>
   `;
+}
+
+function Redirect({ to }) {
+  useEffect(() => {
+    if (_navigate) {
+      _navigate(to, { replace: true });
+    }
+  }, [to]);
+  return html`<div style="padding:2rem;text-align:center;color:var(--xmc-fg-muted)">正在跳转…</div>`;
 }
 
 const routes = {
@@ -399,7 +412,6 @@ const routes = {
   `,
   "/sessions": (state) => html`<${SessionsPage} token=${state.auth.token} />`,
   "/cron": (state) => html`<${CronPage} token=${state.auth.token} />`,
-  "/config": (state) => html`<${ConfigPage} token=${state.auth.token} />`,
   "/logs":      (state) => html`<${LogsPage}      token=${state.auth.token} />`,
   // B-157: /env 路由删除 (B-137 已合入 /settings)。旧书签 → "未找到"
   // 路由由通配符兜底，不会 404。EnvPage 文件也一并删了。
@@ -416,8 +428,12 @@ const routes = {
   "/memory": (state) => html`<${MemoryPage} token=${state.auth.token} />`,
   "/tools": (state) => html`<${ToolsPage} token=${state.auth.token} />`,
   "/security": (state) => html`<${SecurityPage} token=${state.auth.token} />`,
-  "/backup": (state) => html`<${BackupPage} token=${state.auth.token} />`,
-  "/doctor": (state) => html`<${DoctorPage} token=${state.auth.token} />`,
+  // Phase F: /config /backup /doctor 合并到 /settings
+  "/config":  () => html`<${Redirect} to="/settings" />`,
+  "/backup":  () => html`<${Redirect} to="/settings" />`,
+  "/doctor":  () => html`<${Redirect} to="/settings" />`,
+  "/files":   (state) => html`<${FilesPage}   token=${state.auth.token} />`,
+  "/dashboard": (state) => html`<${DashboardPage} token=${state.auth.token} />`,
   // B-159: /insights 整合到 /trace。route 留通配符兜底，不再注册。
   "/settings": (state) => html`<${SettingsPage} token=${state.auth.token} />`,
   "*": () => html`<${Placeholder} title="未找到" subtitle="未匹配的路由" />`,
@@ -461,7 +477,8 @@ function renderApp() {
   render(html`<${AppErrorBoundary}><${App} state=${store.getState()} /></${AppErrorBoundary}>`, root);
 }
 
-installRouter(store, routes);
+const { navigate } = installRouter(store, routes);
+_navigate = navigate;
 store.subscribe(renderApp);
 renderApp();
 

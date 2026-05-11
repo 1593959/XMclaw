@@ -96,62 +96,49 @@ export function Icon({ name, className }) {
 }
 
 // Built-in nav (mirrors Hermes BUILTIN_NAV_REST + CHAT_NAV_ITEM).
-// B-151: nav 5 分组 + 折叠
+// Phase F: nav 4 分组 + 折叠 — 从 21 项合并到 14 项，减少认知负担。
 //
-// 之前 20 项平铺在侧栏，新手扫一眼眼花。按用途归 5 组:
-//   💬 对话/通信  对话 / 会话 / 智能体 / 聊天接入
-//   🧠 能力       技能 / 工具 / 记忆 / 进化
-//   ⏱ 自动化     Cron / 工作区
-//   👁 观察       思考 / 日志 / 分析 / 洞察
-//   ⚙ 系统       设置 / 高级配置 / 安全 / 诊断 / 备份 / 文档
+//   💬 核心       对话 / 会话
+//   🧠 智能       技能 / 技能商店 / 进化 / 认知 / 记忆
+//   ⚙️ 配置       设置 / 文件 / 定时任务 / 工作区
+//   👁️ 观察       分析 / 事件 / 日志
 //
+// 被移除导航但保留路由的页面：/agents /channels /tools /security /doctor
+// /backup /config /docs — 它们的功能已合并到设置页或通过其他入口访问。
 // 每组可折叠，活跃路由的组自动展开。状态存 localStorage。
 export const NAV_GROUPS = [
   {
-    id: "comm", label: "对话与通信", icon: "Terminal",
+    id: "comm", label: "核心", icon: "Terminal",
     items: [
-      { path: "/chat",      label: "对话",     icon: "Terminal" },
-      { path: "/sessions",  label: "会话",     icon: "MessageSquare" },
-      { path: "/agents",    label: "智能体",   icon: "Heart" },
-      { path: "/channels",  label: "聊天接入（入站）", icon: "MessageSquare" },
+      { path: "/chat",      label: "对话", icon: "Terminal" },
+      { path: "/sessions",  label: "会话", icon: "MessageSquare" },
     ],
   },
   {
-    id: "capabilities", label: "能力", icon: "Sparkles",
+    id: "capabilities", label: "智能", icon: "Sparkles",
     items: [
-      { path: "/skills",    label: "技能", icon: "Package" },
+      { path: "/skills",      label: "技能",     icon: "Package" },
       { path: "/marketplace", label: "技能商店", icon: "Package" },
-      { path: "/tools",     label: "工具", icon: "Wrench" },
-      { path: "/memory",    label: "记忆", icon: "Database" },
-      { path: "/evolution", label: "进化", icon: "Sparkles", accent: true },
-      { path: "/cognition", label: "认知", icon: "Eye" },
+      { path: "/evolution",   label: "进化",     icon: "Sparkles", accent: true },
+      { path: "/cognition",   label: "认知",     icon: "Eye" },
+      { path: "/memory",      label: "记忆",     icon: "Database" },
     ],
   },
   {
-    id: "automation", label: "自动化", icon: "Clock",
+    id: "system", label: "配置", icon: "Settings",
     items: [
-      { path: "/cron",      label: "Cron",   icon: "Clock" },
-      { path: "/workspace", label: "工作区", icon: "FileText" },
+      { path: "/settings",  label: "设置",     icon: "Settings" },
+      { path: "/files",     label: "文件",     icon: "FileText" },
+      { path: "/cron",      label: "定时任务", icon: "Clock" },
+      { path: "/workspace", label: "工作区",   icon: "FileText" },
     ],
   },
   {
     id: "observe", label: "观察", icon: "Eye",
     items: [
-      // B-159: /insights 删 (pure subset of /trace)
-      { path: "/trace",     label: "思考", icon: "Activity" },
-      { path: "/logs",      label: "日志", icon: "FileText" },
       { path: "/analytics", label: "分析", icon: "BarChart3" },
-    ],
-  },
-  {
-    id: "system", label: "系统", icon: "Settings",
-    items: [
-      { path: "/settings",  label: "设置",     icon: "Settings" },
-      { path: "/security",  label: "安全",     icon: "Shield" },
-      { path: "/doctor",    label: "诊断",     icon: "Heart" },
-      { path: "/backup",    label: "备份",     icon: "Database" },
-      { path: "/config",    label: "高级配置", icon: "Settings" },
-      { path: "/docs",      label: "文档",     icon: "BookOpen" },
+      { path: "/trace",     label: "事件", icon: "Activity" },
+      { path: "/logs",      label: "日志", icon: "FileText" },
     ],
   },
 ];

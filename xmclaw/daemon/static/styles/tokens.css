@@ -134,6 +134,11 @@
   --xmc-topbar-h: 38px;
 }
 
+@keyframes xmc-skel-pulse {
+  0%, 100% { opacity: .35; }
+  50% { opacity: .55; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   :root {
     --xmc-transition-fast: 0s;

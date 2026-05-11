@@ -11,26 +11,14 @@ const { h } = window.__xmc.preact;
 const { useEffect, useState, useRef } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
-import { apiGet } from "../lib/api.js";
+import { apiGet, apiPost, apiDelete } from "../lib/api.js";
 import { useSafePost } from "../lib/use_safe_fetch.js";
 import { toast } from "../lib/toast.js";
-// R6 (2026-05-10) — 心智可视化新增的两个 panel:
-//   * 内心独白 — 显示 ReflectionCycle (R1) 产生的 INNER_MONOLOGUE 事件
-//   * 建议盒子 — 显示 SuggestionInbox (R5) 待审 / 已审建议
+import { Skeleton } from "../components/atoms/skeleton.js";
 import { InnerMonologuePanel } from "./_panels/mind_inner_monologue.js";
 import { SuggestionsPanel } from "./_panels/mind_suggestions.js";
-
-// Lazy-load Mermaid for DAG visualisation.
-let _mermaidPromise = null;
-function loadMermaid() {
-  if (!_mermaidPromise) {
-    _mermaidPromise = import("https://esm.sh/mermaid@10/dist/mermaid.esm.min.mjs").then((m) => {
-      m.default.initialize({ startOnLoad: false, theme: "dark" });
-      return m.default;
-    });
-  }
-  return _mermaidPromise;
-}
+import { TaskDag } from "./_panels/cognition_task_dag.js";
+import { ExperimentsPanel } from "./_panels/cognition_experiments.js";
 
 function fmtTs(ts) {
   if (!ts) return "—";
@@ -71,7 +59,10 @@ export function CognitionPage({ token }) {
   const [graphStats, setGraphStats] = useState(null);
   const [taskGraph, setTaskGraph] = useState(null);
   const [daemonHealth, setDaemonHealth] = useState(null);
+  const [history, setHistory] = useState([]);
   const [error, setError] = useState(null);
+  const [gDraft, setGDraft] = useState("");
+  const [tDraft, setTDraft] = useState("");
   const dagRef = useRef(null);
   // R6: which top-level "心智" tab is active. Default = state
   // (the legacy live-state grid). New tabs: 内心独白 + 建议盒子.
@@ -88,6 +79,7 @@ export function CognitionPage({ token }) {
         apiGet("/api/v2/cognition/graph/stats", token),
         apiGet("/api/v2/cognition/tasks/graph", token),
         apiGet("/api/v2/cognition/daemon/health", token).catch(() => null),
+        apiGet("/api/v2/cognition/daemon/history?limit=30", token).catch(() => ({ ticks: [] })),
       ]);
       if (!isMountedRef.current) return;
       setCogState(s);
@@ -96,6 +88,7 @@ export function CognitionPage({ token }) {
       setGraphStats(g);
       setTaskGraph(tg);
       setDaemonHealth(dh && dh.ok ? dh : null);
+      setHistory((hData && hData.ticks) || []);
       setState("ready");
     } catch (e) {
       if (!isMountedRef.current) return;
@@ -163,7 +156,7 @@ export function CognitionPage({ token }) {
   }
 
   if (state === "loading") {
-    return html`<div style="padding:40px;text-align:center">加载认知状态…</div>`;
+    return html`<div style="padding:2rem;max-width:720px;margin:0 auto"><${Skeleton} lines=${6} /></div>`;
   }
   if (state === "error") {
     // 503 with structured "reason" field (from routers/cognition.py
@@ -232,6 +225,7 @@ export function CognitionPage({ token }) {
     { id: "state", label: "实时状态", hint: "注意力焦点 / 目标 / 任务 / 提案 / 图谱" },
     { id: "monologue", label: "内心独白", hint: "Agent 的反思 / 计划 / 担忧 (R1 ReflectionCycle)" },
     { id: "suggestions", label: "建议盒子", hint: "AutonomyPolicy surface 给你审批的主动建议 (R5)" },
+    { id: "experiments", label: "实验记录", hint: "A/B 实验结果" },
   ];
   const activeMeta = tabs.find((t) => t.id === tab);
 
@@ -257,6 +251,7 @@ export function CognitionPage({ token }) {
         </nav>
         ${tab === "monologue" ? html`<${InnerMonologuePanel} token=${token} />` : null}
         ${tab === "suggestions" ? html`<${SuggestionsPanel} token=${token} />` : null}
+        ${tab === "experiments" ? html`<${ExperimentsPanel} token=${token} />` : null}
       </section>
     `;
   }
@@ -319,6 +314,19 @@ export function CognitionPage({ token }) {
                   </div>
                 `
                 : null}
+              ${history.length > 1 ? html`
+                <div style="margin-top:8px">
+                  <div style="font-size:.7rem;opacity:.6;margin-bottom:4px">最近 ${history.length} ticks latency</div>
+                  <div style="display:flex;align-items:flex-end;gap:2px;height:40px">
+                    ${history.map((h, i) => {
+                      const total = Object.values(h.latency_ms || {}).reduce((a, b) => a + b, 0);
+                      const max = Math.max(...history.map(x => Object.values(x.latency_ms || {}).reduce((a, b) => a + b, 0)), 1);
+                      const pct = Math.min(100, (total / max) * 100);
+                      return html`<div key=${i} title=${`tick ${h.tick}: ${total}ms`} style="flex:1;height:${pct}%;background:${total > 500 ? 'var(--xmc-danger)' : total > 200 ? '#f39c12' : 'var(--xmc-accent)'};border-radius:2px;min-width:3px"></div>`;
+                    })}
+                  </div>
+                </div>
+              ` : null}
             </div>
           `}
       <//>
@@ -345,6 +353,10 @@ export function CognitionPage({ token }) {
 
       <!-- Goals -->
       <${Card} title="当前目标">
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <input value=${gDraft} onInput=${e => setGDraft(e.target.value)} placeholder="新目标描述…" style="flex:1;padding:4px 8px;border-radius:4px;border:1px solid var(--color-border);background:transparent;color:inherit" />
+          <button onClick=${async () => { if(!gDraft.trim())return; try{await apiPost("/api/v2/cognition/goals",{description:gDraft.trim(),priority:5},token);setGDraft("");loadAll();}catch(e){toast.error(String(e.message||e));} }} style="font-size:.75rem;padding:4px 10px">添加</button>
+        </div>
         ${!cogState?.goals?.length
           ? html`<div style="opacity:.6;font-size:.9rem">暂无目标</div>`
           : html`
@@ -357,6 +369,7 @@ export function CognitionPage({ token }) {
                   </div>
                   <${Badge} text=${`P${g.priority}`} tone=${g.priority >= 8 ? "danger" : g.priority >= 5 ? "warning" : "neutral"} />
                   <${Badge} text=${g.status} tone=${g.status === "active" ? "info" : "success"} />
+                  <button onClick=${async () => { try{await apiDelete(`/api/v2/cognition/goals/${g.id}`,token);loadAll();}catch(e){toast.error(String(e.message||e));} }} style="font-size:.7rem;padding:3px 8px">完成</button>
                 </div>
               `)}
             </div>
@@ -365,6 +378,10 @@ export function CognitionPage({ token }) {
 
       <!-- Tasks -->
       <${Card} title="任务队列">
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <input value=${tDraft} onInput=${e => setTDraft(e.target.value)} placeholder="任务 prompt…" style="flex:1;padding:4px 8px;border-radius:4px;border:1px solid var(--color-border);background:transparent;color:inherit" />
+          <button onClick=${async () => { if(!tDraft.trim())return; try{await apiPost("/api/v2/cognition/tasks",{prompt:tDraft.trim(),priority:5},token);setTDraft("");loadAll();}catch(e){toast.error(String(e.message||e));} }} style="font-size:.75rem;padding:4px 10px">提交</button>
+        </div>
         ${!tasks.length
           ? html`<div style="opacity:.6;font-size:.9rem">队列为空</div>`
           : html`
@@ -375,11 +392,8 @@ export function CognitionPage({ token }) {
                     <div style="font-size:.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${t.prompt}</div>
                     <div style="font-size:.75rem;opacity:.6">retries: ${t.retries}/${t.max_retries}</div>
                   </div>
-                  <${Badge} text=${t.status} tone=${
-                    t.status === "completed" ? "success" :
-                    t.status === "failed" || t.status === "escalated" ? "danger" :
-                    t.status === "running" ? "info" : "neutral"
-                  } />
+                  <${Badge} text=${t.status} tone=${t.status === "completed" ? "success" : t.status === "failed" || t.status === "escalated" ? "danger" : t.status === "running" ? "info" : "neutral"} />
+                  <button onClick=${async () => { try{await apiDelete(`/api/v2/cognition/tasks/${t.id}`,token);loadAll();}catch(e){toast.error(String(e.message||e));} }} style="font-size:.7rem;padding:3px 8px">取消</button>
                 </div>
               `)}
             </div>
@@ -434,84 +448,4 @@ export function CognitionPage({ token }) {
       </div>
     </section>
   `;
-}
-
-
-function TaskDag({ data }) {
-  const ref = useRef(null);
-  const [svg, setSvg] = useState(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function render() {
-      const mermaid = await loadMermaid();
-      if (cancelled) return;
-
-      const { nodes, edges } = data;
-      if (!nodes.length) return;
-
-      // Build Mermaid graph definition.
-      const lines = ["graph TD"];
-      const statusShapes = {
-        pending: "((",
-        blocked: "((",
-        running: "[[",
-        completed: "([",
-        failed: "{{",
-        retrying: "{{",
-        escalated: "{{",
-      };
-      const statusShapesEnd = {
-        pending: "))",
-        blocked: "))",
-        running: "]]",
-        completed: "])",
-        failed: "}}",
-        retrying: "}}",
-        escalated: "}}",
-      };
-      const statusColors = {
-        pending: "#888",
-        blocked: "#f39c12",
-        running: "#3498db",
-        completed: "#2ecc71",
-        failed: "#e74c3c",
-        retrying: "#e67e22",
-        escalated: "#9b59b6",
-      };
-
-      for (const n of nodes) {
-        const id = n.id.replace(/[^a-zA-Z0-9]/g, "_");
-        const label = n.label.replace(/"/g, '\\"');
-        const start = statusShapes[n.status] || "((";
-        const end = statusShapesEnd[n.status] || "))";
-        const color = statusColors[n.status] || "#888";
-        lines.push(`    ${id}${start}"${label}"${end}`);
-        lines.push(`    style ${id} fill:${color}22,stroke:${color},stroke-width:2px`);
-      }
-      for (const e of edges) {
-        const s = e.source.replace(/[^a-zA-Z0-9]/g, "_");
-        const t = e.target.replace(/[^a-zA-Z0-9]/g, "_");
-        lines.push(`    ${s} --> ${t}`);
-      }
-
-      const defn = lines.join("\n");
-      try {
-        const { svg: svgCode } = await mermaid.render("task-dag-" + Date.now(), defn);
-        if (!cancelled) setSvg(svgCode);
-      } catch (e) {
-        if (!cancelled) setSvg(`<div style="color:var(--xmc-danger)">渲染失败: ${e.message}</div>`);
-      }
-    }
-    render();
-    return () => { cancelled = true; };
-  }, [data]);
-
-  useEffect(() => {
-    if (ref.current && svg) {
-      ref.current.innerHTML = svg;
-    }
-  }, [svg]);
-
-  return html`<div ref=${ref} style="overflow:auto" />`;
 }

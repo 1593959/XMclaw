@@ -35,7 +35,6 @@ import asyncio
 import json
 import sys
 import time
-from collections import Counter
 from pathlib import Path
 
 import websockets
@@ -454,7 +453,7 @@ async def main() -> None:
         encoding="utf-8",
     )
 
-    print(f"\n=== summary ===", flush=True)
+    print("\n=== summary ===", flush=True)
     print(f"arms before: {arms_before}, after: {arms_after} "
           f"(delta {arms_after - arms_before:+d})", flush=True)
     print(f"total elapsed: {results['total_elapsed_s']:.1f}s", flush=True)

@@ -23,6 +23,8 @@ import { apiGet, apiPut } from "../lib/api.js";
 import { confirmDialog } from "../lib/dialog.js";
 import { toast } from "../lib/toast.js";
 import { AudioSection } from "./_panels/settings_audio.js";
+import { CognitionSettings } from "./_panels/settings_cognition.js";
+import { SecuritySettings } from "./_panels/settings_security.js";
 import { PROVIDER_PRESETS, findPreset, presetIdFromProfile } from "../lib/model_presets.js";
 
 async function postJson(path, token, body) {
@@ -280,6 +282,7 @@ export function SettingsPage({ token }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [showWizard, setShowWizard] = useState(false);
+  const [tab, setTab] = useState("models");
 
   const load = useCallback(() => {
     if (!token) return;  // B-214: wait until token has hydrated
@@ -305,35 +308,37 @@ export function SettingsPage({ token }) {
     <section class="xmc-settings" aria-labelledby="settings-title">
       <header class="xmc-settings__header">
         <h2 id="settings-title">设置</h2>
-        <p class="xmc-settings__subtitle">
-          模型配置（B-148 重设计）。每张卡 = 一个模型，"+ 添加模型" 走引导对话框，
-          一键带好 base_url 和模型候选。可配 N 个，chat 顶部下拉切换。改完
-          <strong>需重启 daemon</strong>。
-        </p>
       </header>
+      <nav style="display:flex;gap:.4rem;border-bottom:1px solid var(--color-border);margin-bottom:1rem;flex-wrap:wrap">
+        ${[{id:"models",label:"模型"},{id:"cognition",label:"认知"},{id:"security",label:"安全"}].map(t => html`
+          <button key=${t.id} onClick=${() => setTab(t.id)}
+            style=${`appearance:none;background:none;border:none;padding:.5rem .9rem;cursor:pointer;color:${tab===t.id?"var(--color-primary)":"var(--xmc-fg-muted)"};border-bottom:2px solid ${tab===t.id?"var(--color-primary)":"transparent"};font-weight:${tab===t.id?"600":"500"}`}>
+            ${t.label}
+          </button>
+        `)}
+      </nav>
 
-      <section style="margin-top:1rem">
-        <header style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:.5rem">
-          <h3 style="margin:0">已配置模型 (${profiles.length})</h3>
-          <button class="xmc-h-btn" onClick=${() => setShowWizard(true)}>+ 添加模型</button>
-        </header>
-        ${profiles.length === 0
-          ? html`<p style="opacity:.7;padding:1rem;border:1px dashed var(--color-border);border-radius:6px;text-align:center">
-              还没有模型。点 <strong>+ 添加模型</strong> 开始（Anthropic / OpenAI / MiniMax / DeepSeek / Kimi / 智谱 / Qwen / 本地 Ollama 都有预设）。
-            </p>`
-          : profiles.map((p) => html`
-              <${ModelCard} key=${p.id} profile=${p} isDefault=${p.id === defaultId} token=${token} onChanged=${load} />
-            `)}
-      </section>
+      ${tab === "models" ? html`
+        <p class="xmc-settings__subtitle">模型配置（B-148）。每张卡 = 一个模型，改完 <strong>需重启 daemon</strong>。</p>
+        <section style="margin-top:1rem">
+          <header style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:.5rem">
+            <h3 style="margin:0">已配置模型 (${profiles.length})</h3>
+            <button class="xmc-h-btn" onClick=${() => setShowWizard(true)}>+ 添加模型</button>
+          </header>
+          ${profiles.length === 0
+            ? html`<p style="opacity:.7;padding:1rem;border:1px dashed var(--color-border);border-radius:6px;text-align:center">
+                还没有模型。点 <strong>+ 添加模型</strong> 开始。
+              </p>`
+            : profiles.map((p) => html`
+                <${ModelCard} key=${p.id} profile=${p} isDefault=${p.id === defaultId} token=${token} onChanged=${load} />
+              `)}
+        </section>
+        ${showWizard ? html`<${AddModelWizard} token=${token} existingIds=${existingIds} onClose=${() => setShowWizard(false)} onCreated=${() => { setShowWizard(false); load(); }} />` : null}
+        <${AudioSection} />
+      ` : null}
 
-      ${showWizard ? html`<${AddModelWizard}
-        token=${token}
-        existingIds=${existingIds}
-        onClose=${() => setShowWizard(false)}
-        onCreated=${() => { setShowWizard(false); load(); }}
-      />` : null}
-
-      <${AudioSection} />
+      ${tab === "cognition" ? html`<${CognitionSettings} token=${token} />` : null}
+      ${tab === "security" ? html`<${SecuritySettings} token=${token} />` : null}
     </section>
   `;
 }
