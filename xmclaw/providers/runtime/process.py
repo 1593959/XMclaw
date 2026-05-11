@@ -1,6 +1,6 @@
 """ProcessSkillRuntime — subprocess-isolated skill execution.
 
-Phase 3.4 delivery. Upgrades the runtime story from "asyncio-task
+Phase 3.5 delivery. Upgrades the runtime story from "asyncio-task
 with CPU timeout" (LocalSkillRuntime) to "separate OS process, real
 SIGKILL, parent state cannot leak in".
 
@@ -12,15 +12,24 @@ Honest scope (what you gain vs Local):
     caches shared with the parent.
   ✓ CPU timeout is enforced by Process.join(timeout) + .terminate()
     which goes through the OS.
+  ✓ Filesystem sandbox (best-effort): each skill runs in a fresh
+    temporary directory with cwd locked there and HOME/TEMP redirected.
+  ✓ Subprocess sandbox: manifest.permissions_subprocess is enforced
+    via a monkey-patched subprocess.Popen guard in the child.
+  ✓ Memory soft-cap: a daemon thread in the child monitors RSS via
+    psutil and self-terminates when the limit is breached.
+  ✓ Environment sanitization: sensitive env vars (KEY, SECRET, TOKEN,
+    PASSWORD, AUTH, CREDENTIAL, PRIVATE) are stripped before the child
+    starts.
 
 Honest scope (what you do NOT get, compared to a docker runtime):
-  ✗ No filesystem sandbox. A skill inside the subprocess can still
-    Path('/').iterdir(). Manifest's permissions_fs is still advisory
-    in this runtime.
-  ✗ No network sandbox. Skill can still hit any URL.
-  ✗ No memory hard cap. Python has no in-stdlib cgroup API;
-    manifest.max_memory_mb is advisory here. Real enforcement requires
-    Docker / Modal / nsjail — Phase 3.5+ runtimes.
+  ✗ No network sandbox. Skill can still hit any URL. Per-skill
+    permissions_net is not enforced in this runtime.
+  ✗ Filesystem sandbox is cwd+redirect, not a true chroot. A skill
+    that uses absolute paths can still escape the temp directory.
+  ✗ Memory cap is self-policing (child thread), not a kernel cgroup.
+    A pathological skill that allocates faster than the 0.5s poll
+    interval may briefly exceed the limit.
 
 Pickle constraint:
   Skills pass from parent to child through multiprocessing's spawn
@@ -41,10 +50,13 @@ from __future__ import annotations
 
 import asyncio
 import multiprocessing as mp
+import os
 import pickle
+import shutil
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from xmclaw.providers.runtime.base import (
@@ -63,34 +75,179 @@ def _worker_entry(
     skill_pickle: bytes,
     args: dict[str, Any],
     result_queue: mp.Queue[Any],
+    *,
+    work_dir: str | None = None,
+    allowed_subprocesses: tuple[str, ...] = (),
+    max_memory_mb: int = 0,
 ) -> None:
     """Runs inside the child process. Unpickles the skill, runs it, ships
-    the SkillOutput (or an error envelope) back via the queue."""
-    try:
-        skill = pickle.loads(skill_pickle)
-    except Exception as exc:  # noqa: BLE001
-        result_queue.put(("unpickle_error", f"{type(exc).__name__}: {exc}"))
-        return
+    the SkillOutput (or an error envelope) back via the queue.
 
+    Phase 3.5: sandbox setup happens *before* the skill is unpickled so
+    even skill-module import-time side effects are contained.
+    """
+    original_dir = os.getcwd()
+    tmp_dir: str | None = None
     try:
-        # Each child runs a fresh event loop — no asyncio state leaks from
-        # the parent because we're in a separate process.
-        loop = asyncio.new_event_loop()
+        # 1. Filesystem sandbox — fresh temp directory, cwd locked.
+        tmp_dir = _make_skill_tmp(work_dir)
+        os.chdir(tmp_dir)
+
+        # 2. Environment sanitization — strip secrets, redirect HOME/TEMP.
+        _sanitize_env(tmp_dir)
+
+        # 3. Subprocess guard — whitelist only (empty list = block all).
+        _install_subprocess_guard(allowed_subprocesses)
+
+        # 4. Memory guard — self-policing daemon thread.
+        if max_memory_mb > 0:
+            _install_memory_guard(max_memory_mb)
+
+        # ── existing worker logic ──
         try:
-            output = loop.run_until_complete(skill.run(SkillInput(args=args)))
-        finally:
-            loop.close()
-    except Exception as exc:  # noqa: BLE001
-        result_queue.put(("skill_error", f"{type(exc).__name__}: {exc}"))
+            skill = pickle.loads(skill_pickle)
+        except Exception as exc:  # noqa: BLE001
+            result_queue.put(("unpickle_error", f"{type(exc).__name__}: {exc}"))
+            return
+
+        try:
+            loop = asyncio.new_event_loop()
+            try:
+                output = loop.run_until_complete(skill.run(SkillInput(args=args)))
+            finally:
+                loop.close()
+        except Exception as exc:  # noqa: BLE001
+            result_queue.put(("skill_error", f"{type(exc).__name__}: {exc}"))
+            return
+
+        try:
+            result_queue.put(("ok", output))
+        except Exception as exc:  # noqa: BLE001
+            result_queue.put((
+                "output_pickle_error",
+                f"{type(exc).__name__}: output could not be pickled: {exc}",
+            ))
+    finally:
+        os.chdir(original_dir)
+        if tmp_dir is not None:
+            try:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+# ── sandbox helpers (top-level so spawn can import them) ──
+
+
+def _make_skill_tmp(work_dir: str | None) -> str:
+    """Create a fresh temporary directory for the skill."""
+    import tempfile
+    kwargs: dict[str, Any] = {"prefix": "xmclaw_skill_"}
+    if work_dir is not None:
+        kwargs["dir"] = work_dir
+    return tempfile.mkdtemp(**kwargs)
+
+
+def _sanitize_env(tmp_dir: str) -> None:
+    """Strip sensitive env vars and redirect HOME/TEMP into the sandbox."""
+    # Keep only known-harmless + OS-required variables.
+    keep = {
+        "PATH",
+        "SYSTEMROOT",
+        "WINDIR",
+        "SYSTEMDRIVE",
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONIOENCODING",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE",
+        "OS",
+        "COMSPEC",
+        "PATHEXT",
+    }
+    if os.name == "nt":
+        keep.update({
+            "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA",
+            "PUBLIC", "PROGRAMFILES", "PROGRAMFILES(X86)",
+            "COMMONPROGRAMFILES", "COMMONPROGRAMFILES(X86)",
+        })
+
+    sensitive = ("KEY", "SECRET", "TOKEN", "PASSWORD", "AUTH",
+                 "CREDENTIAL", "PRIVATE", "CERT", "SSH_", "AWS_",
+                 "AZURE_", "GCP_", "GOOGLE_", "OPENAI_", "ANTHROPIC_")
+
+    new_env: dict[str, str] = {}
+    for k, v in os.environ.items():
+        ku = k.upper()
+        if ku in keep:
+            new_env[k] = v
+            continue
+        if any(ku.startswith(s) or s in ku for s in sensitive):
+            continue
+        new_env[k] = v
+
+    os.environ.clear()
+    os.environ.update(new_env)
+
+    # Redirect home and temp into the sandbox so ~ and $TMP resolve there.
+    os.environ["HOME"] = tmp_dir
+    os.environ["USERPROFILE"] = tmp_dir
+    os.environ["TMPDIR"] = tmp_dir
+    os.environ["TEMP"] = tmp_dir
+    os.environ["TMP"] = tmp_dir
+
+
+def _install_subprocess_guard(allowed: tuple[str, ...]) -> None:
+    """Monkey-patch subprocess.Popen so only allowed executables run."""
+    import subprocess as _subprocess
+
+    allowed_set = set(allowed)
+    _orig_popen = _subprocess.Popen
+
+    def _guarded_popen(*args: Any, **kwargs: Any) -> Any:
+        cmd = args[0] if args else kwargs.get("args", [])
+        if isinstance(cmd, str):
+            exe = cmd
+        elif isinstance(cmd, (list, tuple)) and len(cmd) > 0:
+            exe = cmd[0]
+        else:
+            exe = str(cmd)
+        base = os.path.basename(exe)
+        if base not in allowed_set:
+            raise PermissionError(
+                f"subprocess {base!r} not in manifest "
+                f"permissions_subprocess allowlist: {allowed_set}"
+            )
+        return _orig_popen(*args, **kwargs)
+
+    _subprocess.Popen = _guarded_popen  # type: ignore[assignment]
+
+
+def _install_memory_guard(max_mb: int) -> None:
+    """Start a daemon thread that self-kills the process when RSS > limit."""
+    try:
+        import psutil
+    except ImportError:
         return
 
-    try:
-        result_queue.put(("ok", output))
-    except Exception as exc:  # noqa: BLE001 — output itself may not pickle
-        result_queue.put((
-            "output_pickle_error",
-            f"{type(exc).__name__}: output could not be pickled: {exc}",
-        ))
+    import threading
+
+    proc = psutil.Process(os.getpid())
+    limit_bytes = max_mb * 1024 * 1024
+
+    def _watch() -> None:
+        while True:
+            try:
+                if proc.memory_info().rss > limit_bytes:
+                    os._exit(77)
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(0.5)
+
+    threading.Thread(target=_watch, daemon=True).start()
 
 
 # ── slot (internal runtime state per fork) ──
@@ -118,15 +275,16 @@ class ProcessSkillRuntime(SkillRuntime):
     Linux/macOS gain a clean-import child this way too).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, work_dir: str | Path | None = None) -> None:
         # Spawn context: portable. Every skill run pays a process-startup
         # cost; if that becomes the bottleneck, later we can add a pool.
         self._ctx = mp.get_context("spawn")
         self._slots: dict[str, _Slot] = {}
+        self._work_dir = str(work_dir) if work_dir is not None else None
 
     def enforce_manifest(self, manifest: SkillManifest) -> None:
-        """Same structural invariants as LocalSkillRuntime. fs/net/memory
-        are advisory here; documented in the module docstring."""
+        """Validate manifest. Phase 3.5: rejects network-sandbox demands
+        when this runtime cannot satisfy them."""
         if manifest.max_cpu_seconds < 0:
             raise ValueError(
                 f"manifest.max_cpu_seconds must be >= 0, got "
@@ -136,6 +294,17 @@ class ProcessSkillRuntime(SkillRuntime):
             raise ValueError(
                 f"manifest.max_memory_mb must be >= 0, got "
                 f"{manifest.max_memory_mb}"
+            )
+        # If the manifest claims enforced permissions but demands a
+        # network sandbox, we must refuse — this runtime has no network
+        # isolation.
+        if (
+            manifest.permissions_enforced
+            and manifest.permissions_net
+        ):
+            raise ValueError(
+                "ProcessSkillRuntime cannot enforce permissions_net; "
+                "use DockerSkillRuntime or set permissions_enforced=False"
             )
 
     async def fork(
@@ -176,7 +345,13 @@ class ProcessSkillRuntime(SkillRuntime):
 
         queue: mp.Queue[Any] = self._ctx.Queue()
         proc = self._ctx.Process(
-            target=_worker_entry, args=(skill_pickle, args, queue),
+            target=_worker_entry,
+            args=(skill_pickle, args, queue),
+            kwargs={
+                "work_dir": self._work_dir,
+                "allowed_subprocesses": manifest.permissions_subprocess,
+                "max_memory_mb": manifest.max_memory_mb,
+            },
         )
         proc.start()
         handle = SkillHandle(
@@ -225,17 +400,32 @@ class ProcessSkillRuntime(SkillRuntime):
             return slot.output
 
         if result is _CLOSED:
-            # Process died before writing a result (e.g. killed externally).
+            # Process died before writing a result (e.g. killed externally
+            # or self-terminated due to memory limit).
+            exit_code = slot.process.exitcode
             slot.errored = True
-            slot.output = SkillOutput(
-                ok=False,
-                result={
-                    "error": "subprocess exited without producing a result",
-                    "kind": "subprocess_crash",
-                    "exit_code": slot.process.exitcode,
-                },
-                side_effects=[],
-            )
+            if exit_code == 77:
+                slot.output = SkillOutput(
+                    ok=False,
+                    result={
+                        "error": (
+                            f"memory limit exceeded: "
+                            f"{slot.manifest.max_memory_mb} MB"
+                        ),
+                        "kind": "memory_limit",
+                    },
+                    side_effects=[],
+                )
+            else:
+                slot.output = SkillOutput(
+                    ok=False,
+                    result={
+                        "error": "subprocess exited without producing a result",
+                        "kind": "subprocess_crash",
+                        "exit_code": exit_code,
+                    },
+                    side_effects=[],
+                )
             return slot.output
 
         # result is a (tag, payload) tuple from the worker.

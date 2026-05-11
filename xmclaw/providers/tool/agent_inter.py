@@ -191,6 +191,37 @@ _STOP_AGENT_TASK_SPEC = ToolSpec(
     },
 )
 
+_SWARM_DISPATCH_SPEC = ToolSpec(
+    name="swarm_dispatch",
+    description=(
+        "Decompose a complex goal into parallel sub-tasks, dispatch them "
+        "to available agents, and return a unified result. Use when the "
+        "user asks something that requires multiple independent steps "
+        "(e.g. 'research X, code Y, and write tests for Z'). The swarm "
+        "orchestrator handles task decomposition, load balancing across "
+        "agents, dependency tracking, and result aggregation."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "description": {
+                "type": "string",
+                "description": "High-level goal to decompose and execute.",
+            },
+            "success_criteria": {
+                "type": "string",
+                "description": "Optional. How to know the goal is done.",
+            },
+            "strategy": {
+                "type": "string",
+                "enum": ["concat", "vote", "map_reduce"],
+                "description": "How to merge sub-agent results. Default: map_reduce.",
+            },
+        },
+        "required": ["description"],
+    },
+)
+
 
 _CHECK_AGENT_TASK_SPEC = ToolSpec(
     name="check_agent_task",
@@ -249,10 +280,14 @@ class AgentInterTools(ToolProvider):
         manager: _ManagerLike,
         primary_loop: _AgentLoopLike | None = None,
         primary_id: str = "main",
+        task_scheduler: Any | None = None,
+        swarm_orchestrator: Any | None = None,
     ) -> None:
         self._manager = manager
         self._primary_loop = primary_loop
         self._primary_id = primary_id
+        self._task_scheduler = task_scheduler
+        self._swarm = swarm_orchestrator
         self._tasks: dict[str, _TaskRecord] = {}
         # B-68: hold strong references to fire-and-forget background
         # tasks. asyncio docs explicitly warn that ``create_task``
@@ -264,7 +299,7 @@ class AgentInterTools(ToolProvider):
     # ── ToolProvider surface ─────────────────────────────────────────
 
     def list_tools(self) -> list[ToolSpec]:
-        return [
+        specs = [
             _LIST_AGENTS_SPEC,
             _CHAT_WITH_AGENT_SPEC,
             _SUBMIT_TO_AGENT_SPEC,
@@ -272,6 +307,9 @@ class AgentInterTools(ToolProvider):
             _LIST_AGENT_TASKS_SPEC,  # B-111
             _STOP_AGENT_TASK_SPEC,   # B-111
         ]
+        if self._swarm is not None:
+            specs.append(_SWARM_DISPATCH_SPEC)
+        return specs
 
     async def invoke(self, call: ToolCall) -> ToolResult:
         t0 = time.perf_counter()
@@ -281,13 +319,15 @@ class AgentInterTools(ToolProvider):
             elif call.name == "chat_with_agent":
                 content = await self._do_chat_with_agent(call)
             elif call.name == "submit_to_agent":
-                content = self._do_submit_to_agent(call)
+                content = await self._do_submit_to_agent(call)
             elif call.name == "check_agent_task":
-                content = self._do_check_agent_task(call)
+                content = await self._do_check_agent_task(call)
             elif call.name == "list_agent_tasks":
-                content = self._do_list_agent_tasks(call)
+                content = await self._do_list_agent_tasks(call)
             elif call.name == "stop_agent_task":
-                content = self._do_stop_agent_task(call)
+                content = await self._do_stop_agent_task(call)
+            elif call.name == "swarm_dispatch":
+                content = await self._do_swarm_dispatch(call)
             else:
                 return ToolResult(
                     call_id=call.id, ok=False, content=None,
@@ -375,14 +415,34 @@ class AgentInterTools(ToolProvider):
 
     # ── submit_to_agent (async) ──────────────────────────────────────
 
-    def _do_submit_to_agent(self, call: ToolCall) -> str:
+    async def _do_submit_to_agent(self, call: ToolCall) -> str:
         import json
         agent_id, content = self._extract_target_and_content(call)
-        loop = self._resolve_loop(agent_id)
         caller = self._resolve_caller_id()
+        stamped = _prepend_caller_marker(content, caller)
+
+        # When a TaskScheduler is wired, delegate persistence and
+        # execution to it so that agent-to-agent tasks participate in
+        # the global task DAG, retry logic, and progress endpoints.
+        if self._task_scheduler is not None:
+            task_id = uuid.uuid4().hex[:16]
+            try:
+                from xmclaw.cognition.task_scheduler import Task
+            except Exception as exc:  # noqa: BLE001
+                raise _ToolError(f"task_scheduler import failed: {exc}")
+            task = Task(
+                id=task_id,
+                prompt=stamped,
+                agent_id=agent_id,
+                priority=5,
+            )
+            await self._task_scheduler.submit(task)
+            return json.dumps({"task_id": task_id, "agent_id": agent_id})
+
+        # Fallback: in-memory execution (tests, single-agent mode).
+        loop = self._resolve_loop(agent_id)
         task_id = uuid.uuid4().hex[:16]
         session_id = _make_a2a_session_id(caller=caller, callee=agent_id)
-        stamped = _prepend_caller_marker(content, caller)
         record = _TaskRecord(
             task_id=task_id, agent_id=agent_id,
             session_id=session_id, content=stamped,
@@ -466,16 +526,33 @@ class AgentInterTools(ToolProvider):
 
     # ── check_agent_task ─────────────────────────────────────────────
 
-    def _do_check_agent_task(self, call: ToolCall) -> str:
+    async def _do_check_agent_task(self, call: ToolCall) -> str:
         import json
         raw = call.args.get("task_id")
         if not isinstance(raw, str) or not raw.strip():
             raise _ToolError("task_id required")
         task_id = raw.strip()
+
+        if self._task_scheduler is not None:
+            task = await self._task_scheduler.get_task(task_id)
+            if task is None:
+                raise _ToolError(f"unknown task_id: {task_id!r}")
+            status = _map_scheduler_status(task.status)
+            payload: dict[str, Any] = {
+                "task_id": task.id,
+                "agent_id": task.agent_id,
+                "status": status,
+            }
+            if status == "done":
+                payload["reply"] = task.result or ""
+            elif status == "error":
+                payload["error"] = task.error or "unknown error"
+            return json.dumps(payload)
+
         record = self._tasks.get(task_id)
         if record is None:
             raise _ToolError(f"unknown task_id: {task_id!r}")
-        payload: dict[str, Any] = {
+        payload = {
             "task_id": record.task_id,
             "agent_id": record.agent_id,
             "status": record.status,
@@ -486,7 +563,7 @@ class AgentInterTools(ToolProvider):
             payload["error"] = record.error or "unknown error"
         return json.dumps(payload)
 
-    def _do_list_agent_tasks(self, call: ToolCall) -> str:
+    async def _do_list_agent_tasks(self, call: ToolCall) -> str:
         """B-111: list recent / in-flight tasks newest-first.
 
         Filters by status / agent_id. Bounded by ``limit`` (default 20,
@@ -502,16 +579,49 @@ class AgentInterTools(ToolProvider):
         status_filter = (call.args.get("status") or "").strip() or None
         agent_filter = (call.args.get("agent_id") or "").strip() or None
 
-        # Walk the bounded dict in reverse (oldest-first → newest-first).
+        if self._task_scheduler is not None:
+            # TaskScheduler uses its own status vocabulary; map the
+            # LLM-facing filter into scheduler terms.
+            sched_status: str | None = None
+            if status_filter:
+                sched_status = _unmap_scheduler_status(status_filter)
+            tasks = await self._task_scheduler.list_tasks(
+                status=sched_status, agent_id=agent_filter, limit=limit,
+            )
+            out: list[dict[str, Any]] = []
+            for t in tasks:
+                status = _map_scheduler_status(t.status)
+                if status_filter and status != status_filter:
+                    continue
+                entry: dict[str, Any] = {
+                    "task_id": t.id,
+                    "agent_id": t.agent_id,
+                    "status": status,
+                    "created_at": t.created_at,
+                }
+                if t.completed_at:
+                    entry["completed_at"] = t.completed_at
+                if t.result and len(t.result) > 0:
+                    entry["reply_preview"] = t.result[:200]
+                if t.error:
+                    entry["error"] = t.error
+                out.append(entry)
+            return json.dumps({
+                "count": len(out),
+                "total_tracked": len(out),
+                "tasks": out,
+            })
+
+        # Fallback: in-memory bookkeeping.
         records = list(self._tasks.values())
         records.sort(key=lambda r: r.created_at, reverse=True)
-        out: list[dict[str, Any]] = []
+        out = []
         for r in records:
             if status_filter and r.status != status_filter:
                 continue
             if agent_filter and r.agent_id != agent_filter:
                 continue
-            entry: dict[str, Any] = {
+            entry = {
                 "task_id": r.task_id,
                 "agent_id": r.agent_id,
                 "status": r.status,
@@ -520,7 +630,6 @@ class AgentInterTools(ToolProvider):
             if r.completed_at:
                 entry["completed_at"] = r.completed_at
             if r.reply and len(r.reply) > 0:
-                # Tease first 200 chars; LLM can fetch full via check.
                 entry["reply_preview"] = r.reply[:200]
             if r.error:
                 entry["error"] = r.error
@@ -533,7 +642,7 @@ class AgentInterTools(ToolProvider):
             "tasks": out,
         })
 
-    def _do_stop_agent_task(self, call: ToolCall) -> str:
+    async def _do_stop_agent_task(self, call: ToolCall) -> str:
         """B-111: cancel an in-flight task. Marks the record as 'error'
         with reason='cancelled'; the underlying asyncio.Task gets a
         cancel signal best-effort (it may still run one more step
@@ -543,6 +652,15 @@ class AgentInterTools(ToolProvider):
         if not isinstance(raw, str) or not raw.strip():
             raise _ToolError("task_id required")
         task_id = raw.strip()
+
+        if self._task_scheduler is not None:
+            ok = await self._task_scheduler.cancel(task_id)
+            return json.dumps({
+                "task_id": task_id,
+                "stopped": ok,
+                "status": "error" if ok else "unknown",
+            })
+
         record = self._tasks.get(task_id)
         if record is None:
             raise _ToolError(f"unknown task_id: {task_id!r}")
@@ -564,6 +682,45 @@ class AgentInterTools(ToolProvider):
         })
 
     # ── helpers ──────────────────────────────────────────────────────
+
+    async def _do_swarm_dispatch(self, call: ToolCall) -> str:
+        """Route a complex goal through the swarm orchestrator."""
+        import json
+        if self._swarm is None:
+            raise _ToolError("swarm orchestrator is not wired")
+        description = str(call.args.get("description", "")).strip()
+        if not description:
+            raise _ToolError("description required")
+        success_criteria = (call.args.get("success_criteria") or "").strip() or None
+        strategy = str(call.args.get("strategy", "map_reduce")).strip()
+        if strategy not in ("concat", "vote", "map_reduce"):
+            strategy = "map_reduce"
+        _max_wait = call.args.get("max_wait_s")
+        try:
+            max_wait_s = float(_max_wait) if _max_wait is not None else 300.0
+        except (TypeError, ValueError):
+            max_wait_s = 300.0
+        from xmclaw.daemon.swarm_orchestrator import SwarmDispatchRequest
+        req = SwarmDispatchRequest(
+            description=description,
+            success_criteria=success_criteria,
+            strategy=strategy,  # type: ignore[arg-type]
+            max_wait_s=max_wait_s,
+        )
+        result = await self._swarm.dispatch(req)
+        payload: dict[str, Any] = {
+            "ok": result.ok,
+            "result": result.result,
+            "task_count": len(result.task_ids),
+            "assignments": result.assignments,
+            "completed": result.completed,
+            "failed": result.failed,
+            "timed_out": result.timed_out,
+            "elapsed_seconds": result.elapsed_seconds,
+        }
+        if result.error:
+            payload["error"] = result.error
+        return json.dumps(payload)
 
     def _extract_target_and_content(self, call: ToolCall) -> tuple[str, str]:
         raw_id = call.args.get("agent_id")
@@ -605,6 +762,21 @@ class AgentInterTools(ToolProvider):
         if ws.agent_loop is None:
             raise _ToolError(f"agent {agent_id!r} is not ready")
         return ws.agent_loop
+
+
+def _map_scheduler_status(status: str) -> str:
+    """Map TaskScheduler status → AgentInterTools LLM-facing status.
+
+    TaskScheduler uses ``completed`` / ``failed``; the agent-inter
+    surface exposes ``done`` / ``error`` to the LLM. All other statuses
+    pass through unchanged.
+    """
+    return {"completed": "done", "failed": "error"}.get(status, status)
+
+
+def _unmap_scheduler_status(status: str) -> str:
+    """Reverse of :func:`_map_scheduler_status` for filter translation."""
+    return {"done": "completed", "error": "failed"}.get(status, status)
 
 
 class _ToolError(Exception):

@@ -82,7 +82,7 @@ class _FakeAgent:
             raise RuntimeError("simulated turn failure")
         # Track concurrency PER session — used by the lock test below.
         self.in_flight.add(session_id)
-        cur = len([s for s in self.in_flight if s == session_id])
+        len([s for s in self.in_flight if s == session_id])
         self.max_concurrent[session_id] = max(
             self.max_concurrent.get(session_id, 0),
             sum(1 for s in self.in_flight if s == session_id),

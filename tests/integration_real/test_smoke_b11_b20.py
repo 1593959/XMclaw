@@ -96,7 +96,7 @@ def test_daemon_health() -> None:
         # this assertion forever otherwise. 50 lines covers "this test
         # run" comfortably without dragging in stale residue.
         r = get("/api/v2/logs?file=daemon&lines=50")
-        warns = [l for l in r["lines"] if "ERROR" in l or "Traceback" in l or "rebuild_failed" in l]
+        warns = [line for line in r["lines"] if "ERROR" in line or "Traceback" in line or "rebuild_failed" in line]
         if not warns:
             passed("log clean (no ERROR/Traceback in last 50 lines)")
         else:

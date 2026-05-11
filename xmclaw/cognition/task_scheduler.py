@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import asyncio
-import heapq
 import json
 import sqlite3
 import time
@@ -19,14 +18,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 
+from xmclaw.utils.paths import default_events_db_path
+
 TaskStatus = Literal["pending", "blocked", "running", "completed", "failed", "retrying", "escalated"]
 
 # Jarvisification Phase 5: reuse the events.db file instead of a
 # separate tasks.db.  Task state changes are events — they belong
 # in the same substrate.  The tasks table co-exists with the event
 # bus tables (events, sessions) in the same SQLite WAL.
-from xmclaw.utils.paths import default_events_db_path
-
 _DEFAULT_DB_PATH = default_events_db_path()
 
 

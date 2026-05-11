@@ -671,3 +671,174 @@ def test_ctor_rejects_out_of_range_p_threshold(tmp_path):
             store=ExperimentStore(db_path=tmp_path / "exp.db"),
             p_value_threshold=0.0,
         )
+
+
+# ── tick / set_factories ───────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_tick_without_factories_returns_false(tmp_path):
+    loop = SelfExperimentLoop(store=ExperimentStore(db_path=tmp_path / "exp.db"))
+    assert await loop.tick() is False
+
+
+@pytest.mark.asyncio
+async def test_tick_with_factories_proposes_and_executes(tmp_path):
+    loop = SelfExperimentLoop(store=ExperimentStore(db_path=tmp_path / "exp.db"))
+    baseline = _make_stub_suite_result("s", [0.5, 0.6, 0.55])
+    treatment = _make_stub_suite_result("s", [0.7, 0.75, 0.72])
+    suite = _StubSuite("s", arms=[[0.5, 0.6, 0.55], [0.7, 0.75, 0.72]])
+
+    loop.set_factories(
+        baseline_factory=lambda: object(),
+        treatment_factory=lambda: object(),
+        load_suite=lambda sid: suite,
+        suite_id="s",
+    )
+
+    # Patch _run_one_arm so we don't need a real Runner.
+    call_order: list[str] = []
+    async def _fake_run_one_arm(load_suite, suite_id, factory, limit):
+        call_order.append("arm")
+        if len(call_order) == 1:
+            return baseline
+        return treatment
+
+    with patch.object(loop, "_run_one_arm", _fake_run_one_arm):
+        ok = await loop.tick()
+
+    assert ok is True
+    # tick() should have proposed an experiment and executed it.
+    experiments = await loop.store.list_experiments(limit=10)
+    assert len(experiments) == 1
+    exp, res = experiments[0]
+    assert res is not None
+    assert res.decision in ("adopt", "reject", "extend")
+
+
+@pytest.mark.asyncio
+async def test_tick_creates_pending_when_factories_missing_then_resumes(tmp_path):
+    loop = SelfExperimentLoop(store=ExperimentStore(db_path=tmp_path / "exp.db"))
+    loop.set_factories(
+        baseline_factory=None,  # type: ignore[arg-type]
+        treatment_factory=None,  # type: ignore[arg-type]
+        load_suite=lambda sid: _StubSuite("s", arms=[]),
+        suite_id="s",
+    )
+    # tick() with factories=None should still propose but return True
+    # because it created a pending experiment.
+    ok = await loop.tick()
+    assert ok is True
+    assert loop._pending_experiment is not None
+
+    # Now inject factories and tick again — should execute the pending one.
+    baseline = _make_stub_suite_result("s", [0.5, 0.5])
+    treatment = _make_stub_suite_result("s", [0.6, 0.6])
+    suite = _StubSuite("s", arms=[[0.5, 0.5], [0.6, 0.6]])
+
+    loop.set_factories(
+        baseline_factory=lambda: object(),
+        treatment_factory=lambda: object(),
+        load_suite=lambda sid: suite,
+        suite_id="s",
+    )
+
+    async def _fake_run_one_arm(load_suite, suite_id, factory, limit):
+        if factory == loop._baseline_factory:
+            return baseline
+        return treatment
+
+    with patch.object(loop, "_run_one_arm", _fake_run_one_arm):
+        ok2 = await loop.tick()
+
+    assert ok2 is True
+    assert loop._pending_experiment is None
+    experiments = await loop.store.list_experiments(limit=10)
+    assert len(experiments) == 1
+    assert experiments[0][1] is not None
+
+
+@pytest.mark.asyncio
+async def test_tick_isolates_single_candidate_when_multiple_exist(tmp_path):
+    """When multiple skills have candidates, tick() rotates through
+    them one-at-a-time so each experiment isolates a single skill."""
+    loop = SelfExperimentLoop(store=ExperimentStore(db_path=tmp_path / "exp.db"))
+    loop.set_candidate_resolver(lambda: {"skill_a": 2, "skill_b": 3})
+    loop.set_factories(
+        baseline_factory=lambda: object(),
+        treatment_factory=lambda overrides=None: object(),
+        load_suite=lambda sid: _StubSuite("s", arms=[]),
+        suite_id="s",
+    )
+
+    async def _fake_run_one_arm(load_suite, suite_id, factory, limit):
+        return _make_stub_suite_result(suite_id, [0.5])
+
+    with patch.object(loop, "_run_one_arm", _fake_run_one_arm):
+        # First tick — should propose + execute with skill_a only.
+        ok1 = await loop.tick()
+        assert ok1 is True
+        exps1 = await loop.store.list_experiments(limit=10)
+        assert len(exps1) == 1
+        assert exps1[0][0].intervention.get("candidate_overrides") == {"skill_a": 2}
+
+        # Second tick — should rotate to skill_b.
+        ok2 = await loop.tick()
+        assert ok2 is True
+        exps2 = await loop.store.list_experiments(limit=10)
+        assert len(exps2) == 2
+        assert exps2[0][0].intervention.get("candidate_overrides") == {"skill_b": 3}
+
+        # Third tick — should wrap back to skill_a.
+        ok3 = await loop.tick()
+        assert ok3 is True
+        exps3 = await loop.store.list_experiments(limit=10)
+        assert len(exps3) == 3
+        assert exps3[0][0].intervention.get("candidate_overrides") == {"skill_a": 2}
+
+
+@pytest.mark.asyncio
+async def test_execute_passes_overrides_to_treatment_factory(tmp_path):
+    """execute() forwards candidate_overrides from the experiment
+    intervention to the treatment_agent_factory."""
+    loop = SelfExperimentLoop(store=ExperimentStore(db_path=tmp_path / "exp.db"))
+    received_overrides = []
+
+    def _capturing_treatment(overrides=None):
+        received_overrides.append(overrides)
+        return object()
+
+    loop.set_factories(
+        baseline_factory=lambda: object(),
+        treatment_factory=_capturing_treatment,
+        load_suite=lambda sid: _StubSuite("s", arms=[]),
+        suite_id="s",
+    )
+
+    exp = await loop.propose(
+        hypothesis="test",
+        intervention={"candidate_overrides": {"skill_x": 7}},
+        metric="mean_score",
+        suite_id="s",
+        baseline_value=0.0,
+        holdout_set_size=1,
+    )
+
+    call_log = []
+
+    async def _fake_run_one_arm(load_suite, suite_id, factory, limit):
+        # Invoke the factory so treatment factories with overrides are
+        # exercised (the real Runner does this).
+        factory()
+        call_log.append(suite_id)
+        return _make_stub_suite_result(suite_id, [0.5])
+
+    with patch.object(loop, "_run_one_arm", _fake_run_one_arm):
+        await loop.execute(
+            exp,
+            baseline_agent_factory=lambda: object(),
+            treatment_agent_factory=_capturing_treatment,
+            load_suite=lambda sid: _StubSuite("s", arms=[]),
+        )
+
+    assert any(ov == {"skill_x": 7} for ov in received_overrides)

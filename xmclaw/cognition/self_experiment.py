@@ -360,6 +360,17 @@ class SelfExperimentLoop:
         # Caller can register a sink to be notified on staged adoptions.
         # See Iron Rule #2 — we never call registry.promote ourselves.
         self._staging_sinks: list[Callable[[ExperimentResult], Any]] = []
+        self._baseline_factory: Callable[[], Any] | None = None
+        self._treatment_factory: Callable[..., Any] | None = None
+        self._load_suite: Callable[[str], Any] | None = None
+        self._default_suite_id: str = "default"
+        self._pending_experiment: Experiment | None = None
+        # Phase E debt-2: candidate resolver for single-skill-isolated
+        # experiments.  When multiple skills have candidates, we rotate
+        # through them one-at-a-time so each experiment is a controlled
+        # variable (only one skill differs from baseline).
+        self._candidate_resolver: Callable[[], dict[str, int]] | None = None
+        self._candidate_rotation_idx: int = 0
 
     @property
     def store(self) -> ExperimentStore:
@@ -376,6 +387,101 @@ class SelfExperimentLoop:
     def add_staging_sink(self, sink: Callable[[ExperimentResult], Any]) -> None:
         """Register a callback that fires (sync or async) on adopt."""
         self._staging_sinks.append(sink)
+
+    def set_factories(
+        self,
+        baseline_factory: Callable[[], Any],
+        treatment_factory: Callable[..., Any],
+        load_suite: Callable[[str], Any],
+        suite_id: str = "default",
+    ) -> None:
+        """Inject the agent factories and suite loader required by execute().
+
+        Call this once after construction (typically from daemon lifespan)
+        before tick() can run full experiments.
+        """
+        self._baseline_factory = baseline_factory
+        self._treatment_factory = treatment_factory
+        self._load_suite = load_suite
+        self._default_suite_id = suite_id
+
+    def set_candidate_resolver(
+        self, resolver: Callable[[], dict[str, int]] | None,
+    ) -> None:
+        """Register a callback that returns the current candidate overrides.
+
+        When multiple skills have non-HEAD versions, the loop rotates
+        through them one-at-a-time so each experiment isolates a single
+        skill change.
+        """
+        self._candidate_resolver = resolver
+
+    async def tick(self) -> bool:
+        """High-level driver called by CognitiveDaemon._run_experiment.
+
+        If factories are wired and there is no pending experiment, proposes
+        a new one and immediately executes it.  Returns True when a cycle
+        was attempted (proposed or executed), False when factories are
+        missing or the loop is otherwise idle.
+        """
+        if self._load_suite is None:
+            logger.debug("self_experiment.tick: no suite loader wired")
+            return False
+        if self._pending_experiment is not None:
+            # Resume / execute the pending experiment.
+            if self._baseline_factory is None or self._treatment_factory is None:
+                logger.debug("self_experiment.tick: factories missing for pending experiment")
+                return False
+            exp = self._pending_experiment
+            self._pending_experiment = None
+            try:
+                await self.execute(
+                    exp,
+                    baseline_agent_factory=self._baseline_factory,
+                    treatment_agent_factory=self._treatment_factory,
+                    load_suite=self._load_suite,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("self_experiment.tick: execute failed for %s", exp.id)
+            return True
+        # Propose a new experiment.  If a candidate resolver is wired
+        # and returns multiple candidates, rotate so each experiment
+        # isolates exactly one skill change.
+        candidates: dict[str, int] = {}
+        if self._candidate_resolver is not None:
+            candidates = self._candidate_resolver()
+        if len(candidates) > 1:
+            keys = sorted(candidates.keys())
+            idx = self._candidate_rotation_idx % len(keys)
+            sid = keys[idx]
+            candidates = {sid: candidates[sid]}
+            self._candidate_rotation_idx += 1
+
+        intervention: dict[str, Any] = {"source": "cognitive_daemon_tick"}
+        if candidates:
+            intervention["candidate_overrides"] = candidates
+
+        exp = await self.propose(
+            hypothesis="automated self-experiment from cognitive daemon tick",
+            intervention=intervention,
+            metric="mean_score",
+            suite_id=self._default_suite_id,
+            baseline_value=0.0,
+        )
+        self._pending_experiment = exp
+        # If factories are available, execute immediately.
+        if self._baseline_factory is not None and self._treatment_factory is not None:
+            self._pending_experiment = None
+            try:
+                await self.execute(
+                    exp,
+                    baseline_agent_factory=self._baseline_factory,
+                    treatment_agent_factory=self._treatment_factory,
+                    load_suite=self._load_suite,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("self_experiment.tick: execute failed for %s", exp.id)
+        return True
 
     async def propose(
         self,
@@ -409,7 +515,7 @@ class SelfExperimentLoop:
         self,
         exp: Experiment,
         baseline_agent_factory: Callable[[], Any],
-        treatment_agent_factory: Callable[[], Any],
+        treatment_agent_factory: Callable[..., Any],
         load_suite: Callable[[str], Any],
     ) -> ExperimentResult:
         """Run the suite under both factories, decide, persist.
@@ -419,13 +525,25 @@ class SelfExperimentLoop:
         ``lambda sid: SUITE_REGISTRY[sid](...)``. Keeping it injected
         avoids importing ``xmclaw.eval`` here.
         """
+        candidate_overrides = exp.intervention.get("candidate_overrides")
         try:
             baseline_result = await self._run_one_arm(
                 load_suite, exp.suite_id, baseline_agent_factory, exp.holdout_set_size
             )
-            treatment_result = await self._run_one_arm(
-                load_suite, exp.suite_id, treatment_agent_factory, exp.holdout_set_size
-            )
+            if candidate_overrides is not None:
+                treatment_result = await self._run_one_arm(
+                    load_suite,
+                    exp.suite_id,
+                    lambda: treatment_agent_factory(candidate_overrides),
+                    exp.holdout_set_size,
+                )
+            else:
+                treatment_result = await self._run_one_arm(
+                    load_suite,
+                    exp.suite_id,
+                    treatment_agent_factory,
+                    exp.holdout_set_size,
+                )
         except _RunnerInfraError as exc:
             return await self._record_abort(exp, str(exc))
         except Exception as exc:  # noqa: BLE001

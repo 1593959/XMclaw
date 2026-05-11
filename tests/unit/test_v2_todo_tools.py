@@ -144,7 +144,9 @@ async def test_todo_write_emits_bus_event_via_agent_loop() -> None:
                 yield  # type: ignore[unreachable]
 
         async def complete(self, messages, tools=None):  # noqa: ANN001
-            r = self.script[self._i]; self._i += 1; return r
+            r = self.script[self._i]
+            self._i += 1
+            return r
 
         @property
         def tool_call_shape(self) -> ToolCallShape:

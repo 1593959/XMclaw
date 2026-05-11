@@ -19,7 +19,8 @@ from pathlib import Path
 import pytest
 
 from xmclaw.core.ir import ToolCall
-from xmclaw.providers.tool.builtin import BuiltinTools, _WORKTREE_ORIGIN
+from xmclaw.providers.tool.builtin import BuiltinTools
+from xmclaw.providers.tool.builtin_worktree import _WORKTREE_ORIGIN
 
 
 _HAS_GIT = shutil.which("git") is not None

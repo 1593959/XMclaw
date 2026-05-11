@@ -16,12 +16,12 @@ import time
 
 from xmclaw.utils.log import get_logger
 
-log = get_logger(__name__)
 import uuid
 from dataclasses import dataclass
-from typing import Any
 
-from xmclaw.cognition.memory_graph import GraphEdge, GraphNode, MemoryGraph
+from xmclaw.cognition.memory_graph import GraphEdge, MemoryGraph
+
+log = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)

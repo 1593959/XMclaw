@@ -15,12 +15,9 @@ Phase 4.x replaces the default accept-all with ed25519 pairing.
 """
 from __future__ import annotations
 
-import json
-import time as time_module
 from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from starlette.responses import FileResponse, JSONResponse, RedirectResponse
@@ -41,32 +38,7 @@ from xmclaw.core.bus import (
     event_as_jsonable,
     make_event,
 )
-from xmclaw.utils.log import get_logger
-
-# Epic #24 Phase 1: module-level logger. Several pre-existing
-# error-path call sites used a bare ``log.warning(...)`` reference
-# without importing one — pure pre-existing NameError bug that
-# would surface on first channel / MCP failure. Defining this here
-# unblocks lint and makes those branches actually log.
-log = get_logger(__name__)
-
-
-_SECRET_KEYS = frozenset({
-    "api_key", "apikey", "bot_token", "app_token", "token",
-    "password", "secret", "authorization",
-})
-
-
 from xmclaw.daemon.app_lifespan import make_lifespan
-from xmclaw.daemon.multi_agent_manager import MultiAgentManager
-from xmclaw.core.bus import (
-    BehavioralEvent,
-    EventType,
-    InProcessEventBus,
-    SqliteEventBus,
-    event_as_jsonable,
-    make_event,
-)
 from xmclaw.utils.log import get_logger
 
 # Epic #24 Phase 1: module-level logger. Several pre-existing
@@ -489,7 +461,6 @@ def create_app(
     # Phase 6 cron: stand up a CronTickTask once the agent is wired so
     # ~/.xmclaw/cron/jobs.json actually fires every 60s. Runner uses
     # the primary AgentLoop's run_turn to execute the job's prompt.
-    cron_tick = None
 
     # 进化路径设计原则: 所有 skill 提案都必须过 HonestGrader 的
     # 0.80 hard-evidence 评分 (ran/returned/type_matched/side_effect)
@@ -552,6 +523,12 @@ def create_app(
     # Epic #3: approval service for GuardedToolProvider needs_approval path.
     from xmclaw.security.approval_service import ApprovalService
     app.state.approval_service = ApprovalService()
+
+    # Phase B security hardening: unified security audit log.
+    from xmclaw.security.auditor import SecurityAuditor
+    _security_auditor = SecurityAuditor()
+    _security_auditor.subscribe_to_bus(bus)
+    app.state.security_auditor = _security_auditor
 
     # Epic #18 Phase A: web-UI router surfaces (files / memory /
     # profiles / workspaces). Included here so the panels have real
@@ -643,7 +620,9 @@ def create_app(
         # module's sibling packages).
         from xmclaw.daemon.factory import build_agent_from_config
         agent = build_agent_from_config(
-            config, bus, approval_service=app.state.approval_service
+            config, bus,
+            approval_service=app.state.approval_service,
+            auditor=getattr(app.state, "security_auditor", None),
         )
 
     # Epic #17 Phase 5: attach the agent-to-agent tools to the primary
@@ -662,7 +641,12 @@ def create_app(
         # the agent-inter tools only matter when a real loop is wired.
         from xmclaw.providers.tool.agent_inter import AgentInterTools
         from xmclaw.providers.tool.composite import CompositeToolProvider
-        _inter = AgentInterTools(manager=agents_manager, primary_loop=agent)
+        _inter = AgentInterTools(
+            manager=agents_manager,
+            primary_loop=agent,
+            task_scheduler=getattr(app.state, "task_scheduler", None),
+            swarm_orchestrator=getattr(app.state, "swarm_orchestrator", None),
+        )
         if agent._tools is None:
             agent._tools = _inter
         else:

@@ -57,6 +57,7 @@ _HELPERS = [
     "default_cognitive_state_path",
     "default_graph_db_path",
     "default_experiments_db_path",
+    "default_ticks_db_path",
     "evolution_proposals_dir",
     "default_decisions_db_path",
     "default_suggestions_db_path",
@@ -76,6 +77,7 @@ _NARROW_OVERRIDES = {
     "default_cognitive_state_path": "XMC_V2_COGNITIVE_STATE_PATH",
     "default_graph_db_path": "XMC_V2_GRAPH_DB_PATH",
     "default_experiments_db_path": "XMC_V2_EXPERIMENTS_DB_PATH",
+    "default_ticks_db_path": "XMC_V2_TICKS_DB_PATH",
     "default_decisions_db_path": "XMC_V2_DECISIONS_DB_PATH",
     "default_suggestions_db_path": "XMC_V2_SUGGESTIONS_DB_PATH",
 }

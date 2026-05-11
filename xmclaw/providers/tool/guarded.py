@@ -1,7 +1,7 @@
 """GuardedToolProvider — wraps a ToolProvider with pre-invocation security."""
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from xmclaw.core.ir import ToolCall, ToolResult
 from xmclaw.providers.tool.base import ToolProvider
@@ -13,6 +13,9 @@ from xmclaw.security.tool_guard.models import (
     GuardSeverity,
 )
 from xmclaw.utils.i18n import _
+
+if TYPE_CHECKING:
+    from xmclaw.security.auditor import SecurityAuditor
 
 
 class GuardedToolProvider(ToolProvider):
@@ -48,11 +51,13 @@ class GuardedToolProvider(ToolProvider):
         engine: ToolGuardEngine,
         approval_service: ApprovalService | None = None,
         policy: GuardianPolicy | None = None,
+        auditor: "SecurityAuditor | None" = None,
     ) -> None:
         self._inner = inner
         self._engine = engine
         self._approval_service = approval_service
         self._policy = policy or GuardianPolicy()
+        self._auditor = auditor
 
     def list_tools(self) -> list[Any]:
         return self._inner.list_tools()
@@ -94,8 +99,25 @@ class GuardedToolProvider(ToolProvider):
         max_sev = result.max_severity or GuardSeverity.SAFE
         action = self._policy.action_for(max_sev)
 
+        _findings_dicts = [
+            {
+                "rule_id": f.rule_id,
+                "severity": f.severity.value,
+                "description": f.description,
+                "remediation": f.remediation,
+            }
+            for f in result.findings
+        ]
+
         if action == GuardianAction.DENY:
             summary = _format_findings_summary(result.findings)
+            if self._auditor is not None:
+                self._auditor.record_tool_guard(
+                    session_id=call.session_id,
+                    tool_name=tool_name,
+                    action="deny",
+                    findings=_findings_dicts,
+                )
             return ToolResult(
                 call_id=call.id,
                 ok=False,
@@ -112,6 +134,13 @@ class GuardedToolProvider(ToolProvider):
                     tool_name=tool_name,
                     tool_params=params,
                     findings_summary=summary,
+                )
+            if self._auditor is not None:
+                self._auditor.record_tool_guard(
+                    session_id=call.session_id,
+                    tool_name=tool_name,
+                    action="approve",
+                    findings=_findings_dicts,
                 )
             return ToolResult(
                 call_id=call.id,

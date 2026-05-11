@@ -65,7 +65,22 @@ async def test_memory_injects_prior_session_into_new_turn(tmp_path):
     )
     assert res_a.ok
 
-    # The turn is now in long-term memory.
+    # B-197 changed the architecture: raw conversation turns are no longer
+    # auto-ingested via sync_turn (that produced 86% noise in the vec index).
+    # Instead, extracted facts are put() explicitly — either by MemoryExtractor
+    # (heuristic-gated LLM call) or manually.  We simulate the extractor here.
+    from xmclaw.providers.memory.base import MemoryItem
+    await memory.put(
+        layer="long",
+        item=MemoryItem(
+            id="",
+            layer="long",
+            text="The build broke at line 47 of main.py",
+            metadata={"session_id": "session-a", "source": "extractor"},
+        ),
+    )
+
+    # The extracted fact is now in long-term memory.
     items = await memory.query(layer="long", k=10)
     assert len(items) == 1
     assert "line 47" in items[0].text

@@ -104,8 +104,10 @@ def test_manager_remove(tmp_path):
 
 def test_manager_set_primary(tmp_path):
     m = _mgr(tmp_path)
-    a = tmp_path / "a"; a.mkdir()
-    b = tmp_path / "b"; b.mkdir()
+    a = tmp_path / "a"
+    a.mkdir()
+    b = tmp_path / "b"
+    b.mkdir()
     m.add(a)
     m.add(b)
     # b was added last → primary == 1.
@@ -118,7 +120,8 @@ def test_manager_set_primary(tmp_path):
 
 def test_manager_resolves_path_to_root(tmp_path):
     m = _mgr(tmp_path)
-    p = tmp_path / "proj"; p.mkdir()
+    p = tmp_path / "proj"
+    p.mkdir()
     (p / "src").mkdir()
     m.add(p)
     file_inside = p / "src" / "x.py"
@@ -126,7 +129,8 @@ def test_manager_resolves_path_to_root(tmp_path):
     root = m.resolve_path_to_root(file_inside)
     assert root is not None and root.path == p.resolve()
     # Outside the workspace
-    outside = tmp_path / "elsewhere"; outside.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
     assert m.resolve_path_to_root(outside) is None
 
 
@@ -136,7 +140,8 @@ def test_manager_atomic_write_under_corrupt_state(tmp_path):
     m = WorkspaceManager(path=state_file)
     # Bad file should not crash; should treat as empty.
     assert m.get().roots == []
-    p = tmp_path / "ok"; p.mkdir()
+    p = tmp_path / "ok"
+    p.mkdir()
     m.add(p)
     raw = json.loads(state_file.read_text(encoding="utf-8"))
     assert len(raw["roots"]) == 1

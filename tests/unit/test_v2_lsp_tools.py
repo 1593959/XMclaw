@@ -37,7 +37,8 @@ async def test_missing_pylsp_returns_structured_error(
     """pylsp isn't a hard dep. Tools must refuse gracefully when invoked
     on an otherwise-valid file (we provide one so the path-exists guard
     doesn't short-circuit before the pylsp check)."""
-    src = tmp_path / "x.py"; src.write_text("def f(): pass\n", encoding="utf-8")
+    src = tmp_path / "x.py"
+    src.write_text("def f(): pass\n", encoding="utf-8")
     monkeypatch.setitem(sys.modules, "pylsp", None)  # force ImportError
     tools = LSPTools()
     r = await tools.invoke(_call("lsp_hover", {

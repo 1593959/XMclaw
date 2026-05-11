@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Literal
 
 logger = logging.getLogger(__name__)
 

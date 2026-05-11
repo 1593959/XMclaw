@@ -354,6 +354,42 @@ async def test_web_fetch_disabled_refuses() -> None:
 
 
 @pytest.mark.asyncio
+async def test_web_fetch_blocks_private_ips() -> None:
+    """SSRF protection: raw private / loopback IPs are refused
+    before any HTTP request is made."""
+    tools = BuiltinTools()
+    blocked = [
+        "http://127.0.0.1/secret",
+        "http://127.0.0.1:8080/admin",
+        "http://10.0.0.1/",
+        "http://192.168.1.1/",
+        "http://172.16.0.1/",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://0.0.0.0/",
+        "http://[::1]/",
+        "http://[fe80::1]/",
+        "http://localhost/",
+        "http://metadata.google.internal/",
+    ]
+    for url in blocked:
+        r = await tools.invoke(_call("web_fetch", {"url": url}))
+        assert r.ok is False, f"expected {url} to be blocked"
+        assert "ssrf" in r.error.lower() or "private" in r.error.lower() or "disallowed" in r.error.lower(), (
+            f"expected SSRF error for {url}, got: {r.error}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_blocks_credential_urls() -> None:
+    """SSRF protection: URLs containing @ (credentials / redirect trick)
+    are refused."""
+    tools = BuiltinTools()
+    r = await tools.invoke(_call("web_fetch", {"url": "http://evil.com@127.0.0.1/"}))
+    assert r.ok is False
+    assert "ssrf" in r.error.lower() or "credential" in r.error.lower()
+
+
+@pytest.mark.asyncio
 async def test_web_search_parses_results(monkeypatch: pytest.MonkeyPatch) -> None:
     """Feed a fake DDG HTML page and confirm we extract titles + urls."""
     import httpx

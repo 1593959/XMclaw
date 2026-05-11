@@ -5,20 +5,18 @@ Extracted from app.py to keep the factory under control.
 from __future__ import annotations
 
 import asyncio
-import json
 import time as time_module
-from collections import deque
-from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager
+import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, AsyncIterator
 
 from fastapi import FastAPI
 
 from xmclaw.core.bus import (
+    BehavioralEvent,
     EventType,
     InProcessEventBus,
-    SqliteEventBus,
 )
 from xmclaw.utils.log import get_logger
 
@@ -541,6 +539,73 @@ def make_lifespan(
                             log.warning(
                                 "config_reloaded.security_failed err=%s", exc,
                             )
+                    # Phase E: cognition.continuous_loop — live-apply
+                    # CognitiveDaemonConfig without restart.
+                    if "cognition" in top_changed:
+                        try:
+                            daemon = getattr(
+                                _app.state, "cognitive_daemon", None,
+                            )
+                            if daemon is not None:
+                                from xmclaw.cognition.cognitive_daemon import (
+                                    CognitiveDaemonConfig,
+                                )
+
+                                _cog = (config or {}).get("cognition") or {}
+                                _cl = _cog.get("continuous_loop") or {}
+                                new_cfg = CognitiveDaemonConfig(
+                                    enabled=bool(_cl.get("enabled", True)),
+                                    autonomy_level=int(
+                                        _cl.get("autonomy_level", 50)
+                                    ),
+                                    heartbeat_hz=float(
+                                        _cl.get("heartbeat_hz", 1.0)
+                                    ),
+                                    action_threshold=float(
+                                        _cl.get("action_threshold", 0.6)
+                                    ),
+                                    top_k_focus=int(
+                                        _cl.get("top_k_focus", 7)
+                                    ),
+                                    goal_gen_every_n_ticks=int(
+                                        _cl.get(
+                                            "goal_gen_every_n_ticks", 60
+                                        )
+                                    ),
+                                    self_experiment_every_n_ticks=int(
+                                        _cl.get(
+                                            "self_experiment_every_n_ticks",
+                                            600,
+                                        )
+                                    ),
+                                    skill_propose_every_n_ticks=int(
+                                        _cl.get(
+                                            "skill_propose_every_n_ticks",
+                                            300,
+                                        )
+                                    ),
+                                    max_pending_goals=int(
+                                        _cl.get("max_pending_goals", 16)
+                                    ),
+                                    slow_subsystem_threshold_ms=float(
+                                        _cl.get(
+                                            "slow_subsystem_threshold_ms",
+                                            500.0,
+                                        )
+                                    ),
+                                )
+                                daemon.update_config(new_cfg)
+                                log.info(
+                                    "config_reloaded.cognition applied "
+                                    "autonomy=%d hz=%.2f",
+                                    new_cfg.autonomy_level,
+                                    new_cfg.heartbeat_hz,
+                                )
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning(
+                                "config_reloaded.cognition_failed err=%s",
+                                exc,
+                            )
 
                 bus.subscribe(
                     lambda e: e.type == EventType.CONFIG_RELOADED,
@@ -870,7 +935,7 @@ def make_lifespan(
         # taken at session start and the new lines never reach the
         # agent until the next persona write or daemon restart.
         try:
-            from xmclaw.daemon.agent_loop import (
+            from xmclaw.daemon.prompt_builder import (
                 bump_prompt_freeze_generation,
             )
 
@@ -1079,8 +1144,23 @@ def make_lifespan(
                     or {}
                 )
                 if bool(m_cfg.get("enabled", True)):
+                    # Sprint 3 #5: wire ReflectiveMutator as fallback
+                    # when DSPy is not installed. Pure-Python, no heavy
+                    # deps — closes the "mutation engine is wired but
+                    # inert" gap identified in the evolution audit.
+                    fallback = None
+                    if agent is not None and config is not None:
+                        llm = getattr(agent, "_llm", None)
+                        if llm is not None:
+                            from xmclaw.daemon.factory import (
+                                build_reflective_mutator_from_config,
+                            )
+                            fallback = build_reflective_mutator_from_config(
+                                config, llm=llm,
+                            )
                     mut_orch = MutationOrchestrator(
                         orchestrator.registry, bus,
+                        fallback_mutator=fallback,
                         ewma_alpha=float(m_cfg.get("ewma_alpha", 0.2)),
                         threshold=float(m_cfg.get("threshold", 0.5)),
                         min_samples=int(m_cfg.get("min_samples", 5)),
@@ -1229,6 +1309,7 @@ def make_lifespan(
         _cognitive_state = shared_cognitive_state
         _app.state.cognitive_state = _cognitive_state
         _app.state.file_watcher = None
+        _app.state.process_watcher = None
         _app.state.evolution_loop = None
         _app.state.task_scheduler = None
         if cognition_cfg.get("enabled", True) and _cognitive_state is not None:
@@ -1246,6 +1327,20 @@ def make_lifespan(
             except Exception as exc:  # noqa: BLE001
                 log.warning("cognition.file_watcher_start_failed err=%s", exc)
                 _app.state.file_watcher = None
+
+            try:
+                from xmclaw.cognition.process_watcher import ProcessWatcher
+                _pw = ProcessWatcher(
+                    bus=bus,
+                    poll_interval_s=float(
+                        cognition_cfg.get("process_poll_interval_s", 30.0)
+                    ),
+                )
+                await _pw.start()
+                _app.state.process_watcher = _pw
+            except Exception as exc:  # noqa: BLE001
+                log.warning("cognition.process_watcher_start_failed err=%s", exc)
+                _app.state.process_watcher = None
 
             try:
                 from xmclaw.cognition.evolution_loop import EvolutionLoop
@@ -1268,15 +1363,87 @@ def make_lifespan(
                 from xmclaw.cognition.task_scheduler import TaskScheduler
 
                 async def _task_executor(task):
-                    target_agent = _app.state.agent
+                    # Route by agent_id so submit_to_agent tasks land on
+                    # the correct sub-agent, not always the primary.
+                    _mgr = getattr(_app.state, "agents", None)
+                    if task.agent_id == "main" or task.agent_id == getattr(
+                        _app.state, "agent_id", "main"
+                    ):
+                        target_agent = _app.state.agent
+                    elif _mgr is not None:
+                        _ws = _mgr.get(task.agent_id)
+                        target_agent = _ws.agent_loop if _ws is not None else None
+                    else:
+                        target_agent = None
                     if target_agent is None:
-                        return "(no agent wired)"
-                    sid = f"task:{task.id}:{int(time_module.time())}"
-                    res = await target_agent.run_turn(sid, task.prompt)
-                    return (
-                        f"## Result\n\n{res.text or '(no text)'}\n\n"
-                        f"## Tool calls\n\n{len(res.tool_calls)} call(s); ok={res.ok}\n"
-                    )
+                        return f"(no agent wired for {task.agent_id!r})"
+
+                    # Extract caller from the agent-inter caller marker
+                    # so a2a tasks get consistent session ids.
+                    caller = getattr(
+                        _app.state, "agent_id", "main"
+                    ) or "main"
+                    prompt = task.prompt
+                    if prompt.startswith("[Agent "):
+                        end = prompt.find(" requesting]")
+                        if end > 8:
+                            caller = prompt[8:end]
+
+                    # Use a2a session-id format for agent-inter tasks so
+                    # they are visually distinct in logs / history.
+                    if task.agent_id != "main":
+                        stamp = int(time_module.time() * 1000)
+                        suffix = uuid.uuid4().hex[:8]
+                        sid = f"{caller}:to:{task.agent_id}:{stamp}:{suffix}"
+                    else:
+                        sid = f"task:{task.id}:{int(time_module.time())}"
+
+                    res = await target_agent.run_turn(sid, prompt)
+
+                    # Extract the last assistant message — same logic as
+                    # AgentInterTools._run_background so check_agent_task
+                    # returns a clean reply rather than a formatted blob.
+                    history = target_agent._histories.get(sid, [])
+                    raw_reply = ""
+                    for msg in reversed(history):
+                        if getattr(msg, "role", None) == "assistant":
+                            raw_reply = getattr(msg, "content", "") or ""
+                            break
+                    if not raw_reply and res is not None:
+                        raw_reply = getattr(res, "text", "") or ""
+
+                    # B-307 parity: scan the sub-agent reply for prompt
+                    # injection before it lands in the task result.
+                    try:
+                        from xmclaw.security import (
+                            PolicyMode,
+                            SOURCE_SUB_AGENT,
+                            apply_policy,
+                        )
+                        policy = getattr(
+                            target_agent, "_injection_policy",
+                            PolicyMode.DETECT_ONLY,
+                        )
+                        decision = apply_policy(
+                            raw_reply,
+                            policy=policy,
+                            source=SOURCE_SUB_AGENT,
+                            extra={
+                                "caller": caller,
+                                "callee": task.agent_id,
+                                "task_id": task.id,
+                                "async": True,
+                            },
+                        )
+                        if decision.blocked:
+                            return (
+                                "[B-307 sub-agent reply blocked by "
+                                "prompt-injection policy — see "
+                                "PROMPT_INJECTION_DETECTED event]"
+                            )
+                        return decision.content
+                    except Exception:  # noqa: BLE001
+                        return raw_reply
 
                 # Phase 5: derive db_path from the event bus so tasks
                 # live in events.db (same WAL, same backup, same prune).
@@ -1294,6 +1461,35 @@ def make_lifespan(
             except Exception as exc:  # noqa: BLE001
                 log.warning("cognition.task_scheduler_start_failed err=%s", exc)
                 _app.state.task_scheduler = None
+
+        # Phase C-4/4: swarm orchestrator.  Wires HTNPlanner + TaskScheduler
+        # + MultiAgentManager so the primary agent can dispatch complex goals
+        # to the swarm via the ``swarm_dispatch`` tool.
+        _swarm = None
+        if _app.state.task_scheduler is not None:
+            try:
+                from xmclaw.daemon.swarm_orchestrator import SwarmOrchestrator
+                from xmclaw.cognition.htn_planner import HTNPlanner
+
+                _primary_agent = getattr(_app.state, "agent", None)
+                _llm_for_planner = getattr(_primary_agent, "_llm", None)
+                _htn = HTNPlanner(
+                    llm=_llm_for_planner,
+                    max_depth=int(cognition_cfg.get("swarm_max_depth", 3)),
+                    max_total_cost_usd=float(
+                        cognition_cfg.get("swarm_max_cost_usd", 1.0)
+                    ),
+                )
+                _swarm = SwarmOrchestrator(
+                    planner=_htn,
+                    scheduler=_app.state.task_scheduler,
+                    manager=getattr(_app.state, "agents", None),
+                    llm=_llm_for_planner,
+                )
+                _app.state.swarm_orchestrator = _swarm
+            except Exception as exc:  # noqa: BLE001
+                log.warning("swarm.orchestrator_init_failed err=%s", exc)
+                _app.state.swarm_orchestrator = None
 
         # Phase 6.7: continuous cognitive daemon. Disabled by default —
         # opted-in via ``cognition.continuous_loop.enabled = true``.
@@ -1455,13 +1651,222 @@ def make_lifespan(
                         "reflection_cycle.build_failed err=%s", exc,
                     )
                     _reflection_cycle = None
+                # Sprint 3 #5: wire SkillProposer into the daemon's
+                # heartbeat so journal patterns auto-surface as
+                # SKILL_CANDIDATE_PROPOSED events. The ProposalMaterializer
+                # (started earlier in lifespan) subscribes to these and
+                # turns them into real registry entries.
+                _skill_proposer = None
+                if agent is not None and config is not None:
+                    _agent_llm = getattr(agent, "_llm", None)
+                    if _agent_llm is not None:
+                        try:
+                            from xmclaw.core.evolution.proposer import SkillProposer
+                            from xmclaw.core.journal import JournalReader
+                            from xmclaw.daemon.llm_extractors import (
+                                build_skill_extractor,
+                            )
+                            _sp_cfg = (
+                                ((config or {}).get("evolution") or {})
+                                .get("skill_proposer") or {}
+                            )
+                            _skill_proposer = SkillProposer(
+                                reader=JournalReader(),
+                                extractor_callable=build_skill_extractor(
+                                    _agent_llm,
+                                ),
+                                history_window=int(
+                                    _sp_cfg.get("history_window", 50),
+                                ),
+                                min_pattern_count=int(
+                                    _sp_cfg.get("min_pattern_count", 3),
+                                ),
+                                min_confidence=float(
+                                    _sp_cfg.get("min_confidence", 0.5),
+                                ),
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning(
+                                "skill_proposer.build_failed err=%s", exc,
+                            )
+
+                # Phase 6.8: SelfExperimentLoop — wired even without
+                # factories so that tick() can propose experiments; factories
+                # are injected later when a treatment is available.
+                _experiment_loop = None
+                try:
+                    from xmclaw.cognition.self_experiment import SelfExperimentLoop
+
+                    _experiment_loop = SelfExperimentLoop()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("cognition.experiment_loop_init_failed err=%s", exc)
+
+                # Phase 6.8b: inject factories so tick() can execute full
+                # A/B cycles, not just propose.  Baseline re-uses the live
+                # agent (each benchmark task gets a fresh session_id, so
+                # history isolation is preserved).  Treatment currently
+                # mirrors baseline — a future phase wires the
+                # MutationOrchestrator to supply a mutated variant.
+                if _experiment_loop is not None and agent is not None:
+                    try:
+                        from xmclaw.eval import SUITE_REGISTRY
+
+                        def _baseline_factory():
+                            return agent
+
+                        def _treatment_factory(
+                            overrides: dict[str, int] | None = None,
+                        ):
+                            # If overrides are passed (from
+                            # SelfExperimentLoop isolation), use them
+                            # directly.  Otherwise fall back to scanning
+                            # the registry for all non-HEAD candidates.
+                            if _evo_registry is not None:
+                                if overrides is None:
+                                    overrides = {}
+                                    for sid in _evo_registry.list_skill_ids():
+                                        head = _evo_registry.active_version(sid)
+                                        for v in _evo_registry.list_versions(sid):
+                                            if v != head:
+                                                overrides[sid] = v
+                                                break
+                                if overrides:
+                                    import copy
+
+                                    from xmclaw.providers.tool.composite import (
+                                        CompositeToolProvider,
+                                    )
+                                    from xmclaw.skills.registry import (
+                                        SkillRegistryView,
+                                    )
+                                    from xmclaw.skills.tool_bridge import (
+                                        SkillToolProvider,
+                                    )
+
+                                    view = SkillRegistryView(
+                                        _evo_registry, overrides,
+                                    )
+                                    mutant_skills = SkillToolProvider(view)
+
+                                    def _replace(root: Any) -> Any:
+                                        if isinstance(
+                                            root, SkillToolProvider,
+                                        ):
+                                            return mutant_skills
+                                        _kids = (
+                                            getattr(root, "children", None)
+                                            or getattr(root, "_children", None)
+                                            or []
+                                        )
+                                        if _kids:
+                                            _new = [
+                                                _replace(c) for c in _kids
+                                            ]
+                                            return CompositeToolProvider(
+                                                *_new,
+                                            )
+                                        return root
+
+                                    treatment = copy.copy(agent)
+                                    if agent._tools is not None:
+                                        treatment._tools = _replace(
+                                            agent._tools,
+                                        )
+                                    return treatment
+                            return agent
+
+                        def _load_suite(suite_id: str):
+                            cls = SUITE_REGISTRY.get(suite_id)
+                            if cls is None:
+                                raise KeyError(
+                                    f"unknown suite {suite_id!r}; "
+                                    f"registered: {list(SUITE_REGISTRY.keys())}"
+                                )
+                            return cls()
+
+                        _experiment_loop.set_factories(
+                            baseline_factory=_baseline_factory,
+                            treatment_factory=_treatment_factory,
+                            load_suite=_load_suite,
+                            suite_id="longmemeval_mini",
+                        )
+                        # Phase E debt-2: wire candidate resolver so
+                        # multi-skill experiments are isolated one-at-a-time.
+                        if _evo_registry is not None:
+                            def _resolve_candidates() -> dict[str, int]:
+                                out: dict[str, int] = {}
+                                for sid in _evo_registry.list_skill_ids():
+                                    head = _evo_registry.active_version(sid)
+                                    for v in _evo_registry.list_versions(sid):
+                                        if v != head:
+                                            out[sid] = v
+                                            break
+                                return out
+
+                            _experiment_loop.set_candidate_resolver(
+                                _resolve_candidates,
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning(
+                            "cognition.experiment_loop_factories_failed err=%s",
+                            exc,
+                        )
+
+                # Phase 6.2: ReasoningEngine — uses the agent's LLM, the
+                # memory graph, and the strategy bank if available.
+                _reasoning = None
+                try:
+                    from xmclaw.cognition.reasoning import ReasoningEngine
+
+                    _reasoning = ReasoningEngine(
+                        llm=getattr(agent, "_llm", None),
+                        graph=getattr(_app.state, "memory_graph", None),
+                        bank=getattr(agent, "_strategy_bank", None),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("cognition.reasoning_engine_init_failed err=%s", exc)
+
+                # Phase 6.3: Planner — drives the plan → dispatch pipeline
+                # inside CognitiveDaemon._react_to_percept.
+                _planner = None
+                try:
+                    from xmclaw.cognition.planner import Planner
+
+                    _planner = Planner(
+                        llm=getattr(agent, "_llm", None),
+                        skill_registry=_evo_registry,
+                        reasoning_engine=_reasoning,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("cognition.planner_init_failed err=%s", exc)
+
+                # Phase D: tick history store for /daemon/history.
+                _tick_store = None
+                try:
+                    from xmclaw.cognition.tick_store import TickStore
+
+                    _tick_store = TickStore()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("cognition.tick_store_init_failed err=%s", exc)
+
                 _cognitive_daemon = CognitiveDaemon(
                     config=_cd_cfg,
                     bus=_percept_bus,
                     attention=_attention,
                     cognitive_state=_cognitive_state,
-                    dispatcher=ActionDispatcher(),
+                    dispatcher=ActionDispatcher(
+                        agent_loop=agent,
+                        skill_registry=_evo_registry,
+                        tool_provider=getattr(agent, "_tools", None),
+                    ),
                     reflection_cycle=_reflection_cycle,
+                    skill_proposer=_skill_proposer,
+                    event_bus=bus,
+                    experiment_loop=_experiment_loop,
+                    reasoning=_reasoning,
+                    planner=_planner,
+                    process_watcher=getattr(_app.state, "process_watcher", None),
+                    tick_store=_tick_store,
                 )
                 _app.state.perception_bus = _percept_bus
                 # Phase 6 wiring A: subscribe existing event sources
@@ -1486,6 +1891,10 @@ def make_lifespan(
                         _percept_sources.attach_user_message_hook(agent)
                     if cron_tick is not None:
                         _percept_sources.attach_cron_hook(cron_tick)
+                    # Phase B: forward high-signal internal events
+                    # (skill promoted, goals groomed, etc.) as percepts.
+                    if bus is not None:
+                        _percept_sources.attach_internal_events(bus)
                 except Exception as exc:  # noqa: BLE001
                     log.warning("percept_sources.attach_failed err=%s", exc)
                     _percept_sources = None
@@ -1527,6 +1936,7 @@ def make_lifespan(
                 log.warning("cognitive_daemon.start_failed err=%s", exc)
                 _cognitive_daemon = None
         _app.state.cognitive_daemon = _cognitive_daemon
+        _app.state.experiment_loop = _experiment_loop
 
         # 2026-05-11: log lifespan startup duration. /api/v2/status
         # surfaces this so the UI can show "daemon ready in 1.2s"
@@ -1797,6 +2207,12 @@ def make_lifespan(
             if _fw is not None:
                 try:
                     await _fw.stop()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
+            _pw = getattr(_app.state, "process_watcher", None)
+            if _pw is not None:
+                try:
+                    await _pw.stop()
                 except Exception as exc:  # noqa: BLE001
                     log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             _graph = getattr(_app.state, "memory_graph", None)

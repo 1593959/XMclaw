@@ -15,7 +15,7 @@ These tests pin the helper + the sanitiser extension in
 """
 from __future__ import annotations
 
-from xmclaw.daemon.agent_loop import (
+from xmclaw.daemon.turn_context import (
     _detect_frustration_signal,
     _sanitize_memory_context,
 )

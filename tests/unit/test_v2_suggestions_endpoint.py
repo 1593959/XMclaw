@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 from fastapi.testclient import TestClient
 
 from xmclaw.cognition.suggestion_inbox import (
@@ -89,7 +88,7 @@ def test_get_pending_returns_pending_only(tmp_path) -> None:  # noqa: ANN001
 def test_get_all_returns_everything(tmp_path) -> None:  # noqa: ANN001
     inbox = SuggestionInbox(db_path=tmp_path / "s.db")
     s1 = inbox.add(Suggestion(kind="x", summary="a"))
-    s2 = inbox.add(Suggestion(kind="y", summary="b"))
+    inbox.add(Suggestion(kind="y", summary="b"))
     inbox.decide(s1, status="approved")
     with _client_with(inbox) as tc:
         r = tc.get("/api/v2/cognition/suggestions?status=all")

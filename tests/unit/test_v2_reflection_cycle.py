@@ -17,8 +17,6 @@ from typing import Any
 import pytest
 
 from xmclaw.cognition.reflection_cycle import (
-    CycleResult,
-    InnerThought,
     ReflectionCycle,
 )
 

@@ -136,6 +136,13 @@ class EventType(str, Enum):
     #     "bytes_removed": int | None,  # only present for byte-cap evictions
     # }
     MEMORY_EVICTED = "memory_evicted"
+    # Phase 6: emitted by CognitiveDaemon after each heartbeat tick.
+    # Payload mirrors tick_once() return dict:
+    #   {"tick": int, "n_percepts": int, "n_goals_spawned": int,
+    #    "n_plans_executed": int, "ran_experiment": bool,
+    #    "n_reflections": int, "n_skill_proposals": int,
+    #    "errors": list[str], "timestamp": float}
+    COGNITIVE_DAEMON_TICK = "cognitive_daemon_tick"
 
     # B-27: emitted when a memory provider stores or recalls. Payload:
     # {"provider": "builtin" | "sqlite_vec" | ...,

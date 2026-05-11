@@ -131,10 +131,10 @@ def test_b332_allowed_names_property_is_frozen() -> None:
 # ── AgentLoop integration ──────────────────────────────────────────
 
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field  # noqa: E402
 
-from xmclaw.core.ir import ToolCallShape
-from xmclaw.providers.llm.base import LLMProvider, LLMResponse, Pricing
+from xmclaw.core.ir import ToolCallShape  # noqa: E402
+from xmclaw.providers.llm.base import LLMProvider, LLMResponse, Pricing  # noqa: E402
 
 
 @dataclass

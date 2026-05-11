@@ -53,7 +53,19 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STATIC_DIR = REPO_ROOT / "xmclaw" / "daemon" / "static"
 AGENT_LOOP = REPO_ROOT / "xmclaw" / "daemon" / "agent_loop.py"
+HOP_LOOP = REPO_ROOT / "xmclaw" / "daemon" / "hop_loop.py"
 REDUCER = STATIC_DIR / "lib" / "chat_reducer.js"
+
+
+def _daemon_src() -> str:
+    """Return concatenated source of all daemon files that may emit
+    tool-call events. After the AgentLoop refactor (Phase A) the hop
+    loop lives in hop_loop.py; the contract guard must span both files.
+    """
+    parts = [AGENT_LOOP.read_text(encoding="utf-8")]
+    if HOP_LOOP.exists():
+        parts.append(HOP_LOOP.read_text(encoding="utf-8"))
+    return "\n".join(parts)
 
 
 # ── Python side: pin the daemon emission keys ──────────────────────
@@ -63,14 +75,14 @@ def test_agent_loop_publishes_tool_call_emitted_with_call_id_key() -> None:
     """The TOOL_CALL_EMITTED publisher MUST put ``call_id`` in the
     payload. ``tool_call_id`` alone is the B-232 regression — the
     reducer's primary key path reads ``call_id``."""
-    src = AGENT_LOOP.read_text(encoding="utf-8")
+    src = _daemon_src()
     # Find every ``TOOL_CALL_EMITTED`` publish and look at its payload
     # dict literal. The publisher pattern in agent_loop.py is:
     #     await publish(EventType.TOOL_CALL_EMITTED, {"call_id": ...})
     # We require at least one publish-site whose payload contains
     # ``"call_id":``. Any publish that omits the key entirely is the
     # bug we want to catch.
-    occurrences = re.findall(
+    re.findall(
         r"EventType\.TOOL_CALL_EMITTED[^)]*\)\s*\n[^}]*\{[^}]*\}",
         src, flags=re.DOTALL,
     )
@@ -78,14 +90,14 @@ def test_agent_loop_publishes_tool_call_emitted_with_call_id_key() -> None:
     # If the publisher block format changes the regex above can miss;
     # the textual guard below is the resilient backstop.
     assert '"call_id":' in src, (
-        "no ``call_id`` payload key found in agent_loop.py — "
+        "no ``call_id`` payload key found in daemon source — "
         "TOOL_CALL_EMITTED publishers must surface call_id "
         "(B-232 regression: pre-fix only ``tool_call_id`` was emitted)"
     )
     # Stronger: the snippet around any TOOL_CALL_EMITTED publish must
     # mention call_id within ~400 chars (the payload literal).
     matches = list(re.finditer(r"EventType\.TOOL_CALL_EMITTED", src))
-    assert matches, "no TOOL_CALL_EMITTED publish found in agent_loop.py"
+    assert matches, "no TOOL_CALL_EMITTED publish found in daemon source"
     for m in matches:
         window = src[m.start():m.start() + 400]
         assert "call_id" in window, (
@@ -99,7 +111,7 @@ def test_agent_loop_publishes_tool_invocation_finished_with_call_id() -> None:
     """Same guard for TOOL_INVOCATION_FINISHED — the reducer's
     finished-arm reads ``payload.call_id`` first; emitting only
     ``tool_call_id`` brings back the "stuck at running" bug."""
-    src = AGENT_LOOP.read_text(encoding="utf-8")
+    src = _daemon_src()
     matches = list(re.finditer(r"EventType\.TOOL_INVOCATION_FINISHED", src))
     assert matches, "no TOOL_INVOCATION_FINISHED publish found"
     for m in matches:

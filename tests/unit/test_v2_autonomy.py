@@ -11,10 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from xmclaw.cognition.autonomy import (
-    AutonomyDecision,
     AutonomyPolicy,
 )
 from xmclaw.cognition.suggestion_inbox import (

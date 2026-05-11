@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import json
+import ipaddress
+import os
 import re
 import shutil
 import subprocess
 import sys
 import time
-import uuid
-from pathlib import Path
-from typing import Any
+from urllib.parse import urlparse
 
 from xmclaw.core.ir import ToolCall, ToolResult
 from xmclaw.providers.tool._helpers import _fail as _fail, _parse_ddg_html as _parse_ddg_html
@@ -17,6 +16,67 @@ from xmclaw.providers.tool._helpers import _fail as _fail, _parse_ddg_html as _p
 _BASH_DEFAULT_TIMEOUT = 30.0
 _BASH_MAX_OUTPUT = 100_000
 _MAX_WEB_BYTES = 50_000
+
+# SSRF blocklist — private, loopback, link-local, and well-known
+# cloud metadata endpoints that should never be reachable via
+# the web_fetch tool.
+_SSRF_DISALLOWED_HOSTS = frozenset({
+    "localhost", "localhost.localdomain",
+    "metadata.google.internal",
+    "metadata",
+})
+_SSRF_DISALLOWED_PATTERNS = [
+    re.compile(r"^169\.254\.169\.254$"),          # AWS / Azure / GCP metadata
+    re.compile(r"^metadata\d*\.google\.internal$"),
+    re.compile(r"^.*\.metadata\.google\.internal$"),
+]
+
+
+def _check_url_for_ssrf(url: str) -> str | None:
+    """Return an error string if *url* points to a private / internal
+    endpoint, otherwise ``None``.
+
+    Checks raw IP addresses against private/link-local ranges and
+    blocks known cloud-metadata hostnames.  Does **not** follow
+    redirects — callers that need redirect safety must re-check
+    each hop target.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception as exc:  # noqa: BLE001
+        return f"invalid URL: {exc}"
+
+    # Reject URLs that embed credentials or use non-standard ports
+    # in ways that commonly bypass naive filters.
+    if "@" in (parsed.netloc or ""):
+        return "URLs containing credentials are not allowed"
+
+    hostname = (parsed.hostname or "").lower().strip()
+    if not hostname:
+        return "missing hostname"
+
+    # 1. Raw IPv4 / IPv6 check
+    try:
+        addr = ipaddress.ip_address(hostname)
+        if addr.is_loopback or addr.is_private or addr.is_link_local or addr.is_reserved:
+            return f"private / internal IP address: {hostname}"
+        if addr.is_multicast or addr.is_unspecified:
+            return f"non-routable IP address: {hostname}"
+    except ValueError:
+        pass  # not a raw IP — proceed to hostname checks
+
+    # 2. Hostname blocklist
+    if hostname in _SSRF_DISALLOWED_HOSTS:
+        return f"disallowed host: {hostname}"
+    for pat in _SSRF_DISALLOWED_PATTERNS:
+        if pat.match(hostname):
+            return f"disallowed host pattern: {hostname}"
+
+    # 3. Prevent IPv4-address-like hostnames that slipped past
+    # ip_address() because they include a port (e.g. 127.0.0.1:8080).
+    # parsed.hostname strips the port, so we already checked the raw IP.
+
+    return None
 
 class BuiltinToolsShellMixin:
     """Shell and web tools: bash, web_fetch, web_search."""
@@ -62,17 +122,29 @@ class BuiltinToolsShellMixin:
                     shell_args = ["-NoProfile", "-Command", command]
                     break
 
+        # Sanitize environment before spawning a shell.  Removes
+        # dynamic-library injection vectors that could be used to
+        # intercept system calls or hijack child processes.
+        _clean_env = os.environ.copy()
+        for _dangerous in (
+            "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT",
+            "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+        ):
+            _clean_env.pop(_dangerous, None)
+
         def _run() -> tuple[int, bytes]:
             if shell_exe is not None and shell_args is not None:
                 proc = subprocess.run(
                     [shell_exe, *shell_args],
                     shell=False, cwd=cwd,
                     capture_output=True, timeout=timeout,
+                    env=_clean_env,
                 )
             else:
                 proc = subprocess.run(
                     command, shell=True, cwd=cwd,
                     capture_output=True, timeout=timeout,
+                    env=_clean_env,
                 )
             merged = (proc.stdout or b"") + (proc.stderr or b"")
             return proc.returncode, merged
@@ -102,6 +174,9 @@ class BuiltinToolsShellMixin:
             return _fail(call, t0, "missing or empty 'url' argument")
         if not (url.startswith("http://") or url.startswith("https://")):
             return _fail(call, t0, f"url must start with http(s)://, got {url!r}")
+        _ssrf_err = _check_url_for_ssrf(url)
+        if _ssrf_err:
+            return _fail(call, t0, f"SSRF protection: {_ssrf_err}")
         max_chars = call.args.get("max_chars", _MAX_WEB_BYTES)
         try:
             max_chars = int(max_chars)

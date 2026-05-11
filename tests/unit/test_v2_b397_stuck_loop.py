@@ -328,3 +328,77 @@ async def test_b397_success_resets_streak() -> None:
     # hops: 2 errors + 1 success + 3 errors = 6 hops worth of LLM
     # calls. We expect to break on the 6th hop's tool result.
     assert res.hops <= 7
+
+
+# ── meta-cognitive no-progress guard ──────────────────────────────────
+
+
+@dataclass
+class _AlwaysFailProvider(ToolProvider):
+    """Every tool call fails with a DIFFERENT error — B-397 won't trip
+    (because errors differ) but the no-progress guard will."""
+
+    _count: int = 0
+
+    def list_tools(self) -> list[ToolSpec]:
+        return [
+            ToolSpec(name="tool_a", description="a", parameters_schema={}),
+            ToolSpec(name="tool_b", description="b", parameters_schema={}),
+        ]
+
+    async def invoke(self, call: ToolCall) -> ToolResult:
+        self._count += 1
+        return ToolResult(
+            call_id=call.id, ok=False, content=None,
+            error=f"fail #{self._count}", latency_ms=0.0, side_effects=(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_no_progress_guard_trips_after_five_failed_hops() -> None:
+    """When every tool call fails for 5 consecutive hops (different
+    errors each time so B-397 does NOT fire), the no-progress guard
+    should break the loop."""
+    bus = InProcessEventBus()
+
+    from xmclaw.providers.llm.base import LLMProvider
+
+    @dataclass
+    class _AlwaysToolLLM(LLMProvider):
+        _i: int = 0
+        model: str = "mock"
+
+        async def stream(self, _messages, tools=None, *, cancel=None):
+            if False:
+                yield  # type: ignore[unreachable]
+
+        async def complete(self, _messages, tools=None):
+            self._i += 1
+            # Emit a different tool each hop to avoid B-397.
+            name = "tool_a" if self._i % 2 else "tool_b"
+            return LLMResponse(
+                content="",
+                tool_calls=(ToolCall(
+                    name=name, args={}, provenance="test", id=f"tc-{self._i}",
+                ),),
+            )
+
+        @property
+        def tool_call_shape(self):
+            from xmclaw.core.ir.toolcall import ToolCallShape
+            return ToolCallShape.ANTHROPIC_NATIVE
+
+        @property
+        def pricing(self):
+            from xmclaw.providers.llm.base import Pricing
+            return Pricing()
+
+    llm = _AlwaysToolLLM()
+    tools = _AlwaysFailProvider()
+    loop = AgentLoop(llm=llm, bus=bus, tools=tools, max_hops=20)
+    res = await loop.run_turn("sess-np", "do thing")
+
+    assert res.ok is False
+    assert "no progress" in (res.text or "").lower() or "no_progress" in (res.error or "")
+    # Should break well before max_hops=20.
+    assert res.hops <= 7

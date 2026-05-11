@@ -270,6 +270,15 @@ class PerceptSourceRegistry:
     stop-then-start cycle doesn't double-fire.
     """
 
+    # Event types on the main bus that we forward as internal percepts.
+    _INTERNAL_EVENT_KINDS: dict[str, float] = {
+        "skill_promoted": 0.7,
+        "skill_rolled_back": 0.6,
+        "goals_groomed": 0.5,
+        "memory_consolidated": 0.4,
+        "reflection_cycle_ran": 0.4,
+    }
+
     def __init__(self, bus: PerceptionBus) -> None:
         self._bus = bus
         # Subscriber ids on the bus — kept so we can unsubscribe on detach
@@ -286,6 +295,9 @@ class PerceptSourceRegistry:
         self._agent_loops: list[tuple[Any, Any]] = []
         # Cron runner hooks: stash callbacks we registered.
         self._cron_runners: list[tuple[Any, Any]] = []
+        # Main-bus subscriber for internal-event forwarding.
+        self._internal_bus: Any | None = None
+        self._internal_handler: Any | None = None
 
     # ----------------------------------------------------------- file events
 
@@ -346,6 +358,49 @@ class PerceptSourceRegistry:
             )
             return
         self._process_watcher_state.append((watcher, original_bus))
+
+    # -------------------------------------------------------- internal events
+
+    def attach_internal_events(self, main_bus: Any) -> None:
+        """Subscribe to ``main_bus`` and forward designated event types as
+        ``source="internal"`` percepts.
+
+        Only a curated subset of high-signal event types is forwarded;
+        routine churn (LLM_CHUNK, cost_tick) is intentionally skipped so
+        the perception bus doesn't drown in noise.
+        """
+        if main_bus is None:
+            return
+        self._internal_bus = main_bus
+
+        async def _handler(event: Any) -> None:
+            try:
+                ev_type = getattr(event, "type", None)
+                if ev_type is None:
+                    return
+                kind = str(ev_type.value if hasattr(ev_type, "value") else ev_type)
+                salience = self._INTERNAL_EVENT_KINDS.get(kind)
+                if salience is None:
+                    return
+                payload = getattr(event, "payload", {}) or {}
+                await self._bus.push(
+                    make_internal_event_percept(
+                        event_kind=kind,
+                        payload=dict(payload),
+                        suggested_salience=salience,
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("PerceptSources: internal event -> bus push failed")
+
+        self._internal_handler = _handler
+        try:
+            from xmclaw.core.bus.memory import accept_all
+
+            sub_id = main_bus.subscribe(accept_all, _handler)
+            self._sub_ids.append(sub_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("PerceptSources: could not subscribe to internal events")
 
     # -------------------------------------------------------------- WS hook
 
@@ -450,6 +505,8 @@ class PerceptSourceRegistry:
             except Exception:  # noqa: BLE001
                 logger.exception("PerceptSources: bus.unsubscribe failed")
         self._sub_ids.clear()
+        self._internal_bus = None
+        self._internal_handler = None
 
     # Allow ``async with`` usage in tests / lifespan helpers without
     # forcing it on callers — a light convenience.

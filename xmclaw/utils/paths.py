@@ -322,6 +322,18 @@ def default_experiments_db_path() -> Path:
     return v2_workspace_dir() / "experiments.db"
 
 
+def default_ticks_db_path() -> Path:
+    """CognitiveDaemon tick history — ``<v2>/ticks.db``.
+
+    Phase D: stores per-tick summaries (latency breakdown, error
+    counts, subsystem counters) for the /daemon/history endpoint.
+    """
+    override = os.environ.get("XMC_V2_TICKS_DB_PATH")
+    if override:
+        return Path(override)
+    return v2_workspace_dir() / "ticks.db"
+
+
 def evolution_proposals_dir() -> Path:
     """EvolutionLoop scratch dir — ``<v2>/proposals/``.
 

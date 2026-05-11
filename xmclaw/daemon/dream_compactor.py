@@ -221,7 +221,7 @@ class DreamCompactor:
 
         # Bump prompt-freeze generation so live sessions pick up.
         try:
-            from xmclaw.daemon.agent_loop import bump_prompt_freeze_generation
+            from xmclaw.daemon.prompt_builder import bump_prompt_freeze_generation
             bump_prompt_freeze_generation()
         except Exception:  # noqa: BLE001
             pass

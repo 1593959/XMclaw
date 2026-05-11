@@ -11,7 +11,7 @@ import fnmatch
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Awaitable, Callable, Literal
 
 from xmclaw.utils.log import get_logger
 
@@ -156,9 +156,9 @@ class FileWatcher:
                     except Exception:
                         log.warning("file_watcher.callback_failed", exc_info=True)
 
-    def _take_snapshot(self) -> dict[str, float]:
-        """拍摄文件系统快照。"""
-        snapshot: dict[str, float] = {}
+    def _take_snapshot(self) -> dict[str, tuple[float, int, int]]:
+        """拍摄文件系统快照。返回 {path: (mtime, size, inode)}。"""
+        snapshot: dict[str, tuple[float, int, int]] = {}
         for watch_path in self.watch_paths:
             if not watch_path.exists():
                 continue
@@ -168,7 +168,7 @@ class FileWatcher:
                         continue
                     try:
                         stat = item.stat()
-                        snapshot[str(item)] = stat.st_mtime
+                        snapshot[str(item)] = (stat.st_mtime, stat.st_size, stat.st_ino)
                     except (OSError, PermissionError):
                         continue
             except (OSError, PermissionError):
@@ -177,31 +177,74 @@ class FileWatcher:
 
     def _diff_snapshots(
         self,
-        old: dict[str, float],
-        new: dict[str, float],
+        old: dict[str, tuple[float, int, int]],
+        new: dict[str, tuple[float, int, int]],
     ) -> list[FilePercept]:
-        """对比快照，生成感知事件。"""
+        """对比快照，生成感知事件。支持 move 检测。"""
         events: list[FilePercept] = []
         now = time.time()
 
         # 新增 / 修改
-        for path, mtime in new.items():
+        for path, (mtime, size, _ino) in new.items():
             if path not in old:
                 events.append(FilePercept(path, "created", now))
-            elif old[path] != mtime:
+            elif old[path][0] != mtime:
                 events.append(FilePercept(path, "modified", now))
 
         # 删除
+        deleted: list[str] = []
         for path in old:
             if path not in new:
+                deleted.append(path)
                 events.append(FilePercept(path, "deleted", now))
+
+        # Move 检测：一个 deleted + 一个 created 具有相同 (size, inode)
+        # 则将 deleted 升级为 moved。
+        if deleted:
+            old_inodes = {
+                old[p][2]: p for p in deleted if old[p][2] != 0
+            }
+            for ev in list(events):
+                if ev.event_type != "created":
+                    continue
+                _mtime, _size, ino = new[ev.path]
+                if ino != 0 and ino in old_inodes:
+                    src = old_inodes[ino]
+                    # 替换 created 为 moved，并移除对应的 deleted
+                    events = [
+                        e for e in events
+                        if not (e.path == ev.path and e.event_type == "created")
+                        and not (e.path == src and e.event_type == "deleted")
+                    ]
+                    events.append(
+                        FilePercept(ev.path, "moved", now, src_path=src)
+                    )
+                    del old_inodes[ino]
 
         return events
 
     async def is_contextually_relevant(self, path: str) -> bool:
         """判断文件变化是否与当前上下文相关。
-        Phase 1: 始终返回 False（只记录不打扰）。
-        Phase 2: 基于最近 memory search 的 query 与路径的 token 重叠判断。
+
+        Phase 2: 基于 cognitive_state 的 attention focus 与路径的 token
+        重叠判断。如果当前高关注主题与文件路径/扩展名有关联，则判定为
+        相关，允许主动提示。
         """
-        # Phase 1: 不打扰
-        return False
+        if self._cognitive_state is None:
+            return False
+        try:
+            focuses = getattr(self._cognitive_state, "attention_focuses", [])
+            if not focuses:
+                return False
+            path_lower = path.lower()
+            # 提取路径中的关键 token（文件名、扩展名、目录名）
+            tokens = set(Path(path_lower).parts)
+            tokens.add(Path(path_lower).suffix.lstrip("."))
+            for focus in focuses[-3:]:  # 只看最近 3 个焦点
+                focus_text = getattr(focus, "content", "") or ""
+                focus_tokens = set(focus_text.lower().split())
+                if tokens & focus_tokens:
+                    return True
+            return False
+        except Exception:
+            return False

@@ -16,8 +16,8 @@ These tests pin the helper functions in ``daemon/agent_loop.py``.
 """
 from __future__ import annotations
 
-from xmclaw.daemon.agent_loop import (
-    _continuation_anchor,
+from xmclaw.daemon.agent_loop import _continuation_anchor
+from xmclaw.daemon.turn_context import (
     _is_vague_continuation,
     _prior_ended_without_synthesis,
 )

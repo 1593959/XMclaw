@@ -32,7 +32,7 @@ from typing import Any
 import pytest
 
 from xmclaw.core.bus import InProcessEventBus
-from xmclaw.core.ir import ToolCall, ToolCallShape, ToolSpec
+from xmclaw.core.ir import ToolCallShape, ToolSpec
 from xmclaw.daemon.agent_loop import AgentLoop
 from xmclaw.providers.llm.base import (
     LLMChunk,

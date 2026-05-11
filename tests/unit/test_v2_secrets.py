@@ -26,11 +26,11 @@ import pytest
 
 pytestmark = pytest.mark.real_secrets
 
-import pytest
-from typer.testing import CliRunner
+import pytest  # noqa: E402
+from typer.testing import CliRunner  # noqa: E402
 
-from xmclaw.cli.main import app
-from xmclaw.utils import secrets as secrets_mod
+from xmclaw.cli.main import app  # noqa: E402
+from xmclaw.utils import secrets as secrets_mod  # noqa: E402
 
 
 # ── helpers ─────────────────────────────────────────────────────────────

@@ -427,4 +427,4 @@ def test_bound_goal_atomic_leaves_walks_tree() -> None:
         kind="compound", children=(leaf1, nested),
     )
     leaves = root.atomic_leaves()
-    assert [l.goal_id for l in leaves] == ["a", "b"]
+    assert [leaf.goal_id for leaf in leaves] == ["a", "b"]

@@ -11,6 +11,7 @@ Verifies:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -36,6 +37,26 @@ def test_health_endpoint(client: TestClient) -> None:
     assert body["status"] == "ok"
     assert "version" in body
     assert body["bus"] == "InProcessEventBus"
+
+
+def test_lifespan_wires_experiment_loop_factories(bus: InProcessEventBus) -> None:
+    """Phase 6.8b: SelfExperimentLoop factories are injected in lifespan."""
+    class _FakeAgent:
+        pass
+
+    app = create_app(
+        bus=bus,
+        agent=_FakeAgent(),
+        config={"cognition": {"enabled": True}},
+    )
+    with TestClient(app) as client:
+        exp_loop = client.app.state.experiment_loop
+        assert exp_loop is not None
+        assert exp_loop._baseline_factory is not None
+        assert exp_loop._treatment_factory is not None
+        assert exp_loop._load_suite is not None
+        # baseline factory returns the wired agent
+        assert exp_loop._baseline_factory() is client.app.state.agent
 
 
 def test_ws_connect_emits_session_create(client: TestClient) -> None:
@@ -474,3 +495,136 @@ def test_b348_third_ws_supersedes_second_after_first_disconnects(
                     "from active_ws_for_session before tab 3 connected — "
                     "likely ws_a's finally clobbered ws_b's registration"
                 )
+
+
+# ── Phase 6: CognitiveDaemon end-to-end tick wiring ───────────────────
+
+
+@pytest.mark.asyncio
+async def test_cognitive_daemon_tick_e2e_lifespan_wiring(bus: InProcessEventBus) -> None:
+    """Full tick cycle on real lifespan wiring: percept → attention →
+    daemon tick → event bus publish.
+
+    Uses a fake agent so no LLM is required; the assertion is that the
+    tick completes without error and the summary contains the expected
+    keys.  This guards against regressions where a collaborator
+    (ReasoningEngine, Planner, ActionDispatcher) is wired with the
+    wrong shape and silently fails inside tick_once's try/except.
+    """
+    class _FakeAgent:
+        async def run_turn(self, session_id: str, prompt: str):
+            class _Res:
+                text = "ok"
+                hops = 1
+                cost_usd = 0.0
+                ok = True
+                tool_calls = []
+            return _Res()
+
+    app = create_app(
+        bus=bus,
+        agent=_FakeAgent(),
+        config={"cognition": {"enabled": True}},
+    )
+    with TestClient(app) as client:
+        daemon = client.app.state.cognitive_daemon
+        assert daemon is not None, "cognitive_daemon not wired in lifespan"
+
+        # Drive one tick deterministically (no wall-clock sleep).
+        # The daemon may have already ticked in the background since
+        # lifespan start() spawns _run(); use tick_count to know where
+        # we are.
+        before = daemon.tick_count
+        summary = await daemon.tick_once()
+        assert summary["tick"] == before + 1
+        assert summary["errors"] == []
+        assert "n_percepts" in summary
+        assert "n_actionable" in summary
+        assert "n_goals_spawned" in summary
+        assert "n_plans_executed" in summary
+        assert "ran_experiment" in summary
+        assert "n_reflections" in summary
+        assert "n_skill_proposals" in summary
+
+        # Verify the tick event was published on the bus.
+        tick_events = []
+        async def _collect(ev) -> None:  # noqa: ANN001
+            if ev.type == EventType.COGNITIVE_DAEMON_TICK:
+                tick_events.append(ev)
+
+        bus.subscribe(
+            lambda e: e.type == EventType.COGNITIVE_DAEMON_TICK, _collect,
+        )
+        await daemon.tick_once()
+        # publish spawns async tasks for subscribers; drain waits for
+        # them to finish before we assert.
+        await bus.drain()
+        assert len(tick_events) >= 1
+        assert tick_events[-1].payload["tick"] == daemon.tick_count
+
+
+@pytest.mark.asyncio
+async def test_cognitive_daemon_config_hot_reload(
+    bus: InProcessEventBus, tmp_path: Path,
+) -> None:
+    """CONFIG_RELOADED with cognition changes updates daemon config live."""
+    class _FakeAgent:
+        async def run_turn(self, session_id: str, prompt: str):
+            class _Res:
+                text = "ok"
+                hops = 1
+                cost_usd = 0.0
+                ok = True
+                tool_calls = []
+            return _Res()
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({
+            "cognition": {
+                "enabled": True,
+                "continuous_loop": {
+                    "autonomy_level": 50,
+                    "heartbeat_hz": 1.0,
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    app = create_app(
+        bus=bus,
+        agent=_FakeAgent(),
+        config={
+            "cognition": {
+                "enabled": True,
+                "continuous_loop": {
+                    "autonomy_level": 50,
+                    "heartbeat_hz": 1.0,
+                },
+            },
+        },
+        config_path=config_path,
+    )
+    with TestClient(app) as client:
+        daemon = client.app.state.cognitive_daemon
+        assert daemon is not None
+        assert daemon.config.autonomy_level == 50
+        assert daemon.config.heartbeat_hz == 1.0
+
+        # Mutate the in-memory config dict (mirrors what ConfigFileWatcher
+        # does when it detects a file change) and fire CONFIG_RELOADED.
+        cfg = client.app.state.config
+        cfg["cognition"]["continuous_loop"]["autonomy_level"] = 75
+        cfg["cognition"]["continuous_loop"]["heartbeat_hz"] = 2.5
+        event = make_event(
+            session_id="test",
+            agent_id="test",
+            type=EventType.CONFIG_RELOADED,
+            payload={"top_changed": ["cognition"]},
+        )
+        await bus.publish(event)
+        await bus.drain()
+
+        assert daemon.config.autonomy_level == 75
+        assert daemon.config.heartbeat_hz == 2.5

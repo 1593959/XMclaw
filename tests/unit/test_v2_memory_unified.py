@@ -25,7 +25,7 @@ from fastapi.testclient import TestClient
 
 from xmclaw.core.bus import InProcessEventBus
 from xmclaw.daemon.app import create_app
-from xmclaw.memory import MemoryEntry, TimeRange, UnifiedMemorySystem
+from xmclaw.memory import TimeRange, UnifiedMemorySystem
 
 
 # ── Layer 1 — module direct ───────────────────────────────────────

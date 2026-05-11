@@ -40,8 +40,8 @@ def _ascii(s: str, n: int = 200) -> str:
 # Chinese — Windows GBK terminals throw UnicodeEncodeError on the
 # print() calls otherwise. Routes everything through the same
 # replace-on-failure path.
-import sys as _sys
-import io as _io
+import sys as _sys  # noqa: E402
+import io as _io  # noqa: E402
 try:
     _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:

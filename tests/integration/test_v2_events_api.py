@@ -33,11 +33,11 @@ def loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
     tests). Creating a fresh loop here makes sync tests deterministic when
     mixed into a larger suite.
     """
-    l = asyncio.new_event_loop()
+    loop = asyncio.new_event_loop()
     try:
-        yield l
+        yield loop
     finally:
-        l.close()
+        loop.close()
 
 
 # --------------------------------------------------------------------------- #

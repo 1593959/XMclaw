@@ -27,6 +27,7 @@ from xmclaw.core.bus import InProcessEventBus
 from xmclaw.core.bus.events import EventType, make_event
 from xmclaw.core.evolution.dataset import EvalDataset
 from xmclaw.core.evolution.mutator import MutationResult
+from xmclaw.core.evolution.reflective_mutator import MutationCandidate
 from xmclaw.daemon.mutation_orchestrator import MutationOrchestrator
 from xmclaw.skills.markdown_skill import MarkdownProcedureSkill
 from xmclaw.skills.manifest import SkillManifest
@@ -505,3 +506,211 @@ def test_user_loader_reads_versions_subdir(tmp_path: Path) -> None:
     # v2 / v3 carry created_by="evolved" so UI badges them correctly.
     assert reg.ref("auto-foo", 2).manifest.created_by == "evolved"
     assert reg.ref("auto-foo", 3).manifest.created_by == "evolved"
+
+
+# ── Sprint 3 #5: ReflectiveMutator fallback ──────────────────────
+
+
+@dataclass
+class _StubFallbackMutator:
+    """Minimal ReflectiveMutator stand-in."""
+
+    candidates: list[MutationCandidate]
+    call_count: int = 0
+    last_skill_id: str | None = None
+
+    async def propose_mutations(
+        self, *, skill_id: str, head_source: str,
+        recent_failures: list[dict], parent_version: int = 0,
+    ) -> list[MutationCandidate]:
+        self.call_count += 1
+        self.last_skill_id = skill_id
+        return list(self.candidates)
+
+
+@pytest.mark.asyncio
+async def test_fallback_used_when_primary_unavailable(tmp_path: Path) -> None:
+    """When SkillMutator.is_available=False, ReflectiveMutator fallback
+    runs and the successful candidate is materialised."""
+    bus = InProcessEventBus()
+    reg = SkillRegistry()
+    _seed_v1(reg, "demo.fallback")
+
+    primary = _StubMutator(is_available_value=False)
+    fallback = _StubFallbackMutator([
+        MutationCandidate(
+            skill_id="demo.fallback",
+            parent_version=1,
+            proposed_source="fallback body\n",
+            reflection_summary="fix it",
+            confidence=0.55,
+            created_at=0.0,
+        ),
+    ])
+
+    mo = MutationOrchestrator(
+        reg, bus,
+        skills_root=tmp_path / "sk",
+        events_db_path=tmp_path / "events.db",
+        mutator=primary,
+        fallback_mutator=fallback,
+        min_samples=1, threshold=1.0, cooldown_s=0.0,
+    )
+    captured: list = []
+    bus.subscribe(
+        lambda e: e.type == EventType.SKILL_CANDIDATE_PROPOSED,
+        lambda e: captured.append(e) or None,
+    )
+
+    await mo.start()
+
+    await bus.publish(_verdict_event("demo.fallback", 0.0))
+    await bus.drain()
+
+    assert primary.call_count == 0  # never called because unavailable
+    assert fallback.call_count == 1
+    assert fallback.last_skill_id == "demo.fallback"
+
+    # Materialised: v2 written + registered + event emitted.
+    assert reg.list_versions("demo.fallback") == [1, 2]
+    assert len(captured) == 1
+    assert captured[0].payload["winner_version"] == 2
+
+    await mo.stop()
+
+
+@pytest.mark.asyncio
+async def test_fallback_used_when_primary_returns_dspy_not_installed(
+    tmp_path: Path,
+) -> None:
+    """Primary returns ok=False with reason=dspy_not_installed → fallback
+    should be tried."""
+    bus = InProcessEventBus()
+    reg = SkillRegistry()
+    _seed_v1(reg, "demo.fallback2")
+
+    primary = _StubMutator(
+        is_available_value=True,
+        next_result=MutationResult(
+            ok=False, skill_id="demo.fallback2",
+            candidate_text=None, baseline_score=0.0,
+            candidate_holdout_score=0.0, constraint_report=None,
+            duration_s=0.0, reason="dspy_not_installed",
+        ),
+    )
+    fallback = _StubFallbackMutator([
+        MutationCandidate(
+            skill_id="demo.fallback2",
+            parent_version=1,
+            proposed_source="fallback body 2\n",
+            reflection_summary="fix it again",
+            confidence=0.6,
+            created_at=0.0,
+        ),
+    ])
+
+    mo = MutationOrchestrator(
+        reg, bus,
+        skills_root=tmp_path / "sk",
+        events_db_path=tmp_path / "events.db",
+        mutator=primary,
+        fallback_mutator=fallback,
+        min_samples=1, threshold=1.0, cooldown_s=0.0,
+    )
+    captured: list = []
+    bus.subscribe(
+        lambda e: e.type == EventType.SKILL_CANDIDATE_PROPOSED,
+        lambda e: captured.append(e) or None,
+    )
+
+    await mo.start()
+
+    await bus.publish(_verdict_event("demo.fallback2", 0.0))
+    await bus.drain()
+
+    assert primary.call_count == 1
+    assert fallback.call_count == 1
+    assert reg.list_versions("demo.fallback2") == [1, 2]
+    assert len(captured) == 1
+    assert captured[0].payload["winner_version"] == 2
+
+    await mo.stop()
+
+
+@pytest.mark.asyncio
+async def test_no_fallback_when_primary_succeeds(tmp_path: Path) -> None:
+    """If the primary mutator succeeds, fallback is NOT invoked."""
+    bus = InProcessEventBus()
+    reg = SkillRegistry()
+    _seed_v1(reg, "demo.primary_ok")
+
+    primary = _StubMutator(
+        is_available_value=True,
+        next_result=_success("demo.primary_ok"),
+    )
+    fallback = _StubFallbackMutator([])
+
+    mo = MutationOrchestrator(
+        reg, bus,
+        skills_root=tmp_path / "sk",
+        events_db_path=tmp_path / "events.db",
+        mutator=primary,
+        fallback_mutator=fallback,
+        min_samples=1, threshold=1.0, cooldown_s=0.0,
+    )
+    captured: list = []
+    bus.subscribe(
+        lambda e: e.type == EventType.SKILL_CANDIDATE_PROPOSED,
+        lambda e: captured.append(e) or None,
+    )
+
+    await mo.start()
+
+    await bus.publish(_verdict_event("demo.primary_ok", 0.0))
+    await bus.drain()
+
+    assert primary.call_count == 1
+    assert fallback.call_count == 0
+    assert reg.list_versions("demo.primary_ok") == [1, 2]
+    assert len(captured) == 1
+    assert captured[0].payload["winner_version"] == 2
+
+    await mo.stop()
+
+
+@pytest.mark.asyncio
+async def test_no_crash_when_fallback_is_none_and_primary_fails(
+    tmp_path: Path,
+) -> None:
+    """Primary fails and fallback=None → gracefully no-op."""
+    bus = InProcessEventBus()
+    reg = SkillRegistry()
+    _seed_v1(reg, "demo.no_fallback")
+
+    primary = _StubMutator(
+        is_available_value=True,
+        next_result=MutationResult(
+            ok=False, skill_id="demo.no_fallback",
+            candidate_text=None, baseline_score=0.0,
+            candidate_holdout_score=0.0, constraint_report=None,
+            duration_s=0.0, reason="compile_failed:RuntimeError",
+        ),
+    )
+
+    mo = MutationOrchestrator(
+        reg, bus,
+        skills_root=tmp_path / "sk",
+        events_db_path=tmp_path / "events.db",
+        mutator=primary,
+        fallback_mutator=None,
+        min_samples=1, threshold=1.0, cooldown_s=0.0,
+    )
+    await mo.start()
+
+    await bus.publish(_verdict_event("demo.no_fallback", 0.0))
+    await bus.drain()
+
+    assert primary.call_count == 1
+    assert reg.list_versions("demo.no_fallback") == [1]
+
+    await mo.stop()

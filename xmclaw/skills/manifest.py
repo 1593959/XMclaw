@@ -10,34 +10,35 @@ materializer parse them into the manifest. ``slots=False`` (was True)
 to keep ``dataclasses.asdict`` cheap and to let ``to_dict`` round-
 trip without a separate codec.
 
-B-328 — permissions are ADVISORY in the current runtime stack
-(LocalSkillRuntime + ProcessSkillRuntime). They're parsed, persisted,
-served by ``/api/v2/skills``, and shown in the Skills UI, but no
-runtime layer enforces them — ``permissions_fs=("/tmp",)`` does NOT
-prevent the skill from reading ``/etc/shadow``. This was a real gap:
-operators authoring ``permissions_subprocess: []`` in SKILL.md
-reasonably assumed it stopped subprocess calls, when in fact only a
-docker / nsjail / firecracker runtime can enforce that and Phase 3.5+
-runtime work hasn't landed.
+B-328 — permissions enforcement varies by runtime:
 
-This file does three things to surface the gap honestly without
-forcing a behaviour change:
+* **LocalSkillRuntime** — purely advisory. A skill can freely access
+  the filesystem, network, and subprocesses regardless of manifest.
+* **ProcessSkillRuntime** — Phase 3.5+ enforces:
+  - filesystem sandbox (best-effort: fresh temp directory + cwd lock +
+    HOME/TEMP redirect)
+  - subprocess allowlist (monkey-patched ``subprocess.Popen`` guard)
+  - memory soft-cap (self-monitoring daemon thread via psutil)
+  - environment sanitization (sensitive env vars stripped)
+  - **NOT enforced**: network isolation (``permissions_net``).
+    A manifest with ``permissions_enforced=True`` and non-empty
+    ``permissions_net`` is rejected by ``ProcessSkillRuntime``.
+* **DockerSkillRuntime** — full kernel-enforced sandbox (fs, net,
+  memory cgroup, capabilities drop).
 
-* :attr:`permissions_enforced` — bool, ``False`` until a sandbox-
-  capable runtime lands. ``to_dict`` ships it so the UI can label
-  permissions as "advisory" rather than "enforced".
+This file does three things to surface the gap honestly:
+
+* :attr:`permissions_enforced` — bool. ``True`` when the runtime
+  that loaded the skill can actually enforce the declared limits.
+  ``to_dict`` ships it so the UI can label permissions as
+  "advisory" vs "enforced".
 * :func:`permissions_are_meaningful` — quick check whether the
-  manifest claims any non-trivial permission constraints. Used by
+  manifest claims any non-trivial permission constraint. Used by
   :mod:`xmclaw.skills.user_loader` for a load-time AST cross-check
   on ``permissions_subprocess`` (warns if a Python skill claims
   no-subprocess but its source uses ``subprocess.*`` / ``os.system``).
 * This docstring — so future readers + audit pickers know the
   difference between *declared* and *enforced* permissions.
-
-When a Phase 3.5+ Docker / nsjail runtime lands, it sets
-``permissions_enforced=True`` on the manifests it inspects (or the
-runtime's metadata says so), the UI flips the badge, and these
-fields finally mean what their names imply.
 """
 from __future__ import annotations
 

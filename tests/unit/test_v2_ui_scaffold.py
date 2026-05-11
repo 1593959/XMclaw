@@ -310,7 +310,7 @@ def test_ui_assets_served_under_ui_mount(
 # extractions where ``../lib/...`` was wrong from one-level-deeper
 # ``_panels/``). Doesn't try to type-check exports — just resolve.
 
-import re
+import re  # noqa: E402
 
 _IMPORT_RE = re.compile(
     r'(?:^|[\s;,(])import\s+(?:[^"\']*from\s+)?["\']([^"\']+)["\']'

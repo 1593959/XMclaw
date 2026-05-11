@@ -39,12 +39,14 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from xmclaw.core.bus import InProcessEventBus
 from xmclaw.core.bus.events import BehavioralEvent, EventType, make_event
 from xmclaw.core.bus.memory import Subscription
 from xmclaw.core.evolution.dataset import build_dataset_from_history
-from xmclaw.core.evolution.mutator import SkillMutator
+from xmclaw.core.evolution.mutator import MutationResult, SkillMutator
+from xmclaw.core.evolution.reflective_mutator import ReflectiveMutator
 from xmclaw.skills.markdown_skill import MarkdownProcedureSkill
 from xmclaw.skills.manifest import SkillManifest
 from xmclaw.skills.registry import SkillRegistry, UnknownSkillError
@@ -124,6 +126,7 @@ class MutationOrchestrator:
         skills_root: Path | None = None,
         events_db_path: Path | None = None,
         mutator: SkillMutator | None = None,
+        fallback_mutator: ReflectiveMutator | None = None,
         ewma_alpha: float = 0.2,
         threshold: float = 0.5,
         min_samples: int = 5,
@@ -142,6 +145,7 @@ class MutationOrchestrator:
             else default_events_db_path()
         )
         self._mutator = mutator if mutator is not None else SkillMutator()
+        self._fallback_mutator = fallback_mutator
         self._ewma_alpha = max(0.0, min(1.0, float(ewma_alpha)))
         self._threshold = float(threshold)
         self._min_samples = max(1, int(min_samples))
@@ -270,20 +274,39 @@ class MutationOrchestrator:
             )
             return
 
-        try:
-            result = await self._mutator.mutate(
+        result: MutationResult | None = None
+        if getattr(self._mutator, "is_available", False):
+            try:
+                result = await self._mutator.mutate(
+                    skill_id=skill_id,
+                    baseline_text=baseline_body,
+                    dataset=dataset,
+                )
+            except Exception as exc:  # noqa: BLE001 — defend the loop
+                _log.warning(
+                    "mutation_orchestrator.mutate_raised skill_id=%s err=%s",
+                    skill_id, exc,
+                )
+
+        # Sprint 3 #5 follow-up: when the primary DSPy mutator is
+        # unavailable (dspy_not_installed) or failed, automatically
+        # fall back to the ReflectiveMutator — a single LLM round-trip
+        # self-critique that needs no third-party dependencies.
+        if (result is None or not result.ok) and self._fallback_mutator is not None:
+            if result is not None and result.reason == "dspy_not_installed":
+                _log.info(
+                    "mutation_orchestrator.reflective_fallback "
+                    "skill_id=%s reason=dspy_not_installed",
+                    skill_id,
+                )
+            result = await self._run_reflective_fallback(
                 skill_id=skill_id,
-                baseline_text=baseline_body,
+                version=version,
+                baseline_body=baseline_body,
                 dataset=dataset,
             )
-        except Exception as exc:  # noqa: BLE001 — defend the loop
-            _log.warning(
-                "mutation_orchestrator.mutate_raised skill_id=%s err=%s",
-                skill_id, exc,
-            )
-            return
 
-        if not result.ok or result.candidate_text is None:
+        if result is None or not result.ok or result.candidate_text is None:
             self._decisions.append(MutationDecision(
                 skill_id=skill_id,
                 new_version=version + 1,
@@ -329,6 +352,86 @@ class MutationOrchestrator:
             promoted=True,
             reason="promoted",
         ))
+
+    async def _run_reflective_fallback(
+        self,
+        skill_id: str,
+        version: int,
+        baseline_body: str,
+        dataset: Any,
+    ) -> MutationResult | None:
+        """Run ReflectiveMutator when the primary DSPy mutator is absent.
+
+        Converts the dataset into recent-failure dicts, asks the LLM
+        for 1-3 alternative skill bodies, and wraps the best candidate
+        in a :class:`MutationResult` so the rest of `_maybe_mutate`
+        (score-delta gate + materialise) can proceed unchanged.
+        """
+        if self._fallback_mutator is None:
+            return None
+
+        recent_failures: list[dict[str, Any]] = []
+        for ex in (
+            getattr(dataset, "train", [])
+            + getattr(dataset, "val", [])
+            + getattr(dataset, "holdout", [])
+        ):
+            recent_failures.append(
+                {
+                    "task_input": getattr(ex, "task_input", ""),
+                    "expected_behavior": getattr(ex, "expected_behavior", ""),
+                    "baseline_score": getattr(ex, "baseline_score", 0.0),
+                }
+            )
+
+        try:
+            candidates = await self._fallback_mutator.propose_mutations(
+                skill_id=skill_id,
+                head_source=baseline_body,
+                recent_failures=recent_failures,
+                parent_version=version,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "mutation_orchestrator.fallback_propose_failed "
+                "skill_id=%s err=%s",
+                skill_id,
+                exc,
+            )
+            return None
+
+        if not candidates:
+            return MutationResult(
+                ok=False,
+                skill_id=skill_id,
+                candidate_text=None,
+                baseline_score=0.0,
+                candidate_holdout_score=0.0,
+                constraint_report=None,
+                duration_s=0.0,
+                reason="reflective_no_candidates",
+            )
+
+        best = max(candidates, key=lambda c: c.confidence)
+
+        # Proxy baseline score from holdout slice when present.
+        baseline_score = 0.0
+        holdout = getattr(dataset, "holdout", [])
+        if holdout:
+            baseline_score = sum(
+                getattr(ex, "baseline_score", 0.0) for ex in holdout
+            ) / len(holdout)
+
+        return MutationResult(
+            ok=True,
+            skill_id=skill_id,
+            candidate_text=best.proposed_source,
+            baseline_score=baseline_score,
+            candidate_holdout_score=best.confidence,
+            constraint_report=None,
+            duration_s=0.0,
+            reason=None,
+        )
 
     def _next_version(
         self, skill_id: str, current_version: int,

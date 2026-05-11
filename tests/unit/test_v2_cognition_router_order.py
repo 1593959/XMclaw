@@ -20,7 +20,6 @@ This file ships TWO layers:
 """
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -172,6 +171,10 @@ def test_cognition_state_endpoint_reachable_from_ui_url(
         "/api/v2/cognition/proposals",
         "/api/v2/cognition/graph/stats",
         "/api/v2/cognition/tasks/graph",
+        "/api/v2/cognition/daemon",
+        "/api/v2/cognition/daemon/history",
+        "/api/v2/cognition/daemon/health",
+        "/api/v2/cognition/experiments",
     ]
     failures: list[tuple[str, int]] = []
     for url in ui_urls:
@@ -185,3 +188,70 @@ def test_cognition_state_endpoint_reachable_from_ui_url(
         f"frontend pages/Cognition.js loadAll() URL(s) returned 404 "
         f"(route mismatch — should never happen): {failures}"
     )
+
+
+# ── Phase D: daemon + experiment observability endpoints ───────────────
+
+
+def test_daemon_status_returns_daemon_shape(client_with_scheduler: TestClient) -> None:
+    """GET /daemon must return tick_count + running + config keys."""
+    r = client_with_scheduler.get("/api/v2/cognition/daemon")
+    assert r.status_code in (200, 503)
+    if r.status_code == 200:
+        body = r.json()
+        assert body["ok"] is True
+        assert "running" in body
+        assert "tick_count" in body
+        assert "config" in body
+        assert "autonomy_level" in body["config"]
+
+
+def test_experiments_list_returns_ok_when_wired(client_with_scheduler: TestClient) -> None:
+    """GET /experiments must return 200 with an experiments list."""
+    r = client_with_scheduler.get("/api/v2/cognition/experiments")
+    assert r.status_code in (200, 503)
+    if r.status_code == 200:
+        body = r.json()
+        assert body["ok"] is True
+        assert isinstance(body.get("experiments"), list)
+        assert "count" in body
+
+
+def test_experiment_by_id_404_for_unknown(client_with_scheduler: TestClient) -> None:
+    """GET /experiments/{id} must 404 for a non-existent experiment."""
+    r = client_with_scheduler.get("/api/v2/cognition/experiments/nope")
+    assert r.status_code in (404, 503)
+    if r.status_code == 404:
+        assert r.json().get("ok") is False
+
+
+def test_daemon_history_returns_ticks_shape(client_with_scheduler: TestClient) -> None:
+    """GET /daemon/history must return a ticks list (or 503 if store
+    missing)."""
+    r = client_with_scheduler.get("/api/v2/cognition/daemon/history")
+    assert r.status_code in (200, 503)
+    if r.status_code == 200:
+        body = r.json()
+        assert body["ok"] is True
+        assert isinstance(body.get("ticks"), list)
+        assert "count" in body
+
+
+def test_daemon_health_returns_status(client_with_scheduler: TestClient) -> None:
+    """GET /daemon/health must return status + tick_count + last_tick."""
+    r = client_with_scheduler.get("/api/v2/cognition/daemon/health")
+    assert r.status_code in (200, 503)
+    if r.status_code == 200:
+        body = r.json()
+        assert body["ok"] is True
+        assert body["status"] in ("healthy", "degraded", "unhealthy")
+        assert "running" in body
+        assert "tick_count" in body
+        # last_tick may be absent if no tick has run yet.
+        if "last_tick" in body:
+            assert "tick" in body["last_tick"]
+            assert "latency_ms" in body["last_tick"]
+            assert "errors" in body["last_tick"]
+        # memory_mb is optional (only when psutil is installed).
+        if "memory_mb" in body:
+            assert isinstance(body["memory_mb"], (int, float))

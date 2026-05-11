@@ -25,7 +25,6 @@ streaming git internals.
 """
 from __future__ import annotations
 
-from pathlib import Path
 
 from xmclaw.cognition.file_watcher import FileWatcher
 

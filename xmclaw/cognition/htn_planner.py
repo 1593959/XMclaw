@@ -68,10 +68,9 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -536,7 +535,7 @@ class HTNPlanner:
     ) -> list[BoundGoal]:
         """Kahn's algorithm. Drops impossible cases (= we already
         cycle-stripped, but defensive)."""
-        by_id = {l.goal_id: l for l in leaves}
+        by_id = {leaf.goal_id: leaf for leaf in leaves}
         in_deg: dict[str, int] = {
             lid: len(leaf_deps.get(lid, [])) for lid in by_id
         }

@@ -17,7 +17,6 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-import pytest
 from fastapi.testclient import TestClient
 
 from xmclaw.core.bus import InProcessEventBus

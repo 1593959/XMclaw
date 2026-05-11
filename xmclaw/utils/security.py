@@ -16,13 +16,14 @@ from dataclasses import dataclass
 
 from xmclaw.utils.log import get_logger
 
-log = get_logger(__name__)
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
 
 from xmclaw.utils.paths import BASE_DIR
+
+log = get_logger(__name__)
 
 # ── Enums ───────────────────────────────────────────────────────────────────────
 

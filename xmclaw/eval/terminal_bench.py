@@ -41,7 +41,6 @@ only ``xmclaw eval run terminal_bench`` does.
 """
 from __future__ import annotations
 
-import asyncio
 import os
 import re
 from pathlib import Path
@@ -50,7 +49,7 @@ from typing import TYPE_CHECKING, Any
 from xmclaw.eval.harness import BenchmarkSuite, TaskCase
 
 if TYPE_CHECKING:
-    from xmclaw.eval.terminal_bench_sandbox import TerminalBenchDockerGrader
+    pass
 
 
 # Where we tell HuggingFace to cache the dataset. Using XMclaw's own

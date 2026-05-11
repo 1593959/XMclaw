@@ -84,8 +84,14 @@ class CognitiveDaemonConfig:
     #   self_experiment every 600s (10 min)
     goal_gen_every_n_ticks: int = 60
     self_experiment_every_n_ticks: int = 600
+    skill_propose_every_n_ticks: int = 300
 
     max_pending_goals: int = 16
+
+    # Phase D: warn when any subsystem exceeds this latency (ms).
+    # 500 ms default at 1 Hz heartbeat means a single slow step
+    # consumes half the tick budget — worth surfacing.
+    slow_subsystem_threshold_ms: float = 500.0
 
 
 # ── Daemon ────────────────────────────────────────────────────────────
@@ -117,6 +123,10 @@ class CognitiveDaemon:
         # ``None`` disables the entire reflection layer — daemon falls
         # back to the legacy "react to percepts" loop unchanged.
         reflection_cycle: Any | None = None,
+        skill_proposer: Any | None = None,   # SkillProposer duck
+        event_bus: Any | None = None,        # InProcessEventBus duck for publishing proposals
+        # Phase D: optional TickStore for persisting tick summaries.
+        tick_store: Any | None = None,
     ) -> None:
         self._config = config
         self._bus = bus
@@ -129,10 +139,16 @@ class CognitiveDaemon:
         self._state = cognitive_state
         self._dispatcher = dispatcher
         self._reflection_cycle = reflection_cycle
+        self._skill_proposer = skill_proposer
+        self._event_bus = event_bus
+        self._tick_store = tick_store
 
         self._task: asyncio.Task[Any] | None = None
         self._running = False
         self._tick_count = 0
+        # Phase E: asyncio.Event so _run() sleep can be interrupted
+        # immediately on stop() without cancelling an in-flight tick.
+        self._stop_event = asyncio.Event()
 
     # ------------------------------------------------------------------
     # Public properties (mainly for tests + observability)
@@ -159,6 +175,7 @@ class CognitiveDaemon:
         if self._running:
             return
         self._running = True
+        self._stop_event.clear()
         self._task = asyncio.create_task(self._run(), name="cognitive-daemon")
         logger.info(
             "CognitiveDaemon started: heartbeat_hz=%.2f autonomy_level=%d",
@@ -169,40 +186,69 @@ class CognitiveDaemon:
     async def stop(self, timeout_s: float = 5.0) -> None:
         """Stop the background loop. Bounded by ``timeout_s`` seconds.
 
-        Idempotent: safe to call when not running. Cancels the task
-        and waits for it to drain; if it doesn't drain in time, logs
-        a warning and returns anyway — the daemon must never block
-        an enclosing lifespan shutdown.
+        Idempotent: safe to call when not running. Signals the loop
+        via :attr:`_stop_event` so that an in-flight tick is allowed
+        to finish (graceful).  If the tick does not complete within
+        ``timeout_s``, the task is cancelled.  The daemon must never
+        block an enclosing lifespan shutdown.
         """
         self._running = False
+        self._stop_event.set()
         task = self._task
         self._task = None
         if task is None:
             return
 
-        task.cancel()
         try:
             await asyncio.wait_for(task, timeout=timeout_s)
-        except asyncio.CancelledError:
-            pass
         except asyncio.TimeoutError:
             logger.warning(
-                "CognitiveDaemon.stop timed out after %.1fs; abandoning task",
+                "CognitiveDaemon.stop graceful timeout after %.1fs; "
+                "cancelling task",
                 timeout_s,
             )
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=2.0)
+            except asyncio.CancelledError:
+                pass
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "CognitiveDaemon.stop force-cancel timed out; "
+                    "abandoning task",
+                )
+        except asyncio.CancelledError:
+            pass
         except Exception:  # noqa: BLE001
             logger.exception("CognitiveDaemon background task raised on stop")
+
+    def update_config(self, new_config: CognitiveDaemonConfig) -> None:
+        """Replace the frozen config at runtime.
+
+        Called by the lifespan's CONFIG_RELOADED handler when
+        ``cognition.continuous_loop.*`` fields change in config.json.
+        The new config takes effect on the *next* tick (heartbeat_hz
+        is read fresh each cycle, and autonomy_level is consulted
+        inside :meth:`tick_once`).
+        """
+        old_hz = self._config.heartbeat_hz
+        self._config = new_config
+        if old_hz != new_config.heartbeat_hz:
+            logger.info(
+                "CognitiveDaemon config updated: heartbeat_hz %.2f -> %.2f",
+                old_hz, new_config.heartbeat_hz,
+            )
 
     # ------------------------------------------------------------------
     # The heartbeat
     # ------------------------------------------------------------------
 
     async def _run(self) -> None:
-        """Background loop. Ticks at ``heartbeat_hz`` until cancelled.
+        """Background loop. Ticks at ``heartbeat_hz`` until stopped.
 
         Iron rule: this method NEVER raises out. Every per-tick
         exception is captured by :meth:`tick_once`; everything else
-        (sleep cancellation, etc.) is caught here. This is the safety
+        (stop-event wake-up, etc.) is caught here. This is the safety
         net for the integrating lifespan — a buggy collaborator must
         not be able to take down the daemon process.
         """
@@ -222,11 +268,18 @@ class CognitiveDaemon:
             except Exception:  # noqa: BLE001 — must never crash the loop
                 logger.exception("CognitiveDaemon tick raised; continuing")
 
-            if not self._running:
+            if not self._running or self._stop_event.is_set():
                 break
 
+            # Phase E: use wait_for on the stop event so stop() can
+            # wake us immediately without cancelling an in-flight tick.
             try:
-                await asyncio.sleep(period)
+                await asyncio.wait_for(
+                    self._stop_event.wait(),
+                    timeout=period,
+                )
+            except asyncio.TimeoutError:
+                pass  # normal — time for next tick
             except asyncio.CancelledError:
                 raise
 
@@ -243,6 +296,7 @@ class CognitiveDaemon:
         * ``n_goals_spawned`` — goals minted by GoalGenerator this tick.
         * ``n_plans_executed`` — plans that reached the dispatcher.
         * ``ran_experiment`` — whether SelfExperimentLoop fired this tick.
+        * ``latency_ms`` — per-subsystem latency breakdown (Phase D).
         * ``errors`` — list of human-readable strings, one per caught
           exception. Empty when the tick was clean.
 
@@ -256,10 +310,21 @@ class CognitiveDaemon:
         n_goals_spawned = 0
         n_plans_executed = 0
         ran_experiment = False
+        latency_ms: dict[str, float] = {}
+
+        async def _timed(name: str, coro):
+            """Await *coro*, record wall-clock ms in ``latency_ms``."""
+            t0 = time.perf_counter()
+            try:
+                return await coro
+            finally:
+                latency_ms[name] = round(
+                    (time.perf_counter() - t0) * 1000, 2,
+                )
 
         # 1. Attention pass — drain bus, score, return actionable.
         try:
-            actionable = list(await self._attention.tick())
+            actionable = list(await _timed("attention", self._attention.tick()))
         except Exception as exc:  # noqa: BLE001
             logger.exception("CognitiveDaemon: attention.tick failed")
             errors.append(f"attention.tick: {type(exc).__name__}: {exc}")
@@ -268,7 +333,7 @@ class CognitiveDaemon:
         # 2. For each actionable percept: reason → plan → dispatch.
         for percept in actionable:
             try:
-                await self._react_to_percept(percept)
+                await _timed("react", self._react_to_percept(percept))
                 n_plans_executed += 1
             except Exception as exc:  # noqa: BLE001
                 logger.exception(
@@ -283,7 +348,7 @@ class CognitiveDaemon:
         # 3. Periodic goal generation.
         if self._should_spawn_goals(tick):
             try:
-                spawned = await self._spawn_goals()
+                spawned = await _timed("goals", self._spawn_goals())
                 n_goals_spawned = spawned
             except Exception as exc:  # noqa: BLE001
                 logger.exception("CognitiveDaemon: goal-spawn failed")
@@ -292,20 +357,16 @@ class CognitiveDaemon:
         # 4. Periodic self-experiment.
         if self._should_run_experiment(tick):
             try:
-                ran_experiment = await self._run_experiment()
+                ran_experiment = await _timed("experiment", self._run_experiment())
             except Exception as exc:  # noqa: BLE001
                 logger.exception("CognitiveDaemon: self-experiment failed")
                 errors.append(f"self_experiment: {type(exc).__name__}: {exc}")
 
-        # 5. R1: 3-bucket reflection cycle. Each invocation lets the
-        # cycle decide internally which buckets are due (5min/1h/1d
-        # cadence). All three buckets are best-effort + fault-tolerant
-        # at the cycle's level; we just collect the results for the
-        # tick summary.
+        # 5. R1: 3-bucket reflection cycle.
         n_reflections = 0
         if self._reflection_cycle is not None:
             try:
-                results = await self._reflection_cycle.run_due(tick)
+                results = await _timed("reflection", self._reflection_cycle.run_due(tick))
                 n_reflections = len(results)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("CognitiveDaemon: reflection_cycle failed")
@@ -313,7 +374,27 @@ class CognitiveDaemon:
                     f"reflection_cycle: {type(exc).__name__}: {exc}",
                 )
 
-        return {
+        # 6. Periodic skill proposal.
+        n_skill_proposals = 0
+        if self._should_propose_skills(tick):
+            try:
+                n_skill_proposals = await _timed("skills", self._run_skill_proposer())
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("CognitiveDaemon: skill_proposer failed")
+                errors.append(
+                    f"skill_proposer: {type(exc).__name__}: {exc}",
+                )
+
+        # Phase D: slow-subsystem warnings (non-blocking).
+        threshold = self._config.slow_subsystem_threshold_ms
+        for subsys, ms in latency_ms.items():
+            if ms >= threshold:
+                errors.append(
+                    f"slow_subsystem: {subsys}={ms:.1f}ms "
+                    f"(threshold={threshold:.0f}ms)"
+                )
+
+        summary = {
             "tick": tick,
             "n_percepts": len(actionable),
             "n_actionable": len(actionable),
@@ -321,8 +402,44 @@ class CognitiveDaemon:
             "n_plans_executed": n_plans_executed,
             "ran_experiment": ran_experiment,
             "n_reflections": n_reflections,
+            "n_skill_proposals": n_skill_proposals,
+            "latency_ms": latency_ms,
             "errors": errors,
         }
+
+        # Stash for the /daemon endpoint to serve without re-computing.
+        self._last_tick_summary = summary
+
+        # Phase D: persist to TickStore for history queries.
+        if self._tick_store is not None:
+            try:
+                await self._tick_store.save(
+                    {**summary, "timestamp": time.time()},
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("CognitiveDaemon: tick_store.save failed")
+
+        # Publish tick summary to the event bus so dashboards / audit
+        # logs / health monitors can observe daemon activity without
+        # polling.
+        if self._event_bus is not None:
+            try:
+                from xmclaw.core.bus.events import EventType, make_event
+
+                event = make_event(
+                    session_id="_system:cognitive_daemon",
+                    agent_id="cognitive-daemon",
+                    type=EventType.COGNITIVE_DAEMON_TICK,
+                    payload={
+                        **summary,
+                        "timestamp": time.time(),
+                    },
+                )
+                await self._event_bus.publish(event)
+            except Exception:  # noqa: BLE001
+                logger.exception("CognitiveDaemon: failed to publish tick event")
+
+        return summary
 
     # ------------------------------------------------------------------
     # Per-tick subsystems
@@ -337,15 +454,11 @@ class CognitiveDaemon:
         """
         # Reasoning is optional; we still try to plan even when it's
         # absent (the planner can drive off the percept directly).
+        reasoning_result = None
         if self._reasoning is not None:
             query = self._percept_to_query(percept)
             try:
-                # ReasoningEngine.reason returns a result with
-                # ``conclusion`` / ``suggested_goals`` we could feed
-                # forward. v0 just discards it — the planner consumes
-                # the percept, not the reasoning result. Phase 6.7
-                # follow-up wires reasoning output into goal context.
-                await self._reasoning.reason(query)
+                reasoning_result = await self._reasoning.reason(query)
             except Exception:  # noqa: BLE001
                 logger.exception(
                     "CognitiveDaemon: reasoning.reason raised; continuing"
@@ -360,6 +473,10 @@ class CognitiveDaemon:
         # to decompose it. The planner duck accepts dicts (see
         # _goal_to_prompt_blob in planner.py).
         goal_blob = self._percept_to_goal(percept)
+        if reasoning_result is not None:
+            goal_blob = self._inject_reasoning_into_goal(
+                goal_blob, reasoning_result,
+            )
 
         try:
             plan = await self._planner.plan(goal_blob)
@@ -451,6 +568,57 @@ class CognitiveDaemon:
         every = max(1, int(self._config.self_experiment_every_n_ticks))
         return tick_count % every == 0
 
+    def _should_propose_skills(self, tick_count: int) -> bool:
+        """True every ``skill_propose_every_n_ticks`` ticks."""
+        if self._skill_proposer is None:
+            return False
+        every = max(1, int(self._config.skill_propose_every_n_ticks))
+        return tick_count % every == 0
+
+    async def _run_skill_proposer(self) -> int:
+        """Run SkillProposer and publish proposals to the event bus.
+
+        Returns the number of proposals emitted.
+        """
+        if self._skill_proposer is None:
+            return 0
+        proposals = await self._skill_proposer.propose()
+        if not proposals:
+            return 0
+        if self._event_bus is None:
+            logger.debug(
+                "skill_proposer: %d proposals but no event_bus wired",
+                len(proposals),
+            )
+            return 0
+        count = 0
+        for proposed in proposals:
+            try:
+                from xmclaw.core.bus.events import EventType, make_event
+                event = make_event(
+                    session_id="_system:skill_proposer",
+                    agent_id="cognitive-daemon",
+                    type=EventType.SKILL_CANDIDATE_PROPOSED,
+                    payload={
+                        "decision": "propose",
+                        "winner_candidate_id": proposed.skill_id,
+                        "evidence": list(proposed.evidence),
+                        "reason": (
+                            f"pattern={proposed.source_pattern} "
+                            f"confidence={proposed.confidence:.2f}"
+                        ),
+                        "draft": proposed.to_jsonable(),
+                    },
+                )
+                await self._event_bus.publish(event)
+                count += 1
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "skill_proposer: failed to publish proposal for %s",
+                    getattr(proposed, "skill_id", "?"),
+                )
+        return count
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -493,6 +661,23 @@ class CognitiveDaemon:
             if isinstance(v, str) and v.strip():
                 return v
         return f"{getattr(percept, 'source', '?')}:{getattr(percept, 'kind', '?')}"
+
+    @staticmethod
+    def _inject_reasoning_into_goal(
+        goal: dict[str, Any],
+        result: Any,
+    ) -> dict[str, Any]:
+        """Merge a :class:`ReasoningResult` into the goal blob so the
+        planner sees conclusions, confidence, and suggested goals."""
+        conclusion = getattr(result, "conclusion", "") or ""
+        confidence = getattr(result, "confidence", 0.0) or 0.0
+        suggested = list(getattr(result, "suggested_goals", ()) or ())
+        if conclusion:
+            goal["reasoning_conclusion"] = conclusion
+            goal["reasoning_confidence"] = confidence
+        if suggested:
+            goal["reasoning_suggested_goals"] = suggested
+        return goal
 
     @staticmethod
     def _percept_to_goal(percept: Any) -> dict[str, Any]:

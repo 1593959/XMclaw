@@ -274,7 +274,7 @@ async def plan_goal(
 
     return JSONResponse({
         "plan": _bound_to_dict(bound),
-        "leaves": [_bound_to_dict(l) for l in bound.atomic_leaves()],
+        "leaves": [_bound_to_dict(leaf) for leaf in bound.atomic_leaves()],
         "estimated_cost_usd": round(
             bound.total_estimated_cost_usd(), 4,
         ),
@@ -690,3 +690,210 @@ async def reject_suggestion(
         return _not_wired(request)
     ok = inbox.decide(sg_id, status="rejected")
     return JSONResponse({"ok": ok, "id": sg_id, "status": "rejected"})
+
+
+# ── Phase D: daemon + experiment observability ──────────────────────────
+
+
+def _cognitive_daemon(request: Request) -> Any | None:
+    return getattr(_state(request), "cognitive_daemon", None)
+
+
+def _experiment_loop(request: Request) -> Any | None:
+    return getattr(_state(request), "experiment_loop", None)
+
+
+@router.get("/daemon")
+async def get_daemon_status(request: Request) -> JSONResponse:
+    """Return the live CognitiveDaemon tick summary + running state."""
+    daemon = _cognitive_daemon(request)
+    if daemon is None:
+        return _not_wired(request)
+    payload: dict[str, Any] = {
+        "ok": True,
+        "running": daemon.is_running,
+        "tick_count": daemon.tick_count,
+        "config": {
+            "enabled": daemon.config.enabled,
+            "autonomy_level": daemon.config.autonomy_level,
+            "heartbeat_hz": daemon.config.heartbeat_hz,
+            "action_threshold": daemon.config.action_threshold,
+            "top_k_focus": daemon.config.top_k_focus,
+            "goal_gen_every_n_ticks": daemon.config.goal_gen_every_n_ticks,
+            "self_experiment_every_n_ticks": (
+                daemon.config.self_experiment_every_n_ticks
+            ),
+            "skill_propose_every_n_ticks": (
+                daemon.config.skill_propose_every_n_ticks
+            ),
+            "slow_subsystem_threshold_ms": (
+                daemon.config.slow_subsystem_threshold_ms
+            ),
+        },
+    }
+    # Attach the most recent tick summary if available.
+    last = getattr(daemon, "_last_tick_summary", None)
+    if last is not None:
+        payload["last_tick"] = {
+            "tick": last.get("tick"),
+            "n_percepts": last.get("n_percepts"),
+            "n_plans_executed": last.get("n_plans_executed"),
+            "ran_experiment": last.get("ran_experiment"),
+            "n_reflections": last.get("n_reflections"),
+            "n_skill_proposals": last.get("n_skill_proposals"),
+            "latency_ms": last.get("latency_ms"),
+            "errors": last.get("errors", []),
+        }
+    return JSONResponse(payload)
+
+
+@router.get("/daemon/history")
+async def get_daemon_history(
+    request: Request,
+    limit: int = 50,
+    since: float | None = None,
+    until: float | None = None,
+) -> JSONResponse:
+    """Query persisted tick summaries for trend analysis.
+
+    Query params:
+      * ``since`` — UNIX timestamp (inclusive)
+      * ``until`` — UNIX timestamp (inclusive)
+      * ``limit`` — max rows, clamped to 1..100
+    """
+    daemon = _cognitive_daemon(request)
+    if daemon is None:
+        return _not_wired(request)
+    store = getattr(daemon, "_tick_store", None)
+    if store is None:
+        return JSONResponse(
+            {"ok": False, "error": "tick_store not wired"},
+            status_code=503,
+        )
+    ticks = await store.list_ticks(
+        since=since,
+        until=until,
+        limit=max(1, min(limit, 100)),
+    )
+    return JSONResponse({"ok": True, "ticks": ticks, "count": len(ticks)})
+
+
+@router.get("/daemon/health")
+async def get_daemon_health(request: Request) -> JSONResponse:
+    """Health check with memory + last-tick quality signal.
+
+    Status taxonomy:
+      * ``healthy``   — running and last tick was clean.
+      * ``degraded``  — running but last tick had only slow-subsystem
+                        warnings (no hard errors).
+      * ``unhealthy`` — not running, or last tick had non-slow errors.
+    """
+    daemon = _cognitive_daemon(request)
+    if daemon is None:
+        return _not_wired(request)
+
+    last = getattr(daemon, "_last_tick_summary", None)
+    errors = last.get("errors", []) if last else []
+    slow_only = bool(errors) and all(
+        e.startswith("slow_subsystem:") for e in errors
+    )
+
+    if not daemon.is_running:
+        status = "unhealthy"
+    elif not errors:
+        status = "healthy"
+    elif slow_only:
+        status = "degraded"
+    else:
+        status = "unhealthy"
+
+    payload: dict[str, Any] = {
+        "ok": True,
+        "status": status,
+        "running": daemon.is_running,
+        "tick_count": daemon.tick_count,
+    }
+
+    if last is not None:
+        payload["last_tick"] = {
+            "tick": last.get("tick"),
+            "latency_ms": last.get("latency_ms"),
+            "errors": errors,
+        }
+
+    # Optional: process memory (RSS in MB).  psutil is an optional
+    # extra (cognition-process) so we soft-fail when absent.
+    try:
+        import psutil as _psutil  # type: ignore[import-untyped]
+
+        proc = _psutil.Process()
+        payload["memory_mb"] = round(proc.memory_info().rss / (1024 * 1024), 2)
+    except Exception:
+        pass
+
+    return JSONResponse(payload)
+
+
+@router.get("/experiments")
+async def list_experiments(
+    request: Request,
+    limit: int = 20,
+    decision: str | None = None,
+) -> JSONResponse:
+    """List recent A/B experiments from the SelfExperimentLoop store."""
+    loop = _experiment_loop(request)
+    if loop is None:
+        return _not_wired(request)
+    store = loop.store
+    rows = await store.list_experiments(
+        decision=decision,  # type: ignore[arg-type]
+        limit=max(1, min(limit, 100)),
+    )
+    out: list[dict[str, Any]] = []
+    for exp, res in rows:
+        item: dict[str, Any] = {
+            "id": exp.id,
+            "hypothesis": exp.hypothesis,
+            "metric": exp.metric,
+            "suite_id": exp.suite_id,
+            "started_at": exp.started_at,
+        }
+        if res is not None:
+            item["result"] = {
+                "decision": res.decision,
+                "delta": res.delta,
+                "delta_p_value": res.delta_p_value,
+                "baseline_value": res.baseline_value,
+                "treatment_value": res.treatment_value,
+                "n_baseline": res.n_baseline,
+                "n_treatment": res.n_treatment,
+                "decision_reason": res.decision_reason,
+                "finished_at": res.finished_at,
+            }
+        out.append(item)
+    return JSONResponse({"ok": True, "experiments": out, "count": len(out)})
+
+
+@router.get("/experiments/{experiment_id}")
+async def get_experiment(
+    request: Request, experiment_id: str,
+) -> JSONResponse:
+    """Get a single experiment + its result by id."""
+    loop = _experiment_loop(request)
+    if loop is None:
+        return _not_wired(request)
+    store = loop.store
+    exp = await store.get_experiment(experiment_id)
+    if exp is None:
+        return JSONResponse(
+            {"ok": False, "error": "experiment not found"},
+            status_code=404,
+        )
+    res = await store.get_result(experiment_id)
+    payload: dict[str, Any] = {
+        "ok": True,
+        "experiment": exp.to_dict(),
+    }
+    if res is not None:
+        payload["result"] = res.to_dict()
+    return JSONResponse(payload)

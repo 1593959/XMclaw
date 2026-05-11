@@ -435,3 +435,59 @@ class SkillRegistry:
             )
         except (KeyError, TypeError, ValueError):
             return None
+
+
+class SkillRegistryView:
+    """Read-only view over a :class:`SkillRegistry` with per-skill HEAD
+    overrides.
+
+    Used by :class:`xmclaw.cognition.self_experiment.SelfExperimentLoop`
+    to build a *treatment* agent that sees candidate skill versions while
+    the baseline agent continues to use the real HEAD.  The view delegates
+    every call to the underlying registry except ``get()``, ``ref()`` and
+    ``active_version()``, where an override (if present) wins.
+
+    The view is intentionally **stateless** — it reads the base registry
+    live on every call, so a candidate registered after the view is
+    created is still visible.  Only the HEAD override dict is fixed at
+    construction time.
+    """
+
+    def __init__(
+        self,
+        base: SkillRegistry,
+        head_overrides: dict[str, int],
+    ) -> None:
+        self._base = base
+        self._overrides = dict(head_overrides)
+
+    # ── read-only delegation ──
+
+    def get(self, skill_id: str, version: int | None = None) -> Skill:
+        if version is None and skill_id in self._overrides:
+            version = self._overrides[skill_id]
+        return self._base.get(skill_id, version)
+
+    def ref(self, skill_id: str, version: int | None = None) -> SkillRef:
+        if version is None and skill_id in self._overrides:
+            version = self._overrides[skill_id]
+        return self._base.ref(skill_id, version)
+
+    def active_version(self, skill_id: str) -> int | None:
+        if skill_id in self._overrides:
+            return self._overrides[skill_id]
+        return self._base.active_version(skill_id)
+
+    def list_skill_ids(self) -> list[str]:
+        return self._base.list_skill_ids()
+
+    def list_versions(self, skill_id: str) -> list[int]:
+        return self._base.list_versions(skill_id)
+
+    def register(self, *args: Any, **kwargs: Any) -> Any:
+        """Not supported — the view is read-only."""
+        raise NotImplementedError("SkillRegistryView is read-only")
+
+    def promote(self, *args: Any, **kwargs: Any) -> Any:
+        """Not supported — the view is read-only."""
+        raise NotImplementedError("SkillRegistryView is read-only")

@@ -136,7 +136,9 @@ class _FakeContext:
     closed: bool = False
 
     async def new_page(self) -> _FakePage:
-        p = _FakePage(); self.pages.append(p); return p
+        p = _FakePage()
+        self.pages.append(p)
+        return p
 
     def set_default_timeout(self, _ms: int) -> None: pass
 
@@ -148,7 +150,9 @@ class _FakeBrowser:
     contexts: list[_FakeContext] = field(default_factory=list)
 
     async def new_context(self, **_: Any) -> _FakeContext:
-        c = _FakeContext(); self.contexts.append(c); return c
+        c = _FakeContext()
+        self.contexts.append(c)
+        return c
 
     async def close(self) -> None: pass
 

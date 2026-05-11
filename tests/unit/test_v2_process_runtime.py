@@ -14,9 +14,12 @@ import pytest
 from xmclaw.providers.runtime import ProcessSkillRuntime, SkillStatus
 from xmclaw.providers.runtime.base import SkillHandle
 from xmclaw.skills.demo.picklable_demo import (
+    PickleCheckCwd,
     PickleEcho,
+    PickleMemoryHog,
     PickleRaising,
     PickleSlow,
+    PickleSubprocess,
 )
 from xmclaw.skills.manifest import SkillManifest
 
@@ -205,3 +208,110 @@ async def test_kill_unknown_handle_raises() -> None:
     rt = ProcessSkillRuntime()
     with pytest.raises(LookupError):
         await rt.kill(SkillHandle(id="nope", skill_id="x", version=1))
+
+
+# ── Phase 3.5 sandbox tests ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_sandbox_cwd_is_temp_directory() -> None:
+    """The child process must run in a fresh temp directory."""
+    rt = ProcessSkillRuntime()
+    try:
+        handle = await rt.fork(
+            PickleCheckCwd(),
+            SkillManifest(id="demo.pickle_check_cwd", version=1),
+            args={},
+        )
+        out = await rt.wait(handle)
+        assert out.ok is True
+        cwd = out.result["cwd"]
+        assert "xmclaw_skill_" in cwd
+    finally:
+        rt.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_subprocess_blocked_when_not_allowed() -> None:
+    """permissions_subprocess=() means NO subprocess calls allowed."""
+    rt = ProcessSkillRuntime()
+    try:
+        handle = await rt.fork(
+            PickleSubprocess(["python", "-c", "print('hi')"]),
+            SkillManifest(
+                id="demo.pickle_subprocess",
+                version=1,
+                permissions_subprocess=(),
+            ),
+            args={},
+        )
+        out = await rt.wait(handle)
+        assert out.ok is False
+        assert out.result["kind"] == "permission_denied"
+    finally:
+        rt.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_subprocess_allowed_when_whitelisted() -> None:
+    """permissions_subprocess=('python',) allows python.exe."""
+    rt = ProcessSkillRuntime()
+    try:
+        handle = await rt.fork(
+            PickleSubprocess(["python", "-c", "print('sandbox_ok')"]),
+            SkillManifest(
+                id="demo.pickle_subprocess",
+                version=1,
+                permissions_subprocess=("python",),
+                max_cpu_seconds=10.0,
+            ),
+            args={},
+        )
+        out = await rt.wait(handle)
+        assert out.ok is True
+        assert "sandbox_ok" in out.result["stdout"]
+    finally:
+        rt.shutdown()
+
+
+def test_enforce_manifest_rejects_network_sandbox_demand() -> None:
+    """A manifest that demands network isolation is refused because
+    ProcessSkillRuntime has no network sandbox."""
+    rt = ProcessSkillRuntime()
+    with pytest.raises(ValueError, match="permissions_net"):
+        rt.enforce_manifest(
+            SkillManifest(
+                id="x", version=1,
+                permissions_enforced=True,
+                permissions_net=("example.com",),
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_memory_limit_self_terminates() -> None:
+    """A skill that allocates more than max_memory_mb is killed by the
+    self-monitoring thread (exit code 77 → memory_limit kind)."""
+    if __import__("importlib.util").util.find_spec("psutil") is None:
+        pytest.skip("psutil not installed")
+
+    rt = ProcessSkillRuntime()
+    try:
+        # Allocate 64 MB — well above the 32 MB limit.
+        # Short hold + tight cpu cap so the test finishes quickly even
+        # when the queue blocks until timeout on Windows.
+        handle = await rt.fork(
+            PickleMemoryHog(64_000_000, hold_seconds=1.0),
+            SkillManifest(
+                id="demo.pickle_memory_hog",
+                version=1,
+                max_memory_mb=32,
+                max_cpu_seconds=5.0,
+            ),
+            args={},
+        )
+        out = await rt.wait(handle)
+        assert out.ok is False
+        assert out.result["kind"] == "memory_limit"
+    finally:
+        rt.shutdown()

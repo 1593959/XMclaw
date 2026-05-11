@@ -12,7 +12,8 @@ from xmclaw.providers.tool.composite import CompositeToolProvider
 
 class _Stub(ToolProvider):
     def __init__(self, name: str, reply: str = "ok") -> None:
-        self._name = name; self._reply = reply
+        self._name = name
+        self._reply = reply
         self.session_closed: list[str] = []
         self.shut_called = False
 

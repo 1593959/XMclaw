@@ -676,7 +676,7 @@ def _persona_writeback(app_state_holder: Any) -> Any:
             # PRE-edit system prompt — the agent's own ``remember``
             # write wouldn't take effect until a daemon restart.
             try:
-                from xmclaw.daemon.agent_loop import bump_prompt_freeze_generation
+                from xmclaw.daemon.prompt_builder import bump_prompt_freeze_generation
                 bump_prompt_freeze_generation()
             except Exception:  # noqa: BLE001
                 pass
@@ -691,6 +691,7 @@ def build_tools_from_config(
     cfg: dict[str, Any],
     *,
     approval_service: Any | None = None,
+    auditor: Any | None = None,
 ) -> ToolProvider | None:
     """Return a ``ToolProvider`` built from ``cfg['tools']``.
 
@@ -898,6 +899,7 @@ def build_tools_from_config(
             engine,
             approval_service=approval_service,
             policy=policy,
+            auditor=auditor,
         )
 
     return provider
@@ -1170,6 +1172,7 @@ def build_agent_from_config(
     max_hops: int | None = None,
     approval_service: Any | None = None,
     cognitive_state: Any | None = None,
+    auditor: Any | None = None,
 ) -> AgentLoop | None:
     """Assemble an AgentLoop from config. Returns None if no LLM is set.
 
@@ -1204,7 +1207,7 @@ def build_agent_from_config(
     llm = default_profile.llm if default_profile is not None else None
     if llm is None:
         return None
-    tools = build_tools_from_config(cfg, approval_service=approval_service)
+    tools = build_tools_from_config(cfg, approval_service=approval_service, auditor=auditor)
     security = cfg.get("security")
     policy_raw = None
     if isinstance(security, Mapping):

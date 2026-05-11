@@ -470,8 +470,41 @@ class ActionDispatcher:
 
         latency_ms = (time.monotonic() - t0) * 1000.0
         ok = bool(getattr(result, "ok", True))
-        content = _coerce_jsonish(getattr(result, "content", result))
+        raw_content = getattr(result, "content", result)
+        content = _coerce_jsonish(raw_content)
         err = getattr(result, "error", None)
+
+        # B-273 parity: scan tool results for prompt injection before
+        # they land in the agent's history.  AgentInterTools does this
+        # for sub-agent replies; we do it for every tool_call route so
+        # that a malicious/compromised tool cannot inject instructions.
+        if isinstance(raw_content, str):
+            try:
+                from xmclaw.security import (
+                    PolicyMode,
+                    SOURCE_TOOL_RESULT,
+                    apply_policy,
+                )
+                policy = getattr(
+                    self._agent_loop, "_injection_policy", PolicyMode.DETECT_ONLY,
+                )
+                decision = apply_policy(
+                    raw_content,
+                    policy=policy,
+                    source=SOURCE_TOOL_RESULT,
+                    extra={"tool_name": tool_name, "step_id": step_id},
+                )
+                if decision.blocked:
+                    content = (
+                        "[B-273 tool result blocked by prompt-injection "
+                        "policy — see PROMPT_INJECTION_DETECTED event]"
+                    )
+                    ok = False
+                else:
+                    content = _coerce_jsonish(decision.content)
+            except Exception:  # noqa: BLE001 — never block on scanner failure
+                pass
+
         return StepExecutionResult(
             step_id=step_id,
             route="tool_call",

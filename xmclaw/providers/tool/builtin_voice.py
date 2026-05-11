@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 import json
-import re
 import time
 import uuid
 from pathlib import Path
-from typing import Any
 
 from xmclaw.core.ir import ToolCall, ToolResult
 from xmclaw.providers.tool._helpers import _fail as _fail
@@ -26,7 +23,6 @@ class BuiltinToolsVoiceMixin:
         intent is ambiguous). Neither → reject (need an input).
         """
         import base64
-        import json
         args = call.args or {}
         audio_path = args.get("audio_path")
         audio_b64 = args.get("audio_b64")
@@ -88,9 +84,6 @@ class BuiltinToolsVoiceMixin:
         records the resolved path on ``side_effects`` so the grader can
         verify the write actually landed.
         """
-        import json
-        import os
-        import uuid
         args = call.args or {}
         text = args.get("text")
         voice = args.get("voice", "default")

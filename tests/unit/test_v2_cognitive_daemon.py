@@ -17,6 +17,7 @@ from xmclaw.cognition.cognitive_daemon import (
     CognitiveDaemonConfig,
 )
 from xmclaw.cognition.perception_bus import Percept, PerceptionBus
+from xmclaw.core.bus.events import EventType
 
 
 # ── helpers ────────────────────────────────────────────────────────────
@@ -577,3 +578,319 @@ async def test_tick_count_increments_per_call() -> None:
     s3 = await daemon.tick_once()
     assert (s1["tick"], s2["tick"], s3["tick"]) == (1, 2, 3)
     assert daemon.tick_count == 3
+
+
+# ── Sprint 3 #5: SkillProposer periodic trigger ──────────────────
+
+
+class FakeSkillProposer:
+    """Returns scripted proposals."""
+
+    def __init__(self, proposals: list[Any] | None = None) -> None:
+        self.proposals = list(proposals or [])
+        self.call_count = 0
+
+    async def propose(self) -> list[Any]:
+        self.call_count += 1
+        return list(self.proposals)
+
+
+class FakeEventBus:
+    """Records published events."""
+
+    def __init__(self) -> None:
+        self.published: list[Any] = []
+
+    async def publish(self, event: Any) -> None:
+        self.published.append(event)
+
+
+@pytest.mark.asyncio
+async def test_skill_proposer_tick_emits_events() -> None:
+    """Every skill_propose_every_n_ticks, the daemon calls propose()
+    and publishes SKILL_CANDIDATE_PROPOSED events to the event bus."""
+    from xmclaw.core.evolution.proposer import ProposedSkill
+
+    bus = PerceptionBus()
+    event_bus = FakeEventBus()
+    proposer = FakeSkillProposer([
+        ProposedSkill(
+            skill_id="auto-test-skill",
+            title="Test Skill",
+            description="A test skill",
+            body="step 1\nstep 2\n",
+            triggers=("test",),
+            confidence=0.7,
+            evidence=("sess-1",),
+            source_pattern="test_pattern",
+        ),
+    ])
+
+    daemon = CognitiveDaemon(
+        config=CognitiveDaemonConfig(skill_propose_every_n_ticks=3),
+        bus=bus,
+        attention=FakeAttention(responses=[[]] * 6),
+        skill_proposer=proposer,
+        event_bus=event_bus,
+    )
+
+    # tick 1: no proposal (1 % 3 != 0)
+    s1 = await daemon.tick_once()
+    assert s1["n_skill_proposals"] == 0
+    assert proposer.call_count == 0
+
+    # tick 2: no proposal
+    s2 = await daemon.tick_once()
+    assert s2["n_skill_proposals"] == 0
+
+    # tick 3: proposal fires
+    s3 = await daemon.tick_once()
+    assert s3["n_skill_proposals"] == 1
+    assert proposer.call_count == 1
+    skill_events = [
+        e for e in event_bus.published
+        if getattr(e, "type", None) == EventType.SKILL_CANDIDATE_PROPOSED
+    ]
+    assert len(skill_events) == 1
+    ev = skill_events[0]
+    assert ev.payload["decision"] == "propose"
+    assert ev.payload["winner_candidate_id"] == "auto-test-skill"
+    assert "draft" in ev.payload
+
+
+@pytest.mark.asyncio
+async def test_skill_proposer_no_event_bus_silently_skips() -> None:
+    """When event_bus is None, proposals are generated but not published."""
+    from xmclaw.core.evolution.proposer import ProposedSkill
+
+    bus = PerceptionBus()
+    proposer = FakeSkillProposer([
+        ProposedSkill(
+            skill_id="auto-test-skill",
+            title="Test Skill",
+            description="A test skill",
+            body="step 1\n",
+            triggers=("test",),
+            confidence=0.7,
+            evidence=("sess-1",),
+            source_pattern="test_pattern",
+        ),
+    ])
+
+    daemon = CognitiveDaemon(
+        config=CognitiveDaemonConfig(skill_propose_every_n_ticks=1),
+        bus=bus,
+        attention=FakeAttention(responses=[[]]),
+        skill_proposer=proposer,
+        event_bus=None,
+    )
+
+    s = await daemon.tick_once()
+    assert s["n_skill_proposals"] == 0
+    assert proposer.call_count == 1
+
+
+def test_should_propose_skills_false_when_no_proposer() -> None:
+    daemon = CognitiveDaemon(
+        config=CognitiveDaemonConfig(skill_propose_every_n_ticks=1),
+        bus=PerceptionBus(),
+        attention=FakeAttention(),
+        skill_proposer=None,
+    )
+    assert daemon._should_propose_skills(1) is False
+
+
+def test_should_propose_skills_respects_interval() -> None:
+    proposer = FakeSkillProposer()
+    daemon = CognitiveDaemon(
+        config=CognitiveDaemonConfig(skill_propose_every_n_ticks=5),
+        bus=PerceptionBus(),
+        attention=FakeAttention(),
+        skill_proposer=proposer,
+    )
+    assert daemon._should_propose_skills(1) is False
+    assert daemon._should_propose_skills(5) is True
+    assert daemon._should_propose_skills(10) is True
+
+
+@pytest.mark.asyncio
+async def test_skill_proposer_exception_captured_in_summary() -> None:
+    """A crashing skill_proposer must not crash the tick."""
+    class BrokenProposer:
+        async def propose(self) -> list[Any]:
+            raise RuntimeError("proposer kaboom")
+
+    bus = PerceptionBus()
+    daemon = CognitiveDaemon(
+        config=CognitiveDaemonConfig(skill_propose_every_n_ticks=1),
+        bus=bus,
+        attention=FakeAttention(responses=[[]]),
+        skill_proposer=BrokenProposer(),
+        event_bus=FakeEventBus(),
+    )
+
+    s = await daemon.tick_once()
+    assert s["n_skill_proposals"] == 0
+    assert any("proposer kaboom" in err for err in s["errors"])
+
+
+# ── tick event publishing ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_tick_event_published_to_event_bus() -> None:
+    """After a successful tick, a COGNITIVE_DAEMON_TICK event lands on
+    the wired event_bus."""
+    from xmclaw.core.bus.events import EventType
+
+    bus = FakeEventBus()
+    daemon = CognitiveDaemon(
+        config=CognitiveDaemonConfig(),
+        bus=PerceptionBus(),
+        attention=FakeAttention(responses=[[]]),
+        event_bus=bus,
+    )
+    await daemon.tick_once()
+    tick_events = [
+        e for e in bus.published
+        if getattr(e, "type", None) == EventType.COGNITIVE_DAEMON_TICK
+    ]
+    assert len(tick_events) == 1
+    payload = tick_events[0].payload
+    assert "tick" in payload
+    assert "timestamp" in payload
+
+
+@pytest.mark.asyncio
+async def test_tick_event_not_published_when_bus_is_none() -> None:
+    """If no event_bus is wired, tick runs silently without crashing."""
+    daemon = CognitiveDaemon(
+        config=CognitiveDaemonConfig(),
+        bus=PerceptionBus(),
+        attention=FakeAttention(responses=[[]]),
+        event_bus=None,
+    )
+    summary = await daemon.tick_once()
+    assert summary["tick"] == 1
+
+
+# ── Phase D: latency monitoring ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_tick_summary_contains_latency_ms() -> None:
+    """Every tick must record per-subsystem latency breakdown."""
+    daemon = CognitiveDaemon(
+        config=CognitiveDaemonConfig(),
+        bus=PerceptionBus(),
+        attention=FakeAttention(responses=[[]]),
+    )
+    summary = await daemon.tick_once()
+    assert "latency_ms" in summary
+    assert isinstance(summary["latency_ms"], dict)
+    # Attention always runs; its latency must be recorded.
+    assert "attention" in summary["latency_ms"]
+    assert summary["latency_ms"]["attention"] >= 0.0
+
+
+@pytest.mark.asyncio
+async def test_slow_subsystem_warning_in_errors() -> None:
+    """A subsystem that exceeds the threshold produces a warning in
+    ``errors`` without crashing the tick."""
+    class SlowAttention:
+        async def tick(self):
+            await asyncio.sleep(0.06)  # 60 ms > 1 ms threshold
+            return []
+
+    daemon = CognitiveDaemon(
+        config=CognitiveDaemonConfig(slow_subsystem_threshold_ms=1.0),
+        bus=PerceptionBus(),
+        attention=SlowAttention(),
+    )
+    summary = await daemon.tick_once()
+    assert any(
+        "slow_subsystem: attention=" in err for err in summary["errors"]
+    )
+    assert summary["latency_ms"]["attention"] >= 50.0
+
+
+@pytest.mark.asyncio
+async def test_last_tick_summary_stashed_on_daemon() -> None:
+    """After tick_once returns, the summary is available on
+    ``_last_tick_summary`` for the /daemon endpoint to read."""
+    daemon = CognitiveDaemon(
+        config=CognitiveDaemonConfig(),
+        bus=PerceptionBus(),
+        attention=FakeAttention(responses=[[]]),
+    )
+    summary = await daemon.tick_once()
+    assert getattr(daemon, "_last_tick_summary", None) is summary
+
+
+@pytest.mark.asyncio
+async def test_tick_saved_to_tick_store(tmp_path) -> None:
+    """When a TickStore is wired, tick summaries are persisted."""
+    from xmclaw.cognition.tick_store import TickStore
+
+    store = TickStore(db_path=tmp_path / "ticks.db")
+    daemon = CognitiveDaemon(
+        config=CognitiveDaemonConfig(),
+        bus=PerceptionBus(),
+        attention=FakeAttention(responses=[[]]),
+        tick_store=store,
+    )
+    await daemon.tick_once()
+    rows = await store.list_ticks(limit=1)
+    assert len(rows) == 1
+    assert rows[0]["tick"] == 1
+    assert "latency_ms" in rows[0]
+
+
+# ── Phase E: config hot-reload + graceful shutdown ───────────────────
+
+
+@pytest.mark.asyncio
+async def test_update_config_replaces_config_at_runtime() -> None:
+    """update_config() swaps the frozen CognitiveDaemonConfig."""
+    daemon = CognitiveDaemon(
+        config=CognitiveDaemonConfig(autonomy_level=50, heartbeat_hz=1.0),
+        bus=PerceptionBus(),
+        attention=FakeAttention(),
+    )
+    assert daemon.config.autonomy_level == 50
+    assert daemon.config.heartbeat_hz == 1.0
+
+    daemon.update_config(
+        CognitiveDaemonConfig(autonomy_level=75, heartbeat_hz=2.0)
+    )
+    assert daemon.config.autonomy_level == 75
+    assert daemon.config.heartbeat_hz == 2.0
+
+
+@pytest.mark.asyncio
+async def test_stop_graceful_waits_for_tick_to_finish() -> None:
+    """stop() lets the in-flight tick complete before returning."""
+    tick_started = asyncio.Event()
+    tick_finished = asyncio.Event()
+
+    class SlowAttention:
+        async def tick(self) -> list[Percept]:
+            tick_started.set()
+            await asyncio.sleep(0.2)
+            tick_finished.set()
+            return []
+
+    daemon = CognitiveDaemon(
+        config=CognitiveDaemonConfig(heartbeat_hz=100.0),
+        bus=PerceptionBus(),
+        attention=SlowAttention(),
+    )
+    await daemon.start()
+    await tick_started.wait()
+    # Tick is now in-flight (sleeping 0.2s). stop() should wait for it.
+    t0 = time.time()
+    await daemon.stop(timeout_s=5.0)
+    elapsed = time.time() - t0
+    assert tick_finished.is_set(), "tick did not finish before stop returned"
+    assert elapsed >= 0.15, f"stop returned too quickly ({elapsed:.3f}s)"
+    assert not daemon.is_running

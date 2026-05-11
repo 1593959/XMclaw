@@ -26,18 +26,15 @@ tool-message content so the LLM sees the real reason instead of "None".
 from __future__ import annotations
 
 import asyncio
-import shutil
-import subprocess
-import sys
-import json
-import re
 import time
-import uuid
 from pathlib import Path
-from typing import Any
 
 from xmclaw.core.ir import ToolCall, ToolResult, ToolSpec
 from xmclaw.providers.tool.base import ToolProvider
+from xmclaw.providers.tool.builtin_user import (
+    _PENDING_QUESTIONS,
+    _PENDING_QUESTION_PAYLOADS,
+)
 
 # B-324: ToolSpec definitions split into ``_specs`` (pure data) and
 # bullet/dedup/persona/web helpers split into ``_helpers``. Re-imported
@@ -120,16 +117,6 @@ _MAX_WEB_BYTES = 50_000
 _BASH_DEFAULT_TIMEOUT = 30.0
 _BASH_MAX_OUTPUT = 100_000
 _VALID_TODO_STATUSES = {"pending", "in_progress", "done"}
-
-# B-92: cross-boundary store for in-flight ``ask_user_question`` calls.
-# Re-export question state from the user mixin so external callers
-# (daemon WS handler, doctor check) don't need to know the internal
-# module split.
-from xmclaw.providers.tool.builtin_user import (
-    _PENDING_QUESTIONS,
-    _PENDING_QUESTION_PAYLOADS,
-)
-from xmclaw.providers.tool.builtin_worktree import _WORKTREE_ORIGIN
 
 
 def list_pending_questions() -> list[dict]:

@@ -455,3 +455,75 @@ def test_replay_per_skill_id_filter(tmp_path: Path) -> None:
     assert replayed == {"a": 2}
     assert reg2.active_version("a") == 2
     assert reg2.active_version("b") == 1  # b's history NOT replayed
+
+
+# ── SkillRegistryView (candidate-HEAD override for A/B experiments) ───────
+
+
+def test_view_delegates_get_when_no_override() -> None:
+    reg = SkillRegistry()
+    reg.register(_skill("s", 1), _manifest("s", 1))
+    reg.promote("s", 1, evidence=["x"])
+
+    from xmclaw.skills.registry import SkillRegistryView
+
+    view = SkillRegistryView(reg, {})
+    assert view.get("s").version == 1
+    assert view.active_version("s") == 1
+    assert view.ref("s").version == 1
+
+
+def test_view_overrides_head_for_overridden_skill() -> None:
+    reg = SkillRegistry()
+    reg.register(_skill("s", 1, "baseline"), _manifest("s", 1))
+    reg.register(_skill("s", 2, "candidate"), _manifest("s", 2))
+    reg.promote("s", 1, evidence=["x"])
+
+    from xmclaw.skills.registry import SkillRegistryView
+
+    view = SkillRegistryView(reg, {"s": 2})
+    assert view.get("s").version == 2
+    assert view.active_version("s") == 2
+    assert view.ref("s").version == 2
+    assert view.get("s", version=1).version == 1  # explicit version bypasses override
+
+
+def test_view_leaves_non_overridden_skills_unchanged() -> None:
+    reg = SkillRegistry()
+    reg.register(_skill("a", 1), _manifest("a", 1))
+    reg.register(_skill("b", 1), _manifest("b", 1))
+    reg.promote("a", 1, evidence=["x"])
+    reg.promote("b", 1, evidence=["y"])
+
+    from xmclaw.skills.registry import SkillRegistryView
+
+    view = SkillRegistryView(reg, {"a": 99})  # 99 not registered — will raise
+    assert view.get("b").version == 1
+    with pytest.raises(UnknownSkillError):
+        view.get("a")  # overridden to 99 which doesn't exist
+
+
+def test_view_list_methods_delegate() -> None:
+    reg = SkillRegistry()
+    reg.register(_skill("s", 1), _manifest("s", 1))
+    reg.promote("s", 1, evidence=["x"])
+
+    from xmclaw.skills.registry import SkillRegistryView
+
+    view = SkillRegistryView(reg, {"s": 2})
+    assert view.list_skill_ids() == ["s"]
+    assert view.list_versions("s") == [1]
+
+
+def test_view_is_read_only() -> None:
+    reg = SkillRegistry()
+    reg.register(_skill("s", 1), _manifest("s", 1))
+    reg.promote("s", 1, evidence=["x"])
+
+    from xmclaw.skills.registry import SkillRegistryView
+
+    view = SkillRegistryView(reg, {})
+    with pytest.raises(NotImplementedError):
+        view.register(_skill("s", 2), _manifest("s", 2))
+    with pytest.raises(NotImplementedError):
+        view.promote("s", 1, evidence=["x"])

@@ -109,7 +109,8 @@ def test_prune_missing_with_include_temp_strips_pytest_paths(isolated_app, tmp_p
     app, _ = isolated_app
     p1 = tmp_path / "a"
     p2 = tmp_path / "b"
-    p1.mkdir(); p2.mkdir()
+    p1.mkdir()
+    p2.mkdir()
     with TestClient(app) as c:
         from xmclaw.daemon.routers import workspace as ws_router
         ws_router._manager.add(str(p1), name="a")

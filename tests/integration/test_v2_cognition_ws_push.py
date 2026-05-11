@@ -31,7 +31,6 @@ Cases (mirroring docs/AUDIT_PASS_3_FINDINGS.md C2):
 from __future__ import annotations
 
 import time
-from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
