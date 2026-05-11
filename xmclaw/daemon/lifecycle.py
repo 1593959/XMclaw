@@ -95,11 +95,29 @@ def _process_alive(pid: int) -> bool:
     return True
 
 
-def _http_healthy(host: str, port: int, timeout: float = 1.0) -> bool:
+def _http_healthy(host: str, port: int, timeout: float = 3.0) -> bool:
+    """Probe ``GET /health`` to confirm the daemon is serving.
+
+    2026-05-11 perf fix: switched from ``httpx`` to stdlib
+    ``urllib.request`` because on Windows + HTTP_PROXY env var set
+    (common with clash / v2ray users), httpx's per-call cold-start
+    (Client construction + proxy resolution + h2 negotiation)
+    consistently takes 1–2.5 seconds *just to send the request*,
+    even when ``trust_env=False``. ``curl`` and stdlib ``urllib``
+    handle the same /health probe in <10ms. The legacy 1.0s
+    timeout in this function caused EVERY ``xmclaw start`` poll
+    to fail client-side — daemon was up but the CLI never saw it,
+    burning all 30s of ``wait_seconds`` on local-Python overhead.
+
+    Now: urllib (no cold-init tax) + 3s per-call timeout (margin
+    for a busy event loop that's mid-warmup but still capable of
+    serving /health within a normal HTTP turnaround).
+    """
     try:
-        import httpx
-        r = httpx.get(f"http://{host}:{port}/health", timeout=timeout)
-        return r.status_code == 200
+        import urllib.request
+        url = f"http://{host}:{port}/health"
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return resp.status == 200
     except Exception:  # noqa: BLE001
         return False
 
@@ -155,7 +173,7 @@ def start_daemon(
     port: int,
     config: str,
     no_auth: bool = False,
-    wait_seconds: float = 30.0,
+    wait_seconds: float = 60.0,
 ) -> DaemonStatus:
     """Spawn ``xmclaw serve`` detached, wait for /health, write pid+meta.
 

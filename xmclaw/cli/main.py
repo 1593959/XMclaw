@@ -469,7 +469,7 @@ def start(
         help="DANGEROUS: skip pairing-token validation.",
     ),
     wait: float = typer.Option(
-        30.0, help="Seconds to wait for /health before giving up.",
+        60.0, help="Seconds to wait for /health before giving up.",
     ),
 ) -> None:
     """Spawn the daemon in the background, return once /health answers.
@@ -478,12 +478,15 @@ def start(
     ``~/.xmclaw/v2/daemon.log``. Use ``xmclaw stop`` to kill it, or
     ``xmclaw status`` to check on it.
 
-    The wait timeout defaults to 30s (was 10s pre-2026-05-11). On
-    Windows + cold module cache + Defender scanning, subprocess boot
-    + uvicorn binding + lifespan startup can stretch past 10s even
-    after the lark_oapi-import fix; 30s gives margin without making
-    the user wait noticeably longer when the daemon comes up fast
-    (the loop polls every 0.3s and exits as soon as /health answers).
+    The wait timeout defaults to 60s (was 10s pre-2026-05-11, bumped
+    to 30s then 60s after real-machine measurement). On Windows +
+    cold module cache + Defender scanning, subprocess boot + uvicorn
+    binding + lifespan startup can stretch past 30s — the user's
+    machine consistently took ~40s for a fresh ``xmclaw serve``
+    subprocess to reach its first log line, even though the lifespan
+    itself ran in 0.13s. 60s is the new pessimistic ceiling; the
+    loop polls every 0.3s and exits as soon as /health answers, so
+    healthy boots are not slowed.
     """
     from xmclaw.daemon.lifecycle import start_daemon
     try:
@@ -532,11 +535,11 @@ def restart(
     ),
     no_auth: bool = typer.Option(False, "--no-auth"),
     grace: float = typer.Option(5.0),
-    wait: float = typer.Option(30.0),
+    wait: float = typer.Option(60.0),
 ) -> None:
     """Stop (if running) then start. Idempotent.
 
-    Wait timeout defaults to 30s (was 10s pre-2026-05-11) for the
+    Wait timeout defaults to 60s (was 10s pre-2026-05-11) for the
     same reason as ``xmclaw start`` — see that command's docstring.
     """
     from xmclaw.daemon.lifecycle import read_status, start_daemon, stop_daemon
