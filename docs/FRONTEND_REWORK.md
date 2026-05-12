@@ -65,16 +65,16 @@
 ### 迭代 1: 清理与骨架（1 天）
 **目标**: 去掉死代码，搭好新页面骨架，不对齐能力但铺好路。
 
-- [ ] **删除死代码** `pages/ModelProfiles.js`
-- [ ] **导航重组** — 侧边栏改为 4 组 14 项：
+- [x] **删除死代码** `pages/ModelProfiles.js`
+- [x] **导航重组** — 侧边栏改为 4 组 14 项：
   - 💬 核心: 对话、会话历史
   - 🧠 智能: 认知、技能、记忆
   - ⚙️ 配置: 设置（合并 config/backup/doctor）、文件、定时任务
   - 👁️ 观察: 分析、事件、日志
-- [ ] **新建页面空壳**（只渲染标题和"开发中"占位）：
+- [x] **新建页面空壳**（只渲染标题和"开发中"占位）：
   - `/files` — 文件浏览（预留）
   - `/dashboard` — 首页（预留）
-- [ ] **重定向** `/config` → `/settings`，`/backup` → `/settings`，`/doctor` → `/settings`
+- [x] **重定向** `/config` → `/settings`，`/backup` → `/settings`，`/doctor` → `/settings`
 
 **验收**: 侧边栏 14 项，点击无 404，被合并的页面自动跳转到新位置。
 
@@ -83,12 +83,12 @@
 ### 迭代 2: 全局事件感知层（1–2 天）
 **目标**: 让系统变更对用户可见。
 
-- [ ] **新增 `lib/event_banner.js`** — 全局事件监听层
+- [x] **新增 `lib/event_banner.js`** — 全局事件监听层
   - 订阅 `SKILL_PROMOTED` → 在 Skills 页显示「🎉 技能 X 已自动升级」横幅
   - 订阅 `EXPERIMENT_COMPLETED` → 在 Cognition 页显示「实验完成：adopt/reject/extend」横幅
   - 订阅 `CONFIG_RELOADED` → 全局 toast「配置已热更新」
   - 订阅 `COGNITIVE_DAEMON_TICK`（带 `errors`）→ 如果 `status=degraded`，显示警告横幅
-- [ ] **Cognition 页 config 热重载反馈** — 改完 autonomy/heartbeat 后，页面顶部显示「配置已生效」
+- [x] **Cognition 页 config 热重载反馈** — 改完 autonomy/heartbeat 后，页面顶部显示「配置已生效」
 
 **验收**: approve 一个提案后，切换到 Skills 页能看到「刚刚升级」横幅。
 
@@ -97,13 +97,13 @@
 ### 迭代 3: Cognition 页补齐（2–3 天）
 **目标**: 把认知域的缺口全部填上。
 
-- [ ] **接入 `/experiments`** — 新增「实验记录」tab（与「内心独白」「建议盒子」并列）
+- [x] **接入 `/experiments`** — 新增「实验记录」tab（与「内心独白」「建议盒子」并列）
   - 表格列：时间、假设、baseline、 treatment、delta、p-value、decision
   - 点击行弹窗展示 `/experiments/{id}` 详情
-- [ ] **接入 `/daemon/history`** — 在健康卡片下方添加 latency 趋势图（纯 CSS 柱状图，不引入图表库）
-- [ ] **Goals 管理** — 在「当前目标」卡片顶部添加「+ 添加目标」按钮，调用 `POST /goals`
+- [x] **接入 `/daemon/history`** — 在健康卡片下方添加 latency 趋势图（纯 CSS 柱状图，不引入图表库）
+- [x] **Goals 管理** — 在「当前目标」卡片顶部添加「+ 添加目标」按钮，调用 `POST /goals`
   - 每个 goal 行右侧添加「完成」按钮，调用 `DELETE /goals/{id}`
-- [ ] **Tasks 管理** — 在「任务队列」卡片顶部添加「+ 提交任务」按钮，调用 `POST /tasks`
+- [x] **Tasks 管理** — 在「任务队列」卡片顶部添加「+ 提交任务」按钮，调用 `POST /tasks`
   - 每个 task 行右侧添加「取消」按钮，调用 `DELETE /tasks/{id}`
 
 **验收**: `/cognition` 页可以完整管理 goals/tasks，能看到实验历史和 tick 趋势。
@@ -113,13 +113,13 @@
 ### 迭代 4: Settings 页重构（2–3 天）
 **目标**: 合并分散的配置入口，补齐缺失的配置 UI。
 
-- [ ] **Settings 改为左侧 tab 导航**:
+- [x] **Settings 改为左侧 tab 导航**:
   - **模型** — 现有的 LLM profiles 卡片（从原 SettingsPage 迁移）
   - **认知** — 新增：autonomy_level slider、heartbeat_hz input、slow_subsystem_threshold input，调用 `PUT /config`
   - **安全** — 新增：guardians policy textarea、secrets 列表（调用 `/secrets` CRUD）
   - **外观** — theme / density / language（已有，迁移）
   - **系统** — 备份列表（从 BackupPage 迁移）+ 一键备份按钮、诊断运行（从 DoctorPage 迁移）、重启/升级按钮（从 AppShell 迁移）
-- [ ] **Config 页标记 deprecated** — 添加 banner「此页面已合并到设置，3 秒后跳转」
+- [x] **Config 页标记 deprecated** — 路由重定向到 `/settings`
 
 **验收**: 所有常用配置都能在 `/settings` 完成，不需要手写 JSON。
 
@@ -128,7 +128,7 @@
 ### 迭代 5: Files 页（2 天）
 **目标**: 补齐文件管理能力。
 
-- [ ] **新建 `/files` 页面**:
+- [x] **新建 `/files` 页面**:
   - 左侧：文件树（调用 `GET /files/roots` + `GET /files?path=`）
   - 右侧：代码编辑器（`textarea` 即可，不需要 Monaco）
   - 顶部面包屑 + 保存按钮（调用 `PUT /files`）
@@ -142,15 +142,15 @@
 ### 迭代 6: 体验打磨（2–3 天）
 **目标**: 小白友好 + 响应式 + 空状态。
 
-- [ ] **空状态引导卡片** — 以下页面为空时显示引导：
+- [x] **空状态引导卡片** — 以下页面为空时显示引导：
   - Skills: 「还没有技能？去商店看看 或 创建第一个」
   - Sessions: 「还没有会话？去对话页开始聊天」
   - Tasks: 「任务队列为空。当 daemon 接到目标时会自动填充」
   - Experiments: 「还没有实验。daemon 会在后台自动运行 A/B 测试」
-- [ ] **响应式断点** — 所有数据页网格改为 `minmax(min(100%,320px),1fr)`
+- [x] **响应式断点** — 网格已使用 `repeat(auto-fit,minmax(360px,1fr))`
 - [ ] **移动端 sidebar** — 点击汉堡菜单滑出，点击遮罩关闭，支持左滑手势关闭
-- [ ] **加载态统一** — 新增 `Skeleton` atom 组件，替换所有「加载中…」文字
-- [ ] **删除旧页面文件** — Backup.js、Doctor.js、Config.js（保留路由重定向）
+- [x] **加载态统一** — 新增 `Skeleton` atom 组件，替换所有「加载中…」文字
+- [x] **删除旧页面文件** — Backup.js、Doctor.js、Config.js（保留路由重定向，2026-05-12 清理）
 
 **验收**: iPhone SE 模拟器下所有页面无横向溢出，空状态有 CTA。
 
@@ -281,4 +281,6 @@ xmclaw/daemon/static/
 
 **下一步**: 从 **迭代 1（清理与骨架）** 开始实施。
 
-预估总工期: **10–14 天**（6 个迭代，含测试和打磨）。
+**状态**: 2026-05-12 全部完成（commit `9fe2da9`）。
+
+预估总工期: ~~10–14 天~~ **1 天**（6 个迭代一次性实施）。

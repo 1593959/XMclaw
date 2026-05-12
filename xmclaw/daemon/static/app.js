@@ -81,7 +81,9 @@ import { AppShell as HermesAppShell } from "./components/organisms/AppShell.js";
 import "./lib/hermes-themes.js";
 import { ChatPage } from "./pages/Chat.js";
 import { SettingsPage } from "./pages/Settings.js";
-import { DoctorPage } from "./pages/Doctor.js";
+// Phase F (2026-05-12): Doctor / Backup / Config 合并进 Settings 后死代码删除。
+// 旧路由 /doctor /backup /config 在 ``routes`` 表里仍 redirect 到 /settings —
+// 不破坏书签 / 外部链接。
 import { ToolsPage } from "./pages/Tools.js";
 import { AgentsPage } from "./pages/Agents.js";
 import { ChannelsPage } from "./pages/Channels.js";
@@ -91,11 +93,9 @@ import { SkillsPage } from "./pages/Skills.js";
 import { MarketplacePage } from "./pages/Marketplace.js";  // B-390 (Sprint 2)
 import { EvolutionPage } from "./pages/Evolution.js";
 import { CognitionPage } from "./pages/Cognition.js";
-import { BackupPage } from "./pages/Backup.js";
 import { WorkspacePage } from "./pages/Workspace.js";
 import { SessionsPage } from "./pages/Sessions.js";
 import { CronPage } from "./pages/Cron.js";
-import { ConfigPage } from "./pages/Config.js";
 import { LogsPage } from "./pages/Logs.js";
 import { AnalyticsPage } from "./pages/Analytics.js";
 import { DocsPage } from "./pages/Docs.js";
