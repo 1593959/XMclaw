@@ -118,6 +118,13 @@ computer-use = [
   "rapidocr-onnxruntime>=1.3.0",
   "Pillow>=10.0",
   "numpy>=1.24",
+  # 2026-05-12 r2 — Windows-native UI Automation (accessibility tree).
+  # Agent reads native app structure directly: WeChat / QQ / Office /
+  # Explorer expose every button + textbox by name + automation_id.
+  # ``ui_inspect`` dumps the tree, ``ui_click`` invokes by name —
+  # way more reliable than OCR-then-coords for native apps. Windows
+  # only; Linux / macOS will need AT-SPI / AXUIElement backends later.
+  "uiautomation>=2.0; platform_system=='Windows'",
 ]
 # 2026-05-12 媒体工具 — agent 录麦克风 / 拍摄像头 / 播音箱。
 # 跟 [voice] 区分: voice 是 STT/TTS 后端模型 (faster-whisper /

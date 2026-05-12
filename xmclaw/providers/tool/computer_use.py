@@ -436,6 +436,161 @@ _REGION_CAPTURE_SPEC = ToolSpec(
 )
 
 
+# ── 2026-05-12 (round 2): image template + scroll + native UI ────────
+
+
+_FIND_IMAGE_SPEC = ToolSpec(
+    name="find_image_on_screen",
+    description=(
+        "Locate a template image on the current screen. Use for "
+        "icon-based UI elements that OCR can't read (send buttons, "
+        "settings gears, app icons in the taskbar).\n\n"
+        "Workflow:\n"
+        "  1. screen_region_capture the icon once → save as template\n"
+        "  2. find_image_on_screen with that template path → "
+        "     returns {found, x, y, bbox, confidence}\n\n"
+        "``confidence`` 0-1 controls match strictness (default 0.8, "
+        "lower for slight scaling / antialiasing tolerance). "
+        "``region`` clips the search area. Needs ``opencv-python``."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "template_path": {"type": "string"},
+            "confidence": {
+                "type": "number",
+                "description": "0-1, default 0.8.",
+            },
+            "region": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "[x, y, w, h] search clip.",
+            },
+        },
+        "required": ["template_path"],
+    },
+)
+
+_CLICK_IMAGE_SPEC = ToolSpec(
+    name="click_on_image",
+    description=(
+        "Convenience: find_image_on_screen + mouse_click in one. "
+        "Returns the find result + click coords. Same args as "
+        "find_image_on_screen plus button / count."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "template_path": {"type": "string"},
+            "confidence":    {"type": "number"},
+            "region":        {"type": "array", "items": {"type": "integer"}},
+            "button":        {"type": "string", "enum": ["left", "right", "middle"]},
+            "count":         {"type": "integer", "description": "1-3"},
+        },
+        "required": ["template_path"],
+    },
+)
+
+_SCROLL_TO_TEXT_SPEC = ToolSpec(
+    name="scroll_to_text",
+    description=(
+        "Scroll at (x, y) until ``text`` appears on screen, or give "
+        "up after ``max_scrolls`` attempts. Use for long lists "
+        "(group lists, settings menus, search results).\n\n"
+        "After each scroll, re-OCRs the (optional) ``region`` and "
+        "checks if the text is visible. ``direction`` ∈ {down, up}, "
+        "default down. Returns the same shape as find_on_screen "
+        "when found, or {found: false, scrolls_tried} on giveup."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "text": {"type": "string"},
+            "x": {"type": "integer", "description": "Scroll-anchor x."},
+            "y": {"type": "integer", "description": "Scroll-anchor y."},
+            "direction": {"type": "string", "enum": ["down", "up"]},
+            "max_scrolls": {"type": "integer", "description": "1-30, default 10."},
+            "scroll_amount": {
+                "type": "integer",
+                "description": "Wheel notches per scroll, default 3.",
+            },
+            "region": {
+                "type": "array",
+                "items": {"type": "integer"},
+            },
+            "exact": {"type": "boolean"},
+        },
+        "required": ["text"],
+    },
+)
+
+_UI_INSPECT_SPEC = ToolSpec(
+    name="ui_inspect",
+    description=(
+        "Read the accessibility tree of the currently focused "
+        "Windows window — every button / textbox / list / etc. "
+        "shows up with its name + automation_id + bbox. WAY more "
+        "reliable than OCR for native apps (WeChat, QQ, Office, "
+        "Explorer) because the OS exposes the structured UI "
+        "directly.\n\n"
+        "Filter with ``control_type`` (e.g. 'Button', 'Edit', "
+        "'List') and/or ``name_contains`` to scope. Capped at 100 "
+        "elements per call.\n\n"
+        "Windows-only (uses ``uiautomation`` package). Returns "
+        "ok=False with install hint elsewhere — Linux/macOS will "
+        "need AT-SPI / AXUIElement backends in a future pass."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "control_type": {
+                "type": "string",
+                "description": "e.g. Button / Edit / List / Text / "
+                               "Pane. Omit to return all.",
+            },
+            "name_contains": {
+                "type": "string",
+                "description": "Substring filter on the element's name.",
+            },
+            "window_title": {
+                "type": "string",
+                "description": "Target window title contains. Omit "
+                               "to use the foreground window.",
+            },
+            "max_depth": {
+                "type": "integer",
+                "description": "Tree walk depth (1-12, default 6).",
+            },
+        },
+    },
+)
+
+_UI_CLICK_SPEC = ToolSpec(
+    name="ui_click",
+    description=(
+        "Click an element by accessibility name (or automation_id) "
+        "via the Windows UIAutomation API. Much more reliable than "
+        "OCR-then-coords for native apps: it works even when the "
+        "button is rendered as just an icon, or the text is anti-"
+        "aliased weird, or the window scrolls. The element doesn't "
+        "have to be visible — UIAutomation can also invoke pattern.\n\n"
+        "Search order: name_contains exact → name_contains substring "
+        "→ automation_id exact. Returns the matched element's name + "
+        "bbox after invoke. Windows-only."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "name_contains": {"type": "string"},
+            "automation_id": {"type": "string"},
+            "control_type":  {"type": "string"},
+            "window_title":  {"type": "string"},
+            "double_click":  {"type": "boolean"},
+        },
+    },
+)
+
+
 # ── Provider ──────────────────────────────────────────────────────────
 
 
@@ -483,6 +638,9 @@ class ComputerUseTools(ToolProvider):
             _SCREEN_OCR_SPEC, _FIND_ON_SCREEN_SPEC,
             _CLICK_ON_TEXT_SPEC, _WAIT_FOR_TEXT_SPEC,
             _REGION_CAPTURE_SPEC,
+            # Image template + scroll + native Windows UIA (2026-05-12 r2)
+            _FIND_IMAGE_SPEC, _CLICK_IMAGE_SPEC, _SCROLL_TO_TEXT_SPEC,
+            _UI_INSPECT_SPEC, _UI_CLICK_SPEC,
         ]
 
     async def invoke(self, call: ToolCall) -> ToolResult:
@@ -507,6 +665,12 @@ class ComputerUseTools(ToolProvider):
             if name == "click_on_text":         return await self._click_on_text(call, t0, args)
             if name == "wait_for_text":         return await self._wait_for_text(call, t0, args)
             if name == "screen_region_capture": return await self._screen_region_capture(call, t0, args)
+            # 2026-05-12 r2: image template + scroll + native UIA
+            if name == "find_image_on_screen":  return await self._find_image_on_screen(call, t0, args)
+            if name == "click_on_image":        return await self._click_on_image(call, t0, args)
+            if name == "scroll_to_text":        return await self._scroll_to_text(call, t0, args)
+            if name == "ui_inspect":            return await self._ui_inspect(call, t0, args)
+            if name == "ui_click":              return await self._ui_click(call, t0, args)
         except Exception as exc:  # noqa: BLE001 — surface as ok=False
             return _fail(call, t0, f"{type(exc).__name__}: {exc}")
         return _fail(call, t0, f"unknown tool: {name!r}")
@@ -1088,6 +1252,417 @@ class ComputerUseTools(ToolProvider):
             except OSError:
                 pass
         return _ok(call, t0, json.dumps(result, ensure_ascii=False))
+
+    # ── 2026-05-12 r2: image template matching ────────────────────
+
+    async def _find_image_on_screen(
+        self, call: ToolCall, t0: float, args: dict,
+    ) -> ToolResult:
+        template_path = args.get("template_path")
+        if not isinstance(template_path, str) or not template_path:
+            return _fail(call, t0, "template_path (string) required")
+        tpath = Path(template_path).expanduser()
+        if not tpath.is_file():
+            return _fail(call, t0, f"template not found: {tpath}")
+        confidence = _clamp(float(args.get("confidence", 0.8)), 0.1, 1.0)
+        region = args.get("region")
+
+        try:
+            import cv2  # type: ignore
+            import numpy as np  # type: ignore
+        except ImportError as exc:
+            return _fail(
+                call, t0,
+                f"find_image_on_screen needs ``opencv-python``: {exc}",
+            )
+
+        def _do_find() -> dict[str, Any]:
+            template = cv2.imread(str(tpath), cv2.IMREAD_COLOR)
+            if template is None:
+                raise RuntimeError(f"cv2 couldn't read template {tpath}")
+            th, tw = template.shape[:2]
+            # Grab full screen / region as BGR ndarray
+            screen, (ox, oy) = _grab_for_ocr(region)
+            res = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
+            _min_val, max_val, _min_loc, max_loc = cv2.minMaxLoc(res)
+            if max_val < confidence:
+                return {
+                    "found": False,
+                    "best_confidence": round(float(max_val), 4),
+                    "threshold": confidence,
+                }
+            x0, y0 = int(max_loc[0]) + ox, int(max_loc[1]) + oy
+            return {
+                "found": True,
+                "x": x0 + tw // 2,
+                "y": y0 + th // 2,
+                "bbox": [x0, y0, tw, th],
+                "confidence": round(float(max_val), 4),
+            }
+
+        try:
+            payload = await asyncio.to_thread(_do_find)
+        except RuntimeError as exc:
+            return _fail(call, t0, str(exc))
+        except Exception as exc:  # noqa: BLE001
+            return _fail(
+                call, t0,
+                f"find_image_on_screen failed: {type(exc).__name__}: {exc}",
+            )
+
+        if not payload["found"]:
+            return _fail(call, t0, json.dumps(payload))
+        return _ok(call, t0, json.dumps(payload, ensure_ascii=False))
+
+    async def _click_on_image(
+        self, call: ToolCall, t0: float, args: dict,
+    ) -> ToolResult:
+        find_args = {
+            k: v for k, v in args.items()
+            if k in ("template_path", "confidence", "region")
+        }
+        find_call = ToolCall(
+            id=call.id + "-find",
+            name="find_image_on_screen",
+            args=find_args,
+            provenance=call.provenance,
+            session_id=call.session_id,
+        )
+        fr = await self._find_image_on_screen(find_call, t0, find_args)
+        if not fr.ok:
+            return _fail(call, t0, fr.error)
+        fp = json.loads(fr.content)
+        button = str(args.get("button", "left"))
+        if button not in _VALID_BUTTONS:
+            return _fail(call, t0, f"button must be one of {sorted(_VALID_BUTTONS)}")
+        count = _clamp(int(args.get("count", 1)), 1, 3)
+        try:
+            pg = self._require_pyautogui()
+        except ImportError as exc:
+            return _fail(call, t0, _pg_install_hint(exc))
+        x, y = fp["x"], fp["y"]
+        try:
+            await asyncio.to_thread(
+                pg.click, x=x, y=y, button=button, clicks=count,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _fail(
+                call, t0,
+                f"click at ({x},{y}) failed: {type(exc).__name__}: {exc}",
+            )
+        return _ok(call, t0, json.dumps({
+            "clicked": True, "x": x, "y": y,
+            "button": button, "count": count,
+            "template": args.get("template_path"),
+            "confidence": fp["confidence"],
+            "bbox": fp["bbox"],
+        }, ensure_ascii=False))
+
+    # ── 2026-05-12 r2: scroll_to_text ──────────────────────────────
+
+    async def _scroll_to_text(
+        self, call: ToolCall, t0: float, args: dict,
+    ) -> ToolResult:
+        text = args.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return _fail(call, t0, "text (non-empty string) required")
+        direction = str(args.get("direction", "down")).lower()
+        if direction not in ("up", "down"):
+            return _fail(call, t0, "direction must be 'up' or 'down'")
+        max_scrolls = _clamp(int(args.get("max_scrolls", 10)), 1, 30)
+        scroll_amount = int(args.get("scroll_amount", 3))
+        if scroll_amount <= 0:
+            return _fail(call, t0, "scroll_amount must be > 0")
+        clicks = -scroll_amount if direction == "down" else scroll_amount
+        region = args.get("region")
+        exact = bool(args.get("exact", False))
+        x = args.get("x")
+        y = args.get("y")
+
+        try:
+            pg = self._require_pyautogui()
+        except ImportError as exc:
+            return _fail(call, t0, _pg_install_hint(exc))
+
+        # First check — might already be visible without any scroll.
+        for attempt in range(max_scrolls + 1):
+            try:
+                blocks = await asyncio.to_thread(
+                    _run_ocr_full_pipeline, region, 0.5,
+                )
+            except _NoOCREngineError as exc:
+                return _fail(call, t0, str(exc))
+            except Exception:  # noqa: BLE001
+                blocks = []
+            matches = _match_text_in_blocks(blocks, text, exact=exact)
+            if matches:
+                best = matches[0]
+                return _ok(call, t0, json.dumps({
+                    "found": True,
+                    "x": best["center"][0],
+                    "y": best["center"][1],
+                    "bbox": best["bbox"],
+                    "match_text": best["text"],
+                    "confidence": best["confidence"],
+                    "scrolls_tried": attempt,
+                }, ensure_ascii=False))
+            if attempt >= max_scrolls:
+                break
+            # Scroll and retry
+            try:
+                if x is not None and y is not None:
+                    await asyncio.to_thread(
+                        pg.scroll, clicks, x=int(x), y=int(y),
+                    )
+                else:
+                    await asyncio.to_thread(pg.scroll, clicks)
+            except Exception as exc:  # noqa: BLE001
+                return _fail(call, t0, f"scroll failed: {exc}")
+            # Small pause for repaint
+            await asyncio.sleep(0.25)
+
+        return _fail(call, t0, json.dumps({
+            "found": False,
+            "wanted": text,
+            "scrolls_tried": max_scrolls,
+            "direction": direction,
+        }, ensure_ascii=False))
+
+    # ── 2026-05-12 r2: Windows UIAutomation ────────────────────────
+
+    async def _ui_inspect(
+        self, call: ToolCall, t0: float, args: dict,
+    ) -> ToolResult:
+        try:
+            import uiautomation as uia  # type: ignore
+        except ImportError:
+            return _fail(call, t0, (
+                "ui_inspect needs ``uiautomation``: "
+                "pip install uiautomation (Windows only)"
+            ))
+        control_type = (args.get("control_type") or "").strip()
+        name_contains = (args.get("name_contains") or "").strip().lower()
+        window_title = (args.get("window_title") or "").strip()
+        max_depth = _clamp(int(args.get("max_depth", 6)), 1, 12)
+
+        def _do_inspect() -> dict[str, Any]:
+            # COM threading: uiautomation needs CoInitialize() per thread.
+            # asyncio.to_thread spawns a worker without it; the library
+            # ships ``UIAutomationInitializerInThread`` as the context-
+            # manager that handles both Co{,Un}Initialize. Without it
+            # every UIA call raises "CoInitialize hasn't been called".
+            with uia.UIAutomationInitializerInThread():
+                if window_title:
+                    root = uia.WindowControl(
+                        searchDepth=2, SubName=window_title,
+                    )
+                    if not root.Exists(maxSearchSeconds=1):
+                        raise LookupError(
+                            f"no window title containing {window_title!r}",
+                        )
+                else:
+                    root = uia.GetForegroundControl()
+
+                target_title = ""
+                try:
+                    cur = root
+                    for _ in range(5):
+                        if cur is None:
+                            break
+                        target_title = getattr(cur, "Name", "") or target_title
+                        if cur.ControlTypeName == "WindowControl":
+                            break
+                        cur = cur.GetParentControl() if hasattr(cur, "GetParentControl") else None
+                except Exception:  # noqa: BLE001
+                    pass
+
+                elements: list[dict[str, Any]] = []
+
+                def _walk(ctrl, depth: int) -> None:
+                    if depth > max_depth or len(elements) >= 100:
+                        return
+                    try:
+                        name = getattr(ctrl, "Name", "") or ""
+                        ctype = getattr(ctrl, "ControlTypeName", "") or ""
+                        auto_id = getattr(ctrl, "AutomationId", "") or ""
+                        bbox = getattr(ctrl, "BoundingRectangle", None)
+                    except Exception:  # noqa: BLE001
+                        return
+                    keep = True
+                    if control_type and ctype.lower() != f"{control_type.lower()}control":
+                        if not ctype.lower().startswith(control_type.lower()):
+                            keep = False
+                    if keep and name_contains and name_contains not in name.lower():
+                        keep = False
+                    if keep and (name or auto_id):
+                        bbox_list = [0, 0, 0, 0]
+                        if bbox is not None:
+                            try:
+                                bbox_list = [
+                                    int(bbox.left),
+                                    int(bbox.top),
+                                    int(bbox.right - bbox.left),
+                                    int(bbox.bottom - bbox.top),
+                                ]
+                            except Exception:  # noqa: BLE001
+                                pass
+                        elements.append({
+                            "name": name[:120],
+                            "control_type": ctype,
+                            "automation_id": auto_id[:80],
+                            "bbox": bbox_list,
+                            "depth": depth,
+                        })
+                    try:
+                        for child in ctrl.GetChildren():
+                            _walk(child, depth + 1)
+                            if len(elements) >= 100:
+                                return
+                    except Exception:  # noqa: BLE001
+                        return
+
+                _walk(root, 0)
+                return {
+                    "window_title": target_title[:160],
+                    "count": len(elements),
+                    "elements": elements,
+                }
+
+        try:
+            payload = await asyncio.to_thread(_do_inspect)
+        except LookupError as exc:
+            return _fail(call, t0, str(exc))
+        except Exception as exc:  # noqa: BLE001
+            return _fail(
+                call, t0,
+                f"ui_inspect failed: {type(exc).__name__}: {exc}",
+            )
+        return _ok(call, t0, json.dumps(payload, ensure_ascii=False))
+
+    async def _ui_click(
+        self, call: ToolCall, t0: float, args: dict,
+    ) -> ToolResult:
+        try:
+            import uiautomation as uia  # type: ignore
+        except ImportError:
+            return _fail(call, t0, (
+                "ui_click needs ``uiautomation``: "
+                "pip install uiautomation (Windows only)"
+            ))
+        name_contains = (args.get("name_contains") or "").strip()
+        automation_id = (args.get("automation_id") or "").strip()
+        control_type = (args.get("control_type") or "").strip()
+        window_title = (args.get("window_title") or "").strip()
+        double_click = bool(args.get("double_click", False))
+        if not (name_contains or automation_id):
+            return _fail(
+                call, t0,
+                "need name_contains or automation_id",
+            )
+
+        def _do_click() -> dict[str, Any]:
+            # COM threading guard — see _ui_inspect for the same pattern.
+            with uia.UIAutomationInitializerInThread():
+                if window_title:
+                    root = uia.WindowControl(searchDepth=2, SubName=window_title)
+                    if not root.Exists(maxSearchSeconds=2):
+                        raise LookupError(
+                            f"window {window_title!r} not found",
+                        )
+                else:
+                    root = uia.GetForegroundControl()
+
+                # Walk tree looking for matching element
+                matched = []
+
+                def _walk(ctrl, depth: int) -> None:
+                    if depth > 10 or len(matched) > 5:
+                        return
+                    try:
+                        name = getattr(ctrl, "Name", "") or ""
+                        ctype = getattr(ctrl, "ControlTypeName", "") or ""
+                        auto_id = getattr(ctrl, "AutomationId", "") or ""
+                    except Exception:  # noqa: BLE001
+                        return
+                    hit = False
+                    if name_contains and name_contains.lower() in name.lower():
+                        hit = True
+                    if automation_id and automation_id == auto_id:
+                        hit = True
+                    if hit and (
+                        not control_type
+                        or control_type.lower() in ctype.lower()
+                    ):
+                        matched.append((ctrl, name, ctype, auto_id))
+                    try:
+                        for child in ctrl.GetChildren():
+                            _walk(child, depth + 1)
+                    except Exception:  # noqa: BLE001
+                        return
+
+                _walk(root, 0)
+                if not matched:
+                    raise LookupError(
+                        f"no UI element matching name_contains="
+                        f"{name_contains!r} automation_id="
+                        f"{automation_id!r} control_type={control_type!r}",
+                    )
+                ctrl, name, ctype, auto_id = matched[0]
+                try:
+                    bbox = ctrl.BoundingRectangle
+                    bbox_list = [
+                        int(bbox.left), int(bbox.top),
+                        int(bbox.right - bbox.left),
+                        int(bbox.bottom - bbox.top),
+                    ]
+                except Exception:  # noqa: BLE001
+                    bbox_list = [0, 0, 0, 0]
+                # Prefer InvokePattern (no mouse movement, more
+                # reliable) but fall back to physical click when the
+                # control doesn't expose it.
+                invoked = False
+                try:
+                    ctrl.SetFocus()
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    if hasattr(ctrl, "GetInvokePattern"):
+                        pattern = ctrl.GetInvokePattern()
+                        if pattern is not None:
+                            pattern.Invoke()
+                            invoked = True
+                except Exception:  # noqa: BLE001
+                    pass
+                if not invoked:
+                    try:
+                        if double_click:
+                            ctrl.DoubleClick()
+                        else:
+                            ctrl.Click()
+                    except Exception as exc:  # noqa: BLE001
+                        raise RuntimeError(
+                            f"both InvokePattern and physical click failed: "
+                            f"{exc}",
+                        )
+                return {
+                    "clicked": True,
+                    "name": name[:120],
+                    "control_type": ctype,
+                    "automation_id": auto_id[:80],
+                    "bbox": bbox_list,
+                    "via": "invoke_pattern" if invoked else "physical_click",
+                }
+
+        try:
+            payload = await asyncio.to_thread(_do_click)
+        except (LookupError, RuntimeError) as exc:
+            return _fail(call, t0, str(exc))
+        except Exception as exc:  # noqa: BLE001
+            return _fail(
+                call, t0,
+                f"ui_click failed: {type(exc).__name__}: {exc}",
+            )
+        return _ok(call, t0, json.dumps(payload, ensure_ascii=False))
 
 
 # ── Helpers ───────────────────────────────────────────────────────────

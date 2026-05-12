@@ -158,11 +158,9 @@ def _json(result):
 
 
 def test_lists_all_tools(tools):
-    """2026-05-12: provider grew from 11 → 16 tools when vision-
-    grounding (screen_ocr / find_on_screen / click_on_text /
-    wait_for_text / screen_region_capture) landed. Test pinned at
-    "all tools listed" rather than a fixed count so future additions
-    don't keep churning the assertion."""
+    """Provider has grown through several rounds; the test pins
+    every tool advertised today so a silent rename in list_tools
+    surfaces here. Re-extend the expected set when you add a tool."""
     names = {s.name for s in tools.list_tools()}
     expected = {
         # Mouse / keyboard / window (original 11)
@@ -170,9 +168,12 @@ def test_lists_all_tools(tools):
         "mouse_move", "mouse_click", "mouse_drag", "mouse_scroll",
         "keyboard_type", "keyboard_press",
         "window_list", "window_focus",
-        # Vision grounding (2026-05-12)
+        # Vision grounding (2026-05-12 r1)
         "screen_ocr", "find_on_screen", "click_on_text",
         "wait_for_text", "screen_region_capture",
+        # Image template + scroll + Windows UIA (2026-05-12 r2)
+        "find_image_on_screen", "click_on_image", "scroll_to_text",
+        "ui_inspect", "ui_click",
     }
     assert names == expected
 
