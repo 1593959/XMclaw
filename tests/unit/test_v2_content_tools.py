@@ -88,23 +88,58 @@ async def test_pdf_read_missing_pypdf_dep(tmp_path: Path) -> None:
 # ── image_read happy + size cap ──────────────────────────────────
 
 
+_TINY_PNG_HEX = (
+    "89504E470D0A1A0A0000000D49484452000000010000000108060000001F15C4"
+    "890000000A49444154789C636000000000020001E221BC330000000049454E44"
+    "AE426082"
+)
+
+
 @pytest.mark.asyncio
-async def test_image_read_returns_base64(tmp_path: Path) -> None:
+async def test_image_read_defaults_to_no_base64(tmp_path: Path) -> None:
+    """DEFAULT behaviour: NO base64 in the result (was the prompt-bloat
+    bug). Path + metadata only, plus OCR text if an engine is wired."""
     img = tmp_path / "tiny.png"
-    # 1x1 PNG (transparent) — minimal valid PNG bytes.
-    img.write_bytes(bytes.fromhex(
-        "89504E470D0A1A0A0000000D49484452000000010000000108060000001F15C4"
-        "890000000A49444154789C636000000000020001E221BC330000000049454E44"
-        "AE426082"
-    ))
+    img.write_bytes(bytes.fromhex(_TINY_PNG_HEX))
     r = await ContentTools().invoke(_call("image_read", {"path": str(img)}))
     assert r.ok is True
     payload = json.loads(r.content)
     assert payload["mime"] == "image/png"
     assert payload["bytes"] == img.stat().st_size
-    # round-trip the base64 to confirm it's actually decodable
+    # The crucial assertion — no base64 by default.
+    assert "base64" not in payload, (
+        "image_read MUST NOT default-include base64 — stuffs ~MBs into "
+        "the next prompt and the LLM can't read base64 from a tool result"
+    )
+
+
+@pytest.mark.asyncio
+async def test_image_read_opt_in_base64(tmp_path: Path) -> None:
+    """Explicit ``include_base64: true`` brings the bytes back."""
+    img = tmp_path / "tiny.png"
+    img.write_bytes(bytes.fromhex(_TINY_PNG_HEX))
+    r = await ContentTools().invoke(_call(
+        "image_read",
+        {"path": str(img), "include_base64": True, "ocr": False},
+    ))
+    assert r.ok is True
+    payload = json.loads(r.content)
+    assert "base64" in payload
     decoded = base64.b64decode(payload["base64"])
     assert decoded == img.read_bytes()
+
+
+@pytest.mark.asyncio
+async def test_image_read_ocr_skipped_when_flag_false(tmp_path: Path) -> None:
+    img = tmp_path / "tiny.png"
+    img.write_bytes(bytes.fromhex(_TINY_PNG_HEX))
+    r = await ContentTools().invoke(_call(
+        "image_read", {"path": str(img), "ocr": False},
+    ))
+    assert r.ok is True
+    payload = json.loads(r.content)
+    assert "ocr_text" not in payload
+    assert "ocr_error" not in payload
 
 
 @pytest.mark.asyncio

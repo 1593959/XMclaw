@@ -83,16 +83,37 @@ _SCREENSHOT_SPEC = ToolSpec(
 _IMAGE_READ_SPEC = ToolSpec(
     name="image_read",
     description=(
-        "Read an image file (png/jpg/gif/webp) and return its bytes "
-        "as a base64 string + metadata. Pair this with a multimodal "
-        "LLM request to actually 'see' the image. Capped at 8 MB; "
-        "larger files return a structured error rather than blowing "
-        "up the context window."
+        "Read an image file (png/jpg/gif/webp) and return its OCR "
+        "TEXT + metadata (path, mime, width, height, bytes). DEFAULT "
+        "MODE is OCR-only — base64 is NOT returned by default because "
+        "stuffing 3-5 MB of base64 into a tool result blows up the "
+        "next LLM call (~1M tokens, 100s+ latency) AND the model can't "
+        "actually 'see' base64 inside a tool result anyway — vision "
+        "needs proper image content blocks. Set ``include_base64: "
+        "true`` ONLY when you have downstream code that consumes it. "
+        "Set ``ocr: false`` if you only need metadata. Capped at 8 MB."
     ),
     parameters_schema={
         "type": "object",
         "properties": {
             "path": {"type": "string"},
+            "ocr": {
+                "type": "boolean",
+                "description": (
+                    "Run OCR and include the extracted text. Default "
+                    "true. Set false to skip OCR when you only need "
+                    "metadata (path, size, dimensions)."
+                ),
+            },
+            "include_base64": {
+                "type": "boolean",
+                "description": (
+                    "Include the raw base64-encoded bytes in the "
+                    "result. Default false. Almost always leave this "
+                    "off — it explodes the prompt and the LLM cannot "
+                    "interpret base64 from a tool result."
+                ),
+            },
         },
         "required": ["path"],
     },
@@ -298,19 +319,44 @@ class ContentTools(ToolProvider):
                 f"image is {size / 1024 / 1024:.1f} MB — over the 8 MB cap. "
                 f"Resize first or pass a smaller file."
             ))
-        data = path.read_bytes()
+        args = call.args or {}
+        want_ocr = bool(args.get("ocr", True))
+        want_b64 = bool(args.get("include_base64", False))
+
         ext = path.suffix.lower().lstrip(".")
         mime_map = {
             "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
             "gif": "image/gif", "webp": "image/webp", "bmp": "image/bmp",
         }
         mime = mime_map.get(ext, "application/octet-stream")
-        return _ok(call, t0, json.dumps({
+
+        payload: dict[str, Any] = {
             "path": str(path),
             "mime": mime,
             "bytes": size,
-            "base64": base64.b64encode(data).decode("ascii"),
-        }, ensure_ascii=False))
+        }
+
+        # Image dimensions — cheap (Pillow only reads the header).
+        try:
+            from PIL import Image  # type: ignore
+            with Image.open(str(path)) as im:
+                payload["width"], payload["height"] = im.size
+        except Exception:  # noqa: BLE001 — Pillow optional; metadata is a nice-to-have
+            pass
+
+        if want_ocr:
+            ocr_text, ocr_error = _run_ocr_on_path(str(path))
+            if ocr_text is not None:
+                payload["ocr_text"] = ocr_text
+                payload["ocr_block_count"] = ocr_text.count("\n") + 1 if ocr_text else 0
+            else:
+                payload["ocr_error"] = ocr_error
+
+        if want_b64:
+            data = path.read_bytes()
+            payload["base64"] = base64.b64encode(data).decode("ascii")
+
+        return _ok(call, t0, json.dumps(payload, ensure_ascii=False))
 
     async def _pdf_read(self, call: ToolCall, t0: float) -> ToolResult:
         try:
@@ -500,4 +546,77 @@ def _fail(call: ToolCall, t0: float, err: str) -> ToolResult:
     return ToolResult(
         call_id=call.id, ok=False, content=None, error=err,
         latency_ms=(time.perf_counter() - t0) * 1000.0,
+    )
+
+
+def _run_ocr_on_path(image_path: str) -> tuple[str | None, str]:
+    """Best-effort OCR over a saved image file.
+
+    Returns ``(text, "")`` on success or ``(None, error_message)`` on
+    any failure. Tries engines in order: rapidocr → paddleocr →
+    pytesseract. All three accept either file paths or PIL images;
+    we feed paths to keep the surface tiny.
+
+    The returned ``text`` is one OCR block per line. Empty string is
+    valid (image had no text). ``None`` means OCR genuinely failed —
+    no engine installed, or all engines errored.
+    """
+    # rapidocr — best Chinese support per MB.
+    try:
+        from rapidocr_onnxruntime import RapidOCR  # type: ignore
+        engine = RapidOCR()
+        result, _ = engine(image_path)
+        if result is None:
+            return "", ""
+        lines: list[str] = []
+        for row in result:
+            if not row or len(row) < 2:
+                continue
+            text = str(row[1] or "").strip()
+            if text:
+                lines.append(text)
+        return "\n".join(lines), ""
+    except ImportError:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        return None, f"rapidocr failed: {type(exc).__name__}: {exc}"
+
+    # paddleocr.
+    try:
+        from paddleocr import PaddleOCR  # type: ignore
+        ocr = PaddleOCR(use_angle_cls=True, lang="ch", show_log=False)
+        result = ocr.ocr(image_path, cls=True)
+        if not result:
+            return "", ""
+        lines = []
+        for page in result:
+            if not page:
+                continue
+            for row in page:
+                if not row or len(row) < 2:
+                    continue
+                text_pair = row[1]
+                text = str(text_pair[0] if isinstance(text_pair, (list, tuple)) else text_pair).strip()
+                if text:
+                    lines.append(text)
+        return "\n".join(lines), ""
+    except ImportError:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        return None, f"paddleocr failed: {type(exc).__name__}: {exc}"
+
+    # pytesseract — needs the Tesseract binary on PATH.
+    try:
+        import pytesseract  # type: ignore
+        from PIL import Image  # type: ignore
+        text = pytesseract.image_to_string(Image.open(image_path), lang="chi_sim+eng")
+        return (text or "").strip(), ""
+    except ImportError:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        return None, f"pytesseract failed: {type(exc).__name__}: {exc}"
+
+    return None, (
+        "no OCR engine available — install one of: "
+        "rapidocr-onnxruntime / paddleocr / pytesseract"
     )
