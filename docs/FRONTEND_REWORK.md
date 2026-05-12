@@ -133,7 +133,7 @@
   - 右侧：代码编辑器（`textarea` 即可，不需要 Monaco）
   - 顶部面包屑 + 保存按钮（调用 `PUT /files`）
   - 只显示文本文件（≤1MB），二进制文件显示「无法预览」
-- [ ] **Workspace roots 管理** — 在 Files 页顶部显示当前 roots，可添加/删除（复用 WorkspacePage 逻辑）
+- [x] **Workspace roots 管理** — Files 页 sidebar 分两组: ``XMclaw 数据`` (canonical 5 roots from utils/paths) + ``可浏览目录`` (config.tools.allowed_dirs, 从 /api/v2/config 读)。添加按钮打开说明 dialog 引导用户改 daemon/config.json (热重载生效)。后端 POST/DELETE 端点故意不开 — config 写盘是 Settings 页的职责, 不混进 Files。2026-05-12 落地。
 
 **验收**: 能在浏览器里浏览工作区文件、编辑 `.py`/`.md`/`.json`、保存后后端文件确实变了。
 
@@ -148,7 +148,7 @@
   - Tasks: 「任务队列为空。当 daemon 接到目标时会自动填充」
   - Experiments: 「还没有实验。daemon 会在后台自动运行 A/B 测试」
 - [x] **响应式断点** — 网格已使用 `repeat(auto-fit,minmax(360px,1fr))`
-- [ ] **移动端 sidebar** — 点击汉堡菜单滑出，点击遮罩关闭，支持左滑手势关闭
+- [x] **移动端 sidebar** — 点击汉堡菜单滑出 (一直有), 点击遮罩关闭 (一直有), Escape 关闭 (一直有), 现在补上**左滑手势关闭** (touchstart/touchend, dx<-60px + |dy|<|dx| + dt<700ms 三重判别)。2026-05-12 落地。
 - [x] **加载态统一** — 新增 `Skeleton` atom 组件，替换所有「加载中…」文字
 - [x] **删除旧页面文件** — Backup.js、Doctor.js、Config.js（保留路由重定向，2026-05-12 清理）
 

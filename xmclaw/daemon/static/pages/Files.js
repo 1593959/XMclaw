@@ -1,7 +1,19 @@
-// XMclaw — Files page (Iteration 5)
+// XMclaw — Files page (Iteration 5 + 2026-05-12 roots panel)
 //
 // File browser + editor. Reads directories and text files via
 // /api/v2/files, writes back via PUT.
+//
+// Sidebar shows two groups:
+//   1. ``XMclaw 数据`` — the 5 canonical workspace roots from
+//      ``xmclaw.utils.paths`` (skills / agents / personas / memory /
+//      workspaces). System-defined, not user-modifiable.
+//   2. ``可浏览目录 (tools.allowed_dirs)`` — additional roots the
+//      user has whitelisted in ``daemon/config.json``. Read from
+//      ``/api/v2/config`` so the page reflects current live config
+//      (hot-reload aware). The "添加…" button opens a dialog
+//      explaining how to edit the config — daemon-side mutation
+//      endpoint is intentionally NOT exposed (writes to config.json
+//      are reserved for the user / the Settings page).
 
 const { h } = window.__xmc.preact;
 const { useEffect, useState } = window.__xmc.preact_hooks;
@@ -9,6 +21,7 @@ const html = window.__xmc.htm.bind(h);
 
 import { apiGet, apiPut } from "../lib/api.js";
 import { toast } from "../lib/toast.js";
+import { confirmDialog } from "../lib/dialog.js";
 
 function _basename(p) {
   const parts = String(p).replace(/\\/g, "/").split("/").filter(Boolean);
@@ -23,6 +36,7 @@ function _dirname(p) {
 
 export function FilesPage({ token }) {
   const [roots, setRoots] = useState([]);
+  const [allowedDirs, setAllowedDirs] = useState([]);
   const [path, setPath] = useState("");
   const [entries, setEntries] = useState(null);
   const [content, setContent] = useState("");
@@ -36,6 +50,46 @@ export function FilesPage({ token }) {
       setRoots(d.roots || []);
       if (!path && d.roots.length) setPath(d.roots[0].path);
     } catch (_) {}
+  }
+
+  // Pull tools.allowed_dirs from the live config so the second sidebar
+  // group reflects what the user has actually whitelisted. Resilient
+  // to missing fields — the sanitised config snapshot always has the
+  // structure ``{config: {tools: {allowed_dirs: [...]}}}`` once tools
+  // are configured, and is ``{config: null, note: ...}`` for echo-mode
+  // installs.
+  async function loadAllowedDirs() {
+    try {
+      const d = await apiGet("/api/v2/config", token);
+      const dirs = ((d && d.config && d.config.tools) || {}).allowed_dirs || [];
+      setAllowedDirs(Array.isArray(dirs) ? dirs : []);
+    } catch (_) {
+      setAllowedDirs([]);
+    }
+  }
+
+  async function explainAddRoot() {
+    // We deliberately don't expose POST /api/v2/files/roots — mutating
+    // config from a UI button + persisting back to config.json on disk
+    // is a separate concern (auth, atomic write, hot-reload race). For
+    // now we just teach the user how to do it themselves via the file
+    // they already have edit access to.
+    await confirmDialog({
+      title: "添加可浏览目录",
+      body: (
+        "想让 Files 页能浏览其他目录? 编辑 ``daemon/config.json``:\n\n" +
+        "  \"tools\": {\n" +
+        "    \"allowed_dirs\": [\n" +
+        "      \"~/projects/foo\",\n" +
+        "      \"D:/work/notes\"\n" +
+        "    ]\n" +
+        "  }\n\n" +
+        "保存后 daemon 会热重载, 刷新本页即可看到新目录。\n\n" +
+        "注意: allowed_dirs 控制的是浏览权限, 不是写权限 — 写入仍只能落到\n" +
+        "XMclaw 5 个 canonical roots (上方 ``XMclaw 数据`` 那组)。"
+      ),
+      confirmLabel: "知道了",
+    });
   }
 
   async function loadPath(p) {
@@ -70,7 +124,7 @@ export function FilesPage({ token }) {
     }
   }
 
-  useEffect(() => { loadRoots(); }, [token]);
+  useEffect(() => { loadRoots(); loadAllowedDirs(); }, [token]);
   useEffect(() => { if (path) loadPath(path); }, [path]);
 
   const crumbs = [];
@@ -89,17 +143,44 @@ export function FilesPage({ token }) {
 
       <div style="display:flex;gap:1rem;flex-wrap:wrap">
         <!-- Sidebar: roots -->
-        <div style="min-width:180px;max-width:240px;flex:1">
-          <div style="font-size:.75rem;opacity:.6;margin-bottom:.4rem">工作区</div>
+        <div style="min-width:200px;max-width:260px;flex:1">
+          <!-- Group 1: canonical XMclaw workspace roots -->
+          <div style="font-size:.75rem;opacity:.6;margin-bottom:.4rem">XMclaw 数据</div>
           <ul style="list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.15rem">
             ${roots.map((r) => html`
               <li key=${r.key}>
-                <button onClick=${() => setPath(r.path)} style="width:100%;text-align:left;padding:.35rem .5rem;background:${path.startsWith(r.path)?"rgba(255,255,255,.06)":"transparent"};border:1px solid ${path.startsWith(r.path)?"var(--color-border)":"transparent"};border-radius:4px;color:inherit;cursor:pointer;font-size:.82rem">
-                  ${r.label}
+                <button onClick=${() => setPath(r.path)} style="width:100%;text-align:left;padding:.35rem .5rem;background:${path.startsWith(r.path)?"rgba(255,255,255,.06)":"transparent"};border:1px solid ${path.startsWith(r.path)?"var(--color-border)":"transparent"};border-radius:4px;color:inherit;cursor:pointer;font-size:.82rem;${r.exists===false?"opacity:.55":""}">
+                  ${r.label}${r.exists === false ? " ·" : ""}${r.exists === false ? html`<span style="opacity:.7;font-size:.7rem"> 未创建</span>` : null}
                 </button>
               </li>
             `)}
           </ul>
+
+          <!-- Group 2: user-configured allowed_dirs (read from /api/v2/config) -->
+          <div style="font-size:.75rem;opacity:.6;margin:.9rem 0 .4rem;display:flex;align-items:center;justify-content:space-between">
+            <span>可浏览目录</span>
+            <button
+              type="button"
+              onClick=${explainAddRoot}
+              title="如何添加可浏览目录?"
+              style="background:none;border:1px solid var(--color-border);border-radius:50%;width:1.3rem;height:1.3rem;cursor:pointer;color:inherit;font-size:.7rem;line-height:1;padding:0">＋</button>
+          </div>
+          ${allowedDirs.length === 0
+            ? html`<div style="font-size:.72rem;opacity:.5;padding:.35rem .5rem">
+                (无) ·
+                <button type="button" onClick=${explainAddRoot}
+                  style="background:none;border:0;color:var(--xmc-accent);cursor:pointer;padding:0;font:inherit">怎么加?</button>
+              </div>`
+            : html`<ul style="list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.15rem">
+                ${allowedDirs.map((d, i) => html`
+                  <li key=${i}>
+                    <button onClick=${() => setPath(d)} style="width:100%;text-align:left;padding:.35rem .5rem;background:${path.startsWith(d)?"rgba(255,255,255,.06)":"transparent"};border:1px solid ${path.startsWith(d)?"var(--color-border)":"transparent"};border-radius:4px;color:inherit;cursor:pointer;font-size:.78rem;font-family:var(--xmc-font-mono);word-break:break-all"
+                      title=${d}>
+                      ${d}
+                    </button>
+                  </li>
+                `)}
+              </ul>`}
         </div>
 
         <!-- Main -->

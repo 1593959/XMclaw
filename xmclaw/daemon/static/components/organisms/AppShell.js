@@ -18,7 +18,7 @@
 //   - Main content: relative z-2, flex-col, padded, contains <Routes />
 
 const { h } = window.__xmc.preact;
-const { useState, useEffect, useCallback } = window.__xmc.preact_hooks;
+const { useState, useEffect, useCallback, useRef } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
 import { Backdrop } from "./Backdrop.js";
@@ -191,6 +191,36 @@ export function AppShell({ activePath, brand = "XMclaw", subBrand = "Agent", tok
     return () => mql.removeEventListener("change", onChange);
   }, []);
 
+  // 2026-05-12 (FRONTEND_REWORK §3 iter 5 line 151): left-swipe gesture
+  // to close the mobile sidebar. Tap-on-overlay already worked; this
+  // adds the iOS / Android-native "drag the sheet to dismiss" affordance.
+  //
+  // Heuristic: dx < -60px AND |dy| < |dx| (more horizontal than vertical)
+  // AND total elapsed < 700ms (gesture, not slow drag). Thresholds match
+  // common mobile UX defaults (Material has ~48px; we go a touch larger
+  // since the sidebar is narrow and accidental swipes during scroll are
+  // worse than missed intentional ones).
+  const touchRef = useRef({ x: 0, y: 0, t: 0 });
+  const onSidebarTouchStart = useCallback((e) => {
+    if (!mobileOpen) return;
+    const t = e.touches && e.touches[0];
+    if (!t) return;
+    touchRef.current = { x: t.clientX, y: t.clientY, t: Date.now() };
+  }, [mobileOpen]);
+  const onSidebarTouchEnd = useCallback((e) => {
+    if (!mobileOpen) return;
+    const t = (e.changedTouches && e.changedTouches[0]) || null;
+    if (!t) return;
+    const start = touchRef.current;
+    if (!start || !start.t) return;
+    const dx = t.clientX - start.x;
+    const dy = t.clientY - start.y;
+    const dt = Date.now() - start.t;
+    if (dt > 700) return;            // too slow → not a gesture
+    if (Math.abs(dy) >= Math.abs(dx)) return; // vertical-ish scroll
+    if (dx < -60) setMobileOpen(false);
+  }, [mobileOpen]);
+
   return html`
     <div class="xmc-h-app">
       <${Backdrop} />
@@ -216,6 +246,8 @@ export function AppShell({ activePath, brand = "XMclaw", subBrand = "Agent", tok
           id="app-sidebar"
           class=${"xmc-h-sidebar " + (mobileOpen ? "is-mobile-open" : "")}
           aria-label="primary navigation"
+          onTouchStart=${onSidebarTouchStart}
+          onTouchEnd=${onSidebarTouchEnd}
         >
           <div class="xmc-h-sidebar__brand">
             <strong class="xmc-h-sidebar__title blend-lighter">
