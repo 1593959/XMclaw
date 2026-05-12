@@ -121,6 +121,11 @@ class HopLoopMixin:
         _goal_anchor_tracker = GoalAnchorTracker(
             anchor_every=int(getattr(self, "_goal_anchor_every", 5)),
         )
+        # 2026-05-12 Batch C.2: StepValidator — optional per-step
+        # "did this advance the goal" check. Off by default (opt-in
+        # via config tools.step_validator.enabled). When on, each
+        # successful tool call emits an INNER_MONOLOGUE verdict chip.
+        _step_validator = getattr(self, "_step_validator", None)
 
         for hop in range(self._max_hops):
             hop_corr = f"{turn_uuid}-{hop}"
@@ -184,8 +189,8 @@ class HopLoopMixin:
                     ] or None,
                 ))
                 messages.append(Message(role="user", content=anchor_text))
-                await publish(EventType.LLM_CHUNK, {
-                    "hop": hop, "delta": "",
+                await publish(EventType.INNER_MONOLOGUE, {
+                    "hop": hop,
                     "kind": "goal_anchor_injected",
                     "anchor_len": len(anchor_text),
                 }, correlation_id=hop_corr)
@@ -701,6 +706,49 @@ class HopLoopMixin:
                     if result.ok:
                         _stuck_loop_deque.clear()
                         _had_success_this_hop = True
+                        # Batch C.2: validate this successful step.
+                        # Verdict published as INNER_MONOLOGUE so the UI
+                        # think pane shows the advancement chip. Never
+                        # blocks the hop loop.
+                        if (
+                            _step_validator is not None
+                            and _step_validator.enabled
+                        ):
+                            try:
+                                _result_preview = (
+                                    result.content
+                                    if isinstance(result.content, str)
+                                    else str(result.content)
+                                )
+                                verdict = await _step_validator.validate(
+                                    goal=user_message,
+                                    plan_steps=getattr(
+                                        self, "_active_plan_steps", None,
+                                    ),
+                                    tool_name=call.name,
+                                    tool_args=dict(call.args or {}),
+                                    tool_result=_result_preview,
+                                )
+                                if verdict is not None:
+                                    await publish(
+                                        EventType.INNER_MONOLOGUE, {
+                                            "kind": "step_verdict",
+                                            "tool": call.name,
+                                            "verdict": verdict.verdict,
+                                            "confidence": verdict.confidence,
+                                            "reason": verdict.reason,
+                                            "elapsed_ms": round(
+                                                verdict.elapsed_ms, 1,
+                                            ),
+                                            "hop": hop,
+                                        },
+                                    )
+                            except Exception as exc:  # noqa: BLE001
+                                from xmclaw.utils.log import get_logger as _gl
+                                _gl(__name__).debug(
+                                    "step_validator.hook_failed err=%s",
+                                    exc,
+                                )
                     else:
                         sig = (result.error or "")[:80]
                         key = (call.name, sig)

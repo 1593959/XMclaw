@@ -1201,30 +1201,59 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         _stuck_loop_deque: list[tuple[str, str]] = []
         _STUCK_LOOP_THRESHOLD = 3
 
+        # 2026-05-12 Batch D: ModeRouter — pick cheapest run mode that
+        # can serve this turn (instant / thinking / agent / swarm).
+        # The route is informational for now — emitted as an event so
+        # the UI / Analytics can see what mode would have been chosen.
+        # Actual mode-conditional execution paths arrive batch-by-batch
+        # below: instant skips plan-first, swarm boosts subagent
+        # tool prominence. Failure-graceful: any router error → no
+        # override, agent mode (status quo) runs.
+        self._active_run_mode = None
+        try:
+            from xmclaw.cognition.mode_router import ModeRouter, RunMode
+            _mode_router = getattr(self, "_mode_router", None) or ModeRouter(
+                enable_instant=bool(getattr(self, "_mode_instant_enabled", True)),
+                enable_swarm=bool(getattr(self, "_mode_swarm_enabled", False)),
+            )
+            _route = _mode_router.route(user_message)
+            self._active_run_mode = _route.mode.value
+            await publish(EventType.INNER_MONOLOGUE, {
+                "kind": "mode_routed",
+                "mode": _route.mode.value,
+                "reason": _route.reason,
+                "forced": _route.forced,
+            })
+        except Exception as exc:  # noqa: BLE001
+            from xmclaw.utils.log import get_logger as _gl
+            _gl(__name__).debug("mode_router.skipped err=%s", exc)
+
         # 2026-05-12 Batch B.1: PlanFirstMode — heuristically detect
         # complex queries and run HTNPlanner-style decomposition BEFORE
         # the hop_loop starts. Plan steps land on
         # ``self._active_plan_steps`` so GoalAnchor (Batch A.1) injects
         # them into the per-N-hop reminder. Failure-graceful: any
         # planner error → empty plan → hop_loop runs as if plan-first
-        # was off (zero regression vs baseline).
+        # was off (zero regression vs baseline). Skipped entirely for
+        # the ``instant`` mode (single-shot, no tool chain).
         self._active_plan_steps = None
         self._active_plan_completed = set()
-        try:
-            from xmclaw.cognition.plan_first import PlanFirstGate
-            _gate = PlanFirstGate(llm=llm)
-            if _gate.is_complex(user_message):
-                _steps = await _gate.plan(user_message)
-                if _steps:
-                    self._active_plan_steps = _steps
-                    await publish(EventType.LLM_REQUEST, {
-                        "kind": "plan_first_decomposed",
-                        "steps_count": len(_steps),
-                        "user_msg_len": len(user_message),
-                    })
-        except Exception as exc:  # noqa: BLE001 — never block the turn
-            from xmclaw.utils.log import get_logger as _gl
-            _gl(__name__).warning("plan_first.skipped err=%s", exc)
+        if self._active_run_mode != "instant":
+            try:
+                from xmclaw.cognition.plan_first import PlanFirstGate
+                _gate = PlanFirstGate(llm=llm)
+                if _gate.is_complex(user_message):
+                    _steps = await _gate.plan(user_message)
+                    if _steps:
+                        self._active_plan_steps = _steps
+                        await publish(EventType.INNER_MONOLOGUE, {
+                            "kind": "plan_first_decomposed",
+                            "steps_count": len(_steps),
+                            "user_msg_len": len(user_message),
+                        })
+            except Exception as exc:  # noqa: BLE001 — never block the turn
+                from xmclaw.utils.log import get_logger as _gl
+                _gl(__name__).warning("plan_first.skipped err=%s", exc)
 
         _hop_result = await self._run_hop_loop(
             session_id=session_id,

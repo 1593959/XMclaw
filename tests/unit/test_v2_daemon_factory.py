@@ -28,6 +28,27 @@ from xmclaw.providers.runtime import LocalSkillRuntime, ProcessSkillRuntime
 from xmclaw.providers.tool.builtin import BuiltinTools
 
 
+def _unwrap_builtin(tools):
+    """Walk through ErrorAwareRetryProvider / CompositeToolProvider wraps
+    that ``build_tools_from_config`` now layers on top of BuiltinTools
+    (Batch B+C — retry-aware + ephemeral subagent fanout). Returns the
+    innermost BuiltinTools so structural assertions keep working."""
+    cur = tools
+    for _ in range(10):  # depth cap — never recurse forever
+        if isinstance(cur, BuiltinTools):
+            return cur
+        inner = getattr(cur, "_inner", None)
+        if inner is not None:
+            cur = inner
+            continue
+        children = getattr(cur, "_children", None)
+        if children:
+            cur = children[0]
+            continue
+        break
+    return cur
+
+
 # ── build_llm_from_config ────────────────────────────────────────────────
 
 
@@ -576,6 +597,7 @@ def test_build_tools_defaults_to_full_access_when_no_tools_section() -> None:
     reversal."""
     for cfg in ({}, {"llm": {}}):
         tools = build_tools_from_config(cfg)
+        tools = _unwrap_builtin(tools)
         assert isinstance(tools, BuiltinTools)
         names = {s.name for s in tools.list_tools()}
         # All tool families on by default.
@@ -593,6 +615,7 @@ def test_build_tools_empty_section_defaults_to_full_access() -> None:
     in to a tools section but configured no restrictions, so nothing
     is restricted. No ConfigError."""
     tools = build_tools_from_config({"tools": {}})
+    tools = _unwrap_builtin(tools)
     assert isinstance(tools, BuiltinTools)
     names = {s.name for s in tools.list_tools()}
     assert "bash" in names and "web_fetch" in names
@@ -602,6 +625,7 @@ def test_build_tools_empty_allowed_dirs_collapses_to_no_sandbox() -> None:
     """Empty list used to be an error; now it collapses to 'no sandbox'
     (same as omitting the key) -- too easy to trip over by accident."""
     tools = build_tools_from_config({"tools": {"allowed_dirs": []}})
+    tools = _unwrap_builtin(tools)
     assert isinstance(tools, BuiltinTools)
     assert tools._allowed is None
 
@@ -620,6 +644,7 @@ def test_build_tools_happy_path_with_allowlist(tmp_path: Path) -> None:
     tools = build_tools_from_config({
         "tools": {"allowed_dirs": [str(tmp_path)]},
     })
+    tools = _unwrap_builtin(tools)
     assert isinstance(tools, BuiltinTools)
     tool_names = {s.name for s in tools.list_tools()}
     # All six tools present (filesystem + bash + web).
@@ -633,6 +658,7 @@ def test_build_tools_honors_kill_switches() -> None:
     tools = build_tools_from_config({
         "tools": {"enable_bash": False, "enable_web": False},
     })
+    tools = _unwrap_builtin(tools)
     assert isinstance(tools, BuiltinTools)
     names = {s.name for s in tools.list_tools()}
     assert "bash" not in names

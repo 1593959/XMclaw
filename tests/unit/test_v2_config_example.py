@@ -72,9 +72,25 @@ def test_example_tools_section_matches_v2_schema(example_cfg: dict) -> None:
     end up in echo mode."""
     tools = build_tools_from_config(example_cfg)
     # Example has "." as a single allowed dir -> BuiltinTools, not None.
-    assert isinstance(tools, BuiltinTools), (
-        f"expected BuiltinTools, got {type(tools).__name__}"
+    # Batch B+C wraps BuiltinTools with ErrorAwareRetryProvider /
+    # SubagentToolProvider — walk through to the inner builtins for
+    # the structural assertion.
+    cur = tools
+    for _ in range(10):
+        if isinstance(cur, BuiltinTools):
+            break
+        inner = getattr(cur, "_inner", None)
+        children = getattr(cur, "_children", None)
+        if inner is not None:
+            cur = inner
+        elif children:
+            cur = children[0]
+        else:
+            break
+    assert isinstance(cur, BuiltinTools), (
+        f"expected BuiltinTools, got {type(cur).__name__}"
     )
+    # list_tools() works on the outermost — wrappers passthrough.
     specs = tools.list_tools()
     names = {s.name for s in specs}
     assert "file_read" in names

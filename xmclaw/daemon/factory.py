@@ -978,6 +978,38 @@ def build_tools_from_config(
         except Exception:  # noqa: BLE001
             pass
 
+    # 2026-05-12 Batch C.1: SubagentToolProvider — ephemeral parallel
+    # fanout. Kimi K2.6 agent swarm pattern. Adds the
+    # ``parallel_subagents`` tool to the catalogue. Off by default —
+    # opt-in via tools.subagent_fanout.enabled.
+    subagent_cfg = tools_section.get("subagent_fanout") or {}
+    if isinstance(subagent_cfg, dict) and subagent_cfg.get("enabled", False):
+        try:
+            from xmclaw.providers.tool.builtin_subagent import (
+                SubagentToolProvider,
+            )
+            from xmclaw.providers.tool.composite import CompositeToolProvider
+            subagent_provider = SubagentToolProvider(
+                llm=None,  # plumbed in by build_agent_from_config
+                tools=None,  # plumbed in by build_agent_from_config
+                max_hops_per_subagent=int(
+                    subagent_cfg.get("max_hops_per_subagent", 6)
+                ),
+                max_concurrency=int(
+                    subagent_cfg.get("max_concurrency", 4)
+                ),
+                fanout_timeout_s=float(
+                    subagent_cfg.get("fanout_timeout_s", 120.0)
+                ),
+                per_subagent_timeout_s=float(
+                    subagent_cfg.get("per_subagent_timeout_s", 45.0)
+                ),
+                enabled=True,
+            )
+            provider = CompositeToolProvider(provider, subagent_provider)
+        except Exception:  # noqa: BLE001
+            pass
+
     # Epic #3: optionally wrap with security guardians
     security_cfg = cfg.get("security", {})
     guardians_cfg = security_cfg.get("guardians", {})
@@ -1332,6 +1364,32 @@ def build_agent_from_config(
             cur = getattr(cur, "_inner", None)
     except Exception:  # noqa: BLE001
         pass
+
+    # 2026-05-12 Batch C.1: plumb the LLM + inner tools into the
+    # SubagentToolProvider so the ``parallel_subagents`` tool can drive
+    # ephemeral sub-LLM runs that share the parent agent's tool surface
+    # (excluding fanout itself — blocked at runtime to prevent nesting).
+    try:
+        from xmclaw.providers.tool.builtin_subagent import (
+            SubagentToolProvider,
+        )
+        _stack: list[Any] = [tools]
+        while _stack:
+            cur = _stack.pop()
+            if isinstance(cur, SubagentToolProvider):
+                cur.set_llm(llm)
+                cur.set_tools(tools)
+                break
+            for attr in ("_inner", "_providers", "_children"):
+                v = getattr(cur, attr, None)
+                if v is None:
+                    continue
+                if isinstance(v, (list, tuple)):
+                    _stack.extend(v)
+                else:
+                    _stack.append(v)
+    except Exception:  # noqa: BLE001
+        pass
     security = cfg.get("security")
     policy_raw = None
     if isinstance(security, Mapping):
@@ -1682,7 +1740,7 @@ def build_agent_from_config(
             _unified_memory = None
             _memory_extractor = None
 
-    return AgentLoop(
+    agent_loop = AgentLoop(
         llm=llm, bus=bus, tools=tools,
         system_prompt=system_prompt,
         max_hops=max_hops,
@@ -1706,6 +1764,26 @@ def build_agent_from_config(
         unified_recall_top_k=_unified_top_k,
         memory_extractor=_memory_extractor,
     )
+
+    # 2026-05-12 Batch C.2: StepValidator — opt-in per-step
+    # "did this advance the goal" auditor. Off by default to keep
+    # baseline cost unchanged; flipped on when the agent is doing
+    # high-stakes / long-chain work via tools.step_validator.enabled.
+    try:
+        tools_cfg = cfg.get("tools", {}) if isinstance(cfg, Mapping) else {}
+        sv_cfg = tools_cfg.get("step_validator", {}) if isinstance(tools_cfg, Mapping) else {}
+        if isinstance(sv_cfg, Mapping) and sv_cfg.get("enabled", False):
+            from xmclaw.cognition.step_validator import StepValidator
+            agent_loop._step_validator = StepValidator(
+                llm=llm,
+                timeout_s=float(sv_cfg.get("timeout_s", 4.0)),
+                max_result_chars=int(sv_cfg.get("max_result_chars", 800)),
+                enabled=True,
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
+    return agent_loop
 
 
 # ── Sprint 3 #5 follow-up: evolution-loop wiring ────────────────────
