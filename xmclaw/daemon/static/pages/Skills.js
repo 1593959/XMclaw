@@ -34,6 +34,7 @@ const html = window.__xmc.htm.bind(h);
 import { apiGet, apiPost } from "../lib/api.js";
 import { confirmDialog } from "../lib/dialog.js";
 import { toast } from "../lib/toast.js";
+import { Skeleton } from "../components/atoms/skeleton.js";
 
 function Icon({ d, className }) {
   return html`
