@@ -90,6 +90,12 @@
       "entity_id": "default",
       "apps": ["GMAIL", "SLACK", "GITHUB", "NOTION"],
       "cache_ttl_s": 300
+    },
+    "_comment_computer_use": "2026-05-12 桌面自动化 — 给 agent 装上鼠标键盘 + 屏幕截图。enabled=false 是默认（最危险的工具集，agent 会真的代你点鼠标按键盘）。enabled=true 后 agent 获得 11 个工具：screen_capture / screen_size / cursor_position / mouse_{move,click,drag,scroll} / keyboard_{type,press} / window_{list,focus}。依赖：``pip install pyautogui mss pygetwindow``（macOS 还要在系统设置 → 隐私 → 辅助功能 / 屏幕录制里给终端授权；Linux 需要 X11 会话）。FAILSAFE 永远开着：把鼠标拽到屏幕左上角 (0,0) 会立即中止 agent 任何 GUI 动作。screenshot_dir 默认是 ~/.xmclaw/v2/screenshots；base64_size_cap 是截图内嵌进 LLM context 的字节数上限（超出只返路径，不嵌 base64）。",
+    "computer_use": {
+      "enabled": false,
+      "screenshot_dir": null,
+      "base64_size_cap": 524288
     }
   },
   "voice": {

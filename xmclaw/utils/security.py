@@ -71,6 +71,21 @@ TOOL_CATEGORIES: dict[str, ToolCategory] = {
     "computer_use":  ToolCategory.DANGEROUS,
     "browser":       ToolCategory.DANGEROUS,
     "github":        ToolCategory.DANGEROUS,  # external write access
+    # 2026-05-12: the individual computer-use tool names so guardians
+    # can gate by tool_name instead of the generic ``computer_use``
+    # category alone. Read pixels = MODERATE (no side effect); mouse/
+    # keyboard/window = DANGEROUS (full GUI control).
+    "screen_capture":   ToolCategory.MODERATE,
+    "screen_size":      ToolCategory.SAFE,
+    "cursor_position":  ToolCategory.SAFE,
+    "mouse_move":       ToolCategory.DANGEROUS,
+    "mouse_click":      ToolCategory.DANGEROUS,
+    "mouse_drag":       ToolCategory.DANGEROUS,
+    "mouse_scroll":     ToolCategory.DANGEROUS,
+    "keyboard_type":    ToolCategory.DANGEROUS,
+    "keyboard_press":   ToolCategory.DANGEROUS,
+    "window_list":      ToolCategory.SAFE,
+    "window_focus":     ToolCategory.DANGEROUS,
 }
 
 DEFAULT_PERMISSIONS: dict[ToolCategory, PermissionLevel] = {

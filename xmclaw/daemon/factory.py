@@ -830,6 +830,26 @@ def build_tools_from_config(
         except ImportError:
             pass
 
+    # 2026-05-12: computer-use tools (mouse / keyboard / screen capture /
+    # window control). Default OFF — this is the most dangerous tool
+    # surface XMclaw exposes: the agent literally drives the user's GUI.
+    # Opt-in via ``tools.computer_use.enabled = true``. Each tool also
+    # degrades when ``pyautogui`` isn't installed, surfacing an install
+    # hint instead of crashing the daemon. See xmclaw/providers/tool/
+    # computer_use.py module docstring for the full safety model.
+    cu_cfg = tools_section.get("computer_use") or {}
+    if isinstance(cu_cfg, dict) and cu_cfg.get("enabled"):
+        try:
+            from xmclaw.providers.tool.computer_use import ComputerUseTools
+            children.append(ComputerUseTools(
+                screenshot_dir=cu_cfg.get("screenshot_dir") or None,
+                base64_size_cap=int(
+                    cu_cfg.get("base64_size_cap", 512 * 1024),
+                ),
+            ))
+        except Exception:  # noqa: BLE001 — never block boot over an optional tool
+            pass
+
     # B-389 Sprint 2: optionally bridge Composio's 7000+ pre-integrated
     # tools (Gmail / Slack / GitHub / Notion / Linear / HubSpot / …) into
     # the agent's toolset. Block is independently gated; default off so a
