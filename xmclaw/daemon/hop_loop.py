@@ -10,6 +10,10 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from xmclaw.cognition.goal_anchor import (
+    GoalAnchorState,
+    GoalAnchorTracker,
+)
 from xmclaw.core.bus import BehavioralEvent, EventType
 from xmclaw.core.ir.toolcall import ToolSpec
 from xmclaw.daemon.history_utils import _is_transient_tool_error
@@ -107,6 +111,16 @@ class HopLoopMixin:
         _NO_PROGRESS_THRESHOLD = 5
         _no_progress_counter = 0
 
+        # 2026-05-12 Batch A.1: GoalAnchor — runtime trick to make
+        # weak/short-context models do long tool chains. Every N hops
+        # we inject a synthesised reminder of the original goal + tools
+        # called so far + remaining hop budget. Pulled from Kimi K2.6
+        # agent mode's "200-300 steps without drift" pattern — moved
+        # from model weights to runtime scaffolding so any LLM benefits.
+        # Tracker is stateless; per-call snapshot built fresh each anchor.
+        _goal_anchor_tracker = GoalAnchorTracker(
+            anchor_every=int(getattr(self, "_goal_anchor_every", 5)),
+        )
 
         for hop in range(self._max_hops):
             hop_corr = f"{turn_uuid}-{hop}"
@@ -147,6 +161,34 @@ class HopLoopMixin:
                         events=events,
                         error=f"budget_exceeded: {exc}",
                     )
+
+            # 2026-05-12 Batch A.1: GoalAnchor injection. Every N hops
+            # (default 5), append a synthesised reminder of the original
+            # goal + progress so the LLM doesn't drift on long chains.
+            # Carries the ``[GOAL-ANCHOR]`` marker that turn_context.py's
+            # sanitiser strips before history-to-disk persistence.
+            if _goal_anchor_tracker.should_anchor(hop):
+                anchor_text = _goal_anchor_tracker.format(GoalAnchorState(
+                    original_goal=user_message,
+                    hop=hop,
+                    max_hops=self._max_hops,
+                    tool_calls_made=tool_calls_made,
+                    plan_steps=getattr(self, "_active_plan_steps", None),
+                    completed_step_indices=getattr(
+                        self, "_active_plan_completed", None,
+                    ),
+                    open_errors=[
+                        str(tc.get("error", ""))
+                        for tc in tool_calls_made[-10:]
+                        if not tc.get("ok", True) and tc.get("error")
+                    ] or None,
+                ))
+                messages.append(Message(role="user", content=anchor_text))
+                await publish(EventType.LLM_CHUNK, {
+                    "hop": hop, "delta": "",
+                    "kind": "goal_anchor_injected",
+                    "anchor_len": len(anchor_text),
+                }, correlation_id=hop_corr)
 
             # 2. LLM request event (messages_hash is a cheap fingerprint
             # so the bus consumer can distinguish different hops).

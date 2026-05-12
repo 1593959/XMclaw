@@ -24,6 +24,12 @@ _MEMORY_SYS_NOTE_RE = _re_mem.compile(
     r"context[^\]]*\]\s*",
     _re_mem.IGNORECASE,
 )
+# 2026-05-12 Batch A.1: GoalAnchor messages carry this marker. Strip
+# the entire message body when found — they're an in-flight context
+# scaffold, NOT something the on-disk chat record should remember.
+_GOAL_ANCHOR_MARKER_RE = _re_mem.compile(
+    r"\[GOAL-ANCHOR\][\s\S]*", _re_mem.IGNORECASE,
+)
 # B-202: curriculum-edit hint also rides on the user message and
 # must be stripped before persistence — otherwise the on-disk
 # history records a "[System note: ...]" framing as if the user
@@ -218,4 +224,7 @@ def _sanitize_memory_context(text: str) -> str:
     out = _CURRICULUM_HINT_TAG_RE.sub("", out)
     out = _CURRICULUM_STRATEGIES_TAG_RE.sub("", out)
     out = _MEMORY_SYS_NOTE_RE.sub("", out)
+    # Batch A.1: strip everything from "[GOAL-ANCHOR]" onward so the
+    # on-disk record doesn't accrete one anchor block per N hops.
+    out = _GOAL_ANCHOR_MARKER_RE.sub("", out)
     return out.rstrip()

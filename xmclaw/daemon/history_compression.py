@@ -306,31 +306,95 @@ class HistoryCompressionMixin:
     def _build_compression_summary_rule_based(
         self, dropped: list[Message], provider_extract: str,
     ) -> str:
-        """Deterministic digest fallback (B-28 original logic)."""
-        roles: dict[str, int] = {}
-        first_user = ""
-        last_assistant = ""
-        for m in dropped:
-            roles[m.role] = roles.get(m.role, 0) + 1
-            if m.role == "user" and isinstance(m.content, str) and not first_user:
-                first_user = m.content[:200].replace("\n", " ").strip()
-            if m.role == "assistant" and isinstance(m.content, str):
-                last_assistant = m.content[:200].replace("\n", " ").strip()
+        """Deterministic digest fallback — subgoal-aware as of 2026-05-12.
 
-        parts = [
+        Old behaviour: pure roles-count digest (B-28).
+        New behaviour (Batch A.2 HierarchicalContextWindow): group the
+        dropped slice by **user turn** (each user message starts a
+        subgoal), compress each completed subgoal into a single bullet
+        with its tool-call summary, keep the most recent subgoal
+        intact at the tail.
+
+        Why: Kimi K2.6's "200-300 step tool chains without drift" is
+        partly inference-infra (long ctx) but partly **goal-aware
+        compression** — completed sub-tasks shrink to one line, the
+        live sub-task keeps full detail. Replicating that here lets a
+        weak/short-context model (Qwen 7B, Llama 8B) hold up to
+        long-horizon tasks without re-asking for the same things.
+
+        Output format::
+
+            ## Earlier conversation summary
+            _Compressed N earlier messages from this session into M subgoals_:
+
+            ### Subgoal 1: "what user said" → done
+            - 5 tool calls, 4 succeeded, 1 failed
+            - Key result: ...
+
+            ### Subgoal 2: ...
+            ...
+
+            ### Most-recent subgoal (still in progress)
+            (kept verbatim — see live messages above)
+
+        Falls back gracefully on edge cases: ``dropped=[]`` → empty
+        string; only-system-messages → roles-count digest. Memory-
+        manager extract still appended at the bottom regardless.
+        """
+        if not dropped:
+            return ""
+
+        # Group by user turn — each user message starts a new subgoal.
+        subgoals = self._group_into_subgoals(dropped)
+
+        parts: list[str] = [
             "## Earlier conversation summary",
             "",
-            f"_Compressed {len(dropped)} earlier messages from this session_:",
+            f"_Compressed {len(dropped)} earlier messages into "
+            f"{len(subgoals)} subgoal(s)_:",
+            "",
         ]
-        for r in ("user", "assistant", "tool", "system"):
-            if r in roles:
-                parts.append(f"- {r}: {roles[r]} message(s)")
-        if first_user:
+
+        # Show each completed subgoal as one section.
+        for i, sg in enumerate(subgoals, start=1):
+            user_text = sg["user_text"][:200].replace("\n", " ").strip()
+            n_tools = sg["tool_count"]
+            n_tools_ok = sg["tool_ok"]
+            n_tools_fail = sg["tool_fail"]
+            assistant_synth = sg["assistant_synthesis"][:240].replace("\n", " ").strip()
+
+            parts.append(f"### Subgoal {i}: \"{user_text}\"")
+            tool_line_bits: list[str] = []
+            if n_tools:
+                tool_line_bits.append(
+                    f"{n_tools} tool call(s)"
+                    + (f", {n_tools_ok} ok" if n_tools_ok else "")
+                    + (f", {n_tools_fail} failed" if n_tools_fail else "")
+                )
+                if sg["tool_names"]:
+                    head = ", ".join(sg["tool_names"][:6])
+                    if len(sg["tool_names"]) > 6:
+                        head += f", +{len(sg['tool_names']) - 6} more"
+                    tool_line_bits.append(f"tools: {head}")
+            if tool_line_bits:
+                parts.append("- " + " · ".join(tool_line_bits))
+            if assistant_synth:
+                parts.append(f"- Synthesis: \"{assistant_synth}\"")
             parts.append("")
-            parts.append(f"**Conversation started with:** \"{first_user}\"")
-        if last_assistant:
-            parts.append(f"**Last assistant reply (before compression):** "
-                         f"\"{last_assistant[:160]}\"")
+
+        # Roles-count footer for parity with old digest (some downstream
+        # consumers grep for "user: N message(s)").
+        roles: dict[str, int] = {}
+        for m in dropped:
+            roles[m.role] = roles.get(m.role, 0) + 1
+        roles_line = ", ".join(
+            f"{r}: {roles[r]}"
+            for r in ("user", "assistant", "tool", "system")
+            if r in roles
+        )
+        if roles_line:
+            parts.append(f"_(Roles: {roles_line}.)_")
+
         if provider_extract:
             parts.append("")
             parts.append("**Memory-extracted facts to preserve:**")
@@ -341,6 +405,86 @@ class HistoryCompressionMixin:
             "are the live context.)_"
         )
         return "\n".join(parts)
+
+    @staticmethod
+    def _group_into_subgoals(
+        dropped: "list[Message]",
+    ) -> list[dict[str, Any]]:
+        """Split a flat message list into subgoals — one per user turn.
+
+        Returns a list of dicts with fields:
+          * ``user_text``        — the user's prompt that started this subgoal
+          * ``tool_count``       — total tool calls in this subgoal
+          * ``tool_ok``          — successful ones
+          * ``tool_fail``        — failed ones
+          * ``tool_names``       — unique tool names called (preserves order)
+          * ``assistant_synthesis`` — the LAST non-empty assistant text in
+            this subgoal (treated as the "answer" the LLM eventually gave)
+
+        Tool messages contribute to whatever subgoal their preceding
+        user message established. Stray system messages are attached
+        to the nearest subgoal. If no user message exists, returns one
+        subgoal labelled "(pre-user context)".
+        """
+        if not dropped:
+            return []
+
+        subgoals: list[dict[str, Any]] = []
+        cur: dict[str, Any] | None = None
+        seen_tools_in_cur: set[str] = set()
+
+        def _new_subgoal(user_text: str) -> dict[str, Any]:
+            return {
+                "user_text": user_text,
+                "tool_count": 0,
+                "tool_ok": 0,
+                "tool_fail": 0,
+                "tool_names": [],
+                "assistant_synthesis": "",
+            }
+
+        for m in dropped:
+            if m.role == "user" and isinstance(m.content, str):
+                # Start a new subgoal — user explicitly said something.
+                cur = _new_subgoal(m.content)
+                seen_tools_in_cur = set()
+                subgoals.append(cur)
+                continue
+            if cur is None:
+                cur = _new_subgoal("(pre-user context)")
+                seen_tools_in_cur = set()
+                subgoals.append(cur)
+
+            # Assistant turn — track tool_calls + capture synthesis text.
+            if m.role == "assistant":
+                content = m.content
+                tool_calls = getattr(m, "tool_calls", None) or ()
+                for tc in tool_calls:
+                    cur["tool_count"] += 1
+                    name = getattr(tc, "name", None)
+                    if isinstance(name, str) and name not in seen_tools_in_cur:
+                        cur["tool_names"].append(name)
+                        seen_tools_in_cur.add(name)
+                # Final answer text — keep the latest non-empty.
+                if isinstance(content, str) and content.strip():
+                    cur["assistant_synthesis"] = content
+            elif m.role == "tool":
+                # tool-result message: classify ok / fail by content hint.
+                content = m.content
+                text = (
+                    content if isinstance(content, str)
+                    else (str(content) if content is not None else "")
+                )
+                low = text[:400].lower()
+                if any(k in low for k in (
+                    '"ok": false', "error:", "failed", "permission denied",
+                    "not found", "timeout",
+                )):
+                    cur["tool_fail"] += 1
+                else:
+                    cur["tool_ok"] += 1
+
+        return subgoals
 
     def _persist_history(
         self, session_id: str, messages: list[Message],

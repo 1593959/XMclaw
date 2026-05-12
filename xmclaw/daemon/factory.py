@@ -948,6 +948,36 @@ def build_tools_from_config(
         from xmclaw.providers.tool.composite import CompositeToolProvider
         provider = CompositeToolProvider(*children)
 
+    # 2026-05-12 Batch B.2: ErrorAwareRetryProvider — LLM-guided one-shot
+    # fixup layer for SEMANTIC tool failures (wrong args, wrong tool).
+    # Composes ON TOP of the existing B-17 transient retry in hop_loop.
+    # Default ON (zero regression: on success path it's a passthrough;
+    # on failure it tries one fixup, returns original on any issue).
+    retry_aware_cfg = tools_section.get("retry_aware") or {}
+    if (
+        not isinstance(retry_aware_cfg, dict)
+        or retry_aware_cfg.get("enabled", True)
+    ):
+        try:
+            from xmclaw.providers.tool.retry_aware import (
+                ErrorAwareRetryProvider,
+            )
+            # llm is injected by build_agent_from_config when this
+            # function gets called by it; the build_tools-only path
+            # gives None and the wrapper is a passthrough on llm=None.
+            llm_for_retry = None  # filled in by build_agent_from_config
+            provider = ErrorAwareRetryProvider(
+                provider,
+                llm=llm_for_retry,
+                timeout_s=float(
+                    retry_aware_cfg.get("timeout_s", 8.0)
+                    if isinstance(retry_aware_cfg, dict) else 8.0
+                ),
+                enabled=True,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     # Epic #3: optionally wrap with security guardians
     security_cfg = cfg.get("security", {})
     guardians_cfg = security_cfg.get("guardians", {})
@@ -1289,6 +1319,19 @@ def build_agent_from_config(
     if llm is None:
         return None
     tools = build_tools_from_config(cfg, approval_service=approval_service, auditor=auditor)
+    # 2026-05-12 Batch B.2: plumb the LLM into the ErrorAwareRetryProvider
+    # wrapper. The retry wrapper was constructed in build_tools_from_config
+    # before the LLM existed; now it does — wire it.
+    try:
+        from xmclaw.providers.tool.retry_aware import ErrorAwareRetryProvider
+        cur = tools
+        while cur is not None:
+            if isinstance(cur, ErrorAwareRetryProvider):
+                cur.set_llm(llm)
+                break
+            cur = getattr(cur, "_inner", None)
+    except Exception:  # noqa: BLE001
+        pass
     security = cfg.get("security")
     policy_raw = None
     if isinstance(security, Mapping):

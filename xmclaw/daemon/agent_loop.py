@@ -1201,6 +1201,31 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         _stuck_loop_deque: list[tuple[str, str]] = []
         _STUCK_LOOP_THRESHOLD = 3
 
+        # 2026-05-12 Batch B.1: PlanFirstMode — heuristically detect
+        # complex queries and run HTNPlanner-style decomposition BEFORE
+        # the hop_loop starts. Plan steps land on
+        # ``self._active_plan_steps`` so GoalAnchor (Batch A.1) injects
+        # them into the per-N-hop reminder. Failure-graceful: any
+        # planner error → empty plan → hop_loop runs as if plan-first
+        # was off (zero regression vs baseline).
+        self._active_plan_steps = None
+        self._active_plan_completed = set()
+        try:
+            from xmclaw.cognition.plan_first import PlanFirstGate
+            _gate = PlanFirstGate(llm=llm)
+            if _gate.is_complex(user_message):
+                _steps = await _gate.plan(user_message)
+                if _steps:
+                    self._active_plan_steps = _steps
+                    await publish(EventType.LLM_REQUEST, {
+                        "kind": "plan_first_decomposed",
+                        "steps_count": len(_steps),
+                        "user_msg_len": len(user_message),
+                    })
+        except Exception as exc:  # noqa: BLE001 — never block the turn
+            from xmclaw.utils.log import get_logger as _gl
+            _gl(__name__).warning("plan_first.skipped err=%s", exc)
+
         _hop_result = await self._run_hop_loop(
             session_id=session_id,
             user_message=user_message,
