@@ -594,14 +594,17 @@ _UI_CLICK_SPEC = ToolSpec(
 _GUI_SEND_CHAT_SPEC = ToolSpec(
     name="gui_send_chat",
     description=(
-        "ATOMIC compose-and-send for chat apps (WeChat / QQ / 飞书 / "
+        "ATOMIC navigate-and-send for chat apps (WeChat / QQ / 飞书 / "
         "Discord / Slack desktop / Telegram / etc.). One tool call "
-        "does the whole last-mile sequence: focus window → OCR-verify "
-        "the currently-open chat header matches ``verify_chat_title`` "
-        "→ click the input box → type text via clipboard → press "
-        "Enter → confirmation screenshot. Use this AFTER you've "
-        "navigated to the right conversation (e.g. via "
-        "``click_on_text`` on the group name).\n\n"
+        "does the whole sequence: focus window → optionally NAVIGATE "
+        "to the target chat by name → OCR-verify chat header → click "
+        "input box → type text via clipboard → press Enter → "
+        "confirmation screenshot. **The recommended call for a fresh "
+        "send is:** ``gui_send_chat(text=\"...\", window_title=\"WeChat\", "
+        "nav_chat_name=\"<group>\", verify_chat_title=\"<group>\")`` — "
+        "this is the SINGLE atomic call that replaces the 4-step "
+        "manual chain (window_focus + click_on_text + mouse_click + "
+        "keyboard_type+enter) and avoids every known failure mode.\n\n"
         "**SAFETY RAIL — always pass ``verify_chat_title``** when you "
         "know the target chat name. The tool OCRs a narrow strip at "
         "the top of the focused window (the chat header, ~80 px tall) "
@@ -632,6 +635,22 @@ _GUI_SEND_CHAT_SPEC = ToolSpec(
                     "foreground window."
                 ),
             },
+            "nav_chat_name": {
+                "type": "string",
+                "description": (
+                    "If set, ATOMIC navigate-then-send: OCR the chat "
+                    "list (left pane of the focused window), find this "
+                    "substring, click it, wait for the conversation to "
+                    "load, then type + send. Eliminates the stale-"
+                    "coords / wrong-chat bug entirely — pass the group "
+                    "or contact name (e.g. \"魔丸\") and the tool "
+                    "handles navigation + send in one hop. Typically "
+                    "this is the SAME value you'd pass to "
+                    "verify_chat_title (which is checked after the "
+                    "navigation click). When in doubt, set both to "
+                    "the chat name."
+                ),
+            },
             "verify_chat_title": {
                 "type": "string",
                 "description": (
@@ -640,7 +659,8 @@ _GUI_SEND_CHAT_SPEC = ToolSpec(
                     "substring is not visible. Pass this whenever you "
                     "know the target chat name (e.g. \"魔丸\"). It is "
                     "the cheapest single defense against the wrong-"
-                    "chat-send bug."
+                    "chat-send bug. Use TOGETHER with nav_chat_name "
+                    "for full atomic safety."
                 ),
             },
             "input_bbox": {
@@ -1826,6 +1846,9 @@ class ComputerUseTools(ToolProvider):
             )
         window_title = args.get("window_title")
         explicit_bbox = args.get("input_bbox")
+        nav_chat_name = args.get("nav_chat_name")
+        if nav_chat_name is not None and not isinstance(nav_chat_name, str):
+            return _fail(call, t0, "nav_chat_name must be a string")
         verify_chat_title = args.get("verify_chat_title")
         if verify_chat_title is not None and not isinstance(verify_chat_title, str):
             return _fail(call, t0, "verify_chat_title must be a string")
@@ -1882,6 +1905,114 @@ class ComputerUseTools(ToolProvider):
                 ]
             except Exception:  # noqa: BLE001
                 target_bbox = None
+
+        # ── Step 1.25: navigate to target chat (if nav_chat_name set) ──
+        # OCR the chat-list strip (left ~1/3 of the focused window),
+        # find an exact-or-substring match for nav_chat_name, click it.
+        # Critical for the "WeChat window moved between hops" failure
+        # mode — we re-find both the window and the chat-list match
+        # right before clicking, so stale coords from a previous hop
+        # can't bite us.
+        nav_clicked: list[int] | None = None
+        if nav_chat_name and nav_chat_name.strip():
+            wanted_chat = nav_chat_name.strip()
+            if target_bbox is None or target_bbox[2] <= 0:
+                return _fail(
+                    call, t0,
+                    "nav_chat_name set but no window bbox known — "
+                    "pass window_title so the chat list can be located",
+                )
+            wx, wy, ww, wh = target_bbox
+            # Chat list = left ~1/3 of window, full vertical (skip
+            # top 60 px for search bar). WeChat / 飞书 / Slack all
+            # use this layout.
+            chat_list_bbox = [wx, wy + 60, ww // 3, wh - 60]
+            try:
+                blocks = await asyncio.to_thread(
+                    _run_ocr_full_pipeline, chat_list_bbox, 0.5,
+                )
+            except _NoOCREngineError as exc:
+                return _fail(call, t0, str(exc))
+            except Exception as exc:  # noqa: BLE001
+                return _fail(
+                    call, t0,
+                    f"chat-list OCR failed: {type(exc).__name__}: {exc}",
+                )
+            matches = _match_text_in_blocks(
+                blocks or [], wanted_chat, exact=False,
+            )
+            if not matches:
+                # Capture the chat-list region for the agent to inspect.
+                cl_path: str | None = None
+                try:
+                    import mss
+                    self._screenshot_dir.mkdir(parents=True, exist_ok=True)
+                    cx, cy, cw, ch = chat_list_bbox
+                    out = self._screenshot_dir / (
+                        f"{int(time.time())}_{call.id[:8]}_chatlist.png"
+                    )
+                    with mss.mss() as sct:
+                        grab = sct.grab({
+                            "left": cx, "top": cy,
+                            "width": cw, "height": ch,
+                        })
+                        mss.tools.to_png(grab.rgb, grab.size, output=str(out))
+                    cl_path = str(out)
+                except Exception:  # noqa: BLE001
+                    pass
+                return ToolResult(
+                    call_id=call.id, ok=False, content=None,
+                    error=(
+                        f"nav_chat_name {wanted_chat!r} not found in "
+                        f"chat list (OCR'd region {chat_list_bbox}). "
+                        f"Sample OCR hits: "
+                        f"{[b.get('text', '')[:20] for b in (blocks or [])[:8]]}. "
+                        f"Possible causes: chat scrolled below visible "
+                        f"area (scroll the list and retry), chat does "
+                        f"not exist, OCR misread Chinese characters."
+                    ),
+                    latency_ms=(time.perf_counter() - t0) * 1000.0,
+                    metadata=(
+                        {"attach_image": cl_path} if cl_path else {}
+                    ),
+                )
+            top = matches[0]
+            nav_x = int(top["center"][0])
+            nav_y = int(top["center"][1])
+            try:
+                pg_nav = self._require_pyautogui()
+                await asyncio.to_thread(pg_nav.click, nav_x, nav_y)
+            except ImportError as exc:
+                return _fail(call, t0, _pg_install_hint(exc))
+            except Exception as exc:  # noqa: BLE001
+                return _fail(
+                    call, t0,
+                    f"nav click failed at ({nav_x}, {nav_y}): "
+                    f"{type(exc).__name__}: {exc}",
+                )
+            nav_clicked = [nav_x, nav_y]
+            # Give the conversation pane time to render before we
+            # OCR-verify the chat header.
+            await asyncio.sleep(0.6)
+            # Re-read window bbox — clicking a chat may shift the
+            # window position on some systems (rare but observed).
+            try:
+                import pygetwindow as gw  # type: ignore
+                if isinstance(window_title, str) and window_title.strip():
+                    substring2 = window_title.strip().lower()
+                    windows2 = await asyncio.to_thread(gw.getAllWindows)
+                    for w in windows2:
+                        title2 = (getattr(w, "title", "") or "")
+                        if title2 and substring2 in title2.lower():
+                            target_bbox = [
+                                int(getattr(w, "left", 0)),
+                                int(getattr(w, "top", 0)),
+                                int(getattr(w, "width", 0)),
+                                int(getattr(w, "height", 0)),
+                            ]
+                            break
+            except Exception:  # noqa: BLE001
+                pass
 
         # ── Step 1.5: OCR-verify the active chat header (anti-wrong-chat) ──
         # We OCR a narrow strip at the very top of the focused window
@@ -2048,6 +2179,12 @@ class ComputerUseTools(ToolProvider):
                 if isinstance(window_title, str) else None
             ),
             "window_bbox": target_bbox,
+            "nav_chat_name": (
+                nav_chat_name.strip()
+                if isinstance(nav_chat_name, str) and nav_chat_name.strip()
+                else None
+            ),
+            "nav_clicked": nav_clicked,
             "verified_chat_title": (
                 verify_chat_title.strip()
                 if isinstance(verify_chat_title, str) and verify_chat_title.strip()
