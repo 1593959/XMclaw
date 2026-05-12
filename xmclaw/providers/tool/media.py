@@ -470,7 +470,10 @@ class MediaTools(ToolProvider):
         except ImportError as exc:
             return _fail(call, t0, _opencv_install_hint(exc))
         idx = int(args.get("camera_index", 0))
-        include_b64 = bool(args.get("include_base64", True))
+        # B-Vision: default OFF. hop_loop attaches the JPEG as a real
+        # vision content block via ``metadata.attach_image`` — same
+        # migration as screen_capture / image_read.
+        include_b64 = bool(args.get("include_base64", False))
         path = self._mkpath(f"cam{idx}", "jpg")
 
         def _capture() -> tuple[int, int]:
@@ -516,6 +519,7 @@ class MediaTools(ToolProvider):
             "path": str(path),
             "size": [w, h],
             "camera_index": idx,
+            "vision_attached": True,
         }
         if include_b64:
             try:
@@ -528,7 +532,12 @@ class MediaTools(ToolProvider):
                     )
             except OSError as exc:
                 result["base64_omitted"] = f"read failed: {exc}"
-        return _ok(call, t0, json.dumps(result, ensure_ascii=False))
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content=json.dumps(result, ensure_ascii=False),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+            metadata={"attach_image": str(path)},
+        )
 
     async def _camera_list(self, call: ToolCall, t0: float) -> ToolResult:
         try:

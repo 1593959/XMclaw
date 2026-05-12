@@ -63,12 +63,18 @@ def _toolcall_from_dict(d: dict[str, Any]) -> ToolCall:
 
 
 def _message_to_dict(m: Message) -> dict[str, Any]:
-    return {
+    out: dict[str, Any] = {
         "role": m.role,
         "content": m.content,
         "tool_calls": [_toolcall_to_dict(tc) for tc in m.tool_calls],
         "tool_call_id": m.tool_call_id,
     }
+    # B-Vision: persist image attachments so session reload + cross-
+    # turn context retains visual history. Empty tuple → omit field
+    # for backwards-compat with old persisted rows.
+    if m.images:
+        out["images"] = list(m.images)
+    return out
 
 
 def _message_from_dict(d: dict[str, Any]) -> Message:
@@ -77,6 +83,7 @@ def _message_from_dict(d: dict[str, Any]) -> Message:
         content=d.get("content", "") or "",
         tool_calls=tuple(_toolcall_from_dict(tc) for tc in d.get("tool_calls") or ()),
         tool_call_id=d.get("tool_call_id"),
+        images=tuple(d.get("images") or ()),
     )
 
 

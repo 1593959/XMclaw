@@ -16,8 +16,10 @@ The interface is the one declared in ``providers.llm.base.LLMProvider``.
 from __future__ import annotations
 
 import asyncio
+import base64
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 from xmclaw.core.ir import ToolCall, ToolCallShape, ToolSpec
@@ -122,6 +124,21 @@ class AnthropicLLM(LLMProvider):
                     }],
                 })
                 continue
+            # B-Vision: user message with image attachments — emit
+            # content blocks containing the text + each image as a
+            # native Anthropic ``image`` block (source.type=base64).
+            # Anthropic accepts image blocks on user messages, not
+            # assistant; we guard on role just to be safe.
+            if m.role == "user" and m.images:
+                blocks: list[dict[str, Any]] = []
+                if m.content:
+                    blocks.append({"type": "text", "text": m.content})
+                for img in m.images:
+                    block = _img_to_anthropic_block(img)
+                    if block is not None:
+                        blocks.append(block)
+                converted.append({"role": m.role, "content": blocks})
+                continue
             # Prefer the naked-SDK convention: plain string content when
             # there are no tool_calls. Only emit block-shaped content
             # when we actually need tool_use blocks alongside text.
@@ -130,7 +147,7 @@ class AnthropicLLM(LLMProvider):
             if not m.tool_calls:
                 converted.append({"role": m.role, "content": m.content})
                 continue
-            blocks: list[dict[str, Any]] = []
+            blocks = []
             if m.content:
                 blocks.append({"type": "text", "text": m.content})
             for tc in m.tool_calls:
@@ -539,3 +556,91 @@ class AnthropicLLM(LLMProvider):
             input_per_mtok=cost_pricing.input_per_mtok,
             output_per_mtok=cost_pricing.output_per_mtok,
         )
+
+
+# ── Image helpers (B-Vision) ───────────────────────────────────────
+
+# Same constants as openai.py — image token cost scales with pixel
+# area; 1280 wide is the Anthropic recommendation for "high readability,
+# bounded cost".
+_VISION_MAX_WIDTH = 1280
+_VISION_JPEG_QUALITY = 80
+
+
+def _img_to_anthropic_block(src: str) -> dict[str, Any] | None:
+    """Convert a file path / data: URL to an Anthropic ``image`` block.
+
+    Shape per Anthropic SDK:
+
+        {"type": "image", "source": {"type": "base64",
+         "media_type": "image/jpeg", "data": "<b64>"}}
+
+    Returns ``None`` if the file is unreadable — caller drops it.
+    Lossy-resizes to ``_VISION_MAX_WIDTH`` to keep image-token cost
+    bounded; JPEG q80 trades a few % readability for 3-4× smaller
+    payload vs PNG. Mirrors openai.py's _img_to_data_url so vision
+    behaviour is identical across both translators.
+    """
+    if not src:
+        return None
+    if src.startswith("data:"):
+        # data URL — parse media type + base64 payload back out.
+        try:
+            header, b64 = src.split(",", 1)
+            media_type = header.split(";")[0][len("data:"):]
+            return {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type or "image/png",
+                    "data": b64,
+                },
+            }
+        except Exception:  # noqa: BLE001
+            return None
+    p = Path(src)
+    if not p.is_file():
+        return None
+    try:
+        from PIL import Image  # type: ignore
+        from io import BytesIO
+
+        img = Image.open(str(p))
+        if img.mode in ("RGBA", "LA", "P"):
+            img = img.convert("RGB")
+        if img.width > _VISION_MAX_WIDTH:
+            ratio = _VISION_MAX_WIDTH / img.width
+            img = img.resize(
+                (_VISION_MAX_WIDTH, int(img.height * ratio)),
+                Image.LANCZOS,
+            )
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=_VISION_JPEG_QUALITY)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/jpeg",
+                "data": b64,
+            },
+        }
+    except Exception:  # noqa: BLE001
+        # Last-ditch: ship original bytes, no resize.
+        try:
+            raw = p.read_bytes()
+            ext = p.suffix.lower().lstrip(".")
+            mime = {
+                "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                "gif": "image/gif", "webp": "image/webp",
+            }.get(ext, "image/png")
+            return {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": mime,
+                    "data": base64.b64encode(raw).decode("ascii"),
+                },
+            }
+        except Exception:  # noqa: BLE001
+            return None
