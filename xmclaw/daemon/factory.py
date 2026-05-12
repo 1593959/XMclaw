@@ -792,6 +792,44 @@ def build_tools_from_config(
             return None
         return getattr(st, "persona_store", None)
 
+    # 2026-05-12: voice providers — wire ``voice.stt`` / ``voice.tts``
+    # config blocks into WhisperSTT / EdgeTTS instances and hand them
+    # to BuiltinTools so ``voice_transcribe`` / ``voice_synthesize``
+    # tools advertise themselves. Pre-this the provider classes existed
+    # but no callsite constructed them — voice tools were dead code.
+    # Optional + lazy: missing extras (``faster-whisper`` / ``edge-tts``)
+    # surface at construction time as None (tools hide) rather than at
+    # daemon boot, so installs without the [voice] extra still boot.
+    voice_cfg = cfg.get("voice") or {}
+    _stt_provider: Any = None
+    _tts_provider: Any = None
+    stt_section = voice_cfg.get("stt") if isinstance(voice_cfg, dict) else None
+    if isinstance(stt_section, dict):
+        try:
+            from xmclaw.providers.voice.whisper import WhisperSTT
+            _stt_provider = WhisperSTT(
+                model_name=str(stt_section.get("model") or "tiny"),
+                device=str(stt_section.get("device") or "cpu"),
+                compute_type=str(stt_section.get("compute_type") or "int8"),
+                language=stt_section.get("language"),
+            )
+        except Exception:  # noqa: BLE001
+            # Provider construction itself shouldn't fail (real model
+            # load is deferred to first transcribe). If it does, leave
+            # provider None — voice_transcribe just won't list.
+            _stt_provider = None
+    tts_section = voice_cfg.get("tts") if isinstance(voice_cfg, dict) else None
+    if isinstance(tts_section, dict):
+        try:
+            from xmclaw.providers.voice.edge_tts import EdgeTTS
+            _tts_provider = EdgeTTS(
+                voice=str(tts_section.get("voice") or "zh-CN-XiaoxiaoNeural"),
+                rate=str(tts_section.get("rate") or "+0%"),
+                volume=str(tts_section.get("volume") or "+0%"),
+            )
+        except Exception:  # noqa: BLE001
+            _tts_provider = None
+
     builtins = BuiltinTools(
         allowed_dirs=allowed_dirs,
         enable_bash=bool(enable_bash),
@@ -801,6 +839,8 @@ def build_tools_from_config(
         persona_dir_provider=_persona_dir_provider(cfg),
         persona_writeback=_persona_writeback(_app_state_holder),
         persona_store_provider=_persona_store_provider,
+        stt_provider=_stt_provider,
+        tts_provider=_tts_provider,
     )
     children: list[ToolProvider] = [builtins]
 
@@ -848,6 +888,27 @@ def build_tools_from_config(
                 ),
             ))
         except Exception:  # noqa: BLE001 — never block boot over an optional tool
+            pass
+
+    # 2026-05-12: media tools (microphone / camera / live audio
+    # playback). Same opt-in posture as computer_use — DEFAULT OFF.
+    # ``tools.media.enabled = true`` must be set explicitly. Voice
+    # providers (stt/tts) are shared with BuiltinTools so
+    # ``voice_listen`` / ``speak`` see the same WhisperSTT / EdgeTTS
+    # instances as ``voice_transcribe`` / ``voice_synthesize``.
+    media_cfg = tools_section.get("media") or {}
+    if isinstance(media_cfg, dict) and media_cfg.get("enabled"):
+        try:
+            from xmclaw.providers.tool.media import MediaTools
+            children.append(MediaTools(
+                media_dir=media_cfg.get("media_dir") or None,
+                stt_provider=_stt_provider,
+                tts_provider=_tts_provider,
+                base64_size_cap=int(
+                    media_cfg.get("base64_size_cap", 512 * 1024),
+                ),
+            ))
+        except Exception:  # noqa: BLE001
             pass
 
     # B-389 Sprint 2: optionally bridge Composio's 7000+ pre-integrated

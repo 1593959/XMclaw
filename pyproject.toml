@@ -107,6 +107,22 @@ tools-composio = ["composio-core>=0.7"]
 # 里 tools.computer_use.enabled=true。模块 docstring 描述了完整安全
 # 模型 (三道闸: provider gate / PermissionLevel / FAILSAFE 强制开)。
 computer-use = ["pyautogui>=0.9.54", "mss>=10.1.0", "pygetwindow>=0.0.9"]
+# 2026-05-12 媒体工具 — agent 录麦克风 / 拍摄像头 / 播音箱。
+# 跟 [voice] 区分: voice 是 STT/TTS 后端模型 (faster-whisper /
+# edge-tts), media 是 I/O 层 (录音 / 拍照 / 喇叭播放)。voice_listen
+# 同时需要这俩。三个依赖各自:
+#   * sounddevice  — 跨平台 PortAudio Python 绑定 (录音/播放)
+#   * numpy        — sounddevice 需要 ndarray
+#   * opencv-python — 跨平台摄像头 (Windows DirectShow / macOS
+#                    AVFoundation / Linux V4L2 自动选)
+#   * playsound    — 跨平台 mp3 播放 (mp3 兼容比 simpleaudio 好)
+# 平台坑: macOS 首次调用触发 Microphone / Camera 隐私授权弹窗;
+# Linux 需要 ``sudo apt install libportaudio2`` + user in ``video`` 组。
+media = [
+  "sounddevice>=0.4.7",
+  "numpy>=1.24",
+  "opencv-python>=4.8",
+]
 # Sprint 4 follow-up: LongMemEval real-corpus adapter pulls
 # ``OpenMOSS/LongMemEval`` from HuggingFace via ``datasets``. Lazy-import
 # inside ``xmclaw.eval.longmemeval_full.LongMemEvalSuite.load_tasks``

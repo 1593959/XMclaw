@@ -86,6 +86,15 @@ TOOL_CATEGORIES: dict[str, ToolCategory] = {
     "keyboard_press":   ToolCategory.DANGEROUS,
     "window_list":      ToolCategory.SAFE,
     "window_focus":     ToolCategory.DANGEROUS,
+    # 2026-05-12 media tools (microphone / camera / live audio).
+    # Mic/cam capture = MODERATE (no system side effect but reads
+    # private user audio/video — privacy-sensitive). speak() is
+    # MODERATE too (audible output, can wake/disturb user).
+    "mic_record":       ToolCategory.MODERATE,
+    "voice_listen":     ToolCategory.MODERATE,
+    "speak":            ToolCategory.MODERATE,
+    "camera_capture":   ToolCategory.MODERATE,
+    "camera_list":      ToolCategory.SAFE,
 }
 
 DEFAULT_PERMISSIONS: dict[ToolCategory, PermissionLevel] = {
