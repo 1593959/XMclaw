@@ -157,14 +157,24 @@ def _json(result):
 # ── list_tools ────────────────────────────────────────────────────
 
 
-def test_lists_all_eleven_tools(tools):
+def test_lists_all_tools(tools):
+    """2026-05-12: provider grew from 11 → 16 tools when vision-
+    grounding (screen_ocr / find_on_screen / click_on_text /
+    wait_for_text / screen_region_capture) landed. Test pinned at
+    "all tools listed" rather than a fixed count so future additions
+    don't keep churning the assertion."""
     names = {s.name for s in tools.list_tools()}
-    assert names == {
+    expected = {
+        # Mouse / keyboard / window (original 11)
         "screen_capture", "screen_size", "cursor_position",
         "mouse_move", "mouse_click", "mouse_drag", "mouse_scroll",
         "keyboard_type", "keyboard_press",
         "window_list", "window_focus",
+        # Vision grounding (2026-05-12)
+        "screen_ocr", "find_on_screen", "click_on_text",
+        "wait_for_text", "screen_region_capture",
     }
+    assert names == expected
 
 
 # ── Vision ────────────────────────────────────────────────────────

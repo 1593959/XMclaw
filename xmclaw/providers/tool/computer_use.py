@@ -287,6 +287,155 @@ _WINDOW_FOCUS_SPEC = ToolSpec(
 )
 
 
+# ── 2026-05-12 vision-grounding specs ─────────────────────────────────
+
+
+_SCREEN_OCR_SPEC = ToolSpec(
+    name="screen_ocr",
+    description=(
+        "OCR the current screen (or a region) and return text blocks "
+        "with bounding boxes. Each block: {text, bbox: [x, y, w, h], "
+        "center: [cx, cy], confidence}. Pair with ``mouse_click`` to "
+        "click on detected text without pixel-perfect coordinate "
+        "guessing.\n\n"
+        "Optional ``region`` clips the OCR area before running — "
+        "faster + more accurate for small targets (e.g. searching "
+        "only the chat-list panel of WeChat). Format: [x, y, w, h].\n\n"
+        "Needs an OCR engine — tries in order: rapidocr-onnxruntime "
+        "(Chinese-friendly, ~50MB) → paddleocr → pytesseract. Each "
+        "is an optional pip install; the tool returns an install "
+        "hint when none are available."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "region": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "[x, y, w, h] clipping rectangle.",
+            },
+            "min_confidence": {
+                "type": "number",
+                "description": "Drop blocks below this. Default 0.5.",
+            },
+        },
+    },
+)
+
+_FIND_ON_SCREEN_SPEC = ToolSpec(
+    name="find_on_screen",
+    description=(
+        "Locate text on the current screen and return its center "
+        "coordinates + bbox. Returns {found, x, y, bbox, "
+        "match_text, confidence, all_matches: [...]}. Matching is "
+        "case-insensitive + substring; pass ``exact: true`` to "
+        "require full-cell match.\n\n"
+        "Multiple matches → returns the highest-confidence one; "
+        "``all_matches`` lists the rest so the LLM can disambiguate. "
+        "Use ``region`` to scope (same shape as screen_ocr)."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "text": {"type": "string"},
+            "region": {
+                "type": "array",
+                "items": {"type": "integer"},
+            },
+            "exact": {"type": "boolean"},
+            "min_confidence": {"type": "number"},
+        },
+        "required": ["text"],
+    },
+)
+
+_CLICK_ON_TEXT_SPEC = ToolSpec(
+    name="click_on_text",
+    description=(
+        "One-shot: find text on screen + move + click its center. "
+        "Returns the match metadata from find_on_screen + the click "
+        "coordinates. ``button`` ∈ {left, right, middle}, ``count`` "
+        "1-3 (1=single, 2=double). Wraps the find + click sequence "
+        "so the LLM can write 'click the 魔丸 group in the chat "
+        "list' as one tool call instead of three.\n\n"
+        "Returns ok=False with the OCR matches list when the text "
+        "isn't found — the LLM can adjust its query and retry."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "text":   {"type": "string"},
+            "region": {
+                "type": "array",
+                "items": {"type": "integer"},
+            },
+            "button": {"type": "string", "enum": ["left", "right", "middle"]},
+            "count":  {"type": "integer", "description": "1-3"},
+            "exact":  {"type": "boolean"},
+            "min_confidence": {"type": "number"},
+        },
+        "required": ["text"],
+    },
+)
+
+_WAIT_FOR_TEXT_SPEC = ToolSpec(
+    name="wait_for_text",
+    description=(
+        "Poll the screen with OCR until ``text`` appears (or "
+        "``timeout_s`` elapses). Returns find_on_screen's result "
+        "when found, or {found: false} on timeout. Use for waiting "
+        "on UI elements that load after a click (e.g. 'open WeChat "
+        "then wait for the chat list to render')."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "text": {"type": "string"},
+            "timeout_s": {
+                "type": "number",
+                "description": "0.5-30, default 5.",
+            },
+            "poll_interval_s": {
+                "type": "number",
+                "description": "0.2-5, default 0.6.",
+            },
+            "region": {
+                "type": "array",
+                "items": {"type": "integer"},
+            },
+            "exact": {"type": "boolean"},
+        },
+        "required": ["text"],
+    },
+)
+
+_REGION_CAPTURE_SPEC = ToolSpec(
+    name="screen_region_capture",
+    description=(
+        "Capture a rectangular region of the screen → JPG (lighter "
+        "than full PNG for cropped vision-LLM input). Returns "
+        "{path, region, base64_jpg}. Useful when you've already "
+        "OCR'd and want to send the LLM only the relevant pane."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "region": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "[x, y, w, h]",
+            },
+            "include_base64": {"type": "boolean"},
+            "quality": {
+                "type": "integer",
+                "description": "JPEG quality 1-100, default 85.",
+            },
+        },
+        "required": ["region"],
+    },
+)
+
+
 # ── Provider ──────────────────────────────────────────────────────────
 
 
@@ -330,6 +479,10 @@ class ComputerUseTools(ToolProvider):
             _MOUSE_SCROLL_SPEC,
             _KEYBOARD_TYPE_SPEC, _KEYBOARD_PRESS_SPEC,
             _WINDOW_LIST_SPEC, _WINDOW_FOCUS_SPEC,
+            # Vision-grounding (2026-05-12)
+            _SCREEN_OCR_SPEC, _FIND_ON_SCREEN_SPEC,
+            _CLICK_ON_TEXT_SPEC, _WAIT_FOR_TEXT_SPEC,
+            _REGION_CAPTURE_SPEC,
         ]
 
     async def invoke(self, call: ToolCall) -> ToolResult:
@@ -348,6 +501,12 @@ class ComputerUseTools(ToolProvider):
             if name == "keyboard_press":   return await self._keyboard_press(call, t0, args)
             if name == "window_list":      return await self._window_list(call, t0, args)
             if name == "window_focus":     return await self._window_focus(call, t0, args)
+            # 2026-05-12 vision-grounding
+            if name == "screen_ocr":            return await self._screen_ocr(call, t0, args)
+            if name == "find_on_screen":        return await self._find_on_screen(call, t0, args)
+            if name == "click_on_text":         return await self._click_on_text(call, t0, args)
+            if name == "wait_for_text":         return await self._wait_for_text(call, t0, args)
+            if name == "screen_region_capture": return await self._screen_region_capture(call, t0, args)
         except Exception as exc:  # noqa: BLE001 — surface as ok=False
             return _fail(call, t0, f"{type(exc).__name__}: {exc}")
         return _fail(call, t0, f"unknown tool: {name!r}")
@@ -678,6 +837,258 @@ class ComputerUseTools(ToolProvider):
             return _fail(call, t0, f"window_focus failed: {exc}")
         return _ok(call, t0, json.dumps(payload, ensure_ascii=False))
 
+    # ── 2026-05-12 vision-grounding ────────────────────────────────
+
+    async def _screen_ocr(
+        self, call: ToolCall, t0: float, args: dict,
+    ) -> ToolResult:
+        region = args.get("region")
+        min_conf = float(args.get("min_confidence", 0.5))
+        try:
+            blocks = await asyncio.to_thread(
+                _run_ocr_full_pipeline, region, min_conf,
+            )
+        except _NoOCREngineError as exc:
+            return _fail(call, t0, str(exc))
+        except Exception as exc:  # noqa: BLE001
+            return _fail(
+                call, t0,
+                f"screen_ocr failed: {type(exc).__name__}: {exc}",
+            )
+        return _ok(call, t0, json.dumps({
+            "blocks": blocks,
+            "count": len(blocks),
+            "region": region,
+        }, ensure_ascii=False))
+
+    async def _find_on_screen(
+        self, call: ToolCall, t0: float, args: dict,
+    ) -> ToolResult:
+        text = args.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return _fail(call, t0, "text (non-empty string) required")
+        region = args.get("region")
+        exact = bool(args.get("exact", False))
+        min_conf = float(args.get("min_confidence", 0.5))
+
+        try:
+            blocks = await asyncio.to_thread(
+                _run_ocr_full_pipeline, region, min_conf,
+            )
+        except _NoOCREngineError as exc:
+            return _fail(call, t0, str(exc))
+        except Exception as exc:  # noqa: BLE001
+            return _fail(call, t0, f"OCR failed: {exc}")
+
+        matches = _match_text_in_blocks(blocks, text, exact=exact)
+        if not matches:
+            # Surface the top blocks so the LLM can see what WAS read
+            # and adjust the query. This is more useful than a blank
+            # "not found" — the LLM can spot "I asked for '魔丸群' but
+            # the OCR read '魔丸' (cut off)".
+            return _fail(
+                call, t0,
+                json.dumps({
+                    "found": False,
+                    "wanted": text,
+                    "matched_zero": True,
+                    "sample_blocks": [
+                        {"text": b["text"], "confidence": b["confidence"]}
+                        for b in blocks[:20]
+                    ],
+                }, ensure_ascii=False),
+            )
+        best = matches[0]
+        return _ok(call, t0, json.dumps({
+            "found": True,
+            "x": best["center"][0],
+            "y": best["center"][1],
+            "bbox": best["bbox"],
+            "match_text": best["text"],
+            "confidence": best["confidence"],
+            "all_matches": matches[1:5],  # top 4 alternatives
+        }, ensure_ascii=False))
+
+    async def _click_on_text(
+        self, call: ToolCall, t0: float, args: dict,
+    ) -> ToolResult:
+        # Step 1: find
+        find_args = {
+            k: v for k, v in args.items()
+            if k in ("text", "region", "exact", "min_confidence")
+        }
+        find_call = ToolCall(
+            id=call.id + "-find",
+            name="find_on_screen",
+            args=find_args,
+            provenance=call.provenance,
+            session_id=call.session_id,
+        )
+        find_result = await self._find_on_screen(find_call, t0, find_args)
+        if not find_result.ok:
+            # Bubble up the same diagnostic shape (with sample_blocks)
+            # so the LLM can adjust its query.
+            return _fail(call, t0, find_result.error)
+
+        find_payload = json.loads(find_result.content)
+        x, y = find_payload["x"], find_payload["y"]
+
+        # Step 2: click
+        try:
+            pg = self._require_pyautogui()
+        except ImportError as exc:
+            return _fail(call, t0, _pg_install_hint(exc))
+        button = str(args.get("button", "left"))
+        if button not in _VALID_BUTTONS:
+            return _fail(
+                call, t0,
+                f"button must be one of {sorted(_VALID_BUTTONS)}",
+            )
+        count = _clamp(int(args.get("count", 1)), 1, 3)
+        try:
+            await asyncio.to_thread(
+                pg.click, x=x, y=y, button=button, clicks=count,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _fail(
+                call, t0,
+                f"click at ({x},{y}) failed: {type(exc).__name__}: {exc}",
+            )
+
+        return _ok(call, t0, json.dumps({
+            "clicked": True,
+            "x": x, "y": y,
+            "button": button,
+            "count": count,
+            "match_text": find_payload["match_text"],
+            "confidence": find_payload["confidence"],
+            "bbox": find_payload["bbox"],
+        }, ensure_ascii=False))
+
+    async def _wait_for_text(
+        self, call: ToolCall, t0: float, args: dict,
+    ) -> ToolResult:
+        text = args.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return _fail(call, t0, "text required")
+        timeout_s = _clamp(float(args.get("timeout_s", 5.0)), 0.5, 30.0)
+        poll = _clamp(float(args.get("poll_interval_s", 0.6)), 0.2, 5.0)
+        region = args.get("region")
+        exact = bool(args.get("exact", False))
+
+        deadline = time.perf_counter() + timeout_s
+        attempts = 0
+        last_blocks: list = []
+        while time.perf_counter() < deadline:
+            attempts += 1
+            try:
+                blocks = await asyncio.to_thread(
+                    _run_ocr_full_pipeline, region, 0.5,
+                )
+                last_blocks = blocks
+            except _NoOCREngineError as exc:
+                return _fail(call, t0, str(exc))
+            except Exception:  # noqa: BLE001
+                blocks = []
+            matches = _match_text_in_blocks(blocks, text, exact=exact)
+            if matches:
+                best = matches[0]
+                return _ok(call, t0, json.dumps({
+                    "found": True,
+                    "x": best["center"][0],
+                    "y": best["center"][1],
+                    "bbox": best["bbox"],
+                    "match_text": best["text"],
+                    "confidence": best["confidence"],
+                    "elapsed_s": round(
+                        timeout_s - (deadline - time.perf_counter()),
+                        2,
+                    ),
+                    "attempts": attempts,
+                }, ensure_ascii=False))
+            await asyncio.sleep(poll)
+        return _fail(call, t0, json.dumps({
+            "found": False,
+            "wanted": text,
+            "timed_out_after_s": timeout_s,
+            "attempts": attempts,
+            "sample_blocks_last_poll": [
+                {"text": b["text"], "confidence": b["confidence"]}
+                for b in last_blocks[:10]
+            ],
+        }, ensure_ascii=False))
+
+    async def _screen_region_capture(
+        self, call: ToolCall, t0: float, args: dict,
+    ) -> ToolResult:
+        try:
+            region = args["region"]
+            x, y, w, h = (int(v) for v in region)
+        except (KeyError, TypeError, ValueError):
+            return _fail(
+                call, t0,
+                "region=[x, y, w, h] (4 ints) required",
+            )
+        if w <= 0 or h <= 0:
+            return _fail(call, t0, "region width/height must be > 0")
+        include_b64 = bool(args.get("include_base64", True))
+        quality = _clamp(int(args.get("quality", 85)), 1, 100)
+
+        try:
+            import mss
+        except ImportError:
+            return _fail(
+                call, t0,
+                "screen_region_capture needs ``mss``: pip install mss",
+            )
+        try:
+            from PIL import Image  # noqa: F401
+        except ImportError:
+            return _fail(
+                call, t0,
+                "screen_region_capture needs ``Pillow``: pip install Pillow",
+            )
+
+        self._screenshot_dir.mkdir(parents=True, exist_ok=True)
+        out = self._screenshot_dir / f"{int(time.time())}_{call.id[:8]}.jpg"
+
+        def _capture() -> tuple[int, int, int]:
+            from PIL import Image as _Image
+            with mss.mss() as sct:
+                shot = sct.grab({
+                    "left": x, "top": y, "width": w, "height": h,
+                })
+                img = _Image.frombytes(
+                    "RGB", shot.size,
+                    shot.bgra, "raw", "BGRX",
+                )
+                img.save(out, format="JPEG", quality=int(quality))
+            return (shot.size[0], shot.size[1], out.stat().st_size)
+
+        try:
+            (rw, rh, fsize) = await asyncio.to_thread(_capture)
+        except Exception as exc:  # noqa: BLE001
+            return _fail(
+                call, t0,
+                f"region capture failed: {type(exc).__name__}: {exc}",
+            )
+
+        result: dict[str, Any] = {
+            "path": str(out),
+            "region": [x, y, w, h],
+            "size": [rw, rh],
+            "bytes": fsize,
+        }
+        if include_b64 and fsize <= self._base64_size_cap:
+            try:
+                import base64 as _b64
+                result["base64_jpg"] = _b64.b64encode(
+                    out.read_bytes(),
+                ).decode("ascii")
+            except OSError:
+                pass
+        return _ok(call, t0, json.dumps(result, ensure_ascii=False))
+
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -718,6 +1129,222 @@ def _fail(call: ToolCall, t0: float, err: str) -> ToolResult:
         call_id=call.id, ok=False, content=None, error=err,
         latency_ms=(time.perf_counter() - t0) * 1000.0,
     )
+
+
+# ── 2026-05-12 OCR backend ────────────────────────────────────────────
+
+
+class _NoOCREngineError(RuntimeError):
+    """Raised when none of the supported OCR engines can be imported."""
+
+
+def _grab_for_ocr(region: list | tuple | None) -> Any:
+    """Capture full-screen or region as numpy ndarray (H, W, 3) BGR.
+
+    RapidOCR / PaddleOCR both accept numpy arrays directly; pytesseract
+    expects a PIL Image and we adapt below.
+    """
+    import mss
+    import numpy as np
+    with mss.mss() as sct:
+        if region:
+            x, y, w, h = (int(v) for v in region)
+            mon = {"left": x, "top": y, "width": w, "height": h}
+        else:
+            mon = sct.monitors[1]  # primary
+        shot = sct.grab(mon)
+        # mss returns BGRA; OCR engines want BGR / RGB.
+        arr = np.frombuffer(shot.bgra, dtype=np.uint8).reshape(
+            shot.size[1], shot.size[0], 4,
+        )
+        # BGRA → BGR (drop alpha). RapidOCR + PaddleOCR are OK with BGR.
+        return arr[:, :, :3], (mon.get("left", 0), mon.get("top", 0))
+
+
+def _run_ocr_full_pipeline(
+    region: list | tuple | None, min_confidence: float,
+) -> list[dict]:
+    """Run OCR + return blocks with absolute screen coordinates.
+
+    Tries engines in order: rapidocr-onnxruntime → paddleocr →
+    pytesseract. Each block: {text, bbox: [x, y, w, h], center: [cx,
+    cy], confidence}. Coordinates are ABSOLUTE screen pixels (i.e.
+    region offset is already added).
+    """
+    img, (ox, oy) = _grab_for_ocr(region)
+    # Try rapidocr first — best Chinese support per MB.
+    blocks = _try_rapidocr(img, min_confidence)
+    if blocks is not None:
+        return _offset_blocks(blocks, ox, oy)
+    blocks = _try_paddleocr(img, min_confidence)
+    if blocks is not None:
+        return _offset_blocks(blocks, ox, oy)
+    blocks = _try_pytesseract(img, min_confidence)
+    if blocks is not None:
+        return _offset_blocks(blocks, ox, oy)
+    raise _NoOCREngineError(
+        "No OCR engine installed. Pick one:\n"
+        "  pip install rapidocr-onnxruntime   # 50 MB, best Chinese support\n"
+        "  pip install paddleocr              # 300 MB, most accurate\n"
+        "  pip install pytesseract             # needs Tesseract binary + chi_sim data\n"
+        "(rapidocr is recommended — bundled into xmclaw[computer-use].)"
+    )
+
+
+def _try_rapidocr(img: Any, min_confidence: float) -> list[dict] | None:
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+    except ImportError:
+        return None
+    try:
+        engine = RapidOCR()
+        result, _elapse = engine(img)
+        if not result:
+            return []
+        blocks: list[dict] = []
+        for row in result:
+            # rapidocr row: [bbox4points, text, score]
+            if not row or len(row) < 3:
+                continue
+            pts, text, score = row[0], row[1], row[2]
+            if score is None or score < min_confidence:
+                continue
+            # bbox4points = [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]; compute axis-aligned
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            x0, y0 = int(min(xs)), int(min(ys))
+            x1, y1 = int(max(xs)), int(max(ys))
+            blocks.append({
+                "text": str(text),
+                "bbox": [x0, y0, x1 - x0, y1 - y0],
+                "center": [(x0 + x1) // 2, (y0 + y1) // 2],
+                "confidence": round(float(score), 4),
+                "engine": "rapidocr",
+            })
+        return blocks
+    except Exception:  # noqa: BLE001 — fall through to next engine
+        return None
+
+
+def _try_paddleocr(img: Any, min_confidence: float) -> list[dict] | None:
+    try:
+        from paddleocr import PaddleOCR
+    except ImportError:
+        return None
+    try:
+        # use_angle_cls=False for speed; lang="ch" handles both EN + CN
+        engine = PaddleOCR(use_angle_cls=False, lang="ch")
+        result = engine.ocr(img, cls=False)
+        if not result:
+            return []
+        blocks: list[dict] = []
+        for page in result:
+            if not page:
+                continue
+            for row in page:
+                if not row or len(row) < 2:
+                    continue
+                pts, (text, score) = row[0], row[1]
+                if score < min_confidence:
+                    continue
+                xs = [p[0] for p in pts]
+                ys = [p[1] for p in pts]
+                x0, y0 = int(min(xs)), int(min(ys))
+                x1, y1 = int(max(xs)), int(max(ys))
+                blocks.append({
+                    "text": str(text),
+                    "bbox": [x0, y0, x1 - x0, y1 - y0],
+                    "center": [(x0 + x1) // 2, (y0 + y1) // 2],
+                    "confidence": round(float(score), 4),
+                    "engine": "paddleocr",
+                })
+        return blocks
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _try_pytesseract(img: Any, min_confidence: float) -> list[dict] | None:
+    try:
+        import pytesseract
+        from PIL import Image
+    except ImportError:
+        return None
+    try:
+        # pytesseract wants PIL; convert from numpy BGR
+        pil_img = Image.fromarray(img[:, :, ::-1])  # BGR → RGB
+        data = pytesseract.image_to_data(
+            pil_img,
+            lang="chi_sim+eng",  # Chinese + English; OK to fall back if chi_sim absent
+            output_type=pytesseract.Output.DICT,
+        )
+        blocks: list[dict] = []
+        n = len(data.get("text", []))
+        for i in range(n):
+            text = (data["text"][i] or "").strip()
+            if not text:
+                continue
+            conf_raw = data["conf"][i]
+            try:
+                conf = float(conf_raw) / 100.0  # tesseract returns 0-100
+            except (TypeError, ValueError):
+                conf = 0.0
+            if conf < min_confidence:
+                continue
+            x = int(data["left"][i])
+            y = int(data["top"][i])
+            w = int(data["width"][i])
+            h = int(data["height"][i])
+            blocks.append({
+                "text": text,
+                "bbox": [x, y, w, h],
+                "center": [x + w // 2, y + h // 2],
+                "confidence": round(conf, 4),
+                "engine": "pytesseract",
+            })
+        return blocks
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _offset_blocks(blocks: list[dict], ox: int, oy: int) -> list[dict]:
+    """Shift block coordinates by region offset so the LLM gets
+    absolute-screen coordinates regardless of whether OCR was full or
+    region-cropped."""
+    if ox == 0 and oy == 0:
+        return blocks
+    for b in blocks:
+        b["bbox"][0] += ox
+        b["bbox"][1] += oy
+        b["center"][0] += ox
+        b["center"][1] += oy
+    return blocks
+
+
+def _match_text_in_blocks(
+    blocks: list[dict], wanted: str, *, exact: bool = False,
+) -> list[dict]:
+    """Find OCR blocks matching ``wanted``. Returns matches sorted
+    by confidence desc; empty list when nothing matches.
+
+    - ``exact=False`` (default): case-insensitive substring match.
+      Most useful for GUI clicking — OCR may read "魔丸群 (12)" when
+      you wanted "魔丸群".
+    - ``exact=True``: trimmed-equal match. For when you really mean it.
+    """
+    wanted_norm = wanted.strip().casefold()
+    if not wanted_norm:
+        return []
+    matches: list[dict] = []
+    for b in blocks:
+        text_norm = b["text"].strip().casefold()
+        if exact:
+            if text_norm == wanted_norm:
+                matches.append(b)
+        else:
+            if wanted_norm in text_norm:
+                matches.append(b)
+    matches.sort(key=lambda m: m["confidence"], reverse=True)
+    return matches
 
 
 __all__ = ["ComputerUseTools"]
