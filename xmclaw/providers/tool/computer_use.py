@@ -591,6 +591,94 @@ _UI_CLICK_SPEC = ToolSpec(
 )
 
 
+_GUI_SEND_CHAT_SPEC = ToolSpec(
+    name="gui_send_chat",
+    description=(
+        "ATOMIC compose-and-send for chat apps (WeChat / QQ / 飞书 / "
+        "Discord / Slack desktop / Telegram / etc.). One tool call "
+        "does the whole last-mile sequence: focus window → OCR-verify "
+        "the currently-open chat header matches ``verify_chat_title`` "
+        "→ click the input box → type text via clipboard → press "
+        "Enter → confirmation screenshot. Use this AFTER you've "
+        "navigated to the right conversation (e.g. via "
+        "``click_on_text`` on the group name).\n\n"
+        "**SAFETY RAIL — always pass ``verify_chat_title``** when you "
+        "know the target chat name. The tool OCRs a narrow strip at "
+        "the top of the focused window (the chat header, ~80 px tall) "
+        "and ABORTS the send if the title substring is not present. "
+        "This is the one defense that stops the WeChat-specific "
+        "failure where the chat list scrolls under the agent and a "
+        "stale click coordinate lands on the wrong conversation.\n\n"
+        "Input-box location: if ``input_bbox`` is given, click its "
+        "center (preferred — read it visually from a screenshot first). "
+        "Otherwise use a HEURISTIC: 70 px above the bottom edge of "
+        "the focused window, horizontally centered. The heuristic is "
+        "fragile when the window is non-maximized or split-pane.\n\n"
+        "Typing uses the system clipboard + Ctrl+V — pyautogui's "
+        "per-key write is unreliable for Chinese / IME input."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "text": {
+                "type": "string",
+                "description": "Message body to send. Required.",
+            },
+            "window_title": {
+                "type": "string",
+                "description": (
+                    "Substring of the target window title to focus "
+                    "first. Optional — if omitted we use the current "
+                    "foreground window."
+                ),
+            },
+            "verify_chat_title": {
+                "type": "string",
+                "description": (
+                    "If set, OCR a narrow chat-header strip on the "
+                    "focused window and ABORT the send if this "
+                    "substring is not visible. Pass this whenever you "
+                    "know the target chat name (e.g. \"魔丸\"). It is "
+                    "the cheapest single defense against the wrong-"
+                    "chat-send bug."
+                ),
+            },
+            "input_bbox": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "minItems": 4,
+                "maxItems": 4,
+                "description": (
+                    "[x, y, w, h] of the input box in screen pixels. "
+                    "Overrides the bottom-anchored heuristic when set. "
+                    "Strongly preferred — read this off a screenshot."
+                ),
+            },
+            "press_after": {
+                "type": "string",
+                "description": (
+                    "Key pressed after typing. Default 'enter' "
+                    "(sends in most chat apps). Set to '' to skip "
+                    "and leave the text in the input box for manual "
+                    "review."
+                ),
+            },
+            "confirm_screenshot": {
+                "type": "boolean",
+                "description": (
+                    "If true (default), take a screenshot AFTER "
+                    "sending and attach it (via "
+                    "metadata.attach_image) so you can confirm the "
+                    "message landed. Set false only if you really "
+                    "don't need verification."
+                ),
+            },
+        },
+        "required": ["text"],
+    },
+)
+
+
 # ── Provider ──────────────────────────────────────────────────────────
 
 
@@ -641,6 +729,8 @@ class ComputerUseTools(ToolProvider):
             # Image template + scroll + native Windows UIA (2026-05-12 r2)
             _FIND_IMAGE_SPEC, _CLICK_IMAGE_SPEC, _SCROLL_TO_TEXT_SPEC,
             _UI_INSPECT_SPEC, _UI_CLICK_SPEC,
+            # 2026-05-12 r3: atomic compose-and-send for chat apps
+            _GUI_SEND_CHAT_SPEC,
         ]
 
     async def invoke(self, call: ToolCall) -> ToolResult:
@@ -671,6 +761,7 @@ class ComputerUseTools(ToolProvider):
             if name == "scroll_to_text":        return await self._scroll_to_text(call, t0, args)
             if name == "ui_inspect":            return await self._ui_inspect(call, t0, args)
             if name == "ui_click":              return await self._ui_click(call, t0, args)
+            if name == "gui_send_chat":         return await self._gui_send_chat(call, t0, args)
         except Exception as exc:  # noqa: BLE001 — surface as ok=False
             return _fail(call, t0, f"{type(exc).__name__}: {exc}")
         return _fail(call, t0, f"unknown tool: {name!r}")
@@ -1685,6 +1776,313 @@ class ComputerUseTools(ToolProvider):
                 f"ui_click failed: {type(exc).__name__}: {exc}",
             )
         return _ok(call, t0, json.dumps(payload, ensure_ascii=False))
+
+    # ── Atomic chat compose+send (2026-05-12 r3) ──────────────────
+
+    @staticmethod
+    def _chat_header_bbox(target_bbox: list[int] | None) -> list[int] | None:
+        """Return the [x, y, w, h] of the chat-header OCR strip.
+
+        Chat apps put the conversation title in the top-most ~80 px of
+        the right pane. We approximate the right pane as starting at
+        ~30 % of the window width (chat list takes the left) and going
+        to the right edge. Heuristic — caller can override by passing
+        an explicit input_bbox for the OCR step in a future revision.
+        """
+        if target_bbox is None or len(target_bbox) != 4:
+            return None
+        wx, wy, ww, wh = target_bbox
+        if ww <= 0 or wh <= 0:
+            return None
+        # Right pane starts ~30% into the window width.
+        right_pane_x = wx + ww // 3
+        right_pane_w = ww - ww // 3
+        # Top ~80 px is where the chat header sits — covers the title
+        # plus participant count in WeChat / 飞书 / Slack / etc.
+        header_h = min(80, wh // 6)
+        return [right_pane_x, wy, right_pane_w, header_h]
+
+    async def _gui_send_chat(
+        self, call: ToolCall, t0: float, args: dict,
+    ) -> ToolResult:
+        """Compose-and-send a chat message in one tool call.
+
+        Failure modes we explicitly handle:
+
+        * No focused window after window_focus → return error, don't
+          guess coordinates blindly.
+        * Empty text → reject (model probably meant something else).
+        * Input box heuristic miss → caller can retry with explicit
+          input_bbox or fall back to manual click+type+enter.
+        """
+        text = args.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return _fail(call, t0, "text (non-empty string) required")
+        if len(text) > _MAX_TYPE_LEN:
+            return _fail(
+                call, t0,
+                f"text > {_MAX_TYPE_LEN} chars — split into multiple "
+                "gui_send_chat calls",
+            )
+        window_title = args.get("window_title")
+        explicit_bbox = args.get("input_bbox")
+        verify_chat_title = args.get("verify_chat_title")
+        if verify_chat_title is not None and not isinstance(verify_chat_title, str):
+            return _fail(call, t0, "verify_chat_title must be a string")
+        press_after = args.get("press_after", "enter")
+        if not isinstance(press_after, str):
+            press_after = "enter"
+        # Default ON — the verify screenshot is cheap insurance and
+        # the agent needs it to actually trust the send happened.
+        confirm_screenshot = bool(args.get("confirm_screenshot", True))
+
+        # ── Step 1: focus target window ──
+        target_bbox: list[int] | None = None
+        if isinstance(window_title, str) and window_title.strip():
+            try:
+                import pygetwindow as gw  # type: ignore
+            except ImportError:
+                return _fail(
+                    call, t0,
+                    "gui_send_chat needs ``pygetwindow``. "
+                    "pip install pygetwindow",
+                )
+            substring = window_title.strip().lower()
+            try:
+                windows = await asyncio.to_thread(gw.getAllWindows)
+            except Exception as exc:  # noqa: BLE001
+                return _fail(call, t0, f"pygetwindow failed: {exc}")
+            chosen = None
+            for w in windows:
+                try:
+                    title = (getattr(w, "title", "") or "")
+                    if title and substring in title.lower():
+                        chosen = w
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+            if chosen is None:
+                return _fail(
+                    call, t0,
+                    f"no window with title containing {window_title!r}",
+                )
+            try:
+                if bool(getattr(chosen, "isMinimized", False)):
+                    chosen.restore()
+                chosen.activate()
+            except Exception:  # noqa: BLE001 — Windows occasionally raises
+                pass
+            await asyncio.sleep(0.4)
+            try:
+                target_bbox = [
+                    int(getattr(chosen, "left", 0)),
+                    int(getattr(chosen, "top", 0)),
+                    int(getattr(chosen, "width", 0)),
+                    int(getattr(chosen, "height", 0)),
+                ]
+            except Exception:  # noqa: BLE001
+                target_bbox = None
+
+        # ── Step 1.5: OCR-verify the active chat header (anti-wrong-chat) ──
+        # We OCR a narrow strip at the very top of the focused window
+        # — roughly where chat apps render the conversation title —
+        # and abort if the expected title substring isn't found. The
+        # strip is small enough that OCR finishes in 1-3 s rather than
+        # the 20-30 s a full-window scan takes.
+        if verify_chat_title and verify_chat_title.strip():
+            wanted = verify_chat_title.strip()
+            header_bbox = self._chat_header_bbox(target_bbox)
+            if header_bbox is None:
+                return _fail(
+                    call, t0,
+                    "verify_chat_title set but no window bbox known — "
+                    "pass window_title so the chat header strip can "
+                    "be located",
+                )
+            try:
+                header_blocks = await asyncio.to_thread(
+                    _run_ocr_full_pipeline, header_bbox, 0.5,
+                )
+            except _NoOCREngineError as exc:
+                return _fail(call, t0, str(exc))
+            except Exception as exc:  # noqa: BLE001
+                return _fail(
+                    call, t0,
+                    f"chat-header OCR failed: {type(exc).__name__}: {exc}",
+                )
+            header_text = " ".join(
+                b.get("text", "") for b in (header_blocks or [])
+            )
+            if wanted.casefold() not in header_text.casefold():
+                # Compose a verification screenshot so the agent can see
+                # what the header actually said.
+                hdr_path: str | None = None
+                try:
+                    import mss
+                    self._screenshot_dir.mkdir(parents=True, exist_ok=True)
+                    out = self._screenshot_dir / (
+                        f"{int(time.time())}_{call.id[:8]}_header.png"
+                    )
+                    hx, hy, hw, hh = header_bbox
+                    with mss.mss() as sct:
+                        grab = sct.grab({
+                            "left": hx, "top": hy,
+                            "width": hw, "height": hh,
+                        })
+                        mss.tools.to_png(grab.rgb, grab.size, output=str(out))
+                    hdr_path = str(out)
+                except Exception:  # noqa: BLE001
+                    pass
+                err_payload = {
+                    "sent": False,
+                    "aborted": "wrong_chat",
+                    "wanted": wanted,
+                    "header_text_seen": header_text[:200],
+                    "header_bbox": header_bbox,
+                }
+                return ToolResult(
+                    call_id=call.id, ok=False, content=None,
+                    error=(
+                        f"verify_chat_title mismatch — wanted "
+                        f"{wanted!r}, header OCR says "
+                        f"{header_text[:120]!r}. Aborted to prevent "
+                        f"sending to the wrong chat. Re-navigate "
+                        f"(e.g. click_on_text with the group name) "
+                        f"and retry, or inspect the attached header "
+                        f"screenshot."
+                    ),
+                    latency_ms=(time.perf_counter() - t0) * 1000.0,
+                    metadata=(
+                        {"attach_image": hdr_path} if hdr_path else {}
+                    ),
+                )
+
+        # ── Step 2: determine input box coordinate ──
+        if isinstance(explicit_bbox, list) and len(explicit_bbox) == 4:
+            try:
+                ix, iy, iw, ih = (int(v) for v in explicit_bbox)
+                click_x = ix + iw // 2
+                click_y = iy + ih // 2
+                source = "explicit_bbox"
+            except (TypeError, ValueError):
+                return _fail(
+                    call, t0,
+                    "input_bbox must be [x, y, w, h] of integers",
+                )
+        elif target_bbox is not None and target_bbox[2] > 0:
+            wx, wy, ww, wh = target_bbox
+            click_x = wx + ww // 2
+            # 70 px above bottom edge — empirically matches WeChat /
+            # 飞书 / Slack / Discord desktop input composers. If the
+            # caller is using a different app, pass input_bbox.
+            click_y = wy + wh - 70
+            source = "window_bottom_heuristic"
+        else:
+            return _fail(
+                call, t0,
+                "no input_bbox and no focused window with bbox — "
+                "either pass window_title to focus, OR pass "
+                "input_bbox=[x,y,w,h] of the input field",
+            )
+
+        # ── Step 3: click input box, type via clipboard, press ──
+        # Clipboard + Ctrl+V is dramatically more reliable than
+        # pyautogui.write for Chinese / IME input. pyautogui's per-
+        # key typewriter path hits IME composition quirks on Windows
+        # and frequently drops characters mid-word.
+        try:
+            pg = self._require_pyautogui()
+        except ImportError as exc:
+            return _fail(call, t0, _pg_install_hint(exc))
+        typing_path = "clipboard_paste"
+        try:
+            await asyncio.to_thread(pg.click, click_x, click_y)
+            await asyncio.sleep(0.2)
+            try:
+                import pyperclip  # type: ignore
+                # Save the user's current clipboard so we don't clobber
+                # whatever they had on it.
+                try:
+                    saved_clip = pyperclip.paste()
+                except Exception:  # noqa: BLE001
+                    saved_clip = None
+                await asyncio.to_thread(pyperclip.copy, text)
+                await asyncio.sleep(0.1)
+                await asyncio.to_thread(pg.hotkey, "ctrl", "v")
+                await asyncio.sleep(0.1)
+                # Best-effort restore so the user's clipboard isn't
+                # surprised after the action.
+                if saved_clip is not None:
+                    try:
+                        await asyncio.to_thread(pyperclip.copy, saved_clip)
+                    except Exception:  # noqa: BLE001
+                        pass
+            except ImportError:
+                # Fallback when pyperclip isn't installed.
+                typing_path = "pyautogui_write"
+                await asyncio.to_thread(pg.write, text, interval=0.01)
+            await asyncio.sleep(0.2)
+            if press_after.strip():
+                pk = press_after.strip().lower()
+                if "+" in pk:
+                    parts = [p.strip() for p in pk.split("+") if p.strip()]
+                    await asyncio.to_thread(pg.hotkey, *parts)
+                else:
+                    await asyncio.to_thread(pg.press, pk)
+        except Exception as exc:  # noqa: BLE001
+            return _fail(
+                call, t0,
+                f"compose-and-send failed at action step: "
+                f"{type(exc).__name__}: {exc}",
+            )
+
+        payload: dict[str, Any] = {
+            "sent": True,
+            "click_coordinate": [click_x, click_y],
+            "click_source": source,
+            "chars_typed": len(text),
+            "typing_path": typing_path,
+            "pressed": press_after if press_after.strip() else None,
+            "window_focused": (
+                window_title.strip()
+                if isinstance(window_title, str) else None
+            ),
+            "window_bbox": target_bbox,
+            "verified_chat_title": (
+                verify_chat_title.strip()
+                if isinstance(verify_chat_title, str) and verify_chat_title.strip()
+                else None
+            ),
+        }
+
+        if not confirm_screenshot:
+            return _ok(call, t0, json.dumps(payload, ensure_ascii=False))
+
+        # Optional verification screenshot via existing screenshot pipeline.
+        try:
+            import mss
+            self._screenshot_dir.mkdir(parents=True, exist_ok=True)
+            fname = f"{int(time.time())}_{call.id[:8]}_verify.png"
+            out = self._screenshot_dir / fname
+
+            def _do_capture() -> tuple[int, int]:
+                with mss.mss() as sct:
+                    grab = sct.grab(sct.monitors[1])
+                    mss.tools.to_png(grab.rgb, grab.size, output=str(out))
+                    return grab.size
+
+            size = await asyncio.to_thread(_do_capture)
+            payload["verify_screenshot_path"] = str(out)
+            payload["verify_screenshot_size"] = [int(size[0]), int(size[1])]
+            return ToolResult(
+                call_id=call.id, ok=True,
+                content=json.dumps(payload, ensure_ascii=False),
+                latency_ms=(time.perf_counter() - t0) * 1000.0,
+                metadata={"attach_image": str(out)},
+            )
+        except Exception:  # noqa: BLE001 — verification is optional
+            payload["verify_screenshot_path"] = None
+            return _ok(call, t0, json.dumps(payload, ensure_ascii=False))
 
 
 # ── Helpers ───────────────────────────────────────────────────────────

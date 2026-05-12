@@ -174,6 +174,8 @@ def test_lists_all_tools(tools):
         # Image template + scroll + Windows UIA (2026-05-12 r2)
         "find_image_on_screen", "click_on_image", "scroll_to_text",
         "ui_inspect", "ui_click",
+        # Atomic compose+send (2026-05-12 r3)
+        "gui_send_chat",
     }
     assert names == expected
 
