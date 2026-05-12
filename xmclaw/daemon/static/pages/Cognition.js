@@ -72,7 +72,7 @@ export function CognitionPage({ token }) {
 
   async function loadAll() {
     try {
-      const [s, t, p, g, tg, dh] = await Promise.all([
+      const [s, t, p, g, tg, dh, hData] = await Promise.all([
         apiGet("/api/v2/cognition/state", token),
         apiGet("/api/v2/cognition/tasks", token),
         apiGet("/api/v2/cognition/proposals", token),
