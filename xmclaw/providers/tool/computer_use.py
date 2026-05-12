@@ -2044,7 +2044,30 @@ class ComputerUseTools(ToolProvider):
             header_text = " ".join(
                 b.get("text", "") for b in (header_blocks or [])
             )
-            if wanted.casefold() not in header_text.casefold():
+            # Tolerant chat-title match. RapidOCR on small Chinese
+            # text routinely drops one character (e.g. "魔丸" → "魔"
+            # only, or "魔丸(5)" → "(5)" only). Strict substring would
+            # block legitimate sends; we accept the match when EITHER:
+            #   * full wanted substring is present (ideal), OR
+            #   * ≥ half the chars in wanted appear in header_text
+            # AND at least one non-space char overlaps.
+            # Combined with nav_chat_name (which itself clicked a chat-
+            # list block matching wanted), this keeps the wrong-chat
+            # defense without false-rejecting Chinese near-matches.
+            wlow = wanted.casefold()
+            hlow = header_text.casefold()
+            if wlow in hlow:
+                match_kind = "exact_substring"
+            else:
+                w_chars = {c for c in wlow if not c.isspace()}
+                overlap = w_chars & set(hlow)
+                if w_chars and len(overlap) / len(w_chars) >= 0.5:
+                    match_kind = (
+                        f"partial_chars({len(overlap)}/{len(w_chars)})"
+                    )
+                else:
+                    match_kind = None
+            if match_kind is None:
                 # Compose a verification screenshot so the agent can see
                 # what the header actually said.
                 hdr_path: str | None = None
