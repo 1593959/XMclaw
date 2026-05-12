@@ -97,6 +97,16 @@ content = [
 # CLI / dashboard at https://app.composio.dev — XMclaw consumes
 # already-authorised entities, never initiates OAuth itself.
 tools-composio = ["composio-core>=0.7"]
+# 2026-05-12 桌面自动化 — 给 agent 装上鼠标键盘 + 屏幕截图 + 窗口控制。
+# 单独成 extra 是因为依赖很重 (Pillow + pyscreeze + 平台桥接)：
+#   * pyautogui — 跨平台鼠标键盘 + screenshot bridge
+#   * mss       — fast多显示器截图，比 pyautogui 自带的快 10×
+#   * pygetwindow — 窗口枚举 + 激活 (Windows 直接挂 win32, macOS 挂
+#                  AppKit, Linux 需 X11 + python3-tk)。
+# 启用方式: pip install 'xmclaw[computer-use]' + daemon/config.json
+# 里 tools.computer_use.enabled=true。模块 docstring 描述了完整安全
+# 模型 (三道闸: provider gate / PermissionLevel / FAILSAFE 强制开)。
+computer-use = ["pyautogui>=0.9.54", "mss>=10.1.0", "pygetwindow>=0.0.9"]
 # Sprint 4 follow-up: LongMemEval real-corpus adapter pulls
 # ``OpenMOSS/LongMemEval`` from HuggingFace via ``datasets``. Lazy-import
 # inside ``xmclaw.eval.longmemeval_full.LongMemEvalSuite.load_tasks``
