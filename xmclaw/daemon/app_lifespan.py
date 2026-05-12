@@ -1215,6 +1215,44 @@ def make_lifespan(
                 )
                 _app.state.proposal_materializer = None
 
+        # 2026-05-12: ReflectionMaterializer — closes the reflection
+        # loop. Pre-this, INNER_MONOLOGUE + METACOGNITION_PROPOSAL
+        # events landed in events.db + Mind UI but had ZERO downstream
+        # Python consumer — agent's next turn rebuilt its system prompt
+        # from persona files that had no memory of its own reflections.
+        # Now: ``plan`` thoughts → AGENTS.md, ``concern`` thoughts →
+        # MEMORY.md, preference_update / curriculum_edit proposals →
+        # USER.md / AGENTS.md. ``skill_propose`` proposals still flow
+        # through ProposalMaterializer (above) — one materializer per
+        # artifact type, no dual writes.
+        _app.state.reflection_materializer = None
+        try:
+            from xmclaw.cognition.reflection_materializer import (
+                ReflectionMaterializer,
+            )
+            from xmclaw.daemon.factory import (
+                _resolve_persona_profile_dir,
+            )
+            _rm_cfg_dict = config or {}
+
+            def _rm_persona_dir() -> Any:
+                # Resolved per-event so persona-switch mid-session is
+                # honoured (mirrors ProfileExtractor's contract).
+                return _resolve_persona_profile_dir(_rm_cfg_dict)
+
+            _rm = ReflectionMaterializer(
+                bus=bus,
+                persona_dir_provider=_rm_persona_dir,
+                cfg=_rm_cfg_dict,
+            )
+            await _rm.start()
+            _app.state.reflection_materializer = _rm
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "reflection_materializer.start_failed err=%s", exc,
+            )
+            _app.state.reflection_materializer = None
+
         # B-145: channel adapters (飞书 / 钉钉 / 企微 / Telegram).
         # Each enabled channel gets a long-running adapter that listens
         # for inbound messages + dispatches them through the same
@@ -2108,6 +2146,13 @@ def make_lifespan(
             if _pm is not None:
                 try:
                     await _pm.stop()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
+            # 2026-05-12: stop the reflection materializer.
+            _rm = getattr(_app.state, "reflection_materializer", None)
+            if _rm is not None:
+                try:
+                    await _rm.stop()
                 except Exception as exc:  # noqa: BLE001
                     log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             # B-173: stop the skills watcher so a tick doesn't fire
