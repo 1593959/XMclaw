@@ -36,8 +36,10 @@ B-320 prompt cache parity:
 from __future__ import annotations
 
 import asyncio
+import base64
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 from xmclaw.core.ir import ToolCall, ToolCallShape, ToolSpec
@@ -189,6 +191,28 @@ class OpenAILLM(LLMProvider):
                         "cache_control": {"type": "ephemeral"},
                     }],
                 })
+                continue
+
+            # B-Vision: user message with image attachments — encode as
+            # multimodal content list. Kimi K2.6 / GPT-4o / Claude all
+            # accept image_url blocks on user messages. Tool messages
+            # don't support images on the OpenAI shape (Anthropic does
+            # but we route those through anthropic_native), so we never
+            # multimodal-encode a non-user message.
+            if m.role == "user" and m.images:
+                content_blocks: list[dict[str, Any]] = []
+                if m.content:
+                    content_blocks.append({"type": "text", "text": m.content})
+                for img in m.images:
+                    data_url = _img_to_data_url(img)
+                    if data_url is None:
+                        continue
+                    content_blocks.append({
+                        "type": "image_url",
+                        "image_url": {"url": data_url},
+                    })
+                entry = {"role": m.role, "content": content_blocks}
+                out.append(entry)
                 continue
 
             entry: dict[str, Any] = {"role": m.role, "content": m.content or ""}
@@ -615,3 +639,60 @@ class OpenAILLM(LLMProvider):
             input_per_mtok=cost_pricing.input_per_mtok,
             output_per_mtok=cost_pricing.output_per_mtok,
         )
+
+
+# ── Image helpers (B-Vision) ───────────────────────────────────────
+
+# Max width we feed to the model. Screenshots at 2560×1600 cost a fortune
+# in image tokens (Kimi K2.6 / GPT-4o both bill by approx. pixel area).
+# 1280 wide is the Anthropic-recommended sweet spot — readable enough for
+# UI elements, ~4× cheaper than full-res.
+_VISION_MAX_WIDTH = 1280
+_VISION_JPEG_QUALITY = 80
+
+
+def _img_to_data_url(src: str) -> str | None:
+    """Convert a file path or pass-through data URL into a data: URL the
+    OpenAI-compat API accepts. Returns ``None`` on any failure — the
+    caller drops the attachment silently rather than aborting the turn.
+
+    File-path inputs are LOSSY-RESIZED to ``_VISION_MAX_WIDTH`` to keep
+    image-token cost bounded. Re-encoded as JPEG for size; PNG goes in
+    at 2-4× the byte count with no readability win for screenshots.
+    """
+    if not src:
+        return None
+    if src.startswith("data:"):
+        return src
+    p = Path(src)
+    if not p.is_file():
+        return None
+    try:
+        from PIL import Image  # type: ignore
+        from io import BytesIO
+
+        img = Image.open(str(p))
+        if img.mode in ("RGBA", "LA", "P"):
+            img = img.convert("RGB")
+        if img.width > _VISION_MAX_WIDTH:
+            ratio = _VISION_MAX_WIDTH / img.width
+            img = img.resize(
+                (_VISION_MAX_WIDTH, int(img.height * ratio)),
+                Image.LANCZOS,
+            )
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=_VISION_JPEG_QUALITY)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/jpeg;base64,{b64}"
+    except Exception:  # noqa: BLE001 — never abort a turn over image decode
+        try:
+            # Last-ditch: ship the original bytes without resize.
+            raw = p.read_bytes()
+            ext = p.suffix.lower().lstrip(".")
+            mime = {
+                "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                "gif": "image/gif", "webp": "image/webp",
+            }.get(ext, "image/png")
+            return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+        except Exception:  # noqa: BLE001
+            return None

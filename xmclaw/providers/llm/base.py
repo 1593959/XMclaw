@@ -32,6 +32,14 @@ class Message:
     content: str
     tool_calls: tuple[ToolCall, ...] = ()
     tool_call_id: str | None = None  # for role=tool
+    # B-Vision: image attachments for user-role messages. Each entry is
+    # either a local file path (translator reads + base64-encodes) or a
+    # ``data:`` URL (passes through). Used by the computer-use loop —
+    # after ``screen_capture``, hop_loop injects a synthetic user message
+    # with the screenshot here so the LLM SEES the screen instead of
+    # squinting at OCR text. Ignored for non-user roles. Empty tuple =
+    # plain text-only message (default, backwards-compatible).
+    images: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

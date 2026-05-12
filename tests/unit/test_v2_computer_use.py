@@ -181,16 +181,34 @@ def test_lists_all_tools(tools):
 # ── Vision ────────────────────────────────────────────────────────
 
 
-async def test_screen_capture_writes_png_and_returns_b64(
+async def test_screen_capture_writes_png_and_attaches_vision(
     tools, fake_mss,
 ):
+    """B-Vision: ``screen_capture`` now puts the image into
+    ``metadata.attach_image`` (hop_loop turns that into a vision
+    content block) instead of stuffing base64 into the text result.
+    ``include_base64`` is still available as opt-in."""
     r = await tools.invoke(_call("screen_capture", {"monitor": 1}))
     assert r.ok, r.error
     payload = _json(r)
     assert "path" in payload
     assert Path(payload["path"]).is_file()
     assert payload["size"] == [10, 10]
-    assert "base64_png" in payload  # under cap
+    # Default: NO base64 in text — vision attached via metadata.
+    assert "base64_png" not in payload
+    assert payload.get("vision_attached") is True
+    assert r.metadata.get("attach_image") == payload["path"]
+
+
+async def test_screen_capture_opt_in_base64_still_works(
+    tools, fake_mss,
+):
+    r = await tools.invoke(_call(
+        "screen_capture", {"monitor": 1, "include_base64": True},
+    ))
+    assert r.ok, r.error
+    payload = _json(r)
+    assert "base64_png" in payload
 
 
 async def test_screen_capture_invalid_monitor(tools, fake_mss):

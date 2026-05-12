@@ -700,7 +700,14 @@ class ComputerUseTools(ToolProvider):
         except ImportError:
             return _fail(call, t0, "screen_capture needs ``mss``. pip install mss")
         monitor_idx = int(args.get("monitor", 1))
-        include_b64 = bool(args.get("include_base64", True))
+        # B-Vision: default is now NO base64 in the tool result text.
+        # Instead we set ``metadata.attach_image`` so hop_loop injects
+        # the screenshot as a real vision content block on the NEXT
+        # user message — the model literally SEES the screen instead
+        # of OCRing it. ``include_base64=true`` opt-in still works for
+        # legacy callers but is almost always wrong (1+ MB text in
+        # the tool result, model can't read base64 from text anyway).
+        include_b64 = bool(args.get("include_base64", False))
 
         self._screenshot_dir.mkdir(parents=True, exist_ok=True)
         fname = f"{int(time.time())}_{call.id[:8]}.png"
@@ -728,6 +735,7 @@ class ComputerUseTools(ToolProvider):
             "path": str(out),
             "size": [int(size[0]), int(size[1])],
             "monitor_index": monitor_idx,
+            "vision_attached": True,
         }
         if include_b64:
             try:
@@ -742,7 +750,12 @@ class ComputerUseTools(ToolProvider):
             except OSError as exc:
                 result["base64_omitted"] = f"read failed: {exc}"
 
-        return _ok(call, t0, json.dumps(result, ensure_ascii=False))
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content=json.dumps(result, ensure_ascii=False),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+            metadata={"attach_image": str(out)},
+        )
 
     async def _screen_size(self, call: ToolCall, t0: float) -> ToolResult:
         try:
@@ -1195,7 +1208,10 @@ class ComputerUseTools(ToolProvider):
             )
         if w <= 0 or h <= 0:
             return _fail(call, t0, "region width/height must be > 0")
-        include_b64 = bool(args.get("include_base64", True))
+        # B-Vision: same migration as _screen_capture — base64 in tool
+        # text is the wrong channel; hop_loop attaches the file as a
+        # real vision content block instead.
+        include_b64 = bool(args.get("include_base64", False))
         quality = _clamp(int(args.get("quality", 85)), 1, 100)
 
         try:
@@ -1242,6 +1258,7 @@ class ComputerUseTools(ToolProvider):
             "region": [x, y, w, h],
             "size": [rw, rh],
             "bytes": fsize,
+            "vision_attached": True,
         }
         if include_b64 and fsize <= self._base64_size_cap:
             try:
@@ -1251,7 +1268,12 @@ class ComputerUseTools(ToolProvider):
                 ).decode("ascii")
             except OSError:
                 pass
-        return _ok(call, t0, json.dumps(result, ensure_ascii=False))
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content=json.dumps(result, ensure_ascii=False),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+            metadata={"attach_image": str(out)},
+        )
 
     # ── 2026-05-12 r2: image template matching ────────────────────
 

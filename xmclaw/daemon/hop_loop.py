@@ -577,6 +577,12 @@ class HopLoopMixin:
 
                 # Phase C: process results in original order (serial).
                 _had_success_this_hop = False
+                # B-Vision: collect ``metadata.attach_image`` paths from
+                # any tools that produced screenshots, so we can inject
+                # a single multimodal user message AFTER the batch (the
+                # OpenAI API requires all tool_call responses back-to-
+                # back; interleaving user messages breaks the contract).
+                _vision_attachments: list[str] = []
                 for call, result in zip(response.tool_calls, _invoke_results):
                     # After todo tool runs, surface TODO_UPDATED so the UI
                     # can live-render the panel. We detect this here to
@@ -852,6 +858,20 @@ class HopLoopMixin:
                         content=tool_msg_content,
                         tool_call_id=call.id,
                     ))
+                    # B-Vision: harvest any vision attachment the tool
+                    # produced. ``ToolResult.metadata["attach_image"]``
+                    # is set by ``screen_capture`` / ``screen_region_capture``
+                    # — see content.py / computer_use.py. Skipped when
+                    # the prompt-injection policy blocked the tool
+                    # output (the tool didn't actually run safely).
+                    if (
+                        result.ok
+                        and not decision.blocked
+                        and isinstance(getattr(result, "metadata", None), dict)
+                    ):
+                        img_path = result.metadata.get("attach_image")
+                        if isinstance(img_path, str) and img_path:
+                            _vision_attachments.append(img_path)
                     if decision.blocked:
                         await publish(EventType.ANTI_REQ_VIOLATION, {
                             "message": "tool output blocked by prompt-injection policy",
@@ -867,6 +887,33 @@ class HopLoopMixin:
                             events=events,
                             error="prompt_injection_blocked",
                         )
+
+                # B-Vision: inject a single user-role message that
+                # actually CARRIES the screenshot(s) the tool batch
+                # produced. Kimi K2.6 / GPT-4o / Claude all accept
+                # ``image_url`` content blocks on user messages; the
+                # OpenAI translator (xmclaw/providers/llm/openai.py
+                # _img_to_data_url) resizes + base64-encodes from path.
+                # This is the SINGLE point in the agent loop where
+                # vision enters context — the OCR detour is now a
+                # fallback, not the primary channel.
+                if _vision_attachments:
+                    messages.append(Message(
+                        role="user",
+                        content=(
+                            "(screenshots from the previous tool batch "
+                            "— look at the images to choose pixel "
+                            "coordinates instead of guessing from OCR "
+                            "text. The first image is from the first "
+                            "screenshot/region tool in the batch, etc.)"
+                        ),
+                        images=tuple(_vision_attachments),
+                    ))
+                    await publish(EventType.INNER_MONOLOGUE, {
+                        "kind": "vision_attached",
+                        "hop": hop,
+                        "image_count": len(_vision_attachments),
+                    })
 
                 # Meta-cognitive no-progress guard: if we haven't made a
                 # successful tool call for N consecutive hops, we're

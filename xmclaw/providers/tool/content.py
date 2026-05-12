@@ -356,7 +356,13 @@ class ContentTools(ToolProvider):
             data = path.read_bytes()
             payload["base64"] = base64.b64encode(data).decode("ascii")
 
-        return _ok(call, t0, json.dumps(payload, ensure_ascii=False))
+        payload["vision_attached"] = True
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content=json.dumps(payload, ensure_ascii=False),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+            metadata={"attach_image": str(path)},
+        )
 
     async def _pdf_read(self, call: ToolCall, t0: float) -> ToolResult:
         try:
