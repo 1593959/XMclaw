@@ -2354,11 +2354,21 @@ class ComputerUseTools(ToolProvider):
                 )
         elif target_bbox is not None and target_bbox[2] > 0:
             wx, wy, ww, wh = target_bbox
-            click_x = wx + ww // 2
-            # 70 px above bottom edge — empirically matches WeChat /
-            # 飞书 / Slack / Discord desktop input composers. If the
-            # caller is using a different app, pass input_bbox.
-            click_y = wy + wh - 70
+            # Click x: center the conversation pane (right ~67% of
+            # window). Window-center clicks the boundary between chat
+            # list and conversation; better to shift right.
+            click_x = wx + (ww * 2) // 3
+            # Click y: WeChat 4.x layout (validated 2026-05-13):
+            #   bottom 50 px = icon row (emoji / file / 截图 / audio)
+            #   above icons: ~200 px input typing area
+            #   above input: messages
+            # CLICKING IN THE ICON ROW triggers the 截图 (screenshot)
+            # tool, which captures a region and auto-sends it. Real
+            # bug observed: agent's click at wh-70 hit 截图, screenshot
+            # got sent instead of the typed text. Fix: click ~150 px
+            # above bottom — center of input typing area, well above
+            # icons.
+            click_y = wy + wh - 150
             source = "window_bottom_heuristic"
         else:
             return _fail(
