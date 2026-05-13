@@ -265,6 +265,97 @@ def _storage_block(st: Any) -> dict[str, Any]:
     return out
 
 
+# Event types the dashboard timeline cares about. The wider event firehose
+# (every tool call, every hop, every state transition) is noisy; this is
+# the curated "what's the agent doing on its own" subset that maps 1:1 to
+# user-visible activity.
+_TIMELINE_EVENT_TYPES = (
+    "proactive_proposal",
+    "reflection_cycle_ran",
+    "memory_consolidated",
+    "goals_groomed",
+    "metacognition_proposal",
+    "task_state_changed",
+    "evolution_promoted",
+)
+
+_TIMELINE_LIMIT = 25
+
+
+def _recent_events_block(st: Any) -> list[dict[str, Any]] | None:
+    """Pull the last _TIMELINE_LIMIT timeline-worthy events from the
+    persistent event log. Returns None when the bus isn't SQLite-backed
+    (in-memory bus during tests) so the UI can hide the card."""
+    bus = getattr(st, "bus", None)
+    if bus is None:
+        return None
+    query = getattr(bus, "query", None)
+    if not callable(query):
+        return None
+    try:
+        evs = query(
+            types=list(_TIMELINE_EVENT_TYPES),
+            limit=_TIMELINE_LIMIT,
+        )
+        # Newest first for the UI (query returns oldest-first).
+        evs = list(reversed(evs))
+        out: list[dict[str, Any]] = []
+        for e in evs:
+            payload = getattr(e, "payload", None)
+            if not isinstance(payload, dict):
+                payload = {}
+            out.append({
+                "id": getattr(e, "id", None),
+                "ts": float(getattr(e, "ts", 0.0)),
+                "type": str(getattr(e, "type", "")),
+                "session_id": getattr(e, "session_id", None),
+                "summary": _summarize_event(
+                    str(getattr(e, "type", "")), payload,
+                ),
+            })
+        return out
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("dashboard.recent_events_block_failed err=%s", exc)
+        return [{"error": str(exc)}]
+
+
+def _summarize_event(ev_type: str, payload: dict[str, Any]) -> str:
+    """Tiny human-readable line for the timeline. Keep these short —
+    they're list items, not paragraphs."""
+    if ev_type == "proactive_proposal":
+        trig = payload.get("trigger", "?")
+        msg = (payload.get("message") or "")[:60]
+        return f"主动发声 [{trig}] {msg}"
+    if ev_type == "reflection_cycle_ran":
+        scope = payload.get("scope", "?")
+        actions = payload.get("actions_taken") or []
+        n = len(actions) if isinstance(actions, list) else 0
+        return f"反思周期 [{scope}] — {n} 项动作"
+    if ev_type == "memory_consolidated":
+        return (
+            f"记忆整理：合并 {payload.get('merged', 0)} 提升 "
+            f"{payload.get('promoted', 0)} 归档 {payload.get('archived', 0)}"
+        )
+    if ev_type == "goals_groomed":
+        return (
+            f"目标梳理：{payload.get('before', 0)} → "
+            f"{payload.get('after', 0)}（完成 "
+            f"{payload.get('completed_archived', 0)}）"
+        )
+    if ev_type == "metacognition_proposal":
+        kind = payload.get("kind", "?")
+        why = (payload.get("why") or "")[:60]
+        return f"元认知建议 [{kind}] {why}"
+    if ev_type == "task_state_changed":
+        return (
+            f"任务状态：{payload.get('from', '?')} → "
+            f"{payload.get('to', '?')}"
+        )
+    if ev_type == "evolution_promoted":
+        return f"技能晋升：{payload.get('skill', '?')}"
+    return ev_type
+
+
 # ── endpoint ──────────────────────────────────────────────────────
 
 
@@ -283,7 +374,8 @@ async def overview(request: Request) -> JSONResponse:
           "cognition":    {goal_count, active_goals, ...} | null,
           "suggestions":  {pending_count, recent} | null,
           "tasks":        {total, by_status} | null,
-          "storage":      {events_db_bytes, ...}
+          "storage":      {events_db_bytes, ...},
+          "recent_events": [{ts, type, summary, ...}] | null
         }
     """
     st = _state(request)
@@ -298,5 +390,6 @@ async def overview(request: Request) -> JSONResponse:
         "suggestions": _suggestions_block(st),
         "tasks": _tasks_block(st),
         "storage": _storage_block(st),
+        "recent_events": _recent_events_block(st),
     }
     return JSONResponse(payload)

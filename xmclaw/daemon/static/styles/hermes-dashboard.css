@@ -146,8 +146,69 @@
   padding: 0.5rem 0.7rem;
 }
 
+/* ── Wide card (timeline spans full grid width) ────────────────── */
+.xmc-dash__card--wide {
+  grid-column: 1 / -1;
+  background: color-mix(in srgb, var(--midground) 4%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 0.85rem 1rem 1rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.xmc-dash__timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.xmc-dash__timeline-item {
+  display: grid;
+  grid-template-columns: 1.4rem 1fr auto;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--midground);
+  padding: 0.35rem 0.5rem;
+  background: color-mix(in srgb, var(--midground) 3%, transparent);
+  border-radius: var(--radius-sm);
+  border-left: 2px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+
+.xmc-dash__timeline-icon {
+  font-size: 0.95rem;
+  text-align: center;
+}
+
+.xmc-dash__timeline-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xmc-dash__timeline-meta {
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 @media (max-width: 640px) {
   .xmc-dash__grid {
     grid-template-columns: 1fr;
+  }
+  .xmc-dash__timeline-item {
+    grid-template-columns: 1.4rem 1fr;
+  }
+  .xmc-dash__timeline-meta {
+    grid-column: 2;
+    font-size: 0.65rem;
   }
 }

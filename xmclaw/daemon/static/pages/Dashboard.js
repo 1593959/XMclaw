@@ -270,6 +270,57 @@ function StorageCard({ storage }) {
   `;
 }
 
+const EVENT_ICONS = {
+  proactive_proposal:     "📢",
+  reflection_cycle_ran:   "🪞",
+  memory_consolidated:    "🧠",
+  goals_groomed:          "🎯",
+  metacognition_proposal: "💡",
+  task_state_changed:     "🔄",
+  evolution_promoted:     "⬆",
+};
+
+function RecentEventsCard({ recentEvents, now }) {
+  // Span the full grid width — this is the "what was the agent doing"
+  // timeline and benefits from one long column over multiple short ones.
+  if (recentEvents == null) {
+    return html`
+      <${Card} title="最近活动">
+        <${EmptyHint} text="事件总线未启用 — 在内存总线下无持久化记录" />
+      </${Card}>
+    `;
+  }
+  if (recentEvents.length > 0 && recentEvents[0].error) {
+    return html`<${Card} title="最近活动"><div class="xmc-dash__err">读取失败：${recentEvents[0].error}</div></${Card}>`;
+  }
+  if (recentEvents.length === 0) {
+    return html`
+      <${Card} title="最近活动" hint="近 25 条主动认知事件">
+        <${EmptyHint} text="还没记录到 agent 自己发起的活动" />
+      </${Card}>
+    `;
+  }
+  return html`
+    <div class="xmc-dash__card xmc-dash__card--wide">
+      <header class="xmc-dash__card-head">
+        <h2 class="xmc-dash__card-title">最近活动</h2>
+        <span class="xmc-dash__card-hint">近 ${recentEvents.length} 条主动认知事件</span>
+      </header>
+      <ol class="xmc-dash__timeline">
+        ${recentEvents.map((e) => html`
+          <li class="xmc-dash__timeline-item">
+            <span class="xmc-dash__timeline-icon" aria-hidden="true">
+              ${EVENT_ICONS[e.type] || "•"}
+            </span>
+            <span class="xmc-dash__timeline-text">${e.summary}</span>
+            <span class="xmc-dash__timeline-meta">${fmtDuration(now - e.ts)} 前</span>
+          </li>
+        `)}
+      </ol>
+    </div>
+  `;
+}
+
 // ── Main page ─────────────────────────────────────────────────────
 
 export function DashboardPage({ token }) {
@@ -337,6 +388,7 @@ export function DashboardPage({ token }) {
         <${SuggestionsCard} suggestions=${data.suggestions} now=${now} />
         <${TasksCard} tasks=${data.tasks} />
         <${StorageCard} storage=${data.storage} />
+        <${RecentEventsCard} recentEvents=${data.recent_events} now=${now} />
       </div>
     </section>
   `;

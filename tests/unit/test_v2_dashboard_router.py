@@ -182,3 +182,106 @@ def test_overview_resilient_to_failing_subsystem(
     assert "error" in body["autobio"]
     # Sibling blocks unaffected.
     assert "storage" in body
+
+
+# ── Wave 8: recent_events timeline ────────────────────────────────
+
+
+def test_overview_includes_recent_events_key(
+    empty_client: TestClient,
+) -> None:
+    """Top-level key exists even when no SQLite bus is wired (in-memory
+    test bus has no .query attribute)."""
+    body = empty_client.get("/api/v2/dashboard/overview").json()
+    assert "recent_events" in body
+    # InProcessEventBus doesn't expose .query, so None is correct.
+    assert body["recent_events"] is None
+
+
+@pytest.fixture
+def client_with_event_bus(empty_client: TestClient) -> TestClient:
+    """Attach a fake bus with .query() returning realistic events."""
+
+    class _Ev:
+        def __init__(self, ev_type, payload, ts, ev_id):
+            self.type = ev_type
+            self.payload = payload
+            self.ts = ts
+            self.id = ev_id
+            self.session_id = "s1"
+
+    now = time.time()
+    fake_bus = MagicMock()
+    fake_bus.query.return_value = [
+        _Ev(
+            "proactive_proposal",
+            {"trigger": "idle_check_in", "message": "你刚才忙完了吗？"},
+            now - 60.0, "e1",
+        ),
+        _Ev(
+            "reflection_cycle_ran",
+            {"scope": "recent", "actions_taken": ["propose_skill"]},
+            now - 30.0, "e2",
+        ),
+        _Ev(
+            "goals_groomed",
+            {"before": 5, "after": 3, "completed_archived": 2},
+            now - 10.0, "e3",
+        ),
+    ]
+    empty_client.app.state.bus = fake_bus
+    return empty_client
+
+
+def test_overview_recent_events_returns_summaries(
+    client_with_event_bus: TestClient,
+) -> None:
+    body = client_with_event_bus.get(
+        "/api/v2/dashboard/overview",
+    ).json()
+    evs = body["recent_events"]
+    assert isinstance(evs, list)
+    assert len(evs) == 3
+    # Reversed = newest first.
+    assert evs[0]["type"] == "goals_groomed"
+    assert evs[1]["type"] == "reflection_cycle_ran"
+    assert evs[2]["type"] == "proactive_proposal"
+    # Human-readable summaries are baked server-side.
+    assert "目标梳理" in evs[0]["summary"]
+    assert "反思周期" in evs[1]["summary"]
+    assert "主动发声" in evs[2]["summary"]
+    assert "idle_check_in" in evs[2]["summary"]
+
+
+def test_overview_recent_events_filters_by_type(
+    client_with_event_bus: TestClient,
+) -> None:
+    """The endpoint must pass the curated whitelist into bus.query()
+    — we don't want every tool_call clogging the timeline."""
+    client_with_event_bus.get("/api/v2/dashboard/overview")
+    fake_bus = client_with_event_bus.app.state.bus
+    call_kwargs = fake_bus.query.call_args.kwargs
+    types = call_kwargs.get("types") or []
+    # Spot-check a few must-be-included types.
+    assert "proactive_proposal" in types
+    assert "reflection_cycle_ran" in types
+    assert "metacognition_proposal" in types
+    # tool_call is intentionally NOT in the whitelist.
+    assert "tool_call" not in types
+
+
+def test_overview_recent_events_resilient_to_bus_failure(
+    empty_client: TestClient,
+) -> None:
+    """A failing bus.query() must not 500 the whole endpoint."""
+    bad = MagicMock()
+    bad.query.side_effect = RuntimeError("db locked")
+    empty_client.app.state.bus = bad
+
+    r = empty_client.get("/api/v2/dashboard/overview")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    evs = body["recent_events"]
+    assert isinstance(evs, list)
+    assert len(evs) == 1
+    assert "error" in evs[0]
