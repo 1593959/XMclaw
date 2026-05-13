@@ -192,12 +192,17 @@ def build_bridge_from_config(
     channels_config: dict[str, Any] | None,
     proactive_push_config: dict[str, Any] | None,
     adapters: list[Any],
+    include_persisted: bool = True,
 ) -> ProactiveChannelBridge | None:
     """Convenience for lifespan: build + populate a bridge from the
-    same config dicts already in scope.
+    same config dicts already in scope. Wave 10: also reads the
+    persistent target store (``~/.xmclaw/v2/proactive_targets.json``)
+    so users who ran ``/订阅`` in chat get their subscription back
+    across daemon restarts.
 
     Returns ``None`` when there are no enabled channels with a
-    ``proactive_chat_id`` — caller can skip starting the bridge.
+    ``proactive_chat_id`` AND no persisted targets — caller can skip
+    starting the bridge.
     """
     pp_cfg = proactive_push_config or {}
     enabled = bool(pp_cfg.get("enabled", True))
@@ -209,7 +214,8 @@ def build_bridge_from_config(
     )
     chcfg = channels_config or {}
     if not isinstance(chcfg, dict):
-        return None
+        chcfg = {}
+    # 1) Static config: channels.<id>.proactive_chat_id
     for ch_id, ch_cfg in chcfg.items():
         if not isinstance(ch_cfg, dict) or not ch_cfg.get("enabled"):
             continue
@@ -223,6 +229,28 @@ def build_bridge_from_config(
         if adapter is None:
             continue
         bridge.add_target(adapter, ref.strip())
+    # 2) Persisted runtime subscriptions from /订阅 slash commands.
+    if include_persisted:
+        try:
+            from xmclaw.cognition.proactive_target_store import (
+                load_targets,
+            )
+            for t in load_targets():
+                adapter = next(
+                    (
+                        a for a in adapters
+                        if getattr(a, "name", None) == t.channel
+                    ),
+                    None,
+                )
+                if adapter is None:
+                    continue
+                bridge.add_target(adapter, t.ref)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "proactive_channel_bridge.persisted_load_failed err=%s",
+                exc,
+            )
     if bridge.target_count() == 0:
         return None
     return bridge

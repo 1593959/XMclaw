@@ -52,7 +52,13 @@ class ChannelDispatcher:
                so this module doesn't import xmclaw.daemon.agent_loop.
     """
 
-    def __init__(self, agent: Any, *, ack_delay_s: float = 0.0) -> None:
+    def __init__(
+        self,
+        agent: Any,
+        *,
+        ack_delay_s: float = 0.0,
+        app_state: Any | None = None,
+    ) -> None:
         self._agent = agent
         self._adapters: list[ChannelAdapter] = []
         # In-flight per-(channel, chat) lock so two messages in the
@@ -63,6 +69,12 @@ class ChannelDispatcher:
         # message ("不要两秒，要立刻"). Set >0 to suppress ack on
         # fast turns, or for tests that don't want the placeholder.
         self._ack_delay_s = ack_delay_s
+        # Wave 10: app.state ref so the slash-command router can pull
+        # daemon health / autobio / cognitive_state / config for
+        # /status / /tasks / /calendar. Optional — None means slash
+        # commands still work but read-only commands degrade to
+        # "未启用" messages.
+        self._app_state = app_state
 
     def add(self, adapter: ChannelAdapter) -> None:
         """Register an adapter + subscribe to its inbound stream."""
@@ -104,16 +116,43 @@ class ChannelDispatcher:
                 )
 
     async def _handle_one(self, msg: InboundMessage, session_id: str) -> None:
-        agent = self._agent
-        if agent is None or not hasattr(agent, "run_turn"):
-            _log.warning("channel.no_agent_wired channel=%s", msg.target.channel)
-            return
-
         adapter = next(
             (a for a in self._adapters if a.name == msg.target.channel),
             None,
         )
         reply_to = (msg.raw or {}).get("message_id") if msg.raw else None
+
+        # Wave 10: slash-command short-circuit. Intercept `/cmd ...`
+        # before the AgentLoop turn so /订阅 / /状态 / /帮助 don't
+        # consume LLM tokens. Conversational messages flow through
+        # unchanged.
+        from xmclaw.daemon.channel_slash_router import (
+            is_slash_command,
+            route as _slash_route,
+        )
+        if is_slash_command(msg.content) and adapter is not None:
+            try:
+                reply = await _slash_route(
+                    msg.content,
+                    app_state=self._app_state,
+                    channel=msg.target.channel,
+                    chat_ref=msg.target.ref,
+                )
+                await adapter.send(
+                    msg.target,
+                    OutboundMessage(content=reply, reply_to=reply_to),
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "channel.slash_failed channel=%s err=%s",
+                    msg.target.channel, exc,
+                )
+            return
+
+        agent = self._agent
+        if agent is None or not hasattr(agent, "run_turn"):
+            _log.warning("channel.no_agent_wired channel=%s", msg.target.channel)
+            return
 
         # B-195: delayed acknowledgement. Long-running turns
         # (web search + multi-hop LLM) can take 30s-2min in IM

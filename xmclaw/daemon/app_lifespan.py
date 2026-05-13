@@ -1269,7 +1269,9 @@ def make_lifespan(
             channels_cfg = (config or {}).get("channels") or {}
             if isinstance(channels_cfg, dict) and channels_cfg and agent is not None:
                 manifests = _ch_discover(include_scaffolds=False)
-                channel_dispatcher = ChannelDispatcher(agent)
+                channel_dispatcher = ChannelDispatcher(
+                    agent, app_state=_app.state,
+                )
                 for ch_id, ch_cfg in channels_cfg.items():
                     if not isinstance(ch_cfg, dict) or not ch_cfg.get("enabled"):
                         continue
