@@ -36,6 +36,25 @@ export function ChatPage({ chat, session, connection, token, onSend, onCancel, o
   const busy = !!chat.pendingAssistantId;
   const sid = session.activeSid || "(new)";
 
+  // Wave 7: feed the latest finalized assistant message to the
+  // Composer so its continuous-voice loop can TTS-read it when the
+  // turn ends.
+  const lastAssistantText = (() => {
+    const msgs = chat.messages || [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m.role !== "assistant") continue;
+      if (m.id === chat.pendingAssistantId) continue;  // still streaming
+      const text = typeof m.content === "string"
+        ? m.content
+        : (Array.isArray(m.content)
+          ? m.content.map((b) => b?.text || "").join(" ")
+          : "");
+      return text;
+    }
+    return "";
+  })();
+
   // B1: visible-at-top loading dot during connect/reconnect — kept inline
   // so the message list stays mounted and the user doesn't lose scroll
   // position on a transient drop.
@@ -168,6 +187,7 @@ export function ChatPage({ chat, session, connection, token, onSend, onCancel, o
           images=${stagedImages}
           onAddImages=${onAddImages}
           onRemoveImage=${onRemoveImage}
+          lastAssistantText=${lastAssistantText}
         />
        </div>
        <${ChatSidebar}

@@ -25,6 +25,11 @@ import { Button } from "../atoms/button.js";
 import { Badge } from "../atoms/badge.js";
 import { usePopoverApi } from "./SlashPopover.js";
 import { createRecognizer, sttSupported } from "../../lib/audio.js";
+import {
+  createVoiceLoop,
+  voiceLoopSupported,
+  PHASES as VOICE_PHASES,
+} from "../../lib/voice_loop.js";
 import { toast } from "../../lib/toast.js";
 
 // B-105: prompt history picker (free-code HISTORY_PICKER parity).
@@ -81,6 +86,7 @@ export function Composer({
   images,
   onAddImages,
   onRemoveImage,
+  lastAssistantText,
 }) {
   const fileInputRef = useRef(null);
 
@@ -184,6 +190,82 @@ export function Composer({
 
   useEffect(() => () => {
     if (recRef.current) recRef.current.stop();
+  }, []);
+
+  // ── Continuous voice loop (Sprint 2 Wave 7) ─────────────────────
+  // Hands-free conversation: one tap on "对话" enters a state machine
+  // that listens → submits → speaks the reply → listens again.
+  const [voiceActive, setVoiceActive] = useState(false);
+  const [voicePhase, setVoicePhase] = useState(VOICE_PHASES.IDLE);
+  const voiceRef = useRef(null);
+  const wasBusyRef = useRef(false);
+  const pendingValueRef = useRef(null);
+
+  function startVoiceLoop() {
+    if (!voiceLoopSupported) {
+      toast.error("当前浏览器不支持连续语音（建议 Chrome 或 Edge）");
+      return;
+    }
+    if (voiceRef.current) {
+      voiceRef.current.stop();
+      voiceRef.current = null;
+    }
+    const loop = createVoiceLoop({
+      onUtterance: (text) => {
+        // Stage the text into the draft and fire send. The reply
+        // will land via the busy false→true→false transition below.
+        pendingValueRef.current = text;
+        onChange(text);
+      },
+      onPhaseChange: (p) => setVoicePhase(p),
+      onError: (err) => {
+        const msg = err?.message || String(err) || "voice loop error";
+        if (msg !== "no-speech" && msg !== "aborted") {
+          toast.error("连续语音：" + msg);
+        }
+      },
+    });
+    voiceRef.current = loop;
+    loop.start();
+    setVoiceActive(true);
+  }
+
+  function stopVoiceLoop() {
+    if (voiceRef.current) {
+      voiceRef.current.stop();
+      voiceRef.current = null;
+    }
+    setVoiceActive(false);
+    setVoicePhase(VOICE_PHASES.IDLE);
+    pendingValueRef.current = null;
+  }
+
+  // When voice loop staged a value into the draft, fire onSend on the
+  // next tick once the parent has propagated value=text down. This
+  // avoids racing the controlled-input cycle.
+  useEffect(() => {
+    if (!voiceActive) return;
+    if (pendingValueRef.current == null) return;
+    if (value !== pendingValueRef.current) return;  // wait for prop sync
+    if (!canSend) return;
+    pendingValueRef.current = null;
+    onSend();
+  }, [voiceActive, value, canSend, onSend]);
+
+  // Busy true→false transition with the voice loop active means the
+  // agent's reply has landed — push it through TTS, which auto-restarts
+  // the recognizer when done.
+  useEffect(() => {
+    if (!voiceActive || !voiceRef.current) return;
+    const wasBusy = wasBusyRef.current;
+    wasBusyRef.current = busy;
+    if (wasBusy && !busy) {
+      voiceRef.current.deliverReply(lastAssistantText || "");
+    }
+  }, [busy, voiceActive, lastAssistantText]);
+
+  useEffect(() => () => {
+    if (voiceRef.current) voiceRef.current.stop();
   }, []);
 
   const startListening = () => {
@@ -412,6 +494,25 @@ export function Composer({
           title="Ultrathink：触发更深的推理（消耗更多 token）"
         >
           ★ Ultrathink
+        </button>
+        <button
+          type="button"
+          class=${"xmc-composer__chip" + (voiceActive ? " is-on" : "") + (voiceLoopSupported ? "" : " is-disabled")}
+          aria-pressed=${voiceActive ? "true" : "false"}
+          onClick=${voiceActive ? stopVoiceLoop : startVoiceLoop}
+          disabled=${!voiceLoopSupported}
+          title=${voiceLoopSupported
+            ? (voiceActive
+              ? `连续语音中（${voicePhase === VOICE_PHASES.LISTENING ? "听你说" : voicePhase === VOICE_PHASES.SUBMITTING ? "提交中" : voicePhase === VOICE_PHASES.SPEAKING ? "在说话" : "待机"}）— 点击退出`
+              : "连续对话模式：解放双手，说完它就回，回完接着听")
+            : "当前浏览器不支持连续语音"}
+        >
+          ${voiceActive
+            ? (voicePhase === VOICE_PHASES.LISTENING ? "🎧 听"
+              : voicePhase === VOICE_PHASES.SUBMITTING ? "✉ 发"
+              : voicePhase === VOICE_PHASES.SPEAKING ? "🔊 说"
+              : "🔁 对话")
+            : "🔁 对话"}
         </button>
         <span class="xmc-composer__hint">
           ${busy
