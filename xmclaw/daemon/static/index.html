@@ -8,8 +8,13 @@
 <html lang="zh-CN" data-theme="dark" data-density="comfortable">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#1a1f2a" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="XMclaw" />
+    <link rel="manifest" href="/ui/manifest.webmanifest" />
     <title>XMclaw</title>
 
     <!-- Hermes 1:1 design system. Tokens first; everything else cascades. -->
@@ -40,6 +45,10 @@
     <link rel="stylesheet" href="./styles/workspace.css" />
     <link rel="stylesheet" href="./styles/toast.css" />
     <link rel="stylesheet" href="./components/atoms/atoms.css" />
+    <!-- Sprint 1 Wave 4: mobile-responsive overrides. MUST be last
+         in the stylesheet chain so its breakpoint rules win the cascade
+         against earlier desktop styles. -->
+    <link rel="stylesheet" href="./styles/mobile.css" />
 
     <!--
       bootstrap.js does two jobs:
@@ -48,6 +57,17 @@
       We keep it as a module so top-level await is available.
     -->
     <script type="module" src="./bootstrap.js"></script>
+    <!-- Sprint 1 Wave 4: PWA service worker. Registers once on
+         first load; sw.js handles its own version bump on update.
+         Failure to register is silent — daemon access still works. -->
+    <script>
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => {
+          navigator.serviceWorker.register("/ui/sw.js", { scope: "/ui/" })
+            .catch(() => { /* fine — PWA is opt-in polish */ });
+        });
+      }
+    </script>
   </head>
   <body>
     <!--

@@ -1,0 +1,152 @@
+/* XMclaw — mobile responsive layer (Sprint 1 Wave 4)
+ *
+ * Breakpoints (mobile-first style — these add overrides for SMALL
+ * screens; desktop styles in other files are the baseline):
+ *
+ *   <= 880px : tablet / wide phone — sidebar already hides
+ *              (handled in hermes-chatsidebar.css), but we still
+ *              tighten composer + message bubbles.
+ *   <= 640px : phone — single-column, larger touch targets, full-
+ *              width bubbles, sticky composer.
+ *
+ * Touch-friendly: minimum 44×44 px for buttons (Apple HIG), 1.2 rem
+ * font in composer, ample gap between message bubbles.
+ *
+ * Pulled in at the end of index.html so it overrides earlier desktop
+ * styles via cascade.
+ */
+
+/* ── Tablet + small laptop (≤ 880 px) ───────────────────────────── */
+
+@media (max-width: 880px) {
+  /* Composer chips can wrap two rows on narrow screens. */
+  .xmc-composer__toolbar {
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+
+  /* Hide the right rail entirely on narrow tablet — covered by the
+     chatsidebar rule, but reassert for any new right-rail siblings. */
+  .xmc-h-chatpage__aside {
+    display: none;
+  }
+}
+
+/* ── Phone (≤ 640 px) ───────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  /* App shell: collapse left nav into a drawer overlay (toggled by
+     the hamburger button which is already in the shell header). */
+  .xmc-h-sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 50;
+    width: 78vw;
+    max-width: 280px;
+    transform: translateX(-100%);
+    transition: transform 200ms ease;
+    box-shadow: 0 0 30px rgba(0, 0, 0, 0.35);
+  }
+  .xmc-h-sidebar.is-open {
+    transform: translateX(0);
+  }
+  .xmc-h-main {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  /* Chat area: full width, no padding so bubbles can use the screen. */
+  .xmc-h-chatpage {
+    padding: 0;
+    gap: 0;
+  }
+  .xmc-h-chatpage__main {
+    padding: 0.4rem;
+  }
+
+  /* Message bubbles: bigger touch target, narrower horizontal
+     padding so the text fills the screen. */
+  .xmc-msg {
+    padding: 0.6rem 0.7rem;
+    margin-bottom: 0.6rem;
+    font-size: 0.95rem;
+    line-height: 1.5;
+  }
+  .xmc-msg__header {
+    font-size: 0.72rem;
+  }
+
+  /* Composer: sticky bottom, larger touch targets. */
+  .xmc-composer {
+    position: sticky;
+    bottom: 0;
+    padding: 0.5rem 0.4rem calc(env(safe-area-inset-bottom, 0px) + 0.5rem);
+    background: var(--color-bg, #1a1f2a);
+    border-top: 1px solid var(--color-border, #2a2f3a);
+    z-index: 10;
+  }
+  .xmc-composer__input {
+    font-size: 1rem;       /* prevent iOS zoom on focus (< 16px) */
+    min-height: 44px;
+    padding: 0.6rem 0.7rem;
+  }
+  .xmc-composer__mic,
+  .xmc-composer__attach {
+    width: 44px;
+    height: 44px;
+    font-size: 1.2rem;
+  }
+  .xmc-composer__chip {
+    min-height: 36px;
+    padding: 0.4rem 0.7rem;
+    font-size: 0.85rem;
+  }
+
+  /* Attachment thumbnails — slightly larger on touch. */
+  .xmc-composer__attachment {
+    width: 72px;
+    height: 72px;
+  }
+
+  /* Toolcard images: stay under the screen width. */
+  .xmc-toolcard__image,
+  .xmc-msg__image {
+    max-height: 220px;
+    max-width: calc(100vw - 2rem);
+  }
+
+  /* Phase / status badges shrink to fit. */
+  .xmc-badge {
+    font-size: 0.68rem;
+    padding: 0.1rem 0.4rem;
+  }
+
+  /* Hide the topbar shortcuts hint on narrow screens. */
+  .xmc-composer__hint {
+    display: none;
+  }
+}
+
+/* ── Very small phone (≤ 380 px) ───────────────────────────────── */
+
+@media (max-width: 380px) {
+  /* Push the composer chips into a single horizontal scrollable
+     strip when they overflow. */
+  .xmc-composer__toolbar {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+  }
+  .xmc-composer__toolbar::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* ── PWA / installed-app polish ─────────────────────────────────── */
+
+@media (display-mode: standalone) {
+  /* Hide URL bar margin when installed — looks like a native app. */
+  body {
+    overscroll-behavior-y: none;
+  }
+}
