@@ -84,18 +84,70 @@ _BROWSER_OPEN_SPEC = ToolSpec(
 _BROWSER_CLICK_SPEC = ToolSpec(
     name="browser_click",
     description=(
-        "Click an element by CSS selector (or Playwright text= selector). "
-        "Fails if the element isn't found within 5 seconds."
+        "Click an element. Auto-waits for the element to become visible "
+        "(timeout via context default ~15s), scrolls it into view, "
+        "clicks, then detects whether a navigation occurred. Returns "
+        "the post-click URL + title so the agent knows whether to "
+        "browser_snapshot again."
     ),
     parameters_schema={
         "type": "object",
         "properties": {
             "selector": {
                 "type": "string",
-                "description": "CSS selector or 'text=...' / 'role=...' Playwright locator.",
+                "description": (
+                    "CSS selector, 'text=...' / 'role=...' Playwright "
+                    "locator, or 'nth=N selector' to pick the Nth match "
+                    "(0-indexed) when the selector is ambiguous."
+                ),
+            },
+            "force": {
+                "type": "boolean",
+                "description": (
+                    "Bypass Playwright's actionability checks (covered "
+                    "by overlay, not stable, etc.). Default false."
+                ),
+            },
+            "wait_for_navigation_ms": {
+                "type": "integer",
+                "description": (
+                    "Max ms to wait for a navigation that the click "
+                    "might trigger. 0 = don't wait, just report URL "
+                    "delta. Default 2000."
+                ),
             },
         },
         "required": ["selector"],
+    },
+)
+
+_BROWSER_PRESS_SPEC = ToolSpec(
+    name="browser_press",
+    description=(
+        "Press a key (or chord) on the focused element. Use this after "
+        "browser_fill to submit a form via Enter, navigate dropdowns "
+        "with Arrow keys, dismiss modals with Escape, etc. Key syntax "
+        "matches Playwright: 'Enter', 'Tab', 'Escape', 'ArrowDown', "
+        "'PageDown', 'Control+A', 'Shift+Tab', etc."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "key": {
+                "type": "string",
+                "description": "Single key or chord like 'Control+A'.",
+            },
+            "selector": {
+                "type": "string",
+                "description": (
+                    "Optional — if set, focus this element first via "
+                    "page.locator(selector).press(key). If omitted, "
+                    "uses page.keyboard.press(key) on whatever is "
+                    "currently focused."
+                ),
+            },
+        },
+        "required": ["key"],
     },
 )
 
@@ -115,9 +167,13 @@ _BROWSER_FILL_SPEC = ToolSpec(
 _BROWSER_SCREENSHOT_SPEC = ToolSpec(
     name="browser_screenshot",
     description=(
-        "Take a PNG screenshot of the current viewport. Returns a "
-        "base64-encoded data URL. Full-page screenshots are opt-in via "
-        "``full_page=true``."
+        "Take a screenshot of the current viewport. Returns a base64 "
+        "data URL by default; if the encoded payload would exceed "
+        "``max_inline_bytes`` (default 512 KB) it falls back to "
+        "writing a file under ~/.xmclaw/v2/screenshots/ and returns "
+        "the path instead — so a full-page capture of a long article "
+        "doesn't blow the LLM context window. Full-page screenshots "
+        "are opt-in via ``full_page=true``."
     ),
     parameters_schema={
         "type": "object",
@@ -126,6 +182,18 @@ _BROWSER_SCREENSHOT_SPEC = ToolSpec(
                 "type": "boolean",
                 "description": "Capture the entire scrollable page. Default false.",
             },
+            "format": {
+                "type": "string",
+                "description": "'png' (lossless) or 'jpeg' (smaller). Default 'png'.",
+            },
+            "quality": {
+                "type": "integer",
+                "description": "1-100, JPEG only. Default 80.",
+            },
+            "max_inline_bytes": {
+                "type": "integer",
+                "description": "Cap on the inline data_url. Larger captures spill to disk. Default 524288.",
+            },
         },
     },
 )
@@ -133,10 +201,11 @@ _BROWSER_SCREENSHOT_SPEC = ToolSpec(
 _BROWSER_SNAPSHOT_SPEC = ToolSpec(
     name="browser_snapshot",
     description=(
-        "Return a lightweight text+link view of the current page -- "
+        "Return a lightweight text+link+form view of the current page -- "
         "good for LLM reasoning over content without the image-parsing "
-        "overhead. Includes title, visible text (truncated), and the "
-        "top N hyperlinks."
+        "overhead. Includes title, visible text (truncated), top-N "
+        "hyperlinks, AND form inputs + buttons with their selectors so "
+        "the agent can fill / click without guessing CSS."
     ),
     parameters_schema={
         "type": "object",
@@ -148,6 +217,10 @@ _BROWSER_SNAPSHOT_SPEC = ToolSpec(
             "max_links": {
                 "type": "integer",
                 "description": "Top-N links to surface. Default 30.",
+            },
+            "max_inputs": {
+                "type": "integer",
+                "description": "Top-N inputs / buttons to surface. Default 20.",
             },
         },
     },
@@ -218,9 +291,9 @@ class BrowserTools(ToolProvider):
         # the tool returns a structured install-me error when called,
         # which is much friendlier than "unknown tool".
         return [
-            _BROWSER_OPEN_SPEC, _BROWSER_CLICK_SPEC, _BROWSER_FILL_SPEC,
-            _BROWSER_SCREENSHOT_SPEC, _BROWSER_SNAPSHOT_SPEC,
-            _BROWSER_EVAL_SPEC, _BROWSER_CLOSE_SPEC,
+            _BROWSER_OPEN_SPEC, _BROWSER_CLICK_SPEC, _BROWSER_PRESS_SPEC,
+            _BROWSER_FILL_SPEC, _BROWSER_SCREENSHOT_SPEC,
+            _BROWSER_SNAPSHOT_SPEC, _BROWSER_EVAL_SPEC, _BROWSER_CLOSE_SPEC,
         ]
 
     async def invoke(self, call: ToolCall) -> ToolResult:
@@ -230,6 +303,8 @@ class BrowserTools(ToolProvider):
                 return await self._open(call, t0)
             if call.name == "browser_click":
                 return await self._click(call, t0)
+            if call.name == "browser_press":
+                return await self._press(call, t0)
             if call.name == "browser_fill":
                 return await self._fill(call, t0)
             if call.name == "browser_screenshot":
@@ -358,13 +433,120 @@ class BrowserTools(ToolProvider):
         sel = call.args.get("selector")
         if not isinstance(sel, str) or not sel:
             return _fail(call, t0, "missing or empty 'selector'")
+        force = bool(call.args.get("force", False))
+        wait_nav_ms = int(call.args.get("wait_for_navigation_ms", 2000))
         page = await self._page_for(self._sid(call))
         if page is None or page.url == "about:blank":
             return _fail(call, t0, "no page open -- call browser_open first")
-        await page.click(sel)
+
+        url_before = page.url
+        title_before = ""
+        try:
+            title_before = await page.title()
+        except Exception:  # noqa: BLE001
+            pass
+
+        # Click with auto-wait. Playwright's locator API auto-waits for
+        # the element to be visible + stable + receive events before
+        # firing — much more reliable than the legacy ``page.click(sel)``
+        # path which would race JS-rendered widgets. ``force`` skips the
+        # actionability checks for the rare case where an overlay
+        # blocks the hit-test but the click should still go through.
+        try:
+            locator = page.locator(sel)
+            await locator.first.click(force=force)
+        except Exception as exc:  # noqa: BLE001
+            # Try to give the agent useful diagnostics: how many
+            # elements matched, was the page still loading, etc.
+            count = None
+            try:
+                count = await page.locator(sel).count()
+            except Exception:  # noqa: BLE001
+                pass
+            return _fail(
+                call, t0,
+                f"click failed: {type(exc).__name__}: {exc}"
+                + (f" (matched {count} elements)" if count is not None else ""),
+            )
+
+        # Detect a navigation kicked off by the click. We don't strictly
+        # need page.expect_navigation here — we just compare URLs after
+        # a short settle window. If the click was a SPA route change
+        # without a real network nav, page.wait_for_load_state still
+        # gives JS frameworks a moment to render the new DOM.
+        navigated = False
+        new_url = url_before
+        new_title = title_before
+        if wait_nav_ms > 0:
+            try:
+                await page.wait_for_load_state(
+                    "domcontentloaded", timeout=wait_nav_ms,
+                )
+            except Exception:  # noqa: BLE001 — timeout is fine, just no nav
+                pass
+            try:
+                new_url = page.url
+                new_title = await page.title()
+            except Exception:  # noqa: BLE001
+                pass
+        navigated = new_url != url_before
+
         return ToolResult(
-            call_id=call.id, ok=True, content=f"clicked {sel!r}",
-            side_effects=(), latency_ms=(time.perf_counter() - t0) * 1000.0,
+            call_id=call.id, ok=True,
+            content={
+                "selector": sel,
+                "url": new_url,
+                "title": new_title,
+                "navigated": navigated,
+                "url_before": url_before,
+            },
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _press(self, call: ToolCall, t0: float) -> ToolResult:
+        key = call.args.get("key")
+        if not isinstance(key, str) or not key.strip():
+            return _fail(call, t0, "missing or empty 'key'")
+        page = await self._page_for(self._sid(call))
+        if page is None or page.url == "about:blank":
+            return _fail(call, t0, "no page open -- call browser_open first")
+        sel = call.args.get("selector")
+        url_before = page.url
+        try:
+            if isinstance(sel, str) and sel:
+                await page.locator(sel).first.press(key)
+            else:
+                await page.keyboard.press(key)
+        except Exception as exc:  # noqa: BLE001
+            return _fail(
+                call, t0,
+                f"press failed: {type(exc).__name__}: {exc}",
+            )
+        # Same auto-wait posture as click — Enter often submits a form
+        # which navigates.
+        try:
+            await page.wait_for_load_state(
+                "domcontentloaded", timeout=2000,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        new_url = page.url
+        try:
+            new_title = await page.title()
+        except Exception:  # noqa: BLE001
+            new_title = ""
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "key": key,
+                "selector": sel or None,
+                "url": new_url,
+                "title": new_title,
+                "navigated": new_url != url_before,
+            },
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 
     async def _fill(self, call: ToolCall, t0: float) -> ToolResult:
@@ -386,29 +568,62 @@ class BrowserTools(ToolProvider):
 
     async def _screenshot(self, call: ToolCall, t0: float) -> ToolResult:
         full = bool(call.args.get("full_page", False))
+        fmt = (call.args.get("format") or "png").lower()
+        if fmt not in ("png", "jpeg"):
+            return _fail(call, t0, f"format must be 'png' or 'jpeg', got {fmt!r}")
+        quality = int(call.args.get("quality", 80))
+        max_inline = int(call.args.get("max_inline_bytes", 512 * 1024))
         page = await self._page_for(self._sid(call))
         if page is None or page.url == "about:blank":
             return _fail(call, t0, "no page open -- call browser_open first")
-        png = await page.screenshot(full_page=full, type="png")
-        b64 = base64.b64encode(png).decode("ascii")
+
+        shot_kwargs: dict[str, Any] = {"full_page": full, "type": fmt}
+        if fmt == "jpeg":
+            shot_kwargs["quality"] = max(1, min(100, quality))
+        png_or_jpeg = await page.screenshot(**shot_kwargs)
+        mime = "image/png" if fmt == "png" else "image/jpeg"
+        b64 = base64.b64encode(png_or_jpeg).decode("ascii")
+        inline_size = len(b64) + len(f"data:{mime};base64,")
+
+        content: dict[str, Any] = {
+            "mime": mime,
+            "url": page.url,
+            "bytes": len(png_or_jpeg),
+            "full_page": full,
+        }
+        side_effects: tuple[str, ...] = ()
+
+        if inline_size <= max_inline:
+            content["data_url"] = f"data:{mime};base64,{b64}"
+        else:
+            # Spill to disk to keep the LLM context sane.
+            from pathlib import Path as _Path
+
+            from xmclaw.utils.paths import data_dir
+            dest_dir = data_dir() / "v2" / "screenshots"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            ext = ".png" if fmt == "png" else ".jpg"
+            out = dest_dir / f"shot_{int(time.time()*1000)}_{call.id[:8]}{ext}"
+            out.write_bytes(png_or_jpeg)
+            content["path"] = str(out)
+            content["truncated"] = True
+            content["hint"] = (
+                f"Screenshot was {inline_size} bytes inline — over the "
+                f"{max_inline}-byte cap. Saved to {_Path(out).name} on "
+                "disk instead. Set max_inline_bytes higher (or request "
+                "format=jpeg with quality<80) to inline it."
+            )
+            side_effects = (str(out),)
         return ToolResult(
-            call_id=call.id, ok=True,
-            content={
-                "mime": "image/png",
-                "url": page.url,
-                "bytes": len(png),
-                # The agent likely wants a data-URL it can embed in a
-                # reply to the user. Keep it short in the event log by
-                # truncating for display -- full data stays in content.
-                "data_url": f"data:image/png;base64,{b64}",
-            },
-            side_effects=(),
+            call_id=call.id, ok=True, content=content,
+            side_effects=side_effects,
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 
     async def _snapshot(self, call: ToolCall, t0: float) -> ToolResult:
         max_chars = int(call.args.get("max_chars", 8000))
         max_links = int(call.args.get("max_links", 30))
+        max_inputs = int(call.args.get("max_inputs", 20))
         page = await self._page_for(self._sid(call))
         if page is None or page.url == "about:blank":
             return _fail(call, t0, "no page open -- call browser_open first")
@@ -431,6 +646,66 @@ class BrowserTools(ToolProvider):
                 return out;
             }""", max_links,
         )
+        # Wave 22: form inputs + buttons. Without these, the agent has
+        # to guess selectors and burns hops on "selector not found".
+        # Returns {kind, selector, name, type, placeholder, value, label}
+        # for each so the LLM can craft a precise browser_fill /
+        # browser_click without an extra eval round-trip. ``selector``
+        # is a stable CSS path the agent can pass straight into our
+        # other tools.
+        inputs = await page.evaluate(
+            """(max) => {
+                const cssEscape = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : s.replace(/[^\\w-]/g, ''));
+                const visible = (el) => {
+                    if (!el.offsetParent && el.tagName !== 'BUTTON') return false;
+                    const r = el.getBoundingClientRect();
+                    if (r.width === 0 || r.height === 0) return false;
+                    return true;
+                };
+                const buildSel = (el) => {
+                    if (el.id) return `#${cssEscape(el.id)}`;
+                    if (el.name) return `${el.tagName.toLowerCase()}[name="${el.name}"]`;
+                    if (el.getAttribute && el.getAttribute('data-testid'))
+                        return `[data-testid="${el.getAttribute('data-testid')}"]`;
+                    return el.tagName.toLowerCase();
+                };
+                const labelFor = (el) => {
+                    if (el.labels && el.labels.length) return el.labels[0].innerText.slice(0, 60);
+                    if (el.getAttribute && el.getAttribute('aria-label')) return el.getAttribute('aria-label').slice(0, 60);
+                    return '';
+                };
+                const out = [];
+                const seen = new Set();
+                const push = (kind, el) => {
+                    const sel = buildSel(el);
+                    const key = kind + ':' + sel;
+                    if (seen.has(key)) return;
+                    seen.add(key);
+                    if (!visible(el)) return;
+                    out.push({
+                        kind,
+                        selector: sel,
+                        name: el.name || null,
+                        type: el.type || null,
+                        placeholder: el.placeholder || null,
+                        value: typeof el.value === 'string' ? el.value.slice(0, 120) : null,
+                        label: labelFor(el),
+                        text: kind === 'button' ? (el.innerText || el.value || '').slice(0, 60) : null,
+                    });
+                };
+                for (const el of document.querySelectorAll('input, textarea, select')) {
+                    push('input', el);
+                    if (out.length >= max) break;
+                }
+                if (out.length < max) {
+                    for (const el of document.querySelectorAll('button, [role=button], input[type=submit], input[type=button]')) {
+                        push('button', el);
+                        if (out.length >= max) break;
+                    }
+                }
+                return out;
+            }""", max_inputs,
+        )
         return ToolResult(
             call_id=call.id, ok=True,
             content={
@@ -438,6 +713,7 @@ class BrowserTools(ToolProvider):
                 "title": title,
                 "text": text or "",
                 "links": links or [],
+                "inputs": inputs or [],
             },
             side_effects=(),
             latency_ms=(time.perf_counter() - t0) * 1000.0,

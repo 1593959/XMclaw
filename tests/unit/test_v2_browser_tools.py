@@ -35,9 +35,9 @@ def _call(name: str, args: dict, session_id: str | None = None) -> ToolCall:
 def test_list_tools_complete_roster_even_without_playwright() -> None:
     names = {s.name for s in BrowserTools().list_tools()}
     assert names == {
-        "browser_open", "browser_click", "browser_fill",
-        "browser_screenshot", "browser_snapshot", "browser_eval",
-        "browser_close",
+        "browser_open", "browser_click", "browser_press",
+        "browser_fill", "browser_screenshot", "browser_snapshot",
+        "browser_eval", "browser_close",
     }
 
 
@@ -90,14 +90,47 @@ class _FakeResponse:
     def __init__(self, status: int = 200) -> None: self.status = status
 
 
+class _FakeLocatorChain:
+    """Mimic the Playwright locator chain just enough for our tools."""
+
+    def __init__(self, page: "_FakePage", selector: str) -> None:
+        self._page = page
+        self._selector = selector
+        self.first = self
+
+    async def click(self, force: bool = False) -> None:
+        self._page.last_click = self._selector
+        self._page.last_click_force = force
+
+    async def press(self, key: str) -> None:
+        self._page.last_press = (self._selector, key)
+
+    async def count(self) -> int:
+        return 1
+
+
+class _FakeKeyboard:
+    def __init__(self, page: "_FakePage") -> None:
+        self._page = page
+
+    async def press(self, key: str) -> None:
+        self._page.last_press = (None, key)
+
+
 class _FakePage:
     def __init__(self) -> None:
         self.url = "about:blank"
         self.title_value = "Untitled"
         self.evaluate_map: dict[str, Any] = {}
         self.last_click: str | None = None
+        self.last_click_force: bool = False
+        self.last_press: tuple[str | None, str] | None = None
         self.last_fill: tuple[str, str] | None = None
         self._closed = False
+        self.keyboard = _FakeKeyboard(self)
+        # Sites that "navigate" in tests can flip this so the URL
+        # after click != before.
+        self._navigate_to: str | None = None
 
     def is_closed(self) -> bool: return self._closed
 
@@ -115,15 +148,45 @@ class _FakePage:
     async def fill(self, selector: str, value: str) -> None:
         self.last_fill = (selector, value)
 
-    async def screenshot(self, full_page: bool = False, type: str = "png") -> bytes:
-        # Tiny PNG header -- enough to verify base64 encoding roundtrips.
-        return b"\x89PNG\r\n\x1a\n" + (b"FULL" if full_page else b"VIEW")
+    def locator(self, selector: str) -> _FakeLocatorChain:
+        return _FakeLocatorChain(self, selector)
+
+    async def wait_for_load_state(
+        self, state: str = "load", timeout: int = 30000,
+    ) -> None:
+        # When the test set `_navigate_to`, simulate a redirect happening
+        # during the load wait.
+        if self._navigate_to:
+            self.url = self._navigate_to
+            self._navigate_to = None
+
+    async def screenshot(
+        self, full_page: bool = False, type: str = "png",
+        quality: int = 80,
+    ) -> bytes:
+        # Tiny PNG/JPEG header -- enough to verify base64 encoding roundtrips.
+        magic = b"\x89PNG\r\n\x1a\n" if type == "png" else b"\xff\xd8\xff\xe0"
+        return magic + (b"FULL" if full_page else b"VIEW")
 
     async def evaluate(self, expr: str, *args: Any) -> Any:
-        # Simulate the snapshot JS calls -- check the link-grab first
-        # because the text-grab's script also mentions querySelectorAll
-        # in the outer function string representation. Order-sensitive.
-        if "querySelectorAll" in expr:
+        # Snapshot dispatches three different JS scripts; match the
+        # most specific first.
+        if "input, textarea, select" in expr:
+            return [
+                {
+                    "kind": "input", "selector": "#q",
+                    "name": "q", "type": "text",
+                    "placeholder": "Search", "value": "",
+                    "label": "Query", "text": None,
+                },
+                {
+                    "kind": "button", "selector": "button[name=\"go\"]",
+                    "name": "go", "type": "submit",
+                    "placeholder": None, "value": None,
+                    "label": "", "text": "Search",
+                },
+            ]
+        if "a[href]" in expr:
             return [{"label": "Example Link", "href": "https://example.com/a"}]
         if "document.body" in expr or "innerText" in expr:
             return "hello page body"
@@ -314,3 +377,200 @@ async def test_click_refuses_when_no_page(patched_browser: BrowserTools) -> None
     ))
     assert r.ok is False
     assert "browser_open" in r.error
+
+
+# ── Wave 22: enhanced click + press + snapshot forms + screenshot spill ──
+
+
+@pytest.mark.asyncio
+async def test_click_returns_rich_state_no_navigation(
+    patched_browser: BrowserTools,
+) -> None:
+    """Click that doesn't navigate returns url unchanged + navigated=False."""
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    r = await patched_browser.invoke(_call(
+        "browser_click", {"selector": "#some-button"}, session_id="s1",
+    ))
+    assert r.ok is True
+    assert isinstance(r.content, dict)
+    assert r.content["selector"] == "#some-button"
+    assert r.content["url"] == "https://example.com"
+    assert r.content["navigated"] is False
+    # Fake page records the click target.
+    assert patched_browser._pages["s1"].last_click == "#some-button"
+
+
+@pytest.mark.asyncio
+async def test_click_detects_navigation(
+    patched_browser: BrowserTools,
+) -> None:
+    """When click triggers a URL change, navigated=True + new url + title."""
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com/login"},
+        session_id="s1",
+    ))
+    # Arm the fake to "navigate" on the next load_state wait.
+    patched_browser._pages["s1"]._navigate_to = "https://example.com/dashboard"
+    patched_browser._pages["s1"].title_value = "Dashboard"
+
+    r = await patched_browser.invoke(_call(
+        "browser_click", {"selector": "button.submit"}, session_id="s1",
+    ))
+    assert r.ok is True
+    assert r.content["navigated"] is True
+    assert r.content["url"] == "https://example.com/dashboard"
+    assert r.content["title"] == "Dashboard"
+    assert r.content["url_before"] == "https://example.com/login"
+
+
+@pytest.mark.asyncio
+async def test_click_force_flag_passes_through(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    await patched_browser.invoke(_call(
+        "browser_click", {"selector": ".overlay-button", "force": True},
+        session_id="s1",
+    ))
+    assert patched_browser._pages["s1"].last_click_force is True
+
+
+@pytest.mark.asyncio
+async def test_press_uses_keyboard_when_no_selector(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    r = await patched_browser.invoke(_call(
+        "browser_press", {"key": "Enter"}, session_id="s1",
+    ))
+    assert r.ok is True
+    assert r.content["key"] == "Enter"
+    assert r.content["selector"] is None
+    assert patched_browser._pages["s1"].last_press == (None, "Enter")
+
+
+@pytest.mark.asyncio
+async def test_press_uses_locator_when_selector_given(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    await patched_browser.invoke(_call(
+        "browser_press",
+        {"key": "Tab", "selector": "input[name=q]"},
+        session_id="s1",
+    ))
+    assert patched_browser._pages["s1"].last_press == (
+        "input[name=q]", "Tab",
+    )
+
+
+@pytest.mark.asyncio
+async def test_press_detects_navigation_after_enter(
+    patched_browser: BrowserTools,
+) -> None:
+    """Common case: user fills a search box, presses Enter → submits
+    form → navigation. We expose that delta so the agent knows to
+    snapshot fresh."""
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://search.example/start"},
+        session_id="s1",
+    ))
+    patched_browser._pages["s1"]._navigate_to = "https://search.example/results?q=foo"
+    patched_browser._pages["s1"].title_value = "Results"
+    r = await patched_browser.invoke(_call(
+        "browser_press", {"key": "Enter"}, session_id="s1",
+    ))
+    assert r.content["navigated"] is True
+    assert "results" in r.content["url"]
+
+
+@pytest.mark.asyncio
+async def test_press_missing_key_returns_error(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    r = await patched_browser.invoke(_call(
+        "browser_press", {}, session_id="s1",
+    ))
+    assert r.ok is False
+    assert "key" in r.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_includes_inputs_and_buttons(
+    patched_browser: BrowserTools,
+) -> None:
+    """Wave 22 — snapshot must surface form inputs + buttons so the
+    agent doesn't have to guess CSS selectors."""
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com/form"},
+        session_id="s1",
+    ))
+    snap = await patched_browser.invoke(_call(
+        "browser_snapshot", {}, session_id="s1",
+    ))
+    assert snap.ok is True
+    assert "inputs" in snap.content
+    inputs = snap.content["inputs"]
+    kinds = {i["kind"] for i in inputs}
+    assert "input" in kinds
+    assert "button" in kinds
+    # Selector + label info should make it through.
+    by_sel = {i["selector"]: i for i in inputs}
+    assert "#q" in by_sel
+    assert by_sel["#q"]["placeholder"] == "Search"
+
+
+@pytest.mark.asyncio
+async def test_screenshot_jpeg_format(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    r = await patched_browser.invoke(_call(
+        "browser_screenshot", {"format": "jpeg", "quality": 60},
+        session_id="s1",
+    ))
+    assert r.ok is True
+    assert r.content["mime"] == "image/jpeg"
+    assert r.content["data_url"].startswith("data:image/jpeg;base64,")
+
+
+@pytest.mark.asyncio
+async def test_screenshot_spills_to_disk_when_over_cap(
+    patched_browser: BrowserTools, tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the encoded payload exceeds max_inline_bytes, the tool
+    writes to disk + returns the path instead of bloating LLM context."""
+    monkeypatch.setattr(
+        "xmclaw.utils.paths.data_dir", lambda: tmp_path,
+    )
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    # Set the cap absurdly low so even our tiny fake-PNG payload
+    # spills.
+    r = await patched_browser.invoke(_call(
+        "browser_screenshot",
+        {"full_page": True, "max_inline_bytes": 10},
+        session_id="s1",
+    ))
+    assert r.ok is True
+    assert "data_url" not in r.content
+    assert "path" in r.content
+    assert r.content["truncated"] is True
+    assert str(tmp_path) in r.content["path"]
+    # Side effects record the file path so HonestGrader can verify.
+    assert r.side_effects and tmp_path.as_posix() in r.side_effects[0].replace("\\", "/")
