@@ -543,6 +543,17 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         except Exception:  # noqa: BLE001
             pass
 
+        # Sprint 1 Wave 2: rule-based extraction from user message.
+        # Pushes "我是 X" / "I'm working on Y" / "我朋友 Z" into the
+        # structured autobiographical store so future turns get a
+        # better profile snapshot.
+        try:
+            autobio = getattr(self, "_autobio_memory", None)
+            if autobio is not None and user_message:
+                autobio.extract_from_message(user_message)
+        except Exception:  # noqa: BLE001
+            pass
+
         # Phase 6 wiring A: push user message as a percept when the
         # continuous cognitive loop is on. The PerceptionBus reference
         # is injected by ``PerceptSourceRegistry.attach_user_message_hook``
@@ -1167,6 +1178,19 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             f"Trust this over your training-time clock."
         )
         system_content = cache_entry[1] + "\n\n" + time_block
+
+        # Sprint 1 Wave 2: autobiographical memory snapshot. Renders
+        # the structured "what I know about you" block (name / works
+        # on / likes / recent people / etc) so the agent has user
+        # context without doing a separate retrieval call.
+        try:
+            autobio = getattr(self, "_autobio_memory", None)
+            if autobio is not None:
+                autobio_block = autobio.summarize_for_prompt(max_facts=20)
+                if autobio_block:
+                    system_content = system_content + "\n\n" + autobio_block
+        except Exception:  # noqa: BLE001 — never block a turn over memory
+            pass
 
         tool_specs = effective_tools.list_tools() if effective_tools else None
 

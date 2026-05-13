@@ -1993,6 +1993,35 @@ def make_lifespan(
             _lifespan_elapsed_s,
         )
 
+        # Sprint 1 Wave 2: AutobiographicalMemory — structured "who
+        # the user is" store. Hooked into AgentLoop for extraction on
+        # user message + recall at turn start.
+        autobio_cfg = (
+            (config.get("cognition") or {}).get("autobiographical", {})
+            if isinstance(config, dict) else {}
+        )
+        autobio_mem = None
+        if (
+            not isinstance(autobio_cfg, dict)
+            or autobio_cfg.get("enabled", True)
+        ):
+            try:
+                from xmclaw.cognition.autobiographical_memory import (
+                    AutobiographicalMemory,
+                )
+                autobio_mem = AutobiographicalMemory()
+                _app.state.autobio_memory = autobio_mem
+                if agent is not None:
+                    try:
+                        agent._autobio_memory = autobio_mem
+                    except Exception:  # noqa: BLE001
+                        pass
+                log.info("autobiographical_memory.started")
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "autobiographical_memory.start_failed err=%s", exc,
+                )
+
         # Sprint 1: ProactiveAgent — periodic trigger evaluator that
         # publishes PROACTIVE_PROPOSAL events when the agent should
         # speak without being asked. Reads cognition.proactive.*
