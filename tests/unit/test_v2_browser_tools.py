@@ -12,6 +12,7 @@ browser binary. The tests cover:
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 from dataclasses import dataclass, field
 from typing import Any
@@ -41,6 +42,8 @@ def test_list_tools_complete_roster_even_without_playwright() -> None:
         "browser_back", "browser_forward", "browser_reload",
         "browser_tabs", "browser_tab_switch", "browser_tab_close",
         "browser_download_next",
+        "browser_save_state", "browser_list_states",
+        "browser_get_console",
         "browser_screenshot", "browser_snapshot",
         "browser_eval", "browser_close",
     }
@@ -154,6 +157,23 @@ class _FakeMouse:
         self._page.last_wheel = (dx, dy)
 
 
+class _FakeFrame:
+    """Minimal iframe stand-in — has `name`, `url`, and a `.locator()`
+    that records hits on the parent page so tests can verify routing."""
+
+    def __init__(self, page: "_FakePage", name: str, url: str) -> None:
+        self._page = page
+        self.name = name
+        self.url = url
+
+    def locator(self, selector: str) -> _FakeLocatorChain:
+        # Tag the selector with the frame name so tests can confirm
+        # action routed into the frame, not the top page.
+        chain = _FakeLocatorChain(self._page, selector)
+        self._page.last_frame_locator = (self.name, selector)
+        return chain
+
+
 class _FakePage:
     def __init__(self) -> None:
         self.url = "about:blank"
@@ -170,12 +190,38 @@ class _FakePage:
         self.last_upload: tuple[str, Any] | None = None
         self.last_wait_for: tuple[str, str, int] | None = None
         self.last_history: str | None = None
+        self.last_frame_locator: tuple[str, str] | None = None
+        self._console_handlers: list[Any] = []
+        self._pageerror_handlers: list[Any] = []
         self._closed = False
         self.keyboard = _FakeKeyboard(self)
         self.mouse = _FakeMouse(self)
+        # `name` is queried by _resolve_locator when matching frame_name=
+        self.name = ""
+        # Tests can populate fake iframes to drive _resolve_locator.
+        self.frames: list[Any] = [self]  # top frame == this page
         # Sites that "navigate" in tests can flip this so the URL
         # after click != before.
         self._navigate_to: str | None = None
+
+    def on(self, event: str, handler: Any) -> None:
+        if event == "console":
+            self._console_handlers.append(handler)
+        elif event == "pageerror":
+            self._pageerror_handlers.append(handler)
+
+    def emit_console(self, level: str, text: str) -> None:
+        """Test helper: simulate a console event."""
+        class _M:
+            type = level
+        m = _M()
+        m.text = text  # type: ignore[attr-defined]
+        for h in list(self._console_handlers):
+            h(m)
+
+    def emit_pageerror(self, msg: str) -> None:
+        for h in list(self._pageerror_handlers):
+            h(msg)
 
     def is_closed(self) -> bool: return self._closed
 
@@ -266,6 +312,8 @@ class _FakeContext:
     closed: bool = False
     init_scripts: list[str] = field(default_factory=list)
     user_agent: str | None = None
+    storage_state_load_path: str | None = None
+    storage_state_save_path: str | None = None
 
     async def new_page(self) -> _FakePage:
         p = _FakePage()
@@ -277,6 +325,16 @@ class _FakeContext:
     async def add_init_script(self, script: str) -> None:
         self.init_scripts.append(script)
 
+    async def storage_state(self, path: str | None = None) -> Any:
+        if path is not None:
+            from pathlib import Path as _P
+            _P(path).parent.mkdir(parents=True, exist_ok=True)
+            _P(path).write_text(
+                '{"cookies":[],"origins":[]}', encoding="utf-8",
+            )
+            self.storage_state_save_path = path
+        return {"cookies": [], "origins": []}
+
     async def close(self) -> None: self.closed = True
 
 
@@ -286,7 +344,14 @@ class _FakeBrowser:
     last_launch_args: list[str] = field(default_factory=list)
 
     async def new_context(self, **kwargs: Any) -> _FakeContext:
-        c = _FakeContext(user_agent=kwargs.get("user_agent"))
+        c = _FakeContext(
+            user_agent=kwargs.get("user_agent"),
+            storage_state_load_path=(
+                kwargs.get("storage_state")
+                if isinstance(kwargs.get("storage_state"), str)
+                else None
+            ),
+        )
         self.contexts.append(c)
         return c
 
@@ -1029,3 +1094,320 @@ async def test_context_uses_real_chrome_ua_and_init_script(
     assert "'webdriver'" in joined
     assert "'plugins'" in joined
     assert "window.chrome" in joined
+
+
+# ── Wave 25.1: iframe traversal selector syntax ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_iframe_click_by_name(patched_browser: BrowserTools) -> None:
+    """frame_name=foo>>selector routes the click into the named iframe."""
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    page = patched_browser._pages["s1"]
+    page.frames = [
+        page,
+        _FakeFrame(page, "payment", "https://payments.example/inner"),
+    ]
+    r = await patched_browser.invoke(_call(
+        "browser_click",
+        {"selector": "frame_name=payment>>button.pay"},
+        session_id="s1",
+    ))
+    assert r.ok is True
+    assert page.last_frame_locator == ("payment", "button.pay")
+
+
+@pytest.mark.asyncio
+async def test_iframe_unknown_name_returns_error(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    r = await patched_browser.invoke(_call(
+        "browser_click",
+        {"selector": "frame_name=nope>>button"},
+        session_id="s1",
+    ))
+    assert r.ok is False
+    assert "nope" in r.error
+
+
+@pytest.mark.asyncio
+async def test_iframe_by_url_substring(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    page = patched_browser._pages["s1"]
+    page.frames = [
+        page,
+        _FakeFrame(page, "", "https://stripe.com/v3/payment-form"),
+        _FakeFrame(page, "", "https://example.com/sidebar"),
+    ]
+    r = await patched_browser.invoke(_call(
+        "browser_click",
+        {"selector": "frame_url=stripe.com>>#submit"},
+        session_id="s1",
+    ))
+    assert r.ok is True
+    assert page.last_frame_locator == ("", "#submit")
+
+
+@pytest.mark.asyncio
+async def test_iframe_by_index(patched_browser: BrowserTools) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    page = patched_browser._pages["s1"]
+    page.frames = [
+        page,
+        _FakeFrame(page, "a", "https://example.com/a"),
+        _FakeFrame(page, "b", "https://example.com/b"),
+    ]
+    r = await patched_browser.invoke(_call(
+        "browser_click",
+        {"selector": "frame_index=2>>button"},
+        session_id="s1",
+    ))
+    assert r.ok is True
+    assert page.last_frame_locator == ("b", "button")
+
+
+@pytest.mark.asyncio
+async def test_iframe_index_out_of_range(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    r = await patched_browser.invoke(_call(
+        "browser_click",
+        {"selector": "frame_index=99>>button"},
+        session_id="s1",
+    ))
+    assert r.ok is False
+    assert "out of range" in r.error
+
+
+@pytest.mark.asyncio
+async def test_iframe_syntax_works_for_hover(
+    patched_browser: BrowserTools,
+) -> None:
+    """Every verb should accept frame selectors uniformly."""
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    page = patched_browser._pages["s1"]
+    page.frames = [page, _FakeFrame(page, "menu", "https://example.com/menu")]
+    r = await patched_browser.invoke(_call(
+        "browser_hover",
+        {"selector": "frame_name=menu>>.dropdown"},
+        session_id="s1",
+    ))
+    assert r.ok is True
+    assert page.last_frame_locator == ("menu", ".dropdown")
+
+
+# ── Wave 25.2: storage_state save/load ───────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_save_and_list_state(
+    patched_browser: BrowserTools, tmp_path, monkeypatch,
+) -> None:
+    monkeypatch.setattr("xmclaw.utils.paths.data_dir", lambda: tmp_path)
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    r_save = await patched_browser.invoke(_call(
+        "browser_save_state", {"name": "github_login"}, session_id="s1",
+    ))
+    assert r_save.ok is True
+    assert r_save.content["name"] == "github_login"
+    assert "github_login.json" in r_save.content["path"]
+
+    r_list = await patched_browser.invoke(_call(
+        "browser_list_states", {}, session_id="s1",
+    ))
+    assert r_list.ok is True
+    names = [p["name"] for p in r_list.content["profiles"]]
+    assert "github_login" in names
+
+
+@pytest.mark.asyncio
+async def test_save_state_rejects_bad_name(
+    patched_browser: BrowserTools, tmp_path, monkeypatch,
+) -> None:
+    monkeypatch.setattr("xmclaw.utils.paths.data_dir", lambda: tmp_path)
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    r = await patched_browser.invoke(_call(
+        "browser_save_state",
+        {"name": "../traversal"},  # path traversal attempt
+        session_id="s1",
+    ))
+    assert r.ok is False
+    assert "name" in r.error
+
+
+@pytest.mark.asyncio
+async def test_open_load_state_hydrates_context(
+    patched_browser: BrowserTools, tmp_path, monkeypatch,
+) -> None:
+    """Save in session A, load_state in fresh session B → ctx gets the
+    storage_state path."""
+    monkeypatch.setattr("xmclaw.utils.paths.data_dir", lambda: tmp_path)
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s_save",
+    ))
+    await patched_browser.invoke(_call(
+        "browser_save_state", {"name": "my_login"}, session_id="s_save",
+    ))
+    await patched_browser.invoke(_call(
+        "browser_open",
+        {"url": "https://example.com", "load_state": "my_login"},
+        session_id="s_load",
+    ))
+    ctx = patched_browser._contexts["s_load"]
+    assert ctx.storage_state_load_path is not None
+    assert "my_login.json" in ctx.storage_state_load_path
+
+
+@pytest.mark.asyncio
+async def test_load_state_missing_profile_clean_error(
+    patched_browser: BrowserTools, tmp_path, monkeypatch,
+) -> None:
+    monkeypatch.setattr("xmclaw.utils.paths.data_dir", lambda: tmp_path)
+    r = await patched_browser.invoke(_call(
+        "browser_open",
+        {"url": "https://example.com", "load_state": "never_saved"},
+        session_id="s1",
+    ))
+    assert r.ok is False
+    assert "not found" in r.error
+
+
+# ── Wave 25.3: console + pageerror capture ───────────────────────
+
+
+@pytest.mark.asyncio
+async def test_console_buffer_collects_messages(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    page = patched_browser._pages["s1"]
+    page.emit_console("error", "TypeError: undefined is not a function")
+    page.emit_console("warning", "deprecated API")
+    page.emit_console("log", "ok")
+    page.emit_pageerror("ReferenceError: x is not defined")
+
+    r = await patched_browser.invoke(_call(
+        "browser_get_console", {}, session_id="s1",
+    ))
+    assert r.ok is True
+    entries = r.content["entries"]
+    # 3 console + 1 pageerror, newest first.
+    assert len(entries) == 4
+    texts = [e["text"] for e in entries]
+    assert "ReferenceError: x is not defined" in texts
+    assert "TypeError: undefined is not a function" in texts
+
+
+@pytest.mark.asyncio
+async def test_console_filter_by_level(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    page = patched_browser._pages["s1"]
+    page.emit_console("error", "boom")
+    page.emit_console("log", "noise")
+    page.emit_console("error", "second boom")
+
+    r = await patched_browser.invoke(_call(
+        "browser_get_console", {"level": "error"}, session_id="s1",
+    ))
+    assert r.ok is True
+    entries = r.content["entries"]
+    assert len(entries) == 2
+    assert all(e["level"] == "error" for e in entries)
+
+
+@pytest.mark.asyncio
+async def test_console_clear_drains_buffer(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    page = patched_browser._pages["s1"]
+    page.emit_console("log", "first")
+    await patched_browser.invoke(_call(
+        "browser_get_console", {"clear": True}, session_id="s1",
+    ))
+    page.emit_console("log", "second")
+    r = await patched_browser.invoke(_call(
+        "browser_get_console", {}, session_id="s1",
+    ))
+    texts = [e["text"] for e in r.content["entries"]]
+    assert texts == ["second"]
+
+
+# ── Wave 25.4: two-step download ticketing ───────────────────────
+
+
+@pytest.mark.asyncio
+async def test_download_arm_returns_ticket(
+    patched_browser: BrowserTools, tmp_path, monkeypatch,
+) -> None:
+    """Bare arm (no and_then_click, no ticket) → register listener +
+    return a ticket the agent uses to collect later."""
+    monkeypatch.setattr("xmclaw.utils.paths.data_dir", lambda: tmp_path)
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    # _FakePage doesn't have wait_for_event — patch it to a future the
+    # test resolves manually.
+    page = patched_browser._pages["s1"]
+    armed_future: asyncio.Future = asyncio.get_event_loop().create_future()
+
+    async def _fake_wait(event, timeout):
+        return await armed_future
+
+    page.wait_for_event = _fake_wait  # type: ignore[attr-defined]
+
+    r = await patched_browser.invoke(_call(
+        "browser_download_next", {"timeout_ms": 30_000}, session_id="s1",
+    ))
+    assert r.ok is True
+    ticket = r.content["ticket"]
+    assert r.content["status"] == "armed"
+    assert (("s1", ticket) in patched_browser._pending_downloads)
+    # Clean up — cancel the pending task.
+    armed_future.cancel()
+    patched_browser._pending_downloads.pop(("s1", ticket), None)
+
+
+@pytest.mark.asyncio
+async def test_download_collect_with_bad_ticket(
+    patched_browser: BrowserTools, tmp_path, monkeypatch,
+) -> None:
+    monkeypatch.setattr("xmclaw.utils.paths.data_dir", lambda: tmp_path)
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    r = await patched_browser.invoke(_call(
+        "browser_download_next",
+        {"ticket": "bogus_ticket"},
+        session_id="s1",
+    ))
+    assert r.ok is False
+    assert "unknown ticket" in r.error

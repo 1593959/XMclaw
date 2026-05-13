@@ -136,6 +136,18 @@ _BROWSER_OPEN_SPEC = ToolSpec(
                     "started in."
                 ),
             },
+            "load_state": {
+                "type": "string",
+                "description": (
+                    "Name of a previously saved storage-state profile "
+                    "(see browser_save_state). When set, the session's "
+                    "context starts pre-populated with that profile's "
+                    "cookies + localStorage so the page sees you as "
+                    "already logged in. Must be passed on the FIRST "
+                    "browser_open of a session; subsequent calls in "
+                    "the same session ignore it."
+                ),
+            },
         },
         "required": ["url"],
     },
@@ -457,6 +469,66 @@ _BROWSER_TAB_CLOSE_SPEC = ToolSpec(
     },
 )
 
+_BROWSER_SAVE_STATE_SPEC = ToolSpec(
+    name="browser_save_state",
+    description=(
+        "Snapshot the current session's cookies + localStorage to a "
+        "named profile at ~/.xmclaw/v2/browser_state/<name>.json. "
+        "Pair with browser_open(load_state=name) on a future session "
+        "to skip a manual login. Profiles are local files — they ride "
+        "filesystem permissions, not encryption."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Profile name (alphanumeric / dashes / underscores).",
+            },
+        },
+        "required": ["name"],
+    },
+)
+
+_BROWSER_LIST_STATES_SPEC = ToolSpec(
+    name="browser_list_states",
+    description=(
+        "List saved storage-state profiles (from browser_save_state). "
+        "Returns [{name, saved_ts, size_bytes}]."
+    ),
+    parameters_schema={"type": "object", "properties": {}},
+)
+
+_BROWSER_GET_CONSOLE_SPEC = ToolSpec(
+    name="browser_get_console",
+    description=(
+        "Return console messages + page errors captured since this "
+        "session's browser_open. Useful when a page misbehaves and "
+        "the agent wants to see JS errors / warnings without "
+        "browser_eval-ing console.log directly. Buffer is per-session, "
+        "capped at the most recent 200 entries."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "level": {
+                "type": "string",
+                "description": (
+                    "Filter by level: 'error' / 'warning' / 'info' / "
+                    "'log' / 'debug'. Default 'all'."
+                ),
+            },
+            "max": {"type": "integer", "description": "Default 50."},
+            "clear": {
+                "type": "boolean",
+                "description": (
+                    "Drain the buffer after reading. Default false."
+                ),
+            },
+        },
+    },
+)
+
 _BROWSER_DOWNLOAD_NEXT_SPEC = ToolSpec(
     name="browser_download_next",
     description=(
@@ -528,6 +600,19 @@ class BrowserTools(ToolProvider):
         # Track which session is in which mode so callers don't have
         # to re-pass ``visible`` on every browser_* call.
         self._session_headless: dict[str, bool] = {}
+        # Wave 25.2: per-session pending storage_state path. If set
+        # when _page_for first creates a context, the file is read +
+        # passed to new_context(storage_state=...).
+        self._session_storage_state: dict[str, str] = {}
+        # Wave 25.3: per-session console log buffer. Bounded list so
+        # a noisy page doesn't grow unbounded — drops oldest first.
+        self._console_buffers: dict[str, list[dict[str, Any]]] = {}
+        # Wave 25.4: per-session pending download tickets, keyed by
+        # ticket id. Each entry: {task, save_dir, timeout_ms,
+        # armed_ts}. Task awaits page.wait_for_event('download').
+        self._pending_downloads: dict[
+            tuple[str, str], dict[str, Any],
+        ] = {}
         # Guard the lazy init with a lock to avoid multiple concurrent
         # tool calls trying to spin up the browser at once.
         self._boot_lock = asyncio.Lock()
@@ -546,6 +631,8 @@ class BrowserTools(ToolProvider):
             _BROWSER_RELOAD_SPEC,
             _BROWSER_TABS_SPEC, _BROWSER_TAB_SWITCH_SPEC,
             _BROWSER_TAB_CLOSE_SPEC, _BROWSER_DOWNLOAD_NEXT_SPEC,
+            _BROWSER_SAVE_STATE_SPEC, _BROWSER_LIST_STATES_SPEC,
+            _BROWSER_GET_CONSOLE_SPEC,
             _BROWSER_SCREENSHOT_SPEC,
             _BROWSER_SNAPSHOT_SPEC, _BROWSER_EVAL_SPEC, _BROWSER_CLOSE_SPEC,
         ]
@@ -593,6 +680,12 @@ class BrowserTools(ToolProvider):
                 return await self._tab_close(call, t0)
             if call.name == "browser_download_next":
                 return await self._download_next(call, t0)
+            if call.name == "browser_save_state":
+                return await self._save_state(call, t0)
+            if call.name == "browser_list_states":
+                return await self._list_states(call, t0)
+            if call.name == "browser_get_console":
+                return await self._get_console(call, t0)
             return _fail(call, t0, f"unknown tool: {call.name!r}")
         except _PlaywrightMissing as exc:
             return _fail(call, t0, str(exc))
@@ -616,6 +709,17 @@ class BrowserTools(ToolProvider):
         # Wave 23: also forget the pinned visibility so a re-open
         # after close can choose a fresh mode.
         self._session_headless.pop(session_id, None)
+        # Wave 25.2 / 25.3 / 25.4: drop per-session state.
+        self._session_storage_state.pop(session_id, None)
+        self._console_buffers.pop(session_id, None)
+        # Cancel any pending download tasks tied to this session.
+        for key in list(self._pending_downloads):
+            if key[0] == session_id:
+                entry = self._pending_downloads.pop(key)
+                try:
+                    entry["task"].cancel()
+                except Exception:  # noqa: BLE001
+                    pass
 
     async def shutdown(self) -> None:
         """Close every session + both browsers. For daemon shutdown."""
@@ -708,11 +812,18 @@ class BrowserTools(ToolProvider):
             # warnings) + accept_downloads=True so browser_download_next
             # has something to capture; the daemon still gates where
             # files land via save_dir kwarg.
-            ctx = await browser.new_context(
-                accept_downloads=True,
-                viewport={"width": 1280, "height": 800},
-                user_agent=_REAL_CHROME_UA,
-            )
+            # Wave 25.2: if the session pre-loaded a storage profile
+            # via browser_open(load_state=...), pass the path so the
+            # new context hydrates cookies + localStorage.
+            ctx_kwargs: dict[str, Any] = {
+                "accept_downloads": True,
+                "viewport": {"width": 1280, "height": 800},
+                "user_agent": _REAL_CHROME_UA,
+            }
+            state_path = self._session_storage_state.get(session_id)
+            if state_path:
+                ctx_kwargs["storage_state"] = state_path
+            ctx = await browser.new_context(**ctx_kwargs)
             # Hide automation traces from window/navigator probes — most
             # bot detectors look at navigator.webdriver, window.chrome,
             # the missing plugins array, etc.
@@ -720,8 +831,52 @@ class BrowserTools(ToolProvider):
             ctx.set_default_timeout(self._timeout_ms)
             self._contexts[session_id] = ctx
         page = await ctx.new_page()
+        # Wave 25.3: attach console + pageerror listeners to every new
+        # page so the agent can query the buffer later via
+        # browser_get_console. Idempotent — Playwright dedups handlers.
+        self._attach_console_listeners(session_id, page)
         self._pages[session_id] = page
         return page
+
+    def _attach_console_listeners(
+        self, session_id: str, page: Any,
+    ) -> None:
+        """Wave 25.3: register console + pageerror event handlers and
+        funnel into the per-session bounded buffer."""
+        buf = self._console_buffers.setdefault(session_id, [])
+        cap = 200
+
+        def _on_console(msg: Any) -> None:
+            try:
+                buf.append({
+                    "type": "console",
+                    "level": getattr(msg, "type", "log") or "log",
+                    "text": (getattr(msg, "text", "") or "")[:1000],
+                    "ts": time.time(),
+                })
+                while len(buf) > cap:
+                    buf.pop(0)
+            except Exception:  # noqa: BLE001
+                pass
+
+        def _on_pageerror(err: Any) -> None:
+            try:
+                buf.append({
+                    "type": "pageerror",
+                    "level": "error",
+                    "text": str(err)[:1000],
+                    "ts": time.time(),
+                })
+                while len(buf) > cap:
+                    buf.pop(0)
+            except Exception:  # noqa: BLE001
+                pass
+
+        try:
+            page.on("console", _on_console)
+            page.on("pageerror", _on_pageerror)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _check_host(self, url: str) -> None:
         if self._allowed is None:
@@ -756,6 +911,22 @@ class BrowserTools(ToolProvider):
             headless = not visible_arg
         else:
             headless = None  # defer to default / pinned
+        # Wave 25.2: pre-load saved storage state on first open of a
+        # session. Ignored if the session already has a context (the
+        # storage_state= kwarg only takes effect at context creation).
+        load_state = call.args.get("load_state")
+        if (
+            isinstance(load_state, str)
+            and load_state.strip()
+            and sid not in self._contexts
+        ):
+            state_path = _state_profile_path(load_state.strip())
+            if not state_path.exists():
+                return _fail(
+                    call, t0,
+                    f"load_state: profile {load_state!r} not found at {state_path}",
+                )
+            self._session_storage_state[sid] = str(state_path)
         page = await self._page_for(sid, headless=headless)
         resp = await page.goto(url, wait_until=wait_until)
         final_url = page.url
@@ -798,9 +969,12 @@ class BrowserTools(ToolProvider):
         # path which would race JS-rendered widgets. ``force`` skips the
         # actionability checks for the rare case where an overlay
         # blocks the hit-test but the click should still go through.
+        # Wave 25.1: _resolve_locator handles iframe prefixes.
         try:
-            locator = page.locator(sel)
-            await locator.first.click(force=force)
+            locator = self._resolve_locator(page, sel)
+            await locator.click(force=force)
+        except ValueError as exc:
+            return _fail(call, t0, str(exc))
         except Exception as exc:  # noqa: BLE001
             # Try to give the agent useful diagnostics: how many
             # elements matched, was the page still loading, etc.
@@ -861,9 +1035,11 @@ class BrowserTools(ToolProvider):
         url_before = page.url
         try:
             if isinstance(sel, str) and sel:
-                await page.locator(sel).first.press(key)
+                await self._resolve_locator(page, sel).press(key)
             else:
                 await page.keyboard.press(key)
+        except ValueError as exc:
+            return _fail(call, t0, str(exc))
         except Exception as exc:  # noqa: BLE001
             return _fail(
                 call, t0,
@@ -905,7 +1081,18 @@ class BrowserTools(ToolProvider):
         page = await self._page_for(self._sid(call))
         if page is None or page.url == "about:blank":
             return _fail(call, t0, "no page open -- call browser_open first")
-        await page.fill(sel, val)
+        # Wave 25.1: use _resolve_locator for iframe support; fall back
+        # to legacy page.fill for plain selectors so tests that patch
+        # _FakePage.fill keep working.
+        try:
+            if "frame_name=" in sel or "frame_url=" in sel or "frame_index=" in sel:
+                await self._resolve_locator(page, sel).fill(val)
+            else:
+                await page.fill(sel, val)
+        except ValueError as exc:
+            return _fail(call, t0, str(exc))
+        except Exception as exc:  # noqa: BLE001
+            return _fail(call, t0, f"fill failed: {type(exc).__name__}: {exc}")
         return ToolResult(
             call_id=call.id, ok=True,
             content=f"filled {sel!r} with {len(val)} chars",
@@ -1102,7 +1289,9 @@ class BrowserTools(ToolProvider):
         if page is None or page.url == "about:blank":
             return _fail(call, t0, "no page open -- call browser_open first")
         try:
-            await page.locator(sel).first.hover()
+            await self._resolve_locator(page, sel).hover()
+        except ValueError as exc:
+            return _fail(call, t0, str(exc))
         except Exception as exc:  # noqa: BLE001
             return _fail(call, t0, f"hover failed: {type(exc).__name__}: {exc}")
         return ToolResult(
@@ -1119,7 +1308,11 @@ class BrowserTools(ToolProvider):
         to_sel = call.args.get("to_selector")
         if isinstance(to_sel, str) and to_sel:
             try:
-                await page.locator(to_sel).first.scroll_into_view_if_needed()
+                await self._resolve_locator(
+                    page, to_sel,
+                ).scroll_into_view_if_needed()
+            except ValueError as exc:
+                return _fail(call, t0, str(exc))
             except Exception as exc:  # noqa: BLE001
                 return _fail(call, t0, f"scroll-to-selector failed: {exc}")
             return ToolResult(
@@ -1171,9 +1364,13 @@ class BrowserTools(ToolProvider):
             chosen: list[str] = []
             for arg in try_args:
                 try:
-                    chosen = await page.locator(sel).first.select_option(arg)
+                    chosen = await self._resolve_locator(
+                        page, sel,
+                    ).select_option(arg)
                     last_err = None
                     break
+                except ValueError as exc:
+                    return _fail(call, t0, str(exc))
                 except Exception as exc:  # noqa: BLE001
                     last_err = exc
             if last_err is not None:
@@ -1184,7 +1381,11 @@ class BrowserTools(ToolProvider):
                 )
         elif isinstance(val, list):
             try:
-                chosen = await page.locator(sel).first.select_option(val)
+                chosen = await self._resolve_locator(
+                    page, sel,
+                ).select_option(val)
+            except ValueError as exc:
+                return _fail(call, t0, str(exc))
             except Exception as exc:  # noqa: BLE001
                 return _fail(call, t0, f"select_option failed: {exc}")
         else:
@@ -1215,7 +1416,9 @@ class BrowserTools(ToolProvider):
         if page is None or page.url == "about:blank":
             return _fail(call, t0, "no page open -- call browser_open first")
         try:
-            await page.locator(sel).first.set_input_files(files)
+            await self._resolve_locator(page, sel).set_input_files(files)
+        except ValueError as exc:
+            return _fail(call, t0, str(exc))
         except Exception as exc:  # noqa: BLE001
             return _fail(call, t0, f"upload failed: {exc}")
         return ToolResult(
@@ -1240,7 +1443,11 @@ class BrowserTools(ToolProvider):
         if page is None or page.url == "about:blank":
             return _fail(call, t0, "no page open -- call browser_open first")
         try:
-            await page.locator(sel).first.wait_for(state=state, timeout=timeout)
+            await self._resolve_locator(page, sel).wait_for(
+                state=state, timeout=timeout,
+            )
+        except ValueError as exc:
+            return _fail(call, t0, str(exc))
         except Exception as exc:  # noqa: BLE001
             return _fail(
                 call, t0,
@@ -1391,6 +1598,7 @@ class BrowserTools(ToolProvider):
         timeout = int(call.args.get("timeout_ms", 30_000))
         save_dir_arg = call.args.get("save_dir")
         and_then_click = call.args.get("and_then_click")
+        ticket = call.args.get("ticket")
         from pathlib import Path as _P
         if isinstance(save_dir_arg, str) and save_dir_arg.strip():
             save_dir = _P(save_dir_arg).expanduser()
@@ -1398,45 +1606,324 @@ class BrowserTools(ToolProvider):
             from xmclaw.utils.paths import data_dir
             save_dir = data_dir() / "v2" / "downloads"
         save_dir.mkdir(parents=True, exist_ok=True)
-        page = await self._page_for(self._sid(call))
+        sid = self._sid(call)
+        page = await self._page_for(sid)
         if page is None or page.url == "about:blank":
             return _fail(call, t0, "no page open -- call browser_open first")
-        # One-shot mode: arm + trigger + wait in a single call.
+
+        # Mode 1 — one-shot: arm + trigger + wait in a single call.
         if isinstance(and_then_click, str) and and_then_click.strip():
             try:
                 async with page.expect_download(timeout=timeout) as dl_info:
-                    await page.locator(and_then_click).first.click()
+                    await self._resolve_locator(
+                        page, and_then_click,
+                    ).click()
                 dl = await dl_info.value
             except Exception as exc:  # noqa: BLE001
                 return _fail(
                     call, t0,
                     f"download wait failed: {type(exc).__name__}: {exc}",
                 )
-            suggested = dl.suggested_filename or f"download_{int(time.time())}"
-            dest = save_dir / suggested
+            return await self._finish_download(call, t0, dl, save_dir)
+
+        # Mode 2 — two-step ticketed (Wave 25.4):
+        #   First call WITHOUT ticket: arm background task that awaits
+        #   page.wait_for_event('download', timeout). Return ticket.
+        #   Later call WITH ticket: check the task — if done, save +
+        #   return path; if not done and caller's timeout=0, return
+        #   "armed, not ready"; otherwise await up to timeout.
+        if isinstance(ticket, str) and ticket.strip():
+            key = (sid, ticket.strip())
+            entry = self._pending_downloads.get(key)
+            if entry is None:
+                return _fail(call, t0, f"unknown ticket: {ticket!r}")
+            task: asyncio.Task = entry["task"]
+            if task.done():
+                self._pending_downloads.pop(key, None)
+                if task.cancelled():
+                    return _fail(call, t0, "download task was cancelled")
+                exc = task.exception()
+                if exc is not None:
+                    return _fail(
+                        call, t0,
+                        f"download wait failed: {type(exc).__name__}: {exc}",
+                    )
+                dl = task.result()
+                return await self._finish_download(
+                    call, t0, dl, entry["save_dir"],
+                )
+            # Not ready yet — caller asked for non-blocking poll?
+            if timeout <= 0:
+                return ToolResult(
+                    call_id=call.id, ok=True,
+                    content={
+                        "ticket": ticket,
+                        "status": "armed",
+                        "armed_ms_ago": int(
+                            (time.time() - entry["armed_ts"]) * 1000,
+                        ),
+                    },
+                    side_effects=(),
+                    latency_ms=(time.perf_counter() - t0) * 1000.0,
+                )
             try:
-                await dl.save_as(str(dest))
-            except Exception as exc:  # noqa: BLE001
-                return _fail(call, t0, f"save_as failed: {exc}")
+                dl = await asyncio.wait_for(asyncio.shield(task), timeout / 1000.0)
+            except asyncio.TimeoutError:
+                return _fail(
+                    call, t0,
+                    f"download not ready after {timeout}ms — call again with ticket {ticket}",
+                )
+            self._pending_downloads.pop(key, None)
+            return await self._finish_download(
+                call, t0, dl, entry["save_dir"],
+            )
+
+        # Mode 3 — bare arm (no ticket, no click): spin up a background
+        # task that listens for the next download, return a fresh ticket
+        # the caller will use to collect.
+        import uuid as _uuid
+        ticket_new = _uuid.uuid4().hex[:16]
+
+        async def _wait_for_dl() -> Any:
+            return await page.wait_for_event(
+                "download", timeout=timeout,
+            )
+        task = asyncio.create_task(
+            _wait_for_dl(), name=f"browser-download-{ticket_new}",
+        )
+        self._pending_downloads[(sid, ticket_new)] = {
+            "task": task,
+            "save_dir": save_dir,
+            "timeout_ms": timeout,
+            "armed_ts": time.time(),
+        }
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "ticket": ticket_new,
+                "status": "armed",
+                "timeout_ms": timeout,
+                "hint": (
+                    "Trigger the download now (browser_click on the link "
+                    "or whatever), then call browser_download_next again "
+                    f"with ticket='{ticket_new}' to collect the file."
+                ),
+            },
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _finish_download(
+        self, call: ToolCall, t0: float, dl: Any, save_dir: Any,
+    ) -> ToolResult:
+        suggested = dl.suggested_filename or f"download_{int(time.time())}"
+        dest = save_dir / suggested
+        try:
+            await dl.save_as(str(dest))
+        except Exception as exc:  # noqa: BLE001
+            return _fail(call, t0, f"save_as failed: {exc}")
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "path": str(dest),
+                "filename": suggested,
+                "url": dl.url,
+                "bytes": dest.stat().st_size if dest.exists() else 0,
+            },
+            side_effects=(str(dest),),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _save_state(
+        self, call: ToolCall, t0: float,
+    ) -> ToolResult:
+        name = call.args.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return _fail(call, t0, "missing or empty 'name'")
+        try:
+            path = _state_profile_path(name.strip())
+        except ValueError as exc:
+            return _fail(call, t0, str(exc))
+        sid = self._sid(call)
+        ctx = self._contexts.get(sid)
+        if ctx is None:
+            return _fail(
+                call, t0,
+                "no browser context — call browser_open first",
+            )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            await ctx.storage_state(path=str(path))
+        except Exception as exc:  # noqa: BLE001
+            return _fail(call, t0, f"storage_state save failed: {exc}")
+        size = path.stat().st_size if path.exists() else 0
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "name": name,
+                "path": str(path),
+                "bytes": size,
+            },
+            side_effects=(str(path),),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _list_states(
+        self, call: ToolCall, t0: float,
+    ) -> ToolResult:
+        from pathlib import Path as _P
+
+        from xmclaw.utils.paths import data_dir
+        root = _P(data_dir() / "v2" / "browser_state")
+        if not root.exists():
             return ToolResult(
                 call_id=call.id, ok=True,
-                content={
-                    "path": str(dest),
-                    "filename": suggested,
-                    "url": dl.url,
-                    "bytes": dest.stat().st_size if dest.exists() else 0,
-                },
-                side_effects=(str(dest),),
+                content={"profiles": []},
+                side_effects=(),
                 latency_ms=(time.perf_counter() - t0) * 1000.0,
             )
-        return _fail(
-            call, t0,
-            "two-step mode not yet supported; pass `and_then_click` "
-            "with the selector that triggers the download.",
+        rows: list[dict[str, Any]] = []
+        for p in sorted(root.glob("*.json")):
+            try:
+                stat = p.stat()
+                rows.append({
+                    "name": p.stem,
+                    "saved_ts": stat.st_mtime,
+                    "size_bytes": stat.st_size,
+                })
+            except Exception:  # noqa: BLE001
+                pass
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={"profiles": rows, "count": len(rows)},
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _get_console(
+        self, call: ToolCall, t0: float,
+    ) -> ToolResult:
+        sid = self._sid(call)
+        level = (call.args.get("level") or "all").lower()
+        cap = max(1, min(int(call.args.get("max", 50)), 200))
+        clear = bool(call.args.get("clear", False))
+        buf = self._console_buffers.get(sid, [])
+        rows = list(buf)
+        if level != "all":
+            rows = [r for r in rows if r["level"] == level]
+        # Most recent first.
+        rows.reverse()
+        rows = rows[:cap]
+        if clear and sid in self._console_buffers:
+            # In-place clear — the page-attached handler closes over
+            # the original list. Reassigning would orphan future emits
+            # to a buffer nobody reads.
+            self._console_buffers[sid].clear()
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={"entries": rows, "count": len(rows)},
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 
     def _sid(self, call: ToolCall) -> str:
         return call.session_id or "_default"
+
+    def _resolve_locator(self, page: Any, selector: str) -> Any:
+        """Wave 25.1: parse the iframe-aware selector syntax.
+
+        Three prefixes let agents reach into iframes without us having
+        to expose a separate frame-handle API:
+
+          ``frame_name=NAME>>INNER``  — iframe by ``name`` attribute
+          ``frame_url=SUBSTRING>>INNER`` — iframe whose URL contains
+              SUBSTRING (matches across redirect chains)
+          ``frame_index=N>>INNER`` — iframe by 0-based position in
+              ``page.frames`` (top frame is 0; first iframe is 1)
+
+        Without a prefix, behaves like the legacy ``page.locator(sel)``
+        path. All eight action verbs (click / press / fill / hover /
+        scroll / select_option / upload / wait_for) call this helper
+        so iframe traversal is uniform.
+
+        Returns a Playwright locator. Raises ValueError if a prefix is
+        present but the named frame can't be found — surfaces as a
+        clean tool error instead of a generic timeout.
+        """
+        if "::" not in selector and ">>" not in selector:
+            return page.locator(selector).first
+        # Use ">>" as the separator. Frame prefix is the first token,
+        # inner selector is everything after. Don't split on later >>
+        # because those might appear inside the inner selector
+        # (Playwright supports chained `>>` for compound matching).
+        if ">>" not in selector:
+            return page.locator(selector).first
+        prefix, _, inner = selector.partition(">>")
+        prefix = prefix.strip()
+        inner = inner.strip()
+        if not inner:
+            raise ValueError(
+                f"frame selector {selector!r} missing inner selector "
+                "after '>>'"
+            )
+        if prefix.startswith("frame_name="):
+            name = prefix[len("frame_name="):].strip()
+            frame = next(
+                (f for f in page.frames if getattr(f, "name", "") == name),
+                None,
+            )
+            if frame is None:
+                raise ValueError(
+                    f"no iframe with name={name!r} (frames have names: "
+                    f"{[getattr(f, 'name', '') for f in page.frames]})"
+                )
+            return frame.locator(inner).first
+        if prefix.startswith("frame_url="):
+            needle = prefix[len("frame_url="):].strip()
+            frame = next(
+                (f for f in page.frames if needle in (f.url or "")),
+                None,
+            )
+            if frame is None:
+                raise ValueError(
+                    f"no iframe whose url contains {needle!r}"
+                )
+            return frame.locator(inner).first
+        if prefix.startswith("frame_index="):
+            try:
+                idx = int(prefix[len("frame_index="):])
+            except ValueError as exc:
+                raise ValueError(
+                    f"frame_index must be int, got "
+                    f"{prefix[len('frame_index='):]!r}"
+                ) from exc
+            frames = list(page.frames)
+            if idx < 0 or idx >= len(frames):
+                raise ValueError(
+                    f"frame_index={idx} out of range (have "
+                    f"{len(frames)} frames)"
+                )
+            return frames[idx].locator(inner).first
+        # Unknown prefix — treat the whole string as a normal selector
+        # (Playwright's own chained-locator >> syntax for compound
+        # matching, e.g. ``css=.row >> text=Submit``).
+        return page.locator(selector).first
+
+
+def _state_profile_path(name: str) -> Any:
+    """Wave 25.2: resolve a storage_state profile name to a file path
+    under ~/.xmclaw/v2/browser_state/. Sanitizes the name to prevent
+    path traversal (the only allowed chars are alphanumeric / dash /
+    underscore — agents that emit weird names get a clean error)."""
+    import re
+    from pathlib import Path as _P
+
+    from xmclaw.utils.paths import data_dir
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        raise ValueError(
+            f"profile name {name!r} must match [A-Za-z0-9_-]+"
+        )
+    return _P(data_dir() / "v2" / "browser_state" / f"{name}.json")
 
 
 class _PlaywrightMissing(RuntimeError):
