@@ -734,6 +734,13 @@ class ComputerUseTools(ToolProvider):
         # in _require_pyautogui so a daemon that never invokes a tool
         # doesn't pay the import cost.
         self._pyautogui_ready: bool | None = None
+        # B-TOPMOST-CLEANUP: gui_send_chat pins WeChat HWND_TOPMOST so
+        # Claude Code / browser overlays can't obscure it during the
+        # OCR-+-click sequence. We track the pinned window here and
+        # release at the START of the NEXT invoke (cheap, simple, and
+        # guaranteed even if gui_send_chat errored out before reaching
+        # its own release).
+        self._pending_topmost_release: Any | None = None
 
     def list_tools(self) -> list[ToolSpec]:
         return [
@@ -757,6 +764,18 @@ class ComputerUseTools(ToolProvider):
         t0 = time.perf_counter()
         name = call.name
         args = call.args or {}
+        # B-TOPMOST-CLEANUP: release any window left HWND_TOPMOST by
+        # the previous gui_send_chat call. The pin is intentionally
+        # left in place until the NEXT tool invocation so the agent /
+        # user can see the message land + read confirmation; by the
+        # time another tool fires the user has had visual feedback.
+        prev = self._pending_topmost_release
+        if prev is not None:
+            self._pending_topmost_release = None
+            try:
+                await asyncio.to_thread(_release_topmost, prev)
+            except Exception:  # noqa: BLE001 — never block the new tool
+                pass
         try:
             if name == "screen_capture":   return await self._screen_capture(call, t0, args)
             if name == "screen_size":      return await self._screen_size(call, t0)
@@ -1101,13 +1120,43 @@ class ComputerUseTools(ToolProvider):
                     chosen.restore()
                 except Exception:  # noqa: BLE001
                     pass
+            # 2026-05-13 r4: pygetwindow.activate() returns ok on
+            # Windows even when the OS silently denied the focus
+            # change (focus-stealing prevention). We use the lower-
+            # level SetForegroundWindow path via ctypes, with the
+            # ALT-key trick that bypasses the restriction (works
+            # because alt-tab implicitly grants the calling thread
+            # foreground rights). Falls back to pygetwindow if win32
+            # APIs are unavailable.
+            _activated_via = "pygetwindow"
+            activation_warning: str | None = None
             try:
-                chosen.activate()
-            except Exception as exc:  # noqa: BLE001
-                raise RuntimeError(
-                    f"activate failed for {chosen.title!r}: {exc}",
+                _activated_via = _force_foreground(chosen)
+            except Exception as exc:  # noqa: BLE001 — fall back
+                activation_warning = (
+                    f"win32 force-foreground failed ({exc}); "
+                    "falling back to pygetwindow.activate"
                 )
-            return {
+                try:
+                    chosen.activate()
+                except Exception as exc2:  # noqa: BLE001
+                    raise RuntimeError(
+                        f"activate failed for {chosen.title!r}: {exc2}",
+                    )
+            # Verify it actually came to front. GetForegroundWindow
+            # is the ground truth.
+            is_frontmost = False
+            try:
+                import ctypes
+                hwnd_fg = ctypes.windll.user32.GetForegroundWindow()
+                hwnd_target = getattr(chosen, "_hWnd", None)
+                if hwnd_target is None:
+                    # pygetwindow's Win32Window stores hwnd here
+                    hwnd_target = int(getattr(chosen, "hWnd", 0))
+                is_frontmost = (hwnd_fg == int(hwnd_target))
+            except Exception:  # noqa: BLE001
+                pass
+            payload = {
                 "title": (chosen.title or "")[:160],
                 "bbox": [
                     int(getattr(chosen, "left", 0)),
@@ -1115,7 +1164,12 @@ class ComputerUseTools(ToolProvider):
                     int(getattr(chosen, "width", 0)),
                     int(getattr(chosen, "height", 0)),
                 ],
+                "activated_via": _activated_via,
+                "is_frontmost": is_frontmost,
             }
+            if activation_warning:
+                payload["warning"] = activation_warning
+            return payload
 
         try:
             payload = await asyncio.to_thread(_do_focus)
@@ -1803,11 +1857,16 @@ class ComputerUseTools(ToolProvider):
     def _chat_header_bbox(target_bbox: list[int] | None) -> list[int] | None:
         """Return the [x, y, w, h] of the chat-header OCR strip.
 
-        Chat apps put the conversation title in the top-most ~80 px of
-        the right pane. We approximate the right pane as starting at
-        ~30 % of the window width (chat list takes the left) and going
-        to the right edge. Heuristic — caller can override by passing
-        an explicit input_bbox for the OCR step in a future revision.
+        Chat apps put the conversation title at the **top-left** of the
+        right (conversation) pane. We narrow our OCR strip there to:
+
+        1. Skip the action icons on the right side of the header bar
+           (call, video, menu) which OCR would misread.
+        2. Skip any external overlay (Claude Code / browser tooltip)
+           covering the right side of the screen.
+
+        Result: leftmost 40% of the right pane, top 60 px tall. The
+        chat title fits in this even for long group names (~12 chars).
         """
         if target_bbox is None or len(target_bbox) != 4:
             return None
@@ -1817,10 +1876,10 @@ class ComputerUseTools(ToolProvider):
         # Right pane starts ~30% into the window width.
         right_pane_x = wx + ww // 3
         right_pane_w = ww - ww // 3
-        # Top ~80 px is where the chat header sits — covers the title
-        # plus participant count in WeChat / 飞书 / Slack / etc.
-        header_h = min(80, wh // 6)
-        return [right_pane_x, wy, right_pane_w, header_h]
+        # Narrow strip: left 40% of right pane is where the title is.
+        title_strip_w = max(120, int(right_pane_w * 0.4))
+        header_h = min(60, wh // 8)
+        return [right_pane_x, wy, title_strip_w, header_h]
 
     async def _gui_send_chat(
         self, call: ToolCall, t0: float, args: dict,
@@ -1861,41 +1920,54 @@ class ComputerUseTools(ToolProvider):
 
         # ── Step 1: focus target window ──
         target_bbox: list[int] | None = None
+        chosen_proc_name: str = ""
         if isinstance(window_title, str) and window_title.strip():
             try:
-                import pygetwindow as gw  # type: ignore
+                import pygetwindow as gw  # type: ignore  # noqa: F401
             except ImportError:
                 return _fail(
                     call, t0,
                     "gui_send_chat needs ``pygetwindow``. "
                     "pip install pygetwindow",
                 )
-            substring = window_title.strip().lower()
+            substring = window_title.strip()
             try:
-                windows = await asyncio.to_thread(gw.getAllWindows)
+                chosen = await asyncio.to_thread(
+                    _pick_chat_window, substring,
+                )
             except Exception as exc:  # noqa: BLE001
-                return _fail(call, t0, f"pygetwindow failed: {exc}")
-            chosen = None
-            for w in windows:
-                try:
-                    title = (getattr(w, "title", "") or "")
-                    if title and substring in title.lower():
-                        chosen = w
-                        break
-                except Exception:  # noqa: BLE001
-                    continue
+                return _fail(call, t0, f"pick-chat-window failed: {exc}")
             if chosen is None:
                 return _fail(
                     call, t0,
-                    f"no window with title containing {window_title!r}",
+                    f"no chat-app window with title containing "
+                    f"{window_title!r} (after filtering out browser "
+                    f"tabs and the WeChat mini-program auxiliary "
+                    f"window). Open the app first, then retry.",
                 )
+            chosen_proc_name = _window_process_name(chosen)
             try:
                 if bool(getattr(chosen, "isMinimized", False)):
                     chosen.restore()
-                chosen.activate()
+                # Use the win32-foreground bypass — pygetwindow.activate
+                # alone silently failed against Windows 11 focus-
+                # stealing protection (real bug seen with WeChat hiding
+                # behind Claude / browser). _force_foreground PINS the
+                # window HWND_TOPMOST so other topmost windows (Claude
+                # Code's task panel) can't obscure it. Pin stays until
+                # the next tool invocation releases it (see invoke()).
+                _force_foreground(chosen)
+                self._pending_topmost_release = chosen
             except Exception:  # noqa: BLE001 — Windows occasionally raises
-                pass
-            await asyncio.sleep(0.4)
+                try:
+                    chosen.activate()
+                except Exception:  # noqa: BLE001
+                    pass
+            # Give Windows + WeChat time to render the activated state
+            # before we OCR. 0.4s was empirically not enough during
+            # the test — the chat header was OCR'd before WeChat
+            # actually finished its paint cycle.
+            await asyncio.sleep(0.8)
             try:
                 target_bbox = [
                     int(getattr(chosen, "left", 0)),
@@ -1907,13 +1979,18 @@ class ComputerUseTools(ToolProvider):
                 target_bbox = None
 
         # ── Step 1.25: navigate to target chat (if nav_chat_name set) ──
-        # OCR the chat-list strip (left ~1/3 of the focused window),
-        # find an exact-or-substring match for nav_chat_name, click it.
-        # Critical for the "WeChat window moved between hops" failure
-        # mode — we re-find both the window and the chat-list match
-        # right before clicking, so stale coords from a previous hop
-        # can't bite us.
+        # Strategy: OCR-find-and-click the chat name in the left-pane
+        # chat list. This is THE one path that has empirically worked
+        # in real WeChat / 飞书 / Slack tests — focusing the window
+        # then clicking an OCR'd text block. We previously tried
+        # Ctrl+F to use WeChat's search but that fires the BROWSER's
+        # find-in-page when focus is even slightly off (real bug seen
+        # in the e2e trace).
         nav_clicked: list[int] | None = None
+        nav_strategy: str | None = None
+        # Allow skip when header already shows wanted chat — saves
+        # a navigation hop on re-tries.
+        skip_nav_because_already_there = False
         if nav_chat_name and nav_chat_name.strip():
             wanted_chat = nav_chat_name.strip()
             if target_bbox is None or target_bbox[2] <= 0:
@@ -1922,95 +1999,172 @@ class ComputerUseTools(ToolProvider):
                     "nav_chat_name set but no window bbox known — "
                     "pass window_title so the chat list can be located",
                 )
-            wx, wy, ww, wh = target_bbox
-            # Chat list = left ~1/3 of window, full vertical (skip
-            # top 60 px for search bar). WeChat / 飞书 / Slack all
-            # use this layout.
-            chat_list_bbox = [wx, wy + 60, ww // 3, wh - 60]
-            try:
-                blocks = await asyncio.to_thread(
-                    _run_ocr_full_pipeline, chat_list_bbox, 0.5,
-                )
-            except _NoOCREngineError as exc:
-                return _fail(call, t0, str(exc))
-            except Exception as exc:  # noqa: BLE001
-                return _fail(
-                    call, t0,
-                    f"chat-list OCR failed: {type(exc).__name__}: {exc}",
-                )
-            matches = _match_text_in_blocks(
-                blocks or [], wanted_chat, exact=False,
-            )
-            if not matches:
-                # Capture the chat-list region for the agent to inspect.
-                cl_path: str | None = None
+            # Pre-check: if verify_chat_title is also set AND the
+            # current chat-header OCR already matches, skip the
+            # nav click entirely (the user / agent may have already
+            # opened the right chat). This is the fast-path for
+            # idempotent send.
+            if verify_chat_title and verify_chat_title.strip():
+                wanted_v = verify_chat_title.strip()
+                pre_header_bbox = self._chat_header_bbox(target_bbox)
+                if pre_header_bbox is not None:
+                    try:
+                        pre_blocks = await asyncio.to_thread(
+                            _run_ocr_full_pipeline,
+                            pre_header_bbox, 0.5,
+                        )
+                        pre_text = " ".join(
+                            b.get("text", "")
+                            for b in (pre_blocks or [])
+                        )
+                        plow = pre_text.casefold()
+                        wlow = wanted_v.casefold()
+                        if wlow in plow:
+                            skip_nav_because_already_there = True
+                        else:
+                            w_chars = {c for c in wlow if not c.isspace()}
+                            if w_chars and (
+                                len(w_chars & set(plow)) / len(w_chars) >= 0.5
+                            ):
+                                skip_nav_because_already_there = True
+                    except Exception:  # noqa: BLE001
+                        pass
+
+            if not skip_nav_because_already_there:
                 try:
-                    import mss
-                    self._screenshot_dir.mkdir(parents=True, exist_ok=True)
-                    cx, cy, cw, ch = chat_list_bbox
-                    out = self._screenshot_dir / (
-                        f"{int(time.time())}_{call.id[:8]}_chatlist.png"
+                    pg_nav = self._require_pyautogui()
+                except ImportError as exc:
+                    return _fail(call, t0, _pg_install_hint(exc))
+
+                wx, wy, ww, wh = target_bbox
+                chat_list_bbox = [wx, wy + 60, ww // 3, wh - 60]
+                try:
+                    blocks = await asyncio.to_thread(
+                        _run_ocr_full_pipeline, chat_list_bbox, 0.5,
                     )
-                    with mss.mss() as sct:
-                        grab = sct.grab({
-                            "left": cx, "top": cy,
-                            "width": cw, "height": ch,
-                        })
-                        mss.tools.to_png(grab.rgb, grab.size, output=str(out))
-                    cl_path = str(out)
-                except Exception:  # noqa: BLE001
-                    pass
-                return ToolResult(
-                    call_id=call.id, ok=False, content=None,
-                    error=(
-                        f"nav_chat_name {wanted_chat!r} not found in "
-                        f"chat list (OCR'd region {chat_list_bbox}). "
-                        f"Sample OCR hits: "
-                        f"{[b.get('text', '')[:20] for b in (blocks or [])[:8]]}. "
-                        f"Possible causes: chat scrolled below visible "
-                        f"area (scroll the list and retry), chat does "
-                        f"not exist, OCR misread Chinese characters."
-                    ),
-                    latency_ms=(time.perf_counter() - t0) * 1000.0,
-                    metadata=(
-                        {"attach_image": cl_path} if cl_path else {}
-                    ),
+                except _NoOCREngineError as exc:
+                    return _fail(call, t0, str(exc))
+                except Exception as exc:  # noqa: BLE001
+                    return _fail(
+                        call, t0,
+                        f"chat-list OCR failed: {type(exc).__name__}: {exc}",
+                    )
+                matches = _match_text_in_blocks(
+                    blocks or [], wanted_chat, exact=False,
                 )
-            top = matches[0]
-            nav_x = int(top["center"][0])
-            nav_y = int(top["center"][1])
-            try:
-                pg_nav = self._require_pyautogui()
-                await asyncio.to_thread(pg_nav.click, nav_x, nav_y)
-            except ImportError as exc:
-                return _fail(call, t0, _pg_install_hint(exc))
-            except Exception as exc:  # noqa: BLE001
-                return _fail(
-                    call, t0,
-                    f"nav click failed at ({nav_x}, {nav_y}): "
-                    f"{type(exc).__name__}: {exc}",
-                )
-            nav_clicked = [nav_x, nav_y]
-            # Give the conversation pane time to render before we
-            # OCR-verify the chat header.
-            await asyncio.sleep(0.6)
+                if matches:
+                    top = matches[0]
+                    nav_x = int(top["center"][0])
+                    nav_y = int(top["center"][1])
+                    try:
+                        await asyncio.to_thread(pg_nav.click, nav_x, nav_y)
+                    except Exception as exc:  # noqa: BLE001
+                        return _fail(
+                            call, t0,
+                            f"nav click failed at ({nav_x}, {nav_y}): "
+                            f"{type(exc).__name__}: {exc}",
+                        )
+                    nav_clicked = [nav_x, nav_y]
+                    nav_strategy = "ocr_chat_list_click"
+                    # Conversation pane needs time to load + re-render
+                    # the chat header text. 0.6s was too short in
+                    # practice; 1.2s gives reliable paint.
+                    await asyncio.sleep(1.2)
+                else:
+                    # FALLBACK: chat is scrolled out of view. Use the
+                    # app's search box. We OCR'd "Q 搜索" / "Search"
+                    # near the top of chat list — click it, paste
+                    # name, press Enter. This is robust against any
+                    # number of chats in the list.
+                    search_block = None
+                    for b in (blocks or []):
+                        text = (b.get("text", "") or "").strip()
+                        # WeChat search box text: "Q搜索" / "Q 搜索";
+                        # 飞书 / Slack: "Search"; QQ: "搜索"
+                        low = text.casefold()
+                        if (
+                            "搜索" in low
+                            or low == "search"
+                            or low.startswith("search ")
+                            or low.startswith("q搜索")
+                            or low.startswith("q 搜索")
+                        ):
+                            search_block = b
+                            break
+                    if search_block is None:
+                        return ToolResult(
+                            call_id=call.id, ok=False, content=None,
+                            error=(
+                                f"nav_chat_name {wanted_chat!r} not in "
+                                f"visible chat list AND no search box "
+                                f"detected. OCR sample: "
+                                f"{[b.get('text','')[:20] for b in (blocks or [])[:8]]}. "
+                                f"If the app has hundreds of chats, "
+                                f"scroll down with mouse_scroll until "
+                                f"the chat is visible, then retry."
+                            ),
+                            latency_ms=(time.perf_counter() - t0) * 1000.0,
+                        )
+                    sx = int(search_block["center"][0])
+                    sy = int(search_block["center"][1])
+                    try:
+                        await asyncio.to_thread(pg_nav.click, sx, sy)
+                        await asyncio.sleep(0.3)
+                        # Clear any prior content + paste new query.
+                        await asyncio.to_thread(pg_nav.hotkey, "ctrl", "a")
+                        await asyncio.sleep(0.1)
+                        try:
+                            import pyperclip  # type: ignore
+                            saved_clip_search = None
+                            try:
+                                saved_clip_search = pyperclip.paste()
+                            except Exception:  # noqa: BLE001
+                                pass
+                            await asyncio.to_thread(
+                                pyperclip.copy, wanted_chat,
+                            )
+                            await asyncio.sleep(0.1)
+                            await asyncio.to_thread(
+                                pg_nav.hotkey, "ctrl", "v",
+                            )
+                            if saved_clip_search is not None:
+                                try:
+                                    await asyncio.to_thread(
+                                        pyperclip.copy, saved_clip_search,
+                                    )
+                                except Exception:  # noqa: BLE001
+                                    pass
+                        except ImportError:
+                            await asyncio.to_thread(
+                                pg_nav.write, wanted_chat, interval=0.02,
+                            )
+                        await asyncio.sleep(0.6)
+                        await asyncio.to_thread(pg_nav.press, "enter")
+                    except Exception as exc:  # noqa: BLE001
+                        return _fail(
+                            call, t0,
+                            f"search-box navigation failed: "
+                            f"{type(exc).__name__}: {exc}",
+                        )
+                    nav_clicked = [sx, sy]
+                    nav_strategy = "search_box_fallback"
+                    # Search-result open + conversation paint takes
+                    # slightly longer than a direct chat-list click.
+                    await asyncio.sleep(1.5)
             # Re-read window bbox — clicking a chat may shift the
             # window position on some systems (rare but observed).
             try:
-                import pygetwindow as gw  # type: ignore
                 if isinstance(window_title, str) and window_title.strip():
-                    substring2 = window_title.strip().lower()
-                    windows2 = await asyncio.to_thread(gw.getAllWindows)
-                    for w in windows2:
-                        title2 = (getattr(w, "title", "") or "")
-                        if title2 and substring2 in title2.lower():
-                            target_bbox = [
-                                int(getattr(w, "left", 0)),
-                                int(getattr(w, "top", 0)),
-                                int(getattr(w, "width", 0)),
-                                int(getattr(w, "height", 0)),
-                            ]
-                            break
+                    re_chosen = await asyncio.to_thread(
+                        _pick_chat_window, window_title.strip(),
+                    )
+                    if re_chosen is not None:
+                        target_bbox = [
+                            int(getattr(re_chosen, "left", 0)),
+                            int(getattr(re_chosen, "top", 0)),
+                            int(getattr(re_chosen, "width", 0)),
+                            int(getattr(re_chosen, "height", 0)),
+                        ]
             except Exception:  # noqa: BLE001
                 pass
 
@@ -2201,6 +2355,7 @@ class ComputerUseTools(ToolProvider):
                 window_title.strip()
                 if isinstance(window_title, str) else None
             ),
+            "window_process": chosen_proc_name,
             "window_bbox": target_bbox,
             "nav_chat_name": (
                 nav_chat_name.strip()
@@ -2208,6 +2363,7 @@ class ComputerUseTools(ToolProvider):
                 else None
             ),
             "nav_clicked": nav_clicked,
+            "nav_strategy": nav_strategy,
             "verified_chat_title": (
                 verify_chat_title.strip()
                 if isinstance(verify_chat_title, str) and verify_chat_title.strip()
@@ -2283,6 +2439,283 @@ def _fail(call: ToolCall, t0: float, err: str) -> ToolResult:
     return ToolResult(
         call_id=call.id, ok=False, content=None, error=err,
         latency_ms=(time.perf_counter() - t0) * 1000.0,
+    )
+
+
+def _release_topmost(window: Any) -> bool:
+    """Reverse the HWND_TOPMOST pin from ``_force_foreground``.
+
+    Call from a try/finally so the window doesn't stay pinned topmost
+    after the GUI operation completes. Returns True on success, False
+    on any failure (caller can ignore — leaving a window topmost is
+    annoying but not destructive).
+    """
+    try:
+        import ctypes
+        hwnd = int(
+            getattr(window, "_hWnd", None) or getattr(window, "hWnd", 0)
+        )
+        if not hwnd:
+            return False
+        HWND_NOTOPMOST = -2
+        SWP_NOMOVE = 0x0002
+        SWP_NOSIZE = 0x0001
+        SWP_NOACTIVATE = 0x0010
+        flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+        return bool(ctypes.windll.user32.SetWindowPos(
+            hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags,
+        ))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _window_process_name(window: Any) -> str:
+    """Return the process executable name (e.g. 'Weixin.exe') for a
+    pygetwindow Window. Returns '' on any failure.
+
+    Used by `_pick_chat_window` to distinguish e.g. the real WeChat
+    main window ('Weixin.exe') from the WeChat extension/mini-program
+    auxiliary window ('WeChatAppEx.exe') and from a browser tab whose
+    title also contains '微信'.
+    """
+    try:
+        import ctypes
+        import ctypes.wintypes
+        hwnd = int(
+            getattr(window, "_hWnd", None) or getattr(window, "hWnd", 0)
+        )
+        if not hwnd:
+            return ""
+        pid = ctypes.wintypes.DWORD()
+        ctypes.windll.user32.GetWindowThreadProcessId(
+            hwnd, ctypes.byref(pid),
+        )
+        if not pid.value:
+            return ""
+        import psutil  # type: ignore
+        p = psutil.Process(pid.value)
+        return p.name() or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+# Process names known to be browser tabs that often steal "微信"
+# title from the real WeChat window. If the window's pid matches one
+# of these, we skip it as a chat-app candidate.
+_BROWSER_EXE_NAMES = frozenset({
+    "msedge.exe", "chrome.exe", "firefox.exe", "brave.exe",
+    "opera.exe", "vivaldi.exe", "iexplore.exe", "safari.exe",
+})
+
+# WeChat / 飞书 / Slack / Discord / QQ main-app exe names. When
+# searching for a chat window by title, we prefer one of these over
+# any other process (e.g. WeChat's extension window WeChatAppEx.exe
+# which sometimes carries the same '微信' title but is for the
+# channels / mini-program viewer, not the main chat surface).
+_CHAT_APP_EXE_NAMES = frozenset({
+    # WeChat / Tencent
+    "weixin.exe",       # WeChat 4.x main
+    "wechat.exe",       # WeChat 3.x main
+    "qq.exe",
+    # ByteDance
+    "feishu.exe",
+    "lark.exe",
+    # International
+    "slack.exe",
+    "discord.exe",
+    "telegram.exe",
+})
+
+
+def _pick_chat_window(title_substring: str) -> Any | None:
+    """Find the best matching chat-app window for ``title_substring``.
+
+    Selection logic (per real bug seen 2026-05-13):
+
+    1. Filter to windows whose title contains the substring.
+    2. Discard browser-process windows (msedge.exe etc) — their tab
+       title can match unrelated text like '微信'.
+    3. Discard WeChat extension/auxiliary processes (WeChatAppEx.exe)
+       which carry the SAME '微信' title as the main app but are
+       full-screen mini-program/channels viewers, not the chat UI.
+    4. Prefer windows whose process name is in ``_CHAT_APP_EXE_NAMES``.
+    5. Of remaining, prefer NON-minimized and NON-full-screen (the
+       main chat window is usually 800×600 or 1300×900, not screen-
+       spanning).
+
+    Returns the chosen pygetwindow Window or None.
+    """
+    try:
+        import pygetwindow as gw  # type: ignore
+    except ImportError:
+        return None
+    sub = title_substring.strip().lower()
+    if not sub:
+        return None
+    candidates: list[tuple[Any, str]] = []
+    for w in gw.getAllWindows():
+        try:
+            title = (getattr(w, "title", "") or "").strip()
+            if not title or sub not in title.lower():
+                continue
+            proc = _window_process_name(w).lower()
+            if proc in _BROWSER_EXE_NAMES:
+                continue
+            # WeChatAppEx is the mini-program/channels viewer — NOT
+            # the chat surface. Skip even though title matches.
+            if proc == "wechatappex.exe":
+                continue
+            candidates.append((w, proc))
+        except Exception:  # noqa: BLE001
+            continue
+    if not candidates:
+        return None
+    # Sort: known chat-app exe first, then non-minimized + non-full-
+    # screen, then anything else.
+    import ctypes
+    user32 = ctypes.windll.user32
+
+    def _score(item: tuple[Any, str]) -> tuple[int, int, int]:
+        w, proc = item
+        in_chat_app = 0 if proc in _CHAT_APP_EXE_NAMES else 1
+        is_min = 1 if bool(getattr(w, "isMinimized", False)) else 0
+        # Penalize windows that span the full screen — those are
+        # usually launchers / fullscreen apps, not chat composers.
+        sw = user32.GetSystemMetrics(0)
+        sh = user32.GetSystemMetrics(1)
+        width = int(getattr(w, "width", 0))
+        height = int(getattr(w, "height", 0))
+        is_fullscreen = 1 if (width >= sw - 50 and height >= sh - 100) else 0
+        return (in_chat_app, is_min, is_fullscreen)
+
+    candidates.sort(key=_score)
+    return candidates[0][0]
+
+
+def _force_foreground(window: Any) -> str:
+    """Bring a window to the foreground reliably on Windows.
+
+    pygetwindow's ``activate()`` returns success on Windows even when
+    the OS silently denies the focus change due to foreground-lock
+    protection (this is what we hit in the WeChat e2e test —
+    window_focus said ok but WeChat stayed behind Claude). The
+    documented workaround uses the AttachThreadInput technique: we
+    attach our thread to the foreground thread, call
+    SetForegroundWindow, then detach. This is the same technique
+    Microsoft Spy++ and similar tools use.
+
+    Returns the strategy that succeeded so callers / tests can see
+    what path was taken. Raises on total failure.
+
+    Windows-only; on other platforms, falls back to plain activate().
+    """
+    import platform
+    if platform.system() != "Windows":
+        window.activate()
+        return "pygetwindow"
+
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+
+    hwnd_target = int(
+        getattr(window, "_hWnd", None) or getattr(window, "hWnd", 0)
+    )
+    if not hwnd_target:
+        window.activate()
+        return "pygetwindow"
+
+    # Restore from minimized if needed.
+    SW_RESTORE = 9
+    if user32.IsIconic(hwnd_target):
+        user32.ShowWindow(hwnd_target, SW_RESTORE)
+
+    # BEFORE anything else: pin the window HWND_TOPMOST. This puts
+    # it above any other HWND_TOPMOST windows (Claude Code's task
+    # panel, system notifications, popup tooltips). DO NOT immediately
+    # revert — previous attempts at flip+revert left WeChat back under
+    # Claude Code's panel within milliseconds. Caller (gui_send_chat)
+    # must call ``_release_topmost(window)`` in a try/finally so the
+    # window doesn't stay pinned after the operation.
+    HWND_TOPMOST = -1
+    HWND_NOTOPMOST = -2  # noqa: F841 (kept for _release_topmost reference)
+    SWP_NOMOVE = 0x0002
+    SWP_NOSIZE = 0x0001
+    SWP_SHOWWINDOW = 0x0040
+    SWP_NOACTIVATE = 0x0010
+    flip_flags = SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
+    user32.SetWindowPos(hwnd_target, HWND_TOPMOST, 0, 0, 0, 0, flip_flags)
+
+    # Strategy A: bare SetForegroundWindow. Often works when the
+    # calling thread is already the foreground thread (rare).
+    if user32.SetForegroundWindow(hwnd_target):
+        # Confirm.
+        if user32.GetForegroundWindow() == hwnd_target:
+            return "topmost_flip_set_foreground"
+
+    # Strategy B: AttachThreadInput trick. The classic Windows
+    # focus-stealing bypass. Attach our thread to the current
+    # foreground thread's input queue, call SetForegroundWindow,
+    # detach. Works because Windows trusts focus changes that come
+    # from the active thread.
+    foreground_hwnd = user32.GetForegroundWindow()
+    foreground_tid = user32.GetWindowThreadProcessId(
+        foreground_hwnd, None,
+    )
+    target_tid = user32.GetWindowThreadProcessId(hwnd_target, None)
+    current_tid = kernel32.GetCurrentThreadId()
+
+    attached = False
+    if foreground_tid and current_tid and foreground_tid != current_tid:
+        attached = bool(user32.AttachThreadInput(
+            current_tid, foreground_tid, True,
+        ))
+    try:
+        # Also lock + release the lock-set-foreground-window timeout.
+        ASFW_ANY = wintypes.DWORD(-1)
+        try:
+            user32.AllowSetForegroundWindow(ASFW_ANY)
+        except Exception:  # noqa: BLE001 — some Windows variants lack this
+            pass
+        # Send a synthetic ALT key — Windows treats this as user input
+        # and grants the calling thread foreground rights for the next
+        # SetForegroundWindow call.
+        VK_MENU = 0x12
+        KEYEVENTF_KEYUP = 0x0002
+        user32.keybd_event(VK_MENU, 0, 0, 0)
+        user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+
+        user32.ShowWindow(hwnd_target, SW_RESTORE)
+        user32.SetForegroundWindow(hwnd_target)
+        # BringWindowToTop forces the Z-order even when foreground
+        # isn't granted; combined with SetForegroundWindow above we
+        # cover both cases.
+        user32.BringWindowToTop(hwnd_target)
+    finally:
+        if attached:
+            user32.AttachThreadInput(current_tid, foreground_tid, False)
+
+    if user32.GetForegroundWindow() == hwnd_target:
+        return "attach_thread_input"
+
+    # Strategy C: re-do the TOPMOST flip (we already did it once at
+    # the top; doing it again after the AttachThreadInput attempt
+    # sometimes shakes loose a stuck z-order).
+    user32.SetWindowPos(hwnd_target, HWND_TOPMOST, 0, 0, 0, 0, flip_flags)
+    user32.SetWindowPos(hwnd_target, HWND_NOTOPMOST, 0, 0, 0, 0, flip_flags)
+    if user32.GetForegroundWindow() == hwnd_target:
+        return "topmost_flip_retry"
+
+    # Last-ditch: pygetwindow's activate.
+    window.activate()
+    if user32.GetForegroundWindow() == hwnd_target:
+        return "pygetwindow_fallback"
+    raise RuntimeError(
+        f"failed to bring window to foreground after all strategies "
+        f"(target hwnd {hwnd_target}, current fg "
+        f"{user32.GetForegroundWindow()})",
     )
 
 
