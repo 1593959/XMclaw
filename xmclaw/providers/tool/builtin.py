@@ -81,6 +81,8 @@ from xmclaw.providers.tool._specs import (  # noqa: F401
     _UPDATE_PERSONA_SPEC as _UPDATE_PERSONA_SPEC,
     _VOICE_SYNTHESIZE_SPEC as _VOICE_SYNTHESIZE_SPEC,
     _VOICE_TRANSCRIBE_SPEC as _VOICE_TRANSCRIBE_SPEC,
+    _UNDO_LIST_SPEC as _UNDO_LIST_SPEC,
+    _UNDO_RECENT_SPEC as _UNDO_RECENT_SPEC,
     _WEB_FETCH_SPEC as _WEB_FETCH_SPEC,
     _WEB_SEARCH_SPEC as _WEB_SEARCH_SPEC,
 )
@@ -181,12 +183,17 @@ class BuiltinTools(
         # must have ``async synthesize(text, voice) -> bytes``.
         stt_provider: "object | None" = None,
         tts_provider: "object | None" = None,
+        # Sprint 0 Track B: undo cabinet for destructive ops. When
+        # provided, ``file_write`` / ``apply_patch`` / ``file_delete``
+        # snapshot pre-state for reversal. None = no recording (testing).
+        undo_cabinet: "object | None" = None,
     ) -> None:
         self._allowed = (
             [Path(d).resolve() for d in allowed_dirs] if allowed_dirs else None
         )
         self._enable_bash = enable_bash
         self._enable_web = enable_web
+        self._undo_cabinet = undo_cabinet
         # Optional callable () -> Path returning the active persona profile
         # directory (e.g. ~/.xmclaw/persona/profiles/default/). The
         # ``remember`` and ``learn_about_user`` tools target MEMORY.md and
@@ -297,6 +304,11 @@ class BuiltinTools(
             _LIST_DIR_SPEC, _GLOB_FILES_SPEC, _GREP_FILES_SPEC,
             _FILE_DELETE_SPEC,
         ]
+        # Sprint 0 Track B: surface undo tools whenever a cabinet is
+        # wired. Without one (test constructor) we don't advertise them
+        # since they'd return empty.
+        if getattr(self, "_undo_cabinet", None) is not None:
+            specs.extend([_UNDO_LIST_SPEC, _UNDO_RECENT_SPEC])
         if self._enable_bash:
             specs.append(_BASH_SPEC)
         if self._enable_web:
@@ -393,6 +405,10 @@ class BuiltinTools(
                 return await self._grep_files(call, t0)
             if call.name == "file_delete":
                 return await self._file_delete(call, t0)
+            if call.name == "undo_list":
+                return await self._undo_list(call, t0)
+            if call.name == "undo_recent":
+                return await self._undo_recent(call, t0)
             if call.name == "bash":
                 if not self._enable_bash:
                     return _fail(call, t0, "bash tool is disabled in config")

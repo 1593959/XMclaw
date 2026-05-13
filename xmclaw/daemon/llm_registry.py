@@ -31,6 +31,21 @@ class LLMProfile:
     ``llm`` is the constructed provider (Anthropic / OpenAI / …).
     ``label`` is the human-friendly name shown in the chat header
     dropdown — falls back to ``id`` when the user didn't supply one.
+
+    ``tier`` (Sprint 0 multi-model routing): semantic capability tier.
+    The ``ModelTierRouter`` reads message complexity / vision needs /
+    tool needs and picks one of:
+
+      * ``"fast"``     — single-shot chitchat / commands (Qwen 7B,
+                        Haiku, GPT-4o-mini). Latency target < 2s.
+      * ``"balanced"`` — default for most turns (Sonnet, GPT-4o,
+                        Kimi K2.6). Latency 5-15s, quality good.
+      * ``"strong"``   — long-chain reasoning, complex tool use
+                        (Opus 4.7, GPT-4.1). Quality > speed.
+      * ``"vision"``   — vision-grounded GUI work (Sonnet 4.6,
+                        GPT-4o, UI-TARS). Specialised.
+
+    Unconfigured profiles default to ``"balanced"``.
     """
 
     id: str
@@ -38,6 +53,7 @@ class LLMProfile:
     provider_name: str   # "anthropic" / "openai" / future kinds
     model: str
     llm: LLMProvider
+    tier: str = "balanced"
 
 
 @dataclass
@@ -84,3 +100,40 @@ class LLMRegistry:
 
     def __contains__(self, profile_id: object) -> bool:
         return profile_id in self.profiles
+
+    # ── Sprint 0: tier-based picking ──────────────────────────────
+
+    def by_tier(self, tier: str) -> list[LLMProfile]:
+        """Return all profiles whose ``tier`` matches. Insertion order
+        preserved so the FIRST hit is the preferred candidate."""
+        return [p for p in self.profiles.values() if p.tier == tier]
+
+    def pick_by_tier(
+        self,
+        tier: str,
+        *,
+        fallback_chain: tuple[str, ...] = (),
+    ) -> LLMProfile | None:
+        """Find a profile for ``tier``. If none registered for the
+        requested tier, walk ``fallback_chain`` in order. Last resort
+        is the registry default. Returns None only when the entire
+        registry is empty.
+
+        Typical fallback chains:
+          * fast      → fallback ("balanced",)
+          * vision    → fallback ("balanced", "strong")
+          * strong    → fallback ("balanced",)
+          * balanced  → fallback ("strong", "fast")
+
+        ``ModelTierRouter`` constructs the chain based on what failure
+        mode is least bad (e.g., for a vision-required turn, a non-
+        vision balanced model is better than a 30s timeout).
+        """
+        hits = self.by_tier(tier)
+        if hits:
+            return hits[0]
+        for fb in fallback_chain:
+            hits = self.by_tier(fb)
+            if hits:
+                return hits[0]
+        return self.default()

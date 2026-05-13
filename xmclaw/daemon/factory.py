@@ -263,6 +263,43 @@ def load_config(
     return merged
 
 
+# Sprint 0 multi-model routing: rough tier inference from model name
+# strings. Used when the user didn't explicitly set ``tier`` in their
+# profile config. Conservative — when in doubt return "balanced".
+def _infer_tier_from_model(model: str) -> str:
+    """Heuristic tier mapping based on common Anthropic / OpenAI /
+    open-source model name fragments."""
+    m = (model or "").lower()
+    if not m:
+        return "balanced"
+    # Fast tier — small chitchat models
+    if any(x in m for x in (
+        "haiku", "mini", "gpt-3.5", "phi", "qwen-7b", "qwen2-7b",
+        "llama-3-8b", "llama3-8b", "deepseek-v2-lite",
+        "moonshot-v1-8k", "yi-6b", "gemma-2b", "gemma-7b",
+        "8b-instruct", "tinyllama",
+    )):
+        return "fast"
+    # Strong tier — long-chain reasoning heavyweights
+    if any(x in m for x in (
+        "opus", "gpt-4.1", "gpt-4-turbo", "kimi-k2", "qwen-max",
+        "llama-3-405b", "llama3-405b", "deepseek-v3", "deepseek-r1",
+        "claude-opus", "o1", "o3",
+    )):
+        return "strong"
+    # Vision tier — vision-tuned for GUI / image grounding
+    if any(x in m for x in (
+        "sonnet", "gpt-4o", "gpt-4.5",
+        "ui-tars", "qwen2-vl", "qwen-vl", "vl-",
+        "cogvlm", "showui",
+    )):
+        # Most "sonnet" / "4o" are both balanced AND vision-capable.
+        # We bucket them as "vision" so vision turns pick them first;
+        # fallback chain catches non-vision needs.
+        return "vision"
+    return "balanced"
+
+
 def build_llm_from_config(cfg: dict[str, Any]) -> LLMProvider | None:
     """Return an LLMProvider constructed from ``cfg['llm'][<provider>]``.
 
@@ -501,9 +538,14 @@ def build_llm_profiles_from_config(cfg: dict[str, Any]) -> list[LLMProfile]:
             continue
 
         label = str(entry.get("label") or "").strip() or pid
+        # Sprint 0 multi-model routing: pull the explicit tier from
+        # config; default to "balanced" so existing configs keep
+        # working without change.
+        raw_tier = str(entry.get("tier") or "").strip().lower()
+        tier = raw_tier if raw_tier in ("fast", "balanced", "strong", "vision") else "balanced"
         out.append(LLMProfile(
             id=pid, label=label, provider_name=provider_name,
-            model=model, llm=llm,
+            model=model, llm=llm, tier=tier,
         ))
         seen.add(pid)
     return out
@@ -549,6 +591,7 @@ def build_llm_registry_from_config(cfg: dict[str, Any]) -> LLMRegistry:
             provider_name=legacy_provider,
             model=legacy_model,
             llm=legacy,
+            tier=_infer_tier_from_model(legacy_model),
         )
 
     for prof in build_llm_profiles_from_config(cfg):
@@ -830,6 +873,24 @@ def build_tools_from_config(
         except Exception:  # noqa: BLE001
             _tts_provider = None
 
+    # Sprint 0 Track B: undo cabinet for destructive file ops.
+    # Opt-out via tools.undo_cabinet.enabled=false (default ON).
+    _undo_cab = None
+    _undo_cfg = tools_section.get("undo_cabinet") or {}
+    if (
+        not isinstance(_undo_cfg, dict)
+        or _undo_cfg.get("enabled", True)
+    ):
+        try:
+            from xmclaw.security.undo_cabinet import UndoCabinet
+            _window = (
+                float(_undo_cfg.get("window_s", 1800))
+                if isinstance(_undo_cfg, dict) else 1800.0
+            )
+            _undo_cab = UndoCabinet(window_s=_window)
+        except Exception:  # noqa: BLE001 — undo is nice-to-have, not load-bearing
+            _undo_cab = None
+
     builtins = BuiltinTools(
         allowed_dirs=allowed_dirs,
         enable_bash=bool(enable_bash),
@@ -841,6 +902,7 @@ def build_tools_from_config(
         persona_store_provider=_persona_store_provider,
         stt_provider=_stt_provider,
         tts_provider=_tts_provider,
+        undo_cabinet=_undo_cab,
     )
     children: list[ToolProvider] = [builtins]
 

@@ -125,17 +125,34 @@ class BuiltinToolsFsMixin:
         # configured workspace roots. Doesn't block — sandboxing is
         # a separate UX-design epic.
         self._audit_workspace_containment(path, op="file_write")
+        # Sprint 0 Track B: snapshot pre-state for undo. Skipped when
+        # no cabinet is wired (test/legacy callers).
+        undo_id: str | None = None
+        cab = getattr(self, "_undo_cabinet", None)
+        if cab is not None:
+            try:
+                undo_id = cab.record_file_mutation(
+                    path=path,
+                    action="file_write",
+                    args={"bytes": len(text.encode("utf-8"))},
+                    session_id=getattr(call, "session_id", None),
+                )
+            except Exception:  # noqa: BLE001 — never block tool over undo
+                undo_id = None
         path.parent.mkdir(parents=True, exist_ok=True)
         from xmclaw.utils.fs_locks import atomic_write_text
         atomic_write_text(path, text)
         # Structured dict for graders and the bus; agent_loop renders
         # it into a readable tool-message string when feeding to the LLM.
+        content_dict: dict[str, Any] = {
+            "path": str(path),
+            "bytes": len(text.encode("utf-8")),
+        }
+        if undo_id:
+            content_dict["undo_id"] = undo_id
         return ToolResult(
             call_id=call.id, ok=True,
-            content={
-                "path": str(path),
-                "bytes": len(text.encode("utf-8")),
-            },
+            content=content_dict,
             side_effects=(str(path.resolve()),),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
@@ -201,6 +218,22 @@ class BuiltinToolsFsMixin:
         if text == original:
             return _fail(call, t0, "patch produced no change (every old_text == new_text)")
 
+        # Sprint 0 Track B: snapshot pre-state for undo BEFORE the
+        # atomic write. We have the original bytes in ``original`` but
+        # the cabinet reads from disk — so we record before the swap.
+        undo_id: str | None = None
+        cab = getattr(self, "_undo_cabinet", None)
+        if cab is not None:
+            try:
+                undo_id = cab.record_file_mutation(
+                    path=path,
+                    action="apply_patch",
+                    args={"edits_count": len(clean)},
+                    session_id=getattr(call, "session_id", None),
+                )
+            except Exception:  # noqa: BLE001
+                undo_id = None
+
         # Atomic write: temp + replace so a crash mid-write can't truncate.
         tmp = path.with_suffix(path.suffix + ".patch.tmp")
         tmp.write_text(text, encoding="utf-8")
@@ -208,15 +241,18 @@ class BuiltinToolsFsMixin:
 
         before = len(original.encode("utf-8"))
         after = len(text.encode("utf-8"))
+        content_dict: dict[str, Any] = {
+            "path": str(path),
+            "edits_applied": len(clean),
+            "bytes_before": before,
+            "bytes_after": after,
+            "delta": after - before,
+        }
+        if undo_id:
+            content_dict["undo_id"] = undo_id
         return ToolResult(
             call_id=call.id, ok=True,
-            content={
-                "path": str(path),
-                "edits_applied": len(clean),
-                "bytes_before": before,
-                "bytes_after": after,
-                "delta": after - before,
-            },
+            content=content_dict,
             side_effects=(str(path.resolve()),),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
@@ -500,6 +536,21 @@ class BuiltinToolsFsMixin:
             return _fail(call, t0, f"path does not exist: {path}")
         recursive = bool(call.args.get("recursive", False))
         kind = "dir" if path.is_dir() else "file"
+        # Sprint 0 Track B: snapshot the file's bytes before deletion
+        # so undo can restore. Directories are NOT recorded yet (would
+        # need recursive zip backup) — caller should be warned.
+        undo_id: str | None = None
+        cab = getattr(self, "_undo_cabinet", None)
+        if cab is not None and kind == "file":
+            try:
+                undo_id = cab.record_file_mutation(
+                    path=path,
+                    action="file_delete",
+                    args={"recursive": False},
+                    session_id=getattr(call, "session_id", None),
+                )
+            except Exception:  # noqa: BLE001
+                undo_id = None
         try:
             if path.is_dir():
                 if recursive:
@@ -511,14 +562,85 @@ class BuiltinToolsFsMixin:
                 path.unlink()
         except OSError as exc:
             return _fail(call, t0, f"delete failed: {exc}")
+        content_dict: dict[str, Any] = {
+            "path": str(path),
+            "kind": kind,
+            "recursive": recursive if kind == "dir" else False,
+        }
+        if undo_id:
+            content_dict["undo_id"] = undo_id
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content=content_dict,
+            side_effects=(str(path),),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    # ── Undo (Sprint 0 Track B) ────────────────────────────────────
+
+    async def _undo_list(self, call: ToolCall, t0: float) -> ToolResult:
+        cab = getattr(self, "_undo_cabinet", None)
+        if cab is None:
+            return _fail(call, t0, "undo cabinet not wired")
+        within_s = call.args.get("within_s", 60)
+        try:
+            within = float(within_s)
+        except (TypeError, ValueError):
+            within = 60.0
+        within = max(0.0, min(within, 1800.0))
+        records = cab.recent(within_s=within)
+        now = time.time()
         return ToolResult(
             call_id=call.id, ok=True,
             content={
-                "path": str(path),
-                "kind": kind,
-                "recursive": recursive if kind == "dir" else False,
+                "count": len(records),
+                "within_s": within,
+                "records": [
+                    {
+                        "id": r.id,
+                        "action": r.action,
+                        "path": r.path,
+                        "age_s": round(now - r.ts, 1),
+                        "pre_existed": r.pre_existed,
+                    }
+                    for r in records
+                ],
             },
-            side_effects=(str(path),),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _undo_recent(self, call: ToolCall, t0: float) -> ToolResult:
+        cab = getattr(self, "_undo_cabinet", None)
+        if cab is None:
+            return _fail(call, t0, "undo cabinet not wired")
+        action_id = call.args.get("action_id")
+        action_filter = call.args.get("action_filter")
+        if action_filter is not None and not isinstance(action_filter, str):
+            return _fail(call, t0, "action_filter must be a string")
+        if action_id is not None and isinstance(action_id, str) and action_id.strip():
+            result = cab.undo(action_id.strip())
+            return ToolResult(
+                call_id=call.id, ok=bool(result.get("applied")),
+                content=result,
+                error=None if result.get("applied") else result.get("reason"),
+                latency_ms=(time.perf_counter() - t0) * 1000.0,
+            )
+        within_s = call.args.get("within_s", 10)
+        try:
+            within = float(within_s)
+        except (TypeError, ValueError):
+            within = 10.0
+        within = max(0.0, min(within, 1800.0))
+        results = cab.undo_recent(within_s=within, action_filter=action_filter)
+        applied = sum(1 for r in results if r.get("applied"))
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "applied_count": applied,
+                "total_attempted": len(results),
+                "within_s": within,
+                "results": results,
+            },
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 

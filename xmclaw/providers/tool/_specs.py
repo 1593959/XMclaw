@@ -240,6 +240,76 @@ _FILE_DELETE_SPEC = ToolSpec(
 )
 
 
+_UNDO_LIST_SPEC = ToolSpec(
+    name="undo_list",
+    description=(
+        "List recent destructive file operations that can be undone. "
+        "Sprint 0 trust infrastructure: every ``file_write``, "
+        "``apply_patch``, and ``file_delete`` is auto-recorded with a "
+        "reverse op for ``UNDO_WINDOW_S`` (30 min default). Use this "
+        "to see what's still reversible before calling ``undo_recent``. "
+        "Returns id / action / path / age for each active record, "
+        "newest first."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "within_s": {
+                "type": "number",
+                "description": (
+                    "How far back to look (seconds). Default 60. "
+                    "Cap at 30*60 = 1800."
+                ),
+            },
+        },
+    },
+)
+
+
+_UNDO_RECENT_SPEC = ToolSpec(
+    name="undo_recent",
+    description=(
+        "Reverse recent destructive file operations. By default undoes "
+        "every active record within the last 10 seconds (newest first) "
+        "— intended for the 'agent just made a bad write, undo it' "
+        "loop. Pass ``action_id`` to undo ONE specific record (safer "
+        "when multiple unrelated mutations happened). Returns per-"
+        "action result (applied, action, path, reverse_kind).\n\n"
+        "Reverse semantics:\n"
+        "  * file existed before action → restore from backup\n"
+        "  * file did NOT exist (action created it) → delete\n"
+        "After undo, the record is marked done and the backup is "
+        "deleted (frees disk). Idempotent — undoing twice is a no-op."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "within_s": {
+                "type": "number",
+                "description": "Seconds back. Default 10.",
+            },
+            "action_id": {
+                "type": "string",
+                "description": (
+                    "Undo ONE specific record by id (returned by "
+                    "the original tool result or ``undo_list``). "
+                    "Mutually exclusive with within_s."
+                ),
+            },
+            "action_filter": {
+                "type": "string",
+                "enum": ["file_write", "file_delete", "apply_patch"],
+                "description": (
+                    "Only undo records matching this action name. "
+                    "Useful when you want to keep a file_write but "
+                    "undo a file_delete."
+                ),
+            },
+        },
+    },
+)
+
+
 _BASH_SPEC = ToolSpec(
     name="bash",
     description=(

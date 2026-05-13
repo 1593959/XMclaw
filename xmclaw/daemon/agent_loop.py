@@ -385,15 +385,55 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
     # per call, EvolutionAgent aggregates per (skill_id, version),
     # and the controller decides promotion.
 
-    def _resolve_llm(self, llm_profile_id: str | None) -> LLMProvider:
-        """Pick the LLM for this turn. Falls back to ``self._llm`` when
-        the registry is missing or the requested profile is unknown —
-        the caller never sees an error for a stale profile id, so a
-        deleted profile gracefully degrades to the default."""
+    def _resolve_llm(
+        self,
+        llm_profile_id: str | None,
+        *,
+        user_message: str = "",
+        has_images: bool = False,
+        tier_override: str | None = None,
+    ) -> LLMProvider:
+        """Pick the LLM for this turn.
+
+        Resolution order:
+          1. Explicit ``llm_profile_id`` — user pinned a model in UI.
+          2. Tier-based routing via :class:`ModelTierRouter`:
+             classifier reads the user message + image attachments,
+             picks a tier (fast / balanced / strong / vision), the
+             registry finds a matching profile and walks the
+             fallback chain if none configured.
+          3. Registry default — last-resort.
+          4. ``self._llm`` (constructor injected) — echo fallback.
+
+        Stale profile ids gracefully degrade (no error to caller).
+        """
         if llm_profile_id and self._llm_registry is not None:
             prof = self._llm_registry.get(llm_profile_id)
             if prof is not None:
                 return prof.llm
+        # Sprint 0: tier-based routing. Only fires when the registry
+        # actually has multiple tiers (otherwise it'd be a no-op and
+        # we save the regex pass).
+        if self._llm_registry is not None and len(self._llm_registry) > 1:
+            try:
+                from xmclaw.cognition.model_tier_router import ModelTierRouter
+                router = ModelTierRouter()
+                decision = router.route(
+                    user_message,
+                    has_images=has_images,
+                    forced_tier=tier_override,
+                )
+                prof = self._llm_registry.pick_by_tier(
+                    decision.tier,
+                    fallback_chain=decision.fallback_chain,
+                )
+                if prof is not None:
+                    # Stash decision for observability — agent_loop's
+                    # event publisher reads this off self.
+                    self._last_tier_decision = decision
+                    return prof.llm
+            except Exception:  # noqa: BLE001 — never block a turn over router error
+                pass
         return self._llm
 
     async def run_turn(
@@ -448,7 +488,14 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             effective_tools = self._tools
         events: list[BehavioralEvent] = []
         tool_calls_made: list[dict[str, Any]] = []
-        llm = self._resolve_llm(llm_profile_id)
+        # Sprint 0 multi-model routing: pass the user message + image
+        # presence to _resolve_llm so the tier classifier can pick the
+        # cheapest model that can serve the turn.
+        llm = self._resolve_llm(
+            llm_profile_id,
+            user_message=user_message,
+            has_images=bool(user_images),
+        )
 
         async def publish(
             type_: EventType, payload: dict[str, Any],
@@ -1249,6 +1296,24 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         except Exception as exc:  # noqa: BLE001
             from xmclaw.utils.log import get_logger as _gl
             _gl(__name__).debug("mode_router.skipped err=%s", exc)
+
+        # Sprint 0: surface the tier decision that _resolve_llm made
+        # so Analytics + UI can show which model is on duty this turn.
+        _tier_decision = getattr(self, "_last_tier_decision", None)
+        if _tier_decision is not None:
+            try:
+                await publish(EventType.INNER_MONOLOGUE, {
+                    "kind": "model_tier_routed",
+                    "tier": _tier_decision.tier,
+                    "fallback_chain": list(_tier_decision.fallback_chain),
+                    "reason": _tier_decision.reason,
+                    "has_images": _tier_decision.has_images,
+                    "has_tool_cues": _tier_decision.has_tool_cues,
+                    "is_trivial": _tier_decision.is_trivial,
+                    "is_complex": _tier_decision.is_complex,
+                })
+            except Exception:  # noqa: BLE001
+                pass
 
         # 2026-05-12 Batch B.1: PlanFirstMode — heuristically detect
         # complex queries and run HTNPlanner-style decomposition BEFORE
