@@ -1993,6 +1993,90 @@ def make_lifespan(
             _lifespan_elapsed_s,
         )
 
+        # Sprint 1: ProactiveAgent — periodic trigger evaluator that
+        # publishes PROACTIVE_PROPOSAL events when the agent should
+        # speak without being asked. Reads cognition.proactive.*
+        # config; opt-out via cognition.proactive.enabled=false.
+        proactive_agent = None
+        proactive_cfg = (
+            (config.get("cognition") or {}).get("proactive", {})
+            if isinstance(config, dict) else {}
+        )
+        if (
+            not isinstance(proactive_cfg, dict)
+            or proactive_cfg.get("enabled", True)
+        ):
+            try:
+                from xmclaw.cognition.proactive_agent import (
+                    ProactiveAgent,
+                    IdleCheckInTrigger,
+                    SystemHealthTrigger,
+                )
+
+                async def _publish_proactive(type_str: str, payload: dict):
+                    from xmclaw.core.bus import EventType, make_event
+                    ev = make_event(
+                        session_id="proactive",
+                        agent_id="proactive",
+                        type=EventType.PROACTIVE_PROPOSAL,
+                        payload=payload,
+                    )
+                    await bus.publish(ev)
+
+                proactive_agent = ProactiveAgent(
+                    publish=_publish_proactive,
+                    tick_interval_s=float(
+                        proactive_cfg.get("tick_interval_s", 30.0)
+                        if isinstance(proactive_cfg, dict) else 30.0
+                    ),
+                    global_min_gap_s=float(
+                        proactive_cfg.get("global_min_gap_s", 60.0)
+                        if isinstance(proactive_cfg, dict) else 60.0
+                    ),
+                    quiet_start_hour=int(
+                        proactive_cfg.get("quiet_start_hour", 23)
+                        if isinstance(proactive_cfg, dict) else 23
+                    ),
+                    quiet_end_hour=int(
+                        proactive_cfg.get("quiet_end_hour", 7)
+                        if isinstance(proactive_cfg, dict) else 7
+                    ),
+                    memory=getattr(_app.state, "memory", None),
+                    perception_bus=getattr(
+                        _app.state, "perception_bus", None,
+                    ),
+                    cron_store=getattr(_app.state, "cron_store", None),
+                    agent_loop=agent,
+                )
+                # Default trigger set. User can disable individual
+                # triggers via cognition.proactive.disabled_triggers.
+                disabled = set(
+                    proactive_cfg.get("disabled_triggers") or []
+                    if isinstance(proactive_cfg, dict) else []
+                )
+                if "idle_check_in" not in disabled:
+                    proactive_agent.register_trigger(IdleCheckInTrigger())
+                if "system_health" not in disabled:
+                    proactive_agent.register_trigger(SystemHealthTrigger())
+                await proactive_agent.start()
+                _app.state.proactive_agent = proactive_agent
+                # Back-reference so AgentLoop can call note_user_message
+                # without hardcoding a lifespan dependency.
+                if agent is not None:
+                    try:
+                        agent._proactive_agent = proactive_agent
+                    except Exception:  # noqa: BLE001
+                        pass
+                log.info(
+                    "proactive_agent.started triggers=%s",
+                    proactive_agent.trigger_names(),
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "proactive_agent.start_failed err=%s", exc,
+                )
+                proactive_agent = None
+
         try:
             yield
         finally:
@@ -2002,6 +2086,11 @@ def make_lifespan(
             # rapid restart), every subsequent shutdown step was
             # skipped and background tasks leaked across the daemon's
             # lifetime. Now: each step is independent.
+            if proactive_agent is not None:
+                try:
+                    await proactive_agent.stop()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             if sweep_task is not None:
                 try:
                     await sweep_task.stop()

@@ -57,6 +57,7 @@ export const PHASE_1_EVENT_TYPES = [
   "session_lifecycle",
   "skill_invoked",          // B-130: heuristic-path skill detections
   "skill_outcome",          // B-130: turn-level verdict for the skill
+  "proactive_proposal",     // Sprint 1: agent-initiated message
 ];
 
 function genId() {
@@ -378,6 +379,33 @@ export function applyEvent(chat, envelope) {
           result,
           images,
         })),
+      };
+    }
+
+    case "proactive_proposal": {
+      // Sprint 1: ProactiveAgent surfaces a trigger as an agent-
+      // initiated bubble. No correlation_id (these aren't part of
+      // any user turn). Each proposal renders as a regular
+      // assistant message tagged proactive=true; clicking it can
+      // open a follow-up turn (handled in MessageBubble).
+      const id = "proactive_" + (payload.trigger || "x")
+        + "_" + Math.floor(ts * 1000);
+      const exists = chat.messages.some((m) => m.id === id);
+      if (exists) return chat;
+      return {
+        ...chat,
+        messages: chat.messages.concat({
+          id,
+          role: "assistant",
+          content: typeof payload.message === "string"
+            ? payload.message
+            : "(proactive trigger without message text)",
+          status: "complete",
+          ts,
+          proactive: true,
+          proactiveTrigger: payload.trigger || "",
+          proactiveUrgency: payload.urgency || "normal",
+        }),
       };
     }
 

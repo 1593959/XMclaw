@@ -195,6 +195,17 @@ class EventType(str, Enum):
     #   "trigger": str,                 # what prompted this thought
     # }
     INNER_MONOLOGUE = "inner_monologue"
+    # Sprint 1: ProactiveAgent fires this when a trigger surfaces a
+    # message the agent wants to say WITHOUT user prompt. Payload: {
+    #   "trigger": str,        # trigger name ("idle_check_in", "system_health", ...)
+    #   "message": str,        # what the user sees as the assistant bubble
+    #   "urgency": "low" | "normal" | "high",
+    #   "ts": float,
+    #   ... + per-trigger payload (idle_minutes, warning text, ...)
+    # }
+    # Frontend renders this as an agent-initiated bubble; click can
+    # open a new conversation thread with this as the first turn.
+    PROACTIVE_PROPOSAL = "proactive_proposal"
     # R1: emitted when the 5-min ReflectionCycle.reflect_recent runs
     # — surfaces patterns / quality scores / suggestions found by
     # looking at the last N turns. Payload: {

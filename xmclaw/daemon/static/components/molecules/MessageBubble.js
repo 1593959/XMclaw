@@ -256,6 +256,9 @@ export function MessageBubble({ message, onAnswerQuestion }) {
     >
       <header class="xmc-msg__header">
         <span class="xmc-msg__role">${isUser ? "you" : isSystem ? "system" : "assistant"}</span>
+        ${message.proactive
+          ? html`<${Badge} tone="warn">主动 · ${message.proactiveTrigger || "trigger"}</${Badge}>`
+          : null}
         ${message.ultrathink
           ? html`<${Badge} tone="info">ultrathink</${Badge}>`
           : null}

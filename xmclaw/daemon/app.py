@@ -1682,6 +1682,11 @@ def create_app(
             EventType.SKILL_PROMOTED,
             EventType.SKILL_ROLLED_BACK,
             EventType.SKILL_CANDIDATE_PROPOSED,
+            # Sprint 1: ProactiveAgent fires without a session_id —
+            # broadcast to every connected client so the active tab
+            # sees the proposal regardless of which conversation
+            # they're in.
+            EventType.PROACTIVE_PROPOSAL,
         })
 
         def _is_relevant(event: BehavioralEvent) -> bool:

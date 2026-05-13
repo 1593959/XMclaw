@@ -532,6 +532,17 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             correlation_id=user_correlation_id,
         )
 
+        # Sprint 1: notify ProactiveAgent that the user just spoke so
+        # time-since-last-message triggers stay accurate. ``getattr``
+        # so AgentLoops constructed without a proactive ref (tests) are
+        # fine.
+        try:
+            proactive = getattr(self, "_proactive_agent", None)
+            if proactive is not None:
+                proactive.note_user_message()
+        except Exception:  # noqa: BLE001
+            pass
+
         # Phase 6 wiring A: push user message as a percept when the
         # continuous cognitive loop is on. The PerceptionBus reference
         # is injected by ``PerceptSourceRegistry.attach_user_message_hook``
