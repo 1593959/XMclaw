@@ -96,6 +96,10 @@ def make_lifespan(
         # at boot. Logged right before yield + stamped on app.state
         # for /api/v2/status to surface.
         _lifespan_t0 = time_module.perf_counter()
+        # Sprint 2 Wave 6: stamp wall-clock boot ts for the dashboard's
+        # uptime widget. perf_counter is monotonic + unhelpful for "when
+        # did the daemon start" — time.time() is what we want here.
+        _app.state.boot_ts = time_module.time()
         # cron_tick is now a local variable in the closure
         if sweep_task is not None:
             await sweep_task.start()

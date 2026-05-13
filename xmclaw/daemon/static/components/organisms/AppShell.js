@@ -110,6 +110,7 @@ export const NAV_GROUPS = [
   {
     id: "comm", label: "核心", icon: "Terminal",
     items: [
+      { path: "/dashboard", label: "概览", icon: "BarChart3" },
       { path: "/chat",      label: "对话", icon: "Terminal" },
       { path: "/sessions",  label: "会话", icon: "MessageSquare" },
     ],
