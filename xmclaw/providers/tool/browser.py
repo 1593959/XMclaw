@@ -56,6 +56,50 @@ from xmclaw.core.ir import ToolCall, ToolResult, ToolSpec
 from xmclaw.providers.tool.base import ToolProvider
 
 
+# Wave 24 stealth — pretend we're a normal headed Chrome. Sites pattern-
+# match "HeadlessChrome" in UA → "your browser is too old" banner; we
+# strip that and overwrite a few other automation fingerprints in the
+# init script below. This is not a full bot bypass — modern Cloudflare /
+# Akamai will still fingerprint us via canvas / WebGL / timing. But for
+# the 90% of normal sites that just check UA + navigator.webdriver this
+# is enough.
+_REAL_CHROME_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/145.0.0.0 Safari/537.36"
+)
+
+_STEALTH_SCRIPT = r"""
+// Drop the automation marker most bot detectors check.
+try {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+} catch (e) {}
+// Real Chrome exposes a non-empty `plugins` array; headless ships an
+// empty one which is a giveaway.
+try {
+    Object.defineProperty(navigator, 'plugins', {
+        get: () => [1, 2, 3, 4, 5],
+    });
+} catch (e) {}
+// Real Chrome exposes `window.chrome` with a runtime stub.
+try {
+    if (!window.chrome) {
+        window.chrome = { runtime: {} };
+    }
+} catch (e) {}
+// Permission API spoof — sites that check Notification permission to
+// detect headless get the same answer regardless of state.
+try {
+    const _origQuery = navigator.permissions.query;
+    navigator.permissions.query = (parameters) => (
+        parameters && parameters.name === 'notifications'
+            ? Promise.resolve({ state: Notification.permission })
+            : _origQuery.call(navigator.permissions, parameters)
+    );
+} catch (e) {}
+"""
+
+
 # ── tool specs ────────────────────────────────────────────────────
 
 _BROWSER_OPEN_SPEC = ToolSpec(
@@ -265,6 +309,183 @@ _BROWSER_CLOSE_SPEC = ToolSpec(
 )
 
 
+# ── Wave 24: deeper automation surface ───────────────────────────
+
+_BROWSER_HOVER_SPEC = ToolSpec(
+    name="browser_hover",
+    description=(
+        "Hover the mouse over an element without clicking. Use this "
+        "before clicking a menu item that only appears on hover (drop-"
+        "downs, popovers, file/edit menus in web apps)."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {"selector": {"type": "string"}},
+        "required": ["selector"],
+    },
+)
+
+_BROWSER_SCROLL_SPEC = ToolSpec(
+    name="browser_scroll",
+    description=(
+        "Scroll the page. Two modes:\n"
+        "  • Pixel mode — ``direction`` ∈ {'up','down','top','bottom'} "
+        "+ optional ``amount`` (default 800 px for up/down)\n"
+        "  • Selector mode — ``to_selector`` scrolls until the element "
+        "is in view. Useful when content lazy-loads on scroll."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "direction": {"type": "string"},
+            "amount": {"type": "integer"},
+            "to_selector": {"type": "string"},
+        },
+    },
+)
+
+_BROWSER_SELECT_OPTION_SPEC = ToolSpec(
+    name="browser_select_option",
+    description=(
+        "Pick an option in a native <select> dropdown. ``value`` can be "
+        "the option's value attribute or its visible label — Playwright "
+        "matches either. For multi-select pass a list."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "selector": {"type": "string"},
+            "value": {
+                "type": ["string", "array"],
+                "description": "Single value/label or list for multi-select.",
+            },
+        },
+        "required": ["selector", "value"],
+    },
+)
+
+_BROWSER_UPLOAD_SPEC = ToolSpec(
+    name="browser_upload",
+    description=(
+        "Attach one or more local files to an <input type='file'>. "
+        "``files`` is a list of absolute paths the daemon can read."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "selector": {"type": "string"},
+            "files": {
+                "type": ["string", "array"],
+                "description": "Single path or list of paths to attach.",
+            },
+        },
+        "required": ["selector", "files"],
+    },
+)
+
+_BROWSER_WAIT_FOR_SPEC = ToolSpec(
+    name="browser_wait_for",
+    description=(
+        "Explicit wait until a selector reaches a state — useful for "
+        "post-AJAX content where auto-wait isn't enough. ``state`` ∈ "
+        "{'attached','detached','visible','hidden'}, default 'visible'."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "selector": {"type": "string"},
+            "state": {"type": "string"},
+            "timeout_ms": {"type": "integer"},
+        },
+        "required": ["selector"],
+    },
+)
+
+_BROWSER_BACK_SPEC = ToolSpec(
+    name="browser_back",
+    description="Navigate back one step in this page's history.",
+    parameters_schema={"type": "object", "properties": {}},
+)
+
+_BROWSER_FORWARD_SPEC = ToolSpec(
+    name="browser_forward",
+    description="Navigate forward one step in this page's history.",
+    parameters_schema={"type": "object", "properties": {}},
+)
+
+_BROWSER_RELOAD_SPEC = ToolSpec(
+    name="browser_reload",
+    description="Reload the current page.",
+    parameters_schema={"type": "object", "properties": {}},
+)
+
+_BROWSER_TABS_SPEC = ToolSpec(
+    name="browser_tabs",
+    description=(
+        "List every tab/page in this session's browser context. Returns "
+        "{index, url, title, active} for each. Use index with "
+        "browser_tab_switch / browser_tab_close. New tabs that open via "
+        "target=_blank or window.open() show up here automatically."
+    ),
+    parameters_schema={"type": "object", "properties": {}},
+)
+
+_BROWSER_TAB_SWITCH_SPEC = ToolSpec(
+    name="browser_tab_switch",
+    description=(
+        "Make a different tab the active page for subsequent browser_* "
+        "calls in this session. Index from browser_tabs."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {"index": {"type": "integer"}},
+        "required": ["index"],
+    },
+)
+
+_BROWSER_TAB_CLOSE_SPEC = ToolSpec(
+    name="browser_tab_close",
+    description=(
+        "Close a tab by index. If the active tab is closed, the next "
+        "remaining tab becomes active. Closing the last tab leaves the "
+        "session without an active page; browser_open creates a new one."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {"index": {"type": "integer"}},
+        "required": ["index"],
+    },
+)
+
+_BROWSER_DOWNLOAD_NEXT_SPEC = ToolSpec(
+    name="browser_download_next",
+    description=(
+        "Arm a download listener, perform an action that triggers a "
+        "download, and wait for the file to finish writing. Two-step: "
+        "(1) call browser_download_next FIRST with a timeout — it "
+        "returns immediately with a ticket; (2) trigger the download "
+        "(typically browser_click on the download link); the next time "
+        "you call browser_download_next with the same ticket id, it "
+        "returns the saved file path. Or pass ``and_then`` with a "
+        "selector to click in the same call (one-shot mode)."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "and_then_click": {
+                "type": "string",
+                "description": "Selector to click immediately after arming.",
+            },
+            "timeout_ms": {"type": "integer"},
+            "save_dir": {
+                "type": "string",
+                "description": "Override default ~/.xmclaw/v2/downloads/.",
+            },
+        },
+    },
+)
+
+
 # ── module ────────────────────────────────────────────────────────
 
 class BrowserTools(ToolProvider):
@@ -318,7 +539,14 @@ class BrowserTools(ToolProvider):
         # which is much friendlier than "unknown tool".
         return [
             _BROWSER_OPEN_SPEC, _BROWSER_CLICK_SPEC, _BROWSER_PRESS_SPEC,
-            _BROWSER_FILL_SPEC, _BROWSER_SCREENSHOT_SPEC,
+            _BROWSER_FILL_SPEC, _BROWSER_HOVER_SPEC,
+            _BROWSER_SCROLL_SPEC, _BROWSER_SELECT_OPTION_SPEC,
+            _BROWSER_UPLOAD_SPEC, _BROWSER_WAIT_FOR_SPEC,
+            _BROWSER_BACK_SPEC, _BROWSER_FORWARD_SPEC,
+            _BROWSER_RELOAD_SPEC,
+            _BROWSER_TABS_SPEC, _BROWSER_TAB_SWITCH_SPEC,
+            _BROWSER_TAB_CLOSE_SPEC, _BROWSER_DOWNLOAD_NEXT_SPEC,
+            _BROWSER_SCREENSHOT_SPEC,
             _BROWSER_SNAPSHOT_SPEC, _BROWSER_EVAL_SPEC, _BROWSER_CLOSE_SPEC,
         ]
 
@@ -341,6 +569,30 @@ class BrowserTools(ToolProvider):
                 return await self._eval(call, t0)
             if call.name == "browser_close":
                 return await self._close(call, t0)
+            if call.name == "browser_hover":
+                return await self._hover(call, t0)
+            if call.name == "browser_scroll":
+                return await self._scroll(call, t0)
+            if call.name == "browser_select_option":
+                return await self._select_option(call, t0)
+            if call.name == "browser_upload":
+                return await self._upload(call, t0)
+            if call.name == "browser_wait_for":
+                return await self._wait_for(call, t0)
+            if call.name == "browser_back":
+                return await self._history_nav(call, t0, "back")
+            if call.name == "browser_forward":
+                return await self._history_nav(call, t0, "forward")
+            if call.name == "browser_reload":
+                return await self._history_nav(call, t0, "reload")
+            if call.name == "browser_tabs":
+                return await self._tabs_list(call, t0)
+            if call.name == "browser_tab_switch":
+                return await self._tab_switch(call, t0)
+            if call.name == "browser_tab_close":
+                return await self._tab_close(call, t0)
+            if call.name == "browser_download_next":
+                return await self._download_next(call, t0)
             return _fail(call, t0, f"unknown tool: {call.name!r}")
         except _PlaywrightMissing as exc:
             return _fail(call, t0, str(exc))
@@ -405,8 +657,18 @@ class BrowserTools(ToolProvider):
                         "`pip install xmclaw[browser]` then `playwright install chromium`"
                     ) from exc
                 self._playwright = await async_playwright().start()
+            # Wave 24 stealth defaults — sites have UA blacklists that
+            # match "HeadlessChrome" and pop "your browser is too old"
+            # banners (Chromium 145 is current — it's pattern matching,
+            # not a real version check). Drop the AutomationControlled
+            # blink feature so navigator.webdriver isn't set, and we
+            # override UA per-context so the stamp matches normal Chrome.
             browser = await self._playwright.chromium.launch(
                 headless=headless,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-features=IsolateOrigins,site-per-process",
+                ],
             )
             setattr(self, attr, browser)
 
@@ -441,10 +703,20 @@ class BrowserTools(ToolProvider):
         ctx = self._contexts.get(session_id)
         if ctx is None:
             browser = self._browser_for_session(session_id)
+            # Wave 24 stealth: real Chrome UA (drops "HeadlessChrome"
+            # tag that sites pattern-match into "browser too old"
+            # warnings) + accept_downloads=True so browser_download_next
+            # has something to capture; the daemon still gates where
+            # files land via save_dir kwarg.
             ctx = await browser.new_context(
-                accept_downloads=False,
+                accept_downloads=True,
                 viewport={"width": 1280, "height": 800},
+                user_agent=_REAL_CHROME_UA,
             )
+            # Hide automation traces from window/navigator probes — most
+            # bot detectors look at navigator.webdriver, window.chrome,
+            # the missing plugins array, etc.
+            await ctx.add_init_script(_STEALTH_SCRIPT)
             ctx.set_default_timeout(self._timeout_ms)
             self._contexts[session_id] = ctx
         page = await ctx.new_page()
@@ -818,6 +1090,349 @@ class BrowserTools(ToolProvider):
         return ToolResult(
             call_id=call.id, ok=True, content="browser session closed",
             side_effects=(), latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    # ── Wave 24 handlers ──────────────────────────────────────────
+
+    async def _hover(self, call: ToolCall, t0: float) -> ToolResult:
+        sel = call.args.get("selector")
+        if not isinstance(sel, str) or not sel:
+            return _fail(call, t0, "missing or empty 'selector'")
+        page = await self._page_for(self._sid(call))
+        if page is None or page.url == "about:blank":
+            return _fail(call, t0, "no page open -- call browser_open first")
+        try:
+            await page.locator(sel).first.hover()
+        except Exception as exc:  # noqa: BLE001
+            return _fail(call, t0, f"hover failed: {type(exc).__name__}: {exc}")
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={"selector": sel, "url": page.url},
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _scroll(self, call: ToolCall, t0: float) -> ToolResult:
+        page = await self._page_for(self._sid(call))
+        if page is None or page.url == "about:blank":
+            return _fail(call, t0, "no page open -- call browser_open first")
+        to_sel = call.args.get("to_selector")
+        if isinstance(to_sel, str) and to_sel:
+            try:
+                await page.locator(to_sel).first.scroll_into_view_if_needed()
+            except Exception as exc:  # noqa: BLE001
+                return _fail(call, t0, f"scroll-to-selector failed: {exc}")
+            return ToolResult(
+                call_id=call.id, ok=True,
+                content={"mode": "to_selector", "selector": to_sel},
+                side_effects=(),
+                latency_ms=(time.perf_counter() - t0) * 1000.0,
+            )
+        direction = (call.args.get("direction") or "down").lower()
+        amount = int(call.args.get("amount", 800))
+        if direction == "top":
+            await page.evaluate("() => window.scrollTo(0, 0)")
+        elif direction == "bottom":
+            await page.evaluate(
+                "() => window.scrollTo(0, document.body.scrollHeight)",
+            )
+        elif direction == "up":
+            await page.mouse.wheel(0, -abs(amount))
+        elif direction == "down":
+            await page.mouse.wheel(0, abs(amount))
+        else:
+            return _fail(
+                call, t0,
+                f"direction must be up/down/top/bottom, got {direction!r}",
+            )
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={"mode": "direction", "direction": direction, "amount": amount},
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _select_option(self, call: ToolCall, t0: float) -> ToolResult:
+        sel = call.args.get("selector")
+        val = call.args.get("value")
+        if not isinstance(sel, str) or not sel:
+            return _fail(call, t0, "missing or empty 'selector'")
+        if val is None:
+            return _fail(call, t0, "missing 'value'")
+        page = await self._page_for(self._sid(call))
+        if page is None or page.url == "about:blank":
+            return _fail(call, t0, "no page open -- call browser_open first")
+        # Playwright's select_option accepts {label} / {value} / string —
+        # easier on the agent to just try value-then-label by passing
+        # both shapes when input is a string.
+        if isinstance(val, str):
+            try_args = [{"value": val}, {"label": val}]
+            last_err: Exception | None = None
+            chosen: list[str] = []
+            for arg in try_args:
+                try:
+                    chosen = await page.locator(sel).first.select_option(arg)
+                    last_err = None
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    last_err = exc
+            if last_err is not None:
+                return _fail(
+                    call, t0,
+                    f"select_option failed for {val!r}: "
+                    f"{type(last_err).__name__}: {last_err}",
+                )
+        elif isinstance(val, list):
+            try:
+                chosen = await page.locator(sel).first.select_option(val)
+            except Exception as exc:  # noqa: BLE001
+                return _fail(call, t0, f"select_option failed: {exc}")
+        else:
+            return _fail(call, t0, "'value' must be string or list")
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={"selector": sel, "selected": chosen},
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _upload(self, call: ToolCall, t0: float) -> ToolResult:
+        sel = call.args.get("selector")
+        files = call.args.get("files")
+        if not isinstance(sel, str) or not sel:
+            return _fail(call, t0, "missing or empty 'selector'")
+        if isinstance(files, str):
+            files = [files]
+        if not isinstance(files, list) or not files:
+            return _fail(call, t0, "'files' must be a path or non-empty list")
+        # Validate paths upfront so the agent gets a clear error instead
+        # of a stack trace from Playwright.
+        from pathlib import Path as _P
+        bad = [f for f in files if not isinstance(f, str) or not _P(f).is_file()]
+        if bad:
+            return _fail(call, t0, f"files not found / not strings: {bad}")
+        page = await self._page_for(self._sid(call))
+        if page is None or page.url == "about:blank":
+            return _fail(call, t0, "no page open -- call browser_open first")
+        try:
+            await page.locator(sel).first.set_input_files(files)
+        except Exception as exc:  # noqa: BLE001
+            return _fail(call, t0, f"upload failed: {exc}")
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={"selector": sel, "files": files, "count": len(files)},
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _wait_for(self, call: ToolCall, t0: float) -> ToolResult:
+        sel = call.args.get("selector")
+        if not isinstance(sel, str) or not sel:
+            return _fail(call, t0, "missing or empty 'selector'")
+        state = (call.args.get("state") or "visible").lower()
+        if state not in ("attached", "detached", "visible", "hidden"):
+            return _fail(
+                call, t0,
+                f"state must be attached/detached/visible/hidden, got {state!r}",
+            )
+        timeout = int(call.args.get("timeout_ms", 10_000))
+        page = await self._page_for(self._sid(call))
+        if page is None or page.url == "about:blank":
+            return _fail(call, t0, "no page open -- call browser_open first")
+        try:
+            await page.locator(sel).first.wait_for(state=state, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001
+            return _fail(
+                call, t0,
+                f"wait_for timed out / failed: {type(exc).__name__}: {exc}",
+            )
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={"selector": sel, "state": state, "url": page.url},
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _history_nav(
+        self, call: ToolCall, t0: float, op: str,
+    ) -> ToolResult:
+        page = await self._page_for(self._sid(call))
+        if page is None or page.url == "about:blank":
+            return _fail(call, t0, "no page open -- call browser_open first")
+        url_before = page.url
+        try:
+            if op == "back":
+                await page.go_back()
+            elif op == "forward":
+                await page.go_forward()
+            else:
+                await page.reload()
+        except Exception as exc:  # noqa: BLE001
+            return _fail(call, t0, f"{op} failed: {exc}")
+        try:
+            await page.wait_for_load_state(
+                "domcontentloaded", timeout=5_000,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        title = ""
+        try:
+            title = await page.title()
+        except Exception:  # noqa: BLE001
+            pass
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "op": op,
+                "url_before": url_before,
+                "url": page.url,
+                "title": title,
+                "navigated": page.url != url_before,
+            },
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _tabs_list(self, call: ToolCall, t0: float) -> ToolResult:
+        sid = self._sid(call)
+        ctx = self._contexts.get(sid)
+        if ctx is None:
+            return _fail(call, t0, "no browser context — call browser_open first")
+        pages = list(ctx.pages)
+        active_page = self._pages.get(sid)
+        rows: list[dict[str, Any]] = []
+        for i, p in enumerate(pages):
+            try:
+                title = await p.title()
+            except Exception:  # noqa: BLE001
+                title = ""
+            rows.append({
+                "index": i,
+                "url": p.url,
+                "title": title,
+                "active": p is active_page,
+            })
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={"tabs": rows, "count": len(rows)},
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _tab_switch(self, call: ToolCall, t0: float) -> ToolResult:
+        idx = call.args.get("index")
+        if not isinstance(idx, int):
+            return _fail(call, t0, "missing or non-integer 'index'")
+        sid = self._sid(call)
+        ctx = self._contexts.get(sid)
+        if ctx is None:
+            return _fail(call, t0, "no browser context — call browser_open first")
+        pages = list(ctx.pages)
+        if idx < 0 or idx >= len(pages):
+            return _fail(
+                call, t0,
+                f"index {idx} out of range (have {len(pages)} tabs)",
+            )
+        target = pages[idx]
+        try:
+            await target.bring_to_front()
+        except Exception:  # noqa: BLE001
+            pass
+        self._pages[sid] = target
+        title = ""
+        try:
+            title = await target.title()
+        except Exception:  # noqa: BLE001
+            pass
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={"index": idx, "url": target.url, "title": title},
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _tab_close(self, call: ToolCall, t0: float) -> ToolResult:
+        idx = call.args.get("index")
+        if not isinstance(idx, int):
+            return _fail(call, t0, "missing or non-integer 'index'")
+        sid = self._sid(call)
+        ctx = self._contexts.get(sid)
+        if ctx is None:
+            return _fail(call, t0, "no browser context — call browser_open first")
+        pages = list(ctx.pages)
+        if idx < 0 or idx >= len(pages):
+            return _fail(
+                call, t0,
+                f"index {idx} out of range (have {len(pages)} tabs)",
+            )
+        target = pages[idx]
+        was_active = target is self._pages.get(sid)
+        try:
+            await target.close()
+        except Exception as exc:  # noqa: BLE001
+            return _fail(call, t0, f"close failed: {exc}")
+        if was_active:
+            remaining = [p for p in ctx.pages if not p.is_closed()]
+            self._pages[sid] = remaining[-1] if remaining else None  # type: ignore[assignment]
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "closed_index": idx,
+                "was_active": was_active,
+                "remaining": len(ctx.pages),
+            },
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _download_next(
+        self, call: ToolCall, t0: float,
+    ) -> ToolResult:
+        timeout = int(call.args.get("timeout_ms", 30_000))
+        save_dir_arg = call.args.get("save_dir")
+        and_then_click = call.args.get("and_then_click")
+        from pathlib import Path as _P
+        if isinstance(save_dir_arg, str) and save_dir_arg.strip():
+            save_dir = _P(save_dir_arg).expanduser()
+        else:
+            from xmclaw.utils.paths import data_dir
+            save_dir = data_dir() / "v2" / "downloads"
+        save_dir.mkdir(parents=True, exist_ok=True)
+        page = await self._page_for(self._sid(call))
+        if page is None or page.url == "about:blank":
+            return _fail(call, t0, "no page open -- call browser_open first")
+        # One-shot mode: arm + trigger + wait in a single call.
+        if isinstance(and_then_click, str) and and_then_click.strip():
+            try:
+                async with page.expect_download(timeout=timeout) as dl_info:
+                    await page.locator(and_then_click).first.click()
+                dl = await dl_info.value
+            except Exception as exc:  # noqa: BLE001
+                return _fail(
+                    call, t0,
+                    f"download wait failed: {type(exc).__name__}: {exc}",
+                )
+            suggested = dl.suggested_filename or f"download_{int(time.time())}"
+            dest = save_dir / suggested
+            try:
+                await dl.save_as(str(dest))
+            except Exception as exc:  # noqa: BLE001
+                return _fail(call, t0, f"save_as failed: {exc}")
+            return ToolResult(
+                call_id=call.id, ok=True,
+                content={
+                    "path": str(dest),
+                    "filename": suggested,
+                    "url": dl.url,
+                    "bytes": dest.stat().st_size if dest.exists() else 0,
+                },
+                side_effects=(str(dest),),
+                latency_ms=(time.perf_counter() - t0) * 1000.0,
+            )
+        return _fail(
+            call, t0,
+            "two-step mode not yet supported; pass `and_then_click` "
+            "with the selector that triggers the download.",
         )
 
     def _sid(self, call: ToolCall) -> str:

@@ -36,7 +36,12 @@ def test_list_tools_complete_roster_even_without_playwright() -> None:
     names = {s.name for s in BrowserTools().list_tools()}
     assert names == {
         "browser_open", "browser_click", "browser_press",
-        "browser_fill", "browser_screenshot", "browser_snapshot",
+        "browser_fill", "browser_hover", "browser_scroll",
+        "browser_select_option", "browser_upload", "browser_wait_for",
+        "browser_back", "browser_forward", "browser_reload",
+        "browser_tabs", "browser_tab_switch", "browser_tab_close",
+        "browser_download_next",
+        "browser_screenshot", "browser_snapshot",
         "browser_eval", "browser_close",
     }
 
@@ -108,6 +113,30 @@ class _FakeLocatorChain:
     async def count(self) -> int:
         return 1
 
+    async def hover(self) -> None:
+        self._page.last_hover = self._selector
+
+    async def scroll_into_view_if_needed(self) -> None:
+        self._page.last_scroll_target = self._selector
+
+    async def select_option(self, arg: Any) -> list[str]:
+        # Echo back the value(s) so the tool can return a useful payload.
+        if isinstance(arg, dict):
+            val = arg.get("value") or arg.get("label")
+            self._page.last_select = (self._selector, val)
+            return [str(val)]
+        if isinstance(arg, list):
+            self._page.last_select = (self._selector, arg)
+            return [str(v) for v in arg]
+        self._page.last_select = (self._selector, arg)
+        return [str(arg)]
+
+    async def set_input_files(self, files: Any) -> None:
+        self._page.last_upload = (self._selector, files)
+
+    async def wait_for(self, state: str = "visible", timeout: int = 10000) -> None:
+        self._page.last_wait_for = (self._selector, state, timeout)
+
 
 class _FakeKeyboard:
     def __init__(self, page: "_FakePage") -> None:
@@ -115,6 +144,14 @@ class _FakeKeyboard:
 
     async def press(self, key: str) -> None:
         self._page.last_press = (None, key)
+
+
+class _FakeMouse:
+    def __init__(self, page: "_FakePage") -> None:
+        self._page = page
+
+    async def wheel(self, dx: float, dy: float) -> None:
+        self._page.last_wheel = (dx, dy)
 
 
 class _FakePage:
@@ -126,8 +163,16 @@ class _FakePage:
         self.last_click_force: bool = False
         self.last_press: tuple[str | None, str] | None = None
         self.last_fill: tuple[str, str] | None = None
+        self.last_hover: str | None = None
+        self.last_scroll_target: str | None = None
+        self.last_wheel: tuple[float, float] | None = None
+        self.last_select: tuple[str, Any] | None = None
+        self.last_upload: tuple[str, Any] | None = None
+        self.last_wait_for: tuple[str, str, int] | None = None
+        self.last_history: str | None = None
         self._closed = False
         self.keyboard = _FakeKeyboard(self)
+        self.mouse = _FakeMouse(self)
         # Sites that "navigate" in tests can flip this so the URL
         # after click != before.
         self._navigate_to: str | None = None
@@ -150,6 +195,24 @@ class _FakePage:
 
     def locator(self, selector: str) -> _FakeLocatorChain:
         return _FakeLocatorChain(self, selector)
+
+    async def go_back(self) -> None:
+        self.last_history = "back"
+        if self._navigate_to:
+            self.url = self._navigate_to
+            self._navigate_to = None
+
+    async def go_forward(self) -> None:
+        self.last_history = "forward"
+        if self._navigate_to:
+            self.url = self._navigate_to
+            self._navigate_to = None
+
+    async def reload(self) -> None:
+        self.last_history = "reload"
+
+    async def bring_to_front(self) -> None:
+        pass
 
     async def wait_for_load_state(
         self, state: str = "load", timeout: int = 30000,
@@ -188,6 +251,10 @@ class _FakePage:
             ]
         if "a[href]" in expr:
             return [{"label": "Example Link", "href": "https://example.com/a"}]
+        if "window.scrollTo" in expr:
+            # scroll-to-top / scroll-to-bottom branches in _scroll.
+            self.last_scroll_eval = expr
+            return None
         if "document.body" in expr or "innerText" in expr:
             return "hello page body"
         return self.evaluate_map.get(expr, expr)
@@ -197,6 +264,8 @@ class _FakePage:
 class _FakeContext:
     pages: list[_FakePage] = field(default_factory=list)
     closed: bool = False
+    init_scripts: list[str] = field(default_factory=list)
+    user_agent: str | None = None
 
     async def new_page(self) -> _FakePage:
         p = _FakePage()
@@ -205,15 +274,19 @@ class _FakeContext:
 
     def set_default_timeout(self, _ms: int) -> None: pass
 
+    async def add_init_script(self, script: str) -> None:
+        self.init_scripts.append(script)
+
     async def close(self) -> None: self.closed = True
 
 
 @dataclass
 class _FakeBrowser:
     contexts: list[_FakeContext] = field(default_factory=list)
+    last_launch_args: list[str] = field(default_factory=list)
 
-    async def new_context(self, **_: Any) -> _FakeContext:
-        c = _FakeContext()
+    async def new_context(self, **kwargs: Any) -> _FakeContext:
+        c = _FakeContext(user_agent=kwargs.get("user_agent"))
         self.contexts.append(c)
         return c
 
@@ -224,7 +297,11 @@ class _FakeBrowser:
 class _FakeChromium:
     browser: _FakeBrowser = field(default_factory=_FakeBrowser)
 
-    async def launch(self, headless: bool = True) -> _FakeBrowser:
+    async def launch(
+        self, headless: bool = True, args: list[str] | None = None,
+    ) -> _FakeBrowser:
+        if args:
+            self.browser.last_launch_args = list(args)
         return self.browser
 
 
@@ -671,3 +748,284 @@ async def test_headless_and_visible_browsers_independent(
     # Each session pinned its own mode.
     assert patched_browser._session_headless["hidden"] is True
     assert patched_browser._session_headless["visible"] is False
+
+
+# ── Wave 24: deep automation surface ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_hover_records_target(patched_browser: BrowserTools) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    r = await patched_browser.invoke(_call(
+        "browser_hover", {"selector": ".menu-trigger"}, session_id="s1",
+    ))
+    assert r.ok is True
+    assert patched_browser._pages["s1"].last_hover == ".menu-trigger"
+
+
+@pytest.mark.asyncio
+async def test_scroll_to_selector(patched_browser: BrowserTools) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    r = await patched_browser.invoke(_call(
+        "browser_scroll", {"to_selector": "#footer"}, session_id="s1",
+    ))
+    assert r.ok is True
+    assert patched_browser._pages["s1"].last_scroll_target == "#footer"
+
+
+@pytest.mark.asyncio
+async def test_scroll_direction_down_uses_mouse_wheel(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    r = await patched_browser.invoke(_call(
+        "browser_scroll", {"direction": "down", "amount": 500},
+        session_id="s1",
+    ))
+    assert r.ok is True
+    assert patched_browser._pages["s1"].last_wheel == (0, 500)
+
+
+@pytest.mark.asyncio
+async def test_scroll_direction_top_uses_evaluate(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    r = await patched_browser.invoke(_call(
+        "browser_scroll", {"direction": "top"}, session_id="s1",
+    ))
+    assert r.ok is True
+    assert "scrollTo" in getattr(
+        patched_browser._pages["s1"], "last_scroll_eval", "",
+    )
+
+
+@pytest.mark.asyncio
+async def test_select_option_string_value(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    r = await patched_browser.invoke(_call(
+        "browser_select_option",
+        {"selector": "select[name=country]", "value": "CN"},
+        session_id="s1",
+    ))
+    assert r.ok is True
+    sel, val = patched_browser._pages["s1"].last_select
+    assert sel == "select[name=country]"
+    assert val == "CN"
+
+
+@pytest.mark.asyncio
+async def test_upload_validates_files_exist(
+    patched_browser: BrowserTools, tmp_path,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    r_bad = await patched_browser.invoke(_call(
+        "browser_upload",
+        {"selector": "input[type=file]", "files": str(tmp_path / "missing")},
+        session_id="s1",
+    ))
+    assert r_bad.ok is False
+    assert "not found" in r_bad.error.lower()
+
+    real = tmp_path / "ok.txt"
+    real.write_text("hi", encoding="utf-8")
+    r_good = await patched_browser.invoke(_call(
+        "browser_upload",
+        {"selector": "input[type=file]", "files": str(real)},
+        session_id="s1",
+    ))
+    assert r_good.ok is True
+    assert patched_browser._pages["s1"].last_upload[1] == [str(real)]
+
+
+@pytest.mark.asyncio
+async def test_wait_for_passes_state_and_timeout(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    r = await patched_browser.invoke(_call(
+        "browser_wait_for",
+        {"selector": "#dynamic", "state": "hidden", "timeout_ms": 5000},
+        session_id="s1",
+    ))
+    assert r.ok is True
+    last = patched_browser._pages["s1"].last_wait_for
+    assert last == ("#dynamic", "hidden", 5000)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_rejects_bad_state(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    r = await patched_browser.invoke(_call(
+        "browser_wait_for",
+        {"selector": "#x", "state": "vanished"},
+        session_id="s1",
+    ))
+    assert r.ok is False
+    assert "state" in r.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_back_forward_reload(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com/a"},
+        session_id="s1",
+    ))
+    patched_browser._pages["s1"]._navigate_to = "https://example.com/prev"
+    r_back = await patched_browser.invoke(_call(
+        "browser_back", {}, session_id="s1",
+    ))
+    assert r_back.ok is True
+    assert r_back.content["op"] == "back"
+    assert patched_browser._pages["s1"].last_history == "back"
+
+    r_fwd = await patched_browser.invoke(_call(
+        "browser_forward", {}, session_id="s1",
+    ))
+    assert r_fwd.ok is True
+    assert patched_browser._pages["s1"].last_history == "forward"
+
+    r_rel = await patched_browser.invoke(_call(
+        "browser_reload", {}, session_id="s1",
+    ))
+    assert r_rel.ok is True
+    assert patched_browser._pages["s1"].last_history == "reload"
+
+
+@pytest.mark.asyncio
+async def test_tabs_list_returns_pages_in_context(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com/tab1"},
+        session_id="s1",
+    ))
+    ctx = patched_browser._contexts["s1"]
+    second = await ctx.new_page()
+    second.url = "https://example.com/popup"
+    second.title_value = "Popup"
+
+    r = await patched_browser.invoke(_call(
+        "browser_tabs", {}, session_id="s1",
+    ))
+    assert r.ok is True
+    tabs = r.content["tabs"]
+    assert len(tabs) == 2
+    urls = [t["url"] for t in tabs]
+    assert "https://example.com/tab1" in urls
+    assert "https://example.com/popup" in urls
+    active = [t for t in tabs if t["active"]]
+    assert len(active) == 1
+
+
+@pytest.mark.asyncio
+async def test_tab_switch_changes_active_page(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com/tab1"},
+        session_id="s1",
+    ))
+    ctx = patched_browser._contexts["s1"]
+    second = await ctx.new_page()
+    second.url = "https://example.com/popup"
+    second.title_value = "Popup"
+
+    r = await patched_browser.invoke(_call(
+        "browser_tab_switch", {"index": 1}, session_id="s1",
+    ))
+    assert r.ok is True
+    assert r.content["index"] == 1
+    assert patched_browser._pages["s1"].url == "https://example.com/popup"
+
+
+@pytest.mark.asyncio
+async def test_tab_switch_out_of_range(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    r = await patched_browser.invoke(_call(
+        "browser_tab_switch", {"index": 99}, session_id="s1",
+    ))
+    assert r.ok is False
+    assert "out of range" in r.error
+
+
+@pytest.mark.asyncio
+async def test_tab_close_removes_page(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com/tab1"},
+        session_id="s1",
+    ))
+    ctx = patched_browser._contexts["s1"]
+    second = await ctx.new_page()
+    second.url = "https://example.com/popup"
+
+    r = await patched_browser.invoke(_call(
+        "browser_tab_close", {"index": 1}, session_id="s1",
+    ))
+    assert r.ok is True
+    assert second.is_closed() is True
+
+
+# ── Wave 24: stealth defaults ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_browser_launches_with_anti_automation_flag(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    launched = patched_browser._browser_headless
+    assert launched is not None
+    assert any(
+        "AutomationControlled" in a for a in launched.last_launch_args
+    )
+
+
+@pytest.mark.asyncio
+async def test_context_uses_real_chrome_ua_and_init_script(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    ctx = patched_browser._contexts["s1"]
+    assert ctx.user_agent is not None
+    assert "HeadlessChrome" not in ctx.user_agent
+    assert "Chrome/" in ctx.user_agent
+    joined = "\n".join(ctx.init_scripts)
+    # The stealth script defines navigator.webdriver via
+    # Object.defineProperty(navigator, 'webdriver', ...) — check for the
+    # property name itself (which is the load-bearing identifier).
+    assert "'webdriver'" in joined
+    assert "'plugins'" in joined
+    assert "window.chrome" in joined
