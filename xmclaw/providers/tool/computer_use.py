@@ -1857,16 +1857,19 @@ class ComputerUseTools(ToolProvider):
     def _chat_header_bbox(target_bbox: list[int] | None) -> list[int] | None:
         """Return the [x, y, w, h] of the chat-header OCR strip.
 
-        Chat apps put the conversation title at the **top-left** of the
-        right (conversation) pane. We narrow our OCR strip there to:
+        WeChat 4.x layout (validated against user screenshot
+        2026-05-13):
+        * Top ~40 px: window chrome / title bar — empty grey, no text.
+          DO NOT include this — OCR returns nothing.
+        * Below chrome ~50-60 px: conversation header with chat name
+          (e.g. "魔丸(5)") on the left, action icons on the right.
+        * Below that: messages.
 
-        1. Skip the action icons on the right side of the header bar
-           (call, video, menu) which OCR would misread.
-        2. Skip any external overlay (Claude Code / browser tooltip)
-           covering the right side of the screen.
-
-        Result: leftmost 40% of the right pane, top 60 px tall. The
-        chat title fits in this even for long group names (~12 chars).
+        We aim the OCR strip at the chat header band only:
+        * y starts at wy + 40 (skip chrome)
+        * h = 60 (catch one band of header text)
+        * x starts at right_pane_x (skip chat list)
+        * w = 40% of right pane (skip action icons on right)
         """
         if target_bbox is None or len(target_bbox) != 4:
             return None
@@ -1876,10 +1879,17 @@ class ComputerUseTools(ToolProvider):
         # Right pane starts ~30% into the window width.
         right_pane_x = wx + ww // 3
         right_pane_w = ww - ww // 3
+        # Skip the window chrome / title bar (~40 px) at top.
+        chrome_offset = 40
         # Narrow strip: left 40% of right pane is where the title is.
         title_strip_w = max(120, int(right_pane_w * 0.4))
-        header_h = min(60, wh // 8)
-        return [right_pane_x, wy, title_strip_w, header_h]
+        header_h = min(60, max(40, wh // 10))
+        return [
+            right_pane_x,
+            wy + chrome_offset,
+            title_strip_w,
+            header_h,
+        ]
 
     async def _gui_send_chat(
         self, call: ToolCall, t0: float, args: dict,
