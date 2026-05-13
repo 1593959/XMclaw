@@ -237,7 +237,9 @@
       "encrypt_key": "",
       "verify_token": "",
       "_proactive_chat_id_help": "Wave 9: 填某个聊天/群的 chat_id (形如 'oc_xxxxxx')，daemon 会把 ProactiveAgent 的主动发声（日历提醒/闲置提醒/陈旧项目）推到这个聊天里走飞书原生通知。chat_id 可以在 daemon 日志里查到：你 @ 机器人发第一条消息时会打 'channel.inbound feishu target.ref=oc_xxx'。空 → 不推送（默认）。",
-      "proactive_chat_id": ""
+      "proactive_chat_id": "",
+      "_session_per_user_help": "Wave 18: true 时同一个群里的不同用户各自一个 session (会话历史互相独立)，agent 不会把张三李四的话当成同一个对话方。false (默认) 时整个群共享一个 session — 单人/家庭群更顺手。注意：开启会"重置"现有群聊的连续性（老 session 历史还在但不会自动接上新 session）。",
+      "session_per_user": false
     },
     "telegram": {
       "enabled": false,

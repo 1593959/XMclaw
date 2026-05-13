@@ -1269,8 +1269,21 @@ def make_lifespan(
             channels_cfg = (config or {}).get("channels") or {}
             if isinstance(channels_cfg, dict) and channels_cfg and agent is not None:
                 manifests = _ch_discover(include_scaffolds=False)
+                # Wave 18: per-user session partitioning. Each channel
+                # config can set ``session_per_user: true`` so group
+                # chats get one session per sender rather than one
+                # shared session.
+                _spu_channels: list[str] = []
+                for _ch_id, _ch_cfg in channels_cfg.items():
+                    if (
+                        isinstance(_ch_cfg, dict)
+                        and _ch_cfg.get("session_per_user") is True
+                    ):
+                        _spu_channels.append(_ch_id)
                 channel_dispatcher = ChannelDispatcher(
-                    agent, app_state=_app.state,
+                    agent,
+                    app_state=_app.state,
+                    session_per_user_channels=frozenset(_spu_channels),
                 )
                 for ch_id, ch_cfg in channels_cfg.items():
                     if not isinstance(ch_cfg, dict) or not ch_cfg.get("enabled"):

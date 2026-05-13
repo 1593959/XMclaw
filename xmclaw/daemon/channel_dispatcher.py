@@ -58,6 +58,7 @@ class ChannelDispatcher:
         *,
         ack_delay_s: float = 0.0,
         app_state: Any | None = None,
+        session_per_user_channels: frozenset[str] | None = None,
     ) -> None:
         self._agent = agent
         self._adapters: list[ChannelAdapter] = []
@@ -75,6 +76,14 @@ class ChannelDispatcher:
         # commands still work but read-only commands degrade to
         # "未启用" messages.
         self._app_state = app_state
+        # Wave 18: channels whose chats should be sub-partitioned by
+        # sender so each user in a shared group chat gets their own
+        # conversation history with the agent. Empty = legacy
+        # per-chat behavior (everyone in the group shares one
+        # session). Configured via channels.<id>.session_per_user.
+        self._session_per_user_channels = (
+            session_per_user_channels or frozenset()
+        )
 
     def add(self, adapter: ChannelAdapter) -> None:
         """Register an adapter + subscribe to its inbound stream."""
@@ -243,8 +252,20 @@ class ChannelDispatcher:
     # ── helpers ────────────────────────────────────────────────
 
     def _session_id_for(self, msg: InboundMessage) -> str:
-        """Stable session id per (channel, chat). Same chat across
-        daemon restarts → same id → conversation history continuity."""
+        """Stable session id per (channel, chat) — or per (channel,
+        chat, user_ref) when this channel opted into per-user
+        partitioning (Wave 18). Same key across daemon restarts →
+        same id → conversation history continuity.
+
+        Per-user partitioning is opt-in because it changes the
+        retroactive interpretation of existing chats: enabling it on a
+        group with prior history orphans that history under the bare
+        (channel, chat) key. Operators flip the flag deliberately
+        before adding new users.
+        """
+        if msg.target.channel in self._session_per_user_channels:
+            ref = (msg.user_ref or "unknown").strip()
+            return f"{msg.target.channel}:{msg.target.ref}:{ref}"
         return f"{msg.target.channel}:{msg.target.ref}"
 
     def _extract_last_assistant(self, agent: Any, session_id: str) -> str:
