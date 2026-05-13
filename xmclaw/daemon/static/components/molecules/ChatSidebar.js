@@ -236,6 +236,88 @@ export function ChatSidebar({
               `)}
         </ul>
       </section>
+
+      <${BackgroundTasksPanel} token=${token} />
     </aside>
+  `;
+}
+
+
+// Sprint 1 Wave 3: Background tasks panel.
+//
+// Polls /api/v2/agent_tasks every 3s. Renders one row per
+// submit_to_agent task: status badge, content preview (≤80 chars),
+// agent + elapsed. Reuses the same chat sidebar styling.
+function BackgroundTasksPanel({ token }) {
+  const [tasks, setTasks] = useState(null);
+  const [collapsed, setCollapsed] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!token) return;
+    try {
+      const r = await apiGet("/api/v2/agent_tasks", token);
+      if (Array.isArray(r?.tasks)) setTasks(r.tasks);
+    } catch (_e) { /* network blip — keep last list */ }
+  }, [token]);
+
+  useEffect(() => {
+    if (collapsed) return;
+    load();
+    const id = setInterval(load, 3000);
+    return () => clearInterval(id);
+  }, [load, collapsed]);
+
+  const inFlight = (tasks || []).filter(
+    (t) => t.status === "pending" || t.status === "running",
+  ).length;
+
+  return html`
+    <section class="xmc-h-chatside__section xmc-bgtasks">
+      <header class="xmc-h-chatside__head"
+              onClick=${() => setCollapsed(!collapsed)}
+              style="cursor:pointer;user-select:none">
+        <span>后台任务 ${inFlight > 0
+          ? html`<span class="xmc-h-pill" style="background:#3a823a;color:#fff;font-size:.6rem;padding:1px 5px;border-radius:8px;margin-left:4px">${inFlight} 跑中</span>`
+          : null}</span>
+        <span style="font-size:.7rem;opacity:.5">${collapsed ? "▸" : "▾"}</span>
+      </header>
+      ${collapsed ? null : html`
+        <ul class="xmc-h-chatside__list">
+          ${tasks === null
+            ? html`<li class="xmc-h-loading">载入中…</li>`
+            : tasks.length === 0
+            ? html`<li class="xmc-h-empty">无后台任务</li>`
+            : tasks.slice(0, 8).map((t) => html`
+              <li
+                key=${t.task_id}
+                class="xmc-h-chatside__item xmc-bgtask__item"
+                title=${t.preview || ""}
+                style="display:flex;flex-direction:column;gap:2px;cursor:default"
+              >
+                <span style="display:flex;align-items:center;gap:4px;font-size:.72rem">
+                  <span class=${"xmc-bgtask__status xmc-bgtask__status--" + t.status}
+                        style=${"display:inline-block;width:6px;height:6px;border-radius:50%;background:" +
+                          (t.status === "running" ? "#4a90e2"
+                           : t.status === "done" ? "#3a823a"
+                           : t.status === "error" ? "#c84a4a"
+                           : "#888")
+                        }></span>
+                  <span style="color:var(--color-fg-muted)">${t.agent_id || "main"}</span>
+                  <span style="margin-left:auto;color:var(--color-fg-muted);font-size:.65rem">
+                    ${t.elapsed_s ? Math.round(t.elapsed_s) + "s" : "—"}
+                  </span>
+                </span>
+                <span style="font-size:.78rem;color:var(--color-fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:170px"
+                      title=${t.preview}>
+                  ${t.preview || "(no preview)"}
+                </span>
+                ${t.status === "error" && t.error
+                  ? html`<span style="font-size:.65rem;color:#c84a4a">${String(t.error).slice(0, 60)}</span>`
+                  : null}
+              </li>
+            `)}
+        </ul>
+      `}
+    </section>
   `;
 }

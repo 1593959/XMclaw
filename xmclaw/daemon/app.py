@@ -651,6 +651,10 @@ def create_app(
             agent._tools = _inter
         else:
             agent._tools = CompositeToolProvider(agent._tools, _inter)
+        # Sprint 1 Wave 3: stash the AgentInterTools instance on
+        # app.state so the /api/v2/agent_tasks HTTP route can read its
+        # task log without going through the LLM tool path.
+        app.state.agent_inter_tools = _inter
 
         # B-135: content tools — screenshot / pdf_read / docx_read /
         # xlsx_read / clipboard_read|write / image_read. Each tool
@@ -918,6 +922,51 @@ def create_app(
             "path": str(target_path),
             "restart_required": True,
         })
+
+    # ── /api/v2/agent_tasks (Sprint 1 Wave 3) ─────────────────────
+    # Read-only listing of background tasks dispatched via the
+    # ``submit_to_agent`` tool. The UI's "后台任务" sidebar tab polls
+    # this every couple of seconds to show what XMclaw is doing in
+    # parallel to the active chat.
+    @app.get("/api/v2/agent_tasks")
+    async def agent_tasks() -> JSONResponse:
+        inter = getattr(app.state, "agent_inter_tools", None)
+        if inter is None:
+            return JSONResponse({"tasks": []})
+        # ``AgentInterTools._tasks`` is the bounded dict[task_id, _TaskRecord].
+        # Read it without touching internals beyond what's needed.
+        records = list(getattr(inter, "_tasks", {}).values())
+        # Sort newest-first.
+        records.sort(key=lambda r: getattr(r, "created_at", 0.0), reverse=True)
+        out: list[dict[str, Any]] = []
+        for r in records[:200]:
+            try:
+                created = float(getattr(r, "created_at", 0.0))
+                completed = getattr(r, "completed_at", None)
+                completed_f = float(completed) if completed is not None else None
+                content = (getattr(r, "content", "") or "")
+                preview = content[:120]
+                out.append({
+                    "task_id": getattr(r, "task_id", ""),
+                    "agent_id": getattr(r, "agent_id", ""),
+                    "session_id": getattr(r, "session_id", ""),
+                    "status": getattr(r, "status", ""),
+                    "preview": preview,
+                    "reply_preview": (
+                        (getattr(r, "reply", None) or "")[:200]
+                        if getattr(r, "reply", None) else None
+                    ),
+                    "error": getattr(r, "error", None),
+                    "created_at": created,
+                    "completed_at": completed_f,
+                    "elapsed_s": (
+                        round((completed_f or time.time()) - created, 1)
+                        if created else 0.0
+                    ),
+                })
+            except Exception:  # noqa: BLE001
+                continue
+        return JSONResponse({"tasks": out, "count": len(out)})
 
     # ── /api/v2/status ────────────────────────────────────────────
     # Richer status than /health: active model, tool roster, mcp state.
