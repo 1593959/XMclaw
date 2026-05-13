@@ -214,21 +214,27 @@ def _suggestions_block(st: Any) -> dict[str, Any] | None:
         return {"error": str(exc)}
 
 
-def _tasks_block(st: Any) -> dict[str, Any] | None:
-    """Task scheduler queue counts (R2)."""
+async def _tasks_block(st: Any) -> dict[str, Any] | None:
+    """Task scheduler queue counts (R2). Wave 20 bugfix:
+    TaskScheduler.list_tasks is async — we were calling it without
+    await, so the block always returned {error: "'coroutine' object
+    is not iterable"} in production. Now async + awaits the listing."""
+    import inspect
     sched = getattr(st, "task_scheduler", None)
     if sched is None:
         return None
     try:
-        # TaskScheduler usually exposes ``list_tasks`` or similar.
-        listing = None
+        listing: Any = None
         for attr in ("list_tasks", "tasks", "all_tasks"):
             fn = getattr(sched, attr, None)
-            if callable(fn):
-                listing = fn()
-                break
             if attr == "tasks" and isinstance(fn, list):
                 listing = fn
+                break
+            if callable(fn):
+                result = fn()
+                if inspect.isawaitable(result):
+                    result = await result
+                listing = result
                 break
         if listing is None:
             return {"total": 0, "by_status": {}}
@@ -319,6 +325,92 @@ def _recent_events_block(st: Any) -> list[dict[str, Any]] | None:
         return [{"error": str(exc)}]
 
 
+def _cost_today_block(st: Any) -> dict[str, Any] | None:
+    """Wave 20: aggregate the last 24h of COST_TICK events into the
+    'today's spend' card. Per-call payloads carry per-hop costs +
+    model + token counts; we group by model so the user can see where
+    their tier router actually sends turns (and at what dollar weight).
+
+    Returns None when the bus isn't SQLite-backed (no query()). UI
+    renders an "事件总线未启用" placeholder in that case.
+    """
+    bus = getattr(st, "bus", None)
+    if bus is None:
+        return None
+    query = getattr(bus, "query", None)
+    if not callable(query):
+        return None
+    try:
+        since = time.time() - 86400.0
+        evs = query(
+            since=since,
+            types=["cost_tick"],
+            limit=5000,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("dashboard.cost_today_query_failed err=%s", exc)
+        return {"error": str(exc)}
+
+    total_usd = 0.0
+    prompt_tokens = 0
+    completion_tokens = 0
+    cache_creation_tokens = 0
+    cache_read_tokens = 0
+    by_model: dict[str, dict[str, Any]] = {}
+    for e in evs:
+        payload = getattr(e, "payload", None) or {}
+        if not isinstance(payload, dict):
+            continue
+        model = str(payload.get("model") or "unknown")
+        cost = float(payload.get("cost_usd") or 0.0)
+        pt = int(payload.get("prompt_tokens") or 0)
+        ct = int(payload.get("completion_tokens") or 0)
+        cc = int(payload.get("cache_creation_input_tokens") or 0)
+        cr = int(payload.get("cache_read_input_tokens") or 0)
+        total_usd += cost
+        prompt_tokens += pt
+        completion_tokens += ct
+        cache_creation_tokens += cc
+        cache_read_tokens += cr
+        slot = by_model.setdefault(model, {
+            "model": model,
+            "cost_usd": 0.0,
+            "calls": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+        })
+        slot["cost_usd"] += cost
+        slot["calls"] += 1
+        slot["prompt_tokens"] += pt
+        slot["completion_tokens"] += ct
+    # Sort models by cost desc — most expensive at the top.
+    model_rows = sorted(
+        by_model.values(),
+        key=lambda r: r["cost_usd"],
+        reverse=True,
+    )
+    # Round costs for display so JSON doesn't carry 14-digit floats.
+    for row in model_rows:
+        row["cost_usd"] = round(row["cost_usd"], 4)
+    # Anthropic cache hit rate (only meaningful when cache stats > 0).
+    cache_total = cache_creation_tokens + cache_read_tokens
+    cache_hit_rate: float | None = None
+    if cache_total > 0:
+        cache_hit_rate = round(
+            cache_read_tokens / cache_total, 3,
+        )
+    return {
+        "call_count": len(evs),
+        "total_usd": round(total_usd, 4),
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "cache_creation_tokens": cache_creation_tokens,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_hit_rate": cache_hit_rate,
+        "by_model": model_rows[:5],   # top 5 to keep card readable
+    }
+
+
 def _summarize_event(ev_type: str, payload: dict[str, Any]) -> str:
     """Tiny human-readable line for the timeline. Keep these short —
     they're list items, not paragraphs."""
@@ -375,7 +467,8 @@ async def overview(request: Request) -> JSONResponse:
           "suggestions":  {pending_count, recent} | null,
           "tasks":        {total, by_status} | null,
           "storage":      {events_db_bytes, ...},
-          "recent_events": [{ts, type, summary, ...}] | null
+          "recent_events": [{ts, type, summary, ...}] | null,
+          "cost_today":   {total_usd, by_model, ...} | null
         }
     """
     st = _state(request)
@@ -388,8 +481,9 @@ async def overview(request: Request) -> JSONResponse:
         "autobio": _autobio_block(st),
         "cognition": _cognition_block(st),
         "suggestions": _suggestions_block(st),
-        "tasks": _tasks_block(st),
+        "tasks": await _tasks_block(st),
         "storage": _storage_block(st),
         "recent_events": _recent_events_block(st),
+        "cost_today": _cost_today_block(st),
     }
     return JSONResponse(payload)

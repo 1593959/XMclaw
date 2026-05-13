@@ -9,7 +9,7 @@ router-inspection layer for registration-order regressions.
 from __future__ import annotations
 
 import time
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -257,17 +257,23 @@ def test_overview_recent_events_filters_by_type(
     client_with_event_bus: TestClient,
 ) -> None:
     """The endpoint must pass the curated whitelist into bus.query()
-    — we don't want every tool_call clogging the timeline."""
+    — we don't want every tool_call clogging the timeline. Wave 20
+    introduced a second bus.query for cost_today, so we scan all
+    calls and verify ONE of them carries the timeline-events filter.
+    """
     client_with_event_bus.get("/api/v2/dashboard/overview")
     fake_bus = client_with_event_bus.app.state.bus
-    call_kwargs = fake_bus.query.call_args.kwargs
-    types = call_kwargs.get("types") or []
-    # Spot-check a few must-be-included types.
-    assert "proactive_proposal" in types
-    assert "reflection_cycle_ran" in types
-    assert "metacognition_proposal" in types
-    # tool_call is intentionally NOT in the whitelist.
-    assert "tool_call" not in types
+    all_calls_types = [
+        (c.kwargs.get("types") or [])
+        for c in fake_bus.query.call_args_list
+    ]
+    flattened = {t for types in all_calls_types for t in types}
+    # Spot-check a few must-be-included types from the timeline filter.
+    assert "proactive_proposal" in flattened
+    assert "reflection_cycle_ran" in flattened
+    assert "metacognition_proposal" in flattened
+    # tool_call is intentionally NOT in either whitelist.
+    assert "tool_call" not in flattened
 
 
 def test_overview_recent_events_resilient_to_bus_failure(
@@ -285,3 +291,179 @@ def test_overview_recent_events_resilient_to_bus_failure(
     assert isinstance(evs, list)
     assert len(evs) == 1
     assert "error" in evs[0]
+
+
+# ── Wave 20: cost_today block ─────────────────────────────────────
+
+
+def test_overview_includes_cost_today_key(
+    empty_client: TestClient,
+) -> None:
+    body = empty_client.get("/api/v2/dashboard/overview").json()
+    assert "cost_today" in body
+    # In-memory bus → None (no .query)
+    assert body["cost_today"] is None
+
+
+@pytest.fixture
+def client_with_cost_events(empty_client: TestClient) -> TestClient:
+    """Bus that returns a mix of COST_TICK events from a couple
+    different models, simulating ~24h of agent activity."""
+
+    class _Ev:
+        def __init__(self, payload):
+            self.type = "cost_tick"
+            self.payload = payload
+            self.ts = time.time() - 60.0
+
+    fake_bus = MagicMock()
+    fake_bus.query.return_value = [
+        _Ev({
+            "model": "claude-opus-4-7",
+            "cost_usd": 0.012,
+            "prompt_tokens": 1500,
+            "completion_tokens": 400,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 800,
+        }),
+        _Ev({
+            "model": "claude-opus-4-7",
+            "cost_usd": 0.008,
+            "prompt_tokens": 1000,
+            "completion_tokens": 300,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 200,
+        }),
+        _Ev({
+            "model": "kimi-k2.6",
+            "cost_usd": 0.001,
+            "prompt_tokens": 800,
+            "completion_tokens": 200,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        }),
+    ]
+    empty_client.app.state.bus = fake_bus
+    return empty_client
+
+
+def test_cost_today_aggregates_totals(
+    client_with_cost_events: TestClient,
+) -> None:
+    body = client_with_cost_events.get(
+        "/api/v2/dashboard/overview",
+    ).json()
+    c = body["cost_today"]
+    assert c is not None
+    assert c["call_count"] == 3
+    assert c["total_usd"] == 0.021  # 0.012 + 0.008 + 0.001
+    assert c["prompt_tokens"] == 3300
+    assert c["completion_tokens"] == 900
+
+
+def test_cost_today_groups_by_model_descending(
+    client_with_cost_events: TestClient,
+) -> None:
+    body = client_with_cost_events.get(
+        "/api/v2/dashboard/overview",
+    ).json()
+    by_model = body["cost_today"]["by_model"]
+    assert len(by_model) == 2
+    assert by_model[0]["model"] == "claude-opus-4-7"
+    assert by_model[0]["calls"] == 2
+    assert by_model[0]["cost_usd"] == 0.02
+    assert by_model[1]["model"] == "kimi-k2.6"
+    assert by_model[1]["calls"] == 1
+
+
+def test_cost_today_cache_hit_rate(
+    client_with_cost_events: TestClient,
+) -> None:
+    body = client_with_cost_events.get(
+        "/api/v2/dashboard/overview",
+    ).json()
+    # Total cache: 800 + 200 = 1000 read, 0 creation → 100% hit rate.
+    assert body["cost_today"]["cache_hit_rate"] == 1.0
+
+
+def test_cost_today_no_cache_returns_null_hit_rate(
+    empty_client: TestClient,
+) -> None:
+    """When all calls have 0 cache tokens, hit_rate is None (not
+    misleadingly 0.0 / division-by-zero)."""
+    class _Ev:
+        def __init__(self):
+            self.type = "cost_tick"
+            self.payload = {
+                "model": "gpt-4o",
+                "cost_usd": 0.005,
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            }
+            self.ts = time.time()
+
+    fake_bus = MagicMock()
+    fake_bus.query.return_value = [_Ev()]
+    empty_client.app.state.bus = fake_bus
+
+    body = empty_client.get("/api/v2/dashboard/overview").json()
+    assert body["cost_today"]["cache_hit_rate"] is None
+
+
+def test_cost_today_resilient_to_bus_failure(
+    empty_client: TestClient,
+) -> None:
+    bad = MagicMock()
+    # bus.query for "proactive_proposal" types (recent_events) returns
+    # OK; bus.query for "cost_tick" throws. Cleanest way to test cost
+    # block isolation is to make query unconditionally raise — both
+    # blocks degrade gracefully.
+    bad.query.side_effect = RuntimeError("db wedged")
+    empty_client.app.state.bus = bad
+
+    r = empty_client.get("/api/v2/dashboard/overview")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["cost_today"] is not None
+    assert "error" in body["cost_today"]
+
+
+def test_tasks_block_awaits_async_list_tasks(
+    empty_client: TestClient,
+) -> None:
+    """Regression: production TaskScheduler.list_tasks is async.
+    The dashboard block must await it, not pass back a coroutine
+    that the downstream list() chokes on."""
+
+    class _T:
+        status = "running"
+
+    sched = MagicMock()
+    sched.list_tasks = AsyncMock(return_value=[_T(), _T(), _T()])
+    empty_client.app.state.task_scheduler = sched
+
+    r = empty_client.get("/api/v2/dashboard/overview")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["tasks"] is not None
+    assert "error" not in body["tasks"]
+    assert body["tasks"]["total"] == 3
+    assert body["tasks"]["by_status"] == {"running": 3}
+
+
+def test_cost_today_empty_events_returns_zeroes(
+    empty_client: TestClient,
+) -> None:
+    fake_bus = MagicMock()
+    fake_bus.query.return_value = []
+    empty_client.app.state.bus = fake_bus
+
+    body = empty_client.get("/api/v2/dashboard/overview").json()
+    c = body["cost_today"]
+    assert c is not None
+    assert c["call_count"] == 0
+    assert c["total_usd"] == 0.0
+    assert c["prompt_tokens"] == 0
+    assert c["by_model"] == []

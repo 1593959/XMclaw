@@ -270,6 +270,44 @@ function StorageCard({ storage }) {
   `;
 }
 
+function CostTodayCard({ cost }) {
+  if (cost == null) {
+    return html`
+      <${Card} title="今日花费">
+        <${EmptyHint} text="事件总线未启用 — 无法查询过去 24h 调用" />
+      </${Card}>
+    `;
+  }
+  if (cost.error) {
+    return html`<${Card} title="今日花费"><div class="xmc-dash__err">读取失败：${cost.error}</div></${Card}>`;
+  }
+  const total = (cost.total_usd ?? 0).toFixed(4);
+  const tokensTotal = (cost.prompt_tokens || 0) + (cost.completion_tokens || 0);
+  return html`
+    <${Card} title="今日花费" hint=${`过去 24h · ${cost.call_count} 次调用`}>
+      <div class="xmc-dash__stats-grid">
+        <${Stat} label="美元" value=${`$${total}`} />
+        <${Stat} label="Token" value=${tokensTotal.toLocaleString()} />
+        ${cost.cache_hit_rate != null ? html`
+          <${Stat} label="缓存命中" value=${`${(cost.cache_hit_rate * 100).toFixed(1)}%`} />
+        ` : null}
+      </div>
+      ${cost.by_model.length > 0 ? html`
+        <div class="xmc-dash__subhead">按模型</div>
+        <ul class="xmc-dash__list">
+          ${cost.by_model.map((row) => html`
+            <li class="xmc-dash__list-item">
+              <span class="xmc-dash__tag">${row.calls}×</span>
+              <span>${row.model}</span>
+              <span class="xmc-dash__list-meta">$${row.cost_usd.toFixed(4)}</span>
+            </li>
+          `)}
+        </ul>
+      ` : null}
+    </${Card}>
+  `;
+}
+
 const EVENT_ICONS = {
   proactive_proposal:     "📢",
   reflection_cycle_ran:   "🪞",
@@ -388,6 +426,7 @@ export function DashboardPage({ token }) {
         <${SuggestionsCard} suggestions=${data.suggestions} now=${now} />
         <${TasksCard} tasks=${data.tasks} />
         <${StorageCard} storage=${data.storage} />
+        <${CostTodayCard} cost=${data.cost_today} />
         <${RecentEventsCard} recentEvents=${data.recent_events} now=${now} />
       </div>
     </section>
