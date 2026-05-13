@@ -1004,6 +1004,21 @@ def build_tools_from_config(
             cache_ttl_s=float(composio_cfg.get("cache_ttl_s", 300.0)),
         ))
 
+    # Sprint 2 Wave 15: calendar write-back tool. Hooked to the same
+    # ICS file CalendarReminderTrigger reads, so created events are
+    # picked up by the trigger's next read (≤60s cache TTL).
+    proactive_cfg = (
+        (cfg.get("cognition") or {}).get("proactive", {})
+        if isinstance(cfg, dict) else {}
+    )
+    ics_path = (
+        proactive_cfg.get("calendar_ics_path")
+        if isinstance(proactive_cfg, dict) else None
+    )
+    if isinstance(ics_path, str) and ics_path.strip():
+        from xmclaw.providers.tool.calendar import CalendarToolProvider
+        children.append(CalendarToolProvider(ics_path=ics_path.strip()))
+
     if len(children) == 1:
         provider = builtins  # no extras wired -- skip the composite wrapper
     else:
