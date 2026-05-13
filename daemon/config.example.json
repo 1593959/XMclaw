@@ -99,11 +99,23 @@
       "apps": ["GMAIL", "SLACK", "GITHUB", "NOTION"],
       "cache_ttl_s": 300
     },
-    "_comment_computer_use": "2026-05-12 桌面自动化 — 给 agent 装上鼠标键盘 + 屏幕截图。enabled=false 是默认（最危险的工具集，agent 会真的代你点鼠标按键盘）。enabled=true 后 agent 获得 11 个工具：screen_capture / screen_size / cursor_position / mouse_{move,click,drag,scroll} / keyboard_{type,press} / window_{list,focus}。依赖：``pip install pyautogui mss pygetwindow``（macOS 还要在系统设置 → 隐私 → 辅助功能 / 屏幕录制里给终端授权；Linux 需要 X11 会话）。FAILSAFE 永远开着：把鼠标拽到屏幕左上角 (0,0) 会立即中止 agent 任何 GUI 动作。screenshot_dir 默认是 ~/.xmclaw/v2/screenshots；base64_size_cap 是截图内嵌进 LLM context 的字节数上限（超出只返路径，不嵌 base64）。",
+    "_comment_computer_use": "2026-05-12 桌面自动化 — 给 agent 装上鼠标键盘 + 屏幕截图。2026-05-14 default-on (默认 true) — agent 能操作微信 / Office / VSCode / 任何本地软件。11 个工具：screen_capture / screen_size / cursor_position / mouse_{move,click,drag,scroll} / keyboard_{type,press} / window_{list,focus}。依赖：``pip install pyautogui mss pygetwindow``（macOS 还要在系统设置 → 隐私 → 辅助功能 / 屏幕录制里给终端授权；Linux 需要 X11 会话）。FAILSAFE 永远开着：把鼠标拽到屏幕左上角 (0,0) 会立即中止 agent 任何 GUI 动作。screenshot_dir 默认是 ~/.xmclaw/v2/screenshots；base64_size_cap 是截图内嵌进 LLM context 的字节数上限（超出只返路径，不嵌 base64）。要关掉就 enabled=false。",
     "computer_use": {
-      "enabled": false,
+      "enabled": true,
       "screenshot_dir": null,
       "base64_size_cap": 524288
+    },
+    "_comment_media": "2026-05-12 媒体工具 — 录音、拍照、放音频。2026-05-14 default-on。依赖 sounddevice / opencv-python / simpleaudio（``pip install xmclaw[media]``，部分平台 / 设备首次调用会触发系统权限弹窗）。缺包时工具列出但 invoke 返结构化 error。",
+    "media": {
+      "enabled": true,
+      "media_dir": null,
+      "base64_size_cap": 524288
+    },
+    "_comment_subagent_fanout": "2026-05-12 并行子 agent — 给主 agent 加 `parallel_subagents` 工具，让它把独立子任务一次性 fan out 到 N 个临时 agent 并行跑（Kimi K2.6 swarm 模式）。2026-05-14 default-on — 多任务 + 多研究问题场景下能 5-10x 缩短墙钟时间。",
+    "subagent_fanout": {
+      "enabled": true,
+      "max_concurrency": 4,
+      "per_subagent_timeout_s": 120
     }
   },
   "voice": {
@@ -165,8 +177,8 @@
   },
   "backup": {
     "_consumer": "lifespan (BackupSchedulerTask); not in factory.py.",
-    "_comment": "Epic #20 Phase 2: daemon runs a daily workspace backup when auto_daily=true. Prefix-scoped prune keeps only the newest `keep` auto backups (manual `xmclaw backup create <name>` entries are never touched). Disabled by default — the daemon stays cost-free for users who don't opt in. interval_s is the wait between backups in seconds (86400 = 24h).",
-    "auto_daily": false,
+    "_comment": "Epic #20 Phase 2: daemon runs a daily workspace backup when auto_daily=true. 2026-05-14 default-on — keep=7 means at most 7 auto backups (~一周) 留盘，prefix-scoped prune 不碰手工 `xmclaw backup create <name>` 备份。interval_s 是备份间隔秒数 (86400 = 24h)。要关掉就 auto_daily=false。",
+    "auto_daily": true,
     "interval_s": 86400,
     "keep": 7,
     "name_prefix": "auto-"
@@ -224,8 +236,8 @@
         "min_urgency": "normal"
       },
       "daily_digest": {
-        "_comment": "Wave 16: 每天到点生成当日活动汇总（主动发声次数 / 反思周期 / 自传记忆 / 活跃目标）。配合 channel_push 自动推到飞书做'晚报'。",
-        "enabled": false,
+        "_comment": "Wave 16: 每天到点生成当日活动汇总（主动发声次数 / 反思周期 / 自传记忆 / 活跃目标）。2026-05-14 default-on — 配合 channel_push 自动推到飞书做'晚报'。要关掉就 enabled=false。",
+        "enabled": true,
         "_schedule_help": "cron 表达式 (需 croniter) 或 'every Nu'。默认 22:00 每天。",
         "schedule": "0 22 * * *",
         "_lookback_h_help": "汇总往前看多少小时的事件。",

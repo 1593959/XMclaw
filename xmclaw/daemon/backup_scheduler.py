@@ -56,12 +56,14 @@ DEFAULT_NAME_PREFIX = "auto-"
 class BackupPolicy:
     """Resolved auto-backup config.
 
-    ``auto_daily`` is the master switch. When False the task's
-    :meth:`BackupSchedulerTask.start` is a no-op so daemons that don't
-    opt in pay zero background cost.
+    ``auto_daily`` is the master switch. 2026-05-14: default flipped to
+    True so users get an automatic weekly safety net (keep=7 → at most
+    7 prefix-scoped backups on disk). Daemons that don't want it set
+    ``auto_daily: false`` in their config. When False the task's
+    :meth:`BackupSchedulerTask.start` is a no-op.
     """
 
-    auto_daily: bool = False
+    auto_daily: bool = True
     interval_s: float = float(DEFAULT_INTERVAL_S)
     keep: int = DEFAULT_KEEP
     name_prefix: str = DEFAULT_NAME_PREFIX
@@ -78,7 +80,7 @@ def parse_backup_config(cfg: dict[str, Any] | None) -> BackupPolicy:
     if not isinstance(cfg, dict):
         return BackupPolicy()
 
-    auto_daily = bool(cfg.get("auto_daily", False))
+    auto_daily = bool(cfg.get("auto_daily", True))
 
     interval_raw = cfg.get("interval_s", DEFAULT_INTERVAL_S)
     if isinstance(interval_raw, (int, float)) and interval_raw > 0:

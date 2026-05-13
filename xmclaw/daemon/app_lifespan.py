@@ -2174,8 +2174,12 @@ def make_lifespan(
                     )
                     if not isinstance(digest_cfg, dict):
                         digest_cfg = {}
+                    # 2026-05-14 default-flip: 22:00 read-only summary,
+                    # no risk surface. Explicit ``enabled: false`` opts
+                    # out; "daily_digest" in the disabled set also opts
+                    # out.
                     if (
-                        digest_cfg.get("enabled", False)
+                        digest_cfg.get("enabled", True)
                         and "daily_digest" not in disabled
                     ):
                         from xmclaw.cognition.triggers_digest import (

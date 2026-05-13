@@ -944,8 +944,14 @@ def build_tools_from_config(
     # degrades when ``pyautogui`` isn't installed, surfacing an install
     # hint instead of crashing the daemon. See xmclaw/providers/tool/
     # computer_use.py module docstring for the full safety model.
+    # 2026-05-14 default-flip: same posture as enable_browser — lazy
+    # import means daemons without pyautogui/mss/pygetwindow log skip
+    # and continue cleanly. Explicit ``enabled: false`` still opts out.
     cu_cfg = tools_section.get("computer_use") or {}
-    if isinstance(cu_cfg, dict) and cu_cfg.get("enabled"):
+    cu_enabled = (
+        cu_cfg.get("enabled", True) if isinstance(cu_cfg, dict) else False
+    )
+    if cu_enabled:
         try:
             from xmclaw.providers.tool.computer_use import ComputerUseTools
             children.append(ComputerUseTools(
@@ -963,8 +969,14 @@ def build_tools_from_config(
     # providers (stt/tts) are shared with BuiltinTools so
     # ``voice_listen`` / ``speak`` see the same WhisperSTT / EdgeTTS
     # instances as ``voice_transcribe`` / ``voice_synthesize``.
+    # 2026-05-14 default-flip: lazy import + structured error on missing
+    # cv2/sounddevice means daemons without the [media] extra boot clean.
     media_cfg = tools_section.get("media") or {}
-    if isinstance(media_cfg, dict) and media_cfg.get("enabled"):
+    media_enabled = (
+        media_cfg.get("enabled", True)
+        if isinstance(media_cfg, dict) else False
+    )
+    if media_enabled:
         try:
             from xmclaw.providers.tool.media import MediaTools
             children.append(MediaTools(
@@ -1064,8 +1076,10 @@ def build_tools_from_config(
     # fanout. Kimi K2.6 agent swarm pattern. Adds the
     # ``parallel_subagents`` tool to the catalogue. Off by default —
     # opt-in via tools.subagent_fanout.enabled.
+    # 2026-05-14 default-flip: parallel_subagents tool is pure-logic
+    # (no external services), safe to default on.
     subagent_cfg = tools_section.get("subagent_fanout") or {}
-    if isinstance(subagent_cfg, dict) and subagent_cfg.get("enabled", False):
+    if isinstance(subagent_cfg, dict) and subagent_cfg.get("enabled", True):
         try:
             from xmclaw.providers.tool.builtin_subagent import (
                 SubagentToolProvider,

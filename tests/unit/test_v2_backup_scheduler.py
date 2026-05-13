@@ -37,8 +37,11 @@ from xmclaw.daemon.backup_scheduler import (
 
 class TestParseBackupConfig:
     def test_none_returns_defaults(self) -> None:
+        """2026-05-14 default-on: no config → auto_daily=True (weekly
+        safety net by default). Explicit ``auto_daily: false`` still
+        opts out."""
         p = parse_backup_config(None)
-        assert p.auto_daily is False
+        assert p.auto_daily is True
         assert p.interval_s == float(DEFAULT_INTERVAL_S)
         assert p.keep == DEFAULT_KEEP
         assert p.name_prefix == DEFAULT_NAME_PREFIX
@@ -52,11 +55,16 @@ class TestParseBackupConfig:
         p = parse_backup_config({"auto_daily": True})
         assert p.auto_daily is True
 
-    def test_truthy_strings_do_not_enable(self) -> None:
+    def test_explicit_false_opts_out(self) -> None:
+        """Default flipped to on (2026-05-14) — verify operators who
+        want to keep things hand-rolled can still turn it off."""
+        p = parse_backup_config({"auto_daily": False})
+        assert p.auto_daily is False
+
+    def test_truthy_strings_keep_enabled(self) -> None:
         # Common JSON confusion: ``"true"`` (string) vs ``true`` (bool).
-        # bool() of a non-empty string is True — which we explicitly
-        # accept here. The point is to lock in the current behavior so
-        # a future refactor doesn't silently change it.
+        # bool() of a non-empty string is True; "" is False. Lock in
+        # behavior so a future refactor doesn't silently change it.
         p = parse_backup_config({"auto_daily": "true"})
         assert p.auto_daily is True
         p2 = parse_backup_config({"auto_daily": ""})
