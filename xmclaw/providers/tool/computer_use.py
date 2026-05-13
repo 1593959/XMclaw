@@ -2138,16 +2138,81 @@ class ComputerUseTools(ToolProvider):
                             await asyncio.to_thread(
                                 pg_nav.write, wanted_chat, interval=0.02,
                             )
-                        await asyncio.sleep(0.6)
-                        await asyncio.to_thread(pg_nav.press, "enter")
+                        # WeChat shows a dropdown below the search box:
+                        #   * top section "搜索网络结果" / 关键词建议
+                        #   * "群聊" heading
+                        #   * the actual group chats (with avatars)
+                        # PRESSING ENTER selects the TOP entry which is
+                        # the WEB-SEARCH, NOT the chat we want — sends
+                        # the user to a search-engine page. Real bug
+                        # demonstrated by user's screenshot 2026-05-13.
+                        # Wait for dropdown to render, then OCR-find
+                        # the "群聊" heading and click the first
+                        # matching chat below it.
+                        await asyncio.sleep(0.8)
+                        # OCR the dropdown area — roughly below the
+                        # search box, in the left ~1/3 of the window.
+                        wx2, wy2, ww2, wh2 = target_bbox
+                        dropdown_bbox = [
+                            wx2,
+                            sy + 25,           # just below search box
+                            min(ww2 // 3 + 80, 520),
+                            min(wh2 - (sy - wy2) - 25, 600),
+                        ]
+                        try:
+                            drop_blocks = await asyncio.to_thread(
+                                _run_ocr_full_pipeline,
+                                dropdown_bbox, 0.4,
+                            )
+                        except Exception:  # noqa: BLE001
+                            drop_blocks = []
+                        # Find "群聊" heading y-coordinate.
+                        group_section_y = None
+                        for b in (drop_blocks or []):
+                            text_b = (b.get("text", "") or "")
+                            if "群聊" in text_b or "Group" in text_b:
+                                group_section_y = b.get("center", [0, 0])[1]
+                                break
+                        if group_section_y is not None:
+                            # Find chat matches BELOW the 群聊 heading.
+                            below = [
+                                b for b in drop_blocks
+                                if b.get("center", [0, 0])[1]
+                                > group_section_y
+                            ]
+                            chat_matches = _match_text_in_blocks(
+                                below, wanted_chat, exact=False,
+                            )
+                            # Reject matches that look like other
+                            # sections (网络结果 prefix etc).
+                            chat_matches = [
+                                m for m in chat_matches
+                                if "网络" not in m.get("text", "")
+                                and "搜索" not in m.get("text", "")
+                            ]
+                        else:
+                            chat_matches = []
+                        if chat_matches:
+                            chat_m = chat_matches[0]
+                            cx2 = int(chat_m["center"][0])
+                            cy2 = int(chat_m["center"][1])
+                            await asyncio.to_thread(pg_nav.click, cx2, cy2)
+                            nav_clicked = [cx2, cy2]
+                            nav_strategy = "search_dropdown_group_section"
+                        else:
+                            # No "群聊" section found in dropdown
+                            # (maybe single-result or dropdown layout
+                            # differs). Fall back to pressing Enter,
+                            # accepting risk of web-search hit.
+                            await asyncio.to_thread(pg_nav.press, "enter")
+                            nav_clicked = [sx, sy]
+                            nav_strategy = "search_box_enter_fallback"
                     except Exception as exc:  # noqa: BLE001
                         return _fail(
                             call, t0,
                             f"search-box navigation failed: "
                             f"{type(exc).__name__}: {exc}",
                         )
-                    nav_clicked = [sx, sy]
-                    nav_strategy = "search_box_fallback"
                     # Search-result open + conversation paint takes
                     # slightly longer than a direct chat-list click.
                     await asyncio.sleep(1.5)
