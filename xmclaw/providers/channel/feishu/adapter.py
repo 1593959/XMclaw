@@ -342,6 +342,71 @@ class FeishuAdapter(ChannelAdapter):
         self._ws_task = None
         _log.info("feishu.stopped")
 
+    async def _download_message_resource(
+        self, message_id: str, file_key: str, *, kind: str = "image",
+    ) -> bytes | None:
+        """Wave 12: download an inbound image/file by (message_id, key).
+
+        Returns raw bytes on success, ``None`` on failure (caller logs +
+        skips). Lark's WS push gives us the image_key — fetching the
+        bytes is a separate REST call.
+
+        Uses ``im.v1.message_resource.get`` which supports kind ∈
+        {"image", "file"}.
+        """
+        if self._client is None:
+            return None
+        try:
+            from lark_oapi.api.im.v1 import GetMessageResourceRequest
+        except ImportError:
+            return None
+
+        def _do_get() -> Any:
+            req = (
+                GetMessageResourceRequest.builder()
+                .message_id(message_id)
+                .file_key(file_key)
+                .type(kind)
+                .build()
+            )
+            return self._client.im.v1.message_resource.get(req)
+
+        try:
+            resp = await asyncio.to_thread(_do_get)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "feishu.download_resource_failed msg_id=%s key=%s err=%s",
+                message_id, file_key, exc,
+            )
+            return None
+        if not getattr(resp, "success", lambda: False)():
+            _log.warning(
+                "feishu.download_resource_unsuccessful msg_id=%s key=%s "
+                "code=%s msg=%s",
+                message_id, file_key,
+                getattr(resp, "code", "?"), getattr(resp, "msg", "?"),
+            )
+            return None
+        # The response's file-like body lives on resp.file; some
+        # lark-oapi versions also stick the bytes on resp.raw.content.
+        candidates = (
+            getattr(resp, "file", None),
+            getattr(getattr(resp, "raw", None), "content", None),
+        )
+        for c in candidates:
+            if isinstance(c, bytes):
+                return c
+            if hasattr(c, "read"):
+                try:
+                    return c.read()
+                except Exception:  # noqa: BLE001
+                    continue
+        _log.warning(
+            "feishu.download_resource_no_body msg_id=%s key=%s",
+            message_id, file_key,
+        )
+        return None
+
     async def _upload_image(self, image_path: str) -> str:
         """B-199: upload a local image to Lark, return image_key.
 
@@ -526,24 +591,33 @@ class FeishuAdapter(ChannelAdapter):
             sender = event.event.sender
         except AttributeError:
             return
-        # Only handle text messages for v1. Rich-text / images come
-        # back as JSON-encoded content; the agent can ask the user
-        # to use text.
+        # Wave 12: handle text + image + post (rich text with image).
+        # Other types (file/audio/video/etc.) still skip — those need
+        # heavier processing pipelines than the agent has plumbing for.
         msg_type = getattr(msg, "message_type", "") or ""
-        if msg_type != "text":
-            _log.debug("feishu.skip_non_text type=%s", msg_type)
+        if msg_type not in ("text", "image", "post"):
+            _log.debug("feishu.skip_unsupported_type type=%s", msg_type)
             return
-        # content is JSON-encoded: '{"text":"hi @bot"}'
         text = ""
+        image_keys: list[str] = []
         try:
             content_obj = json.loads(getattr(msg, "content", "") or "{}")
-            text = (content_obj.get("text") or "").strip()
-            # Strip leading @bot mention text (lark renders it as
-            # `@_user_1` placeholder when the bot is mentioned).
-            text = _strip_at_mentions(text)
         except (json.JSONDecodeError, TypeError, ValueError):
             return
-        if not text:
+        if msg_type == "text":
+            text = (content_obj.get("text") or "").strip()
+            text = _strip_at_mentions(text)
+        elif msg_type == "image":
+            # {"image_key": "img_v3_xxx"}
+            key = content_obj.get("image_key")
+            if isinstance(key, str) and key:
+                image_keys.append(key)
+        elif msg_type == "post":
+            # Rich text: nested {"title": "...", "content": [[{"tag":...}]]}
+            # We pull out text spans + image refs.
+            text, image_keys = _flatten_post(content_obj)
+            text = _strip_at_mentions(text)
+        if not text and not image_keys:
             return
 
         chat_id = getattr(msg, "chat_id", "") or ""
@@ -637,17 +711,84 @@ class FeishuAdapter(ChannelAdapter):
                 )
                 return
 
+        # Wave 12: download any inbound image bytes and persist to the
+        # workspace uploads dir. Run AFTER injection / allowlist gates
+        # so unauthorized senders don't get free image downloads.
+        image_paths: list[str] = []
+        if image_keys and msg_id:
+            image_paths = await self._fetch_and_save_images(
+                msg_id, image_keys,
+            )
+        if not text and not image_paths:
+            # All image fetches failed AND no text — nothing for the
+            # agent to act on. Log + drop.
+            _log.info(
+                "feishu.inbound_empty_after_fetch msg_id=%s",
+                msg_id,
+            )
+            return
+
+        # If user only sent image(s) without caption, give the agent a
+        # tiny default prompt so the LLM has SOMETHING textual to ground
+        # its reply on. Otherwise some LLM clients drop messages with
+        # empty text + only image content.
+        if not text and image_paths:
+            text = "看一下这张图。"
+
         inbound = InboundMessage(
             target=ChannelTarget(channel="feishu", ref=chat_id),
             user_ref=user_id,
             content=text,
-            raw={"message_id": msg_id, "msg_type": msg_type},
+            raw={
+                "message_id": msg_id,
+                "msg_type": msg_type,
+                "images": image_paths,
+            },
         )
         for h in list(self._handlers):
             try:
                 await h(inbound)
             except Exception as exc:  # noqa: BLE001
                 _log.warning("feishu.handler_failed err=%s", exc)
+
+    async def _fetch_and_save_images(
+        self, message_id: str, image_keys: list[str],
+    ) -> list[str]:
+        """Download every image_key in this message → ~/.xmclaw/v2/
+        uploads/feishu_<msgid>_<i>.<ext>. Returns absolute paths of
+        successfully downloaded images (failures log + skip)."""
+        from xmclaw.utils.paths import data_dir
+        uploads_dir = data_dir() / "v2" / "uploads"
+        try:
+            uploads_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "feishu.uploads_dir_mkdir_failed err=%s", exc,
+            )
+            return []
+        out: list[str] = []
+        for i, key in enumerate(image_keys[:4]):  # cap at 4 per msg
+            data = await self._download_message_resource(
+                message_id, key, kind="image",
+            )
+            if not data:
+                continue
+            # Sniff extension from magic bytes — Lark doesn't return
+            # mime in the resource fetch.
+            ext = _sniff_image_ext(data) or ".jpg"
+            safe_msg_id = "".join(
+                c if c.isalnum() else "_" for c in message_id
+            )[:32]
+            out_path = uploads_dir / f"feishu_{safe_msg_id}_{i}{ext}"
+            try:
+                out_path.write_bytes(data)
+                out.append(str(out_path))
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "feishu.image_write_failed path=%s err=%s",
+                    out_path, exc,
+                )
+        return out
 
 
 def _strip_at_mentions(text: str) -> str:
@@ -656,3 +797,55 @@ def _strip_at_mentions(text: str) -> str:
     import re
     cleaned = re.sub(r"@_user_\d+\s*", "", text)
     return cleaned.strip()
+
+
+def _flatten_post(content_obj: dict) -> tuple[str, list[str]]:
+    """Walk a Lark ``post`` rich-text payload, return (joined_text,
+    image_keys). Lark's post schema is nested list-of-lists where each
+    leaf is a tagged dict (``text`` / ``a`` / ``at`` / ``img``)."""
+    texts: list[str] = []
+    images: list[str] = []
+    title = content_obj.get("title")
+    if isinstance(title, str) and title.strip():
+        texts.append(title.strip())
+    content = content_obj.get("content")
+    if not isinstance(content, list):
+        return " ".join(texts).strip(), images
+    for line in content:
+        if not isinstance(line, list):
+            continue
+        for span in line:
+            if not isinstance(span, dict):
+                continue
+            tag = span.get("tag")
+            if tag == "text":
+                t = span.get("text")
+                if isinstance(t, str):
+                    texts.append(t)
+            elif tag == "a":
+                t = span.get("text") or span.get("href") or ""
+                if isinstance(t, str):
+                    texts.append(t)
+            elif tag == "img":
+                key = span.get("image_key")
+                if isinstance(key, str) and key:
+                    images.append(key)
+    return " ".join(texts).strip(), images
+
+
+def _sniff_image_ext(data: bytes) -> str | None:
+    """Return a file extension based on magic bytes. Used after Lark
+    download since the resource fetch doesn't return mime."""
+    if not data or len(data) < 4:
+        return None
+    if data.startswith(b"\x89PNG"):
+        return ".png"
+    if data[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return ".gif"
+    if data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP":
+        return ".webp"
+    if data[:2] == b"BM":
+        return ".bmp"
+    return None

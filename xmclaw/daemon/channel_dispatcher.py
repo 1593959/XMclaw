@@ -184,8 +184,19 @@ class ChannelDispatcher:
 
         # Run a turn. agent.run_turn streams events to the bus AND
         # records the assistant's final text in agent._histories[sid].
+        # Wave 12: pass through any inbound image paths the channel
+        # adapter saved (currently feishu only; other channels still
+        # text-only).
+        raw_images = (msg.raw or {}).get("images") if msg.raw else None
+        user_images_arg: tuple[str, ...] | None = None
+        if isinstance(raw_images, list) and raw_images:
+            user_images_arg = tuple(
+                p for p in raw_images if isinstance(p, str) and p
+            ) or None
         try:
-            await agent.run_turn(session_id, msg.content)
+            await agent.run_turn(
+                session_id, msg.content, user_images=user_images_arg,
+            )
         except Exception as exc:  # noqa: BLE001
             _log.warning("channel.run_turn_failed err=%s", exc)
             ack_task.cancel()
