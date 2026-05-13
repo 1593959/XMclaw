@@ -2087,6 +2087,39 @@ def make_lifespan(
                     proactive_agent.register_trigger(IdleCheckInTrigger())
                 if "system_health" not in disabled:
                     proactive_agent.register_trigger(SystemHealthTrigger())
+                # Sprint 2 Wave 5: environment-aware triggers. ICS
+                # calendar reminder requires user to point at an
+                # exported .ics file. Stale project trigger reads
+                # autobiographical_memory projects.
+                try:
+                    from xmclaw.cognition.triggers_environment import (
+                        CalendarReminderTrigger,
+                        StaleProjectTrigger,
+                    )
+                    ics_path = (
+                        proactive_cfg.get("calendar_ics_path")
+                        if isinstance(proactive_cfg, dict) else None
+                    )
+                    if (
+                        "calendar_reminder" not in disabled
+                        and isinstance(ics_path, str) and ics_path.strip()
+                    ):
+                        proactive_agent.register_trigger(
+                            CalendarReminderTrigger(
+                                ics_path=ics_path.strip(),
+                            ),
+                        )
+                    if (
+                        "stale_project" not in disabled
+                        and autobio_mem is not None
+                    ):
+                        proactive_agent.register_trigger(
+                            StaleProjectTrigger(),
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "environment_triggers.register_failed err=%s", exc,
+                    )
                 await proactive_agent.start()
                 _app.state.proactive_agent = proactive_agent
                 # Back-reference so AgentLoop can call note_user_message
