@@ -2137,6 +2137,52 @@ def make_lifespan(
                     "proactive_agent.started triggers=%s",
                     proactive_agent.trigger_names(),
                 )
+
+                # Sprint 2 Wave 9: fan out PROACTIVE_PROPOSAL events to
+                # configured IM channels (飞书 / Telegram / …) so phone
+                # users get a native push instead of having to keep the
+                # web UI open. Each channel must opt in by setting
+                # ``proactive_chat_id`` in its config block.
+                try:
+                    from xmclaw.cognition.proactive_channel_bridge import (
+                        build_bridge_from_config,
+                    )
+                    _channel_dispatcher = getattr(
+                        _app.state, "channel_dispatcher", None,
+                    )
+                    _adapters_list: list[Any] = []
+                    if _channel_dispatcher is not None:
+                        _adapters_list = list(
+                            getattr(_channel_dispatcher, "_adapters", [])
+                            or [],
+                        )
+                    _channel_push_cfg = (
+                        proactive_cfg.get("channel_push", {})
+                        if isinstance(proactive_cfg, dict) else {}
+                    )
+                    _bridge = build_bridge_from_config(
+                        bus=bus,
+                        channels_config=(
+                            (config or {}).get("channels") or {}
+                        ),
+                        proactive_push_config=_channel_push_cfg,
+                        adapters=_adapters_list,
+                    )
+                    if _bridge is not None:
+                        await _bridge.start()
+                        _app.state.proactive_channel_bridge = _bridge
+                        log.info(
+                            "proactive_channel_bridge.started targets=%d",
+                            _bridge.target_count(),
+                        )
+                    else:
+                        _app.state.proactive_channel_bridge = None
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "proactive_channel_bridge.start_failed err=%s",
+                        exc,
+                    )
+                    _app.state.proactive_channel_bridge = None
             except Exception as exc:  # noqa: BLE001
                 log.warning(
                     "proactive_agent.start_failed err=%s", exc,

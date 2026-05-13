@@ -177,6 +177,19 @@
       "action_threshold": 0.6,
       "top_k_focus": 7,
       "max_pending_goals": 16
+    },
+    "proactive": {
+      "_comment": "Sprint 1-2 proactive triggers — agent 主动发声（不是用户问才答）。enabled=true 后台 ProactiveAgent.tick() 30s 一次扫所有 trigger，命中 + 不在冷却 + 不在勿扰窗口 → 发 PROACTIVE_PROPOSAL event。前端 web UI 自动收，channel_push 配了的话同步推到飞书/TG/Slack。",
+      "enabled": true,
+      "tick_interval_s": 30.0,
+      "_calendar_ics_path_help": "Wave 5: 指向你导出的 .ics 文件路径（Outlook/iCal/Google Calendar 都能导）。CalendarReminderTrigger 默认提前 5min 提醒，2min 内 urgency=high。空 = 不启用日历触发器。",
+      "calendar_ics_path": "",
+      "channel_push": {
+        "_comment": "Wave 9: 把 PROACTIVE_PROPOSAL 推到 channels.<id>.proactive_chat_id 配置的聊天。urgency=high 自动加 🚨 前缀。",
+        "enabled": true,
+        "_min_urgency_help": "只推 urgency >= 这个等级的提案。'low' 全推、'normal' 默认、'high' 只推紧急。",
+        "min_urgency": "normal"
+      }
     }
   },
   "channels": {
@@ -188,7 +201,9 @@
       "app_id": "",
       "app_secret": "",
       "encrypt_key": "",
-      "verify_token": ""
+      "verify_token": "",
+      "_proactive_chat_id_help": "Wave 9: 填某个聊天/群的 chat_id (形如 'oc_xxxxxx')，daemon 会把 ProactiveAgent 的主动发声（日历提醒/闲置提醒/陈旧项目）推到这个聊天里走飞书原生通知。chat_id 可以在 daemon 日志里查到：你 @ 机器人发第一条消息时会打 'channel.inbound feishu target.ref=oc_xxx'。空 → 不推送（默认）。",
+      "proactive_chat_id": ""
     },
     "telegram": {
       "enabled": false,
