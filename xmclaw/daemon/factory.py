@@ -797,7 +797,12 @@ def build_tools_from_config(
 
     enable_bash = tools_section.get("enable_bash", True)
     enable_web = tools_section.get("enable_web", True)
-    enable_browser = tools_section.get("enable_browser", False)
+    # 2026-05-14 default-flip: browser tools are headless DOM-scoped,
+    # much safer than enable_bash (which is also default-on). Lazy
+    # playwright import means daemons without ``playwright install
+    # chromium`` log a startup skip and continue cleanly — the seven
+    # browser_* tools just won't list.
+    enable_browser = tools_section.get("enable_browser", True)
     enable_lsp = tools_section.get("enable_lsp", False)
 
     # Stash the daemon's app.state in module scope so the persona

@@ -83,6 +83,14 @@
     "allowed_dirs": [],
     "enable_bash": true,
     "enable_web": true,
+    "_comment_browser": "2026-05-14 default-on. Playwright-backed headless browser — 7 工具: browser_open / browser_click / browser_fill / browser_screenshot / browser_snapshot / browser_eval / browser_close。比 enable_web 单一 GET 强得多，能跑 SPA、操作表单、自动登录、截图取证。第一次用必须先：``pip install 'xmclaw[browser]'`` 再 ``playwright install chromium``（下载 ~150MB Chromium 二进制，只跑一次）。没装 chromium 也不 crash daemon — 7 个工具不出现在列表里就行了。allowed_hosts=null 让 agent 去任何域名；填 list 限制域。headless=false 看着浏览器跑（调试用）。download_dir=null 禁下载（默认）；填路径开下载。",
+    "enable_browser": true,
+    "browser": {
+      "allowed_hosts": null,
+      "headless": true,
+      "timeout_ms": 15000,
+      "download_dir": null
+    },
     "_comment_composio": "B-389 (Sprint 2) Composio bridge — 7000+ pre-integrated SaaS tools (Gmail, Slack, GitHub, Notion, Linear, HubSpot, …) exposed as agent tools. enabled=false by default. To use: 1) pip install 'xmclaw[tools-composio]'; 2) sign up at https://app.composio.dev → Settings → API keys → copy the ck_live_... key into api_key; 3) authorise each app (Gmail OAuth / Slack OAuth / …) in the Composio dashboard; 4) list the slug in apps[] (uppercase, e.g. GMAIL / SLACK / GITHUB / NOTION). entity_id='default' for single-user installs. cache_ttl_s caps tool-list refetches to once per N seconds (default 300). XMclaw NEVER initiates OAuth — that's Composio's CLI / dashboard step.",
     "composio": {
       "enabled": false,
