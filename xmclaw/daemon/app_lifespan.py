@@ -2149,6 +2149,48 @@ def make_lifespan(
                         "cron_triggers.register_failed err=%s", exc,
                     )
 
+                # Sprint 2 Wave 16: daily digest trigger. Reads
+                # cognition.proactive.daily_digest.{enabled, schedule,
+                # lookback_h, urgency}; default schedule "0 22 * * *"
+                # = 10pm every day. Opt-out via daily_digest.enabled=
+                # false or "daily_digest" in disabled set.
+                try:
+                    digest_cfg = (
+                        proactive_cfg.get("daily_digest", {})
+                        if isinstance(proactive_cfg, dict) else {}
+                    )
+                    if not isinstance(digest_cfg, dict):
+                        digest_cfg = {}
+                    if (
+                        digest_cfg.get("enabled", False)
+                        and "daily_digest" not in disabled
+                    ):
+                        from xmclaw.cognition.triggers_digest import (
+                            DailyDigestTrigger,
+                        )
+                        digest_trigger = DailyDigestTrigger(
+                            bus=bus,
+                            schedule_expr=str(
+                                digest_cfg.get("schedule")
+                                or "0 22 * * *",
+                            ),
+                            lookback_h=float(
+                                digest_cfg.get("lookback_h") or 24.0,
+                            ),
+                            urgency=str(
+                                digest_cfg.get("urgency") or "normal",
+                            ),
+                            agent_loop=agent,
+                        )
+                        if digest_trigger._next_fire_ts is not None:
+                            proactive_agent.register_trigger(
+                                digest_trigger,
+                            )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "daily_digest.register_failed err=%s", exc,
+                    )
+
                 await proactive_agent.start()
                 _app.state.proactive_agent = proactive_agent
                 # Back-reference so AgentLoop can call note_user_message

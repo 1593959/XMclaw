@@ -214,6 +214,15 @@
         "enabled": true,
         "_min_urgency_help": "只推 urgency >= 这个等级的提案。'low' 全推、'normal' 默认、'high' 只推紧急。",
         "min_urgency": "normal"
+      },
+      "daily_digest": {
+        "_comment": "Wave 16: 每天到点生成当日活动汇总（主动发声次数 / 反思周期 / 自传记忆 / 活跃目标）。配合 channel_push 自动推到飞书做'晚报'。",
+        "enabled": false,
+        "_schedule_help": "cron 表达式 (需 croniter) 或 'every Nu'。默认 22:00 每天。",
+        "schedule": "0 22 * * *",
+        "_lookback_h_help": "汇总往前看多少小时的事件。",
+        "lookback_h": 24.0,
+        "urgency": "normal"
       }
     }
   },
