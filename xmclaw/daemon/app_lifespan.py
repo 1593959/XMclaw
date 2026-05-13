@@ -2126,6 +2126,29 @@ def make_lifespan(
                     log.warning(
                         "environment_triggers.register_failed err=%s", exc,
                     )
+
+                # Sprint 2 Wave 11: cron-scheduled triggers
+                # (config.cognition.proactive.cron_jobs).
+                try:
+                    from xmclaw.cognition.triggers_cron import (
+                        build_cron_triggers_from_config,
+                    )
+                    cron_jobs_cfg = (
+                        proactive_cfg.get("cron_jobs")
+                        if isinstance(proactive_cfg, dict) else None
+                    )
+                    cron_triggers = build_cron_triggers_from_config(
+                        cron_jobs_cfg,
+                    )
+                    for t in cron_triggers:
+                        if t.name in disabled:
+                            continue
+                        proactive_agent.register_trigger(t)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "cron_triggers.register_failed err=%s", exc,
+                    )
+
                 await proactive_agent.start()
                 _app.state.proactive_agent = proactive_agent
                 # Back-reference so AgentLoop can call note_user_message

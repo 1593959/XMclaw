@@ -184,6 +184,31 @@
       "tick_interval_s": 30.0,
       "_calendar_ics_path_help": "Wave 5: 指向你导出的 .ics 文件路径（Outlook/iCal/Google Calendar 都能导）。CalendarReminderTrigger 默认提前 5min 提醒，2min 内 urgency=high。空 = 不启用日历触发器。",
       "calendar_ics_path": "",
+      "_cron_jobs_help": "Wave 11: 按 cron 表达式定时发声。schedule 支持 'every 5m' / 'every 1h' / 'every 1d'（无依赖）或完整 cron '0 8 * * *'（要 pip install croniter）。message 是固定文本，到点直接发给 Web UI 和已订阅的飞书/TG。每个 job 自带 name（用于冷却 + /disabled 控制）。坏 schedule 跳过不 crash。",
+      "cron_jobs": [
+        {
+          "_example_only_comment": "把 enabled 之外的 job 注释掉或删掉再启用。下面 3 个是示例，按需改。",
+          "name": "morning_briefing",
+          "schedule": "0 8 * * *",
+          "message": "☀️ 早安。要不要把今天日历和未完任务过一下？",
+          "urgency": "normal",
+          "enabled": false
+        },
+        {
+          "name": "lunch_break",
+          "schedule": "0 12 * * MON-FRI",
+          "message": "🍱 该休息吃午饭了",
+          "urgency": "low",
+          "enabled": false
+        },
+        {
+          "name": "evening_review",
+          "schedule": "0 22 * * *",
+          "message": "🌙 今天搞了啥？要不要我帮你过一遍 Dashboard 时间线？",
+          "urgency": "normal",
+          "enabled": false
+        }
+      ],
       "channel_push": {
         "_comment": "Wave 9: 把 PROACTIVE_PROPOSAL 推到 channels.<id>.proactive_chat_id 配置的聊天。urgency=high 自动加 🚨 前缀。",
         "enabled": true,
