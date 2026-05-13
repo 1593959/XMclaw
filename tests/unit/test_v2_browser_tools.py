@@ -574,3 +574,100 @@ async def test_screenshot_spills_to_disk_when_over_cap(
     assert str(tmp_path) in r.content["path"]
     # Side effects record the file path so HonestGrader can verify.
     assert r.side_effects and tmp_path.as_posix() in r.side_effects[0].replace("\\", "/")
+
+
+# ── Wave 23: visible vs headless per-call selection ──────────────
+
+
+@pytest.mark.asyncio
+async def test_open_default_headless(patched_browser: BrowserTools) -> None:
+    """No ``visible`` arg → session inherits BrowserTools' default
+    (headless=True from constructor)."""
+    r = await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"}, session_id="s1",
+    ))
+    assert r.ok is True
+    assert r.content["visible"] is False
+    assert patched_browser._session_headless["s1"] is True
+
+
+@pytest.mark.asyncio
+async def test_open_visible_true_flips_mode(
+    patched_browser: BrowserTools,
+) -> None:
+    """``visible: true`` pins the session to a visible window."""
+    r = await patched_browser.invoke(_call(
+        "browser_open",
+        {"url": "https://example.com", "visible": True},
+        session_id="s_visible",
+    ))
+    assert r.ok is True
+    assert r.content["visible"] is True
+    assert patched_browser._session_headless["s_visible"] is False
+
+
+@pytest.mark.asyncio
+async def test_session_mode_sticks_after_first_open(
+    patched_browser: BrowserTools,
+) -> None:
+    """Once a session has been opened with visible=True, a second
+    browser_open in the same session ignores a contradictory flag —
+    the agent doesn't have to re-thread visibility on every call."""
+    await patched_browser.invoke(_call(
+        "browser_open",
+        {"url": "https://example.com", "visible": True},
+        session_id="s_pin",
+    ))
+    # Now open a second URL WITHOUT visible — should keep visible.
+    r2 = await patched_browser.invoke(_call(
+        "browser_open",
+        {"url": "https://example.org"},
+        session_id="s_pin",
+    ))
+    assert r2.content["visible"] is True
+    assert patched_browser._session_headless["s_pin"] is False
+
+
+@pytest.mark.asyncio
+async def test_close_forgets_pinned_mode(
+    patched_browser: BrowserTools,
+) -> None:
+    """After close, a fresh open can choose a different mode."""
+    await patched_browser.invoke(_call(
+        "browser_open",
+        {"url": "https://example.com", "visible": True},
+        session_id="s_close",
+    ))
+    await patched_browser.invoke(_call(
+        "browser_close", {}, session_id="s_close",
+    ))
+    assert "s_close" not in patched_browser._session_headless
+    # Re-open without flag → falls back to default (headless).
+    r3 = await patched_browser.invoke(_call(
+        "browser_open",
+        {"url": "https://example.com"},
+        session_id="s_close",
+    ))
+    assert r3.content["visible"] is False
+
+
+@pytest.mark.asyncio
+async def test_headless_and_visible_browsers_independent(
+    patched_browser: BrowserTools,
+) -> None:
+    """Two sessions in different modes should land in different
+    browser handles — verified via the internal cache attrs."""
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://h.example"}, session_id="hidden",
+    ))
+    await patched_browser.invoke(_call(
+        "browser_open",
+        {"url": "https://v.example", "visible": True},
+        session_id="visible",
+    ))
+    # Both browsers booted.
+    assert patched_browser._browser_headless is not None
+    assert patched_browser._browser_headed is not None
+    # Each session pinned its own mode.
+    assert patched_browser._session_headless["hidden"] is True
+    assert patched_browser._session_headless["visible"] is False

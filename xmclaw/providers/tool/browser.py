@@ -61,9 +61,15 @@ from xmclaw.providers.tool.base import ToolProvider
 _BROWSER_OPEN_SPEC = ToolSpec(
     name="browser_open",
     description=(
-        "Navigate the browser to a URL. Opens a headless Chromium page "
-        "tied to this session; subsequent browser tools operate on it. "
-        "Returns the final URL after redirects + the page title."
+        "Navigate the browser to a URL. Opens a Chromium page tied to "
+        "this session; subsequent browser tools operate on it. "
+        "Returns the final URL after redirects + the page title.\n\n"
+        "``visible``: false (default) → headless, no window pops up — "
+        "use for data extraction, automated form-fill, screenshots. "
+        "true → real visible Chromium window — use when the user "
+        "wants to *watch* the browser, log into a site manually, or "
+        "debug. Visible sessions live in a separate browser process "
+        "from headless ones, so cookies/storage don't mix."
     ),
     parameters_schema={
         "type": "object",
@@ -75,6 +81,16 @@ _BROWSER_OPEN_SPEC = ToolSpec(
             "wait_until": {
                 "type": "string",
                 "description": "'load' | 'domcontentloaded' | 'networkidle'. Default 'load'.",
+            },
+            "visible": {
+                "type": "boolean",
+                "description": (
+                    "Show a real browser window (default false = "
+                    "headless). Visible mode uses a separate browser "
+                    "process; subsequent browser_* calls in the same "
+                    "session keep using whichever mode the session "
+                    "started in."
+                ),
             },
         },
         "required": ["url"],
@@ -273,14 +289,24 @@ class BrowserTools(ToolProvider):
         timeout_ms: int = 15_000,
     ) -> None:
         self._allowed = set(allowed_hosts) if allowed_hosts else None
-        self._headless = headless
+        # ``headless`` is now the DEFAULT for sessions that don't pass
+        # ``visible`` explicitly. Sessions request visible mode on
+        # first browser_open; once chosen, the session sticks with it.
+        self._default_headless = headless
         self._timeout_ms = timeout_ms
         # Shared across sessions -- Playwright / browser are expensive
-        # to start (~1s), cheap per-session context on top.
+        # to start (~1s), cheap per-session context on top. Wave 23
+        # split: maintain TWO long-lived browsers (one headless, one
+        # headed) so we don't reload chromium just to flip visibility.
+        # Headed only spins up the first time a session asks for it.
         self._playwright = None
-        self._browser = None
+        self._browser_headless: Any = None
+        self._browser_headed: Any = None
         self._contexts: dict[str, Any] = {}   # session_id -> BrowserContext
         self._pages:    dict[str, Any] = {}   # session_id -> Page
+        # Track which session is in which mode so callers don't have
+        # to re-pass ``visible`` on every browser_* call.
+        self._session_headless: dict[str, bool] = {}
         # Guard the lazy init with a lock to avoid multiple concurrent
         # tool calls trying to spin up the browser at once.
         self._boot_lock = asyncio.Lock()
@@ -335,17 +361,22 @@ class BrowserTools(ToolProvider):
                 await ctx.close()
             except Exception:  # noqa: BLE001,S110
                 pass
+        # Wave 23: also forget the pinned visibility so a re-open
+        # after close can choose a fresh mode.
+        self._session_headless.pop(session_id, None)
 
     async def shutdown(self) -> None:
-        """Close every session + the shared browser. For daemon shutdown."""
+        """Close every session + both browsers. For daemon shutdown."""
         for sid in list(self._contexts):
             await self.close_session(sid)
-        if self._browser is not None:
-            try:
-                await self._browser.close()
-            except Exception:  # noqa: BLE001,S110
-                pass
-            self._browser = None
+        for attr in ("_browser_headless", "_browser_headed"):
+            b = getattr(self, attr, None)
+            if b is not None:
+                try:
+                    await b.close()
+                except Exception:  # noqa: BLE001,S110
+                    pass
+                setattr(self, attr, None)
         if self._playwright is not None:
             try:
                 await self._playwright.stop()
@@ -355,33 +386,62 @@ class BrowserTools(ToolProvider):
 
     # ── internals ──────────────────────────────────────────────────
 
-    async def _ensure_playwright(self):
-        """Lazy import + boot. Raises _PlaywrightMissing if not installed."""
-        if self._browser is not None:
+    async def _ensure_playwright(self, headless: bool):
+        """Lazy import + boot. Raises _PlaywrightMissing if not installed.
+        Spins up either the headless or headed browser on demand —
+        keeping each cached for subsequent calls."""
+        attr = "_browser_headless" if headless else "_browser_headed"
+        if getattr(self, attr) is not None:
             return
         async with self._boot_lock:
-            if self._browser is not None:
+            if getattr(self, attr) is not None:
                 return
-            try:
-                from playwright.async_api import async_playwright
-            except ImportError as exc:
-                raise _PlaywrightMissing(
-                    "playwright not installed -- run "
-                    "`pip install xmclaw[browser]` then `playwright install chromium`"
-                ) from exc
-            self._playwright = await async_playwright().start()
-            self._browser = await self._playwright.chromium.launch(
-                headless=self._headless,
+            if self._playwright is None:
+                try:
+                    from playwright.async_api import async_playwright
+                except ImportError as exc:
+                    raise _PlaywrightMissing(
+                        "playwright not installed -- run "
+                        "`pip install xmclaw[browser]` then `playwright install chromium`"
+                    ) from exc
+                self._playwright = await async_playwright().start()
+            browser = await self._playwright.chromium.launch(
+                headless=headless,
             )
+            setattr(self, attr, browser)
 
-    async def _page_for(self, session_id: str):
-        await self._ensure_playwright()
+    def _browser_for_session(self, session_id: str) -> Any:
+        """Pick the right browser handle based on the session's pinned
+        visibility mode (set at first browser_open)."""
+        # Default to constructor's setting when session hasn't been
+        # opened yet (covers code paths that touch _page_for before
+        # browser_open — shouldn't happen, but guarded).
+        headless = self._session_headless.get(
+            session_id, self._default_headless,
+        )
+        return (
+            self._browser_headless if headless else self._browser_headed
+        )
+
+    async def _page_for(
+        self, session_id: str, *, headless: bool | None = None,
+    ):
+        # Resolve which mode this session is in. The first call with
+        # an explicit ``headless`` pins the session; subsequent calls
+        # ignore the argument so the agent doesn't have to thread it.
+        if session_id not in self._session_headless:
+            self._session_headless[session_id] = (
+                self._default_headless if headless is None else headless
+            )
+        pinned = self._session_headless[session_id]
+        await self._ensure_playwright(pinned)
         page = self._pages.get(session_id)
         if page is not None and not page.is_closed():
             return page
         ctx = self._contexts.get(session_id)
         if ctx is None:
-            ctx = await self._browser.new_context(
+            browser = self._browser_for_session(session_id)
+            ctx = await browser.new_context(
                 accept_downloads=False,
                 viewport={"width": 1280, "height": 800},
             )
@@ -413,7 +473,18 @@ class BrowserTools(ToolProvider):
         if wait_until not in ("load", "domcontentloaded", "networkidle", "commit"):
             return _fail(call, t0, f"wait_until={wait_until!r} not supported")
 
-        page = await self._page_for(self._sid(call))
+        # Wave 23: ``visible: true`` flips this session to a real
+        # window for the rest of its life. ``visible: false`` (or
+        # omitted) keeps it headless. Only the FIRST browser_open in
+        # a session decides; subsequent calls in the same session
+        # ignore the flag to keep the pinned mode stable.
+        sid = self._sid(call)
+        visible_arg = call.args.get("visible")
+        if isinstance(visible_arg, bool):
+            headless = not visible_arg
+        else:
+            headless = None  # defer to default / pinned
+        page = await self._page_for(sid, headless=headless)
         resp = await page.goto(url, wait_until=wait_until)
         final_url = page.url
         title = await page.title()
@@ -424,6 +495,9 @@ class BrowserTools(ToolProvider):
                 "url": final_url,
                 "title": title,
                 "status": status,
+                "visible": not self._session_headless.get(
+                    sid, self._default_headless,
+                ),
             },
             side_effects=(),
             latency_ms=(time.perf_counter() - t0) * 1000.0,

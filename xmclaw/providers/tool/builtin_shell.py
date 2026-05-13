@@ -132,6 +132,12 @@ class BuiltinToolsShellMixin:
         ):
             _clean_env.pop(_dangerous, None)
 
+        # Wave 23 fix: keep child shells windowless on Windows so
+        # users don't see a black cmd.exe / bash.exe blink per tool
+        # call. No-op on POSIX.
+        from xmclaw.utils.subprocess_hidden import hidden_subprocess_kwargs
+        _hidden = hidden_subprocess_kwargs()
+
         def _run() -> tuple[int, bytes]:
             if shell_exe is not None and shell_args is not None:
                 proc = subprocess.run(
@@ -139,12 +145,14 @@ class BuiltinToolsShellMixin:
                     shell=False, cwd=cwd,
                     capture_output=True, timeout=timeout,
                     env=_clean_env,
+                    **_hidden,
                 )
             else:
                 proc = subprocess.run(
                     command, shell=True, cwd=cwd,
                     capture_output=True, timeout=timeout,
                     env=_clean_env,
+                    **_hidden,
                 )
             merged = (proc.stdout or b"") + (proc.stderr or b"")
             return proc.returncode, merged

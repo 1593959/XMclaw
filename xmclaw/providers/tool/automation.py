@@ -308,12 +308,17 @@ class AutomationTools(ToolProvider):
         # Use the same Python interpreter the daemon is on so import
         # paths match. -I = isolated mode (no PYTHONPATH leak); -X
         # utf8 = consistent stdio encoding on Windows.
+        # Wave 23 fix: hidden_subprocess_kwargs() injects
+        # CREATE_NO_WINDOW + SW_HIDE on Windows so the child python.exe
+        # doesn't pop a console window every tool call. No-op on POSIX.
+        from xmclaw.utils.subprocess_hidden import hidden_subprocess_kwargs
         cmd = [sys.executable, "-I", "-X", "utf8", "-c", code]
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **hidden_subprocess_kwargs(),
             )
             try:
                 stdout_b, stderr_b = await asyncio.wait_for(
