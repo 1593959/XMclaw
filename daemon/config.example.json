@@ -177,8 +177,8 @@
   },
   "backup": {
     "_consumer": "lifespan (BackupSchedulerTask); not in factory.py.",
-    "_comment": "Epic #20 Phase 2: daemon runs a daily workspace backup when auto_daily=true. 2026-05-14 default-on — keep=7 means at most 7 auto backups (~一周) 留盘，prefix-scoped prune 不碰手工 `xmclaw backup create <name>` 备份。interval_s 是备份间隔秒数 (86400 = 24h)。要关掉就 auto_daily=false。",
-    "auto_daily": true,
+    "_comment": "Epic #20 Phase 2: daemon runs a daily workspace backup when auto_daily=true. Default false — 备份费磁盘且用户多数有自己的备份方案，按需开。Prefix-scoped prune 不碰手工 `xmclaw backup create <name>` 备份。interval_s 是备份间隔秒数 (86400 = 24h)。",
+    "auto_daily": false,
     "interval_s": 86400,
     "keep": 7,
     "name_prefix": "auto-"
