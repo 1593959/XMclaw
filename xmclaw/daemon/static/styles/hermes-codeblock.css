@@ -203,3 +203,56 @@
   color: var(--color-muted-foreground);
   margin-bottom: 0.25rem;
 }
+
+/* B-MULTIMODAL-UI: thumbnail gallery for tool image attachments
+   (screen_capture / image_read / camera_capture / gui_send_chat
+   confirm screenshots). Renders horizontally-scrollable strip of
+   ≤160px tall thumbnails; click opens full-size in a new tab. */
+.xmc-toolcard__images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+.xmc-toolcard__image-link {
+  display: inline-block;
+  line-height: 0;
+  border: 1px solid var(--color-border, #2a2f3a);
+  border-radius: 6px;
+  overflow: hidden;
+  transition: border-color 0.15s ease;
+}
+.xmc-toolcard__image-link:hover {
+  border-color: var(--color-accent, #4f8cc9);
+}
+.xmc-toolcard__image {
+  display: block;
+  max-height: 160px;
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+/* User-side message image attachments (composer-staged images). */
+.xmc-msg__images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.xmc-msg__image-link {
+  display: inline-block;
+  line-height: 0;
+  border: 1px solid var(--color-border, #2a2f3a);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.xmc-msg__image {
+  display: block;
+  max-height: 220px;
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}

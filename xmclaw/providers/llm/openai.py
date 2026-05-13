@@ -643,12 +643,16 @@ class OpenAILLM(LLMProvider):
 
 # ── Image helpers (B-Vision) ───────────────────────────────────────
 
-# Max width we feed to the model. Screenshots at 2560×1600 cost a fortune
-# in image tokens (Kimi K2.6 / GPT-4o both bill by approx. pixel area).
-# 1280 wide is the Anthropic-recommended sweet spot — readable enough for
-# UI elements, ~4× cheaper than full-res.
-_VISION_MAX_WIDTH = 1280
-_VISION_JPEG_QUALITY = 80
+# Max width we feed to the model. PRIOR ATTEMPT (1280 wide): images
+# were resized, agent saw resized image, but mouse_click expects
+# ORIGINAL screen pixels — coord-space mismatch caused stale clicks
+# on any "look at image, read coord, click" path. NOW: 1920 cap so a
+# 2560×1600 screen sees a 1920×1200 view with the SAME aspect; agent's
+# coords are scaled cleanly by 4/3 (which most vision-capable LLMs
+# handle correctly) or we just don't resize for screens at-or-below
+# this. Kimi K2.6 / GPT-4o / Sonnet all accept 1920 wide images.
+_VISION_MAX_WIDTH = 1920
+_VISION_JPEG_QUALITY = 85
 
 
 def _img_to_data_url(src: str) -> str | None:

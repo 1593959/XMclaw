@@ -128,6 +128,25 @@ export function applyEvent(chat, envelope) {
       // have a local-optimistic copy with the same correlation_id, replace
       // it; otherwise append.
       const id = corr;
+      // B-MULTIMODAL-UI: server-side images come as /api/v2/media/...
+      // URLs. We append the pairing token here on the client side so
+      // they pass the media route's auth check.
+      const _token = (() => {
+        try {
+          return new URL(window.location.href).searchParams.get("token") || "";
+        } catch (_e) {
+          return "";
+        }
+      })();
+      function _resolve(u) {
+        if (!u || typeof u !== "string") return u;
+        if (u.startsWith("data:") || u.startsWith("http")) return u;
+        if (u.includes("?")) return u + (_token ? "&token=" + encodeURIComponent(_token) : "");
+        return u + (_token ? "?token=" + encodeURIComponent(_token) : "");
+      }
+      const serverImages = Array.isArray(payload.images)
+        ? payload.images.map(_resolve)
+        : [];
       const exists = chat.messages.some((m) => m.id === id);
       if (exists) {
         return {
@@ -137,6 +156,10 @@ export function applyEvent(chat, envelope) {
             content: typeof payload.content === "string" ? payload.content : m.content,
             status: "complete",
             ts,
+            // Prefer the server-side persisted URLs (resolves through
+            // reload), but keep the optimistic data: URLs as fallback
+            // if the server payload didn't carry images.
+            images: serverImages.length > 0 ? serverImages : (m.images || []),
           })),
         };
       }
@@ -149,6 +172,7 @@ export function applyEvent(chat, envelope) {
           status: "complete",
           ts,
           ultrathink: !!payload.ultrathink,
+          images: serverImages,
         }),
       };
     }
@@ -311,6 +335,10 @@ export function applyEvent(chat, envelope) {
         : (typeof payload.result === "string"
             ? payload.result
             : JSON.stringify(payload.result || {}, null, 2));
+      // B-MULTIMODAL-UI: surface attached images. Backend publishes
+      // ``payload.images`` as a list of /api/v2/media/<filename> URLs
+      // from screen_capture / image_read / camera_capture / etc.
+      const images = Array.isArray(payload.images) ? payload.images : [];
       const idx = chat.messages.findIndex(
         (m) => m.kind === "tool_use" && m.id === callId,
       );
@@ -337,6 +365,7 @@ export function applyEvent(chat, envelope) {
             args: payload.args || payload.arguments || {},
             status,
             result,
+            images,
             ts,
           }),
         };
@@ -347,6 +376,7 @@ export function applyEvent(chat, envelope) {
           ...m,
           status,
           result,
+          images,
         })),
       };
     }
@@ -435,7 +465,7 @@ export function applySessionLifecycle(session, envelope) {
 // Helper for the composer's optimistic local echo when sending a user
 // message before the server's USER_MESSAGE event arrives. Returns the
 // generated id so the caller can hand it to ws.send() as correlation_id.
-export function appendOptimisticUser(chat, content, { ultrathink = false } = {}) {
+export function appendOptimisticUser(chat, content, { ultrathink = false, images = [] } = {}) {
   const id = genId();
   const messages = chat.messages.concat({
     id,
@@ -444,6 +474,11 @@ export function appendOptimisticUser(chat, content, { ultrathink = false } = {})
     status: "complete",
     ts: Date.now() / 1000,
     ultrathink,
+    // B-MULTIMODAL-UI: include images in the optimistic echo so the
+    // user sees their attachments immediately, before the server
+    // mirrors the USER_MESSAGE event back. Each entry is a data: URL
+    // or /api/v2/media/... reference.
+    images: Array.isArray(images) ? images : [],
   });
   return { id, chat: { ...chat, messages } };
 }

@@ -594,6 +594,21 @@ class HopLoopMixin:
                                 "items": items,
                                 "count": len(items),
                             })
+                    # B-MULTIMODAL-UI: surface image attachments to
+                    # the chat UI. screen_capture / screen_region_capture
+                    # / image_read / camera_capture / gui_send_chat all
+                    # set ``ToolResult.metadata["attach_image"]`` with
+                    # the absolute path. The UI doesn't have FS access,
+                    # so we publish a /api/v2/media/<filename> URL the
+                    # browser can <img src> directly.
+                    _image_urls: list[str] = []
+                    if isinstance(getattr(result, "metadata", None), dict):
+                        attach_img = result.metadata.get("attach_image")
+                        if isinstance(attach_img, str) and attach_img:
+                            from pathlib import Path as _Path
+                            _image_urls.append(
+                                f"/api/v2/media/{_Path(attach_img).name}",
+                            )
                     finished_event = await publish(
                         EventType.TOOL_INVOCATION_FINISHED, {
                             "call_id": result.call_id,
@@ -603,6 +618,7 @@ class HopLoopMixin:
                             "latency_ms": result.latency_ms,
                             "expected_side_effects": list(result.side_effects),
                             "ok": result.ok,
+                            "images": _image_urls,
                         },
                     )
 

@@ -26,7 +26,12 @@ export function createComposerActions({
   function sendComposer() {
     const s = store.getState();
     const text = (s.chat.composerDraft || "").trim();
-    if (!text) return;
+    const stagedImages = Array.isArray(s.chat.composerImages)
+      ? s.chat.composerImages
+      : [];
+    // Allow sending with images only (no text). The agent can still
+    // act on "what's wrong with this screenshot?" with empty text.
+    if (!text && stagedImages.length === 0) return;
     const wsHandle = getWsHandle();
     if (!wsHandle) {
       toast.error("WS 未连接，消息未发送 — 请检查 daemon 状态");
@@ -34,7 +39,7 @@ export function createComposerActions({
     }
     // B-105: persist this prompt in the up/down history before send.
     try {
-      appendPromptHistory(text);
+      if (text) appendPromptHistory(text);
     } catch (_) { /* never block send on history */ }
 
     // Allow send even when reconnecting; the WS client now queues frames
@@ -47,16 +52,25 @@ export function createComposerActions({
     // and the reducer will dedupe by id.
     const { id, chat: afterUser } = appendOptimisticUser(s.chat, text, {
       ultrathink: s.chat.ultrathink,
+      images: stagedImages.map((img) => img.dataUrl),
     });
     // Push a "thinking" assistant bubble keyed by `id` so the UI shows
     // immediate feedback. The reducer's llm_chunk / llm_response cases
     // upsert by id, transitioning this bubble into streaming/complete.
     const nextChat = appendThinkingAssistant(afterUser, id);
-    store.setState({ chat: { ...nextChat, composerDraft: "" } });
+    store.setState({
+      chat: { ...nextChat, composerDraft: "", composerImages: [] },
+    });
 
+    // B-MULTIMODAL-UI: include image data URIs in the WS frame so the
+    // daemon's WS handler can populate Message.images on the first
+    // user turn and the LLM translator encodes them as vision blocks.
     const result = wsHandle.send({
       type: "user",
       content: text,
+      images: stagedImages.length > 0
+        ? stagedImages.map((img) => img.dataUrl)
+        : undefined,
       ultrathink: s.chat.ultrathink || undefined,
       correlation_id: id,
       plan_mode: s.chat.planMode || undefined,
@@ -152,6 +166,27 @@ export function createComposerActions({
     store.setState((s) => ({ chat: { ...s.chat, ultrathink: !s.chat.ultrathink } }));
   }
 
+  function addImages(entries) {
+    if (!Array.isArray(entries) || entries.length === 0) return;
+    store.setState((s) => ({
+      chat: {
+        ...s.chat,
+        composerImages: [
+          ...(s.chat.composerImages || []),
+          ...entries,
+        ],
+      },
+    }));
+  }
+
+  function removeImage(idx) {
+    store.setState((s) => {
+      const cur = s.chat.composerImages || [];
+      const next = cur.filter((_, i) => i !== idx);
+      return { chat: { ...s.chat, composerImages: next } };
+    });
+  }
+
   return {
     sendComposer,
     setLlmProfile,
@@ -160,5 +195,7 @@ export function createComposerActions({
     changeDraft,
     togglePlan,
     toggleUltrathink,
+    addImages,
+    removeImage,
   };
 }

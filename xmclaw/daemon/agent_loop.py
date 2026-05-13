@@ -401,6 +401,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         *, user_correlation_id: str | None = None,
         llm_profile_id: str | None = None,
         tools_allowlist: "set[str] | frozenset[str] | None" = None,
+        user_images: "tuple[str, ...] | None" = None,
     ) -> AgentTurnResult:
         # B-38: register a fresh per-session cancel event. Cleared via
         # ``cancel_session`` (set by the WS handler when the user clicks
@@ -417,6 +418,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 llm_profile_id=llm_profile_id,
                 cancel_event=cancel_event,
                 tools_allowlist=tools_allowlist,
+                user_images=user_images,
             )
         finally:
             self._cancel_events.pop(session_id, None)
@@ -428,6 +430,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         llm_profile_id: str | None,
         cancel_event: asyncio.Event,
         tools_allowlist: "set[str] | frozenset[str] | None" = None,
+        user_images: "tuple[str, ...] | None" = None,
     ) -> AgentTurnResult:
         # B-332: per-call tool-name allowlist. When set, the rest of
         # this method routes all ``list_tools()`` / ``invoke()``
@@ -463,9 +466,22 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # correlation_id so the optimistic local-echo bubble in the web
         # UI dedupes against the mirrored event (otherwise the user sees
         # their message twice).
+        # B-MULTIMODAL-UI: include image URLs so the UI shows uploaded
+        # images on the user's bubble (post-reload + non-optimistic
+        # paths). URLs go through /api/v2/media/{filename}.
+        _user_image_urls: list[str] = []
+        if user_images:
+            from pathlib import Path as _P
+            for p in user_images:
+                if isinstance(p, str) and p:
+                    _user_image_urls.append(f"/api/v2/media/{_P(p).name}")
         await publish(
             EventType.USER_MESSAGE,
-            {"content": user_message, "channel": "agent_loop"},
+            {
+                "content": user_message,
+                "channel": "agent_loop",
+                "images": _user_image_urls,
+            },
             correlation_id=user_correlation_id,
         )
 
@@ -1176,6 +1192,12 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     + curriculum_strategies_block
                     + skill_browse_hint
                 ),
+                # B-MULTIMODAL-UI: user uploaded images in the composer.
+                # WS handler wrote them to ~/.xmclaw/v2/uploads/ and passed
+                # the paths here. LLM translator (openai.py / anthropic.py
+                # _img_to_data_url / _img_to_anthropic_block) reads each
+                # path + base64-encodes as a vision content block.
+                images=tuple(user_images) if user_images else (),
             ),
         ]
 

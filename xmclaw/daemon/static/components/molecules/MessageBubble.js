@@ -314,6 +314,17 @@ export function MessageBubble({ message, onAnswerQuestion }) {
             ${(message.toolCalls || []).map(
               (call) => html`<${ToolCard} key=${call.id} call=${call} />`
             )}
+            ${Array.isArray(message.images) && message.images.length > 0
+              ? html`
+                  <div class="xmc-msg__images">
+                    ${message.images.map((src, i) => html`
+                      <a key=${i} href=${src} target="_blank" rel="noopener" class="xmc-msg__image-link">
+                        <img src=${src} alt="attachment ${i + 1}" loading="lazy" class="xmc-msg__image" />
+                      </a>
+                    `)}
+                  </div>
+                `
+              : null}
           `}
       ${(message.skillNotes || []).map((note, i) => html`
         <${SkillNote} key=${"sn_" + i} note=${note} />

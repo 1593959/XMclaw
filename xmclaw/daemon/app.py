@@ -1473,6 +1473,67 @@ def create_app(
             name="ui",
         )
 
+        # B-MULTIMODAL-UI: serve screenshots saved by screen_capture /
+        # screen_region_capture / image_read / camera_capture so the
+        # chat UI can <img src="/api/v2/media/<filename>"> them.
+        # Token-gated so private images can't be siphoned by another
+        # tab on the same machine without the pairing token.
+        from xmclaw.utils.paths import data_dir as _data_dir
+        _media_dirs = [
+            _data_dir() / "v2" / "screenshots",
+            _data_dir() / "v2" / "audio",
+            _data_dir() / "v2" / "uploads",  # user-uploaded media
+        ]
+        for _d in _media_dirs:
+            _d.mkdir(parents=True, exist_ok=True)
+
+        @app.get("/api/v2/media/{filename}", response_model=None)
+        async def media_file(
+            filename: str,
+            token: str | None = None,
+        ) -> FileResponse | JSONResponse:
+            if auth_check is not None:
+                try:
+                    ok = await auth_check(token)
+                except Exception:  # noqa: BLE001
+                    ok = False
+                if not ok:
+                    return JSONResponse(
+                        {"error": "unauthorized"}, status_code=401,
+                    )
+            # Defense-in-depth: filename basename only — no traversal.
+            from pathlib import Path as _P
+            safe = _P(filename).name
+            if safe != filename or not safe:
+                return JSONResponse(
+                    {"error": "invalid filename"}, status_code=400,
+                )
+            for d in _media_dirs:
+                p = d / safe
+                if p.is_file():
+                    # Common MIME types — let Starlette infer the
+                    # rest from the suffix.
+                    ext = p.suffix.lower()
+                    mime = {
+                        ".png": "image/png",
+                        ".jpg": "image/jpeg",
+                        ".jpeg": "image/jpeg",
+                        ".gif": "image/gif",
+                        ".webp": "image/webp",
+                        ".bmp": "image/bmp",
+                        ".mp3": "audio/mpeg",
+                        ".wav": "audio/wav",
+                        ".ogg": "audio/ogg",
+                        ".mp4": "video/mp4",
+                        ".webm": "video/webm",
+                    }.get(ext)
+                    return FileResponse(
+                        str(p),
+                        media_type=mime,
+                        headers=_NO_STORE_HEADERS,
+                    )
+            return JSONResponse({"error": "not found"}, status_code=404)
+
         @app.get("/")
         async def root() -> RedirectResponse:
             return RedirectResponse(url="/ui/", status_code=302)
@@ -1699,6 +1760,56 @@ def create_app(
                     llm_profile_id = frame.get("llm_profile_id")
                     if llm_profile_id is not None and not isinstance(llm_profile_id, str):
                         llm_profile_id = None
+                    # B-MULTIMODAL-UI: composer can attach images / video /
+                    # audio. Each entry is a data: URL the browser
+                    # built via FileReader.readAsDataURL. Persist each
+                    # to disk under ~/.xmclaw/v2/uploads/ and pass the
+                    # ABSOLUTE PATH to run_turn — agent_loop then sets
+                    # Message.images so the LLM translator encodes
+                    # them as vision content blocks.
+                    user_image_paths: list[str] = []
+                    raw_images = frame.get("images")
+                    if isinstance(raw_images, list):
+                        from xmclaw.utils.paths import data_dir as _data_dir
+                        import base64 as _b64
+                        import uuid as _uuid
+                        from pathlib import Path as _P
+                        uploads_dir = (
+                            _data_dir() / "v2" / "uploads"
+                        )
+                        uploads_dir.mkdir(parents=True, exist_ok=True)
+                        for entry in raw_images[:8]:
+                            if not isinstance(entry, str):
+                                continue
+                            if not entry.startswith("data:"):
+                                continue
+                            try:
+                                header, payload_b64 = entry.split(",", 1)
+                                # e.g. "data:image/png;base64"
+                                meta = header[len("data:"):]
+                                mime = (meta.split(";")[0] or "image/png").lower()
+                                ext_map = {
+                                    "image/png": ".png",
+                                    "image/jpeg": ".jpg",
+                                    "image/jpg": ".jpg",
+                                    "image/gif": ".gif",
+                                    "image/webp": ".webp",
+                                    "image/bmp": ".bmp",
+                                    "video/mp4": ".mp4",
+                                    "video/webm": ".webm",
+                                    "audio/wav": ".wav",
+                                    "audio/mpeg": ".mp3",
+                                    "audio/ogg": ".ogg",
+                                }
+                                ext = ext_map.get(mime, ".bin")
+                                raw_bytes = _b64.b64decode(payload_b64)
+                                if len(raw_bytes) > 8 * 1024 * 1024:
+                                    continue  # reject huge uploads
+                                out = uploads_dir / f"{int(time.time())}_{_uuid.uuid4().hex[:8]}{ext}"
+                                out.write_bytes(raw_bytes)
+                                user_image_paths.append(str(out))
+                            except Exception:  # noqa: BLE001 — skip bad blobs
+                                continue
                     # Ultrathink (borrowed from the /ultrathink pattern):
                     # when set, prepend a directive to make the model
                     # slow down and think step-by-step before answering.
@@ -1725,6 +1836,10 @@ def create_app(
                                     session_id, content,
                                     user_correlation_id=user_corr,
                                     llm_profile_id=llm_profile_id,
+                                    user_images=(
+                                        tuple(user_image_paths)
+                                        if user_image_paths else None
+                                    ),
                                 )
                         except Exception as exc:  # noqa: BLE001
                             # Surface a structured error frame so the

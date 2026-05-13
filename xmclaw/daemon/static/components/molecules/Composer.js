@@ -78,7 +78,84 @@ export function Composer({
   busy,
   slashStore,
   token,
+  images,
+  onAddImages,
+  onRemoveImage,
 }) {
+  const fileInputRef = useRef(null);
+
+  function handleFiles(fileList) {
+    if (!fileList || fileList.length === 0) return;
+    const files = Array.from(fileList).filter((f) =>
+      f.type.startsWith("image/")
+      || f.type.startsWith("video/")
+      || f.type.startsWith("audio/")
+    );
+    if (files.length === 0) {
+      toast.error("仅支持图片 / 音频 / 视频文件");
+      return;
+    }
+    // Cap individual file size to 8 MB — multimodal LLMs reject
+    // larger inputs and the WS frame would balloon.
+    const SIZE_CAP = 8 * 1024 * 1024;
+    const tooBig = files.filter((f) => f.size > SIZE_CAP);
+    if (tooBig.length > 0) {
+      toast.error(`文件 ${tooBig[0].name} 超过 8 MB，请先压缩`);
+      return;
+    }
+    Promise.all(
+      files.map(
+        (f) => new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () =>
+            resolve({
+              name: f.name,
+              type: f.type,
+              size: f.size,
+              dataUrl: reader.result,
+            });
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(f);
+        }),
+      ),
+    ).then((entries) => {
+      if (onAddImages) onAddImages(entries);
+    }).catch((err) => {
+      toast.error("读取文件失败：" + (err?.message || err));
+    });
+  }
+
+  function pickFiles() {
+    if (fileInputRef.current) fileInputRef.current.click();
+  }
+
+  function handlePaste(evt) {
+    // Pasted images (e.g. from Snipping Tool / WeChat screenshot) land
+    // in the clipboard as a file item. Hijack the textarea paste so
+    // these auto-stage instead of dropping unrenderable bytes.
+    const items = evt.clipboardData?.items;
+    if (!items) return;
+    const files = [];
+    for (const it of items) {
+      if (it.kind === "file") {
+        const f = it.getAsFile();
+        if (f) files.push(f);
+      }
+    }
+    if (files.length > 0) {
+      evt.preventDefault();
+      handleFiles(files);
+    }
+  }
+
+  function handleDrop(evt) {
+    evt.preventDefault();
+    handleFiles(evt.dataTransfer?.files);
+  }
+
+  function handleDragOver(evt) {
+    evt.preventDefault();
+  }
   // SlashPopover takeover. When the popover is visible, ↑/↓/Tab/Esc
   // are consumed by it; Enter still falls through to the composer's
   // own send logic so the user can submit "/help" verbatim if they
@@ -222,8 +299,48 @@ export function Composer({
     ta.style.height = Math.min(ta.scrollHeight, 200) + "px";
   }
 
+  const stagedImages = Array.isArray(images) ? images : [];
   return html`
-    <div class="xmc-composer" data-busy=${busy ? "1" : "0"}>
+    <div
+      class="xmc-composer"
+      data-busy=${busy ? "1" : "0"}
+      onPaste=${handlePaste}
+      onDrop=${handleDrop}
+      onDragOver=${handleDragOver}
+    >
+      ${stagedImages.length > 0
+        ? html`
+            <div class="xmc-composer__attachments">
+              ${stagedImages.map((img, idx) => html`
+                <div class="xmc-composer__attachment" key=${idx}>
+                  ${img.type && img.type.startsWith("video/")
+                    ? html`<video src=${img.dataUrl} muted />`
+                    : img.type && img.type.startsWith("audio/")
+                    ? html`<div class="xmc-composer__attachment-audio">🎵 ${img.name || "audio"}</div>`
+                    : html`<img src=${img.dataUrl} alt=${img.name || ""} />`}
+                  <button
+                    type="button"
+                    class="xmc-composer__attachment-remove"
+                    onClick=${() => onRemoveImage && onRemoveImage(idx)}
+                    title="移除"
+                    aria-label="移除附件"
+                  >×</button>
+                </div>
+              `)}
+            </div>
+          `
+        : null}
+      <input
+        ref=${fileInputRef}
+        type="file"
+        accept="image/*,video/*,audio/*"
+        multiple
+        style="display:none"
+        onChange=${(e) => {
+          handleFiles(e.target.files);
+          e.target.value = "";
+        }}
+      />
       <div class="xmc-composer__row xmc-composer__row--popover-host">
         ${slash.render()}
         <textarea
@@ -231,12 +348,19 @@ export function Composer({
           rows="1"
           placeholder=${planMode
             ? "Plan 模式 — 让助手先规划再执行。Enter 发送，Shift+Enter 换行。"
-            : "输入消息… Enter 发送，Shift+Enter 换行。"}
+            : "输入消息… Enter 发送，Shift+Enter 换行。粘贴/拖拽图片可附加。"}
           value=${value}
           onInput=${handleInput}
           onKeyDown=${handleKeyDown}
           aria-label="message composer"
         ></textarea>
+        <button
+          type="button"
+          class="xmc-composer__attach"
+          onClick=${pickFiles}
+          aria-label="附加图片 / 音频 / 视频"
+          title="附加图片、音频或视频（也可直接粘贴或拖拽）"
+        >📎</button>
         <button
           type="button"
           class=${"xmc-composer__mic" + (listening ? " is-on" : "") + (sttSupported ? "" : " is-disabled")}

@@ -305,6 +305,8 @@ const answerQuestion = _COMPOSER.answerQuestion;
 const changeDraft = _COMPOSER.changeDraft;
 const togglePlan = _COMPOSER.togglePlan;
 const toggleUltrathink = _COMPOSER.toggleUltrathink;
+const addImages = _COMPOSER.addImages;
+const removeImage = _COMPOSER.removeImage;
 
 function startNewSession() {
   const sid = newSid();
@@ -318,6 +320,7 @@ function startNewSession() {
       messages: [],
       pendingAssistantId: null,
       composerDraft: "",
+      composerImages: [],
       // B-269: drop cancelled-turn tracking on session switch — stale
       // ids would just leak memory + confuse a future turn that
       // happens to reuse a correlation_id.
@@ -408,6 +411,8 @@ const routes = {
       onChangeModel=${setLlmProfile}
       onSwitchAgent=${switchAgent}
       slashStore=${CHAT_ACTIONS}
+      onAddImages=${addImages}
+      onRemoveImage=${removeImage}
     />
   `,
   "/sessions": (state) => html`<${SessionsPage} token=${state.auth.token} />`,

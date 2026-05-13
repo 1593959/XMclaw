@@ -108,8 +108,60 @@ export function ToolCard({ call }) {
               </div>
             `
           : null}
+        ${Array.isArray(call.images) && call.images.length > 0
+          ? html`
+              <div class="xmc-toolcard__section">
+                <div class="xmc-toolcard__label">附图 (${call.images.length})</div>
+                <${ToolImageGallery} images=${call.images} />
+              </div>
+            `
+          : null}
       </div>
     </details>
+  `;
+}
+
+
+// B-MULTIMODAL-UI: render image attachments from tool results
+// (screen_capture / image_read / camera_capture / gui_send_chat
+// confirm screenshots). Each image is fetched from
+// /api/v2/media/<filename>?token=<pairing> so we attach the
+// pairing token from the current location.
+function ToolImageGallery({ images }) {
+  const token = (() => {
+    try {
+      const url = new URL(window.location.href);
+      return url.searchParams.get("token") || "";
+    } catch (_e) {
+      return "";
+    }
+  })();
+  function _url(u) {
+    if (!u) return "";
+    if (u.startsWith("http") || u.startsWith("data:")) return u;
+    if (u.includes("?")) return u + (token ? "&token=" + encodeURIComponent(token) : "");
+    return u + (token ? "?token=" + encodeURIComponent(token) : "");
+  }
+  return html`
+    <div class="xmc-toolcard__images">
+      ${images.map((src, i) => html`
+        <a
+          key=${i}
+          href=${_url(src)}
+          target="_blank"
+          rel="noopener"
+          class="xmc-toolcard__image-link"
+          title="点击放大查看"
+        >
+          <img
+            src=${_url(src)}
+            alt="tool image ${i + 1}"
+            loading="lazy"
+            class="xmc-toolcard__image"
+          />
+        </a>
+      `)}
+    </div>
   `;
 }
 

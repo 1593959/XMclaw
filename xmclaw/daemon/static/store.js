@@ -172,6 +172,10 @@ export const app = createStore({
     messages: [],
     pendingAssistantId: null,    // id of the in-flight assistant turn, or null
     composerDraft: "",
+    // B-MULTIMODAL-UI: image attachments staged in the composer.
+    // Each entry: { url: data-URI or /api/v2/media/... , name: string }.
+    // Cleared on send + included in the user_message WS frame.
+    composerImages: [],
     planMode: false,             // Plan vs Act
     ultrathink: false,
     // Multi-model: which configured LLM profile this session routes to.
