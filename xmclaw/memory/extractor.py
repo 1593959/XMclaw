@@ -108,11 +108,19 @@ _REMEMBER_PATTERNS: tuple[re.Pattern[str], ...] = (
 # happened). Now they force-fire the LLM extractor so the durable
 # memory ACTUALLY persists the thing the agent promised to keep.
 _ASSISTANT_REMEMBER_PATTERNS: tuple[re.Pattern[str], ...] = (
-    # Chinese: 我记下了 / 我记住了 / 已记录 / 已记住 / 我会记得
-    re.compile(r"我(已经?)?记(下|住)了", re.IGNORECASE),
-    re.compile(r"已记(录|住|下)", re.IGNORECASE),
-    re.compile(r"我会记得", re.IGNORECASE),
-    re.compile(r"我?帮你记(下|住)了?", re.IGNORECASE),
+    # Chinese: 记下了 / 记住了 / 已记录 / 已记住 / 会记得 / 帮你记住了
+    # — "我" prefix is OPTIONAL because the agent often skips it
+    # ("哥，记住了！" / "ok，已记录" — same intent without the
+    # pronoun). Fix #2 (post-Wave 26 fix-4): the user's first real
+    # test had "哥，记住了！" which my too-strict r"我..." pattern
+    # missed → no extraction → no memo. Loosen the "我" anchor and
+    # the patterns trigger on every natural Chinese memorisation
+    # claim the agent emits.
+    re.compile(r"(?:我(?:已经?)?)?记(?:下|住)了", re.IGNORECASE),
+    re.compile(r"已记(?:录|住|下)", re.IGNORECASE),
+    re.compile(r"(?:我)?会记得", re.IGNORECASE),
+    re.compile(r"(?:我)?帮你记(?:下|住)了?", re.IGNORECASE),
+    re.compile(r"(?:已)?收到[，,!！.。]?\s*(?:记下了|记住了)", re.IGNORECASE),
     # English: I'll remember / I've noted / noted! / got it, I'll remember
     re.compile(r"\bI(?:'ll| will) remember\b", re.IGNORECASE),
     re.compile(r"\bI(?:'ve| have) noted\b", re.IGNORECASE),
@@ -234,8 +242,12 @@ class MemoryExtractor:
             LLMResponse``. ``LLMResponse.content`` is parsed as JSON.
             (NOT ``complete_streaming`` — extract is fire-and-forget,
             we don't need streaming UI for this background job.)
-        timeout_s: hard wall-clock cap on the LLM call. Defaults to 8s
-            — extract should be quick or it's not worth doing.
+        timeout_s: hard wall-clock cap on the LLM call. Wave 26 fix-4
+            bumped to 30s (was 8s — too tight for Kimi K2 / Sonnet
+            which routinely take 5-15s). The call is background so a
+            longer cap doesn't hurt UX; what hurt was the 8s timeout
+            silently dropping every extraction attempt, which is why
+            "I remember X" claims never landed in storage.
         log: logger instance for failures (defaults to module logger).
     """
 
@@ -243,7 +255,7 @@ class MemoryExtractor:
         self,
         llm: Any,
         *,
-        timeout_s: float = 8.0,
+        timeout_s: float = 30.0,
         log: logging.Logger | None = None,
     ) -> None:
         self._llm = llm

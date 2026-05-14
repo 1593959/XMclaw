@@ -23,9 +23,27 @@ from xmclaw.memory.extractor import (
 
 
 def test_trigger_user_fact_chinese() -> None:
+    # Assistant responses must be neutral — Wave 26 fix-4 added
+    # ``assistant_remember`` which has higher precedence than user_fact
+    # (the agent's commitment to remember is a stronger signal than
+    # the user's self-statement). Tests of user_fact in isolation
+    # therefore use neutral assistant replies.
     assert _detect_trigger("我叫张三", "好的") == "user_fact"
     assert _detect_trigger("我习惯用 vim", "明白") == "user_fact"
-    assert _detect_trigger("我喜欢深色主题", "记下了") == "user_fact"
+    assert _detect_trigger("我喜欢深色主题", "好的") == "user_fact"
+
+
+def test_trigger_assistant_remember_chinese() -> None:
+    """Wave 26 fix-4: the agent's "记住了 / 我记下了 / 已记录" claims are
+    promises the user expects honoured. The trigger fires regardless
+    of what the user said, so the LLM extractor distils the relevant
+    fact from context and persists it. This was the #1 silent failure
+    before Wave 26: agent claims memorisation, no actual write."""
+    assert _detect_trigger("我叫张三", "哥，记住了！") == "assistant_remember"
+    assert _detect_trigger("admin/admin888", "已记录账号信息") == "assistant_remember"
+    assert _detect_trigger("anything", "ok，记下了") == "assistant_remember"
+    assert _detect_trigger("anything", "I'll remember that.") == "assistant_remember"
+    assert _detect_trigger("anything", "noted!") == "assistant_remember"
 
 
 def test_trigger_user_fact_english() -> None:
