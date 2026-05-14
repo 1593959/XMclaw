@@ -370,6 +370,7 @@ class MemoryService:
         min_confidence: float = 0.3,
         include_relations: bool = True,
         only_layer: FactLayerStr | None = None,
+        keyword_only: bool = False,
     ) -> list[RecallHit]:
         """Search L1 and return top-k facts enriched with relations.
 
@@ -400,15 +401,18 @@ class MemoryService:
         if query is None:
             search_query = None
         elif isinstance(query, str):
-            if self._embedder is not None:
+            if keyword_only or self._embedder is None:
+                # Force the keyword path — UI list / search box uses
+                # this to get substring matches rather than vector
+                # nearest-neighbour (which returns everything).
+                search_query = query
+            else:
                 try:
                     vec = await self._embedder.embed(query)
                     search_query = list(vec)
                 except EmbeddingFailure:
                     # Fall back to keyword.
                     search_query = query
-            else:
-                search_query = query
         else:
             search_query = list(query)
 

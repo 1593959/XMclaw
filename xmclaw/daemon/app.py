@@ -536,6 +536,11 @@ def create_app(
     from xmclaw.daemon.routers import files as _files_router
     from xmclaw.daemon.routers import llm_profiles as _llm_profiles_router
     from xmclaw.daemon.routers import memory as _memory_router
+    # Wave 27: Memory v2 — L1 facts + relations API for the new
+    # Memory Panel UI (list / flow / graph views). Always mounted
+    # so the UI can probe ``/status`` and show the "v2 disabled"
+    # hint when cognition.memory_v2.enabled=false in config.
+    from xmclaw.daemon.routers import memory_v2 as _memory_v2_router
     from xmclaw.daemon.routers import profiles as _profiles_router
     from xmclaw.daemon.routers import skills as _skills_router
     from xmclaw.daemon.routers import analytics as _analytics_router
@@ -561,6 +566,7 @@ def create_app(
     app.include_router(_files_router.router)
     app.include_router(_llm_profiles_router.router)
     app.include_router(_memory_router.router)
+    app.include_router(_memory_v2_router.router)  # Wave 27
     app.include_router(_profiles_router.router)
     app.include_router(_analytics_router.router)
     app.include_router(_cron_router.router)
