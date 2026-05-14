@@ -54,6 +54,18 @@ dev = [
 #        servers for other languages land as separate extras.
 browser = ["playwright>=1.48.0"]
 lsp     = ["python-lsp-server>=1.12.0"]
+# Wave 27 / Memory v2: LanceDB-backed L1 facts + relations store.
+# Replaces the sqlite-vec backend whose vec0 virtual table doesn't
+# support real upsert (GitHub issues #127 / #26 / #186). LanceDB:
+# native merge_insert, KNN-with-filter, Pydantic schema, columnar
+# Arrow storage. Production at Netflix / Uber / Harvey at same
+# workload (agent memory + RAG). See docs/MEMORY_EVOLUTION_REDESIGN.md.
+# Lazy-imported by xmclaw/memory/v2 — `pip install xmclaw` without
+# this extra still works (InMemory backend covers tests + CI).
+memory-v2 = [
+    "lancedb>=0.30.0",
+    "pyarrow>=16",
+]
 # B-145: 双向聊天 channel adapters (飞书 + 钉钉 + 企微 + telegram)。
 # Each picks lazy: only the channels the user enables in
 # ``config.channels`` actually import their SDK at runtime.
