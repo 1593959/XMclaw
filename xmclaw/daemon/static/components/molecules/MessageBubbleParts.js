@@ -11,6 +11,7 @@ import { lex, renderTokenHtml } from "../../lib/markdown.js";
 import { Spinner } from "../atoms/spinner.js";
 import { Badge } from "../atoms/badge.js";
 import { CodeBlock } from "./CodeBlock.js";
+import { resolveMediaTokenInHtml, _resolveMediaUrl } from "../../lib/chat_reducer.js";
 
 
 export function ToolCard({ call }) {
@@ -209,11 +210,37 @@ export function MarkdownBody({ content }) {
             />
           `;
         }
+        // Wave 26 (fix-2): standalone image token (a markdown line like
+        // ``![alt](/api/v2/media/foo.png)``). Render as a real <img>
+        // wrapped in <a> so clicking opens full-size in a new tab, and
+        // pipe the URL through _resolveMediaUrl so /api/v2/media/* paths
+        // get the pairing token attached.
+        if (tok.type === "image" && typeof tok.href === "string") {
+          const src = _resolveMediaUrl(tok.href);
+          const alt = tok.text || "";
+          return html`
+            <a
+              key=${tok.idx}
+              href=${src}
+              target="_blank"
+              rel="noopener"
+              class="xmc-md__image-link"
+              title=${tok.title || alt || "查看大图"}
+            >
+              <img src=${src} alt=${alt} loading="lazy" class="xmc-md__image" />
+            </a>
+          `;
+        }
+        // For all other tokens, run a post-pass on the sanitized HTML so
+        // inline images (``Look: ![alt](/api/v2/media/x.png)`` inside a
+        // paragraph) also get the auth token appended to their src.
         return html`
           <div
             key=${tok.idx}
             data-tok-type=${tok.type || "text"}
-            dangerouslySetInnerHTML=${{ __html: renderTokenHtml(tok) }}
+            dangerouslySetInnerHTML=${{
+              __html: resolveMediaTokenInHtml(renderTokenHtml(tok)),
+            }}
           ></div>
         `;
       })}

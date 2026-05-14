@@ -103,7 +103,7 @@ function _finalizeAbandoned(messages, newAssistantId) {
 // (401). Centralized so user_message AND tool_invocation_finished
 // branches share one implementation — duplicating it inside
 // user_message was the original Wave 25.8 bug.
-function _resolveMediaUrl(u) {
+export function _resolveMediaUrl(u) {
   if (!u || typeof u !== "string") return u;
   if (u.startsWith("data:") || u.startsWith("http")) return u;
   // Token is fetched from /api/v2/pair and exposed as window.__xmc_token
@@ -121,6 +121,22 @@ function _resolveMediaUrl(u) {
   if (!token) return u;
   const sep = u.includes("?") ? "&" : "?";
   return u + sep + "token=" + encodeURIComponent(token);
+}
+
+// Wave 26 (fix-2): rewrite src/href attributes pointing at /api/v2/media/
+// inside a pre-sanitized HTML string so markdown-rendered ``![alt](path)``
+// images load through the auth middleware. Called on the html string from
+// marked → DOMPurify, NOT on raw LLM output (so we don't have to re-escape
+// anything). Only rewrites URLs that already start with /api/v2/media/
+// or that DOMPurify rewrote to a relative form — leaves data:/http(s)
+// URLs alone.
+export function resolveMediaTokenInHtml(html) {
+  if (!html || typeof html !== "string") return html;
+  if (!html.includes("/api/v2/media/")) return html;
+  return html.replace(
+    /(src|href)="(\/api\/v2\/media\/[^"]+)"/g,
+    (_m, attr, url) => `${attr}="${_resolveMediaUrl(url)}"`,
+  );
 }
 
 export function applyEvent(chat, envelope) {
