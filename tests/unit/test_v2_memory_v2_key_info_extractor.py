@@ -255,3 +255,181 @@ async def test_extract_and_remember_empty_message_noop() -> None:
     written = await extract_and_remember("", svc)
     assert written == []
     assert await svc.count() == 0
+
+
+# ── Phase 3.1 — extended coverage ────────────────────────────────
+
+
+def test_extract_email() -> None:
+    keys = extract_keys("联系 alice@example.com 或者 bob.smith+filter@sub.example.co.uk")
+    emails = [k for k in keys if k.pattern_name == "email"]
+    assert len(emails) == 2
+
+
+def test_extract_phone_cn_mobile() -> None:
+    keys = extract_keys("我手机 13812345678，备用 +86 138 1234 5678")
+    phones = [k for k in keys if k.pattern_name == "phone"]
+    assert len(phones) >= 1
+
+
+def test_extract_phone_400_vanity() -> None:
+    keys = extract_keys("客服 400-800-1234")
+    phones = [k for k in keys if k.pattern_name == "phone"]
+    assert any("400" in p.text for p in phones)
+
+
+def test_extract_phone_skips_short_digit_blob() -> None:
+    """5-6 digit blobs are usually IDs / prices, not phones."""
+    keys = extract_keys("订单号 12345")
+    phones = [k for k in keys if k.pattern_name == "phone"]
+    assert phones == []
+
+
+def test_extract_social_wechat() -> None:
+    keys = extract_keys("微信号 alice_2024")
+    socials = [k for k in keys if k.pattern_name == "social"]
+    assert len(socials) == 1
+
+
+def test_extract_social_qq() -> None:
+    keys = extract_keys("QQ 1234567")
+    socials = [k for k in keys if k.pattern_name == "social"]
+    assert len(socials) == 1
+
+
+def test_extract_social_github() -> None:
+    keys = extract_keys("github acme-engineering 上有源码")
+    socials = [k for k in keys if k.pattern_name == "social"]
+    assert len(socials) >= 1
+
+
+def test_extract_social_at_handle() -> None:
+    keys = extract_keys("找 @alice_dev 帮看")
+    socials = [k for k in keys if k.pattern_name == "social"]
+    assert len(socials) >= 1
+
+
+def test_extract_windows_path() -> None:
+    keys = extract_keys("代码在 C:\\Users\\me\\proj\\src\\main.py")
+    paths = [k for k in keys if k.pattern_name == "path"]
+    assert any("main.py" in p.text for p in paths)
+
+
+def test_extract_posix_path() -> None:
+    keys = extract_keys("配置在 /etc/nginx/nginx.conf 改一下")
+    paths = [k for k in keys if k.pattern_name == "path"]
+    assert any("/etc/nginx" in p.text for p in paths)
+
+
+def test_extract_home_path() -> None:
+    keys = extract_keys("放 ~/Desktop/notes.md 里")
+    paths = [k for k in keys if k.pattern_name == "path"]
+    assert any("~/Desktop" in p.text for p in paths)
+
+
+def test_extract_tech_stack() -> None:
+    keys = extract_keys("我用 Python 写后端，栈是 FastAPI + Postgres")
+    stacks = [k for k in keys if k.pattern_name == "stack"]
+    assert len(stacks) >= 1
+
+
+def test_extract_deadline_chinese() -> None:
+    keys = extract_keys("截止日期 6月底前，DDL 双11")
+    dls = [k for k in keys if k.pattern_name == "deadline"]
+    assert len(dls) >= 1
+
+
+def test_extract_deadline_english() -> None:
+    keys = extract_keys("submit by Friday or by next Monday")
+    dls = [k for k in keys if k.pattern_name == "deadline"]
+    assert len(dls) >= 1
+
+
+def test_extract_datetime_iso() -> None:
+    keys = extract_keys("会议 2026-05-15 10点")
+    dts = [k for k in keys if k.pattern_name == "datetime"]
+    assert any("2026-05-15" in d.text for d in dts)
+
+
+def test_extract_datetime_chinese_relative() -> None:
+    keys = extract_keys("下周一上午 10 点开会，每周三复盘")
+    dts = [k for k in keys if k.pattern_name == "datetime"]
+    assert len(dts) >= 2
+
+
+def test_datetime_skips_bare_today() -> None:
+    """Bare '今天' / '明天' is too noisy as a fact — skip."""
+    keys = extract_keys("今天天气真好")
+    dts = [k for k in keys if k.pattern_name == "datetime"]
+    assert dts == []
+
+
+def test_extract_money_chinese() -> None:
+    keys = extract_keys("预算 5 万，报价 12.5 万 RMB")
+    monies = [k for k in keys if k.pattern_name == "money"]
+    assert len(monies) >= 1
+
+
+def test_extract_money_usd() -> None:
+    keys = extract_keys("budget $500K total")
+    monies = [k for k in keys if k.pattern_name == "money"]
+    assert len(monies) >= 1
+
+
+def test_extract_relationship_family() -> None:
+    keys = extract_keys("我老婆叫小红，我儿子小明今年 5 岁")
+    rels = [k for k in keys if k.pattern_name == "relationship"]
+    assert len(rels) >= 2
+
+
+def test_extract_relationship_work() -> None:
+    keys = extract_keys("我同事 Alice 负责前端，我老板叫 Bob")
+    rels = [k for k in keys if k.pattern_name == "relationship"]
+    assert len(rels) >= 2
+
+
+def test_extract_constraint_chinese() -> None:
+    keys = extract_keys("必须用 PowerShell，永远别用 bash")
+    cs = [k for k in keys if k.pattern_name == "constraint"]
+    assert len(cs) >= 1
+
+
+def test_extract_constraint_english() -> None:
+    keys = extract_keys("must use HTTPS, never store passwords in plain text")
+    cs = [k for k in keys if k.pattern_name == "constraint"]
+    assert len(cs) >= 1
+
+
+def test_extract_org() -> None:
+    keys = extract_keys("公司名 Acme Corp，项目叫 NimbusBot")
+    orgs = [k for k in keys if k.pattern_name == "org"]
+    assert len(orgs) >= 1
+
+
+# ── Mega-realistic message — multiple categories ─────────────────
+
+
+def test_mega_realistic_message() -> None:
+    """Stress-test a message that covers half a dozen categories."""
+    msg = (
+        "我是干陪玩店的，公司名 NimbusGames，"
+        "网站 https://pw310.wxselling.com，账号 admin / admin888，"
+        "客服电话 400-800-1234，邮箱 contact@nimbus.cn，"
+        "微信号 nimbus_cs，我老婆叫小红负责运营，"
+        "用 Python + FastAPI 写后端，预算 5 万，"
+        "截止日期 6月底前，每周三复盘。"
+        "目标是月流水破 10 万。记住这些。"
+    )
+    keys = extract_keys(msg)
+    patterns_hit = {k.pattern_name for k in keys}
+    expected = {
+        "url", "credential", "cred_pair", "goal", "email", "phone",
+        "social", "stack", "deadline", "datetime", "money",
+        "relationship", "identity", "remember_directive", "org",
+    }
+    # At least 12 distinct patterns from the expected set should fire.
+    actual = patterns_hit & expected
+    assert len(actual) >= 12, (
+        f"only matched {len(actual)} of {len(expected)} expected patterns: "
+        f"{sorted(actual)}"
+    )

@@ -96,6 +96,97 @@ async def status(request: Request) -> dict[str, Any]:
     }
 
 
+# ── Embedder config inspection + test ────────────────────────────
+
+
+@router.get("/embedder")
+async def embedder_info(request: Request) -> dict[str, Any]:
+    """Surface the active embedder config to the UI.
+
+    Shows: provider, model, dim, base_url (masked), api_key set?
+    + cache stats (hits/misses/hit_rate from EmbeddingService).
+    """
+    svc = _get_service(request)
+    if svc is None or svc.embedder is None:
+        return {
+            "configured": False,
+            "reason": "memory_v2 disabled or no embedder wired",
+        }
+
+    # Pull the underlying OpenAIEmbeddingProvider out of the LRU
+    # wrapper so we can show model + base_url.
+    inner = getattr(svc.embedder, "_provider", None)
+    model = getattr(inner, "_model", None)
+    base_url = getattr(inner, "_base_url", None)
+    api_key = getattr(inner, "_api_key", None)
+    max_batch = getattr(inner, "_max_batch_size", None)
+    timeout_s = getattr(inner, "_timeout_s", None)
+
+    masked_key = ""
+    if api_key:
+        masked_key = (
+            api_key[:4] + "…" + api_key[-4:]
+            if len(api_key) > 12
+            else "(set, short)"
+        )
+
+    stats = svc.embedder.stats() if hasattr(svc.embedder, "stats") else {}
+
+    return {
+        "configured": True,
+        "provider": svc.embedder.name,
+        "model": model,
+        "dim": svc.embedder.dim,
+        "base_url": base_url,
+        "api_key_set": bool(api_key),
+        "api_key_masked": masked_key,
+        "max_batch_size": max_batch,
+        "timeout_s": timeout_s,
+        "cache": {
+            "hits": stats.get("cache_hits", 0),
+            "misses": stats.get("cache_misses", 0),
+            "hit_rate": stats.get("cache_hit_rate", 0.0),
+            "size": stats.get("cache_size", 0),
+            "capacity": stats.get("cache_capacity", 0),
+        },
+        "failures": stats.get("failures", 0),
+    }
+
+
+@router.post("/embedder/test")
+async def embedder_test(request: Request) -> dict[str, Any]:
+    """Round-trip test: embed a probe string + return dim + elapsed.
+
+    Lets the user confirm the embedder is actually reachable without
+    waiting for the next real turn.
+    """
+    import time as _time
+    svc = _get_service(request)
+    if svc is None or svc.embedder is None:
+        return _v2_disabled_response()  # type: ignore[return-value]
+    body = await request.json() if request.headers.get("content-length") else {}
+    probe = body.get("text", "测试 embedder 是否工作 — quick probe")
+    t0 = _time.perf_counter()
+    try:
+        vec = await svc.embedder.embed(probe)
+        elapsed_ms = (_time.perf_counter() - t0) * 1000.0
+        return {
+            "ok": True,
+            "probe_text": probe,
+            "returned_dim": len(vec),
+            "elapsed_ms": round(elapsed_ms, 1),
+            # First 4 floats so the user can sanity-check it's a real vec.
+            "sample": [round(float(v), 4) for v in list(vec)[:4]],
+        }
+    except Exception as exc:  # noqa: BLE001
+        elapsed_ms = (_time.perf_counter() - t0) * 1000.0
+        return {
+            "ok": False,
+            "error": str(exc),
+            "elapsed_ms": round(elapsed_ms, 1),
+        }
+
+
 # ── List + filter facts ──────────────────────────────────────────
 
 

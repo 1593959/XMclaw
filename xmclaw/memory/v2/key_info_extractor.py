@@ -164,6 +164,173 @@ _CORRECTION_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# ── Wave 27 Phase 3.1 — additional coverage ────────────────────
+# User asked for "全场景" coverage. Beyond the 8 original patterns:
+
+# Email — bare local@domain.
+_EMAIL_RE = re.compile(
+    r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
+)
+
+# Phone numbers — accept 11-digit Mainland mobiles (1[3-9]xxxxxxxx),
+# +-country-prefixed international (+86 / +1 / etc), and 800/400
+# vanity numbers. Hyphens / spaces tolerated.
+_PHONE_RE = re.compile(
+    r"""(
+        \+?\d{1,3}[\s-]?\d{3,4}[\s-]?\d{3,4}[\s-]?\d{3,5}
+        |
+        \b1[3-9]\d{9}\b                # 11-digit CN mobile
+        |
+        \b(?:400|800)[\s-]?\d{3,4}[\s-]?\d{3,4}\b
+    )""",
+    re.VERBOSE,
+)
+
+# Social / IM handles — WeChat / QQ / Telegram / Github / Twitter
+# patterns. Capture labels + value when present; bare @handle for
+# Twitter; "微信号 X" / "QQ X" with optional separator.
+_SOCIAL_RE = re.compile(
+    r"""(
+        # 微信号 / 微信 X
+        (?:微信号?|wechat)\s*[:：=是叫]?\s*([A-Za-z][A-Za-z0-9_-]{4,30})
+        |
+        # QQ 号 / QQ X — pure digits, 5-13 long
+        \bQQ\s*[:：=是叫号]?\s*(\d{5,13})\b
+        |
+        # Telegram / TG handle
+        (?:telegram|tg)\s*[:：=]?\s*@?([A-Za-z][A-Za-z0-9_]{4,30})
+        |
+        # GitHub user
+        (?:github|gh)\s*[:：=]?\s*([A-Za-z0-9][A-Za-z0-9-]{1,38})
+        |
+        # @username — only treat as social when it looks like a handle
+        # and isn't an email (no "@x@y" or "@..."). Conservative:
+        # require it to be standalone (word boundary on both sides).
+        (?<![A-Za-z0-9.])@([A-Za-z][A-Za-z0-9_]{2,30})\b
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Local file paths (Windows + POSIX). Capture absolute / drive paths
+# OR ~/relative-from-home shorthand. Generous on the body but require
+# a path-shaped start to avoid grabbing sentences.
+_PATH_RE = re.compile(
+    r"""(
+        # Windows: C:\Users\... / D:/foo / \\server\share
+        \b[A-Za-z]:[\\/](?:[^\s"'<>|*?:\n]+[\\/]?)+[^\s"'<>|*?:\n]+
+        |
+        \\\\[A-Za-z0-9_.-]+[\\/][^\s"'<>|*?:\n]+
+        |
+        # POSIX absolute: /etc/hosts / /usr/local/bin
+        (?:^|\s)(/(?:home|etc|var|usr|opt|root|tmp|mnt|srv|Users)/[^\s"'<>|*?:\n]+)
+        |
+        # ~/relative
+        (?:^|\s)(~/[^\s"'<>|*?:\n]+)
+    )""",
+    re.VERBOSE | re.MULTILINE,
+)
+
+# Tech stack — "用 X" / "栈是 ..." / explicit language/framework mention.
+# Conservative: only match common stacks we want as facts.
+_STACK_RE = re.compile(
+    r"""(
+        # 我?用 X 写/做/开发
+        我?用\s*([A-Z][A-Za-z0-9+#./_-]{1,30})\s*(?:写|做|开发|搭|跑|部署)?
+        |
+        # 栈 / tech stack is X
+        (?:栈是|技术栈是?|stack(?:\s+is)?)\s*[:：]?\s*([A-Za-z][A-Za-z0-9+#./, _-]{2,80})
+        |
+        # X 版本 N.N — version statement
+        \b([A-Z][A-Za-z+#.-]{1,20})\s*(?:版本是?|version\s*(?:is|=)?)\s*([0-9]+(?:\.[0-9]+)*)
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Schedule / deadline — 截止 / deadline / 月底前 / Q3 前 / by Friday.
+_DEADLINE_RE = re.compile(
+    r"""(
+        # 截止 / deadline
+        (?:截止(?:日期)?|ddl|deadline)\s*[:：是为]?\s*([^,，。、!！?？\n]{2,60})
+        |
+        # 月底 / 周末 / Q3 末 / 双11 / 春节 前
+        (?:今年|今|本)?(?:月底|周末|Q[1-4]\s*(?:末|前|内)?|双11|春节|国庆|618|11月|12月)\s*(?:前|内|之前)?
+        |
+        # by Friday / before March
+        \bby\s+(?:next\s+)?(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Date / time mention — explicit dates (2026-05-15) or natural-language
+# Chinese dates (明天 / 后天 / 下周一 / 5月15日 / 每周三 10点).
+_DATETIME_RE = re.compile(
+    r"""(
+        # ISO-style 2026-05-15 / 2026/5/15 / 2026.5.15
+        \b20\d{2}[-/.]\d{1,2}[-/.]\d{1,2}\b
+        |
+        # 中文日期 5月15日 / 5月15号
+        \d{1,2}\s*月\s*\d{1,2}\s*[日号]
+        |
+        # 相对日期
+        (?:今天|明天|后天|昨天|大?前天|大?后天|下下?周[一二三四五六日天]?|上周[一二三四五六日天]?|每周[一二三四五六日天]?|每天|每月|每年)
+        |
+        # 时间点 10点 / 上午 9 点半
+        (?:上午|下午|早上|晚上|凌晨|中午)?\s*\d{1,2}\s*(?:点|时)(?:\s*\d{1,2}\s*分|半|整)?
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Budget / money — 预算 N 元 / 预算 N 万 / $N / ￥N
+_MONEY_RE = re.compile(
+    r"""(
+        # 预算 / cost / 花了 / 报价 + amount
+        (?:预算|费用|成本|报价|售价|定价|花了|花费|cost|budget|price)\s*(?:为|是|约)?\s*
+        [\$￥¥]?\s*\d+(?:\.\d+)?\s*(?:万|千|百|亿|k|K|m|M)?\s*(?:元|块|RMB|人民币|美金|USD|刀|CNY)?
+        |
+        # Standalone currency amount $100 / ￥1000
+        [\$￥¥]\s*\d+(?:\.\d+)?(?:[KkMm万千百])?
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Relationship / family / colleague: 我朋友 X / 我老婆 X / 我老板 X /
+# 我同事 X — captures (rel_word, name).
+_RELATIONSHIP_RE = re.compile(
+    r"""(
+        我(?:朋友|男朋友|女朋友|男友|女友|老公|老婆|男人|女人|对象|爱人|
+            老板|领导|上司|同事|队友|合伙人|室友|同学|老师|学生|师傅|徒弟|
+            爸|妈|爸爸|妈妈|父亲|母亲|爷爷|奶奶|外公|外婆|哥|姐|弟|妹|
+            儿子|女儿|孩子|宝宝)
+        \s*(?:叫|是|的名字是)?\s*([^\s,，。、!！?？]{1,30})
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Hard constraints — 必须 / 永远 / 一定 / always / must / never (stronger
+# than `correction`, also fires on positive obligations).
+_CONSTRAINT_RE = re.compile(
+    r"""(
+        # 必须 / 一定要 / 一律 / 永远 + clause
+        (?:必须|一定(?:要)?|一律|永远(?:都)?|绝对(?:不可?)?|从来不?|从不|从未)\s*
+        ([^,，。、!！?？\n]{2,80})
+        |
+        # English: must / always / never X
+        \b(?:must|always|never|under no circumstances)\s+
+        ([a-z][a-z0-9 -]{2,60})
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Organization / product — "公司是 X" / "产品名 X" / "项目 X".
+_ORG_RE = re.compile(
+    r"""(
+        (?:公司|项目|产品|品牌|店铺|工作室|平台)
+        (?:名字?|叫|是)?\s*[:：]?\s*
+        ([A-Za-z一-鿿][A-Za-z0-9一-鿿._-]{1,40})
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
 
 # ── Extractor ────────────────────────────────────────────────────
 
@@ -310,6 +477,126 @@ def extract_keys(message: str) -> list[ExtractedKey]:
             f"纠正: {m.group(0).strip()}",
             kind="correction", scope="user",
             confidence=0.90, pattern_name="correction",
+            span=m.span(),
+        )
+
+    # ── Wave 27 Phase 3.1 — extended coverage ──
+
+    # ── Email (project scope — likely a contact for the project) ──
+    for m in _EMAIL_RE.finditer(message):
+        _add(
+            f"邮箱: {m.group(0).strip()}",
+            kind="project", scope="project",
+            confidence=0.92, pattern_name="email",
+            span=m.span(),
+        )
+
+    # ── Phone numbers ──
+    for m in _PHONE_RE.finditer(message):
+        num = m.group(0).strip()
+        # Skip ambiguous short matches that look like price/ID rather
+        # than a phone — require ≥ 7 effective digits.
+        digits = "".join(ch for ch in num if ch.isdigit())
+        if len(digits) < 7:
+            continue
+        _add(
+            f"电话: {num}",
+            kind="project", scope="project",
+            confidence=0.85, pattern_name="phone",
+            span=m.span(),
+        )
+
+    # ── Social handles ──
+    for m in _SOCIAL_RE.finditer(message):
+        handle = next((g for g in m.groups()[1:] if g), None)
+        if handle is None:
+            continue
+        _add(
+            f"社交账号: {m.group(0).strip()}",
+            kind="project", scope="project",
+            confidence=0.85, pattern_name="social",
+            span=m.span(),
+        )
+
+    # ── File paths ──
+    for m in _PATH_RE.finditer(message):
+        path = m.group(0).strip()
+        # Drop obviously trailing punctuation captured by the wide regex.
+        path = path.rstrip(".,;)")
+        # Skip excessively short / shouty captures.
+        if len(path) < 4:
+            continue
+        _add(
+            f"路径: {path}",
+            kind="project", scope="project",
+            confidence=0.82, pattern_name="path",
+            span=m.span(),
+        )
+
+    # ── Tech stack ──
+    for m in _STACK_RE.finditer(message):
+        _add(
+            f"技术: {m.group(0).strip()}",
+            kind="project", scope="project",
+            confidence=0.78, pattern_name="stack",
+            span=m.span(),
+        )
+
+    # ── Deadlines ──
+    for m in _DEADLINE_RE.finditer(message):
+        _add(
+            f"截止: {m.group(0).strip()}",
+            kind="commitment", scope="project",
+            confidence=0.82, pattern_name="deadline",
+            span=m.span(),
+        )
+
+    # ── Datetime mentions ──
+    for m in _DATETIME_RE.finditer(message):
+        # Don't add bare "今天" / "明天" — too noisy as standalone facts.
+        text_norm = m.group(0).strip()
+        if text_norm in ("今天", "明天", "昨天"):
+            continue
+        _add(
+            f"时间: {text_norm}",
+            kind="commitment", scope="project",
+            confidence=0.70, pattern_name="datetime",
+            span=m.span(),
+        )
+
+    # ── Money / budget ──
+    for m in _MONEY_RE.finditer(message):
+        _add(
+            f"金额: {m.group(0).strip()}",
+            kind="project", scope="project",
+            confidence=0.85, pattern_name="money",
+            span=m.span(),
+        )
+
+    # ── Relationships ──
+    for m in _RELATIONSHIP_RE.finditer(message):
+        _add(
+            f"关系: {m.group(0).strip()}",
+            kind="identity", scope="user",
+            confidence=0.88, pattern_name="relationship",
+            span=m.span(),
+        )
+
+    # ── Hard constraints ──
+    for m in _CONSTRAINT_RE.finditer(message):
+        _add(
+            f"约束: {m.group(0).strip()}",
+            kind="correction", scope="user",
+            confidence=0.92, pattern_name="constraint",
+            span=m.span(),
+        )
+
+    # ── Org / product / project name ──
+    for m in _ORG_RE.finditer(message):
+        _add(
+            f"组织: {m.group(0).strip()}",
+            kind="project", scope="project",
+            confidence=0.78, pattern_name="org",
             span=m.span(),
         )
 

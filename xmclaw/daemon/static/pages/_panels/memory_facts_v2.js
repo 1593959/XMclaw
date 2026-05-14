@@ -24,6 +24,8 @@ const html = window.__xmc.htm.bind(h);
 
 import { apiGet, apiPost, apiDelete } from "../../lib/api.js";
 import { toast } from "../../lib/toast.js";
+import { FactsGraphView } from "./memory_facts_v2_graph.js";
+import { EmbedderInfoPanel } from "./memory_facts_v2_embedder.js";
 
 
 // ── Constants ─────────────────────────────────────────────────────
@@ -273,6 +275,9 @@ export function FactsV2Tab({ token }) {
   const [filters, setFilters] = useState({ kind: "", scope: "", q: "" });
   const [loading, setLoading] = useState(false);
   const [selectedFactId, setSelectedFactId] = useState(null);
+  // Phase 5c — view toggle: list | graph. Default list for low-jank
+  // first paint (graph viz needs a CDN fetch on first open).
+  const [view, setView] = useState("list");
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -328,47 +333,68 @@ export function FactsV2Tab({ token }) {
     }
   };
 
+  // Sub-view toggle buttons: list | graph | embedder.
+  const ViewToggle = () => html`
+    <div style="display:flex;gap:.4rem;margin:.6rem 0;flex-wrap:wrap">
+      <button
+        type="button"
+        class=${"xmc-h-btn" + (view === "list" ? " xmc-h-btn--primary" : "")}
+        onClick=${() => setView("list")}
+        style="font-size:.85rem"
+      >📋 列表</button>
+      <button
+        type="button"
+        class=${"xmc-h-btn" + (view === "graph" ? " xmc-h-btn--primary" : "")}
+        onClick=${() => setView("graph")}
+        style="font-size:.85rem"
+      >🕸 图谱</button>
+      <button
+        type="button"
+        class=${"xmc-h-btn" + (view === "embedder" ? " xmc-h-btn--primary" : "")}
+        onClick=${() => setView("embedder")}
+        style="font-size:.85rem"
+      >🧬 向量模型</button>
+    </div>
+  `;
+
   return html`
     <section>
       <${StatusBanner} status=${status} />
       ${status && status.enabled
         ? html`
-            <${AddFactForm} token=${token} onCreated=${() => { refresh(); refreshStatus(); }} />
-            <${FilterBar} ...${filters} onChange=${setFilters} />
-            ${loading
-              ? html`<div style="opacity:.7;padding:1rem 0">加载中…</div>`
-              : facts.length === 0
-                ? html`<div style="opacity:.7;padding:1rem 0">暂无事实（过滤条件不匹配，或库为空）。</div>`
-                : html`
-                    <div style="margin:.6rem 0;font-size:.78rem;color:var(--xmc-fg-muted)">
-                      显示 ${facts.length} 条
-                    </div>
-                    ${facts.map((f) => html`
-                      <${FactRow}
-                        key=${f.id}
-                        fact=${f}
-                        onDelete=${handleDelete}
-                        onSelect=${setSelectedFactId}
-                      />
-                    `)}
-                  `
-            }
-            ${selectedFactId
+            <${ViewToggle} />
+            ${view === "list"
               ? html`
-                  <div style="margin-top:1rem;padding:.8rem;border:1px dashed var(--color-border);border-radius:6px;background:var(--xmc-bg-elev-2,var(--xmc-bg-elev))">
-                    <div style="font-size:.78rem;color:var(--xmc-fg-muted);margin-bottom:.4rem">
-                      事实关系子图（Phase 5c 力导向 vis-network 即将到位）
-                    </div>
-                    <code style="font-size:.72rem;word-break:break-all">${selectedFactId}</code>
-                    <button
-                      type="button"
-                      class="xmc-h-btn"
-                      onClick=${() => setSelectedFactId(null)}
-                      style="margin-left:.5rem;font-size:.72rem"
-                    >×</button>
-                  </div>
+                  <${AddFactForm} token=${token} onCreated=${() => { refresh(); refreshStatus(); }} />
+                  <${FilterBar} ...${filters} onChange=${setFilters} />
+                  ${loading
+                    ? html`<div style="opacity:.7;padding:1rem 0">加载中…</div>`
+                    : facts.length === 0
+                      ? html`<div style="opacity:.7;padding:1rem 0">暂无事实（过滤条件不匹配，或库为空）。</div>`
+                      : html`
+                          <div style="margin:.6rem 0;font-size:.78rem;color:var(--xmc-fg-muted)">
+                            显示 ${facts.length} 条
+                          </div>
+                          ${facts.map((f) => html`
+                            <${FactRow}
+                              key=${f.id}
+                              fact=${f}
+                              onDelete=${handleDelete}
+                              onSelect=${(fid) => { setSelectedFactId(fid); setView("graph"); }}
+                            />
+                          `)}
+                        `
+                  }
                 `
-              : null}
+              : view === "graph"
+              ? html`
+                  <${FactsGraphView}
+                    token=${token}
+                    focusFactId=${selectedFactId}
+                    onFocusFact=${setSelectedFactId}
+                  />
+                `
+              : html`<${EmbedderInfoPanel} token=${token} />`}
           `
         : null}
     </section>
