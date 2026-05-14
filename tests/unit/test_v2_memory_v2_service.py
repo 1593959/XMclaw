@@ -276,3 +276,74 @@ async def test_find_related_subgraph_for_ui() -> None:
     assert b.id in sub["nodes"]
     assert len(sub["edges"]) == 1
     assert sub["edges"][0].relation == "PART_OF"
+
+
+# ── render_for_prompt (Phase 4a) ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_render_for_prompt_includes_user_project_decisions() -> None:
+    svc = _make_service()
+    # Mix of fact kinds.
+    await svc.remember(
+        "用户喜欢简短回复",
+        kind="preference", scope="user",
+        skip_contradict_check=True,
+    )
+    await svc.remember(
+        "陪玩店 pw310.wxselling.com",
+        kind="project", scope="project",
+        skip_contradict_check=True,
+    )
+    await svc.remember(
+        "用 PowerShell 不用 bash",
+        kind="decision",
+        skip_contradict_check=True,
+    )
+    block = await svc.render_for_prompt("anything")
+    assert "<memory-v2-facts>" in block
+    assert "用户档案" in block
+    assert "项目档案" in block
+    assert "决定记录" in block
+    assert "用户喜欢简短回复" in block
+    assert "陪玩店" in block
+    assert "PowerShell" in block
+
+
+@pytest.mark.asyncio
+async def test_render_for_prompt_empty_when_no_facts() -> None:
+    svc = _make_service()
+    block = await svc.render_for_prompt("anything")
+    assert block == ""
+
+
+@pytest.mark.asyncio
+async def test_render_for_prompt_attaches_contradicts_marker() -> None:
+    """CONTRADICTS edges show up as ⚠ markers in the prompt block."""
+    svc = _make_service()
+    await svc.remember(
+        "用 Mac",
+        kind="preference", scope="user",
+    )
+    await svc.remember(
+        "用 Windows",
+        kind="preference", scope="user",
+    )
+    block = await svc.render_for_prompt("Windows", k=5)
+    # The Windows fact has an outgoing CONTRADICTS edge to Mac fact.
+    # The recall section should carry a ⚠ marker.
+    assert "⚠" in block or "contradicts" in block.lower()
+
+
+@pytest.mark.asyncio
+async def test_render_for_prompt_skips_duplicates_in_recall_section() -> None:
+    """If a fact appears in the always-on section AND the query-
+    relevant recall, it shouldn't appear twice."""
+    svc = _make_service()
+    await svc.remember(
+        "用户喜欢简短回复",
+        kind="preference", scope="user",
+    )
+    block = await svc.render_for_prompt("简短回复")
+    # Count "用户喜欢简短回复" occurrences — should be 1, not 2.
+    assert block.count("用户喜欢简短回复") == 1

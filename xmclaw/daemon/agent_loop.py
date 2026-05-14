@@ -933,6 +933,31 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 except Exception:  # noqa: BLE001
                     pass
 
+        # Wave 27 Phase 4a: append v2 facts (L1) — USER 档案 +
+        # PROJECT 档案 + DECISIONS + top-K vec-recall hits with
+        # CONTRADICTS/SUPERSEDES inline markers. The agent reads
+        # this block naturally; key user info that was auto-extracted
+        # by Phase 3b's KeyInfoExtractor shows up here automatically.
+        # See §8.3.1 of MEMORY_EVOLUTION_REDESIGN.md.
+        memory_v2_service = getattr(self, "_memory_service_v2", None)
+        if memory_v2_service is not None:
+            try:
+                v2_block = await memory_v2_service.render_for_prompt(
+                    user_message or "", k=8,
+                )
+                if v2_block:
+                    memory_ctx_block = (
+                        memory_ctx_block.rstrip() + v2_block
+                        if memory_ctx_block
+                        else v2_block
+                    )
+            except Exception as exc:  # noqa: BLE001
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).warning(
+                    "memory_v2.render_failed session=%s err=%s",
+                    session_id, exc,
+                )
+
         # B-93: LLM-picked relevant memory files (free-code memdir
         # parity). Disabled by default because it adds one extra LLM
         # call per turn. When enabled (config:

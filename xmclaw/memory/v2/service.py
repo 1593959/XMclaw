@@ -484,6 +484,111 @@ class MemoryService:
             fact_ids, max_hops=max_hops, limit=limit,
         )
 
+    # ── Prompt rendering (Phase 4a) ─────────────────────────────
+
+    async def render_for_prompt(
+        self,
+        query: str,
+        *,
+        k: int = 8,
+    ) -> str:
+        """Render an L1 facts block ready to be injected into the
+        agent's system prompt.
+
+        Composition (§8.3.1 of design doc):
+          * User档案 — all user-scope facts kinds (preference / identity
+            / correction) regardless of query
+          * 项目档案 — all project-scope facts (project / commitment)
+          * 决定记录 — all decision-kind facts
+          * 与本轮相关 — top-k vector recall hits with relation hints
+
+        The first three sections are "always-on" so the agent has
+        durable context without needing to recall. The fourth is the
+        query-conditioned working set. CONTRADICTS / SUPERSEDES
+        relations appear inline as "⚠ contradicts: X" markers so the
+        agent SEES the relation graph without having to query it.
+
+        Empty string when no facts. Callers concatenate into the
+        existing memory_ctx_block.
+        """
+        # Always-on sections.
+        user_facts = await self.recall(
+            None, kinds=["preference", "identity", "correction"],
+            scopes=["user"], k=20, include_relations=False,
+        )
+        project_facts = await self.recall(
+            None, kinds=["project", "commitment"],
+            scopes=["project"], k=20, include_relations=False,
+        )
+        decision_facts = await self.recall(
+            None, kinds=["decision"], k=10, include_relations=False,
+        )
+
+        # Query-conditioned.
+        relevant_hits = []
+        if query and query.strip():
+            relevant_hits = await self.recall(
+                query, k=k, include_relations=True,
+            )
+
+        sections: list[str] = []
+
+        if user_facts:
+            sections.append("### 用户档案 (USER)")
+            for h in user_facts:
+                sections.append(
+                    f"  - [{h.fact.kind}] {h.fact.text} "
+                    f"(conf {h.fact.confidence:.2f})"
+                )
+
+        if project_facts:
+            sections.append("### 项目档案 (PROJECT)")
+            for h in project_facts:
+                sections.append(
+                    f"  - [{h.fact.kind}] {h.fact.text} "
+                    f"(conf {h.fact.confidence:.2f})"
+                )
+
+        if decision_facts:
+            sections.append("### 决定记录 (DECISIONS)")
+            for h in decision_facts:
+                sections.append(
+                    f"  - {h.fact.text} (conf {h.fact.confidence:.2f})"
+                )
+
+        if relevant_hits:
+            sections.append("### 与本轮相关的事实 (top-K, 向量召回)")
+            seen_ids = {h.fact.id for h in (user_facts + project_facts + decision_facts)}
+            new_hits = [h for h in relevant_hits if h.fact.id not in seen_ids]
+            for h in new_hits:
+                # Annotate with CONTRADICTS / SUPERSEDES inline so the
+                # agent sees the relation graph at glance.
+                markers = []
+                for rel in h.related_relations:
+                    if rel.relation in ("CONTRADICTS", "SUPERSEDES"):
+                        markers.append(f"⚠ {rel.relation.lower()} {rel.target_fact_id[:24]}")
+                marker_str = f" [{'; '.join(markers)}]" if markers else ""
+                sections.append(
+                    f"  - [{h.fact.kind}] {h.fact.text}{marker_str} "
+                    f"(conf {h.fact.confidence:.2f})"
+                )
+
+        if not sections:
+            return ""
+
+        return (
+            "\n\n<memory-v2-facts>\n"
+            "[System: the following are durable facts from your L1 "
+            "memory store. They were recorded automatically when the "
+            "user typed key information (URLs / accounts / numeric "
+            "goals / 记住 X / 我是 X / etc) — you do NOT need to call "
+            "memorize() for these. Refer to them naturally when "
+            "relevant. ⚠ markers mean a related fact contradicts or "
+            "supersedes the marked one; prefer the unmarked source.]\n\n"
+            + "\n".join(sections)
+            + "\n</memory-v2-facts>"
+        )
+
     # ── Lifecycle ───────────────────────────────────────────────
 
     async def close(self) -> None:
