@@ -361,7 +361,33 @@ export function MessageBubble({ message, onAnswerQuestion }) {
       ${(message.skillNotes || []).map((note, i) => html`
         <${SkillNote} key=${"sn_" + i} note=${note} />
       `)}
+      ${(message.memoryMemos || []).map((memo) => html`
+        <${MemoryMemo} key=${memo.id} memo=${memo} />
+      `)}
     </article>
+  `;
+}
+
+// Wave 26 fix-4: inline 📝 badge that surfaces a MEMORY_PUT_AUTO write
+// next to the assistant bubble that triggered it. Closes the
+// "他说他记住了，结果一压缩啥都不知道" pain point — the persistence
+// now happens AND is visible.
+function MemoryMemo({ memo }) {
+  const layerLabel = memo.layer === "long_term" ? "长期记忆"
+    : memo.layer === "short_term" ? "短期记忆"
+    : memo.layer === "working" ? "工作记忆"
+    : memo.layer === "procedural" ? "程序记忆"
+    : memo.layer || "记忆";
+  return html`
+    <div
+      class="xmc-memory-memo"
+      role="note"
+      title=${memo.reason ? `为什么记: ${memo.reason}` : "已写入记忆"}
+    >
+      <span class="xmc-memory-memo__icon" aria-hidden="true">📝</span>
+      <${Badge} tone="success">${layerLabel}</${Badge}>
+      <span class="xmc-memory-memo__text">${memo.text}</span>
+    </div>
   `;
 }
 

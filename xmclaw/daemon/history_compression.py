@@ -50,12 +50,19 @@ class HistoryCompressionMixin:
         """Lazy-init the ContextCompressor on first use.
 
         Uses ``self._llm`` for both:
-          * model name (display only — drives logging not tokenisation)
+          * model name (drives ctx_len lookup + display logging)
           * summarise_call (wraps ``llm.complete``)
 
-        Default tunables match Hermes:
-          * 200K context window (Anthropic Sonnet baseline)
-          * 50% threshold (compress when prompt > 100K tokens)
+        Wave 26 fix-4 (2026-05-14): compression was firing at 39% of
+        Kimi-K2's real 256K window because the 200K default was used
+        for every model. Now context_length is looked up per-model via
+        get_model_context_length() and the threshold is 0.85 (was 0.50)
+        — accurate window declaration + the synthetic-message exclusion
+        in the estimator means we can be aggressive without overflowing.
+
+        Tunables:
+          * context window: from ``get_model_context_length(model)``
+          * 85% threshold (compress when prompt > 0.85 × ctx_len)
           * 3 head messages protected
           * 20 tail messages floor (token-budget overrides)
           * 20% of threshold reserved for summary output
@@ -63,13 +70,23 @@ class HistoryCompressionMixin:
         if self._compressor is not None:
             return self._compressor
         from xmclaw.context.compressor import ContextCompressor
+        from xmclaw.providers.llm._provider_profiles import (
+            get_model_context_length,
+        )
         model = getattr(self._llm, "model", "") or "unknown"
-        # Pull context_length from LLM if it exposes one; else 200K default.
-        ctx_len = int(getattr(self._llm, "context_length", 200_000) or 200_000)
+        # Two-step resolution: per-model lookup is the source of truth;
+        # an instance-level ``context_length`` attr (set by a custom
+        # adapter, e.g. self-hosted vLLM) wins as an override.
+        override = getattr(self._llm, "context_length", None)
+        if isinstance(override, int) and override > 0:
+            ctx_len = override
+        else:
+            provider_id = getattr(self._llm, "provider_id", None)
+            ctx_len = get_model_context_length(model, provider_id=provider_id)
         self._compressor = ContextCompressor(
             model=model,
             summarize_call=self._summarize_for_compressor,
-            threshold_percent=0.50,
+            threshold_percent=0.85,
             protect_first_n=3,
             protect_last_n=20,
             summary_target_ratio=0.20,
@@ -107,11 +124,27 @@ class HistoryCompressionMixin:
                 # SOMETHING; getting to "<10% savings → permanent skip"
                 # turns the brake into a guaranteed crash on the next
                 # token-budget breach).
+                #
+                # Wave 26 fix-4: pass an on_drop callback that
+                # publishes CONTEXT_COMPRESSION_PENDING with the
+                # doomed slice so memory subsystems can extract facts
+                # BEFORE the content collapses to a one-paragraph
+                # summary.
+                trigger_label = "reactive" if force else "proactive"
+
+                async def _on_drop(dropped: list[Message]) -> None:
+                    await self._publish_compression_pending(
+                        session_id=session_id,
+                        dropped=dropped,
+                        trigger=trigger_label,
+                    )
+
                 new_msgs = await cc.compress(
                     messages,
                     session_id=session_id,
                     current_tokens=est,
                     force=force,
+                    on_drop=_on_drop,
                 )
                 return new_msgs, len(new_msgs) != len(messages)
         except Exception as exc:  # noqa: BLE001
@@ -124,6 +157,60 @@ class HistoryCompressionMixin:
             except Exception:  # noqa: BLE001
                 pass
         return messages, False
+
+    async def _publish_compression_pending(
+        self,
+        *,
+        session_id: str,
+        dropped: list[Message],
+        trigger: str,
+    ) -> None:
+        """Wave 26 fix-4: emit CONTEXT_COMPRESSION_PENDING with the
+        doomed slice so memory subsystems can extract facts before the
+        content collapses into a summary.
+
+        Best-effort — never fails the compression call. Serialises
+        each message into a plain dict (role/content/ts) because raw
+        ``Message`` dataclass instances don't survive JSON
+        round-tripping through the event bus.
+        """
+        bus = getattr(self, "_bus", None)
+        if bus is None:
+            return
+        try:
+            from xmclaw.core.bus.events import EventType, make_event
+            from xmclaw.context.compressor import estimate_messages_tokens_rough
+            serialised: list[dict[str, Any]] = []
+            for m in dropped:
+                content = m.content if isinstance(m.content, str) else ""
+                if not content:
+                    # tool_call messages carry structured tool_calls,
+                    # not text. Serialise a short marker so the
+                    # subscriber knows this slot was a tool invocation.
+                    tcs = m.tool_calls or ()
+                    if tcs:
+                        names = ", ".join(
+                            getattr(tc, "name", "?") for tc in tcs
+                        )
+                        content = f"[tool_call: {names}]"
+                serialised.append({
+                    "role": m.role or "?",
+                    "content": content,
+                })
+            event = make_event(
+                session_id=session_id,
+                agent_id=getattr(self, "_agent_id", "main"),
+                type=EventType.CONTEXT_COMPRESSION_PENDING,
+                payload={
+                    "session_id": session_id,
+                    "dropped_messages": serialised,
+                    "trigger": trigger,
+                    "estimated_tokens": estimate_messages_tokens_rough(dropped),
+                },
+            )
+            await bus.publish(event)
+        except Exception:  # noqa: BLE001 — never fail compression over telemetry
+            pass
 
     def _build_compression_summary(
         self, session_id: str, dropped: list[Message],

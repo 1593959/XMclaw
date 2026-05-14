@@ -296,6 +296,19 @@ class EventType(str, Enum):
     # WHY older content disappeared from the agent's view.
     CONTEXT_COMPRESSED = "context_compressed"
 
+    # Wave 26 fix-4: fires BEFORE the compressor discards content so
+    # memory subscribers can extract facts from the doomed messages.
+    # Closes the "compression eats my memory" pain — autobio + vector
+    # stores listen on this and run fact extraction on the payload.
+    # Payload:
+    # {"session_id": str,
+    #  "dropped_messages": [           # list of message dicts about to be summarised
+    #    {"role": str, "content": str, "ts": float | None}, ...
+    #  ],
+    #  "trigger": "proactive" | "reactive",  # how compression got invoked
+    #  "estimated_tokens": int}         # CJK-aware estimate of dropped slice
+    CONTEXT_COMPRESSION_PENDING = "context_compression_pending"
+
     # Epic #24 Phase 2.2: emitted when ProfileExtractor flushes new
     # delta lines to ``<persona>/USER.md`` so the agent's frozen
     # system-prompt cache can invalidate (next turn re-reads USER.md

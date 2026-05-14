@@ -98,6 +98,14 @@ class ProviderProfile:
         output is statistically common phrases, not useful patterns.
     docs_url : str
         Link surfaced in error messages / wizard help text.
+    context_length : int
+        Default context-window size in tokens for the *first* entry in
+        ``default_models``. Wave-26 compression overhaul: the compressor
+        used to hardcode 200K for every model, which meant a 256K
+        Kimi-K2 session compressed at 39% of its real capacity. With
+        per-profile declaration + the model-pattern table below, the
+        threshold gate fires at the right place for each model. Falls
+        back to 200K when unknown.
     """
 
     provider_id: str
@@ -105,6 +113,7 @@ class ProviderProfile:
     default_base_url: str
     default_models: tuple[str, ...] = field(default_factory=tuple)
     default_max_tokens: int = 4096
+    context_length: int = 200_000
     supports_thinking: bool = False
     supports_tool_use_streaming: bool = True
     supports_prompt_cache_marker: bool = False
@@ -129,6 +138,8 @@ DEEPSEEK: Final = ProviderProfile(
     default_base_url="https://api.deepseek.com/v1",
     default_models=("deepseek-chat", "deepseek-reasoner"),
     default_max_tokens=8192,
+    # deepseek-chat / deepseek-reasoner: 64K context (Jan 2026 docs).
+    context_length=64_000,
     # deepseek-reasoner emits reasoning_content; deepseek-chat does not.
     # Flag set True so the streaming wiring lights up for whichever
     # model the user picks; harmless on chat models (they just never
@@ -158,6 +169,11 @@ KIMI: Final = ProviderProfile(
         "moonshot-v1-32k",
     ),
     default_max_tokens=8192,
+    # K2-0905 ships with a 256K context. The moonshot-v1-* aliases each
+    # declare their size in the name and are looked up via the pattern
+    # table below — this profile value is the default for the FIRST
+    # entry (kimi-k2-0905-preview).
+    context_length=256_000,
     supports_thinking=True,  # K2 family streams reasoning_content.
     supports_tool_use_streaming=True,
     # Moonshot's compat shim DOES honour the cache_control marker
@@ -188,6 +204,10 @@ QWEN: Final = ProviderProfile(
         "qwen3-coder-plus",
     ),
     default_max_tokens=8192,
+    # qwen-plus baseline is 131K; qwen-max is 32K; qwen3-coder-plus is
+    # 1M. Profile value matches the FIRST default (qwen-plus); the
+    # pattern table below resolves the others when actually selected.
+    context_length=131_072,
     # Qwen3 / QwQ stream reasoning_content; Qwen-Plus / Max / Turbo do
     # not — same trade-off as DeepSeek: enable the wiring, harmless on
     # non-reasoning models.
@@ -222,6 +242,10 @@ GEMINI: Final = ProviderProfile(
         "gemini-3-flash-preview",
     ),
     default_max_tokens=8192,
+    # Gemini 2.5 Flash & Pro both ship with 1M context. 3-flash-preview
+    # ships with 2M but XMclaw caps at 1M to stay within DOH-safe
+    # estimator bounds.
+    context_length=1_000_000,
     # Gemini 2.5 Flash / Pro emit thinking blocks via the native API;
     # the OpenAI-compat shim documents `reasoning` deltas in
     # streaming. Toggle on so the streaming wiring picks them up.
@@ -338,6 +362,164 @@ _TIER_PATTERNS: Final[tuple[tuple[str, str], ...]] = (
 )
 
 
+# ── Wave 26 fix-4: model id → context-window size ────────────────
+#
+# Wired into the compressor so the threshold gate (0.85 × ctx_len)
+# fires at the right point for each model. The 200K default that
+# used to be hardcoded meant:
+#   - Kimi-K2 (256K)         compressed at 100K  → 39% utilization
+#   - GPT-4o (128K)          compressed at 100K  → 78% utilization (close)
+#   - Gemini-2.5-Pro (1M)    compressed at 100K  → 10% utilization
+#   - DeepSeek-Chat (64K)    compressed at 100K  → already overflowed
+#
+# Now: per-model lookup → 85% threshold → right amount of compression
+# for the right model. Most-specific patterns first (substring match
+# inside a lower-cased model id). Fallback: 200K.
+
+# Exact-match table — model ids we know the precise context length of.
+_MODEL_CONTEXT_LENGTHS: Final[dict[str, int]] = {
+    # Anthropic — 1M tier (Sonnet 4.6 / Opus 4.7 with 1m context flag).
+    "claude-sonnet-4-6": 1_000_000,
+    "claude-opus-4-7": 1_000_000,
+    "claude-opus-4-7[1m]": 1_000_000,
+    "claude-sonnet-4-6[1m]": 1_000_000,
+    # Anthropic — 200K default tier.
+    "claude-opus-4-5": 200_000,
+    "claude-sonnet-4-5": 200_000,
+    "claude-haiku-4-5": 200_000,
+    "claude-3-5-sonnet-20241022": 200_000,
+    "claude-3-7-sonnet-20250219": 200_000,
+    # Kimi family — sizes encoded in the name except for K2.
+    "kimi-k2-0905-preview": 256_000,
+    "kimi-k1.5": 200_000,
+    "moonshot-v1-8k": 8_000,
+    "moonshot-v1-32k": 32_000,
+    "moonshot-v1-128k": 128_000,
+    # Qwen family — Alibaba official caps.
+    "qwen-plus": 131_072,
+    "qwen-max": 32_768,
+    "qwen-turbo": 1_000_000,
+    "qwen3-coder-plus": 1_000_000,
+    # DeepSeek — 64K as of Jan 2026.
+    "deepseek-chat": 64_000,
+    "deepseek-reasoner": 64_000,
+    "deepseek-v3": 128_000,
+    # Gemini family — all 2.5+ tier ships with 1M+.
+    "gemini-2.5-flash": 1_000_000,
+    "gemini-2.5-pro": 1_000_000,
+    "gemini-3-flash-preview": 1_000_000,
+    # OpenAI flagships.
+    "gpt-4o": 128_000,
+    "gpt-4o-mini": 128_000,
+    "gpt-4.1": 1_000_000,
+    "gpt-4-turbo": 128_000,
+    "o1-preview": 128_000,
+    "o1-pro": 200_000,
+    "o1-mini": 128_000,
+    "gpt-5": 256_000,
+    "gpt-5-mini": 256_000,
+    "gpt-5-nano": 256_000,
+}
+
+# Substring patterns — first-match wins. Order matters: more-specific
+# patterns MUST come before more-general ones (``kimi-k2`` before
+# ``kimi`` etc.). Lower-cased.
+_CONTEXT_LENGTH_PATTERNS: Final[tuple[tuple[str, int], ...]] = (
+    # Anthropic — explicit 1m suffix (e.g. claude-opus-4-7[1m]).
+    ("[1m]", 1_000_000),
+    ("-1m", 1_000_000),
+    # Anthropic family fallbacks.
+    ("claude-opus-4-7", 1_000_000),
+    ("claude-sonnet-4-6", 1_000_000),
+    ("claude-haiku-4", 200_000),
+    ("claude-opus-4", 200_000),
+    ("claude-sonnet-4", 200_000),
+    ("claude-3-5", 200_000),
+    ("claude-3-7", 200_000),
+    # Kimi family.
+    ("kimi-k2", 256_000),
+    ("kimi-k1", 200_000),
+    ("moonshot-v1-128k", 128_000),
+    ("moonshot-v1-32k", 32_000),
+    ("moonshot-v1-8k", 8_000),
+    # Qwen family.
+    ("qwen-turbo", 1_000_000),
+    ("qwen3-coder", 1_000_000),
+    ("qwen3", 131_072),
+    ("qwen-plus", 131_072),
+    ("qwen-max", 32_768),
+    # DeepSeek family.
+    ("deepseek-v3", 128_000),
+    ("deepseek-chat", 64_000),
+    ("deepseek-reasoner", 64_000),
+    ("deepseek-r1", 64_000),
+    # Gemini family.
+    ("gemini-3", 1_000_000),
+    ("gemini-2.5-pro", 1_000_000),
+    ("gemini-2.5-flash", 1_000_000),
+    ("gemini-2", 1_000_000),
+    # OpenAI family.
+    ("gpt-5", 256_000),
+    ("gpt-4.1", 1_000_000),
+    ("gpt-4o", 128_000),
+    ("gpt-4-turbo", 128_000),
+    ("gpt-4", 128_000),
+    ("gpt-3.5", 16_385),
+    ("o1-pro", 200_000),
+    ("o1-mini", 128_000),
+    ("o1-preview", 128_000),
+    ("o1", 200_000),
+)
+
+# Sentinel default for completely unknown models. 200K matches the
+# Anthropic Sonnet baseline and is conservative enough that even a
+# small-window model (32K) won't compress before its real ceiling
+# (because the threshold gate also checks the provider's actual
+# prompt_tokens from a successful response — see compressor.py:198
+# ``last_prompt_tokens``).
+DEFAULT_CONTEXT_LENGTH: Final[int] = 200_000
+
+
+def get_model_context_length(
+    model: str | None, *, provider_id: str | None = None,
+) -> int:
+    """Return the context-window size in tokens for a given model id.
+
+    Lookup order:
+      1. Exact match in :data:`_MODEL_CONTEXT_LENGTHS`.
+      2. Substring pattern in :data:`_CONTEXT_LENGTH_PATTERNS`
+         (first-match wins; ordered most-specific-first).
+      3. If ``provider_id`` is given, fall back to the profile's
+         declared ``context_length`` so a deployment that pins
+         ``llm.openai.api_base = some-anthropic-proxy`` still gets
+         the Anthropic profile's window.
+      4. :data:`DEFAULT_CONTEXT_LENGTH` (200K).
+
+    Args:
+        model: model id (lowercased internally for matching).
+        provider_id: optional provider id from config — used as
+            tiebreaker when the model id is ambiguous.
+    """
+    if not isinstance(model, str) or not model:
+        if provider_id:
+            profile = get_profile(provider_id)
+            if profile:
+                return profile.context_length
+        return DEFAULT_CONTEXT_LENGTH
+    lowered = model.lower()
+    exact = _MODEL_CONTEXT_LENGTHS.get(lowered)
+    if exact is not None:
+        return exact
+    for pat, ctx in _CONTEXT_LENGTH_PATTERNS:
+        if pat in lowered:
+            return ctx
+    if provider_id:
+        profile = get_profile(provider_id)
+        if profile:
+            return profile.context_length
+    return DEFAULT_CONTEXT_LENGTH
+
+
 def classify_model_tier(model: str | None) -> str:
     """Sprint 3 Iron Rule #3 — return an evolution tier for a model id.
 
@@ -390,6 +572,7 @@ def detect_profile_from_base_url(base_url: str | None) -> ProviderProfile | None
 
 __all__ = [
     "DEEPSEEK",
+    "DEFAULT_CONTEXT_LENGTH",
     "GEMINI",
     "KIMI",
     "PROFILES",
@@ -397,6 +580,7 @@ __all__ = [
     "ProviderProfile",
     "classify_model_tier",
     "detect_profile_from_base_url",
+    "get_model_context_length",
     "get_profile",
     "list_profiles",
 ]

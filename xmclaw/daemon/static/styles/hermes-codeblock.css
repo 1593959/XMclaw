@@ -452,3 +452,29 @@
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.12);
 }
+
+/* Wave 26 fix-4: inline memory-write badge ("📝 已记忆: <text>").
+ * Sits below the assistant bubble that triggered the extraction so
+ * the user SEES that the agent's "我记下了" claim was honoured. */
+.xmc-memory-memo {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.35rem 0 0;
+  padding: 0.3rem 0.6rem;
+  border: 1px dashed color-mix(in srgb, var(--color-success, #4f8c4f) 50%, transparent);
+  border-radius: var(--radius-md, 6px);
+  background: color-mix(in srgb, var(--color-success, #4f8c4f) 6%, transparent);
+  font-size: 0.78rem;
+  max-width: 100%;
+}
+.xmc-memory-memo__icon {
+  font-size: 0.95em;
+  flex-shrink: 0;
+}
+.xmc-memory-memo__text {
+  color: var(--xmc-fg, var(--midground));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}

@@ -112,9 +112,12 @@ def test_should_compress_threshold() -> None:
 
 
 def test_should_compress_anti_thrashing() -> None:
+    # Wave 26 fix-4: default threshold raised to 0.85; pin to 0.50 here
+    # so the test's 80_000 figure (which is > 50_000 threshold) still
+    # exceeds the gate and exercises the anti-thrashing branch.
     cc = ContextCompressor(
         model="t", summarize_call=_stub_summarize,
-        context_length=100_000, quiet_mode=True,
+        context_length=100_000, threshold_percent=0.5, quiet_mode=True,
     )
     cc._state("s1").ineffective_count = 2
     assert cc.should_compress(80_000, session_id="s1") is False

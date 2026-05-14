@@ -102,12 +102,32 @@ _REMEMBER_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bnote (this|that) down\b", re.IGNORECASE),
 )
 
+# Wave 26 fix-4: assistant-side memorisation claims. Triggered when the
+# agent says "我记下了 X" / "I'll remember Y" / "noted" — the user's
+# pain point was that these claims were lies (no actual write
+# happened). Now they force-fire the LLM extractor so the durable
+# memory ACTUALLY persists the thing the agent promised to keep.
+_ASSISTANT_REMEMBER_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Chinese: 我记下了 / 我记住了 / 已记录 / 已记住 / 我会记得
+    re.compile(r"我(已经?)?记(下|住)了", re.IGNORECASE),
+    re.compile(r"已记(录|住|下)", re.IGNORECASE),
+    re.compile(r"我会记得", re.IGNORECASE),
+    re.compile(r"我?帮你记(下|住)了?", re.IGNORECASE),
+    # English: I'll remember / I've noted / noted! / got it, I'll remember
+    re.compile(r"\bI(?:'ll| will) remember\b", re.IGNORECASE),
+    re.compile(r"\bI(?:'ve| have) noted\b", re.IGNORECASE),
+    re.compile(r"\bI(?:'ll| will) note\b", re.IGNORECASE),
+    re.compile(r"\bnoted[.!]", re.IGNORECASE),
+    re.compile(r"\bgot it,? I('?ll| will) remember\b", re.IGNORECASE),
+)
+
 
 TriggerKind = Literal[
     "user_fact",
     "decision",
     "completion",
     "remember",
+    "assistant_remember",  # Wave 26 fix-4
 ]
 
 
@@ -123,6 +143,12 @@ def _detect_trigger(
     # Order matters — explicit "remember" beats heuristics.
     if any(p.search(user) for p in _REMEMBER_PATTERNS):
         return "remember"
+    # Wave 26 fix-4: assistant-claimed memorisation is the #1 silent
+    # failure the user complained about ("说他记住了，一压缩啥都不知道"
+    # — closing the gap means we treat the claim as a commitment to
+    # write).
+    if any(p.search(asst) for p in _ASSISTANT_REMEMBER_PATTERNS):
+        return "assistant_remember"
     if any(p.search(user) for p in _USER_FACT_PATTERNS):
         return "user_fact"
     if any(p.search(asst) for p in _DECISION_PATTERNS):
@@ -186,10 +212,11 @@ procedural=技能/方法。
 
 
 _TRIGGER_REASONS = {
-    "user_fact":   "用户陈述了关于自己的事实/偏好",
-    "decision":    "助手或对话中做出了决定",
-    "completion":  "助手报告任务完成",
-    "remember":    "用户明确要求记住",
+    "user_fact":           "用户陈述了关于自己的事实/偏好",
+    "decision":            "助手或对话中做出了决定",
+    "completion":          "助手报告任务完成",
+    "remember":            "用户明确要求记住",
+    "assistant_remember":  "助手声称已记住 — 必须实际持久化以兑现承诺",
 }
 
 

@@ -19,6 +19,8 @@ const HANDLED = new Set([
   "cost_tick",
   "anti_req_violation",
   "context_compressed",
+  "context_compression_pending",
+  "memory_put_auto",
   "todo_updated",
   "grader_verdict",
   "skill_candidate_proposed",
@@ -172,12 +174,54 @@ export function applySecondaryEvent(chat, envelope, helpers) {
           id,
           role: "system",
           kind: "context_compressed",
-          content: `🗜️ 上下文被压缩 (${trigger})`,
+          content: `🗜️ 上下文被压缩 (${trigger}) — 已尝试将旧内容中的事实持久化到记忆`,
           status: "complete",
           ts,
           collapsed: true,
         }),
       };
+    }
+
+    case "context_compression_pending": {
+      // Wave 26 fix-4: emitted BEFORE compressor discards content.
+      // Memory subsystems subscribe on the backend to extract facts
+      // from the doomed slice. On the UI side we don't render a
+      // separate bubble (would be noise — context_compressed already
+      // shows a bubble right after). Pure no-op for transcript;
+      // surfaced in the Trace page via the always-on event log.
+      return chat;
+    }
+
+    case "memory_put_auto": {
+      // Wave 26 fix-4: surface MemoryExtractor writes as an inline
+      // 📝 badge attached to the closest preceding assistant bubble
+      // (the turn whose user_message+assistant_response triggered the
+      // extraction). The user sees "📝 已记忆: <text>" right under
+      // the response so they know the agent's claim of memorisation
+      // actually persisted.
+      const text = (payload.text || "").trim();
+      if (!text) return chat;
+      const layer = payload.layer || "long_term";
+      // Find the most-recent assistant message and append a memo to it.
+      const msgs = chat.messages.slice();
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].role !== "assistant") continue;
+        const memos = Array.isArray(msgs[i].memoryMemos)
+          ? msgs[i].memoryMemos
+          : [];
+        msgs[i] = {
+          ...msgs[i],
+          memoryMemos: memos.concat({
+            id: corr + "_mem_" + memos.length,
+            text: text.slice(0, 240),
+            layer,
+            reason: (payload.reason || "").slice(0, 120),
+            ts,
+          }),
+        };
+        return { ...chat, messages: msgs };
+      }
+      return chat;
     }
 
     case "todo_updated": {

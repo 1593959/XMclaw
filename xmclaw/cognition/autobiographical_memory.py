@@ -532,8 +532,8 @@ class AutobiographicalMemory:
     # ── Wave 25.6: bridge from ProfileExtractor (LLM) ─────────────
 
     def subscribe_to_bus(self, bus: Any) -> Any | None:
-        """Subscribe to USER_PROFILE_UPDATED events on the bus and
-        ingest each delta as a structured fact row.
+        """Subscribe to USER_PROFILE_UPDATED + CONTEXT_COMPRESSION_PENDING
+        events on the bus and ingest extracted facts into the SQL store.
 
         The rule-based extract_from_message() path only matches first-
         person self-statements ("我喜欢 X", "我是 Y", "我朋友 Z"); a
@@ -541,16 +541,17 @@ class AutobiographicalMemory:
         triggers it, leaving the autobio tables empty. ProfileExtractor
         (Epic #24 Phase 2.2) already runs LLM extraction on every turn
         and emits USER_PROFILE_UPDATED with the resulting deltas. This
-        method bridges that pipeline into our SQL store so Dashboard's
-        "认识的人 / 进行中项目" cards + the stale_project trigger see
-        real data even when nobody says "我喜欢 X".
+        method bridges that pipeline into our SQL store.
 
-        Mapping: delta.kind → kind, subject="user", predicate=kind,
-        value=delta.text, confidence=delta.confidence,
-        source="profile_extractor".
+        Wave 26 fix-4: ALSO listens for CONTEXT_COMPRESSION_PENDING —
+        before compression collapses old turns into a summary, this
+        subscriber runs the cheap rule-based extractor on every user
+        message in the doomed slice so identity/preference statements
+        ("我是 X", "我喜欢 Y") aren't silently lost. The richer LLM
+        extractor wires through a separate path (memory/extractor.py).
 
-        Returns the subscription handle (caller can ``cancel()``), or
-        None if the bus doesn't support subscribe (no-op in tests).
+        Returns the FIRST subscription handle for back-compat; the
+        compression handle is stored on ``self`` for cancellation.
         """
         subscribe = getattr(bus, "subscribe", None)
         if not callable(subscribe):
@@ -562,7 +563,13 @@ class AutobiographicalMemory:
                 t = t.value
             return str(t) == "user_profile_updated"
 
-        async def _on_event(event: Any) -> None:
+        def _is_compression_pending_event(event: Any) -> bool:
+            t = getattr(event, "type", None)
+            if hasattr(t, "value"):
+                t = t.value
+            return str(t) == "context_compression_pending"
+
+        async def _on_profile_event(event: Any) -> None:
             payload = getattr(event, "payload", None) or {}
             if not isinstance(payload, dict):
                 return
@@ -589,7 +596,39 @@ class AutobiographicalMemory:
                 except Exception:  # noqa: BLE001 — never crash the bus subscriber
                     pass
 
-        return subscribe(_is_user_profile_event, _on_event)
+        async def _on_compression_pending(event: Any) -> None:
+            # Wave 26 fix-4: scrape the doomed slice for rule-based
+            # facts before they're collapsed into a one-paragraph
+            # summary. Extract_from_message() is idempotent (unique
+            # constraint on auto_facts) so re-running on the same
+            # content costs nothing.
+            payload = getattr(event, "payload", None) or {}
+            if not isinstance(payload, dict):
+                return
+            dropped = payload.get("dropped_messages") or []
+            if not isinstance(dropped, list):
+                return
+            for msg in dropped:
+                if not isinstance(msg, dict):
+                    continue
+                # Only run rule extractor on USER messages — assistant
+                # claims ("我记下了…") go through memory/extractor.py's
+                # assistant-side path, which has the LLM extractor.
+                if msg.get("role") != "user":
+                    continue
+                content = msg.get("content") or ""
+                if not isinstance(content, str) or not content.strip():
+                    continue
+                try:
+                    self.extract_from_message(content)
+                except Exception:  # noqa: BLE001
+                    pass
+
+        # Hold both handles so callers can cancel cleanly.
+        self._compression_sub = subscribe(
+            _is_compression_pending_event, _on_compression_pending,
+        )
+        return subscribe(_is_user_profile_event, _on_profile_event)
 
 
 __all__ = [

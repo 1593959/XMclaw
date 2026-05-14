@@ -127,14 +127,41 @@ def _count_tokens_in_text(text: str) -> int:
     return (ascii_chars // _CHARS_PER_TOKEN) + (cjk * _CJK_RATIO[0] // _CJK_RATIO[1])
 
 
+# Wave 26 fix-4: hop_loop injects per-N-hop ``[GOAL-ANCHOR]`` messages
+# and agent_loop appends ``[turn hint] 你的本地 N 个技能…`` to the user
+# message every turn. These are scaffolding the user never sees — they
+# guide the LLM but should not pressure the compression gate. Counting
+# them inflates the estimate and fires compression earlier than the
+# real conversation warrants. We skip messages whose content starts
+# with these markers from the token total (the message ITSELF is still
+# sent to the LLM — we only stop them from EATING the budget).
+_SYNTHETIC_MESSAGE_PREFIXES: tuple[str, ...] = (
+    "[GOAL-ANCHOR]",
+    "[turn hint]",
+)
+
+
+def _is_synthetic_message(text: str) -> bool:
+    """True if message body is a scaffolding marker we want to exclude
+    from token-budget accounting."""
+    if not text:
+        return False
+    stripped = text.lstrip()
+    return any(stripped.startswith(p) for p in _SYNTHETIC_MESSAGE_PREFIXES)
+
+
 def estimate_messages_tokens_rough(messages: list[Message]) -> int:
-    """Rough token count, CJK-aware (B-233).
+    """Rough token count, CJK-aware (B-233 + Wave 26 fix-4).
 
     Real tokenisation is provider-specific and too expensive to run on
     every turn. This heuristic over-estimates ASCII-heavy content
     slightly (still chars/4) and properly weights CJK at ~1.5
     chars/token so the threshold gate fires AT the threshold, not 3×
     past it.
+
+    Wave 26 fix-4: scaffolding markers ([GOAL-ANCHOR], [turn hint])
+    are EXCLUDED — they're agent-internal nudges, not real
+    conversation, and shouldn't trigger early compression.
     """
     total = 0
     for m in messages:
@@ -143,6 +170,11 @@ def estimate_messages_tokens_rough(messages: list[Message]) -> int:
             text = "".join(p.get("text", "") for p in content if isinstance(p, dict))
         else:
             text = str(content)
+        if _is_synthetic_message(text):
+            # Skip the entire message — content + per-msg overhead +
+            # any tool_calls (scaffolding messages don't carry them
+            # in practice but be defensive).
+            continue
         total += _count_tokens_in_text(text) + 10
         for tc in m.tool_calls or ():
             args = getattr(tc, "args", {}) or {}
@@ -232,7 +264,7 @@ class ContextCompressor:
         model: str,
         summarize_call: Callable[[str, int], Awaitable[Optional[str]]],
         *,
-        threshold_percent: float = 0.40,  # B-233: was 0.50, lowered for safety margin
+        threshold_percent: float = 0.85,  # Wave 26 fix-4: was 0.50/0.40; per-model ctx_len now declared, can be aggressive
         protect_first_n: int = 3,
         protect_last_n: int = 20,
         summary_target_ratio: float = 0.20,
@@ -328,6 +360,7 @@ class ContextCompressor:
         current_tokens: Optional[int] = None,
         focus_topic: Optional[str] = None,
         force: bool = False,
+        on_drop: Optional[Callable[[list[Message]], Awaitable[None]]] = None,
     ) -> list[Message]:
         """Run the 5-phase pipeline. Returns a new ``list[Message]``.
 
@@ -341,6 +374,12 @@ class ContextCompressor:
             focus_topic: optional priority hint passed to the summariser.
                 When set, the summariser allocates 60-70% of the budget
                 to content related to this topic.
+            on_drop: optional async callback fired with the slice of
+                messages about to be summarised AWAY (Wave 26 fix-4).
+                Memory subsystems subscribe here to run fact extraction
+                on the doomed content before it's collapsed into a one-
+                paragraph summary. Failures inside the callback are
+                swallowed — compression never fails over a hook.
 
         On any internal error the original messages are returned
         unchanged — context compression NEVER fails a user turn.
@@ -390,6 +429,20 @@ class ContextCompressor:
                     compress_start + 1, compress_end, len(turns_to_summarize),
                     compress_start, n - compress_end,
                 )
+
+            # Wave 26 fix-4: fire the pre-drop hook so memory
+            # subsystems can extract facts from the doomed slice BEFORE
+            # it collapses into a one-paragraph summary. Never let a
+            # hook failure abort compression — wrap broadly.
+            if on_drop is not None and turns_to_summarize:
+                try:
+                    await on_drop(list(turns_to_summarize))
+                except Exception as exc:  # noqa: BLE001
+                    if not self.quiet_mode:
+                        logger.warning(
+                            "ContextCompressor.on_drop_hook_failed session=%s err=%s",
+                            session_id or "?", exc,
+                        )
 
             # Phase 4: summarise.
             summary = await self._generate_summary(
