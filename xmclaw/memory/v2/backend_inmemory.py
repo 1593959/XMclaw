@@ -28,6 +28,15 @@ _BIN_OP_RE = re.compile(
     r"^\s*(\w+)\s*(=|!=|<=|>=|<|>)\s*(.+?)\s*$"
 )
 
+# Match: ``col IN ('a', 'b', 'c')`` — case-insensitive on IN.
+_IN_OP_RE = re.compile(
+    r"^\s*(\w+)\s+IN\s*\(\s*(.+?)\s*\)\s*$",
+    re.IGNORECASE,
+)
+# Split items on commas not inside quotes. For our test usage,
+# everything's single-quoted; a simple split is enough.
+_IN_ITEM_RE = re.compile(r"\s*,\s*")
+
 
 def _unquote(s: str) -> Any:
     """Strip 'quotes' or "quotes" or cast to numeric if it looks like one."""
@@ -70,6 +79,14 @@ def _eval_filter(where: str | None, row: dict[str, Any]) -> bool:
     and_parts = re.split(r"\s+AND\s+", expr, flags=re.IGNORECASE)
     if len(and_parts) > 1:
         return all(_eval_filter(p, row) for p in and_parts)
+    # Leaf: IN clause first (more specific than binary op match).
+    m_in = _IN_OP_RE.match(expr)
+    if m_in:
+        col = m_in.group(1)
+        items_raw = _IN_ITEM_RE.split(m_in.group(2))
+        items = [_unquote(it) for it in items_raw]
+        cell = row.get(col)
+        return cell in items
     # Leaf: binary comparison.
     m = _BIN_OP_RE.match(expr)
     if not m:

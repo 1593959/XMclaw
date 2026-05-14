@@ -28,6 +28,12 @@ from xmclaw.memory.v2.backend_inmemory import (
     InMemoryGraphBackend,
     InMemoryVectorBackend,
 )
+from xmclaw.memory.v2.embedding import (
+    EmbeddingFailure,
+    EmbeddingService,
+    StubEmbedder,
+    build_embedding_service,
+)
 from xmclaw.memory.v2.models import (
     Fact,
     FactKind,
@@ -39,6 +45,13 @@ from xmclaw.memory.v2.models import (
     Relation,
     RelationKind,
     RelationKindStr,
+)
+from xmclaw.memory.v2.service import (
+    CONTRADICTS_DISTANCE_THRESHOLD,
+    LONG_TERM_PROMOTE_THRESHOLD,
+    MemoryService,
+    RecallHit,
+    SAME_TOPIC_DISTANCE_THRESHOLD,
 )
 
 # LanceDB backends lazy-imported via helper so importing
@@ -57,6 +70,9 @@ def get_lancedb_graph_backend(*args, **kwargs):
 
 
 __all__ = [
+    "CONTRADICTS_DISTANCE_THRESHOLD",
+    "EmbeddingFailure",
+    "EmbeddingService",
     "Fact",
     "FactKind",
     "FactKindStr",
@@ -67,10 +83,16 @@ __all__ = [
     "GraphBackend",
     "InMemoryGraphBackend",
     "InMemoryVectorBackend",
+    "LONG_TERM_PROMOTE_THRESHOLD",
+    "MemoryService",
+    "RecallHit",
     "Relation",
     "RelationKind",
     "RelationKindStr",
+    "SAME_TOPIC_DISTANCE_THRESHOLD",
+    "StubEmbedder",
     "VectorBackend",
+    "build_embedding_service",
     "get_lancedb_graph_backend",
     "get_lancedb_vector_backend",
 ]
