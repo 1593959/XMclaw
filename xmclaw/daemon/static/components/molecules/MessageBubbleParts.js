@@ -29,7 +29,15 @@ export function ToolCard({ call }) {
       return String(call.args);
     }
   })();
-  const openByDefault = call.status === "error";
+  // Auto-open when there's an error (so user sees the failure) OR
+  // when there's a media attachment (so the agent's screenshot /
+  // video / audio shows up without an extra click — Wave 26 UX fix).
+  const hasMedia = (
+    (Array.isArray(call.images) && call.images.length > 0)
+    || (Array.isArray(call.videos) && call.videos.length > 0)
+    || (Array.isArray(call.audios) && call.audios.length > 0)
+  );
+  const openByDefault = call.status === "error" || hasMedia;
 
   // B-130: detect skill tool-calls so the user can SEE in-chat when
   // the agent autonomously picked a skill (vs reaching for a generic
@@ -116,45 +124,55 @@ export function ToolCard({ call }) {
               </div>
             `
           : null}
+        ${Array.isArray(call.videos) && call.videos.length > 0
+          ? html`
+              <div class="xmc-toolcard__section">
+                <div class="xmc-toolcard__label">附视频 (${call.videos.length})</div>
+                <div class="xmc-toolcard__images">
+                  ${call.videos.map((src, i) => html`
+                    <video key=${"v" + i} src=${src} controls preload="metadata" class="xmc-toolcard__video" />
+                  `)}
+                </div>
+              </div>
+            `
+          : null}
+        ${Array.isArray(call.audios) && call.audios.length > 0
+          ? html`
+              <div class="xmc-toolcard__section">
+                <div class="xmc-toolcard__label">附音频 (${call.audios.length})</div>
+                <div class="xmc-toolcard__images">
+                  ${call.audios.map((src, i) => html`
+                    <audio key=${"a" + i} src=${src} controls preload="metadata" class="xmc-toolcard__audio" />
+                  `)}
+                </div>
+              </div>
+            `
+          : null}
       </div>
     </details>
   `;
 }
 
 
-// B-MULTIMODAL-UI: render image attachments from tool results
-// (screen_capture / image_read / camera_capture / gui_send_chat
-// confirm screenshots). Each image is fetched from
-// /api/v2/media/<filename>?token=<pairing> so we attach the
-// pairing token from the current location.
+// B-MULTIMODAL-UI / Wave 26: render image attachments from tool
+// results. chat_reducer already passed URLs through _resolveMediaUrl
+// so the pairing token is baked in — pass through as-is. Pre-fix the
+// gallery double-tokened ("?token=X&token=X"); harmless but a code
+// smell.
 function ToolImageGallery({ images }) {
-  const token = (() => {
-    try {
-      const url = new URL(window.location.href);
-      return url.searchParams.get("token") || "";
-    } catch (_e) {
-      return "";
-    }
-  })();
-  function _url(u) {
-    if (!u) return "";
-    if (u.startsWith("http") || u.startsWith("data:")) return u;
-    if (u.includes("?")) return u + (token ? "&token=" + encodeURIComponent(token) : "");
-    return u + (token ? "?token=" + encodeURIComponent(token) : "");
-  }
   return html`
     <div class="xmc-toolcard__images">
       ${images.map((src, i) => html`
         <a
           key=${i}
-          href=${_url(src)}
+          href=${src}
           target="_blank"
           rel="noopener"
           class="xmc-toolcard__image-link"
           title="点击放大查看"
         >
           <img
-            src=${_url(src)}
+            src=${src}
             alt="tool image ${i + 1}"
             loading="lazy"
             class="xmc-toolcard__image"

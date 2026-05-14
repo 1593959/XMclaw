@@ -338,17 +338,21 @@ class ContentTools(ToolProvider):
                 "Install with: pip install mss"
             ))
         args = call.args or {}
-        # Default output path. ~/Pictures on Windows is the standard
-        # screenshot dump; fall back to ~ on other OSes.
+        # Wave 26 fix: default output goes into the daemon's media-
+        # accessible dir (~/.xmclaw/v2/screenshots/) so the UI's
+        # /api/v2/media/<filename> route can actually serve the file.
+        # Pre-fix the default was ~/Pictures which is OUTSIDE the
+        # media allowlist → screenshot showed as a broken thumbnail
+        # in chat. Explicit ``path`` still wins (agent can save
+        # elsewhere on the user's machine when intent is "save to
+        # desktop for later").
         ts = int(time.time())
         out_path_arg = args.get("path")
         if out_path_arg:
             out = Path(str(out_path_arg)).expanduser()
         else:
-            home = Path.home()
-            pics = home / "Pictures"
-            base = pics if pics.is_dir() else home
-            out = base / f"xmclaw_{ts}.png"
+            from xmclaw.utils.paths import data_dir
+            out = data_dir() / "v2" / "screenshots" / f"xmclaw_{ts}.png"
         out.parent.mkdir(parents=True, exist_ok=True)
 
         monitor_idx = int(args.get("monitor", 1))

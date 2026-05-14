@@ -233,6 +233,21 @@
   height: auto;
   object-fit: contain;
 }
+/* Wave 26: video / audio thumbnails in tool cards. Slightly taller
+   than image thumbnails because video controls eat ~30px. */
+.xmc-toolcard__video {
+  display: block;
+  max-height: 260px;
+  max-width: 100%;
+  border: 1px solid var(--color-border, #2a2f3a);
+  border-radius: 6px;
+  background: #000;
+}
+.xmc-toolcard__audio {
+  display: block;
+  max-width: 100%;
+  min-width: 240px;
+}
 
 /* User-side message image attachments (composer-staged images). */
 .xmc-msg__images {
