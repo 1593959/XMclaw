@@ -839,15 +839,20 @@ Memory Panel 下挂一个 **"图谱"** 标签页 —— **force-directed network
 
 1. **架构方向**：上面四层 + 单一管道，OK 吗？还是你想要不同的分层？
 2. **向量后端**（§16 调研结论）：LanceDB 接受吗？还是想用 sqlite-vec / Chroma / Qdrant local / SurrealDB？
-3. **图谱方案**（§16.8.5）：LanceDB + relations 表 OK，还是想直接上 SurrealDB embedded？
-4. **Agent 使用契约**（§8.3）：自动注入 + 主动调用 + 反馈回路这三段设计 OK 吗？要补什么？
-5. **图谱 UI**（§9.3）：vis-network 力导向 + 多视图（列表/流水/图谱）OK 吗？还是直接 Cytoscape.js？
-6. **杀代码列表**（10.1）：sqlite_vec / memory_graph / autobio 三个会一并下线，有没有哪个其实你想留？
-7. **工具收敛**（7.3）：6 → 1 个，OK 吗？
-8. **迁移**：能接受一次性迁移（带备份）吗？还是要新旧并存一段？
-9. **分阶段实施**（11）：按 Phase 1a-9 顺序走，OK 吗？还是想跳着做？
-10. **L1 默认 layer**（13）：working 还是 long_term？
-11. **待决问题表 13**：每行的默认提议接受还是改？
+3. **L1 实现方案**（§16.8.7 关键决策）：
+   - **Path A** 自建（LanceDB + 自定 schema，~10 天，全控制）
+   - **Path B** m_flow 替换 L1（~3-4 天，benchmark 89%，但 schema 约束）
+   - **Path C** 混合（m_flow 仅做摄取，~7 天，灵活）
+   - 或者 **先 spike 半天** 再决定（推荐）
+4. **图谱方案**（§16.8.5）：LanceDB + relations 表 OK，还是想直接上 SurrealDB embedded？
+5. **Agent 使用契约**（§8.3）：自动注入 + 主动调用 + 反馈回路这三段设计 OK 吗？要补什么？
+6. **图谱 UI**（§9.3）：vis-network 力导向 + 多视图（列表/流水/图谱）OK 吗？还是直接 Cytoscape.js？
+7. **杀代码列表**（10.1）：sqlite_vec / memory_graph / autobio 三个会一并下线，有没有哪个其实你想留？
+8. **工具收敛**（7.3）：6 → 1 个，OK 吗？
+9. **迁移**：能接受一次性迁移（带备份）吗？还是要新旧并存一段？
+10. **分阶段实施**（11）：按 Phase 1a-10 顺序走，OK 吗？还是想跳着做？
+11. **L1 默认 layer**（13）：working 还是 long_term？
+12. **待决问题表 13**：每行的默认提议接受还是改？
 
 ---
 
@@ -858,6 +863,10 @@ Memory Panel 下挂一个 **"图谱"** 标签页 —— **force-directed network
 > 调研时间: 2026-05-14. 数据源标注在每条结论后。
 
 ### 16.1 候选清单 + 一句话评判
+
+候选拆成"**纯向量后端**"和"**记忆框架（含图）**"两类：
+
+**纯向量 / 图后端：**
 
 | 候选 | 类型 | 进 / 出 |
 |---|---|---|
@@ -871,6 +880,19 @@ Memory Panel 下挂一个 **"图谱"** 标签页 —— **force-directed network
 | **pgvector** | PostgreSQL 扩展 | ❌ 违反 local-first |
 | **Milvus / Weaviate / Pinecone** | 云 / 服务化 | ❌ 违反 local-first |
 | **FAISS / hnswlib (裸)** | C++ 库 | ❌ 没 metadata、没持久化 |
+
+**完整 Agent Memory 框架（含图 + 检索引擎）：**
+
+| 候选 | 类型 | LongMemEval 分数 | 进 / 出 |
+|---|---|---|---|
+| **m_flow** (FlowElement-ai) | bio-inspired cognitive memory engine | **89%** | ✅ **重磅候选** (§16.8.7) |
+| **Hindsight** | 双焦点 (个性化 + 机构知识) | **91.4%** | 🟡 备选 |
+| **Letta** (MemGPT) | OS-inspired tiered memory + agent runtime | — | 🟡 但是 full runtime，与我们 AgentLoop 冲突 |
+| **Cognee** | 知识图谱 + 多模态 | 79.4% | 🟡 6 lines of code 但 Python-only 社区小 |
+| **Mem0** | personalization memory layer | 71% | ❌ benchmark 拖底 + 图功能要付费 ($249/mo) |
+| **Zep / Graphiti** | 时序知识图谱 | 63.8% / 73.4% | 🟡 self-host 只剩 Graphiti，Zep cloud-only |
+| **Supermemory** | API bundling memory + RAG | 81.6% | ❌ 闭源 + cloud-only |
+| **LangMem / LlamaIndex Memory** | 框架内置 | 较低 | ❌ 框架锁定（LangGraph / LlamaIndex） |
 
 ### 16.2 硬约束 (XMclaw 项目特性)
 
@@ -1064,6 +1086,104 @@ Memory Panel 下挂一个 **"图谱"** 标签页 —— **force-directed network
 | `PART_OF` | episode → experience → skill 蒸馏链 | 自动 |
 | `REFERS_TO` | LLM 抽取时识别引用 | LLM |
 | `SAME_TOPIC` | vec 距离 < 0.2 的 fact 对 | 自动周期跑 |
+
+### 16.8.7 m_flow 详评 — 第三条路
+
+[m_flow](https://github.com/FlowElement-ai/m_flow) 是 2026 年新涌现的"完整 agent memory engine"，不是单纯的向量数据库 —— 它把 ingest → 抽取 → 图谱构建 → embedding → 检索 全打包成一个 Python 库，**LongMemEval 跑到 89%，把 Mem0 (71%) / Supermemory (74%) / Zep (64%) 全部碾过**。
+
+#### 16.8.7.1 m_flow 的核心机制
+
+```
+        Episode (一段完整问答 / 文档片段)
+            │
+        Facet (从 Episode 抽出的语义片段, 比如 "用户偏好")
+            │
+        FacetPoint (Facet 里的具体陈述, 比如 "喜欢简短回复")
+            │
+        Entity (被 FacetPoint 引用的实体, 比如 "用户" / "Python")
+```
+
+检索时不是"找最相似 chunk"，而是"**找最强的证据路径**"。Query 在 Episode/Facet/FacetPoint/Entity 任意一层 anchor，然后**沿 typed edge 向上传播**返回 Episode Bundle。
+
+#### 16.8.7.2 三种集成姿态
+
+**Path A — 我们自己建（当前文档方案）**
+
+LanceDB + 自建 facts + relations，按我们的 7 类 FactKind / 6 类 RelationKind 设计。
+
+| 维度 | 评价 |
+|---|---|
+| 工时 | ~10 天 |
+| 控制力 | 100%，schema 完全贴 L0-L3 进化流 |
+| 集成度 | 与 L2 experience / L3 skill 管道天然契合 |
+| 性能 | 取决于我们的实现 |
+| 风险 | 我们自己写的 graph + retrieval 可能踩坑 |
+
+**Path B — m_flow 替换 L1**
+
+m_flow 接管"facts + relations + 检索"，底层挂 LanceDB（m_flow 本身 backend-agnostic 支持 LanceDB）。
+
+| 维度 | 评价 |
+|---|---|
+| 工时 | ~3-4 天集成 |
+| 控制力 | 60%，要接受他们的 Episode/Facet/FacetPoint/Entity schema |
+| 集成度 | L2/L3 仍是我们自己的（m_flow 不管 experience 蒸馏 / skill 晋升）|
+| 性能 | 89% LongMemEval（实测）|
+| 风险 | schema 翻译开销；他们的 API churn；3.2K star 还不算业界标准 |
+
+**Path C — 混合**
+
+我们的 L1 schema 保留（FactKind / RelationKind 我们定）；m_flow **只用作"文档摄取 + coreference resolution"工具**（它强在这一块）：
+
+| 维度 | 评价 |
+|---|---|
+| 工时 | ~7 天（A 减少 3 天） |
+| 控制力 | 90%（schema 自有，仅 ingestion 借）|
+| 集成度 | m_flow 输出我们定义的 Fact 结构（写个 adapter）|
+| 性能 | ingestion 强（50+ 格式），retrieval 自建 |
+| 风险 | 边界拆分清晰度需要工程纪律 |
+
+#### 16.8.7.3 决策矩阵
+
+| 维度 | Path A 自建 | Path B m_flow 替换 | Path C 混合 |
+|---|---|---|---|
+| **vs 我们 L0-L3 管道契合度** | ✅ 完美 | 🟡 要 schema 映射 | ✅ 上层不变 |
+| **L2/L3 进化耦合** | ✅ 设计时就考虑 | 🟡 m_flow 不知道有 L2/L3 | ✅ 不影响 |
+| **CONTRADICTS/SUPERSEDES 关系语义** | ✅ 一等公民 | 🟡 m_flow 用 typed edges 抽象 | ✅ |
+| **agent 使用契约**（§8.3）| ✅ 自由设计 | 🟡 受 m_flow API 约束 | ✅ |
+| **89% benchmark 直接拿** | ❌ 要自己达到 | ✅ | 🟡 需自己实现 retrieval |
+| **50+ 文件格式摄取** | ❌ 自己写 | ✅ | ✅ 借 m_flow 摄取 |
+| **coreference resolution** | ❌ 自己写或不要 | ✅ | ✅ 借 m_flow |
+| **dep 数量** | 0 新（已有 LanceDB） | +1 (mflow-ai) | +1 (mflow-ai) |
+| **学习曲线** | 0 | 中（m_flow API） | 低（只学 ingestion）|
+| **未来切回 / 切换** | 自有代码可改 | 锁在他们 API | 部分锁定 |
+| **production 用户背书** | LanceDB 有 | m_flow 没大牌 | LanceDB 有 |
+
+#### 16.8.7.4 我的看法
+
+我倾向 **Path A**（自建），理由：
+
+1. **L2/L3 进化是 XMclaw 的灵魂**。m_flow 完全不管这个 —— 我们 L1 怎么写，L2 distiller 就怎么读。**Path A 设计时就考虑 L2 的消费契合**，Path B 要在外面再包一层。
+2. **CONTRADICTS / SUPERSEDES 在我们语义里是一等公民**（修旧记忆、状态覆写、agent 看到立刻避坑）。m_flow 的 Episode→Facet→FacetPoint→Entity 模型更适合"知识图谱式 RAG"，**不是"个性化 + 决策追溯"**。
+3. **m_flow 还没大牌客户**（3.2K star 不算成熟）。LanceDB 有 Netflix/Uber/Harvey 撑腰，长期看 LanceDB 风险更低。
+4. **schema 翻译是隐形税**。每次他们改 schema 我们都要追，每次我们想加 FactKind 都要看他们支不支持。
+5. **89% benchmark 是 RAG 语料场景**（LongMemEval / LoCoMo），跟我们"agent 记住用户偏好 + 业务参数"的场景**重合度大概 60%**。对我们来说"陪玩店账号"被 100% 检索到比"5 轮对话末尾被检索到"重要 100 倍。
+
+**但是有一个例外可能改变结论：** 如果用户希望 XMclaw 处理"摄取 PDF / Word / 网页 → 自动建图谱 → RAG 查询"这类**文档 RAG 场景**，那 Path C（借 m_flow 做摄取层）非常值得 —— 自己写 50+ 格式 + coreference 没头脑。
+
+#### 16.8.7.5 推荐试探性"spike"
+
+不论选哪个 Path，建议在 Phase 1a 前花 **半天做一个 m_flow spike**：
+
+1. `pip install mflow-ai`
+2. 跑他们的 quickstart，喂一段我们真实对话 transcript
+3. 测试三件事：
+   - 能不能正确提取出 "陪玩店业务" / "URL" / "账号密码" / "月流水目标"
+   - 检索 "业务参数" 时能否命中上面所有
+   - 试一下他们的 LanceDB 后端能否平行运行（与我们后续的 LanceDB 不冲突）
+4. 半天后写一个 50 行的实测报告，再做 Path 决策
+
+**spike 通过 → 严肃考虑 Path B 或 C；spike 不通过 → 坚定 Path A。**
 
 ### 16.9 风险 + 缓解
 
