@@ -471,6 +471,128 @@ UI 上点开任意一个 L3 skill → 展开看：
 
 **用户可以看到 agent 的每一项能力是从哪条历史对话长出来的。** 这是"honest evolution"的具体形态。
 
+### 8.3 Agent 使用契约（关键：让 agent 知道怎么用）
+
+> 用户原话："**深度绑定也是给 agent 用的，他得知道该怎么用**"
+
+光把数据管道修通不够。agent 必须知道：
+- 什么时候会自动收到记忆注入（不用自己 recall）
+- 什么时候应该主动调 `memorize` 工具
+- 什么时候应该用 `memory_search` 工具
+- 他自己晋升出来的 L3 skill 如何在工具列表里露面
+- 如何理解 prompt 里的"过去经验"提示
+
+否则就算后端写得再漂亮，agent 也不会用。
+
+#### 8.3.1 自动注入（agent 0 心智负担）
+
+每轮 LLM 起手时，系统提示词包含：
+
+```
+## 你的记忆系统
+
+你有一个 4 层记忆 + 进化管道。每轮我会自动把相关内容注入到上下文，
+你**不需要主动 recall**，除非确实搜不到关键信息。
+
+### 用户档案 (USER.md, 自动同步)
+{USER.md 内容 — 从 L1 user-scope facts 渲染}
+
+### 项目档案 (PROJECT.md, 自动同步)
+{PROJECT.md 内容 — 从 L1 project-scope facts 渲染}
+
+### 决定记录 (DECISIONS.md, 自动同步)
+{DECISIONS.md — 从 L1 decision kind 渲染}
+
+### 与本轮相关的事实 (Top-K, 向量召回)
+{recall(user_message, k=8) 结果}
+
+### 与本轮相关的经验 (Experience Bank)
+{experience_bank.match(user_message, k=3) 结果}
+  - 例: "用户问业务参数 → sqlite_query 看后台"
+    成功 12 次, 失败 1 次, 你可以照这个模式做
+
+### 你自己晋升的技能 (L3, 出现在你的 tools 列表)
+{skill_registry.list_promoted() 名称列表}
+```
+
+#### 8.3.2 主动调用契约（agent 该 / 不该）
+
+```
+## memorize(text, kind, scope) — 写入记忆
+
+什么时候调用：
+  ✅ 用户明确说"记住 X"、"以后都这样" → 立刻调
+  ✅ 你做出一个决定（"我决定用 X"）→ 调 kind=decision
+  ✅ 用户告诉你一个长期偏好（"我喜欢简短回复"）→ 调 kind=preference
+
+什么时候 NOT 调用（避免噪音）：
+  ❌ 单次操作的细节（"刚才点了 5 次按钮"）
+  ❌ 你已经看到 prompt 里有该事实
+  ❌ 临时上下文（"现在文件名是 X"）→ 这类用 todo_write
+
+注意：daemon 会自动从用户消息中抓 URL / 账号密码 / 数字目标
+等关键模式强制落库，你不需要为这些再调 memorize。
+
+## memory_search(query) — 主动查询
+
+什么时候调用：
+  ✅ 你怀疑过去聊过相关话题但 prompt 里没看到
+  ✅ 用户问"你还记得 ... 吗"
+
+不要滥用：默认 prompt 里的 Top-K 召回已经覆盖了大部分情况。
+```
+
+#### 8.3.3 L3 skill 露面（agent 调自己晋升的能力）
+
+agent 看到的 tools 列表里，每个 L3 skill 会显示：
+
+```
+- check_business_dashboard
+  来源: 从你过去 5 次"用户问业务参数 → sqlite_query"的成功
+        episode 晶化（origin_experience_id=exp_abc123）
+  调用模式: check_business_dashboard(query: str)
+  自上次使用: 3 hops 前
+```
+
+**这让 agent 看见自己的"成长"**。下次再遇到类似场景，agent 知道"我有专门的工具，不用再 LLM 推理"。
+
+#### 8.3.4 反馈回路（agent 自评）
+
+每次 turn 结束，agent 在 inner_monologue 里被鼓励反思：
+
+```
+你这次解决问题用了哪些记忆 / 经验 / 技能？哪些下次该记？
+
+填表：
+- recalled_facts: [fact_id 列表，标注哪条真有用]
+- used_experiences: [exp_id 列表]
+- used_skills: [skill_id 列表]
+- new_to_memorize: [新的应该记的事实]
+```
+
+这份"自评"喂回 grader：
+- 被标"真有用"的 fact → confidence + 0.05, retrieval_count++
+- 没被引用的 recall hit → 下次 ranking 降权
+- agent 提议的 new_to_memorize → 直接走 memorize() 落库
+
+**自评闭环 = agent 用记忆 = 记忆质量自动提升**。这就是"深度绑定给 agent 用"的具体落地。
+
+### 8.4 关系图谱在 agent 视角的用法
+
+agent 在 prompt 里收到的不仅是 top-K facts 文本，还有它们的**关系标记**：
+
+```
+### 相关事实
+[fact-1] 陪玩店业务: pw310.wxselling.com  (kind=project, conf=0.95)
+  ↳ 包含 [fact-3]    (PART_OF)
+  ↳ 矛盾于 [fact-9]  (CONTRADICTS - 旧版账号 admin/admin123)
+
+[fact-3] 后台账号 admin / admin888  (kind=project, conf=0.95)
+  ↳ 来自事件 #ev-abc123 (CAUSED_BY)
+```
+
+agent 看到 CONTRADICTS 提示就知道："**fact-9 是过期信息，别用**"。看到 PART_OF 就知道两个 fact 是一组的，引用要带上下文。这是图谱**对 agent 实际有用**的形态 —— 而不是给 UI 看的好看。
+
 ---
 
 ## 9. 用户可见层
@@ -518,6 +640,71 @@ UI 上点开任意一个 L3 skill → 展开看：
 ```
 
 **每条记录可点击：** 点 fact → 看完整 text + 矛盾候选 + 链回 events；点 skill → 看 origin experience + origin episodes。
+
+### 9.3 知识图谱可视化（新页签）
+
+Memory Panel 下挂一个 **"图谱"** 标签页 —— **force-directed network 渲染整个 L1 + L2 + L3 互联关系**：
+
+```
+                           [DECISIONS: threshold 85%]
+                                    ⊥
+                                 SUPERSEDES
+                                    │
+       [USER: 喜欢简短回复] ───SAME_TOPIC─── [USER: PowerShell 不用 bash]
+                                                          │
+                                                       PART_OF
+                                                          ↓
+                  [EXP: 用户问业务参数 → sqlite_query]
+                  (S=12 F=1)                ╲
+                       │                     ╲ PROMOTED_TO
+                       │ CAUSED_BY            ╲
+                       ↓                       ↓
+       [EP: ep_abc 查询 orders 表]      [SKILL: check_business_dashboard]
+                       │
+                  CAUSED_BY
+                       ↓
+       [EV: user_message "看后台数据"]
+                                  CONTRADICTS
+       [PROJECT: pw310.wxselling.com] ━━━━━ [PROJECT-OLD: pw310.example.com]
+       (active)                            (superseded)
+```
+
+**视觉编码：**
+
+| 维度 | 编码 |
+|---|---|
+| 节点形状 | L1 fact: ●, L2 exp: ◆, L3 skill: ⚡ |
+| 节点颜色 | preference 蓝 / decision 紫 / identity 绿 / commitment 黄 / correction 红 / project 橙 / episode 灰 |
+| 节点大小 | 与 retrieval_count（被引用次数）成正比 |
+| 边颜色 | CONTRADICTS 红 / SUPERSEDES 灰虚线 / CAUSED_BY 蓝 / PART_OF 紫 / SAME_TOPIC 浅灰 / REFERS_TO 绿 |
+| 边粗细 | 与 strength 成正比 |
+
+**交互：**
+- **拖拽**：力导向重排
+- **悬停节点**：弹 popover 显示 fact text + confidence + ts_last
+- **悬停边**：显示 relation 类型 + strength
+- **点击节点**：右侧抽屉打开 fact 详情 + 它的 1-hop 子图 + 源 event 链接
+- **顶部 filter**：按 kind / scope / confidence range 过滤
+- **左侧搜索框**：vec 检索定位某个 fact，画布自动 zoom 到它
+- **右下 mini-map**：大图谱时的导航
+
+**技术选型：**
+- **库：vis-network**（200K 周下载，~50KB，物理引擎内置，与 Preact + htm 集成简单，DataSet 响应式）
+- **数据源：** `GET /api/v2/memory/graph?focus_fact_id=<id>&max_hops=2&limit=200` 返回 `{nodes: [...], edges: [...]}` JSON
+- **更新：** WS 事件 `FACT_RECORDED` / `RELATION_ADDED` → 增量更新 DataSet，不全量重画
+- **降级：** > 1000 节点时切到 Cytoscape.js 或 Sigma.js (WebGL) 渲染
+
+**Sources:** [Cytoscape.js vs vis-network vs Sigma.js 2026 comparison](https://www.pkgpulse.com/blog/cytoscape-vs-vis-network-vs-sigma-graph-visualization-javascript-2026)
+
+### 9.4 UI 三种粒度的视图（共用底层 facts.db）
+
+| 视图 | 数据形态 | 用途 |
+|---|---|---|
+| **列表视图**（默认） | markdown bullets, 按 kind 分组 | 阅读 / 编辑 / 删除单条 |
+| **流水视图** | 时间倒序 + kind 颜色条 | 看记忆生长过程 / 审计 |
+| **图谱视图** | force-directed network | 看关系结构 / 找盲点 |
+
+三种视图共享同一份 facts.db + relations 表，**视图切换是前端的事**，不重新查数据库。
 
 ---
 
@@ -578,20 +765,25 @@ UI 上点开任意一个 L3 skill → 展开看：
 | Phase | 工作 | 工时 | 验证 |
 |---|---|---|---|
 | **0** | 这份文档 | — | 用户拍板 |
-| **1a** | 引入 LanceDB 依赖 + `VectorBackend` 接口 + `LanceDBBackend` + `InMemoryBackend` | 半天 | 单元测试 round-trip / upsert 幂等 / where filter |
-| **1b** | 新 `xmclaw/memory/` 模块（Fact / FactKind / EmbeddingService / facts table schema） | 半天 | 单元测试 100% |
-| **2** | 新 `memory_service.remember/recall` 公开 API（基于 VectorBackend） | 半天 | 单元测试 + 5 个写入触发都接通 |
-| **3** | daemon 入口 hook (关键信息强制写) | 半天 | 集成测试：消息含 URL → 立刻能 recall |
-| **4** | UI Memory Panel + 三个 markdown 双向同步 | 1 天 | 浏览器 e2e |
-| **5** | 迁移脚本（memory.db + autobio + graph → LanceDB facts 表） + 跑一次 | 1 天 | 迁移报告：保留 X / 丢弃 Y / 失败 Z |
-| **6** | 删工具 / 删死代码 / 移除 sqlite-vec 依赖 | 半天 | grep 0 引用确认 + `pyproject.toml` clean |
-| **7** | L2 ExperienceDistiller | 1 天 | 跑 10 个 episode 看能否蒸馏出 experience |
-| **8** | L3 promote 接 L2 | 半天 | 看到一个真实 skill 从 experience promote |
-| **9** | 反向追溯 UI | 半天 | 点 skill 能链到 episode 链到 event |
+| **1a** | 引入 LanceDB 依赖 + `VectorBackend` + `GraphBackend` Protocol + LanceDB 双实现 + InMemory 测试 stub | 1 天 | 单元测试 upsert 幂等 / where filter / relations CRUD / neighbors |
+| **1b** | `xmclaw/memory/` 核心模块（Fact / Relation / FactKind / EmbeddingService / schema） | 半天 | 单元测试 100% |
+| **2** | `memory_service.remember/recall/relate/neighbors` 公开 API | 半天 | 5 个写入触发 + 关系自动生成（contradicts/supersedes/caused_by）都接通 |
+| **3** | daemon 入口 hook（关键信息强制写）+ assistant_remember 强制 trigger | 半天 | 集成测试：消息含 URL → 立刻能 recall + 关系自动连边 |
+| **4a** | **Agent 使用契约** — 系统提示词注入（自动 USER/PROJECT/DECISIONS + top-K + experiences + skills）+ 工具描述更新 | 半天 | 模型实测：给定关键信息 → 下轮自动引用 |
+| **4b** | Agent 自评反馈回路（inner_monologue 填表 → grader 闭环）| 半天 | 看到 retrieval_count 真的随使用上涨 |
+| **5a** | UI Memory Panel 列表视图 + 流水视图 + 三个 markdown 双向同步 | 1 天 | 浏览器 e2e |
+| **5b** | UI 图谱视图 — vis-network 集成 + `/api/v2/memory/graph` 端点 + WS 增量更新 | 1 天 | 渲染 200 节点流畅；点击节点抽屉打开 |
+| **6** | 迁移脚本（memory.db + autobio + graph → facts + relations）+ 跑一次 | 1 天 | 迁移报告：保留 X / 丢弃 Y / 失败 Z |
+| **7** | 删工具 / 删死代码 / 移除 sqlite-vec + memory_graph + autobio 模块 | 半天 | grep 0 引用 + `pyproject.toml` clean |
+| **8** | L2 ExperienceDistiller — 扫 episodes 聚类抽 pattern | 1 天 | 10 个相似 episode → 蒸馏出 1 个 experience candidate |
+| **9** | L3 promote — experience grader 评分通过 → skill canary 灰度 | 半天 | 看到 1 个真实 skill 从 experience 晋升 + UI 显示来源链 |
+| **10** | 反向追溯 UI — skill 详情页展开 origin chain | 半天 | 点 skill ⚡ → 看到 origin exp ◆ → 看到 5 个 episode ● → 看到 user_message 事件 |
 
-**总计：6.5-7.5 天**（不算阻塞 / 测试调整）
+**总计：9.5-10.5 天**（不算阻塞 / 测试调整）
 
-**每个 Phase 是独立可验证、可回滚的。** 不要一次性大爆炸。LanceDB 引入放最前因为整条管道的写入路径都依赖它。
+**每个 Phase 是独立可验证、可回滚的。** 不要一次性大爆炸。
+
+**关键依赖顺序：** 1a → 1b → 2 是地基；3 是写入触发；4a/4b 是 agent 集成；5a/5b 是 UI；6 是迁移；7 是清理；8/9/10 是进化层。**4a (agent 契约) 在第二批做** —— 是用户特别强调的"agent 得知道怎么用"，必须在记忆能写之后立刻教 agent 用。
 
 ---
 
@@ -646,13 +838,16 @@ UI 上点开任意一个 L3 skill → 展开看：
 ## 15. 决策需要用户回答
 
 1. **架构方向**：上面四层 + 单一管道，OK 吗？还是你想要不同的分层？
-2. **向量后端**（§16 调研结论）：LanceDB 接受吗？还是想用 sqlite-vec / Chroma / Qdrant local？
-3. **杀代码列表**（10.1）：sqlite_vec / memory_graph / autobio 三个会一并下线，有没有哪个其实你想留？
-4. **工具收敛**（7.3）：6 → 1 个，OK 吗？
-5. **迁移**：能接受一次性迁移（带备份）吗？还是要新旧并存一段？
-6. **分阶段实施**（11）：按 Phase 1a-9 顺序走，OK 吗？还是想跳着做？
-7. **L1 默认 layer**（13）：working 还是 long_term？
-8. **待决问题表 13**：每行的默认提议接受还是改？
+2. **向量后端**（§16 调研结论）：LanceDB 接受吗？还是想用 sqlite-vec / Chroma / Qdrant local / SurrealDB？
+3. **图谱方案**（§16.8.5）：LanceDB + relations 表 OK，还是想直接上 SurrealDB embedded？
+4. **Agent 使用契约**（§8.3）：自动注入 + 主动调用 + 反馈回路这三段设计 OK 吗？要补什么？
+5. **图谱 UI**（§9.3）：vis-network 力导向 + 多视图（列表/流水/图谱）OK 吗？还是直接 Cytoscape.js？
+6. **杀代码列表**（10.1）：sqlite_vec / memory_graph / autobio 三个会一并下线，有没有哪个其实你想留？
+7. **工具收敛**（7.3）：6 → 1 个，OK 吗？
+8. **迁移**：能接受一次性迁移（带备份）吗？还是要新旧并存一段？
+9. **分阶段实施**（11）：按 Phase 1a-9 顺序走，OK 吗？还是想跳着做？
+10. **L1 默认 layer**（13）：working 还是 long_term？
+11. **待决问题表 13**：每行的默认提议接受还是改？
 
 ---
 
@@ -666,14 +861,16 @@ UI 上点开任意一个 L3 skill → 展开看：
 
 | 候选 | 类型 | 进 / 出 |
 |---|---|---|
-| **sqlite-vec** (当前) | SQLite 扩展 | 🟡 进入终选，但有 4 个已知严重 issue |
-| **LanceDB** | Rust 嵌入式 / Arrow | ✅ **本方案推荐** |
-| **ChromaDB** | Python 嵌入式 | 🟡 备选，v1.0 API 有 churn |
-| **Qdrant (embedded)** | Rust 嵌入式 + 本地 client | 🟡 备选，文档以 server 为主 |
-| **pgvector** | PostgreSQL 扩展 | ❌ 违反 local-first（要 Postgres daemon） |
+| **sqlite-vec** (当前) | SQLite 扩展 | 🟡 有 4 个已知严重 issue |
+| **LanceDB** | Rust 嵌入式 / Arrow | ✅ **向量主存推荐** |
+| **Kuzu** | 嵌入式图 + 向量一体化 | ❌ **2025-10 已 archived，不能用** |
+| **Ryugraph** (Kuzu fork) | 嵌入式图 + 向量 | 🟡 fork 太新，风险高 |
+| **SurrealDB embedded** | 多模型 (graph+vec+doc+SQL) | 🟡 备选，新但完整 |
+| **ChromaDB** | Python 嵌入式 | 🟡 v1.0 API churn |
+| **Qdrant (embedded)** | Rust 嵌入式 + 本地 client | 🟡 文档以 server 为主 |
+| **pgvector** | PostgreSQL 扩展 | ❌ 违反 local-first |
 | **Milvus / Weaviate / Pinecone** | 云 / 服务化 | ❌ 违反 local-first |
-| **FAISS / hnswlib (裸)** | C++ 库 | ❌ 没 metadata、没持久化、要自己包一层 |
-| **txtai / usearch** | Python 封装 | ❌ 控制力不够，与我们 schema 强类型期望不匹配 |
+| **FAISS / hnswlib (裸)** | C++ 库 | ❌ 没 metadata、没持久化 |
 
 ### 16.2 硬约束 (XMclaw 项目特性)
 
@@ -803,6 +1000,71 @@ UI 上点开任意一个 L3 skill → 展开看：
 5. **time-travel 表版本化**：未来 schema 迁移可回滚 — 减少架构演进的恐惧
 6. **Lance format 是 ASF 项目**：Apache Arrow 生态加持，长期稳定性有保障
 
+### 16.8.5 关系知识图谱（用户新需求）
+
+用户要求："**向量数据库要带关系知识图谱的，直接集成到 UI 展示**"。
+
+**评估三个路径：**
+
+#### A. Kuzu (embedded graph + vector)
+- **死掉了**：[BigGo 报道](https://biggo.com/news/202510130126_KuzuDB-embedded-graph-database-archived) 2025-10 项目被 archived
+- fork "Ryu" 还在跑但新，生产风险高
+- ❌ **排除**
+
+#### B. SurrealDB embedded
+- 单一后端覆盖 vec + graph + relational + document
+- Rust 实现，WebAssembly 支持，可纯进程内运行
+- LangChain 已集成
+- 缺点：新（2024 才稳）、生产案例少于 LanceDB
+- 🟡 **备选**
+
+#### C. LanceDB (vector) + 自建 relations 表（推荐）
+- LanceDB 主表 `facts`：所有事实 + 向量
+- **新建**一个 LanceDB 表 `relations`（同 db 目录，无新依赖）：
+
+  ```python
+  class Relation(LanceModel):
+      id: str           # 边 id
+      source_fact_id: str
+      target_fact_id: str
+      relation: str     # CONTRADICTS / SUPERSEDES / CAUSED_BY / PART_OF / REFERS_TO / SAME_TOPIC
+      strength: float   # 0.0 - 1.0
+      ts: float
+      auto_extracted: bool
+  ```
+
+- 查询模式：
+  - "fact X 的所有关系" → `relations.where("source_fact_id = X OR target_fact_id = X")`
+  - 1-hop 邻居 → JOIN facts.id 取 text
+  - 2+hop → 应用层递归（< 100K 边足够）
+- ✅ **推荐**
+
+**为什么选 C 而不是 B：**
+
+| 维度 | LanceDB+relations | SurrealDB embedded |
+|---|---|---|
+| 引入新依赖 | 0（同 LanceDB） | 1（SurrealDB 包）|
+| 学习曲线 | 0（已会 LanceDB） | SurrealQL 新语法 |
+| 生产案例 | Netflix/Uber/Harvey | 有，但少 |
+| 性能（< 100K 边）| 充分 | 同样充分 |
+| 复杂图查询 | 应用层 | 原生 |
+| 我们是否需要复杂图查询 | **不需要** | — |
+
+**结论：** 我们的图谱主要为了"**UI 可视化展示 fact 之间的关系**"，不是为了图算法。1-hop / 2-hop 邻居查询应用层 JOIN 就够。把 Kuzu 那种"graph DB 原生 Cypher 查询"的需求强加给我们是过度设计。
+
+未来如果真要复杂图查询（"找出所有从 A 到 B 距离 ≤ 3 的路径"），再切到 SurrealDB 或 Ryu。**抽象层（VectorBackend + 类似的 GraphBackend Protocol）让这个切换可逆。**
+
+#### 关系如何自动产生
+
+| 关系类型 | 产生时机 | 来源 |
+|---|---|---|
+| `CONTRADICTS` | remember() 检测矛盾时 | 自动 |
+| `SUPERSEDES` | 同 id 但新 evidence 覆盖旧时 | 自动 |
+| `CAUSED_BY` | episode 的 source_event_id 链 | 自动 |
+| `PART_OF` | episode → experience → skill 蒸馏链 | 自动 |
+| `REFERS_TO` | LLM 抽取时识别引用 | LLM |
+| `SAME_TOPIC` | vec 距离 < 0.2 的 fact 对 | 自动周期跑 |
+
 ### 16.9 风险 + 缓解
 
 | 风险 | 概率 | 缓解 |
@@ -815,9 +1077,10 @@ UI 上点开任意一个 L3 skill → 展开看：
 
 ### 16.10 集成边界
 
-**新建模块：** `xmclaw/memory/vec_backend.py` —— 抽象 `VectorBackend` 接口
+**两个抽象层：**
 
 ```python
+# xmclaw/memory/vec_backend.py
 class VectorBackend(Protocol):
     async def upsert(self, records: list[Fact]) -> None: ...
     async def search(
@@ -826,13 +1089,30 @@ class VectorBackend(Protocol):
     ) -> list[Fact]: ...
     async def delete(self, where: str) -> int: ...
     async def count(self, where: str | None = None) -> int: ...
+
+
+# xmclaw/memory/graph_backend.py
+class GraphBackend(Protocol):
+    async def add_relation(self, rel: Relation) -> None: ...
+    async def remove_relation(self, rel_id: str) -> None: ...
+    async def neighbors(
+        self, fact_id: str, *, relation_types: list[str] | None = None,
+        max_hops: int = 1,
+    ) -> list[tuple[Relation, Fact]]: ...
+    async def find_related(
+        self, fact_ids: list[str], *, limit: int = 50,
+    ) -> dict: ...  # 返回 {nodes:[], edges:[]} JSON, UI 直接吃
+    async def contradictions_of(self, fact_id: str) -> list[Fact]: ...
 ```
 
-**默认实现：** `LanceDBBackend(VectorBackend)` —— 包 LanceDB API
+**默认实现：**
+- `LanceDBBackend(VectorBackend)` — facts 表
+- `LanceDBGraphBackend(GraphBackend)` — relations 表（同 LanceDB db）
 
-**Test stub：** `InMemoryBackend(VectorBackend)` —— 单元测试用，不依赖 LanceDB
+**Test stub：**
+- `InMemoryVectorBackend` + `InMemoryGraphBackend` — 单元测试用，不依赖 LanceDB
 
-**为什么留抽象层：** 防止"再换库"成本；也让 CI 跑测试时不强制装 LanceDB。
+**为什么留抽象层：** 防止"再换库"成本；CI 跑测试时不强制装 LanceDB；未来如果切 SurrealDB，只换两个 `*Backend` 实现，业务层 `memory_service` 一行不动。
 
 ### 16.11 依赖声明（pyproject.toml）
 
