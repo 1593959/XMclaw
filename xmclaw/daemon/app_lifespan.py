@@ -2054,6 +2054,66 @@ def make_lifespan(
                     "autobiographical_memory.start_failed err=%s", exc,
                 )
 
+        # Wave 27: Memory v2 — Fact/Relation + LanceDB-backed L1 +
+        # deterministic key-info extractor on every user message.
+        # Opt-in via cognition.memory_v2.enabled (default False during
+        # rollout). When enabled:
+        #   * facts live under ~/.xmclaw/v2/facts/ (LanceDB dataset)
+        #   * agent_loop.run_turn force-extracts URL/account/numeric-
+        #     goal/explicit-remember patterns from every user message
+        #   * future Phase 4a will inject these into the LLM's system
+        #     prompt so the agent sees the v2 facts automatically
+        # See docs/MEMORY_EVOLUTION_REDESIGN.md for the full plan.
+        memory_v2_cfg = (
+            (config.get("cognition") or {}).get("memory_v2", {})
+            if isinstance(config, dict) else {}
+        )
+        memory_v2_service = None
+        if (
+            isinstance(memory_v2_cfg, dict)
+            and memory_v2_cfg.get("enabled", False)
+        ):
+            try:
+                from xmclaw.memory.v2 import (
+                    MemoryService,
+                    build_embedding_service,
+                    get_lancedb_graph_backend,
+                    get_lancedb_vector_backend,
+                )
+                from xmclaw.utils.paths import data_dir as _data_dir
+                facts_dir = _data_dir() / "v2" / "facts"
+                facts_dir.mkdir(parents=True, exist_ok=True)
+                # Build embedding service; None falls back to keyword.
+                embedder = build_embedding_service(cfg=config)
+                # Embedding dim must match the configured embedding
+                # model. Default 1536 (OpenAI text-embedding-3-small).
+                dim = embedder.dim if embedder else 1536
+                vec_backend = get_lancedb_vector_backend(
+                    str(facts_dir), embedding_dim=dim,
+                )
+                graph_backend = get_lancedb_graph_backend(str(facts_dir))
+                memory_v2_service = MemoryService(
+                    vector_backend=vec_backend,
+                    graph_backend=graph_backend,
+                    embedder=embedder,
+                )
+                _app.state.memory_v2_service = memory_v2_service
+                if agent is not None:
+                    try:
+                        agent._memory_service_v2 = memory_v2_service
+                    except Exception:  # noqa: BLE001
+                        pass
+                log.info(
+                    "memory_v2.started path=%s dim=%d embedder=%s",
+                    facts_dir, dim,
+                    embedder.name if embedder else "(none, keyword fallback)",
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "memory_v2.start_failed err=%s "
+                    "(daemon continues without v2)", exc,
+                )
+
         # Sprint 1: ProactiveAgent — periodic trigger evaluator that
         # publishes PROACTIVE_PROPOSAL events when the agent should
         # speak without being asked. Reads cognition.proactive.*

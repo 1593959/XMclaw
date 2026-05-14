@@ -554,6 +554,37 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         except Exception:  # noqa: BLE001
             pass
 
+        # Wave 27 Phase 3b: deterministic key-info extractor (v2
+        # memory pipeline). Scans the user message for URL / account /
+        # password / numeric-goal / explicit-remember patterns and
+        # force-writes via MemoryService.remember(). Bypasses agent
+        # discretion — the guarantee is "if the user typed these
+        # patterns, they LAND in L1". Gated on
+        # ``cognition.memory_v2.enabled`` config flag, off by default
+        # until the operator opts in. CAUSED_BY edge links each fact
+        # back to the L0 user_message event for audit trail.
+        memory_v2 = getattr(self, "_memory_service_v2", None)
+        if memory_v2 is not None and user_message:
+            try:
+                from xmclaw.memory.v2 import extract_and_remember
+                # Correlation id was set when USER_MESSAGE event was
+                # published above; we use it as the source_event_id so
+                # the CAUSED_BY edge points back at events.db.
+                src_event = user_correlation_id or session_id
+                await extract_and_remember(
+                    user_message, memory_v2,
+                    source_event_id=src_event,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Never fail a user turn over memory extraction. The
+                # idempotent upsert path means the next message will
+                # retry the missed extractions.
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).warning(
+                    "memory_v2.extract_failed session=%s err=%s",
+                    session_id, exc,
+                )
+
         # Phase 6 wiring A: push user message as a percept when the
         # continuous cognitive loop is on. The PerceptionBus reference
         # is injected by ``PerceptSourceRegistry.attach_user_message_hook``
