@@ -114,10 +114,18 @@ class BuiltinToolsFsMixin:
         text = call.args.get("content")
         if not isinstance(raw_path, str) or not raw_path:
             return _fail(call, t0, "missing or empty 'path' argument")
-        if not isinstance(text, str):
+        # Wave 25.5 forgiving content: agents that want to scaffold an
+        # empty file routinely omit ``content``. Treat missing/None as
+        # empty string; non-string non-None remains a hard error.
+        # Existing-file overwrite is still gated by the undo cabinet so
+        # an "oops, wrong tool" is reversible.
+        if text is None:
+            text = ""
+        elif not isinstance(text, str):
             return _fail(
                 call, t0,
-                f"'content' must be string, got {type(text).__name__}",
+                f"'content' must be string or omitted (empty file), "
+                f"got {type(text).__name__}",
             )
         path = Path(raw_path)
         self._check_allowed(path)

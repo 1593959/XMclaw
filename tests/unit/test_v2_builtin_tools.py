@@ -157,6 +157,39 @@ async def test_file_write_rejects_non_string_content() -> None:
         assert "content" in result.error
 
 
+@pytest.mark.asyncio
+async def test_file_write_missing_content_creates_empty_file() -> None:
+    """Wave 25.5: omitting ``content`` (or passing null) is treated as
+    scaffolding an empty file rather than a hard error. Common case:
+    agent wants to create a placeholder before writing into it via
+    apply_patch / a subsequent file_write."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tools = BuiltinTools(allowed_dirs=[tmp])
+        target = Path(tmp) / "scaffold.py"
+        # No `content` key at all.
+        r = await tools.invoke(_call("file_write", {
+            "path": str(target),
+        }))
+        assert r.ok is True, r.error
+        assert target.exists()
+        assert target.read_text(encoding="utf-8") == ""
+
+
+@pytest.mark.asyncio
+async def test_file_write_null_content_creates_empty_file() -> None:
+    """Same tolerance for explicit ``null`` — some JSON-mode LLMs emit
+    null instead of omitting the key."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tools = BuiltinTools(allowed_dirs=[tmp])
+        target = Path(tmp) / "scaffold.py"
+        r = await tools.invoke(_call("file_write", {
+            "path": str(target),
+            "content": None,
+        }))
+        assert r.ok is True
+        assert target.read_text(encoding="utf-8") == ""
+
+
 # ── allowlist ─────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

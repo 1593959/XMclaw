@@ -59,16 +59,24 @@ _FILE_READ_SPEC = ToolSpec(
 _FILE_WRITE_SPEC = ToolSpec(
     name="file_write",
     description=(
-        "Write UTF-8 text to a file, creating parent directories as needed. "
-        "Overwrites existing files."
+        "Write UTF-8 text to a file, creating parent directories as "
+        "needed. Overwrites existing files (undo cabinet snapshots "
+        "pre-state so an accidental overwrite is reversible). Omit "
+        "``content`` (or pass empty string) to scaffold an empty file."
     ),
     parameters_schema={
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Absolute path."},
-            "content": {"type": "string", "description": "Text to write."},
+            "content": {
+                "type": "string",
+                "description": (
+                    "Text to write. Optional — missing or null is "
+                    "treated as empty string (creates an empty file)."
+                ),
+            },
         },
-        "required": ["path", "content"],
+        "required": ["path"],
     },
 )
 
