@@ -36,6 +36,10 @@ import { UnifiedQueryTab } from "./_panels/memory_unified_query.js";
 // the daemon booted. This is the "view that's actually for the user" —
 // the unified-query tab next to it is now a debug surface.
 import { ActivityTab } from "./_panels/memory_activity.js";
+// Wave 27 / Memory v2: L1 facts + relations tab. Consumes
+// /api/v2/memory/v2/* router; shows "v2 disabled" banner when
+// cognition.memory_v2.enabled=false.
+import { FactsV2Tab } from "./_panels/memory_facts_v2.js";
 
 // ── shared ────────────────────────────────────────────────────────────
 // B-323: apiPut / apiPost / _diagnoseFetch / todayIso were used only
@@ -47,6 +51,7 @@ import { ActivityTab } from "./_panels/memory_activity.js";
 // 光给我用"：把"记忆活动"放在最显眼的位置（agent 自己读写记忆的实时
 // 时间线），把"统一查询"降级成调试工具（顶部 banner 说明）。
 const TAB_LABELS = [
+  { id: "facts_v2", label: "L1 事实 (v2)", hint: "Wave 27 — Fact/Relation 结构化事实库。KeyInfoExtractor 自动抓取 URL/账号/数字目标；agent 自动注入到提示词" },
   { id: "identity", label: "标识", hint: "SOUL / AGENTS / USER / MEMORY 等核心人格文件" },
   { id: "notes", label: "笔记", hint: "随手保存的主题笔记（~/.xmclaw/memory/*.md）" },
   { id: "journal", label: "日记", hint: "按日期归档的对话/事件记录" },
@@ -118,7 +123,7 @@ class TabErrorBoundary extends Component {
 // ── shell ─────────────────────────────────────────────────────────────
 
 export function MemoryPage({ token }) {
-  const [tab, setTab] = useState("identity");
+  const [tab, setTab] = useState("facts_v2");
   const activeMeta = useMemo(() => TAB_LABELS.find((t) => t.id === tab), [tab]);
 
   // B2: small mounting indicator — flicked on each tab switch and cleared
@@ -159,6 +164,7 @@ export function MemoryPage({ token }) {
         })}
       </nav>
       <${TabErrorBoundary} resetKey=${tab}>
+        ${tab === "facts_v2" ? html`<${FactsV2Tab} token=${token} />` : null}
         ${tab === "identity" ? html`<${IdentityTab} token=${token} />` : null}
         ${tab === "notes" ? html`<${NotesTab} token=${token} />` : null}
         ${tab === "journal" ? html`<${JournalTab} token=${token} />` : null}
