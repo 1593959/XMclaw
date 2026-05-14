@@ -585,6 +585,62 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     session_id, exc,
                 )
 
+        # Wave 27 Phase 3.2: Layer 2 — LLM-based semantic extractor.
+        # Runs ASYNC as a background task so it doesn't add latency
+        # to the user turn. Catches everything regex (Phase 3b)
+        # misses: implicit identity ("做电商" → industry), paraphrased
+        # facts ("月底前" → deadline without 截止 keyword), domain
+        # knowledge ("陪玩店" → 业务模型 + 用户画像), soft preferences,
+        # cross-sentence references. The two layers complement: regex
+        # = high precision/fast, LLM = high recall/slow. remember()
+        # is idempotent so overlap doesn't double-count.
+        if memory_v2 is not None and user_message:
+            try:
+                # Wired by app_lifespan into the AgentLoop when
+                # cognition.memory_v2.enabled. None when not wired
+                # (no LLM available, or fact extraction disabled).
+                llm_fact_extractor = getattr(
+                    self, "_memory_v2_llm_extractor", None,
+                )
+                if llm_fact_extractor is not None:
+                    from xmclaw.memory.v2 import llm_extract_and_remember
+                    src_event = user_correlation_id or session_id
+
+                    async def _bg_llm_extract() -> None:
+                        try:
+                            await llm_extract_and_remember(
+                                user_message,
+                                memory_v2,
+                                llm_fact_extractor,
+                                source_event_id=src_event,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            from xmclaw.utils.log import get_logger
+                            get_logger(__name__).warning(
+                                "memory_v2.llm_extract_failed "
+                                "session=%s err=%s",
+                                session_id, exc,
+                            )
+
+                    bg_task = asyncio.create_task(
+                        _bg_llm_extract(),
+                        name=f"v2-llm-extract-{session_id[:8]}",
+                    )
+                    # Park in the post-sampling background set so the
+                    # task survives without warnings about unreferenced
+                    # task objects.
+                    post_sampling_bg = getattr(
+                        self, "_post_sampling_bg", None,
+                    )
+                    if post_sampling_bg is not None:
+                        post_sampling_bg.add(bg_task)
+                        bg_task.add_done_callback(post_sampling_bg.discard)
+            except Exception as exc:  # noqa: BLE001
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).warning(
+                    "memory_v2.llm_extract_schedule_failed err=%s", exc,
+                )
+
         # Phase 6 wiring A: push user message as a percept when the
         # continuous cognitive loop is on. The PerceptionBus reference
         # is injected by ``PerceptSourceRegistry.attach_user_message_hook``

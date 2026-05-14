@@ -1,0 +1,296 @@
+"""LLM Fact Extractor — Layer 2 of the v2 memory write pipeline.
+
+KeyInfoExtractor (Layer 1, regex, ~20 patterns) catches structured
+shapes: URLs / accounts / phones / dates / etc. But regex can't see:
+
+  * Implicit identity ("我们做电商" → industry=ecommerce)
+  * Paraphrased deadlines ("月底前 / 下个月初 / 30 天内")
+  * Disambiguated numbers (5万 = 业务目标 vs 5万 = 客户人数)
+  * Cross-sentence references ("他" → 上文提到的人)
+  * Soft preferences ("不喜欢太啰嗦的回答" — no "我喜欢" keyword)
+  * Domain knowledge ("陪玩店" → 业务模型 + 用户画像)
+
+LLMFactExtractor closes this gap. Per-message LLM call returns a
+structured JSON array of facts. Runs ASYNC after the user turn
+finishes so it doesn't add latency.
+
+Architecture:
+  user_message
+    → Layer 1 sync regex (guarantees URL/account/numeric land NOW)
+    → Layer 2 async LLM (semantic + paraphrase + implicit facts)
+    → both write to MemoryService.remember (idempotent on text →
+      same fact written twice just bumps evidence_count)
+
+The 7 FactKind enum is mapped 1:1 in the LLM prompt so output
+shapes stay consistent. Confidence comes from the LLM's own
+estimate clamped to [0.5, 0.95] — regex stays at the 0.78-0.95
+high end since its precision is higher.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+import time
+from typing import Any
+
+from xmclaw.utils.log import get_logger
+
+_log = get_logger(__name__)
+
+
+# ── Prompt ───────────────────────────────────────────────────────
+
+
+_EXTRACT_PROMPT = """\
+你是一个事实抽取器。从下面这一条用户消息里抽取出**所有**值得长期\
+记住的事实/偏好/决定/约束。
+
+用户消息：
+{user_message}
+
+输出严格 JSON 数组，每条事实形如：
+
+{{
+  "text": "事实的陈述句 (一句话，越紧凑越好)",
+  "kind": "preference | decision | identity | commitment | correction | project",
+  "scope": "user | project | session",
+  "confidence": 0.0-1.0
+}}
+
+kind 含义：
+- preference: 用户偏好（"喜欢简短回复"、"用 PowerShell 不用 bash"）
+- decision: 已做的决定（"决定用 LanceDB"）
+- identity: 身份/身份相关事实（"用户做陪玩店生意"、"Windows 11"、"用户 25 岁"）
+- commitment: 待办/承诺/截止（"agent 下次写测试"、"月底前上线"）
+- correction: 纠正信号（"不要再 X / 永远 Y / 必须 Z"）
+- project: 项目参数 (网址/账号/数字目标/技术栈/团队信息)
+
+scope 含义：
+- user: 长期跨项目的事实（个人偏好、身份、人际关系）
+- project: 当前项目的事实（URL/账号/目标/截止）
+- session: 仅本会话相关，不应长期保留
+
+判断准则：
+- text 必须是**事实陈述句**，不是问题或闲聊
+- 跨越多个事实的复杂消息应拆成多条
+- 不要复述消息原文，要**归纳**成简洁陈述
+- 拿不准时**宁可输出**（remember 是幂等的），不要漏
+- 闲聊 / 单次操作细节 / 临时上下文 → 不要输出
+- 输出 JSON 数组之外**不要**任何字符（包括代码块标记）
+
+如果没有任何值得长期保留的事实，输出空数组 []。
+"""
+
+
+# ── Extracted fact shape ─────────────────────────────────────────
+
+
+_VALID_KINDS = {
+    "preference", "decision", "identity",
+    "commitment", "correction", "project",
+}
+_VALID_SCOPES = {"user", "project", "session"}
+
+
+# ── Extractor ────────────────────────────────────────────────────
+
+
+class LLMFactExtractor:
+    """LLM-driven fact extractor running async after each turn.
+
+    Args:
+        llm: any async LLM with ``.complete(messages, tools=None) ->
+            LLMResponse``. Reuses the main agent LLM by default but
+            production should pass a cheap+fast model (haiku /
+            kimi-flash).
+        timeout_s: hard wall-clock cap. Default 30s — same as
+            MemoryExtractor (Wave 26 fix-4 raised from 8s).
+        max_concurrent: at-most-N extractions in flight at any time
+            across the whole process. Smoke-test revealed that
+            multiple concurrent extracts can saturate the LLM
+            channel and starve the main turn's reply LLM call.
+            Default 1: serialise extracts; the main turn always gets
+            priority. Skipped extracts return [] without firing the
+            LLM — idempotent regex layer already covers the high-
+            precision patterns, and the next turn will catch any
+            missed semantic facts on its own extract pass.
+        log: logger (defaults to module logger).
+    """
+
+    # Class-level semaphore so the limit is GLOBAL across all
+    # LLMFactExtractor instances (one daemon ⇒ one cap). The agent's
+    # reply LLM call lives outside this semaphore — extracts never
+    # block the user-visible turn.
+    _global_sem: asyncio.Semaphore | None = None
+
+    def __init__(
+        self,
+        llm: Any,
+        *,
+        timeout_s: float = 30.0,
+        max_concurrent: int = 1,
+        log: Any = None,
+    ) -> None:
+        self._llm = llm
+        self._timeout_s = max(1.0, float(timeout_s))
+        self._max_concurrent = max(1, int(max_concurrent))
+        # Lazy semaphore init — must happen inside a running event
+        # loop, not at module import time.
+        if LLMFactExtractor._global_sem is None:
+            LLMFactExtractor._global_sem = asyncio.Semaphore(
+                self._max_concurrent,
+            )
+        self._log = log or _log
+
+    async def extract(
+        self,
+        user_message: str,
+    ) -> list[dict[str, Any]]:
+        """Return a list of fact dicts. Empty list on any failure —
+        never raises (background path can't kill the turn)."""
+        if not user_message or not user_message.strip():
+            return []
+        # Skip extremely short messages (likely "好的" / "ok" — no
+        # facts worth LLM cost).
+        if len(user_message.strip()) < 8:
+            return []
+
+        prompt = _EXTRACT_PROMPT.format(user_message=user_message[:3000])
+
+        # Skip immediately when the LLM channel is already busy —
+        # don't queue, don't wait. The next user message will retry
+        # via idempotent upsert; regex layer (high precision) has
+        # already landed the URL/account/phone facts.
+        sem = LLMFactExtractor._global_sem
+        assert sem is not None
+        if sem.locked():
+            self._log.info(
+                "llm_fact_extractor.skipped (channel busy)",
+            )
+            return []
+
+        async with sem:
+            try:
+                from xmclaw.providers.llm.base import Message
+                t0 = time.perf_counter()
+                resp = await asyncio.wait_for(
+                    self._llm.complete([Message(role="user", content=prompt)]),
+                    timeout=self._timeout_s,
+                )
+                elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            except asyncio.TimeoutError:
+                self._log.warning(
+                    "llm_fact_extractor.timeout elapsed_ms=%.0f",
+                    self._timeout_s * 1000.0,
+                )
+                return []
+            except Exception as exc:  # noqa: BLE001
+                self._log.warning(
+                    "llm_fact_extractor.llm_failed err=%s", exc,
+                )
+                return []
+
+        content = (getattr(resp, "content", "") or "").strip()
+        # Strip markdown code-fence if model wrapped despite the
+        # instruction.
+        content = re.sub(r"^```(?:json)?\s*", "", content)
+        content = re.sub(r"\s*```$", "", content)
+        if not content:
+            return []
+
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            self._log.warning(
+                "llm_fact_extractor.bad_json elapsed_ms=%.0f preview=%r",
+                elapsed_ms, content[:200],
+            )
+            return []
+
+        if not isinstance(data, list):
+            return []
+
+        facts: list[dict[str, Any]] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            kind = item.get("kind")
+            scope = item.get("scope", "project")
+            confidence = item.get("confidence", 0.7)
+
+            # Validate.
+            if not isinstance(text, str) or not text.strip():
+                continue
+            text = text.strip()
+            if len(text) > 500:
+                text = text[:500]
+            if kind not in _VALID_KINDS:
+                continue
+            if scope not in _VALID_SCOPES:
+                scope = "project"
+            try:
+                confidence = float(confidence)
+            except (TypeError, ValueError):
+                confidence = 0.7
+            # Clamp LLM confidence to [0.5, 0.95]. Regex hits stay
+            # higher (0.78-0.95); LLM hits are inherently less sure.
+            confidence = max(0.5, min(0.95, confidence))
+
+            facts.append({
+                "text": text,
+                "kind": kind,
+                "scope": scope,
+                "confidence": confidence,
+            })
+
+        self._log.info(
+            "llm_fact_extractor.done elapsed_ms=%.0f facts=%d",
+            elapsed_ms, len(facts),
+        )
+        return facts
+
+
+# ── Convenience: extract + remember ──────────────────────────────
+
+
+async def llm_extract_and_remember(
+    user_message: str,
+    memory_service: Any,
+    llm_extractor: LLMFactExtractor,
+    *,
+    source_event_id: str | None = None,
+) -> list[Any]:
+    """Run LLM extraction + write each fact to MemoryService.
+
+    Per-fact failures are logged but don't abort the batch — same
+    posture as the regex path (idempotent upsert retries on next
+    message).
+    """
+    facts_raw = await llm_extractor.extract(user_message)
+    if not facts_raw:
+        return []
+    written = []
+    for f in facts_raw:
+        try:
+            fact = await memory_service.remember(
+                f["text"],
+                kind=f["kind"],
+                scope=f["scope"],
+                confidence=f["confidence"],
+                source_event_id=source_event_id,
+            )
+            written.append(fact)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "llm_fact_extractor.remember_failed text=%r err=%s",
+                f["text"][:60], exc,
+            )
+    return written
+
+
+__all__ = [
+    "LLMFactExtractor",
+    "llm_extract_and_remember",
+]

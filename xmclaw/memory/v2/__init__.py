@@ -39,6 +39,10 @@ from xmclaw.memory.v2.key_info_extractor import (
     extract_and_remember,
     extract_keys,
 )
+from xmclaw.memory.v2.llm_extractor import (
+    LLMFactExtractor,
+    llm_extract_and_remember,
+)
 from xmclaw.memory.v2.models import (
     Fact,
     FactKind,
@@ -79,6 +83,7 @@ __all__ = [
     "EmbeddingFailure",
     "EmbeddingService",
     "ExtractedKey",
+    "LLMFactExtractor",
     "Fact",
     "FactKind",
     "FactKindStr",
@@ -101,6 +106,7 @@ __all__ = [
     "build_embedding_service",
     "extract_and_remember",
     "extract_keys",
+    "llm_extract_and_remember",
     "get_lancedb_graph_backend",
     "get_lancedb_vector_backend",
 ]

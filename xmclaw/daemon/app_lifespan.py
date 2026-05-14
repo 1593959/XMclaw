@@ -2103,6 +2103,27 @@ def make_lifespan(
                         agent._memory_service_v2 = memory_v2_service
                     except Exception:  # noqa: BLE001
                         pass
+                # Phase 3.2: Layer 2 LLM semantic extractor —
+                # background task on every user message catches what
+                # the regex (Layer 1) can't (implicit identity,
+                # paraphrased deadlines, domain knowledge etc).
+                # Reuses the main agent LLM by default; future
+                # config knob can route it to a cheap+fast model
+                # (haiku / kimi-flash) to drop cost.
+                try:
+                    from xmclaw.memory.v2 import LLMFactExtractor
+                    llm_obj = getattr(agent, "_llm", None) if agent else None
+                    if llm_obj is not None:
+                        llm_fact_extractor = LLMFactExtractor(llm_obj)
+                        if agent is not None:
+                            agent._memory_v2_llm_extractor = llm_fact_extractor
+                        _app.state.memory_v2_llm_extractor = llm_fact_extractor
+                        log.info("memory_v2.llm_extractor.wired")
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "memory_v2.llm_extractor.wire_failed err=%s "
+                        "(regex layer still active)", exc,
+                    )
                 log.info(
                     "memory_v2.started path=%s dim=%d embedder=%s",
                     facts_dir, dim,

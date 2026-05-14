@@ -191,17 +191,28 @@ _PHONE_RE = re.compile(
 # Twitter; "微信号 X" / "QQ X" with optional separator.
 _SOCIAL_RE = re.compile(
     r"""(
-        # 微信号 / 微信 X
-        (?:微信号?|wechat)\s*[:：=是叫]?\s*([A-Za-z][A-Za-z0-9_-]{4,30})
+        # 微信号 / 微信 X — allow a Chinese filler word like
+        # "号/帐号/账号/名字/叫" between label and value
+        (?:微信号?|wechat)
+        (?:\s*(?:号|账号|帐号|名字|叫|是)?)?\s*[:：=]?\s*
+        ([A-Za-z][A-Za-z0-9_-]{4,30})
         |
         # QQ 号 / QQ X — pure digits, 5-13 long
-        \bQQ\s*[:：=是叫号]?\s*(\d{5,13})\b
+        \bQQ
+        (?:\s*(?:号|账号|帐号))?\s*[:：=]?\s*
+        (\d{5,13})\b
         |
         # Telegram / TG handle
-        (?:telegram|tg)\s*[:：=]?\s*@?([A-Za-z][A-Za-z0-9_]{4,30})
+        (?:telegram|tg)
+        (?:\s*(?:号|账号|名字))?\s*[:：=]?\s*@?
+        ([A-Za-z][A-Za-z0-9_]{4,30})
         |
-        # GitHub user
-        (?:github|gh)\s*[:：=]?\s*([A-Za-z0-9][A-Za-z0-9-]{1,38})
+        # GitHub user — allow a Chinese filler word like "仓库/账号/
+        # repo" between "github" and the value. acme-team/foo style
+        # captures "acme-team/foo" up to whitespace.
+        (?:github|gh)
+        (?:\s*(?:仓库|repo|账号|帐号|user|用户))?\s*[:：=]?\s*
+        ([A-Za-z0-9][A-Za-z0-9/_-]{1,60})
         |
         # @username — only treat as social when it looks like a handle
         # and isn't an email (no "@x@y" or "@..."). Conservative:
@@ -431,14 +442,30 @@ def extract_keys(message: str) -> list[ExtractedKey]:
             span=m.span(),
         )
 
-    # ── Explicit "remember X" ──
+    # ── Hard constraints (FIRST — beats remember_directive on same
+    # span since constraint preserves the negation prefix ("永远别 X"
+    # → correction, not "在 X" preference which inverts meaning) ──
+    for m in _CONSTRAINT_RE.finditer(message):
+        _add(
+            f"约束: {m.group(0).strip()}",
+            kind="correction", scope="user",
+            confidence=0.92, pattern_name="constraint",
+            span=m.span(),
+        )
+
+    # ── Explicit "remember X" — only matches AFTER constraint has had
+    # a chance, so "永远别 X" stays as constraint (correction kind). ──
     for m in _REMEMBER_DIRECT_RE.finditer(message):
         # Get the captured payload.
         payload = next((g for g in m.groups()[1:] if g), None)
         if payload is None:
             continue
+        # Preserve the trigger word in the stored text so semantics
+        # don't invert (e.g. "永远别 X" must keep "永远别" to mean
+        # NEGATION, not "下次都 X" which means INSTRUCTION).
+        full = m.group(0).strip().rstrip(".,;:。！？")
         _add(
-            payload.strip().rstrip(".,;:。！？"),
+            full,
             kind="preference", scope="user",
             confidence=0.95, pattern_name="remember_directive",
             span=m.span(),
@@ -579,15 +606,6 @@ def extract_keys(message: str) -> list[ExtractedKey]:
             f"关系: {m.group(0).strip()}",
             kind="identity", scope="user",
             confidence=0.88, pattern_name="relationship",
-            span=m.span(),
-        )
-
-    # ── Hard constraints ──
-    for m in _CONSTRAINT_RE.finditer(message):
-        _add(
-            f"约束: {m.group(0).strip()}",
-            kind="correction", scope="user",
-            confidence=0.92, pattern_name="constraint",
             span=m.span(),
         )
 
