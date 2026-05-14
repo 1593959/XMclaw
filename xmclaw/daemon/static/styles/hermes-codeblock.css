@@ -297,3 +297,158 @@
   max-width: 100%;
   min-width: 240px;
 }
+
+/* Wave 26 fix-3: tool-card wrapper + outside-the-fold media row.
+ * The image/video/audio gallery now sits BESIDE the collapsible
+ * <details>, so collapsing "参数" doesn't hide the screenshot.
+ * Direct-chat feel: when the agent calls screen_capture you see
+ * the image right there, no fiddling with the card. */
+.xmc-toolcard-wrap {
+  margin: 0.4rem 0;
+}
+.xmc-toolcard-wrap > .xmc-toolcard {
+  margin: 0;
+}
+.xmc-toolcard__media {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.45rem;
+}
+.xmc-toolcard__media-btn {
+  display: inline-block;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--color-border, #2a2f3a);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #000;
+  cursor: zoom-in;
+  line-height: 0;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.xmc-toolcard__media-btn:hover {
+  border-color: var(--color-accent, var(--color-primary, #4f8cc9));
+  transform: translateY(-1px);
+}
+.xmc-toolcard__media-btn:focus-visible {
+  outline: 2px solid var(--color-accent, var(--color-primary, #4f8cc9));
+  outline-offset: 2px;
+}
+.xmc-toolcard__media-img {
+  display: block;
+  max-height: 360px;
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  background: #000;
+}
+
+/* User-image button — same shape as the tool-media button but
+ * matches the user-bubble visual weight. */
+.xmc-msg__image-btn {
+  display: inline-block;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--color-border, #2a2f3a);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #000;
+  cursor: zoom-in;
+  line-height: 0;
+  transition: border-color 0.15s ease;
+}
+.xmc-msg__image-btn:hover {
+  border-color: var(--color-accent, var(--color-primary, #4f8cc9));
+}
+
+/* Lightbox overlay — fullscreen dim backdrop + centred image.
+ * Click outside / Esc to close (handled by lib/lightbox.js).
+ * Image scales to fit viewport but never upscales past native
+ * resolution (object-fit: contain). */
+.xmc-lightbox {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 10000;
+  background: rgba(0, 0, 0, 0.86);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  box-sizing: border-box;
+  animation: xmc-lightbox-fade 0.12s ease-out;
+}
+@keyframes xmc-lightbox-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.xmc-lightbox__img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+  cursor: default;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
+  border-radius: 4px;
+}
+.xmc-lightbox__close,
+.xmc-lightbox__nav {
+  position: absolute;
+  background: rgba(20, 20, 24, 0.75);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 999px;
+  width: 2.4rem;
+  height: 2.4rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+.xmc-lightbox__close:hover,
+.xmc-lightbox__nav:hover {
+  background: rgba(60, 60, 70, 0.95);
+  transform: scale(1.05);
+}
+.xmc-lightbox__close {
+  top: 1rem;
+  right: 1rem;
+}
+.xmc-lightbox__nav--prev {
+  left: 1rem;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.xmc-lightbox__nav--prev:hover {
+  transform: translateY(-50%) scale(1.05);
+}
+.xmc-lightbox__nav--next {
+  right: 1rem;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.xmc-lightbox__nav--next:hover {
+  transform: translateY(-50%) scale(1.05);
+}
+.xmc-lightbox__counter {
+  position: absolute;
+  bottom: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(20, 20, 24, 0.75);
+  color: #fff;
+  font-family: var(--theme-font-mono, monospace);
+  font-size: 0.75rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}

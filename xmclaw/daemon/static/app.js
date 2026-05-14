@@ -72,6 +72,7 @@ import {
 // renderer comes from HermesAppShell below.
 import { ToastViewport, toast } from "./lib/toast.js";
 import { DialogViewport } from "./lib/dialog.js";
+import { LightboxViewport } from "./lib/lightbox.js";
 // B-105: prompt history helper lives in Composer module.
 import { appendPromptHistory } from "./components/molecules/Composer.js";
 // Hermes 1:1 port — IS the shell. No legacy fallback.
@@ -474,6 +475,7 @@ function App({ state }) {
         : html`<div class="xmc-h-loading" style="padding:2rem;text-align:center;color:var(--xmc-fg-muted)">正在初始化…</div>`}
       <${ToastViewport} />
       <${DialogViewport} />
+      <${LightboxViewport} />
     </${HermesAppShell}>
   `;
 }

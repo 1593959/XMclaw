@@ -96,12 +96,11 @@
 .xmc-md h3 { font-size: 1rem; }
 .xmc-md h4 { font-size: 0.95rem; color: var(--xmc-fg-muted); }
 
-/* ── Images (Wave 26 fix-2) ──────────────────────────────────────────
- * Without these rules a 2560×1600 screenshot embedded as
- * ``![](/api/v2/media/foo.png)`` blows past the chat column and
- * pushes the rest of the layout off-screen. Cap at 320px tall and
- * give a clear "clickable" affordance — same visual weight as the
- * tool-card gallery and the user composer attachments. */
+/* ── Images (Wave 26 fix-2/fix-3) ───────────────────────────────────
+ * Without size constraints a 2560×1600 screenshot embedded as
+ * ``![](/api/v2/media/foo.png)`` blows past the chat column. Cap at
+ * 320px tall and give a "click-to-zoom" affordance — the click is
+ * delegated by MarkdownBody to open lib/lightbox.js (no tab switch). */
 .xmc-md img {
   display: block;
   max-height: 320px;
@@ -113,6 +112,12 @@
   border-radius: 6px;
   margin: 0.4rem 0;
   background: #000;
+  cursor: zoom-in;
+  transition: border-color 0.15s ease, transform 0.12s ease;
+}
+.xmc-md img:hover {
+  border-color: var(--color-accent, var(--color-primary, #4f8cc9));
+  transform: translateY(-1px);
 }
 .xmc-md__image {
   display: block;
@@ -122,16 +127,5 @@
   height: auto;
   object-fit: contain;
   background: #000;
-}
-.xmc-md__image-link {
-  display: inline-block;
-  line-height: 0;
-  border: 1px solid var(--color-border, var(--xmc-border, #2a2f3a));
-  border-radius: 6px;
-  overflow: hidden;
-  margin: 0.4rem 0;
-  transition: border-color 0.15s ease;
-}
-.xmc-md__image-link:hover {
-  border-color: var(--color-accent, var(--color-primary, #4f8cc9));
+  cursor: zoom-in;
 }

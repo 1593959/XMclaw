@@ -42,6 +42,7 @@ import {
   plainTextForTts,
   getAudioPrefs,
 } from "../../lib/audio.js";
+import { openLightbox } from "../../lib/lightbox.js";
 
 // B-218: per-block Thinking row. One row per continuous thinking
 // segment (terminated by a tool call or text emission). Collapses
@@ -321,9 +322,19 @@ export function MessageBubble({ message, onAnswerQuestion }) {
               ? html`
                   <div class="xmc-msg__images">
                     ${message.images.map((src, i) => html`
-                      <a key=${i} href=${src} target="_blank" rel="noopener" class="xmc-msg__image-link">
-                        <img src=${src} alt="attachment ${i + 1}" loading="lazy" class="xmc-msg__image" />
-                      </a>
+                      <button
+                        key=${i}
+                        type="button"
+                        class="xmc-msg__image-btn"
+                        onClick=${() => openLightbox(src, {
+                          alt: `attachment ${i + 1}`,
+                          items: message.images,
+                          index: i,
+                        })}
+                        title="点击查看大图"
+                      >
+                        <img src=${src} alt=${"attachment " + (i + 1)} loading="lazy" class="xmc-msg__image" />
+                      </button>
                     `)}
                   </div>
                 `

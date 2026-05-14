@@ -12,6 +12,7 @@ import { Spinner } from "../atoms/spinner.js";
 import { Badge } from "../atoms/badge.js";
 import { CodeBlock } from "./CodeBlock.js";
 import { resolveMediaTokenInHtml, _resolveMediaUrl } from "../../lib/chat_reducer.js";
+import { openLightbox } from "../../lib/lightbox.js";
 
 
 export function ToolCard({ call }) {
@@ -30,15 +31,16 @@ export function ToolCard({ call }) {
       return String(call.args);
     }
   })();
-  // Auto-open when there's an error (so user sees the failure) OR
-  // when there's a media attachment (so the agent's screenshot /
-  // video / audio shows up without an extra click — Wave 26 UX fix).
+  // Wave 26 fix-3: media (images/videos/audios) renders OUTSIDE the
+  // collapsible <details>, so we DON'T need to auto-open the card on
+  // media presence anymore — the screenshot is always visible above
+  // or below the fold-button. Only auto-open on error so the user
+  // sees the failure detail without a click.
   const hasMedia = (
     (Array.isArray(call.images) && call.images.length > 0)
     || (Array.isArray(call.videos) && call.videos.length > 0)
     || (Array.isArray(call.audios) && call.audios.length > 0)
   );
-  const openByDefault = call.status === "error" || hasMedia;
 
   // B-130: detect skill tool-calls so the user can SEE in-chat when
   // the agent autonomously picked a skill (vs reaching for a generic
@@ -80,105 +82,105 @@ export function ToolCard({ call }) {
   const cardModifier = isAnySkill ? " xmc-toolcard--skill"
     : isAgentTool ? " xmc-toolcard--agent" : "";
   const bullet = isAnySkill ? "⚡" : isAgentTool ? "🤝" : "●";
+  // Wave 26 fix-3: tool-attached media (images/videos/audios) renders
+  // OUTSIDE the collapsible <details> so it stays visible even when the
+  // user folds away the args/result panel. Previously the user had to
+  // keep the "参数" section open to see screenshots — folding hid them.
+  const hasImages = Array.isArray(call.images) && call.images.length > 0;
+  const hasVideos = Array.isArray(call.videos) && call.videos.length > 0;
+  const hasAudios = Array.isArray(call.audios) && call.audios.length > 0;
   return html`
-    <details
-      class=${"xmc-toolcard xmc-toolcard--" + call.status + cardModifier}
-      open=${openByDefault}
-    >
-      <summary
-        class=${"xmc-toolcard__summary" + (call.status === "running" ? " is-running" : "")}
+    <div class=${"xmc-toolcard-wrap" + (hasMedia ? " has-media" : "")}>
+      <details
+        class=${"xmc-toolcard xmc-toolcard--" + call.status + cardModifier}
+        open=${call.status === "error"}
       >
-        <span class="xmc-toolcard__bullet" aria-hidden="true">${bullet}</span>
-        ${(isAnySkill || isAgentTool)
-          ? html`<${Badge} tone=${isAgentTool ? "warn" : "success"} title=${`${skillLabel} — agent 自主选取的`}>${skillLabel}</${Badge}>`
-          : null}
-        <code class="xmc-toolcard__name">${displayName}</code>
-        ${targetAgent
-          ? html`<small style="color:var(--xmc-fg-muted)">→ <code style="font-family:var(--xmc-font-mono)">${targetAgent}</code></small>`
-          : null}
-        <${Badge} tone=${tone}>${label}</${Badge}>
-        ${call.status === "running"
-          ? html`<${Spinner} size="sm" label="running" hideLabel=${true} />`
-          : null}
-      </summary>
-      <div class="xmc-toolcard__body">
-        <div class="xmc-toolcard__section">
-          <div class="xmc-toolcard__label">参数</div>
-          <${CodeBlock} code=${argsPreview} lang="json" />
+        <summary
+          class=${"xmc-toolcard__summary" + (call.status === "running" ? " is-running" : "")}
+        >
+          <span class="xmc-toolcard__bullet" aria-hidden="true">${bullet}</span>
+          ${(isAnySkill || isAgentTool)
+            ? html`<${Badge} tone=${isAgentTool ? "warn" : "success"} title=${`${skillLabel} — agent 自主选取的`}>${skillLabel}</${Badge}>`
+            : null}
+          <code class="xmc-toolcard__name">${displayName}</code>
+          ${targetAgent
+            ? html`<small style="color:var(--xmc-fg-muted)">→ <code style="font-family:var(--xmc-font-mono)">${targetAgent}</code></small>`
+            : null}
+          <${Badge} tone=${tone}>${label}</${Badge}>
+          ${call.status === "running"
+            ? html`<${Spinner} size="sm" label="running" hideLabel=${true} />`
+            : null}
+        </summary>
+        <div class="xmc-toolcard__body">
+          <div class="xmc-toolcard__section">
+            <div class="xmc-toolcard__label">参数</div>
+            <${CodeBlock} code=${argsPreview} lang="json" />
+          </div>
+          ${call.result != null
+            ? html`
+                <div class="xmc-toolcard__section">
+                  <div class="xmc-toolcard__label">${call.status === "error" ? "错误" : "结果"}</div>
+                  <${CodeBlock}
+                    code=${typeof call.result === "string" ? call.result : JSON.stringify(call.result, null, 2)}
+                    lang=${call.status === "error" ? "" : "text"}
+                  />
+                </div>
+              `
+            : null}
         </div>
-        ${call.result != null
-          ? html`
-              <div class="xmc-toolcard__section">
-                <div class="xmc-toolcard__label">${call.status === "error" ? "错误" : "结果"}</div>
-                <${CodeBlock}
-                  code=${typeof call.result === "string" ? call.result : JSON.stringify(call.result, null, 2)}
-                  lang=${call.status === "error" ? "" : "text"}
-                />
-              </div>
-            `
-          : null}
-        ${Array.isArray(call.images) && call.images.length > 0
-          ? html`
-              <div class="xmc-toolcard__section">
-                <div class="xmc-toolcard__label">附图 (${call.images.length})</div>
-                <${ToolImageGallery} images=${call.images} />
-              </div>
-            `
-          : null}
-        ${Array.isArray(call.videos) && call.videos.length > 0
-          ? html`
-              <div class="xmc-toolcard__section">
-                <div class="xmc-toolcard__label">附视频 (${call.videos.length})</div>
-                <div class="xmc-toolcard__images">
-                  ${call.videos.map((src, i) => html`
-                    <video key=${"v" + i} src=${src} controls preload="metadata" class="xmc-toolcard__video" />
-                  `)}
-                </div>
-              </div>
-            `
-          : null}
-        ${Array.isArray(call.audios) && call.audios.length > 0
-          ? html`
-              <div class="xmc-toolcard__section">
-                <div class="xmc-toolcard__label">附音频 (${call.audios.length})</div>
-                <div class="xmc-toolcard__images">
-                  ${call.audios.map((src, i) => html`
-                    <audio key=${"a" + i} src=${src} controls preload="metadata" class="xmc-toolcard__audio" />
-                  `)}
-                </div>
-              </div>
-            `
-          : null}
-      </div>
-    </details>
+      </details>
+      ${hasImages
+        ? html`<${ToolMediaImages} images=${call.images} />`
+        : null}
+      ${hasVideos
+        ? html`
+            <div class="xmc-toolcard__media">
+              ${call.videos.map((src, i) => html`
+                <video key=${"v" + i} src=${src} controls preload="metadata" class="xmc-toolcard__video" />
+              `)}
+            </div>
+          `
+        : null}
+      ${hasAudios
+        ? html`
+            <div class="xmc-toolcard__media">
+              ${call.audios.map((src, i) => html`
+                <audio key=${"a" + i} src=${src} controls preload="metadata" class="xmc-toolcard__audio" />
+              `)}
+            </div>
+          `
+        : null}
+    </div>
   `;
 }
 
-
-// B-MULTIMODAL-UI / Wave 26: render image attachments from tool
-// results. chat_reducer already passed URLs through _resolveMediaUrl
-// so the pairing token is baked in — pass through as-is. Pre-fix the
-// gallery double-tokened ("?token=X&token=X"); harmless but a code
-// smell.
-function ToolImageGallery({ images }) {
+// Wave 26 fix-3: tool-screenshot gallery rendered OUTSIDE the
+// collapsible card. Clicking opens the in-app lightbox (no tab
+// switch, no scroll loss) and the row exposes the whole image list
+// so left/right arrow keys can flip between thumbnails.
+function ToolMediaImages({ images }) {
   return html`
-    <div class="xmc-toolcard__images">
+    <div class="xmc-toolcard__media">
       ${images.map((src, i) => html`
-        <a
+        <button
           key=${i}
-          href=${src}
-          target="_blank"
-          rel="noopener"
-          class="xmc-toolcard__image-link"
-          title="点击放大查看"
+          type="button"
+          class="xmc-toolcard__media-btn"
+          onClick=${() => openLightbox(src, {
+            alt: `tool image ${i + 1}`,
+            items: images,
+            index: i,
+          })}
+          title="点击查看大图"
+          aria-label=${`tool image ${i + 1}`}
         >
           <img
             src=${src}
-            alt="tool image ${i + 1}"
+            alt=${"tool image " + (i + 1)}
             loading="lazy"
-            class="xmc-toolcard__image"
+            class="xmc-toolcard__media-img"
           />
-        </a>
+        </button>
       `)}
     </div>
   `;
@@ -194,8 +196,20 @@ export function MarkdownBody({ content }) {
   if (!tokens.length) {
     return html`<div class="xmc-msg__body xmc-md"></div>`;
   }
+  // Wave 26 fix-3: click delegation for inline markdown images. The
+  // ``<img>`` lives inside a sanitized HTML blob (we can't attach an
+  // onclick in the source string — DOMPurify would strip it), so we
+  // listen on the wrapper and dispatch openLightbox when the click
+  // target is an image.
+  const onClickDelegate = (e) => {
+    const t = e.target;
+    if (t && t.tagName === "IMG" && t.src) {
+      e.preventDefault();
+      openLightbox(t.src, { alt: t.alt || "" });
+    }
+  };
   return html`
-    <div class="xmc-msg__body xmc-md">
+    <div class="xmc-msg__body xmc-md" onClick=${onClickDelegate}>
       ${tokens.map((tok) => {
         // Intercept code tokens so we can render them through CodeBlock
         // (lang badge + copy button). marked@12 emits {type:"code",
@@ -210,25 +224,23 @@ export function MarkdownBody({ content }) {
             />
           `;
         }
-        // Wave 26 (fix-2): standalone image token (a markdown line like
-        // ``![alt](/api/v2/media/foo.png)``). Render as a real <img>
-        // wrapped in <a> so clicking opens full-size in a new tab, and
-        // pipe the URL through _resolveMediaUrl so /api/v2/media/* paths
-        // get the pairing token attached.
+        // Defensive: marked@12 wraps standalone images in <p>, but a
+        // future version might emit them at the top level. Render as
+        // a real <img> with the URL passed through _resolveMediaUrl.
+        // The delegated click handler above opens the lightbox on
+        // click — no <a target="_blank">, no tab switch.
         if (tok.type === "image" && typeof tok.href === "string") {
           const src = _resolveMediaUrl(tok.href);
           const alt = tok.text || "";
           return html`
-            <a
+            <img
               key=${tok.idx}
-              href=${src}
-              target="_blank"
-              rel="noopener"
-              class="xmc-md__image-link"
-              title=${tok.title || alt || "查看大图"}
-            >
-              <img src=${src} alt=${alt} loading="lazy" class="xmc-md__image" />
-            </a>
+              src=${src}
+              alt=${alt}
+              loading="lazy"
+              class="xmc-md__image"
+              title=${tok.title || alt || "点击查看大图"}
+            />
           `;
         }
         // For all other tokens, run a post-pass on the sanitized HTML so
