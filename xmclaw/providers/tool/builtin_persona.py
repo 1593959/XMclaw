@@ -449,7 +449,16 @@ class BuiltinToolsPersonaMixin:
                     evicted = before_len - len(new_text)
                 try:
                     await store.set_manual(basename, new_text)
-                except (OSError, ValueError) as exc:
+                except Exception as exc:  # noqa: BLE001
+                    # Wave 26 fix-5: broadened from (OSError, ValueError)
+                    # to catch sqlite3.IntegrityError too. Pre-fix, vec0's
+                    # UNIQUE constraint failure bubbled out of the except
+                    # block and never returned a ToolResult — the dispatcher
+                    # eventually emitted a generic error frame but the
+                    # ``tool_invocation_finished`` event for THIS call_id
+                    # never fired, leaving the UI's ToolCard stuck at
+                    # ``running`` forever. Catching broadly here ensures
+                    # the user sees an error instead of a frozen spinner.
                     return _fail(call, t0, f"store write failed: {exc}")
             else:
                 try:

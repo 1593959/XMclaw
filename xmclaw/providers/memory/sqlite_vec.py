@@ -335,11 +335,25 @@ class SqliteVecMemory(MemoryProvider):
                 (item_id, layer, item.text, metadata, ts, has_embedding),
             )
             if item.embedding:
+                # Wave 26 fix-5: ``INSERT OR REPLACE`` on a vec0 virtual
+                # table doesn't honour REPLACE semantics — vec0 treats
+                # it as plain INSERT and raises UNIQUE on the existing
+                # primary key. This silently broke every deterministic-id
+                # write path (persona_manual:MEMORY.md was the loudest
+                # one — the ``remember`` tool emitted call but never
+                # finished, UI showed "running" forever, file silently
+                # stale on second+ invocation). Fix: explicit DELETE
+                # then INSERT. Both rows live inside the write lock so
+                # the pair is still atomic from the caller's POV.
+                cur.execute(
+                    "DELETE FROM memory_vec WHERE item_id = ?",
+                    (item_id,),
+                )
                 # Serialize vector as little-endian float32 bytes for sqlite-vec.
                 import struct
                 blob = struct.pack(f"{len(item.embedding)}f", *item.embedding)
                 cur.execute(
-                    "INSERT OR REPLACE INTO memory_vec (item_id, embedding) VALUES (?, ?)",
+                    "INSERT INTO memory_vec (item_id, embedding) VALUES (?, ?)",
                     (item_id, blob),
                 )
             self._conn.commit()
