@@ -529,6 +529,68 @@ class AutobiographicalMemory:
             conn.commit()
             return cur.rowcount > 0
 
+    # ── Wave 25.6: bridge from ProfileExtractor (LLM) ─────────────
+
+    def subscribe_to_bus(self, bus: Any) -> Any | None:
+        """Subscribe to USER_PROFILE_UPDATED events on the bus and
+        ingest each delta as a structured fact row.
+
+        The rule-based extract_from_message() path only matches first-
+        person self-statements ("我喜欢 X", "我是 Y", "我朋友 Z"); a
+        user who mostly issues commands ("继续", "调研一下…") never
+        triggers it, leaving the autobio tables empty. ProfileExtractor
+        (Epic #24 Phase 2.2) already runs LLM extraction on every turn
+        and emits USER_PROFILE_UPDATED with the resulting deltas. This
+        method bridges that pipeline into our SQL store so Dashboard's
+        "认识的人 / 进行中项目" cards + the stale_project trigger see
+        real data even when nobody says "我喜欢 X".
+
+        Mapping: delta.kind → kind, subject="user", predicate=kind,
+        value=delta.text, confidence=delta.confidence,
+        source="profile_extractor".
+
+        Returns the subscription handle (caller can ``cancel()``), or
+        None if the bus doesn't support subscribe (no-op in tests).
+        """
+        subscribe = getattr(bus, "subscribe", None)
+        if not callable(subscribe):
+            return None
+
+        def _is_user_profile_event(event: Any) -> bool:
+            t = getattr(event, "type", None)
+            if hasattr(t, "value"):
+                t = t.value
+            return str(t) == "user_profile_updated"
+
+        async def _on_event(event: Any) -> None:
+            payload = getattr(event, "payload", None) or {}
+            if not isinstance(payload, dict):
+                return
+            deltas = payload.get("deltas")
+            if not isinstance(deltas, list):
+                return
+            for d in deltas:
+                if not isinstance(d, dict):
+                    continue
+                kind = (d.get("kind") or "fact").strip() or "fact"
+                text = (d.get("text") or "").strip()
+                if not text:
+                    continue
+                conf = float(d.get("confidence") or 0.5)
+                try:
+                    self.record_fact(
+                        kind=kind,
+                        subject="user",
+                        predicate=kind,
+                        value=text[:500],
+                        confidence=conf,
+                        source="profile_extractor",
+                    )
+                except Exception:  # noqa: BLE001 — never crash the bus subscriber
+                    pass
+
+        return subscribe(_is_user_profile_event, _on_event)
+
 
 __all__ = [
     "AutobiographicalMemory",

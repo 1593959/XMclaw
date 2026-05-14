@@ -229,3 +229,110 @@ def test_subject_case_insensitive(mem):
     # Should find under lowercase "user"
     assert len(mem.facts_about("user")) == 1
     assert len(mem.facts_about("USER")) == 1
+
+
+# ── Wave 25.6: ProfileExtractor → autobio bridge ────────────────
+
+
+@pytest.mark.asyncio
+async def test_subscribe_to_bus_ingests_user_profile_event(mem):
+    """USER_PROFILE_UPDATED events should land as facts about 'user'
+    in the autobio tables — bridging the LLM extractor pipeline."""
+    from xmclaw.core.bus import EventType, make_event
+    from xmclaw.core.bus.memory import InProcessEventBus
+
+    bus = InProcessEventBus()
+    sub = mem.subscribe_to_bus(bus)
+    assert sub is not None
+
+    ev = make_event(
+        session_id="chat-test",
+        agent_id="main",
+        type=EventType.USER_PROFILE_UPDATED,
+        payload={
+            "file_path": "/tmp/USER.md",
+            "delta_count": 2,
+            "session_id": "chat-test",
+            "deltas": [
+                {
+                    "kind": "preference",
+                    "text": "Prefers Chinese language responses",
+                    "confidence": 0.85,
+                },
+                {
+                    "kind": "style",
+                    "text": "Uses casual tone with occasional slang",
+                    "confidence": 0.75,
+                },
+            ],
+        },
+    )
+    await bus.publish(ev)
+    await bus.drain()
+
+    facts = mem.facts_about("user")
+    assert len(facts) == 2
+    kinds = {f.kind for f in facts}
+    assert kinds == {"preference", "style"}
+    by_kind = {f.kind: f for f in facts}
+    assert "Chinese" in by_kind["preference"].value
+    assert by_kind["preference"].source == "profile_extractor"
+    assert 0.84 <= by_kind["preference"].confidence <= 0.86
+
+
+@pytest.mark.asyncio
+async def test_subscribe_to_bus_ignores_unrelated_events(mem):
+    from xmclaw.core.bus import EventType, make_event
+    from xmclaw.core.bus.memory import InProcessEventBus
+
+    bus = InProcessEventBus()
+    mem.subscribe_to_bus(bus)
+
+    other = make_event(
+        session_id="chat-x",
+        agent_id="main",
+        type=EventType.USER_MESSAGE,
+        payload={"content": "I like cookies"},
+    )
+    await bus.publish(other)
+    await bus.drain()
+
+    assert mem.facts_about("user") == []
+
+
+@pytest.mark.asyncio
+async def test_subscribe_to_bus_skips_empty_deltas(mem):
+    from xmclaw.core.bus import EventType, make_event
+    from xmclaw.core.bus.memory import InProcessEventBus
+
+    bus = InProcessEventBus()
+    mem.subscribe_to_bus(bus)
+
+    ev = make_event(
+        session_id="chat-x",
+        agent_id="main",
+        type=EventType.USER_PROFILE_UPDATED,
+        payload={
+            "deltas": [
+                {"kind": "preference", "text": "", "confidence": 0.9},
+                {"kind": "style", "text": "   ", "confidence": 0.9},
+                {"kind": "habit", "text": "real fact", "confidence": 0.9},
+            ],
+        },
+    )
+    await bus.publish(ev)
+    await bus.drain()
+
+    facts = mem.facts_about("user")
+    assert len(facts) == 1
+    assert facts[0].value == "real fact"
+
+
+def test_subscribe_to_bus_returns_none_when_no_subscribe_method(mem):
+    """Buses without ``subscribe`` (e.g. unwired test stubs) shouldn't
+    crash; the subscribe call is a no-op."""
+
+    class _NoSubBus:
+        pass
+
+    assert mem.subscribe_to_bus(_NoSubBus()) is None

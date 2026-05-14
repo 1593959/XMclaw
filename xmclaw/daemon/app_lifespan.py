@@ -2035,6 +2035,19 @@ def make_lifespan(
                         agent._autobio_memory = autobio_mem
                     except Exception:  # noqa: BLE001
                         pass
+                # Wave 25.6: bridge ProfileExtractor's LLM-derived
+                # deltas into the autobio SQL tables. Without this,
+                # users who give commands instead of "我喜欢 X" self-
+                # statements never populate the structured store.
+                try:
+                    sub = autobio_mem.subscribe_to_bus(bus)
+                    if sub is not None:
+                        _app.state.autobio_bus_subscription = sub
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "autobiographical_memory.bus_subscribe_failed err=%s",
+                        exc,
+                    )
                 log.info("autobiographical_memory.started")
             except Exception as exc:  # noqa: BLE001
                 log.warning(

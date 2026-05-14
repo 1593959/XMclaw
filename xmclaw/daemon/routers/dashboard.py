@@ -266,7 +266,13 @@ def _storage_block(st: Any) -> dict[str, Any]:
 
     out["events_db_bytes"] = _maybe_size(base / "events.db")
     out["memory_db_bytes"] = _maybe_size(base / "memory.db")
-    out["autobio_db_bytes"] = _maybe_size(base / "autobiographical.db")
+    # Wave 25.6 path bugfix: AutobiographicalMemory actually writes
+    # ``<data_dir>/v2/autobio/store.sqlite``, not the file name the
+    # Dashboard used to look for (autobiographical.db). The card was
+    # reporting None all this time.
+    out["autobio_db_bytes"] = _maybe_size(
+        base / "autobio" / "store.sqlite",
+    )
     out["data_dir"] = str(base)
     return out
 
