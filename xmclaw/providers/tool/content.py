@@ -111,7 +111,13 @@ _IMAGE_READ_SPEC = ToolSpec(
                     "Include the raw base64-encoded bytes in the "
                     "result. Default false. Almost always leave this "
                     "off — it explodes the prompt and the LLM cannot "
-                    "interpret base64 from a tool result."
+                    "interpret base64 from a tool result. Even when "
+                    "set to true, the daemon enforces a 512 KB raw-"
+                    "file cap; over that, base64 is silently skipped "
+                    "(see base64_skipped flag in the result) so the "
+                    "next LLM call doesn't get rejected for message "
+                    "size. Vision attachment is independent and "
+                    "always works via the multimodal pipeline."
                 ),
             },
         },
@@ -352,9 +358,26 @@ class ContentTools(ToolProvider):
             else:
                 payload["ocr_error"] = ocr_error
 
+        # Wave 25.7: even with include_base64=true, refuse to inline
+        # giants. ~512 KB raw inflates to ~700 KB base64 — that fits
+        # under common 2 MB API message caps even when stacked with
+        # tool history. Bigger than that → drop the base64, keep the
+        # metadata + attach_image so vision pipeline still works.
+        _BASE64_INLINE_CAP = 512 * 1024
         if want_b64:
-            data = path.read_bytes()
-            payload["base64"] = base64.b64encode(data).decode("ascii")
+            if size > _BASE64_INLINE_CAP:
+                payload["base64_skipped"] = True
+                payload["base64_skip_reason"] = (
+                    f"file is {size / 1024:.0f} KB, over the "
+                    f"{_BASE64_INLINE_CAP // 1024} KB inline cap. "
+                    "Vision is still attached via the multimodal "
+                    "pipeline (see vision_attached). The LLM cannot "
+                    "read base64 from a tool result anyway — request "
+                    "an image-aware turn instead."
+                )
+            else:
+                data = path.read_bytes()
+                payload["base64"] = base64.b64encode(data).decode("ascii")
 
         payload["vision_attached"] = True
         return ToolResult(

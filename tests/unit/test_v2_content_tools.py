@@ -130,6 +130,39 @@ async def test_image_read_opt_in_base64(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_image_read_base64_skipped_when_file_too_big(
+    tmp_path: Path,
+) -> None:
+    """Wave 25.7 regression: when include_base64=True but the file is
+    above the 512 KB inline cap, we MUST skip the base64 payload (it
+    would push the next LLM call past common API message-size limits).
+    Vision attachment via metadata still happens — the LLM can still
+    'see' the image through the multimodal pipeline."""
+    img = tmp_path / "huge.png"
+    # Build a 1 MB-ish file (above the 512 KB cap, below the 8 MB
+    # hard cap). Starts with a valid PNG header so mime detection
+    # still classifies it correctly.
+    img.write_bytes(bytes.fromhex(_TINY_PNG_HEX) + b"\x00" * (700 * 1024))
+    r = await ContentTools().invoke(_call(
+        "image_read",
+        {"path": str(img), "include_base64": True, "ocr": False},
+    ))
+    assert r.ok is True
+    payload = json.loads(r.content)
+    assert "base64" not in payload, (
+        "image_read MUST NOT inline base64 for big files even when "
+        "the caller asked for it — base64 in tool results blows up "
+        "the next API call past message-size limits."
+    )
+    assert payload["base64_skipped"] is True
+    assert "inline cap" in payload["base64_skip_reason"]
+    # Vision attachment is preserved so the multimodal pipeline still
+    # gives the LLM access to the image.
+    assert payload["vision_attached"] is True
+    assert r.metadata.get("attach_image") == str(img)
+
+
+@pytest.mark.asyncio
 async def test_image_read_ocr_skipped_when_flag_false(tmp_path: Path) -> None:
     img = tmp_path / "tiny.png"
     img.write_bytes(bytes.fromhex(_TINY_PNG_HEX))
