@@ -1577,8 +1577,14 @@ def create_app(
                         ".mp3": "audio/mpeg",
                         ".wav": "audio/wav",
                         ".ogg": "audio/ogg",
+                        ".m4a": "audio/mp4",
+                        # Wave 26: additional video containers for view_video.
                         ".mp4": "video/mp4",
                         ".webm": "video/webm",
+                        ".mov": "video/quicktime",
+                        ".mkv": "video/x-matroska",
+                        ".avi": "video/x-msvideo",
+                        ".m4v": "video/mp4",
                     }.get(ext)
                     return FileResponse(
                         str(p),

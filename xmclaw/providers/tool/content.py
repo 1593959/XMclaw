@@ -126,6 +126,56 @@ _IMAGE_READ_SPEC = ToolSpec(
 )
 
 
+_VIEW_IMAGE_SPEC = ToolSpec(
+    name="view_image",
+    description=(
+        "Load an image file into the LLM's vision context so the next "
+        "turn can 'see' it. Use this when a previous tool returned an "
+        "image PATH (browser_screenshot file-spill, file_read of an "
+        "image, user-uploaded asset) and you actually need to look at "
+        "the pixels rather than just reference them. Does NOT run OCR "
+        "— if you need text, call image_read first. Costs vision "
+        "tokens, so don't call on every screenshot — screenshot / "
+        "image_read auto-attach already; view_image is for paths the "
+        "agent picks up from elsewhere (downloads, prior session "
+        "artifacts, user file uploads)."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Absolute path to an image file.",
+            },
+        },
+        "required": ["path"],
+    },
+)
+
+_VIEW_VIDEO_SPEC = ToolSpec(
+    name="view_video",
+    description=(
+        "Load a video file into the LLM's context. Use when the agent "
+        "needs to inspect a clip the user uploaded or a previous tool "
+        "produced (screen recording, downloaded video, etc.). The UI "
+        "renders an inline <video> player. LLM-side vision: only the "
+        "providers that natively eat video (Gemini 1.5+, GPT-4o "
+        "video) actually see frames; others get path + metadata only. "
+        "Supported containers: mp4, webm, mov, mkv, avi."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Absolute path to a video file.",
+            },
+        },
+        "required": ["path"],
+    },
+)
+
+
 _PDF_READ_SPEC = ToolSpec(
     name="pdf_read",
     description=(
@@ -241,6 +291,10 @@ class ContentTools(ToolProvider):
             out.append(_SCREENSHOT_SPEC)
         # image_read is always on — it's just file reading + base64
         out.append(_IMAGE_READ_SPEC)
+        # Wave 26: explicit-attach tools for paths the agent picks up
+        # outside of capture flows.
+        out.append(_VIEW_IMAGE_SPEC)
+        out.append(_VIEW_VIDEO_SPEC)
         if self._enable_documents:
             out.extend([_PDF_READ_SPEC, _DOCX_READ_SPEC, _XLSX_READ_SPEC])
         if self._enable_clipboard:
@@ -255,6 +309,10 @@ class ContentTools(ToolProvider):
                 return await self._screenshot(call, t0)
             if name == "image_read":
                 return await self._image_read(call, t0)
+            if name == "view_image":
+                return await self._view_image(call, t0)
+            if name == "view_video":
+                return await self._view_video(call, t0)
             if name == "pdf_read":
                 return await self._pdf_read(call, t0)
             if name == "docx_read":
@@ -312,6 +370,11 @@ class ContentTools(ToolProvider):
         # downstream LLM also gets the vision content block via the
         # same metadata channel (image_read had this; screenshot was
         # missing it, so screenshots never rendered).
+        from xmclaw.core.ir import MediaAttachment
+        att = MediaAttachment(
+            kind="image", path=str(out), mime="image/png",
+            bytes_size=out.stat().st_size, width=w, height=h,
+        )
         return ToolResult(
             call_id=call.id, ok=True,
             content=json.dumps({
@@ -322,7 +385,10 @@ class ContentTools(ToolProvider):
                 "bytes": out.stat().st_size,
             }, ensure_ascii=False),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
-            metadata={"attach_image": str(out)},
+            metadata={
+                "attach_image": str(out),
+                "attachments": [att.to_dict()],
+            },
         )
 
     async def _image_read(self, call: ToolCall, t0: float) -> ToolResult:
@@ -392,11 +458,143 @@ class ContentTools(ToolProvider):
                 payload["base64"] = base64.b64encode(data).decode("ascii")
 
         payload["vision_attached"] = True
+        # Wave 26: also emit the canonical MediaAttachment shape
+        # alongside the legacy attach_image for forward compat.
+        from xmclaw.core.ir import MediaAttachment
+        att = MediaAttachment(
+            kind="image",
+            path=str(path),
+            mime=mime,
+            bytes_size=size,
+            width=payload.get("width"),
+            height=payload.get("height"),
+        )
         return ToolResult(
             call_id=call.id, ok=True,
             content=json.dumps(payload, ensure_ascii=False),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
-            metadata={"attach_image": str(path)},
+            metadata={
+                "attach_image": str(path),
+                "attachments": [att.to_dict()],
+            },
+        )
+
+    async def _view_image(self, call: ToolCall, t0: float) -> ToolResult:
+        """Wave 26: explicit-attach for images the agent picked up
+        outside a capture flow (downloads, file inputs, etc.)."""
+        from xmclaw.core.ir import MediaAttachment
+        p = _path_arg(call)
+        if isinstance(p, ToolResult):
+            return p
+        if not p.is_file():
+            return _fail(call, t0, f"image not found: {p}")
+        size = p.stat().st_size
+        if size > 8 * 1024 * 1024:
+            return _fail(call, t0, (
+                f"image is {size / 1024 / 1024:.1f} MB — over the 8 MB cap."
+            ))
+        ext = p.suffix.lower().lstrip(".")
+        if ext not in ("png", "jpg", "jpeg", "gif", "webp", "bmp"):
+            return _fail(
+                call, t0,
+                f"unsupported image extension {ext!r}; "
+                "use png/jpg/jpeg/gif/webp/bmp",
+            )
+        mime = {
+            "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+            "gif": "image/gif", "webp": "image/webp", "bmp": "image/bmp",
+        }[ext]
+        w = h = None
+        try:
+            from PIL import Image  # type: ignore
+            with Image.open(str(p)) as im:
+                w, h = im.size
+        except Exception:  # noqa: BLE001
+            pass
+        att = MediaAttachment(
+            kind="image", path=str(p), mime=mime, bytes_size=size,
+            width=w, height=h,
+        )
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content=json.dumps({
+                "path": str(p),
+                "mime": mime,
+                "bytes": size,
+                "width": w,
+                "height": h,
+                "vision_attached": True,
+            }, ensure_ascii=False),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+            metadata={
+                "attach_image": str(p),
+                "attachments": [att.to_dict()],
+            },
+        )
+
+    async def _view_video(self, call: ToolCall, t0: float) -> ToolResult:
+        """Wave 26: load a video for UI playback + (where supported)
+        LLM vision. Light metadata probe via PIL/ffprobe is best-
+        effort — duration is nice-to-have, not load-bearing."""
+        from xmclaw.core.ir import MediaAttachment
+        p = _path_arg(call)
+        if isinstance(p, ToolResult):
+            return p
+        if not p.is_file():
+            return _fail(call, t0, f"video not found: {p}")
+        size = p.stat().st_size
+        # Generous 256 MB cap — videos legitimately get big, but
+        # uploads-as-tool-input get prohibitive past this.
+        if size > 256 * 1024 * 1024:
+            return _fail(call, t0, (
+                f"video is {size / 1024 / 1024:.1f} MB — over the 256 MB cap."
+            ))
+        ext = p.suffix.lower().lstrip(".")
+        if ext not in ("mp4", "webm", "mov", "mkv", "avi", "m4v"):
+            return _fail(
+                call, t0,
+                f"unsupported video extension {ext!r}; "
+                "use mp4/webm/mov/mkv/avi/m4v",
+            )
+        mime = {
+            "mp4": "video/mp4", "webm": "video/webm",
+            "mov": "video/quicktime", "mkv": "video/x-matroska",
+            "avi": "video/x-msvideo", "m4v": "video/mp4",
+        }[ext]
+        duration_s: float | None = None
+        # Best-effort duration: try imageio-ffmpeg / opencv if present.
+        try:
+            import cv2  # type: ignore
+            cap = cv2.VideoCapture(str(p))
+            if cap.isOpened():
+                fps = cap.get(cv2.CAP_PROP_FPS) or 0
+                frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+                if fps > 0:
+                    duration_s = float(frames) / float(fps)
+            cap.release()
+        except Exception:  # noqa: BLE001
+            pass
+        att = MediaAttachment(
+            kind="video", path=str(p), mime=mime,
+            bytes_size=size, duration_s=duration_s,
+        )
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content=json.dumps({
+                "path": str(p),
+                "mime": mime,
+                "bytes": size,
+                "duration_s": duration_s,
+                "vision_attached": True,
+                "note": (
+                    "Video attachment surfaced. UI renders an inline "
+                    "<video> player. LLM-side vision depends on the "
+                    "provider (Gemini 1.5+ / GPT-4o video natively eat "
+                    "frames; others get this metadata only)."
+                ),
+            }, ensure_ascii=False),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+            metadata={"attachments": [att.to_dict()]},
         )
 
     async def _pdf_read(self, call: ToolCall, t0: float) -> ToolResult:

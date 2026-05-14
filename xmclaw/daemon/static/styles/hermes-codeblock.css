@@ -256,3 +256,29 @@
   height: auto;
   object-fit: contain;
 }
+
+/* Wave 26: video + audio attachments. Sit alongside images, same
+   visual weight. Videos cap at 320px tall so a 1080p clip doesn't
+   eat the conversation. */
+.xmc-msg__videos,
+.xmc-msg__audios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.xmc-msg__video {
+  display: block;
+  max-height: 320px;
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  border: 1px solid var(--color-border, #2a2f3a);
+  border-radius: 6px;
+  background: #000;
+}
+.xmc-msg__audio {
+  display: block;
+  max-width: 100%;
+  min-width: 240px;
+}

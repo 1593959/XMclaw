@@ -34,8 +34,9 @@ def _call(name: str, args: dict | None = None) -> ToolCall:
 def test_list_tools_default_includes_all() -> None:
     names = {s.name for s in ContentTools().list_tools()}
     assert names == {
-        "screenshot", "image_read", "pdf_read", "docx_read",
-        "xlsx_read", "clipboard_read", "clipboard_write",
+        "screenshot", "image_read", "view_image", "view_video",
+        "pdf_read", "docx_read", "xlsx_read",
+        "clipboard_read", "clipboard_write",
     }
 
 
@@ -283,3 +284,108 @@ async def test_clipboard_round_trip() -> None:
     assert read_r.ok is True
     payload_back = json.loads(read_r.content)
     assert payload_back["text"] == payload
+
+
+# ── Wave 26: view_image / view_video + MediaAttachment plumbing ──
+
+
+@pytest.mark.asyncio
+async def test_view_image_emits_canonical_attachments(
+    tmp_path: Path,
+) -> None:
+    img = tmp_path / "tiny.png"
+    img.write_bytes(bytes.fromhex(_TINY_PNG_HEX))
+    r = await ContentTools().invoke(_call(
+        "view_image", {"path": str(img)},
+    ))
+    assert r.ok is True
+    payload = json.loads(r.content)
+    assert payload["vision_attached"] is True
+    # Legacy attach_image preserved for backwards compat.
+    assert r.metadata["attach_image"] == str(img)
+    # Canonical attachments list.
+    atts = r.metadata["attachments"]
+    assert len(atts) == 1
+    assert atts[0]["kind"] == "image"
+    assert atts[0]["path"] == str(img)
+    assert atts[0]["mime"] == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_view_image_rejects_unsupported_ext(
+    tmp_path: Path,
+) -> None:
+    bad = tmp_path / "foo.txt"
+    bad.write_text("not an image", encoding="utf-8")
+    r = await ContentTools().invoke(_call("view_image", {"path": str(bad)}))
+    assert r.ok is False
+    assert "unsupported image extension" in r.error
+
+
+@pytest.mark.asyncio
+async def test_view_image_missing_file(tmp_path: Path) -> None:
+    r = await ContentTools().invoke(_call(
+        "view_image", {"path": str(tmp_path / "ghost.png")},
+    ))
+    assert r.ok is False
+    assert "not found" in r.error
+
+
+@pytest.mark.asyncio
+async def test_view_video_basic_attachment(tmp_path: Path) -> None:
+    """We don't need a real video — extension check + metadata
+    structure is what we're locking in. cv2 duration probe just
+    silently fails for the dummy bytes."""
+    fake = tmp_path / "clip.mp4"
+    # Tiny non-zero file; cv2 will fail to open but the tool returns
+    # OK with duration_s=None.
+    fake.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 64)
+    r = await ContentTools().invoke(_call(
+        "view_video", {"path": str(fake)},
+    ))
+    assert r.ok is True
+    payload = json.loads(r.content)
+    assert payload["mime"] == "video/mp4"
+    assert payload["vision_attached"] is True
+    atts = r.metadata["attachments"]
+    assert len(atts) == 1
+    assert atts[0]["kind"] == "video"
+    assert atts[0]["mime"] == "video/mp4"
+    # No legacy attach_image — video doesn't bridge into the old key.
+    assert "attach_image" not in r.metadata
+
+
+@pytest.mark.asyncio
+async def test_view_video_rejects_unsupported_ext(
+    tmp_path: Path,
+) -> None:
+    bad = tmp_path / "clip.flv"
+    bad.write_bytes(b"FLV\x01" + b"\x00" * 16)
+    r = await ContentTools().invoke(_call("view_video", {"path": str(bad)}))
+    assert r.ok is False
+    assert "unsupported video extension" in r.error
+
+
+@pytest.mark.asyncio
+async def test_screenshot_emits_canonical_attachments_too(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Regression: the screenshot tool's Wave 25.8 attach_image fix is
+    now joined by the Wave 26 attachments list. Both must appear so
+    legacy consumers + new normalize_attachments() consumers agree."""
+    import mss
+    if not hasattr(mss, "mss"):
+        pytest.skip("mss not properly installed on runner")
+    out = tmp_path / "shot.png"
+    r = await ContentTools().invoke(_call(
+        "screenshot", {"path": str(out), "monitor": 0},
+    ))
+    if not r.ok:
+        # Headless CI / no DISPLAY — that's not the bug we're testing.
+        pytest.skip(f"screenshot unavailable: {r.error}")
+    # Legacy and canonical both present.
+    assert r.metadata["attach_image"] == str(out)
+    atts = r.metadata["attachments"]
+    assert len(atts) == 1
+    assert atts[0]["kind"] == "image"
+    assert atts[0]["mime"] == "image/png"

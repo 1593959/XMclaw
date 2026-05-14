@@ -328,6 +328,24 @@ export function MessageBubble({ message, onAnswerQuestion }) {
                   </div>
                 `
               : null}
+            ${Array.isArray(message.videos) && message.videos.length > 0
+              ? html`
+                  <div class="xmc-msg__videos">
+                    ${message.videos.map((src, i) => html`
+                      <video key=${"v" + i} src=${src} controls preload="metadata" class="xmc-msg__video" />
+                    `)}
+                  </div>
+                `
+              : null}
+            ${Array.isArray(message.audios) && message.audios.length > 0
+              ? html`
+                  <div class="xmc-msg__audios">
+                    ${message.audios.map((src, i) => html`
+                      <audio key=${"a" + i} src=${src} controls preload="metadata" class="xmc-msg__audio" />
+                    `)}
+                  </div>
+                `
+              : null}
           `}
       ${(message.skillNotes || []).map((note, i) => html`
         <${SkillNote} key=${"sn_" + i} note=${note} />

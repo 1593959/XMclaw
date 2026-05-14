@@ -594,21 +594,33 @@ class HopLoopMixin:
                                 "items": items,
                                 "count": len(items),
                             })
-                    # B-MULTIMODAL-UI: surface image attachments to
-                    # the chat UI. screen_capture / screen_region_capture
-                    # / image_read / camera_capture / gui_send_chat all
-                    # set ``ToolResult.metadata["attach_image"]`` with
-                    # the absolute path. The UI doesn't have FS access,
-                    # so we publish a /api/v2/media/<filename> URL the
-                    # browser can <img src> directly.
+                    # B-MULTIMODAL-UI / Wave 26: surface media
+                    # attachments to the chat UI. Tools emit either
+                    # the legacy ``metadata.attach_image: str`` or the
+                    # canonical ``metadata.attachments: [MediaAttachment
+                    # dicts]``. normalize_attachments() handles both.
+                    # The UI doesn't have FS access, so we publish
+                    # /api/v2/media/<filename> URLs the browser can
+                    # <img>/<video>/<audio> directly.
+                    from xmclaw.core.ir import normalize_attachments
                     _image_urls: list[str] = []
-                    if isinstance(getattr(result, "metadata", None), dict):
-                        attach_img = result.metadata.get("attach_image")
-                        if isinstance(attach_img, str) and attach_img:
-                            from pathlib import Path as _Path
-                            _image_urls.append(
-                                f"/api/v2/media/{_Path(attach_img).name}",
-                            )
+                    _video_urls: list[str] = []
+                    _audio_urls: list[str] = []
+                    _media_dicts: list[dict[str, Any]] = []
+                    for att in normalize_attachments(
+                        getattr(result, "metadata", None),
+                    ):
+                        url = att.public_url()
+                        if att.kind == "image":
+                            _image_urls.append(url)
+                        elif att.kind == "video":
+                            _video_urls.append(url)
+                        elif att.kind == "audio":
+                            _audio_urls.append(url)
+                        _media_dicts.append({
+                            **att.to_dict(),
+                            "url": url,
+                        })
                     finished_event = await publish(
                         EventType.TOOL_INVOCATION_FINISHED, {
                             "call_id": result.call_id,
@@ -619,6 +631,12 @@ class HopLoopMixin:
                             "expected_side_effects": list(result.side_effects),
                             "ok": result.ok,
                             "images": _image_urls,
+                            "videos": _video_urls,
+                            "audios": _audio_urls,
+                            # Wave 26: full attachment list for clients
+                            # that want dimensions / duration / mime
+                            # alongside the URL.
+                            "attachments": _media_dicts,
                         },
                     )
 

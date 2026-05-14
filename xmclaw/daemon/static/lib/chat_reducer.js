@@ -338,13 +338,20 @@ export function applyEvent(chat, envelope) {
         : (typeof payload.result === "string"
             ? payload.result
             : JSON.stringify(payload.result || {}, null, 2));
-      // B-MULTIMODAL-UI: surface attached images. Backend publishes
-      // ``payload.images`` as a list of /api/v2/media/<filename> URLs
-      // from screen_capture / image_read / camera_capture / etc.
-      // Append the pairing token so the <img> fetch passes auth —
-      // shared helper with the user_message branch.
+      // B-MULTIMODAL-UI / Wave 26: surface attached media. Backend
+      // publishes ``payload.images`` + ``payload.videos`` +
+      // ``payload.audios`` as lists of /api/v2/media/<filename> URLs
+      // (from screenshot / image_read / view_image / view_video /
+      // camera_capture / etc.). Append the pairing token so the
+      // <img>/<video>/<audio> fetch passes auth.
       const images = Array.isArray(payload.images)
         ? payload.images.map(_resolveMediaUrl)
+        : [];
+      const videos = Array.isArray(payload.videos)
+        ? payload.videos.map(_resolveMediaUrl)
+        : [];
+      const audios = Array.isArray(payload.audios)
+        ? payload.audios.map(_resolveMediaUrl)
         : [];
       const idx = chat.messages.findIndex(
         (m) => m.kind === "tool_use" && m.id === callId,
@@ -373,6 +380,8 @@ export function applyEvent(chat, envelope) {
             status,
             result,
             images,
+            videos,
+            audios,
             ts,
           }),
         };
@@ -384,6 +393,8 @@ export function applyEvent(chat, envelope) {
           status,
           result,
           images,
+          videos,
+          audios,
         })),
       };
     }
