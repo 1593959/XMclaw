@@ -305,13 +305,25 @@ class ContentTools(ToolProvider):
             mss.tools.to_png(grab.rgb, grab.size, output=str(out))
             w, h = grab.size
 
-        return _ok(call, t0, json.dumps({
-            "path": str(out),
-            "width": w,
-            "height": h,
-            "monitor": monitor_idx,
-            "bytes": out.stat().st_size,
-        }, ensure_ascii=False))
+        # Wave 25.8 bugfix: set ``metadata.attach_image`` so the hop_loop
+        # B-MULTIMODAL-UI path publishes an /api/v2/media/<filename> URL
+        # to the TOOL_INVOCATION_FINISHED event. Without it the user
+        # only sees a text path in chat — no inline thumbnail. The
+        # downstream LLM also gets the vision content block via the
+        # same metadata channel (image_read had this; screenshot was
+        # missing it, so screenshots never rendered).
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content=json.dumps({
+                "path": str(out),
+                "width": w,
+                "height": h,
+                "monitor": monitor_idx,
+                "bytes": out.stat().st_size,
+            }, ensure_ascii=False),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+            metadata={"attach_image": str(out)},
+        )
 
     async def _image_read(self, call: ToolCall, t0: float) -> ToolResult:
         path = _path_arg(call)

@@ -97,6 +97,24 @@ function _finalizeAbandoned(messages, newAssistantId) {
   return touched ? next : messages;
 }
 
+// B-MULTIMODAL-UI: append the pairing token to /api/v2/media/* URLs so
+// the <img src> request passes the daemon's auth middleware. Without
+// this, screenshots from tool results render as broken thumbnails
+// (401). Centralized so user_message AND tool_invocation_finished
+// branches share one implementation — duplicating it inside
+// user_message was the original Wave 25.8 bug.
+function _resolveMediaUrl(u) {
+  if (!u || typeof u !== "string") return u;
+  if (u.startsWith("data:") || u.startsWith("http")) return u;
+  let token = "";
+  try {
+    token = new URL(window.location.href).searchParams.get("token") || "";
+  } catch (_e) { /* SSR or missing window */ }
+  if (!token) return u;
+  const sep = u.includes("?") ? "&" : "?";
+  return u + sep + "token=" + encodeURIComponent(token);
+}
+
 export function applyEvent(chat, envelope) {
   if (!envelope || typeof envelope !== "object") return chat;
   const t = envelope.type;
@@ -129,24 +147,8 @@ export function applyEvent(chat, envelope) {
       // have a local-optimistic copy with the same correlation_id, replace
       // it; otherwise append.
       const id = corr;
-      // B-MULTIMODAL-UI: server-side images come as /api/v2/media/...
-      // URLs. We append the pairing token here on the client side so
-      // they pass the media route's auth check.
-      const _token = (() => {
-        try {
-          return new URL(window.location.href).searchParams.get("token") || "";
-        } catch (_e) {
-          return "";
-        }
-      })();
-      function _resolve(u) {
-        if (!u || typeof u !== "string") return u;
-        if (u.startsWith("data:") || u.startsWith("http")) return u;
-        if (u.includes("?")) return u + (_token ? "&token=" + encodeURIComponent(_token) : "");
-        return u + (_token ? "?token=" + encodeURIComponent(_token) : "");
-      }
       const serverImages = Array.isArray(payload.images)
-        ? payload.images.map(_resolve)
+        ? payload.images.map(_resolveMediaUrl)
         : [];
       const exists = chat.messages.some((m) => m.id === id);
       if (exists) {
@@ -339,7 +341,11 @@ export function applyEvent(chat, envelope) {
       // B-MULTIMODAL-UI: surface attached images. Backend publishes
       // ``payload.images`` as a list of /api/v2/media/<filename> URLs
       // from screen_capture / image_read / camera_capture / etc.
-      const images = Array.isArray(payload.images) ? payload.images : [];
+      // Append the pairing token so the <img> fetch passes auth —
+      // shared helper with the user_message branch.
+      const images = Array.isArray(payload.images)
+        ? payload.images.map(_resolveMediaUrl)
+        : [];
       const idx = chat.messages.findIndex(
         (m) => m.kind === "tool_use" && m.id === callId,
       );
