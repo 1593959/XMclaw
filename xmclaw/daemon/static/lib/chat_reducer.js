@@ -106,9 +106,17 @@ function _finalizeAbandoned(messages, newAssistantId) {
 function _resolveMediaUrl(u) {
   if (!u || typeof u !== "string") return u;
   if (u.startsWith("data:") || u.startsWith("http")) return u;
+  // Token is fetched from /api/v2/pair and exposed as window.__xmc_token
+  // by boot(). Fall back to the legacy URL-param path so tests + direct
+  // navigation still work, but the primary source is the global.
   let token = "";
   try {
-    token = new URL(window.location.href).searchParams.get("token") || "";
+    if (typeof window !== "undefined") {
+      token = window.__xmc_token || "";
+      if (!token) {
+        token = new URL(window.location.href).searchParams.get("token") || "";
+      }
+    }
   } catch (_e) { /* SSR or missing window */ }
   if (!token) return u;
   const sep = u.includes("?") ? "&" : "?";

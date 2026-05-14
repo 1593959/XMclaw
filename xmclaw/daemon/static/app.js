@@ -257,6 +257,13 @@ async function boot() {
   store.setState({
     auth: { token: auth.token, fetched: auth.fetched },
   });
+  // Wave 26 fix: expose the token to the chat reducer's _resolveMediaUrl
+  // helper. The token isn't in window.location.href (we fetch it from
+  // /api/v2/pair, not via a URL param), so without this global the
+  // <img src="/api/v2/media/..."> would 401 on every tool screenshot.
+  if (auth.token) {
+    window.__xmc_token = auth.token;
+  }
 
   // 2. Pick the active sid: localStorage > newly minted.
   let sid = store.getState().session.activeSid;
