@@ -34,6 +34,11 @@ from xmclaw.memory.v2.embedding import (
     StubEmbedder,
     build_embedding_service,
 )
+from xmclaw.memory.v2.key_info_extractor import (
+    ExtractedKey,
+    extract_and_remember,
+    extract_keys,
+)
 from xmclaw.memory.v2.models import (
     Fact,
     FactKind,
@@ -73,6 +78,7 @@ __all__ = [
     "CONTRADICTS_DISTANCE_THRESHOLD",
     "EmbeddingFailure",
     "EmbeddingService",
+    "ExtractedKey",
     "Fact",
     "FactKind",
     "FactKindStr",
@@ -93,6 +99,8 @@ __all__ = [
     "StubEmbedder",
     "VectorBackend",
     "build_embedding_service",
+    "extract_and_remember",
+    "extract_keys",
     "get_lancedb_graph_backend",
     "get_lancedb_vector_backend",
 ]

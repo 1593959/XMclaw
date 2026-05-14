@@ -73,18 +73,22 @@ async def test_upsert_inserts_new_fact() -> None:
 
 
 @pytest.mark.asyncio
-async def test_upsert_idempotent_bumps_evidence() -> None:
-    """Same content twice ⇒ one row + evidence_count=2."""
+async def test_upsert_replaces_on_id_match() -> None:
+    """Backend contract = REPLACE (matches LanceDB merge_insert
+    semantics). Merge logic — evidence accumulation, max confidence —
+    lives in MemoryService.remember, not in the backend. Backend
+    just writes whatever the record carries; caller is responsible
+    for the read-then-write merge."""
     b = InMemoryVectorBackend()
-    f = _mk_fact("X", confidence=0.5)
+    f = _mk_fact("X", confidence=0.5, evidence_count=1)
     await b.upsert([f])
-    f2 = _mk_fact("X", confidence=0.9)
+    # Caller computed merge upstream: evidence_count=2 absolute.
+    f2 = _mk_fact("X", confidence=0.9, evidence_count=2)
     await b.upsert([f2])
     assert await b.count() == 1
     got = await b.get(f.id)
     assert got is not None
     assert got.evidence_count == 2
-    # Higher confidence wins.
     assert got.confidence == pytest.approx(0.9)
 
 

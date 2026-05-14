@@ -140,27 +140,15 @@ class InMemoryVectorBackend:
         self._rows: OrderedDict[str, Fact] = OrderedDict()
 
     async def upsert(self, records: list[Fact]) -> int:
+        # Contract: backend REPLACES on id match (LanceDB merge_insert
+        # semantics). Caller (MemoryService.remember) computes the
+        # post-merge values BEFORE calling upsert — backend just
+        # writes whatever the record carries. Backend never silently
+        # mutates evidence_count or confidence beyond what the caller
+        # supplied.
         n = 0
-        now = time.time()
         for rec in records:
-            existing = self._rows.get(rec.id)
-            if existing is None:
-                # Fresh insert.
-                self._rows[rec.id] = rec
-            else:
-                # Merge: bump evidence + advance ts + take max confidence.
-                existing.evidence_count += rec.evidence_count
-                existing.confidence = max(existing.confidence, rec.confidence)
-                # Highest-precision values from new record win for
-                # the rest, but keep the original embedding if new
-                # didn't supply one.
-                if rec.embedding is not None:
-                    existing.embedding = rec.embedding
-                if rec.source_event_id:
-                    existing.source_event_id = rec.source_event_id
-                existing.text = rec.text or existing.text
-                existing.layer = rec.layer
-                existing.ts_last = now
+            self._rows[rec.id] = rec
             n += 1
         return n
 
