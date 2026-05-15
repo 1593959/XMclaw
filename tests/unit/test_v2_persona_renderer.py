@@ -116,13 +116,14 @@ async def test_render_writes_user_md_combining_identity_and_preference(
 
 @pytest.mark.asyncio
 async def test_render_unknown_basename_skipped(tmp_path: Path):
-    """Basenames without a bucket mapping (e.g. SOUL.md — covered
-    in Phase 2) are silently skipped — the renderer returns False
-    without touching disk."""
+    """Basenames without a bucket mapping (e.g. BOOTSTRAP.md, which
+    is bootstrap-interview-only and never auto-rendered) are
+    silently skipped — the renderer returns False without touching
+    disk."""
     svc = _make_service()
-    wrote = await render_persona_file(svc, tmp_path, "SOUL.md")
+    wrote = await render_persona_file(svc, tmp_path, "BOOTSTRAP.md")
     assert wrote is False
-    assert not (tmp_path / "SOUL.md").exists()
+    assert not (tmp_path / "BOOTSTRAP.md").exists()
 
 
 @pytest.mark.asyncio
@@ -214,3 +215,108 @@ async def test_render_all_processes_every_routed_file(tmp_path: Path):
     # IDENTITY.md + USER.md both got written.
     assert report["IDENTITY.md"] is True
     assert report["USER.md"] is True
+
+
+# ── Phase 2: lesson bucket routes ────────────────────────────────
+
+
+def test_phase2_routes_cover_five_lesson_buckets():
+    """All five lesson buckets ExtractLessonsHook emits today must
+    map to their corresponding persona MD file. Header strings
+    must match the legacy AUTO_SECTIONS so the agent's read path
+    sees consistent section names regardless of which renderer
+    wrote the file.
+    """
+    expected = {
+        "workflow":      ("AGENTS.md",   "## Auto-extracted"),
+        "tool_quirks":   ("TOOLS.md",    "## Auto-extracted"),
+        "failure_modes": ("MEMORY.md",   "## Failure Modes"),
+        "values":        ("SOUL.md",     "## Auto-extracted"),
+        "rules":         ("LEARNING.md", "## Auto-extracted"),
+    }
+    for bucket, (file, header) in expected.items():
+        assert bucket in BUCKET_TO_FILE, (
+            f"Phase 2 bucket {bucket!r} missing from BUCKET_TO_FILE"
+        )
+        got_file, got_header, _ = BUCKET_TO_FILE[bucket]
+        assert got_file == file
+        assert got_header == header
+
+
+@pytest.mark.asyncio
+async def test_render_writes_soul_md_from_values_bucket(tmp_path: Path):
+    """The SOUL.md case the user explicitly worried about.
+
+    User feedback: "他对话时读取的也有 soul"  →  must not break.
+    After ExtractLessonsHook produces a ``values`` lesson, SOUL.md
+    auto section renders from v2 — agent's next-turn read of
+    SOUL.md sees fresh content.
+    """
+    svc = _make_service()
+    await svc.remember(
+        "诚实优于完美的形象",
+        kind="lesson", scope="project",
+        bucket="values",
+    )
+    wrote = await render_persona_file(svc, tmp_path, "SOUL.md")
+    assert wrote is True
+    content = (tmp_path / "SOUL.md").read_text(encoding="utf-8")
+    assert "## Auto-extracted" in content
+    assert "诚实优于完美的形象" in content
+
+
+@pytest.mark.asyncio
+async def test_render_agents_tools_memory_learning_each_from_own_bucket(
+    tmp_path: Path,
+):
+    """Pin the 1-to-1 mapping: each lesson bucket → its single
+    target MD file. Touching one bucket must not bleed into
+    another file.
+    """
+    svc = _make_service()
+    cases = [
+        ("workflow",      "AGENTS.md",   "grep before read"),
+        ("tool_quirks",   "TOOLS.md",    "bash on Windows = Git Bash"),
+        ("failure_modes", "MEMORY.md",   "session restore replays"),
+        ("rules",         "LEARNING.md", "if zero skill match → skill_browse"),
+    ]
+    for bucket, _, text in cases:
+        # skip_contradict_check=True bypasses the write-time
+        # near-dup merge, which StubEmbedder triggers too eagerly
+        # for short distinct test strings (real qwen-embedding-0.6b
+        # at d=1024 would separate these cleanly).
+        await svc.remember(
+            text, kind="lesson", scope="project", bucket=bucket,
+            skip_contradict_check=True,
+        )
+    report = await render_all_persona_files(svc, tmp_path)
+    for bucket, expected_file, text in cases:
+        assert report[expected_file] is True, (
+            f"{expected_file} not rendered for bucket {bucket!r}"
+        )
+        body = (tmp_path / expected_file).read_text(encoding="utf-8")
+        assert text in body, (
+            f"{text!r} missing from {expected_file}"
+        )
+    # Cross-check: workflow text should NOT leak into TOOLS.md, etc.
+    agents_body = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+    tools_body = (tmp_path / "TOOLS.md").read_text(encoding="utf-8")
+    assert "bash on Windows" not in agents_body
+    assert "grep before read" not in tools_body
+
+
+@pytest.mark.asyncio
+async def test_affected_files_path_handles_lesson_buckets(tmp_path: Path):
+    """The hot-path entry — ``render_affected_files`` — must
+    recognise lesson buckets and render the right MD file."""
+    svc = _make_service()
+    f = await svc.remember(
+        "诚实优于完美的形象",
+        kind="lesson", scope="project",
+        bucket="values",
+    )
+    affected = await render_affected_files(svc, tmp_path, [f])
+    assert affected == {"SOUL.md"}
+    assert (tmp_path / "SOUL.md").exists()
+    assert not (tmp_path / "AGENTS.md").exists()
+    assert not (tmp_path / "USER.md").exists()

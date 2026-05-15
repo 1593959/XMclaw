@@ -203,17 +203,39 @@ async def _write_facts_to_memory(
     # preferences flow here; the v2 fact id is deterministic on
     # (kind, scope, text) so repeats merge into one row with bumped
     # evidence_count via the write-time near-dup pipeline.
+    #
+    # Phase 2 (2026-05-16): pass ``bucket`` through to the v2 store
+    # so v2_renderer can find the right MD file for each lesson
+    # bucket (workflow → AGENTS.md, values → SOUL.md, etc.) — see
+    # xmclaw/core/persona/v2_renderer.py:BUCKET_TO_FILE for the
+    # full mapping. After the writes complete, fire the renderer
+    # once for the whole batch — re-renders only the MD files
+    # whose buckets are actually touched (idempotent, cheap).
     v2_svc = getattr(ctx, "memory_v2_service", None)
+    v2_written: list[Any] = []
     if v2_svc is not None and kind in ("lesson", "preference"):
+        # Default scope. preference is user-scoped (matches the
+        # LLM extractor's contract); lessons stay project-scoped.
+        v2_scope = "user" if kind == "preference" else "project"
+        # Map the legacy ``bucket`` argument to the v2 bucket label.
+        # For preference writes the legacy code passed bucket=None,
+        # so we synthesise "user_preference" — same label the LLM
+        # extractor uses in Phase 1.
+        if kind == "preference":
+            v2_bucket = "user_preference"
+        else:
+            v2_bucket = bucket or ""
         for fact in facts:
             try:
-                await v2_svc.remember(
+                f = await v2_svc.remember(
                     fact,
                     kind=kind,
-                    scope="project",
+                    scope=v2_scope,
                     confidence=0.7,
                     source_event_id=ctx.session_id,
+                    bucket=v2_bucket,
                 )
+                v2_written.append(f)
             except Exception as exc:  # noqa: BLE001
                 _log.warning(
                     "post_sampling.v2_dual_write_failed kind=%s err=%s",
@@ -298,6 +320,25 @@ async def _write_facts_to_memory(
         except Exception as exc:  # noqa: BLE001
             _log.warning(
                 "post_sampling.render_to_disk_failed err=%s", exc,
+            )
+
+    # Phase 2 (2026-05-16): v2_renderer fires AFTER the legacy
+    # PersonaStore render, so when both paths target the same MD
+    # file, v2's output wins on disk. This is intentional — v2 is
+    # the eventual source of truth, the legacy memory.db render
+    # only stays for the rare "v2 disabled but legacy enabled"
+    # config combo (Phase 3 will retire that path entirely once
+    # all callers have migrated).
+    if v2_svc is not None and v2_written and ctx.persona_dir is not None:
+        try:
+            from xmclaw.core.persona.v2_renderer import render_affected_files
+            await render_affected_files(
+                v2_svc, ctx.persona_dir, v2_written,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "post_sampling.v2_renderer_failed kind=%s err=%s",
+                kind, exc,
             )
 
 

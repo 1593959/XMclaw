@@ -65,10 +65,26 @@ from xmclaw.utils.fs_locks import atomic_write_text
 # Each entry maps a bucket label → (target_filename, section_header,
 # render_prefix). The renderer queries L1 for ``bucket=<label>``
 # facts and replaces / appends the section.
+#
+# Phase 1 (2026-05-15): identity + preference. UI's 标识 tab visibly
+# inconsistent with L1 events panel — fixed by the first three rows.
+#
+# Phase 2 (2026-05-16): lesson buckets — the five that
+# ExtractLessonsHook already emits. Header strings match the
+# legacy PersonaStore's AUTO_SECTIONS so the agent's existing
+# read path (full MD file → system prompt) sees the same section
+# names it always saw.
 BUCKET_TO_FILE: dict[str, tuple[str, str, str]] = {
+    # ── Phase 1 ────────────────────────────────────────────────
     "agent_identity":  ("IDENTITY.md", "## Auto-extracted",             ""),
     "user_identity":   ("USER.md",     "## Auto-identity",              ""),
     "user_preference": ("USER.md",     "## Auto-extracted preferences", ""),
+    # ── Phase 2 ────────────────────────────────────────────────
+    "workflow":        ("AGENTS.md",   "## Auto-extracted",             ""),
+    "tool_quirks":     ("TOOLS.md",    "## Auto-extracted",             ""),
+    "failure_modes":   ("MEMORY.md",   "## Failure Modes",              ""),
+    "values":          ("SOUL.md",     "## Auto-extracted",             ""),
+    "rules":           ("LEARNING.md", "## Auto-extracted",             ""),
 }
 
 # Reverse map: which buckets feed which filename. Needed when one MD
