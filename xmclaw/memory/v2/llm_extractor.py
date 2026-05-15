@@ -21,10 +21,16 @@ Architecture:
     → both write to MemoryService.remember (idempotent on text →
       same fact written twice just bumps evidence_count)
 
-The 7 FactKind enum is mapped 1:1 in the LLM prompt so output
-shapes stay consistent. Confidence comes from the LLM's own
-estimate clamped to [0.5, 0.95] — regex stays at the 0.78-0.95
-high end since its precision is higher.
+Confidence comes from the LLM's own estimate clamped to
+[0.5, 0.95] — regex stays at the 0.78-0.95 high end since its
+precision is higher.
+
+The prompt enumerates 6 kinds (preference / decision / identity /
+commitment / correction / project) because those are what users
+typically *say* in chat. ``episode`` is auto-tagged elsewhere
+(successful problem-solving events) and ``lesson`` lands via the
+separate ExtractLessonsHook post-turn path, so this user-message
+extractor doesn't suggest them.
 """
 from __future__ import annotations
 

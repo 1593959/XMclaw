@@ -465,6 +465,65 @@ async def test_recall_hides_superseded_by_default() -> None:
 
 
 @pytest.mark.asyncio
+async def test_lesson_kind_accepted_by_remember() -> None:
+    """Wave-27 follow-up: ``lesson`` is a first-class FactKind.
+
+    Lessons previously only lived in memory.db; they now also flow
+    into v2 facts so the dedup pipeline + UI cover them.
+    """
+    svc = _make_service()
+    f = await svc.remember(
+        "Always grep before reading huge files",
+        kind=FactKind.LESSON,
+        scope="project",
+        confidence=0.7,
+    )
+    assert f.kind == "lesson"
+    assert f.scope == "project"
+    assert f.evidence_count == 1
+    # Round-trip via string kind (extract hooks pass the raw str).
+    f2 = await svc.remember(
+        "Different lesson body",
+        kind="lesson", scope="project",
+    )
+    assert f2.kind == "lesson"
+    # Both visible under the lesson kind filter.
+    hits = await svc.recall(None, kinds=["lesson"], k=10, min_confidence=0.0)
+    assert {h.fact.text for h in hits} == {
+        "Always grep before reading huge files",
+        "Different lesson body",
+    }
+
+
+@pytest.mark.asyncio
+async def test_lesson_kind_dedups_like_other_kinds() -> None:
+    """Write-time near-dup merge fires for lessons too — the whole
+    point of bringing them into v2 facts."""
+    class _TightEmbedder:
+        name = "tight"
+        dim = 4
+        async def embed(self, texts):
+            return [[1.0, 0.0, 0.0, 0.0] for _ in texts]
+        def is_available(self): return True
+
+    svc = MemoryService(
+        vector_backend=InMemoryVectorBackend(),
+        graph_backend=InMemoryGraphBackend(),
+        embedder=EmbeddingService(_TightEmbedder()),
+    )
+    # 3 paraphrases of the same lesson — should collapse to one row.
+    for text in [
+        "永远在读大文件前先用 grep 定位",
+        "大文件先 grep 后读",
+        "huge files: grep first, read after",
+    ]:
+        await svc.remember(text, kind="lesson", scope="project")
+    assert await svc.count(kinds=["lesson"]) == 1
+    hits = await svc.recall(None, kinds=["lesson"], k=10, min_confidence=0.0)
+    assert hits[0].fact.evidence_count == 3
+
+
+@pytest.mark.asyncio
 async def test_find_related_subgraph_for_ui() -> None:
     """find_related returns shape ready for vis-network."""
     svc = _make_service()

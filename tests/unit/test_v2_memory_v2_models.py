@@ -135,10 +135,13 @@ def test_relation_roundtrip() -> None:
 # ── Enum values match Literal types ───────────────────────────────
 
 
-def test_factkind_values_cover_seven_kinds() -> None:
+def test_factkind_values_cover_eight_kinds() -> None:
+    # Wave-27 follow-up: ``lesson`` joined the canonical set so the
+    # ExtractLessonsHook dual-write target is a first-class enum.
     assert {k.value for k in FactKind} == {
         "preference", "decision", "identity",
         "commitment", "correction", "project", "episode",
+        "lesson",
     }
 
 

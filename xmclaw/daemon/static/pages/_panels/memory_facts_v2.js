@@ -40,6 +40,7 @@ const KIND_OPTIONS = [
   { id: "correction", label: "correction" },
   { id: "project", label: "project" },
   { id: "episode", label: "episode" },
+  { id: "lesson", label: "lesson (经验教训)" },
 ];
 
 const SCOPE_OPTIONS = [
@@ -57,6 +58,7 @@ const KIND_COLOR = {
   correction: "#d05a5a",
   project: "#d68b3f",
   episode: "#8d8d8d",
+  lesson: "#5cb3a6",
 };
 
 

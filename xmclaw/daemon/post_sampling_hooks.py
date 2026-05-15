@@ -110,6 +110,12 @@ class HookContext:
     memory_provider: Any = None  # MemoryProvider | None
     embedder: Any = None         # EmbeddingProvider | None
     persona_store: Any = None    # PersonaStore | None — B-198 Phase 3
+    # Wave-27 follow-up: when set, lesson-kind facts also dual-write
+    # to the v2 facts store so the LanceDB dedup pipeline (write-time
+    # near-dup merge + bulk dedup + SUPERSEDES graph) covers them.
+    # Legacy memory.db kind=lesson rows continue to land so the
+    # persona MD render path stays unchanged.
+    memory_v2_service: Any = None  # MemoryService | None
 
 
 class PostSamplingHook(abc.ABC):
@@ -181,8 +187,40 @@ async def _write_facts_to_memory(
     markdown append succeeds. Failure here is logged but never
     propagated — markdown stays the user-visible surface, DB is
     best-effort indexing.
+
+    Wave-27 follow-up: when ``ctx.memory_v2_service`` is also wired,
+    ``lesson`` + ``preference`` kinds get a *parallel* write to the v2
+    facts store so the LanceDB dedup pipeline covers them. The v2 path
+    runs even when ``memory_provider`` is None (the legacy memory.db
+    write is optional; v2 doesn't depend on it).
     """
-    if ctx.memory_provider is None or not facts:
+    if not facts:
+        return
+
+    # Wave-27 follow-up: v2 facts write runs FIRST + independently so
+    # the legacy memory.db None-path doesn't short-circuit it. Lessons
+    # (workflow / tool_quirks / failure_modes / values / rules) and
+    # preferences flow here; the v2 fact id is deterministic on
+    # (kind, scope, text) so repeats merge into one row with bumped
+    # evidence_count via the write-time near-dup pipeline.
+    v2_svc = getattr(ctx, "memory_v2_service", None)
+    if v2_svc is not None and kind in ("lesson", "preference"):
+        for fact in facts:
+            try:
+                await v2_svc.remember(
+                    fact,
+                    kind=kind,
+                    scope="project",
+                    confidence=0.7,
+                    source_event_id=ctx.session_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "post_sampling.v2_dual_write_failed kind=%s err=%s",
+                    kind, exc,
+                )
+
+    if ctx.memory_provider is None:
         return
 
     try:

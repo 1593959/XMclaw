@@ -357,7 +357,7 @@ async def create_fact(request: Request) -> Any:
         )
     if kind not in (
         "preference", "decision", "identity", "commitment",
-        "correction", "project", "episode",
+        "correction", "project", "episode", "lesson",
     ):
         return JSONResponse(
             {"error": "invalid_kind", "kind": kind}, status_code=400,

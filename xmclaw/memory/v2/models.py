@@ -36,7 +36,7 @@ from typing import Any, Literal
 class FactKind(str, Enum):
     """L1 fact taxonomy.
 
-    Seven kinds keep the schema strict without becoming a free-form
+    Eight kinds keep the schema strict without becoming a free-form
     bag. Each kind has a different lifecycle + auto-extraction
     trigger (see §4.4 of design doc):
 
@@ -49,6 +49,15 @@ class FactKind(str, Enum):
                        goals, KPIs — the things daemon hook intercepts)
     - ``episode``    — a discrete successful problem-solving event;
                        feeds L2 experience distillation
+    - ``lesson``     — workflow / tool-quirk / failure-mode / value /
+                       rule extracted by ExtractLessonsHook. Lives
+                       here so the dedup pipeline (write-time merge,
+                       bulk consolidation, SUPERSEDES graph) covers
+                       it the same way as the other seven kinds.
+                       Legacy: previously only stored in
+                       ``memory.db`` (SqliteVecMemory kind=lesson)
+                       and persona MD files; v2 facts now indexes
+                       them too.
     """
 
     PREFERENCE = "preference"
@@ -58,6 +67,7 @@ class FactKind(str, Enum):
     CORRECTION = "correction"
     PROJECT = "project"
     EPISODE = "episode"
+    LESSON = "lesson"
 
 
 class FactScope(str, Enum):
@@ -118,6 +128,7 @@ class RelationKind(str, Enum):
 FactKindStr = Literal[
     "preference", "decision", "identity",
     "commitment", "correction", "project", "episode",
+    "lesson",
 ]
 FactScopeStr = Literal["user", "project", "session"]
 FactLayerStr = Literal["working", "long_term"]

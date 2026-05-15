@@ -462,6 +462,85 @@ def test_strip_leading_date_preserves_non_dated_text() -> None:
 
 
 @pytest.mark.asyncio
+async def test_lessons_dual_write_to_v2_facts(tmp_path: Path) -> None:
+    """Wave-27 follow-up: when ``memory_v2_service`` is attached,
+    extracted lessons also flow into the v2 facts store via
+    ``MemoryService.remember()`` so the LanceDB dedup pipeline covers
+    them. The memory.db side (``memory_provider``) is left None here
+    so we observe ONLY the v2 path firing.
+    """
+    from xmclaw.daemon.post_sampling_hooks import _write_facts_to_memory
+    from xmclaw.memory.v2 import (
+        EmbeddingService,
+        InMemoryGraphBackend,
+        InMemoryVectorBackend,
+        MemoryService,
+        StubEmbedder,
+    )
+
+    svc = MemoryService(
+        vector_backend=InMemoryVectorBackend(),
+        graph_backend=InMemoryGraphBackend(),
+        embedder=EmbeddingService(StubEmbedder(dim=4)),
+    )
+    ctx = HookContext(
+        session_id="s-lesson-dual",
+        agent_id="main",
+        user_message="hi",
+        assistant_response="hello",
+        history=[],
+        llm=_StubLLM('{"facts": []}'),
+        persona_dir=tmp_path,
+        cfg={},
+        memory_provider=None,        # legacy path silent
+        embedder=None,
+        persona_store=None,
+        memory_v2_service=svc,        # new path active
+    )
+    await _write_facts_to_memory(
+        ctx,
+        ["grep before reading huge files", "prefer surgical edits"],
+        kind="lesson",
+        bucket="workflow",
+    )
+    hits = await svc.recall(
+        None, kinds=["lesson"], k=10, min_confidence=0.0,
+    )
+    texts = {h.fact.text for h in hits}
+    assert texts == {
+        "grep before reading huge files",
+        "prefer surgical edits",
+    }
+    for h in hits:
+        assert h.fact.scope == "project"
+
+
+@pytest.mark.asyncio
+async def test_v2_dual_write_skipped_when_service_none(tmp_path: Path) -> None:
+    """No v2 service attached → the dual-write path is a no-op. The
+    helper must not raise (best-effort indexing semantics)."""
+    from xmclaw.daemon.post_sampling_hooks import _write_facts_to_memory
+    ctx = HookContext(
+        session_id="s",
+        agent_id="main",
+        user_message="hi",
+        assistant_response="hello",
+        history=[],
+        llm=_StubLLM('{"facts": []}'),
+        persona_dir=tmp_path,
+        cfg={},
+        memory_provider=None,
+        embedder=None,
+        persona_store=None,
+        memory_v2_service=None,
+    )
+    # Must not raise even though there's no backend at all.
+    await _write_facts_to_memory(
+        ctx, ["a lesson"], kind="lesson", bucket="workflow",
+    )
+
+
+@pytest.mark.asyncio
 async def test_lessons_double_date_prefix_collapses(tmp_path: Path) -> None:
     """End-to-end: LLM returns lessons that include a ``YYYY-MM-DD:``
     prefix in the value. The hook must strip it so the on-disk bullet

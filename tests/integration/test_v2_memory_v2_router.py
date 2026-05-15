@@ -131,6 +131,31 @@ def test_create_rejects_invalid_kind() -> None:
         assert r.json()["error"] == "invalid_kind"
 
 
+def test_create_accepts_lesson_kind() -> None:
+    """Wave-27 follow-up: lesson must be a valid POST kind so the
+    extract-hooks dual-write path + manual UI create both work."""
+    app = _build_app()
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/v2/memory/v2/facts",
+            json={
+                "text": "grep before reading huge files",
+                "kind": "lesson",
+                "scope": "project",
+                "confidence": 0.7,
+            },
+        )
+        assert r.status_code == 200, r.text
+        created = r.json()["created"]
+        assert created["kind"] == "lesson"
+        # Lessons surface under the kind filter.
+        r2 = client.get("/api/v2/memory/v2/facts?kind=lesson")
+        assert r2.status_code == 200
+        body = r2.json()
+        assert body["total"] == 1
+        assert body["facts"][0]["text"] == "grep before reading huge files"
+
+
 def test_create_rejects_empty_text() -> None:
     app = _build_app()
     with TestClient(app) as client:

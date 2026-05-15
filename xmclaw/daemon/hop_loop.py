@@ -1062,6 +1062,14 @@ class HopLoopMixin:
                         # B-198 Phase 3: persona_store rendered as
                         # disk cache after each fact upsert.
                         persona_store=self._persona_store,
+                        # Wave-27 follow-up: lessons dual-write to v2
+                        # facts so they hit the LanceDB dedup pipeline.
+                        # None when v2 isn't wired (config off / boot
+                        # failure) — extractor hooks skip the v2 path
+                        # silently in that case.
+                        memory_v2_service=getattr(
+                            self, "_memory_service_v2", None,
+                        ),
                     )
                     # Fire-and-forget — don't await, the next turn must
                     # not wait for hooks. Strong ref via add() / discard
