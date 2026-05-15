@@ -114,6 +114,30 @@ def _eval_filter(where: str | None, row: dict[str, Any]) -> bool:
     raise ValueError(f"unknown op: {op}")
 
 
+# ── Row projection ───────────────────────────────────────────────
+
+
+def _fact_to_row(fact: Fact) -> dict[str, Any]:
+    """Project a Fact into the column dict the filter parser consumes.
+
+    Crucially mirrors the LanceDB schema where ``superseded_by`` is a
+    non-null string ("" when absent) — that lets the same SQL clause
+    ``superseded_by = ''`` filter tombstones from both backends.
+    """
+    return {
+        "id": fact.id,
+        "kind": fact.kind,
+        "scope": fact.scope,
+        "confidence": fact.confidence,
+        "layer": fact.layer,
+        "evidence_count": fact.evidence_count,
+        "ts_last": fact.ts_last,
+        "ts_first": fact.ts_first,
+        "text": fact.text,
+        "superseded_by": fact.superseded_by or "",
+    }
+
+
 # ── Distance ─────────────────────────────────────────────────────
 
 
@@ -162,17 +186,7 @@ class InMemoryVectorBackend:
         # Step 1: filter rows by where.
         candidates: list[Fact] = []
         for fact in self._rows.values():
-            row = {
-                "id": fact.id,
-                "kind": fact.kind,
-                "scope": fact.scope,
-                "confidence": fact.confidence,
-                "layer": fact.layer,
-                "evidence_count": fact.evidence_count,
-                "ts_last": fact.ts_last,
-                "ts_first": fact.ts_first,
-                "text": fact.text,
-            }
+            row = _fact_to_row(fact)
             if _eval_filter(where, row):
                 candidates.append(fact)
 
@@ -208,13 +222,7 @@ class InMemoryVectorBackend:
     async def delete(self, where: str) -> int:
         to_drop = [
             fid for fid, fact in self._rows.items()
-            if _eval_filter(where, {
-                "id": fact.id, "kind": fact.kind, "scope": fact.scope,
-                "confidence": fact.confidence, "layer": fact.layer,
-                "evidence_count": fact.evidence_count,
-                "ts_last": fact.ts_last, "ts_first": fact.ts_first,
-                "text": fact.text,
-            })
+            if _eval_filter(where, _fact_to_row(fact))
         ]
         for fid in to_drop:
             del self._rows[fid]
@@ -225,13 +233,7 @@ class InMemoryVectorBackend:
             return len(self._rows)
         n = 0
         for fact in self._rows.values():
-            if _eval_filter(where, {
-                "id": fact.id, "kind": fact.kind, "scope": fact.scope,
-                "confidence": fact.confidence, "layer": fact.layer,
-                "evidence_count": fact.evidence_count,
-                "ts_last": fact.ts_last, "ts_first": fact.ts_first,
-                "text": fact.text,
-            }):
+            if _eval_filter(where, _fact_to_row(fact)):
                 n += 1
         return n
 

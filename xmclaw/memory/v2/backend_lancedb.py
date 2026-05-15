@@ -245,10 +245,12 @@ class LanceDBVectorBackend:
         # Vector query.
         # LanceDB's async API: ``table.search(vec)`` itself returns a
         # coroutine that yields the QueryBuilder — must await before
-        # chaining .where / .limit.
+        # chaining .where / .limit. The 0.30+ AsyncStandardQuery.where
+        # API no longer accepts a ``prefilter`` kwarg (filtering is
+        # always applied pre-KNN); pass plain string.
         builder = await self._table.search(list(query))
         if where:
-            builder = builder.where(where, prefilter=True)
+            builder = builder.where(where)
         rows = await builder.limit(limit).to_list()
         return [_record_to_fact(r) for r in rows[:limit]]
 

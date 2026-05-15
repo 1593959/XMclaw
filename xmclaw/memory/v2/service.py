@@ -69,12 +69,39 @@ _log = get_logger(__name__)
 #: Cosine distance = 1 - cos_sim. < 0.2 ≈ cosine similarity > 0.8.
 CONTRADICTS_DISTANCE_THRESHOLD = 0.2
 
+#: Cosine distance below which two facts are considered the SAME
+#: thing (different phrasing of the same content). At write time we
+#: MERGE the new write into the existing row instead of creating a
+#: duplicate. At dedup time we collapse pairs already in the store.
+#: 0.15 = cosine similarity > 0.925 — strict enough to avoid
+#: collapsing genuinely different facts about the same topic.
+NEAR_DUPLICATE_DISTANCE_THRESHOLD = 0.15
+
 #: Distance below which two facts are considered the SAME topic
-#: (auto-link via SAME_TOPIC, no contradict assumption).
+#: (auto-link via SAME_TOPIC, no contradict assumption). Looser than
+#: NEAR_DUPLICATE — these are related-but-distinct facts.
 SAME_TOPIC_DISTANCE_THRESHOLD = 0.1
 
 #: evidence_count at which a working-layer fact is auto-promoted.
 LONG_TERM_PROMOTE_THRESHOLD = 3
+
+
+# ── Cosine distance helper ───────────────────────────────────────
+
+
+def _cosine_distance(
+    a: tuple[float, ...] | list[float] | None,
+    b: tuple[float, ...] | list[float] | None,
+) -> float:
+    """Cosine distance = 1 - cos_sim, in [0, 2]. 0 = identical."""
+    if not a or not b or len(a) != len(b):
+        return 2.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(x * x for x in b) ** 0.5
+    if na == 0 or nb == 0:
+        return 2.0
+    return 1.0 - (dot / (na * nb))
 
 
 # ── RecallHit return shape ────────────────────────────────────────
@@ -195,6 +222,61 @@ class MemoryService:
 
         # Look up existing row for merge semantics.
         existing = await self._vec.get(fact_id)
+
+        # NEAR-DUPLICATE DETECTION (semantic consolidation).
+        # If the exact id misses but a same-kind/scope row exists
+        # with cosine distance < NEAR_DUPLICATE_DISTANCE_THRESHOLD,
+        # treat THIS write as another evidence vote for the existing
+        # row instead of creating a near-dup. This is what makes
+        # "目标月流水破10万元" / "月流水破 10 万" / "业务目标:
+        # 月流水破10万" collapse into ONE row instead of three.
+        #
+        # Skipped when:
+        #   - explicit skip_contradict_check (caller wants pure insert)
+        #   - no embedder configured (can't compute distance)
+        #   - no embedding for new text (probe rejected)
+        #   - existing exact-id hit (handled by the merge path below)
+        if (
+            embedding is not None
+            and not skip_contradict_check
+            and existing is None
+        ):
+            near_dup = await self._find_near_duplicate(
+                embedding=embedding,
+                kind=kind_str,
+                scope=scope_str,
+            )
+            if near_dup is not None:
+                # Treat as evidence vote on the existing fact.
+                near_dup.evidence_count += 1
+                near_dup.confidence = min(
+                    0.99,
+                    max(near_dup.confidence, confidence)
+                    + 0.05 * min(near_dup.confidence, confidence),
+                )
+                near_dup.ts_last = time.time()
+                # Promote layer if threshold crossed.
+                if near_dup.evidence_count >= LONG_TERM_PROMOTE_THRESHOLD:
+                    near_dup.layer = FactLayer.LONG_TERM.value
+                await self._vec.upsert([near_dup])
+                # If the caller passed a source_event_id, link the
+                # new event to the SURVIVING fact via CAUSED_BY.
+                if source_event_id:
+                    try:
+                        await self.relate(
+                            source_fact_id=near_dup.id,
+                            target_fact_id=f"event:{source_event_id}",
+                            kind=RelationKind.CAUSED_BY,
+                            auto_extracted=True,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                _log.info(
+                    "memory_service.merged_near_dup id=%s "
+                    "evidence=%d (new write: %r)",
+                    near_dup.id[:32], near_dup.evidence_count, text[:60],
+                )
+                return near_dup
         new_evidence = 1 if existing is None else existing.evidence_count + 1
         new_confidence = (
             max(existing.confidence, confidence) if existing else confidence
@@ -256,6 +338,45 @@ class MemoryService:
         )
 
         return new_fact
+
+    async def _find_near_duplicate(
+        self,
+        *,
+        embedding: tuple[float, ...] | list[float],
+        kind: str,
+        scope: str,
+    ) -> Fact | None:
+        """KNN lookup top-3 same-kind/scope facts; return the one
+        whose cosine distance to ``embedding`` is below the near-dup
+        threshold (or None).
+
+        Skips superseded rows so a SUPERSEDES'd fact doesn't keep
+        absorbing evidence.
+        """
+        try:
+            # Filter at the SQL layer so superseded tombstones don't
+            # eat one of our 3 KNN slots — the in-Python check below
+            # is now belt-and-braces.
+            candidates = await self._vec.search(
+                list(embedding),
+                where=(
+                    f"kind = '{kind}' AND scope = '{scope}' "
+                    f"AND superseded_by = ''"
+                ),
+                limit=3,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("memory_service.near_dup_search_failed err=%s", exc)
+            return None
+        for cand in candidates:
+            if cand.superseded_by:
+                continue
+            if cand.embedding is None:
+                continue
+            d = _cosine_distance(embedding, cand.embedding)
+            if d <= NEAR_DUPLICATE_DISTANCE_THRESHOLD:
+                return cand
+        return None
 
     async def _auto_link_relations(
         self,
@@ -371,6 +492,7 @@ class MemoryService:
         include_relations: bool = True,
         only_layer: FactLayerStr | None = None,
         keyword_only: bool = False,
+        include_superseded: bool = False,
     ) -> list[RecallHit]:
         """Search L1 and return top-k facts enriched with relations.
 
@@ -381,6 +503,11 @@ class MemoryService:
             * None — pure-filter listing ordered by ts_last DESC
 
         Filters compose into a single ``where`` clause.
+
+        ``include_superseded`` (default False): facts marked as
+        replaced by deduplicate() carry ``superseded_by`` pointing
+        at the survivor. By default those are filtered out so the
+        UI list / agent recall doesn't surface tombstone duplicates.
         """
         # Build the where clause.
         clauses: list[str] = []
@@ -394,6 +521,11 @@ class MemoryService:
             clauses.append(f"confidence >= {min_confidence}")
         if only_layer:
             clauses.append(f"layer = '{only_layer}'")
+        if not include_superseded:
+            # LanceDB stores the column as a non-null string ("" when
+            # absent); in-memory backend exposes it the same way in
+            # its row dict for filter eval. Equality on '' covers both.
+            clauses.append("superseded_by = ''")
         where = " AND ".join(clauses) if clauses else None
 
         # Choose the actual search input.
@@ -449,6 +581,7 @@ class MemoryService:
         *,
         kinds: list[FactKindStr] | None = None,
         scopes: list[FactScopeStr] | None = None,
+        include_superseded: bool = False,
     ) -> int:
         clauses: list[str] = []
         if kinds:
@@ -457,6 +590,8 @@ class MemoryService:
         if scopes:
             ss = ", ".join(f"'{s}'" for s in scopes)
             clauses.append(f"scope IN ({ss})")
+        if not include_superseded:
+            clauses.append("superseded_by = ''")
         where = " AND ".join(clauses) if clauses else None
         return await self._vec.count(where)
 
@@ -592,6 +727,155 @@ class MemoryService:
             + "\n".join(sections)
             + "\n</memory-v2-facts>"
         )
+
+    # ── Bulk dedup (offline consolidation) ──────────────────────
+
+    async def deduplicate(
+        self,
+        *,
+        kinds: list[str] | None = None,
+        scopes: list[str] | None = None,
+        distance_threshold: float | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Scan all facts (optionally filtered) and merge pairs whose
+        cosine distance is below ``distance_threshold`` (defaults to
+        the NEAR_DUPLICATE constant).
+
+        Algorithm: union-find by greedy pairwise scan within each
+        (kind, scope) bucket. For each cluster, the survivor is the
+        fact with highest evidence_count (ties → earlier ts_first).
+        Loser facts get marked ``superseded_by=survivor`` and a
+        SUPERSEDES edge survivor→loser is added.
+
+        Loser evidence_count + confidence get rolled into the
+        survivor (cumulative votes for the same content).
+
+        Args:
+            kinds / scopes: restrict the scan; None scans everything.
+            distance_threshold: override the default.
+            dry_run: when True, report what WOULD be merged without
+                touching the store. Useful for previewing impact.
+
+        Returns:
+            {"scanned": N, "clusters_found": K, "merged": M,
+             "actions": [{"survivor_id", "loser_ids", "size"}, ...]}.
+        """
+        thresh = (
+            distance_threshold
+            if distance_threshold is not None
+            else NEAR_DUPLICATE_DISTANCE_THRESHOLD
+        )
+
+        # Pull all facts in scope. Backend's list_all isn't on the
+        # Protocol surface so we go through search(None, where=...).
+        clauses: list[str] = []
+        if kinds:
+            kinds_list = ", ".join(f"'{k}'" for k in kinds)
+            clauses.append(f"kind IN ({kinds_list})")
+        if scopes:
+            scopes_list = ", ".join(f"'{s}'" for s in scopes)
+            clauses.append(f"scope IN ({scopes_list})")
+        where = " AND ".join(clauses) if clauses else None
+
+        all_facts = await self._vec.search(
+            None, where=where, limit=10000,
+        )
+
+        # Bucket by (kind, scope) so we only compare facts that
+        # could plausibly be dupes.
+        buckets: dict[tuple[str, str], list[Fact]] = {}
+        for f in all_facts:
+            if f.embedding is None:
+                continue
+            if f.superseded_by:
+                continue
+            buckets.setdefault((f.kind, f.scope), []).append(f)
+
+        actions: list[dict[str, Any]] = []
+        merged_count = 0
+
+        for (kind, scope), facts in buckets.items():
+            # Greedy clustering: iterate facts; for each, find any
+            # existing cluster with a member close to it. If found,
+            # add this fact to that cluster. Otherwise start a new
+            # singleton cluster.
+            clusters: list[list[Fact]] = []
+            for f in facts:
+                placed = False
+                for cluster in clusters:
+                    # Compare against the cluster's first (anchor) member.
+                    anchor = cluster[0]
+                    d = _cosine_distance(f.embedding, anchor.embedding)
+                    if d <= thresh:
+                        cluster.append(f)
+                        placed = True
+                        break
+                if not placed:
+                    clusters.append([f])
+
+            # Process each cluster of size >= 2.
+            for cluster in clusters:
+                if len(cluster) < 2:
+                    continue
+                # Pick survivor: highest evidence_count, then
+                # earliest ts_first (older / more established wins).
+                cluster.sort(
+                    key=lambda x: (-x.evidence_count, x.ts_first),
+                )
+                survivor = cluster[0]
+                losers = cluster[1:]
+
+                if not dry_run:
+                    # Roll evidence + confidence into survivor.
+                    total_evidence = sum(c.evidence_count for c in cluster)
+                    max_conf = max(c.confidence for c in cluster)
+                    survivor.evidence_count = total_evidence
+                    survivor.confidence = min(
+                        0.99,
+                        max_conf + 0.05 * max(
+                            0,
+                            len(cluster) - 1,
+                        ) * 0.05,
+                    )
+                    survivor.ts_last = time.time()
+                    # Promote to long_term if threshold met.
+                    if survivor.evidence_count >= LONG_TERM_PROMOTE_THRESHOLD:
+                        survivor.layer = FactLayer.LONG_TERM.value
+                    await self._vec.upsert([survivor])
+
+                    # Mark losers superseded + add SUPERSEDES edges.
+                    for loser in losers:
+                        loser.superseded_by = survivor.id
+                        loser.confidence = min(loser.confidence, 0.3)
+                        loser.ts_last = time.time()
+                        await self._vec.upsert([loser])
+                        try:
+                            await self.relate(
+                                source_fact_id=survivor.id,
+                                target_fact_id=loser.id,
+                                kind=RelationKind.SUPERSEDES,
+                                auto_extracted=True,
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+
+                merged_count += len(losers)
+                actions.append({
+                    "survivor_id": survivor.id,
+                    "survivor_text": survivor.text[:120],
+                    "loser_ids": [c.id for c in losers],
+                    "loser_texts": [c.text[:120] for c in losers],
+                    "size": len(cluster),
+                })
+
+        return {
+            "scanned": len(all_facts),
+            "clusters_found": sum(1 for a in actions),
+            "merged": merged_count,
+            "dry_run": dry_run,
+            "actions": actions,
+        }
 
     # ── Lifecycle ───────────────────────────────────────────────
 

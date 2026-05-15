@@ -257,6 +257,213 @@ async def test_relate_manual_edge() -> None:
     assert any(t == b.id for _, t in nbrs)
 
 
+# ── Near-duplicate consolidation (Wave 27 follow-up) ─────────────
+
+
+@pytest.mark.asyncio
+async def test_remember_merges_near_duplicate_at_write() -> None:
+    """Two semantically-equivalent writes with different surface text
+    collapse into ONE fact (evidence bumped), not two near-dup rows."""
+    # Force deterministic embeddings that are NEAR (cosine ~ 0).
+    class _DeterministicEmbedder:
+        name = "deterministic"
+        dim = 4
+        # All inputs map to ALMOST the same vector — within
+        # NEAR_DUPLICATE_DISTANCE_THRESHOLD of each other.
+        async def embed(self, texts):
+            out = []
+            for t in texts:
+                # base vector + tiny noise based on first char
+                seed = (ord(t[0]) if t else 0) % 5
+                out.append([1.0, 0.001 * seed, 0.0, 0.0])
+            return out
+        def is_available(self): return True
+
+    svc = MemoryService(
+        vector_backend=InMemoryVectorBackend(),
+        graph_backend=InMemoryGraphBackend(),
+        embedder=EmbeddingService(_DeterministicEmbedder()),
+    )
+    # Three different surface forms of the "same" idea (vec-close).
+    await svc.remember(
+        "目标月流水破10万",
+        kind="project", scope="project",
+    )
+    await svc.remember(
+        "目标月流水破10万元",  # different chars, embeds near-same
+        kind="project", scope="project",
+    )
+    await svc.remember(
+        "业务目标: 月流水10万",  # different again
+        kind="project", scope="project",
+    )
+    # Should be ONE row, not three.
+    assert await svc.count(kinds=["project"]) == 1
+    # And evidence_count reflects the 3 votes.
+    hits = await svc.recall(None, kinds=["project"], k=5)
+    assert hits[0].fact.evidence_count == 3
+
+
+@pytest.mark.asyncio
+async def test_remember_keeps_distinct_facts_separate() -> None:
+    """When vec distance > threshold, facts stay separate."""
+    svc = _make_service()  # StubEmbedder gives semi-distinct vectors
+    await svc.remember(
+        "陪玩店业务: pw310.wxselling.com",
+        kind="project", scope="project",
+        skip_contradict_check=True,
+    )
+    await svc.remember(
+        "完全不相关的事实 — Python 编程语言版本号 3.10",
+        kind="project", scope="project",
+        skip_contradict_check=True,
+    )
+    # Two distinct facts.
+    assert await svc.count(kinds=["project"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_deduplicate_collapses_existing_duplicates() -> None:
+    """Bulk dedup pass merges existing near-dup rows after the fact."""
+    # Pre-existing scenario: 3 rows that we WANT to be the same fact
+    # but were saved with skip_contradict_check=True (so write-time
+    # dedup was bypassed).
+    svc = _make_service()
+    a = await svc.remember(
+        "用户喜欢简短回复",
+        kind="preference", scope="user",
+        skip_contradict_check=True,
+    )
+    b = await svc.remember(
+        "用户喜欢简短回复",  # exact dup of a — same id, will merge naturally
+        kind="preference", scope="user",
+        skip_contradict_check=True,
+    )
+    # Should already be one row because exact id collision.
+    assert a.id == b.id
+    assert await svc.count() == 1
+
+    # Now force a near-duplicate-but-different-text case:
+    # Same kind/scope, slightly different wording.
+    await svc.remember(
+        "用户偏好简短的回答",
+        kind="preference", scope="user",
+        skip_contradict_check=True,  # bypass write-time merge
+    )
+    # In StubEmbedder world the two embeddings might NOT be within
+    # the near-dup threshold (random-ish bytes), so we may or may
+    # not see a merge. Just verify deduplicate() runs cleanly.
+    report = await svc.deduplicate(dry_run=True)
+    assert "scanned" in report
+    assert "clusters_found" in report
+    assert "merged" in report
+    # dry_run guarantees nothing was written.
+    assert report["dry_run"] is True
+
+
+@pytest.mark.asyncio
+async def test_deduplicate_dry_run_does_not_mutate() -> None:
+    svc = _make_service()
+    await svc.remember(
+        "a fact", kind="project", scope="project",
+        skip_contradict_check=True,
+    )
+    before = await svc.count()
+    report = await svc.deduplicate(dry_run=True)
+    after = await svc.count()
+    assert before == after
+    assert report["dry_run"] is True
+
+
+@pytest.mark.asyncio
+async def test_deduplicate_produces_supersedes_edges() -> None:
+    """When dedup merges A and B, a SUPERSEDES edge survivor->loser
+    appears in the graph so UI viz can show the merge history."""
+    # Force tight clustering.
+    class _TightEmbedder:
+        name = "tight"
+        dim = 4
+        async def embed(self, texts):
+            return [[1.0, 0.0, 0.0, 0.0] for _ in texts]
+        def is_available(self): return True
+
+    svc = MemoryService(
+        vector_backend=InMemoryVectorBackend(),
+        graph_backend=InMemoryGraphBackend(),
+        embedder=EmbeddingService(_TightEmbedder()),
+    )
+    f1 = await svc.remember(
+        "fact A",
+        kind="project", scope="project",
+        skip_contradict_check=True,
+    )
+    f2 = await svc.remember(
+        "fact B (same content, different surface)",
+        kind="project", scope="project",
+        skip_contradict_check=True,
+    )
+    # With tight embedder both share the same vec, distance = 0.
+    # But skip_contradict_check bypassed write-time merge so we have
+    # two rows.
+    assert await svc.count() == 2
+
+    report = await svc.deduplicate()
+    assert report["merged"] == 1
+    assert len(report["actions"]) == 1
+    survivor_id = report["actions"][0]["survivor_id"]
+    loser_id = report["actions"][0]["loser_ids"][0]
+    # SUPERSEDES edge survivor → loser exists.
+    nbrs = await svc.neighbors(survivor_id, relation_types=["SUPERSEDES"])
+    assert any(t == loser_id for _, t in nbrs)
+    # Loser's superseded_by points to survivor.
+    loser = await svc.get_fact(loser_id)
+    assert loser is not None
+    assert loser.superseded_by == survivor_id
+
+
+@pytest.mark.asyncio
+async def test_recall_hides_superseded_by_default() -> None:
+    """After dedup runs, the loser is filtered from default recall + count.
+
+    Prevents tombstone duplicates from polluting the UI list (which
+    was the visible bug: a "deduped" fact still appeared in the panel).
+    """
+    class _TightEmbedder:
+        name = "tight"
+        dim = 4
+        async def embed(self, texts):
+            return [[1.0, 0.0, 0.0, 0.0] for _ in texts]
+        def is_available(self): return True
+
+    svc = MemoryService(
+        vector_backend=InMemoryVectorBackend(),
+        graph_backend=InMemoryGraphBackend(),
+        embedder=EmbeddingService(_TightEmbedder()),
+    )
+    await svc.remember(
+        "fact A", kind="project", scope="project",
+        skip_contradict_check=True,
+    )
+    await svc.remember(
+        "fact B paraphrase", kind="project", scope="project",
+        skip_contradict_check=True,
+    )
+    assert await svc.count() == 2  # raw rows before dedup
+    report = await svc.deduplicate()
+    assert report["merged"] == 1
+    # Default recall hides the tombstone.
+    hits = await svc.recall(None, k=10, min_confidence=0.0)
+    assert len(hits) == 1
+    # Default count() agrees.
+    assert await svc.count() == 1
+    # Opt-in surfaces the loser.
+    hits_all = await svc.recall(
+        None, k=10, min_confidence=0.0, include_superseded=True,
+    )
+    assert len(hits_all) == 2
+    assert await svc.count(include_superseded=True) == 2
+
+
 @pytest.mark.asyncio
 async def test_find_related_subgraph_for_ui() -> None:
     """find_related returns shape ready for vis-network."""

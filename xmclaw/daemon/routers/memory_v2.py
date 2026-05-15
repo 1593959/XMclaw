@@ -153,6 +153,36 @@ async def embedder_info(request: Request) -> dict[str, Any]:
     }
 
 
+@router.post("/deduplicate")
+async def deduplicate(request: Request) -> Any:
+    """Trigger a bulk near-duplicate consolidation pass.
+
+    Body (all optional):
+        {"dry_run": true, "kinds": ["preference"], "scopes": ["user"],
+         "distance_threshold": 0.12}
+
+    Returns the deduplicate() report: scanned / clusters_found /
+    merged + per-cluster survivor/loser detail for UI display.
+    """
+    svc = _get_service(request)
+    if svc is None:
+        return _v2_disabled_response()
+    try:
+        body = await request.json() if request.headers.get("content-length") else {}
+    except Exception:  # noqa: BLE001
+        body = {}
+    dry_run = bool(body.get("dry_run", False))
+    kinds = body.get("kinds") or None
+    scopes = body.get("scopes") or None
+    distance_threshold = body.get("distance_threshold")
+    report = await svc.deduplicate(
+        kinds=kinds, scopes=scopes,
+        distance_threshold=distance_threshold,
+        dry_run=dry_run,
+    )
+    return report
+
+
 @router.post("/embedder/test")
 async def embedder_test(request: Request) -> dict[str, Any]:
     """Round-trip test: embed a probe string + return dim + elapsed.
@@ -198,6 +228,14 @@ async def list_facts(
     layer: str | None = Query(None),
     q: str | None = Query(None, description="Optional keyword search"),
     limit: int = Query(50, ge=1, le=500),
+    include_superseded: bool = Query(
+        False,
+        description=(
+            "Show facts that deduplicate() has marked as replaced by "
+            "a survivor. Off by default — tombstone duplicates "
+            "would otherwise pollute the UI list."
+        ),
+    ),
 ) -> Any:
     svc = _get_service(request)
     if svc is None:
@@ -220,6 +258,7 @@ async def list_facts(
         # similarity — q="陪玩店" should hit "陪玩店业务" but NOT
         # every other fact that happens to be vec-close.
         keyword_only=bool(q),
+        include_superseded=include_superseded,
     )
 
     return {

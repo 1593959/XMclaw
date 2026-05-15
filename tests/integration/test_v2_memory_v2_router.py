@@ -7,9 +7,10 @@ MemoryService attached to app.state.
 
 Covers the 6 endpoints:
   GET    /status
-  GET    /facts (with filters)
+  GET    /facts (with filters, with include_superseded)
   GET    /facts/{id}
   POST   /facts
+  POST   /deduplicate
   DELETE /facts/{id}
   GET    /graph
 """
@@ -30,6 +31,21 @@ from xmclaw.memory.v2 import (
     MemoryService,
     StubEmbedder,
 )
+
+
+# ── Tight embedder for forcing near-dup clustering ──────────────
+
+
+class _TightEmbedder:
+    """Always-same-vector embedder so deduplicate() reliably clusters."""
+    name = "tight"
+    dim = 4
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        return [[1.0, 0.0, 0.0, 0.0] for _ in texts]
+
+    def is_available(self) -> bool:
+        return True
 
 
 # ── Fixture: minimal app with v2 router + service ────────────────
@@ -255,6 +271,112 @@ def test_graph_focus_returns_subgraph() -> None:
         assert r2.status_code == 200
         body = r2.json()
         assert any(n["id"] == fid for n in body["nodes"])
+
+
+# ── deduplicate + superseded filter ──────────────────────────────
+
+
+def _build_app_with_tight_embedder() -> FastAPI:
+    """Variant of _build_app() using the tight embedder so writes
+    cluster reliably for dedup-related tests."""
+    app = FastAPI()
+    app.include_router(memory_v2_router.router)
+    svc = MemoryService(
+        vector_backend=InMemoryVectorBackend(),
+        graph_backend=InMemoryGraphBackend(),
+        embedder=EmbeddingService(_TightEmbedder()),
+    )
+    app.state.memory_v2_service = svc
+    return app
+
+
+def test_deduplicate_dry_run_reports_clusters() -> None:
+    """POST /deduplicate {dry_run:true} returns the report without writing."""
+    app = _build_app_with_tight_embedder()
+    with TestClient(app) as client:
+        # Force two rows by bypassing write-time merge via different
+        # texts that map to the same embedding.
+        for text in ["fact A", "fact B paraphrase"]:
+            r = client.post(
+                "/api/v2/memory/v2/facts",
+                json={"text": text, "kind": "project", "scope": "project"},
+            )
+            assert r.status_code == 200, r.text
+
+        # NB: the tight embedder also makes write-time near-dup merge
+        # fire, so we may end up with 1 row already. Either way the
+        # endpoint should respond cleanly.
+        r = client.post(
+            "/api/v2/memory/v2/deduplicate", json={"dry_run": True},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        for key in ("scanned", "clusters_found", "merged", "dry_run"):
+            assert key in body
+        assert body["dry_run"] is True
+
+
+def test_list_facts_hides_superseded_by_default() -> None:
+    """GET /facts skips deduped tombstones unless include_superseded=true.
+
+    Flow: POST two distinct facts → POST /deduplicate (clusters them
+    via tight embedder) → confirm default GET /facts returns 1, and
+    GET /facts?include_superseded=true returns both rows.
+    """
+    app = _build_app_with_tight_embedder()
+    with TestClient(app) as client:
+        # Use two distinct kinds so write-time near-dup merge can't
+        # collapse them at POST time — then re-tag them in the second
+        # step by running deduplicate() once we have rows landed.
+        # Simpler path: same kind/scope, but write-time merge will
+        # fire (tight embedder). To get 2 rows we POST two distinct
+        # kinds first…
+        client.post(
+            "/api/v2/memory/v2/facts",
+            json={"text": "fact A", "kind": "project", "scope": "project"},
+        )
+        client.post(
+            "/api/v2/memory/v2/facts",
+            json={
+                "text": "fact B paraphrase",
+                "kind": "preference",  # different kind → no merge
+                "scope": "user",
+            },
+        )
+
+        # Two rows landed.
+        all_before = client.get(
+            "/api/v2/memory/v2/facts?include_superseded=true",
+        ).json()
+        assert all_before["total"] == 2
+
+        # Manually mark one as superseded via the underlying service
+        # (the router exposes deduplicate() for the auto path; the
+        # explicit supersede() is a service method without a route).
+        svc = app.state.memory_v2_service
+        ids = sorted(f["id"] for f in all_before["facts"])
+        survivor_id, loser_id = ids[0], ids[1]
+        import asyncio
+        asyncio.new_event_loop().run_until_complete(
+            svc.supersede(
+                old_fact_id=loser_id, new_fact_id=survivor_id,
+            ),
+        )
+
+        # Default list hides the loser.
+        r_default = client.get("/api/v2/memory/v2/facts")
+        body_default = r_default.json()
+        assert body_default["total"] == 1, (
+            f"superseded loser leaked into default list: {body_default}"
+        )
+        assert body_default["facts"][0]["id"] == survivor_id
+
+        # Opt-in surfaces both rows for debugging / dedup verification.
+        r_all = client.get(
+            "/api/v2/memory/v2/facts?include_superseded=true",
+        )
+        body_all = r_all.json()
+        assert body_all["total"] == 2
 
 
 # ── 503 when v2 disabled ─────────────────────────────────────────

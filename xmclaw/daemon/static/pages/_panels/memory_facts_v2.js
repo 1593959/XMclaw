@@ -333,6 +333,40 @@ export function FactsV2Tab({ token }) {
     }
   };
 
+  const runDedup = async (dryRun) => {
+    try {
+      const r = await apiPost(
+        "/api/v2/memory/v2/deduplicate",
+        { dry_run: dryRun },
+        token,
+      );
+      if (dryRun) {
+        const lines = [
+          `dry-run 完成 — 扫描 ${r.scanned} 条`,
+          `发现 ${r.clusters_found} 组近似事实`,
+          `若执行将合并掉 ${r.merged} 条 (保留 evidence + supersedes 链)`,
+        ];
+        if (r.actions && r.actions.length) {
+          lines.push("");
+          lines.push("示例 (前 3 组):");
+          for (const a of r.actions.slice(0, 3)) {
+            lines.push(`• 保留: ${a.survivor_text}`);
+            for (const t of (a.loser_texts || []).slice(0, 2)) {
+              lines.push(`   合并: ${t}`);
+            }
+          }
+        }
+        window.alert(lines.join("\n"));
+      } else {
+        toast.success(`已合并 ${r.merged} 条近似事实 (扫描 ${r.scanned} 条)`);
+        refresh();
+        refreshStatus();
+      }
+    } catch (e) {
+      toast.error("dedup 失败: " + (e?.message || e));
+    }
+  };
+
   // Sub-view toggle buttons: list | graph | embedder.
   const ViewToggle = () => html`
     <div style="display:flex;gap:.4rem;margin:.6rem 0;flex-wrap:wrap">
@@ -366,6 +400,25 @@ export function FactsV2Tab({ token }) {
             ${view === "list"
               ? html`
                   <${AddFactForm} token=${token} onCreated=${() => { refresh(); refreshStatus(); }} />
+                  <div style="display:flex;gap:.4rem;margin:.4rem 0;flex-wrap:wrap;align-items:center">
+                    <span style="font-size:.78rem;color:var(--xmc-fg-muted)">整理:</span>
+                    <button
+                      type="button"
+                      class="xmc-h-btn"
+                      onClick=${() => runDedup(true)}
+                      style="font-size:.78rem;padding:.25rem .6rem"
+                      title="预览 — 看一下有多少近似事实会被合并，不实际写入"
+                    >🔍 dry-run</button>
+                    <button
+                      type="button"
+                      class="xmc-h-btn"
+                      onClick=${() => {
+                        if (window.confirm("执行去重合并？近似事实将合并到 evidence_count 最高的那条，被合并方标 superseded_by。")) runDedup(false);
+                      }}
+                      style="font-size:.78rem;padding:.25rem .6rem"
+                      title="扫描所有事实，把 cosine 距离 < 0.15 的近似项合并到同一行"
+                    >🧹 一键去重</button>
+                  </div>
                   <${FilterBar} ...${filters} onChange=${setFilters} />
                   ${loading
                     ? html`<div style="opacity:.7;padding:1rem 0">加载中…</div>`
