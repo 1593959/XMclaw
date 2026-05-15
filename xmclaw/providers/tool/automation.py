@@ -329,7 +329,31 @@ class AutomationTools(ToolProvider):
                 await proc.wait()
                 return _fail(call, t0, f"code timed out after {timeout_s}s")
         except OSError as exc:
-            return _fail(call, t0, f"subprocess failed: {exc}")
+            # Wave-27 fix-16 (2026-05-16): some WindowsError instances
+            # stringify to empty when ``strerror`` / ``winerror`` are
+            # None — the user saw bare "subprocess failed:" with no
+            # detail after the colon. Build a non-empty message
+            # explicitly so the error type, errno, and winerror all
+            # surface even when str(exc) is empty.
+            detail_parts = [type(exc).__name__]
+            if getattr(exc, "errno", None) is not None:
+                detail_parts.append(f"errno={exc.errno}")
+            if getattr(exc, "winerror", None) is not None:
+                detail_parts.append(f"winerror={exc.winerror}")
+            msg = str(exc) or getattr(exc, "strerror", "") or ""
+            if msg:
+                detail_parts.append(msg)
+            return _fail(
+                call, t0,
+                "subprocess failed: " + " | ".join(detail_parts),
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Belt-and-braces: NameError / SystemError / etc. shouldn't
+            # bubble up as a 500 — convert to a structured tool error.
+            return _fail(
+                call, t0,
+                f"unexpected error ({type(exc).__name__}): {exc!r}",
+            )
 
         stdout = (stdout_b or b"").decode("utf-8", errors="replace")
         stderr = (stderr_b or b"").decode("utf-8", errors="replace")
