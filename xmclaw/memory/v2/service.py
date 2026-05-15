@@ -65,22 +65,36 @@ _log = get_logger(__name__)
 # Thresholds — exposed as module constants so tests can pin them and
 # Phase-7 dream compactor can adjust at runtime if needed.
 
-#: Distance below which two same-kind facts are considered contradictory.
-#: Cosine distance = 1 - cos_sim. < 0.2 ≈ cosine similarity > 0.8.
-CONTRADICTS_DISTANCE_THRESHOLD = 0.2
-
-#: Cosine distance below which two facts are considered the SAME
-#: thing (different phrasing of the same content). At write time we
-#: MERGE the new write into the existing row instead of creating a
-#: duplicate. At dedup time we collapse pairs already in the store.
-#: 0.15 = cosine similarity > 0.925 — strict enough to avoid
-#: collapsing genuinely different facts about the same topic.
+#: Distance design (cosine = 1 - cos_sim, smaller = more similar):
+#:
+#:   d ≤ 0.15  → SAME FACT (different phrasing). Write-time merge
+#:               collapses the new write into the existing row,
+#:               bumps evidence_count. No relation edge — they're
+#:               literally the same fact now.
+#:
+#:   0.15 < d ≤ 0.30 → SAME TOPIC. Related but distinct facts.
+#:               Emit a SAME_TOPIC edge so the graph view can
+#:               cluster them. No semantic claim about agreement.
+#:
+#:   0.15 < d ≤ 0.25 AND kind=correction → CONTRADICTS. A correction
+#:               that lands close to an existing same-kind fact is
+#:               saying "the old one is wrong / superseded". The
+#:               relation IS honest because the caller (LLM /
+#:               user) classified the signal that way; cosine
+#:               alone wouldn't be enough.
+#:
+#:   d > 0.30  → unrelated. No edge.
+#:
+#: Pre-fix the thresholds were 0.20 / 0.15 / 0.10 — SAME_TOPIC sat
+#: BELOW near-dup, so it could never fire (anything close enough to
+#: be a same-topic match had already been merged as a near-dup).
+#: Plus the old contradict scan ignored its threshold entirely and
+#: stamped CONTRADICTS on the top-3 same-kind neighbours of every
+#: write, which is why the UI read "与 N 条事实矛盾" on basically
+#: everything. Fixed in the Wave-27 follow-up.
 NEAR_DUPLICATE_DISTANCE_THRESHOLD = 0.15
-
-#: Distance below which two facts are considered the SAME topic
-#: (auto-link via SAME_TOPIC, no contradict assumption). Looser than
-#: NEAR_DUPLICATE — these are related-but-distinct facts.
-SAME_TOPIC_DISTANCE_THRESHOLD = 0.1
+SAME_TOPIC_DISTANCE_THRESHOLD = 0.30
+CONTRADICTS_DISTANCE_THRESHOLD = 0.25
 
 #: evidence_count at which a working-layer fact is auto-promoted.
 LONG_TERM_PROMOTE_THRESHOLD = 3
@@ -289,8 +303,28 @@ class MemoryService:
         if new_evidence >= LONG_TERM_PROMOTE_THRESHOLD:
             auto_layer = FactLayer.LONG_TERM.value
 
-        # Contradiction scan — find other same-kind facts that are
-        # vector-close. Only meaningful when we have an embedding.
+        # Relation scan — find other vector-close facts and label the
+        # relationship honestly. Pre-fix bug: this used to grab the
+        # top-3 same-kind neighbours and stamp CONTRADICTS on all of
+        # them, ignoring the distance threshold and the actual
+        # semantics. Result: every lesson read "与 3 条事实矛盾"
+        # because lessons cluster tightly by topic.
+        #
+        # Fix:
+        #   1. Cosine similarity ALONE can't tell "always X" from
+        #      "never X" — they embed close. So a same-kind neighbour
+        #      is much more likely a SAME_TOPIC fact than a real
+        #      contradiction. Default behaviour: emit SAME_TOPIC
+        #      edges below ``SAME_TOPIC_DISTANCE_THRESHOLD`` instead.
+        #   2. CONTRADICTS is a strong claim. Reserve it for
+        #      ``kind=correction`` writes — the LLM (or user) has
+        #      already classified that signal as "stop doing X /
+        #      change Y → Z", which IS the only place where the
+        #      contradiction relation is honest.
+        #   3. ``Fact.contradicts`` field stays populated ONLY when
+        #      kind=correction; other kinds leave it empty so the UI
+        #      "与 N 条事实矛盾" badge stops crying wolf.
+        same_topic_ids: tuple[str, ...] = ()
         contradicts_ids: tuple[str, ...] = ()
         if (
             embedding is not None
@@ -300,18 +334,37 @@ class MemoryService:
             try:
                 nearby = await self._vec.search(
                     list(embedding),
-                    where=f"kind = '{kind_str}' AND id != '{fact_id}'",
+                    where=(
+                        f"kind = '{kind_str}' AND id != '{fact_id}' "
+                        f"AND superseded_by = ''"
+                    ),
                     limit=3,
                 )
-                # NOTE: distance threshold is implementation-defined;
-                # for now we treat all top-3 as candidates and let the
-                # CONTRADICTS edge live — UI can resolve manually.
-                # Future: use a proper distance metric returned by
-                # the backend; LanceDB returns _distance column.
-                contradicts_ids = tuple(f.id for f in nearby)
+                same: list[str] = []
+                contra: list[str] = []
+                for cand in nearby:
+                    if cand.embedding is None:
+                        continue
+                    d = _cosine_distance(embedding, cand.embedding)
+                    # SAME_TOPIC: tight cluster, broader than near-dup
+                    # but still strongly related (cosine sim > 0.9).
+                    if d <= SAME_TOPIC_DISTANCE_THRESHOLD:
+                        same.append(cand.id)
+                    # CONTRADICTS: only when THIS write IS a
+                    # correction — the user / LLM said "stop / never /
+                    # change". Use a looser threshold (cosine sim >
+                    # 0.8) since corrections often phrase things
+                    # differently from what they're correcting.
+                    if (
+                        kind_str == FactKind.CORRECTION.value
+                        and d <= CONTRADICTS_DISTANCE_THRESHOLD
+                    ):
+                        contra.append(cand.id)
+                same_topic_ids = tuple(same)
+                contradicts_ids = tuple(contra)
             except Exception as exc:  # noqa: BLE001
                 _log.warning(
-                    "memory_service.contradict_scan_failed err=%s", exc,
+                    "memory_service.relation_scan_failed err=%s", exc,
                 )
 
         new_fact = Fact(
@@ -335,6 +388,7 @@ class MemoryService:
         # write).
         await self._auto_link_relations(
             new_fact, contradicts_ids, source_event_id,
+            same_topic_ids=same_topic_ids,
         )
 
         return new_fact
@@ -383,12 +437,38 @@ class MemoryService:
         fact: Fact,
         contradicts_ids: tuple[str, ...],
         source_event_id: str | None,
+        same_topic_ids: tuple[str, ...] = (),
     ) -> None:
-        """Insert the auto-extracted edges that pair with this fact."""
+        """Insert the auto-extracted edges that pair with this fact.
+
+        Three edge types here:
+
+        - ``SAME_TOPIC``  — default for any near-neighbour (cos sim >
+          0.9). Cheap, honest, doesn't claim contradiction.
+        - ``CONTRADICTS`` — only when the caller already classified
+          this write as a correction (``kind=correction``) AND the
+          neighbour is vector-close. The strong claim earns the strong
+          label.
+        - ``CAUSED_BY``   — pseudo-edge to the originating L0 event.
+        """
         rels: list[Relation] = []
-        # CONTRADICTS: symmetric, but we add only the outgoing edge
-        # from the new fact. The other side gets a SUPERSEDES later if
-        # the user marks one as superseded.
+        # SAME_TOPIC: low-cost, high-volume association. Helps the
+        # graph view + recall expansion without overstating semantics.
+        for target in same_topic_ids:
+            rid = Relation.compute_id(
+                source_fact_id=fact.id,
+                target_fact_id=target,
+                relation=RelationKind.SAME_TOPIC,
+            )
+            rels.append(Relation(
+                id=rid,
+                source_fact_id=fact.id,
+                target_fact_id=target,
+                relation=RelationKind.SAME_TOPIC.value,
+                strength=0.6,
+            ))
+        # CONTRADICTS: strong claim. Only populated when the caller
+        # tagged kind=correction — see remember()'s relation scan.
         for target in contradicts_ids:
             rid = Relation.compute_id(
                 source_fact_id=fact.id,
@@ -400,7 +480,7 @@ class MemoryService:
                 source_fact_id=fact.id,
                 target_fact_id=target,
                 relation=RelationKind.CONTRADICTS.value,
-                strength=0.7,
+                strength=0.85,
             ))
         # CAUSED_BY: link to the L0 event using the event:<id>
         # pseudo-id convention. Backends treat it as opaque.
@@ -875,6 +955,86 @@ class MemoryService:
             "merged": merged_count,
             "dry_run": dry_run,
             "actions": actions,
+        }
+
+    # ── Cleanup: legacy "everyone contradicts everyone" data ────
+
+    async def clear_stale_contradicts(
+        self, *, dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """One-shot repair for the pre-fix relation-scan bug.
+
+        Background: an earlier ``remember()`` implementation stamped
+        CONTRADICTS on the top-3 same-kind neighbours of every new
+        fact regardless of distance or semantics. That left every
+        non-correction fact with a non-empty ``contradicts`` field
+        and a CONTRADICTS edge in the graph — the UI's "⚠ 与 N 条
+        事实矛盾" badge then cried wolf on all of them.
+
+        New writes don't have this problem (only ``kind=correction``
+        produces CONTRADICTS now). This method walks the EXISTING
+        store and:
+
+          1. Zeroes ``Fact.contradicts`` on every non-correction
+             fact whose field is non-empty.
+          2. Removes every outgoing CONTRADICTS graph edge sourced
+             from a non-correction fact.
+
+        Correction facts are left alone — their contradicts data
+        is legitimate.
+
+        Returns a report (counts + sample) for the UI / CLI.
+        """
+        all_facts = await self._vec.search(None, where=None, limit=10000)
+        targets: list[Fact] = []
+        for f in all_facts:
+            if f.kind == FactKind.CORRECTION.value:
+                continue
+            if not f.contradicts:
+                continue
+            targets.append(f)
+
+        if dry_run:
+            return {
+                "scanned": len(all_facts),
+                "would_clear_facts": len(targets),
+                "sample": [
+                    {
+                        "id": t.id, "kind": t.kind,
+                        "n_contradicts": len(t.contradicts),
+                        "text": t.text[:80],
+                    }
+                    for t in targets[:5]
+                ],
+                "dry_run": True,
+            }
+
+        cleared_edges = 0
+        for f in targets:
+            # Remove the matching graph edges. Edge ids are
+            # deterministic on (source, target, relation) so we can
+            # rebuild + delete without an extra scan.
+            for target_id in f.contradicts:
+                rid = Relation.compute_id(
+                    source_fact_id=f.id,
+                    target_fact_id=target_id,
+                    relation=RelationKind.CONTRADICTS,
+                )
+                try:
+                    await self._graph.remove_relation(rid)
+                    cleared_edges += 1
+                except Exception:  # noqa: BLE001
+                    # Edge may already be missing — keep going.
+                    pass
+            # Clear the field + re-upsert the row.
+            f.contradicts = ()
+            await self._vec.upsert([f])
+
+        return {
+            "scanned": len(all_facts),
+            "cleared_facts": len(targets),
+            "cleared_edges": cleared_edges,
+            "dry_run": False,
         }
 
     # ── Lifecycle ───────────────────────────────────────────────

@@ -116,18 +116,158 @@ async def test_remember_empty_text_rejected() -> None:
 # ── Contradict detection ──────────────────────────────────────────
 
 
+class _TopicEmbedder:
+    """Embedder that places texts in the SAME_TOPIC range relative to
+    a baseline — far enough apart to escape the near-dup merge
+    (d > 0.15) but close enough to fire the relation scan
+    (d ≤ 0.30). Uses content-based dispatch so two calls to embed()
+    return distinguishable vectors at a known cosine distance.
+
+    First-seen text → vector A = [1, 0, 0, 0].
+    Subsequent texts → vector B = [0.8, 0.6, 0, 0] (cosine sim 0.8,
+    cosine distance 0.2). All "subsequent" texts share B so they
+    cluster together too.
+    """
+    name = "topic"
+    dim = 4
+
+    def __init__(self) -> None:
+        self._seen: dict[str, list[float]] = {}
+        self._next = 0
+
+    async def embed(self, texts):
+        out = []
+        for t in texts:
+            if t not in self._seen:
+                if self._next == 0:
+                    self._seen[t] = [1.0, 0.0, 0.0, 0.0]
+                else:
+                    # cos sim = 0.8 → cos distance = 0.2 (in
+                    # SAME_TOPIC range but above near-dup).
+                    self._seen[t] = [0.8, 0.6, 0.0, 0.0]
+                self._next += 1
+            out.append(list(self._seen[t]))
+        return out
+
+    def is_available(self): return True
+
+
 @pytest.mark.asyncio
-async def test_contradict_scan_adds_edge() -> None:
-    """Two same-kind facts close in vec space get a CONTRADICTS edge."""
-    svc = _make_service()
-    a = await svc.remember("用 Mac", kind="preference")
+async def test_non_correction_writes_no_longer_emit_contradicts() -> None:
+    """Pre-fix bug: ``remember()`` stamped CONTRADICTS on the top-3
+    same-kind neighbours of EVERY new fact, ignoring the cosine
+    threshold AND the semantics. That left every lesson reading
+    "与 N 条事实矛盾" in the UI.
+
+    Post-fix: non-correction kinds get SAME_TOPIC instead.
+    ``Fact.contradicts`` stays empty for them; the CONTRADICTS
+    label is reserved for ``kind=correction`` writes only.
+    """
+    svc = MemoryService(
+        vector_backend=InMemoryVectorBackend(),
+        graph_backend=InMemoryGraphBackend(),
+        embedder=EmbeddingService(_TopicEmbedder()),
+    )
+    a = await svc.remember(
+        "用 Mac", kind="preference",
+        skip_contradict_check=True,
+    )
     b = await svc.remember("用 Windows", kind="preference")
-    # Pattern: the second fact's contradicts list should contain the
-    # first (top-3 same-kind scan).
-    assert a.id in b.contradicts
-    # And an edge exists.
+    # No false contradiction on the fact row.
+    assert b.contradicts == ()
+    # No CONTRADICTS edge in the graph.
     cs = await svc.contradictions_of(b.id)
-    assert a.id in cs
+    assert a.id not in cs
+    # But a SAME_TOPIC edge IS there — they cluster in vec space.
+    nbrs = await svc.neighbors(b.id, relation_types=["SAME_TOPIC"])
+    assert any(target == a.id for _, target in nbrs)
+
+
+@pytest.mark.asyncio
+async def test_correction_kind_still_emits_contradicts() -> None:
+    """A new ``kind=correction`` fact IS allowed to claim
+    contradiction against its vec-close same-kind neighbours.
+    """
+    svc = MemoryService(
+        vector_backend=InMemoryVectorBackend(),
+        graph_backend=InMemoryGraphBackend(),
+        embedder=EmbeddingService(_TopicEmbedder()),
+    )
+    old = await svc.remember(
+        "不要 X 模式", kind="correction",
+        skip_contradict_check=True,
+    )
+    new = await svc.remember("以后改用 Y 模式", kind="correction")
+    # Correction writes DO populate the contradicts field.
+    assert old.id in new.contradicts
+    cs = await svc.contradictions_of(new.id)
+    assert old.id in cs
+
+
+@pytest.mark.asyncio
+async def test_clear_stale_contradicts_zeroes_non_correction() -> None:
+    """One-shot cleanup zeroes fact.contradicts on non-correction
+    rows + removes the graph edges. Correction-kind rows preserved.
+    """
+    from xmclaw.memory.v2.models import (
+        Fact as _Fact,
+        Relation as _Rel,
+        RelationKind as _RelKind,
+    )
+    svc = _make_service()
+
+    # Synthesize a stale fact directly via the backend (mimics
+    # what the pre-fix code left in storage).
+    stale = _Fact(
+        id="preference:project:stalefake1234",
+        kind="preference",
+        scope="project",
+        text="stale preference fact",
+        contradicts=("preference:project:other1", "preference:project:other2"),
+    )
+    await svc._vec.upsert([stale])  # type: ignore[attr-defined]
+    edge = _Rel(
+        id=_Rel.compute_id(
+            source_fact_id=stale.id,
+            target_fact_id="preference:project:other1",
+            relation=_RelKind.CONTRADICTS,
+        ),
+        source_fact_id=stale.id,
+        target_fact_id="preference:project:other1",
+        relation=_RelKind.CONTRADICTS.value,
+    )
+    await svc._graph.add_relation(edge)  # type: ignore[attr-defined]
+
+    # Add a correction-kind fact whose contradicts data is LEGITIMATE
+    # and must be preserved.
+    real_correction = _Fact(
+        id="correction:project:legitcorr1",
+        kind="correction",
+        scope="project",
+        text="don't do X anymore",
+        contradicts=("preference:project:to-correct",),
+    )
+    await svc._vec.upsert([real_correction])  # type: ignore[attr-defined]
+
+    # Dry-run first.
+    report = await svc.clear_stale_contradicts(dry_run=True)
+    assert report["would_clear_facts"] == 1
+    assert report["dry_run"] is True
+
+    # Real run.
+    report = await svc.clear_stale_contradicts()
+    assert report["cleared_facts"] == 1
+    assert report["cleared_edges"] >= 1
+
+    # Non-correction stale row now has empty contradicts.
+    refetched = await svc.get_fact(stale.id)
+    assert refetched is not None
+    assert refetched.contradicts == ()
+
+    # Correction row is intact.
+    refetched_corr = await svc.get_fact(real_correction.id)
+    assert refetched_corr is not None
+    assert refetched_corr.contradicts == ("preference:project:to-correct",)
 
 
 # ── Supersede ─────────────────────────────────────────────────────
@@ -198,18 +338,31 @@ async def test_recall_filter_by_confidence() -> None:
 
 @pytest.mark.asyncio
 async def test_recall_includes_related_relations() -> None:
-    """A fact with a CONTRADICTS edge gets it back inline."""
+    """A fact with a CONTRADICTS edge gets it back inline.
+
+    Uses explicit relate() to install the edge — relying on the
+    auto-extract relation scan is unsafe (StubEmbedder distance
+    landings are random; the new semantics also only fire
+    CONTRADICTS on kind=correction).
+    """
     svc = _make_service()
     a = await svc.remember(
         "用 Mac", kind="preference", scope="user",
+        skip_contradict_check=True,
     )
     b = await svc.remember(
         "用 Windows", kind="preference", scope="user",
+        skip_contradict_check=True,
+    )
+    # Explicit CONTRADICTS edge (mirrors what a real correction
+    # write or a user-curated relate() call would do).
+    await svc.relate(
+        source_fact_id=b.id, target_fact_id=a.id,
+        kind=RelationKind.CONTRADICTS,
     )
     hits = await svc.recall("用 Windows", k=5)
     h_b = next((h for h in hits if h.fact.id == b.id), None)
     assert h_b is not None
-    # b should have at least one outgoing CONTRADICTS edge to a.
     rels = [r.relation for r in h_b.related_relations]
     assert "CONTRADICTS" in rels
 

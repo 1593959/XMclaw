@@ -183,6 +183,33 @@ async def deduplicate(request: Request) -> Any:
     return report
 
 
+@router.post("/clear_stale_contradicts")
+async def clear_stale_contradicts(request: Request) -> Any:
+    """One-shot repair for the pre-fix relation-scan bug.
+
+    The old ``remember()`` mistakenly tagged the top-3 same-kind
+    neighbours as CONTRADICTS for every new fact, producing the
+    "⚠ 与 3 条事实矛盾" badge on facts that aren't actually
+    contradicting anything. Hitting this endpoint zeroes
+    ``contradicts`` on every non-correction fact and removes the
+    matching CONTRADICTS graph edges. Correction-kind facts are
+    left alone.
+
+    Body (optional): ``{"dry_run": true}`` to preview without
+    writing.
+    """
+    svc = _get_service(request)
+    if svc is None:
+        return _v2_disabled_response()
+    try:
+        body = await request.json() if request.headers.get("content-length") else {}
+    except Exception:  # noqa: BLE001
+        body = {}
+    dry_run = bool(body.get("dry_run", False))
+    report = await svc.clear_stale_contradicts(dry_run=dry_run)
+    return report
+
+
 @router.post("/embedder/test")
 async def embedder_test(request: Request) -> dict[str, Any]:
     """Round-trip test: embed a probe string + return dim + elapsed.
