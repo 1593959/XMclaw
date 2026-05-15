@@ -15,6 +15,7 @@ Phase 4.x replaces the default accept-all with ed25519 pairing.
 """
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -433,7 +434,16 @@ def create_app(
             from xmclaw.utils.paths import default_cognitive_state_path
             _state_path = default_cognitive_state_path()
             if _state_path.exists():
-                import json
+                # NB: ``json`` is imported at module top — DO NOT
+                # ``import json`` here. A local import inside this
+                # ``if`` makes Python treat ``json`` as a local in
+                # the enclosing ``create_app`` scope. When the file
+                # didn't exist (fresh install / post-cleanup), the
+                # import never ran, and the nested ``agent_ws`` WS
+                # handler then hit ``NameError: free variable 'json'
+                # referenced before assignment in enclosing scope``
+                # on its first ``json.loads(raw)`` call → entire
+                # chat path silently 500'd. Fix 2026-05-15.
                 _data = json.loads(_state_path.read_text(encoding="utf-8"))
                 _shared_cognitive_state = CognitiveState.from_dict(_data)
                 log.info("cognition.state_loaded path=%s", _state_path)
