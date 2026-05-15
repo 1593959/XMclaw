@@ -53,19 +53,35 @@ class HistoryCompressionMixin:
           * model name (drives ctx_len lookup + display logging)
           * summarise_call (wraps ``llm.complete``)
 
-        Wave 26 fix-4 (2026-05-14): compression was firing at 39% of
-        Kimi-K2's real 256K window because the 200K default was used
-        for every model. Now context_length is looked up per-model via
-        get_model_context_length() and the threshold is 0.85 (was 0.50)
-        — accurate window declaration + the synthetic-message exclusion
-        in the estimator means we can be aggressive without overflowing.
+        History of tuning (read this before changing the defaults):
 
-        Tunables:
+        * Wave 26 fix-4 (2026-05-14): threshold 0.50 → 0.85 + per-model
+          ctx_len lookup. Compression was firing at 39% of Kimi-K2's
+          real 256K window because the 200K hard-default was used for
+          every model.
+
+        * Wave 27 fix-5 (2026-05-15, user complaint "上下文压缩的还是
+          太快了"): two further changes —
+            (a) ``protect_last_n`` 20 → 40. When compression fires,
+                40 recent messages stay verbatim instead of 20. The
+                old value was thin enough that a multi-turn debug
+                session would lose half its recent context to a
+                summary paragraph.
+            (b) ``summary_target_ratio`` 0.20 → 0.30. The summary
+                output budget grows from 20% to 30% of the threshold,
+                so dropped messages get a larger summary that
+                preserves more detail.
+            (c) Both are now overridable via daemon/config.json:
+                cognition.context_compression.{threshold_percent,
+                protect_first_n, protect_last_n,
+                summary_target_ratio}.
+
+        Tunables (current defaults shown):
           * context window: from ``get_model_context_length(model)``
           * 85% threshold (compress when prompt > 0.85 × ctx_len)
           * 3 head messages protected
-          * 20 tail messages floor (token-budget overrides)
-          * 20% of threshold reserved for summary output
+          * 40 tail messages floor (token-budget overrides)
+          * 30% of threshold reserved for summary output
         """
         if self._compressor is not None:
             return self._compressor
@@ -83,13 +99,42 @@ class HistoryCompressionMixin:
         else:
             provider_id = getattr(self._llm, "provider_id", None)
             ctx_len = get_model_context_length(model, provider_id=provider_id)
+
+        # Wave 27 fix-5: pick up overrides from daemon config so the
+        # user can tune without code edits. Each field validated to a
+        # safe range — bad values log + fall back to the default.
+        cfg = getattr(self, "_cfg", None) or {}
+        sub = (
+            ((cfg.get("cognition") or {}).get("context_compression") or {})
+            if isinstance(cfg, dict) else {}
+        )
+
+        def _f(key: str, default: float, lo: float, hi: float) -> float:
+            try:
+                v = float(sub.get(key, default))
+            except (TypeError, ValueError):
+                return default
+            return v if lo <= v <= hi else default
+
+        def _i(key: str, default: int, lo: int, hi: int) -> int:
+            try:
+                v = int(sub.get(key, default))
+            except (TypeError, ValueError):
+                return default
+            return v if lo <= v <= hi else default
+
+        threshold_percent = _f("threshold_percent", 0.85, 0.30, 0.95)
+        protect_first_n = _i("protect_first_n", 3, 0, 20)
+        protect_last_n = _i("protect_last_n", 40, 5, 200)
+        summary_target_ratio = _f("summary_target_ratio", 0.30, 0.10, 0.60)
+
         self._compressor = ContextCompressor(
             model=model,
             summarize_call=self._summarize_for_compressor,
-            threshold_percent=0.85,
-            protect_first_n=3,
-            protect_last_n=20,
-            summary_target_ratio=0.20,
+            threshold_percent=threshold_percent,
+            protect_first_n=protect_first_n,
+            protect_last_n=protect_last_n,
+            summary_target_ratio=summary_target_ratio,
             context_length=ctx_len,
             quiet_mode=False,
         )

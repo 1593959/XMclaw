@@ -193,6 +193,13 @@
       "_comment": "Wave 27 / Memory v2 — Fact/Relation + LanceDB-backed L1 + 确定性 KeyInfoExtractor。enabled=true 后：每条用户消息自动扫 URL/账号/密码/数字目标/'记住 X' 等模式，落到 ~/.xmclaw/v2/facts/ (LanceDB)。Agent 不需要主动调 remember 工具。详见 docs/MEMORY_EVOLUTION_REDESIGN.md。默认 false（rollout 阶段，等 Phase 4a 完整 agent 契约上线后翻 true）。需要 pip install 'xmclaw[memory-v2]'（带 lancedb + pyarrow）。",
       "enabled": false
     },
+    "context_compression": {
+      "_comment": "Wave 27 fix-5 (2026-05-15)：上下文压缩可调参数。默认值已比 Wave 26 更宽松 — 用户抱怨'压缩太快'后从 protect_last_n=20 → 40，summary_target_ratio=0.20 → 0.30。模型上下文窗口走 _provider_profiles.get_model_context_length() 自动识别（kimi-k2.6 / minimax-m2.7 等都已注册到 256K）。要更激进保留历史就再调高 protect_last_n（每条 ~1500 tok），但注意会挤新内容预算。",
+      "threshold_percent": 0.85,
+      "protect_first_n": 3,
+      "protect_last_n": 40,
+      "summary_target_ratio": 0.30
+    },
     "continuous_loop": {
       "_comment_phase_6": "Phase 6 持续认知循环。1Hz 心跳排空 PerceptionBus、计算 salience、按 autonomy_level 决定是否动作。autonomy_level: 0=只观察、50=主动提示不动作（默认）、75+=允许 self-experiments、100=full Jarvis。详见 docs/JARVIS_PHASE_6_DESIGN.md §4 + DEV_ROADMAP Epic #25。",
       "enabled": true,
