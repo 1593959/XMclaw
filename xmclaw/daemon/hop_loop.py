@@ -35,18 +35,55 @@ class HopLoopMixin:
         Returns the raw ``ToolResult``. Event publishing and loop-state
         mutation are the caller's responsibility so that multiple calls
         can be executed in parallel.
+
+        Wave-27 fix-17 (2026-05-16): wraps ``effective_tools.invoke``
+        in an ``asyncio.wait_for`` so a tool that hangs internally
+        (Playwright waiting for a navigation that never fires,
+        subprocess stuck on stdin read, MCP server unresponsive)
+        cannot block the agent loop forever. Pre-fix the user saw
+        a ``browser_click running...`` state that never returned —
+        no internal timeout caught it. Default 180s; configurable
+        via ``tools.invoke_timeout_s`` in daemon config. On timeout
+        we return a structured failed ToolResult so the LLM can
+        decide what to do next.
         """
         import dataclasses as _dc
+        import asyncio as _asyncio
+        from xmclaw.core.ir import ToolResult as _ToolResult
         call_with_sid = _dc.replace(call, session_id=session_id)
+        tool_timeout_s = float(
+            getattr(self, "_tool_invoke_timeout_s", 180.0),
+        )
         try:
-            result = await effective_tools.invoke(call_with_sid)
+            result = await _asyncio.wait_for(
+                effective_tools.invoke(call_with_sid),
+                timeout=tool_timeout_s,
+            )
+        except _asyncio.TimeoutError:
+            from xmclaw.utils.log import get_logger as _gl
+            _gl(__name__).warning(
+                "tool.invoke_wall_clock_exceeded tool=%s timeout=%.1fs",
+                call.name, tool_timeout_s,
+            )
+            result = _ToolResult(
+                call_id=call.id,
+                ok=False,
+                content=None,
+                error=(
+                    f"tool '{call.name}' exceeded {tool_timeout_s:.0f}s "
+                    f"wall-clock and was aborted. The tool was likely "
+                    f"stuck waiting for an external event (page nav, "
+                    f"subprocess stdout, MCP server reply). Try a "
+                    f"different approach or add an explicit shorter "
+                    f"timeout in the tool args if it supports one."
+                ),
+            )
         except Exception as _invoke_exc:  # noqa: BLE001
             from xmclaw.utils.log import get_logger as _gl
             _gl(__name__).warning(
                 "tool.invoke_uncaught_exception tool=%s err=%s",
                 call.name, _invoke_exc,
             )
-            from xmclaw.core.ir import ToolResult as _ToolResult
             result = _ToolResult(
                 call_id=call.id,
                 ok=False,
@@ -60,12 +97,23 @@ class HopLoopMixin:
             )
         # B-17: retry once on transient failures.
         if not result.ok and result.error and _is_transient_tool_error(result.error):
-            import asyncio as _asyncio
             await _asyncio.sleep(0.5)
             try:
-                retry = await effective_tools.invoke(call_with_sid)
+                retry = await _asyncio.wait_for(
+                    effective_tools.invoke(call_with_sid),
+                    timeout=tool_timeout_s,
+                )
+            except _asyncio.TimeoutError:
+                retry = _ToolResult(
+                    call_id=call.id,
+                    ok=False,
+                    content=None,
+                    error=(
+                        f"tool '{call.name}' retry also exceeded "
+                        f"{tool_timeout_s:.0f}s wall-clock"
+                    ),
+                )
             except Exception as _retry_exc:  # noqa: BLE001
-                from xmclaw.core.ir import ToolResult as _ToolResult
                 retry = _ToolResult(
                     call_id=call.id,
                     ok=False,

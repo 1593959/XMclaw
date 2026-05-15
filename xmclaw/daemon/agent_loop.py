@@ -201,6 +201,13 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         self._cancel_events: dict[str, "asyncio.Event"] = {}
         self._max_hops = max_hops
         self._llm_timeout_s = max(5.0, float(llm_timeout_s))
+        # Wave-27 fix-17 (2026-05-16): per-tool-call wall-clock cap.
+        # Default 180s — generous enough for slow browser navigations
+        # + cold-start MCP servers + heavy subprocess work, but
+        # bounded so a Playwright wait_for that never fires can't
+        # hang the agent forever. Override via ``tools.invoke_timeout_s``
+        # in daemon config; factory wires it post-construction.
+        self._tool_invoke_timeout_s: float = 180.0
         self._agent_id = agent_id
         self._cost_tracker = cost_tracker
         # Sprint 3 #6: ReasoningBank strategy bank (optional). The

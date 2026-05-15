@@ -1776,6 +1776,17 @@ def build_agent_from_config(
         (cfg.get("llm") or {}).get("timeout_s", 300.0)
     )
 
+    # Wave-27 fix-17 (2026-05-16): per-TOOL-call wall-clock cap.
+    # Stops a hung Playwright wait / unresponsive MCP server from
+    # blocking the agent loop forever (user saw browser_click stuck
+    # in "running" state with no recovery). Default 180s — generous
+    # for slow page loads + cold subprocess starts, bounded so no
+    # single tool can stall the turn. Override via
+    # ``tools.invoke_timeout_s`` in daemon config.
+    _tool_invoke_timeout_s = float(
+        (cfg.get("tools") or {}).get("invoke_timeout_s", 180.0)
+    )
+
     # B-312: daemon-level CostTracker injection. anti-req #6 calls
     # for a hard cap on token cost; pre-B-312 the AgentLoop accepted
     # ``cost_tracker`` but factory never instantiated one, leaving
@@ -1876,6 +1887,16 @@ def build_agent_from_config(
         unified_recall_top_k=_unified_top_k,
         memory_extractor=_memory_extractor,
     )
+
+    # Wave-27 fix-17: apply the configured tool wall-clock onto the
+    # constructed AgentLoop instance — hop_loop._invoke_single_tool
+    # reads it via ``getattr(self, "_tool_invoke_timeout_s", 180.0)``.
+    try:
+        agent_loop._tool_invoke_timeout_s = max(
+            5.0, _tool_invoke_timeout_s,
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
     # 2026-05-12 Batch C.2: StepValidator — opt-in per-step
     # "did this advance the goal" auditor. Off by default to keep
