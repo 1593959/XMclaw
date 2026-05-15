@@ -957,6 +957,100 @@ class MemoryService:
             "actions": actions,
         }
 
+    # ── Backfill: co-occurrence edges for existing facts ────────
+
+    async def backfill_cooccurrence_edges(
+        self, *, dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Wave-27 fix-9: add SAME_TOPIC edges between facts that
+        share a ``source_event_id`` but have no relation yet.
+
+        Background: before the extractor pair-linked co-extracted
+        facts, a single user message like
+        "https://pw310.wxselling.com 账号 admin 密码 admin888"
+        produced 3 disconnected nodes in the graph. The user
+        reasonably asked "为什么没有联系" — they were all in one
+        sentence, so they ARE related; the system was just
+        discarding the structural signal.
+
+        New extractor writes link them at write time. This method
+        is a one-shot repair for facts already in the store.
+
+        Returns counts + sample for the UI / CLI. dry_run mode
+        previews without writing edges.
+        """
+        all_facts = await self._vec.search(None, where=None, limit=10000)
+        # Bucket by source_event_id. Only buckets with 2+ facts are
+        # candidates for co-occurrence linking. Facts with no
+        # source_event_id are skipped — there's no signal that they
+        # came from the same input.
+        from collections import defaultdict
+        buckets: dict[str, list[Fact]] = defaultdict(list)
+        for f in all_facts:
+            if f.source_event_id and not f.superseded_by:
+                buckets[f.source_event_id].append(f)
+
+        candidate_pairs: list[tuple[Fact, Fact]] = []
+        for eid, facts in buckets.items():
+            if len(facts) < 2:
+                continue
+            uniq = list({f.id: f for f in facts}.values())
+            for i, a in enumerate(uniq):
+                for b in uniq[i + 1:]:
+                    if a.id == b.id:
+                        continue
+                    candidate_pairs.append((a, b))
+
+        if dry_run:
+            return {
+                "scanned": len(all_facts),
+                "buckets": len([eid for eid, fs in buckets.items() if len(fs) >= 2]),
+                "would_add_edges": len(candidate_pairs) * 2,
+                "sample": [
+                    {
+                        "source_event_id": a.source_event_id,
+                        "a_text": a.text[:60],
+                        "b_text": b.text[:60],
+                    }
+                    for a, b in candidate_pairs[:5]
+                ],
+                "dry_run": True,
+            }
+
+        added = 0
+        skipped_existing = 0
+        for a, b in candidate_pairs:
+            for src, dst in ((a.id, b.id), (b.id, a.id)):
+                rid = Relation.compute_id(
+                    source_fact_id=src, target_fact_id=dst,
+                    relation=RelationKind.SAME_TOPIC,
+                )
+                # add_relation is idempotent by id; we count by
+                # whether the edge existed (cheap check via
+                # neighbors would be O(N) per pair). Just call it
+                # and trust the backend's dedup — add_relation in
+                # in-memory + lancedb both upsert.
+                try:
+                    await self._graph.add_relation(Relation(
+                        id=rid,
+                        source_fact_id=src,
+                        target_fact_id=dst,
+                        relation=RelationKind.SAME_TOPIC.value,
+                        strength=0.80,
+                        auto_extracted=True,
+                    ))
+                    added += 1
+                except Exception:  # noqa: BLE001
+                    skipped_existing += 1
+
+        return {
+            "scanned": len(all_facts),
+            "buckets": len([eid for eid, fs in buckets.items() if len(fs) >= 2]),
+            "added_edges": added,
+            "errors": skipped_existing,
+            "dry_run": False,
+        }
+
     # ── Cleanup: legacy "everyone contradicts everyone" data ────
 
     async def clear_stale_contradicts(

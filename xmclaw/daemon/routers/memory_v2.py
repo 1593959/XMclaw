@@ -183,6 +183,29 @@ async def deduplicate(request: Request) -> Any:
     return report
 
 
+@router.post("/backfill_cooccurrence_edges")
+async def backfill_cooccurrence_edges(request: Request) -> Any:
+    """Wave-27 fix-9: one-shot repair for legacy disconnected facts.
+
+    Before the extractor auto-linked co-extracted facts, a single user
+    message "https://x.com 账号 admin 密码 P" produced 3 disconnected
+    nodes in the graph. This endpoint walks the store, groups facts by
+    ``source_event_id``, and adds SAME_TOPIC edges between every pair
+    in the same group.
+
+    Body (optional): ``{"dry_run": true}`` to preview without writing.
+    """
+    svc = _get_service(request)
+    if svc is None:
+        return _v2_disabled_response()
+    try:
+        body = await request.json() if request.headers.get("content-length") else {}
+    except Exception:  # noqa: BLE001
+        body = {}
+    dry_run = bool(body.get("dry_run", False))
+    return await svc.backfill_cooccurrence_edges(dry_run=dry_run)
+
+
 @router.post("/clear_stale_contradicts")
 async def clear_stale_contradicts(request: Request) -> Any:
     """One-shot repair for the pre-fix relation-scan bug.

@@ -205,6 +205,60 @@ async def test_correction_kind_still_emits_contradicts() -> None:
 
 
 @pytest.mark.asyncio
+async def test_backfill_cooccurrence_edges_links_same_event() -> None:
+    """Wave-27 fix-9 backfill: legacy facts sharing a
+    ``source_event_id`` get SAME_TOPIC edges added between every
+    pair. Repair path for facts written before the auto-link landed.
+    """
+    svc = _make_service()
+    # 3 facts from ONE event — no edges initially (skip_contradict_check
+    # also skips the SAME_TOPIC vec-scan, so they start fully isolated).
+    a = await svc.remember(
+        "网址: https://x.com", kind="project", scope="project",
+        source_event_id="ev-shared",
+        skip_contradict_check=True,
+    )
+    b = await svc.remember(
+        "凭据: 账号 admin", kind="project", scope="project",
+        source_event_id="ev-shared",
+        skip_contradict_check=True,
+    )
+    c = await svc.remember(
+        "凭据: 密码 P", kind="project", scope="project",
+        source_event_id="ev-shared",
+        skip_contradict_check=True,
+    )
+    # A fact from a DIFFERENT event — should not be linked.
+    d = await svc.remember(
+        "unrelated topic", kind="project", scope="project",
+        source_event_id="ev-other",
+        skip_contradict_check=True,
+    )
+
+    # Dry-run first.
+    report = await svc.backfill_cooccurrence_edges(dry_run=True)
+    # 3 facts × 2 directions × pairs(3) = 6 expected new edges.
+    assert report["would_add_edges"] == 6
+    assert report["buckets"] == 1
+    assert report["dry_run"] is True
+
+    # Real run.
+    report2 = await svc.backfill_cooccurrence_edges()
+    assert report2["added_edges"] >= 6
+
+    # Every pair from ev-shared now has SAME_TOPIC edges both ways.
+    for fact_a, fact_b in ((a, b), (a, c), (b, c)):
+        nbrs_a = await svc.neighbors(fact_a.id, relation_types=["SAME_TOPIC"])
+        assert any(t == fact_b.id for _, t in nbrs_a)
+        nbrs_b = await svc.neighbors(fact_b.id, relation_types=["SAME_TOPIC"])
+        assert any(t == fact_a.id for _, t in nbrs_b)
+
+    # The other-event fact stays isolated.
+    nbrs_d = await svc.neighbors(d.id, relation_types=["SAME_TOPIC"])
+    assert nbrs_d == []
+
+
+@pytest.mark.asyncio
 async def test_clear_stale_contradicts_zeroes_non_correction() -> None:
     """One-shot cleanup zeroes fact.contradicts on non-correction
     rows + removes the graph edges. Correction-kind rows preserved.

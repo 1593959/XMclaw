@@ -226,6 +226,70 @@ async def test_extract_and_remember_writes_to_service() -> None:
 
 
 @pytest.mark.asyncio
+async def test_extract_and_remember_links_co_extracted_facts() -> None:
+    """Wave-27 fix-9: when ONE user message produces multiple facts
+    (URL + account + password etc.), they get pairwise SAME_TOPIC
+    edges. Reproduces the user complaint: "是这个网站的账号密码，
+    但是为什么没有联系" — graph showed 3 disconnected nodes.
+    """
+    svc = MemoryService(
+        vector_backend=InMemoryVectorBackend(),
+        graph_backend=InMemoryGraphBackend(),
+        embedder=EmbeddingService(StubEmbedder(dim=4)),
+    )
+    msg = (
+        "https://pw310.wxselling.com/我是开陪玩店的，"
+        "这是我经营的网站，账号 admin，密码 admin888"
+    )
+    written = await extract_and_remember(
+        msg, svc, source_event_id="ev-cooccur",
+    )
+    assert len(written) >= 3  # URL + account + password at minimum
+
+    # Find the URL fact and one of the credential facts.
+    url_fact = next(
+        (f for f in written if "pw310.wxselling.com" in f.text), None,
+    )
+    cred_facts = [f for f in written if "凭据" in f.text or "admin" in f.text]
+    assert url_fact is not None, "URL fact not extracted"
+    assert len(cred_facts) >= 2, "credentials not extracted"
+
+    # Every credential fact must have a SAME_TOPIC edge to the URL.
+    for cred in cred_facts:
+        nbrs = await svc.neighbors(cred.id, relation_types=["SAME_TOPIC"])
+        nbr_ids = {target for _, target in nbrs}
+        assert url_fact.id in nbr_ids, (
+            f"credential fact {cred.text!r} has no SAME_TOPIC edge to "
+            f"the URL — co-occurrence linking broken"
+        )
+
+    # And the reverse direction: URL → credential (symmetric).
+    url_nbrs = await svc.neighbors(url_fact.id, relation_types=["SAME_TOPIC"])
+    url_nbr_ids = {target for _, target in url_nbrs}
+    for cred in cred_facts:
+        assert cred.id in url_nbr_ids, (
+            f"URL has no SAME_TOPIC edge to {cred.text!r} — "
+            "expected symmetric co-occurrence link"
+        )
+
+
+@pytest.mark.asyncio
+async def test_extract_and_remember_single_fact_no_self_link() -> None:
+    """A message that yields only ONE fact must not create any
+    self-edges (sanity check on the pairwise loop)."""
+    svc = MemoryService(
+        vector_backend=InMemoryVectorBackend(),
+        graph_backend=InMemoryGraphBackend(),
+        embedder=EmbeddingService(StubEmbedder(dim=4)),
+    )
+    msg = "https://only-a-url.com"
+    written = await extract_and_remember(msg, svc, source_event_id="ev-1")
+    assert len(written) == 1
+    nbrs = await svc.neighbors(written[0].id, relation_types=["SAME_TOPIC"])
+    assert nbrs == []
+
+
+@pytest.mark.asyncio
 async def test_extract_and_remember_idempotent_on_repeat() -> None:
     """Same message twice ⇒ same facts, evidence_count bumped."""
     svc = MemoryService(

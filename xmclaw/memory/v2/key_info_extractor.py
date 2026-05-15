@@ -636,8 +636,22 @@ async def extract_and_remember(
     Errors during individual writes are logged but don't abort the
     batch — partial success is fine, the next user message will
     retry the missed ones via idempotent upsert.
+
+    Wave-27 fix-9: facts extracted from the SAME user message are
+    auto-linked via SAME_TOPIC edges. Co-occurrence in a single
+    user input is a STRUCTURAL signal that the regex layer was
+    discarding. The user typed
+    "https://pw310.wxselling.com 账号 admin 密码 admin888" — the
+    URL, the account, and the password are obviously about ONE
+    thing, but the per-fact vector-based SAME_TOPIC scan only
+    fires for same-kind vector-close pairs ("账号 admin" and
+    "密码 admin888" cluster; the URL text embeds far enough away
+    to miss the threshold). Cross-fact pairwise edges fix the
+    graph view ("why isn't the URL linked to the credentials?").
+    Symmetric edges so the graph walks both directions.
     """
     from xmclaw.utils.log import get_logger
+    from xmclaw.memory.v2.models import RelationKind
     log = get_logger(__name__)
     keys = extract_keys(message)
     if not keys:
@@ -658,6 +672,34 @@ async def extract_and_remember(
                 "key_info_extractor.remember_failed pattern=%s err=%s",
                 key.pattern_name, exc,
             )
+
+    # Wave-27 fix-9: pairwise SAME_TOPIC edges across co-extracted
+    # facts. Skip when only one fact came out (no pairs to link).
+    if len(written) >= 2:
+        unique_ids = list({f.id: f for f in written}.values())
+        for i, fact_a in enumerate(unique_ids):
+            for fact_b in unique_ids[i + 1:]:
+                if fact_a.id == fact_b.id:
+                    continue
+                for src, dst in (
+                    (fact_a.id, fact_b.id),
+                    (fact_b.id, fact_a.id),
+                ):
+                    try:
+                        await memory_service.relate(
+                            source_fact_id=src,
+                            target_fact_id=dst,
+                            kind=RelationKind.SAME_TOPIC,
+                            strength=0.80,
+                            auto_extracted=True,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning(
+                            "key_info_extractor.cooccur_link_failed "
+                            "src=%s dst=%s err=%s",
+                            src[:32], dst[:32], exc,
+                        )
+
     return written
 
 

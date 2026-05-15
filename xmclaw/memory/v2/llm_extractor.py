@@ -273,7 +273,15 @@ async def llm_extract_and_remember(
     Per-fact failures are logged but don't abort the batch — same
     posture as the regex path (idempotent upsert retries on next
     message).
+
+    Wave-27 fix-9: facts extracted from the same user message get
+    pairwise SAME_TOPIC edges. Mirrors what
+    ``key_info_extractor.extract_and_remember`` does — see that
+    function's docstring for the rationale (URL + credentials
+    extracted from one message should NOT show up as disconnected
+    nodes in the graph).
     """
+    from xmclaw.memory.v2.models import RelationKind
     facts_raw = await llm_extractor.extract(user_message)
     if not facts_raw:
         return []
@@ -293,6 +301,33 @@ async def llm_extract_and_remember(
                 "llm_fact_extractor.remember_failed text=%r err=%s",
                 f["text"][:60], exc,
             )
+
+    # Wave-27 fix-9: pairwise SAME_TOPIC co-occurrence edges.
+    if len(written) >= 2:
+        unique = list({f.id: f for f in written}.values())
+        for i, fact_a in enumerate(unique):
+            for fact_b in unique[i + 1:]:
+                if fact_a.id == fact_b.id:
+                    continue
+                for src, dst in (
+                    (fact_a.id, fact_b.id),
+                    (fact_b.id, fact_a.id),
+                ):
+                    try:
+                        await memory_service.relate(
+                            source_fact_id=src,
+                            target_fact_id=dst,
+                            kind=RelationKind.SAME_TOPIC,
+                            strength=0.80,
+                            auto_extracted=True,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        _log.warning(
+                            "llm_fact_extractor.cooccur_link_failed "
+                            "src=%s dst=%s err=%s",
+                            src[:32], dst[:32], exc,
+                        )
+
     return written
 
 
