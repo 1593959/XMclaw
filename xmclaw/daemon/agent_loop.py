@@ -117,10 +117,20 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # silent for 10 minutes until the user typed "继续".
         # Defending the boundary here so a stuck provider call
         # surfaces as a clean error event the WS client renders
-        # rather than a hung task. 120s default fits the slowest
-        # MiniMax / GPT-4 turn we've seen with tool-spec heavy
-        # prompts; users on local Ollama can bump if they want.
-        llm_timeout_s: float = 120.0,
+        # rather than a hung task.
+        #
+        # Wave-27 fix-13 (2026-05-15): bumped 120 → 300s default.
+        # User complaint: hop 4 kept getting "Blocked: LLM provider
+        # call exceeded 120s wall-clock". Root cause was vision-
+        # heavy turns — Kimi K2.6 / MiniMax M2 processing
+        # accumulated browser_screenshot results (each ~1-3K vision
+        # tokens) on top of 100+ tool specs took >120s. 300s gives
+        # 2.5× headroom for vision-heavy multi-hop browsing turns.
+        # Configurable via daemon config:
+        #   ``agent.llm_timeout_s`` (top-level "agent" block in
+        # config.json) — set lower for fast local Ollama, higher
+        # for slow vision-heavy remote providers.
+        llm_timeout_s: float = 300.0,
         # Sprint 3 #6: optional ReasoningBank-style strategy bank.
         # When wired, ``run_turn`` calls ``bank.retrieve(user_message,
         # limit=strategy_top_k)`` at the start of each turn and injects
@@ -397,13 +407,25 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
 
         Resolution order:
           1. Explicit ``llm_profile_id`` — user pinned a model in UI.
-          2. Tier-based routing via :class:`ModelTierRouter`:
+          2. **Registry default** when frontend sends profile=None
+             (the UI "默认" option deliberately wires this so the
+             daemon's registry-side default decides which model to
+             use). Wave-27 fix-13b (2026-05-15): this branch USED
+             to fall through directly to ``self._llm`` (the legacy
+             ``llm.anthropic`` block), ignoring whatever profile the
+             registry had nominated as its default. Result: user
+             config had ``default_profile_id: "moonshot"`` (kimi),
+             UI showed "默认 · 月之暗面 Kimi", but every turn
+             actually hit MiniMax (the ``llm.anthropic`` block's
+             URL). Now we explicitly ask the registry for its
+             default and prefer that.
+          3. Tier-based routing via :class:`ModelTierRouter`:
              classifier reads the user message + image attachments,
              picks a tier (fast / balanced / strong / vision), the
              registry finds a matching profile and walks the
              fallback chain if none configured.
-          3. Registry default — last-resort.
-          4. ``self._llm`` (constructor injected) — echo fallback.
+          4. ``self._llm`` (constructor injected) — last-resort
+             echo fallback.
 
         Stale profile ids gracefully degrade (no error to caller).
         """
@@ -411,6 +433,19 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             prof = self._llm_registry.get(llm_profile_id)
             if prof is not None:
                 return prof.llm
+        # Wave-27 fix-13b: honour the registry's nominated default
+        # BEFORE legacy fallback / tier routing. The frontend
+        # explicitly sends profile=None to mean "use whatever the
+        # daemon defaults to" — that defaulting decision has to
+        # happen via the registry, not by silently dropping to
+        # self._llm (which is the ctor-injected legacy block).
+        if (
+            llm_profile_id is None
+            and self._llm_registry is not None
+        ):
+            default_prof = self._llm_registry.default()
+            if default_prof is not None:
+                return default_prof.llm
         # Sprint 0: tier-based routing. Only fires when the registry
         # actually has multiple tiers (otherwise it'd be a no-op and
         # we save the regex pass).

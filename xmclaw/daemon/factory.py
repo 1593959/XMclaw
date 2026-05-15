@@ -1766,11 +1766,14 @@ def build_agent_from_config(
     except Exception:  # noqa: BLE001
         _hook_registry = None
 
-    # B-189: per-LLM-call wall-clock timeout. Defaults to 120s; user
-    # can override via ``llm.timeout_s`` in config (e.g. set higher
-    # for slow local models, or lower to fail-fast on flaky cloud).
+    # B-189 / Wave-27 fix-13: per-LLM-call wall-clock timeout.
+    # Default bumped 120 → 300 (2026-05-15) because vision-heavy
+    # turns (browser_screenshot accumulating across hops) routinely
+    # spent 150-250s on a single Kimi K2.6 / MiniMax M2 call.
+    # Override via ``llm.timeout_s`` in config.json — set lower for
+    # fast local Ollama, higher for slow vision-heavy providers.
     _llm_timeout_s = float(
-        (cfg.get("llm") or {}).get("timeout_s", 120.0)
+        (cfg.get("llm") or {}).get("timeout_s", 300.0)
     )
 
     # B-312: daemon-level CostTracker injection. anti-req #6 calls
