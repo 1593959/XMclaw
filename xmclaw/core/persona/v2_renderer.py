@@ -191,8 +191,15 @@ async def render_persona_file(
     the MD file name (``"IDENTITY.md"`` etc.).
 
     Returns True when the file was rewritten, False when nothing
-    needed updating (basename has no bucket mapping, or the section
-    body matches what's already on disk — avoid pointless writes).
+    needed updating (basename has no bucket mapping AND no manual
+    section, or the rendered content matches what's already on
+    disk — avoid pointless writes).
+
+    Phase 3b (2026-05-16): now combines the v2-stored MANUAL
+    section (``kind=persona_manual, bucket=<basename>``) with the
+    auto-section content. Result mirrors the legacy
+    ``manual_part + auto_section`` shape so the agent's read path
+    sees identical layout regardless of which renderer wrote it.
 
     Failures (filesystem errors, recall errors) are caught and
     logged; this function MUST NOT raise — it runs on the hot path
@@ -201,9 +208,7 @@ async def render_persona_file(
     from xmclaw.utils.log import get_logger
     log = get_logger(__name__)
 
-    buckets = FILE_TO_BUCKETS.get(basename)
-    if not buckets:
-        return False
+    buckets = FILE_TO_BUCKETS.get(basename) or []
     target = Path(profile_dir) / basename
     try:
         current = (
@@ -217,8 +222,35 @@ async def render_persona_file(
         )
         return False
 
-    new_text = current
-    changed = False
+    # Phase 3b: pull the v2-stored manual section. ``None`` when the
+    # user has never touched this file via UI / update_persona tool.
+    manual_text: str | None = None
+    try:
+        manual_fact = await memory_service.get_persona_manual(basename)
+        if manual_fact is not None and manual_fact.text:
+            manual_text = manual_fact.text.rstrip() + "\n"
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "v2_renderer.manual_read_failed file=%s err=%s",
+            basename, exc,
+        )
+
+    # When neither buckets nor manual content exist → nothing to do.
+    if not buckets and manual_text is None:
+        return False
+
+    # If we have v2 manual content, start fresh from it (replaces
+    # whatever was on disk's manual region). Otherwise preserve the
+    # existing disk content's manual portion verbatim so user-edited
+    # IDENTITY.md / etc. survives Phase 1/2 callers that don't write
+    # v2 manual rows yet.
+    if manual_text is not None:
+        new_text = manual_text
+    else:
+        new_text = current
+
+    changed = (new_text != current) if manual_text is not None else False
+
     for bucket in buckets:
         cfg = BUCKET_TO_FILE[bucket]
         _fn, section_header, prefix = cfg

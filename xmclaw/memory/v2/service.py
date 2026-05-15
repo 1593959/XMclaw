@@ -39,6 +39,7 @@ Design contract (mirrors §4.4-§4.5 of MEMORY_EVOLUTION_REDESIGN.md):
 """
 from __future__ import annotations
 
+import hashlib
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -548,6 +549,94 @@ class MemoryService:
         )
         await self._graph.add_relation(rel)
         return rel
+
+    async def upsert_persona_manual(
+        self, basename: str, body: str,
+    ) -> Fact:
+        """Wave-27 Phase 3b: store the user-edited manual section of
+        a persona MD file as a v2 fact.
+
+        Differs from ``remember()`` in TWO ways:
+
+          1. The id is deterministic on ``basename`` (not text), so a
+             second edit of IDENTITY.md REPLACES the prior row instead
+             of stacking a new one. There is at most ONE manual row
+             per file.
+
+          2. Skips the near-dup / contradict scans — manual content
+             is user-curated, not extracted, so vec-similarity
+             collapsing across files would corrupt the routing.
+
+        ``body`` may be empty (clears the manual section). Whitespace-
+        normalised before storage so trivial edits don't create
+        ghost evidence_count bumps.
+        """
+        if not basename:
+            raise ValueError("upsert_persona_manual(): empty basename")
+        clean = (body or "").rstrip()
+        # Deterministic id keyed on basename — one row per file.
+        # The text content goes into ``text``; ``bucket`` carries
+        # the filename so the renderer can find it.
+        fact_id = (
+            f"persona_manual:session:"
+            f"{hashlib.sha1(basename.encode('utf-8')).hexdigest()[:12]}"
+        )
+
+        # Look up existing row to preserve evidence_count + ts_first.
+        existing = await self._vec.get(fact_id)
+        ts_first = (
+            existing.ts_first if existing is not None else time.time()
+        )
+        evidence = (
+            existing.evidence_count + 1 if existing is not None else 1
+        )
+
+        embedding: tuple[float, ...] | None = None
+        if self._embedder is not None and clean:
+            try:
+                # Truncate for embed call sanity (manual sections
+                # can be very long).
+                vec = await self._embedder.embed(clean[:6000])
+                embedding = tuple(vec)
+            except EmbeddingFailure as exc:
+                _log.warning(
+                    "memory_service.persona_manual_embed_failed "
+                    "basename=%s err=%s", basename, exc,
+                )
+
+        fact = Fact(
+            id=fact_id,
+            kind=FactKind.PERSONA_MANUAL.value,
+            scope=FactScope.SESSION.value,
+            text=clean,
+            confidence=1.0,           # user-curated = max confidence
+            evidence_count=evidence,
+            embedding=embedding,
+            source_event_id=None,
+            contradicts=(),
+            superseded_by=None,
+            layer=FactLayer.LONG_TERM.value,
+            bucket=basename,          # routing key for v2_renderer
+            ts_first=ts_first,
+            ts_last=time.time(),
+        )
+        await self._vec.upsert([fact])
+        return fact
+
+    async def get_persona_manual(self, basename: str) -> Fact | None:
+        """Wave-27 Phase 3b: read the manual section row for a file.
+
+        Returns None when nothing has been written yet (fresh
+        install). v2_renderer treats None as "no manual content,
+        render auto sections only".
+        """
+        if not basename:
+            return None
+        fact_id = (
+            f"persona_manual:session:"
+            f"{hashlib.sha1(basename.encode('utf-8')).hexdigest()[:12]}"
+        )
+        return await self._vec.get(fact_id)
 
     async def supersede(
         self, *, old_fact_id: str, new_fact_id: str,

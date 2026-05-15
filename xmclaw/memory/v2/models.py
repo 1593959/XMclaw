@@ -68,6 +68,13 @@ class FactKind(str, Enum):
     PROJECT = "project"
     EPISODE = "episode"
     LESSON = "lesson"
+    # Wave-27 Phase 3b (2026-05-16): the user's hand-edited manual
+    # section of a persona MD file (IDENTITY.md / USER.md / etc.).
+    # One row per file, ``bucket=<basename>``. The v2_renderer
+    # combines this with auto-section content from other kinds
+    # (lesson / preference / identity) to produce the on-disk file.
+    # Replaces the legacy ``memory.db kind=persona_manual`` route.
+    PERSONA_MANUAL = "persona_manual"
 
 
 class FactScope(str, Enum):
@@ -128,7 +135,7 @@ class RelationKind(str, Enum):
 FactKindStr = Literal[
     "preference", "decision", "identity",
     "commitment", "correction", "project", "episode",
-    "lesson",
+    "lesson", "persona_manual",
 ]
 FactScopeStr = Literal["user", "project", "session"]
 FactLayerStr = Literal["working", "long_term"]

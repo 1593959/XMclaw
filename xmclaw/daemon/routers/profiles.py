@@ -311,30 +311,59 @@ async def upsert_active_profile_file(
     pdir.mkdir(parents=True, exist_ok=True)
     target = pdir / canonical
 
-    # B-198 Phase 3: route through PersonaStore when wired so the Web
-    # UI edit lands in the DB (truth) and the disk file becomes the
-    # render of that. Auto-extracted bullets the user round-tripped
-    # are stripped by set_manual — they're derived from fact rows,
-    # not user-editable. Falls back to legacy direct-disk write when
-    # the store isn't configured (tests / daemons without vec store).
-    store = getattr(request.app.state, "persona_store", None)
-    if store is not None:
+    # Wave-27 Phase 3b (2026-05-16): when v2 is wired, persona
+    # manual sections live in v2 — single source of truth. The
+    # UI POST writes ``kind=persona_manual, bucket=<basename>``
+    # then asks v2_renderer to rebuild the on-disk MD file (manual
+    # section + every auto section the file routes from). PersonaStore
+    # (memory.db path) only runs as fallback when v2 isn't wired —
+    # backward compat for installs that haven't enabled cognition.
+    # memory_v2 yet.
+    mem_v2 = getattr(request.app.state, "memory_v2_service", None)
+    if mem_v2 is not None:
+        # Strip the auto section before storing — auto content is
+        # derived from other fact kinds, not user-curated. Mirrors
+        # PersonaStore.set_manual's behavior so a round-trip
+        # (render → edit → save) doesn't accidentally promote
+        # auto bullets into the manual row.
+        from xmclaw.core.persona.store import (
+            AUTO_SECTIONS, split_manual_and_auto,
+        )
+        cfg = AUTO_SECTIONS.get(canonical)
+        manual_only = content
+        if cfg is not None:
+            header, _, _ = cfg
+            manual_only, _ = split_manual_and_auto(content, auto_header=header)
+        manual_only = (
+            manual_only.rstrip() + "\n" if manual_only.strip() else ""
+        )
         try:
-            await store.set_manual(canonical, content)
+            await mem_v2.upsert_persona_manual(canonical, manual_only)
+            from xmclaw.core.persona.v2_renderer import render_persona_file
+            await render_persona_file(mem_v2, pdir, canonical)
         except Exception as exc:  # noqa: BLE001
             return JSONResponse(
-                {"ok": False, "error": f"store write failed: {exc}"},
+                {"ok": False, "error": f"v2 write failed: {exc}"},
                 status_code=500,
             )
     else:
-        # B-74: atomic write — agent identity files get rewritten via
-        # this endpoint when the user edits them in the Web UI Memory
-        # page. A daemon crash mid-save would otherwise corrupt the
-        # file the agent's persona depends on. update_persona /
-        # remember tool paths already use this pattern (B-71); the
-        # UI's POST path was the missing twin.
-        from xmclaw.utils.fs_locks import atomic_write_text
-        atomic_write_text(target, content)
+        # Legacy PersonaStore path (memory.db backed).
+        store = getattr(request.app.state, "persona_store", None)
+        if store is not None:
+            try:
+                await store.set_manual(canonical, content)
+            except Exception as exc:  # noqa: BLE001
+                return JSONResponse(
+                    {"ok": False, "error": f"store write failed: {exc}"},
+                    status_code=500,
+                )
+        else:
+            # B-74: atomic write — agent identity files get rewritten via
+            # this endpoint when the user edits them in the Web UI Memory
+            # page. A daemon crash mid-save would otherwise corrupt the
+            # file the agent's persona depends on.
+            from xmclaw.utils.fs_locks import atomic_write_text
+            atomic_write_text(target, content)
 
     # Best-effort: bust the assembled-prompt cache + nudge the running
     # AgentLoop to rebuild on the next turn. The assembler cache is

@@ -320,3 +320,101 @@ async def test_affected_files_path_handles_lesson_buckets(tmp_path: Path):
     assert (tmp_path / "SOUL.md").exists()
     assert not (tmp_path / "AGENTS.md").exists()
     assert not (tmp_path / "USER.md").exists()
+
+
+# ── Phase 3b: manual section storage in v2 ───────────────────────
+
+
+@pytest.mark.asyncio
+async def test_upsert_persona_manual_is_idempotent_on_basename(
+    tmp_path: Path,
+):
+    """One row per file, regardless of how many times the user
+    saves. compute_id keys on basename via the special path, so
+    a second save REPLACES the first instead of stacking."""
+    svc = _make_service()
+    a = await svc.upsert_persona_manual("IDENTITY.md", "v1 content")
+    b = await svc.upsert_persona_manual("IDENTITY.md", "v2 content")
+    assert a.id == b.id, "manual id must be deterministic on basename"
+    refetched = await svc.get_persona_manual("IDENTITY.md")
+    assert refetched is not None
+    assert refetched.text == "v2 content"
+
+
+@pytest.mark.asyncio
+async def test_render_merges_manual_section_with_auto_sections(
+    tmp_path: Path,
+):
+    """The user's IDENTITY.md case: manual section ("我叫嘉鸿,1995年生")
+    + auto section ("AI 叫小咪") rendered together. Both must
+    appear, in the documented order (manual first, auto after).
+    """
+    svc = _make_service()
+    await svc.upsert_persona_manual(
+        "IDENTITY.md",
+        "# IDENTITY.md\n用户叫嘉鸿,1995 年生,做电商业务",
+    )
+    await svc.remember(
+        "AI 的名字是小咪",
+        kind="identity", scope="session",
+        bucket="agent_identity",
+    )
+    await render_persona_file(svc, tmp_path, "IDENTITY.md")
+    content = (tmp_path / "IDENTITY.md").read_text(encoding="utf-8")
+
+    assert "用户叫嘉鸿" in content
+    assert "AI 的名字是小咪" in content
+    assert "## Auto-extracted" in content
+    # Manual section physically precedes auto section.
+    assert content.index("用户叫嘉鸿") < content.index("## Auto-extracted")
+
+
+@pytest.mark.asyncio
+async def test_render_manual_only_when_no_auto_buckets(tmp_path: Path):
+    """For files like BOOTSTRAP.md that have NO auto buckets
+    mapped, the renderer should still write manual content when
+    v2 has a row for that file.
+    """
+    svc = _make_service()
+    await svc.upsert_persona_manual(
+        "BOOTSTRAP.md",
+        "# BOOTSTRAP\n首次启动 interview 笔记",
+    )
+    wrote = await render_persona_file(svc, tmp_path, "BOOTSTRAP.md")
+    assert wrote is True
+    content = (tmp_path / "BOOTSTRAP.md").read_text(encoding="utf-8")
+    assert "首次启动 interview 笔记" in content
+
+
+@pytest.mark.asyncio
+async def test_render_preserves_disk_manual_when_v2_has_none(
+    tmp_path: Path,
+):
+    """If v2 has no persona_manual row yet (e.g. user has never
+    touched UI save), the renderer must NOT wipe whatever was on
+    disk's manual section. It just refreshes the auto portion.
+    """
+    target = tmp_path / "IDENTITY.md"
+    target.write_text(
+        "# IDENTITY.md\n用户手写内容\n\n## Auto-extracted\n_(nothing yet)_\n",
+        encoding="utf-8",
+    )
+    svc = _make_service()
+    await svc.remember(
+        "AI 叫小咪",
+        kind="identity", scope="session",
+        bucket="agent_identity",
+    )
+    await render_persona_file(svc, tmp_path, "IDENTITY.md")
+    content = target.read_text(encoding="utf-8")
+    # Manual content survives.
+    assert "用户手写内容" in content
+    # Auto section got the new fact.
+    assert "AI 叫小咪" in content
+
+
+@pytest.mark.asyncio
+async def test_upsert_persona_manual_rejects_empty_basename():
+    svc = _make_service()
+    with pytest.raises(ValueError):
+        await svc.upsert_persona_manual("", "anything")

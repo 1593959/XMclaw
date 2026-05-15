@@ -516,6 +516,107 @@ async def test_lessons_dual_write_to_v2_facts(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_phase3a_v2_handled_skips_memory_db_when_wired(
+    tmp_path: Path,
+) -> None:
+    """Phase 3a: when v2 service is wired AND accepts the write,
+    the legacy memory.db dual-write is SKIPPED entirely. The v2
+    path becomes the single source of truth for lessons /
+    preferences. Pre-fix: both stores got the row → memory_search
+    could surface stale lessons that v2's dedup had already
+    superseded.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+    from xmclaw.daemon.post_sampling_hooks import _write_facts_to_memory
+    from xmclaw.memory.v2 import (
+        EmbeddingService,
+        InMemoryGraphBackend,
+        InMemoryVectorBackend,
+        MemoryService,
+        StubEmbedder,
+    )
+
+    svc = MemoryService(
+        vector_backend=InMemoryVectorBackend(),
+        graph_backend=InMemoryGraphBackend(),
+        embedder=EmbeddingService(StubEmbedder(dim=4)),
+    )
+    # Mock memory.db + persona_store so we can assert they were
+    # NEVER touched when v2 absorbed the write.
+    memory_provider = MagicMock()
+    memory_provider.upsert_fact = AsyncMock()
+    memory_provider.put = AsyncMock()
+    persona_store = MagicMock()
+    persona_store.render_to_disk = AsyncMock()
+
+    ctx = HookContext(
+        session_id="s-3a",
+        agent_id="main",
+        user_message="hi", assistant_response="hello",
+        history=[], llm=_StubLLM('{"facts": []}'),
+        persona_dir=tmp_path, cfg={},
+        memory_provider=memory_provider,
+        embedder=None,
+        persona_store=persona_store,
+        memory_v2_service=svc,
+    )
+    await _write_facts_to_memory(
+        ctx, ["grep before reading huge files"],
+        kind="lesson", bucket="workflow",
+    )
+    # v2 received the fact.
+    hits = await svc.recall(
+        None, kinds=["lesson"], k=10, min_confidence=0.0,
+    )
+    assert any(
+        h.fact.text == "grep before reading huge files" for h in hits
+    )
+    # memory.db was NOT touched.
+    memory_provider.upsert_fact.assert_not_called()
+    memory_provider.put.assert_not_called()
+    # PersonaStore.render_to_disk was NOT called (v2_renderer did it).
+    persona_store.render_to_disk.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_phase3a_legacy_path_still_works_when_v2_missing(
+    tmp_path: Path,
+) -> None:
+    """Without v2 wired the legacy memory.db + PersonaStore path
+    stays alive — Phase 3a only deprecates the dual-write, not
+    the entire legacy stack. Important for installs that haven't
+    enabled cognition.memory_v2 yet.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+    from xmclaw.daemon.post_sampling_hooks import _write_facts_to_memory
+
+    memory_provider = MagicMock()
+    memory_provider.upsert_fact = AsyncMock()
+    persona_store = MagicMock()
+    persona_store.render_to_disk = AsyncMock()
+
+    ctx = HookContext(
+        session_id="s-legacy",
+        agent_id="main",
+        user_message="hi", assistant_response="hello",
+        history=[], llm=_StubLLM('{"facts": []}'),
+        persona_dir=tmp_path, cfg={},
+        memory_provider=memory_provider,
+        embedder=None,
+        persona_store=persona_store,
+        memory_v2_service=None,        # v2 NOT wired
+    )
+    await _write_facts_to_memory(
+        ctx, ["a workflow lesson"],
+        kind="lesson", bucket="workflow",
+    )
+    # memory.db DID get the write.
+    memory_provider.upsert_fact.assert_called()
+    # PersonaStore DID render (legacy path still active).
+    persona_store.render_to_disk.assert_called()
+
+
+@pytest.mark.asyncio
 async def test_v2_dual_write_skipped_when_service_none(tmp_path: Path) -> None:
     """No v2 service attached → the dual-write path is a no-op. The
     helper must not raise (best-effort indexing semantics)."""

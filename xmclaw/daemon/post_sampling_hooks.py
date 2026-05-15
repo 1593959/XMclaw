@@ -242,6 +242,45 @@ async def _write_facts_to_memory(
                     kind, exc,
                 )
 
+    # Phase 3a (2026-05-16): when v2 actually accepted writes for
+    # this batch, SKIP the legacy memory.db dual-write entirely.
+    # Pre-fix the two stores both held lessons → drift between
+    # them caused the user's "L1 has it, IDENTITY.md doesn't"
+    # complaint (resolved with v2_renderer in Phase 1/2), but it
+    # also left ``memory_search`` and ``Auto-Dream`` consuming
+    # stale memory.db rows when v2 had already deduped /
+    # superseded them. Single-source-of-truth wins: v2 holds the
+    # data, v2_renderer (fired below) writes the MD file, the
+    # legacy memory.db path stays only as a fallback for the
+    # "v2 not configured" install. ``kind not in (lesson,
+    # preference)`` is OUT OF SCOPE — Wave-27 fix-8 only routed
+    # those two kinds through v2; other kinds (preference,
+    # decision, file_chunk, code_chunk) still flow through
+    # memory.db as before.
+    v2_handled_kind = (
+        v2_svc is not None
+        and v2_written
+        and kind in ("lesson", "preference")
+    )
+
+    if v2_handled_kind:
+        # v2 absorbed the write — render persona files from v2 and
+        # return BEFORE the legacy memory.db path so we don't
+        # double-write the same MD file under two different
+        # formats.
+        if ctx.persona_dir is not None:
+            try:
+                from xmclaw.core.persona.v2_renderer import render_affected_files
+                await render_affected_files(
+                    v2_svc, ctx.persona_dir, v2_written,
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "post_sampling.v2_renderer_failed kind=%s err=%s",
+                    kind, exc,
+                )
+        return
+
     if ctx.memory_provider is None:
         return
 
@@ -314,31 +353,18 @@ async def _write_facts_to_memory(
     # newly-upserted rows. We render ALL files for simplicity — disk
     # write is cheap, the alternative (kind→file mapping inversion)
     # adds complexity for marginal speedup.
+    #
+    # Phase 3a (2026-05-16): only reached when v2 was NOT wired
+    # (the v2-handled fast-return above skips this block). The
+    # PersonaStore render path stays for backward compat with
+    # installs that haven't enabled v2 — once cognition.memory_v2
+    # is true everywhere, this branch can be removed entirely.
     if any_wrote and ctx.persona_store is not None:
         try:
             await ctx.persona_store.render_to_disk()
         except Exception as exc:  # noqa: BLE001
             _log.warning(
                 "post_sampling.render_to_disk_failed err=%s", exc,
-            )
-
-    # Phase 2 (2026-05-16): v2_renderer fires AFTER the legacy
-    # PersonaStore render, so when both paths target the same MD
-    # file, v2's output wins on disk. This is intentional — v2 is
-    # the eventual source of truth, the legacy memory.db render
-    # only stays for the rare "v2 disabled but legacy enabled"
-    # config combo (Phase 3 will retire that path entirely once
-    # all callers have migrated).
-    if v2_svc is not None and v2_written and ctx.persona_dir is not None:
-        try:
-            from xmclaw.core.persona.v2_renderer import render_affected_files
-            await render_affected_files(
-                v2_svc, ctx.persona_dir, v2_written,
-            )
-        except Exception as exc:  # noqa: BLE001
-            _log.warning(
-                "post_sampling.v2_renderer_failed kind=%s err=%s",
-                kind, exc,
             )
 
 
