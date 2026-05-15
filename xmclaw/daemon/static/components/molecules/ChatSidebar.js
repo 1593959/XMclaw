@@ -245,27 +245,45 @@ export function ChatSidebar({
 
 // Sprint 1 Wave 3: Background tasks panel.
 //
-// Polls /api/v2/agent_tasks every 3s. Renders one row per
+// Polls /api/v2/agent_tasks every 5s. Renders one row per
 // submit_to_agent task: status badge, content preview (≤80 chars),
 // agent + elapsed. Reuses the same chat sidebar styling.
+//
+// Polling discipline (added after the user observed every page
+// load taking forever):
+//   1. In-flight gate — don't fire a new request until the previous
+//      one returns. The old setInterval-without-tracking fired a
+//      new request every 3s regardless of state, stacking 6+
+//      simultaneous calls and exhausting the browser's HTTP/1.1
+//      6-connection budget. That made EVERY other API call on the
+//      page (status, facts list, etc.) queue 15+ seconds.
+//   2. Pause when tab hidden — saves the daemon work AND keeps the
+//      connection pool clean for the active tab.
+//   3. Pause when collapsed — already there; kept.
 function BackgroundTasksPanel({ token }) {
   const [tasks, setTasks] = useState(null);
   const [collapsed, setCollapsed] = useState(false);
 
-  const load = useCallback(async () => {
-    if (!token) return;
-    try {
-      const r = await apiGet("/api/v2/agent_tasks", token);
-      if (Array.isArray(r?.tasks)) setTasks(r.tasks);
-    } catch (_e) { /* network blip — keep last list */ }
-  }, [token]);
-
   useEffect(() => {
-    if (collapsed) return;
+    if (!token || collapsed) return;
+    let cancelled = false;
+    let inFlight = false;
+
+    const load = async () => {
+      if (cancelled || inFlight) return;
+      if (typeof document !== "undefined" && document.hidden) return;
+      inFlight = true;
+      try {
+        const r = await apiGet("/api/v2/agent_tasks", token);
+        if (!cancelled && Array.isArray(r?.tasks)) setTasks(r.tasks);
+      } catch (_e) { /* network blip — keep last list */ }
+      finally { inFlight = false; }
+    };
+
     load();
-    const id = setInterval(load, 3000);
-    return () => clearInterval(id);
-  }, [load, collapsed]);
+    const id = setInterval(load, 5000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [token, collapsed]);
 
   const inFlight = (tasks || []).filter(
     (t) => t.status === "pending" || t.status === "running",

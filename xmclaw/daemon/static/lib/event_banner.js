@@ -49,9 +49,19 @@ function _handle(ev) {
 export function startEventBanner(token) {
   if (!token) return () => {};
   let cancelled = false;
+  // In-flight gate — without this the 6s setInterval kept firing a
+  // new /api/v2/events request even while the previous one was
+  // outstanding. With BackgroundTasksPanel doing the same thing on
+  // /api/v2/agent_tasks, the browser's HTTP/1.1 6-connection budget
+  // hit zero and every navigation API call queued 15+ seconds.
+  let inFlight = false;
 
   async function tick() {
-    if (cancelled) return;
+    if (cancelled || inFlight) return;
+    // Skip when the tab is hidden — saves bandwidth + daemon CPU
+    // + keeps the connection pool clean for the active window.
+    if (typeof document !== "undefined" && document.hidden) return;
+    inFlight = true;
     try {
       const lastTs = _readLastTs();
       const since = lastTs > 0 ? lastTs + 0.001 : Date.now() / 1000 - 300;
@@ -70,6 +80,8 @@ export function startEventBanner(token) {
       }
     } catch (_) {
       // fail silent — event banner is best-effort
+    } finally {
+      inFlight = false;
     }
   }
 
