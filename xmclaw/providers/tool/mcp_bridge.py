@@ -116,9 +116,28 @@ class MCPBridge(ToolProvider):
         if self._env is not None:
             full_env.update(self._env)
 
+        # Wave-27 fix-10: Windows PATHEXT resolution. The MCP ecosystem
+        # writes ``command: "npx"`` everywhere (Node-native MCP servers
+        # are invoked via ``npx -y @modelcontextprotocol/...``) and
+        # Node ships ``npx.cmd`` on Windows, not ``npx.exe``. Python's
+        # ``asyncio.create_subprocess_exec`` calls Win32 CreateProcess
+        # which does NOT honor PATHEXT — so the literal string "npx"
+        # fails with WinError 2 even though `where npx` finds
+        # ``npx.cmd`` just fine. ``shutil.which`` DOES honor PATHEXT,
+        # so resolving up front gives us the real path
+        # (``C:\Program Files\nodejs\npx.cmd``) which CreateProcess
+        # can spawn directly. Cross-platform safe — on Unix the
+        # which() call returns the same name and nothing changes.
+        import shutil as _shutil
+        resolved_command = list(self._command)
+        if resolved_command:
+            resolved = _shutil.which(resolved_command[0])
+            if resolved:
+                resolved_command[0] = resolved
+
         try:
             self._proc = await asyncio.create_subprocess_exec(
-                *self._command,
+                *resolved_command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -127,7 +146,12 @@ class MCPBridge(ToolProvider):
         except FileNotFoundError as exc:
             raise MCPError(
                 f"failed to spawn MCP server {self._name!r}: "
-                f"command not found: {self._command[0]!r} ({exc})"
+                f"command not found: {self._command[0]!r} ({exc}). "
+                f"Tip: ensure the binary is on PATH "
+                f"(on Windows, .cmd / .bat extensions need PATHEXT "
+                f"resolution — install Node.js for npx-based MCP "
+                f"servers, or set the absolute path in config.json's "
+                f"``mcp_servers.<name>.command`` field)."
             ) from exc
 
         self._reader_task = asyncio.create_task(self._read_loop())
