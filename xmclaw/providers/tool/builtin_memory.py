@@ -77,6 +77,35 @@ class BuiltinToolsMemoryMixin:
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 
+    async def _update_focus(self, call: ToolCall, t0: float) -> ToolResult:
+        """Wave-27 fix-8 / C: agent self-declares its current focus.
+
+        The recorded text gets injected into the GoalAnchor block on
+        the next hop's anchor refresh — survives compression and
+        context shuffling because the anchor is regenerated each
+        time. Empty / blank text clears the slot (use when finishing
+        a phase and not yet starting a new one).
+        """
+        focus = call.args.get("focus")
+        if not isinstance(focus, str):
+            return _fail(call, t0, "'focus' must be a string")
+        # Lazy import — keeps this module independent of cognition/.
+        from xmclaw.cognition.goal_anchor import set_session_focus
+        sid = call.session_id or "_default"
+        focus_clean = focus.strip()
+        set_session_focus(sid, focus_clean)
+        if focus_clean:
+            summary = f"focus set: {focus_clean[:80]}"
+            if len(focus_clean) > 80:
+                summary += "…"
+        else:
+            summary = "focus cleared"
+        return ToolResult(
+            call_id=call.id, ok=True, content=summary,
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
     # ── self-modifying memory tools ───────────────────────────────────
 
     async def _remember(self, call: ToolCall, t0: float) -> ToolResult:

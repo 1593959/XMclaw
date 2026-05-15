@@ -13,6 +13,7 @@ from typing import Any
 from xmclaw.cognition.goal_anchor import (
     GoalAnchorState,
     GoalAnchorTracker,
+    get_session_focus,
 )
 from xmclaw.core.bus import BehavioralEvent, EventType
 from xmclaw.core.ir.toolcall import ToolSpec
@@ -182,18 +183,37 @@ class HopLoopMixin:
             #       opening ask, not just current turn input. Without
             #       this, a chat with zero tool calls per turn never
             #       saw an anchor at all → "聊着聊着就忘了最初的目的".
-            # Find the FIRST user message of this session — the opening
-            # ask that started the whole conversation. GoalAnchor's
-            # format() collapses the block when session_goal equals
-            # the current turn's input (so turn 1 isn't redundant).
+            # Wave-27 fix-8: collect the FULL user-message thread of
+            # the session (evolution of intent), not just the first
+            # message. User pushback: "就像我们之间的对话,是第一句
+            # 就把任务理清的吗" — real tasks evolve across multiple
+            # asks; pinning history[0] discards the chain.
             _session_history = self._histories.get(session_id) or []
-            _session_goal: str | None = None
+            _session_user_thread: list[str] = []
             for _msg in _session_history:
                 if getattr(_msg, "role", None) == "user":
                     _content = getattr(_msg, "content", None) or ""
                     if isinstance(_content, str) and _content.strip():
-                        _session_goal = _content
-                        break
+                        # Filter out our own scaffolding messages —
+                        # GOAL-ANCHOR / [turn hint] are NOT real user
+                        # asks even though they ride on role=user.
+                        s = _content.lstrip()
+                        if s.startswith("[GOAL-ANCHOR]") or s.startswith("[turn hint]"):
+                            continue
+                        _session_user_thread.append(_content)
+            # Back-compat: also surface the first one as session_goal
+            # for callers / tests that still key on the old field.
+            _session_goal: str | None = (
+                _session_user_thread[0] if _session_user_thread else None
+            )
+            # Agent-self-declared current focus (Wave-27 fix-8 / C).
+            # The ``update_focus`` builtin tool writes into a
+            # module-level per-session registry in goal_anchor.py.
+            # When the agent hasn't called update_focus yet for this
+            # session this is None and the block is omitted from the
+            # anchor render.
+            _current_focus: str | None = get_session_focus(session_id)
+
             _is_multi_turn = bool(
                 _session_goal and _session_goal.strip() != user_message.strip()
             )
@@ -205,6 +225,10 @@ class HopLoopMixin:
                 anchor_text = _goal_anchor_tracker.format(GoalAnchorState(
                     original_goal=user_message,
                     session_goal=_session_goal,
+                    session_user_thread=(
+                        _session_user_thread if _session_user_thread else None
+                    ),
+                    current_focus=_current_focus,
                     hop=hop,
                     max_hops=self._max_hops,
                     tool_calls_made=tool_calls_made,

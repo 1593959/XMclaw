@@ -182,3 +182,77 @@ async def test_todo_write_emits_bus_event_via_agent_loop() -> None:
     assert updated[0].session_id == "sess-bus"
     assert updated[0].payload["items"][0]["content"] == "step one"
     assert updated[0].payload["count"] == 1
+
+
+# ── Wave-27 fix-8 / C: update_focus tool ─────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_update_focus_writes_to_session_registry() -> None:
+    """``update_focus`` records text into the per-session focus
+    registry that GoalAnchor reads on the next hop."""
+    from xmclaw.cognition.goal_anchor import (
+        get_session_focus, _reset_session_focus_for_tests,
+    )
+    _reset_session_focus_for_tests()
+    tools = BuiltinTools()
+    r = await tools.invoke(_call(
+        "update_focus",
+        {"focus": "重新设计 token-budget 驱动的压缩"},
+        session_id="s1",
+    ))
+    assert r.ok is True
+    assert "focus set" in r.content
+    assert get_session_focus("s1") == "重新设计 token-budget 驱动的压缩"
+
+
+@pytest.mark.asyncio
+async def test_update_focus_empty_clears_slot() -> None:
+    """Passing empty / whitespace ``focus`` clears the slot — used
+    when a phase wraps up and there's no immediate next focus."""
+    from xmclaw.cognition.goal_anchor import (
+        set_session_focus, get_session_focus, _reset_session_focus_for_tests,
+    )
+    _reset_session_focus_for_tests()
+    set_session_focus("s2", "old focus")
+    tools = BuiltinTools()
+    r = await tools.invoke(_call(
+        "update_focus", {"focus": "  "}, session_id="s2",
+    ))
+    assert r.ok is True
+    assert "cleared" in r.content
+    assert get_session_focus("s2") is None
+
+
+@pytest.mark.asyncio
+async def test_update_focus_isolates_sessions() -> None:
+    from xmclaw.cognition.goal_anchor import (
+        get_session_focus, _reset_session_focus_for_tests,
+    )
+    _reset_session_focus_for_tests()
+    tools = BuiltinTools()
+    await tools.invoke(_call(
+        "update_focus", {"focus": "focus alpha"}, session_id="alpha",
+    ))
+    await tools.invoke(_call(
+        "update_focus", {"focus": "focus beta"}, session_id="beta",
+    ))
+    assert get_session_focus("alpha") == "focus alpha"
+    assert get_session_focus("beta") == "focus beta"
+
+
+@pytest.mark.asyncio
+async def test_update_focus_rejects_non_string() -> None:
+    tools = BuiltinTools()
+    r = await tools.invoke(_call(
+        "update_focus", {"focus": 42}, session_id="s",
+    ))
+    assert r.ok is False
+    assert "must be a string" in r.error
+
+
+@pytest.mark.asyncio
+async def test_update_focus_appears_in_tool_list() -> None:
+    tools = BuiltinTools()
+    names = {s.name for s in tools.list_tools()}
+    assert "update_focus" in names

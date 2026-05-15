@@ -252,3 +252,152 @@ def test_session_goal_none_falls_back_to_original():
     ))
     assert "原始目标" in out
     assert "会话最初目标" not in out
+
+
+# ── Wave-27 fix-8: full user thread (B) ────────────────────────────
+
+
+def test_session_user_thread_renders_as_numbered_evolution():
+    """The full chain of user asks renders as a numbered list — the
+    LLM sees the EVOLUTION of intent, not a frozen snapshot.
+
+    The test uses an exact-match final entry to verify the
+    drop-duplicate-of-current-turn logic. (Substring overlap is
+    benign — we only dedupe EXACT matches.)
+    """
+    t = GoalAnchorTracker()
+    out = t.format(GoalAnchorState(
+        original_goal="复刻你的逻辑",
+        session_user_thread=[
+            "压缩太快了",
+            "卡太死了, 别 hardcode minimax",
+            "长任务忘了目的, 重新设计",
+            "复刻你的逻辑",     # exact match — gets dropped
+        ],
+        hop=5, max_hops=30, tool_calls_made=[],
+    ))
+    assert "用户提出过的诉求" in out
+    assert "1. 压缩太快了" in out
+    assert "2. 卡太死了" in out
+    assert "3. 长任务忘了目的, 重新设计" in out
+    # The exact-match final "复刻你的逻辑" was dropped from the
+    # thread; it should appear once (as the current turn) not twice.
+    assert out.count("复刻你的逻辑") == 1
+
+
+def test_session_user_thread_dedupes_consecutive_repeats():
+    """User repeating themselves verbatim shouldn't bloat the
+    anchor."""
+    t = GoalAnchorTracker()
+    out = t.format(GoalAnchorState(
+        original_goal="something new",
+        session_user_thread=[
+            "first ask",
+            "first ask",       # consecutive dupe — dropped
+            "second ask",
+            "second ask",      # consecutive dupe — dropped
+        ],
+        hop=5, max_hops=30, tool_calls_made=[],
+    ))
+    assert out.count("first ask") == 1
+    assert out.count("second ask") == 1
+
+
+def test_session_user_thread_caps_at_12():
+    """Bound the anchor budget: keep the most recent 12 asks."""
+    t = GoalAnchorTracker()
+    huge_thread = [f"ask-{i}" for i in range(25)]
+    out = t.format(GoalAnchorState(
+        original_goal="current",
+        session_user_thread=huge_thread,
+        hop=5, max_hops=30, tool_calls_made=[],
+    ))
+    # ask-0..ask-12 dropped (older), ask-13..ask-24 kept.
+    assert "ask-0\n" not in out
+    assert "ask-12" not in out      # dropped (oldest of the cap)
+    assert "ask-13" in out          # kept
+    assert "ask-24" in out          # kept (most recent)
+
+
+def test_session_user_thread_single_entry_collapses_to_legacy_render():
+    """Thread of 1 entry == legacy session_goal case; don't render
+    the numbered list (would just be '1. <text>')."""
+    t = GoalAnchorTracker()
+    out = t.format(GoalAnchorState(
+        original_goal="now",
+        session_user_thread=["original"],
+        hop=5, max_hops=30, tool_calls_made=[],
+    ))
+    assert "用户提出过的诉求" not in out
+    # Legacy single-block rendering still works.
+    assert "now" in out
+
+
+# ── Wave-27 fix-8 / C: agent-self-declared current_focus ──────────
+
+
+def test_current_focus_renders_above_user_thread():
+    """When the agent has called update_focus, the declared focus
+    appears AT THE TOP of the anchor — most-recent agent intent.
+
+    Thread has at least 2 unique entries that survive dedup so the
+    user-thread block renders (not the legacy single-block path).
+    """
+    t = GoalAnchorTracker()
+    out = t.format(GoalAnchorState(
+        original_goal="latest user input",
+        current_focus="重新设计 token-budget 驱动的压缩",
+        session_user_thread=[
+            "original ask", "middle ask", "latest user input",
+        ],
+        hop=5, max_hops=30, tool_calls_made=[],
+    ))
+    assert "当前焦点" in out
+    assert "重新设计 token-budget 驱动的压缩" in out
+    assert "用户提出过的诉求" in out
+    # Focus appears before everything else in the body.
+    assert out.index("当前焦点") < out.index("用户提出过的诉求")
+
+
+def test_current_focus_omitted_when_unset():
+    """No focus → no block (no empty header pollution)."""
+    t = GoalAnchorTracker()
+    out = t.format(GoalAnchorState(
+        original_goal="task",
+        current_focus=None,
+        hop=5, max_hops=30, tool_calls_made=[],
+    ))
+    assert "当前焦点" not in out
+
+
+# ── set_session_focus / get_session_focus registry ────────────────
+
+
+def test_session_focus_registry_round_trip():
+    from xmclaw.cognition.goal_anchor import (
+        set_session_focus, get_session_focus, _reset_session_focus_for_tests,
+    )
+    _reset_session_focus_for_tests()
+    assert get_session_focus("s1") is None
+    set_session_focus("s1", "doing the thing")
+    assert get_session_focus("s1") == "doing the thing"
+    # Overwrite.
+    set_session_focus("s1", "doing a different thing")
+    assert get_session_focus("s1") == "doing a different thing"
+    # Clear via empty.
+    set_session_focus("s1", "")
+    assert get_session_focus("s1") is None
+    # Empty session_id is a no-op.
+    set_session_focus("", "x")
+    assert get_session_focus("") is None
+
+
+def test_session_focus_registry_isolates_sessions():
+    from xmclaw.cognition.goal_anchor import (
+        set_session_focus, get_session_focus, _reset_session_focus_for_tests,
+    )
+    _reset_session_focus_for_tests()
+    set_session_focus("a", "focus A")
+    set_session_focus("b", "focus B")
+    assert get_session_focus("a") == "focus A"
+    assert get_session_focus("b") == "focus B"

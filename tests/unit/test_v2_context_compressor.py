@@ -276,6 +276,85 @@ def test_b334_failed_summary_reuses_previous_summary_when_present() -> None:
     ), "B-334: failure note must mark the new round as failed"
 
 
+def _build_history_with_user_markers(
+    n_user_turns: int, marker_template: str,
+) -> list[Message]:
+    """Build a long history with distinct, recognisable user-message
+    texts so tests can assert on their survival post-compression.
+    Returns a list of frozen Messages (compatible with the rest of
+    the compressor's machinery)."""
+    import dataclasses as _dc
+    msgs = _build_long_history(n_user_turns=n_user_turns, content_chars=300)
+    for i in range(n_user_turns):
+        msgs[1 + i * 3] = _dc.replace(
+            msgs[1 + i * 3], content=marker_template.format(i=i),
+        )
+    return msgs
+
+
+def test_user_messages_never_enter_summary() -> None:
+    """Wave-27 fix-8: compressing a long history MUST preserve every
+    user message verbatim. Only assistant + tool turns get rolled
+    into the summary. User pushback: "就像我们之间的对话, 是第一句就
+    把任务理清的吗" — losing user turns to a summary discards the
+    evolving intent that defines the actual task.
+    """
+    cc = ContextCompressor(
+        model="t", summarize_call=_stub_summarize,
+        context_length=1_000, threshold_percent=0.5,
+        protect_first_n=1, protect_last_n=2, protect_last_ratio=0.10,
+        quiet_mode=True,
+    )
+    msgs = _build_history_with_user_markers(
+        10, "USER_ASK_{i}_unique_marker",
+    )
+    out = asyncio.run(cc.compress(msgs, session_id="s"))
+
+    # Every original USER message must be present verbatim in output.
+    out_text = "\n".join(m.content or "" for m in out)
+    for i in range(10):
+        marker = f"USER_ASK_{i}_unique_marker"
+        assert marker in out_text, (
+            f"User message {i} ({marker!r}) was lost to the summary "
+            "— this is the exact 'agent forgets original intent' bug "
+            "Wave-27 fix-8 is supposed to prevent."
+        )
+
+    # And there should be a summary message generated from the
+    # assistant/tool turns (so compression actually happened).
+    assert any(SUMMARY_PREFIX in (m.content or "") for m in out), (
+        "no summary in output — compression didn't fire"
+    )
+
+
+def test_user_messages_preserved_in_original_order() -> None:
+    """Preserved user messages should appear in their original
+    chronological order in the compressed output."""
+    cc = ContextCompressor(
+        model="t", summarize_call=_stub_summarize,
+        context_length=1_000, threshold_percent=0.5,
+        protect_first_n=1, protect_last_n=2,
+        quiet_mode=True,
+    )
+    msgs = _build_history_with_user_markers(8, "MARK_{i:02d}")
+    out = asyncio.run(cc.compress(msgs, session_id="s"))
+    out_text = "\n".join(m.content or "" for m in out)
+    found_positions: list[tuple[int, int]] = []
+    for i in range(8):
+        marker = f"MARK_{i:02d}"
+        idx = out_text.find(marker)
+        if idx >= 0:
+            found_positions.append((i, idx))
+    # All 8 user markers must be found AND in strictly increasing
+    # position order (chronological).
+    assert len(found_positions) == 8
+    positions = [p for _, p in found_positions]
+    assert positions == sorted(positions), (
+        "user-message preservation broke chronological order: "
+        f"{found_positions}"
+    )
+
+
 def test_protect_last_ratio_scales_tail_budget_with_ctx_len() -> None:
     """Wave-27 fix-6: ``tail_token_budget`` is now driven by
     ``protect_last_ratio × context_length``, not by message count.

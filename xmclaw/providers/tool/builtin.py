@@ -78,6 +78,7 @@ from xmclaw.providers.tool._specs import (  # noqa: F401
     _SQLITE_QUERY_SPEC as _SQLITE_QUERY_SPEC,
     _TODO_READ_SPEC as _TODO_READ_SPEC,
     _TODO_WRITE_SPEC as _TODO_WRITE_SPEC,
+    _UPDATE_FOCUS_SPEC as _UPDATE_FOCUS_SPEC,
     _UPDATE_PERSONA_SPEC as _UPDATE_PERSONA_SPEC,
     _VOICE_SYNTHESIZE_SPEC as _VOICE_SYNTHESIZE_SPEC,
     _VOICE_TRANSCRIBE_SPEC as _VOICE_TRANSCRIBE_SPEC,
@@ -313,7 +314,7 @@ class BuiltinTools(
             specs.append(_BASH_SPEC)
         if self._enable_web:
             specs.extend([_WEB_FETCH_SPEC, _WEB_SEARCH_SPEC])
-        specs.extend([_TODO_WRITE_SPEC, _TODO_READ_SPEC])
+        specs.extend([_TODO_WRITE_SPEC, _TODO_READ_SPEC, _UPDATE_FOCUS_SPEC])
         # Self-modifying memory tools are gated by the persona_dir
         # provider — without it we have nowhere to write, so we don't
         # advertise the tools. Tests construct BuiltinTools without
@@ -425,6 +426,8 @@ class BuiltinTools(
                 return await self._todo_write(call, t0)
             if call.name == "todo_read":
                 return await self._todo_read(call, t0)
+            if call.name == "update_focus":
+                return await self._update_focus(call, t0)
             if call.name == "remember":
                 if self._persona_dir_provider is None:
                     return _fail(call, t0, "remember tool not configured (no persona dir)")

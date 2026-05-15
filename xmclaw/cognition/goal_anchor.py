@@ -66,16 +66,27 @@ class GoalAnchorState:
     plan_steps: list[str] | None = None  # populated by PlanFirstMode (Batch B)
     completed_step_indices: set[int] | None = None
     open_errors: list[str] | None = None  # last N tool errors
-    # Wave-27 fix-7: the SESSION's original ask, not just the current
-    # turn's input. User complaint: "长任务,长对话,复杂任务的事情,
-    # 容易聊着聊着就忘了最初的目的". The base GoalAnchor only had the
-    # CURRENT turn's user message, so a multi-turn conversation could
-    # lose the session's opening objective even though it was still in
-    # the history. When set, ``session_goal`` is rendered ABOVE
-    # ``original_goal`` so the LLM sees both: "what the user asked
-    # ORIGINALLY" + "what they just said THIS TURN". Empty / None
-    # collapses the block — backwards compatible.
+    # Wave-27 fix-7: the SESSION's original ask. Deprecated — keep the
+    # field for backwards compat but new callers should use
+    # ``session_user_thread`` (Wave-27 fix-8).
     session_goal: str | None = None
+    # Wave-27 fix-8: the FULL ordered list of user messages from this
+    # session (not just the first one). User pushback: "就像我们之间
+    # 的对话,是第一句就把任务理清的吗" — real tasks evolve across
+    # multiple user inputs. Just pinning ``history[0]`` discards the
+    # CHAIN of asks that defines the actual objective. The anchor
+    # renders this as a numbered list ("用户提出过的诉求") so the
+    # LLM sees the evolution, not a single frozen ask. Callers
+    # supply the de-duplicated list; the tracker handles truncation
+    # and rendering.
+    session_user_thread: list[str] | None = None
+    # Wave-27 fix-8 / C: agent-self-declared current focus. When the
+    # ``update_focus`` tool is wired and the agent has called it,
+    # this carries the latest declaration. Rendered ABOVE everything
+    # else in the anchor — most-recent agent-stated intent, modelled
+    # on how Claude uses TodoWrite to externalise its own working
+    # focus across turns.
+    current_focus: str | None = None
 
     @property
     def hops_remaining(self) -> int:
@@ -141,25 +152,53 @@ class GoalAnchorTracker:
             "deciding the next tool call.\n",
         ]
 
-        # Wave-27 fix-7: session-level goal (the FIRST user message of
-        # this conversation) shown FIRST when distinct from the current
-        # turn's input. Long multi-turn sessions lose the original ask
-        # over time — keeping both anchors here makes the LLM aware of
-        # both "what we set out to do" and "what the user just said".
-        session_goal_clean = (state.session_goal or "").strip()
-        original_goal_clean = state.original_goal.strip()
-        if (
-            session_goal_clean
-            and session_goal_clean != original_goal_clean
-        ):
-            lines.append("## 会话最初目标 (Session Goal — what the user first asked)")
-            lines.append(self._truncate(session_goal_clean, 800))
+        # Wave-27 fix-8 / C: agent-self-declared focus FIRST (most
+        # recent intent). Models the way Claude uses TodoWrite —
+        # externalised state the agent itself updates as the task
+        # evolves. When unset (agent never called ``update_focus``)
+        # this block is omitted.
+        focus_clean = (state.current_focus or "").strip()
+        if focus_clean:
+            lines.append("## 当前焦点 (Agent self-declared focus)")
+            lines.append(self._truncate(focus_clean, 600))
             lines.append("")
-            lines.append("## 当前回合输入 (This turn's request)")
+
+        # Wave-27 fix-8: user thread — the evolution of asks across
+        # the session, not a frozen "first message". When 2+ entries
+        # exist we render as a numbered list (oldest → newest) so the
+        # LLM sees the CHAIN of intent ("user asked X, then refined to
+        # Y, then said Z"). When only 1 entry exists this is the
+        # turn-1 case → collapse to the legacy single-block render.
+        thread = self._normalise_thread(
+            state.session_user_thread, state.original_goal,
+        )
+        original_goal_clean = state.original_goal.strip()
+        if len(thread) >= 2:
+            lines.append(
+                "## 用户提出过的诉求（按时间，最早 → 最新）"
+                " (User asks in this session — evolving thread)",
+            )
+            for i, msg in enumerate(thread, 1):
+                lines.append(f"{i}. {self._truncate(msg, 400)}")
+            lines.append("")
+            lines.append("## 这一轮的输入 (This turn's request)")
             lines.append(self._truncate(original_goal_clean, 800))
         else:
-            lines.append("## 原始目标 (Original Goal)")
-            lines.append(self._truncate(original_goal_clean, 800))
+            # Single-entry thread OR no thread supplied — fall back
+            # to the legacy "session_goal" path for back-compat.
+            session_goal_clean = (state.session_goal or "").strip()
+            if (
+                session_goal_clean
+                and session_goal_clean != original_goal_clean
+            ):
+                lines.append("## 会话最初目标 (Session Goal)")
+                lines.append(self._truncate(session_goal_clean, 800))
+                lines.append("")
+                lines.append("## 当前回合输入 (This turn's request)")
+                lines.append(self._truncate(original_goal_clean, 800))
+            else:
+                lines.append("## 原始目标 (Original Goal)")
+                lines.append(self._truncate(original_goal_clean, 800))
         lines.append("")
 
         if state.plan_steps:
@@ -222,6 +261,94 @@ class GoalAnchorTracker:
             return s
         return s[: max_chars - 1] + "…"
 
+    @staticmethod
+    def _normalise_thread(
+        raw_thread: list[str] | None, current_turn: str,
+    ) -> list[str]:
+        """Wave-27 fix-8: clean the user-message thread for rendering.
+
+        Rules:
+          * Strip + drop empties / whitespace-only.
+          * Dedupe consecutive identicals (user repeating themselves
+            doesn't add information).
+          * Cap to the most recent 12 entries (keeps the anchor
+            bounded — the LLM doesn't need 100 historical asks to
+            see the trajectory). Older entries dropped from the
+            FRONT so the most recent asks always survive.
+          * Drop a final entry that exactly matches ``current_turn``
+            so the same text doesn't render twice (once in the
+            thread, once in "## 这一轮的输入").
+        """
+        cleaned: list[str] = []
+        prev: str | None = None
+        for raw in raw_thread or ():
+            s = (raw or "").strip()
+            if not s:
+                continue
+            if s == prev:
+                continue
+            cleaned.append(s)
+            prev = s
+        # Cap at 12 — keep recent.
+        if len(cleaned) > 12:
+            cleaned = cleaned[-12:]
+        # Drop final entry if it duplicates current_turn.
+        if cleaned and cleaned[-1].strip() == current_turn.strip():
+            cleaned = cleaned[:-1]
+        return cleaned
+
+
+# ── Per-session current-focus registry (Wave-27 fix-8 / C) ─────────
+#
+# Agent-self-declared current focus, keyed by session_id. The
+# ``update_focus`` builtin tool writes here; hop_loop's GoalAnchor
+# build reads. Module-level dict so the writer (tool handler in
+# providers/tool/) and the reader (daemon/hop_loop.py) don't need a
+# constructor-time wiring callback — both touch the same shared
+# state by importing this module.
+#
+# Bounded by a soft cap (200 sessions, oldest evicted) so a
+# long-running daemon doesn't leak. Sessions outlive their value
+# quickly anyway — focus is replaced each time the agent calls
+# update_focus.
+
+import collections as _collections
+
+_SESSION_FOCUS_CAP = 200
+_SESSION_FOCUS: "_collections.OrderedDict[str, str]" = _collections.OrderedDict()
+
+
+def set_session_focus(session_id: str, focus: str) -> None:
+    """Record the agent's self-declared current focus for ``session_id``.
+
+    Empty / blank text clears the slot. Re-inserting an existing key
+    bumps it to most-recent (LRU eviction order).
+    """
+    key = (session_id or "").strip()
+    if not key:
+        return
+    text = (focus or "").strip()
+    if not text:
+        _SESSION_FOCUS.pop(key, None)
+        return
+    # LRU bump.
+    if key in _SESSION_FOCUS:
+        _SESSION_FOCUS.move_to_end(key)
+    _SESSION_FOCUS[key] = text
+    while len(_SESSION_FOCUS) > _SESSION_FOCUS_CAP:
+        _SESSION_FOCUS.popitem(last=False)
+
+
+def get_session_focus(session_id: str) -> str | None:
+    """Return the most-recently-declared focus for ``session_id``,
+    or None if the agent hasn't called ``update_focus`` yet."""
+    return _SESSION_FOCUS.get((session_id or "").strip()) or None
+
+
+def _reset_session_focus_for_tests() -> None:
+    """Test helper — wipe the registry. Not exported."""
+    _SESSION_FOCUS.clear()
+
 
 def is_anchor_message(content: Any) -> bool:
     """Cheap check used by sanitisers to identify anchor messages."""
@@ -244,4 +371,6 @@ __all__ = [
     "GoalAnchorState",
     "GOAL_ANCHOR_MARKER",
     "is_anchor_message",
+    "set_session_focus",
+    "get_session_focus",
 ]

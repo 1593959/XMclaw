@@ -492,24 +492,47 @@ class ContextCompressor:
             if compress_start >= compress_end:
                 return messages
 
-            turns_to_summarize = messages[compress_start:compress_end]
+            turns_to_summarize_all = messages[compress_start:compress_end]
+
+            # Wave-27 fix-8: USER MESSAGES ARE SACRED. The user's actual
+            # asks track the EVOLUTION of intent across a multi-turn
+            # session — losing them to a summary paragraph is the exact
+            # "聊着聊着就忘了最初的目的" failure the user reported. So
+            # we split the slice: only assistant + tool turns get
+            # summarized; user turns are pulled out and re-inserted
+            # verbatim into the compressed result in their original
+            # order. This mirrors how the assistant (Claude/Kimi)
+            # itself tracks an evolving conversation: full user
+            # message history, only its own verbose outputs compress.
+            preserved_users: list[Message] = []
+            turns_to_summarize: list[Message] = []
+            for _m in turns_to_summarize_all:
+                if _m.role == "user":
+                    preserved_users.append(_m)
+                else:
+                    turns_to_summarize.append(_m)
 
             if not self.quiet_mode:
                 logger.info(
                     "ContextCompressor.fire session=%s tokens=%d threshold=%d "
-                    "summarising turns %d-%d (%d turns), head=%d tail=%d",
+                    "summarising turns %d-%d (%d turns, %d users preserved, "
+                    "%d to summarize), head=%d tail=%d",
                     session_id or "?", display_tokens, self.threshold_tokens,
-                    compress_start + 1, compress_end, len(turns_to_summarize),
+                    compress_start + 1, compress_end,
+                    len(turns_to_summarize_all),
+                    len(preserved_users), len(turns_to_summarize),
                     compress_start, n - compress_end,
                 )
 
             # Wave 26 fix-4: fire the pre-drop hook so memory
             # subsystems can extract facts from the doomed slice BEFORE
             # it collapses into a one-paragraph summary. Never let a
-            # hook failure abort compression — wrap broadly.
-            if on_drop is not None and turns_to_summarize:
+            # hook failure abort compression — wrap broadly. (Hook
+            # still sees the FULL slice incl. user messages — extractors
+            # may want to mine the original user prompts too.)
+            if on_drop is not None and turns_to_summarize_all:
                 try:
-                    await on_drop(list(turns_to_summarize))
+                    await on_drop(list(turns_to_summarize_all))
                 except Exception as exc:  # noqa: BLE001
                     if not self.quiet_mode:
                         logger.warning(
@@ -517,18 +540,21 @@ class ContextCompressor:
                             session_id or "?", exc,
                         )
 
-            # Phase 4: summarise.
+            # Phase 4: summarise ONLY the non-user turns.
             summary = await self._generate_summary(
                 turns_to_summarize, st, focus_topic=focus_topic,
-            )
+            ) if turns_to_summarize else None
 
             # Phase 5: assemble.
             # B-334: pass ``st.previous_summary`` so the assembler can
             # use the last-known-good recap as a fallback prefix when
             # this round's summarizer failed (audit #20).
+            # Wave-27 fix-8: pass preserved_users so the assembler
+            # re-inserts them between head and summary.
             compressed = self._assemble_compressed(
                 messages, compress_start, compress_end, summary,
                 previous_summary=st.previous_summary,
+                preserved_users=preserved_users,
             )
             compressed = self._sanitize_tool_pairs(compressed)
 
@@ -951,9 +977,9 @@ Use this exact structure:
         summary: Optional[str],
         *,
         previous_summary: Optional[str] = None,
+        preserved_users: Optional[list[Message]] = None,
     ) -> list[Message]:
-        """Build head + summary + tail, picking summary role to avoid
-        consecutive same-role messages on either side.
+        """Build head + (preserved user messages) + summary + tail.
 
         ``previous_summary`` (B-334): the last successful summary for
         this session, if any. Used as a fallback prefix when
@@ -961,6 +987,13 @@ Use this exact structure:
         Kept as a parameter (rather than reading ``self._states`` here)
         so this method stays a pure transform — easier to unit-test
         without constructing a full _SessionState.
+
+        ``preserved_users`` (Wave-27 fix-8): user-role messages from
+        the compressed range that must be re-inserted verbatim
+        (NOT rolled into the summary). They appear between the head
+        and the summary, in their original order. Empty / None → the
+        pre-fix-8 behaviour where the summary directly follows the
+        head.
         """
         n = len(messages)
         compressed: list[Message] = []
@@ -980,6 +1013,14 @@ Use this exact structure:
                 if note not in existing:
                     m = dataclasses.replace(m, content=existing + "\n\n" + note)
             compressed.append(m)
+
+        # Wave-27 fix-8: re-insert preserved user messages from the
+        # compressed range BEFORE the summary. Verbatim — these are
+        # the user's actual asks across the session and must never be
+        # mutated by the summarizer.
+        if preserved_users:
+            for _m in preserved_users:
+                compressed.append(_m)
 
         # Static fallback if summary failed.
         #
@@ -1015,9 +1056,16 @@ Use this exact structure:
                 summary = f"{SUMMARY_PREFIX}\n{failure_note}"
 
         # Pick a summary role that doesn't collide with adjacent messages.
-        last_head_role = (
-            messages[compress_start - 1].role if compress_start > 0 else "user"
-        )
+        # Wave-27 fix-8: when preserved_users is non-empty they sit
+        # BETWEEN head and summary, so the message immediately
+        # preceding the summary is the last preserved user (role
+        # ``user``), not the last head message.
+        if preserved_users:
+            last_head_role = "user"
+        else:
+            last_head_role = (
+                messages[compress_start - 1].role if compress_start > 0 else "user"
+            )
         first_tail_role = (
             messages[compress_end].role if compress_end < n else "user"
         )

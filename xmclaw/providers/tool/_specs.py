@@ -427,6 +427,51 @@ _TODO_READ_SPEC = ToolSpec(
     parameters_schema={"type": "object", "properties": {}},
 )
 
+# Wave-27 fix-8 / C — update_focus: agent self-declares its current
+# working focus for this session. Mirrors how Claude uses TodoWrite
+# to externalise its working memory across turns. The recorded focus
+# gets re-injected into every GoalAnchor block so the LLM sees its
+# own most-recent intent at the top of every refresh — survives
+# across compression / context shuffling because the anchor is
+# regenerated each hop.
+_UPDATE_FOCUS_SPEC = ToolSpec(
+    name="update_focus",
+    description=(
+        "Record what you (the agent) are currently focused on in this "
+        "session. Call this whenever your task understanding shifts — "
+        "e.g. user moved from 'tune parameter X' to 're-architect Y', "
+        "or you've completed milestone A and are starting on B. The "
+        "recorded text gets injected into the goal-anchor every few "
+        "hops so future-you doesn't lose track of the current phase "
+        "across a long conversation.\n\n"
+        "WHEN TO CALL:\n"
+        "  • User redirects the task (new direction, scope change)\n"
+        "  • Milestone done → moving to the next one\n"
+        "  • Long debugging session → record what you're hunting for\n"
+        "  • Multi-turn refactor → record which file / area you're in\n\n"
+        "WHEN NOT TO CALL:\n"
+        "  • Routine intra-task tool calls (use todo_write for those)\n"
+        "  • Trivial answers / single-turn replies\n\n"
+        "Empty / blank ``focus`` clears the slot (use when the task is "
+        "complete and there is no active focus)."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "focus": {
+                "type": "string",
+                "description": (
+                    "One short sentence describing your current focus. "
+                    "Under 200 chars. Examples: '重新设计 token-budget "
+                    "驱动的压缩,代替旧的消息条数硬编码', 'debugging the "
+                    "websocket reconnect drop after daemon restart'."
+                ),
+            },
+        },
+        "required": ["focus"],
+    },
+)
+
 _REMEMBER_SPEC = ToolSpec(
     name="remember",
     description=(
