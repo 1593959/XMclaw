@@ -66,6 +66,16 @@ class GoalAnchorState:
     plan_steps: list[str] | None = None  # populated by PlanFirstMode (Batch B)
     completed_step_indices: set[int] | None = None
     open_errors: list[str] | None = None  # last N tool errors
+    # Wave-27 fix-7: the SESSION's original ask, not just the current
+    # turn's input. User complaint: "长任务,长对话,复杂任务的事情,
+    # 容易聊着聊着就忘了最初的目的". The base GoalAnchor only had the
+    # CURRENT turn's user message, so a multi-turn conversation could
+    # lose the session's opening objective even though it was still in
+    # the history. When set, ``session_goal`` is rendered ABOVE
+    # ``original_goal`` so the LLM sees both: "what the user asked
+    # ORIGINALLY" + "what they just said THIS TURN". Empty / None
+    # collapses the block — backwards compatible.
+    session_goal: str | None = None
 
     @property
     def hops_remaining(self) -> int:
@@ -129,10 +139,28 @@ class GoalAnchorTracker:
             f"{self._anchor_every} hops — the agent re-anchors to the "
             "user's original goal + progress so far. Read this BEFORE "
             "deciding the next tool call.\n",
-            "## 原始目标 (Original Goal)",
-            self._truncate(state.original_goal.strip(), 800),
-            "",
         ]
+
+        # Wave-27 fix-7: session-level goal (the FIRST user message of
+        # this conversation) shown FIRST when distinct from the current
+        # turn's input. Long multi-turn sessions lose the original ask
+        # over time — keeping both anchors here makes the LLM aware of
+        # both "what we set out to do" and "what the user just said".
+        session_goal_clean = (state.session_goal or "").strip()
+        original_goal_clean = state.original_goal.strip()
+        if (
+            session_goal_clean
+            and session_goal_clean != original_goal_clean
+        ):
+            lines.append("## 会话最初目标 (Session Goal — what the user first asked)")
+            lines.append(self._truncate(session_goal_clean, 800))
+            lines.append("")
+            lines.append("## 当前回合输入 (This turn's request)")
+            lines.append(self._truncate(original_goal_clean, 800))
+        else:
+            lines.append("## 原始目标 (Original Goal)")
+            lines.append(self._truncate(original_goal_clean, 800))
+        lines.append("")
 
         if state.plan_steps:
             lines.append("## 计划步骤 (Decomposed plan)")

@@ -193,3 +193,62 @@ def test_sanitize_memory_context_keeps_clean_text():
     from xmclaw.daemon.turn_context import _sanitize_memory_context
     out = _sanitize_memory_context("just a regular user message")
     assert out == "just a regular user message"
+
+
+# ── Wave-27 fix-7: session goal renders above current-turn ────────
+
+
+def test_session_goal_shows_above_current_turn_when_different():
+    """When session_goal != current original_goal, the anchor must
+    render BOTH — the user's opening ask AND what they just said.
+    Solves the "聊着聊着就忘了最初的目的" multi-turn drift case.
+    """
+    t = GoalAnchorTracker()
+    out = t.format(GoalAnchorState(
+        original_goal="实际上,我现在想改一下颜色",       # current turn
+        session_goal="帮我搭一个陪玩店管理后台",          # session opening
+        hop=5,
+        max_hops=30,
+        tool_calls_made=[],
+    ))
+    # Both labels appear, session goal comes first (above).
+    assert "会话最初目标" in out
+    assert "当前回合输入" in out
+    assert "帮我搭一个陪玩店管理后台" in out
+    assert "实际上,我现在想改一下颜色" in out
+    # Session goal appears physically BEFORE current-turn in the text.
+    assert out.index("帮我搭一个陪玩店管理后台") < out.index(
+        "实际上,我现在想改一下颜色"
+    )
+
+
+def test_session_goal_collapses_when_same_as_original():
+    """Turn 1 case: session_goal == current turn message → only one
+    block rendered, no token waste on duplication.
+    """
+    t = GoalAnchorTracker()
+    msg = "帮我搭一个陪玩店管理后台"
+    out = t.format(GoalAnchorState(
+        original_goal=msg,
+        session_goal=msg,
+        hop=5,
+        max_hops=30,
+        tool_calls_made=[],
+    ))
+    assert "原始目标" in out                  # legacy single-goal label
+    assert "会话最初目标" not in out          # split-block label absent
+    assert "当前回合输入" not in out
+    assert out.count(msg) == 1                # not duplicated
+
+
+def test_session_goal_none_falls_back_to_original():
+    """Backward compat: when session_goal is None, behavior matches
+    the pre-fix-7 single-goal rendering exactly."""
+    t = GoalAnchorTracker()
+    out = t.format(GoalAnchorState(
+        original_goal="some task",
+        session_goal=None,
+        hop=5, max_hops=30, tool_calls_made=[],
+    ))
+    assert "原始目标" in out
+    assert "会话最初目标" not in out

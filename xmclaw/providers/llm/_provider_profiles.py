@@ -437,9 +437,15 @@ _CONTEXT_LENGTH_PATTERNS: Final[tuple[tuple[str, int], ...]] = (
     ("claude-sonnet-4", 200_000),
     ("claude-3-5", 200_000),
     ("claude-3-7", 200_000),
-    # Kimi family.
+    # Kimi family — accept space/underscore variants since the UI
+    # sometimes displays "kimi k2.6" but config can be "kimi_k2" /
+    # "kimi k2" / "kimi-k2". All three should resolve to 256K.
     ("kimi-k2", 256_000),
+    ("kimi k2", 256_000),
+    ("kimi_k2", 256_000),
     ("kimi-k1", 200_000),
+    ("kimi k1", 200_000),
+    ("kimi_k1", 200_000),
     ("moonshot-v1-128k", 128_000),
     ("moonshot-v1-32k", 32_000),
     ("moonshot-v1-8k", 8_000),

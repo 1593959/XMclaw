@@ -172,9 +172,39 @@ class HopLoopMixin:
             # goal + progress so the LLM doesn't drift on long chains.
             # Carries the ``[GOAL-ANCHOR]`` marker that turn_context.py's
             # sanitiser strips before history-to-disk persistence.
-            if _goal_anchor_tracker.should_anchor(hop):
+            #
+            # Wave-27 fix-7: TWO trigger conditions now —
+            #   (a) Standard hop-cadence anchor (every N hops within a
+            #       single turn — the original use case: 100+ tool
+            #       calls deep, remind the LLM of THIS turn's goal).
+            #   (b) Session-start anchor at hop=0 if this is turn 2+ of
+            #       the conversation. Reminds the LLM of the SESSION's
+            #       opening ask, not just current turn input. Without
+            #       this, a chat with zero tool calls per turn never
+            #       saw an anchor at all → "聊着聊着就忘了最初的目的".
+            # Find the FIRST user message of this session — the opening
+            # ask that started the whole conversation. GoalAnchor's
+            # format() collapses the block when session_goal equals
+            # the current turn's input (so turn 1 isn't redundant).
+            _session_history = self._histories.get(session_id) or []
+            _session_goal: str | None = None
+            for _msg in _session_history:
+                if getattr(_msg, "role", None) == "user":
+                    _content = getattr(_msg, "content", None) or ""
+                    if isinstance(_content, str) and _content.strip():
+                        _session_goal = _content
+                        break
+            _is_multi_turn = bool(
+                _session_goal and _session_goal.strip() != user_message.strip()
+            )
+            _should_anchor = (
+                _goal_anchor_tracker.should_anchor(hop)
+                or (hop == 0 and _is_multi_turn)
+            )
+            if _should_anchor:
                 anchor_text = _goal_anchor_tracker.format(GoalAnchorState(
                     original_goal=user_message,
+                    session_goal=_session_goal,
                     hop=hop,
                     max_hops=self._max_hops,
                     tool_calls_made=tool_calls_made,
