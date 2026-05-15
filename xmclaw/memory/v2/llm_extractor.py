@@ -288,12 +288,30 @@ async def llm_extract_and_remember(
     written = []
     for f in facts_raw:
         try:
+            # Wave-27 fix-12: tag identity/preference facts with the
+            # bucket the persona renderer reads. Without this the
+            # bucket column stays empty → IDENTITY.md / USER.md
+            # would still render empty even though the fact lives
+            # in L1.
+            kind = f["kind"]
+            scope = f["scope"]
+            bucket = ""
+            if kind == "identity":
+                # session-scope identity = "AI 自己是谁" → IDENTITY.md
+                # user-scope identity   = "用户身份信息"  → USER.md
+                if scope == "session":
+                    bucket = "agent_identity"
+                elif scope == "user":
+                    bucket = "user_identity"
+            elif kind == "preference" and scope == "user":
+                bucket = "user_preference"
             fact = await memory_service.remember(
                 f["text"],
-                kind=f["kind"],
-                scope=f["scope"],
+                kind=kind,
+                scope=scope,
                 confidence=f["confidence"],
                 source_event_id=source_event_id,
+                bucket=bucket,
             )
             written.append(fact)
         except Exception as exc:  # noqa: BLE001

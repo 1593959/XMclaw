@@ -57,6 +57,10 @@ def _build_fact_schema(dim: int):
         contradicts_json: str  # JSON-encoded list
         superseded_by: str  # "" when absent
         layer: str
+        # Wave-27 fix-12: persona-renderer routing label. See
+        # xmclaw/memory/v2/models.py:Fact.bucket for valid values.
+        # Stored as plain string ("" when unbucketed).
+        bucket: str
         ts_first: float
         ts_last: float
 
@@ -97,6 +101,7 @@ def _fact_to_record(fact: Fact, dim: int) -> dict[str, Any]:
         "contradicts_json": json.dumps(list(fact.contradicts)),
         "superseded_by": fact.superseded_by or "",
         "layer": fact.layer,
+        "bucket": fact.bucket or "",
         "ts_first": fact.ts_first,
         "ts_last": fact.ts_last,
     }
@@ -119,6 +124,7 @@ def _record_to_fact(row: dict[str, Any]) -> Fact:
         contradicts=tuple(json.loads(row.get("contradicts_json") or "[]")),
         superseded_by=row["superseded_by"] or None,
         layer=row["layer"],
+        bucket=row.get("bucket") or "",  # Wave-27 fix-12; absent on legacy rows.
         ts_first=float(row["ts_first"]),
         ts_last=float(row["ts_last"]),
     )

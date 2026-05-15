@@ -659,12 +659,26 @@ async def extract_and_remember(
     written = []
     for key in keys:
         try:
+            # Wave-27 fix-12: bucket inference from (kind, scope) so
+            # the persona renderer can route each fact to the right
+            # MD file. See ``llm_extractor.llm_extract_and_remember``
+            # for the same mapping — kept consistent across the two
+            # extractor entry points.
+            bucket = ""
+            if key.kind == "identity":
+                if key.scope == "session":
+                    bucket = "agent_identity"
+                elif key.scope == "user":
+                    bucket = "user_identity"
+            elif key.kind == "preference" and key.scope == "user":
+                bucket = "user_preference"
             fact = await memory_service.remember(
                 key.text,
                 kind=key.kind,
                 scope=key.scope,
                 confidence=key.confidence,
                 source_event_id=source_event_id,
+                bucket=bucket,
             )
             written.append(fact)
         except Exception as exc:  # noqa: BLE001 — never fail user turn

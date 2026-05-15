@@ -471,6 +471,41 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 pass
         return self._llm
 
+    async def _render_persona_after_writes(
+        self, written: "list[Any]",
+    ) -> None:
+        """Wave-27 fix-12 / refactor B Phase 1: keep persona MD
+        files in sync with L1.
+
+        Called by run_turn after each batch of extractor writes.
+        Looks at the bucket of each written fact, finds the
+        corresponding MD file (IDENTITY.md / USER.md), and rewrites
+        its auto section from the current L1 state. The agent's
+        next turn reads the freshly rendered MD content.
+
+        Failures are caught + logged — persona render is a
+        nice-to-have, never abort a turn over it.
+        """
+        memory_v2 = getattr(self, "_memory_service_v2", None)
+        if memory_v2 is None or not written:
+            return
+        try:
+            from xmclaw.core.persona.v2_renderer import (
+                render_affected_files,
+            )
+            from xmclaw.daemon.factory import (
+                _resolve_persona_profile_dir,
+            )
+            pdir = _resolve_persona_profile_dir(self._cfg or {})
+            if pdir is None:
+                return
+            await render_affected_files(memory_v2, pdir, written)
+        except Exception as exc:  # noqa: BLE001
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).warning(
+                "v2_renderer.refresh_failed err=%s", exc,
+            )
+
     async def run_turn(
         self, session_id: str, user_message: str,
         *, user_correlation_id: str | None = None,
@@ -606,10 +641,18 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 # published above; we use it as the source_event_id so
                 # the CAUSED_BY edge points back at events.db.
                 src_event = user_correlation_id or session_id
-                await extract_and_remember(
+                written = await extract_and_remember(
                     user_message, memory_v2,
                     source_event_id=src_event,
                 )
+                # Wave-27 fix-12 / refactor B Phase 1: re-render the
+                # persona MD files affected by these writes. The
+                # agent reads the on-disk MD files at turn time, so
+                # auto-extracted identity / preference facts must
+                # flow back to the .md files for visible consistency
+                # in the 标识 tab + the next turn's prompt.
+                if written:
+                    await self._render_persona_after_writes(written)
             except Exception as exc:  # noqa: BLE001
                 # Never fail a user turn over memory extraction. The
                 # idempotent upsert path means the next message will
@@ -643,12 +686,23 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
 
                     async def _bg_llm_extract() -> None:
                         try:
-                            await llm_extract_and_remember(
+                            written = await llm_extract_and_remember(
                                 user_message,
                                 memory_v2,
                                 llm_fact_extractor,
                                 source_event_id=src_event,
                             )
+                            # Wave-27 fix-12 / refactor B Phase 1:
+                            # re-render persona MD files affected
+                            # by the new LLM-extracted facts (e.g.
+                            # ``kind=identity, scope=session`` →
+                            # IDENTITY.md, ``kind=preference,
+                            # scope=user`` → USER.md). See same
+                            # block in the regex path above.
+                            if written:
+                                await self._render_persona_after_writes(
+                                    written,
+                                )
                         except Exception as exc:  # noqa: BLE001
                             from xmclaw.utils.log import get_logger
                             get_logger(__name__).warning(

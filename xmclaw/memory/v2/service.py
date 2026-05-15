@@ -209,11 +209,18 @@ class MemoryService:
         source_event_id: str | None = None,
         layer: FactLayer | FactLayerStr = FactLayer.WORKING,
         skip_contradict_check: bool = False,
+        bucket: str = "",
     ) -> Fact:
         """Persist one fact. Idempotent on (kind, scope, text).
 
         Returns the post-upsert Fact (with up-to-date
         evidence_count + ts_last).
+
+        ``bucket`` (Wave-27 fix-12): persona-renderer routing label.
+        See ``Fact.bucket`` in models.py for valid values. The
+        rendered persona MD files (IDENTITY.md / USER.md / etc.)
+        query by ``(kind, scope, bucket)`` triple to build their
+        auto sections.
         """
         if not text or not text.strip():
             raise ValueError("remember(): empty text")
@@ -367,6 +374,10 @@ class MemoryService:
                     "memory_service.relation_scan_failed err=%s", exc,
                 )
 
+        # Wave-27 fix-12: preserve the existing bucket on idempotent
+        # upsert if the new write doesn't supply one. Avoids losing
+        # routing data when an extractor re-fires without bucket.
+        effective_bucket = bucket or (existing.bucket if existing else "")
         new_fact = Fact(
             id=fact_id,
             kind=kind_str,
@@ -379,6 +390,7 @@ class MemoryService:
             contradicts=contradicts_ids,
             superseded_by=None,
             layer=auto_layer,
+            bucket=effective_bucket,
             ts_first=ts_first,
             ts_last=ts_last,
         )
@@ -573,6 +585,7 @@ class MemoryService:
         only_layer: FactLayerStr | None = None,
         keyword_only: bool = False,
         include_superseded: bool = False,
+        buckets: list[str] | None = None,
     ) -> list[RecallHit]:
         """Search L1 and return top-k facts enriched with relations.
 
@@ -597,6 +610,14 @@ class MemoryService:
         if scopes:
             scopes_list = ", ".join(f"'{s}'" for s in scopes)
             clauses.append(f"scope IN ({scopes_list})")
+        if buckets:
+            # Wave-27 fix-12: persona renderer pulls a bucket
+            # subset (e.g. ``bucket="agent_identity"`` for
+            # IDENTITY.md auto section). Empty-string matches
+            # default-bucket facts; explicit "" passed in
+            # ``buckets`` matches those.
+            buckets_list = ", ".join(f"'{b}'" for b in buckets)
+            clauses.append(f"bucket IN ({buckets_list})")
         if min_confidence > 0:
             clauses.append(f"confidence >= {min_confidence}")
         if only_layer:
@@ -661,6 +682,7 @@ class MemoryService:
         *,
         kinds: list[FactKindStr] | None = None,
         scopes: list[FactScopeStr] | None = None,
+        buckets: list[str] | None = None,
         include_superseded: bool = False,
     ) -> int:
         clauses: list[str] = []
@@ -670,6 +692,9 @@ class MemoryService:
         if scopes:
             ss = ", ".join(f"'{s}'" for s in scopes)
             clauses.append(f"scope IN ({ss})")
+        if buckets:
+            bs = ", ".join(f"'{b}'" for b in buckets)
+            clauses.append(f"bucket IN ({bs})")
         if not include_superseded:
             clauses.append("superseded_by = ''")
         where = " AND ".join(clauses) if clauses else None

@@ -161,6 +161,16 @@ class Fact:
     contradicts: tuple[str, ...] = ()
     superseded_by: str | None = None
     layer: FactLayerStr = "working"
+    # Wave-27 fix-12: bucket = routing label for the persona-MD
+    # renderer (Phase 1 of unifying persona files with L1 facts).
+    # Example values: "agent_identity" (→ IDENTITY.md auto section),
+    # "user_identity" (→ USER.md identity section), "user_preference"
+    # (→ USER.md preferences section), "workflow" / "tool_quirks" /
+    # "failure_modes" / "values" / "rules" (existing lesson buckets
+    # for AGENTS/TOOLS/MEMORY/SOUL/LEARNING — Phase 2 will hook
+    # those through here too). Empty string = unbucketed, doesn't
+    # render to any persona file.
+    bucket: str = ""
     ts_first: float = field(default_factory=time.time)
     ts_last: float = field(default_factory=time.time)
 
