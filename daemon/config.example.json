@@ -2,15 +2,18 @@
   "_comment": "XMclaw Daemon Configuration — copy to config.json and fill in your API keys",
   "llm": {
     "_comment": "openai/anthropic/openrouter blocks define the 'default' profile (id='default') the daemon picks when a chat session doesn't specify one. The first block with an api_key wins (anthropic > openai > openrouter — native APIs first, OpenRouter as the fallback). profiles[] adds named alternatives — chat header dropdown lets the user route each session through one of them. Restart the daemon after editing. ('default_provider' field was removed B-304: factory.py auto-detects from filled api_keys; setting it had no effect since B-146.)",
+    "_comment_context_length_help": "Wave 27 fix-6 (2026-05-15): 每个 provider 块都可选填 'context_length' (整数 token 数) — 用来声明你这个 base_url 后面接的模型真正的上下文窗口。压缩器会按这个数算阈值 (默认 85%) + 尾部保留预算 (默认 20%)。三层解析优先级：(1) 这里写的 context_length 最高 — 任何 3rd-party portal (api.minimaxi.com / OpenRouter / 自建 vLLM) 都能用，无需修代码；(2) 内置静态表自动识别 Claude/GPT/Kimi/Qwen/Gemini/DeepSeek 主流模型；(3) 动态 ratchet — 每次 LLM 成功返回的 prompt_tokens 都会抬高估值，未知模型经过 1-2 轮自我校准。所以一般留空即可，只有跑罕见 / 私有模型才需要显式写。",
     "openai": {
       "api_key": "",
       "base_url": "https://api.openai.com/v1",
-      "default_model": ""
+      "default_model": "",
+      "context_length": 0
     },
     "anthropic": {
       "api_key": "",
       "base_url": "https://api.anthropic.com",
-      "default_model": ""
+      "default_model": "",
+      "context_length": 0
     },
     "_comment_openrouter": "B-386: OpenRouter (https://openrouter.ai) — single key, 200+ models. Model id is '<provider>/<model>' (e.g. 'anthropic/claude-sonnet-4', 'openai/gpt-4o', 'meta-llama/llama-3.1-70b-instruct'). XMclaw automatically attaches HTTP-Referer + X-Title attribution headers so calls show up in your OpenRouter dashboard. Prompt-cache auto-detect: on for anthropic/* + openai/* prefixes, off for everything else.",
     "openrouter": {
@@ -194,10 +197,11 @@
       "enabled": false
     },
     "context_compression": {
-      "_comment": "Wave 27 fix-5 (2026-05-15)：上下文压缩可调参数。默认值已比 Wave 26 更宽松 — 用户抱怨'压缩太快'后从 protect_last_n=20 → 40，summary_target_ratio=0.20 → 0.30。模型上下文窗口走 _provider_profiles.get_model_context_length() 自动识别（kimi-k2.6 / minimax-m2.7 等都已注册到 256K）。要更激进保留历史就再调高 protect_last_n（每条 ~1500 tok），但注意会挤新内容预算。",
+      "_comment": "Wave 27 fix-6 (2026-05-15)：上下文压缩 = 按 token 预算压，不按消息条数压。模型上下文窗口三层解析：(1) llm.<provider>.context_length 配置覆盖（最高优先级 — 任何 endpoint 都能用，无需代码改动）；(2) 静态表 _provider_profiles.get_model_context_length() — 主流模型自动识别；(3) 动态 ratchet — 每次 LLM 成功返回的 prompt_tokens 都会抬高估值，所以未注册的模型经过 1-2 轮就自我校准。压缩规则：触发后保留头 N 条（系统提示 / 开局）+ 尾部 token_budget 字节原文 + 中间压成 summary。protect_last_ratio 是核心 — 取上下文窗口的 % 作为尾部预算（默认 20%），所以 1M 窗模型保留 ~150K 原文 / 256K 模型保留 ~51K / 32K 模型保留 ~6K。protect_last_n 是整数地板（默认 5），防小窗模型尾部一条都没。",
       "threshold_percent": 0.85,
       "protect_first_n": 3,
-      "protect_last_n": 40,
+      "protect_last_n": 5,
+      "protect_last_ratio": 0.20,
       "summary_target_ratio": 0.30
     },
     "continuous_loop": {

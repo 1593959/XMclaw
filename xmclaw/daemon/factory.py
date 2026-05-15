@@ -363,14 +363,26 @@ def build_llm_from_config(cfg: dict[str, Any]) -> LLMProvider | None:
         prompt_cache_enabled: bool | None = (
             bool(raw_pc) if isinstance(raw_pc, bool) else None
         )
+        # Wave-27 fix-6: optional explicit context-window override.
+        # When set, takes priority over the static lookup table in
+        # _provider_profiles — gives users an escape hatch for any
+        # endpoint / model the static table doesn't know about.
+        raw_ctx = pcfg.get("context_length")
+        ctx_len_override: int | None = None
+        if isinstance(raw_ctx, int) and raw_ctx > 0:
+            ctx_len_override = raw_ctx
+        elif isinstance(raw_ctx, str) and raw_ctx.strip().isdigit():
+            ctx_len_override = int(raw_ctx.strip())
         if provider_name == "anthropic":
             return AnthropicLLM(
                 api_key=api_key, model=model, base_url=base_url or None,
+                context_length=ctx_len_override,
             )
         if provider_name == "openai":
             return OpenAILLM(
                 api_key=api_key, model=model, base_url=base_url or None,
                 prompt_cache_enabled=prompt_cache_enabled,
+                context_length=ctx_len_override,
             )
         if provider_name == "openrouter":
             # B-386: OpenRouterLLM injects HTTP-Referer + X-Title
@@ -380,6 +392,7 @@ def build_llm_from_config(cfg: dict[str, Any]) -> LLMProvider | None:
             return OpenRouterLLM(
                 api_key=api_key, model=model, base_url=base_url or None,
                 prompt_cache_enabled=prompt_cache_enabled,
+                context_length=ctx_len_override,
             )
 
     return None

@@ -46,63 +46,99 @@ class HistoryCompressionMixin:
         except Exception:  # noqa: BLE001 — never fail a turn over summary
             return None
 
+    def _resolve_context_length(self) -> int:
+        """Decide the model's context window size for the compressor.
+
+        Priority (highest first):
+          1. ``self._llm.context_length`` — explicit override from the
+             LLM constructor (driven by ``llm.<provider>.context_length``
+             in daemon/config.json). User-facing escape hatch: works
+             for ANY model, no hardcoded table needed.
+          2. Static per-model lookup via
+             ``get_model_context_length(model, provider_id)`` —
+             default for well-known models (Claude / Kimi / Qwen /
+             GPT / Gemini / DeepSeek).
+          3. Dynamic ratchet: if any prior LLM call reported
+             ``usage.prompt_tokens > current_estimate``, raise the
+             estimate so the next compressor build matches reality.
+             This is the "self-healing" path for models the static
+             table doesn't know about — after one heavy call, the
+             system has correct ctx_len without anyone editing code.
+
+        The dynamic ratchet stores its high-water mark on
+        ``self._observed_prompt_tokens_high_water`` (set elsewhere
+        on the agent), so it survives across compressor rebuilds.
+        """
+        from xmclaw.providers.llm._provider_profiles import (
+            get_model_context_length,
+        )
+        model = getattr(self._llm, "model", "") or "unknown"
+
+        # 1. Explicit override on the LLM instance.
+        override = getattr(self._llm, "context_length", None)
+        if isinstance(override, int) and override > 0:
+            return override
+
+        # 2. Static lookup for known models.
+        provider_id = getattr(self._llm, "provider_id", None)
+        static = get_model_context_length(model, provider_id=provider_id)
+
+        # 3. Dynamic ratchet — never SHRINK below static, but if we've
+        #    seen a successful completion with more prompt_tokens than
+        #    static says fits, the real window must be at least that
+        #    big (with some breathing room — we divide by 0.85 since
+        #    that's the threshold the provider accepted UNDER).
+        high = int(getattr(self, "_observed_prompt_tokens_high_water", 0) or 0)
+        if high > 0:
+            implied_min = int(high / 0.85)
+            return max(static, implied_min)
+        return static
+
     def _get_compressor(self):
         """Lazy-init the ContextCompressor on first use.
 
-        Uses ``self._llm`` for both:
-          * model name (drives ctx_len lookup + display logging)
-          * summarise_call (wraps ``llm.complete``)
-
-        History of tuning (read this before changing the defaults):
+        Tuning history:
 
         * Wave 26 fix-4 (2026-05-14): threshold 0.50 → 0.85 + per-model
-          ctx_len lookup. Compression was firing at 39% of Kimi-K2's
-          real 256K window because the 200K hard-default was used for
-          every model.
+          ctx_len lookup.
 
-        * Wave 27 fix-5 (2026-05-15, user complaint "上下文压缩的还是
-          太快了"): two further changes —
-            (a) ``protect_last_n`` 20 → 40. When compression fires,
-                40 recent messages stay verbatim instead of 20. The
-                old value was thin enough that a multi-turn debug
-                session would lose half its recent context to a
-                summary paragraph.
-            (b) ``summary_target_ratio`` 0.20 → 0.30. The summary
-                output budget grows from 20% to 30% of the threshold,
-                so dropped messages get a larger summary that
-                preserves more detail.
-            (c) Both are now overridable via daemon/config.json:
-                cognition.context_compression.{threshold_percent,
-                protect_first_n, protect_last_n,
-                summary_target_ratio}.
+        * Wave 27 fix-5 (2026-05-15): user complaint "上下文压缩的还是
+          太快了" — bumped protect_last_n 20 → 40,
+          summary_target_ratio 0.20 → 0.30.
+
+        * Wave 27 fix-6 (2026-05-15): user pushed back —
+          "压缩不是看多少条上下文！而是看模型上下文极限" + "你注册
+          minimax干嘛，那其他模型呢". Two architectural fixes:
+
+            (a) Replaced raw ``protect_last_n=40`` (message count) with
+                ``protect_last_ratio=0.20`` (fraction of ctx_len).
+                Tail protection now scales with the model — a 1M-token
+                window keeps ~150K verbatim, a 32K window keeps ~6.4K.
+                No more "20 messages" hardcode that's right for one
+                model size and wrong for every other.
+
+            (b) Dynamic ctx_len discovery + user-facing override via
+                ``llm.<provider>.context_length``. Static table stays
+                for known models; observed ``prompt_tokens`` from
+                successful calls ratchets UP for unknown ones. No more
+                "every new model needs a code edit". See
+                ``_resolve_context_length``.
 
         Tunables (current defaults shown):
-          * context window: from ``get_model_context_length(model)``
+          * context window: dynamic — see _resolve_context_length
           * 85% threshold (compress when prompt > 0.85 × ctx_len)
           * 3 head messages protected
-          * 40 tail messages floor (token-budget overrides)
+          * 20% of ctx_len reserved as recent verbatim history
+            (with 5-message integer floor)
           * 30% of threshold reserved for summary output
         """
         if self._compressor is not None:
             return self._compressor
         from xmclaw.context.compressor import ContextCompressor
-        from xmclaw.providers.llm._provider_profiles import (
-            get_model_context_length,
-        )
         model = getattr(self._llm, "model", "") or "unknown"
-        # Two-step resolution: per-model lookup is the source of truth;
-        # an instance-level ``context_length`` attr (set by a custom
-        # adapter, e.g. self-hosted vLLM) wins as an override.
-        override = getattr(self._llm, "context_length", None)
-        if isinstance(override, int) and override > 0:
-            ctx_len = override
-        else:
-            provider_id = getattr(self._llm, "provider_id", None)
-            ctx_len = get_model_context_length(model, provider_id=provider_id)
+        ctx_len = self._resolve_context_length()
 
-        # Wave 27 fix-5: pick up overrides from daemon config so the
-        # user can tune without code edits. Each field validated to a
-        # safe range — bad values log + fall back to the default.
+        # Wave 27 fix-5/6: user overrides via daemon config.
         cfg = getattr(self, "_cfg", None) or {}
         sub = (
             ((cfg.get("cognition") or {}).get("context_compression") or {})
@@ -125,7 +161,8 @@ class HistoryCompressionMixin:
 
         threshold_percent = _f("threshold_percent", 0.85, 0.30, 0.95)
         protect_first_n = _i("protect_first_n", 3, 0, 20)
-        protect_last_n = _i("protect_last_n", 40, 5, 200)
+        protect_last_n = _i("protect_last_n", 5, 1, 100)
+        protect_last_ratio = _f("protect_last_ratio", 0.20, 0.05, 0.50)
         summary_target_ratio = _f("summary_target_ratio", 0.30, 0.10, 0.60)
 
         self._compressor = ContextCompressor(
@@ -134,6 +171,7 @@ class HistoryCompressionMixin:
             threshold_percent=threshold_percent,
             protect_first_n=protect_first_n,
             protect_last_n=protect_last_n,
+            protect_last_ratio=protect_last_ratio,
             summary_target_ratio=summary_target_ratio,
             context_length=ctx_len,
             quiet_mode=False,

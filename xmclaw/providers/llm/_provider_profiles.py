@@ -396,14 +396,6 @@ _MODEL_CONTEXT_LENGTHS: Final[dict[str, int]] = {
     "moonshot-v1-8k": 8_000,
     "moonshot-v1-32k": 32_000,
     "moonshot-v1-128k": 128_000,
-    # MiniMax family — MiniMax-M2 / M2.7 ship with 256K window per
-    # the platform docs. The Anthropic-compatible portal at
-    # api.minimaxi.com exposes the same family. Without this entry
-    # the fallback was 200K → compressor fired 20% too early.
-    "minimax-m2": 256_000,
-    "minimax-m2.7": 256_000,
-    "minimax-m2.7-highspeed": 256_000,
-    "minimax-portal/minimax-m2.7-highspeed": 256_000,
     # Qwen family — Alibaba official caps.
     "qwen-plus": 131_072,
     "qwen-max": 32_768,
@@ -451,12 +443,6 @@ _CONTEXT_LENGTH_PATTERNS: Final[tuple[tuple[str, int], ...]] = (
     ("moonshot-v1-128k", 128_000),
     ("moonshot-v1-32k", 32_000),
     ("moonshot-v1-8k", 8_000),
-    # MiniMax family — third-party portal at api.minimaxi.com,
-    # exposed via Anthropic-compat shim. Substring match catches
-    # "minimax-portal/MiniMax-M2.7-highspeed" too because the
-    # lookup is lower-cased.
-    ("minimax-m2", 256_000),
-    ("minimax-m1", 1_000_000),
     # Qwen family.
     ("qwen-turbo", 1_000_000),
     ("qwen3-coder", 1_000_000),

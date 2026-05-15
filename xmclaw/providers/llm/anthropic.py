@@ -55,6 +55,8 @@ class AnthropicLLM(LLMProvider):
         model: str = "claude-opus-4-7",
         base_url: str | None = None,
         pricing: Pricing | None = None,
+        *,
+        context_length: int | None = None,
     ) -> None:
         self.api_key = api_key
         self.model = model
@@ -68,6 +70,14 @@ class AnthropicLLM(LLMProvider):
         # The SDK client is created lazily so tests that don't touch it can
         # run without the anthropic dependency installed.
         self._client: Any = None
+        # Wave-27 fix-6: explicit context-window override. See the
+        # OpenAILLM counterpart for the rationale — any 3rd-party
+        # Anthropic-compatible endpoint (api.minimaxi.com,
+        # custom-portal aggregators, self-hosted shims) can declare
+        # its true window via config without code edits.
+        self.context_length: int | None = (
+            int(context_length) if context_length and context_length > 0 else None
+        )
 
     # ── lazy client ──
 

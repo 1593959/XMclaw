@@ -276,16 +276,86 @@ def test_b334_failed_summary_reuses_previous_summary_when_present() -> None:
     ), "B-334: failure note must mark the new round as failed"
 
 
+def test_protect_last_ratio_scales_tail_budget_with_ctx_len() -> None:
+    """Wave-27 fix-6: ``tail_token_budget`` is now driven by
+    ``protect_last_ratio × context_length``, not by message count.
+    A 1M-token window keeps proportionally more recent verbatim
+    history than a 32K window; the old fixed-count design treated
+    both the same.
+    """
+    small = ContextCompressor(
+        model="small", summarize_call=_stub_summarize,
+        context_length=32_000, protect_last_ratio=0.20, quiet_mode=True,
+    )
+    medium = ContextCompressor(
+        model="medium", summarize_call=_stub_summarize,
+        context_length=256_000, protect_last_ratio=0.20, quiet_mode=True,
+    )
+    huge = ContextCompressor(
+        model="huge", summarize_call=_stub_summarize,
+        context_length=1_000_000, protect_last_ratio=0.20, quiet_mode=True,
+    )
+    # 20% of each ctx_len → linear scaling with the window size.
+    assert small.tail_token_budget == 6_400
+    assert medium.tail_token_budget == 51_200
+    assert huge.tail_token_budget == 200_000
+
+
+def test_maybe_raise_context_length_ratchets_on_observed_tokens() -> None:
+    """Wave-27 fix-6: when a successful LLM call reports more
+    prompt_tokens than our declared ctx_len can hold, the compressor
+    ratchets up — the model proved its window is bigger than we
+    thought. Monotonic: never shrinks.
+    """
+    cc = ContextCompressor(
+        model="m", summarize_call=_stub_summarize,
+        context_length=100_000, threshold_percent=0.85,
+        protect_last_ratio=0.20, quiet_mode=True,
+    )
+    assert cc.context_length == 100_000
+    assert cc.threshold_tokens == 85_000
+    assert cc.tail_token_budget == 20_000
+
+    # Observed 90K input tokens at threshold 85% → implied min ctx
+    # = 90_000 / 0.85 ≈ 105_882. Should ratchet up.
+    cc.maybe_raise_context_length(90_000)
+    assert cc.context_length > 100_000
+    # Derived fields recomputed.
+    assert cc.threshold_tokens == int(cc.context_length * 0.85)
+    assert cc.tail_token_budget == int(cc.context_length * 0.20)
+
+    # Smaller observation must NOT shrink the window.
+    snapshot = cc.context_length
+    cc.maybe_raise_context_length(50_000)
+    assert cc.context_length == snapshot
+
+    # Zero / negative observation is a no-op.
+    cc.maybe_raise_context_length(0)
+    cc.maybe_raise_context_length(-1)
+    assert cc.context_length == snapshot
+
+
 def test_compress_returns_input_on_internal_error() -> None:
     """Catastrophic exception inside compress → return original messages.
-    Context compression NEVER fails a user turn."""
+    Context compression NEVER fails a user turn.
+
+    NB: pins ``protect_last_n=20`` so the Phase 1 prune sees a tail
+    big enough to protect every message in this small fixture from
+    its scrub pass. Otherwise the prune (which runs BEFORE the
+    mocked exception) would mutate tool result bodies and the
+    "messages == out" identity check would fail for reasons
+    unrelated to the error-handling path under test. Wave-27 fix-6
+    dropped the default ``protect_last_n`` from 20 to 5 since the
+    primary driver is now ``protect_last_ratio`` — small fixtures
+    just need to opt back into a generous floor.
+    """
 
     async def _bad_summarize(p: str, t: int) -> Optional[str]:
         return "ok"  # not the failure point
 
     cc = ContextCompressor(
         model="t", summarize_call=_bad_summarize,
-        protect_first_n=2, quiet_mode=True,
+        protect_first_n=2, protect_last_n=20, quiet_mode=True,
     )
     # Simulate a path that crashes
     cc._find_tail_cut_by_tokens = lambda *a, **k: 1 / 0  # type: ignore

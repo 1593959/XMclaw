@@ -266,22 +266,52 @@ class ContextCompressor:
         *,
         threshold_percent: float = 0.85,  # Wave 26 fix-4: was 0.50/0.40; per-model ctx_len now declared, can be aggressive
         protect_first_n: int = 3,
-        protect_last_n: int = 20,
-        summary_target_ratio: float = 0.20,
+        protect_last_n: int = 5,           # FLOOR only (token budget is the real driver)
+        protect_last_ratio: float = 0.20,  # % of ctx_len kept verbatim as recent history
+        summary_target_ratio: float = 0.30,
         context_length: int = 200_000,
         quiet_mode: bool = False,
     ) -> None:
+        """Wave-27 fix-6 (2026-05-15): make tail protection scale with
+        ctx window, not a fixed message count. The old design used a
+        raw integer (``protect_last_n=20``) which was:
+
+          - too tight for big-context models (1M-token Gemini kept 20
+            messages → ~1.5% of capacity)
+          - too loose for small-context models (32K Qwen-max
+            kept 20 messages → could exceed the threshold itself)
+          - couldn't scale automatically when a new model came online
+
+        New design: ``protect_last_ratio`` is the primary dial — a
+        fraction of the model's context window reserved for VERBATIM
+        recent history. ``protect_last_n`` becomes a tiny integer
+        floor (default 5) so a model with 32K window doesn't end up
+        with <5 messages just because it has little headroom.
+
+        Effect across model sizes (with default 0.20 ratio):
+          *   32K window → 6.4K reserved (~4 messages, floor=5)
+          *  128K window → 25.6K (~17 messages)
+          *  256K window → 51.2K (~34 messages)
+          *  1M  window → 200K  (~133 messages)
+        """
         self.model = model
         self.summarize_call = summarize_call
         self.protect_first_n = protect_first_n
-        self.protect_last_n = protect_last_n
+        self.protect_last_n = max(1, protect_last_n)  # integer floor
+        self.protect_last_ratio = max(0.05, min(protect_last_ratio, 0.50))
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
 
         self.context_length = max(int(context_length), 4_096)
         self.threshold_percent = threshold_percent
         self.threshold_tokens = max(int(self.context_length * threshold_percent), 4_096)
-        self.tail_token_budget = int(self.threshold_tokens * self.summary_target_ratio)
+        # tail_token_budget — primary driver. Scales linearly with
+        # ctx_len so big-context models get proportionally more
+        # recent history kept verbatim. The summary_target_ratio
+        # name became misleading once tail used a separate ratio;
+        # kept for backwards compat (other call sites read it for
+        # summary sizing), but the TAIL budget now uses its own knob.
+        self.tail_token_budget = int(self.context_length * self.protect_last_ratio)
         self.max_summary_tokens = min(
             int(self.context_length * 0.05), _SUMMARY_TOKENS_CEILING,
         )
@@ -292,9 +322,10 @@ class ContextCompressor:
         if not quiet_mode:
             logger.info(
                 "ContextCompressor: model=%s ctx=%d threshold=%d (%.0f%%) "
-                "tail_budget=%d",
+                "tail_budget=%d (%.0f%% of ctx) floor=%d msgs",
                 model, self.context_length, self.threshold_tokens,
                 threshold_percent * 100, self.tail_token_budget,
+                self.protect_last_ratio * 100, self.protect_last_n,
             )
 
     # ── Per-session API ──────────────────────────────────────────────
@@ -319,6 +350,48 @@ class ContextCompressor:
         """
         if prompt_tokens > 0:
             self._state(session_id).last_prompt_tokens = int(prompt_tokens)
+
+    def maybe_raise_context_length(
+        self, observed_prompt_tokens: int,
+    ) -> None:
+        """Wave-27 fix-6: ratchet the declared ``context_length`` upward
+        when we see a successful LLM call that proves the model
+        accepted more tokens than we currently think it can hold.
+
+        The provider accepted ``observed_prompt_tokens`` of input
+        without rejecting, so the real window is at least that big.
+        We require ``observed_prompt_tokens / threshold_percent`` (so
+        if the observed tokens already pushed past 0.85 of our
+        estimate, our estimate must be wrong) and update in place,
+        re-deriving ``threshold_tokens``, ``tail_token_budget``, and
+        ``max_summary_tokens`` to match the new window.
+
+        Monotonic: never SHRINKS the window — only grows it. Bad
+        observed values (negative / zero) are silently ignored.
+        """
+        if observed_prompt_tokens <= 0:
+            return
+        implied_min = int(observed_prompt_tokens / max(self.threshold_percent, 0.5))
+        if implied_min <= self.context_length:
+            return
+        old = self.context_length
+        self.context_length = implied_min
+        self.threshold_tokens = max(
+            int(self.context_length * self.threshold_percent), 4_096,
+        )
+        self.tail_token_budget = int(
+            self.context_length * self.protect_last_ratio,
+        )
+        self.max_summary_tokens = min(
+            int(self.context_length * 0.05), _SUMMARY_TOKENS_CEILING,
+        )
+        if not self.quiet_mode:
+            logger.info(
+                "ContextCompressor: raised ctx %d → %d (observed %d "
+                "tokens; threshold now %d, tail %d)",
+                old, self.context_length, observed_prompt_tokens,
+                self.threshold_tokens, self.tail_token_budget,
+            )
 
     def should_compress(
         self, prompt_tokens: int, *, session_id: str = "",

@@ -110,6 +110,7 @@ class OpenAILLM(LLMProvider):
         pricing: Pricing | None = None,
         *,
         prompt_cache_enabled: bool | None = None,
+        context_length: int | None = None,
     ) -> None:
         self.api_key = api_key
         self.model = model
@@ -125,6 +126,15 @@ class OpenAILLM(LLMProvider):
         if prompt_cache_enabled is None:
             prompt_cache_enabled = _default_prompt_cache_enabled(model, base_url)
         self._prompt_cache_enabled: bool = prompt_cache_enabled
+        # Wave-27 fix-6: explicit context-window override so any
+        # endpoint (including unknown 3rd-party portals / self-hosted
+        # vLLM / niche models) can declare its window via config
+        # without needing to be added to the static lookup table.
+        # The compressor reads ``getattr(llm, "context_length", None)``
+        # as the highest-priority signal.
+        self.context_length: int | None = (
+            int(context_length) if context_length and context_length > 0 else None
+        )
 
     def _get_client(self) -> Any:
         if self._client is not None:

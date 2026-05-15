@@ -494,6 +494,33 @@ class HopLoopMixin:
                 except Exception:  # noqa: BLE001
                     pass
 
+            # Wave-27 fix-6: dynamic ctx_len ratchet. Every successful
+            # LLM completion proves the model accepted that many input
+            # tokens, so its true context window is AT LEAST that big.
+            # Stash a high-water mark on the agent so cold-rebuilds
+            # (e.g. after a daemon restart) can recover the estimate
+            # via _resolve_context_length, AND apply it live to the
+            # existing compressor so the current session benefits
+            # without waiting for a session-reset / rebuild. This is
+            # the self-healing path for "you registered MiniMax, what
+            # about every other model" — no static table update
+            # needed after the first successful call.
+            if response.prompt_tokens > 0:
+                prev = int(
+                    getattr(self, "_observed_prompt_tokens_high_water", 0) or 0
+                )
+                if response.prompt_tokens > prev:
+                    self._observed_prompt_tokens_high_water = int(
+                        response.prompt_tokens
+                    )
+                    if self._compressor is not None:
+                        try:
+                            self._compressor.maybe_raise_context_length(
+                                response.prompt_tokens,
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+
             # Anti-req #6 cont'd: record the call's usage against the
             # budget right after we see it. check_budget on the NEXT
             # hop will block if we crossed the cap during this one.
