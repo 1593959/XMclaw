@@ -12,6 +12,12 @@
     <meta name="color-scheme" content="dark light" />
     <meta name="theme-color" content="#1a1f2a" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
+    <!-- Wave-27 fix-15 (2026-05-16): mirror the legacy iOS-only
+         name to the W3C standard so Chromium-family browsers
+         (Chrome / Edge / Brave / 360) stop logging the deprecation
+         warning. Both stay so iOS Safari's homescreen-install
+         path keeps working unchanged. -->
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="XMclaw" />
     <link rel="manifest" href="/ui/manifest.webmanifest" />

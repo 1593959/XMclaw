@@ -57,6 +57,18 @@ async function _getHljsCore() {
   return _hljsCorePromise;
 }
 
+// Wave-27 fix-15 (2026-05-16): pseudo-language tags that callers
+// commonly emit but hljs has no module for. Importing them
+// produces a 404 from esm.sh — the catch below swallows it,
+// but the browser still logs "Failed to load resource" in the
+// DevTools console (impossible to suppress at the JS layer
+// because it's a network-level error). Short-circuit the
+// well-known no-op tags so the console stays clean.
+const _HLJS_NOOP_LANGS = new Set([
+  "text", "txt", "plain", "plaintext", "output",
+  "raw", "log", "none", "tty",
+]);
+
 // hljs per-language registration — lazy import via esm.sh, register
 // against the core. Returns null when unavailable so callers fall
 // back to plain text.
@@ -64,6 +76,7 @@ async function _getHljsLang(lang) {
   if (!lang) return null;
   const key = String(lang).toLowerCase().trim();
   if (!key) return null;
+  if (_HLJS_NOOP_LANGS.has(key)) return null;
   if (_hljsLangs.has(key)) return _hljsLangs.get(key);
   const promise = (async () => {
     const core = await _getHljsCore();

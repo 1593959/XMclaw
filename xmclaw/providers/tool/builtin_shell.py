@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import ipaddress
 import os
 import re
@@ -165,11 +166,41 @@ class BuiltinToolsShellMixin:
         if len(text) > _BASH_MAX_OUTPUT:
             text = text[:_BASH_MAX_OUTPUT] + f"\n...[truncated, {len(merged)} bytes total]"
         content = f"[exit {code}]\n{text}"
+        # Wave-27 fix-14 (2026-05-16): include the LAST line of stderr +
+        # an 8-char hash of the command in the error string. Pre-fix the
+        # error was just ``command exited non-zero ({code})`` — identical
+        # for ANY two failing bash calls regardless of what command was
+        # run or what went wrong. hop_loop's stuck-loop detector uses
+        # ``error[:80]`` as the signature, so 3 different curl probes
+        # that all exit 1 with different stderr looked like "same error
+        # 3x" → false-positive stuck-loop abort after 3 hops. Including
+        # the command hash + last error line makes signatures actually
+        # distinct when the underlying failure mode differs.
+        if code == 0:
+            err = None
+        else:
+            cmd_str = str(call.args.get("command", ""))
+            cmd_hash = hashlib.sha1(
+                cmd_str.encode("utf-8"),
+            ).hexdigest()[:8] if cmd_str else "nohash"
+            # Last non-empty line of merged output — usually the actual
+            # error message ("curl: (6) Could not resolve host", "404
+            # Not Found", etc.).
+            tail_line = ""
+            for raw_line in reversed(text.splitlines()):
+                stripped = raw_line.strip()
+                if stripped:
+                    tail_line = stripped[:60]
+                    break
+            err = (
+                f"command exited non-zero ({code}) "
+                f"[cmd:{cmd_hash}] {tail_line}"
+            )
         return ToolResult(
             call_id=call.id,
             ok=(code == 0),
             content=content,
-            error=None if code == 0 else f"command exited non-zero ({code})",
+            error=err,
             side_effects=(),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
