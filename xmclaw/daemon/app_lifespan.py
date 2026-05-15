@@ -2103,6 +2103,49 @@ def make_lifespan(
                         agent._memory_service_v2 = memory_v2_service
                     except Exception:  # noqa: BLE001
                         pass
+                    # Wave-27 Phase 3c (2026-05-16): plumb v2 service
+                    # into every BuiltinTools instance so memory_search
+                    # can fan its query across L1 facts too. Without
+                    # this hook lessons + preferences + persona_manual
+                    # rows are invisible to memory_search after Phase
+                    # 3a/b moved them out of memory.db.
+                    try:
+                        from xmclaw.providers.tool.builtin import BuiltinTools
+                        from xmclaw.providers.tool.composite import (
+                            CompositeToolProvider,
+                        )
+                        def _walk_for_builtin(node):
+                            if isinstance(node, BuiltinTools):
+                                yield node
+                            inner = getattr(node, "_providers", None)
+                            if isinstance(inner, list | tuple):
+                                for child in inner:
+                                    yield from _walk_for_builtin(child)
+                        tools_provider = getattr(agent, "_tools", None)
+                        if tools_provider is not None:
+                            for bt in _walk_for_builtin(tools_provider):
+                                try:
+                                    bt.set_memory_v2_service(memory_v2_service)
+                                except Exception:  # noqa: BLE001
+                                    pass
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning(
+                            "memory_v2.builtin_tools_wire_failed err=%s",
+                            exc,
+                        )
+
+                # Wave-27 Phase 3c: hot-wire the DreamCompactor too —
+                # it was constructed BEFORE memory_v2 came online.
+                # Without this, Dream's daily MEMORY.md rewrite still
+                # writes to disk directly and gets reverted by the
+                # next v2 render. Patches the simple attribute since
+                # DreamCompactor's __init__ signature accepts it.
+                _existing_compactor = getattr(_app.state, "dream_compactor", None)
+                if _existing_compactor is not None:
+                    try:
+                        _existing_compactor._memory_v2_service = memory_v2_service
+                    except Exception:  # noqa: BLE001
+                        pass
                 # Phase 3.2: Layer 2 LLM semantic extractor —
                 # background task on every user message catches what
                 # the regex (Layer 1) can't (implicit identity,

@@ -259,6 +259,12 @@ class BuiltinTools(
         # factory because EmbeddingProvider is built alongside the
         # indexer (after BuiltinTools).
         self._embedder = embedder
+        # Wave-27 Phase 3c (2026-05-16): v2 MemoryService handle so
+        # ``memory_search`` can query L1 facts (lesson / preference /
+        # identity / persona_manual) alongside the legacy memory.db
+        # provider. Wired post-construction via
+        # ``set_memory_v2_service``.
+        self._memory_v2_service: "object | None" = None
         # B-388: voice provider handles. Each is advertised on
         # list_tools when wired, so a daemon without faster-whisper /
         # edge-tts installed simply doesn't expose those tools.
@@ -298,6 +304,19 @@ class BuiltinTools(
         the vector path. When None, the tool keyword-searches.
         """
         self._embedder = embedder
+
+    def set_memory_v2_service(self, svc: "object | None") -> None:
+        """Wave-27 Phase 3c (2026-05-16): wire (or clear) the
+        v2 MemoryService post-construction.
+
+        When set, ``memory_search`` ALSO queries v2 facts (lessons /
+        preferences / identity / persona_manual rows) and merges
+        them into the result alongside legacy memory.db hits. Phase
+        3a/b moved lessons + persona content out of memory.db into
+        v2, so without this hook ``memory_search`` would silently
+        return less than the user expects.
+        """
+        self._memory_v2_service = svc
 
     def list_tools(self) -> list[ToolSpec]:
         specs = [

@@ -330,6 +330,22 @@ class PersonaStore:
 
         Atomic write via ``atomic_write_text`` — daemon crash mid-flush
         leaves either old or new file, never a half-truncated one.
+
+        .. deprecated:: Wave-27 Phase 3c (2026-05-16)
+            When v2 memory service is wired (``cognition.memory_v2.
+            enabled``), persona MD files are rendered by
+            :func:`xmclaw.core.persona.v2_renderer.render_persona_file`
+            from L1 facts, not from memory.db. The post-sampling
+            hook + UI save path + DreamCompactor have all moved to
+            the v2 path. This method runs only when v2 is NOT wired
+            (legacy / test installs).
+
+            Tracking issue: Phase 3 wrap-up. When all callers are
+            verified migrated AND no install uses
+            ``cognition.memory_v2.enabled=false`` in practice, this
+            method + the entire memory.db-backed PersonaStore can
+            be deleted (Phase 4 — schedule TBD based on user-base
+            telemetry).
         """
         targets = [basename] if basename else list(AUTO_SECTIONS.keys())
         self._profile_dir.mkdir(parents=True, exist_ok=True)

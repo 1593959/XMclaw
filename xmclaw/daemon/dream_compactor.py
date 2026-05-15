@@ -113,12 +113,21 @@ class DreamCompactor:
         bus: "Any | None" = None,
         daily_log_window_days: int = 7,
         min_keep_ratio: float = 0.3,  # reject rewrite if it's < 30% of original
+        memory_v2_service: "Any | None" = None,
     ) -> None:
         self._llm = llm
         self._persona_dir_provider = persona_dir_provider
         self._bus = bus
         self._window_days = max(1, int(daily_log_window_days))
         self._min_ratio = float(min_keep_ratio)
+        # Wave-27 Phase 3c (2026-05-16): when v2 is wired, route the
+        # rewrite through ``upsert_persona_manual("MEMORY.md", ...)``
+        # so the next ``render_affected_files`` for MEMORY.md picks
+        # up Dream's output. Pre-fix Dream wrote directly to
+        # MEMORY.md on disk → any subsequent v2 fact write triggered
+        # a render that reverted Dream's edits. Falls back to direct
+        # disk write when v2 isn't wired (legacy install).
+        self._memory_v2_service = memory_v2_service
 
     async def dream(self) -> dict[str, Any]:
         """Run one dream pass. Returns ``{ok: bool, ...}``."""
@@ -210,14 +219,35 @@ class DreamCompactor:
             except OSError as exc:
                 return {"ok": False, "error": f"backup write failed: {exc}"}
 
-            # Atomic-ish rewrite: write tmp, replace.
-            try:
-                tmp = memory_path.with_suffix(".md.dream.tmp")
-                tmp.write_text(new_text, encoding="utf-8")
-                import os as _os
-                _os.replace(tmp, memory_path)
-            except OSError as exc:
-                return {"ok": False, "error": f"write failed: {exc}"}
+            # Wave-27 Phase 3c (2026-05-16): when v2 is wired, store
+            # the rewrite as MEMORY.md's persona_manual row + ask
+            # the renderer to rebuild the file. v2 becomes the
+            # source of truth, the legacy direct-write only runs
+            # for installs without v2.
+            v2_svc = self._memory_v2_service
+            if v2_svc is not None:
+                try:
+                    await v2_svc.upsert_persona_manual(
+                        "MEMORY.md", new_text,
+                    )
+                    from xmclaw.core.persona.v2_renderer import (
+                        render_persona_file,
+                    )
+                    await render_persona_file(v2_svc, pdir, "MEMORY.md")
+                except Exception as exc:  # noqa: BLE001
+                    return {
+                        "ok": False,
+                        "error": f"v2 dream write failed: {exc}",
+                    }
+            else:
+                # Legacy direct-disk path.
+                try:
+                    tmp = memory_path.with_suffix(".md.dream.tmp")
+                    tmp.write_text(new_text, encoding="utf-8")
+                    import os as _os
+                    _os.replace(tmp, memory_path)
+                except OSError as exc:
+                    return {"ok": False, "error": f"write failed: {exc}"}
 
         # Bump prompt-freeze generation so live sessions pick up.
         try:

@@ -110,13 +110,71 @@ class BuiltinToolsDbMixin:
                 "metadata": md,
             })
             used_chars += len(text)
+
+        # Wave-27 Phase 3c (2026-05-16): also query v2 facts when wired.
+        # Phase 3a/b moved lessons + preferences + persona_manual out
+        # of memory.db into v2 — without this branch, ``memory_search``
+        # would silently return less than the user expects (e.g. agent
+        # asking "what lessons have we learned about X" gets empty).
+        v2_svc = getattr(self, "_memory_v2_service", None)
+        v2_used = False
+        if v2_svc is not None and not truncated:
+            try:
+                # ``kind_filter`` plumb-through: v2 understands the same
+                # kind names (lesson / preference / identity / etc.).
+                kinds_arg = [kind_filter] if kind_filter else None
+                v2_hits = await v2_svc.recall(
+                    query,
+                    k=k,
+                    kinds=kinds_arg,
+                    min_confidence=0.0,
+                    include_relations=False,
+                )
+                v2_used = True
+                # Avoid id collisions with legacy hits (rare — v2 ids
+                # are ``<kind>:<scope>:<hash>``, memory.db rows use
+                # uuid hex or ``persona_manual:<basename>`` — but
+                # belt-and-braces).
+                seen_ids = {r["id"] for r in rows}
+                for h in v2_hits:
+                    fact = getattr(h, "fact", None)
+                    if fact is None or fact.id in seen_ids:
+                        continue
+                    text = (fact.text or "")[:400]
+                    if used_chars + len(text) > max_chars and rows:
+                        truncated = True
+                        break
+                    rows.append({
+                        "id": fact.id,
+                        "text": text,
+                        "ts": fact.ts_last,
+                        "kind": fact.kind,
+                        "provider": "v2",
+                        "metadata": {
+                            "kind": fact.kind,
+                            "scope": fact.scope,
+                            "bucket": fact.bucket or "",
+                            "confidence": fact.confidence,
+                            "evidence_count": fact.evidence_count,
+                            "provider": "v2",
+                        },
+                    })
+                    seen_ids.add(fact.id)
+                    used_chars += len(text)
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).warning(
+                    "memory_search.v2_recall_failed err=%s", exc,
+                )
         return ToolResult(
             call_id=call.id, ok=True,
             content={
                 "query": query,
                 "layer": layer,
                 "k": k,
-                "mode": used_mode,
+                "mode": (
+                    f"{used_mode}+v2" if v2_used else used_mode
+                ),
                 "rows": rows,
                 "row_count": len(rows),
                 "total_chars": used_chars,

@@ -401,6 +401,17 @@ async def create_fact(request: Request) -> Any:
     kind = body.get("kind")
     scope = body.get("scope", "project")
     confidence = float(body.get("confidence", 0.85))
+    # Wave-27 Phase 3c: optional bucket routing label for the
+    # persona renderer. Caller may omit (empty string == no
+    # routing). Migration script + power users set this when
+    # they want a fact to land in a specific persona MD section.
+    bucket = body.get("bucket")
+    if bucket is None:
+        bucket = ""
+    elif not isinstance(bucket, str):
+        return JSONResponse(
+            {"error": "invalid_bucket", "bucket": bucket}, status_code=400,
+        )
     if not isinstance(text, str) or not text.strip():
         return JSONResponse(
             {"error": "missing_text"}, status_code=400,
@@ -417,7 +428,8 @@ async def create_fact(request: Request) -> Any:
             {"error": "invalid_scope", "scope": scope}, status_code=400,
         )
     fact = await svc.remember(
-        text, kind=kind, scope=scope, confidence=confidence,
+        text, kind=kind, scope=scope,
+        confidence=confidence, bucket=bucket,
     )
     return {"created": fact.to_dict()}
 
