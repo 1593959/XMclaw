@@ -796,8 +796,10 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # B-LATENCY-prep: compute_salience may embed the user message
         # against every active goal (state.py:_semantic_relevance). A
         # cold or contended embedder turns that into 2-10s of blocking
-        # work on the user-turn path. Hard-cap to 1.0s — past that we
-        # silently fall back to the default 0.5 salience.
+        # work on the user-turn path. Hard-cap to 10.0s — past that we
+        # silently fall back to the default 0.5 salience. 10s gives a
+        # slow local embedder room to produce a real score (better
+        # cognition than the heuristic fallback) without running away.
         if self._cognitive_state is not None and user_message:
             _t = time.monotonic()
             try:
@@ -810,7 +812,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                         # when embedder is wired; fallback to heuristic.
                         relevance=None,
                     ),
-                    timeout=1.0,
+                    timeout=10.0,
                 )
                 from xmclaw.cognition.state import AttentionFocus
                 self._cognitive_state.add_focus(
