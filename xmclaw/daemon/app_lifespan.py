@@ -2410,6 +2410,30 @@ def make_lifespan(
                 )
                 proactive_agent = None
 
+        # Wave-27 fix-LAT2: spin up the persistent IPython kernel pool
+        # used by ``code_python`` so the LLM gets Jupyter-style state
+        # across calls instead of "every snippet is a fresh process".
+        # The pool is module-singleton + lifespan-owned: started here,
+        # accessed via ``default_pool()`` from the tool handler, killed
+        # in the ``finally`` block below. Optional dep — if
+        # jupyter_client / ipykernel aren't installed the tool falls
+        # back to subprocess and we just don't create a pool here.
+        try:
+            from xmclaw.providers.tool.kernel_pool import (
+                KernelPool, _check_deps, set_default_pool,
+            )
+            _check_deps()
+            _kernel_pool = KernelPool(idle_timeout_s=1800.0, max_kernels=16)
+            set_default_pool(_kernel_pool)
+            log.info("kernel_pool.wired idle_timeout=1800s max=16")
+        except Exception as exc:  # noqa: BLE001 — deps optional
+            _kernel_pool = None
+            log.info(
+                "kernel_pool.skipped err=%s — code_python will use "
+                "subprocess fallback",
+                type(exc).__name__,
+            )
+
         try:
             yield
         finally:
@@ -2419,6 +2443,20 @@ def make_lifespan(
             # rapid restart), every subsequent shutdown step was
             # skipped and background tasks leaked across the daemon's
             # lifetime. Now: each step is independent.
+            if _kernel_pool is not None:
+                try:
+                    await _kernel_pool.shutdown_all()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "kernel_pool.shutdown_failed err=%s", exc,
+                    )
+                try:
+                    from xmclaw.providers.tool.kernel_pool import (
+                        set_default_pool,
+                    )
+                    set_default_pool(None)
+                except Exception:  # noqa: BLE001
+                    pass
             if proactive_agent is not None:
                 try:
                     await proactive_agent.stop()

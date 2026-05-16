@@ -125,19 +125,41 @@ _CRON_REMOVE_SPEC = ToolSpec(
 _CODE_PYTHON_SPEC = ToolSpec(
     name="code_python",
     description=(
-        "Execute a Python snippet in a subprocess and return "
-        "{stdout, stderr, returncode}. Useful for one-off math, data "
-        "munging, regex testing — anything where bash is overkill or "
-        "shell quoting is a pain. The snippet runs with the same "
-        "Python interpreter as the daemon, so import paths match. "
-        "Default timeout 30s, max 300s. No internet sandbox — pair "
-        "with ``allowed_dirs`` when threat model requires it."
+        "Execute a Python snippet inside a PERSISTENT IPython kernel "
+        "scoped to this conversation. Returns "
+        "{stdout, stderr, returncode, result?}.\n\n"
+        "★ State PERSISTS across calls in the same conversation — "
+        "variables, imports, function/class definitions, opened files, "
+        "and loaded DataFrames stay alive between invocations. Write "
+        "exploratory code naturally:\n"
+        "  call 1: import pandas as pd; df = pd.read_csv('orders.csv')\n"
+        "  call 2: df.groupby('user').sum()   # ✅ df is still here\n\n"
+        "If the last statement of a snippet is an expression, its repr "
+        "comes back in the ``result`` field (Jupyter Out[N] style). "
+        "Use ``reset=True`` to wipe the namespace (equivalent of "
+        "%reset) — start fresh when an experiment has gone sideways.\n\n"
+        "Same Python interpreter as the daemon, so import paths match. "
+        "Default timeout 30s, max 300s; on timeout the kernel is "
+        "interrupted (like Ctrl+C) but its namespace survives. No "
+        "internet sandbox — pair with ``allowed_dirs`` when threat "
+        "model requires it.\n\n"
+        "Falls back to a one-shot subprocess (no state, no persistence) "
+        "if ``jupyter_client`` / ``ipykernel`` aren't installed — the "
+        "result shape is identical so callers don't branch."
     ),
     parameters_schema={
         "type": "object",
         "properties": {
             "code": {"type": "string", "description": "Python source."},
             "timeout_s": {"type": "integer", "description": "1-300, default 30."},
+            "reset": {
+                "type": "boolean",
+                "description": (
+                    "When true, wipe the kernel namespace BEFORE running "
+                    "``code``. Useful to start clean without losing the "
+                    "kernel process. Default false."
+                ),
+            },
         },
         "required": ["code"],
     },
@@ -304,7 +326,58 @@ class AutomationTools(ToolProvider):
         if not isinstance(code, str) or not code.strip():
             return _fail(call, t0, "code required")
         timeout_s = max(1, min(int(args.get("timeout_s", 30)), 300))
+        reset_ns = bool(args.get("reset", False))
 
+        # Wave-27 fix-LAT2 (2026-05-16): prefer the persistent kernel
+        # pool when one is wired + the deps are installed. The pool
+        # keeps a long-lived IPython kernel per session_id so
+        # variables / imports survive across tool calls — eliminates
+        # the "变量丢了，让我把完整代码一次性写好" loop the LLM gets
+        # into when it expects Jupyter-style state. Falls back to the
+        # one-shot subprocess below when:
+        #   * jupyter_client / ipykernel aren't installed
+        #   * the pool isn't wired (CLI mode, tests w/o lifespan)
+        #   * spinning the kernel raised (the FIRST request retries
+        #     via subprocess; the second request will retry the kernel
+        #     unless the entry got stuck in dead=True, in which case
+        #     ``reset=True`` clears it)
+        try:
+            from xmclaw.providers.tool.kernel_pool import (
+                KernelDepsMissing, default_pool,
+            )
+            pool = default_pool()
+            if pool is not None and call.session_id:
+                try:
+                    if reset_ns:
+                        await pool.reset_session(call.session_id)
+                    result = await pool.execute(
+                        call.session_id, code,
+                        timeout_s=float(timeout_s),
+                    )
+                    return _ok(call, t0, json.dumps(
+                        result.as_dict(), ensure_ascii=False,
+                    ))
+                except KernelDepsMissing:
+                    # Deps reported present at module-load but failed at
+                    # call time (e.g. site-packages mutation). Fall
+                    # through to subprocess silently.
+                    pass
+                except Exception as exc:  # noqa: BLE001
+                    # Kernel infra problem — log + fall through. The
+                    # user gets a working tool via subprocess instead of
+                    # a hard error.
+                    from xmclaw.utils.log import get_logger
+                    get_logger(__name__).warning(
+                        "code_python.kernel_failed sid=%s "
+                        "err=%s — falling back to subprocess",
+                        call.session_id[:24], exc,
+                    )
+        except ImportError:
+            # ``kernel_pool`` module itself missing (shouldn't happen
+            # post-install but cheap defense).
+            pass
+
+        # Subprocess fallback: same shape as old one-shot path.
         # Use the same Python interpreter the daemon is on so import
         # paths match. -I = isolated mode (no PYTHONPATH leak); -X
         # utf8 = consistent stdio encoding on Windows.

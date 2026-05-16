@@ -54,6 +54,14 @@ dev = [
 #        servers for other languages land as separate extras.
 browser = ["playwright>=1.48.0"]
 lsp     = ["python-lsp-server>=1.12.0"]
+# Wave-27 fix-LAT2: persistent IPython kernel for the ``code_python``
+# tool. Without these the tool falls back to one-shot subprocess (no
+# state across calls — see the Jupyter-mental-model failure mode in
+# xmclaw/providers/tool/kernel_pool.py module docstring).
+kernel = [
+    "jupyter_client>=8.0.0",
+    "ipykernel>=6.0.0",
+]
 # Wave 27 / Memory v2: LanceDB-backed L1 facts + relations store.
 # Replaces the sqlite-vec backend whose vec0 virtual table doesn't
 # support real upsert (GitHub issues #127 / #26 / #186). LanceDB:
