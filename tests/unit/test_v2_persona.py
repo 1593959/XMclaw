@@ -45,6 +45,105 @@ def test_default_identity_line_locks_xmclaw_name():
     assert "DeepSeek" in line
     assert "Qwen" in line
     assert "swappable backend" in line
+    # Wave-27 fix-LAT6: Kimi/Moonshot must be in the don't-self-report
+    # list — Kimi /coding shim spoofs Claude responses, so the model
+    # needs an explicit named entry to override the SFT-trained "I am
+    # Claude" reply.
+    assert "Kimi" in line
+    assert "Moonshot" in line
+    # Anti-hallucination clause directing the agent to consult the
+    # injected backend-truth slot.
+    assert "ANTI-HALLUCINATION" in line
+    assert "当前后端" in line
+
+
+def test_build_system_prompt_injects_backend_label(profile_dir):
+    """When backend_label is supplied, the prompt MUST include a
+    '## 当前后端' section quoting it verbatim. This is the slot
+    DEFAULT_IDENTITY_LINE tells the agent to consult for ground truth."""
+    from xmclaw.core.persona import build_system_prompt
+    prompt = build_system_prompt(
+        profile_dir=profile_dir,
+        backend_label="anthropic/kimi k2.6 (月之暗面 Kimi)",
+        use_cache=False,
+    )
+    assert "## 当前后端" in prompt
+    assert "anthropic/kimi k2.6 (月之暗面 Kimi)" in prompt
+    # Slot ordering: backend section must come BEFORE persona files
+    # so a truncating downstream client preserves the identity-critical
+    # bit.
+    backend_idx = prompt.index("## 当前后端")
+    if "## SOUL.md" in prompt:
+        soul_idx = prompt.index("## SOUL.md")
+        assert backend_idx < soul_idx
+
+
+def test_build_system_prompt_omits_backend_section_when_unknown(profile_dir):
+    """``backend_label=None`` (no active profile resolvable) → no
+    section emitted. DEFAULT_IDENTITY_LINE has a fallback ('I don't
+    know which backend is active') for this case.
+
+    DEFAULT_IDENTITY_LINE itself MENTIONS '## 当前后端' (telling the
+    agent where to look), so plain substring check would always
+    trip. We check the literal value-introducer ``Current backend:``
+    which is only emitted by the section itself.
+    """
+    from xmclaw.core.persona import build_system_prompt
+    prompt = build_system_prompt(
+        profile_dir=profile_dir,
+        backend_label=None,
+        use_cache=False,
+    )
+    assert "Current backend:" not in prompt
+
+
+def test_resolve_backend_label_prefers_profile_config():
+    """factory._resolve_backend_label picks the active profile by id."""
+    from xmclaw.daemon.factory import _resolve_backend_label
+    cfg = {
+        "llm": {
+            "default_profile_id": "moonshot",
+            "profiles": [
+                {
+                    "id": "moonshot",
+                    "label": "月之暗面 Kimi",
+                    "provider": "anthropic",
+                    "model": "kimi k2.6",
+                },
+                {
+                    "id": "other",
+                    "label": "Some Other",
+                    "provider": "openai",
+                    "model": "gpt-4.1",
+                },
+            ],
+        },
+    }
+    label = _resolve_backend_label(cfg)
+    assert label == "anthropic/kimi k2.6 (月之暗面 Kimi)"
+
+
+def test_resolve_backend_label_falls_back_to_legacy_block():
+    """When no profile id is set, fall through to top-level
+    llm.<provider>.default_model."""
+    from xmclaw.daemon.factory import _resolve_backend_label
+    cfg = {
+        "llm": {
+            "default_provider": "anthropic",
+            "anthropic": {
+                "default_model": "claude-3-5-sonnet-20241022",
+            },
+        },
+    }
+    label = _resolve_backend_label(cfg)
+    assert label == "anthropic/claude-3-5-sonnet-20241022"
+
+
+def test_resolve_backend_label_returns_none_when_empty():
+    from xmclaw.daemon.factory import _resolve_backend_label
+    assert _resolve_backend_label({}) is None
+    assert _resolve_backend_label(None) is None
+    assert _resolve_backend_label({"llm": {}}) is None
 
 
 def test_context_file_order_matches_openclaw():

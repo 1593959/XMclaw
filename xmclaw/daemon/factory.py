@@ -724,6 +724,7 @@ def _persona_writeback(app_state_holder: Any) -> Any:
                 profile_dir=profile_dir,
                 workspace_dir=ws_root,
                 tool_names=[s.name for s in tool_specs],
+                backend_label=_resolve_backend_label(cfg),
             )
             agent._system_prompt = new_prompt  # noqa: SLF001
             # B-25: bump the frozen-prompt-snapshot generation so all
@@ -1417,6 +1418,46 @@ def _resolve_persona_profile_dir(cfg: dict[str, Any]) -> Path:
     return persona_dir().parent / "profiles" / "default"
 
 
+def _resolve_backend_label(cfg: dict[str, Any] | None) -> str | None:
+    """Return the active LLM backend rendered as
+    ``"<provider>/<model> (<label>)"`` for ground-truth injection into
+    the system prompt.
+
+    Wave-27 fix-LAT6: without this, the agent answers "what model are
+    you" by hallucinating — Kimi's /coding endpoint is an Anthropic-
+    protocol-compatible shim that spoofs Claude-shaped responses, so
+    the model self-reports as "Claude 3.5 Sonnet" even though the real
+    backend is ``kimi k2.6``. Returning a structured label here lets
+    ``build_system_prompt`` inject a "## 当前后端" section that the
+    DEFAULT_IDENTITY_LINE explicitly tells the agent to consult.
+
+    Resolution order:
+      1. Newer profile-id config: ``llm.default_profile_id`` →
+         match in ``llm.profiles[]`` → "<provider>/<model> (<label>)".
+      2. Legacy top-level block: ``llm.default_provider`` →
+         ``llm.<provider>.default_model`` → "<provider>/<model>".
+      3. None when neither resolves — DEFAULT_IDENTITY_LINE has a
+         fallback ("I don't know which backend is active").
+    """
+    llm_section = (cfg or {}).get("llm") or {}
+    default_id = llm_section.get("default_profile_id")
+    profiles = llm_section.get("profiles") or []
+    if default_id and isinstance(profiles, list):
+        for p in profiles:
+            if isinstance(p, dict) and p.get("id") == default_id:
+                model = p.get("model") or "?"
+                label = p.get("label") or default_id
+                provider = p.get("provider") or "?"
+                return f"{provider}/{model} ({label})"
+    provider = llm_section.get("default_provider")
+    if provider:
+        sub = llm_section.get(provider) or {}
+        model = sub.get("default_model")
+        if model:
+            return f"{provider}/{model}"
+    return None
+
+
 def build_agent_from_config(
     cfg: dict[str, Any],
     bus: InProcessEventBus,
@@ -1568,10 +1609,15 @@ def build_agent_from_config(
         render_tools_section(profile_dir, tool_specs)
     except Exception:  # noqa: BLE001
         pass
+    # Wave-27 fix-LAT6: resolve the active backend label so the agent
+    # can answer "what model are you" truthfully. See
+    # ``_resolve_backend_label`` at module level for the lookup rules.
+    backend_label = _resolve_backend_label(cfg)
     system_prompt = build_system_prompt(
         profile_dir=profile_dir,
         workspace_dir=workspace_root,
         tool_names=[s.name for s in tool_specs],
+        backend_label=backend_label,
     )
     # Cross-session memory: B-26 builds a MemoryManager with two
     # providers — the BuiltinFileMemoryProvider (always-on, wraps

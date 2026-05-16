@@ -148,6 +148,7 @@ def build_system_prompt(
     workspace_dir: Path | None = None,
     tool_names: Iterable[str] | None = None,
     use_cache: bool = True,
+    backend_label: str | None = None,
 ) -> str:
     """Assemble the full system prompt for one turn.
 
@@ -163,6 +164,14 @@ def build_system_prompt(
             files override the profile copy for matching basenames.
         tool_names: optional iterable of tool names for the digest section.
         use_cache: when False, re-read all files (used by tests).
+        backend_label: Wave-27 fix-LAT6 — the active LLM profile rendered
+            as ``"<provider> <model> (<label>)"``. Injected as a "##
+            当前后端" section so the agent can answer "what model are
+            you" truthfully instead of hallucinating ``Claude 3.5
+            Sonnet`` because the upstream provider (Kimi /coding, etc.)
+            spoofs Claude-shaped responses. ``None`` → section omitted;
+            DEFAULT_IDENTITY_LINE instructs the agent to say "I don't
+            know which backend is active" in that case.
     """
     files = load_persona_files(
         profile_dir=profile_dir,
@@ -175,6 +184,7 @@ def build_system_prompt(
         str(workspace_dir) if workspace_dir else None,
         _fingerprint(files),
         tools_tuple,
+        backend_label or "",
     )
     if use_cache and cache_key in _CACHE:
         return _CACHE[cache_key]
@@ -183,6 +193,20 @@ def build_system_prompt(
 
     # Slot 0: hard identity line, always.
     parts.append(DEFAULT_IDENTITY_LINE)
+
+    # Slot 0.5: current backend ground-truth. DEFAULT_IDENTITY_LINE
+    # tells the agent to look HERE when asked "what model are you" —
+    # so this section MUST come right after slot 0, not buried later.
+    if backend_label:
+        parts.append(
+            "## 当前后端\n\n"
+            f"Current backend: **{backend_label}**.\n"
+            "This is the ground truth for which underlying LLM is "
+            "powering THIS turn. When asked what model you are, do NOT "
+            "guess — quote this string verbatim, then immediately remind "
+            "the user that you (the agent) are XMclaw and this is just "
+            "the swappable backend."
+        )
 
     # Slot 1: bootstrap prefix when applicable.
     boot = bootstrap_prefix(

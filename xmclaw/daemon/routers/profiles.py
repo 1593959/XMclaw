@@ -391,10 +391,20 @@ async def upsert_active_profile_file(
                     ws_root = Path(ws.primary.path)
             except Exception:  # noqa: BLE001
                 ws_root = None
+            # Wave-27 fix-LAT6: resolve backend label from current
+            # cfg so the rebuilt prompt includes "## 当前后端".
+            backend_label = None
+            try:
+                from xmclaw.daemon.factory import _resolve_backend_label
+                cfg = getattr(request.app.state, "config", None) or {}
+                backend_label = _resolve_backend_label(cfg)
+            except Exception:  # noqa: BLE001
+                backend_label = None
             new_prompt = build_system_prompt(
                 profile_dir=pdir,
                 workspace_dir=ws_root,
                 tool_names=[s.name for s in tool_specs],
+                backend_label=backend_label,
             )
             agent._system_prompt = new_prompt  # noqa: SLF001
     except Exception as exc:  # noqa: BLE001
