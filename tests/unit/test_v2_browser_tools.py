@@ -43,6 +43,9 @@ def test_list_tools_complete_roster_even_without_playwright() -> None:
         "browser_tabs", "browser_tab_switch", "browser_tab_close",
         "browser_download_next",
         "browser_save_state", "browser_list_states",
+        # Wave-27 fix-LAT8: external cookie import for skipping
+        # third-party logins.
+        "browser_import_cookies",
         "browser_get_console",
         "browser_screenshot", "browser_snapshot",
         "browser_eval", "browser_close",

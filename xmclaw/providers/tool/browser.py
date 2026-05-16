@@ -499,6 +499,59 @@ _BROWSER_LIST_STATES_SPEC = ToolSpec(
     parameters_schema={"type": "object", "properties": {}},
 )
 
+
+_BROWSER_IMPORT_COOKIES_SPEC = ToolSpec(
+    name="browser_import_cookies",
+    description=(
+        "Import cookies from an EXTERNAL source (Chrome 'EditThisCookie' "
+        "export, raw cookies array, or a JSON file on disk) into a "
+        "storage-state profile that browser_open(load_state=name) can "
+        "use later. Wave-27 fix-LAT8 — the third-party-login workflow "
+        "the user is realistically going to take is: open the site in "
+        "Chrome manually, log in via 2FA / CAPTCHA themselves, export "
+        "cookies with the EditThisCookie extension, paste the JSON "
+        "here. That import lands in "
+        "~/.xmclaw/v2/browser_state/<name>.json, then a future agent "
+        "turn calls browser_open(load_state=name, url=...) and the "
+        "Playwright context starts already-logged-in. Pass EITHER "
+        "``cookies_json`` (a JSON-serialised array of cookie objects "
+        "OR a full {cookies, origins} object) OR ``cookies_path`` (a "
+        "path to a JSON file). The 'array of cookie objects' shape "
+        "is what most browser extensions produce."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": (
+                    "Profile name (alphanumeric/dash/underscore). "
+                    "Used as the filename: <name>.json under "
+                    "~/.xmclaw/v2/browser_state/."
+                ),
+            },
+            "cookies_json": {
+                "type": "string",
+                "description": (
+                    "Inline JSON. Either a Playwright storage_state "
+                    "object ``{cookies: [...], origins: [...]}`` or a "
+                    "bare array ``[{...cookie...}, ...]`` which will "
+                    "be wrapped as ``{cookies: <arr>, origins: []}``."
+                ),
+            },
+            "cookies_path": {
+                "type": "string",
+                "description": (
+                    "Path to a JSON file with the same shape as "
+                    "``cookies_json``. Use this for files >100 KB to "
+                    "avoid blowing your tool-arg budget."
+                ),
+            },
+        },
+        "required": ["name"],
+    },
+)
+
 _BROWSER_GET_CONSOLE_SPEC = ToolSpec(
     name="browser_get_console",
     description=(
@@ -632,6 +685,7 @@ class BrowserTools(ToolProvider):
             _BROWSER_TABS_SPEC, _BROWSER_TAB_SWITCH_SPEC,
             _BROWSER_TAB_CLOSE_SPEC, _BROWSER_DOWNLOAD_NEXT_SPEC,
             _BROWSER_SAVE_STATE_SPEC, _BROWSER_LIST_STATES_SPEC,
+            _BROWSER_IMPORT_COOKIES_SPEC,
             _BROWSER_GET_CONSOLE_SPEC,
             _BROWSER_SCREENSHOT_SPEC,
             _BROWSER_SNAPSHOT_SPEC, _BROWSER_EVAL_SPEC, _BROWSER_CLOSE_SPEC,
@@ -684,6 +738,8 @@ class BrowserTools(ToolProvider):
                 return await self._save_state(call, t0)
             if call.name == "browser_list_states":
                 return await self._list_states(call, t0)
+            if call.name == "browser_import_cookies":
+                return await self._import_cookies(call, t0)
             if call.name == "browser_get_console":
                 return await self._get_console(call, t0)
             return _fail(call, t0, f"unknown tool: {call.name!r}")
@@ -1765,6 +1821,150 @@ class BrowserTools(ToolProvider):
                 "bytes": size,
             },
             side_effects=(str(path),),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _import_cookies(
+        self, call: ToolCall, t0: float,
+    ) -> ToolResult:
+        """Convert an external cookie export into a storage_state file
+        that ``browser_open(load_state=name)`` can use.
+
+        Accepts either an inline JSON blob (``cookies_json``) or a
+        path on disk (``cookies_path``). Both can be either a full
+        Playwright storage_state object ``{cookies: [...], origins:
+        [...]}`` or a bare cookie array (what Chrome extensions like
+        EditThisCookie produce). Normalises to the storage_state
+        shape and writes to ``~/.xmclaw/v2/browser_state/<name>.json``.
+        """
+        import json as _json
+        from pathlib import Path as _P
+
+        name = call.args.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return _fail(call, t0, "missing or empty 'name'")
+        try:
+            out_path = _state_profile_path(name.strip())
+        except ValueError as exc:
+            return _fail(call, t0, str(exc))
+
+        cookies_json = call.args.get("cookies_json")
+        cookies_path = call.args.get("cookies_path")
+        if not cookies_json and not cookies_path:
+            return _fail(
+                call, t0,
+                "supply either 'cookies_json' (inline) or "
+                "'cookies_path' (file)",
+            )
+
+        # Read raw payload.
+        if cookies_json:
+            raw_text = cookies_json
+        else:
+            src = _P(cookies_path)
+            if not src.is_file():
+                return _fail(
+                    call, t0,
+                    f"cookies_path does not exist or is not a file: {src}",
+                )
+            try:
+                raw_text = src.read_text(encoding="utf-8")
+            except OSError as exc:
+                return _fail(call, t0, f"read failed: {exc}")
+
+        try:
+            parsed = _json.loads(raw_text)
+        except _json.JSONDecodeError as exc:
+            return _fail(call, t0, f"input is not valid JSON: {exc}")
+
+        # Normalise to storage_state shape.
+        if isinstance(parsed, list):
+            storage_state = {"cookies": parsed, "origins": []}
+        elif isinstance(parsed, dict):
+            if "cookies" in parsed:
+                storage_state = {
+                    "cookies": parsed.get("cookies") or [],
+                    "origins": parsed.get("origins") or [],
+                }
+            else:
+                return _fail(
+                    call, t0,
+                    "JSON object must have 'cookies' key, or pass a "
+                    "JSON array of cookies directly",
+                )
+        else:
+            return _fail(
+                call, t0,
+                "JSON must be either an array of cookies or an object "
+                f"with 'cookies' key (got {type(parsed).__name__})",
+            )
+
+        cookies_list = storage_state["cookies"]
+        if not isinstance(cookies_list, list):
+            return _fail(call, t0, "'cookies' must be an array")
+        # Light validation + normalisation of each cookie. Playwright
+        # is strict about ``sameSite`` values: ``Strict`` / ``Lax`` /
+        # ``None``. Chrome extensions often emit ``no_restriction`` /
+        # ``lax`` (lowercase) / null — translate them.
+        _SAMESITE = {
+            "no_restriction": "None", "unspecified": "None",
+            "none": "None", "lax": "Lax", "strict": "Strict",
+            "None": "None", "Lax": "Lax", "Strict": "Strict",
+        }
+        normalised: list[dict[str, Any]] = []
+        for c in cookies_list:
+            if not isinstance(c, dict):
+                continue
+            if not c.get("name") or "value" not in c:
+                continue
+            # Playwright wants ``expires`` (number, seconds since
+            # epoch). Chrome export uses ``expirationDate`` (float).
+            exp = c.get("expires")
+            if exp is None and "expirationDate" in c:
+                try:
+                    exp = float(c["expirationDate"])
+                except (TypeError, ValueError):
+                    exp = None
+            row: dict[str, Any] = {
+                "name": str(c["name"]),
+                "value": str(c["value"]),
+                "domain": str(c.get("domain") or ""),
+                "path": str(c.get("path") or "/"),
+                "httpOnly": bool(c.get("httpOnly", False)),
+                "secure": bool(c.get("secure", False)),
+            }
+            if exp is not None:
+                row["expires"] = float(exp)
+            ss_raw = c.get("sameSite")
+            if ss_raw is not None:
+                row["sameSite"] = _SAMESITE.get(
+                    str(ss_raw), "None",
+                )
+            normalised.append(row)
+        storage_state["cookies"] = normalised
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            out_path.write_text(
+                _json.dumps(storage_state, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            return _fail(call, t0, f"write failed: {exc}")
+
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "name": name.strip(),
+                "path": str(out_path),
+                "cookie_count": len(normalised),
+                "origins_count": len(storage_state["origins"]),
+                "note": (
+                    f"Saved. Next call browser_open(url=..., "
+                    f"load_state={name.strip()!r}) to use these cookies."
+                ),
+            },
+            side_effects=(str(out_path),),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 

@@ -351,6 +351,11 @@ async def test_web_fetch_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
         status_code = 200
         reason_phrase = "OK"
         text = "<html>hello</html>"
+        # Wave-27 fix-LAT8: web_fetch now inspects content-type to
+        # choose between text-decode (default) and image-save paths.
+        # A plain text/html content-type keeps the legacy text path.
+        headers: dict = {"content-type": "text/html; charset=utf-8"}
+        content = b"<html>hello</html>"
 
     class _FakeClient:
         def __init__(self, *a, **k): pass

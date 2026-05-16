@@ -408,9 +408,17 @@ _BASH_SPEC = ToolSpec(
 _WEB_FETCH_SPEC = ToolSpec(
     name="web_fetch",
     description=(
-        "GET a URL and return its response body as text (up to 200 KB). "
-        "Follows redirects. Use when the user asks about a specific "
-        "web page."
+        "GET a URL and return its response. Follows redirects.\n\n"
+        "★ Auto-detects content-type:\n"
+        "  • text/html / text/* / application/json → returns body as "
+        "text (up to max_chars).\n"
+        "  • image/png|jpeg|gif|webp|bmp|svg → saves bytes to "
+        "~/.xmclaw/web_fetch_cache/, sets metadata.attach_image so "
+        "the NEXT LLM turn sees the image as a vision content block. "
+        "You don't need to OCR, base64, or re-fetch — just refer to "
+        "it directly in your next reasoning.\n\n"
+        "Use whenever the user asks about a specific URL — works for "
+        "text AND image URLs uniformly."
     ),
     parameters_schema={
         "type": "object",
@@ -418,7 +426,10 @@ _WEB_FETCH_SPEC = ToolSpec(
             "url": {"type": "string", "description": "Full http(s) URL."},
             "max_chars": {
                 "type": "integer",
-                "description": "Truncation cap. Default 200000.",
+                "description": (
+                    "Truncation cap for text content. Default 200000. "
+                    "Ignored for images."
+                ),
             },
         },
         "required": ["url"],
@@ -428,9 +439,19 @@ _WEB_FETCH_SPEC = ToolSpec(
 _WEB_SEARCH_SPEC = ToolSpec(
     name="web_search",
     description=(
-        "Search the web via DuckDuckGo's HTML endpoint (no API key). "
-        "Returns the top results as 'TITLE\\nURL\\nSNIPPET' blocks. "
-        "Use for factual lookups where a fresh page is needed."
+        "Search the web. Backend picked from "
+        "``cfg.evolution.search.provider``:\n"
+        "  • ``ddg`` (default, no API key) — DuckDuckGo HTML scrape. "
+        "Quality is fine for English; mediocre for CJK queries.\n"
+        "  • ``bing`` — Azure Bing v7 Web Search. Needs "
+        "``bing_api_key``. Better CJK relevance, structured JSON.\n"
+        "  • ``brave`` — Brave Web Search API. Needs "
+        "``brave_api_key``. Free tier exists.\n"
+        "  • ``google_cse`` — Google Custom Search. Needs "
+        "``google_api_key`` + ``google_cse_id``. Best quality, paid.\n\n"
+        "Returns 'TITLE\\nURL\\nSNIPPET' blocks for the top N hits. "
+        "Backend name is included in the output so you know which "
+        "engine answered."
     ),
     parameters_schema={
         "type": "object",

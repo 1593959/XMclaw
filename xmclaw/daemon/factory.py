@@ -910,6 +910,17 @@ def build_tools_from_config(
         except Exception:  # noqa: BLE001 — undo is nice-to-have, not load-bearing
             _undo_cab = None
 
+    # Wave-27 fix-LAT8: search backend config lookup. Closure pins
+    # the cfg ref so a runtime cfg reload (which mutates the dict in
+    # place) is automatically reflected in the next web_search call.
+    def _search_cfg_getter() -> dict[str, Any]:
+        try:
+            evo = (cfg or {}).get("evolution") or {}
+            sec = evo.get("search") or {}
+            return sec if isinstance(sec, dict) else {}
+        except Exception:  # noqa: BLE001
+            return {}
+
     builtins = BuiltinTools(
         allowed_dirs=allowed_dirs,
         enable_bash=bool(enable_bash),
@@ -922,6 +933,7 @@ def build_tools_from_config(
         stt_provider=_stt_provider,
         tts_provider=_tts_provider,
         undo_cabinet=_undo_cab,
+        search_config_getter=_search_cfg_getter,
     )
     children: list[ToolProvider] = [builtins]
 

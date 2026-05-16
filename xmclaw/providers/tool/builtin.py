@@ -188,6 +188,11 @@ class BuiltinTools(
         # provided, ``file_write`` / ``apply_patch`` / ``file_delete``
         # snapshot pre-state for reversal. None = no recording (testing).
         undo_cabinet: "object | None" = None,
+        # Wave-27 fix-LAT8: callable () -> dict returning the
+        # ``cfg.evolution.search`` block so ``_web_search`` can pick a
+        # backend (ddg / bing / brave / google_cse) and look up API
+        # keys. None → ddg-only.
+        search_config_getter: "object | None" = None,
     ) -> None:
         self._allowed = (
             [Path(d).resolve() for d in allowed_dirs] if allowed_dirs else None
@@ -195,6 +200,7 @@ class BuiltinTools(
         self._enable_bash = enable_bash
         self._enable_web = enable_web
         self._undo_cabinet = undo_cabinet
+        self._search_config_getter = search_config_getter
         # Optional callable () -> Path returning the active persona profile
         # directory (e.g. ~/.xmclaw/persona/profiles/default/). The
         # ``remember`` and ``learn_about_user`` tools target MEMORY.md and
