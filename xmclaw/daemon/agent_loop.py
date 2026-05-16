@@ -225,15 +225,14 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # (which is re-prepended on every run_turn so operator changes to
         # _system_prompt take effect immediately, not after the next restart).
         self._histories: dict[str, list[Message]] = {}
-        self._history_cap = history_cap
-        # B-31: optional token-based gate. When set, compression also
-        # fires once the estimated token count of the kept history
-        # exceeds this cap — protects against the "few but huge"
-        # message case (1 user msg + 1 huge tool result can blow
-        # past the context window long before history_cap fires).
-        # Estimator is chars/4 to avoid pulling tiktoken; ~5% off
-        # for English, fine for a "should I summarise yet" gate.
-        self._compression_token_cap = compression_token_cap
+        # Wave-27 fix-LAT: ``history_cap`` and ``compression_token_cap``
+        # are accepted for backward compat with old callers but are now
+        # no-ops. The post-turn ``_persist_history`` no longer compresses;
+        # the pre-LLM ``_maybe_compress_messages`` (hop_loop.py:372) runs
+        # the smart token-aware ``ContextCompressor`` instead. See the
+        # docstring on ``_persist_history`` for the empirical case that
+        # killed the old msg_cap gate.
+        _ = history_cap, compression_token_cap  # silence linters
         # Epic #14: what the scanner does when a tool result looks hostile.
         self._injection_policy = prompt_injection_policy
         # Optional cross-process persistence. When wired, history outlives

@@ -1715,18 +1715,12 @@ def build_agent_from_config(
             except Exception:  # noqa: BLE001
                 pass
 
-    # B-31: optional token-based compression gate. When set in config
-    # ( ``evolution.compression.token_cap`` ), AgentLoop fires
-    # compression once the kept history's char/4 estimate crosses
-    # this threshold — protects against single-huge-message overruns
-    # that the message-count cap can't catch.
-    compression_section = (cfg or {}).get("evolution", {}).get("compression") or {}
-    raw_token_cap = compression_section.get("token_cap")
-    token_cap: int | None
-    if isinstance(raw_token_cap, (int, float)) and raw_token_cap > 0:
-        token_cap = int(raw_token_cap)
-    else:
-        token_cap = None
+    # Wave-27 fix-LAT: ``evolution.compression.token_cap`` and the
+    # post-turn msg/token gates it fed have been retired. Compression
+    # now runs pre-LLM via ContextCompressor (ctx-window aware,
+    # 85%-of-budget threshold) — see ``cognition.context_compression``
+    # config section for its knobs (threshold_percent, protect_last_n,
+    # protect_last_ratio, ...). The old knob is silently ignored.
 
     # B-55: hand the EmbeddingProvider to AgentLoop too — without it
     # cross-session memory prefetch falls back to "most recent items"
@@ -1872,7 +1866,6 @@ def build_agent_from_config(
         session_store=session_store,
         llm_registry=registry,
         memory=memory_arg,
-        compression_token_cap=token_cap,
         embedder=agent_embedder,
         relevant_files_picker_enabled=_picker_enabled,
         relevant_files_picker_k=_picker_k,

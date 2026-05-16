@@ -214,35 +214,37 @@ async def test_failed_turn_does_not_poison_history() -> None:
 
 
 @pytest.mark.asyncio
-async def test_history_cap_trims_old_messages() -> None:
-    """With a small cap, old messages drop off; the most-recent exchange
-    is always retained."""
-    # 6 scripted responses for 6 turns.
+async def test_history_cap_kwarg_is_accepted_but_noop() -> None:
+    """Wave-27 fix-LAT: ``history_cap`` and ``compression_token_cap``
+    used to drive post-turn message-count compression. That path was
+    removed (it fired on 40 tiny messages, dropping 400 tokens and
+    "summarising" them into 500 chars — negative compression on big-
+    context models). Both kwargs are still accepted to keep older
+    callers happy but they are no-ops; compression now lives in
+    ``_maybe_compress_messages`` (token-aware, pre-LLM).
+
+    This test pins:
+      1. The kwargs are still accepted (no crash).
+      2. They no longer trim history — 6 turns of small messages all
+         survive into turn 6's LLM call.
+    """
     script = [LLMResponse(content=f"resp {i}") for i in range(6)]
     llm = _RecordingLLM(script=script)
     agent = AgentLoop(
-        llm=llm, bus=InProcessEventBus(), history_cap=4,
+        llm=llm, bus=InProcessEventBus(),
+        history_cap=4, compression_token_cap=10,
     )
 
     for i in range(6):
         await agent.run_turn("s1", f"user msg {i}")
 
-    # Turn 6's call should be: base system + (optional compression
-    # summary system) + ≤4 history + 1 new user. B-28 added the
-    # compression summary as a synthetic system message at the head
-    # of history when compression fires, so the upper bound is 7.
-    # Crucially still ≪ 12 (the no-cap baseline).
+    # All 6 user messages must survive — no msg-count gate firing.
     turn6_msgs = llm.seen_messages[-1]
-    assert len(turn6_msgs) <= 7, (
-        f"history cap not applied: got {len(turn6_msgs)} messages"
-    )
-
-    # Most recent user msg must be present; the earliest must be gone.
     user_contents = [m.content for m in turn6_msgs if m.role == "user"]
-    assert any("user msg 5" in c for c in user_contents)
-    assert not any("user msg 0" in c for c in user_contents), (
-        f"oldest user msg should be trimmed: {user_contents}"
-    )
+    for i in range(6):
+        assert any(f"user msg {i}" in (c or "") for c in user_contents), (
+            f"user msg {i} unexpectedly trimmed: {user_contents}"
+        )
 
 
 # ── tool round trips preserve history across calls ───────────────────────

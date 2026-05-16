@@ -659,19 +659,28 @@ class HistoryCompressionMixin:
     def _persist_history(
         self, session_id: str, messages: list[Message],
     ) -> dict[str, Any] | None:
-        """Save conversation history (system prompt excluded) with a size cap.
+        """Save conversation history (system prompt excluded).
 
-        Trims from the front to keep the most recent ``_history_cap``
-        messages. Because Anthropic / OpenAI require assistant messages
-        with tool_calls to be immediately followed by their tool results,
-        we round the cut point up to the next "clean" boundary -- i.e.
-        skip forward past any trailing tool-result orphans until we
-        land on a user message or the end.
+        Wave-27 fix-LAT (2026-05-16): the legacy ``msg_cap`` / ``token_cap``
+        gates that used to live here were removed. They fired on raw
+        message count (default 40) regardless of how small each message
+        was — a chat with 5 tool-using turns easily hit 40 messages
+        totalling 500 tokens, which is 0.2% of a 256K-window model's
+        budget, and the rule-based "summary" was often LONGER than the
+        content it replaced. Empirical: chat-0ac7a48b on 2026-05-16
+        dropped 11 messages = 468 tokens, summary = 526 chars → negative
+        compression.
 
-        B-33: returns a compression-info dict when compression actually
-        ran (the caller emits a CONTEXT_COMPRESSED bus event with it),
-        ``None`` when the history fit under both caps. Keeping this
-        method sync — bus emission happens at the async caller.
+        Compression now lives entirely in ``_maybe_compress_messages``
+        (hop_loop.py:372, pre-LLM) which runs ``ContextCompressor`` with
+        a real token estimate (CJK-aware), an 85%-of-ctx threshold, and
+        a 5-phase LLM-summarised pipeline. We still do the cheap stuff
+        here (system-msg drop, memory-context fence scrub, tool-result
+        prune) before persisting to ``session_store``.
+
+        Always returns ``None`` (no compression-info event from this
+        path anymore). The pre-LLM path emits its own
+        ``CONTEXT_COMPRESSED`` event with full details.
         """
         # Drop the system message we prepended for this turn.
         history = [m for m in messages if m.role != "system"]
@@ -728,76 +737,17 @@ class HistoryCompressionMixin:
             except Exception:  # noqa: BLE001 — never fail a turn over compression
                 pass
 
-        # Decide whether compression should fire. Two independent gates:
-        #   1) message-count: classic ``history_cap``
-        #   2) token-budget: ``compression_token_cap`` (B-31, opt-in)
-        # Either one tripping triggers compression. The cut-point is
-        # the SAME mechanism either way — find the smallest prefix
-        # whose drop brings us back under both caps simultaneously.
-        msg_over = len(history) > self._history_cap
-        tok_over = (
-            self._compression_token_cap is not None
-            and _estimate_history_tokens(history) > self._compression_token_cap
-        )
-        compression_info: dict[str, Any] | None = None
-        if not (msg_over or tok_over):
-            kept = history
-        else:
-            # Greedy: keep dropping the oldest message until we're
-            # under BOTH limits (or down to ≥1 message remaining).
-            start = max(0, len(history) - self._history_cap) if msg_over else 0
-            if tok_over and self._compression_token_cap is not None:
-                cap = self._compression_token_cap
-                while start < len(history) - 1 and _estimate_history_tokens(history[start:]) > cap:
-                    start += 1
-            # Advance past partial tool blocks: if the first kept message is a
-            # tool result or an assistant message that references tools, skip
-            # forward to the next user turn.
-            while start < len(history) and history[start].role in ("tool", "assistant"):
-                start += 1
-
-            # B-28 context compressor: instead of dropping the dropped
-            # prefix on the floor, summarise it into a single system
-            # message so the agent retains gist-level memory of the
-            # earlier conversation. Pulls provider-extracted insights
-            # via on_pre_compress so e.g. fact-extracted user prefs
-            # survive the squeeze.
-            dropped = history[:start]
-            if dropped:
-                summary_text = self._build_compression_summary(
-                    session_id, dropped,
-                )
-                if summary_text:
-                    summary_msg = Message(
-                        role="system",
-                        content=summary_text,
-                    )
-                    kept = [summary_msg] + history[start:]
-                else:
-                    kept = history[start:]
-                # B-33: capture telemetry for the caller to emit on the bus.
-                trigger = (
-                    "both" if msg_over and tok_over
-                    else "msg_cap" if msg_over else "token_cap"
-                )
-                compression_info = {
-                    "session_id": session_id,
-                    "dropped_count": len(dropped),
-                    "kept_count": len(kept),
-                    "dropped_tokens_estimated": _estimate_history_tokens(dropped),
-                    "trigger": trigger,
-                    "summary_chars": len(summary_text or ""),
-                }
-            else:
-                kept = history[start:]
-        self._histories[session_id] = kept
+        # Wave-27 fix-LAT: no more post-turn msg_cap / token_cap gate.
+        # Pre-LLM ContextCompressor (hop_loop.py:372) handles compression
+        # token-aware. We just persist the cleaned history.
+        self._histories[session_id] = history
         if self._session_store is not None:
             try:
-                self._session_store.save(session_id, kept)
+                self._session_store.save(session_id, history)
             except Exception:  # noqa: BLE001
                 # Persistence is best-effort -- a corrupt sessions.db should
                 # never break the live turn. The in-memory copy is the source
                 # of truth for the rest of this process.
                 pass
-        return compression_info
+        return None
 
