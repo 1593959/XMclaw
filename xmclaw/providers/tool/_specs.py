@@ -318,14 +318,73 @@ _UNDO_RECENT_SPEC = ToolSpec(
 )
 
 
-_BASH_SPEC = ToolSpec(
-    name="bash",
-    description=(
+def _bash_description() -> str:
+    """Build the bash tool description with OS-aware shell guidance.
+
+    Wave-27 fix-LAT3 (2026-05-16): the description was generic ("Run a
+    shell command…") and the LLM defaulted to bash syntax on every
+    platform. Empirical fail: on Windows the underlying shell is
+    PowerShell (builtin_shell.py:_bash routes through pwsh/powershell);
+    the LLM emitted ``mkdir -p ~/lt-automation/{content,monitor,...}``
+    and PowerShell rejected the brace expansion + the ``-p`` flag,
+    surfacing as ``MissingArgument`` from FullyQualifiedErrorId. The
+    LLM had no way to know — the tool advertised itself as bash. Fix
+    is to tell the model exactly which shell it's hitting + flag the
+    syntaxes that DON'T translate.
+    """
+    import sys
+    common = (
         "Run a shell command on the local machine and return combined "
         "stdout+stderr plus the exit code. Use for directory listings, "
         "finding files, git status, etc. Be careful with destructive "
-        "commands -- there is no undo."
-    ),
+        "commands — there is no undo."
+    )
+    if sys.platform == "win32":
+        return (
+            common
+            + "\n\n"
+            + "⚠ HOST SHELL = **Windows PowerShell** (NOT bash). The tool "
+            "is named ``bash`` for historical compatibility but the "
+            "underlying interpreter is ``pwsh``/``powershell``. The "
+            "following bash-isms FAIL on this host:\n"
+            "  • Brace expansion ``{a,b,c}`` — PowerShell treats this "
+            "as a script block. Use multiple ``New-Item`` calls or "
+            "``'a','b','c' | ForEach-Object {{ New-Item -ItemType "
+            "Directory -Path \"dir/$_\" }}`` instead.\n"
+            "  • ``mkdir -p`` — PowerShell's ``mkdir`` is "
+            "``New-Item -ItemType Directory`` and auto-creates parents "
+            "by default; no ``-p`` flag.\n"
+            "  • ``cmd && cmd2`` pipeline chaining — PowerShell 5.1 "
+            "does NOT support ``&&``/``||``. Use ``cmd; if ($?) "
+            "{{ cmd2 }}`` for conditional chaining, or ``;`` for "
+            "unconditional.\n"
+            "  • ``$VAR`` env var refs — in PowerShell use "
+            "``$env:VAR``. Read with ``$env:PATH``; set with "
+            "``$env:VAR='value'``.\n"
+            "  • Heredocs ``<<EOF`` — use here-strings ``@'...'@`` "
+            "(literal) or ``@\"...\"@`` (interpolated).\n"
+            "  • Globs in unquoted commands behave differently — "
+            "wrap paths with wildcards in quotes if you hit "
+            "argument-parsing errors.\n"
+            "POSIX aliases that DO work: ``ls``, ``cat``, ``pwd``, "
+            "``rm``, ``cp``, ``mv``, ``echo``, ``grep`` (→ "
+            "Select-String). Most ``git``/``npm``/``python`` "
+            "invocations work identically. When you need a true bash "
+            "feature, fall back to invoking ``python -c \"...\"`` "
+            "or the ``code_python`` tool instead."
+        )
+    return (
+        common
+        + "\n\n"
+        + "Host shell: POSIX bash (or sh on minimal images). Standard "
+        "bash syntax including brace expansion, ``&&``/``||``, "
+        "heredocs, and process substitution all work."
+    )
+
+
+_BASH_SPEC = ToolSpec(
+    name="bash",
+    description=_bash_description(),
     parameters_schema={
         "type": "object",
         "properties": {
