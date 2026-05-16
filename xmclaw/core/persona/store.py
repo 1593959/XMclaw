@@ -459,6 +459,15 @@ class PersonaStore:
         # can recall it. Pre-B-211 audit showed 100% of persona_manual
         # rows shipped with has_embedding=0 — agent literally couldn't
         # find anything the user typed via Web UI / update_persona.
+        # Wave-27 fix-LAT5 (2026-05-16): the embed call had no
+        # wall-clock. When the embedder (Ollama) was slow / queued /
+        # missing the bucket-schema migration, this single call could
+        # stack 30s × 3 retries = 90s. Two persona writes in a row
+        # busted the 180s tool wall-clock — that's the "update_persona
+        # 超时" the user kept hitting. Cap at 5s; on timeout silently
+        # degrade to text-only (B-211 explicitly designed for this
+        # fallback path).
+        import asyncio as _asyncio
         embedding: tuple[float, ...] | None = None
         if self._embedder is not None and text and text.strip():
             try:
@@ -466,9 +475,18 @@ class PersonaStore:
                 # qwen3-embedding-0.6b max ctx ~8k tokens; 6k chars
                 # is a safe upper bound across CJK + ASCII mix.
                 snippet = text[:6000]
-                vecs = await self._embedder.embed([snippet])
+                vecs = await _asyncio.wait_for(
+                    self._embedder.embed([snippet]),
+                    timeout=5.0,
+                )
                 if vecs and vecs[0]:
                     embedding = tuple(vecs[0])
+            except _asyncio.TimeoutError:
+                _log.warning(
+                    "persona_store.embed_manual_timeout file=%s "
+                    "(>5s — falling back to text-only row)",
+                    basename,
+                )
             except Exception as exc:  # noqa: BLE001
                 _log.warning(
                     "persona_store.embed_manual_failed file=%s err=%s "
