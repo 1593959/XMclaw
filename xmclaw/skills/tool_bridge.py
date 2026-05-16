@@ -56,6 +56,8 @@ _VALID_NAME = re.compile(r"[^a-zA-Z0-9_-]")
 # registry — that's the whole point: when prefilter would have
 # returned 0 skills, this is the LLM's fallback discovery affordance.
 META_BROWSE_TOOL_NAME = "skill_browse"
+META_INSTALL_TOOL_NAME = "skill_install"
+META_UNINSTALL_TOOL_NAME = "skill_uninstall"
 
 
 def _to_tool_name(skill_id: str) -> str:
@@ -109,6 +111,14 @@ class SkillToolProvider:
         # skill descs is the canonical 0-result case). The prefilter
         # special-cases this name to always pass through.
         specs.append(self._browse_spec())
+        # Wave-27 fix-LAT7: skill_install + skill_uninstall let the
+        # agent expand its own toolset on demand, instead of needing
+        # the human to run ``xmclaw skill install`` from the CLI.
+        # Both are always exposed (whitelisted in prefilter same way
+        # as skill_browse) so the agent can act on its own "this
+        # repo looks useful" decisions.
+        specs.append(self._install_spec())
+        specs.append(self._uninstall_spec())
         for skill_id in self._registry.list_skill_ids():
             spec = self._spec_for(skill_id)
             if spec is not None:
@@ -130,6 +140,10 @@ class SkillToolProvider:
         # ``unknown skill tool``.
         if call.name == META_BROWSE_TOOL_NAME:
             return self._invoke_browse(call, t0)
+        if call.name == META_INSTALL_TOOL_NAME:
+            return await self._invoke_install(call, t0)
+        if call.name == META_UNINSTALL_TOOL_NAME:
+            return self._invoke_uninstall(call, t0)
 
         skill_id = self._tool_name_to_skill_id(call.name)
         if skill_id is None:
@@ -366,6 +380,184 @@ class SkillToolProvider:
             },
             error=None,
             latency_ms=latency,
+        )
+
+    # ── Wave-27 fix-LAT7: skill_install / skill_uninstall ──────────
+
+    def _install_spec(self) -> ToolSpec:
+        """ToolSpec for the always-exposed ``skill_install`` meta-tool.
+
+        Lets the agent clone a GitHub-hosted skill into
+        ``~/.xmclaw/skills_user/<id>/`` and register it. Reuses
+        :func:`xmclaw.skills.marketplace.install_from_source` so the
+        same safety nets (structure check + skill_scanner) apply as
+        the CLI's ``xmclaw skill install`` path. Trust tier is marked
+        "manual" on the install record.
+        """
+        return ToolSpec(
+            name=META_INSTALL_TOOL_NAME,
+            description=(
+                "Clone a skill from a Git source and register it. The "
+                "agent calls this when ``skill_browse`` surfaced a "
+                "promising third-party skill, or when the user says "
+                "'install <repo>'. ``source`` accepts: "
+                "``github:owner/repo``, ``git+https://...``, or "
+                "``https://....git``. Skill lands in "
+                "``~/.xmclaw/skills_user/<skill_id>/`` and is picked "
+                "up by the daemon's UserSkillsLoader on the NEXT "
+                "boot (or immediately via skills_watcher). Returns "
+                "``{skill_id, install_path, findings}``; raises if "
+                "the cloned dir has no manifest.json / SKILL.md / "
+                "skill.py, or if the security scanner flags a "
+                "CRITICAL finding. Idempotent: re-installing the "
+                "same id wipes the previous copy first (upgrade)."
+            ),
+            parameters_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["source"],
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": (
+                            "Git source. Examples: "
+                            "``github:oswalpalash/ontology``, "
+                            "``https://github.com/foo/bar.git``."
+                        ),
+                    },
+                    "skill_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional install-id override. Default: "
+                            "derived from the URL's last path "
+                            "segment (``.git`` stripped, slug-cased)."
+                        ),
+                    },
+                },
+            },
+        )
+
+    def _uninstall_spec(self) -> ToolSpec:
+        return ToolSpec(
+            name=META_UNINSTALL_TOOL_NAME,
+            description=(
+                "Remove a previously-installed skill from "
+                "``~/.xmclaw/skills_user/<id>/`` and unregister it. "
+                "Use when a skill turns out to be broken or not "
+                "useful. Returns ``{removed: bool}``. Idempotent — "
+                "removing an unknown id returns ``removed=false`` "
+                "without raising."
+            ),
+            parameters_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["skill_id"],
+                "properties": {
+                    "skill_id": {
+                        "type": "string",
+                        "description": "The skill_id to uninstall.",
+                    },
+                },
+            },
+        )
+
+    async def _invoke_install(
+        self, call: ToolCall, t0: float,
+    ) -> ToolResult:
+        """Run the install pipeline. Wrapped in ``asyncio.to_thread``
+        because :func:`marketplace.install_from_source` does sync git
+        clone + filesystem I/O + security scan — keeping it on the
+        event loop would block other tool calls for several seconds.
+        """
+        import asyncio
+        args = dict(call.args or {})
+        source = args.get("source")
+        if not isinstance(source, str) or not source.strip():
+            return self._error_result(
+                call.id,
+                "skill_install requires a non-empty 'source' string",
+                t0,
+            )
+        skill_id = args.get("skill_id")
+        if skill_id is not None and not isinstance(skill_id, str):
+            skill_id = None
+        try:
+            from xmclaw.skills.marketplace import (
+                MarketplaceError, install_from_source,
+            )
+            result = await asyncio.to_thread(
+                install_from_source,
+                source.strip(),
+                skill_id=skill_id.strip() if skill_id else None,
+            )
+        except MarketplaceError as exc:
+            return self._error_result(
+                call.id, f"install failed: {exc}", t0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return self._error_result(
+                call.id,
+                f"install crashed ({type(exc).__name__}): {exc}",
+                t0,
+            )
+        return ToolResult(
+            call_id=call.id,
+            ok=True,
+            content={
+                "skill_id": result.skill_id,
+                "install_path": str(result.install_path),
+                "version": result.version,
+                "source": result.source,
+                "findings": result.findings,
+                "note": (
+                    "Skill installed. The daemon's skills_watcher "
+                    "should pick it up within seconds; "
+                    "skill_<id>-shaped tool will appear in your next "
+                    "tool list. Call ``skill_browse`` to confirm."
+                ),
+            },
+            error=None,
+            latency_ms=self._elapsed_ms(t0),
+            side_effects=(str(result.install_path),),
+        )
+
+    def _invoke_uninstall(
+        self, call: ToolCall, t0: float,
+    ) -> ToolResult:
+        args = dict(call.args or {})
+        skill_id = args.get("skill_id")
+        if not isinstance(skill_id, str) or not skill_id.strip():
+            return self._error_result(
+                call.id,
+                "skill_uninstall requires 'skill_id'",
+                t0,
+            )
+        try:
+            from xmclaw.skills.marketplace import remove
+            removed = remove(skill_id.strip())
+        except Exception as exc:  # noqa: BLE001
+            return self._error_result(
+                call.id,
+                f"uninstall failed ({type(exc).__name__}): {exc}",
+                t0,
+            )
+        return ToolResult(
+            call_id=call.id,
+            ok=True,
+            content={
+                "skill_id": skill_id.strip(),
+                "removed": removed,
+                "note": (
+                    "If removed=true, the skill_<id> tool will "
+                    "disappear from your next tool list. If false, "
+                    "the id wasn't in the installed-registry — it "
+                    "may have been registered by a different code "
+                    "path (built-in skill, ~/.agents/skills/, etc.) "
+                    "and skill_uninstall doesn't touch those."
+                ),
+            },
+            error=None,
+            latency_ms=self._elapsed_ms(t0),
         )
 
     # ── registry-backed skill spec/invoke ──────────────────────────

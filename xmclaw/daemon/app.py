@@ -710,6 +710,23 @@ def create_app(
             _skill_tools = SkillToolProvider(orchestrator.registry)
             agent._tools = CompositeToolProvider(agent._tools, _skill_tools)
 
+        # Wave-27 fix-LAT7: re-render TOOLS.md auto-block now that the
+        # full tool stack is wired (factory's earlier render call saw
+        # only the BuiltinTools layer because SkillToolProvider gets
+        # composited AFTER build_agent_from_config returns). Without
+        # this, the agent's TOOLS.md never mentions skill_browse /
+        # skill_install / skill_uninstall / individual skill_* tools —
+        # which was the "他不知道自己有什么技能" failure mode.
+        try:
+            from xmclaw.core.persona.loader import render_tools_section
+            from xmclaw.daemon.factory import _resolve_persona_profile_dir
+            _pdir = _resolve_persona_profile_dir(config or {})
+            _full_specs = agent._tools.list_tools() if agent._tools else []
+            render_tools_section(_pdir, _full_specs)
+        except Exception:  # noqa: BLE001 — never break startup over a
+            # persona-render miss
+            pass
+
     app.state.agent = agent
     # Module-level handle so factory-time callbacks (the persona
     # writeback used by ``remember`` / ``learn_about_user`` /

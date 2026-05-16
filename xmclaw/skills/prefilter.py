@@ -171,9 +171,18 @@ def select_relevant_skills(
     # the prefilter would have dropped. Without this, a CJK query
     # against English skill descriptions returns 0 skill_* tools —
     # the LLM literally can't see they exist.
-    from xmclaw.skills.tool_bridge import META_BROWSE_TOOL_NAME
+    from xmclaw.skills.tool_bridge import (
+        META_BROWSE_TOOL_NAME,
+        META_INSTALL_TOOL_NAME,
+        META_UNINSTALL_TOOL_NAME,
+    )
+    _ALWAYS_ON_META = frozenset({
+        META_BROWSE_TOOL_NAME,
+        META_INSTALL_TOOL_NAME,
+        META_UNINSTALL_TOOL_NAME,
+    })
 
-    # Partition: skills vs non-skills vs the always-on meta-tool.
+    # Partition: skills vs non-skills vs the always-on meta-tools.
     # Non-skills (bash / file_read / web_fetch / etc) ALWAYS pass
     # through — those are the workhorse tools every turn might need.
     skills: list[Any] = []
@@ -181,7 +190,7 @@ def select_relevant_skills(
     meta: list[Any] = []
     for spec in skill_specs:
         name = getattr(spec, "name", "") or ""
-        if name == META_BROWSE_TOOL_NAME:
+        if name in _ALWAYS_ON_META:
             meta.append(spec)
         elif name.startswith("skill_"):
             skills.append(spec)

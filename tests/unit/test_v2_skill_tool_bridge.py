@@ -23,21 +23,30 @@ from xmclaw.skills.manifest import SkillManifest
 from xmclaw.skills.registry import SkillRegistry
 from xmclaw.skills.tool_bridge import (
     META_BROWSE_TOOL_NAME,
+    META_INSTALL_TOOL_NAME,
+    META_UNINSTALL_TOOL_NAME,
     SkillToolProvider,
     _to_tool_name,
 )
 
 
+_META_TOOL_NAMES = frozenset({
+    META_BROWSE_TOOL_NAME,
+    META_INSTALL_TOOL_NAME,
+    META_UNINSTALL_TOOL_NAME,
+})
+
+
 def _registered_skill_specs(bridge: SkillToolProvider) -> list:
     """Return only the registry-backed skill specs.
 
-    B-299 added a synthesised ``skill_browse`` meta-tool that's
-    always present at the head of ``list_tools()``. Tests that
-    pre-date the meta-tool care about *registered* skills, so we
-    filter that one out here. New tests covering meta-tool
-    behaviour use ``list_tools()`` directly.
+    B-299 added the synthesised ``skill_browse`` meta-tool;
+    Wave-27 fix-LAT7 added ``skill_install`` + ``skill_uninstall``.
+    All three are always-on at the head of ``list_tools()``. Tests
+    that pre-date the meta-tools care about *registered* skills, so
+    we filter all three out here.
     """
-    return [s for s in bridge.list_tools() if s.name != META_BROWSE_TOOL_NAME]
+    return [s for s in bridge.list_tools() if s.name not in _META_TOOL_NAMES]
 
 
 # ── fixtures ────────────────────────────────────────────────────────

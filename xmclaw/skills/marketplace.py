@@ -649,6 +649,101 @@ def install(
     )
 
 
+def _derive_skill_id_from_url(url: str) -> str:
+    """Pick a sane install-id when the caller didn't supply one.
+
+    Heuristic: last path segment, with ``.git`` stripped. Normalised
+    to ``[a-z0-9_-]`` so it survives as a directory name on every
+    platform. Falls back to ``"unnamed-skill"`` for completely
+    pathological inputs.
+    """
+    import re
+    stem = url.rstrip("/").split("/")[-1] or ""
+    if stem.endswith(".git"):
+        stem = stem[:-4]
+    stem = re.sub(r"[^a-z0-9_-]+", "-", stem.lower()).strip("-")
+    return stem or "unnamed-skill"
+
+
+def install_from_source(
+    source: str,
+    *,
+    skill_id: str | None = None,
+    git_runner: Any = None,
+    install_root: Path | None = None,
+    now: float | None = None,
+) -> InstallResult:
+    """Install a skill from an arbitrary source URL (not requiring the
+    curated index).
+
+    Wave-27 fix-LAT7 (2026-05-17): :func:`install` resolves skills
+    by id against the marketplace index, which is great for vetted /
+    discoverable skills but blocks the common case "the user (or the
+    agent) found a skill repo on GitHub and just wants to clone it".
+    This function is the index-bypassing variant — same git_clone /
+    validate / scan pipeline, but accepts:
+
+      * ``github:owner/repo[@ref]``
+      * ``git+https://example.com/path/skill.git``
+      * ``https://github.com/owner/repo.git``
+
+    The trust contract is identical to :func:`install`: a directory
+    with no SKILL.md / manifest.json / skill.py is rejected, and any
+    CRITICAL skill_scanner finding fails the install. Trust tier on
+    the installed record is set to ``"manual"`` so the UI can flag it
+    as "not from the curated index — installed ad-hoc".
+
+    Returns the same :class:`InstallResult` shape as :func:`install`
+    so callers don't branch on entry point.
+    """
+    resolved = _resolve_source(source)
+    if resolved["kind"] != "git":
+        raise InstallValidationError(
+            f"install_from_source only supports git sources, got "
+            f"kind={resolved['kind']!r} for {source!r}"
+        )
+    final_id = skill_id or _derive_skill_id_from_url(resolved["url"])
+    if not final_id:
+        raise InstallValidationError(
+            f"could not derive a skill_id from source {source!r}; "
+            "pass an explicit skill_id"
+        )
+    root = install_root if install_root is not None else user_skills_dir()
+    target = root / final_id
+    if target.exists():
+        shutil.rmtree(target)
+    root.mkdir(parents=True, exist_ok=True)
+
+    _git_clone(resolved["url"], target, runner=git_runner)
+    findings: list[dict[str, Any]] = []
+    try:
+        _validate_structure(target)
+        findings = _scan_for_critical(target)
+    except MarketplaceError:
+        if target.exists():
+            shutil.rmtree(target, ignore_errors=True)
+        raise
+
+    records = _read_installed_registry()
+    records[final_id] = InstalledSkill(
+        id=final_id,
+        version="manual",
+        source=source,
+        install_path=str(target),
+        installed_at=now if now is not None else time.time(),
+        trust_tier="manual",
+        name=final_id,
+    )
+    _write_installed_registry(records)
+    return InstallResult(
+        skill_id=final_id,
+        install_path=target,
+        version="manual",
+        source=source,
+        findings=findings,
+    )
+
+
 def remove(skill_id: str, *, install_root: Path | None = None) -> bool:
     """Uninstall by id. Returns ``True`` if anything was removed.
 
