@@ -609,6 +609,25 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             correlation_id=user_correlation_id,
         )
 
+        # B-LATENCY-prep: per-turn timing breakdown.
+        # The "black period" between user-send and the first LLM_REQUEST
+        # is the sum of every prep step below: regex extraction, v2
+        # write+render, salience compute, compression pre-roll, memory
+        # recall, plan-first decomposition. Each of those was running
+        # un-bounded; cumulative cold-cache latency was several seconds
+        # before any model tokens streamed back. We now (a) time each
+        # step into ``_prep_timings`` and emit one ``turn_prep_timing``
+        # event so the UI can show the breakdown, (b) wall-clock the
+        # ones that block on external services, and (c) fire-and-forget
+        # the writes whose result THIS turn does not consume.
+        _prep_t0 = time.monotonic()
+        _prep_timings: dict[str, float] = {}
+
+        def _prep_mark(name: str, start: float) -> None:
+            _prep_timings[name] = round(
+                (time.monotonic() - start) * 1000.0, 1,
+            )
+
         # Sprint 1: notify ProactiveAgent that the user just spoke so
         # time-since-last-message triggers stay accurate. ``getattr``
         # so AgentLoops constructed without a proactive ref (tests) are
@@ -642,33 +661,43 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # back to the L0 user_message event for audit trail.
         memory_v2 = getattr(self, "_memory_service_v2", None)
         if memory_v2 is not None and user_message:
-            try:
-                from xmclaw.memory.v2 import extract_and_remember
-                # Correlation id was set when USER_MESSAGE event was
-                # published above; we use it as the source_event_id so
-                # the CAUSED_BY edge points back at events.db.
-                src_event = user_correlation_id or session_id
-                written = await extract_and_remember(
-                    user_message, memory_v2,
-                    source_event_id=src_event,
-                )
-                # Wave-27 fix-12 / refactor B Phase 1: re-render the
-                # persona MD files affected by these writes. The
-                # agent reads the on-disk MD files at turn time, so
-                # auto-extracted identity / preference facts must
-                # flow back to the .md files for visible consistency
-                # in the 标识 tab + the next turn's prompt.
-                if written:
-                    await self._render_persona_after_writes(written)
-            except Exception as exc:  # noqa: BLE001
-                # Never fail a user turn over memory extraction. The
-                # idempotent upsert path means the next message will
-                # retry the missed extractions.
-                from xmclaw.utils.log import get_logger
-                get_logger(__name__).warning(
-                    "memory_v2.extract_failed session=%s err=%s",
-                    session_id, exc,
-                )
+            # B-LATENCY-prep: this regex extractor + L1 write + persona
+            # re-render used to be awaited on the user-turn critical
+            # path. Cold cache it was 800ms-3s. THIS turn's recall
+            # filters items < 60s old anyway (line ~970), so it can't
+            # consume the freshly-extracted facts; and the persona MD
+            # rewrite only matters for the NEXT system prompt. So fire
+            # the whole pipeline as a background task — the user sees
+            # the first LLM token sooner, and the data lands by the
+            # time the next turn builds its prompt.
+            _t = time.monotonic()
+            src_event = user_correlation_id or session_id
+
+            async def _bg_regex_extract() -> None:
+                try:
+                    from xmclaw.memory.v2 import extract_and_remember
+                    written = await extract_and_remember(
+                        user_message, memory_v2,
+                        source_event_id=src_event,
+                    )
+                    if written:
+                        await self._render_persona_after_writes(written)
+                except Exception as exc:  # noqa: BLE001
+                    from xmclaw.utils.log import get_logger
+                    get_logger(__name__).warning(
+                        "memory_v2.extract_failed session=%s err=%s",
+                        session_id, exc,
+                    )
+
+            bg_task = asyncio.create_task(
+                _bg_regex_extract(),
+                name=f"v2-regex-extract-{session_id[:8]}",
+            )
+            post_sampling_bg = getattr(self, "_post_sampling_bg", None)
+            if post_sampling_bg is not None:
+                post_sampling_bg.add(bg_task)
+                bg_task.add_done_callback(post_sampling_bg.discard)
+            _prep_mark("regex_extract_scheduled", _t)
 
         # Wave 27 Phase 3.2: Layer 2 — LLM-based semantic extractor.
         # Runs ASYNC as a background task so it doesn't add latency
@@ -764,15 +793,24 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
 
         # Jarvisification: register the user message as an attention
         # focus so the cognitive state can track salience across turns.
+        # B-LATENCY-prep: compute_salience may embed the user message
+        # against every active goal (state.py:_semantic_relevance). A
+        # cold or contended embedder turns that into 2-10s of blocking
+        # work on the user-turn path. Hard-cap to 1.0s — past that we
+        # silently fall back to the default 0.5 salience.
         if self._cognitive_state is not None and user_message:
+            _t = time.monotonic()
             try:
-                salience = await self._cognitive_state.compute_salience(
-                    percept_id=f"msg:{session_id}:{time.time()}",
-                    content=user_message[:200],
-                    urgency=0.6,
-                    # Phase 4: let semantic relevance auto-compute when
-                    # embedder is wired; fallback to heuristic 0.7.
-                    relevance=None,
+                salience = await asyncio.wait_for(
+                    self._cognitive_state.compute_salience(
+                        percept_id=f"msg:{session_id}:{time.time()}",
+                        content=user_message[:200],
+                        urgency=0.6,
+                        # Phase 4: let semantic relevance auto-compute
+                        # when embedder is wired; fallback to heuristic.
+                        relevance=None,
+                    ),
+                    timeout=1.0,
                 )
                 from xmclaw.cognition.state import AttentionFocus
                 self._cognitive_state.add_focus(
@@ -782,8 +820,9 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                         salience_score=salience,
                     )
                 )
-            except Exception:  # noqa: BLE001 — cognition is best-effort
-                pass
+            except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+                pass  # cognition is best-effort
+            _prep_mark("salience", _t)
 
         # Resume prior history for this session; the first turn starts empty.
         # Note: system prompt is prepended fresh each turn (not stored in
@@ -805,10 +844,19 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # The rule-based summary at history[0] gets replaced with a
         # real gist. This turn's reply benefits from the better
         # context, not the next-next one.
+        # B-LATENCY-prep: cap the compression LLM call at 8s. If the
+        # provider is slow or hanging, fall through with the existing
+        # rule-based summary — much better than burning 30s on a
+        # nice-to-have before the user's actual turn starts.
+        _t = time.monotonic()
         try:
-            await self._maybe_apply_llm_compression(session_id)
-        except Exception:  # noqa: BLE001 — never block the turn
-            pass
+            await asyncio.wait_for(
+                self._maybe_apply_llm_compression(session_id),
+                timeout=8.0,
+            )
+        except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+            pass  # never block the turn
+        _prep_mark("llm_compression_preroll", _t)
 
         prior = self._histories.get(session_id, [])
 
@@ -844,6 +892,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # so memory works the moment turns start landing in the store
         # even before users wire an embedder.
         memory_ctx_block = ""
+        _recall_t0 = time.monotonic()
         if self._memory_manager is not None:
             try:
                 # B-26: try the prefetch hook first — providers that
@@ -1262,6 +1311,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             except Exception as exc:  # noqa: BLE001
                 # Recall is best-effort; never kill a turn over it.
                 _log_memory_failure(exc)
+        _prep_mark("memory_recall", _recall_t0)
 
         # B-202: passive trigger for ``propose_curriculum_edit``.
         # Probe round B observed the agent identifying the perfect
@@ -1569,11 +1619,18 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         self._active_plan_steps = None
         self._active_plan_completed = set()
         if self._active_run_mode != "instant":
+            # B-LATENCY-prep: plan-first decomposition fires a real LLM
+            # call before the first hop. Cap at 15s — past that, run
+            # the turn without a pre-decomposed plan rather than burning
+            # the user's wait budget on planning overhead.
+            _t = time.monotonic()
             try:
                 from xmclaw.cognition.plan_first import PlanFirstGate
                 _gate = PlanFirstGate(llm=llm)
                 if _gate.is_complex(user_message):
-                    _steps = await _gate.plan(user_message)
+                    _steps = await asyncio.wait_for(
+                        _gate.plan(user_message), timeout=15.0,
+                    )
                     if _steps:
                         self._active_plan_steps = _steps
                         await publish(EventType.INNER_MONOLOGUE, {
@@ -1581,9 +1638,33 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                             "steps_count": len(_steps),
                             "user_msg_len": len(user_message),
                         })
-            except Exception as exc:  # noqa: BLE001 — never block the turn
+            except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001
                 from xmclaw.utils.log import get_logger as _gl
                 _gl(__name__).warning("plan_first.skipped err=%s", exc)
+            _prep_mark("plan_first", _t)
+
+        # B-LATENCY-prep: emit the full prep-time breakdown right
+        # before the hop loop starts. The UI's MEMORY_RECALL bubble
+        # already shows recall_ms; this event makes the OTHER prep
+        # costs (regex schedule, salience, compression, plan-first)
+        # observable too. Also log a single warning line when total
+        # prep > 1.5s so slow turns surface in the daemon log without
+        # tailing per-step events.
+        _prep_total = round(
+            (time.monotonic() - _prep_t0) * 1000.0, 1,
+        )
+        await publish(EventType.INNER_MONOLOGUE, {
+            "kind": "turn_prep_timing",
+            "total_ms": _prep_total,
+            "breakdown_ms": _prep_timings,
+        })
+        if _prep_total > 1500.0:
+            from xmclaw.utils.log import get_logger as _gl
+            _gl(__name__).warning(
+                "agent_loop.turn_prep_slow session=%s "
+                "total_ms=%.1f breakdown=%s",
+                session_id, _prep_total, _prep_timings,
+            )
 
         _hop_result = await self._run_hop_loop(
             session_id=session_id,
