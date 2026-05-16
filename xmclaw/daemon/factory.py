@@ -1522,6 +1522,10 @@ def build_agent_from_config(
         build_system_prompt,
         ensure_default_profile,
     )
+    from xmclaw.core.persona.loader import (
+        ensure_bootstrap_marker,
+        render_tools_section,
+    )
     profile_dir = _resolve_persona_profile_dir(cfg)
     # Materialize bundled templates on first install so the user can
     # actually edit them (otherwise they only see the prompt output, not
@@ -1530,6 +1534,22 @@ def build_agent_from_config(
         ensure_default_profile(profile_dir)
     except OSError:
         pass
+    # Wave-27 fix-LAT4: write BOOTSTRAP.md when the install looks
+    # fresh (IDENTITY.md still byte-equal to the template). The
+    # ``bootstrap_prefix`` in the system prompt then nudges the agent
+    # to interview the user and fill IDENTITY/USER on the next turn.
+    # ``ensure_bootstrap_marker`` short-circuits when IDENTITY has been
+    # edited or BOOTSTRAP.md is already pending — safe to call every
+    # boot.
+    try:
+        bs_path = ensure_bootstrap_marker(profile_dir)
+        if bs_path is not None:
+            import logging as _lg
+            _lg.getLogger(__name__).info(
+                "persona.bootstrap_marker_written path=%s", bs_path,
+            )
+    except Exception:  # noqa: BLE001
+        pass
     workspace_root: Path | None = None
     ws_section = cfg.get("workspace") if isinstance(cfg, Mapping) else None
     if isinstance(ws_section, Mapping):
@@ -1537,6 +1557,17 @@ def build_agent_from_config(
         if isinstance(ws_path, str) and ws_path.strip():
             workspace_root = Path(ws_path).expanduser()
     tool_specs = tools.list_tools() if tools is not None else []
+    # Wave-27 fix-LAT4: re-render the auto-managed tool list inside
+    # TOOLS.md from the current ToolProvider stack. Without this, the
+    # agent reads a stale list copied from the bundled template (which
+    # listed 7 generic tools and never mentioned cron_*, browser_*,
+    # code_python persistent kernel, skill_browse, etc.) — leading to
+    # the "他跟自己不熟" complaint. Section sits inside marker comments
+    # so manual content elsewhere in TOOLS.md is preserved.
+    try:
+        render_tools_section(profile_dir, tool_specs)
+    except Exception:  # noqa: BLE001
+        pass
     system_prompt = build_system_prompt(
         profile_dir=profile_dir,
         workspace_dir=workspace_root,

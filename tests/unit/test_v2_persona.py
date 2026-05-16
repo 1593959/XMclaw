@@ -152,6 +152,148 @@ def test_bootstrap_prefix_present_when_marker_exists(profile_dir: Path):
     assert "BOOTSTRAP.md" in out
 
 
+# ── Wave-27 fix-LAT4 tests ────────────────────────────────────────
+
+
+def test_ensure_bootstrap_marker_skips_when_identity_filled(
+    profile_dir: Path,
+):
+    """Once the user (or the agent itself, via interview) has edited
+    IDENTITY.md, subsequent boots must NOT re-write BOOTSTRAP.md. The
+    auto-call is meant for FRESH installs only — re-creating the
+    interview marker after the user already set up their identity
+    would be patronising."""
+    ensure_default_profile(profile_dir)
+    # Simulate the user filling in their identity.
+    (profile_dir / "IDENTITY.md").write_text(
+        "# IDENTITY.md\n\n- 名字: 小爪\n- 气质: 锋利\n",
+        encoding="utf-8",
+    )
+    result = ensure_bootstrap_marker(profile_dir)
+    assert result is None
+    assert not (profile_dir / "BOOTSTRAP.md").exists()
+
+
+def test_ensure_bootstrap_marker_writes_when_identity_pristine(
+    profile_dir: Path,
+):
+    """A fresh install (IDENTITY.md byte-equal to template) should get
+    BOOTSTRAP.md so the next agent turn enters interview mode."""
+    ensure_default_profile(profile_dir)
+    # No edit to IDENTITY.md — should still be template.
+    result = ensure_bootstrap_marker(profile_dir)
+    assert result is not None
+    assert result.name == "BOOTSTRAP.md"
+    assert (profile_dir / "BOOTSTRAP.md").exists()
+
+
+def test_ensure_bootstrap_marker_idempotent(profile_dir: Path):
+    """Second call after the first should return None — BOOTSTRAP.md
+    already pending."""
+    ensure_default_profile(profile_dir)
+    first = ensure_bootstrap_marker(profile_dir)
+    assert first is not None
+    second = ensure_bootstrap_marker(profile_dir)
+    assert second is None
+
+
+def test_render_tools_section_inserts_block_when_missing(
+    profile_dir: Path,
+):
+    """First call on a TOOLS.md without markers inserts the auto block
+    near the top (after title + intro). Manual content below survives."""
+    from xmclaw.core.persona.loader import render_tools_section
+    ensure_default_profile(profile_dir)
+
+    class _Spec:
+        def __init__(self, name, desc):
+            self.name = name
+            self.description = desc
+
+    specs = [
+        _Spec("bash", "Run a shell command. More text here."),
+        _Spec("file_read", "Read a file from disk."),
+    ]
+    changed = render_tools_section(profile_dir, specs)
+    assert changed is True
+    text = (profile_dir / "TOOLS.md").read_text(encoding="utf-8")
+    assert "<!-- XMC-AUTO-TOOLS:BEGIN -->" in text
+    assert "<!-- XMC-AUTO-TOOLS:END -->" in text
+    assert "`bash` — Run a shell command" in text
+    assert "`file_read` — Read a file from disk" in text
+    # Manual content from template survives.
+    assert "使用准则" in text
+
+
+def test_render_tools_section_replaces_between_markers(profile_dir: Path):
+    """A second render with a different tool set replaces the block
+    in-place — no duplicate insertion, manual content untouched."""
+    from xmclaw.core.persona.loader import render_tools_section
+    ensure_default_profile(profile_dir)
+    # Inject a manual marker we can verify survives.
+    tools_md = profile_dir / "TOOLS.md"
+    tools_md.write_text(
+        tools_md.read_text(encoding="utf-8")
+        + "\n\n## My Custom Section\n\nDO NOT TOUCH",
+        encoding="utf-8",
+    )
+
+    class _Spec:
+        def __init__(self, name, desc):
+            self.name = name
+            self.description = desc
+
+    render_tools_section(profile_dir, [_Spec("foo", "first version")])
+    after_first = tools_md.read_text(encoding="utf-8")
+    assert "`foo` — first version" in after_first
+    assert "DO NOT TOUCH" in after_first
+
+    render_tools_section(profile_dir, [_Spec("bar", "second version")])
+    after_second = tools_md.read_text(encoding="utf-8")
+    # New tool present, old gone.
+    assert "`bar` — second version" in after_second
+    assert "`foo`" not in after_second
+    # Manual section still there.
+    assert "DO NOT TOUCH" in after_second
+    # Exactly one marker pair (no duplicate insertion).
+    assert after_second.count("<!-- XMC-AUTO-TOOLS:BEGIN -->") == 1
+    assert after_second.count("<!-- XMC-AUTO-TOOLS:END -->") == 1
+
+
+def test_render_tools_section_noop_when_unchanged(profile_dir: Path):
+    """Identical tool list → no write (returns False)."""
+    from xmclaw.core.persona.loader import render_tools_section
+    ensure_default_profile(profile_dir)
+
+    class _Spec:
+        def __init__(self, name, desc):
+            self.name = name
+            self.description = desc
+
+    specs = [_Spec("bash", "Run shell.")]
+    assert render_tools_section(profile_dir, specs) is True
+    # Second identical call → no change.
+    assert render_tools_section(profile_dir, specs) is False
+
+
+def test_render_tools_section_skips_when_tools_md_missing(
+    profile_dir: Path,
+):
+    """No TOOLS.md → no-op, returns False (don't create the file from
+    here — that's ensure_default_profile's job)."""
+    from xmclaw.core.persona.loader import render_tools_section
+
+    class _Spec:
+        def __init__(self, name, desc):
+            self.name = name
+            self.description = desc
+
+    # profile_dir is empty (no ensure_default_profile call).
+    result = render_tools_section(profile_dir, [_Spec("bash", "x")])
+    assert result is False
+    assert not (profile_dir / "TOOLS.md").exists()
+
+
 def test_bootstrap_prefix_absent_for_zero_byte_marker(profile_dir: Path):
     # Empty BOOTSTRAP.md (size 0) should NOT trigger bootstrap mode —
     # it's the file-existing-with-content that's the trigger, mirroring

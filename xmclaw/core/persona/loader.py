@@ -197,23 +197,171 @@ def ensure_default_profile(profile_dir: Path) -> list[Path]:
     return written
 
 
-def ensure_bootstrap_marker(profile_dir: Path) -> Path | None:
-    """Write the BOOTSTRAP.md template if it doesn't already exist.
+def _identity_looks_unfilled(profile_dir: Path) -> bool:
+    """True iff IDENTITY.md is still the pristine bundled template.
 
-    Called explicitly when the user wants the first-run interview pattern
-    (or when XMclaw detects it's the first install and the profile dir is
-    fresh). The agent reads BOOTSTRAP.md, runs the interview, writes
+    Wave-27 fix-LAT4: previously ``ensure_bootstrap_marker`` was never
+    called from anywhere, so fresh installs never got BOOTSTRAP.md and
+    the agent never knew to interview the user → IDENTITY.md stayed
+    template forever. We now call it from factory.py on every boot,
+    but it MUST be idempotent + must NOT clobber installs where the
+    user already filled IDENTITY.md by hand. The heuristic: compare
+    against the bundled IDENTITY_TEMPLATE byte-by-byte. ``AUTO_SECTIONS``
+    is configured with ``IDENTITY.md → None`` so nothing appends to it
+    automatically — an exact-match check is robust here.
+    """
+    p = profile_dir / "IDENTITY.md"
+    if not p.exists():
+        return True  # missing → definitely unfilled
+    try:
+        actual = p.read_text(encoding="utf-8")
+    except OSError:
+        return False  # can't read → be conservative, don't trigger
+    return actual.strip() == _templates.IDENTITY_TEMPLATE.strip()
+
+
+def ensure_bootstrap_marker(profile_dir: Path) -> Path | None:
+    """Write BOOTSTRAP.md when the install needs the first-run interview.
+
+    Called every daemon boot from ``factory.py`` after
+    ``ensure_default_profile``. Idempotent + cheap:
+
+      * If BOOTSTRAP.md already exists → return None (interview pending,
+        next agent turn will pick it up via ``bootstrap_prefix``).
+      * Else if IDENTITY.md has been edited beyond the template → return
+        None (user already set up identity, no need to re-interview).
+      * Else write the template and return the new path.
+
+    The agent reads BOOTSTRAP.md, runs the interview dialogue, writes
     IDENTITY.md / USER.md, then deletes BOOTSTRAP.md — same flow as
     OpenClaw and QwenPaw.
     """
     target = profile_dir / "BOOTSTRAP.md"
     if target.exists():
         return None
+    if not _identity_looks_unfilled(profile_dir):
+        return None
     try:
         target.write_text(_templates.BOOTSTRAP_TEMPLATE, encoding="utf-8")
         return target
     except OSError:
         return None
+
+
+# ── Wave-27 fix-LAT4: dynamic TOOLS.md tool-list section ────────────
+
+
+_TOOLS_AUTO_BEGIN = "<!-- XMC-AUTO-TOOLS:BEGIN -->"
+_TOOLS_AUTO_END = "<!-- XMC-AUTO-TOOLS:END -->"
+
+
+def _build_tools_auto_block(tool_specs: list) -> str:
+    """Render a markdown block listing the currently-registered tools.
+
+    Each spec contributes one bullet ``- `tool_name` — first-sentence``.
+    First sentence is the description up to the first ``.`` / ``。`` /
+    newline — the full description can be looked up via the tool schema
+    if the agent needs more detail. We stay terse here because TOOLS.md
+    is read on every turn and a verbose dump bloats the system prompt.
+    """
+    lines = [
+        _TOOLS_AUTO_BEGIN,
+        "## 当前注册的工具 (auto-generated — 每次 daemon 启动重新生成)",
+        "",
+        "_这一段由 daemon 自动维护,不要手编 —— 手编内容放在标记块外面。_",
+        "",
+    ]
+    if not tool_specs:
+        lines.append("_(no tools registered yet)_")
+    else:
+        for spec in tool_specs:
+            name = getattr(spec, "name", "?")
+            desc = (getattr(spec, "description", "") or "").strip()
+            # First sentence — handles English/Chinese terminators.
+            first = desc
+            for sep in (". ", "。", "\n"):
+                idx = first.find(sep)
+                if idx > 0:
+                    first = first[:idx]
+                    break
+            # Hard cap so a single verbose spec can't blow the line out.
+            if len(first) > 220:
+                first = first[:220].rstrip() + "…"
+            lines.append(f"- `{name}` — {first}" if first else f"- `{name}`")
+    lines.append("")
+    lines.append(_TOOLS_AUTO_END)
+    return "\n".join(lines)
+
+
+def render_tools_section(
+    profile_dir: Path,
+    tool_specs: list,
+) -> bool:
+    """Re-render the auto-managed tool-list section inside TOOLS.md.
+
+    Writes/replaces the block between ``<!-- XMC-AUTO-TOOLS:BEGIN -->``
+    and ``<!-- XMC-AUTO-TOOLS:END -->`` in TOOLS.md. Manual content
+    outside those markers is preserved verbatim.
+
+    First-time placement: when no markers exist yet, the block is
+    inserted right after the H1 title + the immediately-following
+    intro paragraph (or at file top if neither). Subsequent renders
+    only touch content between the markers.
+
+    Returns True iff a write happened (block content changed or was
+    inserted), False when the file was already up to date or absent.
+    """
+    target = profile_dir / "TOOLS.md"
+    if not target.exists():
+        return False
+    try:
+        existing = target.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+    new_block = _build_tools_auto_block(tool_specs)
+    begin = existing.find(_TOOLS_AUTO_BEGIN)
+    end = existing.find(_TOOLS_AUTO_END)
+    if begin >= 0 and end > begin:
+        # Replace existing auto-block in place.
+        end_full = end + len(_TOOLS_AUTO_END)
+        new_text = existing[:begin] + new_block + existing[end_full:]
+    else:
+        # Insert after H1 + intro paragraph. Find the first blank line
+        # following the first non-empty line that isn't the H1.
+        lines = existing.splitlines()
+        insert_at = 0
+        seen_h1 = False
+        seen_intro = False
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if not seen_h1 and stripped.startswith("# "):
+                seen_h1 = True
+                continue
+            if seen_h1 and not seen_intro and stripped:
+                seen_intro = True
+                continue
+            if seen_intro and not stripped:
+                insert_at = i + 1
+                break
+        if insert_at <= 0:
+            # H1-only file or just intro — insert at end.
+            insert_at = len(lines)
+        before = "\n".join(lines[:insert_at])
+        after = "\n".join(lines[insert_at:])
+        new_text = (
+            (before + ("\n" if before and not before.endswith("\n") else ""))
+            + new_block + "\n\n"
+            + after
+        )
+
+    if new_text == existing:
+        return False
+    try:
+        target.write_text(new_text, encoding="utf-8")
+        return True
+    except OSError:
+        return False
 
 
 def has_bootstrap_pending(
