@@ -445,6 +445,10 @@ async def test_click_and_fill_operate_on_current_page(
 
 @pytest.mark.asyncio
 async def test_screenshot_returns_base64_png(patched_browser: BrowserTools) -> None:
+    """Wave-27 fix-LAT15b: screenshot now writes bytes to disk and
+    surfaces a path + metadata.attach_image instead of inlining
+    base64 into content. The bytes are still verifiable via the
+    saved file on disk."""
     await patched_browser.invoke(_call(
         "browser_open", {"url": "https://example.com"}, session_id="s1",
     ))
@@ -452,11 +456,20 @@ async def test_screenshot_returns_base64_png(patched_browser: BrowserTools) -> N
         "browser_screenshot", {"full_page": True}, session_id="s1",
     ))
     assert shot.ok is True
-    # data URL starts with the image prefix + valid base64 payload.
-    assert shot.content["data_url"].startswith("data:image/png;base64,")
-    decoded = base64.b64decode(shot.content["data_url"].split(",", 1)[1])
-    # Our fake returns a tiny payload; verify the full_page flag reached it.
+    assert shot.content["mime"] == "image/png"
+    # data_url is no longer inlined (would bloat message history with
+    # Kimi-tokenised-as-1-char/token base64).
+    assert "data_url" not in shot.content
+    # path is set and points to a real PNG file
+    assert "path" in shot.content
+    from pathlib import Path as _P
+    p = _P(shot.content["path"])
+    assert p.exists()
+    decoded = p.read_bytes()
     assert decoded.endswith(b"FULL")
+    # Vision pipeline handshake: metadata.attach_image set so
+    # hop_loop attaches the image to the next LLM call.
+    assert shot.metadata.get("attach_image") == str(p)
 
 
 @pytest.mark.asyncio
@@ -689,7 +702,11 @@ async def test_screenshot_jpeg_format(
     ))
     assert r.ok is True
     assert r.content["mime"] == "image/jpeg"
-    assert r.content["data_url"].startswith("data:image/jpeg;base64,")
+    # Wave-27 fix-LAT15b: data_url no longer inlined into content.
+    # Verify the image landed on disk + vision-pipeline metadata.
+    assert "data_url" not in r.content
+    assert "path" in r.content
+    assert r.metadata.get("attach_image") == r.content["path"]
 
 
 @pytest.mark.asyncio
@@ -713,9 +730,12 @@ async def test_screenshot_spills_to_disk_when_over_cap(
         session_id="s1",
     ))
     assert r.ok is True
+    # Wave-27 fix-LAT15b: screenshots ALWAYS spill to disk now (no
+    # inline data_url branch). The ``truncated`` flag is therefore
+    # no longer set for the "too big to inline" case — every
+    # screenshot just has a path. Verify the file landed.
     assert "data_url" not in r.content
     assert "path" in r.content
-    assert r.content["truncated"] is True
     assert str(tmp_path) in r.content["path"]
     # Side effects record the file path so HonestGrader can verify.
     assert r.side_effects and tmp_path.as_posix() in r.side_effects[0].replace("\\", "/")

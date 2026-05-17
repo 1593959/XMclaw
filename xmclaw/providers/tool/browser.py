@@ -1556,18 +1556,30 @@ class BrowserTools(ToolProvider):
             (str(out),) if spill_ok else ()
         )
 
-        if inline_size <= max_inline:
-            content["data_url"] = f"data:{mime};base64,{b64}"
+        # Wave-27 fix-LAT15b (2026-05-17): DO NOT inline base64
+        # data_url into ``content``. content is what gets persisted
+        # into ``messages`` and resent to the LLM on EVERY subsequent
+        # turn. A typical 1280×800 PNG screenshot is ~70 KB of
+        # base64 chars, and Kimi/GPT/Claude all tokenise high-entropy
+        # base64 at roughly 1 char/token (NOT 4 like normal text).
+        # Empirical: chat-c7040f1e on 2026-05-17 had ONE screenshot
+        # message at 72303 chars in history → ~72K tokens at Kimi's
+        # rate, while ContextCompressor estimated it as 18K
+        # (chars/4). Result: ``ContextCompressor.fire tokens=143799
+        # threshold=217600`` decided NOT to fire, then Kimi rejected
+        # the actual 364K-token request. Drop the inline so the
+        # vision pipeline (metadata.attach_image → next-turn vision
+        # content block) carries the image without polluting
+        # message history.
         if spill_ok:
             content["path"] = str(out)
-        if inline_size > max_inline:
-            content["truncated"] = True
-            content["hint"] = (
-                f"Screenshot was {inline_size} bytes inline — over the "
-                f"{max_inline}-byte cap. Saved to {_Path(out).name} on "
-                "disk; data_url omitted from this content. Set "
-                "max_inline_bytes higher (or format=jpeg with "
-                "quality<80) to inline it."
+        else:
+            # No disk path AND no inline: the LLM has no way to see
+            # this image. Mark explicitly so the agent doesn't think
+            # the call returned a usable result.
+            content["error"] = (
+                "screenshot taken but could not be saved to disk; "
+                "image is unavailable this turn"
             )
 
         # B-VISION: ``attach_image`` is the universal handshake to
