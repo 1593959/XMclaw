@@ -2418,6 +2418,7 @@ def make_lifespan(
         # in the ``finally`` block below. Optional dep — if
         # jupyter_client / ipykernel aren't installed the tool falls
         # back to subprocess and we just don't create a pool here.
+        _kernel_pool_reaper: asyncio.Task[Any] | None = None
         try:
             from xmclaw.providers.tool.kernel_pool import (
                 KernelPool, _check_deps, set_default_pool,
@@ -2426,6 +2427,38 @@ def make_lifespan(
             _kernel_pool = KernelPool(idle_timeout_s=1800.0, max_kernels=16)
             set_default_pool(_kernel_pool)
             log.info("kernel_pool.wired idle_timeout=1800s max=16")
+
+            # 2026-05-18: actually drive reap_idle on a timer. Without
+            # this loop the ``idle_timeout_s=1800`` knob was decorative
+            # — kernels only ever got killed when (a) max_kernels (16)
+            # forced LRU eviction or (b) the daemon shut down. On a
+            # long-running install with intermittent code_python use,
+            # 16 idle ipykernel processes accumulated at ~30-50 MB RSS
+            # each = 500-800 MB resident for kernels nobody had
+            # touched in hours.
+            async def _kernel_pool_reap_loop() -> None:
+                # Tick every 5 minutes — well below the 30-min idle
+                # threshold, conservative on CPU.
+                while True:
+                    try:
+                        await asyncio.sleep(300.0)
+                    except asyncio.CancelledError:
+                        return
+                    try:
+                        killed = await _kernel_pool.reap_idle()
+                        if killed:
+                            log.info(
+                                "kernel_pool.reaped count=%d", killed,
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning(
+                            "kernel_pool.reap_failed err=%s", exc,
+                        )
+
+            _kernel_pool_reaper = asyncio.create_task(
+                _kernel_pool_reap_loop(),
+                name="xmclaw-kernel-pool-reaper",
+            )
         except Exception as exc:  # noqa: BLE001 — deps optional
             _kernel_pool = None
             log.info(
@@ -2443,6 +2476,12 @@ def make_lifespan(
             # rapid restart), every subsequent shutdown step was
             # skipped and background tasks leaked across the daemon's
             # lifetime. Now: each step is independent.
+            if _kernel_pool_reaper is not None:
+                _kernel_pool_reaper.cancel()
+                try:
+                    await _kernel_pool_reaper
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
             if _kernel_pool is not None:
                 try:
                     await _kernel_pool.shutdown_all()
