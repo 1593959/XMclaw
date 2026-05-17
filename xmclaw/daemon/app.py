@@ -2105,5 +2105,25 @@ def create_app(
     return app
 
 
-# Convenience: a default app instance for `uvicorn xmclaw.daemon.app:app`.
-app = create_app()
+# Intentionally NO module-level ``app = create_app()`` here.
+#
+# Pre-2026-05-17 this module ended with ``app = create_app()`` as a
+# "convenience for ``uvicorn xmclaw.daemon.app:app``". In practice no
+# entry point used that import shape — the CLI (``xmclaw start``) and
+# the Windows service runner both call ``create_app(config)`` directly,
+# and tests always go through the factory.
+#
+# The side effects of the module-level call were:
+#   1. ``create_app()`` ran at import time, BEFORE ``setup_logging()``
+#      in cli/main.py:227. The state-loaded log line got rendered with
+#      structlog's default ConsoleRenderer (plain dev format), then a
+#      second invocation from cli/main.py emitted the same line via
+#      the post-setup JSONRenderer — confusing double output in
+#      ``daemon.log``.
+#   2. Every test that imports anything from ``xmclaw.daemon.app``
+#      paid the cost of an echo-mode app boot (cognitive state read,
+#      MultiAgentManager construction, etc).
+#
+# If a future deployment really does want ``uvicorn module:app``
+# style, expose a lazy factory: ``app = create_app(load_config())``
+# in a separate module so the import-time cost is opt-in.
