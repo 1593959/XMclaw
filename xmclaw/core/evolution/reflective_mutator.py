@@ -180,24 +180,60 @@ async def _call_llm(llm: Any, prompt: str) -> str:
     We accept any of the following — covers our internal ``LLMProvider``
     ABC plus typical mocks used in tests:
 
+    * ``LLMProvider.complete(messages: list[Message]) -> LLMResponse``
+      (the production shape since Wave-27; ``.complete`` accepts
+      ``list[Message]`` not ``str``)
     * ``async llm.acomplete(prompt: str) -> str``
-    * ``async llm.complete(prompt: str) -> str``
+    * ``async llm.complete(prompt: str) -> str`` (legacy test mocks)
     * ``llm.complete(prompt: str) -> str`` (sync)
     * ``async llm(prompt) -> str`` / ``llm(prompt) -> str``
 
-    Whatever the call returns, we coerce to ``str``. Exceptions
-    propagate to the caller — :meth:`propose_mutations` catches and
-    converts them to an empty list.
+    Whatever the call returns, we coerce to ``str``. If we got back an
+    ``LLMResponse`` with a ``.content`` attribute, use that — otherwise
+    ``str(result)``. Exceptions propagate; :meth:`propose_mutations`
+    catches them and returns an empty candidate list.
+
+    2026-05-18 fix: pre-fix this function passed ``prompt`` (a ``str``)
+    directly into ``llm.complete``. Production providers
+    (anthropic/openai adapters) iterate the ``messages`` argument
+    looking for ``.role``, so a raw string blew up with
+    ``'str' object has no attribute 'role'``. The signature change
+    on LLMProvider.complete predated this module's adapter, and the
+    crash was masked by ``propose_mutations``'s broad except → empty
+    candidates. Same shape as the planner.py / reasoning.py fixes
+    (d664e5c, 69dd843).
     """
     for attr in ("acomplete", "complete", "generate", "agenerate"):
         fn = getattr(llm, attr, None)
         if fn is None:
             continue
-        result = fn(prompt)
+        # Try the modern list[Message] shape first; fall back to
+        # legacy ``fn(prompt)`` on TypeError so test mocks that still
+        # accept a raw str keep working.
+        try:
+            from xmclaw.providers.llm.base import Message
+            messages = [Message(role="user", content=prompt)]
+            result = fn(messages)
+        except TypeError:
+            result = fn(prompt)
         # If the call returned an awaitable, await it.
         if hasattr(result, "__await__"):
-            result = await result
-        return "" if result is None else str(result)
+            try:
+                result = await result
+            except TypeError:
+                # Awaited form rejected list[Message]; legacy shape
+                # may accept the raw prompt.
+                result = fn(prompt)
+                if hasattr(result, "__await__"):
+                    result = await result
+        if result is None:
+            return ""
+        # LLMResponse-shaped → unwrap .content (str). Anything else →
+        # str(...) coercion as before.
+        content_attr = getattr(result, "content", None)
+        if isinstance(content_attr, str):
+            return content_attr
+        return str(result)
     # Fall back to calling ``llm`` itself.
     if callable(llm):
         result = llm(prompt)
