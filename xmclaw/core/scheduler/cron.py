@@ -92,7 +92,20 @@ def parse_schedule(expr: str, *, now: float) -> float:
             "or use the simpler 'every Nu' form (e.g. 'every 5m')"
         )
     try:
-        c = croniter_cls(expr, time.localtime(now))
+        # croniter 6.x dropped support for ``time.struct_time``; needs
+        # int / float epoch or a datetime. Two TZ traps:
+        #   * A raw epoch is interpreted as UTC, so "0 22 * * *" would
+        #     fire at UTC 22:00 — not 22:00 local in any non-UTC zone.
+        #   * A NAIVE datetime is ALSO treated as UTC by croniter ≥ 2.
+        # The old behaviour (passing ``time.localtime(now)`` to
+        # croniter ≤ 1.x) was a naive struct_time interpreted as
+        # local. To preserve that under croniter 6.x we attach the
+        # system's local TZ explicitly via .astimezone() — croniter
+        # then walks the cron expression in that local zone and we
+        # convert back to an epoch float at the end.
+        import datetime as _dt
+        local_aware = _dt.datetime.fromtimestamp(now).astimezone()
+        c = croniter_cls(expr, local_aware)
         return float(c.get_next())
     except Exception as exc:
         raise ValueError(f"invalid cron expression {expr!r}: {exc}") from exc
