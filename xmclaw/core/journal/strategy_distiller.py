@@ -247,11 +247,37 @@ class StrategyDistiller:
             return []
 
         prompt = _build_prompt(journal_window)
+        # 2026-05-18: same shape as the planner / reasoning /
+        # reflective_mutator fixes — production LLMProvider.complete
+        # takes ``messages: list[Message]``, NOT a raw str + arbitrary
+        # kwargs. The legacy call signature here would have produced
+        # an AttributeError ('str' has no .role) on the first turn
+        # any user with evolution.reasoning_bank.enabled tried this
+        # path, which was then eaten by the broad except below.
         try:
-            raw = await self._llm.complete(prompt, session_id=session_id)
+            from xmclaw.providers.llm.base import Message
+            messages = [Message(role="user", content=prompt)]
+            resp = await self._llm.complete(messages)
+        except TypeError:
+            # Test mocks that still accept the legacy str + session_id
+            # shape — fall through.
+            try:
+                resp = await self._llm.complete(
+                    prompt, session_id=session_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("strategy_distiller.llm_failed: %s", exc)
+                return []
         except Exception as exc:  # noqa: BLE001 — best-effort surface
             _log.warning("strategy_distiller.llm_failed: %s", exc)
             return []
+
+        # LLMResponse → .content; legacy mock → already a str.
+        if isinstance(resp, str):
+            raw = resp
+        else:
+            content_attr = getattr(resp, "content", None)
+            raw = content_attr if isinstance(content_attr, str) else str(resp)
 
         strategies = _parse_response(raw)
         if len(strategies) > self._max:
