@@ -775,9 +775,16 @@ _BACKOFF_MS: dict[FailoverReason, tuple[int, ...]] = {
     FailoverReason.overloaded:         (2000, 5000, 10000),  # 2s / 5s / 10s
     FailoverReason.server_error:       (1500, 4500),         # 1.5s / 4.5s
     FailoverReason.timeout:            (1000, 3000),         # 1s / 3s
-    FailoverReason.context_overflow:   (500,),               # one retry, fast
-    FailoverReason.payload_too_large:  (500,),               # one retry after compress
-    FailoverReason.long_context_tier:  (1000,),              # one retry after compress
+    # Wave-27 fix-LAT12: bumped 1 → 2 retries for context-bloat
+    # reasons. Real failure: Kimi rejected 316K request, 1 forced
+    # compression cut to ~280K (still over 256K limit because one
+    # tool result was 200K verbatim and got kept in protect_tail),
+    # no retries left, error propagated to user. With 2 retries plus
+    # the per-tool-result hard cap added at hop_loop.py:1018, the
+    # second pass actually has a clean payload to send.
+    FailoverReason.context_overflow:   (500, 2000),           # two retries
+    FailoverReason.payload_too_large:  (500, 2000),           # two retries
+    FailoverReason.long_context_tier:  (1000, 3000),          # two retries
     FailoverReason.thinking_signature: (500,),               # one retry, fresh request
     FailoverReason.auth:               (),                   # never retry — rotate
     FailoverReason.auth_permanent:     (),                   # never retry

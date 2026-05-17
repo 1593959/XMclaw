@@ -1016,6 +1016,44 @@ class HopLoopMixin:
                         )
                     else:
                         tool_msg_content = decision.content
+
+                    # Wave-27 fix-LAT12 (2026-05-17): hard per-tool-
+                    # result size cap. A single tool message that's
+                    # 200K+ chars (real-data: ``browser_eval`` returning
+                    # a 300K-char DOM dump on a chaoxing course page,
+                    # ``file_read`` of a 500K log, ``bash`` w/ verbose
+                    # output) can blow the model's context window in
+                    # one shot — Kimi rejected with "exceeded model
+                    # token limit: 262144 (requested: 316217)" because
+                    # ContextCompressor's ``protect_tail`` reserves
+                    # recent tool results verbatim, so a giant one in
+                    # the tail is NEVER pruned. Truncate here at write
+                    # time so it never reaches the LLM. Head + tail
+                    # so error-prone middle gets dropped first; agent
+                    # can re-run with a narrower query when the truncated
+                    # middle was the part it actually needed.
+                    _TOOL_RESULT_MAX_CHARS = 80_000  # ~20K tokens at chars/4
+                    if (
+                        isinstance(tool_msg_content, str)
+                        and len(tool_msg_content) > _TOOL_RESULT_MAX_CHARS
+                    ):
+                        orig_len = len(tool_msg_content)
+                        head_n, tail_n = 50_000, 20_000
+                        tool_msg_content = (
+                            tool_msg_content[:head_n]
+                            + (
+                                f"\n\n…[TRUNCATED {orig_len - head_n - tail_n} "
+                                f"chars from middle — full output was "
+                                f"{orig_len} chars (~{orig_len // 4} tokens). "
+                                f"Head ({head_n}) + tail ({tail_n}) kept. "
+                                f"If the truncated middle is what you need, "
+                                f"re-run the tool with a more targeted "
+                                f"query (smaller selector, narrower path, "
+                                f"line range, head/tail flag, etc.).]…\n\n"
+                            )
+                            + tool_msg_content[-tail_n:]
+                        )
+
                     messages.append(Message(
                         role="tool",
                         content=tool_msg_content,
