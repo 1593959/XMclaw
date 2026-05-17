@@ -178,7 +178,14 @@ _BROWSER_CLICK_SPEC = ToolSpec(
         "(timeout via context default ~15s), scrolls it into view, "
         "clicks, then detects whether a navigation occurred. Returns "
         "the post-click URL + title so the agent knows whether to "
-        "browser_snapshot again."
+        "browser_snapshot again.\n\n"
+        "★ When the selector matches MULTIPLE elements (common with "
+        "``text=...`` against a page that has both a hidden modal AND "
+        "a visible button with the same label), this tool **picks the "
+        "first VISIBLE match by default** rather than blindly using "
+        ".first(). Set ``visible_only=false`` to revert to literal "
+        ".first(). Use ``nth=N`` selector prefix when you need a "
+        "specific zero-indexed match regardless of visibility."
     ),
     parameters_schema={
         "type": "object",
@@ -196,6 +203,18 @@ _BROWSER_CLICK_SPEC = ToolSpec(
                 "description": (
                     "Bypass Playwright's actionability checks (covered "
                     "by overlay, not stable, etc.). Default false."
+                ),
+            },
+            "visible_only": {
+                "type": "boolean",
+                "description": (
+                    "When the selector matches multiple elements, pick "
+                    "the first one that is actually VISIBLE (not "
+                    "display:none / off-screen / opacity:0 / behind "
+                    "overlay). Default true — this fixes the common "
+                    "case where a hidden modal element shadowed the "
+                    "real visible button. Set false to keep the legacy "
+                    ".first() behaviour."
                 ),
             },
             "wait_for_navigation_ms": {
@@ -1025,6 +1044,7 @@ class BrowserTools(ToolProvider):
         if not isinstance(sel, str) or not sel:
             return _fail(call, t0, "missing or empty 'selector'")
         force = bool(call.args.get("force", False))
+        visible_only = bool(call.args.get("visible_only", True))
         wait_nav_ms = int(call.args.get("wait_for_navigation_ms", 2000))
         page = await self._page_for(self._sid(call))
         if page is None or page.url == "about:blank":
@@ -1044,9 +1064,43 @@ class BrowserTools(ToolProvider):
         # actionability checks for the rare case where an overlay
         # blocks the hit-test but the click should still go through.
         # Wave 25.1: _resolve_locator handles iframe prefixes.
+        #
+        # Wave-27 fix-LAT11 (2026-05-17): when the selector matches
+        # MULTIPLE elements (real-world example: ``text=知道了`` on a
+        # learning page that has both a hidden modal AND a visible
+        # button with the same label), Playwright's ``.first`` picks
+        # the FIRST match in DOM order — which is often the hidden
+        # one. The hidden match then fails 15s of "element not visible"
+        # retries and the click times out, even though a perfectly
+        # clickable visible match exists. ``visible_only=true`` (the
+        # default) iterates matches and clicks the first VISIBLE one
+        # instead. Net effect: clicks "just work" in the common case
+        # without the agent having to add ``nth=N`` prefixes by hand.
         try:
             locator = self._resolve_locator(page, sel)
-            await locator.click(force=force)
+            target = locator
+            picked_visible_idx: int | None = None
+            if visible_only:
+                # Probe match count; if >1 try to find a visible one.
+                try:
+                    n = await locator.count()
+                except Exception:  # noqa: BLE001
+                    n = 1
+                if n > 1:
+                    for i in range(min(n, 20)):  # cap probes
+                        candidate = locator.nth(i)
+                        try:
+                            if await candidate.is_visible():
+                                target = candidate
+                                picked_visible_idx = i
+                                break
+                        except Exception:  # noqa: BLE001
+                            continue
+                    # If no visible match found, fall through to the
+                    # original .first behaviour — Playwright's own
+                    # error message will then surface a useful
+                    # "element not visible" timeout.
+            await target.click(force=force)
         except ValueError as exc:
             return _fail(call, t0, str(exc))
         except Exception as exc:  # noqa: BLE001
@@ -1057,10 +1111,20 @@ class BrowserTools(ToolProvider):
                 count = await page.locator(sel).count()
             except Exception:  # noqa: BLE001
                 pass
+            hint = ""
+            if count and count > 1:
+                hint = (
+                    f" — {count} elements matched the selector but none "
+                    f"were visible/actionable. Try a more specific "
+                    f"selector, or pass ``visible_only=false`` if you "
+                    f"actually want the literal first match, or "
+                    f"``nth=N selector`` to pick a specific index."
+                )
             return _fail(
                 call, t0,
                 f"click failed: {type(exc).__name__}: {exc}"
-                + (f" (matched {count} elements)" if count is not None else ""),
+                + (f" (matched {count} elements)" if count is not None else "")
+                + hint,
             )
 
         # Detect a navigation kicked off by the click. We don't strictly
