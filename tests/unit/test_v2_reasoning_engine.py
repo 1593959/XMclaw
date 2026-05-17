@@ -48,8 +48,20 @@ class FakeLLM:
         self.default = default
         self.calls: list[str] = []
 
-    async def complete(self, prompt: str) -> str:
-        self.calls.append(prompt)
+    async def complete(self, prompt) -> str:
+        # 2026-05-17: real LLMProvider.complete takes
+        # ``messages: list[Message]`` post-Wave-27. ReasoningEngine
+        # was updated in the same commit; this fake accepts both
+        # shapes so tests assert on the string prompt the way they
+        # always did.
+        if isinstance(prompt, str):
+            text = prompt
+        elif isinstance(prompt, list) and prompt:
+            content = getattr(prompt[-1], "content", None)
+            text = content if isinstance(content, str) else str(content)
+        else:
+            text = ""
+        self.calls.append(text)
         if self.responses:
             return self.responses.pop(0)
         return self.default

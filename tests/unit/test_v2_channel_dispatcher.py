@@ -77,7 +77,12 @@ class _FakeAgent:
         self.in_flight: set[str] = set()
         self.max_concurrent: dict[str, int] = {}
 
-    async def run_turn(self, session_id: str, content: str) -> None:
+    async def run_turn(
+        self, session_id: str, content: str, **_kwargs: Any,
+    ) -> None:
+        # ``**_kwargs`` swallows any new AgentLoop.run_turn kwargs
+        # (user_images, llm_profile_id, tools_allowlist, …) so this
+        # fake doesn't go stale every time the real signature grows.
         if self._fail:
             raise RuntimeError("simulated turn failure")
         # Track concurrency PER session — used by the lock test below.
@@ -218,7 +223,9 @@ async def test_no_assistant_reply_skips_send() -> None:
     """When the agent's history has no assistant reply, dispatcher
     should NOT send an empty message back."""
     class _SilentAgent(_FakeAgent):
-        async def run_turn(self, sid: str, content: str) -> None:
+        async def run_turn(
+            self, sid: str, content: str, **_kwargs: Any,
+        ) -> None:
             self.calls.append((sid, content))
             # No history append → no assistant reply
 
@@ -261,7 +268,9 @@ class _SlowAgent(_FakeAgent):
         super().__init__(reply=reply)
         self._sleep_s = sleep_s
 
-    async def run_turn(self, session_id: str, content: str) -> None:
+    async def run_turn(
+        self, session_id: str, content: str, **_kwargs: Any,
+    ) -> None:
         await asyncio.sleep(self._sleep_s)
         self.calls.append((session_id, content))
         self._histories.setdefault(session_id, []).append({
@@ -337,7 +346,9 @@ async def test_ack_timer_cancelled_on_run_turn_failure() -> None:
     still clean up gracefully (no unhandled task warning, no second
     final send)."""
     class _FailSlow(_FakeAgent):
-        async def run_turn(self, sid: str, content: str) -> None:
+        async def run_turn(
+            self, sid: str, content: str, **_kwargs: Any,
+        ) -> None:
             await asyncio.sleep(0.1)
             raise RuntimeError("simulated late failure")
 

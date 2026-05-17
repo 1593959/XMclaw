@@ -605,16 +605,40 @@ class ReasoningEngine:
     async def _llm_complete(self, prompt: str) -> str:
         """Wrap LLM call with logging.  Empty / exception → "" so the
         caller's JSON parse returns ``None`` and we fall through to
-        :func:`_empty_result`."""
+        :func:`_empty_result`.
+
+        2026-05-17 fix: real LLM providers (anthropic / openai
+        adapters) expect ``complete(messages: list[Message], ...)``,
+        not a raw str. Passing a str caused the anthropic adapter
+        to iterate it character-by-character looking for ``.role``,
+        producing the long-running "ReasoningEngine LLM call failed:
+        'str' object has no attribute 'role'" warning seen on every
+        reasoning tick. Same shape as the planner.py fix (d664e5c).
+        """
         if self._llm is None:
             return ""
         try:
-            out = await self._llm.complete(prompt)
+            complete_fn = getattr(self._llm, "complete", None)
+            if callable(complete_fn):
+                from xmclaw.providers.llm.base import Message
+                wrapped = [Message(role="user", content=prompt)]
+                out = await complete_fn(wrapped)
+            elif callable(self._llm):
+                # Test fakes sometimes use a bare callable; keep
+                # that working.
+                out = await self._llm(prompt)
+            else:
+                return ""
         except Exception as exc:  # noqa: BLE001 — never let LLM crash us
             _log.warning("ReasoningEngine LLM call failed: %s", exc)
             return ""
         if out is None:
             return ""
+        # LLMResponse exposes .content; if a plain str came back
+        # (older test fakes) just use it.
+        content_attr = getattr(out, "content", None)
+        if isinstance(content_attr, str):
+            return content_attr
         return str(out)
 
     async def _collect_causal_evidence(self, hypothesis: str) -> list[str]:
