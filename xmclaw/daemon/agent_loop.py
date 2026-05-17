@@ -792,37 +792,55 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
 
         # Jarvisification: register the user message as an attention
         # focus so the cognitive state can track salience across turns.
-        # B-LATENCY-prep: compute_salience may embed the user message
-        # against every active goal (state.py:_semantic_relevance). A
-        # cold or contended embedder turns that into 2-10s of blocking
-        # work on the user-turn path. Hard-cap to 10.0s — past that we
-        # silently fall back to the default 0.5 salience. 10s gives a
-        # slow local embedder room to produce a real score (better
-        # cognition than the heuristic fallback) without running away.
+        # B-LATENCY-prep / 2026-05-18: fire-and-forget. The previous
+        # implementation used ``await asyncio.wait_for(...,
+        # timeout=10.0)`` so the user turn waited up to 10s for the
+        # embedder. Real failure mode: when the embedder doesn't
+        # respond to cancellation (sync-blocking SDK call inside
+        # httpx, or a misbehaving local Ollama), wait_for cancels
+        # the inner coroutine but still awaits it on shutdown —
+        # producing the 15s "salience" line in turn_prep_slow on
+        # chat-c7040f1e. The result this score feeds into is
+        # ``attention_focus`` used by the NEXT turn's cognitive
+        # tick, so blocking the CURRENT user turn is the wrong
+        # cadence. Spawn the work as a background task; the focus
+        # gets added when (if) it finishes, the current turn moves
+        # on instantly. Exceptions still get swallowed (cognition is
+        # observational, not load-bearing).
         if self._cognitive_state is not None and user_message:
             _t = time.monotonic()
-            try:
-                salience = await asyncio.wait_for(
-                    self._cognitive_state.compute_salience(
-                        percept_id=f"msg:{session_id}:{time.time()}",
-                        content=user_message[:200],
+            cs = self._cognitive_state
+            short_content = user_message[:200]
+            focus_pid = f"msg:{session_id}:{time.time()}"
+
+            async def _bg_salience() -> None:
+                try:
+                    salience = await cs.compute_salience(
+                        percept_id=focus_pid,
+                        content=short_content,
                         urgency=0.6,
                         # Phase 4: let semantic relevance auto-compute
                         # when embedder is wired; fallback to heuristic.
                         relevance=None,
-                    ),
-                    timeout=10.0,
-                )
-                from xmclaw.cognition.state import AttentionFocus
-                self._cognitive_state.add_focus(
-                    AttentionFocus(
-                        percept_id=f"msg:{session_id}:{time.time()}",
-                        content=user_message[:200],
-                        salience_score=salience,
                     )
-                )
-            except (asyncio.TimeoutError, Exception):  # noqa: BLE001
-                pass  # cognition is best-effort
+                    from xmclaw.cognition.state import AttentionFocus
+                    cs.add_focus(
+                        AttentionFocus(
+                            percept_id=focus_pid,
+                            content=short_content,
+                            salience_score=salience,
+                        )
+                    )
+                except Exception:  # noqa: BLE001 — cognition best-effort
+                    pass
+
+            bg_task = asyncio.create_task(
+                _bg_salience(), name=f"salience-{session_id[:8]}",
+            )
+            post_sampling_bg = getattr(self, "_post_sampling_bg", None)
+            if post_sampling_bg is not None:
+                post_sampling_bg.add(bg_task)
+                bg_task.add_done_callback(post_sampling_bg.discard)
             _prep_mark("salience", _t)
 
         # Resume prior history for this session; the first turn starts empty.
