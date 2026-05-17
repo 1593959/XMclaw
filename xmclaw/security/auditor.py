@@ -33,6 +33,12 @@ class SecurityAuditor:
 
     def __init__(self, db_path: str | Path | None = None) -> None:
         self.db_path = str(db_path or default_security_audit_db_path())
+        # SQLite refuses to open a file whose parent doesn't exist
+        # with ``OperationalError: unable to open database file``.
+        # Make the parent eagerly so tests pointing XMC_DATA_DIR at a
+        # fresh tmp_path don't trip — and so a fresh install with no
+        # ~/.xmclaw/v2/ directory yet doesn't crash on first start.
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._ensure_schema()
