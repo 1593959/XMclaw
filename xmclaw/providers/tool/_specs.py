@@ -466,6 +466,45 @@ _WEB_SEARCH_SPEC = ToolSpec(
     },
 )
 
+_OPEN_IN_USER_BROWSER_SPEC = ToolSpec(
+    name="open_in_user_browser",
+    description=(
+        "Open a URL in the USER'S DESKTOP BROWSER (Chrome / Edge / "
+        "Firefox / whatever they normally use) — i.e. their real "
+        "foreground window, with their bookmarks, extensions, "
+        "saved logins, and 2FA already set up.\n\n"
+        "Use when:\n"
+        "  • The user needs to SEE the page (exam registration "
+        "page, dashboard, signup form, document, image)\n"
+        "  • Manual interaction is required (CAPTCHA, 2FA, manual "
+        "approval, a 'click here to authorize' page)\n"
+        "  • You want to hand the user a result link (certificate, "
+        "PR / issue URL, generated artefact)\n"
+        "  • The user said 'show me' / '我看看' / '打开给我' / "
+        "anything that implies THEIR eyes on the page\n\n"
+        "CONTRAST with ``browser_open`` (Playwright): that spins up "
+        "a HEADLESS browser inside my daemon process. The user CAN "
+        "NOT see it. It's for automation: scraping, batch clicks, "
+        "running JS, taking screenshots for ME to look at. If you "
+        "browser_open a registration form you can't see, the user "
+        "literally has no way to fill it in. Pick this tool "
+        "(open_in_user_browser) for human-facing pages, browser_* "
+        "for agent-facing ones.\n\n"
+        "Returns immediately after launching; the user's browser "
+        "takes over from here. The URL must be http(s)://."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "Full http(s):// URL.",
+            },
+        },
+        "required": ["url"],
+    },
+)
+
 _TODO_WRITE_SPEC = ToolSpec(
     name="todo_write",
     description=(

@@ -340,6 +340,69 @@ class BuiltinToolsShellMixin:
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 
+    async def _open_in_user_browser(
+        self, call: ToolCall, t0: float,
+    ) -> ToolResult:
+        """Open a URL in the user's foreground desktop browser.
+
+        Wave-27 fix-LAT9: pre-fix, the agent had ONE browser path —
+        headless Playwright (browser_open) — which the user can't see.
+        For tasks like exam registration / dashboard inspection /
+        anything that needs the user to LOOK at or INTERACT with a
+        page, the agent had to dump the URL string in chat and hope
+        the user clicked. Now there's a clean tool that calls
+        ``webbrowser.open(url, new=2)`` — Python stdlib, routes through
+        the OS's URL handler (which is the user's default browser
+        with all their bookmarks / 2FA / extensions / saved logins
+        intact).
+
+        SSRF check is NOT applied here. The threat model is
+        "user clicks a sketchy link the agent suggested", not "agent
+        exfiltrates secrets via internal IP fetch". The user's
+        browser is the audience, not me, so loopback /
+        private-net URLs are legitimate (local dev servers,
+        dashboards, etc.).
+        """
+        url = call.args.get("url")
+        if not isinstance(url, str) or not url.strip():
+            return _fail(call, t0, "missing or empty 'url' argument")
+        u = url.strip()
+        if not (u.startswith("http://") or u.startswith("https://")):
+            return _fail(
+                call, t0,
+                f"url must start with http(s)://, got {u!r}",
+            )
+        import webbrowser
+        try:
+            launched = webbrowser.open(u, new=2)  # new=2 = new tab
+        except Exception as exc:  # noqa: BLE001
+            return _fail(
+                call, t0,
+                f"webbrowser.open failed ({type(exc).__name__}): {exc}",
+            )
+        if not launched:
+            return _fail(
+                call, t0,
+                "webbrowser.open returned False — no default browser "
+                "registered, or the URL handler failed. Tell the user "
+                "to open the URL manually.",
+            )
+        return ToolResult(
+            call_id=call.id,
+            ok=True,
+            content={
+                "url": u,
+                "launched": True,
+                "note": (
+                    "Opened in user's default desktop browser. Tell "
+                    "the user what they should do on that page — "
+                    "they're looking at it now, not me."
+                ),
+            },
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
     async def _web_search(self, call: ToolCall, t0: float) -> ToolResult:
         """Dispatch to the configured search backend.
 

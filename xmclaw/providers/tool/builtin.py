@@ -86,6 +86,7 @@ from xmclaw.providers.tool._specs import (  # noqa: F401
     _UNDO_RECENT_SPEC as _UNDO_RECENT_SPEC,
     _WEB_FETCH_SPEC as _WEB_FETCH_SPEC,
     _WEB_SEARCH_SPEC as _WEB_SEARCH_SPEC,
+    _OPEN_IN_USER_BROWSER_SPEC as _OPEN_IN_USER_BROWSER_SPEC,
 )
 from xmclaw.providers.tool._helpers import (  # noqa: F401
     PERSONA_CHAR_CAPS as PERSONA_CHAR_CAPS,
@@ -338,7 +339,10 @@ class BuiltinTools(
         if self._enable_bash:
             specs.append(_BASH_SPEC)
         if self._enable_web:
-            specs.extend([_WEB_FETCH_SPEC, _WEB_SEARCH_SPEC])
+            specs.extend([
+                _WEB_FETCH_SPEC, _WEB_SEARCH_SPEC,
+                _OPEN_IN_USER_BROWSER_SPEC,
+            ])
         specs.extend([_TODO_WRITE_SPEC, _TODO_READ_SPEC, _UPDATE_FOCUS_SPEC])
         # Self-modifying memory tools are gated by the persona_dir
         # provider — without it we have nowhere to write, so we don't
@@ -447,6 +451,10 @@ class BuiltinTools(
                 if not self._enable_web:
                     return _fail(call, t0, "web tools are disabled in config")
                 return await self._web_search(call, t0)
+            if call.name == "open_in_user_browser":
+                if not self._enable_web:
+                    return _fail(call, t0, "web tools are disabled in config")
+                return await self._open_in_user_browser(call, t0)
             if call.name == "todo_write":
                 return await self._todo_write(call, t0)
             if call.name == "todo_read":
