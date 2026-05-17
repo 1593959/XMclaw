@@ -804,23 +804,46 @@ def _build_repair_prompt(
 async def _call_llm(llm: Any, prompt: str) -> str:
     """Invoke the LLM in the most permissive way the duck supports.
 
-    Tries ``llm.complete(prompt, response_format='json')`` first; falls
-    back to ``llm.complete(prompt)`` then ``llm(prompt)``. Awaits the
-    return value if it is a coroutine.
+    Wave-27 fix-LAT16 (2026-05-17): the previous version passed
+    ``prompt`` (a raw string) as the first positional arg to
+    ``llm.complete``. The real ``LLMProvider.complete(messages:
+    list[Message], ...)`` then iterated the string character-by-
+    character, treating each char as a Message, and crashed with
+    ``AttributeError: 'str' object has no attribute 'role'`` inside
+    the anthropic translator. Result: plan-first decomposition has
+    been silently failing on every turn for any install using a
+    real LLMProvider (i.e. all production users). Now we wrap the
+    prompt as a single user Message before calling, and unwrap
+    ``LLMResponse.content`` on the return side.
+
+    Test-fake LLMs that are simple callables (``llm(prompt) ->
+    str``) still work via the fallback branch.
     """
     fn = getattr(llm, "complete", None)
     if callable(fn):
+        # Build a [Message] list — that's the LLMProvider contract.
+        # Lazy-import so this module stays importable when running
+        # planner tests with a stub LLM (no provider stack needed).
+        from xmclaw.providers.llm.base import Message
+        wrapped = [Message(role="user", content=prompt)]
         try:
-            result = fn(prompt, response_format="json")
+            result = fn(wrapped, response_format="json")
         except TypeError:
-            result = fn(prompt)
+            result = fn(wrapped)
     elif callable(llm):
+        # Test-fake path: callable that takes a raw string. Don't
+        # wrap so existing planner unit tests keep working.
         result = llm(prompt)
     else:
         raise TypeError("Planner: llm has neither .complete nor __call__")
 
     if asyncio.iscoroutine(result):
         result = await result
+
+    # Unwrap LLMResponse → .content (the actual generated text).
+    content_attr = getattr(result, "content", None)
+    if isinstance(content_attr, str):
+        return content_attr
 
     if isinstance(result, str):
         return result

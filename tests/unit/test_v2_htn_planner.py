@@ -27,16 +27,35 @@ from xmclaw.cognition.planner import (
 
 
 class FakeLLM:
-    """Minimal LLM duck. Returns canned JSON strings in order."""
+    """Minimal LLM duck. Returns canned JSON strings in order.
+
+    Wave-27 fix-LAT16: the planner's ``_call_llm`` now wraps the
+    prompt as ``list[Message]`` before passing to ``.complete`` —
+    that's the real LLMProvider contract. The fake accepts BOTH
+    shapes for backward-compat with older tests that called
+    ``complete(prompt: str)`` directly. ``self.calls`` stays a list
+    of strings (the user-message content) so existing
+    ``"phrase" in llm.calls[0]`` substring assertions keep working.
+    """
 
     def __init__(self, responses: list[Any]) -> None:
         self._responses = list(responses)
         self.calls: list[str] = []
 
     async def complete(
-        self, prompt: str, *, response_format: str = "json"
+        self, prompt: Any, *, response_format: str = "json",
     ) -> str:
-        self.calls.append(prompt)
+        # Accept both the new list[Message] contract and the legacy
+        # str prompt. Extract the user-message content either way.
+        text: str
+        if isinstance(prompt, str):
+            text = prompt
+        elif isinstance(prompt, list) and prompt:
+            content = getattr(prompt[-1], "content", None)
+            text = content if isinstance(content, str) else str(content)
+        else:
+            text = str(prompt)
+        self.calls.append(text)
         if not self._responses:
             return "{}"
         nxt = self._responses.pop(0)
