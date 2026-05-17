@@ -739,15 +739,20 @@ async def test_skill_proposer_exception_captured_in_summary() -> None:
 
 @pytest.mark.asyncio
 async def test_tick_event_published_to_event_bus() -> None:
-    """After a successful tick, a COGNITIVE_DAEMON_TICK event lands on
-    the wired event_bus."""
+    """After a NON-IDLE tick, a COGNITIVE_DAEMON_TICK event lands on
+    the wired event_bus. Idle-tick suppression is covered by the
+    sibling test below."""
     from xmclaw.core.bus.events import EventType
 
     bus = FakeEventBus()
+    # 2026-05-18: feed one percept so the tick produces actionable
+    # signal and trips the "interesting" gate that suppresses idle
+    # ticks (cognitive_daemon.py:_run_tick). Without this the bus
+    # would (correctly) see zero published events.
     daemon = CognitiveDaemon(
         config=CognitiveDaemonConfig(),
         bus=PerceptionBus(),
-        attention=FakeAttention(responses=[[]]),
+        attention=FakeAttention(responses=[[make_percept(pid="p1")]]),
         event_bus=bus,
     )
     await daemon.tick_once()
@@ -759,6 +764,33 @@ async def test_tick_event_published_to_event_bus() -> None:
     payload = tick_events[0].payload
     assert "tick" in payload
     assert "timestamp" in payload
+
+
+@pytest.mark.asyncio
+async def test_idle_tick_does_not_publish_to_event_bus() -> None:
+    """2026-05-18: when a tick has zero percepts / plans / reflections
+    / experiments / errors, it must NOT publish to the event bus.
+    Suppression keeps events.db from accumulating 86400 noise rows/day
+    on a quiet machine. The TickStore (ticks.db) still gets the row
+    via its own ``save`` call — that's the canonical trend source."""
+    from xmclaw.core.bus.events import EventType
+
+    bus = FakeEventBus()
+    daemon = CognitiveDaemon(
+        config=CognitiveDaemonConfig(),
+        bus=PerceptionBus(),
+        attention=FakeAttention(responses=[[]]),
+        event_bus=bus,
+    )
+    summary = await daemon.tick_once()
+    # The tick itself ran (returned summary), just no event surfaced.
+    assert summary["tick"] == 1
+    assert summary["n_percepts"] == 0
+    tick_events = [
+        e for e in bus.published
+        if getattr(e, "type", None) == EventType.COGNITIVE_DAEMON_TICK
+    ]
+    assert tick_events == []
 
 
 @pytest.mark.asyncio

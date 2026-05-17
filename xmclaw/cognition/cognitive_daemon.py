@@ -449,22 +449,48 @@ class CognitiveDaemon:
         # Publish tick summary to the event bus so dashboards / audit
         # logs / health monitors can observe daemon activity without
         # polling.
+        #
+        # 2026-05-18: skip the publish on FULLY-IDLE ticks. The
+        # daemon runs at heartbeat_hz=1.0; a quiet machine produces
+        # 86400 ticks/day, almost all with n_percepts=0,
+        # n_goals_spawned=0, n_plans_executed=0, no reflections, no
+        # skill proposals, no errors. Real-data on this install:
+        # ``cognitive_daemon_tick`` is 40% of events.db (33420 /
+        # 82130). Skipping idle ticks halves events.db growth
+        # without losing any observable signal — ticks.db (which
+        # backs the /daemon/history endpoint, the only consumer of
+        # per-tick trend data) still gets every tick via
+        # ``tick_store.save`` above. Nothing on the event bus
+        # currently consumes cognitive_daemon_tick (grep across
+        # xmclaw/daemon/static + xmclaw/cognition turned up zero
+        # consumers — only a few "source label" strings in
+        # self_experiment.py).
         if self._event_bus is not None:
-            try:
-                from xmclaw.core.bus.events import EventType, make_event
+            interesting = (
+                summary.get("n_percepts", 0)
+                or summary.get("n_goals_spawned", 0)
+                or summary.get("n_plans_executed", 0)
+                or summary.get("ran_experiment", False)
+                or summary.get("n_reflections", 0)
+                or summary.get("n_skill_proposals", 0)
+                or summary.get("errors")
+            )
+            if interesting:
+                try:
+                    from xmclaw.core.bus.events import EventType, make_event
 
-                event = make_event(
-                    session_id="_system:cognitive_daemon",
-                    agent_id="cognitive-daemon",
-                    type=EventType.COGNITIVE_DAEMON_TICK,
-                    payload={
-                        **summary,
-                        "timestamp": time.time(),
-                    },
-                )
-                await self._event_bus.publish(event)
-            except Exception:  # noqa: BLE001
-                logger.exception("CognitiveDaemon: failed to publish tick event")
+                    event = make_event(
+                        session_id="_system:cognitive_daemon",
+                        agent_id="cognitive-daemon",
+                        type=EventType.COGNITIVE_DAEMON_TICK,
+                        payload={
+                            **summary,
+                            "timestamp": time.time(),
+                        },
+                    )
+                    await self._event_bus.publish(event)
+                except Exception:  # noqa: BLE001
+                    logger.exception("CognitiveDaemon: failed to publish tick event")
 
         return summary
 
