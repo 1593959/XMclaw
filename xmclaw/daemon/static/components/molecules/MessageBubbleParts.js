@@ -197,7 +197,7 @@ export function MarkdownBody({ content }) {
     return html`<div class="xmc-msg__body xmc-md"></div>`;
   }
   // Wave 26 fix-3: click delegation for inline markdown images. The
-  // ``<img>`` lives inside a sanitized HTML blob (we can't attach an
+  // '<img>' lives inside a sanitized HTML blob (we can't attach an
   // onclick in the source string — DOMPurify would strip it), so we
   // listen on the wrapper and dispatch openLightbox when the click
   // target is an image.

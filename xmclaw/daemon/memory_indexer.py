@@ -470,8 +470,18 @@ class MemoryFileIndexer:
 
     async def _index_file(self, path: Path) -> tuple[int, int, int]:
         """Index one file. Returns (added, deleted, unchanged)."""
+        # 2026-05-17: read both the text AND the mtime up front so a
+        # subsequent unlink (user deletes a scratch file while the
+        # indexer is mid-tick) can't race with the per-chunk
+        # ``os.path.getmtime(path)`` call below. Previously the read
+        # succeeded → we chunked → we embedded → we tried to write
+        # chunks with ``ts=os.path.getmtime(path)`` and got
+        # FileNotFoundError, which then surfaced as the noisy
+        # ``memory_indexer.file_failed`` warning on top of having
+        # done useless embed work.
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
+            file_mtime = os.path.getmtime(path)
         except OSError:
             return (0, 0, 0)
 
@@ -558,7 +568,7 @@ class MemoryFileIndexer:
                         "provider": "indexer",
                     },
                     embedding=tuple(vec),
-                    ts=os.path.getmtime(path),
+                    ts=file_mtime,
                 ),
             )
             added += 1
