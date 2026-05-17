@@ -52,7 +52,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -88,10 +88,33 @@ class CognitiveDaemonConfig:
 
     max_pending_goals: int = 16
 
-    # Phase D: warn when any subsystem exceeds this latency (ms).
-    # 500 ms default at 1 Hz heartbeat means a single slow step
-    # consumes half the tick budget — worth surfacing.
+    # Phase D: warn when a subsystem exceeds its latency budget.
+    # 500ms at 1 Hz heartbeat is the default for HEURISTIC subsystems
+    # (attention, react, goals) — those are DB queries + python
+    # computation; 500ms is a real regression signal.
+    #
+    # LLM-bound subsystems (reflection, skills, experiment) get a
+    # MUCH higher budget because LLM calls naturally take seconds.
+    # Pre-2026-05-17 a single bucket of 500ms applied to everything,
+    # so every reflection tick that called Kimi (5–15s typical for a
+    # multi-sentence prompt) emitted a spurious slow_subsystem error.
+    # Empirical from the user's MEMORY.md auto-extracted reflections
+    # on 2026-05-17: the agent kept observing its own "reflection
+    # cycle took 11 seconds, exceeded threshold" notes and concluded
+    # the system was failing — when in fact 11s for an LLM call is
+    # normal-and-good.
     slow_subsystem_threshold_ms: float = 500.0
+    # Map of subsystem-name → custom threshold. Subsystems not listed
+    # use ``slow_subsystem_threshold_ms``. Override defaults via
+    # config (cognition.slow_subsystem_thresholds) when introducing a
+    # new LLM-bound subsystem.
+    slow_subsystem_thresholds: dict[str, float] = field(
+        default_factory=lambda: {
+            "reflection": 30_000.0,  # Kimi call, occasionally 20s+
+            "skills":     30_000.0,  # LLM-driven skill proposer
+            "experiment": 60_000.0,  # multi-step LLM-driven experiment
+        },
+    )
 
 
 # ── Daemon ────────────────────────────────────────────────────────────
@@ -385,9 +408,13 @@ class CognitiveDaemon:
                     f"skill_proposer: {type(exc).__name__}: {exc}",
                 )
 
-        # Phase D: slow-subsystem warnings (non-blocking).
-        threshold = self._config.slow_subsystem_threshold_ms
+        # Phase D: slow-subsystem warnings (non-blocking). Per-subsystem
+        # override so LLM-bound subsystems don't constantly trip the
+        # heuristic-tier threshold. See ``slow_subsystem_thresholds``.
+        default_threshold = self._config.slow_subsystem_threshold_ms
+        per_subsys = self._config.slow_subsystem_thresholds
         for subsys, ms in latency_ms.items():
+            threshold = per_subsys.get(subsys, default_threshold)
             if ms >= threshold:
                 errors.append(
                     f"slow_subsystem: {subsys}={ms:.1f}ms "
