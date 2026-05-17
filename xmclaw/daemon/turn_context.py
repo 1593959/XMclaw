@@ -30,6 +30,20 @@ _MEMORY_SYS_NOTE_RE = _re_mem.compile(
 _GOAL_ANCHOR_MARKER_RE = _re_mem.compile(
     r"\[GOAL-ANCHOR\][\s\S]*", _re_mem.IGNORECASE,
 )
+# 2026-05-17: turn-hint is appended to user messages by agent_loop
+# when none of the local skills matched the query (see
+# agent_loop.py:1510 ``skill_browse_hint``). Same shape as
+# [GOAL-ANCHOR] — strip everything from the marker onwards before
+# persisting. Without this, the hint accumulates in sessions.db, the
+# next turn's ``prior`` hydrates it as part of the previous user
+# message, the LLM sees N copies of "你的本地 N 个技能里没有一个匹配
+# 本次查询", and ContextCompressor's token estimate counts each
+# replay (~170 tokens / replay for the Chinese body) toward the
+# budget. Inflated estimate fires compression early and confuses
+# the LLM about which hint applied to which turn.
+_TURN_HINT_MARKER_RE = _re_mem.compile(
+    r"\[turn hint\][\s\S]*", _re_mem.IGNORECASE,
+)
 # B-202: curriculum-edit hint also rides on the user message and
 # must be stripped before persistence — otherwise the on-disk
 # history records a "[System note: ...]" framing as if the user
@@ -227,4 +241,8 @@ def _sanitize_memory_context(text: str) -> str:
     # Batch A.1: strip everything from "[GOAL-ANCHOR]" onward so the
     # on-disk record doesn't accrete one anchor block per N hops.
     out = _GOAL_ANCHOR_MARKER_RE.sub("", out)
+    # 2026-05-17: same treatment for [turn hint] — agent-internal
+    # nudge appended by agent_loop when no skill matched. See the
+    # regex's docstring for the failure mode.
+    out = _TURN_HINT_MARKER_RE.sub("", out)
     return out.rstrip()

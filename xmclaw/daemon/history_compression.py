@@ -702,6 +702,13 @@ class HistoryCompressionMixin:
             "curriculum-hint",
             "curriculum-strategies",
             "memory-files",
+            # 2026-05-17: ``[turn hint]`` is appended to user
+            # messages by agent_loop.py when no local skill matched
+            # the query. Same "in-flight scaffolding leaking into
+            # persisted history" failure mode as GOAL-ANCHOR; both
+            # the marker-detection here AND turn_context's regex
+            # stripper need to know about it.
+            "[turn hint]",
         )
         for m in history:
             # 2026-05-17: drop GOAL-ANCHOR user messages entirely from
