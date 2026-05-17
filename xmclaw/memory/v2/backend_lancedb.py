@@ -192,9 +192,65 @@ class LanceDBVectorBackend:
             existing = list(getattr(page, "tables", []) or page)
             if self._table_name in existing:
                 self._table = await self._db.open_table(self._table_name)
+                # Wave-27 fix-LAT15 (2026-05-17): migrate schema when
+                # the on-disk table predates a code-side schema
+                # addition. The 2026-05-15 ``bucket`` field add
+                # (refactor B Phase 1) shipped without a migration
+                # step, so every prod install with a table created
+                # before that date silently fails every fact write
+                # with "Field 'bucket' not found in target schema".
+                # Real-data: chat-c7040f1e on 2026-05-17 logged
+                # ``key_info_extractor.remember_failed`` every user
+                # message because of this. add_columns() is
+                # idempotent through the missing-check below.
+                await self._maybe_add_missing_columns()
             else:
                 self._table = await self._db.create_table(
                     self._table_name, schema=self._schema_cls,
+                )
+
+    async def _maybe_add_missing_columns(self) -> None:
+        """Add columns that the code-side schema declares but the
+        on-disk table is missing. Each new column is added with an
+        empty-string / 0.0 default so existing rows fit the new
+        schema without rewrite.
+
+        Idempotent: only adds columns when missing. Safe to call on
+        every ``_ensure_ready``.
+        """
+        from xmclaw.utils.log import get_logger
+        log = get_logger(__name__)
+        assert self._table is not None
+        try:
+            schema = await self._table.schema()
+            on_disk = {f.name for f in schema}
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "lancedb.schema_introspect_failed table=%s err=%s",
+                self._table_name, exc,
+            )
+            return
+        # (col_name, SQL default) — extend this list whenever the
+        # code-side schema gains a new field. Defaults must be valid
+        # Lance SQL expressions evaluated per-row.
+        _MIGRATIONS: list[tuple[str, str]] = [
+            ("bucket", "''"),  # Wave-27 fix-LAT15 / refactor B Phase 1
+        ]
+        for col, default in _MIGRATIONS:
+            if col in on_disk:
+                continue
+            try:
+                await self._table.add_columns({col: default})
+                log.info(
+                    "lancedb.schema_migrated table=%s column=%s "
+                    "default=%s",
+                    self._table_name, col, default,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "lancedb.schema_migration_failed table=%s "
+                    "column=%s err=%s — future writes WILL fail",
+                    self._table_name, col, exc,
                 )
 
     # ── Protocol surface ────────────────────────────────────────
