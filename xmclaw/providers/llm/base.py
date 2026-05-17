@@ -17,29 +17,21 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from xmclaw.core.ir import ToolCall, ToolCallShape, ToolSpec
+from xmclaw.core.ir import Message, ToolCall, ToolCallShape, ToolSpec
+
+# 2026-05-18: Message moved to xmclaw.core.ir.message so core-side
+# modules (planner, reasoning, reflective_mutator, strategy_distiller)
+# can build Message instances without reaching back into providers/
+# and tripping check_import_direction's "core cannot import from
+# providers" rule. ``Message`` is re-exported here so the ~40 call
+# sites that do ``from xmclaw.providers.llm.base import Message``
+# keep working — same object, identity check passes.
 
 OnChunkCallback = Callable[[str], Awaitable[None]]
 # B-91: separate channel for reasoning / extended-thinking deltas.
 # Same signature as OnChunkCallback so callers can wire either or
 # both. Distinct alias to make the call-site intent obvious.
 OnThinkingChunkCallback = Callable[[str], Awaitable[None]]
-
-
-@dataclass(frozen=True, slots=True)
-class Message:
-    role: str  # "system" | "user" | "assistant" | "tool"
-    content: str
-    tool_calls: tuple[ToolCall, ...] = ()
-    tool_call_id: str | None = None  # for role=tool
-    # B-Vision: image attachments for user-role messages. Each entry is
-    # either a local file path (translator reads + base64-encodes) or a
-    # ``data:`` URL (passes through). Used by the computer-use loop —
-    # after ``screen_capture``, hop_loop injects a synthetic user message
-    # with the screenshot here so the LLM SEES the screen instead of
-    # squinting at OCR text. Ignored for non-user roles. Empty tuple =
-    # plain text-only message (default, backwards-compatible).
-    images: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

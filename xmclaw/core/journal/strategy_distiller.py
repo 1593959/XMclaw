@@ -255,7 +255,10 @@ class StrategyDistiller:
         # any user with evolution.reasoning_bank.enabled tried this
         # path, which was then eaten by the broad except below.
         try:
-            from xmclaw.providers.llm.base import Message
+            # Import Message from core.ir, not providers.llm.base —
+            # core/ must not reach back into providers/ per the
+            # import-direction rule (check_import_direction.py).
+            from xmclaw.core.ir import Message
             messages = [Message(role="user", content=prompt)]
             resp = await self._llm.complete(messages)
         except TypeError:

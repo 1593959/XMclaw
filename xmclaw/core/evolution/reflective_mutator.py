@@ -209,9 +209,11 @@ async def _call_llm(llm: Any, prompt: str) -> str:
             continue
         # Try the modern list[Message] shape first; fall back to
         # legacy ``fn(prompt)`` on TypeError so test mocks that still
-        # accept a raw str keep working.
+        # accept a raw str keep working. Import Message from core.ir
+        # (not providers.llm.base) to stay on the right side of the
+        # import-direction rule — see Wave-29 2026-05-18 commit.
         try:
-            from xmclaw.providers.llm.base import Message
+            from xmclaw.core.ir import Message
             messages = [Message(role="user", content=prompt)]
             result = fn(messages)
         except TypeError:

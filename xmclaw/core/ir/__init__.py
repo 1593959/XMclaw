@@ -9,11 +9,13 @@ from xmclaw.core.ir.media import (
     MediaKind,
     normalize_attachments,
 )
+from xmclaw.core.ir.message import Message
 from xmclaw.core.ir.toolcall import ToolCall, ToolCallShape, ToolResult, ToolSpec
 
 __all__ = [
     "MediaAttachment",
     "MediaKind",
+    "Message",
     "ToolCall",
     "ToolCallShape",
     "ToolResult",
