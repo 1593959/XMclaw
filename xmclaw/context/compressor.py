@@ -162,6 +162,15 @@ def estimate_messages_tokens_rough(messages: list[Message]) -> int:
     Wave 26 fix-4: scaffolding markers ([GOAL-ANCHOR], [turn hint])
     are EXCLUDED — they're agent-internal nudges, not real
     conversation, and shouldn't trigger early compression.
+
+    2026-05-17: vision attachments cost real tokens at the wire.
+    ``Message.images`` is a tuple of file paths; anthropic /
+    openai adapters base64-encode each one as an image content block
+    on every LLM call. Anthropic docs put a typical screenshot at
+    ~1500 tokens (depends on resolution). Pre-fix this was zero,
+    so a session with 5 history screenshots was hiding ~7500 real
+    tokens from the compressor → same shape of bug as the base64
+    inlining one fixed in e6062ca.
     """
     total = 0
     for m in messages:
@@ -182,6 +191,13 @@ def estimate_messages_tokens_rough(messages: list[Message]) -> int:
                 total += _estimate_args_tokens_cjk(args)
             elif isinstance(args, str):
                 total += _count_tokens_in_text(args)
+        # B-Vision: count attached images. Conservative 1500 / image —
+        # below Anthropic's ~1568 cap for an in-budget image, above
+        # the lower bound for tiny thumbnails. Same order of magnitude
+        # works for Kimi / OpenAI vision pricing.
+        images = getattr(m, "images", None) or ()
+        if images:
+            total += 1500 * len(images)
     return total
 
 
