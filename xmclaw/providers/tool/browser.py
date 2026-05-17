@@ -760,6 +760,11 @@ class BrowserTools(ToolProvider):
         # processes opening the same user_data_dir).
         self._persistent_contexts: dict[str, Any] = {}   # profile_name -> BrowserContext
         self._session_persistent_profile: dict[str, str] = {}  # sid -> profile_name
+        # Wave-27 fix-LAT14b: per-session chrome channel preference
+        # (set when ``use_system_chrome=True`` on browser_open). Eager
+        # init so _ensure_persistent_context can read it without a
+        # getattr-default dance.
+        self._session_persistent_chrome_channel: dict[str, str | None] = {}
         # Wave 25.3: per-session console log buffer. Bounded list so
         # a noisy page doesn't grow unbounded — drops oldest first.
         self._console_buffers: dict[str, list[dict[str, Any]]] = {}
@@ -859,12 +864,24 @@ class BrowserTools(ToolProvider):
                 await page.close()
             except Exception:  # noqa: BLE001,S110
                 pass
+        # Wave-27 fix-LAT14b: persistent profile sessions share a
+        # single BrowserContext across multiple session_ids. Closing
+        # ctx here would kill the profile for EVERY other session
+        # using the same profile_name AND skip the cookie-flush-to-
+        # disk on shutdown. So: skip ctx.close() when this session
+        # is persistent. The shared context lives until shutdown()
+        # or an explicit profile-reset call.
+        is_persistent = self._session_persistent_profile.pop(
+            session_id, None,
+        )
         ctx = self._contexts.pop(session_id, None)
-        if ctx is not None:
+        if ctx is not None and is_persistent is None:
             try:
                 await ctx.close()
             except Exception:  # noqa: BLE001,S110
                 pass
+        # Drop any cached per-session persistent-chrome channel hint.
+        self._session_persistent_chrome_channel.pop(session_id, None)
         # Wave 23: also forget the pinned visibility so a re-open
         # after close can choose a fresh mode.
         self._session_headless.pop(session_id, None)
@@ -967,10 +984,16 @@ class BrowserTools(ToolProvider):
         """
         existing = self._persistent_contexts.get(profile_name)
         if existing is not None:
-            # Cheap is-alive probe: a closed context raises on
-            # .browser. Detect + drop so we re-launch below.
+            # Wave-27 fix-LAT14b: liveness probe via ``.pages``.
+            # Note: ``existing.browser`` returns None for persistent
+            # contexts (Playwright contract), so the previous probe
+            # never detected staleness. ``.pages`` is a property
+            # backed by Playwright's internal channel state — it
+            # raises after the context is closed, which is the
+            # signal we want. Stale → drop + re-launch below.
             try:
-                _ = existing.browser  # noqa: B018 — sentinel probe
+                _probe = existing.pages
+                _ = len(_probe)
                 return existing
             except Exception:  # noqa: BLE001
                 self._persistent_contexts.pop(profile_name, None)
@@ -1009,9 +1032,16 @@ class BrowserTools(ToolProvider):
                 "headless": headless,
                 "accept_downloads": True,
                 "viewport": {"width": 1280, "height": 800},
-                # Same stealth defaults as the launch() path. UA stays
-                # default because persistent profile likely has its
-                # own UA pinned via Chrome version.
+                # Wave-27 fix-LAT14b: real Chrome UA to defeat the
+                # "HeadlessChrome" pattern blacklists that show
+                # "your browser is too old" banners. Same UA the
+                # non-persistent path uses (line ~915). When
+                # ``channel="chrome"`` the system Chrome's own UA
+                # would also work; we override for parity so the
+                # stealth behaviour doesn't silently regress when
+                # the user switches between bundled Chromium and
+                # system Chrome.
+                "user_agent": _REAL_CHROME_UA,
                 "args": [
                     "--disable-blink-features=AutomationControlled",
                     "--disable-features=IsolateOrigins,site-per-process",
@@ -1219,11 +1249,21 @@ class BrowserTools(ToolProvider):
             # Stash the visibility hint + chrome channel on the
             # session so _page_for picks them up at launch time.
             self._session_headless[sid] = headless
-            self._session_persistent_chrome_channel = getattr(
-                self, "_session_persistent_chrome_channel", {},
-            )
             self._session_persistent_chrome_channel[sid] = (
                 "chrome" if use_system_chrome else None
+            )
+        elif call.args.get("profile_name") and not persistent_profile:
+            # Wave-27 fix-LAT14b: explicit profile_name without
+            # persistent_profile=true is almost certainly a caller
+            # mistake (agent thinks profile_name auto-enables
+            # persistence; it doesn't). Surface it so login state
+            # doesn't silently fail to persist.
+            return _fail(
+                call, t0,
+                "profile_name was set but persistent_profile=false. "
+                "Set persistent_profile=true to actually use a real "
+                "Chrome profile dir, or drop profile_name and use "
+                "load_state for one-shot cookie injection.",
             )
 
         # Wave 25.2: pre-load saved storage state on first open of a
