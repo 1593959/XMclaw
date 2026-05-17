@@ -160,9 +160,10 @@ _CAMERA_CAPTURE_SPEC = ToolSpec(
     description=(
         "Grab one still frame from the default webcam (or a "
         "specific index). Returns {path, size: [w, h], "
-        "camera_index, base64_jpg (capped)}. Opens the camera, "
-        "captures one frame, releases immediately — no persistent "
-        "handle.\n\n"
+        "camera_index, vision_attached}. Opens the camera, captures "
+        "one frame, releases immediately — no persistent handle.\n\n"
+        "The captured frame is automatically attached to the NEXT "
+        "turn as a vision content block — you do NOT need to opt in.\n\n"
         "Needs ``opencv-python`` (~50 MB). First call on macOS "
         "triggers the camera-permission OS prompt the first time. "
         "On Linux requires ``/dev/video*`` device + user in "
@@ -178,7 +179,13 @@ _CAMERA_CAPTURE_SPEC = ToolSpec(
             },
             "include_base64": {
                 "type": "boolean",
-                "description": "Return base64 inline. Default true.",
+                "description": (
+                    "Include raw base64 bytes in the result. Default "
+                    "FALSE. Almost always leave off — base64 explodes "
+                    "the prompt and the LLM cannot read it from a "
+                    "tool result anyway. Vision is delivered via the "
+                    "multimodal pipeline regardless of this flag."
+                ),
             },
         },
     },

@@ -305,12 +305,27 @@ async def test_speak_fire_and_forget(tools, monkeypatch):
 
 
 async def test_camera_capture(tools, fake_cv2):
+    """B-Vision: camera_capture default is NO base64 in the tool
+    content — the frame rides on metadata.attach_image and becomes a
+    real vision content block on the next turn."""
     r = await tools.invoke(_call("camera_capture", {"camera_index": 0}))
     assert r.ok, r.error
     p = _json(r)
     assert p["camera_index"] == 0
     assert p["size"] == [640, 480]
     assert Path(p["path"]).is_file()
+    assert p.get("vision_attached") is True
+    assert "base64_jpg" not in p
+    assert r.metadata.get("attach_image") == p["path"]
+
+
+async def test_camera_capture_opt_in_base64(tools, fake_cv2):
+    """Explicit include_base64=True still works for non-LLM callers."""
+    r = await tools.invoke(_call(
+        "camera_capture", {"camera_index": 0, "include_base64": True},
+    ))
+    assert r.ok, r.error
+    p = _json(r)
     assert "base64_jpg" in p
 
 

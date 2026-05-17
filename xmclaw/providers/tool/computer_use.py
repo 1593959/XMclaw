@@ -90,15 +90,15 @@ _MAX_WINDOWS_RETURNED = 60
 _SCREEN_CAPTURE_SPEC = ToolSpec(
     name="screen_capture",
     description=(
-        "Take a full-screen screenshot. Returns "
-        "{path, size: [w, h], base64_png (truncated to ~512KB), "
-        "monitor_index}. Default captures the primary monitor "
-        "(index 1 in mss). Pass ``monitor`` to pick a specific "
+        "Take a full-screen screenshot. Returns {path, size: [w, h], "
+        "monitor_index, vision_attached}. Default captures the primary "
+        "monitor (index 1 in mss). Pass ``monitor`` to pick a specific "
         "monitor (0 = virtual screen union of all monitors).\n\n"
-        "Use the returned ``path`` for follow-up vision processing; "
-        "``base64_png`` lets the LLM see what's on screen in the same "
-        "turn when an image-aware model is in use. The base64 stream "
-        "is capped — for raw access read the file."
+        "The image is automatically attached to the NEXT turn as a "
+        "real vision content block — the model literally SEES it. You "
+        "do NOT need to opt in; just call this and look at the next "
+        "turn. Use the returned ``path`` if you need to pipe it into "
+        "another tool (OCR, region crop, etc.)."
     ),
     parameters_schema={
         "type": "object",
@@ -109,7 +109,15 @@ _SCREEN_CAPTURE_SPEC = ToolSpec(
             },
             "include_base64": {
                 "type": "boolean",
-                "description": "Return base64 inline. Default true.",
+                "description": (
+                    "Include raw base64 bytes in the result. Default "
+                    "FALSE. Almost always leave this off — base64 "
+                    "explodes the prompt and the LLM cannot read it "
+                    "from a tool result anyway. Vision is delivered "
+                    "via the multimodal pipeline regardless of this "
+                    "flag. Set true ONLY if downstream non-LLM code "
+                    "consumes the bytes."
+                ),
             },
         },
     },
@@ -414,8 +422,11 @@ _REGION_CAPTURE_SPEC = ToolSpec(
     description=(
         "Capture a rectangular region of the screen → JPG (lighter "
         "than full PNG for cropped vision-LLM input). Returns "
-        "{path, region, base64_jpg}. Useful when you've already "
-        "OCR'd and want to send the LLM only the relevant pane."
+        "{path, region, size, bytes, vision_attached}. Useful when "
+        "you've already OCR'd and want to send the LLM only the "
+        "relevant pane.\n\n"
+        "The cropped image is automatically attached to the NEXT "
+        "turn as a vision content block — you do NOT need to opt in."
     ),
     parameters_schema={
         "type": "object",
@@ -425,7 +436,13 @@ _REGION_CAPTURE_SPEC = ToolSpec(
                 "items": {"type": "integer"},
                 "description": "[x, y, w, h]",
             },
-            "include_base64": {"type": "boolean"},
+            "include_base64": {
+                "type": "boolean",
+                "description": (
+                    "Default FALSE. Almost always leave off — see "
+                    "screen_capture for why."
+                ),
+            },
             "quality": {
                 "type": "integer",
                 "description": "JPEG quality 1-100, default 85.",
