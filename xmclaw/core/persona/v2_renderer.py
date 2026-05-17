@@ -288,7 +288,10 @@ async def render_persona_file(
     # bullets first, preserving prose/headers, so curated content
     # survives even when auto-extracted lessons get truncated.
     try:
-        from xmclaw.providers.tool._helpers import (
+        # 2026-05-17: import direct from core.persona.caps (not
+        # providers.tool._helpers) so the import-direction check in
+        # scripts/check_import_direction.py stays clean.
+        from xmclaw.core.persona.caps import (
             PERSONA_CHAR_CAPS, enforce_char_cap,
         )
         cap = PERSONA_CHAR_CAPS.get(basename)
