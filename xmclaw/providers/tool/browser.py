@@ -1198,33 +1198,69 @@ class BrowserTools(ToolProvider):
             "bytes": len(png_or_jpeg),
             "full_page": full,
         }
-        side_effects: tuple[str, ...] = ()
+
+        # Wave-27 fix-LAT10 (2026-05-17): ALWAYS spill the screenshot
+        # bytes to disk so we can set ``metadata.attach_image`` —
+        # which is what (a) hop_loop reads to inject the image into
+        # the NEXT LLM turn's vision input AND (b) the chat UI reads
+        # (via TOOL_INVOCATION_FINISHED.images → /api/v2/media/...)
+        # to render the screenshot inline in the user's chat bubble.
+        # Pre-fix the inline-data-url branch saved nothing to disk →
+        # ``normalize_attachments`` read empty metadata → UI got
+        # ``images=[]`` → user saw a green "ok" badge with no image
+        # and got told "截图已生成但可能没显示出来". The data_url
+        # is STILL inlined when small (LLM gets a copy in content
+        # too — harmless redundancy), but the disk file is now the
+        # source of truth for the UI render.
+        from pathlib import Path as _Path
+
+        from xmclaw.utils.paths import data_dir
+        dest_dir = data_dir() / "v2" / "screenshots"
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        ext = ".png" if fmt == "png" else ".jpg"
+        out = dest_dir / f"shot_{int(time.time()*1000)}_{call.id[:8]}{ext}"
+        try:
+            out.write_bytes(png_or_jpeg)
+            spill_ok = True
+        except OSError:
+            spill_ok = False
+        side_effects: tuple[str, ...] = (
+            (str(out),) if spill_ok else ()
+        )
 
         if inline_size <= max_inline:
             content["data_url"] = f"data:{mime};base64,{b64}"
-        else:
-            # Spill to disk to keep the LLM context sane.
-            from pathlib import Path as _Path
-
-            from xmclaw.utils.paths import data_dir
-            dest_dir = data_dir() / "v2" / "screenshots"
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            ext = ".png" if fmt == "png" else ".jpg"
-            out = dest_dir / f"shot_{int(time.time()*1000)}_{call.id[:8]}{ext}"
-            out.write_bytes(png_or_jpeg)
+        if spill_ok:
             content["path"] = str(out)
+        if inline_size > max_inline:
             content["truncated"] = True
             content["hint"] = (
                 f"Screenshot was {inline_size} bytes inline — over the "
                 f"{max_inline}-byte cap. Saved to {_Path(out).name} on "
-                "disk instead. Set max_inline_bytes higher (or request "
-                "format=jpeg with quality<80) to inline it."
+                "disk; data_url omitted from this content. Set "
+                "max_inline_bytes higher (or format=jpeg with "
+                "quality<80) to inline it."
             )
-            side_effects = (str(out),)
+
+        # B-VISION: ``attach_image`` is the universal handshake to
+        # both the vision pipeline (hop_loop.py:1024 →
+        # Message.images on next LLM call) and the chat UI media
+        # renderer (hop_loop.py:739 normalize_attachments →
+        # TOOL_INVOCATION_FINISHED.images → ToolMediaImages
+        # component). When the disk spill failed (rare), skip the
+        # attach so the UI doesn't 404 on a missing file.
+        metadata: dict[str, Any] = {}
+        if spill_ok:
+            metadata["attach_image"] = str(out)
+
         return ToolResult(
             call_id=call.id, ok=True, content=content,
             side_effects=side_effects,
             latency_ms=(time.perf_counter() - t0) * 1000.0,
+            metadata=metadata,
         )
 
     async def _snapshot(self, call: ToolCall, t0: float) -> ToolResult:
