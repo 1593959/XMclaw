@@ -130,8 +130,22 @@ _BROWSER_OPEN_SPEC = ToolSpec(
         "``visible``: false (default) → headless. true → real visible "
         "Chromium window — but this is STILL MY Playwright instance, "
         "NOT the user's normal browser; bookmarks/extensions/cookies "
-        "are all empty fresh state. Almost always you want "
-        "open_in_user_browser instead. Returns the final URL + title."
+        "are all empty fresh state by default.\n\n"
+        "★ PERSISTENT PROFILE mode (Wave-27 fix-LAT14, OpenClaw-style): "
+        "set ``persistent_profile=true`` + ``profile_name=<name>`` to "
+        "spin a real Chrome profile under "
+        "``~/.xmclaw/v2/browser_profiles/<name>/user-data``. The FIRST "
+        "session opens an empty profile; once the user logs into the "
+        "target site IN THAT WINDOW manually, the profile retains the "
+        "login (cookies + extensions + autofill + history — full "
+        "Chrome profile, NOT just storage_state JSON) for all future "
+        "sessions on the same profile_name. Combine with "
+        "``visible=true`` for the standard 'user watches + agent "
+        "operates + already-logged-in' workflow that OpenClaw / "
+        "Manus / Comet ship by default. Combine with "
+        "``use_system_chrome=true`` to drive the user's installed "
+        "Chrome.exe instead of Playwright's bundled Chromium.\n\n"
+        "Returns the final URL + title."
     ),
     parameters_schema={
         "type": "object",
@@ -163,7 +177,43 @@ _BROWSER_OPEN_SPEC = ToolSpec(
                     "cookies + localStorage so the page sees you as "
                     "already logged in. Must be passed on the FIRST "
                     "browser_open of a session; subsequent calls in "
-                    "the same session ignore it."
+                    "the same session ignore it. INCOMPATIBLE with "
+                    "``persistent_profile`` (the persistent profile "
+                    "already carries its own cookies)."
+                ),
+            },
+            "persistent_profile": {
+                "type": "boolean",
+                "description": (
+                    "Wave-27 fix-LAT14: use a Playwright "
+                    "``launch_persistent_context`` against a real "
+                    "Chrome profile directory under "
+                    "~/.xmclaw/v2/browser_profiles/<profile_name>/"
+                    "user-data. Persists cookies + localStorage + "
+                    "extensions + autofill + history across daemon "
+                    "restarts. Requires ``profile_name``. Default "
+                    "false."
+                ),
+            },
+            "profile_name": {
+                "type": "string",
+                "description": (
+                    "Namespace for the persistent profile directory. "
+                    "Alphanumeric + dashes + underscores. Default "
+                    "'default'. Use distinct names (e.g. 'chaoxing', "
+                    "'github', 'qq') so site-specific cookies stay "
+                    "isolated. Only meaningful when "
+                    "``persistent_profile=true``."
+                ),
+            },
+            "use_system_chrome": {
+                "type": "boolean",
+                "description": (
+                    "Drive the user's system-installed Chrome "
+                    "(channel='chrome') instead of Playwright's "
+                    "bundled Chromium. Get the user's actual Chrome "
+                    "extensions / version. Requires Chrome installed "
+                    "on the host. Default false."
                 ),
             },
         },
@@ -694,6 +744,22 @@ class BrowserTools(ToolProvider):
         # when _page_for first creates a context, the file is read +
         # passed to new_context(storage_state=...).
         self._session_storage_state: dict[str, str] = {}
+        # Wave-27 fix-LAT14 (2026-05-17): per-profile-name persistent
+        # browser context, opened via Playwright's
+        # ``launch_persistent_context(user_data_dir=...)``. Mirrors
+        # OpenClaw's design (extensions/browser/src/browser/chrome.ts
+        # in openclaw/openclaw): one independent Chrome profile per
+        # ``profile_name`` under
+        # ~/.xmclaw/v2/browser_profiles/<name>/user-data. Persists
+        # cookies / localStorage / Chrome-side extensions / saved
+        # passwords / autofill / history across daemon restarts —
+        # everything a real Chrome profile carries, not just the
+        # cookies+localStorage that storage_state JSON captures.
+        # Multiple sessions targeting the same profile_name share
+        # ONE context (Playwright + Chromium both forbid multiple
+        # processes opening the same user_data_dir).
+        self._persistent_contexts: dict[str, Any] = {}   # profile_name -> BrowserContext
+        self._session_persistent_profile: dict[str, str] = {}  # sid -> profile_name
         # Wave 25.3: per-session console log buffer. Bounded list so
         # a noisy page doesn't grow unbounded — drops oldest first.
         self._console_buffers: dict[str, list[dict[str, Any]]] = {}
@@ -818,6 +884,17 @@ class BrowserTools(ToolProvider):
         """Close every session + both browsers. For daemon shutdown."""
         for sid in list(self._contexts):
             await self.close_session(sid)
+        # Wave-27 fix-LAT14: also close persistent profile contexts.
+        # Closing flushes pending cookie / localStorage writes to the
+        # user-data-dir on disk so next daemon boot reads consistent
+        # state. Best-effort: a hung context shouldn't block other
+        # shutdown steps.
+        for profile_name, ctx in list(self._persistent_contexts.items()):
+            try:
+                await ctx.close()
+            except Exception:  # noqa: BLE001,S110
+                pass
+        self._persistent_contexts.clear()
         for attr in ("_browser_headless", "_browser_headed"):
             b = getattr(self, attr, None)
             if b is not None:
@@ -869,6 +946,88 @@ class BrowserTools(ToolProvider):
             )
             setattr(self, attr, browser)
 
+    async def _ensure_persistent_context(
+        self, profile_name: str, *, headless: bool, session_id: str,
+    ) -> Any:
+        """Wave-27 fix-LAT14: lazy-launch a persistent BrowserContext
+        keyed on ``profile_name``. Mirrors OpenClaw's chrome.ts launch
+        pattern (spawn Chromium with persistent user-data-dir + CDP
+        debug port), but uses Playwright's
+        ``launch_persistent_context()`` which encapsulates that.
+
+        Multiple sessions targeting the same profile_name share the
+        same context — Chromium / Chrome forbid two processes opening
+        the same user-data-dir simultaneously, so this isn't a choice.
+
+        Channel selection: if the session asked for ``use_system_chrome``,
+        we pass ``channel="chrome"`` to drive the user's installed
+        Chrome.exe (gets their version + can install standard Chrome
+        extensions). Otherwise Playwright's bundled Chromium is used
+        (no system-Chrome dependency).
+        """
+        existing = self._persistent_contexts.get(profile_name)
+        if existing is not None:
+            # Cheap is-alive probe: a closed context raises on
+            # .browser. Detect + drop so we re-launch below.
+            try:
+                _ = existing.browser  # noqa: B018 — sentinel probe
+                return existing
+            except Exception:  # noqa: BLE001
+                self._persistent_contexts.pop(profile_name, None)
+
+        async with self._boot_lock:
+            existing = self._persistent_contexts.get(profile_name)
+            if existing is not None:
+                return existing
+            if self._playwright is None:
+                try:
+                    from playwright.async_api import async_playwright
+                except ImportError as exc:
+                    raise _PlaywrightMissing(
+                        "playwright not installed -- run "
+                        "`pip install xmclaw[browser]` then "
+                        "`playwright install chromium`"
+                    ) from exc
+                self._playwright = await async_playwright().start()
+
+            user_data_dir = _persistent_profile_dir(profile_name)
+            try:
+                user_data_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise RuntimeError(
+                    f"could not create persistent profile dir "
+                    f"{user_data_dir}: {exc}"
+                ) from exc
+
+            channel_map = getattr(
+                self, "_session_persistent_chrome_channel", {},
+            )
+            channel = channel_map.get(session_id)
+
+            launch_kwargs: dict[str, Any] = {
+                "user_data_dir": str(user_data_dir),
+                "headless": headless,
+                "accept_downloads": True,
+                "viewport": {"width": 1280, "height": 800},
+                # Same stealth defaults as the launch() path. UA stays
+                # default because persistent profile likely has its
+                # own UA pinned via Chrome version.
+                "args": [
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-features=IsolateOrigins,site-per-process",
+                ],
+            }
+            if channel:
+                launch_kwargs["channel"] = channel
+
+            ctx = await self._playwright.chromium.launch_persistent_context(
+                **launch_kwargs,
+            )
+            await ctx.add_init_script(_STEALTH_SCRIPT)
+            ctx.set_default_timeout(self._timeout_ms)
+            self._persistent_contexts[profile_name] = ctx
+            return ctx
+
     def _browser_for_session(self, session_id: str) -> Any:
         """Pick the right browser handle based on the session's pinned
         visibility mode (set at first browser_open)."""
@@ -893,6 +1052,27 @@ class BrowserTools(ToolProvider):
                 self._default_headless if headless is None else headless
             )
         pinned = self._session_headless[session_id]
+
+        # Wave-27 fix-LAT14: persistent profile branch. Sessions
+        # tagged with a profile_name route through a
+        # ``launch_persistent_context``-managed shared context keyed
+        # on profile_name. Different sessions targeting the SAME
+        # profile_name share the context (Chrome won't open a
+        # user-data-dir twice).
+        profile_name = self._session_persistent_profile.get(session_id)
+        if profile_name is not None:
+            ctx = await self._ensure_persistent_context(
+                profile_name, headless=pinned, session_id=session_id,
+            )
+            page = self._pages.get(session_id)
+            if page is not None and not page.is_closed():
+                return page
+            self._contexts[session_id] = ctx
+            page = await ctx.new_page()
+            self._attach_console_listeners(session_id, page)
+            self._pages[session_id] = page
+            return page
+
         await self._ensure_playwright(pinned)
         page = self._pages.get(session_id)
         if page is not None and not page.is_closed():
@@ -1004,10 +1184,51 @@ class BrowserTools(ToolProvider):
             headless = not visible_arg
         else:
             headless = None  # defer to default / pinned
+
+        # Wave-27 fix-LAT14: persistent profile route. When set, we
+        # bypass the standard launch() + new_context() flow and go
+        # through launch_persistent_context(user_data_dir=...) so
+        # Chrome's own profile machinery (cookies + extensions +
+        # autofill + history + saved passwords) survives across
+        # daemon restarts. Mirrors openclaw/openclaw's
+        # extensions/browser/src/browser/chrome.ts mechanism.
+        persistent_profile = bool(call.args.get("persistent_profile", False))
+        profile_name = call.args.get("profile_name") or "default"
+        use_system_chrome = bool(call.args.get("use_system_chrome", False))
+        load_state = call.args.get("load_state")
+        if persistent_profile and load_state:
+            return _fail(
+                call, t0,
+                "persistent_profile and load_state are mutually "
+                "exclusive — the persistent profile already carries "
+                "its own cookies. Pick one.",
+            )
+        if persistent_profile:
+            try:
+                _persistent_profile_dir(profile_name.strip())
+            except ValueError as exc:
+                return _fail(call, t0, str(exc))
+            self._session_persistent_profile[sid] = profile_name.strip()
+            # ``visible`` defaults to True under persistent_profile —
+            # the whole point of the mode is "user can see + agent
+            # operates" workflow. Caller can still pass visible=false
+            # for headless persistent (e.g. when re-using a logged-in
+            # profile for unattended automation).
+            if headless is None:
+                headless = False
+            # Stash the visibility hint + chrome channel on the
+            # session so _page_for picks them up at launch time.
+            self._session_headless[sid] = headless
+            self._session_persistent_chrome_channel = getattr(
+                self, "_session_persistent_chrome_channel", {},
+            )
+            self._session_persistent_chrome_channel[sid] = (
+                "chrome" if use_system_chrome else None
+            )
+
         # Wave 25.2: pre-load saved storage state on first open of a
         # session. Ignored if the session already has a context (the
         # storage_state= kwarg only takes effect at context creation).
-        load_state = call.args.get("load_state")
         if (
             isinstance(load_state, str)
             and load_state.strip()
@@ -2242,6 +2463,31 @@ def _state_profile_path(name: str) -> Any:
             f"profile name {name!r} must match [A-Za-z0-9_-]+"
         )
     return _P(data_dir() / "v2" / "browser_state" / f"{name}.json")
+
+
+def _persistent_profile_dir(name: str) -> Any:
+    """Wave-27 fix-LAT14: resolve a persistent profile name to its
+    Chromium user-data-dir under
+    ``~/.xmclaw/v2/browser_profiles/<name>/user-data``. The Chrome
+    binary writes its full profile state (cookies / localStorage /
+    extensions / passwords / autofill / history) into this directory
+    — distinct from the storage_state JSON files at
+    ~/.xmclaw/v2/browser_state/ which carry only cookies +
+    localStorage.
+
+    Same sanitization rule as ``_state_profile_path``: alphanumeric +
+    dash + underscore only, so agents can't smuggle path-traversal
+    via a hand-crafted profile_name.
+    """
+    import re
+    from pathlib import Path as _P
+
+    from xmclaw.utils.paths import data_dir
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        raise ValueError(
+            f"profile_name {name!r} must match [A-Za-z0-9_-]+"
+        )
+    return _P(data_dir() / "v2" / "browser_profiles" / name / "user-data")
 
 
 class _PlaywrightMissing(RuntimeError):
