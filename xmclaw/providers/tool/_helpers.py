@@ -253,8 +253,30 @@ PERSONA_CHAR_CAPS: dict[str, int] = {
     # bullets when over budget). Slightly bigger than USER because a
     # workflow lesson tends to be one paragraph not one phrase.
     "AGENTS.md": 2000,
-    "TOOLS.md":  1800,
-    # Other persona files are user-authored and not subject to LRU.
+    # Wave-27 fix-LAT13a: TOOLS.md cap is BIG because the auto-
+    # rendered tool list (XMC-AUTO-TOOLS marker block) needs to fit.
+    # 130 registered tools × ~100 chars each = ~13K chars baseline;
+    # the cap is set higher to absorb that + a few KB of manual
+    # guidance and dated auto-extracted lessons. enforce_char_cap
+    # only evicts dated bullets, so the marker block (unprefixed
+    # bullets) is structurally safe.
+    "TOOLS.md":  18000,
+    # Wave-27 fix-LAT13 (2026-05-17): SOUL.md / LEARNING.md gained
+    # ``## Auto-extracted`` sections (B-303 routes ``values`` →
+    # SOUL.md and ``rules`` → LEARNING.md) and BOTH were uncapped.
+    # Real-data measurement: a single session grew SOUL.md auto-
+    # extracted to 13393 chars and LEARNING.md to 13076 chars,
+    # blowing the system prompt to 37K tokens — every turn. With
+    # 130 tool specs (~16K tokens) the prompt overhead alone left
+    # only ~200K tokens for messages, and Kimi 256K rejected
+    # multi-hop turns. Capping at 4K/6K keeps the most recent
+    # bullets (LRU eviction by YYYY-MM-DD prefix) and shrinks
+    # system_prompt to ~7K tokens total. Loss is bounded: the
+    # underlying L1 facts stay queryable via memory_search.
+    "SOUL.md":     4000,
+    "LEARNING.md": 6000,
+    # IDENTITY.md / BOOTSTRAP.md remain uncapped — user-authored,
+    # not auto-appended.
 }
 
 

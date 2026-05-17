@@ -278,6 +278,34 @@ async def render_persona_file(
     if not changed:
         return False
 
+    # Wave-27 fix-LAT13: apply PERSONA_CHAR_CAPS at render time.
+    # Pre-fix the v2 renderer wrote whatever the L1 facts produced,
+    # bypassing the caps that builtin_persona.update_persona enforces
+    # on the legacy write path. SOUL.md / LEARNING.md grew to 13K+
+    # chars each and blew system_prompt to 37K tokens per turn —
+    # leaving Kimi 256K with too little room for messages on multi-
+    # hop tasks. ``enforce_char_cap`` LRU-evicts oldest dated
+    # bullets first, preserving prose/headers, so curated content
+    # survives even when auto-extracted lessons get truncated.
+    try:
+        from xmclaw.providers.tool._helpers import (
+            PERSONA_CHAR_CAPS, enforce_char_cap,
+        )
+        cap = PERSONA_CHAR_CAPS.get(basename)
+        if cap is not None and len(new_text) > cap:
+            original_len = len(new_text)
+            new_text = enforce_char_cap(new_text, cap)
+            log.info(
+                "v2_renderer.capped file=%s %d→%d (cap=%d)",
+                basename, original_len, len(new_text), cap,
+            )
+    except Exception as exc:  # noqa: BLE001 — cap is a defense in
+        # depth, not a correctness invariant
+        log.warning(
+            "v2_renderer.cap_apply_failed file=%s err=%s",
+            basename, exc,
+        )
+
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(target, new_text)

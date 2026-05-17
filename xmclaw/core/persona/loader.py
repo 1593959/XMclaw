@@ -263,19 +263,36 @@ def _build_tools_auto_block(tool_specs: list) -> str:
     newline — the full description can be looked up via the tool schema
     if the agent needs more detail. We stay terse here because TOOLS.md
     is read on every turn and a verbose dump bloats the system prompt.
+
+    Wave-27 fix-LAT13b: SKIP individual ``skill_*`` entries (one
+    exception: the always-on ``skill_browse`` / ``skill_install`` /
+    ``skill_uninstall`` meta-tools). Real-data measurement: a user
+    with 373 installed skills had 489 bullets here (~64K chars) —
+    blowing system_prompt to 37K tokens. The prefilter only surfaces
+    ~12 query-relevant skills per turn anyway, so listing all 373
+    in the persona file is pure waste. Meta-tools stay because
+    ``skill_browse`` is the agent's escape hatch when prefilter
+    misses what it needs.
     """
+    _SKILL_META_KEEP = {"skill_browse", "skill_install", "skill_uninstall"}
     lines = [
         _TOOLS_AUTO_BEGIN,
         "## 当前注册的工具 (auto-generated — 每次 daemon 启动重新生成)",
         "",
         "_这一段由 daemon 自动维护,不要手编 —— 手编内容放在标记块外面。_",
+        "_技能(``skill_*``)未列出 —— 总数太大且每 turn prefilter 只_",
+        "_暴露 ~12 个最相关的。用 ``skill_browse(query=...)`` 主动发现。_",
         "",
     ]
     if not tool_specs:
         lines.append("_(no tools registered yet)_")
     else:
+        skill_count_skipped = 0
         for spec in tool_specs:
             name = getattr(spec, "name", "?")
+            if name.startswith("skill_") and name not in _SKILL_META_KEEP:
+                skill_count_skipped += 1
+                continue
             desc = (getattr(spec, "description", "") or "").strip()
             # First sentence — handles English/Chinese terminators.
             first = desc
@@ -288,6 +305,12 @@ def _build_tools_auto_block(tool_specs: list) -> str:
             if len(first) > 220:
                 first = first[:220].rstrip() + "…"
             lines.append(f"- `{name}` — {first}" if first else f"- `{name}`")
+        if skill_count_skipped > 0:
+            lines.append("")
+            lines.append(
+                f"_(另有 {skill_count_skipped} 个 ``skill_*`` 已注册但未列在此 "
+                f"—— 用 ``skill_browse(query=...)`` 按需发现)_"
+            )
     lines.append("")
     lines.append(_TOOLS_AUTO_END)
     return "\n".join(lines)
