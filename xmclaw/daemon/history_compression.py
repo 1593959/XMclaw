@@ -704,6 +704,27 @@ class HistoryCompressionMixin:
             "memory-files",
         )
         for m in history:
+            # 2026-05-17: drop GOAL-ANCHOR user messages entirely from
+            # the persisted history. hop_loop.py:293 injects them as a
+            # per-turn scaffolding (every N hops, plus once at hop 0
+            # on multi-turn sessions). They have no value in the
+            # on-disk record — they're regenerated from scratch each
+            # turn from the real history's user thread — and worse,
+            # leaving them in causes role-sequence corruption: the
+            # NEXT turn's run_turn hydrates them as part of ``prior``,
+            # appends the new user msg, hop 0 injects a fresh anchor,
+            # and persists [user, asst, user, anchor, asst] instead
+            # of [user, asst, user, asst]. The duplicate user message
+            # then forms the basis of the NEXT-next turn's anchor,
+            # which compounds across the session. Surfaced by
+            # tests/unit/test_session_store.py:test_agent_loop_persists_after_each_turn
+            # which exercises exactly this two-turn-with-resume path.
+            if (
+                m.role == "user"
+                and isinstance(m.content, str)
+                and m.content.lstrip().startswith("[GOAL-ANCHOR]")
+            ):
+                continue
             if (
                 m.role == "user"
                 and isinstance(m.content, str)
