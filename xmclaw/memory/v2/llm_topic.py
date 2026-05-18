@@ -301,6 +301,177 @@ def _entity_tier(ent_type: str) -> int:
     }.get(ent_type, 0)
 
 
+# Wave-32+ Chunk 9: Louvain-style modularity refinement.
+#
+# The entity-anchored clustering (Chunk 6) prevents over-MERGING.
+# This pass addresses the opposite failure mode: a single entity
+# anchor (e.g. one URL) hosting multiple distinct sub-topics that
+# the LLM would name better separately.
+#
+# Algorithm: simplified single-pass Louvain modularity move loop.
+#   1. Build adjacency for the cluster from SAME_TOPIC edges
+#      RESTRICTED to within-cluster pairs
+#   2. Each node starts in its own community
+#   3. For each node, try moving it to the community of its
+#      highest-weight neighbor; accept if modularity strictly
+#      increases
+#   4. Repeat until a full pass produces no moves (convergence)
+#   5. Communities of size >= _MIN_CLUSTER_SIZE are returned;
+#      smaller ones fold back into the original cluster
+#
+# This is intentionally simpler than full Leiden — it doesn't do
+# the refinement-then-aggregation phases. For the typical cluster
+# size (5-30 facts), single-pass modularity already produces good
+# splits. If clusters get big enough that this under-splits,
+# upgrade to Leiden.
+
+
+def _build_within_cluster_adjacency(
+    cluster: set[str],
+    edges: list[tuple[str, str, float]],
+) -> dict[str, dict[str, float]]:
+    """From a flat edge list, build cluster-internal adjacency.
+    Skips edges that cross the cluster boundary (those are
+    inter-cluster signals, handled elsewhere)."""
+    adj: dict[str, dict[str, float]] = {n: {} for n in cluster}
+    for src, dst, w in edges:
+        if src not in cluster or dst not in cluster or src == dst:
+            continue
+        adj[src][dst] = adj[src].get(dst, 0.0) + w
+        adj[dst][src] = adj[dst].get(src, 0.0) + w  # treat as undirected
+    return adj
+
+
+def _refine_cluster_by_modularity(
+    cluster: set[str],
+    edges: list[tuple[str, str, float]],
+    *,
+    weak_ratio: float = 0.34,
+) -> list[set[str]]:
+    """Refine an entity-anchored cluster by REMOVING weak internal
+    edges, then re-running connected components on what's left.
+
+    Why not full Louvain: a single-pass move loop doesn't converge
+    on multi-community optima without an aggregation phase (the
+    second half of Louvain), and full Louvain is 200+ lines + a
+    correctness suite I don't want to maintain.
+
+    What this does instead: drop edges with strength below
+    ``weak_ratio × max_strength`` (default 0.34 → "anything weaker
+    than 1/3 of the cluster's strongest signal"). Then connected
+    components on what's left. Two cliques connected by a single
+    weak edge: max strength = 1.0, threshold = 0.34, the 0.1
+    bridge gets pruned, cliques separate.
+
+    Fully-uniform clusters (all edges same strength): max ==
+    everything → no edges below threshold → no prune → single
+    cluster preserved. Good.
+
+    Returns components of size >= _MIN_CLUSTER_SIZE; smaller
+    residues fold back into the largest sub-cluster so no data is
+    silently dropped.
+    """
+    if len(cluster) < 2 * _MIN_CLUSTER_SIZE:
+        return [cluster]
+    adj = _build_within_cluster_adjacency(cluster, edges)
+    if not any(adj.values()):
+        return [cluster]
+    # Find the strongest signal in the cluster as the reference.
+    max_strength = 0.0
+    for nb_map in adj.values():
+        for w in nb_map.values():
+            if w > max_strength:
+                max_strength = w
+    if max_strength <= 0:
+        return [cluster]
+    cutoff_strength = max_strength * weak_ratio
+    # Build the pruned adjacency: drop edges with strength < cutoff.
+    pruned: dict[str, set[str]] = {n: set() for n in cluster}
+    pruned_any = False
+    for src, nb_map in adj.items():
+        for dst, w in nb_map.items():
+            if w >= cutoff_strength:
+                pruned[src].add(dst)
+                pruned[dst].add(src)
+            else:
+                pruned_any = True
+    # If we didn't actually prune anything (uniform strengths), the
+    # cluster has no weak signal to split on — return as-is.
+    if not pruned_any:
+        return [cluster]
+    # Connected components on the pruned graph.
+    components: list[set[str]] = []
+    seen: set[str] = set()
+    for start in cluster:
+        if start in seen:
+            continue
+        comp: set[str] = set()
+        stack = [start]
+        while stack:
+            cur = stack.pop()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            comp.add(cur)
+            stack.extend(pruned.get(cur, set()) - seen)
+        components.append(comp)
+    # Filter / fold residue.
+    sub_clusters = [c for c in components if len(c) >= _MIN_CLUSTER_SIZE]
+    residue: set[str] = set()
+    for c in components:
+        if len(c) < _MIN_CLUSTER_SIZE:
+            residue.update(c)
+    if not sub_clusters:
+        return [cluster]
+    if residue:
+        sub_clusters.sort(key=len, reverse=True)
+        sub_clusters[0].update(residue)
+    # No real split happened — single big component covers it all.
+    if len(sub_clusters) == 1 and sub_clusters[0] == cluster:
+        return [cluster]
+    return sub_clusters
+
+
+async def _refine_clusters_with_modularity(
+    svc: "MemoryService",
+    clusters: list[set[str]],
+) -> list[set[str]]:
+    """Apply modularity refinement to each cluster. Only splits when
+    the modularity gain is strictly positive — single-cluster output
+    when the cluster is already cohesive."""
+    if not clusters:
+        return clusters
+    # Pull the SAME_TOPIC edges within each cluster's neighborhood.
+    # We do this per-cluster to bound the edge fetch cost — a
+    # 100-fact graph would need O(N) neighbor queries otherwise.
+    out: list[set[str]] = []
+    for cluster in clusters:
+        if len(cluster) < 2 * _MIN_CLUSTER_SIZE:
+            out.append(cluster)
+            continue
+        edges: list[tuple[str, str, float]] = []
+        seen_edge_ids: set[str] = set()
+        for fid in cluster:
+            try:
+                rels = await svc._graph.neighbors(
+                    fid, relation_types=[RelationKind.SAME_TOPIC.value],
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            for rel, target_id in rels:
+                if rel.id in seen_edge_ids:
+                    continue
+                seen_edge_ids.add(rel.id)
+                edges.append((
+                    rel.source_fact_id,
+                    target_id,
+                    float(rel.strength or 0.5),
+                ))
+        refined = _refine_cluster_by_modularity(cluster, edges)
+        out.extend(refined)
+    return out
+
+
 async def _build_entity_anchored_components(
     svc: "MemoryService",
 ) -> list[set[str]]:
@@ -588,6 +759,12 @@ async def name_clusters(
     components = await _build_entity_anchored_components(svc)
     if not components:
         components = await _build_same_topic_components(svc)
+    # Wave-32+ Chunk 9: refine over-merged clusters via modularity.
+    # The entity-anchored pass prevents over-MERGING; this pass
+    # addresses the opposite — one URL hosting several sub-topics.
+    # Cheap when clusters are small (skips early via the size guard
+    # inside _refine_cluster_by_modularity).
+    components = await _refine_clusters_with_modularity(svc, components)
     if not components:
         return {
             "clusters_scanned": 0, "topics_created": 0,

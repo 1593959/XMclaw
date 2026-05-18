@@ -268,3 +268,104 @@ def test_core_member_hash_length_bounded() -> None:
     f = _mk_fact("t", id="f1")
     object.__setattr__(f, "evidence_count", 1)
     assert len(_compute_core_member_hash([f])) == 12
+
+
+# ── modularity refinement (Wave-32+ chunk 9) ────────────────────────
+
+
+def test_refine_returns_cluster_unchanged_when_small() -> None:
+    """Below 2× _MIN_CLUSTER_SIZE we shouldn't even try to split —
+    not enough mass for the move loop to find meaningful sub-
+    communities."""
+    from xmclaw.memory.v2.llm_topic import _refine_cluster_by_modularity
+    cluster = {"f1", "f2", "f3"}  # 3 = _MIN_CLUSTER_SIZE, below 2×
+    edges = [("f1", "f2", 0.5), ("f2", "f3", 0.5)]
+    result = _refine_cluster_by_modularity(cluster, edges)
+    assert result == [cluster]
+
+
+def test_refine_splits_two_dense_sub_communities() -> None:
+    """Classic Louvain test case: two cliques connected by a single
+    weak bridge edge. Modularity move loop should split them."""
+    from xmclaw.memory.v2.llm_topic import _refine_cluster_by_modularity
+    # Group A: f1-f2-f3 fully connected (strong)
+    # Group B: f4-f5-f6 fully connected (strong)
+    # Bridge: f3-f4 (weak)
+    cluster = {"f1", "f2", "f3", "f4", "f5", "f6"}
+    edges = [
+        ("f1", "f2", 1.0), ("f1", "f3", 1.0), ("f2", "f3", 1.0),
+        ("f4", "f5", 1.0), ("f4", "f6", 1.0), ("f5", "f6", 1.0),
+        ("f3", "f4", 0.1),
+    ]
+    result = _refine_cluster_by_modularity(cluster, edges)
+    # Should produce two sub-clusters.
+    assert len(result) == 2
+    # Each contains one full clique.
+    a_cluster = next(r for r in result if "f1" in r)
+    b_cluster = next(r for r in result if "f4" in r)
+    assert a_cluster == {"f1", "f2", "f3"}
+    assert b_cluster == {"f4", "f5", "f6"}
+
+
+def test_refine_keeps_cohesive_cluster_intact() -> None:
+    """Fully connected cluster — no internal structure to split
+    on. Should stay as one."""
+    from xmclaw.memory.v2.llm_topic import _refine_cluster_by_modularity
+    cluster = {"f1", "f2", "f3", "f4", "f5", "f6"}
+    edges = []
+    nodes = list(cluster)
+    for i, a in enumerate(nodes):
+        for b in nodes[i + 1:]:
+            edges.append((a, b, 1.0))
+    result = _refine_cluster_by_modularity(cluster, edges)
+    assert len(result) == 1
+    assert result[0] == cluster
+
+
+def test_refine_no_edges_returns_intact() -> None:
+    """Cluster with zero internal edges (all connections to it are
+    cross-cluster). The move loop has nothing to work with."""
+    from xmclaw.memory.v2.llm_topic import _refine_cluster_by_modularity
+    cluster = {"f1", "f2", "f3", "f4", "f5", "f6"}
+    result = _refine_cluster_by_modularity(cluster, [])
+    assert result == [cluster]
+
+
+def test_refine_folds_too_small_residue_into_largest() -> None:
+    """When the move loop produces a tiny side-community below
+    _MIN_CLUSTER_SIZE, those nodes fold back into the largest
+    sub-cluster instead of being dropped entirely. Otherwise we'd
+    lose data."""
+    from xmclaw.memory.v2.llm_topic import _refine_cluster_by_modularity
+    # 5 fully connected + 1 isolated weak connection to one of them.
+    cluster = {"f1", "f2", "f3", "f4", "f5", "iso"}
+    edges = [
+        ("f1", "f2", 1.0), ("f1", "f3", 1.0), ("f1", "f4", 1.0),
+        ("f1", "f5", 1.0),
+        ("f2", "f3", 1.0), ("f2", "f4", 1.0), ("f2", "f5", 1.0),
+        ("f3", "f4", 1.0), ("f3", "f5", 1.0), ("f4", "f5", 1.0),
+        ("f1", "iso", 0.1),
+    ]
+    result = _refine_cluster_by_modularity(cluster, edges)
+    # All 6 nodes accounted for (no data loss via fold-in).
+    flat = set()
+    for r in result:
+        flat |= r
+    assert flat == cluster
+
+
+def test_build_within_cluster_adjacency_filters_cross_edges() -> None:
+    """Edges with one endpoint outside the cluster are dropped from
+    the adjacency. Without this, modularity calc would include
+    weights against non-members and skew the move scores."""
+    from xmclaw.memory.v2.llm_topic import _build_within_cluster_adjacency
+    cluster = {"f1", "f2"}
+    edges = [
+        ("f1", "f2", 1.0),    # within
+        ("f1", "outside", 1.0),  # crosses boundary
+        ("outside", "f2", 1.0),  # crosses boundary
+    ]
+    adj = _build_within_cluster_adjacency(cluster, edges)
+    assert adj["f1"] == {"f2": 1.0}
+    assert adj["f2"] == {"f1": 1.0}
+    assert "outside" not in adj
