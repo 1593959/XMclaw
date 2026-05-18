@@ -129,3 +129,43 @@ def test_topic_fact_kind_registered() -> None:
     refactor that drops the enum value gets caught."""
     assert FactKind.TOPIC.value == "topic"
     assert "topic" in {k.value for k in FactKind}
+
+
+# ── stable cluster id (Wave-32+ chunk 2) ───────────────────────────
+
+
+def test_compute_cluster_hash_stable_across_calls() -> None:
+    """The same membership → same hash. Two calls in the same
+    process must agree."""
+    from xmclaw.memory.v2.llm_topic import _compute_cluster_hash
+    a = _compute_cluster_hash({"f1", "f2", "f3"})
+    b = _compute_cluster_hash({"f3", "f2", "f1"})  # order shouldn't matter
+    assert a == b
+
+
+def test_compute_cluster_hash_membership_sensitive() -> None:
+    """Different membership → different hash. Pin that adding /
+    removing a single member changes the cluster identity."""
+    from xmclaw.memory.v2.llm_topic import _compute_cluster_hash
+    base = _compute_cluster_hash({"f1", "f2", "f3"})
+    added = _compute_cluster_hash({"f1", "f2", "f3", "f4"})
+    removed = _compute_cluster_hash({"f1", "f2"})
+    assert base != added
+    assert base != removed
+    assert added != removed
+
+
+def test_compute_cluster_hash_empty_input() -> None:
+    """An empty set returns a defined sentinel rather than raising
+    so callers don't have to special-case the (rare) zero-member
+    edge case."""
+    from xmclaw.memory.v2.llm_topic import _compute_cluster_hash
+    assert _compute_cluster_hash(set()) == "empty"
+
+
+def test_compute_cluster_hash_length_bounded() -> None:
+    """Hash output is short enough to fit in fact text without
+    bloating the LanceDB row size. Pin at 12 chars."""
+    from xmclaw.memory.v2.llm_topic import _compute_cluster_hash
+    h = _compute_cluster_hash({"f1", "f2"})
+    assert len(h) == 12

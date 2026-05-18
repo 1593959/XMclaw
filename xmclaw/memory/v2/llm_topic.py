@@ -327,6 +327,49 @@ async def _build_same_topic_components(
     return components
 
 
+def _compute_cluster_hash(member_fact_ids: set[str]) -> str:
+    """Wave-32+ deterministic cluster id.
+
+    Stable hash over the sorted set of member fact_ids. The SAME
+    membership produces the SAME cluster_hash across runs, across
+    daemon restarts. That's what makes topic naming idempotent —
+    re-running on an unchanged cluster lets ``_cluster_has_topic_node``
+    detect the existing topic and skip the LLM call.
+
+    Pre-fix: cluster identity was implicit (just the set of fact ids
+    in memory). Two runs over the same data could end up creating
+    duplicate topic nodes if the existence-check missed (e.g. only
+    5 sampled members got walked). Now the cluster has a stable
+    string id baked into the topic fact's text, so a prefix scan
+    finds it deterministically.
+    """
+    import hashlib
+    if not member_fact_ids:
+        return "empty"
+    joined = "|".join(sorted(member_fact_ids))
+    return hashlib.sha1(joined.encode("utf-8")).hexdigest()[:12]
+
+
+async def _cluster_has_topic_node_by_hash(
+    svc: "MemoryService", cluster_hash: str,
+) -> bool:
+    """O(N_topics) prefix scan to find an existing topic fact for
+    a given cluster_hash. Much more reliable than the membership-
+    sample check — even if a few PART_OF edges got lost, the topic
+    fact itself carries the hash in its text."""
+    try:
+        topics = await svc._vec.search(
+            None, where=f"kind = '{FactKind.TOPIC.value}'", limit=200,
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    needle = f"topic:{cluster_hash}:"
+    for t in topics:
+        if not t.superseded_by and (t.text or "").startswith(needle):
+            return True
+    return False
+
+
 async def _cluster_has_topic_node(
     svc: "MemoryService", cluster: set[str],
 ) -> bool:
@@ -420,6 +463,16 @@ async def name_clusters(
     for comp in components:
         if processed >= budget:
             break
+        # Wave-32+ deterministic cluster id. Computing this BEFORE
+        # the LLM call means we can skip clusters whose hash already
+        # has a topic — even if the membership-sample check below
+        # missed (e.g. one of the sampled facts got superseded). The
+        # hash is over the FULL membership, not a sample, so it's
+        # canonical.
+        cluster_hash = _compute_cluster_hash(comp)
+        if await _cluster_has_topic_node_by_hash(svc, cluster_hash):
+            skipped += 1
+            continue
         if await _cluster_has_topic_node(svc, comp):
             skipped += 1
             continue
@@ -455,12 +508,15 @@ async def name_clusters(
         if not name:
             processed += 1
             continue
-        # Write the topic fact. We deliberately give it a stable
-        # text format so the dedup on remember() won't treat two
-        # similarly-named topics as the same — text="topic:<name>".
+        # Write the topic fact. Wave-32+ stable id: text encodes the
+        # cluster_hash so re-running on the same membership produces
+        # the SAME fact_id (via Fact.compute_id which hashes text).
+        # Net effect: idempotent topic naming — clicking 起主题名
+        # twice on the same data is a no-op, not a duplicate-node
+        # creator.
         try:
             topic_fact = await svc.remember(
-                f"topic:{name}",
+                f"topic:{cluster_hash}:{name}",
                 kind=FactKind.TOPIC.value,
                 scope="project",
                 confidence=0.85,
