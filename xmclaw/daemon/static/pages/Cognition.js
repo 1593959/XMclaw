@@ -155,6 +155,23 @@ export function CognitionPage({ token }) {
     }
   }
 
+  // Wave-32+ backfill — clear the pre-existing pending pile by
+  // applying the auto-approve threshold to every pending proposal
+  // at once. Useful right after enabling the feature.
+  async function onBackfillAutoApprove() {
+    const r = await postFn("POST", "/api/v2/cognition/proposals/auto_approve_pending", {});
+    if (r.ok) {
+      const d = r.data || r;
+      toast.success(
+        "已批准 " + (d.approved || 0) + " 个高置信提案；" +
+        (d.kept_pending || 0) + " 个低置信提案保留待审",
+      );
+      loadAll();
+    } else {
+      toast.error("backfill 失败: " + (r.error && r.error.message || r.error));
+    }
+  }
+
   if (state === "loading") {
     return html`<div style="padding:2rem;max-width:720px;margin:0 auto"><${Skeleton} lines=${6} /></div>`;
   }
@@ -402,8 +419,23 @@ export function CognitionPage({ token }) {
 
       <!-- Proposals -->
       <${Card} title="进化提案">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:8px">
+          <div style="font-size:.75rem;opacity:.6;flex:1">
+            高置信提案（≥ 0.8）会被自动批准，无需手动点击。
+            下面只展示需人工裁决的提案。可在 <code>/api/v2/features</code>
+            调整 <code>evolution.auto_approve.threshold</code> 改变阈值，
+            或将 <code>evolution.auto_approve.enabled</code> 设为 false 关闭。
+          </div>
+          <button
+            onClick=${onBackfillAutoApprove}
+            style="font-size:.75rem;padding:4px 10px;white-space:nowrap"
+            title="按当前阈值批量批准所有已存在的高置信待审提案"
+          >
+            一键自动批准
+          </button>
+        </div>
         ${!proposals.length
-          ? html`<div style="opacity:.6;font-size:.9rem">暂无待审提案</div>`
+          ? html`<div style="opacity:.6;font-size:.9rem">暂无待审提案（高置信提案已自动批准）</div>`
           : html`
             <div style="display:flex;flex-direction:column;gap:8px">
               ${proposals.map((p) => html`

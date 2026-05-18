@@ -118,6 +118,34 @@ BUILTIN_FLAGS: list[FeatureFlag] = [
             " the user message. Off by default; LLM call is slow."
         ),
     ),
+    # Wave-32+ (2026-05-18): auto-approve evolution proposals whose
+    # confidence clears a threshold. Without this every proposal
+    # piled up in the operator UI waiting for a click — even high-
+    # confidence ones (conf 0.8+) the user invariably approved
+    # anyway. Default ON @ 0.8 so the UI surface stays clean for
+    # the genuinely-uncertain ones (conf < 0.8 still need review).
+    FeatureFlag(
+        name="evolution.auto_approve.enabled",
+        default=True,
+        description=(
+            "Master switch. When true, proposals whose confidence"
+            " is >= evolution.auto_approve.threshold are marked"
+            " approved at trigger time instead of waiting for a"
+            " human click. Lower-confidence proposals still pile"
+            " up as pending."
+        ),
+    ),
+    FeatureFlag(
+        name="evolution.auto_approve.threshold",
+        default=0.8,
+        description=(
+            "Confidence cutoff for auto-approval (0.0-1.0). At 0.8"
+            " (default) this maps to the same cutoff the UI uses"
+            " to render the success-tone badge. Lower the threshold"
+            " for a daemon that should self-evolve aggressively;"
+            " raise it for a conservative one."
+        ),
+    ),
 
     # ── Tool guard ───────────────────────────────────────────────
     FeatureFlag(

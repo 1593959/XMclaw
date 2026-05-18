@@ -449,6 +449,23 @@ async def reject_proposal(request: Request, proposal_id: str) -> JSONResponse:
     return JSONResponse({"ok": ok})
 
 
+@router.post("/proposals/auto_approve_pending")
+async def auto_approve_pending_proposals(request: Request) -> JSONResponse:
+    """Wave-32+ backfill: sweep the entire pending pile and auto-
+    approve everything that clears the configured confidence
+    threshold. Use when you've just enabled the feature and want to
+    clear an existing backlog without waiting for the next
+    evolution cycle.
+
+    Returns ``{ok, approved, kept_pending, skipped_errors}``.
+    """
+    evo = _evolution_loop(request)
+    if evo is None:
+        return _not_wired(request)
+    counts = await evo.auto_approve_pending()
+    return JSONResponse({"ok": True, **counts})
+
+
 # ── memory graph ──────────────────────────────────────────────────
 
 

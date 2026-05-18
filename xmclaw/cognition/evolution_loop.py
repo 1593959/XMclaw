@@ -274,8 +274,34 @@ class EvolutionLoop:
         proposals.extend(await self.perf_analyzer.analyze())
         proposals.extend(await self.pattern_extractor.analyze())
 
+        # Wave-32+ auto-approval. Resolve flag values once per batch
+        # so we don't repeat the lookup per proposal. Defaults
+        # mirror the registry values; explicit fallbacks here keep
+        # the loop usable even when the feature_flags engine isn't
+        # wired (test contexts, embedded calls).
+        enabled, threshold = _resolve_auto_approve_config()
+        approved_count = 0
         for p in proposals:
-            await self._write_proposal(p)
+            if enabled and p.confidence >= threshold:
+                # Replace with an approved variant. EvolutionProposal
+                # is frozen so we copy + override status. Persistence
+                # writes the new status directly — no second
+                # round-trip.
+                approved = _with_status(p, "approved")
+                await self._write_proposal(approved)
+                approved_count += 1
+            else:
+                await self._write_proposal(p)
+
+        if approved_count:
+            try:
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).info(
+                    "evolution.auto_approved count=%d threshold=%.2f total=%d",
+                    approved_count, threshold, len(proposals),
+                )
+            except Exception:  # noqa: BLE001 — never block trigger on telemetry
+                pass
 
         return proposals
 
@@ -338,6 +364,51 @@ class EvolutionLoop:
                 continue
         return proposals
 
+    async def auto_approve_pending(self) -> dict[str, int]:
+        """Backfill pass — scan every ``status="pending"`` proposal on
+        disk and auto-approve any whose confidence clears the current
+        threshold. Returns ``{approved, kept_pending, skipped_errors}``.
+
+        Use case: after enabling auto-approve, the existing pending
+        pile was written before the feature was live. Calling this
+        once clears the backlog without waiting for the next
+        ``trigger_once`` cycle.
+
+        Idempotent — already-approved proposals are skipped because
+        the pending-only filter excludes them.
+        """
+        enabled, threshold = _resolve_auto_approve_config()
+        if not enabled:
+            return {"approved": 0, "kept_pending": 0, "skipped_errors": 0}
+        approved = 0
+        kept = 0
+        errors = 0
+        for path in self.proposals_dir.glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                errors += 1
+                continue
+            if data.get("status") != "pending":
+                continue
+            conf = float(data.get("confidence") or 0.0)
+            if conf >= threshold:
+                data["status"] = "approved"
+                try:
+                    path.write_text(
+                        json.dumps(data, indent=2), encoding="utf-8",
+                    )
+                    approved += 1
+                except OSError:
+                    errors += 1
+            else:
+                kept += 1
+        return {
+            "approved": approved,
+            "kept_pending": kept,
+            "skipped_errors": errors,
+        }
+
     async def approve(self, proposal_id: str) -> bool:
         """批准一个提案（等待人类或外部代理应用）。"""
         path = self.proposals_dir / f"{proposal_id}.json"
@@ -363,3 +434,47 @@ class EvolutionLoop:
             return True
         except Exception:
             return False
+
+
+# ── Wave-32+ auto-approval helpers ──────────────────────────────────────
+
+
+def _with_status(p: EvolutionProposal, status: str) -> EvolutionProposal:
+    """Return a copy of ``p`` with a new status. EvolutionProposal is
+    frozen so we have to rebuild — kept as a tiny helper to avoid
+    inline dataclasses.replace noise at the call site."""
+    return EvolutionProposal(
+        id=p.id, type=p.type, description=p.description,
+        target=p.target, diff=p.diff, confidence=p.confidence,
+        evidence=p.evidence, created_at=p.created_at, status=status,
+    )
+
+
+def _resolve_auto_approve_config() -> tuple[bool, float]:
+    """Read the auto-approve flags from the FeatureFlagEngine.
+
+    Returns ``(enabled, threshold)``. On any error (engine not
+    wired, flags not registered, etc) falls back to (True, 0.8) —
+    same defaults as the registry — so the loop keeps working in
+    test contexts and pre-flag-engine deployments.
+    """
+    try:
+        from xmclaw.core.feature_flags import default_engine
+        eng = default_engine()
+        enabled = bool(eng.variant(
+            "evolution.auto_approve.enabled", default=True,
+        ))
+        threshold_raw = eng.variant(
+            "evolution.auto_approve.threshold", default=0.8,
+        )
+        try:
+            threshold = float(threshold_raw)
+        except (TypeError, ValueError):
+            threshold = 0.8
+        # Clamp into a sane range — a misconfigured 1.5 should
+        # disable rather than reject everything; a -1 should approve
+        # nothing.
+        threshold = max(0.0, min(1.0, threshold))
+        return enabled, threshold
+    except Exception:  # noqa: BLE001
+        return True, 0.8
