@@ -1443,7 +1443,8 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 _PROMPT_FREEZE_GENERATION, static_with_skills,
             )
             cache_entry = self._frozen_prompts[session_id]
-        # Append fresh time (cheap; no cache impact on the prefix).
+        # Build the per-turn time block first (mutable; goes AFTER
+        # the cache boundary so it doesn't poison the cached prefix).
         import time as _t
         now_local = _t.localtime()
         time_block = (
@@ -1454,20 +1455,41 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             f"reasoning about deadlines, schedules, or \"recent\" events. "
             f"Trust this over your training-time clock."
         )
-        system_content = cache_entry[1] + "\n\n" + time_block
 
         # Sprint 1 Wave 2: autobiographical memory snapshot. Renders
         # the structured "what I know about you" block (name / works
         # on / likes / recent people / etc) so the agent has user
         # context without doing a separate retrieval call.
+        autobio_block = ""
         try:
             autobio = getattr(self, "_autobio_memory", None)
             if autobio is not None:
-                autobio_block = autobio.summarize_for_prompt(max_facts=20)
-                if autobio_block:
-                    system_content = system_content + "\n\n" + autobio_block
+                autobio_block = autobio.summarize_for_prompt(max_facts=20) or ""
         except Exception:  # noqa: BLE001 — never block a turn over memory
-            pass
+            autobio_block = ""
+
+        # Wave-30 (2026-05-18): order parts so the cache-friendly
+        # ones are at the front + insert CACHE_BREAKPOINT_MARKER
+        # sentinels for the LLM translators (anthropic / openai) to
+        # split on. Pre-fix the layout was
+        #   ``frozen + "\n\n" + time + "\n\n" + autobio``
+        # which put the per-turn-mutable ``time`` IN THE MIDDLE of
+        # the prefix → every single turn produced a unique
+        # system_content hash and Anthropic's prompt cache had a 0%
+        # hit rate across turns. Real cost: a 3500-token system
+        # prompt re-billed at full input rate on every user turn
+        # within the 5-min cache window. Post-fix layout is
+        #   ``frozen <CACHE> autobio <CACHE> time``
+        # → ``frozen`` and ``frozen+autobio`` both cache; only the
+        # ~50-token time block needs fresh tokens per turn.
+        from xmclaw.providers.llm.base import CACHE_BREAKPOINT_MARKER
+        _parts: list[str] = [cache_entry[1]]
+        if autobio_block:
+            _parts.append(autobio_block)
+        _parts.append(time_block)
+        system_content = (
+            "\n\n" + CACHE_BREAKPOINT_MARKER + "\n\n"
+        ).join(_parts)
 
         tool_specs = effective_tools.list_tools() if effective_tools else None
 

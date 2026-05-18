@@ -261,6 +261,83 @@ def test_b320_messages_decorate_last_system_when_enabled() -> None:
     assert blocks[0]["cache_control"] == {"type": "ephemeral"}
 
 
+def test_wave30_system_cache_breakpoint_marker_splits_into_blocks() -> None:
+    """Wave-30 prompt-cache fix: CACHE_BREAKPOINT_MARKER inside the
+    last system message splits into independent text blocks; every
+    block EXCEPT the last gets cache_control. Per-turn mutable tail
+    (time block) stays out of the cached prefix."""
+    from xmclaw.providers.llm.base import CACHE_BREAKPOINT_MARKER
+
+    sys_text = (
+        "stable prefix"
+        + f"\n\n{CACHE_BREAKPOINT_MARKER}\n\n"
+        + "mutable time block"
+    )
+    msgs = OpenAILLM._messages_to_openai(
+        [
+            Message(role="system", content=sys_text),
+            Message(role="user", content="hi"),
+        ],
+        prompt_cache_enabled=True,
+    )
+    sys_msg = msgs[0]
+    blocks = sys_msg["content"]
+    assert isinstance(blocks, list) and len(blocks) == 2
+    # First (stable) is cacheable.
+    assert blocks[0]["text"] == "stable prefix"
+    assert blocks[0]["cache_control"] == {"type": "ephemeral"}
+    # Last (mutable tail) is NOT cacheable.
+    assert blocks[1]["text"] == "mutable time block"
+    assert "cache_control" not in blocks[1]
+    # Marker stripped from rendered text.
+    for b in blocks:
+        assert CACHE_BREAKPOINT_MARKER not in b["text"]
+
+
+def test_wave30_system_cache_marker_stripped_when_cache_disabled() -> None:
+    """When prompt_cache_enabled=False (standard OpenAI / DeepSeek /
+    unknown shims), the sentinel must NOT leak into the system text
+    the model sees — replace it with plain double-newlines."""
+    from xmclaw.providers.llm.base import CACHE_BREAKPOINT_MARKER
+
+    sys_text = f"prefix\n\n{CACHE_BREAKPOINT_MARKER}\n\ntail"
+    msgs = OpenAILLM._messages_to_openai(
+        [
+            Message(role="system", content=sys_text),
+            Message(role="user", content="hi"),
+        ],
+        prompt_cache_enabled=False,
+    )
+    sys_msg = msgs[0]
+    # No content-block list when cache is disabled — plain string.
+    assert isinstance(sys_msg["content"], str)
+    assert CACHE_BREAKPOINT_MARKER not in sys_msg["content"]
+    assert "prefix" in sys_msg["content"]
+    assert "tail" in sys_msg["content"]
+
+
+def test_wave30_tools_cache_breakpoint_skips_prefilter_skills() -> None:
+    """Wave-30 prompt-cache fix: tools-array breakpoint moves to the
+    LAST STABLE tool (just before the first ``skill_*``), so the
+    per-turn prefilter output doesn't invalidate the cache every
+    turn. Mirror of the anthropic-side fix."""
+    specs = [
+        ToolSpec(name="file_read", description="r",
+                 parameters_schema={"type": "object", "properties": {}}),
+        ToolSpec(name="bash", description="run",
+                 parameters_schema={"type": "object", "properties": {}}),
+        ToolSpec(name="skill_git", description="commit",
+                 parameters_schema={"type": "object", "properties": {}}),
+        ToolSpec(name="skill_review", description="review",
+                 parameters_schema={"type": "object", "properties": {}}),
+    ]
+    out = OpenAILLM._tools_to_openai(specs, prompt_cache_enabled=True)
+    assert out[1]["function"]["name"] == "bash"
+    assert out[1].get("cache_control") == {"type": "ephemeral"}
+    assert "cache_control" not in out[2]
+    assert "cache_control" not in out[3]
+
+
 def test_b320_tools_decorate_last_when_enabled() -> None:
     """B-320: cache_control on the last tool entry is the breakpoint
     that covers every preceding tool def in one cache slot. Mirror

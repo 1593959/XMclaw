@@ -72,6 +72,79 @@ def test_empty_tools_emits_empty_list() -> None:
     assert AnthropicLLM._tools_to_anthropic([]) == []
 
 
+def test_system_cache_breakpoint_marker_splits_into_blocks() -> None:
+    """Wave-30 prompt-cache fix: the CACHE_BREAKPOINT_MARKER sentinel
+    inside ``Message(role="system").content`` splits into independent
+    text blocks. Every block EXCEPT the last gets cache_control —
+    the trailing mutable tail (time block) stays out of the cached
+    prefix so it doesn't invalidate the cache every turn."""
+    from xmclaw.providers.llm.base import CACHE_BREAKPOINT_MARKER
+
+    sys_text = (
+        "you are a helper"
+        + f"\n\n{CACHE_BREAKPOINT_MARKER}\n\n"
+        + "## What I remember about you\n* name: He"
+        + f"\n\n{CACHE_BREAKPOINT_MARKER}\n\n"
+        + "## 当前时刻\n\n2026-05-18 02:30:00"
+    )
+    system, _ = AnthropicLLM._messages_to_anthropic([
+        Message(role="system", content=sys_text),
+        Message(role="user", content="hi"),
+    ])
+    # Three blocks because we put two markers in.
+    assert isinstance(system, list)
+    assert len(system) == 3
+    # First two are cacheable, last (mutable time tail) is not.
+    assert system[0]["cache_control"] == {"type": "ephemeral"}
+    assert system[1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in system[2]
+    # Content order preserved + marker stripped.
+    assert "you are a helper" in system[0]["text"]
+    assert "What I remember" in system[1]["text"]
+    assert "当前时刻" in system[2]["text"]
+    for block in system:
+        assert CACHE_BREAKPOINT_MARKER not in block["text"]
+
+
+def test_tools_cache_breakpoint_skips_prefilter_skills() -> None:
+    """Wave-30 prompt-cache fix: the tools-array cache_control marker
+    moves to the LAST STABLE tool (the one just before the first
+    ``skill_*``) so the per-turn prefilter output doesn't invalidate
+    the cache every turn. Stable tools (bash, file_read, etc.) live
+    at indices [0..N); skills at [N..end)."""
+    specs = [
+        ToolSpec(name="file_read", description="read",
+                 parameters_schema={"type": "object"}),
+        ToolSpec(name="bash", description="run",
+                 parameters_schema={"type": "object"}),
+        ToolSpec(name="skill_git-commit", description="commit",
+                 parameters_schema={"type": "object"}),
+        ToolSpec(name="skill_review", description="review",
+                 parameters_schema={"type": "object"}),
+    ]
+    out = AnthropicLLM._tools_to_anthropic(specs)
+    # Breakpoint should be on ``bash`` (last stable), NOT on the
+    # final ``skill_review`` (which is per-turn volatile).
+    assert out[1]["name"] == "bash"
+    assert out[1].get("cache_control") == {"type": "ephemeral"}
+    assert "cache_control" not in out[3]  # skill_review — no marker
+
+
+def test_tools_cache_breakpoint_falls_back_to_last_when_no_skills() -> None:
+    """When the tool list has no ``skill_*`` entries (small setup
+    below the B-238 prefilter threshold) the breakpoint stays on
+    the last tool — preserves the pre-Wave-30 behaviour."""
+    specs = [
+        ToolSpec(name="file_read", description="read",
+                 parameters_schema={"type": "object"}),
+        ToolSpec(name="bash", description="run",
+                 parameters_schema={"type": "object"}),
+    ]
+    out = AnthropicLLM._tools_to_anthropic(specs)
+    assert out[-1].get("cache_control") == {"type": "ephemeral"}
+    assert "cache_control" not in out[0]
+
+
 # ── properties ────────────────────────────────────────────────────────────
 
 def test_tool_call_shape_is_anthropic_native() -> None:

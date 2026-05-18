@@ -192,12 +192,39 @@ class OpenAILLM(LLMProvider):
                 continue
 
             # B-320: decorate the last system message with cache_control.
+            # Wave-30 (2026-05-18): respect the CACHE_BREAKPOINT_MARKER
+            # so the per-turn mutable tail (time block) doesn't poison
+            # the cached prefix. See base.py:CACHE_BREAKPOINT_MARKER
+            # docstring. Same shape as the anthropic-side split.
             if i == last_system_idx and m.content:
+                from xmclaw.providers.llm.base import CACHE_BREAKPOINT_MARKER
+                if CACHE_BREAKPOINT_MARKER in m.content:
+                    raw_parts = [
+                        p.strip("\n")
+                        for p in m.content.split(CACHE_BREAKPOINT_MARKER)
+                    ]
+                    raw_parts = [p for p in raw_parts if p]
+                    if len(raw_parts) >= 2:
+                        content_blocks_sys: list[dict[str, Any]] = []
+                        for j, part in enumerate(raw_parts):
+                            blk: dict[str, Any] = {"type": "text", "text": part}
+                            if j < len(raw_parts) - 1:
+                                blk["cache_control"] = {"type": "ephemeral"}
+                            content_blocks_sys.append(blk)
+                        out.append({"role": "system", "content": content_blocks_sys})
+                        continue
+                    # Fewer than 2 parts after strip — fall through to
+                    # the legacy single-block path below.
+                    m_content_clean = (
+                        raw_parts[0] if raw_parts else m.content
+                    )
+                else:
+                    m_content_clean = m.content
                 out.append({
                     "role": "system",
                     "content": [{
                         "type": "text",
-                        "text": m.content,
+                        "text": m_content_clean,
                         "cache_control": {"type": "ephemeral"},
                     }],
                 })
@@ -225,7 +252,24 @@ class OpenAILLM(LLMProvider):
                 out.append(entry)
                 continue
 
-            entry: dict[str, Any] = {"role": m.role, "content": m.content or ""}
+            content_str = m.content or ""
+            # Wave-30: strip CACHE_BREAKPOINT_MARKER for endpoints that
+            # don't honor cache_control. Without this strip, system
+            # messages on standard OpenAI / DeepSeek / unknown shims
+            # would surface the literal sentinel to the model. (When
+            # prompt_cache_enabled=True, the system branch above
+            # consumes the marker by splitting on it; this is the
+            # cache-disabled fallback path.)
+            if m.role == "system" and content_str:
+                from xmclaw.providers.llm.base import CACHE_BREAKPOINT_MARKER
+                if CACHE_BREAKPOINT_MARKER in content_str:
+                    # Replace marker with a plain double-newline so
+                    # the visible text reads the same as it would
+                    # without cache support.
+                    content_str = content_str.replace(
+                        CACHE_BREAKPOINT_MARKER, "\n\n",
+                    )
+            entry: dict[str, Any] = {"role": m.role, "content": content_str}
             if m.tool_calls:
                 entry["tool_calls"] = [
                     translator.encode_to_provider(tc) for tc in m.tool_calls
@@ -254,11 +298,27 @@ class OpenAILLM(LLMProvider):
             }
             for t in tools
         ]
-        # B-320: cache the tool array via a marker on the last entry —
-        # mirror of AnthropicLLM._tools_to_anthropic. One breakpoint
-        # covers every preceding tool def.
+        # B-320: cache the tool array via a marker. Wave-30
+        # (2026-05-18): mirror the anthropic-side fix — place the
+        # breakpoint on the LAST STABLE tool (the one just before
+        # the first ``skill_*`` prefilter output), not on the very
+        # last entry. The B-238 prefilter shuffles top-K
+        # ``skill_*`` tools per turn; marking that boundary
+        # invalidates the cache every single turn even though every
+        # workhorse tool definition is unchanged.
         if prompt_cache_enabled:
-            out[-1]["cache_control"] = {"type": "ephemeral"}
+            first_skill_idx: int | None = None
+            for i, t in enumerate(tools):
+                if (t.name or "").startswith("skill_"):
+                    first_skill_idx = i
+                    break
+            boundary = (
+                first_skill_idx - 1
+                if first_skill_idx is not None and first_skill_idx > 0
+                else len(out) - 1
+            )
+            if 0 <= boundary < len(out):
+                out[boundary]["cache_control"] = {"type": "ephemeral"}
         return out
 
     @staticmethod

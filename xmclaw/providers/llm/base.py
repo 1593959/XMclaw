@@ -34,6 +34,28 @@ OnChunkCallback = Callable[[str], Awaitable[None]]
 OnThinkingChunkCallback = Callable[[str], Awaitable[None]]
 
 
+# Wave-30 prompt-cache optimisation (2026-05-18). A literal sentinel
+# string callers embed in ``Message(role="system").content`` to mark
+# cache-boundary positions. The Anthropic + OpenAI-compat translators
+# split on it and emit one ``text`` block per part, with
+# ``cache_control: ephemeral`` on every part EXCEPT the trailing one
+# (which is per-turn mutable, e.g. the timestamp block — caching it
+# would poison the entire stable prefix every second).
+#
+# Why a marker string rather than a structured field: ``Message`` is
+# frozen=True and used in ~40 modules. A new field cascades through
+# every test fake + sub-agent + memory translator. The sentinel is
+# transparent to everything that doesn't care (it's just text), and
+# the two LLM translators that DO care look for it explicitly.
+#
+# Placement convention (agent_loop.py:_build_system_content): stable
+# parts in front, mutable tail last:
+#
+#     frozen_prefix  <CACHE_BREAK>  autobio_block  <CACHE_BREAK>  time_block
+#     └─ cached ────┘              └─ cached ─────┘             └─ no cache
+CACHE_BREAKPOINT_MARKER = "<<XMC_CACHE_BREAKPOINT>>"
+
+
 @dataclass(frozen=True, slots=True)
 class LLMChunk:
     """Normalized streaming chunk. Providers convert to this before yielding."""

@@ -169,27 +169,71 @@ class AnthropicLLM(LLMProvider):
                 })
             converted.append({"role": m.role, "content": blocks})
         # B-245: emit system as a single text block carrying the
-        # cache_control breakpoint. Empty system → empty list (caller
-        # checks ``if system:`` and omits the param entirely).
+        # cache_control breakpoint. Wave-30 (2026-05-18): respect the
+        # CACHE_BREAKPOINT_MARKER sentinel so agent_loop can isolate
+        # the per-turn mutable tail (time block) from the stable
+        # prefix (system prompt + persona-derived persona / autobio
+        # block). Pre-fix: the whole 3500-token system became one
+        # cache block and the trailing time string changed every
+        # second → 0% prompt-cache hit across turns within a session.
+        # Post-fix: each stable part becomes its own text block with
+        # cache_control set; the trailing mutable part gets no
+        # cache_control so it doesn't poison the cached prefix.
+        #
+        # Anthropic 4-breakpoint budget: each ``cache_control`` token
+        # in the request counts as one breakpoint. The system path
+        # uses at most N-1 breakpoints (where N = parts after split);
+        # the tools array uses one more. With N=3 system parts
+        # (frozen / autobio / time-tail) we use 2 + 1 = 3, leaving 1
+        # spare for a future history-prefix breakpoint.
         system_text = "\n\n".join(system_parts).strip()
-        if system_text:
-            system_blocks: list[dict[str, Any]] = [{
-                "type": "text",
-                "text": system_text,
-                "cache_control": {"type": "ephemeral"},
-            }]
-            return system_blocks, converted
-        return "", converted
+        if not system_text:
+            return "", converted
+
+        from xmclaw.providers.llm.base import CACHE_BREAKPOINT_MARKER
+        if CACHE_BREAKPOINT_MARKER in system_text:
+            raw_parts = [
+                p.strip("\n") for p in system_text.split(CACHE_BREAKPOINT_MARKER)
+            ]
+            raw_parts = [p for p in raw_parts if p]
+            if len(raw_parts) >= 2:
+                system_blocks: list[dict[str, Any]] = []
+                for i, part in enumerate(raw_parts):
+                    block: dict[str, Any] = {"type": "text", "text": part}
+                    # Every part EXCEPT the last gets cache_control.
+                    # Anthropic supports up to 4 breakpoints; we use
+                    # ≤ (parts - 1) here + 1 for tools.
+                    if i < len(raw_parts) - 1:
+                        block["cache_control"] = {"type": "ephemeral"}
+                    system_blocks.append(block)
+                return system_blocks, converted
+            # Fewer than 2 effective parts after strip — fall through.
+            system_text = raw_parts[0] if raw_parts else system_text
+
+        system_blocks = [{
+            "type": "text",
+            "text": system_text,
+            "cache_control": {"type": "ephemeral"},
+        }]
+        return system_blocks, converted
 
     @staticmethod
     def _tools_to_anthropic(tools: list[ToolSpec] | None) -> list[dict[str, Any]]:
-        # B-245: cache the tools array. Marking cache_control on the
-        # LAST tool sets a cache breakpoint that includes every
-        # preceding tool def in one cache slot. Tool descriptions
-        # rarely change within a session — caching saves ~5-15K
-        # tokens per call when the agent has 30+ tools (the post-B-238
-        # prefilter trims to ~25 but each description is still ~200
-        # tokens). Empty list returns empty (no breakpoint).
+        # B-245: cache the tools array. Marking cache_control on a
+        # tool sets a cache breakpoint that includes every preceding
+        # tool def in one cache slot. Empty list returns empty (no
+        # breakpoint).
+        #
+        # Wave-30 fix (2026-05-18): pre-fix marked the LAST tool,
+        # which was wrong post-B-238. The B-238 skill prefilter
+        # appends a fresh top-K subset of ``skill_*`` tools to the
+        # END of the array on every turn, keyed by the user's
+        # message. So the last tool was ALWAYS the most volatile —
+        # cache slot got invalidated every single turn. Move the
+        # breakpoint to the boundary BEFORE the first ``skill_*``:
+        # the stable workhorses (file_read, bash, web_fetch,
+        # browser_*, todo_*, etc.) sit at indices [0..N), the
+        # prefilter skills at [N..end). Cache up through N-1.
         if not tools:
             return []
         out = [
@@ -200,7 +244,22 @@ class AnthropicLLM(LLMProvider):
             }
             for t in tools
         ]
-        out[-1]["cache_control"] = {"type": "ephemeral"}
+        # First index where a skill_* tool appears. Everything before
+        # it is stable across turns; everything from there on is the
+        # per-turn prefilter output.
+        first_skill_idx: int | None = None
+        for i, t in enumerate(tools):
+            if (t.name or "").startswith("skill_"):
+                first_skill_idx = i
+                break
+        # Place breakpoint on the LAST stable tool (or the last tool
+        # overall when there are no skill_* tools).
+        boundary = (
+            first_skill_idx - 1 if first_skill_idx is not None and first_skill_idx > 0
+            else len(out) - 1
+        )
+        if 0 <= boundary < len(out):
+            out[boundary]["cache_control"] = {"type": "ephemeral"}
         return out
 
     # ── public API ──
