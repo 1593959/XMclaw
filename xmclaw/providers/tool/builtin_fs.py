@@ -8,6 +8,90 @@ from xmclaw.core.ir import ToolCall, ToolResult
 from xmclaw.providers.tool._helpers import _fail as _fail
 
 
+# 2026-05-18: real-data finding — Kimi K2.6 on this install kept
+# trying to ``file_read`` and ``file_write`` paths like
+# ``C:\Users\<user>\Desktop\AGENTS.md`` and
+# ``Desktop\XMclaw\AGENTS.md`` even though the system prompt has a
+# clear "Path note (B-186)" telling it the persona files live at
+# ``~/.xmclaw/persona/profiles/<active>/``. The note sits ~20K
+# chars into a 24K-char system prompt and the model's attention
+# drifts past it.
+#
+# The agent's prior is reasonable: in 99% of Claude Code / Cursor
+# / Agents.md ecosystem code, ``AGENTS.md`` lives in the project
+# root. XMclaw's persona file convention happens to collide with
+# that. Yelling about it in system prompt didn't work; what does
+# work is putting the routing hint in the TOOL ERROR — the model
+# parses tool errors carefully because they're the only feedback
+# loop short of "the user is annoyed".
+#
+# So when ``file_read`` / ``file_write`` / ``apply_patch`` / etc.
+# fail with file-not-found AND the basename matches a known
+# persona filename, we rewrite the error to point at the right
+# tool (``update_persona`` / ``recall_user_preferences``) and the
+# canonical disk path. The model immediately self-corrects.
+_PERSONA_FILENAMES: frozenset[str] = frozenset({
+    "AGENTS.md",
+    "MEMORY.md",
+    "USER.md",
+    "TOOLS.md",
+    "SOUL.md",
+    "LEARNING.md",
+    "IDENTITY.md",
+    "BOOTSTRAP.md",
+})
+
+
+def _persona_redirect_hint(path: Path, *, op: str) -> str | None:
+    """Return a self-correcting error message when ``path`` looks
+    like the agent confusing a persona-file name with a workspace
+    path; ``None`` when no redirect applies. ``op`` is ``"read"``
+    / ``"write"`` / ``"patch"`` — drives the tool suggestion.
+    """
+    name = path.name
+    if name not in _PERSONA_FILENAMES:
+        return None
+    # Don't redirect if the path is ALREADY pointing at the canonical
+    # location — that's a real "file missing on this fresh install"
+    # case where the user genuinely needs to know the file doesn't
+    # exist yet.
+    posix = path.as_posix().lower()
+    if "/.xmclaw/persona/profiles/" in posix:
+        return None
+    if op == "read":
+        action = (
+            "Their contents are ALREADY injected into your system "
+            "prompt every turn — you almost never need to read "
+            "them. For ad-hoc lookups use ``recall_user_preferences"
+            "(query=...)``."
+        )
+    elif op == "write":
+        action = (
+            "Use ``update_persona(target_file=\""
+            f"{name}\", mode=\"append\", content=\"...\")`` instead "
+            "of ``file_write`` — it auto-resolves the active "
+            "profile path, takes the per-file char cap, and bumps "
+            "the prompt-freeze generation so the change is visible "
+            "on the next turn."
+        )
+    else:  # patch
+        action = (
+            "Persona files are append-only via "
+            "``update_persona(target_file=\""
+            f"{name}\", mode=\"append\", content=\"...\")``. "
+            "``apply_patch`` is for code; persona-file curation "
+            "goes through ``update_persona``."
+        )
+    return (
+        f"file not found: {path}\n\n"
+        f"⚠ ``{name}`` is one of XMclaw's persona files. They live "
+        f"under ``~/.xmclaw/persona/profiles/<active_profile>/`` "
+        f"(typically ``profiles/default/``) — NOT under the user's "
+        f"Desktop, NOT under the XMclaw source tree, NOT in your "
+        f"current working directory. {action}"
+    )
+
+
 
 class BuiltinToolsFsMixin:
     """File-system tools: read, write, patch, list, glob, grep, delete."""
@@ -32,7 +116,8 @@ class BuiltinToolsFsMixin:
         path = Path(raw_path)
         self._check_allowed(path)
         if not path.exists():
-            return _fail(call, t0, f"file not found: {path}")
+            hint = _persona_redirect_hint(path, op="read")
+            return _fail(call, t0, hint or f"file not found: {path}")
         if not path.is_file():
             return _fail(call, t0, f"not a file: {path}")
 
@@ -128,6 +213,17 @@ class BuiltinToolsFsMixin:
                 f"got {type(text).__name__}",
             )
         path = Path(raw_path)
+        # 2026-05-18: hard-fail persona-file writes that target the
+        # wrong location. Without this, the agent "creates" e.g.
+        # ``Desktop\LEARNING.md`` with what it thinks are durable
+        # lessons — but the daemon reads from
+        # ``~/.xmclaw/persona/profiles/default/LEARNING.md`` so the
+        # file is invisible to the next turn. Worse, the user sees a
+        # plausible-looking AGENTS.md / LEARNING.md on their Desktop
+        # and can't tell why their preferences aren't taking effect.
+        redirect = _persona_redirect_hint(path, op="write")
+        if redirect is not None:
+            return _fail(call, t0, redirect)
         self._check_allowed(path)
         # B-331: visibility signal when the write escapes the
         # configured workspace roots. Doesn't block — sandboxing is
@@ -187,6 +283,12 @@ class BuiltinToolsFsMixin:
             clean.append((old_text, new_text))
 
         path = Path(raw_path)
+        # 2026-05-18: persona-file misroute redirect, same logic as
+        # file_read / file_write. apply_patch on a persona name
+        # almost certainly means the agent wanted ``update_persona``.
+        redirect = _persona_redirect_hint(path, op="patch")
+        if redirect is not None:
+            return _fail(call, t0, redirect)
         self._check_allowed(path)
         # B-331: same workspace-containment audit as file_write.
         self._audit_workspace_containment(path, op="apply_patch")

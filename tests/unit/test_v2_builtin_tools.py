@@ -103,6 +103,62 @@ async def test_file_read_missing_file_returns_structured_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_file_read_persona_name_outside_persona_dir_redirects() -> None:
+    """2026-05-18 Wave-31 fix: when ``file_read`` fails on a path
+    whose basename matches a persona file (AGENTS / MEMORY / USER /
+    TOOLS / SOUL / LEARNING / IDENTITY / BOOTSTRAP), the error
+    message points at ``update_persona`` /
+    ``recall_user_preferences`` and the canonical
+    ``~/.xmclaw/persona/profiles/`` location. Without this, real-data
+    Kimi K2.6 turns kept retrying ``Desktop\\AGENTS.md`` →
+    ``Desktop\\XMclaw\\AGENTS.md`` → various other dead paths
+    despite the system prompt's path note (it sits 20K chars deep
+    and the model's attention slips past it)."""
+    tools = BuiltinTools()
+    result = await tools.invoke(_call("file_read", {"path": "/tmp/AGENTS.md"}))
+    assert result.ok is False
+    assert "persona files" in result.error
+    assert "~/.xmclaw/persona/profiles/" in result.error
+    assert "recall_user_preferences" in result.error
+
+
+@pytest.mark.asyncio
+async def test_file_read_persona_path_inside_persona_dir_no_redirect() -> None:
+    """The redirect must NOT fire for paths already pointing at the
+    canonical ``~/.xmclaw/persona/profiles/`` location — that's a
+    legitimate file-missing case (fresh install, profile not built
+    yet) and the agent should see the plain error, not a redirect
+    loop back to itself."""
+    tools = BuiltinTools()
+    result = await tools.invoke(_call("file_read", {
+        "path": "/home/u/.xmclaw/persona/profiles/default/AGENTS.md",
+    }))
+    assert result.ok is False
+    # Plain not-found, no redirect chrome.
+    assert "persona files" not in result.error
+
+
+@pytest.mark.asyncio
+async def test_file_write_persona_name_outside_persona_dir_blocked() -> None:
+    """``file_write`` is hard-blocked when the path is a persona-name
+    in the wrong directory. Without this the agent "creates" e.g.
+    ``Desktop\\LEARNING.md`` with real lesson text — but the daemon
+    reads from the canonical persona path so the write has no
+    effect on the next turn AND the user is left with a confusing
+    stray file on disk."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        tools = BuiltinTools(allowed_dirs=[tmp])
+        target = str(Path(tmp) / "LEARNING.md")
+        result = await tools.invoke(_call(
+            "file_write", {"path": target, "content": "lessons..."},
+        ))
+        assert result.ok is False
+        assert "update_persona" in result.error
+        assert "LEARNING.md" in result.error
+
+
+@pytest.mark.asyncio
 async def test_file_read_missing_path_arg() -> None:
     tools = BuiltinTools()
     result = await tools.invoke(_call("file_read", {}))
