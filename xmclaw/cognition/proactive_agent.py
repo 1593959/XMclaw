@@ -366,19 +366,49 @@ class IdleCheckInTrigger(ProactiveTrigger):
     Heuristic — fires ONLY if there was a recent user message
     (otherwise we'd ping every fresh daemon start). Cooldown 30 min
     so we don't bother the user every cycle.
+
+    Wave-32+ (2026-05-18): generate a CONTEXTUAL one-liner instead
+    of the same hardcoded "你那边还好吗" every time. Two paths:
+
+      1. If an LLM is reachable via ``ctx.agent_loop._llm`` AND the
+         agent has recent history, ask the LLM for a one-sentence
+         check-in that references what the user was doing. Keep the
+         call cheap (no tools, no streaming, ~30 token output) so
+         the user doesn't pay much for the politeness.
+      2. Otherwise (no LLM wired, LLM call failed, history empty)
+         pick from a small rotating pool of fallback templates so
+         even the degraded path doesn't feel robotic.
     """
+
+    # Fallback pool — varied enough that even with no LLM the user
+    # doesn't see the exact same line each cycle. Includes minute-
+    # interpolation slots ({minutes}).
+    _FALLBACK_TEMPLATES: tuple[str, ...] = (
+        "{minutes} 分钟没动静了，要继续刚才的事吗？",
+        "歇好了？随时叫我。",
+        "看你停下来一会了，需要我帮忙整理一下刚才的进度吗？",
+        "在忙别的？需要的时候我都在。",
+        "刚才的话题还要继续吗？还是先放放？",
+    )
 
     def __init__(
         self,
         *,
         idle_threshold_s: float = 30 * 60,
         cooldown_s: float = 30 * 60,
-        message: str = "你那边还好吗？需要帮忙的随时叫我。",
+        message: str | None = None,
+        use_llm: bool = True,
     ) -> None:
         self.name = "idle_check_in"
         self.cooldown_s = float(cooldown_s)
         self._idle_threshold_s = float(idle_threshold_s)
-        self._message = message
+        # ``message`` overrides everything — for tests + for operators
+        # who want a pinned greeting. None = use the contextual path.
+        self._pinned_message = message
+        self._use_llm = bool(use_llm)
+        # Round-robin index for the fallback pool so consecutive
+        # check-ins don't repeat the same template.
+        self._fallback_idx = 0
 
     async def should_fire(self, ctx: ProactiveContext) -> bool:
         last = ctx.last_user_message_ts
@@ -391,14 +421,104 @@ class IdleCheckInTrigger(ProactiveTrigger):
     async def propose(
         self, ctx: ProactiveContext,
     ) -> TriggerProposal | None:
+        idle_minutes = round(
+            (ctx.now - (ctx.last_user_message_ts or ctx.now)) / 60, 1,
+        )
+        # 1) Pinned override wins — test paths + operator overrides.
+        if self._pinned_message is not None:
+            text = self._pinned_message
+        else:
+            text = await self._compose_message(ctx, idle_minutes)
         return TriggerProposal(
             trigger_name=self.name,
-            message=self._message,
+            message=text,
             urgency="low",
-            payload={"idle_minutes": round(
-                (ctx.now - (ctx.last_user_message_ts or ctx.now)) / 60, 1,
-            )},
+            payload={"idle_minutes": idle_minutes},
         )
+
+    async def _compose_message(
+        self, ctx: ProactiveContext, idle_minutes: float,
+    ) -> str:
+        # Try LLM path first when allowed + a loop with an LLM and
+        # history is reachable.
+        if self._use_llm:
+            llm_text = await self._try_llm(ctx, idle_minutes)
+            if llm_text:
+                return llm_text
+        # Fallback — rotate templates so we don't repeat the same
+        # line each cycle.
+        tpl = self._FALLBACK_TEMPLATES[
+            self._fallback_idx % len(self._FALLBACK_TEMPLATES)
+        ]
+        self._fallback_idx += 1
+        return tpl.format(minutes=int(idle_minutes))
+
+    async def _try_llm(
+        self, ctx: ProactiveContext, idle_minutes: float,
+    ) -> str | None:
+        """Best-effort LLM-generated greeting. Returns None on any
+        failure — caller falls back to a template. Bounded by a 10s
+        wait_for so a slow LLM doesn't stall the proactive tick."""
+        loop = ctx.agent_loop
+        llm = getattr(loop, "_llm", None) if loop is not None else None
+        if llm is None:
+            return None
+        # Build a tiny context: last user message + last assistant
+        # message (truncated). The trigger doesn't know the session
+        # id — sweep ``_histories`` for the most recent one. If the
+        # agent runs multiple parallel sessions, "most recent" is a
+        # reasonable proxy.
+        histories = getattr(loop, "_histories", None)
+        if not isinstance(histories, dict) or not histories:
+            return None
+        last_user = ""
+        last_assistant = ""
+        for msgs in histories.values():
+            for m in reversed(msgs or []):
+                role = getattr(m, "role", None)
+                content = getattr(m, "content", "") or ""
+                if role == "user" and not last_user:
+                    last_user = content[:300]
+                elif role == "assistant" and not last_assistant:
+                    last_assistant = content[:300]
+                if last_user and last_assistant:
+                    break
+            if last_user:
+                break
+        if not last_user:
+            return None
+        try:
+            # Lazy import keeps cognition/ off the providers/ DAG.
+            from xmclaw.core.ir import Message
+            prompt = (
+                "你是一个主动的桌面助手。用户已经 "
+                f"{int(idle_minutes)} 分钟没动了。基于下面的最近对话，"
+                "生成一句 15 字以内的主动问候，要：\n"
+                "  • 引用具体上下文，不要套话\n"
+                "  • 不要重复\"还好吗\"\"需要帮忙吗\"\n"
+                "  • 自然、像朋友随口一问\n\n"
+                f"用户上一句：{last_user}\n"
+                f"你上一句：{last_assistant[:200]}\n\n"
+                "直接输出问候，不要前缀，不要引号，不要 emoji。"
+            )
+            resp = await asyncio.wait_for(
+                llm.complete(
+                    [Message(role="user", content=prompt)],
+                    tools=None,
+                ),
+                timeout=10.0,
+            )
+            text = (getattr(resp, "content", None) or "").strip()
+            # Defensive trimming — strip wrapping quotes the model
+            # sometimes adds despite being told not to.
+            text = text.strip("\"'「」『』 ")
+            if text and len(text) <= 80:
+                return text
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "idle_check_in.llm_compose_failed err=%s", exc,
+            )
+        return None
 
 
 class SystemHealthTrigger(ProactiveTrigger):
