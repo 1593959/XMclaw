@@ -231,7 +231,28 @@ async def llm_topic_refine(request: Request) -> Any:
         body = {}
     budget = int(body.get("budget") or 20)
     budget = max(1, min(50, budget))
-    return await svc.llm_topic_refine(llm, budget=budget)
+    # Wave-32+ robust envelope: catch ANY exception so the browser
+    # gets a structured JSON error instead of a hung socket
+    # ("Failed to fetch"). The previous version let exceptions
+    # propagate, and certain provider-side issues (LLM timeout,
+    # auth refresh fail, network drop) presented as opaque fetch
+    # failures with no diagnostic in the UI.
+    try:
+        return await svc.llm_topic_refine(llm, budget=budget)
+    except Exception as exc:  # noqa: BLE001
+        from xmclaw.utils.log import get_logger
+        get_logger(__name__).warning(
+            "llm_topic_refine.route_failed err=%s", exc,
+        )
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "scanned_pairs": 0, "edges_added": 0,
+                "llm_calls": 0, "duration_s": 0.0,
+            },
+            status_code=200,  # 200 so the UI's success-branch fires
+        )
 
 
 @router.post("/llm_topic_name")
@@ -258,7 +279,22 @@ async def llm_topic_name(request: Request) -> Any:
         body = {}
     budget = int(body.get("budget") or 5)
     budget = max(1, min(20, budget))
-    return await svc.llm_topic_name(llm, budget=budget)
+    try:
+        return await svc.llm_topic_name(llm, budget=budget)
+    except Exception as exc:  # noqa: BLE001
+        from xmclaw.utils.log import get_logger
+        get_logger(__name__).warning(
+            "llm_topic_name.route_failed err=%s", exc,
+        )
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "clusters_scanned": 0, "topics_created": 0,
+                "llm_calls": 0, "duration_s": 0.0,
+            },
+            status_code=200,
+        )
 
 
 @router.post("/relink_same_topic")

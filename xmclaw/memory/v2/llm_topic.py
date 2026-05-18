@@ -75,9 +75,10 @@ _REFINE_DISTANCE_BAND = (
 # verbose Chinese facts and the response under 400 tokens — cheap.
 _MAX_PAIRS_PER_BATCH = 20
 
-# Hard timeout on the LLM call. 30s is generous; a smaller fast
-# model usually returns in < 5s.
-_LLM_TIMEOUT_S = 30.0
+# Hard timeout on the LLM call. Tightened 30 → 15s so the browser
+# fetch doesn't time out before the daemon does. If the LLM is too
+# slow for 15s, treat it as a failure and skip.
+_LLM_TIMEOUT_S = 15.0
 
 
 async def find_borderline_pairs(
@@ -87,40 +88,65 @@ async def find_borderline_pairs(
 ) -> list[tuple[Fact, Fact]]:
     """Return up to ``budget`` fact pairs whose vector distance falls
     in the borderline-same-topic band. Excludes pairs that already
-    have a SAME_TOPIC edge (idempotent — second run skips them)."""
+    have a SAME_TOPIC edge (idempotent — second run skips them).
+
+    Wave-32+ perf fix: the pre-fix path ran a graph-neighbors query
+    on EVERY fact up front to seed ``seen_pairs`` — for a 200-fact
+    store that's 200 sequential DB round-trips before the LLM call,
+    which routinely blew past the browser's fetch timeout and
+    produced "Failed to fetch" in the UI. Restructured to:
+      1. Find candidate pairs in the cheap O(N²) cosine pass first
+      2. Only THEN look up existing edges, ONLY for the candidates
+    Bounded work — for budget=20 we do at most 40 neighbor queries
+    instead of N. Plus capped the initial scan at 300 facts (limit
+    was 2000) — beyond that the graph is too big for one-shot LLM
+    refinement anyway.
+    """
     lo, hi = _REFINE_DISTANCE_BAND
-    all_facts = await svc._vec.search(None, where=None, limit=2000)
+    all_facts = await svc._vec.search(None, where=None, limit=300)
     all_facts = [f for f in all_facts if f.embedding is not None and not f.superseded_by]
-    out: list[tuple[Fact, Fact]] = []
-    # Track existing SAME_TOPIC edges per-source-id so we skip them.
-    # We don't have a single "list all edges" query; instead query
-    # neighbors per fact and read its outgoing relations.
-    seen_pairs: set[frozenset[str]] = set()
-    for fact in all_facts:
-        if len(out) >= budget:
-            break
-        try:
-            existing = await svc._graph.neighbors(
-                fact.id, relation_types=[RelationKind.SAME_TOPIC.value],
-            )
-            for rel, target_id in existing:
-                seen_pairs.add(frozenset({rel.source_fact_id, target_id}))
-        except Exception:  # noqa: BLE001
-            pass
-    # Compute borderline pairs.
+    # Step 1: cheap O(N²) cosine pass to find candidates. Over-collect
+    # 3× the budget so we have slack after filtering already-linked
+    # pairs in step 2.
+    candidates: list[tuple[Fact, Fact]] = []
+    over_budget = budget * 3
     for i, a in enumerate(all_facts):
-        if len(out) >= budget:
+        if len(candidates) >= over_budget:
             break
         for b in all_facts[i + 1:]:
-            if len(out) >= budget:
+            if len(candidates) >= over_budget:
                 break
-            pair_key = frozenset({a.id, b.id})
-            if pair_key in seen_pairs:
-                continue
             d = _cosine_distance(a.embedding, b.embedding)
             if lo < d <= hi:
-                out.append((a, b))
-                seen_pairs.add(pair_key)
+                candidates.append((a, b))
+    # Step 2: filter out pairs that already have a SAME_TOPIC edge.
+    # Touch the graph ONLY for the candidate facts (not all facts).
+    seen_pairs: set[frozenset[str]] = set()
+    touched_ids: set[str] = set()
+    for a, b in candidates:
+        for fid in (a.id, b.id):
+            if fid in touched_ids:
+                continue
+            touched_ids.add(fid)
+            try:
+                existing = await svc._graph.neighbors(
+                    fid, relation_types=[RelationKind.SAME_TOPIC.value],
+                )
+                for rel, target_id in existing:
+                    seen_pairs.add(
+                        frozenset({rel.source_fact_id, target_id}),
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+    out: list[tuple[Fact, Fact]] = []
+    for a, b in candidates:
+        if len(out) >= budget:
+            break
+        pair_key = frozenset({a.id, b.id})
+        if pair_key in seen_pairs:
+            continue
+        out.append((a, b))
+        seen_pairs.add(pair_key)
     return out
 
 
