@@ -488,6 +488,7 @@ class MemoryService:
                 # ``_shared_entity_tokens`` for the extraction.
                 entity_matches = self._shared_entity_links(
                     text, nearby, exclude=set(same),
+                    new_fact_id=fact_id,
                 )
                 same_topic_ids = tuple(list(same) + entity_matches)
                 contradicts_ids = tuple(contra)
@@ -517,6 +518,19 @@ class MemoryService:
             ts_last=ts_last,
         )
         await self._vec.upsert([new_fact])
+
+        # Wave-32+ entity layer: register every entity the fact text
+        # mentions. The reverse index unlocks O(1) "facts that share
+        # an entity" queries, which the SAME_TOPIC bridge now uses
+        # in addition to vec similarity + token overlap. Idempotent
+        # for repeat writes of the same fact id.
+        try:
+            from xmclaw.memory.v2.entity import get_entity_store
+            get_entity_store().register_fact_text(new_fact.id, text)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "memory_service.entity_register_failed err=%s", exc,
+            )
 
         # Edge writes (best-effort — never fail the remember on graph
         # write).
@@ -650,28 +664,56 @@ class MemoryService:
         candidates: list[Fact],
         *,
         exclude: set[str],
+        new_fact_id: str | None = None,
     ) -> list[str]:
         """Return ids of candidate facts that share at least one
-        DISTINCTIVE entity token with ``new_text``. Bridges the gap
-        when vec similarity isn't tight enough (the embedder maps
-        URL strings and Chinese paraphrases of "the website" too
-        far apart) but the user clearly meant the same topic.
+        DISTINCTIVE entity reference with ``new_text``. Two layers:
+
+          1. Wave-32+ entity-store overlap (strong signal): if the
+             new fact and a candidate share a CANONICAL entity_id
+             from the EntityStore reverse index, they're linked.
+             This catches "https://X" vs "网址 https://X" — both
+             register the same URL canonical, store returns the
+             match in O(1).
+          2. Fallback token overlap (weak signal): for facts that
+             pre-date the entity layer or didn't get registered,
+             fall back to the old `_extract_entity_tokens` token-
+             intersection bridge.
 
         ``exclude`` is the ids already linked via the vec scan — we
         don't want to double-emit edges, the relate() upsert handles
         dedup but skipping work is cheaper.
         """
+        matched_set: set[str] = set()
+
+        # Strong: entity-store reverse index.
+        if new_fact_id:
+            try:
+                from xmclaw.memory.v2.entity import get_entity_store
+                store = get_entity_store()
+                # Register this fact's entities first (idempotent),
+                # then ask "which other facts share my entities?"
+                store.register_fact_text(new_fact_id, new_text)
+                shared = store.co_mentioned_facts(new_fact_id, exclude=exclude)
+                # Keep only candidates the caller actually passed in
+                # (we don't want to add edges to facts that aren't
+                # in the vec-search neighbor pool — they're probably
+                # superseded or far away).
+                candidate_ids = {c.id for c in candidates}
+                matched_set.update(shared & candidate_ids)
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Weak fallback: token-intersection bridge.
         new_tokens = _extract_entity_tokens(new_text)
-        if not new_tokens:
-            return []
-        matched: list[str] = []
-        for cand in candidates:
-            if cand.id in exclude:
-                continue
-            cand_tokens = _extract_entity_tokens(cand.text)
-            if cand_tokens & new_tokens:
-                matched.append(cand.id)
-        return matched
+        if new_tokens:
+            for cand in candidates:
+                if cand.id in exclude or cand.id in matched_set:
+                    continue
+                cand_tokens = _extract_entity_tokens(cand.text)
+                if cand_tokens & new_tokens:
+                    matched_set.add(cand.id)
+        return list(matched_set)
 
     # ── Explicit relate / supersede ─────────────────────────────
 
