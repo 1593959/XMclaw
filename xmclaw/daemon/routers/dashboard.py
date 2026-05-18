@@ -398,12 +398,34 @@ def _cost_today_block(st: Any) -> dict[str, Any] | None:
     # Round costs for display so JSON doesn't carry 14-digit floats.
     for row in model_rows:
         row["cost_usd"] = round(row["cost_usd"], 4)
-    # Anthropic cache hit rate (only meaningful when cache stats > 0).
-    cache_total = cache_creation_tokens + cache_read_tokens
+    # Cache hit rate — Wave-30 (2026-05-18) corrected formula.
+    #
+    # Old: ``read / (read + creation)`` — this answered "of the
+    # cache-touched tokens, how many were reads vs writes?" which
+    # made hit rate look ~95%+ as soon as any cache existed, because
+    # ``creation`` only fires on the first request that populates a
+    # slot. Subsequent calls only contribute ``read``, dragging the
+    # denominator down.
+    #
+    # New: ``read / total_input_tokens``  where total_input =
+    # prompt_tokens + cache_read + cache_creation. ``prompt_tokens``
+    # in Anthropic / OpenAI usage shapes is the UNCACHED input
+    # (the new prefix + tail that wasn't matched). So:
+    #
+    #     total_input  ≈ uncached + cache_hit + cache_write
+    #     hit_rate     = cache_hit / total_input
+    #
+    # A daemon with zero cache activity (cache_total = 0) but real
+    # LLM calls still reports a meaningful 0.0 instead of None —
+    # this exposes "cache should be on but isn't" instead of
+    # silently hiding the metric.
+    total_input_tokens = (
+        prompt_tokens + cache_creation_tokens + cache_read_tokens
+    )
     cache_hit_rate: float | None = None
-    if cache_total > 0:
+    if total_input_tokens > 0:
         cache_hit_rate = round(
-            cache_read_tokens / cache_total, 3,
+            cache_read_tokens / total_input_tokens, 3,
         )
     return {
         "call_count": len(evs),

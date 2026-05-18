@@ -382,15 +382,30 @@ def test_cost_today_cache_hit_rate(
     body = client_with_cost_events.get(
         "/api/v2/dashboard/overview",
     ).json()
-    # Total cache: 800 + 200 = 1000 read, 0 creation → 100% hit rate.
-    assert body["cost_today"]["cache_hit_rate"] == 1.0
+    # Wave-30 formula change (2026-05-18): cache_hit_rate is now
+    # ``read / total_input`` where total_input = prompt + read +
+    # creation. Old formula was ``read / (read + creation)`` which
+    # reported ~100% as soon as any cache existed.
+    #
+    # Fixture totals:
+    #   prompt:    1500 + 1000 + 800 = 3300
+    #   creation:                       0
+    #   read:       800 +  200 +   0 = 1000
+    #   total_input = 3300 + 0 + 1000 = 4300
+    #   hit_rate    = 1000 / 4300 ≈ 0.233
+    assert body["cost_today"]["cache_hit_rate"] == 0.233
 
 
-def test_cost_today_no_cache_returns_null_hit_rate(
+def test_cost_today_no_cache_returns_zero_hit_rate(
     empty_client: TestClient,
 ) -> None:
-    """When all calls have 0 cache tokens, hit_rate is None (not
-    misleadingly 0.0 / division-by-zero)."""
+    """When every call has 0 cache tokens but real prompt_tokens
+    exist, hit_rate is 0.0 (not None). The earlier ``None``
+    silently hid the metric from the dashboard exactly when the
+    user most needs to know cache isn't working — a fresh-install
+    misconfiguration of OpenAI / DeepSeek / unknown shims where
+    cache_control would be ignored. ``cache_hit_rate: 0.0``
+    surfaces as a 0.0% widget so the operator can react."""
     class _Ev:
         def __init__(self):
             self.type = "cost_tick"
@@ -399,6 +414,33 @@ def test_cost_today_no_cache_returns_null_hit_rate(
                 "cost_usd": 0.005,
                 "prompt_tokens": 100,
                 "completion_tokens": 50,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            }
+            self.ts = time.time()
+
+    fake_bus = MagicMock()
+    fake_bus.query.return_value = [_Ev()]
+    empty_client.app.state.bus = fake_bus
+
+    body = empty_client.get("/api/v2/dashboard/overview").json()
+    assert body["cost_today"]["cache_hit_rate"] == 0.0
+
+
+def test_cost_today_hit_rate_none_when_zero_total_input(
+    empty_client: TestClient,
+) -> None:
+    """The None branch is reserved for the genuinely empty case —
+    no LLM activity at all (no prompts, no cache). Without this
+    division-by-zero would crash."""
+    class _Ev:
+        def __init__(self):
+            self.type = "cost_tick"
+            self.payload = {
+                "model": "?",
+                "cost_usd": 0.0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
                 "cache_creation_input_tokens": 0,
                 "cache_read_input_tokens": 0,
             }
