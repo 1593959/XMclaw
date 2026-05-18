@@ -1369,7 +1369,17 @@ def make_lifespan(
         _app.state.process_watcher = None
         _app.state.evolution_loop = None
         _app.state.task_scheduler = None
-        if cognition_cfg.get("enabled", True) and _cognitive_state is not None:
+        # Wave-32+ default flip: cognition autonomous loop is now
+        # opt-in (default False). Pre-fix it spawned background
+        # sessions whose products were almost never read — the user
+        # rightly complained "用不上的产出就是浪费 LLM 钱". The
+        # feedback-closure work (P0-P3) makes the loop USEFUL when
+        # explicitly enabled, but we still default OFF so the
+        # average install doesn't burn credits on autonomous work
+        # the operator hasn't reviewed. Set
+        # ``cognition.enabled = true`` in daemon/config.json to
+        # opt in.
+        if cognition_cfg.get("enabled", False) and _cognitive_state is not None:
 
             try:
                 from xmclaw.cognition.file_watcher import FileWatcher

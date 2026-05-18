@@ -124,6 +124,22 @@ BUILTIN_FLAGS: list[FeatureFlag] = [
     # confidence ones (conf 0.8+) the user invariably approved
     # anyway. Default ON @ 0.8 so the UI surface stays clean for
     # the genuinely-uncertain ones (conf < 0.8 still need review).
+    # Wave-32+ feedback closure: cognitive_daemon Layer-1 surface
+    # judgment. When on, every autonomous task completion gets a
+    # cheap LLM call ("should the user be notified?"); high-signal
+    # results fire a PROACTIVE_PROPOSAL the chat UI surfaces as a
+    # bubble. Default off — surfacing is a cost-aware feature, and
+    # poorly-tuned thresholds quickly become spam.
+    FeatureFlag(
+        name="cognition.surface_results.enabled",
+        default=False,
+        description=(
+            "When true, the CognitiveDaemon judges each autonomous"
+            " task result via a small LLM call and surfaces"
+            " high-signal ones as proactive_proposal events. Off"
+            " by default — opt-in to avoid noisy / costly bubbles."
+        ),
+    ),
     FeatureFlag(
         name="evolution.auto_approve.enabled",
         default=True,

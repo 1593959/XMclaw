@@ -491,6 +491,56 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         ]
         return list(self._recently_finished_runs)
 
+    # Wave-32+ P3: build a system-prompt block describing the last
+    # few autonomous-task results so the main agent can reference
+    # them. Returns "" when nothing recent exists (cheap, avoids
+    # injecting an empty section).
+    _AUTONOMOUS_BLOCK_MAX_ENTRIES: int = 3
+    # Only include entries newer than this many seconds — older
+    # results are less relevant + bloat the prompt.
+    _AUTONOMOUS_BLOCK_MAX_AGE_S: float = 1800.0  # 30 min
+
+    def _build_recent_autonomous_block(self) -> str:
+        rows = self.list_recently_finished()
+        if not rows:
+            return ""
+        import time as _time
+        cutoff = _time.time() - self._AUTONOMOUS_BLOCK_MAX_AGE_S
+        # Keep the recent + meaningful ones. Drop runs with no reply
+        # preview (no point telling the LLM "task X happened but
+        # produced nothing"), drop stale ones, drop ok=False (those
+        # would distract more than help; the proactive surfacing
+        # path in cognitive_daemon handles user-relevant failures).
+        candidates = [
+            r for r in rows
+            if r.get("finished_at", 0) >= cutoff
+            and r.get("ok", False)
+            and (r.get("reply_preview") or "").strip()
+        ]
+        if not candidates:
+            return ""
+        # Newest first.
+        candidates.sort(key=lambda r: r.get("finished_at", 0), reverse=True)
+        chosen = candidates[: self._AUTONOMOUS_BLOCK_MAX_ENTRIES]
+        lines = [
+            "## 最近后台任务产出",
+            "你最近在后台跑完了以下任务，可以在回答中引用：",
+        ]
+        for r in chosen:
+            ts = r.get("finished_at", 0)
+            mins_ago = max(0, int((_time.time() - ts) / 60))
+            prompt = (r.get("user_message_preview") or "").strip()
+            reply = (r.get("reply_preview") or "").strip()
+            # Cap each row tightly — the goal is a 2-line summary, not
+            # a paragraph. Total block ≤ 1.5KB even with 3 entries.
+            if len(prompt) > 80:
+                prompt = prompt[:77] + "..."
+            if len(reply) > 200:
+                reply = reply[:197] + "..."
+            lines.append(f"- 约 {mins_ago} 分钟前 | 任务: {prompt}")
+            lines.append(f"  产出: {reply}")
+        return "\n".join(lines)
+
     # Skill invocation tracking is fully deterministic now:
     # SkillToolProvider routes registered skills as real ToolCalls, so
     # tool_invocation_started/finished events with name="skill_<id>"
@@ -1666,6 +1716,16 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             pass
         if autobio_block:
             _parts.append(autobio_block)
+        # Wave-32+ P3 feedback closure: surface the last few
+        # autonomous-task outputs to the main agent so it can REFER
+        # to them in the next turn. Pre-fix: autonomous sessions
+        # produced text that vanished from the agent's awareness
+        # the moment they ended. Now the agent knows "while you
+        # were away, I dug into git workflow + found 3 patterns ..."
+        # without the user having to manually retrieve.
+        _bg_block = self._build_recent_autonomous_block()
+        if _bg_block:
+            _parts.append(_bg_block)
         _parts.append(time_block)
         system_content = (
             "\n\n" + CACHE_BREAKPOINT_MARKER + "\n\n"

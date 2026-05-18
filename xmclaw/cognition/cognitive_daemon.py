@@ -172,6 +172,12 @@ class CognitiveDaemon:
         # Phase E: asyncio.Event so _run() sleep can be interrupted
         # immediately on stop() without cancelling an in-flight tick.
         self._stop_event = asyncio.Event()
+        # Wave-32+ P0 feedback closure: track failed goal attempts so
+        # retries are bounded. Without this a chronically failing goal
+        # would re-plan + re-dispatch on every tick forever, burning
+        # LLM credits with no progress.
+        self._failed_goal_attempts: dict[str, int] = {}
+        self._max_goal_retries: int = 2
 
     # ------------------------------------------------------------------
     # Public properties (mainly for tests + observability)
@@ -542,12 +548,247 @@ class CognitiveDaemon:
             return
 
         try:
-            await self._dispatcher.execute_plan(plan)
+            exec_result = await self._dispatcher.execute_plan(plan)
         except Exception:  # noqa: BLE001
             logger.exception(
                 "CognitiveDaemon: dispatcher.execute_plan raised; "
                 "plan dropped"
             )
+            return
+
+        # Wave-32+ feedback loop closure: the pre-fix path discarded
+        # exec_result entirely. The user reasonably complained
+        # "后台跑完呢? 结果呢?" — autonomous work produced text into
+        # session histories that NOTHING read. Now we close four loops:
+        #   P0 — mark the goal done/failed in CognitiveState, retry
+        #        on failure (bounded)
+        #   P1 — high-signal results surface as proactive_proposal
+        #   P2 — successful runs emit SESSION_LIFECYCLE destroy so
+        #        JournalWriter picks them up → skill_dream sees them
+        #   P3 — recently-finished runs already buffered by AgentLoop
+        #        (separate change in _run_turn_inner)
+        try:
+            await self._react_to_exec_result(goal_blob, exec_result)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "CognitiveDaemon: post-execute feedback failed; "
+                "the plan completed but feedback loops didn't close",
+            )
+
+    # ── Wave-32+ feedback closure helpers ──────────────────────────
+
+    async def _react_to_exec_result(
+        self, goal_blob: dict[str, Any], exec_result: Any,
+    ) -> None:
+        """P0+P1+P2 dispatch. Each sub-helper fails soft — a failure
+        in one branch must not block the others."""
+        all_ok = bool(getattr(exec_result, "all_ok", False))
+        step_results = list(getattr(exec_result, "step_results", ()) or ())
+        # P0: goal state
+        try:
+            self._mark_goal_status(goal_blob, all_ok=all_ok)
+        except Exception:  # noqa: BLE001
+            logger.exception("CognitiveDaemon: mark_goal_status failed")
+        # P2: emit SESSION_LIFECYCLE destroy for each session that ran.
+        # Surfaces autonomous sessions into the journal pipeline so
+        # SkillProposer can mine them like user-initiated ones.
+        try:
+            await self._announce_session_destruction(step_results)
+        except Exception:  # noqa: BLE001
+            logger.exception("CognitiveDaemon: session destroy emit failed")
+        # P1: surface high-signal results as proactive proposals.
+        try:
+            await self._maybe_surface_results(goal_blob, step_results)
+        except Exception:  # noqa: BLE001
+            logger.exception("CognitiveDaemon: result surfacing failed")
+
+    def _mark_goal_status(
+        self, goal_blob: dict[str, Any], *, all_ok: bool,
+    ) -> None:
+        """P0: find a matching Goal in CognitiveState by id, flip its
+        status to ``completed`` (success) or ``blocked`` (failed past
+        retry budget). Failed goals keep an attempts counter so retry
+        eventually gives up instead of spinning forever."""
+        if self._state is None:
+            return
+        gid = goal_blob.get("id") if isinstance(goal_blob, dict) else None
+        if not gid:
+            return
+        for goal in list(getattr(self._state, "current_goals", []) or []):
+            if getattr(goal, "id", None) != gid:
+                continue
+            now = time.time()
+            if all_ok:
+                goal.status = "completed"
+                goal.updated_at = now
+                self._failed_goal_attempts.pop(gid, None)
+                logger.info("CognitiveDaemon.goal_completed id=%s", gid)
+            else:
+                attempts = self._failed_goal_attempts.get(gid, 0) + 1
+                self._failed_goal_attempts[gid] = attempts
+                if attempts >= self._max_goal_retries:
+                    goal.status = "blocked"
+                    goal.updated_at = now
+                    logger.warning(
+                        "CognitiveDaemon.goal_blocked id=%s attempts=%d "
+                        "(exceeded retry budget)",
+                        gid, attempts,
+                    )
+                else:
+                    # Stay active so the next tick can re-plan / re-try.
+                    goal.status = "needs_replan"
+                    goal.updated_at = now
+                    logger.info(
+                        "CognitiveDaemon.goal_failed_retrying id=%s attempt=%d",
+                        gid, attempts,
+                    )
+            return
+
+    async def _announce_session_destruction(
+        self, step_results: list[Any],
+    ) -> None:
+        """P2: emit SESSION_LIFECYCLE destroy for each llm_turn step
+        so JournalWriter buffers it + emits a JournalEntry. Without
+        this, autonomous sessions never reach skill_dream's input
+        — the whole "learn from autonomous successes" loop was
+        broken because no journal entry ever existed.
+
+        Idempotent: JournalWriter's _flush pops the buffer, so a
+        re-emit at most creates an empty entry."""
+        if self._event_bus is None:
+            return
+        from xmclaw.core.bus.events import EventType, make_event
+        for sr in step_results:
+            route = getattr(sr, "route", "")
+            if route != "llm_turn":
+                continue
+            output = getattr(sr, "output", None) or {}
+            sid = output.get("session_id") if isinstance(output, dict) else None
+            if not sid:
+                continue
+            try:
+                await self._event_bus.publish(make_event(
+                    session_id=sid,
+                    agent_id="cognitive-daemon",
+                    type=EventType.SESSION_LIFECYCLE,
+                    payload={"phase": "destroy", "reason": "autonomous_complete"},
+                ))
+            except Exception:  # noqa: BLE001
+                continue
+
+    async def _maybe_surface_results(
+        self, goal_blob: dict[str, Any], step_results: list[Any],
+    ) -> None:
+        """P1: for each successful step with text output, ask a
+        small LLM "should the user be notified about this?" If yes,
+        emit a proactive_proposal so the chat UI surfaces a bubble.
+
+        Gated by ``cognition.surface_results.enabled`` feature flag
+        (default False) — surfacing is a cost-aware feature, the
+        operator opts in. Even when on, only runs ONE LLM call per
+        plan (concatenates step texts) to keep costs predictable."""
+        if self._event_bus is None:
+            return
+        if not self._surface_results_enabled():
+            return
+        # Pull a single representative text — the last step's reply
+        # is usually the conclusion of the multi-step plan.
+        last_text = ""
+        for sr in reversed(step_results):
+            if not getattr(sr, "ok", False):
+                continue
+            output = getattr(sr, "output", None) or {}
+            if not isinstance(output, dict):
+                continue
+            agent_result = output.get("agent_result")
+            if isinstance(agent_result, dict):
+                last_text = (agent_result.get("text") or "").strip()
+            elif isinstance(agent_result, str):
+                last_text = agent_result.strip()
+            if last_text:
+                break
+        if not last_text:
+            return
+        llm = self._get_surface_llm()
+        if llm is None:
+            return
+        # Ask the LLM to judge worth + provide a short summary in a
+        # single response. Strict format so parsing is trivial.
+        prompt = (
+            "你是一个主动通知守门员。下面是 agent 后台自动跑完一个任务"
+            "的输出。判断要不要通知用户：\n"
+            "  • 用户已经在做事，能不打扰就不打扰\n"
+            "  • 只有「发现严重问题 / 重要新信息 / 用户大概率想立刻"
+            "    知道」时才通知\n"
+            "  • 普通研究 / 整理 / 总结 → 不通知，存档够了\n\n"
+            "任务上下文：" + str(goal_blob.get("description", ""))[:200] + "\n"
+            "任务产出：" + last_text[:600] + "\n\n"
+            "严格输出格式（一行）：\n"
+            "  通知: <30 字内一句话给用户看>\n"
+            "  或\n"
+            "  跳过\n"
+        )
+        try:
+            from xmclaw.core.ir import Message
+            resp = await asyncio.wait_for(
+                llm.complete([Message(role="user", content=prompt)], tools=None),
+                timeout=15.0,
+            )
+            text = (getattr(resp, "content", None) or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("CognitiveDaemon.surface_judge_failed err=%s", exc)
+            return
+        if not text or text.startswith("跳过"):
+            return
+        # Strip the "通知:" prefix; cap length defensively.
+        message = text
+        for prefix in ("通知:", "通知：", "NOTIFY:", "Notify:"):
+            if message.startswith(prefix):
+                message = message[len(prefix):].strip()
+                break
+        message = message.split("\n", 1)[0][:120]
+        if not message:
+            return
+        from xmclaw.core.bus.events import EventType, make_event
+        try:
+            await self._event_bus.publish(make_event(
+                session_id="proactive",
+                agent_id="cognitive-daemon",
+                type=EventType.PROACTIVE_PROPOSAL,
+                payload={
+                    "trigger": "autonomous_result",
+                    "message": message,
+                    "urgency": "normal",
+                    "goal_id": goal_blob.get("id"),
+                    "goal_description": str(goal_blob.get("description", ""))[:200],
+                },
+            ))
+            logger.info(
+                "CognitiveDaemon.surfaced_result goal=%s msg=%s",
+                goal_blob.get("id"), message[:60],
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("CognitiveDaemon.surface_publish_failed")
+
+    def _surface_results_enabled(self) -> bool:
+        try:
+            from xmclaw.core.feature_flags import default_engine
+            return bool(default_engine().variant(
+                "cognition.surface_results.enabled", default=False,
+            ))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _get_surface_llm(self) -> "Any | None":
+        """Resolve the LLM for the surface-judgment call. Reaches into
+        the dispatcher's wired agent_loop — same LLM the autonomous
+        turns ran against, so no extra config needed."""
+        if self._dispatcher is None:
+            return None
+        loop = getattr(self._dispatcher, "_agent_loop", None)
+        if loop is None:
+            return None
+        return getattr(loop, "_llm", None)
 
     async def _spawn_goals(self) -> int:
         """Run the GoalGenerator, return number of goals spawned.
