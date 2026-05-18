@@ -25,6 +25,9 @@ from typing import Iterator
 _current_agent_id: ContextVar[str | None] = ContextVar(
     "xmclaw_current_agent_id", default=None
 )
+_current_session_id: ContextVar[str | None] = ContextVar(
+    "xmclaw_current_session_id", default=None
+)
 
 
 def get_current_agent_id() -> str | None:
@@ -36,6 +39,18 @@ def get_current_agent_id() -> str | None:
     through the WS handler (CLI, tests, scheduler jobs).
     """
     return _current_agent_id.get()
+
+
+def get_current_session_id() -> str | None:
+    """Return the session id for the running turn, or ``None`` outside one.
+
+    Wave-32+ (2026-05-18): added so tools like ``fork_session`` can
+    discover which session to clone without it appearing as a tool
+    argument (the LLM shouldn't have to know its own session id, and
+    making it an arg invites the LLM to pick someone else's by
+    mistake).
+    """
+    return _current_session_id.get()
 
 
 @contextmanager
@@ -53,3 +68,14 @@ def use_current_agent_id(agent_id: str | None) -> Iterator[None]:
         yield
     finally:
         _current_agent_id.reset(token)
+
+
+@contextmanager
+def use_current_session_id(session_id: str | None) -> Iterator[None]:
+    """Scope the ambient session id to a ``with`` block. Same semantics
+    as :func:`use_current_agent_id` — set on entry, restore on exit."""
+    token = _current_session_id.set(session_id)
+    try:
+        yield
+    finally:
+        _current_session_id.reset(token)

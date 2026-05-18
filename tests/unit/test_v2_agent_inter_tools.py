@@ -535,3 +535,155 @@ async def test_stop_agent_task_unknown_id_errors() -> None:
     res = await tools.invoke(_call("stop_agent_task", task_id="nope"))
     assert res.ok is False
     assert "unknown task_id" in (res.error or "")
+
+
+# ── fork_session (Wave-32+) ──────────────────────────────────────────────
+
+
+def test_fork_session_advertised_in_list_tools() -> None:
+    """fork_session must surface alongside the other delegation tools so
+    the LLM can discover it. Pin the name explicitly — silent rename
+    would be a contract change."""
+    tools = AgentInterTools(manager=_StubManager(), primary_loop=_StubLoop())
+    names = {s.name for s in tools.list_tools()}
+    assert "fork_session" in names
+
+
+@pytest.mark.asyncio
+async def test_fork_session_requires_active_session() -> None:
+    """Calling fork_session outside a live turn (no session contextvar)
+    surfaces an error, not a misleading "session not found". The agent
+    that's supposed to be the parent must be running for fork to make
+    sense at all."""
+    primary = _StubLoop()
+    tools = AgentInterTools(manager=_StubManager(), primary_loop=primary)
+    res = await tools.invoke(_call("fork_session", content="explore alt"))
+    assert res.ok is False
+    assert "parent_session_id" in (res.error or "")
+
+
+@pytest.mark.asyncio
+async def test_fork_session_clones_history_and_dispatches() -> None:
+    """Inside an active session:
+      * the fork creates a NEW session_id (not equal to parent)
+      * the fork's history is seeded with the parent's messages
+        (same objects — Message is frozen, list-level copy is fine)
+      * mutating the fork's history after dispatch doesn't affect the
+        parent (the seed is a shallow copy, not the same list)
+      * the background task drains and the record reaches status=done
+    """
+    from xmclaw.core.agent_context import use_current_session_id
+
+    primary = _StubLoop()
+    primary._histories["sess-A"] = [
+        _StubMessage(role="user", content="hello"),
+        _StubMessage(role="assistant", content="hi there"),
+    ]
+    tools = AgentInterTools(manager=_StubManager(), primary_loop=primary)
+
+    with use_current_session_id("sess-A"):
+        res = await tools.invoke(_call("fork_session", content="explore alt"))
+    assert res.ok, res.error
+    body = json.loads(res.content)
+    fork_sid = body["fork_session_id"]
+    assert body["parent_session_id"] == "sess-A"
+    assert fork_sid != "sess-A"
+    assert body["inherited_messages"] == 2
+    assert body["agent_id"] == "main"
+
+    # Lists are different objects.
+    assert primary._histories[fork_sid] is not primary._histories["sess-A"]
+    # ... but seeded with the same Message objects (cheap, safe — frozen).
+    assert primary._histories[fork_sid][:2] == primary._histories["sess-A"]
+
+    # Wait for background drain.
+    for _ in range(50):
+        record = tools._tasks[body["task_id"]]
+        if record.status in ("done", "error"):
+            break
+        await asyncio.sleep(0.01)
+    assert tools._tasks[body["task_id"]].status == "done"
+    # Stub's run_turn appended user + assistant to the fork's history.
+    assert any(
+        m.role == "assistant" and "explore alt" in m.content
+        for m in primary._histories[fork_sid]
+    )
+
+
+@pytest.mark.asyncio
+async def test_fork_session_targets_specific_agent() -> None:
+    """``agent_id`` arg routes the fork to a named delegate while the
+    history is still copied from the CURRENT parent session (otherwise
+    fork would be indistinguishable from submit_to_agent)."""
+    from xmclaw.core.agent_context import use_current_session_id
+
+    primary = _StubLoop()
+    worker_loop = _StubLoop(reply_template="research: {content}")
+    primary._histories["sess-B"] = [
+        _StubMessage(role="user", content="user said X"),
+    ]
+    mgr = _StubManager({
+        "research": _StubWorkspace("research", worker_loop),
+    })
+    tools = AgentInterTools(manager=mgr, primary_loop=primary)
+
+    with use_current_session_id("sess-B"):
+        res = await tools.invoke(_call(
+            "fork_session", content="deep-dive on X", agent_id="research",
+        ))
+    assert res.ok, res.error
+    body = json.loads(res.content)
+    fork_sid = body["fork_session_id"]
+    # History was cloned to the WORKER's loop, not the primary's.
+    assert fork_sid in worker_loop._histories
+    assert worker_loop._histories[fork_sid][:1] == primary._histories["sess-B"]
+
+
+@pytest.mark.asyncio
+async def test_fork_session_empty_content_errors() -> None:
+    from xmclaw.core.agent_context import use_current_session_id
+
+    tools = AgentInterTools(manager=_StubManager(), primary_loop=_StubLoop())
+    with use_current_session_id("sess-X"):
+        res = await tools.invoke(_call("fork_session", content="   "))
+    assert res.ok is False
+    assert "content required" in (res.error or "")
+
+
+# ── submit_background (Wave-32+ hook-engine helper) ──────────────────────
+
+
+@pytest.mark.asyncio
+async def test_submit_background_returns_task_id_and_runs() -> None:
+    """The hook engine's AgentRunner reaches in via this public helper
+    instead of fabricating a ToolCall. It must accept plain str args
+    and the resulting record must drain to ``done``."""
+    primary = _StubLoop()
+    tools = AgentInterTools(manager=_StubManager(), primary_loop=primary)
+    task_id = await tools.submit_background(
+        "main", "summarize the session", source="post_llm",
+    )
+    assert isinstance(task_id, str) and len(task_id) > 0
+    for _ in range(50):
+        record = tools._tasks[task_id]
+        if record.status in ("done", "error"):
+            break
+        await asyncio.sleep(0.01)
+    record = tools._tasks[task_id]
+    assert record.status == "done", record.error
+    # Hook source must be visible in the prompt the callee actually
+    # saw — operators rely on this to tell hook-driven from
+    # LLM-driven submits during triage.
+    assert any(
+        "[Hook post_llm" in content
+        for (_sid, content) in primary.turns_seen
+    )
+
+
+@pytest.mark.asyncio
+async def test_submit_background_validates_inputs() -> None:
+    tools = AgentInterTools(manager=_StubManager(), primary_loop=_StubLoop())
+    with pytest.raises(ValueError):
+        await tools.submit_background("", "content")
+    with pytest.raises(ValueError):
+        await tools.submit_background("main", "")

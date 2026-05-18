@@ -41,7 +41,10 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from xmclaw.core.agent_context import get_current_agent_id
+from xmclaw.core.agent_context import (
+    get_current_agent_id,
+    get_current_session_id,
+)
 from xmclaw.core.ir import ToolCall, ToolResult, ToolSpec
 from xmclaw.providers.tool.base import ToolProvider
 
@@ -136,6 +139,52 @@ _SUBMIT_TO_AGENT_SPEC = ToolSpec(
             "content": {"type": "string"},
         },
         "required": ["agent_id", "content"],
+    },
+)
+
+
+_FORK_SESSION_SPEC = ToolSpec(
+    name="fork_session",
+    description=(
+        "Wave-32+ (2026-05-18): fork the CURRENT session into a "
+        "background sibling that keeps the full conversation "
+        "history. Differs from submit_to_agent (which starts the "
+        "delegate with an empty history) — the fork starts ON TOP "
+        "OF the parent's prior messages, so the new turn benefits "
+        "from prompt-cache hits on the shared prefix and the "
+        "delegate immediately knows everything you've already "
+        "discussed.\n\n"
+        "Use when you want to: (a) explore an alternative branch "
+        "without dropping the current line of reasoning, (b) "
+        "delegate a sub-question that requires deep context the "
+        "user already provided, (c) run two parallel attempts and "
+        "keep whichever wins.\n\n"
+        "Returns ``{task_id, fork_session_id, parent_session_id}`` "
+        "immediately. Poll the result with check_agent_task. The "
+        "fork shares the parent's prompt-cache prefix so its first "
+        "LLM call typically hits cache on system + prior history."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "content": {
+                "type": "string",
+                "description": (
+                    "The user-message that kicks off the fork. The "
+                    "delegate sees [system, prior history, this "
+                    "content] as its messages list."
+                ),
+            },
+            "agent_id": {
+                "type": "string",
+                "description": (
+                    "Target agent id. Defaults to the current "
+                    "agent (self-fork). Pass a different id to "
+                    "fork into a specialist (e.g. 'research')."
+                ),
+            },
+        },
+        "required": ["content"],
     },
 )
 
@@ -303,6 +352,7 @@ class AgentInterTools(ToolProvider):
             _LIST_AGENTS_SPEC,
             _CHAT_WITH_AGENT_SPEC,
             _SUBMIT_TO_AGENT_SPEC,
+            _FORK_SESSION_SPEC,  # Wave-32+
             _CHECK_AGENT_TASK_SPEC,
             _LIST_AGENT_TASKS_SPEC,  # B-111
             _STOP_AGENT_TASK_SPEC,   # B-111
@@ -320,6 +370,8 @@ class AgentInterTools(ToolProvider):
                 content = await self._do_chat_with_agent(call)
             elif call.name == "submit_to_agent":
                 content = await self._do_submit_to_agent(call)
+            elif call.name == "fork_session":
+                content = await self._do_fork_session(call)
             elif call.name == "check_agent_task":
                 content = await self._do_check_agent_task(call)
             elif call.name == "list_agent_tasks":
@@ -523,6 +575,125 @@ class AgentInterTools(ToolProvider):
             oldest = next(iter(self._tasks))
             del self._tasks[oldest]
         self._tasks[record.task_id] = record
+
+    # ── fork_session (Wave-32+) ──────────────────────────────────────
+
+    async def _do_fork_session(self, call: ToolCall) -> str:
+        """Spawn a background sibling that inherits the parent's history.
+
+        Differences vs submit_to_agent:
+          * The fork's session id keys a NEW entry in ``_histories``
+            seeded with a shallow copy of the parent's history. Message
+            is ``frozen=True`` so list-level copy is enough.
+          * No ``[Agent X requesting]`` marker — the fork is logically
+            the same conversation, just on a parallel branch.
+          * Returns ``parent_session_id`` + ``fork_session_id`` so the
+            caller can correlate cache-hit telemetry / branch resumes.
+        """
+        import json
+
+        raw_content = call.args.get("content")
+        if not isinstance(raw_content, str) or not raw_content.strip():
+            raise _ToolError("content required")
+        content = raw_content
+
+        caller_id = self._resolve_caller_id()
+        raw_agent_id = call.args.get("agent_id")
+        agent_id = (
+            raw_agent_id.strip()
+            if isinstance(raw_agent_id, str) and raw_agent_id.strip()
+            else caller_id
+        )
+        # The parent's history lives on the CALLER's loop. The fork may
+        # target a different agent, in which case we still copy from
+        # the caller and seed the callee. (If we read from the callee's
+        # loop, we'd inherit an unrelated history or empty — that's
+        # what submit_to_agent already does, not what fork promises.)
+        parent_loop = self._resolve_loop(caller_id)
+        target_loop = (
+            parent_loop if agent_id == caller_id
+            else self._resolve_loop(agent_id)
+        )
+
+        parent_session_id = _current_parent_session_id()
+        if not parent_session_id:
+            raise _ToolError(
+                "fork_session can only be called from inside a live "
+                "session (no parent_session_id in agent context)",
+            )
+        parent_history = list(
+            parent_loop._histories.get(parent_session_id) or (),
+        )
+
+        fork_session_id = _make_fork_session_id(
+            parent=parent_session_id, agent_id=agent_id,
+        )
+        # Seed BEFORE dispatching so the new run_turn sees the
+        # inherited prefix instead of starting fresh. Seed onto the
+        # TARGET loop — that's where the fork's run_turn fires.
+        target_loop._histories[fork_session_id] = parent_history
+
+        task_id = uuid.uuid4().hex[:16]
+        record = _TaskRecord(
+            task_id=task_id, agent_id=agent_id,
+            session_id=fork_session_id, content=content,
+        )
+        self._store_task(record)
+        bg = asyncio.create_task(
+            self._run_background(record, target_loop),
+            name=f"agent-inter-task-{task_id}",
+        )
+        self._running_tasks.add(bg)
+        bg.add_done_callback(self._running_tasks.discard)
+        return json.dumps({
+            "task_id": task_id,
+            "fork_session_id": fork_session_id,
+            "parent_session_id": parent_session_id,
+            "agent_id": agent_id,
+            "inherited_messages": len(parent_history),
+        })
+
+    # ── submit_background (Wave-32+ — hook engine AgentRunner) ───────
+
+    async def submit_background(
+        self, agent_id: str, content: str,
+        *, source: str = "hook",
+    ) -> str:
+        """Programmatic counterpart of ``submit_to_agent`` for in-process
+        callers (e.g. the hook engine's ``AgentRunner``). Skips the
+        LLM-facing ToolCall envelope and the caller marker, returns the
+        task_id directly. Idempotent w.r.t. record tracking — the task
+        flows through ``_run_background`` like any LLM-triggered submit.
+
+        ``source`` is recorded on the record's error/log fields if
+        anything goes wrong, so operators can tell hook-driven from
+        LLM-driven submissions when triaging.
+        """
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("submit_background: content required")
+        if not isinstance(agent_id, str) or not agent_id.strip():
+            raise ValueError("submit_background: agent_id required")
+        agent_id = agent_id.strip()
+        loop = self._resolve_loop(agent_id)
+        caller = self._resolve_caller_id()
+        task_id = uuid.uuid4().hex[:16]
+        session_id = _make_a2a_session_id(caller=caller, callee=agent_id)
+        # Tag the prompt so the callee can tell it came from a hook,
+        # not a human / sibling-LLM. Hooks fire on lifecycle events so
+        # the callee may want to silently log instead of replying.
+        stamped = f"[Hook {source} → {agent_id}]\n\n{content}"
+        record = _TaskRecord(
+            task_id=task_id, agent_id=agent_id,
+            session_id=session_id, content=stamped,
+        )
+        self._store_task(record)
+        bg = asyncio.create_task(
+            self._run_background(record, loop),
+            name=f"agent-inter-task-{task_id}",
+        )
+        self._running_tasks.add(bg)
+        bg.add_done_callback(self._running_tasks.discard)
+        return task_id
 
     # ── check_agent_task ─────────────────────────────────────────────
 
@@ -787,6 +958,27 @@ class _ToolError(Exception):
     because the error-payload contract is "string blob in ToolResult.error",
     not an exception type the caller should import.
     """
+
+
+def _current_parent_session_id() -> str | None:
+    """Thin alias over :func:`get_current_session_id` so the fork
+    handler reads naturally (``parent_session_id`` is what fork_session
+    documents, not ``current_session_id``)."""
+    return get_current_session_id()
+
+
+def _make_fork_session_id(*, parent: str, agent_id: str) -> str:
+    """Format: ``{parent}:fork:{agent_id}:{ts}:{uuid8}``.
+
+    Parallel construction to :func:`_make_a2a_session_id`. The literal
+    ``fork`` separator makes forks visually distinct from
+    delegations in event dumps and log greps. Including the parent in
+    full (rather than a hash) means a fork-of-a-fork session id grows
+    but remains debuggable by eye — the lineage is right there.
+    """
+    stamp = int(time.time() * 1000)
+    suffix = uuid.uuid4().hex[:8]
+    return f"{parent}:fork:{agent_id}:{stamp}:{suffix}"
 
 
 def _make_a2a_session_id(*, caller: str, callee: str) -> str:

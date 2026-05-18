@@ -538,16 +538,21 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # loop that's spinning between hops.
         cancel_event = asyncio.Event()
         self._cancel_events[session_id] = cancel_event
+        # Wave-32+: expose the running session id to tools / hooks via
+        # the contextvar in core/agent_context.py. fork_session reads
+        # this to know which history to clone.
+        from xmclaw.core.agent_context import use_current_session_id
         try:
-            return await self._run_turn_inner(
-                session_id=session_id,
-                user_message=user_message,
-                user_correlation_id=user_correlation_id,
-                llm_profile_id=llm_profile_id,
-                cancel_event=cancel_event,
-                tools_allowlist=tools_allowlist,
-                user_images=user_images,
-            )
+            with use_current_session_id(session_id):
+                return await self._run_turn_inner(
+                    session_id=session_id,
+                    user_message=user_message,
+                    user_correlation_id=user_correlation_id,
+                    llm_profile_id=llm_profile_id,
+                    cancel_event=cancel_event,
+                    tools_allowlist=tools_allowlist,
+                    user_images=user_images,
+                )
         finally:
             self._cancel_events.pop(session_id, None)
 
