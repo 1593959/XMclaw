@@ -40,6 +40,7 @@ Design contract (mirrors §4.4-§4.5 of MEMORY_EVOLUTION_REDESIGN.md):
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -99,6 +100,103 @@ CONTRADICTS_DISTANCE_THRESHOLD = 0.25
 
 #: evidence_count at which a working-layer fact is auto-promoted.
 LONG_TERM_PROMOTE_THRESHOLD = 3
+
+
+# ── Wave-32+ entity-token extractor ──────────────────────────────
+
+
+# Distinctive tokens we want to consider as "shared entity" bridges
+# between facts. The patterns target the kinds of things humans
+# naturally associate together:
+#
+#   * URLs / domains — clearest shared-entity signal
+#   * Quoted strings (file names, account names, codes)
+#   * CJK noun phrases ≥ 2 chars — "陪玩店", "网站", "账号", "密码"
+#   * ASCII identifiers ≥ 4 chars — "admin", "pw310"
+#
+# Common Chinese stopwords / pronouns / verbs are excluded so we
+# don't accidentally bridge facts that just both contain "我们" or
+# "可以". Length floor (2 CJK / 4 ASCII) filters most noise.
+_ENTITY_TOKEN_PATTERNS: list = [
+    # Full URLs first — the most distinctive token kind.
+    re.compile(r"https?://[\w\-.:/?=&%+#~]+"),
+    # Quoted strings: ", ', `, 「」, 『』.
+    re.compile(r'"([^"]{2,40})"'),
+    re.compile(r"'([^']{2,40})'"),
+    re.compile(r"`([^`]{2,40})`"),
+    re.compile(r"「([^」]{2,40})」"),
+    re.compile(r"『([^』]{2,40})』"),
+    # File paths / domains / kebab-case ids.
+    re.compile(r"[\w\-]+\.(py|js|ts|json|md|yaml|yml|toml|txt|csv|html|css|sql|sh|bat)"),
+    re.compile(r"[\w\-]{3,}\.[\w\-]{2,}(?:\.[\w\-]{2,})*"),
+    # CJK noun candidates — runs of 2+ chinese chars not split by
+    # punctuation. Crude but cheap.
+    re.compile(r"[一-龥]{2,8}"),
+    # ASCII identifiers — admin, pw310, ROOT_USER, foo_bar.
+    re.compile(r"[A-Za-z][\w\-]{3,}"),
+]
+
+# Tokens we don't want to bridge on — they're too common to be
+# distinctive. Lowercase comparison for ASCII.
+_ENTITY_STOPWORDS: frozenset[str] = frozenset({
+    # Chinese pronouns / function words / time
+    "我们", "你们", "他们", "可以", "现在", "今天", "昨天", "明天",
+    "这个", "那个", "什么", "怎么", "为什么", "已经", "因为",
+    "所以", "如果", "或者", "然后", "之前", "之后", "里面", "外面",
+    "需要", "希望", "应该", "可能", "应当", "记得",
+    # Punctuation-tight pairs we don't want
+    "用户", "助手",
+    # English noise
+    "this", "that", "with", "from", "have", "been", "will",
+    "should", "would", "could", "must", "into", "what", "where",
+    "when", "why", "how", "the", "and", "for", "are", "but",
+    "not", "you", "can", "all", "any", "true", "false",
+    "none", "null",
+})
+
+
+def _extract_entity_tokens(text: str) -> set[str]:
+    """Return the set of distinctive entity tokens in ``text``.
+
+    For ASCII / URL / quoted strings: emit each whole match.
+
+    For CJK runs of length N: emit EVERY 2-char window. A naive
+    greedy match would slurp "陪玩店账号" into a single token that
+    only matches itself; bi-grams of the same run are
+    {"陪玩", "玩店", "店账", "账号"} and DO cross-link to a fact that
+    mentions just "陪玩店" or just "账号". This is the standard
+    Chinese-search bi-gram indexing trick.
+    """
+    if not text:
+        return set()
+    out: set[str] = set()
+    for pat in _ENTITY_TOKEN_PATTERNS:
+        for m in pat.finditer(text):
+            tok = (m.group(1) if m.lastindex else m.group(0)).strip()
+            if not tok:
+                continue
+            is_cjk = any(("一" <= ch <= "龥") for ch in tok)
+            if is_cjk:
+                # Bi-gram window. For a 2-char run we emit the
+                # whole thing; for longer runs every overlapping
+                # 2-char window so cross-fact bridges fire even
+                # when the CJK noun appears INSIDE a longer phrase.
+                if len(tok) == 2:
+                    bigrams = [tok]
+                else:
+                    bigrams = [tok[i:i + 2] for i in range(len(tok) - 1)]
+                for bg in bigrams:
+                    if bg in _ENTITY_STOPWORDS:
+                        continue
+                    out.add(bg)
+            else:
+                if len(tok) < 4:
+                    continue
+                low = tok.lower()
+                if low in _ENTITY_STOPWORDS:
+                    continue
+                out.add(low)
+    return out
 
 
 # ── Cosine distance helper ───────────────────────────────────────
@@ -340,13 +438,24 @@ class MemoryService:
             and existing is None  # only scan on fresh insert
         ):
             try:
+                # Wave-32+ graph-connectivity fix: drop the same-kind
+                # restriction. The whole point of SAME_TOPIC is to
+                # cluster facts about the same THING — a URL and a
+                # credential about that URL embed in different kind
+                # buckets but are obviously the same topic. Old
+                # behaviour produced orphan nodes (user screenshot:
+                # "目标网站无需验证码即可访问" floated alone while the
+                # URL + credentials clustered without it).
+                # Also raised limit 3 → 10 so wider clusters form;
+                # the user's reasonable mental model is that 5+
+                # related facts should all be interconnected, not
+                # split into two-cluster fragments.
                 nearby = await self._vec.search(
                     list(embedding),
                     where=(
-                        f"kind = '{kind_str}' AND id != '{fact_id}' "
-                        f"AND superseded_by = ''"
+                        f"id != '{fact_id}' AND superseded_by = ''"
                     ),
-                    limit=3,
+                    limit=10,
                 )
                 same: list[str] = []
                 contra: list[str] = []
@@ -360,15 +469,27 @@ class MemoryService:
                         same.append(cand.id)
                     # CONTRADICTS: only when THIS write IS a
                     # correction — the user / LLM said "stop / never /
-                    # change". Use a looser threshold (cosine sim >
-                    # 0.8) since corrections often phrase things
-                    # differently from what they're correcting.
+                    # change". Use a looser threshold AND keep the
+                    # same-kind filter to avoid false positives
+                    # (a URL "contradicting" a credential is nonsense).
                     if (
                         kind_str == FactKind.CORRECTION.value
+                        and cand.kind == kind_str
                         and d <= CONTRADICTS_DISTANCE_THRESHOLD
                     ):
                         contra.append(cand.id)
-                same_topic_ids = tuple(same)
+                # Wave-32+ shared-entity bridge — even when vec
+                # similarity falls short of the threshold, two facts
+                # that mention the same URL / identifier / quoted
+                # name are obviously the same topic. Catches the
+                # exact case the user flagged: "目标网站无需验证码即可访问"
+                # has no URL but shares the word "网址" / "网站" with
+                # "网址: https://pw310...". See
+                # ``_shared_entity_tokens`` for the extraction.
+                entity_matches = self._shared_entity_links(
+                    text, nearby, exclude=set(same),
+                )
+                same_topic_ids = tuple(list(same) + entity_matches)
                 contradicts_ids = tuple(contra)
             except Exception as exc:  # noqa: BLE001
                 _log.warning(
@@ -520,6 +641,37 @@ class MemoryService:
                     "(facts persist, edges retried next write)",
                     exc,
                 )
+
+    # ── Wave-32+ shared-entity bridge ────────────────────────────
+
+    def _shared_entity_links(
+        self,
+        new_text: str,
+        candidates: list[Fact],
+        *,
+        exclude: set[str],
+    ) -> list[str]:
+        """Return ids of candidate facts that share at least one
+        DISTINCTIVE entity token with ``new_text``. Bridges the gap
+        when vec similarity isn't tight enough (the embedder maps
+        URL strings and Chinese paraphrases of "the website" too
+        far apart) but the user clearly meant the same topic.
+
+        ``exclude`` is the ids already linked via the vec scan — we
+        don't want to double-emit edges, the relate() upsert handles
+        dedup but skipping work is cheaper.
+        """
+        new_tokens = _extract_entity_tokens(new_text)
+        if not new_tokens:
+            return []
+        matched: list[str] = []
+        for cand in candidates:
+            if cand.id in exclude:
+                continue
+            cand_tokens = _extract_entity_tokens(cand.text)
+            if cand_tokens & new_tokens:
+                matched.append(cand.id)
+        return matched
 
     # ── Explicit relate / supersede ─────────────────────────────
 
@@ -1163,6 +1315,101 @@ class MemoryService:
             "added_edges": added,
             "errors": skipped_existing,
             "dry_run": False,
+        }
+
+    # ── Wave-32+ broader SAME_TOPIC backfill ────────────────────
+
+    async def relink_same_topic(
+        self, *, dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Re-run the SAME_TOPIC auto-link logic over every existing
+        fact using the WAVE-32+ broader rules (drop same-kind
+        restriction, raise neighbor limit, add shared-entity bridge).
+
+        Use case: the user opens the graph view and sees orphan
+        clusters that obviously belong together — they were written
+        BEFORE the Wave-32+ rules went live, so the original scan
+        missed the bridges. One POST to this endpoint rebuilds the
+        edges over the existing store.
+
+        Returns ``{scanned, edges_added, edges_skipped, dry_run}``.
+        """
+        all_facts = await self._vec.search(None, where=None, limit=10000)
+        # Index by id so the inner pass can look up vectors cheaply.
+        all_facts = [f for f in all_facts if not f.superseded_by]
+        if not all_facts:
+            return {"scanned": 0, "edges_added": 0, "edges_skipped": 0, "dry_run": dry_run}
+
+        # Pre-extract entity tokens for the bridge pass — done once
+        # so the O(N^2) inner loop just does set intersection.
+        token_index: dict[str, set[str]] = {
+            f.id: _extract_entity_tokens(f.text) for f in all_facts
+        }
+
+        added = 0
+        skipped = 0
+        seen_pairs: set[frozenset[str]] = set()
+        for fact in all_facts:
+            if fact.embedding is None:
+                continue
+            # Vec-distance pass with the new broader rules.
+            try:
+                nearby = await self._vec.search(
+                    list(fact.embedding),
+                    where=f"id != '{fact.id}' AND superseded_by = ''",
+                    limit=10,
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            vec_matches: set[str] = set()
+            for cand in nearby:
+                if cand.embedding is None:
+                    continue
+                d = _cosine_distance(fact.embedding, cand.embedding)
+                if d <= SAME_TOPIC_DISTANCE_THRESHOLD:
+                    vec_matches.add(cand.id)
+            # Shared-entity bridge pass.
+            entity_matches: set[str] = set()
+            my_tokens = token_index.get(fact.id, set())
+            if my_tokens:
+                for cand in nearby:
+                    if cand.id in vec_matches:
+                        continue
+                    if token_index.get(cand.id, set()) & my_tokens:
+                        entity_matches.add(cand.id)
+            # Pairwise edges (symmetric) — skip pairs we already
+            # processed from the other side.
+            for target in vec_matches | entity_matches:
+                pair = frozenset({fact.id, target})
+                if pair in seen_pairs:
+                    continue
+                seen_pairs.add(pair)
+                if dry_run:
+                    added += 2  # would emit both directions
+                    continue
+                for src, dst in ((fact.id, target), (target, fact.id)):
+                    rid = Relation.compute_id(
+                        source_fact_id=src,
+                        target_fact_id=dst,
+                        relation=RelationKind.SAME_TOPIC,
+                    )
+                    try:
+                        await self._graph.add_relation(Relation(
+                            id=rid,
+                            source_fact_id=src,
+                            target_fact_id=dst,
+                            relation=RelationKind.SAME_TOPIC.value,
+                            strength=0.6,
+                            auto_extracted=True,
+                        ))
+                        added += 1
+                    except Exception:  # noqa: BLE001
+                        skipped += 1
+        return {
+            "scanned": len(all_facts),
+            "edges_added": added,
+            "edges_skipped": skipped,
+            "dry_run": dry_run,
         }
 
     # ── Cleanup: legacy "everyone contradicts everyone" data ────

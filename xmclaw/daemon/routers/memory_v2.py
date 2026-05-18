@@ -206,6 +206,32 @@ async def backfill_cooccurrence_edges(request: Request) -> Any:
     return await svc.backfill_cooccurrence_edges(dry_run=dry_run)
 
 
+@router.post("/relink_same_topic")
+async def relink_same_topic(request: Request) -> Any:
+    """Wave-32+ graph-connectivity backfill.
+
+    Walks every non-superseded fact and re-runs the SAME_TOPIC
+    auto-link logic with the new broader rules (drop same-kind
+    restriction, raise neighbor limit, add shared-entity bridge).
+    Orphan nodes in the graph view get reconnected without
+    requiring the user to re-extract everything.
+
+    Body (optional): ``{"dry_run": true}`` to preview without
+    writing.
+
+    Returns ``{ok, scanned, edges_added, dry_run}``.
+    """
+    svc = _get_service(request)
+    if svc is None:
+        return _v2_disabled_response()
+    try:
+        body = await request.json() if request.headers.get("content-length") else {}
+    except Exception:  # noqa: BLE001
+        body = {}
+    dry_run = bool(body.get("dry_run", False))
+    return await svc.relink_same_topic(dry_run=dry_run)
+
+
 @router.post("/clear_stale_contradicts")
 async def clear_stale_contradicts(request: Request) -> Any:
     """One-shot repair for the pre-fix relation-scan bug.

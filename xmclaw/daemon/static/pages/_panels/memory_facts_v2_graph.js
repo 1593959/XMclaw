@@ -23,7 +23,7 @@ const { h } = window.__xmc.preact;
 const { useState, useEffect, useRef, useCallback } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
-import { apiGet } from "../../lib/api.js";
+import { apiGet, apiPost } from "../../lib/api.js";
 
 
 // ── Color tables (kept in sync with FactsV2Tab) ──────────────────
@@ -240,6 +240,28 @@ export function FactsGraphView({ token, focusFactId, onFocusFact }) {
           onClick=${refresh}
           style="font-size:.78rem;padding:.3rem .6rem"
         >🔄 刷新</button>
+        <button
+          type="button"
+          class="xmc-h-btn"
+          onClick=${async () => {
+            try {
+              const r = await apiPost(
+                "/api/v2/memory/v2/relink_same_topic", {}, token,
+              );
+              const d = (r && r.ok && (r.data || r)) || r || {};
+              alert(
+                "重建关系完成\n扫描: " + (d.scanned || 0) +
+                "\n新增边: " + (d.edges_added || 0) +
+                "\n跳过(已存在): " + (d.edges_skipped || 0),
+              );
+              refresh();
+            } catch (e) {
+              alert("重建关系失败: " + (e && e.message || e));
+            }
+          }}
+          title="按 Wave-32+ 新规则（跨 kind + 共享实体桥接）扫一遍所有事实，补上漏链的 SAME_TOPIC 边"
+          style="font-size:.78rem;padding:.3rem .6rem"
+        >🔗 重建关系</button>
         ${focusFactId
           ? html`<button
               type="button"
