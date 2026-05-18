@@ -280,6 +280,91 @@ _MAX_CLUSTERS_PER_BATCH = 5
 _MAX_FACTS_PER_NAMING = 30
 
 
+def _entity_tier(ent_type: str) -> int:
+    """Tier ranking for entity distinctiveness. Higher tier = more
+    distinctive = better cluster anchor.
+
+      url      4   — full URL incl. path, near-unique
+      domain   3   — domain only, still mostly unique
+      ascii_id 2   — admin / pw310 / kebab-case ids
+      cjk_bigram 1 — "陪玩" / "网址" / "账号" — common, weakest
+
+    Unknown types fall to 0. Used by entity-anchored clustering to
+    pick a fact's PRIMARY entity (highest-tier one it mentions)
+    instead of treating all entity mentions as equal.
+    """
+    return {
+        "url": 4,
+        "domain": 3,
+        "ascii_id": 2,
+        "cjk_bigram": 1,
+    }.get(ent_type, 0)
+
+
+async def _build_entity_anchored_components(
+    svc: "MemoryService",
+) -> list[set[str]]:
+    """Wave-32+ entity-anchored clustering — replaces naive
+    connected-components when the entity index is populated.
+
+    Why: naive components over the SAME_TOPIC edge set merge clusters
+    whenever ANY edge bridges them. With many weak CJK-bigram bridges
+    in the graph (every fact mentioning "网址" or "账号" links to
+    every other), the whole graph collapses into one huge blob.
+
+    Entity-anchored fix: group facts by their HIGHEST-TIER shared
+    entity. A fact mentioning a URL + a bunch of CJK bigrams is
+    anchored to the URL, not the bigrams. Two facts cluster only if
+    they share a sufficiently-distinctive entity (URL / domain /
+    distinct ASCII id), not just a common Chinese noun.
+
+    Returns connected components in the same shape as the legacy
+    path so the caller doesn't have to change. Empty list when the
+    entity index has too few entries to be useful (caller falls
+    back to the legacy path)."""
+    try:
+        from xmclaw.memory.v2.entity import get_entity_store
+        store = get_entity_store()
+    except Exception:  # noqa: BLE001
+        return []
+    stats = store.stats()
+    # Require some entity coverage before relying on this path —
+    # an empty index would cluster nothing.
+    if stats.get("facts_indexed", 0) < 5:
+        return []
+
+    # Pull all facts; only care about ids.
+    all_facts = await svc._vec.search(None, where=None, limit=2000)
+    fact_ids = [f.id for f in all_facts if not f.superseded_by]
+    if not fact_ids:
+        return []
+
+    # Step 1: compute each fact's primary entity (highest-tier
+    # mention). Facts with no entity mentions go to the "isolated"
+    # bucket — keep them out of clustering so they stay as
+    # singletons + don't pollute neighbor clusters.
+    primary_anchor: dict[str, str] = {}
+    for fid in fact_ids:
+        ents = store.entities_for_fact(fid)
+        if not ents:
+            continue
+        best = max(ents, key=lambda e: _entity_tier(e.type))
+        # Skip facts whose only entity is a bigram — too noisy to
+        # anchor clustering on.
+        if _entity_tier(best.type) < 2:
+            continue
+        primary_anchor[fid] = best.id
+
+    # Step 2: invert — group fact_ids by their primary entity_id.
+    by_anchor: dict[str, set[str]] = {}
+    for fid, eid in primary_anchor.items():
+        by_anchor.setdefault(eid, set()).add(fid)
+
+    # Step 3: keep clusters with ≥ _MIN_CLUSTER_SIZE members.
+    components = [s for s in by_anchor.values() if len(s) >= _MIN_CLUSTER_SIZE]
+    return components
+
+
 async def _build_same_topic_components(
     svc: "MemoryService",
 ) -> list[set[str]]:
@@ -450,7 +535,14 @@ async def name_clusters(
     """Find SAME_TOPIC clusters of 3+ facts without an existing
     topic node, ask the LLM to name them, write topic fact + PART_OF
     edges to all members."""
-    components = await _build_same_topic_components(svc)
+    # Wave-32+ entity-anchored clustering: prefer the entity-tier
+    # grouping when the entity index is populated. Falls back to the
+    # legacy SAME_TOPIC-edge connected-components when the index is
+    # empty (test contexts, fresh installs that never ran the
+    # backfill yet).
+    components = await _build_entity_anchored_components(svc)
+    if not components:
+        components = await _build_same_topic_components(svc)
     if not components:
         return {
             "clusters_scanned": 0, "topics_created": 0,

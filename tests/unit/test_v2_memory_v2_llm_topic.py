@@ -169,3 +169,22 @@ def test_compute_cluster_hash_length_bounded() -> None:
     from xmclaw.memory.v2.llm_topic import _compute_cluster_hash
     h = _compute_cluster_hash({"f1", "f2"})
     assert len(h) == 12
+
+
+# ── entity-tier ranking (Wave-32+ chunk C) ──────────────────────────
+
+
+def test_entity_tier_url_beats_bigram() -> None:
+    """URL is the most distinctive anchor; CJK bigram is the
+    weakest. Pin the ordering — clustering quality depends on it."""
+    from xmclaw.memory.v2.llm_topic import _entity_tier
+    assert _entity_tier("url") > _entity_tier("domain")
+    assert _entity_tier("domain") > _entity_tier("ascii_id")
+    assert _entity_tier("ascii_id") > _entity_tier("cjk_bigram")
+    assert _entity_tier("cjk_bigram") > _entity_tier("unknown_type")
+
+
+def test_entity_tier_unknown_returns_zero() -> None:
+    from xmclaw.memory.v2.llm_topic import _entity_tier
+    assert _entity_tier("") == 0
+    assert _entity_tier("anything_else") == 0
