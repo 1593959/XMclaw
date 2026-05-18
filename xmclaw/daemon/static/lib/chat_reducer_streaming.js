@@ -212,17 +212,26 @@ export function applyStreamingEvent(chat, envelope, helpers) {
       const ok = payload.ok !== false;
       const finalStatus = ok ? "complete" : "error";
       const errBody = !ok ? `LLM 调用失败：${payload.error || "未知"}` : "";
+      // Wave-32+ UX fix — DON'T clear pendingAssistantId when this
+      // llm_response is mid-multi-hop (i.e. the model emitted tool
+      // calls that hop_loop will dispatch + come back with another
+      // llm_request shortly). Clearing here made the button flicker
+      // Stop→Send→Stop on every hop boundary. Keep it set when
+      // tool_calls_count > 0; only clear on the FINAL hop where no
+      // more tools are coming.
+      const moreHopsComing = ok && (payload.tool_calls_count || 0) > 0;
+      const nextPending = moreHopsComing ? id : null;
       const idx = chat.messages.findIndex((m) => m.id === id);
       if (idx === -1) {
         return {
           ...chat,
-          pendingAssistantId: null,
+          pendingAssistantId: nextPending,
           messages: chat.messages.concat({
             id,
             role: "assistant",
             content: finalText || errBody,
-            status: finalStatus,
-            phase: null,
+            status: moreHopsComing ? "thinking" : finalStatus,
+            phase: moreHopsComing ? "calling_llm" : null,
             ts,
             toolCalls: [],
           }),
@@ -230,15 +239,18 @@ export function applyStreamingEvent(chat, envelope, helpers) {
       }
       return {
         ...chat,
-        pendingAssistantId: null,
+        pendingAssistantId: nextPending,
         messages: upsertById(chat.messages, id, (m) => ({
           ...m,
           // If the server sent the canonical full text, prefer it over
           // accumulated chunks — this is how we recover from a dropped
           // chunk mid-stream.
           content: finalText || m.content || errBody,
-          status: finalStatus,
-          phase: null,
+          // Mid-multi-hop: stay in "thinking" so the bubble keeps
+          // its spinner + the button stays on Stop. Final hop:
+          // flip to terminal status as before.
+          status: moreHopsComing ? "thinking" : finalStatus,
+          phase: moreHopsComing ? "calling_llm" : null,
           ts,
         })),
       };

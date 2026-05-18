@@ -28,7 +28,7 @@ import { Badge } from "../components/atoms/badge.js";
 // the WS client owns its own backoff loop and exposing a manual reconnect
 // hook through the page tree is out of scope for this batch.
 
-export function ChatPage({ chat, session, connection, token, onSend, onCancel, onAnswerQuestion, onChangeDraft, onTogglePlan, onCycleOutputStyle, onToggleUltrathink, onNewSession, onChangeModel, onSwitchAgent, slashStore, onAddImages, onRemoveImage }) {
+export function ChatPage({ chat, session, connection, token, onSend, onCancel, onAnswerQuestion, onChangeDraft, onTogglePlan, onCycleOutputStyle, onToggleUltrathink, onNewSession, onResumeSession, onChangeModel, onSwitchAgent, slashStore, onAddImages, onRemoveImage }) {
   const stagedImages = chat.composerImages || [];
   const canSend =
     connection.status === "connected" &&
@@ -198,6 +198,7 @@ export function ChatPage({ chat, session, connection, token, onSend, onCancel, o
          connectionStatus=${connection.status}
          toolsCount=${0}
          onNewSession=${onNewSession}
+         onResumeSession=${onResumeSession}
        />
       </div>
     </section>

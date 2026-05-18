@@ -340,6 +340,68 @@ function startNewSession() {
   connectFor(sid, s.auth.token);
 }
 
+// Wave-32+ UX fix: switch to an existing session WITHOUT a full
+// page reload. The pre-fix path was `window.location.reload()` after
+// persisting the sid in localStorage — that caused several seconds
+// of black screen (entire JS bundle, WS handshake, history fetch all
+// re-running). Now we just swap state in-place + re-attach the WS +
+// fetch the persisted history.
+async function resumeSession(sid) {
+  const s = store.getState();
+  if (sid === s.session.activeSid) return;
+  persistActiveSid(sid);
+  const sids = [sid].concat(s.session.sids.filter((x) => x !== sid));
+  persistSidList(sids);
+  // Clear UI immediately so the user sees the swap without latency.
+  store.setState({
+    chat: {
+      ...s.chat,
+      messages: [],
+      pendingAssistantId: null,
+      composerDraft: "",
+      composerImages: [],
+      cancelledTurnIds: new Set(),
+    },
+    session: { ...s.session, activeSid: sid, sids },
+  });
+  // Re-attach WS to the new session so live events route here.
+  connectFor(sid, s.auth.token);
+  // Fetch the persisted history so the user sees the past
+  // exchanges immediately. Fire-and-forget: if it fails we just
+  // show an empty conversation (same as a fresh session).
+  try {
+    const token = s.auth.token;
+    const url = `/api/v2/sessions/${encodeURIComponent(sid)}`
+      + (token ? `?token=${encodeURIComponent(token)}` : "");
+    const r = await fetch(url);
+    if (!r.ok) return;
+    const body = await r.json();
+    if (!body || !Array.isArray(body.messages)) return;
+    // Convert daemon history (role/content/tool_calls) into the
+    // chat reducer's message shape. Stamp synthetic ids by
+    // sequence so reducer dedup keys don't collide.
+    const restored = body.messages
+      .filter(m => m.role === "user" || m.role === "assistant")
+      .map((m, i) => ({
+        id: `restore_${i}`,
+        role: m.role,
+        content: m.content || "",
+        status: "complete",
+        ts: Math.floor(Date.now() / 1000),
+        toolCalls: Array.isArray(m.tool_calls)
+          ? m.tool_calls.map(tc => ({
+              id: tc.id, name: tc.name, args: tc.args || {},
+              status: "complete",
+            }))
+          : [],
+      }));
+    store.setState((cur) => ({
+      ...cur,
+      chat: { ...cur.chat, messages: restored },
+    }));
+  } catch (_) { /* network blip — empty session shown */ }
+}
+
 // Local-only chat clear (does NOT delete daemon-side history). Used by
 // SlashPopover's /clear command.
 function clearChat() {
@@ -418,6 +480,7 @@ const routes = {
       onCycleOutputStyle=${cycleOutputStyle}
       onToggleUltrathink=${toggleUltrathink}
       onNewSession=${startNewSession}
+      onResumeSession=${resumeSession}
       onChangeModel=${setLlmProfile}
       onSwitchAgent=${switchAgent}
       slashStore=${CHAT_ACTIONS}

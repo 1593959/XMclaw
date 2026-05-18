@@ -51,6 +51,7 @@ export function ChatSidebar({
   connectionStatus,
   toolsCount,
   onNewSession,
+  onResumeSession,
 }) {
   const [sessions, setSessions] = useState(null);
   const [busy, setBusy] = useState(null);
@@ -112,6 +113,14 @@ export function ChatSidebar({
   const onResume = (sid) => {
     if (sid === activeSid) {
       toast.info("已经是当前会话");
+      return;
+    }
+    // Wave-32+ UX fix: prefer the prop-injected in-app resume
+    // (no page reload, no black screen). Fall back to the old
+    // localStorage+reload path only when the parent didn't wire
+    // a handler — e.g. older callers that haven't been updated.
+    if (typeof onResumeSession === "function") {
+      onResumeSession(sid);
       return;
     }
     try { localStorage.setItem("xmc.active_sid", sid); } catch (_) {}
