@@ -125,6 +125,59 @@ function _GraphActionButton({
 }
 
 
+// Wave-32+ graph position cache. Keyed per node, bounded to keep
+// localStorage well under quota (typical browser cap ≈ 5MB, this
+// ceiling at 1000 nodes × ~30 bytes/entry stays under 30KB).
+const _POSITIONS_KEY = "xmc.mem.graph.positions";
+const _POSITIONS_MAX = 1000;
+const _POSITIONS_VERSION = 1;
+
+function _loadGraphPositions() {
+  try {
+    const raw = localStorage.getItem(_POSITIONS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    // Version gate — if the schema changes we drop stale entries
+    // rather than rendering them at incompatible coordinates.
+    if (parsed.v !== _POSITIONS_VERSION) return {};
+    return parsed.p || {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function _saveGraphPositions(positions) {
+  if (!positions || typeof positions !== "object") return;
+  // Merge with the existing saved set so nodes not currently in the
+  // viewport (e.g. focus-filtered) retain their saved positions.
+  const existing = _loadGraphPositions();
+  const merged = { ...existing };
+  let count = Object.keys(merged).length;
+  for (const [id, pos] of Object.entries(positions)) {
+    if (!pos || typeof pos.x !== "number" || typeof pos.y !== "number") continue;
+    if (!(id in merged) && count >= _POSITIONS_MAX) continue;
+    merged[id] = { x: Math.round(pos.x), y: Math.round(pos.y) };
+    count = Object.keys(merged).length;
+  }
+  try {
+    localStorage.setItem(_POSITIONS_KEY, JSON.stringify({
+      v: _POSITIONS_VERSION,
+      p: merged,
+    }));
+  } catch (_) {
+    // QuotaExceededError — try once with just the new positions
+    // (drop the merged history) before giving up.
+    try {
+      localStorage.setItem(_POSITIONS_KEY, JSON.stringify({
+        v: _POSITIONS_VERSION,
+        p: positions,
+      }));
+    } catch (__) { /* give up */ }
+  }
+}
+
+
 function _truncate(s, n = 60) {
   if (!s) return "";
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
@@ -162,13 +215,21 @@ export function FactsGraphView({ token, focusFactId, onFocusFact }) {
         return;
       }
 
+      // Wave-32+ position persistence: restore each node's saved
+      // (x,y) from localStorage so re-renders + force-directed
+      // re-layouts don't reshuffle the graph from one click to the
+      // next. The user's complaint "把图分开了 / 数据跑没了" was
+      // largely visual — the underlying data was fine, the force
+      // algorithm was just reflowing positions each refresh. Now
+      // positions persist per-node + per-session.
+      const savedPositions = _loadGraphPositions();
       // Map nodes → vis-network shape.
       const visNodes = data.nodes.map((n) => {
         const color = KIND_COLOR[n.kind] || "#777";
         const evidence = n.evidence_count || 1;
         const size = Math.min(40, 12 + evidence * 4);
         const isEvent = n.kind === "event";
-        return {
+        const node = {
           id: n.id,
           label: _truncate(n.text || n.id, 28),
           title: [
@@ -187,6 +248,14 @@ export function FactsGraphView({ token, focusFactId, onFocusFact }) {
           size,
           font: { color: "#eee", size: 11 },
         };
+        const saved = savedPositions[n.id];
+        if (saved && typeof saved.x === "number" && typeof saved.y === "number") {
+          node.x = saved.x;
+          node.y = saved.y;
+          // ``fixed`` would freeze them entirely; we want them
+          // restored but still movable by the user.
+        }
+        return node;
       });
 
       const visEdges = data.edges.map((e) => {
@@ -250,6 +319,22 @@ export function FactsGraphView({ token, focusFactId, onFocusFact }) {
           const fid = params.nodes[0];
           if (typeof fid === "string" && !fid.startsWith("event:")) {
             if (onFocusFact) onFocusFact(fid);
+          }
+        });
+        // Wave-32+ position persistence: snapshot positions when
+        // the layout stabilizes (initial force-directed converge)
+        // AND when the user finishes dragging a node. Use a single
+        // helper so both paths agree on shape + storage key.
+        const _snapshotPositions = () => {
+          try {
+            const positions = network.getPositions();
+            _saveGraphPositions(positions);
+          } catch (_) { /* localStorage full / disabled */ }
+        };
+        network.on("stabilizationIterationsDone", _snapshotPositions);
+        network.on("dragEnd", (params) => {
+          if (params.nodes && params.nodes.length > 0) {
+            _snapshotPositions();
           }
         });
         networkRef.current = network;
