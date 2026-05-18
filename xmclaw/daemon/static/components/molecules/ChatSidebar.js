@@ -246,7 +246,7 @@ export function ChatSidebar({
         </ul>
       </section>
 
-      <${BackgroundTasksPanel} token=${token} />
+      <${BackgroundTasksPanel} token=${token} onResumeSession=${onResumeSession} />
     </aside>
   `;
 }
@@ -269,7 +269,7 @@ export function ChatSidebar({
 //   2. Pause when tab hidden — saves the daemon work AND keeps the
 //      connection pool clean for the active tab.
 //   3. Pause when collapsed — already there; kept.
-function BackgroundTasksPanel({ token }) {
+function BackgroundTasksPanel({ token, onResumeSession }) {
   const [tasks, setTasks] = useState(null);
   const [collapsed, setCollapsed] = useState(false);
 
@@ -314,12 +314,16 @@ function BackgroundTasksPanel({ token }) {
             ? html`<li class="xmc-h-loading">载入中…</li>`
             : tasks.length === 0
             ? html`<li class="xmc-h-empty">无后台任务</li>`
-            : tasks.slice(0, 8).map((t) => html`
+            : tasks.slice(0, 12).map((t) => {
+              const canOpen = !!(t.session_id && typeof onResumeSession === "function");
+              const reply = t.reply_preview;
+              return html`
               <li
                 key=${t.task_id}
                 class="xmc-h-chatside__item xmc-bgtask__item"
-                title=${t.preview || ""}
-                style="display:flex;flex-direction:column;gap:2px;cursor:default"
+                title=${(t.preview || "") + (reply ? "\n→ " + reply : "")}
+                onClick=${canOpen ? () => onResumeSession(t.session_id) : undefined}
+                style=${"display:flex;flex-direction:column;gap:2px;cursor:" + (canOpen ? "pointer" : "default")}
               >
                 <span style="display:flex;align-items:center;gap:4px;font-size:.72rem">
                   <span class=${"xmc-bgtask__status xmc-bgtask__status--" + t.status}
@@ -330,6 +334,9 @@ function BackgroundTasksPanel({ token }) {
                            : "#888")
                         }></span>
                   <span style="color:var(--color-fg-muted)">${t.agent_id || "main"}</span>
+                  ${typeof t.hops === "number" && t.hops > 0
+                    ? html`<span style="color:var(--color-fg-muted);font-size:.65rem">·${t.hops}hop</span>`
+                    : null}
                   <span style="margin-left:auto;color:var(--color-fg-muted);font-size:.65rem">
                     ${t.elapsed_s ? Math.round(t.elapsed_s) + "s" : "—"}
                   </span>
@@ -338,11 +345,17 @@ function BackgroundTasksPanel({ token }) {
                       title=${t.preview}>
                   ${t.preview || "(no preview)"}
                 </span>
+                ${t.status === "done" && reply
+                  ? html`<span style="font-size:.7rem;color:var(--color-fg-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:170px;font-style:italic" title=${reply}>
+                      → ${reply.length > 50 ? reply.slice(0, 50) + "…" : reply}
+                    </span>`
+                  : null}
                 ${t.status === "error" && t.error
                   ? html`<span style="font-size:.65rem;color:#c84a4a">${String(t.error).slice(0, 60)}</span>`
                   : null}
               </li>
-            `)}
+              `;
+            })}
         </ul>
       `}
     </section>

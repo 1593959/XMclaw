@@ -199,6 +199,14 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # ``run_turn`` checks at hop boundaries (cheap, doesn't
         # interrupt in-flight LLM calls but escapes tool-loop stalls).
         self._cancel_events: dict[str, "asyncio.Event"] = {}
+        # Wave-32+: rolling buffer of recently finished runs. Lets
+        # ``/api/v2/agent_tasks`` surface DONE entries for autonomous
+        # session spawns (GoalGenerator / TaskScheduler / Proactive)
+        # so the 后台任务 panel doesn't drop completed work into the
+        # void — user can see "what did that 5 minutes of background
+        # cooking actually produce". Bounded to keep memory finite;
+        # entries expire after ``_FINISHED_TTL_S`` regardless.
+        self._recently_finished_runs: list[dict[str, Any]] = []
         self._max_hops = max_hops
         self._llm_timeout_s = max(5.0, float(llm_timeout_s))
         # Wave-27 fix-17 (2026-05-16): per-tool-call wall-clock cap.
@@ -405,6 +413,84 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         fan out through it. Setting None turns hooks off."""
         self._hook_engine = engine
 
+    # Wave-32+ recently-finished-runs ring buffer ────────────────────
+
+    _FINISHED_BUFFER_CAP: int = 100
+    _FINISHED_TTL_S: float = 600.0  # entries expire after 10 minutes
+
+    def _record_finished_run(
+        self,
+        *,
+        session_id: str,
+        started_at: float,
+        result: "Any | None",
+        user_message: str,
+    ) -> None:
+        """Stamp a record of a just-completed run for the 后台任务
+        panel. Includes the LAST assistant text so the user can see
+        the actual product of an autonomous session without opening
+        it. Expired aggressively (10 min) — the panel is for
+        recent / live work, not a session log."""
+        import time as _time
+        now = _time.time()
+        # Pull the last assistant text from history (works even if
+        # ``result`` is None — e.g. when run_turn raised before
+        # returning). Trim aggressively so the panel stays compact.
+        reply_preview = ""
+        history = self._histories.get(session_id) or []
+        for msg in reversed(history):
+            if getattr(msg, "role", None) == "assistant":
+                txt = (getattr(msg, "content", "") or "").strip()
+                if txt:
+                    reply_preview = txt[:200]
+                    break
+        # Derive ok / hop count from result when available; fall back
+        # to "unknown" markers when run_turn raised before return.
+        ok = bool(getattr(result, "ok", False)) if result is not None else False
+        hops = int(getattr(result, "hops", 0) or 0) if result is not None else 0
+        error = (
+            (getattr(result, "error", None) or "")[:200]
+            if result is not None and not ok
+            else None
+        )
+        entry = {
+            "session_id": session_id,
+            "started_at": float(started_at),
+            "finished_at": now,
+            "elapsed_s": round(now - started_at, 2),
+            "ok": ok,
+            "hops": hops,
+            "reply_preview": reply_preview,
+            "user_message_preview": (user_message or "")[:120],
+            "error": error,
+        }
+        # Drop expired entries while we have the buffer open.
+        cutoff = now - self._FINISHED_TTL_S
+        self._recently_finished_runs = [
+            e for e in self._recently_finished_runs
+            if e.get("finished_at", 0) >= cutoff
+        ]
+        self._recently_finished_runs.append(entry)
+        # Bound: drop oldest if over cap.
+        if len(self._recently_finished_runs) > self._FINISHED_BUFFER_CAP:
+            self._recently_finished_runs = self._recently_finished_runs[
+                -self._FINISHED_BUFFER_CAP:
+            ]
+
+    def list_recently_finished(self) -> list[dict[str, Any]]:
+        """Return the live snapshot of recently-finished runs (with
+        expired entries already filtered). Used by the agent_tasks
+        endpoint — kept as a method on the loop so callers don't
+        have to know the buffer's internal shape."""
+        import time as _time
+        cutoff = _time.time() - self._FINISHED_TTL_S
+        # Filter in-place so successive reads don't keep stale rows.
+        self._recently_finished_runs = [
+            e for e in self._recently_finished_runs
+            if e.get("finished_at", 0) >= cutoff
+        ]
+        return list(self._recently_finished_runs)
+
     # Skill invocation tracking is fully deterministic now:
     # SkillToolProvider routes registered skills as real ToolCalls, so
     # tool_invocation_started/finished events with name="skill_<id>"
@@ -542,9 +628,12 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # the contextvar in core/agent_context.py. fork_session reads
         # this to know which history to clone.
         from xmclaw.core.agent_context import use_current_session_id
+        import time as _time
+        _started_at = _time.time()
+        _result: "AgentTurnResult | None" = None
         try:
             with use_current_session_id(session_id):
-                return await self._run_turn_inner(
+                _result = await self._run_turn_inner(
                     session_id=session_id,
                     user_message=user_message,
                     user_correlation_id=user_correlation_id,
@@ -553,8 +642,20 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     tools_allowlist=tools_allowlist,
                     user_images=user_images,
                 )
+                return _result
         finally:
             self._cancel_events.pop(session_id, None)
+            # Wave-32+: record a "recently finished" entry so the
+            # 后台任务 panel can surface autonomous-session results
+            # AFTER the turn ends. Without this every spawned task
+            # vanishes from the panel the moment _cancel_events pops
+            # — the user complained "后台跑完呢? 结果呢?".
+            self._record_finished_run(
+                session_id=session_id,
+                started_at=_started_at,
+                result=_result,
+                user_message=user_message,
+            )
 
 
     async def _run_turn_inner(

@@ -1083,6 +1083,53 @@ def create_app(
             except Exception:  # noqa: BLE001
                 pass
 
+        # Source 3 (Wave-32+): recently-finished runs from agent loops.
+        # Surfaces the OUTPUT of autonomous sessions for ~10 minutes
+        # after they end. The user explicitly asked "后台跑完呢? 结果呢?"
+        # — without this they'd see the row disappear with no trace
+        # of what got produced.
+        def _harvest_finished(loop_obj: Any, agent_id: str) -> None:
+            if loop_obj is None:
+                return
+            lister = getattr(loop_obj, "list_recently_finished", None)
+            if lister is None:
+                return
+            try:
+                rows = lister() or []
+            except Exception:  # noqa: BLE001
+                return
+            for r in rows:
+                sid = r.get("session_id", "")
+                if sid in seen_session_ids:
+                    continue  # currently running — keep that priority row
+                seen_session_ids.add(sid)
+                ok = bool(r.get("ok"))
+                out.append({
+                    "task_id": f"done:{sid}:{int(r.get('finished_at', 0))}",
+                    "agent_id": agent_id,
+                    "session_id": sid,
+                    "status": "done" if ok else "error",
+                    "preview": r.get("user_message_preview") or "",
+                    "source": "live_session_done",
+                    "reply_preview": r.get("reply_preview") or None,
+                    "error": r.get("error"),
+                    "created_at": float(r.get("started_at", 0)),
+                    "completed_at": float(r.get("finished_at", 0)),
+                    "elapsed_s": float(r.get("elapsed_s", 0)),
+                    "hops": int(r.get("hops", 0)),
+                })
+
+        _harvest_finished(agent, "main")
+        if agents_mgr is not None:
+            try:
+                for aid in (agents_mgr.list_ids() or []):
+                    ws = agents_mgr.get(aid)
+                    if ws is None:
+                        continue
+                    _harvest_finished(getattr(ws, "agent_loop", None), aid)
+            except Exception:  # noqa: BLE001
+                pass
+
         # Sort: running first (auto-spawned + explicit), then done/
         # error newest-first.
         def _sort_key(t: dict[str, Any]) -> tuple[int, float]:
