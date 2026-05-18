@@ -1412,6 +1412,32 @@ class MemoryService:
             "dry_run": dry_run,
         }
 
+    # ── Wave-32+ LLM topic layer (delegates to llm_topic.py) ────
+
+    async def llm_topic_refine(
+        self,
+        llm: Any,
+        *,
+        budget: int = 20,
+    ) -> dict[str, Any]:
+        """Ask an LLM to judge borderline same-topic pairs (vec
+        distance just over the cluster threshold). See
+        :mod:`xmclaw.memory.v2.llm_topic` for details."""
+        from xmclaw.memory.v2.llm_topic import refine_same_topic
+        return await refine_same_topic(self, llm, budget=budget)
+
+    async def llm_topic_name(
+        self,
+        llm: Any,
+        *,
+        budget: int = 5,
+    ) -> dict[str, Any]:
+        """Find SAME_TOPIC clusters of 3+ facts without an existing
+        topic node, ask the LLM to name them, write topic fact +
+        PART_OF edges. See :mod:`xmclaw.memory.v2.llm_topic`."""
+        from xmclaw.memory.v2.llm_topic import name_clusters
+        return await name_clusters(self, llm, budget=budget)
+
     # ── Cleanup: legacy "everyone contradicts everyone" data ────
 
     async def clear_stale_contradicts(

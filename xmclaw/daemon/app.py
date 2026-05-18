@@ -978,50 +978,119 @@ def create_app(
             "restart_required": True,
         })
 
-    # ── /api/v2/agent_tasks (Sprint 1 Wave 3) ─────────────────────
-    # Read-only listing of background tasks dispatched via the
-    # ``submit_to_agent`` tool. The UI's "后台任务" sidebar tab polls
-    # this every couple of seconds to show what XMclaw is doing in
-    # parallel to the active chat.
+    # ── /api/v2/agent_tasks (Sprint 1 Wave 3 + Wave-32+ widening) ─
+    # Read-only listing of in-flight + recently-finished background
+    # work. The UI's "后台任务" sidebar polls this. Pre-Wave-32+ this
+    # only returned ``AgentInterTools._tasks`` — i.e. work explicitly
+    # kicked off by submit_to_agent / fork_session. But the user
+    # rightfully complained that auto-spawned sessions (GoalGenerator,
+    # TaskScheduler, ProactiveAgent, etc.) never appeared here even
+    # though they were running. Now merges three sources:
+    #   1. AgentInterTools._tasks — explicit submit/fork tasks
+    #   2. AgentLoop._cancel_events keys — sessions with a live
+    #      run_turn right now (catches autonomous-spawned sessions)
+    #   3. MultiAgentManager — other registered agents running
+    #      independent loops
     @app.get("/api/v2/agent_tasks")
     async def agent_tasks() -> JSONResponse:
-        inter = getattr(app.state, "agent_inter_tools", None)
-        if inter is None:
-            return JSONResponse({"tasks": []})
-        # ``AgentInterTools._tasks`` is the bounded dict[task_id, _TaskRecord].
-        # Read it without touching internals beyond what's needed.
-        records = list(getattr(inter, "_tasks", {}).values())
-        # Sort newest-first.
-        records.sort(key=lambda r: getattr(r, "created_at", 0.0), reverse=True)
+        import time
         out: list[dict[str, Any]] = []
-        for r in records[:200]:
-            try:
-                created = float(getattr(r, "created_at", 0.0))
-                completed = getattr(r, "completed_at", None)
-                completed_f = float(completed) if completed is not None else None
-                content = (getattr(r, "content", "") or "")
-                preview = content[:120]
+        seen_session_ids: set[str] = set()
+
+        # Source 1: AgentInterTools._tasks (existing).
+        inter = getattr(app.state, "agent_inter_tools", None)
+        if inter is not None:
+            records = list(getattr(inter, "_tasks", {}).values())
+            records.sort(key=lambda r: getattr(r, "created_at", 0.0), reverse=True)
+            for r in records[:200]:
+                try:
+                    created = float(getattr(r, "created_at", 0.0))
+                    completed = getattr(r, "completed_at", None)
+                    completed_f = float(completed) if completed is not None else None
+                    content = (getattr(r, "content", "") or "")
+                    sid = getattr(r, "session_id", "") or ""
+                    out.append({
+                        "task_id": getattr(r, "task_id", ""),
+                        "agent_id": getattr(r, "agent_id", ""),
+                        "session_id": sid,
+                        "status": getattr(r, "status", ""),
+                        "preview": content[:120],
+                        "source": "agent_inter",
+                        "reply_preview": (
+                            (getattr(r, "reply", None) or "")[:200]
+                            if getattr(r, "reply", None) else None
+                        ),
+                        "error": getattr(r, "error", None),
+                        "created_at": created,
+                        "completed_at": completed_f,
+                        "elapsed_s": (
+                            round((completed_f or time.time()) - created, 1)
+                            if created else 0.0
+                        ),
+                    })
+                    if sid:
+                        seen_session_ids.add(sid)
+                except Exception:  # noqa: BLE001
+                    continue
+
+        # Source 2: AgentLoop._cancel_events — every session id here
+        # has an LLM call running RIGHT NOW. Catches autonomous
+        # spawns (GoalGenerator, ProactiveAgent, TaskScheduler) that
+        # didn't go through AgentInterTools.
+        def _harvest_running(loop_obj: Any, agent_id: str) -> None:
+            if loop_obj is None:
+                return
+            running = list((getattr(loop_obj, "_cancel_events", {}) or {}).keys())
+            histories = getattr(loop_obj, "_histories", None) or {}
+            now = time.time()
+            for sid in running:
+                if sid in seen_session_ids:
+                    continue
+                seen_session_ids.add(sid)
+                # Last user message → preview. Cheap walk of recent
+                # history; bounded by the per-session message cap.
+                preview = ""
+                msgs = histories.get(sid) or []
+                for m in reversed(msgs[-20:]):
+                    if getattr(m, "role", None) == "user":
+                        preview = (getattr(m, "content", "") or "")[:120]
+                        break
                 out.append({
-                    "task_id": getattr(r, "task_id", ""),
-                    "agent_id": getattr(r, "agent_id", ""),
-                    "session_id": getattr(r, "session_id", ""),
-                    "status": getattr(r, "status", ""),
+                    "task_id": f"live:{sid}",
+                    "agent_id": agent_id,
+                    "session_id": sid,
+                    "status": "running",
                     "preview": preview,
-                    "reply_preview": (
-                        (getattr(r, "reply", None) or "")[:200]
-                        if getattr(r, "reply", None) else None
-                    ),
-                    "error": getattr(r, "error", None),
-                    "created_at": created,
-                    "completed_at": completed_f,
-                    "elapsed_s": (
-                        round((completed_f or time.time()) - created, 1)
-                        if created else 0.0
-                    ),
+                    "source": "live_session",
+                    "reply_preview": None,
+                    "error": None,
+                    # No real start ts — approximate with now so the
+                    # UI's elapsed counter starts at 0 (not 1970).
+                    "created_at": now,
+                    "completed_at": None,
+                    "elapsed_s": 0.0,
                 })
+
+        _harvest_running(agent, "main")
+        agents_mgr = getattr(app.state, "agents", None)
+        if agents_mgr is not None:
+            try:
+                for aid in (agents_mgr.list_ids() or []):
+                    ws = agents_mgr.get(aid)
+                    if ws is None:
+                        continue
+                    _harvest_running(getattr(ws, "agent_loop", None), aid)
             except Exception:  # noqa: BLE001
-                continue
-        return JSONResponse({"tasks": out, "count": len(out)})
+                pass
+
+        # Sort: running first (auto-spawned + explicit), then done/
+        # error newest-first.
+        def _sort_key(t: dict[str, Any]) -> tuple[int, float]:
+            running = 0 if t.get("status") in ("running", "pending") else 1
+            return (running, -float(t.get("created_at") or 0.0))
+
+        out.sort(key=_sort_key)
+        return JSONResponse({"tasks": out[:200], "count": len(out)})
 
     # ── /api/v2/status ────────────────────────────────────────────
     # Richer status than /health: active model, tool roster, mcp state.

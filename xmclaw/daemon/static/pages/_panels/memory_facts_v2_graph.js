@@ -38,6 +38,10 @@ const KIND_COLOR = {
   project: "#d68b3f",
   episode: "#8d8d8d",
   event: "#4a4a4a",  // L0 event pseudo-id nodes
+  // Wave-32+ — LLM-named cluster head. Distinctive cyan so the
+  // hierarchy is visible at a glance: topic nodes anchor groups
+  // of normal fact nodes via PART_OF edges.
+  topic: "#3aa8c4",
 };
 
 const RELATION_COLOR = {
@@ -262,6 +266,54 @@ export function FactsGraphView({ token, focusFactId, onFocusFact }) {
           title="按 Wave-32+ 新规则（跨 kind + 共享实体桥接）扫一遍所有事实，补上漏链的 SAME_TOPIC 边"
           style="font-size:.78rem;padding:.3rem .6rem"
         >🔗 重建关系</button>
+        <button
+          type="button"
+          class="xmc-h-btn"
+          onClick=${async () => {
+            try {
+              const r = await apiPost(
+                "/api/v2/memory/v2/llm_topic_refine", { budget: 20 }, token,
+              );
+              const d = (r && r.ok && (r.data || r)) || r || {};
+              alert(
+                "LLM 关系细化完成\n判断对数: " + (d.scanned_pairs || 0) +
+                "\n新增边: " + (d.edges_added || 0) +
+                "\nLLM 调用: " + (d.llm_calls || 0) +
+                "\n耗时: " + (d.duration_s || 0) + "s" +
+                (d.error ? "\n错误: " + d.error : ""),
+              );
+              refresh();
+            } catch (e) {
+              alert("LLM 细化失败: " + (e && e.message || e));
+            }
+          }}
+          title="对向量相似但未达阈值的边缘对，让 LLM 判断是否真的是同一主题（每次最多 20 对，1 次 LLM 调用）"
+          style="font-size:.78rem;padding:.3rem .6rem"
+        >🧠 LLM 细化</button>
+        <button
+          type="button"
+          class="xmc-h-btn"
+          onClick=${async () => {
+            try {
+              const r = await apiPost(
+                "/api/v2/memory/v2/llm_topic_name", { budget: 5 }, token,
+              );
+              const d = (r && r.ok && (r.data || r)) || r || {};
+              alert(
+                "LLM 主题命名完成\n候选簇: " + (d.clusters_scanned || 0) +
+                "\n新主题节点: " + (d.topics_created || 0) +
+                "\n跳过(已有名): " + (d.clusters_skipped_already_named || 0) +
+                "\nLLM 调用: " + (d.llm_calls || 0) +
+                "\n耗时: " + (d.duration_s || 0) + "s",
+              );
+              refresh();
+            } catch (e) {
+              alert("LLM 命名失败: " + (e && e.message || e));
+            }
+          }}
+          title="对 SAME_TOPIC 簇（≥3 事实，未命名）让 LLM 起 2-8 字主题标题，新建 topic 节点 + PART_OF 边（每簇 1 次 LLM 调用，每次最多处理 5 簇）"
+          style="font-size:.78rem;padding:.3rem .6rem"
+        >🏷️ 起主题名</button>
         ${focusFactId
           ? html`<button
               type="button"

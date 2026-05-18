@@ -206,6 +206,61 @@ async def backfill_cooccurrence_edges(request: Request) -> Any:
     return await svc.backfill_cooccurrence_edges(dry_run=dry_run)
 
 
+@router.post("/llm_topic_refine")
+async def llm_topic_refine(request: Request) -> Any:
+    """Wave-32+ Layer 2: ask an LLM to judge borderline-same-topic
+    pairs and emit SAME_TOPIC edges for the yes answers. Catches
+    Chinese-paraphrase synonymy ("网址" ↔ "目标网站") that the vector
+    threshold misses.
+
+    Body (optional): ``{"budget": 20}`` to cap how many pairs go to
+    the LLM. Default 20.
+    """
+    svc = _get_service(request)
+    if svc is None:
+        return _v2_disabled_response()
+    agent = getattr(request.app.state, "agent", None)
+    llm = getattr(agent, "_llm", None) if agent else None
+    if llm is None:
+        return JSONResponse(
+            {"error": "no llm wired"}, status_code=503,
+        )
+    try:
+        body = await request.json() if request.headers.get("content-length") else {}
+    except Exception:  # noqa: BLE001
+        body = {}
+    budget = int(body.get("budget") or 20)
+    budget = max(1, min(50, budget))
+    return await svc.llm_topic_refine(llm, budget=budget)
+
+
+@router.post("/llm_topic_name")
+async def llm_topic_name(request: Request) -> Any:
+    """Wave-32+ Layer 3: find SAME_TOPIC clusters of 3+ facts that
+    have no topic node yet, ask an LLM to name them, write the
+    topic fact + PART_OF edges.
+
+    Body (optional): ``{"budget": 5}`` to cap how many clusters get
+    processed (each = 1 LLM call). Default 5.
+    """
+    svc = _get_service(request)
+    if svc is None:
+        return _v2_disabled_response()
+    agent = getattr(request.app.state, "agent", None)
+    llm = getattr(agent, "_llm", None) if agent else None
+    if llm is None:
+        return JSONResponse(
+            {"error": "no llm wired"}, status_code=503,
+        )
+    try:
+        body = await request.json() if request.headers.get("content-length") else {}
+    except Exception:  # noqa: BLE001
+        body = {}
+    budget = int(body.get("budget") or 5)
+    budget = max(1, min(20, budget))
+    return await svc.llm_topic_name(llm, budget=budget)
+
+
 @router.post("/relink_same_topic")
 async def relink_same_topic(request: Request) -> Any:
     """Wave-32+ graph-connectivity backfill.

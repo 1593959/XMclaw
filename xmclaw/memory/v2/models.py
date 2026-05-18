@@ -75,6 +75,13 @@ class FactKind(str, Enum):
     # (lesson / preference / identity) to produce the on-disk file.
     # Replaces the legacy ``memory.db kind=persona_manual`` route.
     PERSONA_MANUAL = "persona_manual"
+    # Wave-32+ (2026-05-18): higher-level summary node produced by
+    # the LLM topic-naming layer. Connects 3+ related facts via
+    # PART_OF edges into a named cluster ("X 项目的访问凭据", "Y
+    # 公司的业务模型 etc"). Lifecycle: only added by the topic-
+    # naming pass; auto-cleaned when its member facts are all
+    # superseded or deleted.
+    TOPIC = "topic"
 
 
 class FactScope(str, Enum):
