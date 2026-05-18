@@ -178,6 +178,38 @@ function _saveGraphPositions(positions) {
 }
 
 
+// Wave-32+ alpha-blended hex color for edge strength encoding.
+// Accepts "#RRGGBB" or "rgb(...)" — returns "rgba(r, g, b, a)".
+// Pre-fix: edges had constant color regardless of confidence. A 0.6
+// token-bridge looked exactly the same as a 1.0 user-confirmed
+// edge. Now color encodes confidence so the user can SEE which
+// links are load-bearing in the cluster.
+function _withAlpha(color, alpha) {
+  if (!color) return `rgba(160,160,160,${alpha})`;
+  const a = Math.max(0, Math.min(1, alpha));
+  // Hex: #RRGGBB or #RGB.
+  if (color.startsWith("#")) {
+    let r, g, b;
+    if (color.length === 7) {
+      r = parseInt(color.slice(1, 3), 16);
+      g = parseInt(color.slice(3, 5), 16);
+      b = parseInt(color.slice(5, 7), 16);
+    } else if (color.length === 4) {
+      r = parseInt(color[1] + color[1], 16);
+      g = parseInt(color[2] + color[2], 16);
+      b = parseInt(color[3] + color[3], 16);
+    } else {
+      return color;
+    }
+    return `rgba(${r},${g},${b},${a})`;
+  }
+  // rgb(r, g, b) → rgba(r, g, b, a).
+  const m = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+  if (m) return `rgba(${m[1]},${m[2]},${m[3]},${a})`;
+  return color;
+}
+
+
 function _truncate(s, n = 60) {
   if (!s) return "";
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
@@ -260,14 +292,33 @@ export function FactsGraphView({ token, focusFactId, onFocusFact }) {
 
       const visEdges = data.edges.map((e) => {
         const style = RELATION_COLOR[e.relation] || { color: "#999", width: 1 };
+        // Wave-32+ weighted edge rendering. Backend has populated
+        // relation.strength all along (token-bridge=0.6,
+        // entity-share=0.85, LLM-judged=0.85, co-extracted-from-
+        // same-message=0.80, user-confirmed=1.0), but the UI was
+        // rendering every edge at the kind's static width — so all
+        // SAME_TOPIC edges looked identical regardless of how
+        // confident the system was. Now line thickness encodes
+        // strength: width = baseWidth * clamp(0.5 + strength, 0.5, 2.5).
+        // Strong edges (entity-share, LLM-confirmed) stand out;
+        // weak (token-only) recede into the background visually.
+        const strength = typeof e.strength === "number" ? e.strength : 0.5;
+        const weightMultiplier = Math.max(0.5, Math.min(2.5, 0.5 + strength));
+        // Opacity also tracks strength so weak edges literally fade
+        // — for a dense graph the user can SEE which links are
+        // load-bearing.
+        const alpha = Math.max(0.35, Math.min(1.0, 0.4 + strength * 0.6));
         return {
           id: e.id,
           from: e.source,
           to: e.target,
           label: e.relation,
-          title: `${e.relation} (strength ${e.strength.toFixed(2)})`,
-          color: { color: style.color, highlight: "#fff" },
-          width: style.width,
+          title: `${e.relation} (strength ${strength.toFixed(2)})`,
+          color: {
+            color: _withAlpha(style.color, alpha),
+            highlight: "#fff",
+          },
+          width: style.width * weightMultiplier,
           dashes: style.dashes || false,
           arrows: "to",
           font: {
