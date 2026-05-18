@@ -162,6 +162,10 @@ export function MessageBubble({ message, onAnswerQuestion }) {
   const thinking = message.status === "thinking";
   const streaming = message.status === "streaming";
   const errored = message.status === "error";
+  // Wave-32+ UX fix: when the user clicks Stop the bubble's status
+  // flips to "cancelled" — render same as errored but with its own
+  // marker so the user sees WHY this turn stopped early.
+  const cancelled = message.status === "cancelled";
 
   // ── TTS auto-speak (B-20) ────────────────────────────────────────
   // When the assistant's turn finalizes (status=complete) and the
@@ -217,7 +221,8 @@ export function MessageBubble({ message, onAnswerQuestion }) {
     role +
     (thinking ? " is-thinking" : "") +
     (streaming ? " is-streaming" : "") +
-    (errored ? " is-error" : "");
+    (errored ? " is-error" : "") +
+    (cancelled ? " is-cancelled" : "");
 
   // B-43: phase-aware label. The reducer now sets message.phase to
   // 'calling_llm' on llm_request and 'tool_running' on
@@ -265,6 +270,9 @@ export function MessageBubble({ message, onAnswerQuestion }) {
           : null}
         ${streaming && message.content
           ? html`<${Spinner} size="sm" label="streaming" />`
+          : null}
+        ${cancelled
+          ? html`<${Badge} tone="warn">已停止</${Badge}>`
           : null}
         ${role === "assistant" && message.status === "complete" && ttsSupported && message.content
           ? html`

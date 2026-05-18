@@ -196,6 +196,16 @@ export function applyStreamingEvent(chat, envelope, helpers) {
       // user sees the failure instead of an empty completed bubble, and
       // clear `phase` so the "正在调用 LLM · Ns" indicator stops ticking.
       const id = corr;
+      // Wave-32+ UX fix: if the user already clicked Stop on this
+      // turn, the bubble is already marked "cancelled" and
+      // pendingAssistantId is already cleared — a late-arriving
+      // terminal event must NOT overwrite the cancelled state with
+      // "complete" (which would show the post-cancel reply the user
+      // explicitly chose not to wait for). Same B-269 logic as for
+      // late chunks.
+      if (chat.cancelledTurnIds && chat.cancelledTurnIds.has(id)) {
+        return chat;
+      }
       const finalText = typeof payload.content === "string"
         ? payload.content
         : (payload.text || "");

@@ -107,27 +107,48 @@ export function createComposerActions({
   //
   // B-269: also mark the in-flight turn id as "cancelled" in client
   // state. The reducer's llm_chunk / llm_thinking_chunk cases consult
-  // this set and silently drop late-arriving chunks. Without this the
-  // provider's buffered chunks (which were already in flight when
-  // cancel was sent) keep appending to the assistant bubble for a
-  // few more seconds after the user clicks Stop — looks like the
-  // stop button didn't work.
+  // this set and silently drop late-arriving chunks.
+  //
+  // Wave-32+ UX fix: flip the UI to "stopped" immediately rather than
+  // waiting for the backend's cancel_event to reach a hop boundary.
+  // The backend may still emit a few more chunks (already in flight
+  // when cancel was sent) — those get silently dropped by the B-269
+  // gate. From the user's perspective: click Stop → button becomes
+  // Send instantly, in-flight assistant bubble shows "已停止" marker
+  // and stops ticking, toast confirms in past tense.
   function cancelComposer() {
     const wsHandle = getWsHandle();
     if (!wsHandle) {
       toast.error("WS 未连接");
       return;
     }
-    // Mark the current turn cancelled BEFORE sending the WS frame.
-    // Even if the WS send fails, we want to stop appending chunks.
     const currentTurnId = store.getState().chat?.pendingAssistantId;
     if (currentTurnId) {
       store.setState((s) => {
         const cancelled = new Set(s.chat.cancelledTurnIds || []);
         cancelled.add(currentTurnId);
+        // Mark the in-flight assistant bubble as cancelled — stops
+        // its "正在调用 LLM · Ns" spinner and surfaces the terminal
+        // state to the user. Skip bubbles already in a terminal
+        // state to be safe with race conditions.
+        const messages = (s.chat.messages || []).map((m) => {
+          if (m.id !== currentTurnId) return m;
+          if (m.status === "complete" || m.status === "error" || m.status === "cancelled") {
+            return m;
+          }
+          return { ...m, status: "cancelled", phase: null };
+        });
         return {
           ...s,
-          chat: { ...s.chat, cancelledTurnIds: cancelled },
+          chat: {
+            ...s.chat,
+            cancelledTurnIds: cancelled,
+            // Clear pendingAssistantId immediately so `busy` flips
+            // false → Stop button becomes Send. Mirrors what the
+            // anti_req_violation handler does on terminal events.
+            pendingAssistantId: null,
+            messages,
+          },
         };
       });
     }
@@ -135,7 +156,7 @@ export function createComposerActions({
     if (result && !result.ok) {
       toast.error("取消请求失败：" + (result.reason || "未知"));
     } else {
-      toast.info("已请求停止当前回答");
+      toast.success("已停止");
     }
   }
 
