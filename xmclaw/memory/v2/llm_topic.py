@@ -413,25 +413,70 @@ async def _build_same_topic_components(
 
 
 def _compute_cluster_hash(member_fact_ids: set[str]) -> str:
-    """Wave-32+ deterministic cluster id.
+    """Wave-32+ deterministic cluster id (legacy / fallback).
 
-    Stable hash over the sorted set of member fact_ids. The SAME
-    membership produces the SAME cluster_hash across runs, across
-    daemon restarts. That's what makes topic naming idempotent —
-    re-running on an unchanged cluster lets ``_cluster_has_topic_node``
-    detect the existing topic and skip the LLM call.
+    Stable hash over the sorted set of ALL member fact_ids. Used
+    when we don't have access to Fact rows (Fact.evidence_count is
+    what core-member hashing needs).
 
-    Pre-fix: cluster identity was implicit (just the set of fact ids
-    in memory). Two runs over the same data could end up creating
-    duplicate topic nodes if the existence-check missed (e.g. only
-    5 sampled members got walked). Now the cluster has a stable
-    string id baked into the topic fact's text, so a prefix scan
-    finds it deterministically.
+    KNOWN LIMIT: membership-sensitive. Adding ONE peripheral fact
+    to a 10-fact cluster changes the hash → would re-trigger LLM
+    naming. The new ``_compute_core_member_hash`` below is the
+    preferred path; this remains for compatibility with callers
+    that only have ids.
     """
     import hashlib
     if not member_fact_ids:
         return "empty"
     joined = "|".join(sorted(member_fact_ids))
+    return hashlib.sha1(joined.encode("utf-8")).hexdigest()[:12]
+
+
+# Wave-32+ Chunk 7: How many top-evidence members anchor a cluster's
+# identity. Peripheral members beyond top-K can be added / removed
+# without changing the cluster's hash → cluster ID is stable across
+# small membership changes. 5 is a heuristic — gives enough mass
+# for the hash to be specific while letting weak members come and go.
+_CORE_MEMBER_K: int = 5
+
+
+def _compute_core_member_hash(facts: "list[Fact]", *, k: int = _CORE_MEMBER_K) -> str:
+    """Wave-32+ Chunk 7: cluster hash robust to peripheral changes.
+
+    Sort members by evidence_count descending, take the top-K, hash
+    THEIR ids in sorted order. Properties:
+
+      * Adding a fact with LOW evidence to a cluster → its id
+        doesn't reach the top-K → hash unchanged
+      * Removing a fact with LOW evidence → core unchanged → hash
+        unchanged
+      * A fact gains evidence and rises into top-K → hash changes
+        (correctly — the cluster's identity actually shifted)
+      * Re-running on the SAME data → same top-K (sort is stable
+        for ties via id as secondary key) → same hash
+
+    This is the right ID stability for the topic-naming use case:
+    a stable conversation topic keeps its name even as new related
+    facts trickle in.
+
+    Falls back to the legacy full-membership hash when ``facts`` has
+    no evidence_count info (e.g. minimal Fact stubs in tests)."""
+    import hashlib
+    if not facts:
+        return "empty"
+    # Sort by evidence_count desc, id asc (stable tiebreak).
+    sorted_facts = sorted(
+        facts,
+        key=lambda f: (
+            -(getattr(f, "evidence_count", 0) or 0),
+            getattr(f, "id", ""),
+        ),
+    )
+    core = sorted_facts[:k]
+    core_ids = sorted(getattr(f, "id", "") for f in core if getattr(f, "id", ""))
+    if not core_ids:
+        return "empty"
+    joined = "|".join(core_ids)
     return hashlib.sha1(joined.encode("utf-8")).hexdigest()[:12]
 
 
@@ -555,21 +600,12 @@ async def name_clusters(
     for comp in components:
         if processed >= budget:
             break
-        # Wave-32+ deterministic cluster id. Computing this BEFORE
-        # the LLM call means we can skip clusters whose hash already
-        # has a topic — even if the membership-sample check below
-        # missed (e.g. one of the sampled facts got superseded). The
-        # hash is over the FULL membership, not a sample, so it's
-        # canonical.
-        cluster_hash = _compute_cluster_hash(comp)
-        if await _cluster_has_topic_node_by_hash(svc, cluster_hash):
-            skipped += 1
-            continue
-        if await _cluster_has_topic_node(svc, comp):
-            skipped += 1
-            continue
-        # Fetch the actual Fact rows for the LLM prompt + later
-        # PART_OF edges.
+        # Fetch Fact rows FIRST so we can compute the core-member
+        # hash (Wave-32+ Chunk 7). Pre-fix the hash was over full
+        # membership → adding 1 new peripheral fact to a cluster
+        # changed the hash → re-triggered LLM naming on every
+        # tick. Core-member hashing pins identity to the top-K
+        # most-evidenced members; peripheral changes don't shift it.
         facts: list[Fact] = []
         for fid in list(comp):
             try:
@@ -579,6 +615,20 @@ async def name_clusters(
             except Exception:  # noqa: BLE001
                 continue
         if len(facts) < _MIN_CLUSTER_SIZE:
+            skipped += 1
+            continue
+        # Core-member hash for identity. The full-membership hash is
+        # ALSO checked as a fallback so legacy topics (named before
+        # this commit) still get detected and not re-created.
+        cluster_hash = _compute_core_member_hash(facts)
+        legacy_hash = _compute_cluster_hash(comp)
+        if await _cluster_has_topic_node_by_hash(svc, cluster_hash):
+            skipped += 1
+            continue
+        if await _cluster_has_topic_node_by_hash(svc, legacy_hash):
+            skipped += 1
+            continue
+        if await _cluster_has_topic_node(svc, comp):
             skipped += 1
             continue
         # Ask the LLM for a name.

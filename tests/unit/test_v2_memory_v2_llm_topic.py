@@ -188,3 +188,83 @@ def test_entity_tier_unknown_returns_zero() -> None:
     from xmclaw.memory.v2.llm_topic import _entity_tier
     assert _entity_tier("") == 0
     assert _entity_tier("anything_else") == 0
+
+
+# ── core-member cluster hash (Wave-32+ chunk 7) ─────────────────────
+
+
+def test_core_member_hash_stable_to_peripheral_additions() -> None:
+    """Adding a LOW-evidence fact to a cluster shouldn't change its
+    identity. Pin this — it's the whole point of the new hash."""
+    from xmclaw.memory.v2.llm_topic import _compute_core_member_hash
+    # Base: 5 high-evidence facts.
+    base_facts = [
+        _mk_fact("text a", id=f"f{i}", confidence=0.9) for i in range(5)
+    ]
+    # Give each high evidence_count.
+    for i, f in enumerate(base_facts):
+        object.__setattr__(f, "evidence_count", 10 - i)
+    base_hash = _compute_core_member_hash(base_facts)
+
+    # Add 1 low-evidence peripheral fact (evidence_count=1).
+    peripheral = _mk_fact("peripheral", id="periph")
+    object.__setattr__(peripheral, "evidence_count", 1)
+    new_hash = _compute_core_member_hash(base_facts + [peripheral])
+    assert base_hash == new_hash, "peripheral fact shifted the hash"
+
+
+def test_core_member_hash_changes_when_high_evidence_added() -> None:
+    """A high-evidence fact that displaces a current core member
+    SHOULD change the hash — the cluster's center of mass actually
+    shifted. Pin so we don't over-correct into total insensitivity."""
+    from xmclaw.memory.v2.llm_topic import _compute_core_member_hash
+    base_facts = [
+        _mk_fact("text", id=f"f{i}") for i in range(5)
+    ]
+    for i, f in enumerate(base_facts):
+        object.__setattr__(f, "evidence_count", 5 - i)  # 5..1
+    base_hash = _compute_core_member_hash(base_facts)
+    # Add a fact with evidence_count=20 — must displace f4 (count=1)
+    # in the top-5.
+    dominant = _mk_fact("dominant", id="dom")
+    object.__setattr__(dominant, "evidence_count", 20)
+    new_hash = _compute_core_member_hash(base_facts + [dominant])
+    assert base_hash != new_hash
+
+
+def test_core_member_hash_robust_to_low_evidence_removal() -> None:
+    """Removing a peripheral fact also shouldn't shift the cluster
+    identity. Symmetric to the addition case."""
+    from xmclaw.memory.v2.llm_topic import _compute_core_member_hash
+    facts = [_mk_fact("t", id=f"f{i}") for i in range(7)]
+    for i, f in enumerate(facts):
+        object.__setattr__(f, "evidence_count", 10 - i)  # 10..4
+    full_hash = _compute_core_member_hash(facts)
+    # Remove f5 / f6 (lowest evidence) — outside core (top-5).
+    pruned = facts[:5]
+    pruned_hash = _compute_core_member_hash(pruned)
+    assert full_hash == pruned_hash
+
+
+def test_core_member_hash_deterministic_across_calls() -> None:
+    """Same input → same hash. Used to detect re-runs of identical
+    clusters."""
+    from xmclaw.memory.v2.llm_topic import _compute_core_member_hash
+    facts = [_mk_fact("t", id=f"f{i}") for i in range(3)]
+    for f in facts:
+        object.__setattr__(f, "evidence_count", 5)
+    a = _compute_core_member_hash(facts)
+    b = _compute_core_member_hash(facts)
+    assert a == b
+
+
+def test_core_member_hash_empty_input() -> None:
+    from xmclaw.memory.v2.llm_topic import _compute_core_member_hash
+    assert _compute_core_member_hash([]) == "empty"
+
+
+def test_core_member_hash_length_bounded() -> None:
+    from xmclaw.memory.v2.llm_topic import _compute_core_member_hash
+    f = _mk_fact("t", id="f1")
+    object.__setattr__(f, "evidence_count", 1)
+    assert len(_compute_core_member_hash([f])) == 12
