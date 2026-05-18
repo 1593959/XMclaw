@@ -280,7 +280,7 @@ export function ThinkingDots({ label = "正在思考" }) {
 // reducer captured (model / hop / message_count / tools_count from
 // LLM_REQUEST) plus thinking content if a future LLM_THINKING_CHUNK
 // stream lands one (placeholder slot today).
-export function PhaseCard({ message, baseLabel, elapsedS, stalled, isWorking }) {
+export function PhaseCard({ message, baseLabel, elapsedS, stalled, isWorking, currentHop }) {
   const phase = message.phase;
   const hasThinkingHistory = !!(message.thinking && message.thinking.length > 0);
   // Card shows in two cases:
@@ -309,11 +309,14 @@ export function PhaseCard({ message, baseLabel, elapsedS, stalled, isWorking }) 
         <span class="xmc-phasecard__label">
           ${isWorking ? baseLabel : "思考过程（已完成）"}
         </span>
+        ${isWorking && currentHop != null && currentHop > 0
+          ? html`<${Badge} tone="info">hop ${currentHop}</${Badge}>`
+          : null}
         ${elapsedS != null && elapsedS >= 1
           ? html`<${Badge} tone=${tone}>${elapsedS}s</${Badge}>`
           : null}
         ${stalled
-          ? html`<span class="xmc-phasecard__warn">· 可能卡住</span>`
+          ? html`<span class="xmc-phasecard__warn">· 可能卡住，点击展开查看</span>`
           : null}
       </summary>
       <div class="xmc-phasecard__body">

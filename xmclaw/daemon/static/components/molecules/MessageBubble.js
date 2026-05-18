@@ -230,10 +230,21 @@ export function MessageBubble({ message, onAnswerQuestion }) {
   // hung "正在思考". Plus a live elapsed-second counter for any bubble
   // still working (re-renders every 500ms via the tick state below).
   const phase = message.phase;
+  // Wave-32+ status clarity: surface the current running tool name
+  // in the label so "正在执行工具" becomes "browser_fill · 4s" — the
+  // user can tell WHAT is taking time, not just THAT something is.
+  const runningTool = (message.toolCalls || []).find(
+    (c) => c.status === "running",
+  );
+  const runningToolName = runningTool ? runningTool.name : null;
   const baseLabel = thinking
     ? (phase === "calling_llm" ? "正在调用 LLM" : "正在思考")
     : streaming
-    ? hasToolsRunning ? "正在执行工具" : "正在回复"
+    ? hasToolsRunning
+      ? runningToolName
+        ? `正在执行 ${runningToolName}`
+        : "正在执行工具"
+      : "正在回复"
     : null;
 
   const isWorking = thinking || streaming;
@@ -247,10 +258,19 @@ export function MessageBubble({ message, onAnswerQuestion }) {
   const elapsedS = isWorking && message.ts
     ? Math.max(0, Math.floor(Date.now() / 1000 - message.ts))
     : null;
-  // B-46: stall detector. A genuine LLM call takes < 60 s for any
-  // production model. Past 120 s we're almost certainly stuck (network
-  // drop, provider 504, daemon crashed mid-stream). Hint the user.
-  const stalled = elapsedS != null && elapsedS > 120;
+  // B-46 / Wave-32+ status clarity: stall detector. Originally 120 s
+  // — too lenient given typical LLM responses are well under 30 s.
+  // Drop to 30 s so the "可能卡住" warning fires before the user
+  // starts wondering if the daemon crashed. The warning is non-
+  // destructive (it doesn't cancel anything, just opens the
+  // PhaseCard automatically + adds a hint), so being eager is safe.
+  const stalled = elapsedS != null && elapsedS > 30;
+  // Hop badge — pulled from the most recent phase meta. When the
+  // agent is mid-tool-loop, this jumps from 1 → 2 → 3 so the user
+  // can SEE progress even when individual hops fail.
+  const currentHop = message.phaseMeta && message.phaseMeta.hop != null
+    ? message.phaseMeta.hop
+    : null;
 
   return html`
     <article
@@ -294,6 +314,7 @@ export function MessageBubble({ message, onAnswerQuestion }) {
         elapsedS=${elapsedS}
         stalled=${stalled}
         isWorking=${isWorking}
+        currentHop=${currentHop}
       />
       ${role === "assistant" && (message.events || []).length > 0
         ? html`
