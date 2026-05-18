@@ -359,5 +359,10 @@
     "wecom":    { "_comment": "企业微信群机器人 webhook (个人微信无官方 API)", "webhook_url": "" },
     "dingtalk": { "_comment": "钉钉群自定义机器人 webhook", "webhook_url": "", "secret": "" },
     "qq":       { "_comment": "OneBot v11 兼容 bot 的 HTTP API base_url (go-cqhttp/NapCat/Lagrange)", "base_url": "", "access_token": "" }
-  }
+  },
+  "hooks": [
+    {
+      "_help_": "Wave-32 (2026-05-18): user-defined lifecycle hooks. Empty by default. Each entry: {id, event, runner, ...runner-specific...}. Events: SessionStart/End, UserPromptSubmit, PreLLM/PostLLM, PreToolUse/PostToolUse, Stop, TurnFinished, SubagentStart/Stop, MemoryWrite, PersonaUpdated, ChannelInbound/Outbound, PerceptObserved, ReflectionRan, GoalSpawned, Notification, ErrorRaised, SkillInvoked, SkillPromoted, ToolBlocked, ToolFailed (25 total). Runners: command (shell), function (Python entry-point), http (POST webhook), prompt (LLM one-shot), agent (fire-and-forget sub-agent). See docs/HOOKS.md for full reference + JSON output protocol. command/function runners require the workspace be marked trusted via 'xmclaw trust' (drops a .xmclaw-trust marker file)."
+    }
+  ]
 }

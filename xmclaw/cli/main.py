@@ -527,6 +527,67 @@ def stop(
 
 
 @app.command()
+def trust(
+    workspace: str = typer.Argument(
+        ".",
+        help="Workspace directory to mark as trusted (default: cwd).",
+    ),
+    revoke: bool = typer.Option(
+        False, "--revoke",
+        help="Remove the trust marker instead of adding it.",
+    ),
+    status_only: bool = typer.Option(
+        False, "--status",
+        help="Report the current trust level without modifying anything.",
+    ),
+) -> None:
+    """Mark a workspace as trusted so XMclaw hooks (command / function
+    runners) can run there. Wave-32 (2026-05-18).
+
+    The marker is a single empty-ish file ``.xmclaw-trust`` in the
+    workspace root. Presence = trusted. ``command`` / ``function``
+    hook runners refuse to execute on untrusted workspaces because
+    both have arbitrary-code-execution surface. ``http`` / ``prompt``
+    / ``agent`` runners ignore the trust marker (their config is
+    fixed in your config.json so the operator already vetted them).
+
+    Run this once per workspace after reviewing your hook config:
+
+        cd ~/my-project
+        xmclaw trust
+
+    To revoke:
+
+        xmclaw trust ~/my-project --revoke
+
+    To check status without changing anything:
+
+        xmclaw trust ~/my-project --status
+    """
+    from pathlib import Path as _P
+    from xmclaw.core.hooks.trust import (
+        mark_workspace_trusted,
+        unmark_workspace_trusted,
+        workspace_trust_level,
+    )
+    p = _P(workspace).expanduser().resolve()
+    if status_only:
+        level = workspace_trust_level(p)
+        typer.echo(f"  trust: {level}  ({p})")
+        raise typer.Exit(code=0 if level == "trusted" else 1)
+    if revoke:
+        removed = unmark_workspace_trusted(p)
+        if removed:
+            typer.echo(f"  [ok]  revoked trust for {p}")
+        else:
+            typer.echo(f"  [-]   no trust marker at {p}")
+        return
+    marker = mark_workspace_trusted(p)
+    typer.echo(f"  [ok]  trusted {p}")
+    typer.echo(f"        marker: {marker}")
+
+
+@app.command()
 def restart(
     host: str = typer.Option("127.0.0.1", help="Bind address."),
     port: int = typer.Option(8765, help="Port to bind."),
