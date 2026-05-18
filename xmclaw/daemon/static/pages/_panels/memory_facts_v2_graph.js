@@ -60,21 +60,57 @@ const RELATION_COLOR = {
 let _visModule = null;
 let _visPromise = null;
 
+// Wave-32+ resilience: try multiple CDNs with per-CDN timeouts so a
+// blocked / slow esm.sh doesn't hang the graph view indefinitely.
+// User report (2026-05-19): "加载图谱中..." stuck forever because
+// esm.sh wasn't reachable from their network. Pre-fix the import
+// promise never settled and the loading state spun forever.
+const _VIS_CDNS = [
+  // Local vendor copy — tried first so offline use works. Drop
+  // ``vis-network.min.js`` (peer dist build) here to short-circuit
+  // every CDN attempt.
+  "/ui/vendor/vis-network.min.js",
+  "https://esm.sh/vis-network@9.1.9/standalone",
+  "https://cdn.jsdelivr.net/npm/vis-network@9.1.9/standalone/esm/vis-network.js",
+  "https://unpkg.com/vis-network@9.1.9/standalone/esm/vis-network.js",
+];
+const _VIS_CDN_TIMEOUT_MS = 12000;  // per-CDN cap
+
+function _withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms),
+    ),
+  ]);
+}
+
 async function _loadVisNetwork() {
   if (_visModule) return _visModule;
   if (_visPromise) return _visPromise;
   _visPromise = (async () => {
-    try {
-      const mod = await import("https://esm.sh/vis-network@9.1.9/standalone");
-      _visModule = mod;
-      return mod;
-    } catch (err) {
-      _visPromise = null;
-      throw new Error(
-        "vis-network CDN unreachable. Add npm vendor copy under "
-        + "static/vendor/ to enable offline use.",
-      );
+    const errors = [];
+    for (const url of _VIS_CDNS) {
+      try {
+        const mod = await _withTimeout(
+          import(url),
+          _VIS_CDN_TIMEOUT_MS,
+          `vis-network@${url}`,
+        );
+        _visModule = mod;
+        return mod;
+      } catch (err) {
+        errors.push(`${url}: ${err && err.message || err}`);
+        continue;
+      }
     }
+    _visPromise = null;
+    throw new Error(
+      "vis-network unreachable from any CDN. Tried:\n  - "
+      + errors.join("\n  - ")
+      + "\n\nWorkaround: download vis-network/dist/vis-network.min.js to "
+      + "xmclaw/daemon/static/vendor/ and reload.",
+    );
   })();
   return _visPromise;
 }
