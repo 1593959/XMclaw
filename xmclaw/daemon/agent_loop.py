@@ -301,6 +301,12 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # cost). Per-process singleton — per-session state lives
         # inside the compressor keyed by session_id.
         self._compressor: Any = None
+        # Wave-32 (2026-05-18): user-defined hook engine. Set via
+        # ``set_hook_engine`` from app_lifespan after the engine is
+        # built from config.hooks. None → no hooks; lifecycle
+        # dispatches become no-ops (cheap matching loop on empty
+        # spec list).
+        self._hook_engine: Any | None = None
         # Jarvisification: attach a CognitiveState for unified
         # cross-session cognition.  When None we build a fresh one;
         # the lifespan can wire a shared instance so multiple agents
@@ -392,6 +398,12 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             return False
         ev.set()
         return True
+
+    def set_hook_engine(self, engine: Any | None) -> None:
+        """Wave-32: attach the user-defined HookEngine. Lifecycle
+        dispatches (UserPromptSubmit / PreLLM / PreToolUse / Stop / …)
+        fan out through it. Setting None turns hooks off."""
+        self._hook_engine = engine
 
     # Skill invocation tracking is fully deterministic now:
     # SkillToolProvider routes registered skills as real ToolCalls, so
@@ -584,6 +596,57 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             events.append(event)
             await self._bus.publish(event)
             return event
+
+        # Wave-32: UserPromptSubmit hook dispatch. Runs BEFORE we
+        # announce the user message on the bus so a hook returning
+        # ``decision=deny`` can short-circuit the turn cleanly. A
+        # hook may also rewrite the user_message via
+        # ``updated_input`` (e.g. for redaction / templating).
+        if self._hook_engine is not None:
+            try:
+                from xmclaw.core.hooks import HookEvent as _HE
+                _hook_outcome = await self._hook_engine.dispatch(
+                    _HE.USER_PROMPT_SUBMIT,
+                    session_id=session_id, agent_id=self._agent_id,
+                    payload={
+                        "content": user_message,
+                        "images": list(user_images or ()),
+                        "correlation_id": user_correlation_id or "",
+                    },
+                )
+                if (
+                    isinstance(_hook_outcome.updated_input, str)
+                    and _hook_outcome.updated_input
+                ):
+                    user_message = _hook_outcome.updated_input
+                if not _hook_outcome.continue_:
+                    # Block the turn entirely. Surface as a system
+                    # note so the UI explains why nothing happened.
+                    # ``AgentTurnResult`` already imported at module top.
+                    await publish(
+                        EventType.ANTI_REQ_VIOLATION,
+                        {
+                            "rule": "user_prompt_submit_hook",
+                            "reason": _hook_outcome.block_reason,
+                            "hook_outputs": _hook_outcome.outputs,
+                        },
+                        correlation_id=user_correlation_id,
+                    )
+                    return AgentTurnResult(
+                        ok=False,
+                        text=(
+                            f"[Blocked by hook: {_hook_outcome.block_reason}]"
+                        ),
+                        hops=0,
+                        tool_calls=[],
+                        events=events,
+                        error="hook_blocked",
+                    )
+            except Exception as _exc:  # noqa: BLE001
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).warning(
+                    "user_prompt_submit_hook.dispatch_failed err=%s", _exc,
+                )
 
         # 1. Announce the user message. We propagate the client-supplied
         # correlation_id so the optimistic local-echo bubble in the web

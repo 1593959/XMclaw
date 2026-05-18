@@ -2354,6 +2354,44 @@ def make_lifespan(
                         agent._proactive_agent = proactive_agent
                     except Exception:  # noqa: BLE001
                         pass
+
+                # Wave-32 (2026-05-18): build the user-defined hook
+                # engine from ``config.hooks`` and attach it to the
+                # primary AgentLoop + hop_loop. Failure-isolated: a
+                # broken hook config logs a warning but doesn't
+                # crash daemon boot.
+                try:
+                    from xmclaw.core.hooks import (
+                        build_hook_engine_from_config,
+                    )
+                    _llm_for_hooks = getattr(agent, "_llm", None) if agent else None
+                    _agent_inter_for_hooks = getattr(
+                        _app.state, "agent_inter_tools", None,
+                    )
+                    _workspace_root = str(_HOME_PATH) if (
+                        '_HOME_PATH' in globals()
+                    ) else None
+                    hook_engine = build_hook_engine_from_config(
+                        config,
+                        llm_provider=_llm_for_hooks,
+                        agent_inter=_agent_inter_for_hooks,
+                        workspace_root=_workspace_root,
+                    )
+                    _app.state.hook_engine = hook_engine
+                    if agent is not None and hasattr(agent, "set_hook_engine"):
+                        agent.set_hook_engine(hook_engine)
+                        # hop_loop reads from agent._hook_engine via
+                        # ``getattr(self, "_hook_engine", None)``. The
+                        # set_hook_engine setter sets that attribute.
+                    log.info(
+                        "hook_engine.wired hooks=%d",
+                        len(hook_engine.specs()),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "hook_engine.wire_failed err=%s — hooks disabled",
+                        exc,
+                    )
                 log.info(
                     "proactive_agent.started triggers=%s",
                     proactive_agent.trigger_names(),

@@ -54,6 +54,48 @@ class HopLoopMixin:
         tool_timeout_s = float(
             getattr(self, "_tool_invoke_timeout_s", 180.0),
         )
+
+        # Wave-32: PreToolUse hook dispatch. Hooks can deny the tool
+        # call (returns a structured error result the LLM sees) or
+        # rewrite the args via ``updated_input``. Mirrors Claude
+        # Code's PreToolUse semantics.
+        _hook_engine = getattr(self, "_hook_engine", None)
+        if _hook_engine is not None:
+            try:
+                from xmclaw.core.hooks import HookEvent as _HE
+                _pre = await _hook_engine.dispatch(
+                    _HE.PRE_TOOL_USE,
+                    session_id=session_id,
+                    agent_id=getattr(self, "_agent_id", "main"),
+                    payload={
+                        "tool_name": call_with_sid.name,
+                        "args": dict(call_with_sid.args or {}),
+                        "call_id": call_with_sid.id,
+                    },
+                )
+                if (
+                    _pre.decision == "deny"
+                    or _pre.continue_ is False
+                ):
+                    return _ToolResult(
+                        call_id=call.id,
+                        ok=False,
+                        content=None,
+                        error=(
+                            f"[hook denied] {_pre.block_reason or ''}".strip()
+                        ),
+                    )
+                if isinstance(_pre.updated_input, dict):
+                    call_with_sid = _dc.replace(
+                        call_with_sid, args=_pre.updated_input,
+                    )
+            except Exception as _exc:  # noqa: BLE001
+                from xmclaw.utils.log import get_logger as _gl
+                _gl(__name__).warning(
+                    "pre_tool_use_hook.failed tool=%s err=%s",
+                    call.name, _exc,
+                )
+
         try:
             result = await _asyncio.wait_for(
                 effective_tools.invoke(call_with_sid),
@@ -131,6 +173,40 @@ class HopLoopMixin:
                     call.name, (result.error or "")[:120],
                 )
                 result = retry
+
+        # Wave-32: PostToolUse hook dispatch. Fire-and-forget on the
+        # decision-level — hooks at this stage observe + can emit
+        # system_message into the next LLM call but can't unwind a
+        # tool call that already ran. ``updated_input`` here rewrites
+        # the ToolResult content (e.g. for redaction).
+        if _hook_engine is not None:
+            try:
+                from xmclaw.core.hooks import HookEvent as _HE2
+                _post = await _hook_engine.dispatch(
+                    _HE2.POST_TOOL_USE,
+                    session_id=session_id,
+                    agent_id=getattr(self, "_agent_id", "main"),
+                    payload={
+                        "tool_name": call.name,
+                        "call_id": call.id,
+                        "ok": result.ok,
+                        "error": result.error or "",
+                    },
+                )
+                if (
+                    isinstance(_post.updated_input, (str, dict))
+                    and result.ok
+                ):
+                    result = _dc.replace(
+                        result, content=_post.updated_input,
+                    )
+            except Exception as _exc:  # noqa: BLE001
+                from xmclaw.utils.log import get_logger as _gl
+                _gl(__name__).warning(
+                    "post_tool_use_hook.failed tool=%s err=%s",
+                    call.name, _exc,
+                )
+
         return result
 
     async def _run_hop_loop(
