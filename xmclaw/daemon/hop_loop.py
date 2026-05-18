@@ -626,6 +626,37 @@ class HopLoopMixin:
             # Anti-req #6 cont'd: record the call's usage against the
             # budget right after we see it. check_budget on the NEXT
             # hop will block if we crossed the cap during this one.
+            #
+            # Wave-30 (2026-05-18): emit COST_TICK on EVERY LLM call,
+            # not just when a cost_tracker is wired. Pre-fix the dashboard
+            # cache-hit-rate widget was zero on every install that
+            # didn't set ``cost.track`` or ``cost.budget_usd`` (i.e.,
+            # the default install) — the cache stats live in the same
+            # event, and the event itself was gated behind cost
+            # tracking. Cost is now ``None`` in the payload when no
+            # tracker is wired; the UI handles that with the existing
+            # ``cost.cache_hit_rate != null`` check.
+            _cache_creation = int(getattr(
+                response, "cache_creation_input_tokens", 0,
+            ) or 0)
+            _cache_read = int(getattr(
+                response, "cache_read_input_tokens", 0,
+            ) or 0)
+            _tick_payload: dict[str, Any] = {
+                "hop": hop,
+                # B-107: surface per-call token counts so the Web UI
+                # can render a live "tokens this turn" widget without
+                # synthesising it from chunk events.
+                "prompt_tokens": response.prompt_tokens,
+                "completion_tokens": response.completion_tokens,
+                "model": getattr(llm, "model", "") or "",
+                # B-316: cache stats (Anthropic + Moonshot Kimi + Zhipu
+                # GLM; OpenAI proper reports cached_tokens via
+                # prompt_tokens_details which openai.py
+                # _extract_cache_tokens maps to cache_read).
+                "cache_creation_input_tokens": _cache_creation,
+                "cache_read_input_tokens": _cache_read,
+            }
             if self._cost_tracker is not None:
                 cost = self._cost_tracker.record(
                     provider=getattr(llm, "__class__", type(llm)).__name__,
@@ -633,33 +664,17 @@ class HopLoopMixin:
                     prompt_tokens=response.prompt_tokens,
                     completion_tokens=response.completion_tokens,
                 )
-                # B-316: surface Anthropic prompt-cache stats on
-                # COST_TICK so the UI can show hit-rate (and so users
-                # see whether B-245 is actually saving them money).
-                # Falls back to 0 for OpenAI / Kimi / etc. (no cache
-                # support yet) — UI distinguishes via numeric > 0.
-                _cache_creation = int(getattr(
-                    response, "cache_creation_input_tokens", 0,
-                ) or 0)
-                _cache_read = int(getattr(
-                    response, "cache_read_input_tokens", 0,
-                ) or 0)
-                await publish(EventType.COST_TICK, {
-                    "hop": hop,
+                _tick_payload.update({
                     "cost_usd": cost,
                     "spent_usd": self._cost_tracker.spent_usd,
                     "budget_usd": self._cost_tracker.budget_usd,
                     "remaining_usd": self._cost_tracker.remaining_usd,
-                    # B-107: surface per-call token counts so the Web UI
-                    # can render a live "tokens this turn" widget without
-                    # synthesising it from chunk events.
-                    "prompt_tokens": response.prompt_tokens,
-                    "completion_tokens": response.completion_tokens,
-                    "model": getattr(llm, "model", "") or "",
-                    # B-316: cache stats (Anthropic only; 0 elsewhere).
-                    "cache_creation_input_tokens": _cache_creation,
-                    "cache_read_input_tokens": _cache_read,
                 })
+            else:
+                # No tracker → no cost reporting, but cache stats are
+                # still meaningful for the Dashboard widget.
+                _tick_payload["cost_usd"] = None
+            await publish(EventType.COST_TICK, _tick_payload)
 
             # 3. If the model made tool calls, execute them and feed
             # results back into the conversation.
