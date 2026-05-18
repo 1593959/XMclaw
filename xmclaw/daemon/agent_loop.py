@@ -1675,15 +1675,55 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             f"Trust this over your training-time clock."
         )
 
-        # Sprint 1 Wave 2: autobiographical memory snapshot. Renders
-        # the structured "what I know about you" block (name / works
-        # on / likes / recent people / etc) so the agent has user
-        # context without doing a separate retrieval call.
+        # Sprint 1 Wave 2 + Wave-32+ active-recall mode:
+        # autobiographical memory snapshot. Renders the structured
+        # "what I know about you" block.
+        #
+        # The user asked for an active-recall mechanism: instead of
+        # force-feeding facts every turn, let the agent CHOOSE when
+        # to query via ``memory_search``. Two flag-gated knobs:
+        #   * ``memory.auto_inject.enabled`` (default true) — flip
+        #     false to replace the autobio block with a one-line
+        #     hint pointing the agent at memory_search.
+        #   * ``memory.auto_inject.max_facts`` (default 5, was 20)
+        #     — when injection is on, smaller cap leaves room +
+        #     pushes the LLM toward active recall for deeper context.
         autobio_block = ""
+        try:
+            from xmclaw.core.feature_flags import default_engine
+            _ff = default_engine()
+            _auto_inject_enabled = bool(_ff.variant(
+                "memory.auto_inject.enabled", default=True,
+            ))
+            _max_facts = int(_ff.variant(
+                "memory.auto_inject.max_facts", default=5,
+            ))
+        except Exception:  # noqa: BLE001
+            _auto_inject_enabled = True
+            _max_facts = 5
         try:
             autobio = getattr(self, "_autobio_memory", None)
             if autobio is not None:
-                autobio_block = autobio.summarize_for_prompt(max_facts=20) or ""
+                if _auto_inject_enabled:
+                    autobio_block = autobio.summarize_for_prompt(
+                        max_facts=max(1, min(50, _max_facts)),
+                    ) or ""
+                else:
+                    # Active-recall mode: don't inject facts. Tell
+                    # the agent the memory store exists + how to
+                    # query it. A 4-line nudge is enough — the
+                    # tool's own docstring describes parameters.
+                    autobio_block = (
+                        "## Memory recall mode: ACTIVE\n"
+                        "Long-term facts about the user are NOT auto-"
+                        "injected this turn. If you need biographical "
+                        "context (preferences / projects / people / "
+                        "credentials / past decisions), call "
+                        "``memory_search(query=...)`` with a specific "
+                        "phrase. Examples: ``memory_search('user "
+                        "preferences')``, ``memory_search('chen "
+                        "xiaoming')``, ``memory_search('陪玩店')``."
+                    )
         except Exception:  # noqa: BLE001 — never block a turn over memory
             autobio_block = ""
 

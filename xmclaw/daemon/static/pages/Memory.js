@@ -51,7 +51,7 @@ import { FactsV2Tab } from "./_panels/memory_facts_v2.js";
 // 光给我用"：把"记忆活动"放在最显眼的位置（agent 自己读写记忆的实时
 // 时间线），把"统一查询"降级成调试工具（顶部 banner 说明）。
 const TAB_LABELS = [
-  { id: "facts_v2", label: "L1 事实 (v2)", hint: "Wave 27 — Fact/Relation 结构化事实库。KeyInfoExtractor 自动抓取 URL/账号/数字目标；agent 自动注入到提示词" },
+  { id: "facts_v2", label: "L1 事实 (v2)", hint: "Wave 27 — Fact/Relation 结构化事实库。KeyInfoExtractor 自动抓取 URL/账号/数字目标。默认 top-5 自动注入；关掉 memory.auto_inject.enabled 切换为主动召回（agent 用 memory_search 查询）" },
   { id: "identity", label: "标识", hint: "SOUL / AGENTS / USER / MEMORY 等核心人格文件" },
   { id: "notes", label: "笔记", hint: "随手保存的主题笔记（~/.xmclaw/memory/*.md）" },
   { id: "journal", label: "日记", hint: "按日期归档的对话/事件记录" },

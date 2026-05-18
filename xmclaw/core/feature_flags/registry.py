@@ -124,6 +124,36 @@ BUILTIN_FLAGS: list[FeatureFlag] = [
     # confidence ones (conf 0.8+) the user invariably approved
     # anyway. Default ON @ 0.8 so the UI surface stays clean for
     # the genuinely-uncertain ones (conf < 0.8 still need review).
+    # Wave-32+ memory injection policy. The autobio "what I remember
+    # about you" block is auto-prepended to the agent's system
+    # prompt every turn. User asked for active recall instead: the
+    # agent decides what to look up via memory_search, rather than
+    # being force-fed all top facts. Default True keeps the
+    # historical behavior so existing users don't lose context
+    # silently. Flip false → block disappears, replaced by a hint
+    # pointing the agent at memory_search.
+    FeatureFlag(
+        name="memory.auto_inject.enabled",
+        default=True,
+        description=(
+            "When true, the agent's system prompt automatically"
+            " carries an autobio snapshot (~top user facts +"
+            " recent people + active projects). False → the"
+            " agent must call memory_search itself to retrieve"
+            " context. Active-recall mode is honest but slower"
+            " on the first turn of each session."
+        ),
+    ),
+    FeatureFlag(
+        name="memory.auto_inject.max_facts",
+        default=5,
+        description=(
+            "Cap on the per-turn injected autobio fact count."
+            " Lowered from the historical 20 to give the LLM"
+            " room + push it toward active recall via"
+            " memory_search for deeper context."
+        ),
+    ),
     # Wave-32+ feedback closure: cognitive_daemon Layer-1 surface
     # judgment. When on, every autonomous task completion gets a
     # cheap LLM call ("should the user be notified?"); high-signal
