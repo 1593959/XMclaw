@@ -244,6 +244,19 @@ class EntityStore:
         # Used to clean up the reverse index on fact deletion.
         self._fact_to_entities: dict[str, set[str]] = {}
         self._lock = threading.RLock()
+        # Wave-32+ Chunk 10 auto-save: when enabled, every write
+        # schedules a debounced flush to ``_autosave_path``. Saves
+        # the operator from having to manually click 🧱 实体索引 to
+        # persist newly-written facts.
+        #
+        # Disabled by default — tests + plain in-memory consumers
+        # shouldn't pay disk I/O cost. ``enable_autosave(path)``
+        # turns it on; the singleton accessor enables it for the
+        # process default path.
+        self._autosave_path: "Path | None" = None
+        self._autosave_dirty: bool = False
+        self._autosave_timer: "threading.Timer | None" = None
+        self._autosave_debounce_s: float = 5.0
 
     # ── Register ────────────────────────────────────────────────────
 
@@ -279,6 +292,7 @@ class EntityStore:
                 ent.mentions_count += 1
             self._entity_to_facts.setdefault(eid, set()).add(fact_id)
             self._fact_to_entities.setdefault(fact_id, set()).add(eid)
+        self._mark_dirty()
         return eid
 
     def register_fact_text(self, fact_id: str, text: str) -> list[str]:
@@ -352,6 +366,7 @@ class EntityStore:
                     # the reverse-index entry.
                     self._entity_to_facts.pop(eid, None)
                     self._entities.pop(eid, None)
+        self._mark_dirty()
 
     def stats(self) -> dict[str, int]:
         with self._lock:
@@ -474,6 +489,62 @@ class EntityStore:
             return 0
         return self.load_dict(data)
 
+    def enable_autosave(
+        self, path: "Path", *, debounce_s: float = 5.0,
+    ) -> None:
+        """Wave-32+ Chunk 10: turn on debounced auto-save to ``path``.
+        Subsequent writes mark the store dirty + schedule a flush
+        ``debounce_s`` seconds out. Rapid bursts of writes (a
+        100-message session) coalesce into a single disk write."""
+        with self._lock:
+            self._autosave_path = path
+            self._autosave_debounce_s = max(0.5, float(debounce_s))
+
+    def disable_autosave(self) -> None:
+        """Stop auto-saving. Existing pending timer is cancelled —
+        any unflushed changes stay in memory only until the next
+        explicit save_to."""
+        with self._lock:
+            self._autosave_path = None
+            if self._autosave_timer is not None:
+                self._autosave_timer.cancel()
+                self._autosave_timer = None
+
+    def _mark_dirty(self) -> None:
+        """Internal: called from every mutating method. Sets the
+        dirty flag + ensures a flush timer is scheduled. Idempotent
+        — if a timer is already pending, no-op."""
+        if self._autosave_path is None:
+            return
+        self._autosave_dirty = True
+        if self._autosave_timer is not None:
+            return
+        # Schedule a one-shot flush. threading.Timer fires off-thread
+        # so we don't block the call site; the flush body re-acquires
+        # the lock to read state.
+        self._autosave_timer = threading.Timer(
+            self._autosave_debounce_s, self._autosave_flush,
+        )
+        self._autosave_timer.daemon = True
+        self._autosave_timer.start()
+
+    def _autosave_flush(self) -> None:
+        """Internal: fires when the debounce timer expires.
+        Snapshots state + writes. Never raises."""
+        with self._lock:
+            path = self._autosave_path
+            dirty = self._autosave_dirty
+            self._autosave_timer = None
+            if not dirty or path is None:
+                return
+            self._autosave_dirty = False
+        # save_to acquires the lock again internally; do it outside
+        # the with-block so we don't hold the lock during disk I/O.
+        try:
+            self.save_to(path)
+        except Exception:  # noqa: BLE001
+            pass
+
     async def rebuild_from_facts(self, vec_backend: "Any") -> dict:
         """One-shot backfill: scan every fact in ``vec_backend`` and
         re-register its text. Use after upgrading from a pre-entity
@@ -534,14 +605,25 @@ def get_entity_store() -> EntityStore:
     On first build, attempts to load the persisted index from
     :func:`default_entity_store_path`. Failures (missing file,
     parse error, version mismatch) silently fall back to an empty
-    store — the lifespan's backfill pass repopulates."""
+    store — the lifespan's backfill pass repopulates.
+
+    Wave-32+ Chunk 10: also enables auto-save (5s debounce) to the
+    same path so every fact write durably reaches disk without the
+    operator having to click 🧱 实体索引. Test paths build their own
+    EntityStore via ``EntityStore()`` directly and don't get auto-
+    save."""
     global _default_store
     if _default_store is None:
         with _default_lock:
             if _default_store is None:
                 _default_store = EntityStore()
+                path = default_entity_store_path()
                 try:
-                    _default_store.load_from(default_entity_store_path())
+                    _default_store.load_from(path)
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    _default_store.enable_autosave(path)
                 except Exception:  # noqa: BLE001
                     pass
     return _default_store

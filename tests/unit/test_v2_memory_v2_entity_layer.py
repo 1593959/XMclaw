@@ -296,6 +296,89 @@ async def test_rebuild_from_facts_repopulates_index() -> None:
     assert "f2" in store.co_mentioned_facts("f1")
 
 
+def test_autosave_writes_after_debounce(tmp_path) -> None:
+    """Enable auto-save → write a fact → wait past the debounce →
+    file exists with the data. Pin the contract: writes durably
+    reach disk without a manual save_to() call.
+
+    Poll-with-timeout instead of fixed-sleep because Timer threads
+    on Windows under pytest sometimes get scheduled later than the
+    nominal debounce — fixed sleep produced flaky failures."""
+    import time
+    from xmclaw.memory.v2.entity import EntityStore
+    path = tmp_path / "entity_index.json"
+    s = EntityStore()
+    s.enable_autosave(path, debounce_s=0.2)
+    s.register_fact_text("f1", "admin shared identifier")
+    assert not path.exists(), "should not have flushed yet (debounce)"
+    # Poll for up to 3 seconds — far longer than the 0.2s debounce,
+    # but generous for slow CI / loaded systems.
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        if path.exists():
+            break
+        time.sleep(0.1)
+    assert path.exists(), "auto-save should have fired within 3s"
+    # Reload — verify the data is there.
+    s2 = EntityStore()
+    assert s2.load_from(path) > 0
+
+
+def test_autosave_coalesces_burst(tmp_path) -> None:
+    """Rapid writes should NOT trigger one disk write per call —
+    they should coalesce into a single flush at debounce expiry."""
+    import time
+    from xmclaw.memory.v2.entity import EntityStore
+    path = tmp_path / "entity_index.json"
+    s = EntityStore()
+    s.enable_autosave(path, debounce_s=0.3)
+    # Burst of 10 writes inside the debounce window.
+    for i in range(10):
+        s.register_fact_text(f"f{i}", f"fact {i} mentioning shared_token_abc")
+    # File shouldn't exist yet — debounce hasn't expired.
+    assert not path.exists()
+    # Poll for the flush — fixed-sleep is racy on Windows.
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        if path.exists():
+            break
+        time.sleep(0.1)
+    assert path.exists()
+    # All 10 facts present in the saved data.
+    s2 = EntityStore()
+    s2.load_from(path)
+    assert len(s2._fact_to_entities) == 10
+
+
+def test_autosave_disabled_skips_writes(tmp_path) -> None:
+    """With auto-save disabled (default), writes should NOT touch
+    disk. Pin the test-isolation contract."""
+    import time
+    from xmclaw.memory.v2.entity import EntityStore
+    path = tmp_path / "entity_index.json"
+    s = EntityStore()  # auto-save NOT enabled
+    s.register_fact_text("f1", "anything")
+    time.sleep(0.1)
+    assert not path.exists()
+
+
+def test_autosave_disable_cancels_pending_flush(tmp_path) -> None:
+    """disable_autosave should cancel any in-flight timer so a
+    bouncing service (enable / write / immediately disable / shutdown)
+    doesn't leak a delayed write to disk after teardown."""
+    import time
+    from xmclaw.memory.v2.entity import EntityStore
+    path = tmp_path / "entity_index.json"
+    s = EntityStore()
+    s.enable_autosave(path, debounce_s=0.3)
+    s.register_fact_text("f1", "data")
+    # Immediately disable before the timer fires.
+    s.disable_autosave()
+    time.sleep(0.5)
+    # No write reached disk.
+    assert not path.exists()
+
+
 @pytest.mark.asyncio
 async def test_rebuild_clears_old_state() -> None:
     """Rebuild starts from a CLEAN slate so callers can't accumulate
