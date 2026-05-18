@@ -181,13 +181,16 @@ class AnthropicLLM(LLMProvider):
         # cache_control so it doesn't poison the cached prefix.
         #
         # Anthropic 4-breakpoint budget: each ``cache_control`` token
-        # in the request counts as one breakpoint. The system path
-        # uses at most N-1 breakpoints (where N = parts after split);
-        # the tools array uses one more. With N=3 system parts
-        # (frozen / autobio / time-tail) we use 2 + 1 = 3, leaving 1
-        # spare for a future history-prefix breakpoint.
+        # in the request counts as one breakpoint. Current usage:
+        #   * 2 in system (frozen / autobio, time-tail unmarked)
+        #   * 1 in tools (last stable tool, before prefilter skills)
+        #   * 1 in messages (last message — added by
+        #     ``_mark_history_cache_breakpoint`` below)
+        # Total = 4, exactly at budget. This covers prior history
+        # so a 28K-token chat doesn't re-bill its prefix every hop.
         system_text = "\n\n".join(system_parts).strip()
         if not system_text:
+            AnthropicLLM._mark_history_cache_breakpoint(converted)
             return "", converted
 
         from xmclaw.providers.llm.base import CACHE_BREAKPOINT_MARKER
@@ -206,6 +209,7 @@ class AnthropicLLM(LLMProvider):
                     if i < len(raw_parts) - 1:
                         block["cache_control"] = {"type": "ephemeral"}
                     system_blocks.append(block)
+                AnthropicLLM._mark_history_cache_breakpoint(converted)
                 return system_blocks, converted
             # Fewer than 2 effective parts after strip — fall through.
             system_text = raw_parts[0] if raw_parts else system_text
@@ -215,7 +219,60 @@ class AnthropicLLM(LLMProvider):
             "text": system_text,
             "cache_control": {"type": "ephemeral"},
         }]
+        AnthropicLLM._mark_history_cache_breakpoint(converted)
         return system_blocks, converted
+
+    @staticmethod
+    def _mark_history_cache_breakpoint(
+        converted: list[dict[str, Any]],
+    ) -> None:
+        """Wave-30 (2026-05-18): add a cache_control breakpoint to the
+        LAST message so the whole ``prior history`` prefix is cached.
+
+        Pre-fix: cache_control was only on system + tools (~10K tokens).
+        prior history (~28K tokens on a 5-turn session) was re-sent
+        in full on every LLM call. Anthropic does NOT auto-cache
+        messages — it only caches positions explicitly marked with
+        cache_control. So the bulk of every request was billed at
+        full input rate.
+
+        Anthropic budgets 4 cache breakpoints per request. We use 3
+        on system + tools (system frozen, system autobio, tools
+        boundary); this fourth one covers the entire message
+        history up through the most recent turn.
+
+        Marker mechanics: cache_control on a content block means
+        "the cumulative prefix INCLUDING this block is potentially
+        cached." So marking the LAST message captures everything
+        before it as a cache write on the first hop, and every
+        subsequent hop (whose prefix is the previous hop's
+        messages + new assistant/tool entries) gets a partial
+        cache hit on the unchanged prefix.
+
+        Implementation note: cache_control rides on a content
+        BLOCK, not on the message envelope. When the message's
+        content is a plain string we wrap it; when it's already
+        a block list we tag the last block.
+        """
+        if not converted:
+            return
+        last = converted[-1]
+        content = last.get("content")
+        if isinstance(content, str):
+            if not content:
+                return  # empty content can't carry cache_control
+            last["content"] = [{
+                "type": "text",
+                "text": content,
+                "cache_control": {"type": "ephemeral"},
+            }]
+            return
+        if isinstance(content, list) and content:
+            last_block = content[-1]
+            if isinstance(last_block, dict):
+                # tool_result / image / text — Anthropic accepts
+                # cache_control on any of them.
+                last_block["cache_control"] = {"type": "ephemeral"}
 
     @staticmethod
     def _tools_to_anthropic(tools: list[ToolSpec] | None) -> list[dict[str, Any]]:

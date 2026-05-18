@@ -145,6 +145,61 @@ def test_tools_cache_breakpoint_falls_back_to_last_when_no_skills() -> None:
     assert "cache_control" not in out[0]
 
 
+def test_history_cache_breakpoint_marks_last_message() -> None:
+    """Wave-30 follow-up (2026-05-18): the 4th cache breakpoint goes
+    on the LAST message so prior history is cached too. Pre-fix a
+    multi-turn chat re-billed ~28K tokens of prior history on every
+    LLM call because Anthropic does NOT auto-cache messages — only
+    positions explicitly marked with cache_control. Verified
+    empirically against Kimi K2.6 (Anthropic-compat): a 2611-token
+    conversation now bills 0 fresh input + 2611 cache_read on the
+    second call within the cache window."""
+    msgs = [
+        Message(role="system", content="be terse"),
+        Message(role="user", content="hi"),
+        Message(role="assistant", content="hello"),
+        Message(role="user", content="continue"),
+    ]
+    _, converted = AnthropicLLM._messages_to_anthropic(msgs)
+    assert len(converted) == 3
+    # First two messages keep plain-string content (anti-req #11
+    # non-interference — match what a naked SDK caller would send).
+    assert converted[0]["content"] == "hi"
+    assert converted[1]["content"] == "hello"
+    # Last message's content is now a block list with cache_control.
+    last = converted[-1]
+    assert isinstance(last["content"], list)
+    assert last["content"][0]["text"] == "continue"
+    assert last["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_history_cache_breakpoint_tags_existing_block_content() -> None:
+    """When the last message already has block-shape content (tool_use
+    or image attachment), tag the trailing block in place rather than
+    wrapping anew."""
+    tc = ToolCall(name="read", args={}, provenance="synthetic", id="t1")
+    msgs = [
+        Message(role="user", content="hi"),
+        Message(role="assistant", content="checking", tool_calls=(tc,)),
+    ]
+    _, converted = AnthropicLLM._messages_to_anthropic(msgs)
+    last = converted[-1]
+    assert isinstance(last["content"], list)
+    # text block first, tool_use second → tool_use is the trailing
+    # block and gets the cache_control marker.
+    assert last["content"][-1]["type"] == "tool_use"
+    assert last["content"][-1].get("cache_control") == {"type": "ephemeral"}
+
+
+def test_history_cache_breakpoint_skips_empty_messages() -> None:
+    """If the message list is empty, no marker work. (Pre-fix would
+    have IndexError'd on converted[-1].)"""
+    _, converted = AnthropicLLM._messages_to_anthropic([
+        Message(role="system", content="x"),
+    ])
+    assert converted == []
+
+
 # ── properties ────────────────────────────────────────────────────────────
 
 def test_tool_call_shape_is_anthropic_native() -> None:
