@@ -1855,6 +1855,19 @@ def create_app(
                 if frame.get("type") == "user":
                     content = str(frame.get("content", ""))
                     ultrathink = bool(frame.get("ultrathink", False))
+                    # Wave-32+: frontend Plan/Act toggle. The composer
+                    # sends ``plan_mode: true`` when the user has the
+                    # Plan chip lit. Apply it directly to the process-
+                    # level plan-mode set so any tool call this turn
+                    # makes is gated. ``False`` / missing clears.
+                    plan_mode_active = bool(frame.get("plan_mode", False))
+                    try:
+                        from xmclaw.providers.tool.builtin_planmode import (
+                            set_plan_mode as _set_plan_mode,
+                        )
+                        _set_plan_mode(session_id, plan_mode_active)
+                    except Exception:  # noqa: BLE001 — never block a turn on this
+                        pass
                     user_corr = frame.get("correlation_id")
                     if user_corr is not None and not isinstance(user_corr, str):
                         user_corr = None

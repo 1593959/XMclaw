@@ -56,7 +56,9 @@ from xmclaw.providers.tool._specs import (  # noqa: F401
     _ASK_USER_QUESTION_SPEC as _ASK_USER_QUESTION_SPEC,
     _BASH_SPEC as _BASH_SPEC,
     _CURRICULUM_LIST_SPEC as _CURRICULUM_LIST_SPEC,
+    _ENTER_PLAN_MODE_SPEC as _ENTER_PLAN_MODE_SPEC,
     _ENTER_WORKTREE_SPEC as _ENTER_WORKTREE_SPEC,
+    _EXIT_PLAN_MODE_SPEC as _EXIT_PLAN_MODE_SPEC,
     _EXIT_WORKTREE_SPEC as _EXIT_WORKTREE_SPEC,
     _FILE_DELETE_SPEC as _FILE_DELETE_SPEC,
     _FILE_READ_SPEC as _FILE_READ_SPEC,
@@ -105,6 +107,10 @@ from xmclaw.providers.tool.builtin_db import BuiltinToolsDbMixin
 from xmclaw.providers.tool.builtin_fs import BuiltinToolsFsMixin
 from xmclaw.providers.tool.builtin_memory import BuiltinToolsMemoryMixin
 from xmclaw.providers.tool.builtin_persona import BuiltinToolsPersonaMixin
+from xmclaw.providers.tool.builtin_planmode import (
+    BuiltinToolsPlanModeMixin,
+    is_blocked_by_plan_mode,
+)
 from xmclaw.providers.tool.builtin_shell import BuiltinToolsShellMixin
 from xmclaw.providers.tool.builtin_user import BuiltinToolsUserMixin
 from xmclaw.providers.tool.builtin_voice import BuiltinToolsVoiceMixin
@@ -143,6 +149,7 @@ class BuiltinTools(
     BuiltinToolsFsMixin,
     BuiltinToolsMemoryMixin,
     BuiltinToolsPersonaMixin,
+    BuiltinToolsPlanModeMixin,
     BuiltinToolsShellMixin,
     BuiltinToolsUserMixin,
     BuiltinToolsVoiceMixin,
@@ -398,6 +405,10 @@ class BuiltinTools(
         # advertised; ``enter_worktree`` itself errors out cleanly
         # when not in a git repo (so test contexts aren't surprised).
         specs.extend([_ENTER_WORKTREE_SPEC, _EXIT_WORKTREE_SPEC])
+        # Wave-32+ (2026-05-18): plan-mode tools. Always advertised —
+        # plan mode is a free-code-parity workflow primitive the LLM
+        # should be able to opt into without operator setup.
+        specs.extend([_ENTER_PLAN_MODE_SPEC, _EXIT_PLAN_MODE_SPEC])
         # B-52: memory_compact triggers an immediate Auto-Dream pass.
         # Always advertised; the handler refuses cleanly when no LLM
         # is wired (which is the only failure mode).
@@ -420,6 +431,15 @@ class BuiltinTools(
 
     async def invoke(self, call: ToolCall) -> ToolResult:
         t0 = time.perf_counter()
+        # Wave-32+ plan mode gate: mutating tools refuse cleanly while
+        # the session is in plan mode. Sits above the dispatch ladder
+        # so each handler doesn't have to re-implement the check.
+        if is_blocked_by_plan_mode(call.name):
+            return _fail(
+                call, t0,
+                f"plan mode is active — {call.name!r} is disabled "
+                "until you call ``exit_plan_mode`` with a concrete plan",
+            )
         try:
             if call.name == "file_read":
                 return await self._file_read(call, t0)
@@ -523,6 +543,10 @@ class BuiltinTools(
                 return await self._enter_worktree(call, t0)
             if call.name == "exit_worktree":
                 return await self._exit_worktree(call, t0)
+            if call.name == "enter_plan_mode":
+                return await self._enter_plan_mode(call, t0)
+            if call.name == "exit_plan_mode":
+                return await self._exit_plan_mode(call, t0)
             # B-388: voice tools. Each is gated on its provider being
             # wired; without the provider the tool returns a clear
             # "not configured" error pointing at the install hint.

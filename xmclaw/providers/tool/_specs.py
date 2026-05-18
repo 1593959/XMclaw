@@ -1465,3 +1465,75 @@ _VOICE_SYNTHESIZE_SPEC = ToolSpec(
         "required": ["text"],
     },
 )
+
+
+# Wave-32+ (2026-05-18): plan-mode tools — ports the free-code
+# EnterPlanMode / ExitPlanMode pattern. Plan mode is a SESSION-LEVEL
+# state that lets the agent explicitly switch into "explore + design,
+# don't write yet" before tackling non-trivial implementation work.
+# While active, mutating tools (file_write, apply_patch, file_delete,
+# bash) refuse cleanly with a "we're in plan mode" message.
+
+_ENTER_PLAN_MODE_SPEC = ToolSpec(
+    name="enter_plan_mode",
+    description=(
+        "Switch this session into PLAN MODE before tackling a "
+        "non-trivial implementation. While active, read-only tools "
+        "(file_read, glob_files, grep_files, web_search, etc.) keep "
+        "working; mutating tools (file_write, apply_patch, "
+        "file_delete, bash) REFUSE with a clear 'plan mode active' "
+        "message. Use ``exit_plan_mode`` once you have a concrete "
+        "plan to present.\n\n"
+        "When to use:\n"
+        "  • Multi-file refactors where the wrong approach wastes "
+        "    significant effort.\n"
+        "  • Architectural choices (auth scheme, state mgmt, cache "
+        "    backend) where the user should approve direction.\n"
+        "  • Tasks with unclear requirements that need codebase "
+        "    exploration first.\n"
+        "  • Anytime you'd otherwise call ``ask_user_question`` "
+        "    several times in a row to clarify approach — plan "
+        "    mode is a cleaner container for that flow.\n\n"
+        "When NOT to use:\n"
+        "  • Single-line typo / one-file bugfixes.\n"
+        "  • Read-only research questions.\n"
+        "  • The user said \"just do X\" — that's a directive, not "
+        "    an invitation to plan."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {},
+    },
+)
+
+
+_EXIT_PLAN_MODE_SPEC = ToolSpec(
+    name="exit_plan_mode",
+    description=(
+        "Leave plan mode and present the implementation plan you "
+        "drafted while in it. Mutating tools become available "
+        "again after this call (subject to normal permission "
+        "checks). The ``plan`` you submit is shown to the user "
+        "verbatim — write it as the user will read it, with "
+        "markdown structure and concrete file paths.\n\n"
+        "If you discovered the task is simpler than expected and "
+        "no real plan is needed, call this anyway with a one-line "
+        "plan — that's the right way to leave plan mode cleanly."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "plan": {
+                "type": "string",
+                "description": (
+                    "Markdown-formatted implementation plan. Should "
+                    "include: (1) summary of what you'll do, (2) "
+                    "ordered list of concrete steps, (3) files that "
+                    "will be touched, (4) anything the user should "
+                    "approve before you start."
+                ),
+            },
+        },
+        "required": ["plan"],
+    },
+)

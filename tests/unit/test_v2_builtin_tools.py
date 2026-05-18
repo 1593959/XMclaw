@@ -67,6 +67,7 @@ def test_list_tools_schemas_well_formed() -> None:
     zero_arg = {
         "todo_read", "agent_status", "memory_compact",
         "enter_worktree", "exit_worktree",
+        "enter_plan_mode",  # Wave-32+ — no-arg flag flip
         "journal_recall",
         "recall_user_preferences",  # Epic #24 Phase 4.2
     }
