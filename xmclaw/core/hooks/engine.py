@@ -143,7 +143,20 @@ class HookEngine:
 
         Hot path on PreLLM / PreToolUse — keep cheap when no hooks
         match (the matching loop is the only cost).
+
+        Wave-32+: respects the ``hooks.enabled`` feature flag.
+        When operator runtime-disables it (``XMC_FF_HOOKS_ENABLED=
+        false`` or persisted), every dispatch becomes an instant
+        no-op. Kill-switch for incident response — a misbehaving
+        hook can be silenced without redeploying or editing
+        config.json.
         """
+        try:
+            from xmclaw.core.feature_flags import default_engine
+            if not default_engine().is_enabled("hooks.enabled", default=True):
+                return DispatchOutcome(event=event)
+        except Exception:  # noqa: BLE001 — never let flags break dispatch
+            pass
         payload = payload or {}
         matching: list[HookSpec] = [
             s for s in self._specs

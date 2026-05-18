@@ -633,6 +633,13 @@ def create_app(
     from xmclaw.daemon.routers import approvals as _approvals_router
     app.include_router(_approvals_router.router)
 
+    # Wave-32+ (2026-05-18): feature-flag REST surface. Lets the
+    # operator inspect + flip flags from the Web UI without a
+    # daemon restart. Backed by the FeatureFlagEngine module-level
+    # singleton (see xmclaw.core.feature_flags).
+    from xmclaw.daemon.routers import features as _features_router
+    app.include_router(_features_router.router)
+
     app.state.agents = agents_manager
 
     if agent is None and config is not None:
