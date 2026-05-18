@@ -188,6 +188,14 @@ class BuiltinToolsFsMixin:
             return _fail(call, t0, f"read failed: {exc}")
         if stat.st_size > max_bytes:
             content += f"\n\n[truncated, {stat.st_size} total bytes; pass max_bytes or offset/limit for more]"
+        # Wave-32+ MagicDocs: if this file starts with the magic
+        # header, register it for background auto-updates. Fail-soft:
+        # never block a file_read on the magic-docs side-channel.
+        try:
+            from xmclaw.cognition.magic_docs import maybe_register
+            maybe_register(str(path), content)
+        except Exception:  # noqa: BLE001
+            pass
         return ToolResult(
             call_id=call.id, ok=True, content=content,
             side_effects=(),

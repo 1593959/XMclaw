@@ -1507,6 +1507,45 @@ _ENTER_PLAN_MODE_SPEC = ToolSpec(
 )
 
 
+_SET_OUTPUT_STYLE_SPEC = ToolSpec(
+    name="set_output_style",
+    description=(
+        "Switch the conversation's OUTPUT STYLE — the tone and "
+        "behavior preset the agent uses when explaining and "
+        "delivering work. Persists for the session until called "
+        "again with a different style or ``'default'``.\n\n"
+        "Built-in styles:\n"
+        "  • ``default`` — base behavior, no extra style fragment.\n"
+        "  • ``Explanatory`` — adds short ★ Insight boxes around "
+        "    code changes so the user understands *why* the agent "
+        "    made each choice.\n"
+        "  • ``Learning`` — agent inserts TODO(human) stubs and "
+        "    explicitly asks the user to fill them in, optimizing "
+        "    for hands-on practice.\n\n"
+        "Operators can add custom styles by dropping markdown files "
+        "into ``~/.xmclaw/output_styles/<name>.md`` (each file's "
+        "name becomes the style name, contents become the style "
+        "prompt).\n\n"
+        "Use this proactively if the user signals what they want — "
+        "e.g. \"explain as you go\" → Explanatory; \"teach me, let "
+        "me do parts\" → Learning."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": (
+                    "Style name. Use ``default`` to clear; use one "
+                    "of the built-ins or a custom style file's name."
+                ),
+            },
+        },
+        "required": ["name"],
+    },
+)
+
+
 _EXIT_PLAN_MODE_SPEC = ToolSpec(
     name="exit_plan_mode",
     description=(

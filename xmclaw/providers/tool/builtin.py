@@ -77,6 +77,7 @@ from xmclaw.providers.tool._specs import (  # noqa: F401
     _RECALL_USER_PREFS_SPEC as _RECALL_USER_PREFS_SPEC,
     _REMEMBER_SPEC as _REMEMBER_SPEC,
     _SCHEDULE_FOLLOWUP_SPEC as _SCHEDULE_FOLLOWUP_SPEC,
+    _SET_OUTPUT_STYLE_SPEC as _SET_OUTPUT_STYLE_SPEC,
     _SQLITE_QUERY_SPEC as _SQLITE_QUERY_SPEC,
     _TODO_READ_SPEC as _TODO_READ_SPEC,
     _TODO_WRITE_SPEC as _TODO_WRITE_SPEC,
@@ -409,6 +410,9 @@ class BuiltinTools(
         # plan mode is a free-code-parity workflow primitive the LLM
         # should be able to opt into without operator setup.
         specs.extend([_ENTER_PLAN_MODE_SPEC, _EXIT_PLAN_MODE_SPEC])
+        # Wave-32+ OutputStyles tool — agent can switch tone presets
+        # based on user signals ("explain as you go" → Explanatory).
+        specs.append(_SET_OUTPUT_STYLE_SPEC)
         # B-52: memory_compact triggers an immediate Auto-Dream pass.
         # Always advertised; the handler refuses cleanly when no LLM
         # is wired (which is the only failure mode).
@@ -547,6 +551,8 @@ class BuiltinTools(
                 return await self._enter_plan_mode(call, t0)
             if call.name == "exit_plan_mode":
                 return await self._exit_plan_mode(call, t0)
+            if call.name == "set_output_style":
+                return await self._set_output_style(call, t0)
             # B-388: voice tools. Each is gated on its provider being
             # wired; without the provider the tool returns a clear
             # "not configured" error pointing at the install hint.
@@ -575,6 +581,50 @@ class BuiltinTools(
             return _fail(call, t0, f"file not found: {exc}")
         except Exception as exc:  # noqa: BLE001
             return _fail(call, t0, f"{type(exc).__name__}: {exc}")
+
+    async def _set_output_style(self, call: ToolCall, t0: float) -> ToolResult:
+        """Wave-32+ — switch the session's output style.
+
+        Reads the session_id contextvar (set by AgentLoop.run_turn)
+        and updates the process-level session→style map. Validates
+        the name against the merged built-in + on-disk registry —
+        unknown names return an error listing the valid choices so
+        the LLM can self-correct.
+        """
+        from xmclaw.core.agent_context import get_current_session_id
+        from xmclaw.core.output_styles import (
+            list_styles,
+            set_session_style,
+        )
+        from xmclaw.core.ir import ToolResult as _TR
+
+        name = call.args.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return _fail(call, t0, "set_output_style requires a non-empty ``name``")
+        sid = get_current_session_id()
+        if sid is None:
+            return _fail(
+                call, t0,
+                "set_output_style can only be called from inside a "
+                "live session (no session_id in agent context)",
+            )
+        valid = {s.name for s in list_styles()}
+        if name not in valid:
+            return _fail(
+                call, t0,
+                f"unknown output_style {name!r}; valid: {sorted(valid)}",
+            )
+        set_session_style(sid, name)
+        return _TR(
+            call_id=call.id, ok=True,
+            content=(
+                f"Output style switched to {name!r}. Takes effect on "
+                f"the next assistant turn — your CURRENT response is "
+                f"still in the previous style."
+            ),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
     def _fs_lock(self, path: Path) -> asyncio.Lock:
         """B-63 / B-65: per-path async lock for read-modify-write.
 

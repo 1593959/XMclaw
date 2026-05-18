@@ -535,7 +535,7 @@ class _HangingLLM(LLMProvider):
 
     async def complete_streaming(  # noqa: D401, ANN001
         self, messages, tools=None, *, on_chunk=None,
-        on_thinking_chunk=None, cancel=None,
+        on_thinking_chunk=None, on_tool_block=None, cancel=None,
     ):
         await asyncio.Event().wait()  # blocks until cancelled
 

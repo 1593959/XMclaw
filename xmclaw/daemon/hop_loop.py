@@ -471,6 +471,21 @@ class HopLoopMixin:
                 _B230_MAX_CONTINUES = 3
                 _b230_continue_count = 0
                 _b230_acc_content = ""
+                # Wave-32+ Speculation: build a per-hop cache that
+                # the on_tool_block callback fills with prefetched
+                # read-only tool tasks. Phase B below checks the
+                # cache before dispatching, so any task that was
+                # already started during streaming is awaited
+                # instead of re-invoked.
+                from xmclaw.cognition.speculation import (
+                    SpeculationCache,
+                    make_speculation_callback,
+                )
+                _spec_cache = SpeculationCache()
+                _spec_invoke = lambda tc: self._invoke_single_tool(  # noqa: E731
+                    tc, effective_tools, session_id,
+                )
+                _on_tool_block = make_speculation_callback(_spec_cache, _spec_invoke)
                 while True:  # outer = B-230 auto-continue
                     while True:  # inner = B-227 classify-and-retry
                         try:
@@ -478,6 +493,7 @@ class HopLoopMixin:
                                 llm.complete_streaming(
                                     messages, tools=tool_specs, on_chunk=_emit_chunk,
                                     on_thinking_chunk=_emit_thinking_chunk,
+                                    on_tool_block=_on_tool_block,
                                     cancel=cancel_event,
                                 ),
                                 timeout=self._llm_timeout_s,
@@ -788,12 +804,27 @@ class HopLoopMixin:
                         "call_id": call.id, "name": call.name,
                     })
 
-                # Phase B: invoke all tools in parallel.
+                # Phase B: invoke all tools in parallel. Wave-32+:
+                # check the speculation cache first — a read-only
+                # tool that was already started during streaming
+                # gets awaited here instead of re-invoked.
+                from xmclaw.cognition.speculation import maybe_await_cached
                 _invoke_tasks = [
-                    self._invoke_single_tool(call, effective_tools, session_id)
+                    maybe_await_cached(
+                        _spec_cache, call,
+                        lambda c=call: self._invoke_single_tool(
+                            c, effective_tools, session_id,
+                        ),
+                    )
                     for call in response.tool_calls
                 ]
                 _invoke_results = await asyncio.gather(*_invoke_tasks)
+                # Cancel any speculated tools whose ToolCall didn't
+                # end up in the response — defensive cleanup, should
+                # be rare (LLM emitting then retracting a tool_use is
+                # not part of the Anthropic protocol but the SDK has
+                # bugs).
+                _spec_cache.cancel_remaining()
 
                 # Phase C: process results in original order (serial).
                 _had_success_this_hop = False

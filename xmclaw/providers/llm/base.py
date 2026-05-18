@@ -32,6 +32,13 @@ OnChunkCallback = Callable[[str], Awaitable[None]]
 # Same signature as OnChunkCallback so callers can wire either or
 # both. Distinct alias to make the call-site intent obvious.
 OnThinkingChunkCallback = Callable[[str], Awaitable[None]]
+# Wave-32+ Speculation: synchronous callback fired by the provider
+# stream loop the moment a tool_use block completes. Synchronous on
+# purpose — the callback's job is to schedule a background task, not
+# to await it. Forwarding a coroutine would block stream parsing.
+# Imported lazily inside annotations to avoid pulling in core.ir at
+# module load (DAG check).
+OnToolBlockCallback = Callable[["ToolCall"], None]  # noqa: F821
 
 
 # Wave-30 prompt-cache optimisation (2026-05-18). A literal sentinel
@@ -129,6 +136,7 @@ class LLMProvider(abc.ABC):
         *,
         on_chunk: OnChunkCallback | None = None,
         on_thinking_chunk: OnThinkingChunkCallback | None = None,
+        on_tool_block: "OnToolBlockCallback | None" = None,
         cancel: asyncio.Event | None = None,
     ) -> LLMResponse:
         """Stream text deltas to ``on_chunk`` while collecting the final response.
@@ -157,6 +165,15 @@ class LLMProvider(abc.ABC):
         Returns the full ``LLMResponse`` (text + tool_calls + usage).
         Tool-use blocks aren't streamed — they arrive in the final return
         value, since the agent loop needs the whole call before invoking.
+
+        ``on_tool_block`` (Wave-32+ Speculation): synchronous callback
+        fired by providers that support mid-stream tool_use detection
+        (Anthropic). Called once per completed tool_use with the
+        parsed :class:`ToolCall`, so hop_loop can pre-execute
+        read-only invocations while the LLM keeps streaming. The
+        default impl can't fire it (non-streaming fallback only knows
+        about tool_calls at the very end) — providers that DO stream
+        override and fire as soon as a tool_use block finalises.
         """
         # ``tools`` passed by keyword so providers (and test mocks) that
         # declare it as keyword-only still satisfy the call. The two
@@ -167,6 +184,16 @@ class LLMProvider(abc.ABC):
         response = await self.complete(messages, tools=tools)
         if on_chunk is not None and response.content:
             await on_chunk(response.content)
+        # Default impl fires on_tool_block AFTER the full response —
+        # not really speculation, but it preserves the contract that
+        # every tool call goes through the callback exactly once.
+        # Speculative wins require a real streaming override.
+        if on_tool_block is not None:
+            for tc in response.tool_calls or ():
+                try:
+                    on_tool_block(tc)
+                except Exception:  # noqa: BLE001 — never block on callback
+                    pass
         return response
 
     @property

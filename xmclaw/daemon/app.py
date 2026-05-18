@@ -644,6 +644,9 @@ def create_app(
     # reopens after a gap so the user doesn't re-read transcripts.
     from xmclaw.daemon.routers import recap as _recap_router
     app.include_router(_recap_router.router)
+    # Wave-32+ OutputStyles list/get endpoint.
+    from xmclaw.daemon.routers import output_styles as _os_router
+    app.include_router(_os_router.router)
 
     app.state.agents = agents_manager
 
@@ -1873,6 +1876,20 @@ def create_app(
                         _set_plan_mode(session_id, plan_mode_active)
                     except Exception:  # noqa: BLE001 — never block a turn on this
                         pass
+                    # Wave-32+ OutputStyles: frontend sends
+                    # ``output_style`` = "default" / "Explanatory" /
+                    # "Learning" / a custom name. Apply to the
+                    # session before the agent_loop reads it during
+                    # system-prompt build.
+                    _style_name = frame.get("output_style")
+                    if isinstance(_style_name, str):
+                        try:
+                            from xmclaw.core.output_styles import (
+                                set_session_style as _set_style,
+                            )
+                            _set_style(session_id, _style_name)
+                        except Exception:  # noqa: BLE001
+                            pass
                     user_corr = frame.get("correlation_id")
                     if user_corr is not None and not isinstance(user_corr, str):
                         user_corr = None
@@ -1975,6 +1992,21 @@ def create_app(
                                 },
                             ))
                             await bus.drain()
+                        # Wave-32+ MagicDocs: fire any due background
+                        # updates after the user's turn completes.
+                        # Cooldown-gated inside schedule_updates so
+                        # this is cheap on every turn; spawns at most
+                        # one sub-task per tracked doc per 5 minutes.
+                        try:
+                            from xmclaw.cognition.magic_docs import (
+                                schedule_updates as _md_schedule,
+                            )
+                            _inter = getattr(
+                                app.state, "agent_inter_tools", None,
+                            )
+                            await _md_schedule(_inter)
+                        except Exception:  # noqa: BLE001
+                            pass
                     else:
                         # Phase 4.0 fallback: plain bus-echo for tests
                         # and for clients that do their own reasoning.

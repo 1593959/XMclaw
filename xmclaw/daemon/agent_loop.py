@@ -1552,6 +1552,17 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # ~50-token time block needs fresh tokens per turn.
         from xmclaw.providers.llm.base import CACHE_BREAKPOINT_MARKER
         _parts: list[str] = [cache_entry[1]]
+        # Wave-32+ OutputStyles: inject the active style's prompt
+        # AFTER the frozen base but BEFORE autobio so a style change
+        # only invalidates the tail of the cache, not the frozen
+        # core. Style is empty for ``default`` → no extra part.
+        try:
+            from xmclaw.core.output_styles import session_style
+            _style_prompt = session_style(session_id).prompt
+            if _style_prompt:
+                _parts.append(_style_prompt)
+        except Exception:  # noqa: BLE001 — never block a turn over styles
+            pass
         if autobio_block:
             _parts.append(autobio_block)
         _parts.append(time_block)

@@ -437,9 +437,15 @@ class AnthropicLLM(LLMProvider):
         *,
         on_chunk: OnChunkCallback | None = None,
         on_thinking_chunk: OnThinkingChunkCallback | None = None,
+        on_tool_block: Any | None = None,  # Wave-32+ Speculation
         cancel: asyncio.Event | None = None,
     ) -> LLMResponse:
         from xmclaw.providers.llm.translators import anthropic_native as translator
+        # Wave-32+ Speculation: per-stream cache of partial tool_use
+        # blocks. Keyed by content-block index → {id, name, json_buf}.
+        # Finalised + fired through ``on_tool_block`` on each
+        # ``content_block_stop`` event.
+        _spec_blocks: dict[int, dict[str, Any]] = {}
 
         system, anthropic_messages = self._messages_to_anthropic(messages)
         client = self._get_client()
@@ -541,6 +547,44 @@ class AnthropicLLM(LLMProvider):
                         cancelled = True
                         break
                     etype = getattr(event, "type", None)
+                    # Wave-32+ Speculation: track tool_use blocks as
+                    # they arrive so we can fire on_tool_block on
+                    # content_block_stop. Three event types matter:
+                    #   * content_block_start with type=tool_use →
+                    #     stash {id, name} keyed by index
+                    #   * content_block_delta with type=input_json_delta
+                    #     → append partial_json to the buffer
+                    #   * content_block_stop → finalise + fire callback
+                    if etype == "content_block_start" and on_tool_block is not None:
+                        block_obj = getattr(event, "content_block", None)
+                        if block_obj is not None and getattr(block_obj, "type", None) == "tool_use":
+                            idx = getattr(event, "index", -1)
+                            _spec_blocks[idx] = {
+                                "id": getattr(block_obj, "id", "") or "",
+                                "name": getattr(block_obj, "name", "") or "",
+                                "json_buf": "",
+                            }
+                    if etype == "content_block_stop" and on_tool_block is not None:
+                        idx = getattr(event, "index", -1)
+                        block_state = _spec_blocks.pop(idx, None)
+                        if block_state and block_state["name"]:
+                            try:
+                                import json as _json
+                                args = (
+                                    _json.loads(block_state["json_buf"])
+                                    if block_state["json_buf"].strip()
+                                    else {}
+                                )
+                                from xmclaw.core.ir import ToolCall as _TC
+                                _tc = _TC(
+                                    id=block_state["id"],
+                                    name=block_state["name"],
+                                    args=args,
+                                    provenance="llm",
+                                )
+                                on_tool_block(_tc)
+                            except Exception:  # noqa: BLE001 — never break streaming
+                                pass
                     if etype != "content_block_delta":
                         continue
                     delta_obj = getattr(event, "delta", None)
@@ -554,6 +598,15 @@ class AnthropicLLM(LLMProvider):
                         text_parts.append(text)
                         if on_chunk is not None:
                             await on_chunk(text)
+                    elif delta_type == "input_json_delta" and on_tool_block is not None:
+                        # Append to the per-block JSON buffer; the
+                        # finalise step on content_block_stop parses it.
+                        idx = getattr(event, "index", -1)
+                        block_state = _spec_blocks.get(idx)
+                        if block_state is not None:
+                            block_state["json_buf"] += (
+                                getattr(delta_obj, "partial_json", "") or ""
+                            )
                     elif delta_type == "thinking_delta":
                         # Extended thinking — yield to the dedicated
                         # callback so the UI shows it in PhaseCard's
