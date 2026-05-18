@@ -37,7 +37,8 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Iterable
+from pathlib import Path
+from typing import Any, Iterable
 
 
 # ── Canonical form ────────────────────────────────────────────────────
@@ -369,6 +370,143 @@ class EntityStore:
             self._entity_to_facts.clear()
             self._fact_to_entities.clear()
 
+    # ── Persistence (Wave-32+) ───────────────────────────────────────
+
+    # JSON shape carries a version so future schema migrations can
+    # detect + drop / migrate stale dumps. Bumping the version
+    # invalidates the load on next startup — fine, the backfill
+    # path repopulates from facts.
+    _PERSIST_VERSION: int = 1
+
+    def to_dict(self) -> dict:
+        """Snapshot the in-memory state into a serializable dict.
+        Caller is responsible for writing it to disk."""
+        with self._lock:
+            return {
+                "v": self._PERSIST_VERSION,
+                "entities": {
+                    eid: {
+                        "canonical": e.canonical,
+                        "type": e.type,
+                        "surface_forms": list(e.surface_forms),
+                        "first_seen_at": e.first_seen_at,
+                        "last_seen_at": e.last_seen_at,
+                        "mentions_count": e.mentions_count,
+                    }
+                    for eid, e in self._entities.items()
+                },
+                # Reverse index — list-not-set so JSON serializes it.
+                "entity_to_facts": {
+                    eid: sorted(facts)
+                    for eid, facts in self._entity_to_facts.items()
+                },
+                "fact_to_entities": {
+                    fid: sorted(eids)
+                    for fid, eids in self._fact_to_entities.items()
+                },
+            }
+
+    def load_dict(self, data: dict) -> int:
+        """Inverse of :meth:`to_dict`. Returns the entity count
+        loaded (0 on schema mismatch / empty dump)."""
+        if not isinstance(data, dict):
+            return 0
+        if data.get("v") != self._PERSIST_VERSION:
+            return 0
+        ents = data.get("entities") or {}
+        e2f = data.get("entity_to_facts") or {}
+        f2e = data.get("fact_to_entities") or {}
+        if not isinstance(ents, dict) or not isinstance(e2f, dict) or not isinstance(f2e, dict):
+            return 0
+        with self._lock:
+            self._entities.clear()
+            self._entity_to_facts.clear()
+            self._fact_to_entities.clear()
+            for eid, payload in ents.items():
+                if not isinstance(payload, dict):
+                    continue
+                try:
+                    self._entities[eid] = Entity(
+                        id=eid,
+                        canonical=str(payload.get("canonical") or ""),
+                        type=str(payload.get("type") or ""),
+                        surface_forms=tuple(payload.get("surface_forms") or ()),
+                        first_seen_at=float(payload.get("first_seen_at") or 0),
+                        last_seen_at=float(payload.get("last_seen_at") or 0),
+                        mentions_count=int(payload.get("mentions_count") or 0),
+                    )
+                except (TypeError, ValueError):
+                    continue
+            for eid, facts in e2f.items():
+                if isinstance(facts, list):
+                    self._entity_to_facts[eid] = set(facts)
+            for fid, eids in f2e.items():
+                if isinstance(eids, list):
+                    self._fact_to_entities[fid] = set(eids)
+            return len(self._entities)
+
+    def save_to(self, path: "Path") -> bool:
+        """Write the index to ``path`` as JSON. Returns True on
+        success. Atomic via write-to-temp + rename so a crash
+        mid-write can't corrupt the persisted state."""
+        import json
+        try:
+            payload = self.to_dict()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(
+                json.dumps(payload, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            tmp.replace(path)
+            return True
+        except OSError:
+            return False
+
+    def load_from(self, path: "Path") -> int:
+        """Read the index from ``path``. Returns entity count loaded;
+        0 on missing-file / parse error / version mismatch."""
+        import json
+        try:
+            text = path.read_text(encoding="utf-8")
+            data = json.loads(text)
+        except (OSError, ValueError):
+            return 0
+        return self.load_dict(data)
+
+    async def rebuild_from_facts(self, vec_backend: "Any") -> dict:
+        """One-shot backfill: scan every fact in ``vec_backend`` and
+        re-register its text. Use after upgrading from a pre-entity
+        version, or to recover a corrupted index.
+
+        Returns ``{scanned, registered, errors}``. The store is
+        cleared first so callers don't accumulate duplicates over
+        repeated invocations."""
+        scanned = 0
+        registered = 0
+        errors = 0
+        try:
+            facts = await vec_backend.search(None, where=None, limit=20000)
+        except Exception:  # noqa: BLE001
+            return {"scanned": 0, "registered": 0, "errors": 1}
+        self.clear()
+        for f in facts:
+            scanned += 1
+            text = getattr(f, "text", None) or ""
+            fid = getattr(f, "id", None)
+            superseded = getattr(f, "superseded_by", None)
+            if superseded:
+                continue
+            if not fid or not text:
+                continue
+            try:
+                ids = self.register_fact_text(fid, text)
+                if ids:
+                    registered += 1
+            except Exception:  # noqa: BLE001
+                errors += 1
+        return {"scanned": scanned, "registered": registered, "errors": errors}
+
 
 # ── Process-singleton accessor ────────────────────────────────────────
 
@@ -377,14 +515,35 @@ _default_store: EntityStore | None = None
 _default_lock = threading.Lock()
 
 
+def default_entity_store_path() -> "Path":
+    """Where the singleton's index lives on disk. Honors
+    ``XMC_DATA_DIR`` via :func:`xmclaw.utils.paths.data_dir` so the
+    test suite's tmp-path overrides isolate properly."""
+    from pathlib import Path
+    try:
+        from xmclaw.utils.paths import data_dir
+        return data_dir() / "v2" / "entity_index.json"
+    except Exception:  # noqa: BLE001
+        return Path.home() / ".xmclaw" / "v2" / "entity_index.json"
+
+
 def get_entity_store() -> EntityStore:
     """Lazy process-singleton. Build on first access so test paths
-    that don't touch entities pay zero cost."""
+    that don't touch entities pay zero cost.
+
+    On first build, attempts to load the persisted index from
+    :func:`default_entity_store_path`. Failures (missing file,
+    parse error, version mismatch) silently fall back to an empty
+    store — the lifespan's backfill pass repopulates."""
     global _default_store
     if _default_store is None:
         with _default_lock:
             if _default_store is None:
                 _default_store = EntityStore()
+                try:
+                    _default_store.load_from(default_entity_store_path())
+                except Exception:  # noqa: BLE001
+                    pass
     return _default_store
 
 
@@ -400,6 +559,7 @@ __all__ = [
     "EntityMention",
     "EntityStore",
     "canonicalize",
+    "default_entity_store_path",
     "entity_id_for",
     "extract_entity_mentions",
     "get_entity_store",

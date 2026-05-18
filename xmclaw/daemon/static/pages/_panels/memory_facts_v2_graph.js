@@ -372,6 +372,21 @@ export function FactsGraphView({ token, focusFactId, onFocusFact }) {
           style="font-size:.78rem;padding:.3rem .6rem"
         >🔄 刷新</button>
         <${_GraphActionButton}
+          label="🧱 实体索引"
+          runningLabel="🧱 重建中..."
+          title="扫一遍所有 fact，重建实体反向索引。升级后第一次必跑（已有数据没在索引里）。"
+          token=${token}
+          path="/api/v2/memory/v2/entity_index_rebuild"
+          body=${{}}
+          onDone=${refresh}
+          formatResult=${(d) =>
+            "实体索引重建完成\n扫描事实: " + (d.scanned || 0) +
+            "\n注册成功: " + (d.registered || 0) +
+            "\n错误: " + (d.errors || 0) +
+            "\n已保存到磁盘: " + (d.saved ? "是" : "否")
+          }
+        />
+        <${_GraphActionButton}
           label="🔗 重建关系"
           runningLabel="🔗 重建中..."
           title="按 Wave-32+ 新规则（跨 kind + 共享实体桥接）扫一遍所有事实，补上漏链的 SAME_TOPIC 边"

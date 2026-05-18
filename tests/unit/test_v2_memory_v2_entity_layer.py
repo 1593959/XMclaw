@@ -195,6 +195,140 @@ def test_store_drops_orphan_entities() -> None:
     assert store.stats()["entities"] == 0
 
 
+def test_store_persistence_round_trip(tmp_path) -> None:
+    """save_to → load_from should reproduce identical state. Pin
+    because the disk format is part of the schema we have to
+    migrate (versioned)."""
+    from xmclaw.memory.v2.entity import EntityStore
+    s1 = EntityStore()
+    s1.register_fact_text("f1", "陪玩店账号为admin")
+    s1.register_fact_text("f2", "凭据: 账号是admin")
+    stats_before = s1.stats()
+
+    path = tmp_path / "entity_index.json"
+    assert s1.save_to(path) is True
+    assert path.exists()
+
+    s2 = EntityStore()
+    n = s2.load_from(path)
+    assert n > 0
+    assert s2.stats() == stats_before
+    # Reverse index roundtripped — co-mention query still works.
+    assert "f2" in s2.co_mentioned_facts("f1")
+
+
+def test_store_load_missing_file_returns_zero(tmp_path) -> None:
+    """Missing file is a normal case (fresh install) — load should
+    return 0 silently rather than raise."""
+    from xmclaw.memory.v2.entity import EntityStore
+    s = EntityStore()
+    n = s.load_from(tmp_path / "does_not_exist.json")
+    assert n == 0
+
+
+def test_store_load_garbage_returns_zero(tmp_path) -> None:
+    """Corrupt JSON shouldn't crash the daemon startup."""
+    from xmclaw.memory.v2.entity import EntityStore
+    p = tmp_path / "entity_index.json"
+    p.write_text("not json", encoding="utf-8")
+    assert EntityStore().load_from(p) == 0
+
+
+def test_store_load_version_mismatch_drops(tmp_path) -> None:
+    """Future-proofing: when we bump _PERSIST_VERSION, stale dumps
+    get dropped instead of merged at incompatible field shapes."""
+    import json
+    from xmclaw.memory.v2.entity import EntityStore
+    p = tmp_path / "entity_index.json"
+    p.write_text(json.dumps({"v": 99, "entities": {}}), encoding="utf-8")
+    assert EntityStore().load_from(p) == 0
+
+
+def test_store_save_atomic_via_tmpfile(tmp_path) -> None:
+    """The write should NOT leave a partial file at the target on
+    success. Pin via checking the .tmp is gone after a successful
+    save."""
+    from xmclaw.memory.v2.entity import EntityStore
+    s = EntityStore()
+    s.register_fact_text("f1", "陪玩店账号为admin")
+    path = tmp_path / "entity_index.json"
+    s.save_to(path)
+    assert path.exists()
+    assert not (tmp_path / "entity_index.json.tmp").exists()
+
+
+@pytest.mark.asyncio
+async def test_rebuild_from_facts_repopulates_index() -> None:
+    """Backfill scans every fact in the vector backend + re-registers.
+    The biggest gap before this commit: a daemon upgrade left old
+    facts INVISIBLE to the entity layer because they predated the
+    write-time hook. This test pins that the backfill closes that
+    gap — feeding 3 facts to a stub backend produces a populated
+    co-mention graph."""
+    from dataclasses import dataclass
+
+    @dataclass
+    class _StubFact:
+        id: str
+        text: str
+        superseded_by: str = ""
+
+    class _StubVec:
+        def __init__(self, facts):
+            self.facts = facts
+        async def search(self, *args, **kwargs):
+            return self.facts
+
+    from xmclaw.memory.v2.entity import EntityStore
+    store = EntityStore()
+    vec = _StubVec([
+        _StubFact("f1", "陪玩店账号为admin"),
+        _StubFact("f2", "凭据: 账号是admin"),
+        _StubFact("f3", "目标网站无需验证码即可访问"),
+        # Superseded fact — should NOT be registered.
+        _StubFact("f4", "old fact", superseded_by="f1"),
+    ])
+    result = await store.rebuild_from_facts(vec)
+    assert result["scanned"] == 4
+    assert result["registered"] == 3  # f4 superseded → skipped
+    assert result["errors"] == 0
+    # The co-mention bridge now works for previously-orphan facts.
+    assert "f2" in store.co_mentioned_facts("f1")
+
+
+@pytest.mark.asyncio
+async def test_rebuild_clears_old_state() -> None:
+    """Rebuild starts from a CLEAN slate so callers can't accumulate
+    duplicates by repeated invocations."""
+    from dataclasses import dataclass
+
+    @dataclass
+    class _StubFact:
+        id: str
+        text: str
+        superseded_by: str = ""
+
+    class _StubVec:
+        def __init__(self, facts):
+            self.facts = facts
+        async def search(self, *a, **kw):
+            return self.facts
+
+    from xmclaw.memory.v2.entity import EntityStore
+    store = EntityStore()
+    # Seed with one fact NOT in the backend.
+    store.register_fact_text("stale", "陪玩店账号为admin")
+    assert "stale" in store.co_mentioned_facts(
+        "stale", exclude=set(),
+    ) or len(store._fact_to_entities) > 0  # has stale entry
+    # Rebuild from a backend that doesn't contain 'stale'.
+    await store.rebuild_from_facts(_StubVec([
+        _StubFact("f1", "新 fact"),
+    ]))
+    # Stale entry is gone.
+    assert store.entities_for_fact("stale") == []
+
+
 def test_store_surface_forms_capped() -> None:
     """An entity that appears in many different surface forms keeps
     only the last 5 — prevents pathological memory growth on a

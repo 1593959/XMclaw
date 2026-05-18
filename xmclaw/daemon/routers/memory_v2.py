@@ -297,6 +297,54 @@ async def llm_topic_name(request: Request) -> Any:
         )
 
 
+@router.post("/entity_index_rebuild")
+async def entity_index_rebuild(request: Request) -> Any:
+    """Wave-32+ backfill: walk every fact in the vector store and
+    re-register its text into the entity index. Use after upgrading
+    to a daemon that has the entity layer (existing facts predate it
+    and aren't in the in-memory index by default).
+
+    Returns ``{ok, scanned, registered, errors, saved}``. Auto-saves
+    the rebuilt index to disk so a daemon restart picks it up
+    immediately without re-running the backfill.
+    """
+    svc = _get_service(request)
+    if svc is None:
+        return _v2_disabled_response()
+    try:
+        from xmclaw.memory.v2.entity import (
+            default_entity_store_path, get_entity_store,
+        )
+        store = get_entity_store()
+        result = await store.rebuild_from_facts(svc._vec)
+        saved = store.save_to(default_entity_store_path())
+        return JSONResponse({"ok": True, "saved": saved, **result})
+    except Exception as exc:  # noqa: BLE001
+        from xmclaw.utils.log import get_logger
+        get_logger(__name__).warning(
+            "entity_index_rebuild.failed err=%s", exc,
+        )
+        return JSONResponse(
+            {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+            status_code=200,
+        )
+
+
+@router.get("/entity_index_stats")
+async def entity_index_stats(request: Request) -> Any:
+    """Quick read-only inspector — useful for the UI to surface
+    "indexed N entities / M facts" so the user can see whether the
+    layer is healthy."""
+    try:
+        from xmclaw.memory.v2.entity import get_entity_store
+        return JSONResponse({"ok": True, **get_entity_store().stats()})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+            status_code=200,
+        )
+
+
 @router.post("/relink_same_topic")
 async def relink_same_topic(request: Request) -> Any:
     """Wave-32+ graph-connectivity backfill.
