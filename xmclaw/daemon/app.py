@@ -647,6 +647,9 @@ def create_app(
     # Wave-32+ OutputStyles list/get endpoint.
     from xmclaw.daemon.routers import output_styles as _os_router
     app.include_router(_os_router.router)
+    # Wave-32+ Markdown commands — Claude Code .md plugin parity.
+    from xmclaw.daemon.routers import commands as _cmds_router
+    app.include_router(_cmds_router.router)
 
     app.state.agents = agents_manager
 
@@ -1890,6 +1893,44 @@ def create_app(
                             _set_style(session_id, _style_name)
                         except Exception:  # noqa: BLE001
                             pass
+                    # Wave-32+ Markdown commands: if content starts
+                    # with /<known-cmd>, render the .md template and
+                    # substitute the rendered prompt as the user
+                    # message. Unknown slash commands fall through
+                    # to the existing channel_slash_router path.
+                    if content.startswith("/") and " " not in content[:32]:
+                        # Possible slash command — try the markdown
+                        # registry. Single token (or token+args
+                        # separated by first space).
+                        head, _, tail = content[1:].partition(" ")
+                        try:
+                            from xmclaw.cognition.markdown_commands import (
+                                find_command, render_command,
+                            )
+                            from xmclaw.core.hooks.trust import (
+                                workspace_trust_level,
+                            )
+                            _md_cmd = find_command(head)
+                            if _md_cmd is not None:
+                                _trust = workspace_trust_level()
+                                _rendered = await render_command(
+                                    _md_cmd, tail.strip(),
+                                    workspace_trust=_trust,
+                                )
+                                # Tag so the LLM knows the prompt
+                                # came from a command template, not
+                                # the user's raw words.
+                                content = (
+                                    f"[Slash command /{head}]\n\n"
+                                    f"{_rendered.rendered}"
+                                )
+                        except Exception:  # noqa: BLE001 — fall through on error
+                            pass
+                    elif content.startswith("/"):
+                        # Two-token guard didn't trigger (long
+                        # first word with no space in first 32
+                        # chars). Skip markdown handling.
+                        pass
                     user_corr = frame.get("correlation_id")
                     if user_corr is not None and not isinstance(user_corr, str):
                         user_corr = None
