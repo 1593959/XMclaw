@@ -687,3 +687,166 @@ async def test_submit_background_validates_inputs() -> None:
         await tools.submit_background("", "content")
     with pytest.raises(ValueError):
         await tools.submit_background("main", "")
+
+
+# ── progress summary heuristic (Wave-32+ AgentSummary) ───────────────────
+
+
+@pytest.mark.asyncio
+async def test_progress_summary_from_recent_tool_call() -> None:
+    """When the fork's history shows an assistant message with a
+    tool call, ``check_agent_task`` surfaces a heuristic progress
+    string of the form ``tool_name(arg)``. No LLM call is involved —
+    pure history walk so it's free for an LLM-budget-constrained
+    daemon."""
+    from xmclaw.core.ir import ToolCall as RealToolCall
+
+    primary = _StubLoop()
+    tools = AgentInterTools(manager=_StubManager(), primary_loop=primary)
+    # Manually craft a record + history showing the fork ran a tool.
+    record = tools._tasks.setdefault(
+        "tk-1",
+        # _TaskRecord is private; ok in test since the test module
+        # already imports it.
+        _TaskRecord(
+            task_id="tk-1", agent_id="main",
+            session_id="sess-progress", content="x", status="running",
+        ),
+    )
+    primary._histories["sess-progress"] = [
+        _StubMessage(role="user", content="please read foo.py"),
+    ]
+    # Append an assistant message carrying a tool_calls tuple.
+    # _StubMessage doesn't ship tool_calls — use the real Message IR
+    # for this single entry.
+    from xmclaw.core.ir import Message as RealMessage
+    primary._histories["sess-progress"].append(
+        RealMessage(
+            role="assistant", content="",
+            tool_calls=(
+                RealToolCall(
+                    name="file_read", args={"path": "foo.py"},
+                    provenance="llm",
+                ),
+            ),
+        ),
+    )
+    res = await tools.invoke(_call("check_agent_task", task_id="tk-1"))
+    assert res.ok, res.error
+    body = json.loads(res.content)
+    assert body["progress"] == "file_read(foo.py)"
+    assert record.progress_summary == "file_read(foo.py)"
+
+
+@pytest.mark.asyncio
+async def test_progress_summary_truncates_long_args() -> None:
+    """Long path/query strings are clamped so the progress field
+    stays readable in list_agent_tasks output."""
+    from xmclaw.core.ir import Message as RealMessage, ToolCall as RealToolCall
+
+    primary = _StubLoop()
+    tools = AgentInterTools(manager=_StubManager(), primary_loop=primary)
+    tools._tasks["tk-long"] = _TaskRecord(
+        task_id="tk-long", agent_id="main",
+        session_id="sess-long", content="x", status="running",
+    )
+    long_path = "a/" * 80 + "very_long_file_name.txt"
+    primary._histories["sess-long"] = [
+        RealMessage(
+            role="assistant", content="",
+            tool_calls=(
+                RealToolCall(
+                    name="file_write", args={"path": long_path, "content": "..."},
+                    provenance="llm",
+                ),
+            ),
+        ),
+    ]
+    res = await tools.invoke(_call("check_agent_task", task_id="tk-long"))
+    body = json.loads(res.content)
+    assert body["progress"].endswith("...)")
+    assert len(body["progress"]) < 100
+
+
+@pytest.mark.asyncio
+async def test_progress_summary_skipped_for_terminal_status() -> None:
+    """Once status is done/error, the last-known progress is frozen —
+    don't re-walk history after the fork stopped running."""
+    from xmclaw.core.ir import Message as RealMessage, ToolCall as RealToolCall
+
+    primary = _StubLoop()
+    tools = AgentInterTools(manager=_StubManager(), primary_loop=primary)
+    record = _TaskRecord(
+        task_id="tk-done", agent_id="main",
+        session_id="sess-done", content="x", status="done",
+        reply="all set", progress_summary="bash(echo)",
+    )
+    tools._tasks["tk-done"] = record
+    # Add a more-recent tool call AFTER completion. If we naively
+    # refreshed, the progress would be updated to the new call.
+    primary._histories["sess-done"] = [
+        RealMessage(
+            role="assistant", content="",
+            tool_calls=(
+                RealToolCall(
+                    name="file_read", args={"path": "after.txt"},
+                    provenance="llm",
+                ),
+            ),
+        ),
+    ]
+    res = await tools.invoke(_call("check_agent_task", task_id="tk-done"))
+    body = json.loads(res.content)
+    # Frozen at completion-time value, NOT updated to file_read(after.txt).
+    assert body["progress"] == "bash(echo)"
+
+
+@pytest.mark.asyncio
+async def test_progress_summary_absent_when_no_tool_call_yet() -> None:
+    """Fork that's only emitted assistant text (no tool calls yet)
+    has nothing meaningful to summarize — the ``progress`` field is
+    omitted rather than emitting a misleading placeholder."""
+    primary = _StubLoop()
+    tools = AgentInterTools(manager=_StubManager(), primary_loop=primary)
+    tools._tasks["tk-text"] = _TaskRecord(
+        task_id="tk-text", agent_id="main",
+        session_id="sess-text", content="x", status="running",
+    )
+    primary._histories["sess-text"] = [
+        _StubMessage(role="assistant", content="thinking..."),
+    ]
+    res = await tools.invoke(_call("check_agent_task", task_id="tk-text"))
+    body = json.loads(res.content)
+    assert "progress" not in body
+
+
+@pytest.mark.asyncio
+async def test_list_agent_tasks_includes_progress() -> None:
+    """The list endpoint must also surface progress so a caller
+    scanning ``what is everyone doing right now?`` doesn't need
+    one check call per task."""
+    from xmclaw.core.ir import Message as RealMessage, ToolCall as RealToolCall
+
+    primary = _StubLoop()
+    tools = AgentInterTools(manager=_StubManager(), primary_loop=primary)
+    tools._tasks["tk-list"] = _TaskRecord(
+        task_id="tk-list", agent_id="main",
+        session_id="sess-list", content="x", status="running",
+    )
+    primary._histories["sess-list"] = [
+        RealMessage(
+            role="assistant", content="",
+            tool_calls=(
+                RealToolCall(
+                    name="grep_files", args={"query": "TODO"},
+                    provenance="llm",
+                ),
+            ),
+        ),
+    ]
+    res = await tools.invoke(_call("list_agent_tasks"))
+    body = json.loads(res.content)
+    # Find our task in the listing.
+    rows = [r for r in body["tasks"] if r["task_id"] == "tk-list"]
+    assert rows, "task tk-list not in listing"
+    assert rows[0].get("progress") == "grep_files(TODO)"

@@ -315,6 +315,12 @@ class _TaskRecord:
     error: str | None = None
     created_at: float = field(default_factory=time.time)
     completed_at: float | None = None
+    # Wave-32+ AgentSummary: heuristic progress string derived from
+    # the fork's most recent tool call. Refreshed lazily by
+    # ``_refresh_progress_summary`` whenever the task is inspected
+    # (check_agent_task / list_agent_tasks). No LLM call — pure
+    # tool-history walk, so this is free to compute on demand.
+    progress_summary: str | None = None
 
 
 _MAX_TASKS = 256  # bounded dict — drop oldest when full
@@ -695,6 +701,68 @@ class AgentInterTools(ToolProvider):
         bg.add_done_callback(self._running_tasks.discard)
         return task_id
 
+    # ── progress summary (Wave-32+ AgentSummary heuristic) ─────────
+
+    def _refresh_progress_summary(self, record: _TaskRecord) -> None:
+        """Update ``record.progress_summary`` from the fork's most
+        recent tool call. Free — pure history walk, no LLM call.
+
+        Mirrors the free-code AgentSummary intent ("describe the most
+        recent action in 3-5 words, present tense") but uses tool-name
+        + truncated arg as the source instead of a sampling call. For
+        an LLM-budget-constrained local-first daemon this gives the
+        same UX at zero marginal cost.
+
+        Skips refreshing once the task reaches a terminal status so
+        the last-known progress is preserved even after completion
+        (useful for "what was that task doing when it errored?").
+        """
+        if record.status in ("done", "error"):
+            return
+        loop = self._resolve_loop_safe(record.agent_id)
+        if loop is None:
+            return
+        history = loop._histories.get(record.session_id) or []
+        # Walk backwards, find last assistant message that carried
+        # tool_calls. That's the "current action" of the fork.
+        for msg in reversed(history):
+            if getattr(msg, "role", None) != "assistant":
+                continue
+            tcs = getattr(msg, "tool_calls", ()) or ()
+            if not tcs:
+                continue
+            last = tcs[-1]
+            tool_name = getattr(last, "name", "?")
+            args = getattr(last, "args", {}) or {}
+            # Pick a single salient arg to render: prefer path > file >
+            # query > content (truncated). Falls back to "(...)" so the
+            # rendered summary always names *something*.
+            salient = ""
+            for key in ("path", "file", "file_path", "query", "url", "command"):
+                if key in args and isinstance(args[key], str):
+                    salient = args[key]
+                    break
+            if not salient and args:
+                # Any string arg, first one alphabetical.
+                str_keys = sorted(k for k, v in args.items() if isinstance(v, str))
+                if str_keys:
+                    salient = args[str_keys[0]]
+            if salient and len(salient) > 60:
+                salient = salient[:57] + "..."
+            record.progress_summary = (
+                f"{tool_name}({salient})" if salient else tool_name
+            )
+            return
+
+    def _resolve_loop_safe(self, agent_id: str) -> _AgentLoopLike | None:
+        """Like :meth:`_resolve_loop` but returns ``None`` instead of
+        raising — used by progress-summary code paths that should never
+        fail just because the fork's loop went away."""
+        try:
+            return self._resolve_loop(agent_id)
+        except _ToolError:
+            return None
+
     # ── check_agent_task ─────────────────────────────────────────────
 
     async def _do_check_agent_task(self, call: ToolCall) -> str:
@@ -723,11 +791,16 @@ class AgentInterTools(ToolProvider):
         record = self._tasks.get(task_id)
         if record is None:
             raise _ToolError(f"unknown task_id: {task_id!r}")
+        # Wave-32+ AgentSummary: refresh lazily so live readers see the
+        # most recent tool call without paying for a background timer.
+        self._refresh_progress_summary(record)
         payload = {
             "task_id": record.task_id,
             "agent_id": record.agent_id,
             "status": record.status,
         }
+        if record.progress_summary:
+            payload["progress"] = record.progress_summary
         if record.status == "done":
             payload["reply"] = record.reply or ""
         elif record.status == "error":
@@ -792,12 +865,17 @@ class AgentInterTools(ToolProvider):
                 continue
             if agent_filter and r.agent_id != agent_filter:
                 continue
+            # Wave-32+ AgentSummary: refresh on read so list_agent_tasks
+            # shows the latest action each running task is taking.
+            self._refresh_progress_summary(r)
             entry = {
                 "task_id": r.task_id,
                 "agent_id": r.agent_id,
                 "status": r.status,
                 "created_at": r.created_at,
             }
+            if r.progress_summary:
+                entry["progress"] = r.progress_summary
             if r.completed_at:
                 entry["completed_at"] = r.completed_at
             if r.reply and len(r.reply) > 0:

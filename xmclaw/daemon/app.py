@@ -639,6 +639,11 @@ def create_app(
     # singleton (see xmclaw.core.feature_flags).
     from xmclaw.daemon.routers import features as _features_router
     app.include_router(_features_router.router)
+    # Wave-32+: session recap (`while you were away`) endpoint.
+    # Read-only, on-demand — frontend hits it when the chat panel
+    # reopens after a gap so the user doesn't re-read transcripts.
+    from xmclaw.daemon.routers import recap as _recap_router
+    app.include_router(_recap_router.router)
 
     app.state.agents = agents_manager
 
