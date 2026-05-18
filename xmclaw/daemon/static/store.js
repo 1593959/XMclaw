@@ -177,6 +177,10 @@ export const app = createStore({
     // Cleared on send + included in the user_message WS frame.
     composerImages: [],
     planMode: false,             // Plan vs Act
+    // Wave-32+ OutputStyles: which preset prompt fragment to splice
+    // into the system prompt. null / "default" → no extra style.
+    // Server-validated against the registry (built-in + on-disk).
+    outputStyle: "default",
     ultrathink: false,
     // Multi-model: which configured LLM profile this session routes to.
     // null → daemon picks the registry default (legacy single-LLM block).

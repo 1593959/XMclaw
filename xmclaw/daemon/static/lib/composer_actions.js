@@ -74,6 +74,13 @@ export function createComposerActions({
       ultrathink: s.chat.ultrathink || undefined,
       correlation_id: id,
       plan_mode: s.chat.planMode || undefined,
+      // Wave-32+: only send when non-default — saves a few bytes
+      // and matches the "missing = default" convention the backend
+      // expects.
+      output_style:
+        s.chat.outputStyle && s.chat.outputStyle !== "default"
+          ? s.chat.outputStyle
+          : undefined,
       llm_profile_id: s.chat.llmProfileId || undefined,
     });
 
@@ -166,6 +173,24 @@ export function createComposerActions({
     store.setState((s) => ({ chat: { ...s.chat, ultrathink: !s.chat.ultrathink } }));
   }
 
+  // Wave-32+ OutputStyles: cycle through the built-in styles. Custom
+  // on-disk styles need to be picked via REST; this chip is the
+  // quick keyboard-free path for the three defaults.
+  function cycleOutputStyle() {
+    const order = ["default", "Explanatory", "Learning"];
+    store.setState((s) => {
+      const cur = s.chat.outputStyle || "default";
+      const next = order[(order.indexOf(cur) + 1) % order.length];
+      return { chat: { ...s.chat, outputStyle: next } };
+    });
+  }
+
+  function setOutputStyle(name) {
+    store.setState((s) => ({
+      chat: { ...s.chat, outputStyle: name || "default" },
+    }));
+  }
+
   function addImages(entries) {
     if (!Array.isArray(entries) || entries.length === 0) return;
     store.setState((s) => ({
@@ -195,6 +220,8 @@ export function createComposerActions({
     changeDraft,
     togglePlan,
     toggleUltrathink,
+    cycleOutputStyle,
+    setOutputStyle,
     addImages,
     removeImage,
   };

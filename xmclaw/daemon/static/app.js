@@ -313,6 +313,7 @@ const answerQuestion = _COMPOSER.answerQuestion;
 const changeDraft = _COMPOSER.changeDraft;
 const togglePlan = _COMPOSER.togglePlan;
 const toggleUltrathink = _COMPOSER.toggleUltrathink;
+const cycleOutputStyle = _COMPOSER.cycleOutputStyle;
 const addImages = _COMPOSER.addImages;
 const removeImage = _COMPOSER.removeImage;
 
@@ -414,6 +415,7 @@ const routes = {
       onAnswerQuestion=${answerQuestion}
       onChangeDraft=${changeDraft}
       onTogglePlan=${togglePlan}
+      onCycleOutputStyle=${cycleOutputStyle}
       onToggleUltrathink=${toggleUltrathink}
       onNewSession=${startNewSession}
       onChangeModel=${setLlmProfile}

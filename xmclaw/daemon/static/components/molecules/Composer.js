@@ -77,6 +77,8 @@ export function Composer({
   onCancel,
   planMode,
   onTogglePlan,
+  outputStyle,
+  onCycleOutputStyle,
   ultrathink,
   onToggleUltrathink,
   canSend,
@@ -485,6 +487,19 @@ export function Composer({
           title="Plan 模式：助手先列计划再执行"
         >
           ${planMode ? "Plan" : "Act"}
+        </button>
+        <button
+          type="button"
+          class=${"xmc-composer__chip" + ((outputStyle && outputStyle !== "default") ? " is-on" : "")}
+          aria-pressed=${(outputStyle && outputStyle !== "default") ? "true" : "false"}
+          onClick=${onCycleOutputStyle}
+          title="输出风格：default → Explanatory（边写边解释）→ Learning（让你动手填 TODO）"
+        >
+          ${outputStyle === "Explanatory"
+            ? "Explain"
+            : outputStyle === "Learning"
+              ? "Learn"
+              : "Style"}
         </button>
         <button
           type="button"
