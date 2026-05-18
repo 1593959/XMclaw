@@ -40,12 +40,23 @@ boundary" rule in CLAUDE.md).
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 from starlette.responses import JSONResponse
 
 router = APIRouter(prefix="/api/v2/memory/v2", tags=["memory-v2"])
+
+# Wave-32+ (2026-05-19): server-side ceiling on the LLM-topic routes.
+# Pre-fix the topic-name route did N sequential graph.neighbors() calls
+# during cluster discovery (N = total fact count). With 900+ facts that
+# routinely exceeded 60s and the browser surfaced "Failed to fetch" with
+# no useful info. 55s ceiling = 1 cluster of ~5 LLM calls (each capped
+# at 15s) still fits, but the route ALWAYS returns a clean JSON error
+# rather than hanging the socket. Client uses 70s AbortController so
+# this fires first.
+_LLM_TOPIC_ROUTE_TIMEOUT_S = 55.0
 
 
 def _get_service(request: Request) -> Any | None:
@@ -238,7 +249,29 @@ async def llm_topic_refine(request: Request) -> Any:
     # auth refresh fail, network drop) presented as opaque fetch
     # failures with no diagnostic in the UI.
     try:
-        return await svc.llm_topic_refine(llm, budget=budget)
+        return await asyncio.wait_for(
+            svc.llm_topic_refine(llm, budget=budget),
+            timeout=_LLM_TOPIC_ROUTE_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        from xmclaw.utils.log import get_logger
+        get_logger(__name__).warning(
+            "llm_topic_refine.route_timeout after=%ss",
+            _LLM_TOPIC_ROUTE_TIMEOUT_S,
+        )
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": (
+                    f"Timeout after {int(_LLM_TOPIC_ROUTE_TIMEOUT_S)}s — "
+                    "scan exceeded route ceiling. Try a smaller budget, "
+                    "or rerun after the daemon finishes background work."
+                ),
+                "scanned_pairs": 0, "edges_added": 0,
+                "llm_calls": 0, "duration_s": _LLM_TOPIC_ROUTE_TIMEOUT_S,
+            },
+            status_code=200,
+        )
     except Exception as exc:  # noqa: BLE001
         from xmclaw.utils.log import get_logger
         get_logger(__name__).warning(
@@ -280,7 +313,30 @@ async def llm_topic_name(request: Request) -> Any:
     budget = int(body.get("budget") or 5)
     budget = max(1, min(20, budget))
     try:
-        return await svc.llm_topic_name(llm, budget=budget)
+        return await asyncio.wait_for(
+            svc.llm_topic_name(llm, budget=budget),
+            timeout=_LLM_TOPIC_ROUTE_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        from xmclaw.utils.log import get_logger
+        get_logger(__name__).warning(
+            "llm_topic_name.route_timeout after=%ss",
+            _LLM_TOPIC_ROUTE_TIMEOUT_S,
+        )
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": (
+                    f"Timeout after {int(_LLM_TOPIC_ROUTE_TIMEOUT_S)}s — "
+                    "cluster discovery exceeded route ceiling. The "
+                    "underlying scan can be slow on stores with 500+ "
+                    "facts. Try budget=1 to start, or rerun later."
+                ),
+                "clusters_scanned": 0, "topics_created": 0,
+                "llm_calls": 0, "duration_s": _LLM_TOPIC_ROUTE_TIMEOUT_S,
+            },
+            status_code=200,
+        )
     except Exception as exc:  # noqa: BLE001
         from xmclaw.utils.log import get_logger
         get_logger(__name__).warning(

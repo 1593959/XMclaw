@@ -125,6 +125,56 @@ async function _loadVisNetwork() {
 // nothing. User saw a static button + then suddenly an alert; if
 // the call timed out at the network layer they got "Failed to
 // fetch" with no warning the work was even happening.
+//
+// Wave-32+ (2026-05-19) follow-up: bypass the shared apiPost so we
+// can attach an AbortController with a 70s ceiling. The server side
+// fences these routes at 55s, but if the daemon hangs upstream of
+// FastAPI (e.g. uvicorn event loop blocked by an unrelated heavy
+// task) the browser would just sit on a stuck TCP socket until its
+// own network-layer timeout — surfacing as a cryptic "Failed to
+// fetch" with no diagnostic. Now we always surface a structured
+// error: either the route's own JSON timeout payload (clean), or
+// our client-side "请求超时" if the connection itself stalled.
+const _LLM_TOPIC_FETCH_TIMEOUT_MS = 70000;
+
+async function _postWithTimeout(path, body, token, timeoutMs) {
+  const url = path + (token ? `?token=${encodeURIComponent(token)}` : "");
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+      signal: ctrl.signal,
+    });
+    let json = null;
+    try { json = await res.json(); } catch (_) { /* allow empty */ }
+    if (!res.ok) {
+      const detail = json && (json.detail || json.error);
+      const err = new Error(
+        `${res.status} ${res.statusText}${detail ? `: ${detail}` : ""}`,
+      );
+      err.status = res.status;
+      throw err;
+    }
+    return json;
+  } catch (e) {
+    if (e && e.name === "AbortError") {
+      const secs = Math.round(timeoutMs / 1000);
+      const err = new Error(
+        `请求超时（前端 ${secs}s 上限触发）。可能正在大库扫描，` +
+        "稍后重试，或先用 budget=1 试探。",
+      );
+      err.timedOut = true;
+      throw err;
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function _GraphActionButton({
   label, runningLabel, title, token, path, body, onDone, formatResult,
 }) {
@@ -142,7 +192,9 @@ function _GraphActionButton({
         if (busy) return;
         setBusy(true);
         try {
-          const r = await apiPost(path, body || {}, token);
+          const r = await _postWithTimeout(
+            path, body || {}, token, _LLM_TOPIC_FETCH_TIMEOUT_MS,
+          );
           // The route wraps internal errors as 200 + {ok:false,error}
           // so a network-level failure here is genuinely an
           // infrastructure problem worth surfacing.

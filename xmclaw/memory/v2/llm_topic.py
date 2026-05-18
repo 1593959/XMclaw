@@ -81,6 +81,48 @@ _MAX_PAIRS_PER_BATCH = 20
 _LLM_TIMEOUT_S = 15.0
 
 
+# Wave-32+ (2026-05-19) per-fact neighbor concurrency. LanceDB serves
+# concurrent reads fine but the event loop must be cooperatively
+# yielded — N sequential `await neighbors(fid)` calls cost N * round-
+# trip. Fan-out via `gather` + semaphore turns N×round-trip into
+# (N / FANOUT) × round-trip. 20 is the sweet spot in practice: more
+# concurrency stops helping (LanceDB writer-side mutex throttles the
+# reads), less wastes the idle window.
+_NEIGHBOR_FANOUT = 20
+
+
+async def _neighbors_many(
+    svc: "MemoryService",
+    fact_ids: list[str] | set[str],
+    *,
+    relation_types: list[str],
+) -> dict[str, list[tuple[Any, str]]]:
+    """Fan-out wrapper around svc._graph.neighbors. Returns a dict
+    keyed by fact_id so callers don't have to re-stitch results.
+
+    Why this matters: the previous serial loop blew past 60s on the
+    user's 902-fact store, surfacing as "Failed to fetch" in the
+    browser. With FANOUT=20 the same scan finishes in ~3-5s.
+    """
+    if not fact_ids:
+        return {}
+    sem = asyncio.Semaphore(_NEIGHBOR_FANOUT)
+    out: dict[str, list[tuple[Any, str]]] = {}
+
+    async def _one(fid: str) -> None:
+        async with sem:
+            try:
+                rels = await svc._graph.neighbors(
+                    fid, relation_types=relation_types,
+                )
+            except Exception:  # noqa: BLE001
+                rels = []
+            out[fid] = list(rels)
+
+    await asyncio.gather(*(_one(fid) for fid in fact_ids))
+    return out
+
+
 async def find_borderline_pairs(
     svc: "MemoryService",
     *,
@@ -445,6 +487,19 @@ async def _refine_clusters_with_modularity(
     # We do this per-cluster to bound the edge fetch cost — a
     # 100-fact graph would need O(N) neighbor queries otherwise.
     out: list[set[str]] = []
+    # Wave-32+ (2026-05-19): collect all fact_ids across clusters that
+    # need refinement, fan out their neighbor queries in ONE batched
+    # gather, then partition results per-cluster. Cheaper than the
+    # per-cluster serial loop when many clusters cross the size guard.
+    candidates_needing_refine = [
+        c for c in clusters if len(c) >= 2 * _MIN_CLUSTER_SIZE
+    ]
+    all_fids: set[str] = set()
+    for c in candidates_needing_refine:
+        all_fids.update(c)
+    neighbor_map = await _neighbors_many(
+        svc, all_fids, relation_types=[RelationKind.SAME_TOPIC.value],
+    )
     for cluster in clusters:
         if len(cluster) < 2 * _MIN_CLUSTER_SIZE:
             out.append(cluster)
@@ -452,13 +507,7 @@ async def _refine_clusters_with_modularity(
         edges: list[tuple[str, str, float]] = []
         seen_edge_ids: set[str] = set()
         for fid in cluster:
-            try:
-                rels = await svc._graph.neighbors(
-                    fid, relation_types=[RelationKind.SAME_TOPIC.value],
-                )
-            except Exception:  # noqa: BLE001
-                continue
-            for rel, target_id in rels:
+            for rel, target_id in neighbor_map.get(fid, ()):
                 if rel.id in seen_edge_ids:
                     continue
                 seen_edge_ids.add(rel.id)
@@ -551,14 +600,13 @@ async def _build_same_topic_components(
     if not fact_ids:
         return []
     # Build adjacency by walking each fact's SAME_TOPIC neighbors.
+    # Wave-32+ (2026-05-19): batched fan-out — pre-fix this was N
+    # sequential awaits over 902 facts, ~45s. Now ~3s.
     adj: dict[str, set[str]] = {fid: set() for fid in fact_ids}
-    for fid in fact_ids:
-        try:
-            rels = await svc._graph.neighbors(
-                fid, relation_types=[RelationKind.SAME_TOPIC.value],
-            )
-        except Exception:  # noqa: BLE001
-            continue
+    neighbor_map = await _neighbors_many(
+        svc, fact_ids, relation_types=[RelationKind.SAME_TOPIC.value],
+    )
+    for fid, rels in neighbor_map.items():
         for _r, other in rels:
             if other in adj:
                 adj[fid].add(other)
@@ -774,6 +822,39 @@ async def name_clusters(
     created = 0
     processed = 0
     skipped = 0
+    # Wave-32+ (2026-05-19): pre-fetch topics ONCE before the loop.
+    # Pre-fix _cluster_has_topic_node_by_hash + _cluster_has_topic_node
+    # were called 3× per cluster, each doing a fresh vec.search + N
+    # neighbor lookups. For budget=5 that was 15 vec.searches + 50-200
+    # neighbor calls — easily 10s of wall time before the FIRST LLM
+    # call. Now: one vec.search + one batched neighbor fan-out, then
+    # all checks are O(1) set/dict lookups.
+    try:
+        all_topics = await svc._vec.search(
+            None, where=f"kind = '{FactKind.TOPIC.value}'", limit=200,
+        )
+        all_topics = [t for t in all_topics if not t.superseded_by]
+    except Exception:  # noqa: BLE001
+        all_topics = []
+    existing_topic_hashes: set[str] = set()
+    for t in all_topics:
+        # Topic text format: "topic:<hash>:<name>" — pull the hash out
+        # so we can short-circuit the per-cluster identity check.
+        txt = t.text or ""
+        if txt.startswith("topic:"):
+            rest = txt[6:]
+            sep = rest.find(":")
+            if sep > 0:
+                existing_topic_hashes.add(rest[:sep])
+    topic_member_map = await _neighbors_many(
+        svc,
+        [t.id for t in all_topics],
+        relation_types=[RelationKind.PART_OF.value],
+    )
+    members_of_any_topic: set[str] = set()
+    for member_rels in topic_member_map.values():
+        for _r, target_id in member_rels:
+            members_of_any_topic.add(target_id)
     for comp in components:
         if processed >= budget:
             break
@@ -799,13 +880,16 @@ async def name_clusters(
         # this commit) still get detected and not re-created.
         cluster_hash = _compute_core_member_hash(facts)
         legacy_hash = _compute_cluster_hash(comp)
-        if await _cluster_has_topic_node_by_hash(svc, cluster_hash):
+        # Wave-32+ (2026-05-19): O(1) set lookups against the pre-
+        # fetched topic snapshot, replacing 3× vec.search + neighbors
+        # scan per cluster.
+        if cluster_hash in existing_topic_hashes:
             skipped += 1
             continue
-        if await _cluster_has_topic_node_by_hash(svc, legacy_hash):
+        if legacy_hash in existing_topic_hashes:
             skipped += 1
             continue
-        if await _cluster_has_topic_node(svc, comp):
+        if comp & members_of_any_topic:
             skipped += 1
             continue
         # Ask the LLM for a name.
@@ -866,6 +950,12 @@ async def name_clusters(
                 ))
             except Exception:  # noqa: BLE001
                 continue
+        # Wave-32+ (2026-05-19): keep the pre-fetched snapshot in
+        # sync so later iterations see this topic via O(1) lookup,
+        # not a fresh DB scan.
+        existing_topic_hashes.add(cluster_hash)
+        existing_topic_hashes.add(legacy_hash)
+        members_of_any_topic.update(f.id for f in facts)
         created += 1
         processed += 1
     return {
