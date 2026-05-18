@@ -147,7 +147,7 @@ function _loadGraphPositions() {
   }
 }
 
-function _saveGraphPositions(positions) {
+function _saveGraphPositions(positions, token) {
   if (!positions || typeof positions !== "object") return;
   // Merge with the existing saved set so nodes not currently in the
   // viewport (e.g. focus-filtered) retain their saved positions.
@@ -174,6 +174,59 @@ function _saveGraphPositions(positions) {
         p: positions,
       }));
     } catch (__) { /* give up */ }
+  }
+  // Wave-32+ Chunk 8: also push to the server so positions sync
+  // across browsers / devices. Debounced via the caller's snapshot
+  // events (stabilization-done + drag-end, both relatively rare).
+  // Fire-and-forget — failure here doesn't affect the local UI;
+  // localStorage retains the data.
+  if (token) {
+    _pushPositionsToServer(merged, token);
+  }
+}
+
+
+// Wave-32+ Chunk 8: debounced server-side push so we don't spam
+// PUT requests on every micro-stabilization step. 1.5s window is
+// generous — the user typically finishes dragging well within it.
+let _serverPushTimer = null;
+let _serverPushPending = null;
+
+function _pushPositionsToServer(positions, token) {
+  _serverPushPending = positions;
+  if (_serverPushTimer) return;
+  _serverPushTimer = setTimeout(async () => {
+    const pendingPos = _serverPushPending;
+    _serverPushPending = null;
+    _serverPushTimer = null;
+    if (!pendingPos) return;
+    try {
+      const url = "/api/v2/memory/v2/graph_positions"
+        + (token ? `?token=${encodeURIComponent(token)}` : "");
+      await fetch(url, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ positions: pendingPos }),
+      });
+    } catch (_) { /* server unreachable / not yet on new daemon */ }
+  }, 1500);
+}
+
+
+async function _fetchPositionsFromServer(token) {
+  if (!token) return null;
+  try {
+    const url = "/api/v2/memory/v2/graph_positions"
+      + `?token=${encodeURIComponent(token)}`;
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    const body = await resp.json();
+    if (!body || body.ok === false) return null;
+    const positions = body.positions;
+    if (!positions || typeof positions !== "object") return null;
+    return positions;
+  } catch (_) {
+    return null;
   }
 }
 
@@ -248,13 +301,24 @@ export function FactsGraphView({ token, focusFactId, onFocusFact }) {
       }
 
       // Wave-32+ position persistence: restore each node's saved
-      // (x,y) from localStorage so re-renders + force-directed
-      // re-layouts don't reshuffle the graph from one click to the
-      // next. The user's complaint "把图分开了 / 数据跑没了" was
-      // largely visual — the underlying data was fine, the force
-      // algorithm was just reflowing positions each refresh. Now
-      // positions persist per-node + per-session.
-      const savedPositions = _loadGraphPositions();
+      // (x,y). Two-tier read: server-side first (syncs across
+      // browsers / devices), localStorage as fallback (works
+      // offline / before user touched the new endpoint). The
+      // server-side fetch is awaited so first paint already has
+      // restored positions; localStorage stays the auth-free
+      // immediate cache.
+      const serverPositions = await _fetchPositionsFromServer(token);
+      const savedPositions = serverPositions || _loadGraphPositions();
+      // If server returned non-empty data, mirror into localStorage
+      // so subsequent renders don't re-fetch unnecessarily.
+      if (serverPositions && Object.keys(serverPositions).length > 0) {
+        try {
+          localStorage.setItem(_POSITIONS_KEY, JSON.stringify({
+            v: _POSITIONS_VERSION,
+            p: serverPositions,
+          }));
+        } catch (_) { /* quota */ }
+      }
       // Map nodes → vis-network shape.
       const visNodes = data.nodes.map((n) => {
         const color = KIND_COLOR[n.kind] || "#777";
@@ -379,7 +443,7 @@ export function FactsGraphView({ token, focusFactId, onFocusFact }) {
         const _snapshotPositions = () => {
           try {
             const positions = network.getPositions();
-            _saveGraphPositions(positions);
+            _saveGraphPositions(positions, token);
           } catch (_) { /* localStorage full / disabled */ }
         };
         network.on("stabilizationIterationsDone", _snapshotPositions);

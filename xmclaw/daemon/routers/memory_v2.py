@@ -330,6 +330,98 @@ async def entity_index_rebuild(request: Request) -> Any:
         )
 
 
+@router.get("/graph_positions")
+async def graph_positions_get(request: Request) -> Any:
+    """Wave-32+ Chunk 8: server-side position storage.
+
+    Returns ``{ok, positions}`` where positions is a dict of
+    ``fact_id → {x, y}``. Pre-fix the UI relied on localStorage
+    only — open a different browser / device and you'd lose your
+    careful manual layout. This endpoint mirrors the same data
+    server-side so layouts sync across all clients connected to
+    the same daemon.
+
+    Stored as a plain JSON file under ``~/.xmclaw/v2/graph_positions.json``.
+    No DB — single-writer, small payload, last-write-wins. The
+    typical user has hundreds of nodes, JSON-on-disk is plenty.
+    """
+    try:
+        from xmclaw.utils.paths import v2_dir
+        path = v2_dir() / "graph_positions.json"
+        if not path.exists():
+            return JSONResponse({"ok": True, "positions": {}})
+        import json as _json
+        text = path.read_text(encoding="utf-8")
+        data = _json.loads(text)
+        positions = data.get("positions") if isinstance(data, dict) else None
+        if not isinstance(positions, dict):
+            positions = {}
+        return JSONResponse({"ok": True, "positions": positions})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+            status_code=200,
+        )
+
+
+@router.put("/graph_positions")
+async def graph_positions_put(request: Request) -> Any:
+    """Persist a snapshot of node positions. Body shape:
+
+      {"positions": {"fact_id_1": {"x": 123, "y": -456}, ...}}
+
+    Last-write-wins (typical: the UI snapshots on dragEnd /
+    stabilization). Cap at 5000 nodes — beyond that the graph
+    isn't usable anyway and we don't want unbounded disk growth.
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(
+            {"ok": False, "error": "invalid JSON body"},
+            status_code=400,
+        )
+    positions = body.get("positions") if isinstance(body, dict) else None
+    if not isinstance(positions, dict):
+        return JSONResponse(
+            {"ok": False, "error": "body must include 'positions' object"},
+            status_code=400,
+        )
+    if len(positions) > 5000:
+        return JSONResponse(
+            {"ok": False, "error": "too many positions (max 5000)"},
+            status_code=400,
+        )
+    # Validate each entry — accept only well-shaped {x: number, y: number}.
+    cleaned: dict[str, dict[str, float]] = {}
+    for fid, pos in positions.items():
+        if not isinstance(fid, str) or not isinstance(pos, dict):
+            continue
+        x = pos.get("x")
+        y = pos.get("y")
+        if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+            continue
+        cleaned[fid] = {"x": round(float(x), 2), "y": round(float(y), 2)}
+    try:
+        from xmclaw.utils.paths import v2_dir
+        path = v2_dir() / "graph_positions.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        import json as _json
+        # Atomic write: tmp + rename.
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(
+            _json.dumps({"v": 1, "positions": cleaned}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        tmp.replace(path)
+        return JSONResponse({"ok": True, "saved": len(cleaned)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+            status_code=200,
+        )
+
+
 @router.get("/entity_index_stats")
 async def entity_index_stats(request: Request) -> Any:
     """Quick read-only inspector — useful for the UI to surface
