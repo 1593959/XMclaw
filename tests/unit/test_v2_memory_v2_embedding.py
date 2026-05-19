@@ -211,3 +211,109 @@ async def test_stats_reports_hit_rate() -> None:
     assert s["cache_hit_rate"] == pytest.approx(1 / 3)
     assert s["provider"] == "stub"
     assert s["dim"] == 4
+
+
+# ── Epic #27 sweep #8 (2026-05-19): circuit breaker ────────────────
+
+
+class _AlwaysFailingEmbedder:
+    """Embedder that raises on every call — simulates a 502-storm
+    upstream provider. The breaker should clamp down."""
+
+    def __init__(self) -> None:
+        self.name = "always_fail"
+        self.dim = 4
+        self.calls = 0
+
+    def is_available(self) -> bool:
+        return True
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        self.calls += 1
+        raise RuntimeError("upstream 502")
+
+
+@pytest.mark.asyncio
+async def test_cb_opens_after_threshold_consecutive_failures() -> None:
+    """After ``circuit_breaker_threshold`` consecutive failed
+    ``_embed_with_retry`` calls, the breaker opens — subsequent
+    calls raise immediately without hitting the provider."""
+    from xmclaw.memory.v2.embedding import EmbeddingFailure
+
+    backend = _AlwaysFailingEmbedder()
+    svc = EmbeddingService(
+        backend,
+        retry_attempts=2,
+        retry_backoff_s=0.0,
+        circuit_breaker_threshold=3,
+        circuit_breaker_cooldown_s=300.0,
+    )
+    for _ in range(3):
+        with pytest.raises(EmbeddingFailure):
+            await svc.embed("text")
+    expected_calls_before_open = 3 * 2  # 3 cycles × 2 attempts each
+    assert backend.calls == expected_calls_before_open
+
+    # Next call should NOT hit the provider — breaker is open.
+    with pytest.raises(EmbeddingFailure, match="circuit breaker OPEN"):
+        await svc.embed("more text")
+    assert backend.calls == expected_calls_before_open  # no new call
+
+
+@pytest.mark.asyncio
+async def test_cb_resets_on_successful_call() -> None:
+    """A success between failures resets the counter — the breaker
+    should NOT open if failures are interleaved with successes."""
+    from xmclaw.memory.v2.embedding import EmbeddingFailure
+
+    class _FlakyEmbedder:
+        def __init__(self) -> None:
+            self.name = "flaky"
+            self.dim = 4
+            self.call = 0
+        def is_available(self) -> bool:
+            return True
+        async def embed(self, texts: list[str]) -> list[list[float]]:
+            self.call += 1
+            if self.call % 3 == 0:
+                return [[1.0, 0, 0, 0] for _ in texts]
+            raise RuntimeError("flake")
+
+    backend = _FlakyEmbedder()
+    svc = EmbeddingService(
+        backend,
+        retry_attempts=1,
+        retry_backoff_s=0.0,
+        circuit_breaker_threshold=3,
+        circuit_breaker_cooldown_s=300.0,
+    )
+    for i in range(6):
+        try:
+            await svc.embed(f"text-{i}")
+        except EmbeddingFailure:
+            pass
+    s = svc.stats()
+    assert s["circuit_breaker_open"] is False
+
+
+@pytest.mark.asyncio
+async def test_cb_state_in_stats() -> None:
+    """``stats()`` exposes the breaker so observability + UI can
+    surface "embedder unhealthy" without grepping daemon.log."""
+    from xmclaw.memory.v2.embedding import EmbeddingFailure
+
+    backend = _AlwaysFailingEmbedder()
+    svc = EmbeddingService(
+        backend,
+        retry_attempts=1,
+        retry_backoff_s=0.0,
+        circuit_breaker_threshold=2,
+        circuit_breaker_cooldown_s=300.0,
+    )
+    for _ in range(2):
+        with pytest.raises(EmbeddingFailure):
+            await svc.embed("x")
+    s = svc.stats()
+    assert s["circuit_breaker_open"] is True
+    assert s["circuit_breaker_cooldown_remaining_s"] > 0
+    assert s["circuit_breaker_consecutive_failures"] == 2

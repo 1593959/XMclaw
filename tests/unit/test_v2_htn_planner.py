@@ -721,6 +721,55 @@ async def test_plan_resolves_depends_on_through_id_rewrite() -> None:
 
 
 @pytest.mark.asyncio
+async def test_execute_repair_preserves_partial_results_from_original_plan(
+) -> None:
+    """Epic #27 sweep #1 (2026-05-19): when a multi-step plan triggers
+    repair on a LATER step, the OUTPUTS from successfully-completed
+    earlier steps are preserved in the final ``step_results`` —
+    not silently discarded.
+
+    Pre-fix the implementation cleared ``results = []`` before
+    re-running the repaired plan, throwing away genuine work (LLM
+    cost, side effects already applied, etc). Post-Epic #26 Phase A
+    the repaired plan mints a fresh plan_id so step IDs can't
+    collide across the boundary; the "repair may have rewritten
+    earlier steps" defensiveness was over-cautious.
+    """
+    repair_response = {
+        "steps": [
+            {"id": "r1", "intent": "alt path", "depends_on": []},
+        ],
+        "confidence": 0.5,
+    }
+    llm = FakeLLM([_two_step_response(), repair_response])
+    planner = Planner(llm=llm)
+    plan = await planner.plan(FakeGoal(id="g", name="n", description="d"))
+    fast_steps = tuple(
+        PlanStep(
+            id=s.id, action_kind=s.action_kind, payload=s.payload,
+            depends_on=s.depends_on, expected_outcome=s.expected_outcome,
+            retry_policy={"max_retries": 1, "backoff_s": 0.0},
+        )
+        for s in plan.steps
+    )
+    fast_plan = Plan(
+        id=plan.id, goal_id=plan.goal_id, steps=fast_steps,
+        status="draft", confidence=plan.confidence, created_at=0.0,
+    )
+    # s1 succeeds, s2 fails forever → repair fires + r1 succeeds.
+    dispatcher = FakeDispatcher(fail_on={"s2": 999})
+    result = await planner.execute(fast_plan, dispatcher)
+    assert result.status == "repaired"
+    # New invariant: step_results contains BOTH s1's pre-failure
+    # output AND r1's post-repair output. Pre-fix it only carried
+    # r1 because the partial was cleared.
+    assert len(result.step_results) == 2, (
+        f"expected pre-failure s1 + repaired r1 in step_results, "
+        f"got {len(result.step_results)}: {result.step_results}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_planning_prompt_does_not_seed_step_1_as_example_value() -> None:
     """Hygiene: the planner prompt must not present ``"step_1"`` as
     a value the LLM should COPY (i.e. in ``"id": "step_1"`` form).

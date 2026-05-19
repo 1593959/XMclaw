@@ -518,14 +518,29 @@ class Planner:
                     error="repair produced empty plan",
                 )
 
-            # Restart sorted execution from the top of the repaired
-            # plan. Already-completed results are preserved; we only
-            # replay from where we got stuck.
+            # Epic #27 sweep #1 (2026-05-19): keep the successfully-
+            # completed steps from the original plan. Pre-fix the
+            # whole results list was discarded with the comment
+            # "repair may have reordered or rewritten earlier steps
+            # too" — defensive but wrong post-Epic #26 Phase A,
+            # where repair mints a fresh plan_id and step IDs in
+            # the repaired plan are namespaced under that new id
+            # (e.g. ``<new_plan>:step_1`` ≠ ``<old_plan>:step_1``
+            # by construction). The pre-failure steps in the ORIGINAL
+            # plan namespace DID happen and their outputs are valid.
+            # Discarding them lies about what actually executed and
+            # forces the repaired plan to redo work it doesn't need
+            # to (redundant LLM calls, side effects re-applied,
+            # cost burnt).
+            #
+            # New semantic: ``results`` is preserved up to but not
+            # including the failed step. The repaired plan's
+            # outputs append onto that list as they complete. The
+            # final PlanResult.step_results carries BOTH lineages
+            # so the caller sees the full audit trail.
             sorted_steps = self._topological_sort(current_plan)
             idx = 0  # re-execute the repaired plan from scratch
-            results = []  # discard pre-repair partials — repair may
-
-            # have reordered or rewritten earlier steps too.
+            # `results` keeps its pre-repair entries — DO NOT clear.
 
         return PlanResult(
             plan_id=current_plan.id,

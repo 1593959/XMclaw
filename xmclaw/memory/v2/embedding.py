@@ -109,6 +109,8 @@ class EmbeddingService:
         cache_capacity: int = 1024,
         retry_attempts: int = 3,
         retry_backoff_s: float = 0.5,
+        circuit_breaker_threshold: int = 5,
+        circuit_breaker_cooldown_s: float = 300.0,
     ) -> None:
         self._provider = provider
         self._cache: OrderedDict[str, tuple[float, ...]] = OrderedDict()
@@ -119,6 +121,23 @@ class EmbeddingService:
         self.cache_hits = 0
         self.cache_misses = 0
         self.failures = 0
+        # Epic #27 sweep #8 (2026-05-19) — circuit breaker.
+        # Pre-fix daemon.log showed 857 ``embedding.http_error`` /day on
+        # the user's machine: 5xx from the provider, retry 3× with
+        # 0.5→4.5s backoff, then outer caller (key_info_extractor /
+        # llm_fact_extractor / etc) retries the whole thing, stacking
+        # into a sustained storm. Each one of those is a failed
+        # ``remember()`` — user input is getting LOST. The breaker
+        # short-circuits after ``threshold`` consecutive failures and
+        # raises ``EmbeddingFailure`` immediately for the next
+        # ``cooldown_s`` seconds. A successful call resets the counter
+        # back to 0. Threshold + cooldown picked to bound a bad
+        # provider's blast radius at ~5 attempts per 5 minutes
+        # regardless of caller behavior.
+        self._cb_threshold = max(1, int(circuit_breaker_threshold))
+        self._cb_cooldown_s = max(0.0, float(circuit_breaker_cooldown_s))
+        self._cb_consecutive_failures = 0
+        self._cb_open_until: float = 0.0  # monotonic ts; 0 = closed
 
     @property
     def dim(self) -> int:
@@ -214,6 +233,22 @@ class EmbeddingService:
     async def _embed_with_retry(
         self, texts: list[str],
     ) -> list[list[float]]:
+        # Epic #27 sweep #8: circuit-breaker open check. If we recently
+        # tripped the breaker, refuse immediately instead of hammering
+        # the broken provider. Caller catches EmbeddingFailure same
+        # as any other failure mode — including the legitimate
+        # "embedding off" path via service.recall keyword-only.
+        import time as _time
+        now = _time.monotonic()
+        if self._cb_open_until and now < self._cb_open_until:
+            self.failures += 1
+            cooldown_left = self._cb_open_until - now
+            raise EmbeddingFailure(
+                f"embedding circuit breaker OPEN "
+                f"(retry in {cooldown_left:.0f}s) — "
+                f"too many consecutive failures, calls suppressed to "
+                f"avoid hammering the upstream provider."
+            )
         last_err: Exception | None = None
         delay = self._retry_backoff_s
         for attempt in range(1, self._retry_attempts + 1):
@@ -231,6 +266,8 @@ class EmbeddingService:
                 # any empty row as a failure of the whole batch — the
                 # consumer (Fact write) needs ALL or none.
                 if all(v for v in vecs):
+                    # Success — reset breaker counter.
+                    self._cb_consecutive_failures = 0
                     return vecs
                 last_err = EmbeddingFailure(
                     f"provider returned empty rows: "
@@ -245,8 +282,19 @@ class EmbeddingService:
                 await asyncio.sleep(delay)
                 delay *= 3.0  # 0.5 → 1.5 → 4.5 by default
 
-        # All retries failed.
+        # All retries failed. Bump the breaker counter; if we cross
+        # the threshold, open the breaker for cooldown_s.
         self.failures += 1
+        self._cb_consecutive_failures += 1
+        if self._cb_consecutive_failures >= self._cb_threshold:
+            self._cb_open_until = (
+                _time.monotonic() + self._cb_cooldown_s
+            )
+            _log.warning(
+                "embedding_service.circuit_breaker_open "
+                "consecutive_failures=%d cooldown_s=%.0f",
+                self._cb_consecutive_failures, self._cb_cooldown_s,
+            )
         raise EmbeddingFailure(
             f"embedding failed after {self._retry_attempts} attempts: {last_err}",
         )
@@ -254,8 +302,14 @@ class EmbeddingService:
     # ── Diagnostics ─────────────────────────────────────────────
 
     def stats(self) -> dict[str, Any]:
+        import time as _time
         total = self.cache_hits + self.cache_misses
         hit_rate = self.cache_hits / total if total else 0.0
+        now = _time.monotonic()
+        cb_open = bool(self._cb_open_until and now < self._cb_open_until)
+        cb_cooldown_remaining = (
+            max(0.0, self._cb_open_until - now) if cb_open else 0.0
+        )
         return {
             "provider": self.name,
             "dim": self.dim,
@@ -265,6 +319,11 @@ class EmbeddingService:
             "cache_misses": self.cache_misses,
             "cache_hit_rate": hit_rate,
             "failures": self.failures,
+            "circuit_breaker_open": cb_open,
+            "circuit_breaker_cooldown_remaining_s": cb_cooldown_remaining,
+            "circuit_breaker_consecutive_failures": (
+                self._cb_consecutive_failures
+            ),
         }
 
 
