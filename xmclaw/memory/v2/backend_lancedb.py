@@ -38,6 +38,17 @@ if TYPE_CHECKING:
 DEFAULT_EMBEDDING_DIM = 1536
 
 
+class LanceDBSchemaError(RuntimeError):
+    """Epic #27 sweep #7 (2026-05-19): raised by upsert when the
+    on-disk schema is known to be missing a required column.
+
+    Distinct from the generic ``ValueError("Field 'bucket' not found
+    in target schema")`` that LanceDB raises per-row — this one fires
+    ONCE per call (not 538×/day) with an actionable error message
+    that names the fix path. Callers should catch it + emit a
+    MEMORY_SCHEMA_DEGRADED bus event ONCE per daemon lifetime."""
+
+
 def _build_fact_schema(dim: int):
     """Build the Fact Pydantic LanceModel for given embedding dim.
 
@@ -177,6 +188,23 @@ class LanceDBVectorBackend:
         self._db: Any | None = None
         self._table: Any | None = None
         self._schema_cls: Any | None = None
+        # Epic #27 sweep #7 (2026-05-19): track schema-migration state.
+        # Pre-fix _maybe_add_missing_columns logged + continued when a
+        # required column couldn't be added; every subsequent upsert
+        # then failed with the cryptic "Field 'bucket' not found in
+        # target schema" — daemon.log showed 538 such errors/day on
+        # the user's machine, each one a LOST fact write (user input
+        # silently dropped). Now: cache the migration failure, raise a
+        # clear LanceDBSchemaError on the very first upsert call, and
+        # let the daemon-level bus subscriber (memory_v2 router) emit
+        # MEMORY_SCHEMA_DEGRADED ONCE per daemon lifetime instead of
+        # 538×. ``schema_error`` is None when healthy; populated to
+        # the original exception string when migration tried + failed
+        # AND a required column is still missing.
+        self._schema_error: str | None = None
+        # Columns the code REQUIRES to be present (any write requires
+        # them). Keep in sync with _MIGRATIONS below.
+        self._required_columns: frozenset[str] = frozenset({"bucket"})
 
     async def _ensure_ready(self) -> None:
         import lancedb
@@ -217,6 +245,11 @@ class LanceDBVectorBackend:
 
         Idempotent: only adds columns when missing. Safe to call on
         every ``_ensure_ready``.
+
+        Epic #27 sweep #7 (2026-05-19): on add_columns() failure we
+        now set ``self._schema_error`` so subsequent writes refuse
+        immediately with a clear error instead of producing 538
+        cryptic "Field 'bucket' not found" failures per day.
         """
         from xmclaw.utils.log import get_logger
         log = get_logger(__name__)
@@ -249,9 +282,24 @@ class LanceDBVectorBackend:
             except Exception as exc:  # noqa: BLE001
                 log.warning(
                     "lancedb.schema_migration_failed table=%s "
-                    "column=%s err=%s — future writes WILL fail",
+                    "column=%s err=%s — future writes will refuse "
+                    "until daemon restart + manual repair",
                     self._table_name, col, exc,
                 )
+                if col in self._required_columns:
+                    self._schema_error = (
+                        f"required column {col!r} missing and "
+                        f"migration failed: {type(exc).__name__}: {exc}"
+                    )
+
+    @property
+    def schema_error(self) -> str | None:
+        """Epic #27 sweep #7: read-only check for "is the on-disk
+        schema in a degraded state?". The memory_v2 router exposes
+        this via ``/api/v2/memory/v2/status`` so the UI can show a
+        red banner instead of users guessing why ``remember()`` is
+        silently dropping their input."""
+        return self._schema_error
 
     # ── Protocol surface ────────────────────────────────────────
 
@@ -259,6 +307,21 @@ class LanceDBVectorBackend:
         if not records:
             return 0
         await self._ensure_ready()
+        # Epic #27 sweep #7 (2026-05-19): refuse early when the
+        # on-disk schema is known to be missing a required column.
+        # Pre-fix every doomed write produced "Field 'bucket' not
+        # found in target schema" — 538 of those/day on the user's
+        # machine, each one a silently-dropped fact. Now: one clear
+        # error per call, no cryptic stack trace bubbling up.
+        if self._schema_error is not None:
+            raise LanceDBSchemaError(
+                f"refusing upsert: on-disk schema is degraded. "
+                f"{self._schema_error} "
+                f"Fix: restart daemon (re-runs schema migration), "
+                f"or manually run ``ALTER TABLE {self._table_name} "
+                f"ADD COLUMN bucket STRING DEFAULT ''`` via LanceDB "
+                f"CLI then restart."
+            )
         rows = [_fact_to_record(f, self._dim) for f in records]
         # merge_insert("id") — the LanceDB-native upsert. Replaces
         # the matching row entirely; merge semantics (evidence

@@ -98,12 +98,41 @@ async def status(request: Request) -> dict[str, Any]:
         }
     embedder_dim = svc.embedder.dim if svc.embedder else 0
     embedder_name = svc.embedder.name if svc.embedder else "(none)"
+    # Epic #27 sweep #7 (2026-05-19): surface backend schema state +
+    # embedder circuit breaker state so the UI can show a "memory
+    # degraded" banner. Pre-fix these signals existed inside the
+    # backend objects but had no REST surface — daemon.log was the
+    # only visibility, and operators don't tail logs.
+    backend_schema_error = None
+    try:
+        backend = getattr(svc, "_vec", None)
+        backend_schema_error = getattr(backend, "schema_error", None)
+    except Exception:  # noqa: BLE001
+        backend_schema_error = None
+    embedder_circuit_open = False
+    embedder_consecutive_failures = 0
+    try:
+        if svc.embedder is not None and hasattr(svc.embedder, "stats"):
+            es = svc.embedder.stats()
+            embedder_circuit_open = bool(
+                es.get("circuit_breaker_open", False),
+            )
+            embedder_consecutive_failures = int(
+                es.get("circuit_breaker_consecutive_failures", 0) or 0,
+            )
+    except Exception:  # noqa: BLE001
+        pass
+    degraded = bool(backend_schema_error) or embedder_circuit_open
     return {
         "enabled": True,
-        "healthy": True,
+        "healthy": not degraded,
         "fact_count": count,
         "embedder_dim": embedder_dim,
         "embedder_name": embedder_name,
+        "degraded": degraded,
+        "backend_schema_error": backend_schema_error,
+        "embedder_circuit_open": embedder_circuit_open,
+        "embedder_consecutive_failures": embedder_consecutive_failures,
     }
 
 
