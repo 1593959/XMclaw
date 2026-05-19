@@ -926,3 +926,90 @@ async def test_stop_graceful_waits_for_tick_to_finish() -> None:
     assert tick_finished.is_set(), "tick did not finish before stop returned"
     assert elapsed >= 0.15, f"stop returned too quickly ({elapsed:.3f}s)"
     assert not daemon.is_running
+
+
+# ── Epic #27 sweep #12 (2026-05-19): slow_subsystem self-heal ─────
+
+
+class _SlowReflectionCycle:
+    """Reflection cycle that takes ``delay_s`` per run — used to
+    deliberately exceed the threshold + trigger the cooldown."""
+
+    def __init__(self, delay_s: float) -> None:
+        self.delay_s = delay_s
+        self.runs = 0
+
+    async def run_due(self, _tick: int) -> list:
+        self.runs += 1
+        await asyncio.sleep(self.delay_s)
+        return []
+
+
+@pytest.mark.asyncio
+async def test_slow_subsystem_enters_cooldown_after_strike_threshold() -> None:
+    """After 3 consecutive slow reflection ticks, the daemon puts
+    ``reflection`` into a cooldown — subsequent ticks skip it
+    until the cooldown elapses. Pre-fix the daemon just emitted
+    a warning and kept invoking the slow subsystem on every tick,
+    eating heartbeat time forever."""
+    slow = _SlowReflectionCycle(delay_s=0.05)  # 50ms
+    cfg = CognitiveDaemonConfig(
+        heartbeat_hz=100.0,
+        slow_subsystem_thresholds={"reflection": 20.0},  # 20ms threshold
+    )
+    daemon = CognitiveDaemon(
+        config=cfg,
+        bus=PerceptionBus(),
+        attention=FakeAttention(),
+        reflection_cycle=slow,
+    )
+    # 3 ticks: each one runs reflection + breaches threshold.
+    for _ in range(3):
+        await daemon.tick_once()
+    assert slow.runs == 3
+    assert "reflection" in daemon._cooldown_until_tick
+
+    # 4th + 5th tick: reflection should NOT run (cooldown active).
+    await daemon.tick_once()
+    await daemon.tick_once()
+    assert slow.runs == 3, (
+        f"reflection ran during cooldown (runs={slow.runs}, "
+        f"cooldown_until={daemon._cooldown_until_tick.get('reflection')})"
+    )
+
+
+@pytest.mark.asyncio
+async def test_slow_subsystem_strikes_reset_on_healthy_tick() -> None:
+    """A normal-latency tick between slow ones resets the strike
+    counter — interleaved slowness doesn't open the cooldown."""
+    delays = [0.05, 0.001, 0.05, 0.001, 0.05]  # slow, fast, slow, fast, slow
+
+    class _FlickeringRefl:
+        def __init__(self) -> None:
+            self.idx = 0
+            self.runs = 0
+
+        async def run_due(self, _tick: int) -> list:
+            self.runs += 1
+            d = delays[self.idx % len(delays)]
+            self.idx += 1
+            await asyncio.sleep(d)
+            return []
+
+    flicker = _FlickeringRefl()
+    cfg = CognitiveDaemonConfig(
+        heartbeat_hz=100.0,
+        slow_subsystem_thresholds={"reflection": 20.0},
+    )
+    daemon = CognitiveDaemon(
+        config=cfg,
+        bus=PerceptionBus(),
+        attention=FakeAttention(),
+        reflection_cycle=flicker,
+    )
+    for _ in range(5):
+        await daemon.tick_once()
+    # Despite 3 slow ticks total, strikes never reached 3 consecutively
+    # (the fast ticks reset). Cooldown should NOT be active.
+    assert "reflection" not in daemon._cooldown_until_tick
+    assert flicker.runs == 5  # all 5 invoked, none skipped

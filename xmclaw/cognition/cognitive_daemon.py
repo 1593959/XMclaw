@@ -178,6 +178,23 @@ class CognitiveDaemon:
         # LLM credits with no progress.
         self._failed_goal_attempts: dict[str, int] = {}
         self._max_goal_retries: int = 2
+        # Epic #27 sweep #12 (2026-05-19): per-subsystem slow-strike
+        # tracking + cooldown. Pre-fix the daemon emitted
+        # "slow_subsystem" warnings on every threshold breach but
+        # NEVER acted on them — operator had to manually disable a
+        # subsystem to unwedge. Now: after 3 consecutive threshold
+        # breaches we put the subsystem into a cooldown (skip its
+        # next N ticks) so a wedged backend can't keep eating
+        # heartbeat time. A normal-latency tick resets the strike
+        # count; cooldown elapses naturally so the subsystem retries
+        # itself. Cooldown ticks = SLOW_SUBSYSTEM_COOLDOWN_TICKS.
+        self._slow_strikes: dict[str, int] = {}
+        self._cooldown_until_tick: dict[str, int] = {}
+
+    # Consecutive slow ticks before triggering cooldown.
+    SLOW_SUBSYSTEM_STRIKE_THRESHOLD: int = 3
+    # How many ticks a cooled subsystem skips before retrying.
+    SLOW_SUBSYSTEM_COOLDOWN_TICKS: int = 30
 
     # ------------------------------------------------------------------
     # Public properties (mainly for tests + observability)
@@ -384,7 +401,10 @@ class CognitiveDaemon:
                 errors.append(f"goal_generator: {type(exc).__name__}: {exc}")
 
         # 4. Periodic self-experiment.
-        if self._should_run_experiment(tick):
+        if (
+            self._should_run_experiment(tick)
+            and not self._in_cooldown("experiment", tick)
+        ):
             try:
                 ran_experiment = await _timed("experiment", self._run_experiment())
             except Exception as exc:  # noqa: BLE001
@@ -393,7 +413,10 @@ class CognitiveDaemon:
 
         # 5. R1: 3-bucket reflection cycle.
         n_reflections = 0
-        if self._reflection_cycle is not None:
+        if (
+            self._reflection_cycle is not None
+            and not self._in_cooldown("reflection", tick)
+        ):
             try:
                 results = await _timed("reflection", self._reflection_cycle.run_due(tick))
                 n_reflections = len(results)
@@ -405,7 +428,10 @@ class CognitiveDaemon:
 
         # 6. Periodic skill proposal.
         n_skill_proposals = 0
-        if self._should_propose_skills(tick):
+        if (
+            self._should_propose_skills(tick)
+            and not self._in_cooldown("skills", tick)
+        ):
             try:
                 n_skill_proposals = await _timed("skills", self._run_skill_proposer())
             except Exception as exc:  # noqa: BLE001
@@ -414,9 +440,15 @@ class CognitiveDaemon:
                     f"skill_proposer: {type(exc).__name__}: {exc}",
                 )
 
-        # Phase D: slow-subsystem warnings (non-blocking). Per-subsystem
+        # Phase D + Epic #27 sweep #12 (2026-05-19): slow-subsystem
+        # warnings PLUS self-heal cooldown. Per-subsystem threshold
         # override so LLM-bound subsystems don't constantly trip the
         # heuristic-tier threshold. See ``slow_subsystem_thresholds``.
+        # After ``SLOW_SUBSYSTEM_STRIKE_THRESHOLD`` consecutive breaches,
+        # we put the subsystem into a ``SLOW_SUBSYSTEM_COOLDOWN_TICKS``
+        # cooldown — subsequent ticks skip it (see ``_in_cooldown``
+        # checks in the invocation blocks) until the cooldown expires
+        # OR a successful tick resets the strike counter.
         default_threshold = self._config.slow_subsystem_threshold_ms
         per_subsys = self._config.slow_subsystem_thresholds
         for subsys, ms in latency_ms.items():
@@ -426,6 +458,46 @@ class CognitiveDaemon:
                     f"slow_subsystem: {subsys}={ms:.1f}ms "
                     f"(threshold={threshold:.0f}ms)"
                 )
+                self._slow_strikes[subsys] = (
+                    self._slow_strikes.get(subsys, 0) + 1
+                )
+                if (
+                    self._slow_strikes[subsys]
+                    >= self.SLOW_SUBSYSTEM_STRIKE_THRESHOLD
+                    and subsys not in self._cooldown_until_tick
+                ):
+                    self._cooldown_until_tick[subsys] = (
+                        tick + self.SLOW_SUBSYSTEM_COOLDOWN_TICKS
+                    )
+                    logger.warning(
+                        "cognitive_daemon.subsystem_cooldown subsys=%s "
+                        "strikes=%d cooldown_until_tick=%d "
+                        "(skipping next %d ticks)",
+                        subsys, self._slow_strikes[subsys],
+                        self._cooldown_until_tick[subsys],
+                        self.SLOW_SUBSYSTEM_COOLDOWN_TICKS,
+                    )
+                    errors.append(
+                        f"subsystem_cooldown: {subsys} → skipping "
+                        f"next {self.SLOW_SUBSYSTEM_COOLDOWN_TICKS} "
+                        f"ticks (3 strikes of {threshold:.0f}ms)"
+                    )
+            else:
+                # Healthy tick — reset strikes (cooldown still in
+                # effect, but won't get extended).
+                self._slow_strikes[subsys] = 0
+        # Expire elapsed cooldowns so the subsystem can try again.
+        expired = [
+            s for s, until in self._cooldown_until_tick.items()
+            if tick >= until
+        ]
+        for s in expired:
+            del self._cooldown_until_tick[s]
+            self._slow_strikes[s] = 0
+            logger.info(
+                "cognitive_daemon.subsystem_cooldown_expired subsys=%s",
+                s,
+            )
 
         summary = {
             "tick": tick,
@@ -868,6 +940,16 @@ class CognitiveDaemon:
             return False
         every = max(1, int(self._config.skill_propose_every_n_ticks))
         return tick_count % every == 0
+
+    def _in_cooldown(self, subsys: str, tick: int) -> bool:
+        """Epic #27 sweep #12 (2026-05-19): True when this subsystem
+        is currently skipping invocations due to consecutive slow
+        ticks. Cooldown auto-expires when ``tick >= until``; the
+        next post-tick threshold check clears the state."""
+        until = self._cooldown_until_tick.get(subsys)
+        if until is None:
+            return False
+        return tick < until
 
     async def _run_skill_proposer(self) -> int:
         """Run SkillProposer and publish proposals to the event bus.
