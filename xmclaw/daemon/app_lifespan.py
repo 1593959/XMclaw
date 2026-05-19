@@ -395,6 +395,31 @@ def make_lifespan(
         # Some sections (llm/memory/gateway/runtime/mcp_servers/
         # integrations) need a daemon restart to fully take effect —
         # the event payload flags that.
+        # Epic #26 Phase C (2026-05-19): construct the PlanStore here
+        # so it's available BEFORE create_app builds the
+        # ActionDispatcher. mark_orphaned() flips any plan stuck in
+        # ``executing`` from the previous daemon run to
+        # ``orphaned_at_restart`` so the UI shows them clearly + the
+        # next start() call doesn't conflict on the primary key.
+        _app.state.plan_store = None
+        try:
+            from xmclaw.cognition.plan_store import PlanStore
+            from xmclaw.utils.paths import default_plans_db_path
+            _plan_store = PlanStore(default_plans_db_path())
+            n_orphaned = _plan_store.mark_orphaned()
+            if n_orphaned > 0:
+                import logging as _logging
+                _logging.getLogger(__name__).info(
+                    "plan_store.boot_orphan_sweep count=%d", n_orphaned,
+                )
+            _app.state.plan_store = _plan_store
+        except Exception as exc:  # noqa: BLE001
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "plan_store.boot_init_failed err=%s — autonomous "
+                "plans will not persist this session", exc,
+            )
+
         _app.state.config_watcher = None
         try:
             if config is not None and config_path is not None:
@@ -1944,6 +1969,12 @@ def make_lifespan(
                                 (cfg.get("cognition") or {})
                                 .get("autonomous") or {}
                             ).get("plan_budget_usd", 1.0),
+                        ),
+                        # Phase C (2026-05-19): persistent plan ledger
+                        # so plans survive restart + UI Autonomous
+                        # Tasks panel can show timeline.
+                        plan_store=getattr(
+                            app.state, "plan_store", None,
                         ),
                     ),
                     reflection_cycle=_reflection_cycle,

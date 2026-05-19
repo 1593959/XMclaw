@@ -147,6 +147,7 @@ class ActionDispatcher:
         stub_pretend_ok: bool = False,
         cost_tracker: Any | None = None,
         plan_budget_usd: float | None = None,
+        plan_store: Any | None = None,
     ) -> None:
         self._agent_loop = agent_loop
         self._skill_registry = skill_registry
@@ -179,6 +180,14 @@ class ActionDispatcher:
         self._plan_budget_usd: float | None = (
             float(plan_budget_usd) if plan_budget_usd is not None else None
         )
+        # Epic #26 Phase C (2026-05-19): optional PlanStore for
+        # persistent plan audit trail. When wired, every execute_plan
+        # invocation writes a row at start, updates per-step
+        # progress, stamps a terminal status at exit. Survives
+        # daemon restart so the UI's "Autonomous Tasks" panel +
+        # /api/v2/cognition/plans can show plans-in-flight + plans
+        # interrupted by restart. None = no persistence (legacy).
+        self._plan_store = plan_store
 
     # ── Public surface ────────────────────────────────────────────────
 
@@ -249,6 +258,18 @@ class ActionDispatcher:
                 "budget_usd": self._plan_budget_usd,
             },
         )
+        # Phase C: record plan start in the persistent ledger.
+        if self._plan_store is not None:
+            try:
+                self._plan_store.start(
+                    plan_id,
+                    goal_id=goal_id,
+                    n_steps=len(steps),
+                    budget_usd=self._plan_budget_usd,
+                    confidence=_attr_float(plan, "confidence", 0.5),
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("plan_store.start swallowed")
 
         results: list[StepExecutionResult] = []
         # Epic #26 Phase B: accumulator for prior step outputs.
@@ -314,6 +335,22 @@ class ActionDispatcher:
                             "error": budget_msg,
                         },
                     )
+                    if self._plan_store is not None:
+                        try:
+                            from xmclaw.cognition.plan_store import (
+                                PLAN_STATUS_BUDGET_EXCEEDED,
+                            )
+                            self._plan_store.finalise(
+                                plan_id,
+                                status=PLAN_STATUS_BUDGET_EXCEEDED,
+                                error=budget_msg,
+                                spent_usd=delta,
+                                n_completed=len(results),
+                            )
+                        except Exception:  # noqa: BLE001
+                            logger.exception(
+                                "plan_store.finalise swallowed (budget)",
+                            )
                     return PlanExecutionResult(
                         plan_id=plan_id,
                         step_results=tuple(results),
@@ -375,6 +412,33 @@ class ActionDispatcher:
                         "output_keys": list(outcome.output.keys()),
                     },
                 )
+                # Phase C: update per-plan progress in the ledger.
+                if self._plan_store is not None:
+                    try:
+                        spent_so_far: float | None = None
+                        if (
+                            start_spent_usd is not None
+                            and self._cost_tracker is not None
+                        ):
+                            try:
+                                spent_so_far = float(
+                                    getattr(
+                                        self._cost_tracker, "spent_usd", 0.0,
+                                    ),
+                                ) - start_spent_usd
+                            except Exception:  # noqa: BLE001
+                                spent_so_far = None
+                        self._plan_store.update_progress(
+                            plan_id,
+                            n_completed=len([
+                                r for r in results if r.ok
+                            ]),
+                            spent_usd=spent_so_far,
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "plan_store.update_progress swallowed",
+                        )
             elif not outcome.ok:
                 await self._emit_plan_event(
                     EventType.PLAN_STEP_FAILED if EventType else None,
@@ -422,6 +486,23 @@ class ActionDispatcher:
                             "error": agg_error,
                         },
                     )
+                    if self._plan_store is not None:
+                        try:
+                            from xmclaw.cognition.plan_store import (
+                                PLAN_STATUS_FAILED,
+                            )
+                            self._plan_store.finalise(
+                                plan_id,
+                                status=PLAN_STATUS_FAILED,
+                                error=agg_error,
+                                n_completed=len([
+                                    r for r in results if r.ok
+                                ]),
+                            )
+                        except Exception:  # noqa: BLE001
+                            logger.exception(
+                                "plan_store.finalise swallowed (failed)",
+                            )
                     return PlanExecutionResult(
                         plan_id=plan_id,
                         step_results=tuple(results),
@@ -446,6 +527,36 @@ class ActionDispatcher:
                 "duration_ms": duration_ms,
             },
         )
+        if self._plan_store is not None:
+            try:
+                from xmclaw.cognition.plan_store import (
+                    PLAN_STATUS_COMPLETED, PLAN_STATUS_FAILED,
+                )
+                final_spent: float | None = None
+                if (
+                    start_spent_usd is not None
+                    and self._cost_tracker is not None
+                ):
+                    try:
+                        final_spent = float(
+                            getattr(self._cost_tracker, "spent_usd", 0.0),
+                        ) - start_spent_usd
+                    except Exception:  # noqa: BLE001
+                        pass
+                self._plan_store.finalise(
+                    plan_id,
+                    status=(
+                        PLAN_STATUS_COMPLETED if all_ok
+                        else PLAN_STATUS_FAILED
+                    ),
+                    error=None if all_ok else "continue_on_failure partials",
+                    spent_usd=final_spent,
+                    n_completed=len([r for r in results if r.ok]),
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "plan_store.finalise swallowed (completed/failed)",
+                )
         return PlanExecutionResult(
             plan_id=plan_id,
             step_results=tuple(results),

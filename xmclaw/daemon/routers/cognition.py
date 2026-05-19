@@ -914,3 +914,54 @@ async def get_experiment(
     if res is not None:
         payload["result"] = res.to_dict()
     return JSONResponse(payload)
+
+
+# ── Epic #26 Phase C (2026-05-19): plan history endpoints ──────────
+
+
+def _plan_store(request: Request) -> Any | None:
+    return getattr(request.app.state, "plan_store", None)
+
+
+@router.get("/plans")
+async def list_plans(
+    request: Request,
+    limit: int = 50,
+    status: str | None = None,
+) -> JSONResponse:
+    """List recent autonomous plans, newest first.
+
+    Backs the Mind page "Autonomous Tasks" panel. Each row:
+    ``{plan_id, goal_id, status, started_at, finished_at, n_steps,
+    n_completed, error, budget_usd, spent_usd, confidence}``.
+
+    ``status`` filter accepts: executing / completed / failed /
+    budget_exceeded / orphaned_at_restart.
+    """
+    store = _plan_store(request)
+    if store is None:
+        return JSONResponse({"plans": [], "counts": {}})
+    try:
+        plans = store.list_recent(limit=limit, status=status)
+        counts = store.counts_by_status()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"plans": [], "counts": {}, "error": str(exc)})
+    return JSONResponse({"plans": plans, "counts": counts})
+
+
+@router.get("/plans/{plan_id}")
+async def get_plan(request: Request, plan_id: str) -> JSONResponse:
+    """Single plan row by id."""
+    store = _plan_store(request)
+    if store is None:
+        return JSONResponse(
+            {"ok": False, "error": "plan_store not wired"},
+            status_code=503,
+        )
+    plan = store.get(plan_id)
+    if plan is None:
+        return JSONResponse(
+            {"ok": False, "error": "plan not found"},
+            status_code=404,
+        )
+    return JSONResponse({"ok": True, "plan": plan})

@@ -19,6 +19,7 @@ import { InnerMonologuePanel } from "./_panels/mind_inner_monologue.js";
 import { SuggestionsPanel } from "./_panels/mind_suggestions.js";
 import { TaskDag } from "./_panels/cognition_task_dag.js";
 import { ExperimentsPanel } from "./_panels/cognition_experiments.js";
+import { AutonomousTasksPanel } from "./_panels/cognition_autonomous_tasks.js";
 
 function fmtTs(ts) {
   if (!ts) return "—";
@@ -293,6 +294,11 @@ export function CognitionPage({ token }) {
         })}
       </nav>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:14px;align-items:start">
+
+      <!-- Epic #26 Phase C: Autonomous plan history (persisted across restart) -->
+      <${Card} title="🤖 自主任务">
+        <${AutonomousTasksPanel} token=${token} />
+      </${Card}>
 
       <!-- Daemon Health (Phase E) -->
       <${Card} title="Cognitive Daemon">

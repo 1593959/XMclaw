@@ -334,6 +334,22 @@ def default_ticks_db_path() -> Path:
     return v2_workspace_dir() / "ticks.db"
 
 
+def default_plans_db_path() -> Path:
+    """Epic #26 Phase C (2026-05-19): HTN plan persistence ledger —
+    ``<v2>/plans.db``.
+
+    Stores one row per ``execute_plan`` invocation so in-flight
+    plans survive a daemon restart (boot-time replay picks up
+    ``status="executing"`` and either resumes or marks orphaned)
+    and the UI "Autonomous Tasks" panel has a permanent timeline
+    instead of relying on volatile bus events.
+    """
+    override = os.environ.get("XMC_V2_PLANS_DB_PATH")
+    if override:
+        return Path(override)
+    return v2_workspace_dir() / "plans.db"
+
+
 def evolution_proposals_dir() -> Path:
     """EvolutionLoop scratch dir — ``<v2>/proposals/``.
 
