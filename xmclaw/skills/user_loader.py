@@ -100,6 +100,12 @@ class UserSkillsLoader:
         # user authored it directly (trust=USER). Never raises — a
         # missing / malformed registry just yields the empty set.
         self._installed_skill_ids = self._read_installed_skill_ids()
+        # Epic #27 P2 G-08 (2026-05-19): agent-proposed skills carry a
+        # ``.proposed.json`` marker in their dir. Trust starts at
+        # UNTRUSTED — the agent can self-write skills but they don't
+        # get full USER privileges until manual review removes the
+        # marker. Scan once per loader instance.
+        self._proposed_skill_ids = self._scan_proposed_skill_ids()
 
     @staticmethod
     def _read_installed_skill_ids() -> frozenset[str]:
@@ -126,14 +132,48 @@ class UserSkillsLoader:
                     ids.add(sid)
         return frozenset(ids)
 
+    def _scan_proposed_skill_ids(self) -> frozenset[str]:
+        """Walk the canonical + extra roots looking for
+        ``.proposed.json`` markers — these tag agent-proposed skills
+        whose trust should start at UNTRUSTED (G-08).
+        """
+        ids: set[str] = set()
+        for root in [self._root, *self._extra_roots]:
+            if not root.is_dir():
+                continue
+            try:
+                entries = list(root.iterdir())
+            except OSError:
+                continue
+            for entry in entries:
+                if not entry.is_dir():
+                    continue
+                if entry.name.startswith(".") or entry.name.startswith("_"):
+                    continue
+                if (entry / ".proposed.json").is_file():
+                    ids.add(entry.name)
+        return frozenset(ids)
+
     def _trust_for(self, skill_id: str) -> "SkillTrustLevel":
         """Source-based trust assignment. Marketplace-installed skills
-        (recorded in ``.marketplace.json``) get INSTALLED; everything
-        else under the user-skills roots gets USER (the user authored
-        / dropped the dir in themselves). Loader cannot mint BUILTIN —
-        that's reserved for the static demo/plugin registration path.
+        (recorded in ``.marketplace.json``) get INSTALLED; agent-
+        proposed skills (with a ``.proposed.json`` marker) start at
+        UNTRUSTED until manual review; everything else under the
+        user-skills roots gets USER (the user authored / dropped the
+        dir in themselves). Loader cannot mint BUILTIN — that's
+        reserved for the static demo/plugin registration path.
+
+        Precedence (lower trust wins when a skill_id is both
+        proposed AND in the marketplace registry — proposed marker
+        was deliberately written AFTER the install so the agent
+        believes it's still in evaluation):
+          1. UNTRUSTED if ``.proposed.json`` marker present
+          2. INSTALLED if in marketplace registry
+          3. USER (default)
         """
         from xmclaw.skills.manifest import SkillTrustLevel
+        if skill_id in self._proposed_skill_ids:
+            return SkillTrustLevel.UNTRUSTED
         if skill_id in self._installed_skill_ids:
             return SkillTrustLevel.INSTALLED
         return SkillTrustLevel.USER

@@ -29,6 +29,7 @@ from xmclaw.skills.tool_bridge import (
     META_BROWSE_TOOL_NAME,
     META_DIFF_TOOL_NAME,
     META_INSTALL_TOOL_NAME,
+    META_PROPOSE_TOOL_NAME,
     META_ROLLBACK_TOOL_NAME,
     META_RUN_TOOL_NAME,
     META_STATUS_TOOL_NAME,
@@ -48,6 +49,8 @@ _META_NAMES = frozenset({
     # Epic #27 G-07 (2026-05-19): versioned-edit history meta-tools.
     META_DIFF_TOOL_NAME,
     META_ROLLBACK_TOOL_NAME,
+    # Epic #27 G-08 (2026-05-19): self-evolving skills.
+    META_PROPOSE_TOOL_NAME,
 })
 
 

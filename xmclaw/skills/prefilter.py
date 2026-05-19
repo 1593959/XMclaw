@@ -297,6 +297,7 @@ def select_relevant_skills(
         META_BROWSE_TOOL_NAME,
         META_DIFF_TOOL_NAME,
         META_INSTALL_TOOL_NAME,
+        META_PROPOSE_TOOL_NAME,
         META_ROLLBACK_TOOL_NAME,
         META_RUN_TOOL_NAME,
         META_STATUS_TOOL_NAME,
@@ -322,6 +323,10 @@ def select_relevant_skills(
         # is always reachable, no matter what the user query was.
         META_DIFF_TOOL_NAME,
         META_ROLLBACK_TOOL_NAME,
+        # Epic #27 G-08 (2026-05-19): self-evolving skill_propose.
+        # Always on so the agent can author skills regardless of
+        # what tokens the user query carried.
+        META_PROPOSE_TOOL_NAME,
     })
 
     # Partition: skills vs non-skills vs the always-on meta-tools.

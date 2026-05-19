@@ -80,6 +80,16 @@ META_RUN_TOOL_NAME = "skill_run"
 # self-recovery loop always reaches the agent.
 META_DIFF_TOOL_NAME = "skill_diff"
 META_ROLLBACK_TOOL_NAME = "skill_rollback"
+# Epic #27 P2 G-08 (2026-05-19) — self-evolving skills. The agent
+# writes a new SKILL.md under ~/.xmclaw/v2/skills_user/<name>/ +
+# stamps a .proposed.json marker so UserSkillsLoader assigns trust
+# UNTRUSTED. Anti-cargo-cult: unlike Hermes' "5+ tool calls = save
+# as skill" pattern (which auto-stages transient failures as
+# learning), XMclaw keeps the agent's proposals at UNTRUSTED until
+# explicit human / grader-evidence promotion. The bar is "the agent
+# can write code on disk + see it loaded", not "the agent gets to
+# self-promote whatever it just authored."
+META_PROPOSE_TOOL_NAME = "skill_propose"
 
 # Disclosure modes:
 #   ``inline``  — legacy. Every registered skill shows up as its own
@@ -204,6 +214,11 @@ class SkillToolProvider:
         # you put it back?") always has the tools to act.
         specs.append(self._diff_spec())
         specs.append(self._rollback_spec())
+        # Epic #27 G-08 (2026-05-19): self-evolving skills. Agent
+        # can author + register a new skill on disk under
+        # ``~/.xmclaw/v2/skills_user/<name>/``. Marker file keeps
+        # trust at UNTRUSTED until manual promotion.
+        specs.append(self._propose_spec())
 
         if self._effective_disclosure_mode() == DISCLOSURE_MODE_UNIFIED:
             # Skip per-skill tools entirely. The LLM discovers + invokes
@@ -266,6 +281,8 @@ class SkillToolProvider:
             return self._invoke_diff(call, t0)
         if call.name == META_ROLLBACK_TOOL_NAME:
             return self._invoke_rollback(call, t0)
+        if call.name == META_PROPOSE_TOOL_NAME:
+            return self._invoke_propose(call, t0)
 
         # Epic #27 G-04: skill_run reads ``skill_id`` from args and
         # falls through to the shared invocation path below. This
@@ -1138,6 +1155,188 @@ class SkillToolProvider:
             },
             error=None, latency_ms=self._elapsed_ms(t0),
             side_effects=(str(target),),
+        )
+
+    # ── Epic #27 G-08: self-evolving skills (skill_propose) ────────
+
+    def _propose_spec(self) -> ToolSpec:
+        return ToolSpec(
+            name=META_PROPOSE_TOOL_NAME,
+            description=(
+                "Propose a NEW skill on disk. Writes "
+                "``~/.xmclaw/v2/skills_user/<name>/SKILL.md`` + a "
+                "``.proposed.json`` marker so the loader assigns "
+                "trust UNTRUSTED until manual review.\n"
+                "Use when you've solved a problem with a non-trivial "
+                "sequence of tools and want a future-you to be able "
+                "to re-use the playbook — write the SKILL.md body "
+                "describing the recipe.\n"
+                "Anti-pattern (don't do this): proposing a skill for "
+                "a one-off task ('this user wanted X just now'). The "
+                "proposal mechanism is for genuinely-recurring "
+                "playbooks the agent will benefit from later.\n"
+                "After ``skill_propose`` returns, the daemon's "
+                "SkillsWatcher picks up the new file on its next "
+                "tick (typically < 5s) and registers it; "
+                "``skill_status`` will then show ``trust=untrusted`` "
+                "for the new entry. Returns ``{skill_id, path, "
+                "trust, note}``."
+            ),
+            parameters_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["name", "body"],
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": (
+                            "Slug for the new skill, becomes the "
+                            "directory name + tool name. Must match "
+                            "``[a-z0-9][a-z0-9_-]{0,40}`` — short, "
+                            "kebab-case, no spaces. Refused when a "
+                            "skill of that id already exists."
+                        ),
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": (
+                            "SKILL.md content. Conventional shape: "
+                            "frontmatter ``---\\nname: <name>\\n"
+                            "description: <one line>\\n---`` followed "
+                            "by markdown describing what the skill "
+                            "does + how to invoke it. Must be at "
+                            "least 50 chars (defensive against "
+                            "empty-stub proposals)."
+                        ),
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": (
+                            "Optional one-line summary; if provided "
+                            "and the body has no frontmatter, will "
+                            "be prepended as a minimal frontmatter "
+                            "block."
+                        ),
+                    },
+                },
+            },
+        )
+
+    def _invoke_propose(self, call: ToolCall, t0: float) -> ToolResult:
+        import json as _json
+        import re as _re
+        import time as _time
+        from pathlib import Path as _Path
+
+        args = dict(call.args or {})
+        name = args.get("name")
+        body = args.get("body")
+        description = args.get("description") or ""
+        if not isinstance(name, str) or not name.strip():
+            return self._error_result(
+                call.id, "skill_propose requires 'name'", t0,
+            )
+        if not isinstance(body, str) or len(body.strip()) < 50:
+            return self._error_result(
+                call.id,
+                "skill_propose 'body' must be at least 50 non-blank "
+                "chars (defensive against empty-stub proposals)",
+                t0,
+            )
+        name = name.strip().lower()
+        if not _re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,40}", name):
+            return self._error_result(
+                call.id,
+                f"skill_propose 'name' {name!r} doesn't match "
+                "[a-z0-9][a-z0-9_-]{0,40} (short kebab-case slug)",
+                t0,
+            )
+
+        # Resolve where to write — use the canonical user-skills root.
+        try:
+            from xmclaw.utils.paths import user_skills_dir
+            root = user_skills_dir()
+        except Exception as exc:  # noqa: BLE001
+            return self._error_result(
+                call.id,
+                f"could not resolve user_skills_dir: "
+                f"{type(exc).__name__}: {exc}", t0,
+            )
+
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return self._error_result(
+                call.id,
+                f"cannot create user_skills_dir {root}: {exc}", t0,
+            )
+
+        skill_dir = root / name
+        if skill_dir.exists():
+            return self._error_result(
+                call.id,
+                f"skill {name!r} already exists at {skill_dir}; "
+                "rename your proposal or use skill_diff + "
+                "skill_rollback to edit the existing one",
+                t0,
+            )
+
+        # If the body has no frontmatter and description is provided,
+        # prepend a minimal frontmatter so the SkillsLoader can read
+        # the description without parsing markdown.
+        final_body = body
+        if not body.lstrip().startswith("---") and description.strip():
+            final_body = (
+                f"---\n"
+                f"name: {name}\n"
+                f"description: {description.strip()}\n"
+                f"---\n\n"
+                + body
+            )
+
+        try:
+            skill_dir.mkdir(parents=True, exist_ok=False)
+            (skill_dir / "SKILL.md").write_text(
+                final_body, encoding="utf-8",
+            )
+            marker = {
+                "proposed_by": "agent",
+                "proposed_at": _time.time(),
+                "evidence_count": 0,
+                "promote_after_evidence": 3,
+                "note": (
+                    "Agent-authored skill. Trust=untrusted until "
+                    "manual review removes this marker file."
+                ),
+            }
+            (skill_dir / ".proposed.json").write_text(
+                _json.dumps(marker, indent=2), encoding="utf-8",
+            )
+        except OSError as exc:
+            return self._error_result(
+                call.id,
+                f"cannot write skill files: {type(exc).__name__}: {exc}",
+                t0,
+            )
+
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "skill_id": name,
+                "path": str(skill_dir),
+                "trust": "untrusted",
+                "note": (
+                    f"Skill {name!r} written to {skill_dir}. The "
+                    "SkillsWatcher will pick it up within ~5s and "
+                    "register it as trust=untrusted. To promote it "
+                    "later: remove ``.proposed.json`` and restart "
+                    "the daemon (or wait for an evidence-based "
+                    "promotion via the HonestGrader once the skill "
+                    "accumulates enough successful invocations)."
+                ),
+            },
+            error=None, latency_ms=self._elapsed_ms(t0),
+            side_effects=(str(skill_dir),),
         )
 
     # ── Epic #27 G-04: progressive-disclosure run dispatcher ───────
