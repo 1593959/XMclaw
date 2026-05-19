@@ -97,25 +97,42 @@ class FakeReasoningEngine:
 
 
 class FakeDispatcher:
-    """Recordable dispatcher; can be configured to raise on specific steps."""
+    """Recordable dispatcher; can be configured to raise on specific steps.
+
+    Epic #26 Phase A (2026-05-19): step ids are now plan-namespaced
+    (``<plan_id>:s1`` instead of just ``s1``), so ``fail_on`` keys
+    match by SUFFIX rather than exact id. Tests can still pass
+    ``{"s1": 2}`` and the dispatcher will fail steps whose id ends
+    with ``:s1`` OR equals ``s1`` literally — backward-compatible
+    with pre-namespaced fakes.
+    """
 
     def __init__(
         self,
         fail_on: dict[str, int] | None = None,
         fail_action_kinds: set[str] | None = None,
     ) -> None:
-        # fail_on: {step_id: how_many_times_to_fail_before_succeeding}
+        # fail_on: {step_suffix: how_many_times_to_fail_before_succeeding}
         self.fail_on = dict(fail_on) if fail_on else {}
         self.fail_action_kinds = fail_action_kinds or set()
         self.dispatched: list[PlanStep] = []
+
+    def _fail_key_for(self, step_id: str) -> str | None:
+        """Find the fail_on key whose suffix matches this step_id."""
+        if step_id in self.fail_on:
+            return step_id
+        for key in self.fail_on:
+            if step_id == key or step_id.endswith(f":{key}"):
+                return key
+        return None
 
     async def dispatch(self, step: PlanStep) -> dict[str, Any]:
         self.dispatched.append(step)
         if step.action_kind in self.fail_action_kinds:
             raise RuntimeError(f"action_kind {step.action_kind} forbidden")
-        remaining = self.fail_on.get(step.id, 0)
-        if remaining > 0:
-            self.fail_on[step.id] = remaining - 1
+        key = self._fail_key_for(step.id)
+        if key is not None and self.fail_on[key] > 0:
+            self.fail_on[key] -= 1
             raise RuntimeError(f"transient failure on {step.id}")
         return {
             "step_id": step.id,
@@ -197,8 +214,12 @@ async def test_plan_returns_steps_on_valid_llm_json() -> None:
     assert plan.status == "draft"
     assert plan.goal_id == "g1"
     assert len(plan.steps) == 2
-    assert plan.steps[0].id == "s1"
-    assert plan.steps[1].depends_on == ("s1",)
+    # Epic #26 Phase A (2026-05-19): step ids are plan-namespaced
+    # to prevent cross-plan "step_1" / "step_2" collisions. The
+    # LLM's raw "s1" becomes "<plan_id>:s1"; depends_on refs are
+    # rewritten the same way.
+    assert plan.steps[0].id == f"{plan.id}:s1"
+    assert plan.steps[1].depends_on == (f"{plan.id}:s1",)
 
 
 @pytest.mark.asyncio
@@ -316,7 +337,10 @@ async def test_execute_runs_in_topological_order() -> None:
     dispatcher = FakeDispatcher()
     result = await planner.execute(plan, dispatcher)
     assert result.status == "completed"
-    assert [s.id for s in dispatcher.dispatched] == ["s1", "s2"]
+    # Epic #26 Phase A: ids are plan-namespaced. Strip the prefix
+    # to verify the suffix order is the topological order.
+    suffixes = [s.id.rsplit(":", 1)[-1] for s in dispatcher.dispatched]
+    assert suffixes == ["s1", "s2"]
     assert len(result.step_results) == 2
 
 
@@ -384,7 +408,8 @@ async def test_execute_calls_repair_after_retry_budget_exhausted() -> None:
     result = await planner.execute(fast_plan, dispatcher)
     # Repair produced a fresh plan with r1; r1 succeeds → status="repaired".
     assert result.status == "repaired"
-    assert any(s.id == "r1" for s in dispatcher.dispatched)
+    # Epic #26 Phase A: r1 is now namespaced under the repaired plan_id.
+    assert any(s.id.endswith(":r1") for s in dispatcher.dispatched)
 
 
 @pytest.mark.asyncio
@@ -497,7 +522,10 @@ async def test_repair_uses_reasoning_engine_when_provided() -> None:
     failure = PlanStepFailure(step_id="x", reason="timeout")
     repaired = await planner.repair(failed, failure)
     assert repaired.status == "repaired"
-    assert repaired.steps and repaired.steps[0].id == "r1"
+    # Epic #26 Phase A: repaired plan gets a FRESH plan_id (not the
+    # failed plan's id) and the LLM's "r1" is namespaced under it.
+    assert repaired.id != failed.id
+    assert repaired.steps and repaired.steps[0].id == f"{repaired.id}:r1"
     assert engine.analogical_calls, "reasoning engine MUST be consulted"
     assert "similar repair" in llm.calls[0]
 
@@ -517,7 +545,8 @@ async def test_repair_degrades_gracefully_when_engine_raises() -> None:
     failed = Plan(id="p", goal_id="g", steps=(), status="failed")
     failure = PlanStepFailure(step_id="x", reason="boom")
     repaired = await planner.repair(failed, failure)
-    assert repaired.steps and repaired.steps[0].id == "r1"
+    # Epic #26 Phase A: namespaced under repaired plan_id.
+    assert repaired.steps and repaired.steps[0].id == f"{repaired.id}:r1"
 
 
 @pytest.mark.asyncio
@@ -606,3 +635,104 @@ async def test_skill_registry_failure_falls_back_to_llm_turn() -> None:
     # Failure inside find() must NOT poison the plan — degrade to llm_turn.
     for s in plan.steps:
         assert s.action_kind == "llm_turn"
+
+
+# ── Epic #26 Phase A (2026-05-19): step_id uniqueness + payload threading ──
+
+
+@pytest.mark.asyncio
+async def test_plan_step_ids_unique_across_separate_plans() -> None:
+    """The literal "step_1" / "s1" / "s2" example IDs in the LLM's
+    JSON output must NOT cause two independently-generated plans to
+    share step ids. Pre-Epic-#26 they did: every plan's "step_1"
+    landed in the same downstream session, 282-message wedge in
+    production. Each plan now namespaces its steps under its own
+    plan_id, making cross-plan collisions impossible by construction.
+    """
+    llm1 = FakeLLM([_two_step_response()])
+    llm2 = FakeLLM([_two_step_response()])
+    planner1 = Planner(llm=llm1)
+    planner2 = Planner(llm=llm2)
+    plan_a = await planner1.plan(FakeGoal(id="g1", name="n", description="d"))
+    plan_b = await planner2.plan(FakeGoal(id="g2", name="n", description="d"))
+
+    ids_a = {s.id for s in plan_a.steps}
+    ids_b = {s.id for s in plan_b.steps}
+    assert ids_a and ids_b
+    assert ids_a & ids_b == set(), (
+        f"step_ids collided across plans: {ids_a & ids_b}"
+    )
+    # Sanity: each step id is plan-namespaced.
+    for s in plan_a.steps:
+        assert s.id.startswith(f"{plan_a.id}:"), s.id
+    for s in plan_b.steps:
+        assert s.id.startswith(f"{plan_b.id}:"), s.id
+
+
+@pytest.mark.asyncio
+async def test_plan_injects_plan_id_and_goal_id_into_every_step_payload() -> None:
+    """Every PlanStep emitted by Planner.plan() carries plan_id +
+    goal_id in its payload so the dispatcher can derive a stable
+    session_id and (Phase B) thread prior step results."""
+    llm = FakeLLM([_two_step_response()])
+    planner = Planner(llm=llm)
+    plan = await planner.plan(FakeGoal(id="my-goal-42", name="n", description="d"))
+    assert plan.steps
+    for step in plan.steps:
+        assert step.payload.get("plan_id") == plan.id, step.payload
+        assert step.payload.get("goal_id") == "my-goal-42", step.payload
+
+
+@pytest.mark.asyncio
+async def test_repair_namespaces_under_fresh_plan_id() -> None:
+    """When repair() mints a new plan, its steps must namespace
+    under the NEW plan_id (not the failed plan's), so retrying the
+    same failure pattern doesn't collide with prior repairs."""
+    rebuild = {
+        "steps": [{"id": "alt", "intent": "fallback", "depends_on": []}],
+        "confidence": 0.5,
+    }
+    llm = FakeLLM([rebuild])
+    planner = Planner(llm=llm)
+    failed = Plan(id="orig-plan", goal_id="g", steps=(), status="failed")
+    failure = PlanStepFailure(step_id="x", reason="boom")
+    repaired = await planner.repair(failed, failure)
+    assert repaired.id != failed.id
+    assert repaired.steps
+    assert repaired.steps[0].id == f"{repaired.id}:alt"
+    assert repaired.steps[0].payload.get("plan_id") == repaired.id
+    assert repaired.steps[0].payload.get("goal_id") == "g"
+
+
+@pytest.mark.asyncio
+async def test_plan_resolves_depends_on_through_id_rewrite() -> None:
+    """The LLM gives ``depends_on: ["s1"]`` but step 0's id was
+    rewritten to ``<plan>:s1``. The materialiser must remap the
+    reference so the topology stays valid."""
+    llm = FakeLLM([_two_step_response()])
+    planner = Planner(llm=llm)
+    plan = await planner.plan(FakeGoal(id="g", name="n", description="d"))
+    assert len(plan.steps) == 2
+    step1, step2 = plan.steps
+    assert step2.depends_on == (step1.id,), (
+        f"depends_on must remap to namespaced id; got {step2.depends_on} "
+        f"vs step1.id={step1.id}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_planning_prompt_does_not_seed_step_1_as_example_value() -> None:
+    """Hygiene: the planner prompt must not present ``"step_1"`` as
+    a value the LLM should COPY (i.e. in ``"id": "step_1"`` form).
+    Mentioning it inside a "DON'T do this" anti-example is fine —
+    the assertion targets the JSON schema example block only."""
+    from xmclaw.cognition.planner import _build_planning_prompt
+
+    prompt = _build_planning_prompt({"id": "g", "name": "n", "description": "d"})
+    # No `"id": "step_N"` example values — those got faithfully echoed
+    # in production. Placeholder must be visibly NOT real.
+    assert '"id": "step_1"' not in prompt
+    assert '"id": "step_0"' not in prompt
+    assert '"depends_on": ["step_0"]' not in prompt
+    # Must explicitly tell the LLM to pick unique ids.
+    assert "UNIQUE" in prompt.upper() or "unique" in prompt

@@ -259,6 +259,31 @@ async def test_llm_turn_uses_goal_id_when_present() -> None:
 
 
 @pytest.mark.asyncio
+async def test_llm_turn_end_to_end_with_planner_emitted_step() -> None:
+    """Epic #26 Phase A integration: a step that Planner.plan() would
+    actually produce (plan-namespaced id + plan_id + goal_id in
+    payload) routes to a session named after goal_id, not the
+    namespaced step_id. Pins the planner→dispatcher contract."""
+    al = FakeAgentLoop()
+    disp = ActionDispatcher(agent_loop=al)
+    # Shape that matches what Planner._materialize_step emits today.
+    step = make_step(
+        id="plan_abc123:research-topic",
+        action_kind="llm_turn",
+        payload={
+            "plan_id": "plan_abc123",
+            "goal_id": "user-asked-for-summary",
+            "intent": "research",
+            "prompt": "research the topic",
+            "args": {},
+        },
+    )
+    await disp.execute_step(step)
+    # goal_id wins → session is the goal-scoped one, not autonomous:
+    assert al.calls[0]["session_id"] == "user-asked-for-summary"
+
+
+@pytest.mark.asyncio
 async def test_llm_turn_captures_agent_loop_exception() -> None:
     al = FakeAgentLoop(raises=RuntimeError("agent boom"))
     disp = ActionDispatcher(agent_loop=al)

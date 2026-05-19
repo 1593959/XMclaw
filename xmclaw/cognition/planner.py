@@ -163,15 +163,31 @@ class Planner:
         Malformed LLM output (non-JSON, wrong shape, empty list) → a
         ``Plan`` with ``status="failed"`` and zero steps. The caller
         decides whether to retry or escalate.
+
+        Epic #26 Phase A (2026-05-19) — step IDs are now plan-
+        namespaced and ``plan_id``/``goal_id`` are injected into
+        every step's payload. Pre-fix: LLMs faithfully echo the
+        prompt's literal ``"step_1"`` example, so every plan
+        generated different content but shared the same step IDs;
+        the dispatcher's fallback then folded all such steps into
+        one session called ``step_1`` (282-message wedge witnessed
+        in production 2026-05-19). The fix is twofold:
+
+          * Mint a plan_id FIRST so it can be stamped onto every step.
+          * Rewrite the LLM's ``step_N`` into ``<plan_id>:step_N`` so
+            within-plan ``depends_on`` references still resolve but
+            cross-plan collisions become impossible by construction.
         """
         goal_id = _extract_goal_id(goal)
         goal_blob = _goal_to_prompt_blob(goal)
         prompt = _build_planning_prompt(goal_blob)
+        # Mint plan_id up front so it can be threaded into every step.
+        plan_id = _new_id("plan")
 
         raw_steps, raw_confidence = await self._call_llm_for_plan(prompt)
         if not raw_steps:
             return Plan(
-                id=_new_id("plan"),
+                id=plan_id,
                 goal_id=goal_id,
                 steps=(),
                 status="failed",
@@ -179,10 +195,30 @@ class Planner:
                 created_at=time.time(),
             )
 
+        # Build a rename map LLM-id → plan-namespaced id BEFORE we
+        # materialise, so ``depends_on`` references can be remapped
+        # at the same time as step.id is rewritten.
+        llm_ids: list[str] = []
+        for raw in raw_steps:
+            if not isinstance(raw, dict):
+                continue
+            rid = str(raw.get("id") or "")
+            if rid and rid not in llm_ids:
+                llm_ids.append(rid)
+        id_rewrite: dict[str, str] = {
+            rid: f"{plan_id}:{rid}" for rid in llm_ids
+        }
+
         steps: list[PlanStep] = []
         seen_ids: set[str] = set()
         for raw in raw_steps:
-            step = self._materialize_step(raw, sibling_ids=seen_ids)
+            step = self._materialize_step(
+                raw,
+                sibling_ids=seen_ids,
+                plan_id=plan_id,
+                goal_id=goal_id,
+                id_rewrite=id_rewrite,
+            )
             if step is None:
                 continue
             steps.append(step)
@@ -190,7 +226,7 @@ class Planner:
 
         if not steps:
             return Plan(
-                id=_new_id("plan"),
+                id=plan_id,
                 goal_id=goal_id,
                 steps=(),
                 status="failed",
@@ -199,7 +235,7 @@ class Planner:
             )
 
         plan_obj = Plan(
-            id=_new_id("plan"),
+            id=plan_id,
             goal_id=goal_id,
             steps=tuple(steps),
             status="draft",
@@ -264,6 +300,10 @@ class Planner:
         self,
         raw: dict[str, Any],
         sibling_ids: set[str],
+        *,
+        plan_id: str = "",
+        goal_id: str = "",
+        id_rewrite: dict[str, str] | None = None,
     ) -> PlanStep | None:
         """Convert one LLM step descriptor into a :class:`PlanStep`.
 
@@ -276,24 +316,50 @@ class Planner:
         Returns ``None`` (skipped) when the descriptor is too malformed
         to recover — that's preferable to fabricating a step that the
         dispatcher can't run.
+
+        Epic #26 Phase A (2026-05-19): ``plan_id`` and ``goal_id`` are
+        threaded into ``payload`` so the dispatcher always has the
+        full plan context to derive a session_id, emit lifecycle
+        events with, and (later) thread prior step outputs through.
+        ``id_rewrite`` remaps the LLM's raw ids into plan-namespaced
+        ones so cross-plan ``step_1`` literals can't collide.
         """
         if not isinstance(raw, dict):
             return None
 
-        step_id = str(raw.get("id") or _new_id("step"))
+        rewrite = id_rewrite or {}
+        raw_id = str(raw.get("id") or "")
+        if raw_id and raw_id in rewrite:
+            step_id = rewrite[raw_id]
+        elif raw_id:
+            # Unknown id (didn't get into rewrite map for some reason)
+            # — still namespace it manually so the result is unique.
+            step_id = f"{plan_id}:{raw_id}" if plan_id else raw_id
+        else:
+            step_id = _new_id("step")
         intent = raw.get("intent") or raw.get("description") or ""
         if not isinstance(intent, str):
             intent = str(intent)
 
         # depends_on hygiene — only accept refs to siblings already
         # materialised. Forward refs are silently dropped (the LLM
-        # frequently invents them in practice).
+        # frequently invents them in practice). Remap LLM ids → plan-
+        # namespaced ids before checking siblings.
         raw_deps = raw.get("depends_on") or []
         if not isinstance(raw_deps, (list, tuple)):
             raw_deps = []
-        deps = tuple(
-            str(d) for d in raw_deps if isinstance(d, str) and d in sibling_ids
-        )
+        mapped_deps: list[str] = []
+        for d in raw_deps:
+            if not isinstance(d, str):
+                continue
+            mapped = rewrite.get(d, d)
+            if plan_id and mapped == d and ":" not in d:
+                # Unknown raw id — namespace defensively so it can't
+                # collide with another plan's step_id.
+                mapped = f"{plan_id}:{d}"
+            if mapped in sibling_ids:
+                mapped_deps.append(mapped)
+        deps = tuple(mapped_deps)
 
         retry_raw = raw.get("retry_policy")
         retry_policy: dict[str, Any]
@@ -324,8 +390,19 @@ class Planner:
                 )
                 skill = None
 
+        # Epic #26 Phase A: ALWAYS thread plan_id + goal_id into
+        # every step's payload regardless of route. The dispatcher
+        # uses these to derive session_id, emit lifecycle events,
+        # and (Phase B) inject prior_results.
+        base_payload: dict[str, Any] = {}
+        if plan_id:
+            base_payload["plan_id"] = plan_id
+        if goal_id:
+            base_payload["goal_id"] = goal_id
+
         if skill is not None:
             payload: dict[str, Any] = {
+                **base_payload,
                 "intent": intent,
                 "skill_id": getattr(skill, "id", None) or getattr(skill, "name", None),
                 "skill_name": getattr(skill, "name", None),
@@ -349,6 +426,7 @@ class Planner:
             kind = "llm_turn"
 
         payload = {
+            **base_payload,
             "intent": intent,
             "prompt": raw.get("prompt") or intent,
             "args": raw.get("args") or raw.get("payload") or {},
@@ -526,10 +604,30 @@ class Planner:
                 confidence=0.0,
             )
 
+        # Epic #26 Phase A: repair() mints a fresh plan_id so the
+        # repaired plan's steps are namespaced under it. Pre-fix the
+        # repair path inherited failed_plan.id and re-used step_id
+        # literals from the new LLM output — collisions still possible.
+        repaired_plan_id = _new_id("plan")
+        llm_ids: list[str] = []
+        for raw in raw_steps:
+            if not isinstance(raw, dict):
+                continue
+            rid = str(raw.get("id") or "")
+            if rid and rid not in llm_ids:
+                llm_ids.append(rid)
+        id_rewrite = {rid: f"{repaired_plan_id}:{rid}" for rid in llm_ids}
+
         steps: list[PlanStep] = []
         seen: set[str] = set()
         for raw in raw_steps:
-            step = self._materialize_step(raw, sibling_ids=seen)
+            step = self._materialize_step(
+                raw,
+                sibling_ids=seen,
+                plan_id=repaired_plan_id,
+                goal_id=failed_plan.goal_id,
+                id_rewrite=id_rewrite,
+            )
             if step is None:
                 continue
             steps.append(step)
@@ -548,7 +646,7 @@ class Planner:
         repaired_confidence = max(0.0, min(self._confidence_cap, raw_confidence - 0.1))
 
         repaired = Plan(
-            id=_new_id("plan"),
+            id=repaired_plan_id,
             goal_id=failed_plan.goal_id,
             steps=tuple(steps),
             status="repaired",
@@ -746,7 +844,18 @@ def _goal_to_prompt_blob(goal: Any) -> dict[str, Any]:
 
 
 def _build_planning_prompt(goal_blob: dict[str, Any]) -> str:
-    """Construct the JSON-shaped prompt for :meth:`Planner.plan`."""
+    """Construct the JSON-shaped prompt for :meth:`Planner.plan`.
+
+    Epic #26 Phase A (2026-05-19) hygiene pass: the previous template
+    used ``"id": "step_1"`` and ``"depends_on": ["step_0"]`` as
+    LITERAL example values, and the LLM faithfully echoed them in
+    every plan. Across many plans this collided every "step_1" /
+    "step_0" into the same session_id downstream. Switched to angle-
+    bracket placeholders (``"<step-id>"``) that are visibly NOT real
+    values + an explicit instruction to pick unique kebab-case ids
+    per plan. The planner ALSO plan-namespaces the ids server-side
+    as a belt-and-braces measure (see ``id_rewrite`` in plan()).
+    """
     return (
         "You are an HTN planner. Decompose this goal into atomic steps.\n\n"
         f"GOAL:\n{json.dumps(goal_blob, ensure_ascii=False, indent=2)}\n\n"
@@ -754,17 +863,25 @@ def _build_planning_prompt(goal_blob: dict[str, Any]) -> str:
         "{\n"
         '  "steps": [\n'
         '    {\n'
-        '      "id": "step_1",\n'
+        '      "id": "<unique-kebab-case-id-for-this-step>",\n'
         '      "intent": "<short verb phrase>",\n'
         '      "action_kind": "llm_turn|skill_invoke|tool_call|wait_for_percept",\n'
         '      "payload": {...},\n'
-        '      "depends_on": ["step_0"],\n'
+        '      "depends_on": ["<id-of-a-step-listed-earlier>"],\n'
         '      "expected_outcome": "<what success looks like>",\n'
         '      "retry_policy": {"max_retries": 2, "backoff_s": 1.0}\n'
         '    }\n'
         '  ],\n'
         '  "confidence": 0.6\n'
         "}\n"
+        "\n"
+        "Rules for `id`:\n"
+        "  - Each step's id MUST be UNIQUE within this plan.\n"
+        "  - Use a SHORT verb-phrase id describing the step's action, "
+        "not a generic counter like \"step_1\" / \"step_2\".\n"
+        "  - Examples of good ids: \"fetch-issue-body\", \"parse-error-trace\", \"draft-fix\".\n"
+        "  - The runtime will further namespace these under the plan_id, "
+        "so don't worry about cross-plan uniqueness.\n"
     )
 
 

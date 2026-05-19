@@ -1587,10 +1587,64 @@ UI 功能审计（用户要求"代码级检查 + 列文档"）：
 **Epic #25 状态：✅ 完成 | 完成日期 2026-05-11**
 
 下一步候选（未在本 Epic 范围内）：
-- Epic #26 候选: SkillRegistry v2（存 prompt body 而非 Python 类）+ 接通 SkillMutator → 自动 prompt 优化（Epic #24 Phase 3.5.3 推迟项）
+- ~~Epic #26 候选: SkillRegistry v2（存 prompt body 而非 Python 类）+ 接通 SkillMutator → 自动 prompt 优化（Epic #24 Phase 3.5.3 推迟项）~~ → 推迟到 Epic #27+
+- **Epic #26（已立项 2026-05-19）**：自动化可靠性 — Planner + 执行层夯实
 - 元认知修复闭环（stuck self-diagnose）—— 架构评估 §9 Phase C 列项
 - OS Sandbox MVP（process runtime 强化）—— Epic #3 / 架构评估 §9 Phase C
 - 进化执行层 mutation orchestrator → test executor → auto-promote —— 架构评估 §9 Phase C
+
+---
+
+### Epic #26 · 自动化可靠性（Planner + 执行层夯实）★用户复盘"自动化基础不行"
+
+**状态**：🟡 进行中（Phase A） | **负责人**：Claude (AI pair) | **起始**：2026-05-19 | **完成**：—
+**前置依赖**：Epic #25（贾维斯化 — HTN planner + dispatcher 已就位但脆弱）
+**关联 Milestone**：M5（进化可感知）的下游 — 进化的前提是"能可靠执行多步任务"
+
+**问题诊断**（2026-05-19 用户在 session 内当面提出 + 本 session 实测发现）：
+
+Epic #25 把 HTN planner / ActionDispatcher / SuggestionInbox 接通了，但实际跑下来用户复盘"自动化基础和能力和逻辑不行，希望能完美处理自动化任务"。本 session 内排查 sessions 列表混乱时撞见的具体证据：
+
+1. **step_id 跨 plan 碰撞**：planner prompt 模板里 `"id": "step_1"` 是字面值示例，LLM 一字不差抄回来。dispatcher 的 fallback 又是 `payload.goal_id or payload.session_id or step_id`，结果**每个 plan 的 step_1 全部挤进同一个叫 step_1 的会话**——本机实测 282 条消息汇集在那。
+2. **plan_id / goal_id 不入 payload**：`Planner._materialize_step` 只塞 `intent / prompt / args` 进 payload，从来不放 plan_id 或 goal_id；dispatcher 拿不到上下文，只能 fallback 到 step_id。
+3. **step 间结果不传递**：`PlanResult.step_results` 收集了每步输出，但 dispatcher 不接受任何"前序结果"作为输入；LLM 生成的多步 plan 里 step_2 永远看不到 step_1 的输出。
+4. **plan 生命周期事件不广播**：plan_started / step_started / step_failed / plan_completed 没有 bus 事件，UI 没法做"自主任务" 面板。
+5. **repair 路径未真正测过**：planner.py 里的 repair() 把"已完成 step 的 result 全丢掉重跑"逻辑很激进，没有 e2e 测试钉住实际行为。
+6. **planner prompt 提示词污染**：`"id": "step_1"` 字面 + `"depends_on": ["step_0"]` 字面，LLM 倾向抄整段示例。
+
+**Phase 划分**：
+
+| Phase | 范围 | 退出条件 |
+|-------|------|---------|
+| **A** | step_id 唯一化 / plan_id 入 payload / prompt 清理 / 守 dispatcher fallback | 多 plan 跑 → 0 个 step_id 撞车；所有 dispatch 拿得到 plan_id+goal_id |
+| **B** | step 结果传递（prior_results in payload） / plan 生命周期事件 / repair e2e 测 | 2 步 plan step_2 能引用 step_1 输出；bus 上能看到完整 lifecycle |
+| **C** | plan 持久化（重启幸存） / 预算守门 / autonomous panel UI | daemon 重启后 in-flight plan 自动 resume；token 预算扣完自动停 |
+
+**Phase A 检查清单**（本 session 目标）：
+
+- [x] `_route_llm_turn` 兜底改成 `autonomous:<step_id>:<uuid>`，前面提到的 282 条挤一桌问题不会复发（commit d7ed4df 2026-05-19）
+- [ ] `Planner._materialize_step` 给每个 step 注入 `payload.plan_id` 和 `payload.goal_id`
+- [ ] 同样的注入逻辑给 skill_invoke / tool_call / wait_for_percept 三条路径都加
+- [ ] planner prompt 模板里 `"step_1"` / `"step_0"` 改成 `"<unique-step-id>"` 这种明显的占位符，降低 LLM 复刻概率
+- [ ] step ID 唯一化：在 `_materialize_step` 里把 LLM 给的 id 当成"plan-内名"，加 plan_id 命名空间形成全局唯一 id
+- [ ] 测试：`test_planner_step_ids_unique_across_plans` — 跑两次同 prompt 拿到的两个 plan，所有 step.id 不撞
+- [ ] 测试：`test_planner_injects_plan_and_goal_id_into_payload` — 每个生成的 step 都带这俩字段
+- [ ] 测试：`test_dispatcher_uses_payload_plan_id` — 跑 plan 时 dispatcher 收到的 session_id 是 plan_id 而不是 step_id
+
+**Phase B 草图**（下次 session 候选）：
+- 在 dispatcher 上加 `prior_results: list[dict]` 参数，`execute_plan` 累积成 list 并传给下一步的 `_route_*`
+- `payload.prompt` 里加 `{{step_1.output.field}}` 模板替换（最小版：dict-access 字符串替换）
+- 新增 EventType: `PLAN_STARTED`, `PLAN_STEP_STARTED`, `PLAN_STEP_COMPLETED`, `PLAN_STEP_FAILED`, `PLAN_COMPLETED`, `PLAN_FAILED`
+- `tests/integration/test_v2_plan_lifecycle_events.py` — TestClient + EventBus assert
+
+**Phase C 草图**（后续）：
+- plan 状态写 `~/.xmclaw/v2/plans.db`（sqlite，每个 plan 1 行 JSON），daemon 重启读 plans where status in ('executing', 'pending')
+- Token 预算：`evolution.autonomous.token_budget` flag，dispatcher 起前 check `BudgetGuard.would_exceed(plan.estimated_tokens)`
+- UI: Mind 页加 "Autonomous Tasks" 面板，订阅 plan_lifecycle 事件
+
+**进度日志**：
+
+- 2026-05-19: 本 session 排查用户截图的 mystery sessions（"Use the reme..." / "understand ..."），发现根因是 step_1 跨 plan 碰撞。dispatcher fallback 修补先落地 (commit d819e88、d7ed4df、bb5087b)，但 planner 上游污染未根治 → 立项 Epic #26 Phase A 收尾。
 
 ---
 
