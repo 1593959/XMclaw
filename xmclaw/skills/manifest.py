@@ -43,7 +43,43 @@ This file does three things to surface the gap honestly:
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from enum import Enum
 from typing import Any
+
+
+class SkillTrustLevel(str, Enum):
+    """Epic #27 P2 G-06 (2026-05-19) — trust tier for a registered
+    skill, drives capability gating + force-promote eligibility.
+
+    Tiers (low → high trust):
+      * ``UNTRUSTED`` — provenance unknown OR grader marked
+        ``dangerous``. Cannot be force-promoted past the gate; soft
+        warnings on every invocation.
+      * ``INSTALLED`` — installed via ``skill_install`` /
+        ``xmclaw skill install`` from a 3rd-party source. Default
+        cap: must respect ``allowed_tools`` (when declared); refused
+        when grader marks dangerous.
+      * ``USER`` — author is the local user (lives under
+        ``~/.xmclaw/skills_user/``). Treated as code the user wrote
+        themselves, so wide capability access; soft warnings when
+        the source is suspicious but no hard gate.
+      * ``BUILTIN`` — ships with the daemon (``xmclaw/skills/demo``
+        + ``xmclaw/plugins/skills``). Fully trusted; never gated.
+
+    Trust is set at LOAD TIME by the loader that owned the skill's
+    source (UserSkillsLoader vs install_from_source vs the static
+    builtin registry). Manifest authors don't get to claim a higher
+    trust than their source provides — even ``trust_level=builtin``
+    written into a 3rd-party SKILL.md is overridden by the loader.
+
+    The string-valued Enum lets manifest authors write
+    ``trust_level: user`` in YAML / frontmatter and round-trip
+    through ``to_dict`` without bespoke serialisation.
+    """
+    UNTRUSTED = "untrusted"
+    INSTALLED = "installed"
+    USER = "user"
+    BUILTIN = "builtin"
 
 
 @dataclass(frozen=True)
@@ -95,6 +131,12 @@ class SkillManifest:
     paths: tuple[str, ...] = field(default_factory=tuple)
     requires_restart: bool = False
     model: str = ""
+    # Epic #27 P2 G-06 (2026-05-19): trust tier. Default ``user`` so
+    # legacy manifests + user-authored skills don't suddenly need a
+    # field they never wrote. Loaders override at load time based on
+    # source — manifest author cannot self-promote past their source's
+    # trust ceiling.
+    trust_level: SkillTrustLevel = SkillTrustLevel.USER
 
     def permissions_are_meaningful(self) -> bool:
         """B-328: True iff the manifest declares any non-trivial

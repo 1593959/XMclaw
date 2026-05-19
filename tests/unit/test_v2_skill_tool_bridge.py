@@ -133,8 +133,9 @@ def test_list_tools_exposes_registered_skills() -> None:
 
 
 def test_list_tools_description_carries_provenance() -> None:
-    """B-177 trailer format: ``[skill:<id> v<n>, by=<created_by>]``
-    with evidence on a separate line below."""
+    """B-177 trailer format: ``[skill:<id> v<n>, [trust=<lvl>, ]by=<created_by>]``
+    with evidence on a separate line below. Trust tag added by G-06
+    (2026-05-19) — included unconditionally for registered skills."""
     reg = SkillRegistry()
     reg.register(
         _EchoSkill("x"),
@@ -143,8 +144,9 @@ def test_list_tools_description_carries_provenance() -> None:
     )
     bridge = SkillToolProvider(reg)
     spec = _registered_skill_specs(bridge)[0]
-    # New compact trailer.
-    assert "[skill:x v1, by=evolved]" in spec.description
+    # New compact trailer with trust included (G-06).
+    assert "[skill:x v1" in spec.description
+    assert "by=evolved]" in spec.description
     # Evidence preserved (audit trail).
     assert "bench:1.12x" in spec.description
 
@@ -315,8 +317,10 @@ def test_list_tools_description_leads_with_body() -> None:
     # Triggers shown so the LLM can keyword-match.
     assert "Use when:" in desc
     assert "/commit" in desc and "提交" in desc
-    # Provenance trailer kept compact at the end.
-    assert "[skill:git-commit v1, by=user]" in desc
+    # Provenance trailer kept compact at the end. G-06 (2026-05-19)
+    # inserts a ``trust=...`` field between id and ``by=...``.
+    assert "[skill:git-commit v1" in desc
+    assert "by=user]" in desc
 
 
 def test_list_tools_description_falls_back_to_title_when_no_body() -> None:
@@ -349,8 +353,10 @@ def test_list_tools_description_minimal_when_no_frontmatter() -> None:
     specs = _registered_skill_specs(bridge)
     assert len(specs) == 1
     desc = specs[0].description
-    # Trailer carries id + provenance.
-    assert "[skill:bare v1, by=evolved]" in desc
+    # Trailer carries id + provenance. G-06 (2026-05-19) inserts
+    # ``trust=...`` between id and ``by=...``.
+    assert "[skill:bare v1" in desc
+    assert "by=evolved]" in desc
 
 
 # ── Epic #27 P0 G-01 (2026-05-19): skill_status / skill_view ─────

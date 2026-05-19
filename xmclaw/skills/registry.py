@@ -41,6 +41,18 @@ class UnknownSkillError(LookupError):
     """Raised when a skill_id or (skill_id, version) isn't registered."""
 
 
+class DangerousPromotionError(PermissionError):
+    """Epic #27 P2 G-06 (2026-05-19): raised when ``promote()`` would
+    move HEAD to a version whose grader evidence carries a
+    ``dangerous`` verdict, and the caller did not pass ``force=True``.
+
+    Inherits from ``PermissionError`` rather than ``ValueError`` so
+    catch-blocks can distinguish "caller passed bad args" from "policy
+    refused this transition" — the latter typically needs operator
+    review, not a retry with cleaned-up args.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class SkillRef:
     """The addressable identity of a registered skill version."""
@@ -173,6 +185,7 @@ class SkillRegistry:
         *,
         evidence: list[str],
         source: str = "manual",
+        force: bool = False,
     ) -> PromotionRecord:
         """Move HEAD to ``to_version``.
 
@@ -186,6 +199,16 @@ class SkillRegistry:
         / migrations). This makes the audit log answer "who decided?"
         without the consumer having to reverse-engineer it from the
         evidence strings.
+
+        Epic #27 P2 G-06 (2026-05-19): when the evidence list signals a
+        ``dangerous`` grader verdict (any entry containing
+        ``"dangerous:"`` or ``"verdict=dangerous"``), promotion is
+        refused unless the caller passes ``force=True``. This is the
+        "danger gate" — the HonestGrader can stamp dangerous verdicts,
+        the user / controller cannot silently override them. The
+        ``force=True`` escape hatch leaves the CLI / debug-time
+        workflows possible while making the override loud at the
+        call site.
         """
         if not evidence:
             raise ValueError(
@@ -199,6 +222,22 @@ class SkillRegistry:
                 f"cannot promote to unregistered version "
                 f"{skill_id!r} v{to_version}"
             )
+
+        if not force:
+            danger_evidence = [
+                e for e in evidence
+                if isinstance(e, str) and (
+                    "dangerous:" in e.lower()
+                    or "verdict=dangerous" in e.lower()
+                )
+            ]
+            if danger_evidence:
+                raise DangerousPromotionError(
+                    f"refusing to promote {skill_id!r} v{to_version}: "
+                    f"grader stamped dangerous verdict ({danger_evidence!r}). "
+                    "Pass ``force=True`` to override (do this ONLY after "
+                    "reviewing the dangerous-evidence rationale)."
+                )
 
         from_version = self._head.get(skill_id, 0)
         self._head[skill_id] = to_version

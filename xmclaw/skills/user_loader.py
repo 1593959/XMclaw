@@ -91,6 +91,52 @@ class UserSkillsLoader:
         self._registry = registry
         self._root = skills_root
         self._extra_roots = list(extra_roots or [])
+        # Epic #27 P2 G-06 (2026-05-19): read the marketplace install
+        # ledger ONCE per loader instance so per-skill manifest trust
+        # assignment is O(1) instead of repeatedly reopening
+        # ``.marketplace.json``. The set is the truth — a skill_id
+        # present here was installed via ``skill_install`` /
+        # ``xmclaw skill install`` (trust=INSTALLED); absent means the
+        # user authored it directly (trust=USER). Never raises — a
+        # missing / malformed registry just yields the empty set.
+        self._installed_skill_ids = self._read_installed_skill_ids()
+
+    @staticmethod
+    def _read_installed_skill_ids() -> frozenset[str]:
+        try:
+            from xmclaw.skills.marketplace import installed_registry_path
+        except Exception:  # noqa: BLE001
+            return frozenset()
+        try:
+            p = installed_registry_path()
+            if not p.exists():
+                return frozenset()
+            import json as _json
+            raw = _json.loads(p.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return frozenset()
+        items = raw.get("skills") if isinstance(raw, dict) else None
+        if not isinstance(items, list):
+            return frozenset()
+        ids: set[str] = set()
+        for it in items:
+            if isinstance(it, dict):
+                sid = it.get("id")
+                if isinstance(sid, str) and sid:
+                    ids.add(sid)
+        return frozenset(ids)
+
+    def _trust_for(self, skill_id: str) -> "SkillTrustLevel":
+        """Source-based trust assignment. Marketplace-installed skills
+        (recorded in ``.marketplace.json``) get INSTALLED; everything
+        else under the user-skills roots gets USER (the user authored
+        / dropped the dir in themselves). Loader cannot mint BUILTIN —
+        that's reserved for the static demo/plugin registration path.
+        """
+        from xmclaw.skills.manifest import SkillTrustLevel
+        if skill_id in self._installed_skill_ids:
+            return SkillTrustLevel.INSTALLED
+        return SkillTrustLevel.USER
 
     def load_all(self) -> list[LoadResult]:
         results: list[LoadResult] = []
@@ -240,9 +286,16 @@ class UserSkillsLoader:
                 manifest = self._load_manifest(mp, skill_id, version)
             except Exception as exc:  # noqa: BLE001
                 return None, None, f"manifest.json invalid: {exc}"
+            # G-06: source-based trust override — manifest authors can
+            # claim a trust_level but the loader has the final word.
+            from dataclasses import replace as _replace
+            manifest = _replace(
+                manifest, trust_level=self._trust_for(skill_id),
+            )
         else:
             manifest = SkillManifest(
                 id=skill_id, version=version, created_by="user",
+                trust_level=self._trust_for(skill_id),
             )
         return instance, manifest, None
 
@@ -332,9 +385,16 @@ class UserSkillsLoader:
                     manifest_path=mp,
                     error=f"manifest.json invalid: {exc}",
                 )
+            # G-06: loader has final word on trust regardless of
+            # what manifest.json claims.
+            from dataclasses import replace as _replace
+            manifest = _replace(
+                manifest, trust_level=self._trust_for(skill_id),
+            )
         else:
             manifest = SkillManifest(
                 id=skill_id, version=instance_version, created_by="user",
+                trust_level=self._trust_for(skill_id),
             )
 
         # B-328: advisory cross-check. The manifest's ``permissions_*``
@@ -524,6 +584,9 @@ class UserSkillsLoader:
             paths=tuple(extras.get("paths") or ()),
             requires_restart=bool(extras.get("requires_restart") or False),
             model=str(extras.get("model") or ""),
+            # G-06: source-based trust override (loader has final word
+            # over manifest authors).
+            trust_level=self._trust_for(skill_id),
         )
         try:
             self._registry.register(skill, manifest, set_head=True)
@@ -566,6 +629,10 @@ class UserSkillsLoader:
                     title=v_title or title,
                     description=v_desc or description,
                     triggers=v_triggers or triggers,
+                    # G-06: evolved variants inherit the head skill's
+                    # source-based trust (typically USER, INSTALLED if
+                    # the head came from the marketplace).
+                    trust_level=self._trust_for(skill_id),
                 )
                 try:
                     self._registry.register(

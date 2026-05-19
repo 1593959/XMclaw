@@ -1133,7 +1133,9 @@ class SkillToolProvider:
         Ordering (B-176 → B-177):
           1. Body description (the meat — what it DOES)
           2. "Use when ..." trigger hints
-          3. Minimal id / provenance trailer
+          3. Minimal id / provenance trailer (Epic #27 G-06: adds
+             trust level so the LLM can read the skill's
+             provenance class without needing skill_status / view)
           4. Evidence line (audit-only)
         """
         parts: list[str] = []
@@ -1152,8 +1154,27 @@ class SkillToolProvider:
             triggers = ", ".join(repr(t) for t in manifest.triggers[:6])
             parts.append(f"Use when: {triggers}")
 
-        # Trailer: minimal id reference + provenance (compact, not a headline).
-        parts.append(f"[skill:{skill_id} v{version}, by={manifest.created_by}]")
+        # Trailer: minimal id reference + provenance (compact, not a
+        # headline). Epic #27 G-06: trust + (optionally) allowed_tools
+        # so the LLM has at least the metadata to recognise a
+        # capability-restricted skill before invoking it.
+        trust = getattr(manifest, "trust_level", None)
+        trust_part = ""
+        if trust is not None:
+            trust_val = getattr(trust, "value", trust)
+            trust_part = f", trust={trust_val}"
+        parts.append(
+            f"[skill:{skill_id} v{version}{trust_part}, "
+            f"by={manifest.created_by}]"
+        )
+
+        if getattr(manifest, "allowed_tools", None):
+            tools_preview = ", ".join(manifest.allowed_tools[:5])
+            more = (
+                f" (+{len(manifest.allowed_tools) - 5} more)"
+                if len(manifest.allowed_tools) > 5 else ""
+            )
+            parts.append(f"allowed_tools: {tools_preview}{more}")
 
         if manifest.evidence:
             parts.append("evidence: " + "; ".join(manifest.evidence))
