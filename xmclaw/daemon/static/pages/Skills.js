@@ -146,6 +146,12 @@ export function SkillsPage({ token }) {
   // ``/api/v2/skills.pending_restarts``. Pre-B-341 the bus event
   // had zero subscribers; this banner is the missing consumer.
   const [pendingRestarts, setPendingRestarts] = useState([]);
+  // Epic #27 P0 G-02 (2026-05-19): UserSkillsLoader failures land
+  // here via SkillsWatcher.load_failures(). Pre-G-02 the data only
+  // existed in daemon.log — the agent/user had no way to see "your
+  // skill.py couldn't instantiate, that's why skill_browse can't
+  // find it". The banner below renders the actionable subset.
+  const [loadFailures, setLoadFailures] = useState([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -154,6 +160,7 @@ export function SkillsPage({ token }) {
         if (cancelled) return;
         setSkills(d.skills || []);
         setPendingRestarts(d.pending_restarts || []);
+        setLoadFailures(d.load_failures || []);
       })
       .catch((e) => { if (!cancelled) setError(String(e.message || e)); });
     return () => { cancelled = true; };
@@ -209,6 +216,7 @@ export function SkillsPage({ token }) {
       .then((d) => {
         setSkills(d.skills || []);
         setPendingRestarts(d.pending_restarts || []);
+        setLoadFailures(d.load_failures || []);
       })
       .catch((e) => toast.error("刷新失败：" + (e.message || e)));
   };
@@ -302,6 +310,42 @@ export function SkillsPage({ token }) {
         </div>
       </header>
 
+      ${loadFailures.length > 0
+        ? html`
+            <div
+              class="xmc-h-banner xmc-h-banner--error"
+              role="alert"
+              aria-live="polite"
+              style=${"margin: 8px 16px; padding: 10px 14px; "
+                + "border-radius: 6px; "
+                + "background: rgba(239, 68, 68, 0.14); "
+                + "border: 1px solid rgba(239, 68, 68, 0.55); "
+                + "color: var(--xmc-text, inherit);"}
+            >
+              <strong>${loadFailures.length} 个技能加载失败</strong>
+              <span style="opacity:.8">
+                · 这些目录被 SkillsWatcher 看到，但实例化时报错。
+                修完 ``skill.py`` 重启 daemon 即可消除；或 file_read
+                <code>${loadFailures[0].path}</code> 看具体错误。
+              </span>
+              <ul style="margin: 6px 0 0 18px; padding: 0; opacity: .9">
+                ${loadFailures.map(
+                  (it) => html`
+                    <li style="font-family: var(--xmc-mono, monospace); font-size: .85em">
+                      <strong>${it.skill_id}</strong>
+                      <span style="opacity:.7"> (${it.kind}) </span>
+                      <span style="opacity:.8">— ${it.error}</span>
+                      ${it.ticks_failing > 1
+                        ? html`<span style="opacity:.55"> · 连续 ${it.ticks_failing} 个 tick 失败</span>`
+                        : null}
+                    </li>
+                  `,
+                )}
+              </ul>
+            </div>
+          `
+        : null}
+
       ${pendingRestarts.length > 0
         ? html`
             <div
@@ -314,7 +358,11 @@ export function SkillsPage({ token }) {
                 + "border: 1px solid rgba(245, 158, 11, 0.5); "
                 + "color: var(--xmc-text, inherit);"}
             >
-              <strong>需要重启 daemon 才能生效</strong>
+              <strong>
+                ${pendingRestarts.some((r) => r.state === "fixed_after_failure")
+                  ? "看起来你修好了某个坏 skill — 需要重启 daemon 才会加载新版"
+                  : "需要重启 daemon 才能生效"}
+              </strong>
               <span style="opacity:.8">
                 · 检测到 ${pendingRestarts.length} 个 Python 技能
                 文件被编辑：
@@ -324,6 +372,9 @@ export function SkillsPage({ token }) {
                   (it) => html`
                     <li style="font-family: var(--xmc-mono, monospace); font-size: .85em">
                       ${it.skill_id} v${it.version}
+                      ${it.state === "fixed_after_failure"
+                        ? html`<span style="color:#10b981"> ✓ fixed</span>`
+                        : null}
                       <span style="opacity: .6"> — ${it.path}</span>
                     </li>
                   `,
