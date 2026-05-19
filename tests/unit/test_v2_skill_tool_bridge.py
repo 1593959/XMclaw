@@ -14,6 +14,8 @@ Pins:
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from xmclaw.core.ir import ToolCall
@@ -24,7 +26,9 @@ from xmclaw.skills.registry import SkillRegistry
 from xmclaw.skills.tool_bridge import (
     META_BROWSE_TOOL_NAME,
     META_INSTALL_TOOL_NAME,
+    META_STATUS_TOOL_NAME,
     META_UNINSTALL_TOOL_NAME,
+    META_VIEW_TOOL_NAME,
     SkillToolProvider,
     _to_tool_name,
 )
@@ -34,6 +38,9 @@ _META_TOOL_NAMES = frozenset({
     META_BROWSE_TOOL_NAME,
     META_INSTALL_TOOL_NAME,
     META_UNINSTALL_TOOL_NAME,
+    # Epic #27 P0 G-01 (2026-05-19) — introspection meta-tools.
+    META_STATUS_TOOL_NAME,
+    META_VIEW_TOOL_NAME,
 })
 
 
@@ -341,3 +348,193 @@ def test_list_tools_description_minimal_when_no_frontmatter() -> None:
     desc = specs[0].description
     # Trailer carries id + provenance.
     assert "[skill:bare v1, by=evolved]" in desc
+
+
+# ── Epic #27 P0 G-01 (2026-05-19): skill_status / skill_view ─────
+
+
+class _FakeWatcher:
+    """Stand-in for SkillsWatcher carrying just the surface
+    SkillToolProvider needs: ``load_failures()`` + ``pending_restarts()``.
+    Tests inject custom rows."""
+
+    def __init__(
+        self,
+        failures: list | None = None,
+        restarts: list | None = None,
+    ) -> None:
+        self._failures = list(failures or [])
+        self._restarts = list(restarts or [])
+
+    def load_failures(self) -> list:
+        return list(self._failures)
+
+    def pending_restarts(self) -> list:
+        return list(self._restarts)
+
+
+def test_g01_skill_status_tool_exposed_in_list_tools() -> None:
+    """skill_status + skill_view are always-on meta-tools, just like
+    skill_browse / skill_install. Available even with zero skills."""
+    bridge = SkillToolProvider(SkillRegistry())
+    names = {s.name for s in bridge.list_tools()}
+    assert META_STATUS_TOOL_NAME in names
+    assert META_VIEW_TOOL_NAME in names
+
+
+@pytest.mark.asyncio
+async def test_g01_skill_status_no_watcher_reports_clean_state() -> None:
+    """No watcher wired (test harness) → 0 failures, 0 restarts,
+    healthy note. Doesn't raise."""
+    reg = SkillRegistry()
+    reg.register(_EchoSkill("alpha"), _manifest("alpha", 1))
+    bridge = SkillToolProvider(reg, watcher=None)
+    call = ToolCall(name=META_STATUS_TOOL_NAME, args={}, provenance="test")
+    result = await bridge.invoke(call)
+    assert result.ok
+    content = result.content
+    assert content["totals"]["registered_skill_ids"] == 1
+    assert content["load_failures"] == []
+    assert content["pending_restarts"] == []
+    assert "clean state" in " ".join(content["notes"]).lower()
+
+
+@pytest.mark.asyncio
+async def test_g01_skill_status_surfaces_load_failures_and_restarts(
+) -> None:
+    """Watcher reports a broken skill + a fixed-after-failure restart.
+    The status output gives the agent enough info to act:
+      - Read .path + .error of the broken skill
+      - Tell the user to restart the daemon for the fix to load"""
+    reg = SkillRegistry()
+    watcher = _FakeWatcher(
+        failures=[{
+            "skill_id": "hyper-broken",
+            "path": "/tmp/skills/hyper-broken/skill.py",
+            "kind": "python",
+            "error": "no concrete Skill subclass found",
+            "ticks_failing": 8,
+            "first_seen": 1000.0,
+            "last_seen": 1080.0,
+        }],
+        restarts=[{
+            "skill_id": "hyper-fixed",
+            "version": 1,
+            "path": "/tmp/skills/hyper-fixed/skill.py",
+            "state": "fixed_after_failure",
+            "registered": False,
+        }],
+    )
+    bridge = SkillToolProvider(reg, watcher=watcher)
+    call = ToolCall(name=META_STATUS_TOOL_NAME, args={}, provenance="test")
+    result = await bridge.invoke(call)
+    assert result.ok
+    content = result.content
+    assert len(content["load_failures"]) == 1
+    assert content["load_failures"][0]["skill_id"] == "hyper-broken"
+    assert content["load_failures"][0]["ticks_failing"] == 8
+    assert len(content["pending_restarts"]) == 1
+    assert content["pending_restarts"][0]["state"] == "fixed_after_failure"
+    # Notes call out both situations so the agent reads + acts.
+    notes_text = " ".join(content["notes"])
+    assert "failed to load" in notes_text
+    assert "restart" in notes_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_g01_skill_view_reads_markdown_body(tmp_path: Path) -> None:
+    """skill_view returns the SKILL.md body + file inventory so the
+    agent can inspect a skill's instructions before invoking."""
+    # Build a fake skill dir under a tmp skills_user root.
+    skills_root = tmp_path / "skills_user"
+    skill_dir = skills_root / "demo-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: demo-skill\ndescription: a demo\n---\n# Demo\n\nSteps:\n1. foo\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "manifest.json").write_text(
+        '{"id": "demo-skill", "version": 1}', encoding="utf-8",
+    )
+    # Point resolve_skill_roots at our tmp via monkeypatch on user_skills_dir.
+    import xmclaw.skills.user_loader as ul
+    import xmclaw.utils.paths as paths
+
+    original = paths.user_skills_dir
+    paths.user_skills_dir = lambda: skills_root  # type: ignore[assignment]
+    ul.user_skills_dir = paths.user_skills_dir  # keep both in sync
+    try:
+        bridge = SkillToolProvider(SkillRegistry())
+        call = ToolCall(
+            name=META_VIEW_TOOL_NAME,
+            args={"skill_id": "demo-skill"},
+            provenance="test",
+        )
+        result = await bridge.invoke(call)
+        assert result.ok, result.error
+        c = result.content
+        assert c["kind"] == "markdown"
+        assert "# Demo" in c["body"]
+        assert any(f["name"] == "manifest.json" for f in c["files"])
+    finally:
+        paths.user_skills_dir = original
+        ul.user_skills_dir = original
+
+
+@pytest.mark.asyncio
+async def test_g01_skill_view_rejects_path_traversal(tmp_path: Path) -> None:
+    """file_path with ``..`` or absolute paths is refused — the
+    agent shouldn't be able to ``skill_view(skill_id='x',
+    file_path='../../etc/passwd')`` itself out of the skill dir."""
+    skills_root = tmp_path / "skills_user"
+    (skills_root / "demo").mkdir(parents=True)
+    (skills_root / "demo" / "SKILL.md").write_text("# d", encoding="utf-8")
+
+    import xmclaw.skills.user_loader as ul
+    import xmclaw.utils.paths as paths
+
+    original = paths.user_skills_dir
+    paths.user_skills_dir = lambda: skills_root  # type: ignore[assignment]
+    ul.user_skills_dir = paths.user_skills_dir
+    try:
+        bridge = SkillToolProvider(SkillRegistry())
+        for bad in ("../../etc/passwd", "/etc/passwd"):
+            call = ToolCall(
+                name=META_VIEW_TOOL_NAME,
+                args={"skill_id": "demo", "file_path": bad},
+                provenance="test",
+            )
+            result = await bridge.invoke(call)
+            assert not result.ok, f"{bad} should have been rejected"
+            assert "relative" in (result.error or "").lower() or \
+                ".." in (result.error or "")
+    finally:
+        paths.user_skills_dir = original
+        ul.user_skills_dir = original
+
+
+@pytest.mark.asyncio
+async def test_g01_skill_view_missing_skill_reports_error(tmp_path: Path) -> None:
+    """skill_view on an id that doesn't exist on disk returns a
+    clear error rather than 500ing or hanging."""
+    skills_root = tmp_path / "skills_user"
+    skills_root.mkdir()
+    import xmclaw.skills.user_loader as ul
+    import xmclaw.utils.paths as paths
+
+    original = paths.user_skills_dir
+    paths.user_skills_dir = lambda: skills_root  # type: ignore[assignment]
+    ul.user_skills_dir = paths.user_skills_dir
+    try:
+        bridge = SkillToolProvider(SkillRegistry())
+        call = ToolCall(
+            name=META_VIEW_TOOL_NAME,
+            args={"skill_id": "does-not-exist"},
+            provenance="test",
+        )
+        result = await bridge.invoke(call)
+        assert not result.ok
+        assert "not found" in (result.error or "").lower()
+    finally:
+        paths.user_skills_dir = original
+        ul.user_skills_dir = original

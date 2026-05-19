@@ -725,7 +725,16 @@ def create_app(
         # evidence-gated promote() (anti-req #12 enforced at registry).
         if orchestrator is not None:
             from xmclaw.skills.tool_bridge import SkillToolProvider
-            _skill_tools = SkillToolProvider(orchestrator.registry)
+            # Epic #27 P0 G-01 (2026-05-19): hand the SkillsWatcher in
+            # so the new ``skill_status`` meta-tool can surface load
+            # failures + pending restarts to the agent. Watcher may
+            # not be wired yet on first call — pull lazily from
+            # app.state via getattr so None is acceptable.
+            _watcher_ref = getattr(app.state, "skills_watcher", None)
+            _skill_tools = SkillToolProvider(
+                orchestrator.registry,
+                watcher=_watcher_ref,
+            )
             agent._tools = CompositeToolProvider(agent._tools, _skill_tools)
 
         # Wave-27 fix-LAT7: re-render TOOLS.md auto-block now that the

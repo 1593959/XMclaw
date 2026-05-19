@@ -58,6 +58,11 @@ _VALID_NAME = re.compile(r"[^a-zA-Z0-9_-]")
 META_BROWSE_TOOL_NAME = "skill_browse"
 META_INSTALL_TOOL_NAME = "skill_install"
 META_UNINSTALL_TOOL_NAME = "skill_uninstall"
+# Epic #27 P0 G-01 (2026-05-19) — introspection tools so the agent can
+# self-diagnose "did my install work?" / "what's in this skill?" instead
+# of running list_dir + bash in circles.
+META_STATUS_TOOL_NAME = "skill_status"
+META_VIEW_TOOL_NAME = "skill_view"
 
 
 def _to_tool_name(skill_id: str) -> str:
@@ -89,6 +94,7 @@ class SkillToolProvider:
         *,
         description_prefix: str = "Skill: ",
         variant_selector: Any = None,
+        watcher: Any = None,
     ) -> None:
         self._registry = registry
         self._description_prefix = description_prefix
@@ -98,6 +104,11 @@ class SkillToolProvider:
         # invocation asks the selector which version to run; stats
         # accumulate via the selector's own GRADER_VERDICT subscription.
         self._variant_selector = variant_selector
+        # Epic #27 P0 G-01 (2026-05-19): SkillsWatcher reference so the
+        # introspection meta-tools (``skill_status``) can surface load
+        # failures + pending restarts to the agent. None when wired in
+        # contexts without a daemon watcher (tests, eval harness).
+        self._watcher = watcher
 
     # ------------------------------------------------------------------
     # Public API
@@ -119,6 +130,12 @@ class SkillToolProvider:
         # repo looks useful" decisions.
         specs.append(self._install_spec())
         specs.append(self._uninstall_spec())
+        # Epic #27 P0 G-01 (2026-05-19): introspection. The agent
+        # needs to be able to ask "what's the registry state right
+        # now?" + "what's inside <skill_id>?" without running
+        # list_dir / bash. Both meta-tools.
+        specs.append(self._status_spec())
+        specs.append(self._view_spec())
         for skill_id in self._registry.list_skill_ids():
             spec = self._spec_for(skill_id)
             if spec is not None:
@@ -144,6 +161,10 @@ class SkillToolProvider:
             return await self._invoke_install(call, t0)
         if call.name == META_UNINSTALL_TOOL_NAME:
             return self._invoke_uninstall(call, t0)
+        if call.name == META_STATUS_TOOL_NAME:
+            return self._invoke_status(call, t0)
+        if call.name == META_VIEW_TOOL_NAME:
+            return self._invoke_view(call, t0)
 
         skill_id = self._tool_name_to_skill_id(call.name)
         if skill_id is None:
@@ -380,6 +401,327 @@ class SkillToolProvider:
             },
             error=None,
             latency_ms=latency,
+        )
+
+    # ── Epic #27 P0 G-01: introspection meta-tools ─────────────────
+
+    def _status_spec(self) -> ToolSpec:
+        """ToolSpec for ``skill_status``. Pure read, no I/O, never
+        raises. The first call the agent should make when it suspects
+        "did my install succeed?" / "why isn't this skill loading?"."""
+        return ToolSpec(
+            name=META_STATUS_TOOL_NAME,
+            description=(
+                "Inspect the live skill registry state — call this BEFORE "
+                "running list_dir / bash to debug a missing skill. "
+                "Returns ``{registered, load_failures, pending_restarts, "
+                "totals}``:\n"
+                "  - ``registered``: count of (skill_id, version) pairs "
+                "currently in the SkillRegistry.\n"
+                "  - ``load_failures``: list of skills the daemon TRIED to "
+                "load but couldn't (broken skill.py, missing manifest, "
+                "etc). Each row has ``skill_id / path / kind / error / "
+                "ticks_failing``. If your skill ISN'T in skill_browse but "
+                "IS listed here, the user's daemon hit an error during "
+                "load — read .error and fix the underlying issue.\n"
+                "  - ``pending_restarts``: list of Python skills whose "
+                "``skill.py`` was edited but daemon still has the cached "
+                "import. Each row has ``skill_id / version / path / "
+                "state``. When ``state='fixed_after_failure'`` it means "
+                "the user fixed a broken skill but daemon hasn't reloaded "
+                "yet — tell them ``xmclaw stop && xmclaw start`` (or "
+                "click the restart button in the UI) is needed.\n"
+                "When neither array has rows AND your skill is missing, "
+                "the most likely cause is the directory not being under "
+                "``~/.xmclaw/skills_user/`` or ``~/.agents/skills/`` — "
+                "verify with ``skill_view`` first."
+            ),
+            parameters_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {},
+            },
+        )
+
+    def _invoke_status(self, call: ToolCall, t0: float) -> ToolResult:
+        """Return load_failures + pending_restarts + counts. Synchronous;
+        no I/O; never raises."""
+        registered_count = 0
+        try:
+            registered_count = sum(
+                1 for sid in self._registry.list_skill_ids()
+                for _v in self._registry.list_versions(sid)
+            )
+        except Exception:  # noqa: BLE001
+            registered_count = 0
+
+        load_failures: list[dict[str, Any]] = []
+        pending_restarts: list[dict[str, Any]] = []
+        if self._watcher is not None:
+            try:
+                load_failures = list(self._watcher.load_failures() or [])
+            except Exception:  # noqa: BLE001
+                load_failures = []
+            try:
+                pending_restarts = list(self._watcher.pending_restarts() or [])
+            except Exception:  # noqa: BLE001
+                pending_restarts = []
+
+        # Sort failures by ticks_failing desc (oldest pain first).
+        load_failures.sort(
+            key=lambda r: int(r.get("ticks_failing", 0) or 0),
+            reverse=True,
+        )
+
+        notes: list[str] = []
+        if load_failures:
+            n = len(load_failures)
+            notes.append(
+                f"⚠ {n} skill(s) failed to load — read their .error "
+                "field for the underlying cause, then file_read the "
+                ".path to see the broken source."
+            )
+        if pending_restarts:
+            n = len(pending_restarts)
+            fixed = sum(
+                1 for r in pending_restarts
+                if r.get("state") == "fixed_after_failure"
+            )
+            if fixed:
+                notes.append(
+                    f"⚠ {fixed} skill(s) appear FIXED but daemon still "
+                    "has the broken cached import. Tell the user to "
+                    "restart the daemon (xmclaw stop && xmclaw start)."
+                )
+            elif n:
+                notes.append(
+                    f"ℹ {n} Python skill(s) edited — daemon restart "
+                    "needed before changes take effect."
+                )
+        if not notes:
+            notes.append(
+                "✓ No load failures, no pending restarts. Registry is "
+                "in a clean state."
+            )
+
+        return ToolResult(
+            call_id=call.id,
+            ok=True,
+            content={
+                "totals": {
+                    "registered_versions": registered_count,
+                    "registered_skill_ids": len(
+                        list(self._registry.list_skill_ids()),
+                    ),
+                    "load_failures": len(load_failures),
+                    "pending_restarts": len(pending_restarts),
+                },
+                "load_failures": load_failures,
+                "pending_restarts": pending_restarts,
+                "notes": notes,
+            },
+            error=None,
+            latency_ms=self._elapsed_ms(t0),
+        )
+
+    def _view_spec(self) -> ToolSpec:
+        """ToolSpec for ``skill_view``. Reads the skill directory + its
+        files so the agent can inspect SKILL.md content, skill.py
+        source, or manifest.json without poking around the disk."""
+        return ToolSpec(
+            name=META_VIEW_TOOL_NAME,
+            description=(
+                "Read the files inside an installed skill directory. "
+                "Use when you want to inspect HOW a skill works before "
+                "invoking it, OR when ``skill_status`` reports a load "
+                "failure and you need to see the broken source.\n"
+                "Modes:\n"
+                "  - ``skill_view(skill_id)``: lists the skill dir's "
+                "files + returns SKILL.md (or skill.py) body up to 8KB.\n"
+                "  - ``skill_view(skill_id, file_path)``: returns the "
+                "specific file's content (path is relative to the skill "
+                "dir; rejects ``..`` and absolute paths).\n"
+                "Returns ``{path, kind, files, body?}``. ``body`` is the "
+                "primary file's content (or the requested file_path)."
+            ),
+            parameters_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["skill_id"],
+                "properties": {
+                    "skill_id": {
+                        "type": "string",
+                        "description": "Directory name of the skill.",
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": (
+                            "Optional: relative path inside the skill "
+                            "dir (``references/api.md``). Omit to read "
+                            "the primary file (SKILL.md or skill.py)."
+                        ),
+                    },
+                },
+            },
+        )
+
+    def _invoke_view(self, call: ToolCall, t0: float) -> ToolResult:
+        """Find the skill dir + read the requested file. Defaults to
+        SKILL.md or skill.py at the top of the dir. Caps body at 8KB."""
+        from pathlib import Path as _Path
+
+        args = dict(call.args or {})
+        skill_id = args.get("skill_id")
+        if not isinstance(skill_id, str) or not skill_id.strip():
+            return self._error_result(
+                call.id,
+                "skill_view requires a 'skill_id' string",
+                t0,
+            )
+        skill_id = skill_id.strip()
+        file_path = args.get("file_path")
+        if file_path is not None and not isinstance(file_path, str):
+            file_path = None
+        if isinstance(file_path, str):
+            file_path = file_path.strip()
+            # Reject path traversal + absolute paths. ``pathlib.Path``
+            # treats POSIX-absolute paths like ``/etc/passwd`` as
+            # RELATIVE on Windows (only ``C:\`` etc count as absolute
+            # there), so we string-check both flavors directly. Also
+            # block UNC ``\\server\share``.
+            looks_absolute = (
+                _Path(file_path).is_absolute()
+                or file_path.startswith("/")
+                or file_path.startswith("\\\\")
+                or (
+                    len(file_path) >= 2
+                    and file_path[1] == ":"
+                    and file_path[0].isalpha()
+                )
+            )
+            if ".." in _Path(file_path).parts or looks_absolute:
+                return self._error_result(
+                    call.id,
+                    f"file_path must be relative + no ..: got {file_path!r}",
+                    t0,
+                )
+
+        # Resolve the skill dir against the canonical roots.
+        from xmclaw.skills.user_loader import resolve_skill_roots
+
+        try:
+            canonical, extras = resolve_skill_roots()
+        except Exception:  # noqa: BLE001
+            canonical, extras = (_Path.home() / ".xmclaw/skills_user", [])
+        candidate_roots = [canonical, *extras]
+        skill_dir: _Path | None = None
+        for root in candidate_roots:
+            cand = root / skill_id
+            if cand.is_dir():
+                skill_dir = cand
+                break
+        if skill_dir is None:
+            return self._error_result(
+                call.id,
+                f"skill dir not found for {skill_id!r} under any of "
+                f"{[str(r) for r in candidate_roots]}",
+                t0,
+            )
+
+        # List top-level files (and one level into versions/ + skills/
+        # if present) for the file inventory.
+        files: list[dict[str, Any]] = []
+        try:
+            for entry in sorted(skill_dir.iterdir()):
+                if entry.name.startswith("__pycache__"):
+                    continue
+                files.append({
+                    "name": entry.name,
+                    "kind": "dir" if entry.is_dir() else "file",
+                    "size": (
+                        entry.stat().st_size if entry.is_file() else None
+                    ),
+                })
+        except OSError as exc:
+            return self._error_result(
+                call.id,
+                f"cannot list {skill_dir}: {exc}",
+                t0,
+            )
+
+        # Pick the file to read.
+        target: _Path
+        if isinstance(file_path, str) and file_path:
+            target = skill_dir / file_path
+            if not target.exists():
+                return self._error_result(
+                    call.id,
+                    f"file_path {file_path!r} not found in {skill_id}",
+                    t0,
+                )
+        else:
+            # Default: SKILL.md preferred, fall back to skill.py.
+            if (skill_dir / "SKILL.md").is_file():
+                target = skill_dir / "SKILL.md"
+            elif (skill_dir / "skill.py").is_file():
+                target = skill_dir / "skill.py"
+            elif (skill_dir / "manifest.json").is_file():
+                target = skill_dir / "manifest.json"
+            else:
+                return ToolResult(
+                    call_id=call.id,
+                    ok=True,
+                    content={
+                        "path": str(skill_dir),
+                        "kind": "dir",
+                        "files": files,
+                        "body": None,
+                        "note": (
+                            "No SKILL.md / skill.py / manifest.json at "
+                            "the top. Pass file_path explicitly to read "
+                            "something specific."
+                        ),
+                    },
+                    error=None,
+                    latency_ms=self._elapsed_ms(t0),
+                )
+
+        # Read with 8KB cap so a 5MB SKILL.md doesn't blow context.
+        try:
+            raw = target.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return self._error_result(
+                call.id,
+                f"cannot read {target}: {exc}",
+                t0,
+            )
+        truncated = len(raw) > 8192
+        body = raw[:8192] + (
+            "\n\n[... truncated; file is "
+            f"{len(raw)} bytes total. Use file_path with a more "
+            "specific reference to read the rest.]"
+            if truncated else ""
+        )
+
+        return ToolResult(
+            call_id=call.id,
+            ok=True,
+            content={
+                "path": str(target),
+                "skill_dir": str(skill_dir),
+                "kind": (
+                    "markdown" if target.name == "SKILL.md"
+                    else "python" if target.name == "skill.py"
+                    else "manifest" if target.name == "manifest.json"
+                    else "other"
+                ),
+                "files": files,
+                "body": body,
+                "truncated": truncated,
+                "size_bytes": len(raw),
+            },
+            error=None,
+            latency_ms=self._elapsed_ms(t0),
         )
 
     # ── Wave-27 fix-LAT7: skill_install / skill_uninstall ──────────

@@ -174,12 +174,19 @@ def select_relevant_skills(
     from xmclaw.skills.tool_bridge import (
         META_BROWSE_TOOL_NAME,
         META_INSTALL_TOOL_NAME,
+        META_STATUS_TOOL_NAME,
         META_UNINSTALL_TOOL_NAME,
+        META_VIEW_TOOL_NAME,
     )
     _ALWAYS_ON_META = frozenset({
         META_BROWSE_TOOL_NAME,
         META_INSTALL_TOOL_NAME,
         META_UNINSTALL_TOOL_NAME,
+        # Epic #27 P0 G-01 (2026-05-19): introspection tools always
+        # on so the agent can self-diagnose install failures + read
+        # skill bodies without prefilter dropping them.
+        META_STATUS_TOOL_NAME,
+        META_VIEW_TOOL_NAME,
     })
 
     # Partition: skills vs non-skills vs the always-on meta-tools.
