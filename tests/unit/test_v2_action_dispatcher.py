@@ -892,6 +892,118 @@ async def test_b_lifecycle_events_emitted_for_failed_plan() -> None:
     assert "plan_completed" not in types_seen
 
 
+# ── Epic #26 Phase C (2026-05-19): plan budget guard ──────────────
+
+
+class _FakeCostTracker:
+    """Mimics ``CostTracker.spent_usd`` for the dispatcher's
+    snapshot-and-compare logic. Tests bump ``spent_usd`` manually
+    between steps to simulate LLM cost accumulation."""
+
+    def __init__(self, start: float = 0.0) -> None:
+        self.spent_usd = float(start)
+
+
+@pytest.mark.asyncio
+async def test_phase_c_plan_completes_when_within_budget() -> None:
+    """Healthy path: a plan stays under budget → finishes normally."""
+    tracker = _FakeCostTracker(start=10.0)
+    al = FakeAgentLoop()
+    disp = ActionDispatcher(
+        agent_loop=al,
+        cost_tracker=tracker,
+        plan_budget_usd=5.0,  # 5 dollars / plan cap
+    )
+    step = make_step(id="s1", action_kind="llm_turn", payload={"prompt": "x"})
+    plan = make_plan(steps=[step])
+    # Simulate the LLM call costing $0.01 (well under cap).
+    orig_run_turn = al.run_turn
+
+    async def _bump_after(*args: Any, **kwargs: Any) -> Any:
+        tracker.spent_usd = 10.01
+        return await orig_run_turn(*args, **kwargs)
+
+    al.run_turn = _bump_after  # type: ignore[method-assign]
+    result = await disp.execute_plan(plan)
+    assert result.all_ok is True
+
+
+@pytest.mark.asyncio
+async def test_phase_c_plan_halts_when_budget_exceeded() -> None:
+    """Mid-plan budget breach: the 2nd step is refused, status=failed,
+    PLAN_BUDGET_EXCEEDED + PLAN_FAILED events fire."""
+    from types import SimpleNamespace
+    recorded: list[Any] = []
+    bus = SimpleNamespace(publish=lambda evt: recorded.append(evt))
+
+    tracker = _FakeCostTracker(start=0.0)
+    al = FakeAgentLoop()
+    disp = ActionDispatcher(
+        agent_loop=al,
+        bus=bus,
+        cost_tracker=tracker,
+        plan_budget_usd=0.50,  # 50 cents
+    )
+
+    # First step's "LLM call" bumps spent past the budget. Wrap
+    # FakeAgentLoop's existing run_turn so we keep its .calls tracking.
+    orig_run_turn = al.run_turn
+
+    async def _expensive(*args: Any, **kwargs: Any) -> Any:
+        tracker.spent_usd += 0.75  # exceeds 0.50 cap
+        return await orig_run_turn(*args, **kwargs)
+
+    al.run_turn = _expensive  # type: ignore[method-assign]
+    steps = [
+        make_step(id="s1", action_kind="llm_turn", payload={"prompt": "x"}),
+        make_step(id="s2", action_kind="llm_turn", payload={"prompt": "y"}),
+    ]
+    plan = make_plan(steps=steps)
+    result = await disp.execute_plan(plan)
+
+    assert result.all_ok is False
+    assert "budget exceeded" in (result.error or "").lower()
+    # s1 ran (paid its cost), s2 was refused at the gate.
+    assert len(result.step_results) == 1
+    assert len(al.calls) == 1
+
+    types_seen = [e.type.value for e in recorded]
+    assert "plan_budget_exceeded" in types_seen
+    assert "plan_failed" in types_seen
+    # The plan ran step 1 normally → PLAN_STEP_STARTED for s1, then
+    # gate trips for s2; should NOT see plan_completed.
+    assert "plan_completed" not in types_seen
+
+
+@pytest.mark.asyncio
+async def test_phase_c_budget_none_disables_gate() -> None:
+    """``plan_budget_usd=None`` (default) bypasses the gate — legacy
+    behavior. Even if cost_tracker is wired, plans run unbounded."""
+    tracker = _FakeCostTracker(start=100.0)
+    al = FakeAgentLoop()
+    disp = ActionDispatcher(
+        agent_loop=al,
+        cost_tracker=tracker,
+        plan_budget_usd=None,
+    )
+    # Even if "spent" rockets, no gate fires.
+    orig_run_turn = al.run_turn
+
+    async def _spendy(*args: Any, **kwargs: Any) -> Any:
+        tracker.spent_usd += 1000.0
+        return await orig_run_turn(*args, **kwargs)
+
+    al.run_turn = _spendy  # type: ignore[method-assign]
+    steps = [
+        make_step(id=f"s{i}", action_kind="llm_turn", payload={"prompt": "p"})
+        for i in range(3)
+    ]
+    plan = make_plan(steps=steps)
+    result = await disp.execute_plan(plan)
+    assert result.all_ok is True
+    assert len(result.step_results) == 3
+
+
 @pytest.mark.asyncio
 async def test_b_bus_publish_failure_does_not_break_plan() -> None:
     """If the bus.publish itself raises, execute_plan must still

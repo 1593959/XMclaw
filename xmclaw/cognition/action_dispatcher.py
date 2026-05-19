@@ -145,6 +145,8 @@ class ActionDispatcher:
         *,
         bus: Any | None = None,
         stub_pretend_ok: bool = False,
+        cost_tracker: Any | None = None,
+        plan_budget_usd: float | None = None,
     ) -> None:
         self._agent_loop = agent_loop
         self._skill_registry = skill_registry
@@ -162,6 +164,21 @@ class ActionDispatcher:
         # False: real callers see ``ok=False`` when a route had no
         # executor, which is the honest answer.
         self._stub_pretend_ok = bool(stub_pretend_ok)
+        # Epic #26 Phase C (2026-05-19): per-plan cost budget. When
+        # ``cost_tracker`` is wired (typically the daemon-wide
+        # ``CostTracker`` from ``xmclaw.utils.cost``), each
+        # ``execute_plan`` snapshots ``spent_usd`` at start and
+        # gates each subsequent step's launch by
+        # ``spent_now - snapshot < plan_budget_usd``. When the
+        # budget is exceeded mid-run, the plan halts with
+        # ``status="failed"`` + a PLAN_BUDGET_EXCEEDED event so the
+        # cognitive_daemon doesn't keep re-trying the same
+        # over-budget work. ``plan_budget_usd=None`` disables the
+        # gate (legacy unbounded behaviour).
+        self._cost_tracker = cost_tracker
+        self._plan_budget_usd: float | None = (
+            float(plan_budget_usd) if plan_budget_usd is not None else None
+        )
 
     # ── Public surface ────────────────────────────────────────────────
 
@@ -203,6 +220,20 @@ class ActionDispatcher:
         steps = list(_attr_iter(plan, "steps"))
         t0_plan = time.monotonic()
 
+        # Epic #26 Phase C: snapshot cost at plan start so we can
+        # compute per-plan spend (vs daemon-wide cost_tracker totals).
+        start_spent_usd: float | None = None
+        if (
+            self._cost_tracker is not None
+            and self._plan_budget_usd is not None
+        ):
+            try:
+                start_spent_usd = float(
+                    getattr(self._cost_tracker, "spent_usd", 0.0),
+                )
+            except Exception:  # noqa: BLE001
+                start_spent_usd = None
+
         await self._emit_plan_event(
             EventType.PLAN_STARTED if EventType else None,
             plan_id=plan_id,
@@ -215,6 +246,7 @@ class ActionDispatcher:
                     _attr_str(s, "id", "?") for s in steps
                 ],
                 "confidence": _attr_float(plan, "confidence", 0.5),
+                "budget_usd": self._plan_budget_usd,
             },
         )
 
@@ -230,6 +262,65 @@ class ActionDispatcher:
             step_id = _attr_str(step, "id", "<unknown>")
             action_kind = _attr_str(step, "action_kind", "llm_turn")
             t0_step = time.monotonic()
+
+            # Epic #26 Phase C: budget gate. Check BEFORE each step
+            # so we never pay for one more LLM call after the budget
+            # is already blown. The check is cumulative (spent_now -
+            # snapshot at plan start). When tripped we emit
+            # PLAN_BUDGET_EXCEEDED + PLAN_FAILED, return early.
+            if (
+                start_spent_usd is not None
+                and self._cost_tracker is not None
+                and self._plan_budget_usd is not None
+            ):
+                try:
+                    spent_now = float(
+                        getattr(self._cost_tracker, "spent_usd", 0.0),
+                    )
+                except Exception:  # noqa: BLE001
+                    spent_now = start_spent_usd
+                delta = spent_now - start_spent_usd
+                if delta >= self._plan_budget_usd:
+                    budget_msg = (
+                        f"plan budget exceeded: spent ${delta:.4f} of "
+                        f"${self._plan_budget_usd:.4f} cap "
+                        f"(refusing further steps at index {idx})"
+                    )
+                    await self._emit_plan_event(
+                        EventType.PLAN_BUDGET_EXCEEDED if EventType else None,
+                        plan_id=plan_id,
+                        goal_id=goal_id,
+                        payload={
+                            "plan_id": plan_id,
+                            "goal_id": goal_id,
+                            "n_step_results": len(results),
+                            "spent_usd": delta,
+                            "budget_usd": self._plan_budget_usd,
+                            "would_exceed_at_step": idx,
+                        },
+                    )
+                    duration_ms = (time.monotonic() - t0_plan) * 1000.0
+                    await self._emit_plan_event(
+                        EventType.PLAN_FAILED if EventType else None,
+                        plan_id=plan_id,
+                        goal_id=goal_id,
+                        payload={
+                            "plan_id": plan_id,
+                            "goal_id": goal_id,
+                            "n_steps": len(steps),
+                            "n_step_results": len(results),
+                            "status": "failed",
+                            "duration_ms": duration_ms,
+                            "error": budget_msg,
+                        },
+                    )
+                    return PlanExecutionResult(
+                        plan_id=plan_id,
+                        step_results=tuple(results),
+                        all_ok=False,
+                        error=budget_msg,
+                    )
+
             await self._emit_plan_event(
                 EventType.PLAN_STEP_STARTED if EventType else None,
                 plan_id=plan_id,

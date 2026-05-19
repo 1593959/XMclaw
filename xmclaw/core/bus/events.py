@@ -399,6 +399,20 @@ class EventType(str, Enum):
     #   "kind": "python"      # for symmetry with future SKILL.md hot-reload
     SKILL_HOT_RELOADED = "skill_hot_reloaded"
 
+    # Epic #26 Phase C (2026-05-19): emitted by ActionDispatcher.
+    # execute_plan when a per-plan cost budget is exceeded mid-run.
+    # The plan halts at this step (no further dispatches) and the
+    # PlanResult records ``status="failed"`` with the budget reason
+    # so the UI / cognitive_daemon doesn't keep re-trying the same
+    # over-budget work. Payload:
+    #   "plan_id": str
+    #   "goal_id": str
+    #   "n_step_results": int    # how many steps got run before halt
+    #   "spent_usd": float       # actual cost incurred during this plan
+    #   "budget_usd": float      # configured cap
+    #   "would_exceed_at_step": int  # the step index that triggered halt
+    PLAN_BUDGET_EXCEEDED = "plan_budget_exceeded"
+
 
 @dataclass(frozen=True, slots=True)
 class BehavioralEvent:

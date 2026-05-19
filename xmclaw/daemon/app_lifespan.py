@@ -1930,6 +1930,21 @@ def make_lifespan(
                         # the Trace + future "Autonomous Tasks" panel
                         # see in-flight autonomous work.
                         bus=bus,
+                        # Epic #26 Phase C (2026-05-19): per-plan cost
+                        # budget cap. Reuses the daemon-wide cost_tracker
+                        # (B-312) — dispatcher snapshots its
+                        # ``spent_usd`` at plan start, gates each step
+                        # by ``spent_now - snapshot < plan_budget_usd``.
+                        # ``cognition.autonomous.plan_budget_usd`` config
+                        # default $1 keeps single-plan blast radius small;
+                        # bump for long-running autonomous experiments.
+                        cost_tracker=getattr(agent, "_cost_tracker", None),
+                        plan_budget_usd=float(
+                            (
+                                (cfg.get("cognition") or {})
+                                .get("autonomous") or {}
+                            ).get("plan_budget_usd", 1.0),
+                        ),
                     ),
                     reflection_cycle=_reflection_cycle,
                     skill_proposer=_skill_proposer,
