@@ -386,6 +386,7 @@ class BuiltinToolsPersonaMixin:
     async def _append_persona(
         self, call: ToolCall, t0: float, *,
         basename: str, section: str, entry: str, placeholder_title: str,
+        inner_timeout_s: float = 30.0,
     ) -> ToolResult:
         """Idempotent-ish append: locate or create the ``## section``
         block, append a ``- YYYY-MM-DD: entry`` bullet under it.
@@ -397,7 +398,44 @@ class BuiltinToolsPersonaMixin:
         B-63: the read-modify-write block is serialised by a per-path
         asyncio.Lock so concurrent agent + dream cron + multi-agent
         ``remember`` calls don't race + lose appends.
+
+        Epic #27 sweep #9 (2026-05-19): inner timeout of 30s. Pre-fix
+        the only timeout was the hop_loop's 180s outer wall-clock —
+        a wedged PersonaStore.set_manual (embedding pipeline stalled,
+        vec_db locked, etc.) blocked the user-visible tool result
+        for a full 3 minutes per call. daemon.log showed 56 such
+        timeouts/day. Now we wrap the body in asyncio.wait_for(30s)
+        and return a clean error if the backend doesn't answer —
+        agent gets a recoverable signal instead of a 3-minute freeze.
         """
+        import asyncio as _asyncio
+        try:
+            return await _asyncio.wait_for(
+                self._append_persona_inner(
+                    call, t0,
+                    basename=basename,
+                    section=section,
+                    entry=entry,
+                    placeholder_title=placeholder_title,
+                ),
+                timeout=inner_timeout_s,
+            )
+        except _asyncio.TimeoutError:
+            return _fail(
+                call, t0,
+                f"persona write timed out after {int(inner_timeout_s)}s "
+                f"(backend slow / locked). Retry, or check the memory "
+                f"subsystem health via /api/v2/memory/v2/status. "
+                f"Your input is NOT saved; ask the user to confirm.",
+            )
+
+    async def _append_persona_inner(
+        self, call: ToolCall, t0: float, *,
+        basename: str, section: str, entry: str, placeholder_title: str,
+    ) -> ToolResult:
+        """Inner body of _append_persona — wrapped by asyncio.wait_for
+        in the public method. Kept separate so the timeout logic
+        doesn't intermix with the read-modify-write flow."""
         from datetime import date as _date
         try:
             pdir_raw = self._persona_dir_provider()
