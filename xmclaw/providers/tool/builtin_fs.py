@@ -251,9 +251,63 @@ class BuiltinToolsFsMixin:
                 )
             except Exception:  # noqa: BLE001 — never block tool over undo
                 undo_id = None
-        path.parent.mkdir(parents=True, exist_ok=True)
+        # Epic #27 sweep #16 (2026-05-19): catch the write exceptions
+        # here + emit structured errors with hints. Pre-fix
+        # PermissionError / OSError bubbled up to the dispatcher's
+        # generic ``f"{type(exc).__name__}: {exc}"`` formatter — the
+        # LLM saw "PermissionError: [Errno 13] Permission denied" with
+        # no idea whether the fix was "try a different path" or "the
+        # file is read-only" or "the parent dir doesn't exist".
+        from xmclaw.providers.tool._helpers import _fail_with_hint
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return _fail_with_hint(
+                call, t0,
+                f"could not create parent dir for {path}",
+                exc=exc,
+                hint=(
+                    "the dir's PARENT may be read-only, OR the path "
+                    "crosses a permission boundary. Try writing to a "
+                    "subdir under the user's home / workspace."
+                ),
+            )
         from xmclaw.utils.fs_locks import atomic_write_text
-        atomic_write_text(path, text)
+        try:
+            atomic_write_text(path, text)
+        except PermissionError as exc:
+            return _fail_with_hint(
+                call, t0,
+                f"file_write blocked at {path} by file-system permissions",
+                exc=exc,
+                hint=(
+                    "file may be read-only OR open in another process "
+                    "(common on Windows when an editor has the file). "
+                    "Close other readers + retry, or ask the user to "
+                    "choose a different output path."
+                ),
+            )
+        except FileNotFoundError as exc:
+            return _fail_with_hint(
+                call, t0,
+                f"file_write target path invalid: {path}",
+                exc=exc,
+                hint=(
+                    "this usually means a path component points at a "
+                    "broken symlink or a directory that was deleted "
+                    "between mkdir and write. Retry the same path."
+                ),
+            )
+        except OSError as exc:
+            return _fail_with_hint(
+                call, t0,
+                f"file_write failed at {path}",
+                exc=exc,
+                hint=(
+                    "disk full / quota exceeded / IO error are the "
+                    "common causes. Check ``df`` / disk space."
+                ),
+            )
         # Structured dict for graders and the bus; agent_loop renders
         # it into a readable tool-message string when feeding to the LLM.
         content_dict: dict[str, Any] = {

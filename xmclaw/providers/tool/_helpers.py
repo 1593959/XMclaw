@@ -285,6 +285,44 @@ def _fail(call: ToolCall, t0: float, err: str) -> ToolResult:
     )
 
 
+def _fail_with_hint(
+    call: ToolCall,
+    t0: float,
+    summary: str,
+    *,
+    exc: BaseException | None = None,
+    hint: str | None = None,
+) -> ToolResult:
+    """Epic #27 sweep #16 (2026-05-19): structured-error variant of
+    ``_fail`` that includes an actionable hint when the failure has
+    a known recovery path.
+
+    Pre-fix many tool exception sites returned raw
+    ``f"{type(exc).__name__}: {exc}"`` — accurate but the LLM
+    couldn't tell from "PermissionError: ..." whether the fix was
+    "try a different path" or "ask the user to run with elevated
+    privileges". Hints close that gap: a one-line recovery
+    suggestion the LLM can read + act on.
+
+    Format: ``"<summary> | <exc-type>: <exc-msg> | hint: <hint>"``
+    — pipe-separated so the agent's prompt-printer can render
+    cleanly + downstream graders can split if needed.
+
+    All fields optional except summary; if neither exc nor hint
+    given, behaves identically to ``_fail``.
+    """
+    parts: list[str] = [summary]
+    if exc is not None:
+        parts.append(f"{type(exc).__name__}: {exc}")
+    if hint is not None:
+        parts.append(f"hint: {hint}")
+    return ToolResult(
+        call_id=call.id, ok=False, content=None,
+        error=" | ".join(parts),
+        latency_ms=(time.perf_counter() - t0) * 1000.0,
+    )
+
+
 def _parse_ddg_html(html: str, max_results: int) -> list[dict[str, str]]:
     """Pull the top N results out of DuckDuckGo HTML.
 
