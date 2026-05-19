@@ -52,6 +52,7 @@ import asyncio
 import logging
 import re
 from pathlib import Path
+from typing import Any
 
 from xmclaw.skills.registry import SkillRegistry
 from xmclaw.skills.user_loader import (
@@ -141,6 +142,16 @@ class SkillsWatcher:
         # event loop) and don't want to add the threadsafe-publish
         # complexity for a once-per-skill-edit signal.
         self._pending_restart_events: list[dict] = []
+        # Epic #27 P0 G-02 (2026-05-19): track skills that failed to
+        # load on the latest tick. Pre-fix UserSkillsLoader's
+        # LoadResult was returned + discarded — the agent had NO way
+        # to see "your skill.py couldn't instantiate, that's why
+        # skill_browse can't find it". Now: keyed by skill_id so
+        # subsequent ticks update / clear entries in place; cleared
+        # when a previously-failed skill becomes registered.
+        # Each entry: ``{skill_id, path, kind, error, source_root,
+        # first_seen, last_seen}``.
+        self._load_failures: dict[str, dict[str, object]] = {}
 
     # ── observability ───────────────────────────────────────────────
 
@@ -158,6 +169,77 @@ class SkillsWatcher:
 
     def is_running(self) -> bool:
         return self._task is not None and not self._task.done()
+
+    def load_failures(self) -> list[dict[str, object]]:
+        """Epic #27 P0 G-02 (2026-05-19): return the skills that
+        failed to load on the most recent tick. One entry per
+        skill_id, keyed by directory name.
+
+        Each row: ``{skill_id, path, kind, error, source_root,
+        first_seen, last_seen, ticks_failing}``. Stable across
+        ticks — a skill that's been broken for an hour stays in
+        the list with ``ticks_failing`` incrementing.
+
+        Cleared automatically when the skill becomes successfully
+        registered (the SkillsWatcher tick that finally loads it
+        removes the row).
+
+        Used by:
+        - ``GET /api/v2/skills/load_failures`` (UI banner)
+        - ``skills_list`` LLM tool (agent introspection)
+        - Skills page top-bar
+        """
+        # Sort by first_seen so oldest unresolved failures bubble up.
+        rows = list(self._load_failures.values())
+        rows.sort(key=lambda r: float(r.get("first_seen") or 0))
+        # Return a copy so callers can't mutate our state.
+        return [dict(r) for r in rows]
+
+    def _update_load_failures(self, results: list[Any]) -> None:
+        """Sync ``self._load_failures`` with the latest LoadResult set.
+
+        Removes rows that now succeed, adds new failure rows, and
+        bumps ``last_seen`` + ``ticks_failing`` on still-failing
+        rows. ``results`` is whatever ``UserSkillsLoader.load_all()``
+        returned (list of :class:`LoadResult`)."""
+        import time as _time
+
+        now = _time.time()
+        seen_ids: set[str] = set()
+        for r in results:
+            sid = getattr(r, "skill_id", "")
+            if not sid:
+                continue
+            seen_ids.add(sid)
+            ok = bool(getattr(r, "ok", False))
+            if ok:
+                # Previously failing → recovered. Drop the row.
+                self._load_failures.pop(sid, None)
+                continue
+            prev = self._load_failures.get(sid)
+            row = {
+                "skill_id": sid,
+                "path": str(getattr(r, "skill_path", "")),
+                "kind": str(getattr(r, "kind", "") or "python"),
+                "error": str(getattr(r, "error", "") or "unknown"),
+                "source_root": str(getattr(r, "source_root", "") or ""),
+                "first_seen": (
+                    prev.get("first_seen") if prev else now
+                ),
+                "last_seen": now,
+                "ticks_failing": (
+                    int(prev.get("ticks_failing", 0) or 0) + 1
+                    if prev else 1
+                ),
+            }
+            self._load_failures[sid] = row
+        # Garbage-collect rows for ids that no longer appear in
+        # results (skill directory was deleted while broken — we
+        # don't want to keep complaining about it). seen_ids covers
+        # both ok=True and ok=False entries from this tick.
+        stale = [sid for sid in self._load_failures if sid not in seen_ids]
+        for sid in stale:
+            self._load_failures.pop(sid, None)
 
     def pending_restarts(self) -> list[dict[str, object]]:
         """B-341 (audit pass-2 #6): return the list of skill.py edits
@@ -255,12 +337,15 @@ class SkillsWatcher:
         )
         # Run sync filesystem + importlib calls in a thread so we
         # don't pin the event loop on a slow disk.
-        await asyncio.get_event_loop().run_in_executor(
+        results = await asyncio.get_event_loop().run_in_executor(
             None, loader.load_all,
         )
         after = set(self._registry.list_skill_ids())
         new_ids = sorted(after - before)
         self._tick_count += 1
+        # Epic #27 P0 G-02 (2026-05-19): record load failures so the
+        # daemon / agent can see "you wrote a broken skill.py / SKILL.md".
+        self._update_load_failures(results)
         if new_ids:
             self._new_skill_count += len(new_ids)
             _log.info(

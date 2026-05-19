@@ -1595,6 +1595,67 @@ UI 功能审计（用户要求"代码级检查 + 列文档"）：
 
 ---
 
+### Epic #27 · Skill 系统补基础工程 ★ peer gap analysis 后用户拍板"全都做"
+
+**状态**：🟡 进行中（P0 phase） | **负责人**：Claude (AI pair) | **起始**：2026-05-19 | **完成**：—
+**前置依赖**：Epic #24（学徒成长系统 — registry / grader / controller 已就位） / Epic #26（autonomous reliability — planner 修复掉跨 plan 碰撞）
+**关联 Milestone**：M5 的下游 — 进化能产 skill 没意义如果用户/agent 看不见自己装了啥、装失败了不知道、改 Python 不重启 daemon 永远不生效
+
+**问题诊断**（2026-05-19 跨竞品 gap-analysis 后立项）：
+
+用户实测：装个 hyperframes 来来回回失败了几次，最后一次写完 skill.py 后**daemon 还在用 14:05 的旧版**——因为 Python skill 不能热重载、agent 不知道、UI 看不见 load failures。把这个问题翻译到结构层就是：
+
+> **XMclaw 的差异化（HonestGrader + 多臂老虎机 promote）依然成立，但 skill 系统的"基础工程"（自省、热重载信号、load failure 可见性、progressive disclosure）落后竞品 1-2 代。**
+
+对标:
+- **free-code / Claude Code**（[`loadSkillsDir.ts`](file:///C:/Users/15978/Desktop/free-code-main/free-code-main/src/skills/loadSkillsDir.ts) / [`SkillTool.ts`](file:///C:/Users/15978/Desktop/free-code-main/free-code-main/src/tools/SkillTool/SkillTool.ts) / [`reload-plugins/index.ts`](file:///C:/Users/15978/Desktop/free-code-main/free-code-main/src/commands/reload-plugins/index.ts)）：纯 markdown skill + 6 层 precedence + `paths` conditional + 1% context budget + 单 SkillTool + `/reload-plugins` 命令 + PluginErrors panel
+- **Cline**（[`skills.ts`](file:///C:/Users/15978/Desktop/cline-repo/src/core/context/instructions/user-instructions/skills.ts)）：纯 markdown + 6 层 + remote skill 企业下发 + on-demand 扫描
+- **OpenClaw**：watcher + snapshot + clawhub trust scan，但 community 抱怨"silent failure no logs"
+- **Hermes**：3 级 progressive disclosure（`skills_list()` → `skill_view(name)` → `skill_view(name, path)`）+ 4 级 trust + `.bundled_manifest` origin-hash + `skill_manage patch` 增量改优先，但 [issue #25833](https://github.com/NousResearch/hermes-agent/issues/25833) 暴露"无 external validator → agent 同时作者+执行者+裁判"
+
+XMclaw 应抄的 + 不抄的明确划线，**保留 Honest Grader + 4 道关进化路径作为差异化**。
+
+**Phase 划分（按"用户痛感 × 实现成本"打分）**：
+
+| Phase | 范围 | 退出条件 |
+|-------|------|---------|
+| **P0** | G-02 load_failures / G-03 requires_restart / G-01 introspection tools | "装了不知道为啥不工作"再不会发生 |
+| **P1** | G-09 路径统一 / G-10 frontmatter 扩展 / G-04 progressive disclosure | system prompt 不再被 skill 描述撑爆 |
+| **P2** | G-05 conditional / G-06 trust / G-07 rollback / G-08 self-evolve | agent 能自创建 skill + 走 grader 4 道关 |
+
+**P0 检查清单**：
+
+- [ ] **G-02 Load failures**：`SkillLoadFailure` dataclass + `UserSkillsLoader.load_failures` 字段 + `SkillsWatcher.failures` 状态 + `GET /api/v2/skills/load_failures` 端点 + Skills 页 banner + LLM tool `skills_list()` 输出包含失败段
+- [ ] **G-03 requires_restart**：`SkillsWatcher.pending_python_skill_changes` 已存在但范围太窄 → 扩展到 NEW skill 第一次 load 失败 + 修过后又改的情况，emit `SKILL_REQUIRES_RESTART` 上 bus + registry 字段 + system prompt block + `POST /api/v2/system/reload_skills` 端点（subprocess 路径）
+- [ ] **G-01 自省工具**：`skills_list()` / `skill_view(skill_id)` / `skill_view(skill_id, file_path)` 三个 LLM tool，注册到 ToolProvider；同 contract 的 REST：`GET /api/v2/skills/<id>` / `GET /api/v2/skills/<id>/files/<path>`
+
+**P1 检查清单**：
+
+- [ ] **G-09 路径统一**：`UserSkillsLoader._load_one` 在两条根目录都看到同名 skill_id 时记 `duplicate_path` 类型的 failure + warning event + 文档明确"`~/.agents/skills` 是只读兼容路径"
+- [ ] **G-10 frontmatter 扩展**：[`_parse_skill_md_frontmatter`](file:///C:/Users/15978/Desktop/XMclaw/xmclaw/skills/user_loader.py) 加 `when_to_use` / `allowed_tools` / `paths` / `requires_restart` / `model` 字段；`SkillManifest` 同步扩
+- [ ] **G-04 progressive disclosure**：调研 + 渐进式重构（不一次性全换）—— SkillToolProvider 加 `disclosure_mode=summary` flag，summary 模式下不为每 skill 注册独立 tool，而是注册单一 `skill_invoke(skill_id, args)` + `skill_view(skill_id)`
+
+**P2 检查清单**：
+
+- [ ] **G-05 conditional skills**：frontmatter `paths: [...]` → 按 file_op 路径激活 → 类似 free-code 的 `activateConditionalSkillsForPaths`
+- [ ] **G-06 trust 等级**：`SkillTrustLevel` enum (builtin/user/installed/untrusted) + `allowed_tools` capability 收窄 + `dangerous` verdict 不能 force
+- [ ] **G-07 用户 skill rollback**：`.versions/` snapshot + `skill_diff(id)` tool + `skill_patch(id, old, new)` 偏好（替代全文 overwrite）+ CLI `xmclaw skills rollback`
+- [ ] **G-08 self-evolving skills**：`skill-creator` SKILL.md + `skill_propose(content)` tool 走 EvolutionController（**新 skill 默认 trust=untrusted + version=v0_proposal + 至少 ≥3 evidence 才升 HEAD**——保留 XMclaw 差异化，不抄 Hermes 即时学习 transient failure 的雷）
+
+**反 - 抄袭红线（写在显眼处）**：
+
+1. **不绕过 HonestGrader** — agent 写 skill 默认进 staging，必须 ≥3 evidence + grader 评分 ≥0.7 才升 HEAD
+2. **不做 6 层 precedence** — 三层够（builtin < installed < user override）；`~/.agents/skills` 是只读兼容
+3. **不做 marketplace impersonation 防御** — 没 marketplace 就没冒充问题
+4. **不做前端 toggle 启停** — 治标；治本是 G-01 + G-06
+5. **不学 Hermes "5+ tool calls 立刻保存为 skill"** — 配合 G-08 时新 skill 默认 staging，evidence-gated promotion 才允许升
+
+**进度日志**：
+
+- 2026-05-19: peer gap-analysis 跑完（agent 单次 165K tokens），用户拍板"全都做"。Epic 立项，按 P0/P1/P2 推进。
+
+---
+
 ### Epic #26 · 自动化可靠性（Planner + 执行层夯实）★用户复盘"自动化基础不行"
 
 **状态**：🟡 进行中（Phase A） | **负责人**：Claude (AI pair) | **起始**：2026-05-19 | **完成**：—

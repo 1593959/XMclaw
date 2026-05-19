@@ -586,3 +586,115 @@ async def test_b341_pending_restarts_one_per_skill_lifetime(
         f"expected one entry across two edits, got {len(pending)}: "
         f"{pending}"
     )
+
+
+# ── Epic #27 P0 G-02 (2026-05-19): load_failures tracking ──────────
+
+
+def _drop_broken_python_skill(root: Path, skill_id: str) -> Path:
+    """Drop a skill.py with NO Skill subclass — UserSkillsLoader will
+    refuse to register it. Used to seed a load failure."""
+    sd = root / skill_id
+    sd.mkdir(parents=True, exist_ok=True)
+    (sd / "skill.py").write_text(
+        "# Intentionally empty — no Skill subclass.\n"
+        "WHATEVER = 42\n",
+        encoding="utf-8",
+    )
+    return sd
+
+
+@pytest.mark.asyncio
+async def test_load_failures_starts_empty(tmp_path: Path) -> None:
+    """Fresh watcher with no broken skills → zero load failures."""
+    reg = SkillRegistry()
+    canonical = tmp_path / "skills_user"
+    canonical.mkdir()
+    _drop_skill_md(canonical, "fine-skill")
+    watcher = SkillsWatcher(reg, canonical, interval_s=3600.0)
+    await watcher.tick()
+    assert watcher.load_failures() == []
+
+
+@pytest.mark.asyncio
+async def test_load_failures_captures_broken_python_skill(
+    tmp_path: Path,
+) -> None:
+    """A skill.py without a Skill subclass is the exact failure mode
+    that bit the user with hyperframes 2026-05-19. The watcher must
+    surface it so the agent / UI can see WHY skill_browse can't find it."""
+    reg = SkillRegistry()
+    canonical = tmp_path / "skills_user"
+    canonical.mkdir()
+    _drop_broken_python_skill(canonical, "broken-skill")
+    watcher = SkillsWatcher(reg, canonical, interval_s=3600.0)
+
+    await watcher.tick()
+
+    failures = watcher.load_failures()
+    assert len(failures) == 1
+    row = failures[0]
+    assert row["skill_id"] == "broken-skill"
+    assert row["kind"] == "python"
+    assert "no concrete Skill subclass" in row["error"].lower() or \
+        "skill" in row["error"].lower()
+    assert row["ticks_failing"] == 1
+    assert row["first_seen"] == row["last_seen"]  # first tick
+
+    # Second tick: same failure → ticks_failing bumps, first_seen stays.
+    await watcher.tick()
+    failures2 = watcher.load_failures()
+    assert len(failures2) == 1
+    assert failures2[0]["ticks_failing"] == 2
+    assert failures2[0]["first_seen"] == row["first_seen"]
+    assert failures2[0]["last_seen"] >= row["last_seen"]
+
+
+@pytest.mark.asyncio
+async def test_load_failures_clears_when_skill_recovers(
+    tmp_path: Path,
+) -> None:
+    """The user fixes their skill.py → next tick clears the failure
+    row. This is the path back to green from a broken state."""
+    reg = SkillRegistry()
+    canonical = tmp_path / "skills_user"
+    canonical.mkdir()
+    sd = _drop_broken_python_skill(canonical, "recoverable")
+    watcher = SkillsWatcher(reg, canonical, interval_s=3600.0)
+
+    await watcher.tick()
+    assert len(watcher.load_failures()) == 1
+
+    # Fix the skill by replacing skill.py with a SKILL.md instead
+    # (avoids importlib caching of the broken module — SKILL.md is
+    # the simplest recovery path).
+    (sd / "skill.py").unlink()
+    (sd / "SKILL.md").write_text(
+        "---\nname: recoverable\ndescription: now valid\n---\n# ok\n",
+        encoding="utf-8",
+    )
+    await watcher.tick()
+    assert watcher.load_failures() == []
+    assert "recoverable" in reg.list_skill_ids()
+
+
+@pytest.mark.asyncio
+async def test_load_failures_gc_when_skill_dir_deleted(
+    tmp_path: Path,
+) -> None:
+    """User deletes the broken skill dir entirely → failure row drops
+    out (no point complaining about a thing that no longer exists)."""
+    import shutil
+
+    reg = SkillRegistry()
+    canonical = tmp_path / "skills_user"
+    canonical.mkdir()
+    sd = _drop_broken_python_skill(canonical, "ghost-skill")
+    watcher = SkillsWatcher(reg, canonical, interval_s=3600.0)
+
+    await watcher.tick()
+    assert len(watcher.load_failures()) == 1
+
+    shutil.rmtree(sd)
+    await watcher.tick()
+    assert watcher.load_failures() == []

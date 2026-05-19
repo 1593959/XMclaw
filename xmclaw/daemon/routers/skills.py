@@ -96,17 +96,26 @@ async def list_skills(request: Request) -> JSONResponse:
     # Empty list when no edits seen this daemon-lifetime.
     watcher = getattr(request.app.state, "skills_watcher", None)
     pending_restarts: list[dict[str, object]] = []
+    load_failures: list[dict[str, object]] = []
     if watcher is not None:
         try:
             pending_restarts = watcher.pending_restarts()
         except Exception:  # noqa: BLE001 — never let watcher 500 the listing
             pending_restarts = []
+        # Epic #27 P0 G-02 (2026-05-19): surface load failures so the
+        # Skills page can render a banner instead of agent / user
+        # digging through daemon.log.
+        try:
+            load_failures = watcher.load_failures()
+        except Exception:  # noqa: BLE001
+            load_failures = []
 
     if orch is None:
         return JSONResponse({
             "skills": [],
             "evolution_enabled": False,
             "pending_restarts": pending_restarts,
+            "load_failures": load_failures,
         })
 
     registry = orch.registry
@@ -146,6 +155,35 @@ async def list_skills(request: Request) -> JSONResponse:
         "skills": rows,
         "evolution_enabled": True,
         "pending_restarts": pending_restarts,
+        "load_failures": load_failures,
+    })
+
+
+@router.get("/load_failures")
+async def get_load_failures(request: Request) -> JSONResponse:
+    """Epic #27 P0 G-02 (2026-05-19): dedicated endpoint for the
+    Skills page banner + agent introspection. Returns the same
+    payload ``list_skills`` includes inline, but cheap enough to
+    poll without iterating every registered (id, version) row.
+
+    Returns ``{"load_failures": [{skill_id, path, kind, error,
+    source_root, first_seen, last_seen, ticks_failing}], "count": N}``.
+    Empty list with ``count: 0`` is the healthy state.
+    """
+    watcher = getattr(request.app.state, "skills_watcher", None)
+    if watcher is None:
+        return JSONResponse({"load_failures": [], "count": 0})
+    try:
+        failures = watcher.load_failures()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({
+            "load_failures": [],
+            "count": 0,
+            "error": f"watcher failed: {exc}",
+        })
+    return JSONResponse({
+        "load_failures": failures,
+        "count": len(failures),
     })
 
 
