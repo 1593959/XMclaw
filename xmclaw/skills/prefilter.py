@@ -295,7 +295,9 @@ def select_relevant_skills(
     # the LLM literally can't see they exist.
     from xmclaw.skills.tool_bridge import (
         META_BROWSE_TOOL_NAME,
+        META_DIFF_TOOL_NAME,
         META_INSTALL_TOOL_NAME,
+        META_ROLLBACK_TOOL_NAME,
         META_RUN_TOOL_NAME,
         META_STATUS_TOOL_NAME,
         META_UNINSTALL_TOOL_NAME,
@@ -315,6 +317,11 @@ def select_relevant_skills(
         # the ONLY skill-invocation path; the prefilter must never
         # drop it even on zero-token-overlap queries.
         META_RUN_TOOL_NAME,
+        # Epic #27 G-07 (2026-05-19): versioned-edit history. Always
+        # on so the recovery path ("rollback the skill I just broke")
+        # is always reachable, no matter what the user query was.
+        META_DIFF_TOOL_NAME,
+        META_ROLLBACK_TOOL_NAME,
     })
 
     # Partition: skills vs non-skills vs the always-on meta-tools.

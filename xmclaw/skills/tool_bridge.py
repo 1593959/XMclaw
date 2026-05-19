@@ -71,6 +71,15 @@ META_VIEW_TOOL_NAME = "skill_view"
 # mode it's an alias that coexists with them. The Hermes / Claude-Skills
 # 3-step flow is: skill_browse → skill_view → skill_run.
 META_RUN_TOOL_NAME = "skill_run"
+# Epic #27 P2 G-07 (2026-05-19) — versioned-edit history affordances.
+# ``skill_diff`` shows a unified diff between the live file and the
+# most-recent .versions/ snapshot. ``skill_rollback`` restores a
+# snapshot in place (capturing the current live content first so
+# the rollback itself is undoable). Both are always-on meta-tools
+# and whitelisted in the prefilter so a "I just broke my skill"
+# self-recovery loop always reaches the agent.
+META_DIFF_TOOL_NAME = "skill_diff"
+META_ROLLBACK_TOOL_NAME = "skill_rollback"
 
 # Disclosure modes:
 #   ``inline``  — legacy. Every registered skill shows up as its own
@@ -190,6 +199,11 @@ class SkillToolProvider:
         # invocation path. Keeping it always-on means we don't have to
         # update the prompt / TOOLS.md auto-block when the mode flips.
         specs.append(self._run_spec())
+        # Epic #27 G-07 (2026-05-19): versioned-edit history. Always
+        # exposed so the recovery loop ("I just broke my skill, can
+        # you put it back?") always has the tools to act.
+        specs.append(self._diff_spec())
+        specs.append(self._rollback_spec())
 
         if self._effective_disclosure_mode() == DISCLOSURE_MODE_UNIFIED:
             # Skip per-skill tools entirely. The LLM discovers + invokes
@@ -248,6 +262,10 @@ class SkillToolProvider:
             return self._invoke_status(call, t0)
         if call.name == META_VIEW_TOOL_NAME:
             return self._invoke_view(call, t0)
+        if call.name == META_DIFF_TOOL_NAME:
+            return self._invoke_diff(call, t0)
+        if call.name == META_ROLLBACK_TOOL_NAME:
+            return self._invoke_rollback(call, t0)
 
         # Epic #27 G-04: skill_run reads ``skill_id`` from args and
         # falls through to the shared invocation path below. This
@@ -834,6 +852,292 @@ class SkillToolProvider:
             },
             error=None,
             latency_ms=self._elapsed_ms(t0),
+        )
+
+    # ── Epic #27 G-07: versioned-edit history (diff + rollback) ────
+
+    def _diff_spec(self) -> ToolSpec:
+        return ToolSpec(
+            name=META_DIFF_TOOL_NAME,
+            description=(
+                "Read a unified diff between an installed skill's "
+                "current SKILL.md / skill.py and a prior snapshot from "
+                "its ``.versions/`` history. Use when ``skill_status`` "
+                "reports a load failure right after a recent edit, or "
+                "when you want to know what just changed before "
+                "deciding whether to rollback. Returns ``{path, "
+                "snapshot, diff, snapshots_total}``; ``diff`` is empty "
+                "if current content equals the snapshot. The watcher "
+                "automatically snapshots on every detected save, so "
+                "the freshest history exists at index 0 (the previous "
+                "save) — index 1 = save before that, etc."
+            ),
+            parameters_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["skill_id"],
+                "properties": {
+                    "skill_id": {
+                        "type": "string",
+                        "description": "Installed skill id.",
+                    },
+                    "file": {
+                        "type": "string",
+                        "description": (
+                            "Optional: ``SKILL.md`` (default), "
+                            "``skill.py``, or ``manifest.json``. The "
+                            "file under the skill dir whose snapshot "
+                            "history to consult."
+                        ),
+                    },
+                    "against_index": {
+                        "type": "integer",
+                        "description": (
+                            "Newest-first index into "
+                            "``.versions/`` (default 0 = the most "
+                            "recent prior save)."
+                        ),
+                        "minimum": 0,
+                    },
+                },
+            },
+        )
+
+    def _rollback_spec(self) -> ToolSpec:
+        return ToolSpec(
+            name=META_ROLLBACK_TOOL_NAME,
+            description=(
+                "Restore an installed skill's SKILL.md / skill.py / "
+                "manifest.json from its ``.versions/`` snapshot "
+                "history, overwriting the live file in place. The "
+                "rollback ITSELF captures the current live content "
+                "first (snapshotted under .versions/ same as a normal "
+                "edit) so it's undoable — call ``skill_rollback`` "
+                "again with index 0 to swap back. For SKILL.md / "
+                "manifest.json the SkillsWatcher will re-process the "
+                "change on the next tick; for skill.py a daemon "
+                "restart MAY be needed if the import was cached "
+                "(``skill_status`` will say so). Returns ``{path, "
+                "restored_from, snapshots_total}``."
+            ),
+            parameters_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["skill_id"],
+                "properties": {
+                    "skill_id": {
+                        "type": "string",
+                        "description": "Installed skill id.",
+                    },
+                    "file": {
+                        "type": "string",
+                        "description": (
+                            "Same as ``skill_diff.file``: which file "
+                            "(SKILL.md default, or skill.py / "
+                            "manifest.json)."
+                        ),
+                    },
+                    "to_index": {
+                        "type": "integer",
+                        "description": (
+                            "Snapshot index to restore (default 0)."
+                        ),
+                        "minimum": 0,
+                    },
+                },
+            },
+        )
+
+    def _resolve_skill_file(
+        self, skill_id: str, file_hint: str | None,
+    ) -> "tuple[Any | None, Any | None, str | None]":
+        """Locate the skill dir + the specific file under it that
+        ``skill_diff`` / ``skill_rollback`` should consult.
+
+        Returns ``(skill_dir, target_file, error)``. On success
+        ``error`` is ``None``. ``target_file`` defaults to ``SKILL.md``
+        when present else ``skill.py`` — same precedence as
+        ``skill_view`` so the LLM doesn't have to learn a second
+        convention.
+        """
+        from pathlib import Path as _Path
+        from xmclaw.skills.user_loader import resolve_skill_roots
+
+        try:
+            canonical, extras = resolve_skill_roots()
+        except Exception:  # noqa: BLE001
+            canonical, extras = (_Path.home() / ".xmclaw/skills_user", [])
+        roots = [canonical, *extras]
+        skill_dir = None
+        for root in roots:
+            cand = root / skill_id
+            if cand.is_dir():
+                skill_dir = cand
+                break
+        if skill_dir is None:
+            return None, None, (
+                f"skill dir not found for {skill_id!r} under any of "
+                f"{[str(r) for r in roots]}"
+            )
+
+        if file_hint:
+            # Reject path-traversal — same checks as skill_view.
+            hint = file_hint.strip()
+            looks_absolute = (
+                _Path(hint).is_absolute()
+                or hint.startswith("/")
+                or hint.startswith("\\\\")
+                or (
+                    len(hint) >= 2 and hint[1] == ":"
+                    and hint[0].isalpha()
+                )
+            )
+            if ".." in _Path(hint).parts or looks_absolute:
+                return None, None, (
+                    f"file must be relative + no ..: got {hint!r}"
+                )
+            target = skill_dir / hint
+        else:
+            if (skill_dir / "SKILL.md").is_file():
+                target = skill_dir / "SKILL.md"
+            elif (skill_dir / "skill.py").is_file():
+                target = skill_dir / "skill.py"
+            elif (skill_dir / "manifest.json").is_file():
+                target = skill_dir / "manifest.json"
+            else:
+                return None, None, (
+                    f"no SKILL.md / skill.py / manifest.json found "
+                    f"in {skill_dir}; pass ``file`` explicitly"
+                )
+        if not target.is_file():
+            return None, None, f"file not found: {target}"
+        return skill_dir, target, None
+
+    def _invoke_diff(self, call: ToolCall, t0: float) -> ToolResult:
+        from xmclaw.skills.version_history import diff as _diff
+        from xmclaw.skills.version_history import list_versions
+
+        args = dict(call.args or {})
+        skill_id = args.get("skill_id")
+        if not isinstance(skill_id, str) or not skill_id.strip():
+            return self._error_result(
+                call.id, "skill_diff requires 'skill_id'", t0,
+            )
+        file_hint = args.get("file")
+        if file_hint is not None and not isinstance(file_hint, str):
+            file_hint = None
+        try:
+            against_index = int(args.get("against_index", 0))
+        except (TypeError, ValueError):
+            against_index = 0
+        against_index = max(0, against_index)
+
+        skill_dir, target, err = self._resolve_skill_file(
+            skill_id.strip(), file_hint,
+        )
+        if err:
+            return self._error_result(call.id, err, t0)
+
+        ext = target.suffix.lstrip(".") or "txt"
+        snapshots = list_versions(skill_dir, ext=ext)
+        if not snapshots:
+            return ToolResult(
+                call_id=call.id, ok=True,
+                content={
+                    "path": str(target),
+                    "snapshot": None,
+                    "diff": "",
+                    "snapshots_total": 0,
+                    "note": (
+                        "No snapshots exist yet for this skill. The "
+                        "watcher writes one on every detected save; "
+                        "if this is the first time you've touched "
+                        "the file since install, there's nothing to "
+                        "diff against."
+                    ),
+                },
+                error=None, latency_ms=self._elapsed_ms(t0),
+            )
+        if against_index >= len(snapshots):
+            return self._error_result(
+                call.id,
+                f"against_index={against_index} out of range; "
+                f"only {len(snapshots)} snapshot(s) exist",
+                t0,
+            )
+        diff_body = _diff(
+            skill_dir, target,
+            against_index=against_index, max_lines=200,
+        )
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "path": str(target),
+                "snapshot": str(snapshots[against_index].path),
+                "diff": diff_body or "",
+                "snapshots_total": len(snapshots),
+            },
+            error=None, latency_ms=self._elapsed_ms(t0),
+        )
+
+    def _invoke_rollback(self, call: ToolCall, t0: float) -> ToolResult:
+        from xmclaw.skills.version_history import (
+            list_versions, rollback as _rollback,
+        )
+
+        args = dict(call.args or {})
+        skill_id = args.get("skill_id")
+        if not isinstance(skill_id, str) or not skill_id.strip():
+            return self._error_result(
+                call.id, "skill_rollback requires 'skill_id'", t0,
+            )
+        file_hint = args.get("file")
+        if file_hint is not None and not isinstance(file_hint, str):
+            file_hint = None
+        try:
+            to_index = int(args.get("to_index", 0))
+        except (TypeError, ValueError):
+            to_index = 0
+        to_index = max(0, to_index)
+
+        skill_dir, target, err = self._resolve_skill_file(
+            skill_id.strip(), file_hint,
+        )
+        if err:
+            return self._error_result(call.id, err, t0)
+
+        restored_path = _rollback(
+            skill_dir, target,
+            to_index=to_index, snapshot_current=True,
+        )
+        if restored_path is None:
+            ext = target.suffix.lstrip(".") or "txt"
+            total = len(list_versions(skill_dir, ext=ext))
+            return self._error_result(
+                call.id,
+                f"rollback failed — no snapshot at index "
+                f"{to_index} (have {total}) or IO error",
+                t0,
+            )
+        ext = target.suffix.lstrip(".") or "txt"
+        total = len(list_versions(skill_dir, ext=ext))
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "path": str(target),
+                "restored_from": str(restored_path),
+                "snapshots_total": total,
+                "note": (
+                    "Live file restored from snapshot. The "
+                    "SkillsWatcher will pick up the new mtime on "
+                    "its next tick (typically < 5s). For Python "
+                    "skill.py, daemon restart may be required if "
+                    "the import was cached (``skill_status`` will "
+                    "indicate via pending_restarts)."
+                ),
+            },
+            error=None, latency_ms=self._elapsed_ms(t0),
+            side_effects=(str(target),),
         )
 
     # ── Epic #27 G-04: progressive-disclosure run dispatcher ───────

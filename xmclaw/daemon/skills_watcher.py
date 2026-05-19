@@ -547,6 +547,15 @@ class SkillsWatcher:
                 "skills_watcher.read_failed file=%s err=%s", file, exc,
             )
             return False
+        # Epic #27 P2 G-07 (2026-05-19): snapshot the new content
+        # under <skill_dir>/.versions/ before we hand it to the
+        # registry. Snapshotter swallows IO errors — losing a backup
+        # is never fatal to the live reload path.
+        try:
+            from xmclaw.skills.version_history import snapshot as _snap
+            _snap(file.parent, file)
+        except Exception:  # noqa: BLE001 — never fail the watcher tick
+            pass
         title, description, triggers = _parse_skill_md_frontmatter(body)
         try:
             ok = self._registry.update_body(
@@ -613,6 +622,23 @@ class SkillsWatcher:
             return None
 
         skill_id = skill_dir.name
+
+        # Epic #27 P2 G-07 (2026-05-19): snapshot skill.py + adjacent
+        # SKILL.md / manifest.json under .versions/ before the reload
+        # attempt. Snapshot ALL three because the user's edit may
+        # span them (e.g. bumping manifest.version + skill.py body).
+        # Snapshotter never raises.
+        try:
+            from xmclaw.skills.version_history import snapshot as _snap
+            _snap(skill_dir, skill_py)
+            md = skill_dir / "SKILL.md"
+            if md.is_file():
+                _snap(skill_dir, md)
+            mp = skill_dir / "manifest.json"
+            if mp.is_file():
+                _snap(skill_dir, mp)
+        except Exception:  # noqa: BLE001 — never fail the watcher tick
+            pass
 
         # ---------- Hot-reload path (only when previously registered) ----------
         if registered:
