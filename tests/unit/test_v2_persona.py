@@ -242,7 +242,16 @@ def test_load_persona_files_orders_by_priority(profile_dir: Path):
     assert bases.index("TOOLS.md") < bases.index("MEMORY.md")
 
 
-def test_bootstrap_prefix_present_when_marker_exists(profile_dir: Path):
+def test_bootstrap_prefix_present_when_marker_exists(
+    profile_dir: Path, monkeypatch,
+):
+    # Epic #27 G-08 follow-up (2026-05-19): isolate from the user's
+    # real LanceDB — if their facts.lance has any identity fact,
+    # ensure_bootstrap_marker would short-circuit (correct production
+    # behaviour) but defeat this test's premise.
+    monkeypatch.setattr(
+        "xmclaw.core.persona.loader._has_identity_facts", lambda: False,
+    )
     ensure_default_profile(profile_dir)
     assert bootstrap_prefix(profile_dir=profile_dir, workspace_dir=None) == ""
     ensure_bootstrap_marker(profile_dir)
@@ -274,10 +283,16 @@ def test_ensure_bootstrap_marker_skips_when_identity_filled(
 
 
 def test_ensure_bootstrap_marker_writes_when_identity_pristine(
-    profile_dir: Path,
+    profile_dir: Path, monkeypatch,
 ):
     """A fresh install (IDENTITY.md byte-equal to template) should get
     BOOTSTRAP.md so the next agent turn enters interview mode."""
+    # G-08 follow-up: monkey-patch _has_identity_facts → False so
+    # the test doesn't depend on whether the runner's home LanceDB
+    # happens to contain identity facts.
+    monkeypatch.setattr(
+        "xmclaw.core.persona.loader._has_identity_facts", lambda: False,
+    )
     ensure_default_profile(profile_dir)
     # No edit to IDENTITY.md — should still be template.
     result = ensure_bootstrap_marker(profile_dir)
@@ -286,14 +301,39 @@ def test_ensure_bootstrap_marker_writes_when_identity_pristine(
     assert (profile_dir / "BOOTSTRAP.md").exists()
 
 
-def test_ensure_bootstrap_marker_idempotent(profile_dir: Path):
+def test_ensure_bootstrap_marker_idempotent(profile_dir: Path, monkeypatch):
     """Second call after the first should return None — BOOTSTRAP.md
     already pending."""
+    monkeypatch.setattr(
+        "xmclaw.core.persona.loader._has_identity_facts", lambda: False,
+    )
     ensure_default_profile(profile_dir)
     first = ensure_bootstrap_marker(profile_dir)
     assert first is not None
     second = ensure_bootstrap_marker(profile_dir)
     assert second is None
+
+
+def test_ensure_bootstrap_marker_skips_when_identity_facts_in_lancedb(
+    profile_dir: Path, monkeypatch,
+):
+    """Epic #27 G-08 follow-up (2026-05-19): even when IDENTITY.md is
+    the pristine template, if LanceDB facts already carry an
+    ``identity``-kind row (the agent learned its name in a prior
+    session), DON'T re-write BOOTSTRAP.md. Pre-fix this regressed
+    every fresh session into "我刚上线 / 我是谁" because the
+    bootstrap_prefix forced the agent to ignore prior identity
+    facts and re-interview the user."""
+    monkeypatch.setattr(
+        "xmclaw.core.persona.loader._has_identity_facts", lambda: True,
+    )
+    ensure_default_profile(profile_dir)
+    # IDENTITY.md is still the pristine template — would normally
+    # trigger BOOTSTRAP.md write — but the facts short-circuit
+    # MUST kick in.
+    result = ensure_bootstrap_marker(profile_dir)
+    assert result is None
+    assert not (profile_dir / "BOOTSTRAP.md").exists()
 
 
 def test_render_tools_section_inserts_block_when_missing(
@@ -426,7 +466,14 @@ def test_build_system_prompt_includes_tools_digest(profile_dir: Path):
     assert "`bash`" in prompt
 
 
-def test_build_system_prompt_includes_bootstrap_when_pending(profile_dir: Path):
+def test_build_system_prompt_includes_bootstrap_when_pending(
+    profile_dir: Path, monkeypatch,
+):
+    # G-08 follow-up: isolate from the runner's home LanceDB so the
+    # facts short-circuit doesn't suppress the marker we want here.
+    monkeypatch.setattr(
+        "xmclaw.core.persona.loader._has_identity_facts", lambda: False,
+    )
     ensure_default_profile(profile_dir)
     ensure_bootstrap_marker(profile_dir)
     prompt = build_system_prompt(profile_dir=profile_dir)

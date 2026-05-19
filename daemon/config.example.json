@@ -198,8 +198,8 @@
     "_comment": "Jarvisification 认知架构 — Epic #25 完成后默认全 ON（autonomy_level 从 0 翻到 50，之前的保守姿态被显式撤销 2026-05-09）。enabled=true 启用 Phase 1-5 mechanics（CognitiveState / MemoryGraph / TaskScheduler / FileWatcher / EvolutionLoop）。continuous_loop.enabled=true 进一步打开 Phase 6/R1-R6（PerceptionBus + AttentionFilter + ReasoningEngine + Planner + GoalGenerator + SelfExperimentLoop + CognitiveDaemon heartbeat + ReflectionCycle + MetaCognitionPass + Multi-modal watchers + SuggestionInbox）。autonomy_level=50 默认 = 主动提示但不替你执行（建议进 SuggestionInbox 待审批）；要自主行动翻 75+（启用 self-experiments）/ 100（full Jarvis，要 double-confirm + audit log）；要回到只观察不动作翻 0。要完全关回 Phase 5 之前行为，把 enabled 设 false。",
     "enabled": true,
     "memory_v2": {
-      "_comment": "Wave 27 / Memory v2 — Fact/Relation + LanceDB-backed L1 + 确定性 KeyInfoExtractor。enabled=true 后：每条用户消息自动扫 URL/账号/密码/数字目标/'记住 X' 等模式，落到 ~/.xmclaw/v2/facts/ (LanceDB)。Agent 不需要主动调 remember 工具。详见 docs/MEMORY_EVOLUTION_REDESIGN.md。默认 false（rollout 阶段，等 Phase 4a 完整 agent 契约上线后翻 true）。需要 pip install 'xmclaw[memory-v2]'（带 lancedb + pyarrow）。",
-      "enabled": false
+      "_comment": "Wave 27 / Memory v2 — Fact/Relation + LanceDB-backed L1 + 确定性 KeyInfoExtractor。enabled=true 后：每条用户消息自动扫 URL/账号/密码/数字目标/'记住 X' 等模式，落到 ~/.xmclaw/v2/facts/ (LanceDB)。Agent 不需要主动调 remember 工具。详见 docs/MEMORY_EVOLUTION_REDESIGN.md。**2026-05-19 默认翻 true** (Epic #27 G-08 follow-up)——用户实测发现 facts 在 LanceDB 里但 render_for_prompt 因 scope filter 把它们漏掉了，agent 不知道自己叫什么；同 commit 修了 filter + 让 BOOTSTRAP.md 短路尊重已有 identity facts。需要 pip install 'xmclaw[memory-v2]'（带 lancedb + pyarrow）。",
+      "enabled": true
     },
     "context_compression": {
       "_comment": "Wave 27 fix-6 (2026-05-15)：上下文压缩 = 按 token 预算压，不按消息条数压。模型上下文窗口三层解析：(1) llm.<provider>.context_length 配置覆盖（最高优先级 — 任何 endpoint 都能用，无需代码改动）；(2) 静态表 _provider_profiles.get_model_context_length() — 主流模型自动识别；(3) 动态 ratchet — 每次 LLM 成功返回的 prompt_tokens 都会抬高估值，所以未注册的模型经过 1-2 轮就自我校准。压缩规则：触发后保留头 N 条（系统提示 / 开局）+ 尾部 token_budget 字节原文 + 中间压成 summary。protect_last_ratio 是核心 — 取上下文窗口的 % 作为尾部预算（默认 20%），所以 1M 窗模型保留 ~150K 原文 / 256K 模型保留 ~51K / 32K 模型保留 ~6K。protect_last_n 是整数地板（默认 5），防小窗模型尾部一条都没。",

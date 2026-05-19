@@ -78,7 +78,17 @@ _log = logging.getLogger(__name__)
 # metadata.bucket. None entries (e.g. SOUL.md) mean "manual only — no
 # auto append".
 AUTO_SECTIONS: dict[str, tuple[str, str, str | None] | None] = {
-    "IDENTITY.md":  None,
+    # Epic #27 G-08 follow-up (2026-05-19): IDENTITY.md auto-append
+    # ENABLED for the ``identity`` bucket. Pre-fix this was None
+    # ("manual only — no auto append"), which made the fact → file
+    # writeback path silently drop every ``kind=identity`` fact the
+    # extractor produced. Result: LanceDB had "AI 的名字是小咪"
+    # but IDENTITY.md stayed as the pristine template forever,
+    # triggering BOOTSTRAP.md every boot (see ``ensure_bootstrap_marker``).
+    # The bucket filter is "identity" so only facts the
+    # KeyInfoExtractor / LLMFactExtractor explicitly tagged as
+    # identity-relevant land here — not arbitrary lessons.
+    "IDENTITY.md":  ("## Auto-extracted identity",    "lesson",     "identity"),
     "BOOTSTRAP.md": None,
     "USER.md":      ("## Auto-extracted preferences", "preference", None),
     "MEMORY.md":    ("## Failure Modes",              "lesson",     "failure_modes"),

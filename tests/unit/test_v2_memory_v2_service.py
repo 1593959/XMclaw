@@ -820,3 +820,36 @@ async def test_render_for_prompt_skips_duplicates_in_recall_section() -> None:
     block = await svc.render_for_prompt("简短回复")
     # Count "用户喜欢简短回复" occurrences — should be 1, not 2.
     assert block.count("用户喜欢简短回复") == 1
+
+
+@pytest.mark.asyncio
+async def test_render_for_prompt_includes_identity_across_all_scopes() -> None:
+    """Epic #27 G-08 follow-up (2026-05-19): identity / preference
+    facts must surface in the prompt regardless of their scope tag.
+
+    Pre-fix the always-on user section locked ``scopes=["user"]``
+    and the project section locked ``kinds=["project","commitment"]``.
+    Real-data finding: a user had 3 facts in LanceDB —
+        * "AI的名字是小咪"   kind=identity   scope=session
+        * "关系: 我哥或者敬宇"  kind=identity   scope=user
+        * "用户使用中文交流"  kind=preference  scope=project
+    — and only "我哥或者敬宇" made it into the prompt. The agent
+    didn't know its own name because the session-scope identity
+    fact got filter-dropped. Test pins all 3 in.
+    """
+    svc = _make_service()
+    await svc.remember(
+        "AI的名字是小咪", kind="identity", scope="session",
+    )
+    await svc.remember(
+        "关系: 我哥或者敬宇", kind="identity", scope="user",
+    )
+    await svc.remember(
+        "用户使用中文进行交流", kind="preference", scope="project",
+    )
+    block = await svc.render_for_prompt("hi")
+    # All three facts must surface — the scope tag is no longer a
+    # gate for the always-on prompt sections.
+    assert "AI的名字是小咪" in block
+    assert "我哥或者敬宇" in block
+    assert "用户使用中文进行交流" in block

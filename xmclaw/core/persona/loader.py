@@ -230,6 +230,15 @@ def ensure_bootstrap_marker(profile_dir: Path) -> Path | None:
         next agent turn will pick it up via ``bootstrap_prefix``).
       * Else if IDENTITY.md has been edited beyond the template → return
         None (user already set up identity, no need to re-interview).
+      * Epic #27 G-08 follow-up (2026-05-19): else if LanceDB facts
+        already carry an ``identity``-kind fact (any scope) → return
+        None. The agent has previously learned WHO it is from the
+        user; re-triggering the BOOTSTRAP interview would force it
+        to discard that knowledge ("Don't infer name from prior
+        context") and ask the same questions again. The user's
+        report: "他之前知道是谁，刚才改完才不知道" — root cause
+        was BOOTSTRAP.md being written despite identity facts
+        existing in LanceDB. This short-circuit prevents the regress.
       * Else write the template and return the new path.
 
     The agent reads BOOTSTRAP.md, runs the interview dialogue, writes
@@ -241,11 +250,53 @@ def ensure_bootstrap_marker(profile_dir: Path) -> Path | None:
         return None
     if not _identity_looks_unfilled(profile_dir):
         return None
+    # Epic #27 G-08 follow-up: LanceDB facts short-circuit.
+    if _has_identity_facts():
+        return None
     try:
         target.write_text(_templates.BOOTSTRAP_TEMPLATE, encoding="utf-8")
         return target
     except OSError:
         return None
+
+
+def _has_identity_facts() -> bool:
+    """Best-effort check: does the LanceDB facts table carry any
+    ``identity``-kind fact? Used by ``ensure_bootstrap_marker`` to
+    skip the first-run interview when the agent already learned its
+    own name / persona during a previous session.
+
+    Never raises — any IO / import failure returns False so the
+    caller falls through to its normal write path. Lazy-imports
+    LanceDB so the persona loader doesn't take a hard dep on the
+    optional ``[memory-v2]`` extra.
+    """
+    try:
+        from xmclaw.utils.paths import data_dir
+        facts_dir = data_dir() / "v2" / "facts"
+        if not (facts_dir / "facts.lance").exists():
+            return False
+        # Use the synchronous LanceDB API for this one-shot check —
+        # we're called from sync ``ensure_bootstrap_marker`` and
+        # don't want to bring an event loop into the boot path.
+        import lancedb
+        db = lancedb.connect(str(facts_dir))
+        if "facts" not in db.table_names():
+            return False
+        tbl = db.open_table("facts")
+        # ``count_rows`` with a where clause is the cheapest probe.
+        # ``kind`` is a top-level column on the Fact schema.
+        try:
+            n = tbl.count_rows("kind = 'identity'")
+        except Exception:  # noqa: BLE001 — older lancedb sigs
+            # Fallback: pull the first row of any identity fact.
+            rows = list(
+                tbl.search().where("kind = 'identity'").limit(1).to_list()
+            )
+            return len(rows) > 0
+        return n > 0
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # ── Wave-27 fix-LAT4: dynamic TOOLS.md tool-list section ────────────

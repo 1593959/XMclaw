@@ -1092,14 +1092,34 @@ class MemoryService:
         # through N neighbor lookups (the #4 path). Total cost was
         # 4 × the slowest recall. With both fixes the render_for_prompt
         # path drops from ~25s (real-world observed) to ~3s typical.
+        #
+        # Epic #27 G-08 follow-up (2026-05-19): REMOVE scope filter.
+        # Real-data finding from user — 3 facts in LanceDB:
+        #   * "AI的名字是小咪"     kind=identity   scope=session
+        #   * "关系: 我哥或者敬宇"  kind=identity   scope=user
+        #   * "用户使用中文交流"   kind=preference  scope=project
+        # Pre-fix only "我哥或者敬宇" got into the prompt because
+        # user_t locked scopes=["user"] and project_t locked
+        # kinds=["project","commitment"]. The other 2 facts sat in
+        # the DB invisible to the agent — defeating the whole point
+        # of L1 facts being "durable agent-visible context". The
+        # extractor's scope assignment is its own bug to fix, but
+        # render_for_prompt should be permissive: identity-kind
+        # facts ARE identity regardless of scope tag; same for
+        # preference, decision, etc. Cap-by-k still keeps prompt
+        # bounded.
         import asyncio as _asyncio
         user_t = self.recall(
-            None, kinds=["preference", "identity", "correction"],
-            scopes=["user"], k=20, include_relations=False,
+            None,
+            kinds=["preference", "identity", "correction"],
+            scopes=None,  # all scopes — see comment above
+            k=20, include_relations=False,
         )
         project_t = self.recall(
-            None, kinds=["project", "commitment"],
-            scopes=["project"], k=20, include_relations=False,
+            None,
+            kinds=["project", "commitment"],
+            scopes=None,  # all scopes
+            k=20, include_relations=False,
         )
         decision_t = self.recall(
             None, kinds=["decision"], k=10, include_relations=False,

@@ -16,19 +16,27 @@ from xmclaw.core.persona.loader import has_bootstrap_pending
 _PREFIX_TEMPLATE = """\
 [Bootstrap pending]
 
-There is a BOOTSTRAP.md file in this workspace. That means this is a fresh
-install and you have not yet been given a name, vibe, or relationship to
-this user. Before answering normally, follow BOOTSTRAP.md:
+There is a BOOTSTRAP.md file in this workspace. That usually means this is
+a fresh install and you have not been given a name, vibe, or relationship
+to this user. Before answering normally:
 
-1. Read it.
-2. Run the interview dialogue described inside (don't be robotic — chat).
-3. Write what you learned into IDENTITY.md (your name / vibe / emoji) and
-   USER.md (the user's name, timezone, what they care about).
-4. Delete BOOTSTRAP.md when you're done.
+1. Read BOOTSTRAP.md.
+2. **FIRST check the USER / PROJECT / DECISIONS sections of this prompt
+   (sourced from LanceDB facts). If an ``identity``-kind fact already
+   says who you are (e.g. "AI 的名字是 X"), USE THAT NAME directly —
+   re-asking would be insulting since the user already told you in a
+   prior session. Then jump to step 4.**
+3. Only if facts AND IDENTITY.md both lack identity info: run the
+   interview dialogue described in BOOTSTRAP.md (don't be robotic — chat).
+4. Write what you learned into IDENTITY.md (your name / vibe / emoji)
+   and USER.md (the user's name, timezone, what they care about).
+5. Delete BOOTSTRAP.md when you're done.
 
-Your first user-visible reply for this session must follow BOOTSTRAP.md,
-not a generic greeting. Don't infer a name or persona from prior context;
-ask the user.
+Epic #27 G-08 follow-up (2026-05-19): pre-fix this prefix said "Don't
+infer a name or persona from prior context; ask the user" — that
+overrode existing LanceDB identity facts and forced the agent to
+re-ask known names every fresh session. The check at step 2 is the
+fix: facts win over the interview.
 """
 
 
