@@ -326,6 +326,86 @@ class MemoryService:
     def embedder(self) -> EmbeddingService | None:
         return self._embedder
 
+    # ── Bucket inference / backfill (Wave-27 fix-12 follow-up) ──
+
+    @staticmethod
+    def _infer_bucket(kind: str, scope: str) -> str:
+        """Default bucket assignment from (kind, scope).
+
+        Pre-fix every extractor + manual write site duplicated this
+        rule; several missed it and persisted ``bucket=''``, breaking
+        the ``v2_renderer.render_affected_files`` routing — the agent
+        learned facts into LanceDB but the persona MD files never
+        rendered. Centralised here so any caller of
+        :meth:`remember` automatically gets the right routing label
+        without having to know about ``BUCKET_TO_FILE``.
+
+        Mapping mirrors :data:`xmclaw.core.persona.v2_renderer.BUCKET_TO_FILE`:
+          * ``kind=identity, scope=session`` → ``agent_identity`` → IDENTITY.md
+          * ``kind=identity, scope=user``    → ``user_identity``  → USER.md
+          * ``kind=preference, scope=user``  → ``user_preference`` → USER.md
+
+        Any other combination returns "" (no routing) — the fact is
+        still persisted but no MD file is regenerated for it.
+        """
+        if kind == "identity":
+            if scope == "session":
+                return "agent_identity"
+            if scope == "user":
+                return "user_identity"
+        elif kind == "preference" and scope == "user":
+            return "user_preference"
+        return ""
+
+    async def backfill_buckets(self) -> int:
+        """One-shot migration: scan facts with empty bucket and
+        write back the inferred value.
+
+        Idempotent — facts that already have a bucket are skipped;
+        facts where (kind, scope) yields no bucket are also skipped.
+        Cheap enough to run on every daemon boot.
+
+        Returns the number of facts actually updated.
+
+        Wave-27 fix-12 follow-up (2026-05-19): pre-fix every fact
+        written before the bucket inference shipped (or by callers
+        that didn't supply bucket) sat at ``bucket=''`` — invisible
+        to the persona renderer. User report: 5 facts in LanceDB,
+        all bucket='', IDENTITY.md / USER.md stayed pristine
+        template forever. This method heals that legacy data
+        without forcing a fresh-start.
+        """
+        if self._vec is None:
+            return 0
+        try:
+            rows = await self._vec.search(
+                query=None,
+                where="bucket = '' OR bucket IS NULL",
+                limit=10000,
+            )
+        except Exception:  # noqa: BLE001 — InMemory backends may
+            # not support the same where syntax; fall back to a full
+            # scan client-side.
+            try:
+                rows = await self._vec.search(query=None, limit=10000)
+            except Exception:  # noqa: BLE001
+                return 0
+        updated: list[Fact] = []
+        for f in rows:
+            if getattr(f, "bucket", "") or "":
+                continue
+            inferred = self._infer_bucket(f.kind, f.scope)
+            if not inferred:
+                continue
+            from dataclasses import replace as _replace
+            updated.append(_replace(f, bucket=inferred))
+        if updated:
+            try:
+                await self._vec.upsert(updated)
+            except Exception:  # noqa: BLE001
+                return 0
+        return len(updated)
+
     # ── Write API ───────────────────────────────────────────────
 
     async def remember(
@@ -530,7 +610,22 @@ class MemoryService:
         # Wave-27 fix-12: preserve the existing bucket on idempotent
         # upsert if the new write doesn't supply one. Avoids losing
         # routing data when an extractor re-fires without bucket.
-        effective_bucket = bucket or (existing.bucket if existing else "")
+        #
+        # Wave-27 fix-12 follow-up (2026-05-19): if caller didn't pass
+        # a bucket AND existing fact has none, infer from (kind, scope)
+        # so legacy callers (remember tool, UI panel, third-party code)
+        # automatically benefit from the v2_renderer routing without
+        # having to duplicate the inference logic at every call site.
+        # Pre-fix every extractor had its own copy of this rule and
+        # several didn't (leaving bucket='' on the persisted Fact,
+        # which silently broke the persona-renderer routing — agent
+        # would learn "AI 叫小咪" into LanceDB but IDENTITY.md
+        # stayed pristine forever).
+        effective_bucket = (
+            bucket
+            or (existing.bucket if existing else "")
+            or self._infer_bucket(kind_str, scope_str)
+        )
         new_fact = Fact(
             id=fact_id,
             kind=kind_str,
@@ -1093,33 +1188,24 @@ class MemoryService:
         # 4 × the slowest recall. With both fixes the render_for_prompt
         # path drops from ~25s (real-world observed) to ~3s typical.
         #
-        # Epic #27 G-08 follow-up (2026-05-19): REMOVE scope filter.
-        # Real-data finding from user — 3 facts in LanceDB:
-        #   * "AI的名字是小咪"     kind=identity   scope=session
-        #   * "关系: 我哥或者敬宇"  kind=identity   scope=user
-        #   * "用户使用中文交流"   kind=preference  scope=project
-        # Pre-fix only "我哥或者敬宇" got into the prompt because
-        # user_t locked scopes=["user"] and project_t locked
-        # kinds=["project","commitment"]. The other 2 facts sat in
-        # the DB invisible to the agent — defeating the whole point
-        # of L1 facts being "durable agent-visible context". The
-        # extractor's scope assignment is its own bug to fix, but
-        # render_for_prompt should be permissive: identity-kind
-        # facts ARE identity regardless of scope tag; same for
-        # preference, decision, etc. Cap-by-k still keeps prompt
-        # bounded.
+        # Note on scope filters: ``scopes=["user"]`` / ``scopes=["project"]``
+        # is correct semantics. Identity / preference facts that
+        # belong cross-scope are routed via ``Fact.bucket`` to
+        # persona MD files (see ``v2_renderer.BUCKET_TO_FILE``);
+        # the prompt picks them up by reading the rendered files,
+        # not by recall-dumping every scope. An earlier attempt
+        # (G-08 follow-up first cut) widened scopes=None as a
+        # workaround for a separate bucket-routing bug — that bug
+        # is now fixed at the root (boot backfill + remember()
+        # default infer) so this filter can stay tight.
         import asyncio as _asyncio
         user_t = self.recall(
-            None,
-            kinds=["preference", "identity", "correction"],
-            scopes=None,  # all scopes — see comment above
-            k=20, include_relations=False,
+            None, kinds=["preference", "identity", "correction"],
+            scopes=["user"], k=20, include_relations=False,
         )
         project_t = self.recall(
-            None,
-            kinds=["project", "commitment"],
-            scopes=None,  # all scopes
-            k=20, include_relations=False,
+            None, kinds=["project", "commitment"],
+            scopes=["project"], k=20, include_relations=False,
         )
         decision_t = self.recall(
             None, kinds=["decision"], k=10, include_relations=False,

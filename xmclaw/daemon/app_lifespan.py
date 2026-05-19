@@ -2233,6 +2233,57 @@ def make_lifespan(
                     facts_dir, dim,
                     embedder.name if embedder else "(none, keyword fallback)",
                 )
+
+                # Wave-27 fix-12 follow-up (2026-05-19): backfill +
+                # re-render. User report root cause: facts written
+                # before bucket inference shipped (or by callers that
+                # skipped the inference) sat at bucket='' in LanceDB.
+                # The persona renderer routes by bucket — empty
+                # bucket = silently dropped — so IDENTITY.md / USER.md
+                # stayed as the pristine template forever even when
+                # LanceDB had a perfectly fine "AI 的名字是小咪" fact.
+                #
+                # Boot-time backfill heals legacy data WITHOUT a wipe
+                # (every install with v2 facts gets fixed on next
+                # daemon start). The follow-up render pass rebuilds
+                # every persona MD's auto sections from the now-
+                # tagged facts, so the agent's very first turn after
+                # boot sees the right names + preferences in its
+                # system prompt.
+                try:
+                    n_backfilled = await memory_v2_service.backfill_buckets()
+                    log.info(
+                        "memory_v2.bucket_backfill n_updated=%d",
+                        n_backfilled,
+                    )
+                except Exception as exc:  # noqa: BLE001 — never block
+                    # daemon start over a heal pass.
+                    log.warning(
+                        "memory_v2.bucket_backfill_failed err=%s", exc,
+                    )
+
+                try:
+                    from xmclaw.core.persona.v2_renderer import (
+                        render_all_persona_files,
+                    )
+                    from xmclaw.daemon.factory import (
+                        _resolve_persona_profile_dir,
+                    )
+                    pdir = _resolve_persona_profile_dir(config or {})
+                    if pdir is not None:
+                        render_report = await render_all_persona_files(
+                            memory_v2_service, pdir,
+                        )
+                        log.info(
+                            "memory_v2.persona_render_boot pdir=%s "
+                            "files=%s",
+                            pdir,
+                            {k: v for k, v in render_report.items() if v},
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "memory_v2.persona_render_boot_failed err=%s", exc,
+                    )
             except Exception as exc:  # noqa: BLE001
                 log.warning(
                     "memory_v2.start_failed err=%s "

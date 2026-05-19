@@ -823,33 +823,95 @@ async def test_render_for_prompt_skips_duplicates_in_recall_section() -> None:
 
 
 @pytest.mark.asyncio
-async def test_render_for_prompt_includes_identity_across_all_scopes() -> None:
-    """Epic #27 G-08 follow-up (2026-05-19): identity / preference
-    facts must surface in the prompt regardless of their scope tag.
+async def test_remember_auto_infers_bucket_when_caller_omits() -> None:
+    """Wave-27 fix-12 follow-up (2026-05-19): MemoryService.remember
+    must auto-infer the bucket label from (kind, scope) when the
+    caller doesn't supply one. Pre-fix every extractor + manual
+    call site had to duplicate the rule; several missed it and
+    persisted ``bucket=''``, breaking the v2_renderer routing —
+    LanceDB had the fact but IDENTITY.md / USER.md never rendered.
 
-    Pre-fix the always-on user section locked ``scopes=["user"]``
-    and the project section locked ``kinds=["project","commitment"]``.
-    Real-data finding: a user had 3 facts in LanceDB —
-        * "AI的名字是小咪"   kind=identity   scope=session
-        * "关系: 我哥或者敬宇"  kind=identity   scope=user
-        * "用户使用中文交流"  kind=preference  scope=project
-    — and only "我哥或者敬宇" made it into the prompt. The agent
-    didn't know its own name because the session-scope identity
-    fact got filter-dropped. Test pins all 3 in.
+    Mapping mirrors :data:`v2_renderer.BUCKET_TO_FILE`:
+      kind=identity scope=session → agent_identity (→ IDENTITY.md)
+      kind=identity scope=user    → user_identity   (→ USER.md)
+      kind=preference scope=user  → user_preference (→ USER.md)
     """
     svc = _make_service()
+    f_self = await svc.remember(
+        "AI 的名字是小咪", kind="identity", scope="session",
+    )
+    f_user = await svc.remember(
+        "用户叫敬宇", kind="identity", scope="user",
+    )
+    f_pref = await svc.remember(
+        "用户喜欢中文", kind="preference", scope="user",
+    )
+    assert f_self.bucket == "agent_identity"
+    assert f_user.bucket == "user_identity"
+    assert f_pref.bucket == "user_preference"
+
+
+@pytest.mark.asyncio
+async def test_remember_caller_supplied_bucket_wins_over_inference() -> None:
+    """Explicit bucket arg overrides inference — e.g. a custom
+    integration wants to route a fact to a non-default file."""
+    svc = _make_service()
+    f = await svc.remember(
+        "x", kind="identity", scope="session",
+        bucket="custom_route",
+    )
+    assert f.bucket == "custom_route"
+
+
+@pytest.mark.asyncio
+async def test_remember_no_inference_for_unmapped_kind_scope() -> None:
+    """Combinations outside the BUCKET_TO_FILE map (e.g. preference
+    + scope=project, decision kind) get bucket=''. These facts
+    are still persisted, just not routed to any MD file."""
+    svc = _make_service()
+    f = await svc.remember(
+        "X is the project deadline", kind="preference", scope="project",
+    )
+    assert f.bucket == ""
+
+
+@pytest.mark.asyncio
+async def test_backfill_buckets_heals_legacy_empty_facts() -> None:
+    """Pre-fix Wave-27 the extractor wrote facts with bucket=''
+    because the bucket field didn't exist yet (or the caller
+    skipped inference). ``backfill_buckets`` runs once at daemon
+    boot, scans those rows, and writes the inferred value back so
+    the renderer routes them correctly on the very next render
+    pass. Idempotent — second call on an already-healed store
+    returns 0."""
+    svc = _make_service()
+    # Simulate legacy data by writing facts with bucket="" via the
+    # explicit override path (so auto-inference doesn't run).
     await svc.remember(
-        "AI的名字是小咪", kind="identity", scope="session",
+        "AI 叫小咪", kind="identity", scope="session", bucket="",
     )
     await svc.remember(
-        "关系: 我哥或者敬宇", kind="identity", scope="user",
+        "用户叫敬宇", kind="identity", scope="user", bucket="",
     )
-    await svc.remember(
-        "用户使用中文进行交流", kind="preference", scope="project",
-    )
-    block = await svc.render_for_prompt("hi")
-    # All three facts must surface — the scope tag is no longer a
-    # gate for the always-on prompt sections.
-    assert "AI的名字是小咪" in block
-    assert "我哥或者敬宇" in block
-    assert "用户使用中文进行交流" in block
+    # ^ Above writes auto-fill via inference because we hit the
+    # `or self._infer_bucket(...)` branch. Force the legacy state
+    # by directly upserting bucket-stripped Facts.
+    from dataclasses import replace as _replace
+    rows = await svc._vec.search(query=None, limit=100)
+    stripped = [_replace(f, bucket="") for f in rows]
+    await svc._vec.upsert(stripped)
+    # Sanity: confirm we have bucket='' rows now.
+    pre_rows = await svc._vec.search(query=None, limit=100)
+    assert all((r.bucket or "") == "" for r in pre_rows), pre_rows
+
+    n = await svc.backfill_buckets()
+    assert n == 2  # both facts had inferrable (kind, scope) mappings
+
+    post_rows = await svc._vec.search(query=None, limit=100)
+    buckets = {r.bucket for r in post_rows}
+    assert "agent_identity" in buckets
+    assert "user_identity" in buckets
+
+    # Second call → 0 (idempotent).
+    n2 = await svc.backfill_buckets()
+    assert n2 == 0
