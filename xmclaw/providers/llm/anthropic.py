@@ -57,6 +57,7 @@ class AnthropicLLM(LLMProvider):
         pricing: Pricing | None = None,
         *,
         context_length: int | None = None,
+        max_tokens: int | None = None,
     ) -> None:
         self.api_key = api_key
         self.model = model
@@ -77,6 +78,19 @@ class AnthropicLLM(LLMProvider):
         # its true window via config without code edits.
         self.context_length: int | None = (
             int(context_length) if context_length and context_length > 0 else None
+        )
+        # Epic #27 sweep #14 (2026-05-19): configurable max output
+        # tokens. Pre-fix three call sites (stream / complete /
+        # complete_streaming) all hard-coded 4096. Anthropic accepts
+        # up to 8192 default + much more for extended-thinking
+        # endpoints; users with vision-heavy turns or long-reasoning
+        # workflows hit silent mid-output truncation (B-229 partial
+        # tool-call drop). Now configurable per-instance; default
+        # 8192 matches Anthropic's documented default for opus/sonnet.
+        # Config block ``llm.anthropic.max_tokens`` flows in via
+        # factory.py → __init__ kwarg.
+        self.max_tokens: int = (
+            int(max_tokens) if max_tokens and max_tokens > 0 else 8192
         )
 
     # ── lazy client ──
@@ -334,7 +348,7 @@ class AnthropicLLM(LLMProvider):
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": anthropic_messages,
-            "max_tokens": 4096,
+            "max_tokens": self.max_tokens,
         }
         if system:
             kwargs["system"] = system
@@ -368,7 +382,7 @@ class AnthropicLLM(LLMProvider):
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": anthropic_messages,
-            "max_tokens": 4096,
+            "max_tokens": self.max_tokens,
         }
         if system:
             kwargs["system"] = system
@@ -453,7 +467,7 @@ class AnthropicLLM(LLMProvider):
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": anthropic_messages,
-            "max_tokens": 4096,
+            "max_tokens": self.max_tokens,
         }
         if system:
             kwargs["system"] = system

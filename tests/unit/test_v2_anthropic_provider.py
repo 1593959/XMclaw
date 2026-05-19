@@ -300,3 +300,58 @@ async def test_complete_rejects_malformed_tool_use_block() -> None:
     resp = await llm.complete([Message(role="user", content="x")])
     # No tool calls — malformed block silently dropped (translator returned None).
     assert resp.tool_calls == ()
+
+
+# ── Epic #27 sweep #14 (2026-05-19): max_tokens configurable ──────
+
+
+class _KwargsCapturingMessagesAPI:
+    """Like _FakeMessagesAPI but captures kwargs so tests can assert
+    what was passed to the Anthropic SDK."""
+
+    def __init__(self, response: _FakeResponse) -> None:
+        self._response = response
+        self.last_kwargs: dict = {}
+
+    async def create(self, **kwargs):  # noqa: ANN003
+        self.last_kwargs = kwargs
+        return self._response
+
+
+class _CapturingClient:
+    def __init__(self, response: _FakeResponse) -> None:
+        self.messages = _KwargsCapturingMessagesAPI(response)
+
+
+@pytest.mark.asyncio
+async def test_max_tokens_default_is_8192() -> None:
+    """Pre-fix three call sites hard-coded 4096 — long outputs
+    truncated silently with B-229's "partial tool call dropped"
+    marker. Default bumped to Anthropic's documented default for
+    opus/sonnet so vision-heavy + long-reasoning workflows stop
+    hitting the cap by accident."""
+    llm = AnthropicLLM(api_key="x")
+    assert llm.max_tokens == 8192
+
+
+@pytest.mark.asyncio
+async def test_max_tokens_constructor_override() -> None:
+    """Caller can dial it up (or down) via constructor — flows
+    in from ``factory.py`` reading ``llm.anthropic.max_tokens``."""
+    llm = AnthropicLLM(api_key="x", max_tokens=32000)
+    assert llm.max_tokens == 32000
+
+
+@pytest.mark.asyncio
+async def test_complete_sends_configured_max_tokens_to_sdk() -> None:
+    """End-to-end: the max_tokens kwarg lands on the Anthropic
+    SDK call. Pre-fix this asserted 4096 regardless of override."""
+    fake_response = _FakeResponse(
+        content=[_FakeBlock(type="text", text="hi")],
+        usage=_FakeUsage(input_tokens=1, output_tokens=1),
+    )
+    llm = AnthropicLLM(api_key="x", max_tokens=16384)
+    client = _CapturingClient(fake_response)
+    llm._client = client
+    await llm.complete([Message(role="user", content="x")])
+    assert client.messages.last_kwargs["max_tokens"] == 16384

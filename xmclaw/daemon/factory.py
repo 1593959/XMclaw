@@ -373,10 +373,22 @@ def build_llm_from_config(cfg: dict[str, Any]) -> LLMProvider | None:
             ctx_len_override = raw_ctx
         elif isinstance(raw_ctx, str) and raw_ctx.strip().isdigit():
             ctx_len_override = int(raw_ctx.strip())
+        # Epic #27 sweep #14 (2026-05-19): per-provider max_tokens
+        # override. Reads ``llm.<provider>.max_tokens`` from config
+        # (or the per-profile ``profiles[*].max_tokens``). When unset
+        # the provider falls back to its internal default (8192 for
+        # AnthropicLLM, the SDK default for others).
+        raw_max = pcfg.get("max_tokens")
+        max_tokens_override: int | None = None
+        if isinstance(raw_max, int) and raw_max > 0:
+            max_tokens_override = raw_max
+        elif isinstance(raw_max, str) and raw_max.strip().isdigit():
+            max_tokens_override = int(raw_max.strip())
         if provider_name == "anthropic":
             return AnthropicLLM(
                 api_key=api_key, model=model, base_url=base_url or None,
                 context_length=ctx_len_override,
+                max_tokens=max_tokens_override,
             )
         if provider_name == "openai":
             return OpenAILLM(
