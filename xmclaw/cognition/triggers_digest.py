@@ -73,16 +73,43 @@ class DailyDigestTrigger(ProactiveTrigger):
             urgency if urgency in ("low", "normal", "high") else "normal"
         )
         self._agent_loop = agent_loop
+        # Epic #27 sweep #15 (2026-05-19): pre-fix when cron parsing
+        # failed (croniter not installed, daemon never reloaded
+        # after pyproject update, etc.) we set ``_next_fire_ts =
+        # None`` and ``should_fire`` always returned False ⇒
+        # daily_digest effectively never ran. daemon.log on the
+        # user's machine showed 47 ``bad_schedule`` warnings ÷
+        # the trigger tick frequency = the feature has been silently
+        # dead since install. Now: fall back to a 24h interval when
+        # cron parsing fails so the digest still fires once a day,
+        # and surface the fallback so operators can fix at their
+        # leisure (the digest still works in the meantime).
+        self._used_interval_fallback = False
         try:
             self._next_fire_ts: float | None = parse_schedule(
                 schedule_expr, now=time.time(),
             )
         except ValueError as exc:
-            logger.warning(
-                "daily_digest.bad_schedule expr=%r err=%s",
-                schedule_expr, exc,
-            )
-            self._next_fire_ts = None
+            try:
+                self._next_fire_ts = parse_schedule(
+                    "every 1d", now=time.time(),
+                )
+                self._used_interval_fallback = True
+                logger.warning(
+                    "daily_digest.cron_unavailable expr=%r err=%s — "
+                    "falling back to 'every 1d' interval. To restore "
+                    "the configured time-of-day, run "
+                    "``pip install croniter>=2.0.0`` and restart the "
+                    "daemon.",
+                    schedule_expr, exc,
+                )
+            except ValueError as exc2:
+                logger.warning(
+                    "daily_digest.bad_schedule expr=%r err=%s "
+                    "fallback_err=%s",
+                    schedule_expr, exc, exc2,
+                )
+                self._next_fire_ts = None
 
     async def should_fire(self, ctx: ProactiveContext) -> bool:
         if self._next_fire_ts is None:
@@ -94,9 +121,16 @@ class DailyDigestTrigger(ProactiveTrigger):
     ) -> TriggerProposal | None:
         if self._next_fire_ts is None or ctx.now < self._next_fire_ts:
             return None
+        # Epic #27 sweep #15: re-schedule honours the same fallback
+        # logic as the constructor so a recurring digest keeps
+        # firing once a day even on a croniter-less daemon.
+        next_expr = (
+            "every 1d" if self._used_interval_fallback
+            else self._schedule_expr
+        )
         try:
             self._next_fire_ts = parse_schedule(
-                self._schedule_expr, now=ctx.now + 1.0,
+                next_expr, now=ctx.now + 1.0,
             )
         except ValueError:
             self._next_fire_ts = None
