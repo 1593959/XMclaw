@@ -211,13 +211,30 @@ async def test_llm_turn_routes_through_agent_loop() -> None:
 
 @pytest.mark.asyncio
 async def test_llm_turn_falls_back_to_stub_when_agent_loop_missing() -> None:
+    """Epic #27 sweep #3 (2026-05-19): stub fallback now returns
+    ok=False by default because nothing actually ran. Test harnesses
+    that want the old "stub looks like success" behaviour opt in
+    via stub_pretend_ok=True; verified separately below."""
     disp = ActionDispatcher(agent_loop=None)
     step = make_step(action_kind="llm_turn", expected_outcome="hello")
     out = await disp.execute_step(step)
     assert out.route == "stub"
-    assert out.ok is True
+    assert out.ok is False  # was True pre-fix
+    assert "no executor wired" in (out.error or "")
     assert out.output["expected_outcome"] == "hello"
     assert out.output["stub"] is True
+
+
+@pytest.mark.asyncio
+async def test_llm_turn_stub_opt_in_pretend_ok() -> None:
+    """``stub_pretend_ok=True`` restores legacy "stub fallback looks
+    successful" behavior for bench / pure-cognition test harnesses."""
+    disp = ActionDispatcher(agent_loop=None, stub_pretend_ok=True)
+    step = make_step(action_kind="llm_turn", expected_outcome="hello")
+    out = await disp.execute_step(step)
+    assert out.route == "stub"
+    assert out.ok is True
+    assert out.error is None
 
 
 @pytest.mark.asyncio
@@ -344,11 +361,12 @@ async def test_skill_invoke_missing_skill_id_returns_error() -> None:
 
 @pytest.mark.asyncio
 async def test_skill_invoke_falls_back_to_stub_when_registry_missing() -> None:
+    """Stub fallback for unwired skill_registry — ok=False post-#3."""
     disp = ActionDispatcher(skill_registry=None)
     step = make_step(action_kind="skill_invoke", expected_outcome="will-stub")
     out = await disp.execute_step(step)
     assert out.route == "stub"
-    assert out.ok is True
+    assert out.ok is False
     assert out.output["expected_outcome"] == "will-stub"
 
 
@@ -428,7 +446,7 @@ async def test_tool_call_falls_back_to_stub_when_provider_missing() -> None:
     step = make_step(action_kind="tool_call", expected_outcome="stubbed")
     out = await disp.execute_step(step)
     assert out.route == "stub"
-    assert out.ok is True
+    assert out.ok is False  # Sweep #3: stub no longer fakes success
 
 
 @pytest.mark.asyncio
@@ -491,7 +509,7 @@ async def test_unknown_action_kind_falls_through_to_stub() -> None:
     step = make_step(action_kind="space_travel", expected_outcome="moon")
     out = await disp.execute_step(step)
     assert out.route == "stub"
-    assert out.ok is True
+    assert out.ok is False  # Sweep #3
     assert out.output["expected_outcome"] == "moon"
 
 
@@ -675,7 +693,9 @@ async def test_dispatch_does_not_raise_for_pending_step() -> None:
 
 @pytest.mark.asyncio
 async def test_stub_fallback_marks_route_stub_and_carries_expected_outcome() -> None:
-    """The v0 stub semantics are preserved exactly when no executor wired."""
+    """The v0 stub output shape is preserved (route + expected_outcome
+    + stub=True marker). Sweep #3 flipped ``ok=True`` → ``ok=False``
+    by default so plans don't silently pretend to succeed."""
     disp = ActionDispatcher()
     step = make_step(
         action_kind="llm_turn",
@@ -683,7 +703,7 @@ async def test_stub_fallback_marks_route_stub_and_carries_expected_outcome() -> 
     )
     out = await disp.execute_step(step)
     assert out.route == "stub"
-    assert out.ok is True
+    assert out.ok is False
     assert out.output["expected_outcome"] == "42 is the answer"
     assert out.output["stub"] is True
 

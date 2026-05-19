@@ -1925,6 +1925,11 @@ def make_lifespan(
                         agent_loop=agent,
                         skill_registry=_evo_registry,
                         tool_provider=getattr(agent, "_tools", None),
+                        # Epic #26 Phase B (2026-05-19): emit PLAN_*
+                        # lifecycle events on the daemon's main bus so
+                        # the Trace + future "Autonomous Tasks" panel
+                        # see in-flight autonomous work.
+                        bus=bus,
                     ),
                     reflection_cycle=_reflection_cycle,
                     skill_proposer=_skill_proposer,

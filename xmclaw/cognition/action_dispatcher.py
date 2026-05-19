@@ -144,6 +144,7 @@ class ActionDispatcher:
         tool_provider: Any | None = None,
         *,
         bus: Any | None = None,
+        stub_pretend_ok: bool = False,
     ) -> None:
         self._agent_loop = agent_loop
         self._skill_registry = skill_registry
@@ -155,6 +156,12 @@ class ActionDispatcher:
         # Type-loose so tests can inject a list-of-events recorder
         # rather than the full InProcessEventBus.
         self._bus = bus
+        # Epic #27 sweep #3 (2026-05-19): opt-in "stub fallback
+        # pretends ok=True" for test harnesses + benchmark mode that
+        # genuinely want pure-cognition runs to complete. Default
+        # False: real callers see ``ok=False`` when a route had no
+        # executor, which is the honest answer.
+        self._stub_pretend_ok = bool(stub_pretend_ok)
 
     # ── Public surface ────────────────────────────────────────────────
 
@@ -804,19 +811,39 @@ class ActionDispatcher:
         bench / pure-cognition test harness behaviour from cab6fb4.
         Marked ``route="stub"`` so consumers (eventually a
         ``ResultObserver``) can refuse to learn from non-real results.
+
+        Epic #27 sweep #3 (2026-05-19): ``ok=False`` by default now.
+        Pre-fix this returned ``ok=True`` because the v0 echo
+        behaviour was used as a test-harness "success" — but real
+        plans running in pure-cognition mode (no dispatcher wired)
+        then *appeared to succeed* with stubs masquerading as real
+        executions. The grader filters on ``route != "stub"`` so its
+        verdicts were honest, but the planner / cognitive_daemon
+        used the boolean ``ok`` field as ground truth and happily
+        marked plans complete without doing any real work. Now: the
+        boolean ``ok`` reflects reality — no executor ran, so the
+        result is NOT ok. Test harnesses that need "succeeded-stub"
+        semantics opt in via the new ``stub_pretend_ok=True`` kwarg
+        on ``ActionDispatcher.__init__``.
         """
         step_id = _attr_str(step, "id", _new_id("step"))
         expected = _attr_str(step, "expected_outcome", "")
         kind = _attr_str(step, "action_kind", "llm_turn") or "llm_turn"
+        ok = bool(getattr(self, "_stub_pretend_ok", False))
         return StepExecutionResult(
             step_id=step_id,
             route="stub",
-            ok=True,
+            ok=ok,
             output={
                 "expected_outcome": expected,
                 "action_kind": kind,
                 "stub": True,
             },
+            error=None if ok else (
+                f"no executor wired for action_kind={kind!r}; stub "
+                "fallback fired. Plan cannot complete without a real "
+                "agent_loop / skill_registry / tool_provider."
+            ),
             latency_ms=0.0,
         )
 
