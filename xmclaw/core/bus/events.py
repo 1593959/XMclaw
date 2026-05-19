@@ -349,6 +349,45 @@ class EventType(str, Enum):
     #                                         # checkpoint last set
     SLEEP_INTERRUPTED = "sleep_interrupted"
 
+    # Epic #26 Phase B (2026-05-19) — HTN plan lifecycle events. Emitted
+    # by ActionDispatcher.execute_plan and Planner.execute so the UI
+    # ("Autonomous Tasks" panel) + observability layer can see what
+    # autonomous work is in flight, completed, or wedged. Pre-Phase-B
+    # the only signal a plan was running was indirect (the dispatcher
+    # used the step_id as session_id → reflection events fanned out
+    # under that id, but no event NAMED a plan ever appeared).
+    #
+    # Common payload fields (all six events):
+    #   "plan_id": str         # Plan.id (post-Phase-A: plan_<uuid12>)
+    #   "goal_id": str         # plan.goal_id
+    #   "n_steps": int         # total steps in the plan
+    #
+    # PLAN_STARTED additional:
+    #   "step_ids": list[str]   # in topological order
+    #   "confidence": float
+    # PLAN_STEP_STARTED / PLAN_STEP_COMPLETED / PLAN_STEP_FAILED:
+    #   "step_id": str
+    #   "step_index": int       # 0-based ordinal in execution order
+    #   "action_kind": str
+    # PLAN_STEP_COMPLETED additional:
+    #   "latency_ms": float
+    #   "output_keys": list[str]   # top-level keys of step output dict
+    # PLAN_STEP_FAILED additional:
+    #   "error": str
+    #   "latency_ms": float
+    # PLAN_COMPLETED / PLAN_FAILED:
+    #   "status": "completed" | "repaired" | "failed"
+    #   "duration_ms": float
+    #   "n_step_results": int
+    # PLAN_FAILED additional:
+    #   "error": str
+    PLAN_STARTED = "plan_started"
+    PLAN_STEP_STARTED = "plan_step_started"
+    PLAN_STEP_COMPLETED = "plan_step_completed"
+    PLAN_STEP_FAILED = "plan_step_failed"
+    PLAN_COMPLETED = "plan_completed"
+    PLAN_FAILED = "plan_failed"
+
 
 @dataclass(frozen=True, slots=True)
 class BehavioralEvent:

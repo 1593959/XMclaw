@@ -620,7 +620,7 @@ async def test_execute_plan_never_propagates_step_exception() -> None:
     """Even if execute_step is monkey-patched to raise, execute_plan absorbs."""
     disp = ActionDispatcher()
 
-    async def boom(_step: Any) -> StepExecutionResult:
+    async def boom(_step: Any, **_kwargs: Any) -> StepExecutionResult:
         raise RuntimeError("inner boom")
 
     disp.execute_step = boom  # type: ignore[assignment]
@@ -764,3 +764,127 @@ async def test_tool_call_scan_gracefully_degrades_when_security_import_fails() -
     out = await disp.execute_step(step)
     assert out.ok is True
     assert out.output["content"] == "normal result"
+
+
+# ── Epic #26 Phase B (2026-05-19): prior_results threading + bus events ──
+
+
+@pytest.mark.asyncio
+async def test_b_prior_results_substitutes_into_llm_prompt() -> None:
+    """A 2-step plan where step_2's prompt references {{step_1.output.path}}
+    — dispatcher must resolve it to step_1's actual output before
+    handing the prompt to the agent loop. Pre-fix the LLM saw the
+    literal {{...}} template; Phase B substitutes server-side."""
+    # Give s1 a string result so the substitution renders as the
+    # literal string, not a JSON dump.
+    al = FakeAgentLoop(answer="produced-path-42")
+    disp = ActionDispatcher(agent_loop=al)
+    s1 = make_step(
+        id="s1", action_kind="llm_turn",
+        payload={"prompt": "produce a path", "goal_id": "g"},
+    )
+    s2 = make_step(
+        id="s2", action_kind="llm_turn",
+        payload={
+            "prompt": "now summarize {{s1.agent_result}}",
+            "goal_id": "g",
+        },
+    )
+    plan = make_plan(steps=[s1, s2])
+    await disp.execute_plan(plan)
+    # Two run_turn calls, second one's user_message must NOT contain
+    # the literal {{...}} and instead carry s1's agent_result.
+    assert len(al.calls) == 2
+    s2_prompt = al.calls[1]["user_message"]
+    assert "{{" not in s2_prompt, s2_prompt
+    assert "produced-path-42" in s2_prompt
+
+
+@pytest.mark.asyncio
+async def test_b_prior_results_unresolved_renders_marker() -> None:
+    """When the template references a step that doesn't exist (LLM
+    hallucinated a step_id), the dispatcher emits ``<unresolved:...>``
+    so the agent sees the problem in its prompt instead of a silent
+    empty / KeyError."""
+    al = FakeAgentLoop()
+    disp = ActionDispatcher(agent_loop=al)
+    step = make_step(
+        id="s1", action_kind="llm_turn",
+        payload={
+            "prompt": "use {{nonexistent.field}} please",
+            "goal_id": "g",
+        },
+    )
+    plan = make_plan(steps=[step])
+    await disp.execute_plan(plan)
+    prompt = al.calls[0]["user_message"]
+    assert "<unresolved:nonexistent.field>" in prompt
+
+
+@pytest.mark.asyncio
+async def test_b_lifecycle_events_emitted_for_successful_plan() -> None:
+    """A 2-step plan that completes successfully fires:
+       PLAN_STARTED → STEP_STARTED → STEP_COMPLETED ×2 → PLAN_COMPLETED.
+    Tests injection via a recorder bus with a synchronous publish."""
+    from types import SimpleNamespace
+    recorded: list[Any] = []
+    bus = SimpleNamespace(publish=lambda evt: recorded.append(evt))
+
+    al = FakeAgentLoop()
+    disp = ActionDispatcher(agent_loop=al, bus=bus)
+    s1 = make_step(id="s1", action_kind="llm_turn", payload={"prompt": "a"})
+    s2 = make_step(id="s2", action_kind="llm_turn", payload={"prompt": "b"})
+    plan = make_plan(steps=[s1, s2])
+    result = await disp.execute_plan(plan)
+    assert result.all_ok is True
+
+    types_seen = [e.type.value for e in recorded]
+    assert types_seen == [
+        "plan_started",
+        "plan_step_started", "plan_step_completed",
+        "plan_step_started", "plan_step_completed",
+        "plan_completed",
+    ]
+    # Plan ids match between events.
+    plan_ids = {e.payload.get("plan_id") for e in recorded}
+    assert len(plan_ids) == 1
+
+
+@pytest.mark.asyncio
+async def test_b_lifecycle_events_emitted_for_failed_plan() -> None:
+    """A step that returns ok=False with default retry_policy halts
+    the plan → PLAN_STEP_FAILED + PLAN_FAILED, no PLAN_COMPLETED."""
+    from types import SimpleNamespace
+    recorded: list[Any] = []
+    bus = SimpleNamespace(publish=lambda evt: recorded.append(evt))
+
+    # An agent_loop that returns a failing result.
+    al = FakeAgentLoop(raises=RuntimeError("planned fail"))
+    disp = ActionDispatcher(agent_loop=al, bus=bus)
+    step = make_step(id="boom", action_kind="llm_turn", payload={"prompt": "x"})
+    plan = make_plan(steps=[step])
+    await disp.execute_plan(plan)
+
+    types_seen = [e.type.value for e in recorded]
+    assert "plan_started" in types_seen
+    assert "plan_step_failed" in types_seen
+    assert "plan_failed" in types_seen
+    assert "plan_completed" not in types_seen
+
+
+@pytest.mark.asyncio
+async def test_b_bus_publish_failure_does_not_break_plan() -> None:
+    """If the bus.publish itself raises, execute_plan must still
+    complete normally — events are observability, not control flow."""
+    from types import SimpleNamespace
+
+    def _explode(_evt: Any) -> None:
+        raise RuntimeError("bus exploded")
+
+    bus = SimpleNamespace(publish=_explode)
+    al = FakeAgentLoop()
+    disp = ActionDispatcher(agent_loop=al, bus=bus)
+    step = make_step(id="s1", action_kind="llm_turn", payload={"prompt": "a"})
+    plan = make_plan(steps=[step])
+    result = await disp.execute_plan(plan)
+    assert result.all_ok is True  # Plan still completed.

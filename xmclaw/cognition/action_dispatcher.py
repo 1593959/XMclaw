@@ -37,12 +37,31 @@ See ``docs/JARVIS_PHASE_6_DESIGN.md`` §3.8 for the spec.
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
+
+# Epic #26 Phase B (2026-05-19) — lazy import of EventType / make_event
+# so the cognition package keeps its import-direction discipline (this
+# module sits below ``xmclaw.core.bus.events`` in the DAG; importing it
+# at module-top is fine because bus/events is pure data, no deps). The
+# ``try`` guard is for the test harness that may stub the import path.
+try:
+    from xmclaw.core.bus.events import EventType, make_event
+except Exception:  # noqa: BLE001
+    EventType = None  # type: ignore[assignment]
+    make_event = None  # type: ignore[assignment]
+
+
+# Pre-compiled template pattern for prior-result substitution. Matches
+# ``{{step_id.path.to.field}}`` — the path is a dotted accessor into
+# the step's output dict. Outer braces are LITERAL ``{{`` / ``}}``;
+# this is template syntax, not Python format strings.
+_TEMPLATE_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 
 
 ExecutorRoute = Literal[
@@ -123,10 +142,19 @@ class ActionDispatcher:
         agent_loop: Any | None = None,
         skill_registry: Any | None = None,
         tool_provider: Any | None = None,
+        *,
+        bus: Any | None = None,
     ) -> None:
         self._agent_loop = agent_loop
         self._skill_registry = skill_registry
         self._tool_provider = tool_provider
+        # Epic #26 Phase B (2026-05-19): optional event bus so
+        # execute_plan can emit PLAN_STARTED / PLAN_STEP_STARTED /
+        # PLAN_STEP_COMPLETED / PLAN_STEP_FAILED / PLAN_COMPLETED /
+        # PLAN_FAILED. None = silent (test harness / bench mode).
+        # Type-loose so tests can inject a list-of-events recorder
+        # rather than the full InProcessEventBus.
+        self._bus = bus
 
     # ── Public surface ────────────────────────────────────────────────
 
@@ -146,36 +174,128 @@ class ActionDispatcher:
         failure but DO halt plan execution — the CognitiveDaemon parks
         the plan until the awaited percept arrives, then re-invokes
         ``execute_plan`` (or just the suspended subgraph) to resume.
+
+        Epic #26 Phase B (2026-05-19) — two structural additions:
+
+        1. **prior_results threading**: each step receives a dict of
+           prior steps' outputs keyed by step_id. The route methods
+           use this for ``{{step_id.field}}`` template substitution
+           in payload strings (intent / prompt / args), so step_2 can
+           reference step_1's result without the planner having to
+           hard-code it. Backward-compatible: a step whose payload
+           contains no ``{{...}}`` markers behaves identically to
+           pre-Phase-B.
+        2. **Plan lifecycle bus events**: PLAN_STARTED at entry,
+           PLAN_STEP_STARTED / PLAN_STEP_COMPLETED / PLAN_STEP_FAILED
+           per step, PLAN_COMPLETED / PLAN_FAILED at exit. Events fire
+           best-effort (bus optional, swallow publish errors). The UI
+           "Autonomous Tasks" panel + observability layer subscribe.
         """
         plan_id = _attr_str(plan, "id", "<no-plan-id>")
+        goal_id = _attr_str(plan, "goal_id", "")
         steps = list(_attr_iter(plan, "steps"))
+        t0_plan = time.monotonic()
+
+        await self._emit_plan_event(
+            EventType.PLAN_STARTED if EventType else None,
+            plan_id=plan_id,
+            goal_id=goal_id,
+            payload={
+                "plan_id": plan_id,
+                "goal_id": goal_id,
+                "n_steps": len(steps),
+                "step_ids": [
+                    _attr_str(s, "id", "?") for s in steps
+                ],
+                "confidence": _attr_float(plan, "confidence", 0.5),
+            },
+        )
 
         results: list[StepExecutionResult] = []
+        # Epic #26 Phase B: accumulator for prior step outputs.
+        # Keyed by step_id → step.output dict. Passed to execute_step
+        # so template references in later step payloads can resolve.
+        prior_results: dict[str, dict[str, Any]] = {}
         all_ok = True
         agg_error: str | None = None
 
-        for step in steps:
+        for idx, step in enumerate(steps):
+            step_id = _attr_str(step, "id", "<unknown>")
+            action_kind = _attr_str(step, "action_kind", "llm_turn")
+            t0_step = time.monotonic()
+            await self._emit_plan_event(
+                EventType.PLAN_STEP_STARTED if EventType else None,
+                plan_id=plan_id,
+                goal_id=goal_id,
+                payload={
+                    "plan_id": plan_id,
+                    "goal_id": goal_id,
+                    "step_id": step_id,
+                    "step_index": idx,
+                    "action_kind": action_kind,
+                    "n_steps": len(steps),
+                },
+            )
             try:
-                outcome = await self.execute_step(step)
+                outcome = await self.execute_step(
+                    step, prior_results=prior_results,
+                )
             except Exception as exc:  # noqa: BLE001 — we never propagate
                 # execute_step itself NEVER raises; defence-in-depth.
                 logger.exception(
                     "ActionDispatcher.execute_step unexpectedly raised "
                     "for step %s; converting to failure",
-                    _attr_str(step, "id", "<unknown>"),
+                    step_id,
                 )
                 outcome = StepExecutionResult(
-                    step_id=_attr_str(step, "id", "<unknown>"),
+                    step_id=step_id,
                     route="stub",
                     ok=False,
                     output={},
                     error=f"{type(exc).__name__}: {exc}",
+                    latency_ms=(time.monotonic() - t0_step) * 1000.0,
                 )
 
             results.append(outcome)
+            # Stash output so later steps can reference it via
+            # {{step_id.field}} substitution.
+            if outcome.output:
+                prior_results[step_id] = dict(outcome.output)
+
+            if outcome.ok and not outcome.pending:
+                await self._emit_plan_event(
+                    EventType.PLAN_STEP_COMPLETED if EventType else None,
+                    plan_id=plan_id,
+                    goal_id=goal_id,
+                    payload={
+                        "plan_id": plan_id,
+                        "goal_id": goal_id,
+                        "step_id": step_id,
+                        "step_index": idx,
+                        "action_kind": action_kind,
+                        "latency_ms": outcome.latency_ms,
+                        "output_keys": list(outcome.output.keys()),
+                    },
+                )
+            elif not outcome.ok:
+                await self._emit_plan_event(
+                    EventType.PLAN_STEP_FAILED if EventType else None,
+                    plan_id=plan_id,
+                    goal_id=goal_id,
+                    payload={
+                        "plan_id": plan_id,
+                        "goal_id": goal_id,
+                        "step_id": step_id,
+                        "step_index": idx,
+                        "action_kind": action_kind,
+                        "latency_ms": outcome.latency_ms,
+                        "error": outcome.error or "unknown",
+                    },
+                )
 
             if outcome.pending:
                 # Plan is parked, not failed. Caller decides resumption.
+                # No PLAN_COMPLETED — the plan is suspended.
                 return PlanExecutionResult(
                     plan_id=plan_id,
                     step_results=tuple(results),
@@ -189,6 +309,21 @@ class ActionDispatcher:
                     agg_error = (
                         f"step {outcome.step_id} failed: {outcome.error}"
                     )
+                    duration_ms = (time.monotonic() - t0_plan) * 1000.0
+                    await self._emit_plan_event(
+                        EventType.PLAN_FAILED if EventType else None,
+                        plan_id=plan_id,
+                        goal_id=goal_id,
+                        payload={
+                            "plan_id": plan_id,
+                            "goal_id": goal_id,
+                            "n_steps": len(steps),
+                            "n_step_results": len(results),
+                            "status": "failed",
+                            "duration_ms": duration_ms,
+                            "error": agg_error,
+                        },
+                    )
                     return PlanExecutionResult(
                         plan_id=plan_id,
                         step_results=tuple(results),
@@ -198,6 +333,21 @@ class ActionDispatcher:
                 # else: retry_policy says continue — record the failure
                 # but proceed with the next step.
 
+        duration_ms = (time.monotonic() - t0_plan) * 1000.0
+        await self._emit_plan_event(
+            (EventType.PLAN_COMPLETED if all_ok else EventType.PLAN_FAILED)
+            if EventType else None,
+            plan_id=plan_id,
+            goal_id=goal_id,
+            payload={
+                "plan_id": plan_id,
+                "goal_id": goal_id,
+                "n_steps": len(steps),
+                "n_step_results": len(results),
+                "status": "completed" if all_ok else "failed",
+                "duration_ms": duration_ms,
+            },
+        )
         return PlanExecutionResult(
             plan_id=plan_id,
             step_results=tuple(results),
@@ -205,23 +355,35 @@ class ActionDispatcher:
             error=None,
         )
 
-    async def execute_step(self, step: Any) -> StepExecutionResult:
+    async def execute_step(
+        self,
+        step: Any,
+        *,
+        prior_results: dict[str, dict[str, Any]] | None = None,
+    ) -> StepExecutionResult:
         """Route one step to the executor matching its ``action_kind``.
 
         Never raises — exceptions in any route are caught and converted
         to ``StepExecutionResult(ok=False, error=…)``. The latency
         captured includes all retries / fallbacks taken inside the
         route, so failure latencies are meaningful for observability.
+
+        Epic #26 Phase B (2026-05-19): ``prior_results`` is a dict of
+        already-completed step outputs keyed by step_id. The router
+        methods use it for ``{{step_id.field}}`` substitution in
+        prompts / args. Default None = no substitution, behavior
+        matches pre-Phase-B.
         """
         kind = _attr_str(step, "action_kind", "llm_turn") or "llm_turn"
+        priors = prior_results or {}
 
         try:
             if kind == "llm_turn":
-                return await self._route_llm_turn(step)
+                return await self._route_llm_turn(step, prior_results=priors)
             if kind == "skill_invoke":
-                return await self._route_skill_invoke(step)
+                return await self._route_skill_invoke(step, prior_results=priors)
             if kind == "tool_call":
-                return await self._route_tool_call(step)
+                return await self._route_tool_call(step, prior_results=priors)
             if kind == "wait_for_percept":
                 return await self._route_wait_for_percept(step)
             # Unknown action_kind: stub fallback so we never crash.
@@ -244,6 +406,48 @@ class ActionDispatcher:
                 ok=False,
                 output={},
                 error=f"{type(exc).__name__}: {exc}",
+            )
+
+    async def _emit_plan_event(
+        self,
+        event_type: Any,
+        *,
+        plan_id: str,
+        goal_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """Best-effort emit of a PLAN_* lifecycle event on the bus.
+
+        No-op when bus or EventType isn't wired (test harness).
+        Publish errors are swallowed — these are observability
+        signals, not control flow. The async ``execute_plan`` call
+        site never needs to ``await`` this in a way that could fail
+        the plan itself.
+        """
+        if self._bus is None or event_type is None or make_event is None:
+            return
+        # Tests can supply a list-of-events recorder via ``bus=
+        # SimpleNamespace(publish=lambda evt: list.append(evt))``.
+        # We tolerate both that shape AND the full async-publish bus.
+        try:
+            event = make_event(
+                session_id=f"autonomous:plan:{plan_id}",
+                agent_id="action-dispatcher",
+                type=event_type,
+                payload=payload,
+            )
+            publish = getattr(self._bus, "publish", None)
+            if publish is None:
+                return
+            result = publish(event)
+            # InProcessEventBus.publish is async; sync test stubs are
+            # callable returning None. Await only when awaitable.
+            if hasattr(result, "__await__"):
+                await result
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "ActionDispatcher._emit_plan_event failed; "
+                "swallowing so plan execution is not blocked"
             )
 
     async def dispatch(self, step: Any) -> dict[str, Any]:
@@ -277,17 +481,31 @@ class ActionDispatcher:
 
     # ── Routes ────────────────────────────────────────────────────────
 
-    async def _route_llm_turn(self, step: Any) -> StepExecutionResult:
+    async def _route_llm_turn(
+        self,
+        step: Any,
+        *,
+        prior_results: dict[str, dict[str, Any]] | None = None,
+    ) -> StepExecutionResult:
         """Drive an LLM turn via the wired ``AgentLoop``."""
         if self._agent_loop is None:
             return await self._stub_execute(step)
 
         step_id = _attr_str(step, "id", _new_id("step"))
         payload = _attr_dict(step, "payload")
+        # Epic #26 Phase B: substitute ``{{step_id.field}}`` references
+        # in prompt / intent / expected_outcome against prior step
+        # outputs so a multi-step plan can chain results without the
+        # planner having to hard-code them upfront. Missing refs
+        # render as ``<unresolved:...>`` strings so the agent sees
+        # the problem rather than a silent gap.
+        priors = prior_results or {}
         prompt = (
-            payload.get("prompt")
-            or payload.get("intent")
-            or _attr_str(step, "expected_outcome", "")
+            _substitute_priors(payload.get("prompt"), priors)
+            or _substitute_priors(payload.get("intent"), priors)
+            or _substitute_priors(
+                _attr_str(step, "expected_outcome", ""), priors,
+            )
         )
         # Use the goal_id from the step's plan context when present —
         # the CognitiveDaemon parks the goal_id on the step's payload
@@ -339,7 +557,12 @@ class ActionDispatcher:
             latency_ms=latency_ms,
         )
 
-    async def _route_skill_invoke(self, step: Any) -> StepExecutionResult:
+    async def _route_skill_invoke(
+        self,
+        step: Any,
+        *,
+        prior_results: dict[str, dict[str, Any]] | None = None,
+    ) -> StepExecutionResult:
         """Look up and invoke a registered skill."""
         if self._skill_registry is None:
             return await self._stub_execute(step)
@@ -366,6 +589,10 @@ class ActionDispatcher:
         else:
             fallback = payload.get("args")
             skill_args = dict(fallback) if isinstance(fallback, dict) else {}
+        # Epic #26 Phase B: template-substitute any string values in
+        # skill_args that reference prior steps (``{{step_id.field}}``).
+        if prior_results:
+            skill_args = _substitute_priors_in_dict(skill_args, prior_results)
 
         # Prefer a duck-typed `find` (Planner uses that path) and fall
         # back to the canonical `get` API on SkillRegistry.
@@ -437,7 +664,12 @@ class ActionDispatcher:
             latency_ms=latency_ms,
         )
 
-    async def _route_tool_call(self, step: Any) -> StepExecutionResult:
+    async def _route_tool_call(
+        self,
+        step: Any,
+        *,
+        prior_results: dict[str, dict[str, Any]] | None = None,
+    ) -> StepExecutionResult:
         """Invoke a tool via the wired ``ToolProvider``."""
         if self._tool_provider is None:
             return await self._stub_execute(step)
@@ -464,6 +696,11 @@ class ActionDispatcher:
         else:
             fallback_args = payload.get("args")
             tool_args = dict(fallback_args) if isinstance(fallback_args, dict) else {}
+        # Epic #26 Phase B: substitute {{step_id.field}} references in
+        # tool_args strings so a tool_call step can reference outputs
+        # from earlier steps (e.g. ``file_path: "{{step1.path}}"``).
+        if prior_results:
+            tool_args = _substitute_priors_in_dict(tool_args, prior_results)
 
         call = _make_tool_call_shape(name=str(tool_name), args=tool_args)
 
@@ -703,6 +940,130 @@ def _coerce_jsonish(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return list(value)
     return repr(value)
+
+
+# ── Epic #26 Phase B (2026-05-19) — prior-results threading helpers ──
+
+
+def _attr_float(obj: Any, name: str, default: float) -> float:
+    """Read ``obj.name`` (or ``obj[name]``) as a float. Tolerant
+    of dataclasses and dicts, falls back to ``default`` on missing
+    / non-coercible values. Mirrors ``_attr_str`` / ``_attr_dict``."""
+    if isinstance(obj, dict):
+        v = obj.get(name)
+    else:
+        v = getattr(obj, name, None)
+    if v is None:
+        return default
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _resolve_prior_path(
+    path: str, priors: dict[str, dict[str, Any]],
+) -> tuple[Any, bool]:
+    """Resolve a dotted path ``step_id.field.sub`` against the prior
+    results map. Returns ``(value, found)``. ``found=False`` when any
+    segment is missing — caller decides how to render the unresolved
+    reference.
+
+    The first segment is the step_id (looked up in priors). Subsequent
+    segments are nested dict accesses. List indices like
+    ``step1.items.0`` work via str → int coercion.
+    """
+    parts = [p.strip() for p in path.split(".") if p.strip()]
+    if not parts:
+        return None, False
+    step_id, *rest = parts
+    cur: Any = priors.get(step_id)
+    if cur is None:
+        return None, False
+    for seg in rest:
+        if isinstance(cur, dict):
+            if seg in cur:
+                cur = cur[seg]
+                continue
+            return None, False
+        if isinstance(cur, (list, tuple)):
+            try:
+                cur = cur[int(seg)]
+                continue
+            except (ValueError, IndexError):
+                return None, False
+        # Attribute access fallback for object-shaped values.
+        attr = getattr(cur, seg, _MISSING_SENTINEL)
+        if attr is _MISSING_SENTINEL:
+            return None, False
+        cur = attr
+    return cur, True
+
+
+_MISSING_SENTINEL = object()
+
+
+def _substitute_priors(
+    s: Any,
+    priors: dict[str, dict[str, Any]],
+) -> Any:
+    """If ``s`` is a string containing ``{{step_id.field}}`` markers,
+    return a new string with each marker replaced by the resolved
+    value (``str(...)`` of it). Non-string input passes through
+    unchanged. Missing references render as
+    ``<unresolved:step_id.field>`` so the LLM sees the problem
+    rather than a silent empty.
+
+    Pre-Phase-B: dispatcher passed payload strings to executors
+    verbatim, so a planner that wrote ``"prompt": "summarize
+    {{step_1.output.text}}"`` would just send the literal template
+    to the LLM. Now the dispatcher resolves it.
+    """
+    if not isinstance(s, str) or "{{" not in s:
+        return s
+
+    def _sub(match: re.Match[str]) -> str:
+        path = match.group(1)
+        value, found = _resolve_prior_path(path, priors)
+        if not found:
+            return f"<unresolved:{path}>"
+        if isinstance(value, (str, int, float, bool)):
+            return str(value)
+        # Compact dump for complex values so the LLM sees structured
+        # but won't see {} characters that trigger re-substitution.
+        try:
+            import json as _json
+            return _json.dumps(value, ensure_ascii=False)
+        except Exception:  # noqa: BLE001
+            return repr(value)
+
+    return _TEMPLATE_RE.sub(_sub, s)
+
+
+def _substitute_priors_in_dict(
+    d: dict[str, Any],
+    priors: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Recurse into a dict and substitute ``{{step_id.field}}`` in
+    every string value. Lists are walked element-wise; nested dicts
+    recurse. Non-string scalars pass through. Keys are NOT
+    substituted — only values."""
+    out: dict[str, Any] = {}
+    for k, v in d.items():
+        if isinstance(v, str):
+            out[k] = _substitute_priors(v, priors)
+        elif isinstance(v, dict):
+            out[k] = _substitute_priors_in_dict(v, priors)
+        elif isinstance(v, list):
+            out[k] = [
+                _substitute_priors_in_dict(x, priors) if isinstance(x, dict)
+                else _substitute_priors(x, priors) if isinstance(x, str)
+                else x
+                for x in v
+            ]
+        else:
+            out[k] = v
+    return out
 
 
 # Compatibility re-exports — async API and result dataclasses.
