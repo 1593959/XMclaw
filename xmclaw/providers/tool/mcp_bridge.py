@@ -229,30 +229,68 @@ class MCPBridge(ToolProvider):
         return list(self._tools)
 
     async def invoke(self, call: ToolCall) -> ToolResult:
+        # Epic #27 sweep #16 (2026-05-19): pipe through ``_fail_with_hint``
+        # so MCP failures carry actionable hints instead of raw
+        # ``OSError: ...`` strings the LLM can't reason about. Also adds
+        # ``latency_ms`` to every failure path (pre-fix the 4 fail
+        # sites all returned ``latency_ms=None``).
+        import time
+        from xmclaw.providers.tool._helpers import _fail_with_hint
+        t0 = time.perf_counter()
         if not self._started:
-            return ToolResult(
-                call_id=call.id, ok=False, content=None,
-                error=f"MCPBridge {self._name!r} not started",
+            return _fail_with_hint(
+                call, t0,
+                f"MCPBridge {self._name!r} not started",
+                hint=(
+                    "this MCP server's adapter never started (or "
+                    "crashed at boot). Check daemon.log for "
+                    "``mcp.start_failed`` lines + ``daemon/config.json`` "
+                    "``mcp_servers.{name}`` block; the agent cannot use "
+                    f"any tools from {self._name!r} until it boots."
+                ),
             )
         try:
             resp = await self._rpc("tools/call", {
                 "name": call.name,
                 "arguments": call.args,
             })
-        except asyncio.TimeoutError:
-            return ToolResult(
-                call_id=call.id, ok=False, content=None,
-                error=f"tools/call timed out after {self._request_timeout}s",
+        except asyncio.TimeoutError as exc:
+            return _fail_with_hint(
+                call, t0,
+                f"tools/call timed out after {self._request_timeout}s",
+                exc=exc,
+                hint=(
+                    "the MCP server didn't respond in time. Either the "
+                    "tool legitimately takes longer than the configured "
+                    f"timeout ({self._request_timeout}s — bump via "
+                    "``request_timeout`` in the server config), OR the "
+                    "subprocess hung. Restart the daemon to recycle "
+                    "the MCP child process if retries also time out."
+                ),
             )
         except MCPError as exc:
-            return ToolResult(
-                call_id=call.id, ok=False, content=None,
-                error=f"MCP protocol error: {exc}",
+            return _fail_with_hint(
+                call, t0,
+                "MCP protocol error",
+                exc=exc,
+                hint=(
+                    "the MCP server returned a malformed JSON-RPC "
+                    "response. Check the server's stderr (visible in "
+                    "daemon.log under ``mcp.stderr name=...``) for "
+                    "tracebacks; common cause is a server-side bug or "
+                    "version mismatch between client and server."
+                ),
             )
         except Exception as exc:  # noqa: BLE001
-            return ToolResult(
-                call_id=call.id, ok=False, content=None,
-                error=f"{type(exc).__name__}: {exc}",
+            return _fail_with_hint(
+                call, t0,
+                "MCP RPC raised", exc=exc,
+                hint=(
+                    "unexpected exception talking to the MCP server. "
+                    "If the same call works after a daemon restart, "
+                    "the server's child process likely died — check "
+                    "daemon.log for SIGCHLD / EOF events."
+                ),
             )
 
         # MCP tools/call response: either content blocks or an error.
@@ -263,13 +301,22 @@ class MCPBridge(ToolProvider):
         side_effects = tuple(resp.get("_meta", {}).get("side_effects", ()))
         if is_error:
             err_text = content if isinstance(content, str) else str(content)
-            return ToolResult(
-                call_id=call.id, ok=False, content=None,
-                error=f"tool reported error: {err_text}",
+            return _fail_with_hint(
+                call, t0,
+                "tool reported error",
+                hint=(
+                    f"the MCP server's ``{call.name}`` handler returned "
+                    f"isError=true with message: {err_text!r}. This is "
+                    "the SERVER's structured failure (your args were "
+                    "valid JSON-RPC, the tool just didn't succeed) — "
+                    "read the message + adjust args or pick a different "
+                    "tool."
+                ),
             )
         return ToolResult(
             call_id=call.id, ok=True, content=content,
             side_effects=side_effects,
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 
     # ── JSON-RPC plumbing ──

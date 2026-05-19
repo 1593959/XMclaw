@@ -852,9 +852,39 @@ class BrowserTools(ToolProvider):
                 return await self._get_console(call, t0)
             return _fail(call, t0, f"unknown tool: {call.name!r}")
         except _PlaywrightMissing as exc:
-            return _fail(call, t0, str(exc))
+            return _fail_with_hint(
+                call, t0, "playwright not installed",
+                exc=exc,
+                hint=(
+                    "the browser_* tools need playwright + a chromium "
+                    "binary. Install via ``pip install 'xmclaw[browser]'`` "
+                    "then ``playwright install chromium`` (one-time, "
+                    "~150MB). Until installed, no browser_* tool will "
+                    "be invocable."
+                ),
+            )
         except Exception as exc:  # noqa: BLE001
-            return _fail(call, t0, f"{type(exc).__name__}: {exc}")
+            # Epic #27 sweep #16 (2026-05-19): browser failures span a
+            # huge surface (network errors, selectors not matching, JS
+            # crashes, navigation cancellations). The exception type
+            # gives the LLM enough signal — we just add a generic
+            # debugging hint pointing at the most-common recovery
+            # path.
+            return _fail_with_hint(
+                call, t0,
+                f"browser tool {call.name!r} raised",
+                exc=exc,
+                hint=(
+                    "common recoveries: (1) call ``browser_snapshot`` "
+                    "first to see the DOM state, (2) re-check the "
+                    "selector if it's a click/fill/hover, (3) wait "
+                    "with ``browser_wait_for`` before interacting, "
+                    "(4) if the page is gone, ``browser_open`` it "
+                    "again. Persistent crashes likely mean the "
+                    "playwright child process died — close + reopen "
+                    "the session."
+                ),
+            )
 
     async def close_session(self, session_id: str) -> None:
         """Tear down a session's page + context. Safe to call repeatedly."""
@@ -2551,3 +2581,9 @@ def _fail(call: ToolCall, t0: float, err: str) -> ToolResult:
         call_id=call.id, ok=False, content=None, error=err,
         latency_ms=(time.perf_counter() - t0) * 1000.0,
     )
+
+
+# Epic #27 sweep #16 (2026-05-19): re-export from _helpers so the
+# browser tool's exception handlers can use the same structured-error
+# envelope as the other built-in tools (file_write etc).
+from xmclaw.providers.tool._helpers import _fail_with_hint  # noqa: E402,F401
