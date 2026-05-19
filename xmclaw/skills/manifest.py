@@ -67,6 +67,34 @@ class SkillManifest:
     # show an "advisory" vs "enforced" badge so operators don't
     # mistake declarative permissions for runtime guarantees.
     permissions_enforced: bool = False
+    # Epic #27 P1 G-10 (2026-05-19) — frontmatter expansion to match
+    # the Claude Code / Hermes / Cline skill conventions so XMclaw
+    # skills can round-trip with the broader ecosystem AND lay the
+    # data groundwork for G-04/G-05/G-06 (which need these fields):
+    #
+    # - ``when_to_use``: third-person trigger guidance ("This skill
+    #   should be used when..."). The Claude Code skill-development
+    #   guide identifies this as the most important field for the
+    #   LLM's "should I call this?" decision. Higher signal than
+    #   ``description`` (which leans summary-ish).
+    # - ``allowed_tools``: capability allowlist of tool names the
+    #   skill may call ("file_read", "bash"). Currently advisory —
+    #   G-06 will enforce via SkillTrustLevel + capability gates.
+    # - ``paths``: glob patterns ("src/**/*.py") that trigger
+    #   conditional activation when file_op events match. Currently
+    #   stored only — G-05 wires the activation path.
+    # - ``requires_restart``: True if invoking / editing this skill
+    #   needs a daemon restart (Python skill.py defaults True; pure
+    #   SKILL.md defaults False). UI uses to color the row.
+    # - ``model``: optional model hint — when the skill explicitly
+    #   requires a stronger model (``opus``) for its workflow.
+    #   Empty string = inherit. Hooked by output-style / model
+    #   picker future work.
+    when_to_use: str = ""
+    allowed_tools: tuple[str, ...] = field(default_factory=tuple)
+    paths: tuple[str, ...] = field(default_factory=tuple)
+    requires_restart: bool = False
+    model: str = ""
 
     def permissions_are_meaningful(self) -> bool:
         """B-328: True iff the manifest declares any non-trivial

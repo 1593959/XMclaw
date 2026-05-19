@@ -429,11 +429,22 @@ class UserSkillsLoader:
         # the file said, masking 6 of the 6 migrated lineages as USER.
         title, description, triggers = _parse_skill_md_frontmatter(body)
         created_by = _parse_skill_md_created_by(body) or "user"
+        # Epic #27 P1 G-10: pull extra frontmatter fields so SKILL.md
+        # authors can declare ``when_to_use`` / ``allowed_tools`` /
+        # ``paths`` / ``model`` and have them ride through into the
+        # manifest. Storage now; runtime enforcement of allowed_tools
+        # / paths lands in G-05 / G-06.
+        extras = _parse_skill_md_frontmatter_extras(body)
 
         skill = MarkdownProcedureSkill(id=skill_id, body=body, version=1)
         manifest = SkillManifest(
             id=skill_id, version=1, created_by=created_by,
             title=title, description=description, triggers=triggers,
+            when_to_use=str(extras.get("when_to_use") or ""),
+            allowed_tools=tuple(extras.get("allowed_tools") or ()),
+            paths=tuple(extras.get("paths") or ()),
+            requires_restart=bool(extras.get("requires_restart") or False),
+            model=str(extras.get("model") or ""),
         )
         try:
             self._registry.register(skill, manifest, set_head=True)
@@ -566,6 +577,24 @@ class UserSkillsLoader:
                 return tuple(str(x) for x in v)
             return ()
 
+        # Epic #27 P1 G-10 — accept the new fields from manifest.json
+        # too (Python-class skills can declare them just like SKILL.md
+        # frontmatter does). Snake_case and hyphenated keys both
+        # accepted to match the SKILL.md parser's tolerance.
+        def _first_str(*keys: str) -> str:
+            for k in keys:
+                v = data.get(k)
+                if isinstance(v, str) and v:
+                    return v
+            return ""
+
+        def _first_tuple(*keys: str) -> tuple[str, ...]:
+            for k in keys:
+                t = _as_tuple(k)
+                if t:
+                    return t
+            return ()
+
         return SkillManifest(
             id=skill_id,
             version=ver,
@@ -579,6 +608,15 @@ class UserSkillsLoader:
             created_by=str(data.get("created_by", "user")),
             evidence=_as_tuple("evidence"),
             triggers=_as_tuple("triggers"),
+            when_to_use=_first_str("when_to_use", "whenToUse"),
+            allowed_tools=_first_tuple("allowed_tools", "allowedTools"),
+            paths=_as_tuple("paths"),
+            requires_restart=bool(
+                data.get("requires_restart")
+                or data.get("requiresRestart")
+                or False
+            ),
+            model=str(data.get("model", "") or ""),
         )
 
 
@@ -708,6 +746,87 @@ def _parse_skill_md_frontmatter(
                 break
 
     return title, description, triggers
+
+
+# Epic #27 P1 G-10 (2026-05-19): parallel parser for the EXTRA
+# frontmatter fields (when_to_use / allowed_tools / paths /
+# requires_restart / model) added to SkillManifest. Lives alongside
+# the 3-tuple parser instead of changing its return shape — the
+# tuple unpack at all 3 call sites stays untouched, callers that
+# want the new fields call this too. Returns a plain dict so the
+# value types can vary per key without a custom dataclass.
+def _parse_skill_md_frontmatter_extras(body: str) -> dict[str, Any]:
+    """Parse the G-10 frontmatter extras.
+
+    Recognised keys (case-insensitive, hyphen and underscore variants
+    both accepted to match the Claude Code / Hermes conventions):
+
+      * ``when_to_use`` / ``when-to-use`` / ``whenToUse`` — string
+      * ``allowed_tools`` / ``allowed-tools`` / ``allowedTools`` —
+        list-of-strings (bracketed or comma)
+      * ``paths`` — list-of-strings (glob patterns)
+      * ``requires_restart`` / ``requires-restart`` — bool
+      * ``model`` — string
+
+    Unknown keys are silently dropped. Missing keys map to:
+    when_to_use="", allowed_tools=(), paths=(), requires_restart=False,
+    model="".
+    """
+    out: dict[str, Any] = {
+        "when_to_use": "",
+        "allowed_tools": (),
+        "paths": (),
+        "requires_restart": False,
+        "model": "",
+    }
+    m = _FRONTMATTER_BLOCK_RE.match(body or "")
+    if m is None:
+        return out
+
+    def _normalise_key(k: str) -> str:
+        return k.strip().lower().replace("-", "_")
+
+    def _parse_list(val: str) -> tuple[str, ...]:
+        s = val.strip()
+        if s.startswith("[") and s.endswith("]"):
+            inner = s[1:-1]
+            parts = [p.strip().strip("'\"") for p in inner.split(",")]
+            return tuple(p for p in parts if p)
+        if not s:
+            return ()
+        # Comma-separated fallback.
+        if "," in s:
+            return tuple(
+                p.strip().strip("'\"") for p in s.split(",") if p.strip()
+            )
+        return (s.strip("'\""),)
+
+    def _parse_bool(val: str) -> bool:
+        return val.strip().lower() in ("true", "yes", "1", "on")
+
+    for raw in m.group(1).splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        key_raw, _, val = line.partition(":")
+        key = _normalise_key(key_raw)
+        val = val.strip()
+        # Strip wrapping quotes for scalar fields.
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+            scalar = val[1:-1]
+        else:
+            scalar = val
+        if key in ("when_to_use", "whentouse") and not out["when_to_use"]:
+            out["when_to_use"] = scalar
+        elif key in ("allowed_tools", "allowedtools") and not out["allowed_tools"]:
+            out["allowed_tools"] = _parse_list(val)
+        elif key == "paths" and not out["paths"]:
+            out["paths"] = _parse_list(val)
+        elif key in ("requires_restart", "requiresrestart"):
+            out["requires_restart"] = _parse_bool(val)
+        elif key == "model" and not out["model"]:
+            out["model"] = scalar
+    return out
 
 
 # B-176: pull just ``created_by`` from frontmatter so the loader can

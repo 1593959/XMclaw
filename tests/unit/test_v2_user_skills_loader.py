@@ -592,6 +592,98 @@ async def test_g09_same_id_different_paths_records_duplicate(
     assert "multiple roots" in (dupes[0].error or "")
 
 
+# ── Epic #27 P1 G-10 (2026-05-19): frontmatter extras ──────────────
+
+
+def test_g10_extras_parser_handles_string_fields() -> None:
+    from xmclaw.skills.user_loader import _parse_skill_md_frontmatter_extras
+    body = (
+        "---\n"
+        "name: x\n"
+        "when_to_use: This skill should be used when refactoring.\n"
+        "model: opus\n"
+        "---\n# body\n"
+    )
+    extras = _parse_skill_md_frontmatter_extras(body)
+    assert extras["when_to_use"].startswith("This skill")
+    assert extras["model"] == "opus"
+
+
+def test_g10_extras_parser_handles_list_fields() -> None:
+    from xmclaw.skills.user_loader import _parse_skill_md_frontmatter_extras
+    body = (
+        "---\n"
+        "allowed_tools: [file_read, bash, web_fetch]\n"
+        "paths: [src/**/*.py, tests/**/*.py]\n"
+        "---\n"
+    )
+    extras = _parse_skill_md_frontmatter_extras(body)
+    assert extras["allowed_tools"] == ("file_read", "bash", "web_fetch")
+    assert extras["paths"] == ("src/**/*.py", "tests/**/*.py")
+
+
+def test_g10_extras_parser_accepts_hyphenated_keys() -> None:
+    """Claude Code uses ``allowed-tools``, Hermes uses ``allowedTools``;
+    XMclaw also takes the snake_case form. All three should parse."""
+    from xmclaw.skills.user_loader import _parse_skill_md_frontmatter_extras
+    body = (
+        "---\n"
+        "allowed-tools: [a, b]\n"
+        "when-to-use: pick me on bug fixes\n"
+        "requires-restart: true\n"
+        "---\n"
+    )
+    extras = _parse_skill_md_frontmatter_extras(body)
+    assert extras["allowed_tools"] == ("a", "b")
+    assert extras["when_to_use"] == "pick me on bug fixes"
+    assert extras["requires_restart"] is True
+
+
+def test_g10_extras_parser_defaults_when_empty() -> None:
+    from xmclaw.skills.user_loader import _parse_skill_md_frontmatter_extras
+    extras = _parse_skill_md_frontmatter_extras("# no frontmatter\n")
+    assert extras == {
+        "when_to_use": "",
+        "allowed_tools": (),
+        "paths": (),
+        "requires_restart": False,
+        "model": "",
+    }
+
+
+@pytest.mark.asyncio
+async def test_g10_markdown_skill_carries_extras_into_manifest(
+    tmp_path: Path,
+) -> None:
+    """End-to-end: drop a SKILL.md with G-10 frontmatter → loader
+    surfaces all fields in the registered manifest."""
+    sd = tmp_path / "with-extras"
+    sd.mkdir()
+    (sd / "SKILL.md").write_text(
+        "---\n"
+        "name: with-extras\n"
+        "description: demo skill for G-10\n"
+        "when_to_use: This skill should be used when X happens.\n"
+        "allowed_tools: [bash, file_read]\n"
+        "paths: [src/**]\n"
+        "requires_restart: false\n"
+        "model: sonnet\n"
+        "---\n"
+        "# body\nsteps\n",
+        encoding="utf-8",
+    )
+    reg = SkillRegistry()
+    UserSkillsLoader(reg, tmp_path).load_all()
+    assert "with-extras" in reg.list_skill_ids()
+    ref = reg.ref("with-extras", 1)
+    m = ref.manifest
+    assert m.when_to_use.startswith("This skill")
+    assert m.allowed_tools == ("bash", "file_read")
+    assert m.paths == ("src/**",)
+    assert m.model == "sonnet"
+    assert m.requires_restart is False
+
+
 @pytest.mark.asyncio
 async def test_g09_duplicate_row_surfaces_in_watcher_failures(
     tmp_path: Path,
