@@ -528,3 +528,92 @@ def test_b328_no_warning_when_no_meaningful_permissions(
     assert not any(
         "permissions_advisory_violation" in m for m in msgs
     ), f"synthesised manifests should not trigger advisory: {msgs!r}"
+
+
+# ── Epic #27 P1 G-09 (2026-05-19): realpath dedup + duplicate-id warn ──
+
+
+@pytest.mark.asyncio
+async def test_g09_symlinked_skill_dir_loads_once(tmp_path: Path) -> None:
+    """If canonical points at the same realpath as an extra root via
+    symlink, the skill should load ONCE, not twice. The pre-fix
+    name-only dedup would have caught this, but realpath dedup is
+    the proper structural fix."""
+    import os
+
+    real_root = tmp_path / "real_skills"
+    real_root.mkdir()
+    _write_skill(real_root, "shared-via-symlink")
+    # Make extras root a symlink to the same dir (Windows requires
+    # admin or developer mode; skip if symlink isn't supported).
+    extras = tmp_path / "extras"
+    try:
+        os.symlink(real_root, extras, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not supported in this env")
+
+    reg = SkillRegistry()
+    results = UserSkillsLoader(
+        reg, real_root, extra_roots=[extras],
+    ).load_all()
+    successes = [r for r in results if r.ok]
+    # Exactly one successful load — symlinked twin is deduped via realpath.
+    assert len(successes) == 1
+    assert successes[0].skill_id == "shared-via-symlink"
+
+
+@pytest.mark.asyncio
+async def test_g09_same_id_different_paths_records_duplicate(
+    tmp_path: Path,
+) -> None:
+    """Drop the same skill_id (different dir content) in both
+    canonical and extra roots → canonical wins, BUT a duplicate
+    row appears in results so the SkillsWatcher / UI / agent can
+    surface the conflict."""
+    canonical = tmp_path / "skills_user"
+    extras = tmp_path / "agents_skills"
+    canonical.mkdir()
+    extras.mkdir()
+    _write_skill(canonical, "conflict-id", version=1)
+    _write_skill(extras, "conflict-id", version=1)
+
+    reg = SkillRegistry()
+    results = UserSkillsLoader(
+        reg, canonical, extra_roots=[extras],
+    ).load_all()
+    # Canonical version registered.
+    assert "conflict-id" in reg.list_skill_ids()
+    # A duplicate row exists in results so SkillsWatcher can pick
+    # it up + put in load_failures.
+    dupes = [r for r in results if r.kind == "duplicate"]
+    assert len(dupes) == 1
+    assert dupes[0].skill_id == "conflict-id"
+    assert not dupes[0].ok
+    assert "multiple roots" in (dupes[0].error or "")
+
+
+@pytest.mark.asyncio
+async def test_g09_duplicate_row_surfaces_in_watcher_failures(
+    tmp_path: Path,
+) -> None:
+    """End-to-end: SkillsWatcher's load_failures() exposes the
+    duplicate row so the Skills page banner + skill_status tool
+    pick it up alongside genuine load failures."""
+    from xmclaw.daemon.skills_watcher import SkillsWatcher
+
+    canonical = tmp_path / "skills_user"
+    extras = tmp_path / "agents_skills"
+    canonical.mkdir()
+    extras.mkdir()
+    _write_skill(canonical, "dup-end-to-end")
+    _write_skill(extras, "dup-end-to-end")
+
+    reg = SkillRegistry()
+    watcher = SkillsWatcher(
+        reg, canonical, extra_roots=[extras], interval_s=3600.0,
+    )
+    await watcher.tick()
+    failures = watcher.load_failures()
+    assert len(failures) == 1
+    assert failures[0]["skill_id"] == "dup-end-to-end"
+    assert failures[0]["kind"] == "duplicate"

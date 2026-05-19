@@ -95,6 +95,20 @@ class UserSkillsLoader:
     def load_all(self) -> list[LoadResult]:
         results: list[LoadResult] = []
         seen_ids: set[str] = set()
+        # Epic #27 P1 G-09 (2026-05-19): de-dupe by FILESYSTEM IDENTITY
+        # (realpath) so a symlink pointing two roots at the same dir
+        # doesn't load the skill twice. Pre-fix the loader checked only
+        # ``entry.name in seen_ids`` — fine for unique names but blind
+        # to symlinks. Keys are realpath strings; both name-collision
+        # and path-collision routes consult this.
+        seen_realpaths: set[str] = set()
+        # Track skill_ids that appeared in MULTIPLE roots at distinct
+        # realpaths — the "I dropped foo/ in both ~/.xmclaw/skills_user
+        # AND ~/.agents/skills" case. First-wins is the intended policy
+        # but the operator should know about the conflict (so they can
+        # delete the dupe and avoid surprise stale-content loads when
+        # the canonical one is later removed).
+        path_conflicts: dict[str, list[str]] = {}
 
         # Canonical first, then extras — first-wins on collisions.
         for root in [self._root, *self._extra_roots]:
@@ -105,20 +119,52 @@ class UserSkillsLoader:
                     continue
                 if entry.name.startswith(".") or entry.name.startswith("_"):
                     continue
-                if entry.name in seen_ids:
+                # Resolve to realpath for symlink-safe dedup. .resolve()
+                # raises FileNotFoundError on broken symlinks; treat as
+                # if the dir doesn't exist.
+                try:
+                    real = str(entry.resolve(strict=False))
+                except OSError:
+                    continue
+                if real in seen_realpaths:
+                    # Same physical path → silent (a symlink intent).
                     log.debug(
-                        "user_skill.shadowed_by_canonical",
-                        extra={
-                            "skill_id": entry.name,
-                            "shadowed_root": str(root),
-                        },
+                        "user_skill.same_realpath_skipped path=%s", real,
                     )
+                    continue
+                if entry.name in seen_ids:
+                    # Same id, different realpath = TRUE conflict.
+                    log.warning(
+                        "user_skill.duplicate_id_across_roots "
+                        "skill_id=%s shadowed_path=%s",
+                        entry.name, real,
+                    )
+                    path_conflicts.setdefault(entry.name, []).append(real)
                     continue
                 res = self._load_one(entry)
                 res = replace(res, source_root=str(root))
                 results.append(res)
                 if res.ok:
                     seen_ids.add(entry.name)
+                seen_realpaths.add(real)
+        # Inject synthetic LoadResult rows for path conflicts so the
+        # SkillsWatcher → load_failures pipeline surfaces them in the
+        # same channel as broken-module failures. ``kind="duplicate"``
+        # lets callers tell these apart from genuine import errors.
+        for sid, paths in path_conflicts.items():
+            results.append(LoadResult(
+                skill_id=sid,
+                ok=False,
+                skill_path=Path(paths[0]),
+                error=(
+                    f"skill_id {sid!r} found in multiple roots; the "
+                    f"canonical (first scanned) wins, shadowed copies: "
+                    + ", ".join(paths)
+                    + ". Delete the duplicates to silence this warning."
+                ),
+                kind="duplicate",
+                source_root="",
+            ))
         return results
 
     def _load_one(self, skill_dir: Path) -> LoadResult:
