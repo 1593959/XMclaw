@@ -75,7 +75,12 @@ _DEFAULT_INDEX_URL = (
 )
 _CACHE_TTL_SECONDS = 60 * 60  # 1 hour
 _DOWNLOAD_TIMEOUT_SECONDS = 30
-_GIT_CLONE_TIMEOUT_SECONDS = 60
+# Wave-32+ (2026-05-19) bumped 60 → 180s after a user reported
+# "git clone timed out" on heygen-com/hyperframes (Claude Code-style
+# skill repo, ~MB of markdown), hitting the cap on a slow link before
+# anything had a chance to fail. 180s still bounds the worst case
+# but leaves room for unrushed networks.
+_GIT_CLONE_TIMEOUT_SECONDS = 180
 
 
 # ── Errors ───────────────────────────────────────────────────────────────
@@ -433,6 +438,31 @@ def list_installed() -> list[InstalledSkill]:
 # ── Source resolution ───────────────────────────────────────────────────
 
 
+def _looks_like_local_path(s: str) -> bool:
+    """Heuristic: does ``s`` smell like a local filesystem path?
+
+    Windows absolute (``C:\\...`` / ``C:/...``), POSIX absolute
+    (``/foo``), file URL (``file://...``), or a Windows UNC share
+    (``\\\\server\\share``). The check is intentionally generous — we
+    sanity-check existence afterward in ``install_from_source`` so
+    a malformed string still produces a clear error.
+    """
+    if not s:
+        return False
+    if s.startswith("file://"):
+        return True
+    if s.startswith("\\\\"):  # UNC share — \\server\share
+        return True
+    if s.startswith("/"):
+        return True
+    # Windows drive-letter prefix: ``X:`` or ``X:\\`` or ``X:/``.
+    # Avoids matching ``http:`` / ``git+`` (handled above) since those
+    # have multi-char schemes; single-letter + colon is drive-shaped.
+    if len(s) >= 2 and s[1] == ":" and s[0].isalpha():
+        return True
+    return False
+
+
 def _resolve_source(source: str) -> dict[str, Any]:
     """Translate the index ``source`` field into a concrete strategy.
 
@@ -441,6 +471,11 @@ def _resolve_source(source: str) -> dict[str, Any]:
       * ``git+<url>`` — generic git clone
       * ``https://...`` — direct URL (treated as git clone if it ends
         in ``.git``, else as tarball download)
+      * ``<local-fs-path>`` — Windows drive-prefixed (``C:\\…``),
+        POSIX absolute (``/…``), UNC share (``\\\\srv\\share\\…``),
+        or ``file://`` URL. Local source dir is copied (not symlinked)
+        into the install root so subsequent edits to the source don't
+        leak into the live skill.
     """
     s = source.strip()
     if s.startswith("github:"):
@@ -457,13 +492,99 @@ def _resolve_source(source: str) -> dict[str, Any]:
         if s.endswith(".git"):
             return {"kind": "git", "url": s}
         return {"kind": "tarball", "url": s}
+    if _looks_like_local_path(s):
+        # Strip file:// prefix if present; let install_from_source do
+        # the existence check + copy. We return the original string so
+        # the installed-registry source field stays human-readable
+        # ("file:///tmp/x" or "C:\\Users\\me\\skill" survives verbatim).
+        return {"kind": "local", "path": s, "url": s}
     raise InstallValidationError(
         f"unsupported source scheme: {source!r}; "
-        "expected 'github:<owner>/<repo>' / 'git+...' / 'https://...'"
+        "expected 'github:<owner>/<repo>' / 'git+...' / 'https://...' "
+        "/ a local filesystem path"
     )
 
 
+def _safe_rmtree(path: Path) -> None:
+    """``shutil.rmtree`` with a Windows-safe fallback.
+
+    Pre-fix: a fresh ``git clone`` leaves ``.git/objects/pack/*.pack`` /
+    ``*.idx`` with the read-only attribute on Windows. Re-installing
+    the same skill then trips ``PermissionError: [WinError 5] 拒绝访问``
+    inside the rollback path of ``install_from_source`` — the user
+    sees ``install crashed (PermissionError)`` with no clue what to
+    do. The standard fix is the ``onerror`` callback that clears the
+    read-only bit and retries; not POSIX-relevant but harmless there.
+    """
+    import stat
+
+    def _onerror(func: Any, p: str, _exc_info: Any) -> None:
+        try:
+            os.chmod(p, stat.S_IWUSR | stat.S_IWRITE)
+        except OSError:
+            pass
+        try:
+            func(p)
+        except OSError:
+            # Final attempt failed — let the outer caller decide. We
+            # don't re-raise here because ignore_errors=True semantics
+            # are sometimes what the caller wants; the marketplace
+            # install path checks ``path.exists()`` after the rmtree
+            # and surfaces a clear error if cleanup truly failed.
+            pass
+
+    shutil.rmtree(path, onerror=_onerror)
+
+
 # ── Install flow ────────────────────────────────────────────────────────
+
+
+def _local_copy(source_path: str, target: Path) -> None:
+    """Copy a local-filesystem skill directory into ``target``.
+
+    Accepts ``file://...`` URLs, Windows drive paths (``C:\\...``),
+    POSIX absolute paths, and UNC shares. Raises
+    :class:`InstallValidationError` if the source isn't a directory or
+    is inside the install root itself (a copy-of-itself loop).
+    """
+    raw = source_path.strip()
+    if raw.startswith("file://"):
+        # file:// URL — strip the prefix; on Windows the URL form is
+        # ``file:///C:/path``, so peel one extra leading slash if a
+        # drive letter follows.
+        raw = raw[len("file://"):]
+        if len(raw) >= 3 and raw.startswith("/") and raw[2] == ":":
+            raw = raw[1:]
+    src = Path(raw).expanduser()
+    if not src.exists():
+        raise InstallValidationError(
+            f"local skill source does not exist: {src}"
+        )
+    if not src.is_dir():
+        raise InstallValidationError(
+            f"local skill source must be a directory, got file: {src}"
+        )
+    # Guard against ``install_from_source('~/.xmclaw/skills_user/foo')``
+    # which would otherwise recursively copy the target into itself
+    # if the install root and the source share a parent.
+    try:
+        src_resolved = src.resolve()
+        tgt_resolved = target.resolve()
+        if src_resolved == tgt_resolved or tgt_resolved.is_relative_to(src_resolved):
+            raise InstallValidationError(
+                f"local source {src} overlaps install target {target}; "
+                "copy elsewhere first or pick a different skill_id"
+            )
+    except (OSError, ValueError):
+        # is_relative_to raises ValueError on different drives in
+        # 3.9+; treat as "no overlap" and continue.
+        pass
+    try:
+        shutil.copytree(src, target)
+    except OSError as exc:
+        raise InstallValidationError(
+            f"failed to copy {src} → {target}: {exc}"
+        ) from exc
 
 
 def _git_clone(url: str, target: Path, *, runner: Any = None) -> None:
@@ -599,12 +720,14 @@ def install(
     # Wipe an existing install — user expectation for ``xmclaw skill install``
     # of a known id is "upgrade", not "fail because directory exists".
     if target.exists():
-        shutil.rmtree(target)
+        _safe_rmtree(target)
     root.mkdir(parents=True, exist_ok=True)
 
     resolved = _resolve_source(skill.source)
     if resolved["kind"] == "git":
         _git_clone(resolved["url"], target, runner=git_runner)
+    elif resolved["kind"] == "local":
+        _local_copy(resolved["path"], target)
     elif resolved["kind"] == "tarball":
         # Tarball path kept stub-shaped for now — we cover it in tests as
         # a "not yet implemented" branch so a future Epic #16 contributor
@@ -624,7 +747,7 @@ def install(
         # directory means the daemon's UserSkillsLoader picks it up on
         # next boot, which is exactly the wrong outcome.
         if target.exists():
-            shutil.rmtree(target, ignore_errors=True)
+            _safe_rmtree(target)
         raise
 
     # Record the install so ``xmclaw skill installed`` can list it.
@@ -656,9 +779,18 @@ def _derive_skill_id_from_url(url: str) -> str:
     to ``[a-z0-9_-]`` so it survives as a directory name on every
     platform. Falls back to ``"unnamed-skill"`` for completely
     pathological inputs.
+
+    Handles both URL-style (``/`` separators) and Windows-style
+    (``\\`` separators) inputs — pre-fix a local path like
+    ``C:\\Users\\me\\hyperframes-clone`` ran through ``split("/")``
+    as ONE segment and produced an absurd 70-char slug. Now we strip
+    along both separators so the trailing dir name comes out.
     """
     import re
-    stem = url.rstrip("/").split("/")[-1] or ""
+    # Normalise both separator flavours into ``/`` before splitting
+    # so Windows paths produce the same trailing segment as POSIX.
+    normalised = url.replace("\\", "/")
+    stem = normalised.rstrip("/").split("/")[-1] or ""
     if stem.endswith(".git"):
         stem = stem[:-4]
     stem = re.sub(r"[^a-z0-9_-]+", "-", stem.lower()).strip("-")
@@ -697,11 +829,15 @@ def install_from_source(
     so callers don't branch on entry point.
     """
     resolved = _resolve_source(source)
-    if resolved["kind"] != "git":
+    if resolved["kind"] not in ("git", "local"):
         raise InstallValidationError(
-            f"install_from_source only supports git sources, got "
-            f"kind={resolved['kind']!r} for {source!r}"
+            f"install_from_source only supports git or local sources, "
+            f"got kind={resolved['kind']!r} for {source!r}"
         )
+    # For local paths the "url" we derive a skill_id from is the path
+    # itself — last segment, ``.git`` stripped, normalised. Same
+    # helper handles both shapes because it operates on the trailing
+    # path component.
     final_id = skill_id or _derive_skill_id_from_url(resolved["url"])
     if not final_id:
         raise InstallValidationError(
@@ -711,17 +847,20 @@ def install_from_source(
     root = install_root if install_root is not None else user_skills_dir()
     target = root / final_id
     if target.exists():
-        shutil.rmtree(target)
+        _safe_rmtree(target)
     root.mkdir(parents=True, exist_ok=True)
 
-    _git_clone(resolved["url"], target, runner=git_runner)
+    if resolved["kind"] == "git":
+        _git_clone(resolved["url"], target, runner=git_runner)
+    else:  # local
+        _local_copy(resolved["path"], target)
     findings: list[dict[str, Any]] = []
     try:
         _validate_structure(target)
         findings = _scan_for_critical(target)
     except MarketplaceError:
         if target.exists():
-            shutil.rmtree(target, ignore_errors=True)
+            _safe_rmtree(target)
         raise
 
     records = _read_installed_registry()
@@ -762,7 +901,7 @@ def remove(skill_id: str, *, install_root: Path | None = None) -> bool:
         target = root / skill_id
     removed = False
     if target.exists():
-        shutil.rmtree(target, ignore_errors=True)
+        _safe_rmtree(target)
         removed = True
     if rec is not None:
         _write_installed_registry(records)

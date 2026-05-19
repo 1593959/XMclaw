@@ -397,20 +397,25 @@ class SkillToolProvider:
         return ToolSpec(
             name=META_INSTALL_TOOL_NAME,
             description=(
-                "Clone a skill from a Git source and register it. The "
-                "agent calls this when ``skill_browse`` surfaced a "
-                "promising third-party skill, or when the user says "
-                "'install <repo>'. ``source`` accepts: "
-                "``github:owner/repo``, ``git+https://...``, or "
-                "``https://....git``. Skill lands in "
-                "``~/.xmclaw/skills_user/<skill_id>/`` and is picked "
-                "up by the daemon's UserSkillsLoader on the NEXT "
-                "boot (or immediately via skills_watcher). Returns "
-                "``{skill_id, install_path, findings}``; raises if "
-                "the cloned dir has no manifest.json / SKILL.md / "
-                "skill.py, or if the security scanner flags a "
-                "CRITICAL finding. Idempotent: re-installing the "
-                "same id wipes the previous copy first (upgrade)."
+                "Install a skill into ``~/.xmclaw/skills_user/<skill_id>/`` "
+                "and register it. The agent calls this when "
+                "``skill_browse`` surfaced a promising third-party "
+                "skill, or when the user says 'install <repo>'. "
+                "``source`` accepts: ``github:owner/repo``, "
+                "``git+https://...``, ``https://....git``, OR a local "
+                "filesystem path (Windows ``C:\\...``, POSIX ``/...``, "
+                "or ``file://...`` URL) when the skill is already on "
+                "disk. SKILL.md-only repos (Claude Code / Cursor / "
+                "skills.sh style) ARE supported — the loader wraps "
+                "them as MarkdownProcedureSkill; no manifest.json / "
+                "skill.py needed. Skill is picked up by the daemon's "
+                "UserSkillsLoader on the next boot (or immediately "
+                "via skills_watcher). Returns ``{skill_id, install_"
+                "path, findings}``; raises if the dir has none of "
+                "manifest.json / SKILL.md / skill.py, or if the "
+                "security scanner flags a CRITICAL finding. "
+                "Idempotent: re-installing the same id wipes the "
+                "previous copy first (upgrade)."
             ),
             parameters_schema={
                 "type": "object",
@@ -420,9 +425,12 @@ class SkillToolProvider:
                     "source": {
                         "type": "string",
                         "description": (
-                            "Git source. Examples: "
-                            "``github:oswalpalash/ontology``, "
-                            "``https://github.com/foo/bar.git``."
+                            "Where to install from. Examples: "
+                            "``github:owner/repo``, "
+                            "``https://github.com/foo/bar.git``, "
+                            "``C:\\\\Users\\\\me\\\\my-skill`` "
+                            "(local Windows path), "
+                            "``/home/me/my-skill`` (local POSIX)."
                         ),
                     },
                     "skill_id": {

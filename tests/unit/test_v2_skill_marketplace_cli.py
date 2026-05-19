@@ -308,6 +308,75 @@ def test_resolve_source_unsupported_scheme() -> None:
         mp._resolve_source("ftp://nope.example/x")
 
 
+# ── Wave-32+ (2026-05-19): local-path source support ──────────────────
+
+
+def test_resolve_source_local_posix_absolute() -> None:
+    r = mp._resolve_source("/home/me/my-skill")
+    assert r["kind"] == "local"
+    assert r["path"] == "/home/me/my-skill"
+
+
+def test_resolve_source_local_windows_drive() -> None:
+    r = mp._resolve_source(r"C:\Users\me\my-skill")
+    assert r["kind"] == "local"
+    assert r["path"] == r"C:\Users\me\my-skill"
+
+
+def test_resolve_source_local_file_url() -> None:
+    r = mp._resolve_source("file:///tmp/foo")
+    assert r["kind"] == "local"
+
+
+def test_resolve_source_local_unc_path() -> None:
+    r = mp._resolve_source(r"\\fileserver\share\skill")
+    assert r["kind"] == "local"
+
+
+def test_install_from_source_local_copies_dir(
+    isolated_workspace: Path, tmp_path: Path,
+) -> None:
+    """End-to-end: a local directory with a SKILL.md gets copied
+    into the install root and the install registry records it."""
+    src = tmp_path / "hyperframes-clone"
+    src.mkdir()
+    (src / "SKILL.md").write_text(
+        "---\nname: hyperframes\ndescription: demo\n---\n# hi\n",
+        encoding="utf-8",
+    )
+    result = mp.install_from_source(str(src))
+    assert result.skill_id == "hyperframes-clone"
+    assert (result.install_path / "SKILL.md").is_file()
+    # Registry round-trip — list_installed picks it up.
+    rows = mp.list_installed()
+    assert any(r.id == "hyperframes-clone" for r in rows)
+
+
+def test_install_from_source_local_missing_dir_raises(
+    isolated_workspace: Path, tmp_path: Path,
+) -> None:
+    bogus = tmp_path / "does-not-exist"
+    with pytest.raises(mp.InstallValidationError) as exc:
+        mp.install_from_source(str(bogus))
+    assert "does not exist" in str(exc.value)
+
+
+def test_install_from_source_local_overlap_with_target_raises(
+    isolated_workspace: Path,
+) -> None:
+    """``install_from_source('~/.xmclaw/skills_user/foo')`` would
+    otherwise copy the install root into a subdir of itself."""
+    from xmclaw.utils.paths import user_skills_dir
+    root = user_skills_dir()
+    overlap = root / "overlap-test"
+    overlap.mkdir(parents=True)
+    (overlap / "SKILL.md").write_text("# overlap\n", encoding="utf-8")
+    # Pass a parent that contains the install target → should refuse.
+    with pytest.raises(mp.InstallValidationError) as exc:
+        mp.install_from_source(str(root), skill_id="overlap-test")
+    assert "overlap" in str(exc.value).lower()
+
+
 # ── Library — install / remove flow ─────────────────────────────────────
 
 
