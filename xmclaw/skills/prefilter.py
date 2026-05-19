@@ -174,6 +174,7 @@ def select_relevant_skills(
     from xmclaw.skills.tool_bridge import (
         META_BROWSE_TOOL_NAME,
         META_INSTALL_TOOL_NAME,
+        META_RUN_TOOL_NAME,
         META_STATUS_TOOL_NAME,
         META_UNINSTALL_TOOL_NAME,
         META_VIEW_TOOL_NAME,
@@ -187,6 +188,11 @@ def select_relevant_skills(
         # skill bodies without prefilter dropping them.
         META_STATUS_TOOL_NAME,
         META_VIEW_TOOL_NAME,
+        # Epic #27 G-04 (2026-05-19): progressive-disclosure run
+        # dispatcher. ALWAYS exposed because in ``unified`` mode it's
+        # the ONLY skill-invocation path; the prefilter must never
+        # drop it even on zero-token-overlap queries.
+        META_RUN_TOOL_NAME,
     })
 
     # Partition: skills vs non-skills vs the always-on meta-tools.

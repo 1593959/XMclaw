@@ -53,6 +53,17 @@ mutation not to produce silent nonsense.
   scoring. The prefilter has a hard whitelist for
   `META_BROWSE_TOOL_NAME` so it ALWAYS reaches the LLM, even on
   zero-token-overlap queries (CJK against English skill descs).
+  Epic #27 G-04 (2026-05-19): adds `disclosure_mode` (`inline` /
+  `unified` / `auto`, default `auto`) + `unified_threshold`
+  (default 20) constructor args; in `unified` mode (or `auto` once
+  registered skill count > threshold) per-skill `skill_<id>` tools
+  are dropped from `list_tools()` entirely — the agent invokes
+  via the new `skill_run(skill_id, args)` meta-tool after
+  discovering through `skill_browse` + `skill_view` (Hermes-style
+  3-step). All 6 meta-tools (browse / view / status / install /
+  uninstall / run) are always-on and whitelisted in the prefilter.
+  Wire from `daemon/app.py` reads `config.skills.{disclosure_mode,
+  unified_threshold}`.
 - `prefilter.py` — B-238 token-overlap top-K filter that narrows
   ~404 installed skills to ~12 per turn. Non-skill tools and
   `skill_browse` always pass through; skills below

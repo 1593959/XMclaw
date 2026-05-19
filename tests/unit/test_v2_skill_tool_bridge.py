@@ -26,6 +26,7 @@ from xmclaw.skills.registry import SkillRegistry
 from xmclaw.skills.tool_bridge import (
     META_BROWSE_TOOL_NAME,
     META_INSTALL_TOOL_NAME,
+    META_RUN_TOOL_NAME,
     META_STATUS_TOOL_NAME,
     META_UNINSTALL_TOOL_NAME,
     META_VIEW_TOOL_NAME,
@@ -41,6 +42,8 @@ _META_TOOL_NAMES = frozenset({
     # Epic #27 P0 G-01 (2026-05-19) — introspection meta-tools.
     META_STATUS_TOOL_NAME,
     META_VIEW_TOOL_NAME,
+    # Epic #27 G-04 (2026-05-19) — progressive-disclosure run dispatcher.
+    META_RUN_TOOL_NAME,
 })
 
 

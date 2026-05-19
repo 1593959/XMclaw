@@ -724,16 +724,31 @@ def create_app(
         # by the LLM — every version exposed here passed through
         # evidence-gated promote() (anti-req #12 enforced at registry).
         if orchestrator is not None:
-            from xmclaw.skills.tool_bridge import SkillToolProvider
+            from xmclaw.skills.tool_bridge import (
+                DISCLOSURE_MODE_AUTO,
+                SkillToolProvider,
+            )
             # Epic #27 P0 G-01 (2026-05-19): hand the SkillsWatcher in
             # so the new ``skill_status`` meta-tool can surface load
             # failures + pending restarts to the agent. Watcher may
             # not be wired yet on first call — pull lazily from
             # app.state via getattr so None is acceptable.
             _watcher_ref = getattr(app.state, "skills_watcher", None)
+            # Epic #27 G-04 (2026-05-19): progressive-disclosure mode +
+            # threshold. Defaults to ``auto`` so small setups keep their
+            # direct ``skill_<id>`` affordance and large setups (>20
+            # registered skills) auto-switch to the unified browse →
+            # view → run flow.
+            _skills_cfg = (config or {}).get("skills", {}) or {}
+            _disclosure_mode = _skills_cfg.get(
+                "disclosure_mode", DISCLOSURE_MODE_AUTO,
+            )
+            _unified_threshold = _skills_cfg.get("unified_threshold", 20)
             _skill_tools = SkillToolProvider(
                 orchestrator.registry,
                 watcher=_watcher_ref,
+                disclosure_mode=_disclosure_mode,
+                unified_threshold=_unified_threshold,
             )
             agent._tools = CompositeToolProvider(agent._tools, _skill_tools)
 

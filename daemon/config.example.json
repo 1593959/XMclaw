@@ -24,6 +24,11 @@
     "_comment_profiles_schema": "each entry: {id (slug, [a-z0-9][a-z0-9_-]*), label?, provider (anthropic|openai|openrouter), model, api_key, base_url?}. Empty by default; manage via Settings page or edit here directly.",
     "profiles": []
   },
+  "skills": {
+    "_comment": "Epic #27 G-04 (2026-05-19) — skill 工具暴露的渐进披露 (progressive disclosure)。disclosure_mode 决定 LLM 一回合看到几个 skill 工具：'inline' = 每个注册 skill 单独一个 skill_<id> 工具（受 prefilter top-12 收窄，legacy 行为）；'unified' = 只暴露 6 个 meta-tool (browse / view / status / install / uninstall / run)，所有调用走 skill_run(skill_id, args)，强制 LLM 走显式 browse→view→run 三步流程，大库下显著省 prompt token 预算；'auto' = 默认，注册 skill 数 > unified_threshold (默认 20) 时自动切 unified，否则保持 inline 的直接调用便利。",
+    "disclosure_mode": "auto",
+    "unified_threshold": 20
+  },
   "evolution": {
     "_comment": "Epic #4 + Sprint 3 honest-disclosure: ``enabled`` defaults to false until Sprint 4 benchmark numbers prove the loop helps more than it costs. Set true to opt into the experimental observers (HonestGrader / JournalWriter / SkillDreamCycle). ``auto_apply=false`` keeps promotion human-gated even when enabled — the orchestrator observes SKILL_CANDIDATE_PROPOSED events but does not mutate HEAD without ``xmclaw evolve approve <id>``. Flip auto_apply to true only after benchmark + user evidence agree.",
     "enabled": false,

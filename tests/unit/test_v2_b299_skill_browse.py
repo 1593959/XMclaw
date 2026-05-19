@@ -35,8 +35,19 @@ from xmclaw.skills.manifest import SkillManifest
 from xmclaw.skills.prefilter import select_relevant_skills
 from xmclaw.skills.registry import SkillRegistry
 from xmclaw.skills.tool_bridge import (
-    META_BROWSE_TOOL_NAME, SkillToolProvider,
+    DISCLOSURE_MODE_INLINE,
+    META_BROWSE_TOOL_NAME,
+    SkillToolProvider,
 )
+
+
+# Epic #27 G-04 (2026-05-19): the prefilter-coexistence tests below were
+# written when ``inline`` was the only mode. The new ``auto`` default
+# flips to ``unified`` at >20 registered skills, which collapses
+# ``list_tools()`` to just the 6 meta-tools — defeating the premise of
+# tests that assert specific per-skill names survive prefilter trimming.
+# Those tests now pin ``inline`` explicitly; the G-04 disclosure tests
+# live in test_v2_skill_disclosure_mode.py.
 
 
 # ── fixtures ────────────────────────────────────────────────────────
@@ -291,7 +302,9 @@ def test_prefilter_keeps_browse_when_no_match() -> None:
     pairs = [(f"english-skill-{i}", f"english description {i}")
              for i in range(35)]
     reg = _registry_with_skills(*pairs)
-    bridge = SkillToolProvider(reg)
+    # G-04: pin ``inline`` so per-skill specs are still emitted and
+    # the prefilter has something to trim.
+    bridge = SkillToolProvider(reg, disclosure_mode=DISCLOSURE_MODE_INLINE)
     all_specs = bridge.list_tools()
     filtered = select_relevant_skills("天气", all_specs, top_k=12)
     names = [s.name for s in filtered]
@@ -313,7 +326,9 @@ def test_prefilter_keeps_browse_when_match_exists() -> None:
     pairs = [(f"misc-{i}", "filler") for i in range(33)]
     pairs.append(("git-commit", "Run git commit on the repo."))
     reg = _registry_with_skills(*pairs)
-    bridge = SkillToolProvider(reg)
+    # G-04: pin ``inline`` — see comment in test_prefilter_keeps_browse_
+    # when_no_match above.
+    bridge = SkillToolProvider(reg, disclosure_mode=DISCLOSURE_MODE_INLINE)
     all_specs = bridge.list_tools()
     filtered = select_relevant_skills("git commit", all_specs, top_k=12)
     names = [s.name for s in filtered]

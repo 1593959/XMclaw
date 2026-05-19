@@ -63,6 +63,38 @@ META_UNINSTALL_TOOL_NAME = "skill_uninstall"
 # of running list_dir + bash in circles.
 META_STATUS_TOOL_NAME = "skill_status"
 META_VIEW_TOOL_NAME = "skill_view"
+# Epic #27 G-04 (2026-05-19) — progressive disclosure entry point. One
+# unified ``skill_run(skill_id, args)`` tool that routes the call through
+# the registry, same code path as the per-skill ``skill_<id>`` tools.
+# In ``unified`` disclosure mode this is the ONLY way to invoke a skill
+# — per-skill tools are not exposed to the LLM at all; in ``inline``
+# mode it's an alias that coexists with them. The Hermes / Claude-Skills
+# 3-step flow is: skill_browse → skill_view → skill_run.
+META_RUN_TOOL_NAME = "skill_run"
+
+# Disclosure modes:
+#   ``inline``  — legacy. Every registered skill shows up as its own
+#                 ``skill_<id>`` tool (subject to prefilter top-K). The
+#                 LLM picks them directly; ``skill_run`` is an alias.
+#   ``unified`` — only the 6 meta-tools (browse / view / status /
+#                 install / uninstall / run) are exposed. Forces the
+#                 explicit discovery flow; saves the 50-tokens-per-skill
+#                 description budget at the cost of one extra hop per
+#                 invocation (browse + run vs. direct skill_<id>).
+#   ``auto``    — switch to ``unified`` once registered skill count
+#                 exceeds ``unified_threshold`` (default 20). Keeps the
+#                 fast direct path for small setups + saves context
+#                 once the registry grows large enough that the
+#                 prefilter's top-12 is dropping useful matches.
+DISCLOSURE_MODE_INLINE = "inline"
+DISCLOSURE_MODE_UNIFIED = "unified"
+DISCLOSURE_MODE_AUTO = "auto"
+_VALID_DISCLOSURE_MODES = frozenset({
+    DISCLOSURE_MODE_INLINE,
+    DISCLOSURE_MODE_UNIFIED,
+    DISCLOSURE_MODE_AUTO,
+})
+_DEFAULT_UNIFIED_THRESHOLD = 20
 
 
 def _to_tool_name(skill_id: str) -> str:
@@ -95,6 +127,8 @@ class SkillToolProvider:
         description_prefix: str = "Skill: ",
         variant_selector: Any = None,
         watcher: Any = None,
+        disclosure_mode: str = DISCLOSURE_MODE_AUTO,
+        unified_threshold: int = _DEFAULT_UNIFIED_THRESHOLD,
     ) -> None:
         self._registry = registry
         self._description_prefix = description_prefix
@@ -109,6 +143,20 @@ class SkillToolProvider:
         # failures + pending restarts to the agent. None when wired in
         # contexts without a daemon watcher (tests, eval harness).
         self._watcher = watcher
+        # Epic #27 G-04 (2026-05-19): progressive-disclosure switch.
+        # Unknown values fall back to ``auto`` rather than raising — this
+        # path runs at daemon boot and we'd rather log + continue than
+        # refuse to start over a config typo.
+        mode = (disclosure_mode or DISCLOSURE_MODE_AUTO).strip().lower()
+        if mode not in _VALID_DISCLOSURE_MODES:
+            mode = DISCLOSURE_MODE_AUTO
+        self._disclosure_mode = mode
+        try:
+            self._unified_threshold = max(
+                0, int(unified_threshold),
+            )
+        except (TypeError, ValueError):
+            self._unified_threshold = _DEFAULT_UNIFIED_THRESHOLD
 
     # ------------------------------------------------------------------
     # Public API
@@ -136,11 +184,46 @@ class SkillToolProvider:
         # list_dir / bash. Both meta-tools.
         specs.append(self._status_spec())
         specs.append(self._view_spec())
+        # Epic #27 G-04 (2026-05-19): unified skill_run dispatcher.
+        # Always exposed regardless of disclosure mode — in ``inline``
+        # it's an alias the LLM may use; in ``unified`` it's the only
+        # invocation path. Keeping it always-on means we don't have to
+        # update the prompt / TOOLS.md auto-block when the mode flips.
+        specs.append(self._run_spec())
+
+        if self._effective_disclosure_mode() == DISCLOSURE_MODE_UNIFIED:
+            # Skip per-skill tools entirely. The LLM discovers + invokes
+            # via skill_browse → skill_view → skill_run. Big context win
+            # on large libraries (~50 tokens × N skills).
+            return specs
+
         for skill_id in self._registry.list_skill_ids():
             spec = self._spec_for(skill_id)
             if spec is not None:
                 specs.append(spec)
         return specs
+
+    def _effective_disclosure_mode(self) -> str:
+        """Resolve the ``auto`` mode against the current registry size.
+
+        Counts skill IDs (not versions) — version multiplicity doesn't
+        change the per-LLM-turn surface since only HEAD is exposed.
+        Errors fall back to ``inline`` (the safer default — agent still
+        sees per-skill tools, no regression).
+        """
+        if self._disclosure_mode == DISCLOSURE_MODE_INLINE:
+            return DISCLOSURE_MODE_INLINE
+        if self._disclosure_mode == DISCLOSURE_MODE_UNIFIED:
+            return DISCLOSURE_MODE_UNIFIED
+        try:
+            count = sum(1 for _ in self._registry.list_skill_ids())
+        except Exception:  # noqa: BLE001
+            return DISCLOSURE_MODE_INLINE
+        return (
+            DISCLOSURE_MODE_UNIFIED
+            if count > self._unified_threshold
+            else DISCLOSURE_MODE_INLINE
+        )
 
     async def invoke(self, call: ToolCall) -> ToolResult:
         """Resolve ``call.name`` back to a skill_id and run it.
@@ -166,11 +249,40 @@ class SkillToolProvider:
         if call.name == META_VIEW_TOOL_NAME:
             return self._invoke_view(call, t0)
 
-        skill_id = self._tool_name_to_skill_id(call.name)
-        if skill_id is None:
-            return self._error_result(
-                call.id, f"unknown skill tool: {call.name!r}", t0
-            )
+        # Epic #27 G-04: skill_run reads ``skill_id`` from args and
+        # falls through to the shared invocation path below. This
+        # keeps variant selection + version metadata stamping +
+        # error coercion identical to the per-skill route.
+        if call.name == META_RUN_TOOL_NAME:
+            args = dict(call.args or {})
+            requested = args.get("skill_id")
+            if not isinstance(requested, str) or not requested.strip():
+                return self._error_result(
+                    call.id,
+                    "skill_run requires 'skill_id' string in args",
+                    t0,
+                )
+            skill_id = requested.strip()
+            # Forward only ``args`` to the skill; ``skill_id`` is
+            # consumed by the dispatcher itself, not by the skill.
+            forwarded_args = args.get("args")
+            if isinstance(forwarded_args, dict):
+                call_args = forwarded_args
+            elif forwarded_args is None:
+                call_args = {}
+            else:
+                return self._error_result(
+                    call.id,
+                    "skill_run 'args' must be an object (or omitted)",
+                    t0,
+                )
+        else:
+            skill_id = self._tool_name_to_skill_id(call.name)
+            if skill_id is None:
+                return self._error_result(
+                    call.id, f"unknown skill tool: {call.name!r}", t0
+                )
+            call_args = dict(call.args or {})
 
         # B-295: variant selection. If a selector is wired, ask it which
         # version of the skill to run for this turn. Falls back to HEAD
@@ -192,7 +304,7 @@ class SkillToolProvider:
             )
 
         try:
-            out = await skill.run(SkillInput(args=dict(call.args or {})))
+            out = await skill.run(SkillInput(args=call_args))
         except Exception as exc:  # noqa: BLE001
             return self._error_result(
                 call.id, f"{type(exc).__name__}: {exc}", t0
@@ -722,6 +834,72 @@ class SkillToolProvider:
             },
             error=None,
             latency_ms=self._elapsed_ms(t0),
+        )
+
+    # ── Epic #27 G-04: progressive-disclosure run dispatcher ───────
+
+    def _run_spec(self) -> ToolSpec:
+        """ToolSpec for ``skill_run`` — the unified invocation path.
+
+        Always exposed so the description can lean on it. In
+        ``unified`` mode this is the ONLY way to invoke a skill; in
+        ``inline`` mode it's an alias that coexists with the per-skill
+        ``skill_<id>`` tools.
+        """
+        mode = self._effective_disclosure_mode()
+        if mode == DISCLOSURE_MODE_UNIFIED:
+            description = (
+                "Invoke a registered skill by id. This is the ONLY way "
+                "to run a skill in the current disclosure mode — "
+                "per-skill ``skill_<id>`` tools are not exposed. "
+                "Discovery flow:\n"
+                "  1. ``skill_browse(query)`` — find candidate ids.\n"
+                "  2. ``skill_view(skill_id)`` — read SKILL.md to see "
+                "what args the skill expects.\n"
+                "  3. ``skill_run(skill_id, args={...})`` — invoke.\n"
+                "Returns whatever the skill returned in its "
+                "SkillOutput.result; on skill failure surfaces "
+                "ok=False with an error string."
+            )
+        else:
+            description = (
+                "Invoke a registered skill by id. Equivalent to calling "
+                "``skill_<skill_id>`` directly — same code path, same "
+                "variant selection, same error coercion. Useful when "
+                "you've just discovered a skill via ``skill_browse`` "
+                "and want to call it without waiting for the per-skill "
+                "tool to surface on the next turn."
+            )
+        return ToolSpec(
+            name=META_RUN_TOOL_NAME,
+            description=description,
+            parameters_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["skill_id"],
+                "properties": {
+                    "skill_id": {
+                        "type": "string",
+                        "description": (
+                            "Registered skill id (e.g. "
+                            "``demo.read_and_summarize``). Discover "
+                            "available ids with ``skill_browse`` or "
+                            "``skill_status``."
+                        ),
+                    },
+                    "args": {
+                        "type": "object",
+                        "additionalProperties": True,
+                        "description": (
+                            "Arguments forwarded to "
+                            "Skill.run(SkillInput(args=...)). Read the "
+                            "skill's SKILL.md (via ``skill_view``) to "
+                            "see what keys it expects. Omit / pass "
+                            "``{}`` for skills that take no args."
+                        ),
+                    },
+                },
+            },
         )
 
     # ── Wave-27 fix-LAT7: skill_install / skill_uninstall ──────────
