@@ -221,12 +221,41 @@ async def test_llm_turn_falls_back_to_stub_when_agent_loop_missing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_llm_turn_uses_step_id_when_goal_id_missing() -> None:
+async def test_llm_turn_uniquifies_session_when_goal_id_missing() -> None:
+    """Wave-32+ (2026-05-19) collision fix: pre-fix the fallback used
+    the raw step_id, which collided across plans because the LLM
+    template ships ``"id": "step_1"`` and faithful models echo it
+    back unchanged. New rule — when no goal_id/session_id is in the
+    payload we mint ``autonomous:<step_id>:<uuid>`` so different
+    plans get different sessions AND the colon prefix marks it as
+    internal for the Sessions UI filter to hide."""
     al = FakeAgentLoop()
     disp = ActionDispatcher(agent_loop=al)
     step = make_step(id="step-xyz", action_kind="llm_turn", payload={"prompt": "go"})
     await disp.execute_step(step)
-    assert al.calls[0]["session_id"] == "step-xyz"
+    sid = al.calls[0]["session_id"]
+    assert sid.startswith("autonomous:step-xyz:"), sid
+    # Each dispatch gets a fresh UUID suffix — running twice yields
+    # two distinct session_ids even with identical inputs.
+    await disp.execute_step(step)
+    assert al.calls[1]["session_id"] != sid
+    assert al.calls[1]["session_id"].startswith("autonomous:step-xyz:")
+
+
+@pytest.mark.asyncio
+async def test_llm_turn_uses_goal_id_when_present() -> None:
+    """When the plan context parks a goal_id on the step's payload,
+    use it directly — that's how multi-step plans share a single
+    conversation session across their llm_turn steps."""
+    al = FakeAgentLoop()
+    disp = ActionDispatcher(agent_loop=al)
+    step = make_step(
+        id="step_1",
+        action_kind="llm_turn",
+        payload={"prompt": "hi", "goal_id": "goal-abc-123"},
+    )
+    await disp.execute_step(step)
+    assert al.calls[0]["session_id"] == "goal-abc-123"
 
 
 @pytest.mark.asyncio

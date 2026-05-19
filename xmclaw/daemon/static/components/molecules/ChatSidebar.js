@@ -59,13 +59,21 @@ export function ChatSidebar({
   // B-160: filter out internal sessions (reflect:/dream:/etc) — same
   // rule as Sessions page (B-156). Prevents the sidebar from showing
   // 4 "从现在开始..." rows because each WS disconnect spawns one.
+  // Keep this list in sync with Sessions.js's isInternalSid and the
+  // backend's INTERNAL_SESSION_PREFIXES in session_store.py.
   const isInternalSid = (sid) => {
     if (!sid) return false;
     return (
       sid.startsWith("reflect:")
       || sid.startsWith("dream:")
-      || sid.startsWith("_system:")
+      || sid.startsWith("_system")
       || sid.startsWith("evolution:")
+      || sid.startsWith("autonomous:")
+      || sid.startsWith("skill-dream")
+      || sid.startsWith("step_")
+      || sid.startsWith("smoke-")
+      || sid.startsWith("selfmod-")
+      || sid.startsWith("time-fullb20")
     );
   };
 

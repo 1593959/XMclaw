@@ -271,3 +271,34 @@ def test_b339_search_no_matches_returns_empty(tmp_path) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     store.save("sess-a", [Message(role="user", content="hello world")])
     assert store.search_messages("never-mentioned-token") == []
+
+
+# ── Wave-32+ (2026-05-19) — internal-session classification ─────────
+
+
+def test_is_internal_session_id_covers_all_internal_prefixes() -> None:
+    """Pin the prefix list so adding a new autonomous/test session
+    flavor without updating the filter doesn't silently leak it back
+    into the user's Sessions UI."""
+    from xmclaw.daemon.session_store import is_internal_session_id
+
+    # All internal flavors → True
+    assert is_internal_session_id("reflect:chat-a:1779")
+    assert is_internal_session_id("dream:1779")
+    assert is_internal_session_id("_system_anything")
+    assert is_internal_session_id("evolution:proposal-1")
+    assert is_internal_session_id("autonomous:step_1:abcd1234")
+    assert is_internal_session_id("skill-dream-xyz")
+    assert is_internal_session_id("step_1")
+    assert is_internal_session_id("step_42")
+    assert is_internal_session_id("smoke-fullb20-basic")
+    assert is_internal_session_id("selfmod-fullb20-1779130115")
+    assert is_internal_session_id("time-fullb20-1779130215")
+
+    # User-authored chats → False
+    assert not is_internal_session_id("chat-e31f0891")
+    assert not is_internal_session_id("chat-0e255219")
+    assert not is_internal_session_id("")
+    # Plain "time-" prefix WITHOUT fullb20 is not internal — only the
+    # specific smoke-test prefix should match.
+    assert not is_internal_session_id("time-zone-helper-session")

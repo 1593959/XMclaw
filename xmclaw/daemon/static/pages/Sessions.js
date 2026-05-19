@@ -121,13 +121,27 @@ export function SessionsPage({ token }) {
   // closes the "same conversation appears 4 times" bug — reflections
   // copy the user's history, so each spawned reflect:<sid>:<ts> shows
   // the same first user message and looks like a duplicate chat.
+  //
+  // Wave-32+ (2026-05-19): expanded to cover HTN planner autonomous
+  // turns (step_*, autonomous:*) and integration smoke runs (smoke-*,
+  // selfmod-*, time-fullb20-*). Pre-fix these slipped past the
+  // filter and the user saw "Use the reme...", "understand ...",
+  // "What is today'..." sitting in the main sessions list with no
+  // hint they were internal. The set must stay in sync with
+  // ``INTERNAL_SESSION_PREFIXES`` in xmclaw/daemon/session_store.py.
   const isInternalSid = (sid) => {
     if (!sid) return false;
     return (
       sid.startsWith("reflect:")
       || sid.startsWith("dream:")
-      || sid.startsWith("_system:")
+      || sid.startsWith("_system")
       || sid.startsWith("evolution:")
+      || sid.startsWith("autonomous:")
+      || sid.startsWith("skill-dream")
+      || sid.startsWith("step_")
+      || sid.startsWith("smoke-")
+      || sid.startsWith("selfmod-")
+      || sid.startsWith("time-fullb20")
     );
   };
 

@@ -40,6 +40,41 @@ CREATE INDEX IF NOT EXISTS idx_session_history_updated
 """
 
 
+# Wave-32+ (2026-05-19) session classification. The Sessions UI
+# previously surfaced *every* persisted session — including reflection
+# clones (``reflect:*``), HTN-planner autonomous turns (``step_*`` and
+# ``autonomous:*``), background dream cycles, evolution proposals, and
+# integration smoke runs (``smoke-*`` / ``selfmod-*`` / ``time-*``).
+# User asked for the UX to default to user-authored chats; this set
+# defines what's "internal" so the router/store can filter it out
+# unless ``include_internal=true`` is asked for.
+INTERNAL_SESSION_PREFIXES: tuple[str, ...] = (
+    "_system",
+    "skill-dream",
+    "dream:",
+    "evolution:",
+    "reflect:",
+    "autonomous:",
+    "step_",
+    "smoke-",
+    "selfmod-",
+    "time-fullb20",  # specific smoke-test prefix, not general "time-"
+    "smoke-fullb20",
+)
+
+
+def is_internal_session_id(session_id: str) -> bool:
+    """Return True when ``session_id`` matches any internal prefix.
+
+    Used by the Sessions API to hide reflection / autonomous / test
+    plumbing from the user's main list. Keep the rule simple +
+    pure-Python so any caller can apply it consistently.
+    """
+    if not session_id:
+        return False
+    return session_id.startswith(INTERNAL_SESSION_PREFIXES)
+
+
 def _toolcall_to_dict(tc: ToolCall) -> dict[str, Any]:
     return {
         "name": tc.name,

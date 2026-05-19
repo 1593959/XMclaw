@@ -18,7 +18,10 @@ from typing import Any
 from fastapi import APIRouter
 from starlette.responses import JSONResponse
 
-from xmclaw.daemon.session_store import SessionStore
+from xmclaw.daemon.session_store import (
+    SessionStore,
+    is_internal_session_id,
+)
 from xmclaw.utils.paths import default_sessions_db_path
 
 router = APIRouter(prefix="/api/v2/sessions", tags=["sessions"])
@@ -33,24 +36,49 @@ def _store() -> SessionStore | None:
 
 
 @router.get("")
-async def list_sessions(limit: int = 50) -> JSONResponse:
+async def list_sessions(
+    limit: int = 50,
+    include_internal: bool = False,
+) -> JSONResponse:
     """Return up to ``limit`` recent sessions, newest first.
 
-    Each entry: ``{session_id, message_count, updated_at}``. The Web UI
-    sorts client-side too so the order is informational.
+    Each entry: ``{session_id, message_count, updated_at, preview}``.
+    The Web UI sorts client-side too so the order is informational.
+
+    Wave-32+ (2026-05-19): ``include_internal`` defaults to False so
+    the main Sessions list shows only user-authored chats. Internal
+    sessions (reflection clones, HTN planner autonomous turns,
+    integration smoke runs) are hidden by default but accessible
+    via ``?include_internal=true`` for debugging. The cap on
+    ``limit`` is applied AFTER filtering so the visible page size
+    stays predictable even when many internal sessions are
+    interleaved with chats.
     """
     store = _store()
     if store is None:
         return JSONResponse({"sessions": [], "error": "session_store unavailable"})
+    requested = max(1, min(int(limit), 500))
     try:
-        rows = store.list_recent(limit=max(1, min(int(limit), 500)))
+        # Over-fetch by 2x when filtering so a heavily-internal store
+        # still surfaces enough real chats. Tighter than nothing,
+        # cheaper than scanning the whole table.
+        fetch_n = requested if include_internal else min(500, requested * 4)
+        rows = store.list_recent(limit=fetch_n)
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"sessions": [], "error": str(exc)})
+    if not include_internal:
+        rows = [
+            r for r in rows
+            if not is_internal_session_id(str(r.get("session_id") or ""))
+        ]
+    rows = rows[:requested]
     return JSONResponse({"sessions": rows})
 
 
 @router.get("/search")
-async def search_sessions(q: str = "", limit: int = 30) -> JSONResponse:
+async def search_sessions(
+    q: str = "", limit: int = 30, include_internal: bool = False,
+) -> JSONResponse:
     """B-339 (audit #12): substring search across all persisted
     session histories. Returns the same shape as ``GET /``, but each
     entry adds ``match_snippet`` — a short context window around the
@@ -70,10 +98,18 @@ async def search_sessions(q: str = "", limit: int = 30) -> JSONResponse:
     store = _store()
     if store is None:
         return JSONResponse({"sessions": [], "error": "session_store unavailable"})
+    requested = max(1, min(int(limit), 200))
     try:
-        rows = store.search_messages(q, limit=max(1, min(int(limit), 200)))
+        fetch_n = requested if include_internal else min(200, requested * 4)
+        rows = store.search_messages(q, limit=fetch_n)
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"sessions": [], "error": str(exc)})
+    if not include_internal:
+        rows = [
+            r for r in rows
+            if not is_internal_session_id(str(r.get("session_id") or ""))
+        ]
+    rows = rows[:requested]
     return JSONResponse({"sessions": rows, "query": q})
 
 

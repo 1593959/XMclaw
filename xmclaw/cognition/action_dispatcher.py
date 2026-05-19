@@ -292,11 +292,23 @@ class ActionDispatcher:
         # Use the goal_id from the step's plan context when present —
         # the CognitiveDaemon parks the goal_id on the step's payload
         # under "goal_id" when materialising the plan; we tolerate its
-        # absence and fall back to the step id.
+        # absence and fall back to a UNIQUE auto-generated id rather
+        # than the raw step_id.
+        #
+        # Wave-32+ (2026-05-19) collision fix: pre-fix the fallback
+        # was just ``step_id`` — but the planner prompt template ships
+        # ``"id": "step_1"`` as an example, and LLM-generated plans
+        # routinely copy that literal verbatim. Across many plans this
+        # collapsed every "step_1" / "step_2" llm_turn into a SINGLE
+        # shared session, ballooning to 282+ messages of unrelated
+        # autonomous work in one bucket. New rule: when no goal_id is
+        # provided we mint ``autonomous:<step_id>:<uuid>`` so each
+        # plan gets its own session(s) AND the colon prefix marks it
+        # as internal for the Sessions UI filter to hide.
         session_id = (
             payload.get("goal_id")
             or payload.get("session_id")
-            or step_id
+            or f"autonomous:{step_id}:{uuid.uuid4().hex[:8]}"
         )
 
         t0 = time.monotonic()
