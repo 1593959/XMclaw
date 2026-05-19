@@ -187,12 +187,42 @@ function ToolMediaImages({ images }) {
 }
 
 
+// 2026-05-19: strip server-side fences that agent_loop splices into the
+// user message content (memory_ctx, unified_recall, curriculum hint /
+// strategies). Designed-out: the daemon attaches these AS the user
+// message (not the system prompt) on purpose — keeps the system prompt
+// prompt-cache stable. But the chat UI then renders that user message
+// to the user, exposing what was meant to be LLM-only side-channel
+// context (the "[lesson]…[preference]…" wall the user just hit).
+//
+// Strip on display, NOT in the reducer / store, so the round-trip with
+// the LLM still receives the full context — only the human-facing
+// render is filtered.
+const _SYSTEM_FENCES = [
+  "memory-context",
+  "memory-v2-facts",      // ← MemoryService.render_for_prompt output
+  "unified-recall",
+  "curriculum-hint",
+  "curriculum-strategies",
+  "memory-files",
+];
+const _FENCE_RE = new RegExp(
+  "\\n*<(" + _SYSTEM_FENCES.join("|") + ")\\b[^>]*>[\\s\\S]*?<\\/\\1>\\n*",
+  "g",
+);
+function _stripSystemFences(s) {
+  if (!s || typeof s !== "string") return s || "";
+  if (s.indexOf("<") === -1) return s;
+  return s.replace(_FENCE_RE, "").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 export function MarkdownBody({ content }) {
   // Lex once per render; lex itself memoises by source string identity, so
   // re-renders with the same content are O(1). When a new chunk arrives,
   // only the LAST token's html string changes, so Preact's keyed diff
   // touches a single child node — no flicker, no cursor jump.
-  const tokens = lex(content || "");
+  const cleaned = _stripSystemFences(content || "");
+  const tokens = lex(cleaned);
   if (!tokens.length) {
     return html`<div class="xmc-msg__body xmc-md"></div>`;
   }
