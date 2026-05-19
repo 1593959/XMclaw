@@ -64,6 +64,36 @@ from xmclaw.utils.log import get_logger
 _log = get_logger(__name__)
 
 
+# Epic #27 sweep #6 (2026-05-19): centralised cap for maintenance
+# scans (dedupe / backfill / one-shot repair paths). Pre-fix every
+# call site used limit=10000 with no signal when the scan truncated.
+# At 3000+ facts the truncation becomes silent data drop — half a
+# user's facts get skipped by dedupe etc. and they don't know.
+#
+# Cap kept at 5000 (down from 10000) to halve the worst-case memory
+# footprint per scan; combined with the new "did we hit the cap?"
+# warning, operators can see when the scan is incomplete + we have
+# a hook to introduce cursor-based pagination later. The real fix
+# is incremental_dedup (only scan facts newer than last_run_ts) —
+# logged as a follow-up; this commit is the defensive prerequisite.
+_MAINTENANCE_SCAN_LIMIT = 5000
+
+
+def _maybe_warn_scan_truncated(
+    operation: str, n_returned: int, limit: int,
+) -> None:
+    """Log a warning if a maintenance scan returned exactly ``limit``
+    rows — strongly suggests there's more data we didn't see, and
+    the operation worked on a partial view of the fact store."""
+    if n_returned >= limit:
+        _log.warning(
+            "memory_service.scan_truncated op=%s returned=%d limit=%d "
+            "— results worked on a partial view; introduce "
+            "cursor-based pagination when fact_count exceeds limit",
+            operation, n_returned, limit,
+        )
+
+
 # Thresholds — exposed as module constants so tests can pin them and
 # Phase-7 dream compactor can adjust at runtime if needed.
 
@@ -1196,7 +1226,10 @@ class MemoryService:
         where = " AND ".join(clauses) if clauses else None
 
         all_facts = await self._vec.search(
-            None, where=where, limit=10000,
+            None, where=where, limit=_MAINTENANCE_SCAN_LIMIT,
+        )
+        _maybe_warn_scan_truncated(
+            "deduplicate", len(all_facts), _MAINTENANCE_SCAN_LIMIT,
         )
 
         # Bucket by (kind, scope) so we only compare facts that
@@ -1316,7 +1349,13 @@ class MemoryService:
         Returns counts + sample for the UI / CLI. dry_run mode
         previews without writing edges.
         """
-        all_facts = await self._vec.search(None, where=None, limit=10000)
+        all_facts = await self._vec.search(
+            None, where=None, limit=_MAINTENANCE_SCAN_LIMIT,
+        )
+        _maybe_warn_scan_truncated(
+            "co_occurrence_backfill",
+            len(all_facts), _MAINTENANCE_SCAN_LIMIT,
+        )
         # Bucket by source_event_id. Only buckets with 2+ facts are
         # candidates for co-occurrence linking. Facts with no
         # source_event_id are skipped — there's no signal that they
@@ -1405,7 +1444,12 @@ class MemoryService:
 
         Returns ``{scanned, edges_added, edges_skipped, dry_run}``.
         """
-        all_facts = await self._vec.search(None, where=None, limit=10000)
+        all_facts = await self._vec.search(
+            None, where=None, limit=_MAINTENANCE_SCAN_LIMIT,
+        )
+        _maybe_warn_scan_truncated(
+            "same_topic_relink", len(all_facts), _MAINTENANCE_SCAN_LIMIT,
+        )
         # Index by id so the inner pass can look up vectors cheaply.
         all_facts = [f for f in all_facts if not f.superseded_by]
         if not all_facts:
@@ -1537,7 +1581,13 @@ class MemoryService:
 
         Returns a report (counts + sample) for the UI / CLI.
         """
-        all_facts = await self._vec.search(None, where=None, limit=10000)
+        all_facts = await self._vec.search(
+            None, where=None, limit=_MAINTENANCE_SCAN_LIMIT,
+        )
+        _maybe_warn_scan_truncated(
+            "clear_stale_contradicts",
+            len(all_facts), _MAINTENANCE_SCAN_LIMIT,
+        )
         targets: list[Fact] = []
         for f in all_facts:
             if f.kind == FactKind.CORRECTION.value:

@@ -556,10 +556,25 @@ class EntityStore:
         scanned = 0
         registered = 0
         errors = 0
+        # Epic #27 sweep #6 (2026-05-19): entity-index backfill is
+        # the one place where a higher cap is justified — the index
+        # needs to see EVERY fact (vs the dedup-style maintenance
+        # scans where partial is OK). Keep at 20000 but warn when
+        # we hit it so operators know to chunk via cursor.
+        _BACKFILL_LIMIT = 20000
         try:
-            facts = await vec_backend.search(None, where=None, limit=20000)
+            facts = await vec_backend.search(
+                None, where=None, limit=_BACKFILL_LIMIT,
+            )
         except Exception:  # noqa: BLE001
             return {"scanned": 0, "registered": 0, "errors": 1}
+        if len(facts) >= _BACKFILL_LIMIT:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "entity_store.backfill_truncated returned=%d limit=%d "
+                "— some facts missed; cursor-based scan needed",
+                len(facts), _BACKFILL_LIMIT,
+            )
         self.clear()
         for f in facts:
             scanned += 1
