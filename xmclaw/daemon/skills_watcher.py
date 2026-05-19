@@ -146,6 +146,10 @@ class SkillsWatcher:
         # event loop) and don't want to add the threadsafe-publish
         # complexity for a once-per-skill-edit signal.
         self._pending_restart_events: list[dict] = []
+        # Epic #27 sweep follow-up (2026-05-19): buffer for
+        # SKILL_HOT_RELOADED events. Drained + published by the async
+        # ``_tick`` caller, same shape as ``_pending_restart_events``.
+        self._pending_hot_reload_events: list[dict] = []
         # Epic #27 P0 G-02 (2026-05-19): track skills that failed to
         # load on the latest tick. Pre-fix UserSkillsLoader's
         # LoadResult was returned + discarded — the agent had NO way
@@ -408,6 +412,31 @@ class SkillsWatcher:
             # _maybe_announce_python_restart already covered it.
             self._pending_restart_events = []
 
+        # Epic #27 sweep follow-up (2026-05-19): drain hot-reload
+        # events. Mirror the restart-events handling so a bus-less
+        # daemon doesn't grow the queue unboundedly either.
+        if self._pending_hot_reload_events and self._bus is not None:
+            from xmclaw.core.bus.events import EventType, make_event
+            hr_pending = self._pending_hot_reload_events
+            self._pending_hot_reload_events = []
+            for payload in hr_pending:
+                try:
+                    event = make_event(
+                        session_id="_system",
+                        agent_id="skills-watcher",
+                        type=EventType.SKILL_HOT_RELOADED,
+                        payload=payload,
+                    )
+                    await self._bus.publish(event)
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning(
+                        "skills_watcher.publish_hot_reload_event_failed "
+                        "skill_id=%s err=%s",
+                        payload.get("skill_id", "?"), exc,
+                    )
+        elif self._pending_hot_reload_events and self._bus is None:
+            self._pending_hot_reload_events = []
+
         return len(new_ids)
 
     def _refresh_changed_bodies(self) -> int:
@@ -451,18 +480,22 @@ class SkillsWatcher:
                     ):
                         updated += 1
 
-                # B-333 + Epic #27 G-03: watch skill.py for mtime
-                # changes on EVERY dir, registered or not. importlib
-                # caches stale imports either way; the
-                # SKILL_REQUIRES_RESTART signal is the only path back
-                # to a working state. _maybe_announce_python_restart
-                # seeds-then-fires (first observation never fires),
-                # so this is safe to call for newly-discovered files
-                # too.
+                # B-333 + Epic #27 G-03 + 2026-05-19 hot-reload:
+                # watch skill.py for mtime changes on EVERY dir.
+                # First we ATTEMPT the hot-reload path (fresh module
+                # via mtime-stamped name + registry.hot_replace);
+                # only fall back to "requires_restart" signal when
+                # that path fails (syntax error in the new file, or
+                # the skill wasn't previously registered so there's
+                # nothing to replace). Pre-fix Python skills ALWAYS
+                # needed a daemon restart; peers (Claude Code / Hermes
+                # / Cline) sidestep this by being markdown-only —
+                # XMclaw's hot-reload lets Python skills compete on
+                # the same UX.
                 skill_py = skill_dir / "skill.py"
                 if skill_py.is_file():
-                    payload = self._maybe_announce_python_restart(
-                        skill_dir.name, 1, skill_py,
+                    payload = self._maybe_hot_reload_or_announce(
+                        skill_dir, skill_py,
                         registered=is_registered,
                     )
                     if payload is not None:
@@ -536,6 +569,137 @@ class SkillsWatcher:
                 skill_id, version, file,
             )
         return ok
+
+    def _maybe_hot_reload_or_announce(
+        self, skill_dir: Path, skill_py: Path,
+        *,
+        registered: bool,
+    ) -> "dict | None":
+        """Epic #27 sweep follow-up (2026-05-19): attempt actual
+        ``importlib`` reload + ``SkillRegistry.hot_replace`` BEFORE
+        falling back to the legacy SKILL_REQUIRES_RESTART signal.
+
+        Decision tree on mtime change:
+
+          1. First observation of this skill.py path → seed mtime
+             cache, no action (the boot loader / next tick handles
+             initial registration).
+          2. Subsequent observation with newer mtime:
+             a. ``registered=True``: attempt hot reload. On success →
+                ``SKILL_HOT_RELOADED`` event collected for emission;
+                NO restart-required payload returned. On failure →
+                fall through to restart announcement so the user
+                still gets a signal.
+             b. ``registered=False``: skill was never registered (or
+                the previous attempt failed). Hot-reload doesn't
+                apply (nothing to replace); return restart payload
+                so the failed-load → fix → restart workflow stays
+                visible. The next watcher tick's ``load_all`` will
+                pick up the now-valid file.
+
+        Returns the restart payload dict to publish, or ``None`` when
+        either there's nothing to announce (first observation or
+        successful hot reload).
+        """
+        # Mtime seed-then-fire: same gate as
+        # ``_maybe_announce_python_restart``. First sight returns None.
+        try:
+            mtime = skill_py.stat().st_mtime
+        except OSError:
+            return None
+        cached = self._mtimes.get(skill_py)
+        self._mtimes[skill_py] = mtime
+        if cached is None or mtime <= cached:
+            return None
+
+        skill_id = skill_dir.name
+
+        # ---------- Hot-reload path (only when previously registered) ----------
+        if registered:
+            try:
+                # Hot-reload requires the loader's reload_one method.
+                # Lazy-construct a loader so we don't have to thread it
+                # through __init__ (the watcher already has the roots).
+                loader = UserSkillsLoader(
+                    self._registry,
+                    self._skills_root,
+                    extra_roots=self._extra_roots,
+                )
+                new_skill, new_manifest, err = loader.reload_one(skill_dir)
+            except Exception as exc:  # noqa: BLE001
+                err = f"reload_one raised: {type(exc).__name__}: {exc}"
+                new_skill = new_manifest = None
+            if new_skill is not None and new_manifest is not None:
+                version = int(getattr(new_skill, "version", 1))
+                replaced = self._registry.hot_replace(
+                    skill_id, version, new_skill, new_manifest,
+                )
+                if replaced:
+                    _log.info(
+                        "skills_watcher.python_skill_hot_reloaded "
+                        "skill_id=%s version=%d path=%s",
+                        skill_id, version, skill_py,
+                    )
+                    # Queue a SKILL_HOT_RELOADED event for the async
+                    # _tick caller to emit (same pattern as the
+                    # restart-required path — we're in a thread here
+                    # with no running event loop).
+                    self._pending_hot_reload_events.append({
+                        "skill_id": skill_id,
+                        "version": version,
+                        "path": str(skill_py),
+                        "kind": "python",
+                    })
+                    # Clear the "history of failure" entry so a
+                    # future legitimate edit doesn't get tagged as
+                    # ``state="fixed_after_failure"`` long after
+                    # the failure was resolved.
+                    self._skills_with_history_of_failure.discard(skill_id)
+                    return None  # success — no restart payload
+                err = (
+                    "registry.hot_replace returned False — "
+                    f"({skill_id}, v{version}) not in registry"
+                )
+            else:
+                _log.warning(
+                    "skills_watcher.hot_reload_failed "
+                    "skill_id=%s err=%s — falling back to restart signal",
+                    skill_id, err or "unknown",
+                )
+
+        # ---------- Fallback: existing requires_restart announcement ----------
+        # Reuse the existing restart announcer but DON'T re-seed the
+        # mtime cache (we just bumped it above). Drop into the same
+        # payload-building logic by inlining: we replicate the once-per-
+        # daemon dedup + state classification here.
+        version_for_restart = 1
+        try:
+            v = self._registry.active_version(skill_id)
+            if isinstance(v, int) and v > 0:
+                version_for_restart = v
+        except Exception:  # noqa: BLE001
+            pass
+        key = (skill_id, version_for_restart)
+        if key in self._py_restart_announced:
+            return None  # already announced
+        was_failing = skill_id in self._skills_with_history_of_failure
+        state = "fixed_after_failure" if was_failing else "edited"
+        _log.warning(
+            "skills_watcher.python_skill_changed_restart_required "
+            "skill_id=%s version=%d path=%s state=%s",
+            skill_id, version_for_restart, skill_py, state,
+        )
+        announce_payload = {
+            "path": str(skill_py),
+            "state": state,
+            "registered": registered,
+        }
+        self._py_restart_announced[key] = announce_payload
+        return {
+            "skill_id": skill_id,
+            "version": version_for_restart,
+            **announce_payload,
+        }
 
     def _maybe_announce_python_restart(
         self, skill_id: str, version: int, file: Path,

@@ -356,6 +356,10 @@ from xmclaw.skills.base import Skill, SkillInput, SkillOutput
 class _S(Skill):
     id = "{skill_id}"
     version = 1
+    # Expose the tag as a class attribute so hot-reload tests can
+    # verify "is this the new instance or the old one?" without
+    # having to call .run().
+    tag = "{tag}"
     async def run(self, inp: SkillInput) -> SkillOutput:
         return SkillOutput(ok=True, result={{"v": "{tag}"}}, side_effects=[])
 '''
@@ -372,14 +376,20 @@ def _drop_python_skill(root: Path, skill_id: str, *, tag: str = "v0") -> Path:
 
 
 @pytest.mark.asyncio
-async def test_b333_python_skill_edit_publishes_restart_event(
+async def test_b333_python_skill_edit_hot_reloads(
     tmp_path: Path,
 ) -> None:
-    """B-333 (audit #19): editing a Python skill's source must
-    produce a SKILL_UPDATE_REQUIRES_RESTART bus event so the UI can
-    render a "restart needed" banner. Pre-B-333 the watcher silently
-    no-op'd on skill.py and operators had no signal that their edit
-    wouldn't take effect until restart.
+    """2026-05-19 hot-reload follow-up: editing an ALREADY-REGISTERED
+    Python skill.py no longer emits SKILL_UPDATE_REQUIRES_RESTART —
+    the watcher now reloads the module via a fresh
+    ``spec_from_file_location`` + ``SkillRegistry.hot_replace``, and
+    emits SKILL_HOT_RELOADED instead. UI shows "fresh code live"
+    rather than "please restart".
+
+    Pre-fix the user's only path back to a working Python skill after
+    an edit was ``xmclaw stop && xmclaw start``; peers (Claude Code /
+    Cline / Hermes) sidestepped the problem by being markdown-only.
+    Now XMclaw matches the peer UX while keeping Python class support.
     """
     from xmclaw.core.bus import InProcessEventBus, EventType
     from xmclaw.skills.user_loader import UserSkillsLoader
@@ -390,23 +400,28 @@ async def test_b333_python_skill_edit_publishes_restart_event(
     skill_path = _drop_python_skill(canonical, "py-skill", tag="v0")
     UserSkillsLoader(reg, canonical).load_all()
     assert "py-skill" in reg.list_skill_ids()
+    # Sanity: old instance carries the v0 tag.
+    old_instance = reg.get("py-skill")
+    assert getattr(old_instance, "tag", None) == "v0"
 
     bus = InProcessEventBus()
-    captured: list = []
+    hot: list = []
+    restart: list = []
+    bus.subscribe(
+        lambda e: e.type == EventType.SKILL_HOT_RELOADED,
+        lambda e: hot.append(e),
+    )
     bus.subscribe(
         lambda e: e.type == EventType.SKILL_UPDATE_REQUIRES_RESTART,
-        lambda e: captured.append(e),
+        lambda e: restart.append(e),
     )
 
     watcher = SkillsWatcher(reg, canonical, interval_s=3600.0, bus=bus)
-    # Seed mtime cache (first tick is a no-op for unchanged files —
-    # by design, see _maybe_update_body docstring).
     _touch_with_mtime(skill_path / "skill.py", 1000.0)
     await watcher.tick()
     await bus.drain()
-    assert captured == [], "first tick must seed without firing"
+    assert hot == [] and restart == [], "first tick must seed without firing"
 
-    # Now actually edit the file + bump mtime.
     (skill_path / "skill.py").write_text(
         _PY_SKILL_TEMPLATE.format(skill_id="py-skill", tag="v1"),
         encoding="utf-8",
@@ -415,27 +430,72 @@ async def test_b333_python_skill_edit_publishes_restart_event(
     await watcher.tick()
     await bus.drain()
 
-    assert len(captured) == 1, (
-        f"expected exactly one restart-required event, got "
-        f"{len(captured)}: {[e.payload for e in captured]}"
+    assert len(hot) == 1, (
+        f"expected one SKILL_HOT_RELOADED event, got {len(hot)}"
     )
-    payload = captured[0].payload
-    assert payload["skill_id"] == "py-skill"
-    assert payload["version"] == 1
-    assert "skill.py" in payload["path"]
+    assert restart == [], (
+        f"hot reload succeeded → no restart event should fire, got "
+        f"{[e.payload for e in restart]}"
+    )
+    assert hot[0].payload["skill_id"] == "py-skill"
+    assert hot[0].payload["kind"] == "python"
+    # Registry now serves the new instance carrying v1.
+    new_instance = reg.get("py-skill")
+    assert new_instance is not old_instance
+    assert getattr(new_instance, "tag", None) == "v1"
 
 
 @pytest.mark.asyncio
-async def test_b333_python_skill_restart_announced_only_once(
+async def test_b333_hot_reload_falls_back_to_restart_on_syntax_error(
     tmp_path: Path,
 ) -> None:
-    """Multiple edits to the same skill.py within one daemon
-    lifetime should produce ONE event (not N) — otherwise the UI
-    banner would re-fire and the operator gets toast-spam during
-    iterative dev. The seen-set resets on daemon restart, which is
-    the correct semantic (a restart picks up the change so the
-    warning becomes irrelevant).
-    """
+    """When the edited skill.py has a syntax error the reload fails;
+    the watcher falls back to the legacy SKILL_UPDATE_REQUIRES_RESTART
+    signal so the operator still sees SOMETHING. Old instance stays
+    registered (the new content can't replace it)."""
+    from xmclaw.core.bus import InProcessEventBus, EventType
+    from xmclaw.skills.user_loader import UserSkillsLoader
+
+    reg = SkillRegistry()
+    canonical = tmp_path / "skills_user"
+    canonical.mkdir()
+    skill_path = _drop_python_skill(canonical, "py-skill", tag="v0")
+    UserSkillsLoader(reg, canonical).load_all()
+    old = reg.get("py-skill")
+
+    bus = InProcessEventBus()
+    restart: list = []
+    bus.subscribe(
+        lambda e: e.type == EventType.SKILL_UPDATE_REQUIRES_RESTART,
+        lambda e: restart.append(e),
+    )
+    watcher = SkillsWatcher(reg, canonical, interval_s=3600.0, bus=bus)
+    _touch_with_mtime(skill_path / "skill.py", 1000.0)
+    await watcher.tick()
+    await bus.drain()
+
+    # Edit to a syntactically broken file.
+    (skill_path / "skill.py").write_text(
+        "this is not valid python {", encoding="utf-8",
+    )
+    _touch_with_mtime(skill_path / "skill.py", 2000.0)
+    await watcher.tick()
+    await bus.drain()
+
+    assert len(restart) == 1, (
+        f"reload failed → restart event must fire, got {len(restart)}"
+    )
+    # Registry still has the old working instance.
+    assert reg.get("py-skill") is old
+
+
+@pytest.mark.asyncio
+async def test_b333_multiple_edits_each_hot_reload(
+    tmp_path: Path,
+) -> None:
+    """Each successful reload re-arms the next one — pre-fix the
+    once-per-daemon-lifetime guard would have silenced subsequent
+    edits, but hot reload's success path bypasses that dedup."""
     from xmclaw.core.bus import InProcessEventBus, EventType
     from xmclaw.skills.user_loader import UserSkillsLoader
 
@@ -446,18 +506,17 @@ async def test_b333_python_skill_restart_announced_only_once(
     UserSkillsLoader(reg, canonical).load_all()
 
     bus = InProcessEventBus()
-    captured: list = []
+    hot: list = []
     bus.subscribe(
-        lambda e: e.type == EventType.SKILL_UPDATE_REQUIRES_RESTART,
-        lambda e: captured.append(e),
+        lambda e: e.type == EventType.SKILL_HOT_RELOADED,
+        lambda e: hot.append(e),
     )
     watcher = SkillsWatcher(reg, canonical, interval_s=3600.0, bus=bus)
     _touch_with_mtime(skill_path / "skill.py", 1000.0)
     await watcher.tick()
     await bus.drain()
 
-    # Edit twice in succession.
-    for i, (tag, mtime) in enumerate([("v1", 2000.0), ("v2", 3000.0)]):
+    for tag, mtime in [("v1", 2000.0), ("v2", 3000.0), ("v3", 4000.0)]:
         (skill_path / "skill.py").write_text(
             _PY_SKILL_TEMPLATE.format(skill_id="py-skill", tag=tag),
             encoding="utf-8",
@@ -466,10 +525,13 @@ async def test_b333_python_skill_restart_announced_only_once(
         await watcher.tick()
         await bus.drain()
 
-    # Still ONE event despite two edits.
-    assert len(captured) == 1, (
-        f"expected one event across two edits, got {len(captured)}"
+    # 3 edits → 3 hot-reload events. Each one is a real reload, not
+    # a deduped no-op.
+    assert len(hot) == 3, (
+        f"expected 3 hot reload events, got {len(hot)}"
     )
+    # Final registry version reflects the LATEST tag.
+    assert getattr(reg.get("py-skill"), "tag", None) == "v3"
 
 
 @pytest.mark.asyncio
@@ -515,14 +577,13 @@ async def test_b341_pending_restarts_starts_empty(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_b341_pending_restarts_lists_announced_edits(
+async def test_b341_pending_restarts_empty_after_successful_hot_reload(
     tmp_path: Path,
 ) -> None:
-    """After a Python skill edit, ``pending_restarts()`` returns
-    ``[{skill_id, version, path}]``. Pre-B-341 the watcher emitted
-    SKILL_UPDATE_REQUIRES_RESTART to the bus but exposed no public
-    surface for the Skills page banner — the event had zero
-    subscribers and operators saw no warning.
+    """2026-05-19 hot-reload follow-up: a successful hot reload
+    leaves ``pending_restarts()`` empty — the user does NOT need
+    to restart. This is the new green-path semantic; if reload
+    succeeds, the UI banner stays clean.
     """
     from xmclaw.skills.user_loader import UserSkillsLoader
 
@@ -535,9 +596,7 @@ async def test_b341_pending_restarts_lists_announced_edits(
     watcher = SkillsWatcher(reg, canonical, interval_s=3600.0)
     _touch_with_mtime(skill_path / "skill.py", 1000.0)
     await watcher.tick()
-    assert watcher.pending_restarts() == [], "seed tick → no entries"
 
-    # Edit + bump mtime → one announced entry.
     (skill_path / "skill.py").write_text(
         _PY_SKILL_TEMPLATE.format(skill_id="py-skill", tag="v1"),
         encoding="utf-8",
@@ -545,22 +604,19 @@ async def test_b341_pending_restarts_lists_announced_edits(
     _touch_with_mtime(skill_path / "skill.py", 2000.0)
     await watcher.tick()
 
-    pending = watcher.pending_restarts()
-    assert len(pending) == 1
-    entry = pending[0]
-    assert entry["skill_id"] == "py-skill"
-    assert entry["version"] == 1
-    assert "skill.py" in entry["path"]
+    # Hot reload succeeded → no banner item.
+    assert watcher.pending_restarts() == []
+    # Registry now serves v1's instance.
+    assert getattr(reg.get("py-skill"), "tag", None) == "v1"
 
 
 @pytest.mark.asyncio
-async def test_b341_pending_restarts_one_per_skill_lifetime(
+async def test_b341_pending_restarts_populated_on_reload_failure(
     tmp_path: Path,
 ) -> None:
-    """Two edits to the same skill.py in one daemon-lifetime should
-    produce one banner entry, not two — same dedup posture as the
-    bus-event de-dup. Operators should not see two banner items
-    when iterating fast."""
+    """When hot reload fails (syntax error in the edited file), the
+    legacy pending_restarts path takes over — operator sees the
+    banner so they know SOMETHING went wrong with their edit."""
     from xmclaw.skills.user_loader import UserSkillsLoader
 
     reg = SkillRegistry()
@@ -573,19 +629,16 @@ async def test_b341_pending_restarts_one_per_skill_lifetime(
     _touch_with_mtime(skill_path / "skill.py", 1000.0)
     await watcher.tick()
 
-    for tag, mtime in [("v1", 2000.0), ("v2", 3000.0)]:
-        (skill_path / "skill.py").write_text(
-            _PY_SKILL_TEMPLATE.format(skill_id="py-skill", tag=tag),
-            encoding="utf-8",
-        )
-        _touch_with_mtime(skill_path / "skill.py", mtime)
-        await watcher.tick()
+    # Edit to broken content.
+    (skill_path / "skill.py").write_text(
+        "syntax error here {{{", encoding="utf-8",
+    )
+    _touch_with_mtime(skill_path / "skill.py", 2000.0)
+    await watcher.tick()
 
     pending = watcher.pending_restarts()
-    assert len(pending) == 1, (
-        f"expected one entry across two edits, got {len(pending)}: "
-        f"{pending}"
-    )
+    assert len(pending) == 1
+    assert pending[0]["skill_id"] == "py-skill"
 
 
 # ── Epic #27 P0 G-02 (2026-05-19): load_failures tracking ──────────
@@ -704,25 +757,28 @@ async def test_load_failures_gc_when_skill_dir_deleted(
 
 
 @pytest.mark.asyncio
-async def test_g03_skill_py_fix_after_failure_announces_restart(
+async def test_g03_skill_py_fix_after_failure_loads_via_tick_load_all(
     tmp_path: Path,
 ) -> None:
-    """The hyperframes case: user wrote broken skill.py → daemon
-    failed to load → user fixes it → daemon STILL has the cached
-    failure (importlib stale-cache or in-memory registry void).
-    The watcher must surface a requires_restart event with state=
-    'fixed_after_failure' so the agent / UI prompts a reload."""
+    """2026-05-19 hot-reload follow-up: hyperframes scenario revisited.
+    User wrote broken skill.py → tick 1 load fails, skill not registered.
+    User fixes the file → tick 2 ``load_all()`` succeeds and registers
+    the skill the normal way. There is NO need for hot_reload OR
+    requires_restart in this flow — the next watcher tick picks up
+    the fix via the standard registration path, and the load failure
+    row drops out.
+    """
     reg = SkillRegistry()
     canonical = tmp_path / "skills_user"
     canonical.mkdir()
     sd = _drop_broken_python_skill(canonical, "hyper-like")
     watcher = SkillsWatcher(reg, canonical, interval_s=3600.0)
 
-    # Tick 1: skill.py is broken → load_failures has it. seeds mtime.
+    # Tick 1: skill.py is broken → load_failures has it.
     _touch_with_mtime(sd / "skill.py", 1000.0)
     await watcher.tick()
     assert len(watcher.load_failures()) == 1
-    assert watcher.pending_restarts() == []  # mtime just seeded, no fire yet
+    assert "hyper-like" not in reg.list_skill_ids()
 
     # User fixes the file — write a valid Skill subclass.
     (sd / "skill.py").write_text(
@@ -731,22 +787,19 @@ async def test_g03_skill_py_fix_after_failure_announces_restart(
     )
     _touch_with_mtime(sd / "skill.py", 2000.0)
 
-    # Tick 2: mtime change detected. Since the skill was in
-    # load_failures, the announce payload tags state="fixed_after_failure".
+    # Tick 2: load_all() registers it. Load failure row clears.
     await watcher.tick()
-    pending = watcher.pending_restarts()
-    assert len(pending) == 1
-    assert pending[0]["skill_id"] == "hyper-like"
-    assert pending[0]["state"] == "fixed_after_failure"
+    assert "hyper-like" in reg.list_skill_ids()
+    assert watcher.load_failures() == []
 
 
 @pytest.mark.asyncio
-async def test_g03_skill_py_edit_of_working_skill_announces_edited(
+async def test_g03_skill_py_edit_of_working_skill_hot_reloads(
     tmp_path: Path,
 ) -> None:
-    """Already-registered, working skill.py gets edited → state='edited'
-    (not 'fixed_after_failure'). Distinguishes the two ways the
-    user might reach the same "you have to restart" outcome."""
+    """2026-05-19 hot-reload follow-up: already-registered, working
+    skill.py gets edited → hot-reload picks it up, pending_restarts
+    stays empty. Confirms the v0 → v1 swap in the registry."""
     from xmclaw.skills.user_loader import UserSkillsLoader
 
     reg = SkillRegistry()
@@ -755,6 +808,7 @@ async def test_g03_skill_py_edit_of_working_skill_announces_edited(
     sd = _drop_python_skill(canonical, "stable-py", tag="v0")
     UserSkillsLoader(reg, canonical).load_all()
     assert "stable-py" in reg.list_skill_ids()
+    assert getattr(reg.get("stable-py"), "tag", None) == "v0"
 
     watcher = SkillsWatcher(reg, canonical, interval_s=3600.0)
     _touch_with_mtime(sd / "skill.py", 1000.0)
@@ -767,7 +821,6 @@ async def test_g03_skill_py_edit_of_working_skill_announces_edited(
     _touch_with_mtime(sd / "skill.py", 2000.0)
     await watcher.tick()
 
-    pending = watcher.pending_restarts()
-    assert len(pending) == 1
-    assert pending[0]["state"] == "edited"
-    assert pending[0]["registered"] is True
+    # Hot reload succeeded → no pending restart, registry has v1.
+    assert watcher.pending_restarts() == []
+    assert getattr(reg.get("stable-py"), "tag", None) == "v1"

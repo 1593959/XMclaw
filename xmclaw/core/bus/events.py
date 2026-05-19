@@ -388,6 +388,17 @@ class EventType(str, Enum):
     PLAN_COMPLETED = "plan_completed"
     PLAN_FAILED = "plan_failed"
 
+    # Epic #27 sweep follow-up (2026-05-19): emitted by SkillsWatcher
+    # when it SUCCESSFULLY hot-reloads a Python ``skill.py`` after an
+    # mtime change. Pre-this-event Python skills always needed a
+    # daemon restart; now most edits go live within one tick.
+    # Payload:
+    #   "skill_id": str
+    #   "version": int
+    #   "path": str           # absolute path to the reloaded file
+    #   "kind": "python"      # for symmetry with future SKILL.md hot-reload
+    SKILL_HOT_RELOADED = "skill_hot_reloaded"
+
 
 @dataclass(frozen=True, slots=True)
 class BehavioralEvent:

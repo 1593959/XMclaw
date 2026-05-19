@@ -167,6 +167,85 @@ class UserSkillsLoader:
             ))
         return results
 
+    def reload_one(
+        self, skill_dir: Path,
+    ) -> tuple[Skill | None, SkillManifest | None, str | None]:
+        """Epic #27 sweep + Phase B follow-up (2026-05-19): single-dir
+        hot reload for ``skill.py`` skills, used by SkillsWatcher when
+        it detects a Python skill mtime change.
+
+        Returns ``(skill_instance, manifest, error)``:
+          * On success: ``(instance, manifest, None)`` — caller plugs
+            these into ``SkillRegistry.hot_replace``.
+          * On failure: ``(None, None, error_string)`` — caller emits
+            the existing "requires_restart" signal as a fallback.
+
+        Uses an mtime-stamped module name so each reload gets a FRESH
+        module object even if ``sys.modules`` had the old one cached.
+        Pre-fix, ``_load_one`` used ``f"xmclaw_user_skill__{skill_id}"``
+        which IS deterministic — Python's ``module_from_spec`` does
+        create a new module, but if anything in the new code did
+        ``import xmclaw_user_skill__foo`` (rare), it'd hit the stale
+        cache. The unique-name path sidesteps the whole concern.
+
+        Never raises — all exceptions are converted to error strings.
+        """
+        skill_py = skill_dir / "skill.py"
+        if not skill_py.is_file():
+            return None, None, "no skill.py in directory"
+        skill_id = skill_dir.name
+        try:
+            mtime = skill_py.stat().st_mtime
+        except OSError as exc:
+            return None, None, f"cannot stat skill.py: {exc}"
+        # Mtime-stamped module name → fresh sys.modules entry each
+        # reload. Strip non-identifier chars from the timestamp
+        # representation to keep the name a valid Python identifier.
+        mod_name = (
+            f"xmclaw_user_skill__{skill_id}__"
+            f"r{int(mtime * 1e6):d}"
+        )
+        try:
+            spec = importlib.util.spec_from_file_location(mod_name, skill_py)
+            if spec is None or spec.loader is None:
+                return None, None, "importlib could not build a module spec"
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        except Exception as exc:  # noqa: BLE001
+            return None, None, (
+                f"import failed: {type(exc).__name__}: {exc}"
+            )
+
+        instance = self._instantiate(module)
+        if instance is None:
+            return None, None, (
+                "no concrete Skill subclass found in reloaded module"
+            )
+        # Cross-check id matches dir name.
+        if getattr(instance, "id", None) != skill_id:
+            return None, None, (
+                f"reloaded Skill.id {instance.id!r} != dir {skill_id!r}"
+            )
+        version = getattr(instance, "version", None)
+        if not isinstance(version, int) or version < 1:
+            return None, None, (
+                f"reloaded Skill.version must be positive int, got "
+                f"{version!r}"
+            )
+
+        # Build manifest the same way _load_one does.
+        mp = skill_dir / "manifest.json"
+        if mp.is_file():
+            try:
+                manifest = self._load_manifest(mp, skill_id, version)
+            except Exception as exc:  # noqa: BLE001
+                return None, None, f"manifest.json invalid: {exc}"
+        else:
+            manifest = SkillManifest(
+                id=skill_id, version=version, created_by="user",
+            )
+        return instance, manifest, None
+
     def _load_one(self, skill_dir: Path) -> LoadResult:
         skill_py = skill_dir / "skill.py"
         skill_md = skill_dir / "SKILL.md"

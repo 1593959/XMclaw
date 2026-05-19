@@ -332,6 +332,62 @@ class SkillRegistry:
 
         return True
 
+    def hot_replace(
+        self,
+        skill_id: str,
+        version: int,
+        new_skill: Skill,
+        new_manifest: SkillManifest,
+    ) -> bool:
+        """Epic #27 sweep + Phase B follow-up (2026-05-19): replace an
+        already-registered ``(skill_id, version)`` entry's live Skill
+        instance + manifest IN-PLACE.
+
+        Pre-this-method, ``update_body`` could only swap the body of
+        a ``MarkdownProcedureSkill`` (markdown skills are essentially
+        a body string + class wrapper, so safe to replace). Python
+        ``skill.py`` modules were declared un-hot-reloadable because
+        ``importlib`` caches them in ``sys.modules``.
+
+        The cache itself isn't the blocker — :class:`UserSkillsLoader`
+        already uses ``spec_from_file_location`` which creates a fresh
+        module object each call. The REAL blocker was that the
+        registry's "already registered → idempotent skip" code path
+        kept the OLD instance. ``hot_replace`` is the escape hatch:
+        the caller hands us a freshly-loaded module's class instance,
+        we swap it in.
+
+        Returns ``True`` when the replacement happened, ``False`` when
+        ``(skill_id, version)`` wasn't registered to begin with (the
+        caller should ``register`` instead).
+
+        **Caveats** (caller MUST be aware):
+
+        * In-flight ``skill.run()`` calls finish on the old instance
+          (they hold the ref in their frame). Only NEXT call goes to
+          new instance. This is fine for the typical "I edited the
+          skill, run it again" use case.
+        * Other code holding ``registry.get(id)`` → keeps a ref to
+          the old instance for its turn. ``SkillToolProvider`` already
+          re-fetches HEAD on every invocation, so that path is safe.
+        * If the new module's class subclasses a class also imported
+          from the OLD module, things get weird (``isinstance`` checks
+          across the old/new boundary fail). This isn't a real shape
+          in practice — XMclaw skills are single-class files with no
+          intra-module inheritance.
+
+        Never raises — exceptions become ``False`` so the watcher
+        path is exception-safe.
+        """
+        key = (skill_id, version)
+        if key not in self._skills:
+            return False
+        if new_manifest.id != skill_id or new_manifest.version != version:
+            return False
+        self._skills[key] = new_skill
+        self._manifests[key] = new_manifest
+        return True
+
     # ── persistence ──
 
     def _persist(self, record: PromotionRecord) -> None:
