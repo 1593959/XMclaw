@@ -134,7 +134,11 @@ class SkillsWatcher:
         # set) so :meth:`pending_restarts` can return the path too —
         # the Skills page banner needs the file path to surface
         # which edit triggered the warning.
-        self._py_restart_announced: dict[tuple[str, int], str] = {}
+        # Pre-Epic-#27: ``str`` was just the file path. Now we store
+        # the FULL payload dict (path + state + registered) so
+        # :meth:`pending_restarts` can return the same shape we
+        # emitted on the bus.
+        self._py_restart_announced: dict[tuple[str, int], dict[str, object]] = {}
         # Buffer for restart-required event payloads detected during
         # the synchronous executor scan. Drained + published by the
         # async ``_tick`` caller after run_in_executor returns. We
@@ -152,6 +156,15 @@ class SkillsWatcher:
         # Each entry: ``{skill_id, path, kind, error, source_root,
         # first_seen, last_seen}``.
         self._load_failures: dict[str, dict[str, object]] = {}
+        # Pre-Epic-#27 had no persistence — when a skill recovered
+        # (load_all succeeded next tick), its row dropped from
+        # _load_failures. That broke the "state='fixed_after_failure'"
+        # detection because by the time _refresh_changed_bodies ran in
+        # the same tick that re-loaded the skill, the row was already
+        # gone. So we keep a parallel set that ONLY grows
+        # within a daemon lifetime (clears on restart) — "has this
+        # skill_id ever failed to load while I've been running?".
+        self._skills_with_history_of_failure: set[str] = set()
 
     # ── observability ───────────────────────────────────────────────
 
@@ -216,6 +229,10 @@ class SkillsWatcher:
                 # Previously failing → recovered. Drop the row.
                 self._load_failures.pop(sid, None)
                 continue
+            # Failure → record AND remember forever (within daemon
+            # lifetime) so a later "skill.py edited" event can still
+            # be tagged 'fixed_after_failure' even after recovery.
+            self._skills_with_history_of_failure.add(sid)
             prev = self._load_failures.get(sid)
             row = {
                 "skill_id": sid,
@@ -258,13 +275,13 @@ class SkillsWatcher:
         invisible — operators kept hitting "edit + nothing happens".
         """
         out: list[dict[str, object]] = []
-        for (skill_id, version), path in sorted(
+        for (skill_id, version), payload in sorted(
             self._py_restart_announced.items()
         ):
             out.append({
                 "skill_id": skill_id,
                 "version": version,
-                "path": path,
+                **payload,  # path / state / registered
             })
         return out
 
@@ -397,7 +414,20 @@ class SkillsWatcher:
         """Walk every scanned root, check SKILL.md / versions/v<N>.md
         mtimes against the per-file cache, and call
         :meth:`SkillRegistry.update_body` whenever a file changed
-        since last tick. Returns the number of bodies actually updated."""
+        since last tick. Returns the number of bodies actually updated.
+
+        Epic #27 P0 G-03 (2026-05-19): pre-fix this loop SKIPPED any
+        skill dir whose id wasn't in the registry (line ~411 "not
+        registered yet — load_all handles it next tick"). That's
+        wrong for the "I wrote a broken skill.py → fixed it → daemon
+        still uses the failed import" case: the failed dir was
+        never registered, so we never seeded its mtime, so we never
+        detected the fix-edit, so the user never got the
+        SKILL_REQUIRES_RESTART signal. Now we iterate ALL skill dirs
+        — SKILL.md bodies for registered ones (hot-reloadable),
+        skill.py mtime for ALL ones (importlib stale-cache hazard
+        either way).
+        """
         registered = set(self._registry.list_skill_ids())
         updated = 0
         for root in [self._skills_root, *self._extra_roots]:
@@ -408,30 +438,40 @@ class SkillsWatcher:
                     continue
                 if skill_dir.name.startswith(".") or skill_dir.name.startswith("_"):
                     continue
-                if skill_dir.name not in registered:
-                    continue  # not registered yet — load_all handles it next tick
+                is_registered = skill_dir.name in registered
 
-                # v1 lives at <skill_dir>/SKILL.md
-                skill_md = skill_dir / "SKILL.md"
-                if skill_md.is_file() and self._maybe_update_body(
-                    skill_dir.name, 1, skill_md,
-                ):
-                    updated += 1
+                # v1 lives at <skill_dir>/SKILL.md — only hot-update
+                # for skills already in the registry (update_body
+                # would error otherwise). MD-only skills that aren't
+                # registered yet get picked up by load_all next tick.
+                if is_registered:
+                    skill_md = skill_dir / "SKILL.md"
+                    if skill_md.is_file() and self._maybe_update_body(
+                        skill_dir.name, 1, skill_md,
+                    ):
+                        updated += 1
 
-                # B-333: also watch skill.py for mtime changes. We
-                # can't hot-reload it (importlib cache), but emitting
-                # SKILL_UPDATE_REQUIRES_RESTART lets the UI show a
-                # banner instead of operators wondering why their
-                # edit isn't taking effect. Payloads are collected
-                # here (sync executor thread) and published by the
-                # async ``_tick`` caller.
+                # B-333 + Epic #27 G-03: watch skill.py for mtime
+                # changes on EVERY dir, registered or not. importlib
+                # caches stale imports either way; the
+                # SKILL_REQUIRES_RESTART signal is the only path back
+                # to a working state. _maybe_announce_python_restart
+                # seeds-then-fires (first observation never fires),
+                # so this is safe to call for newly-discovered files
+                # too.
                 skill_py = skill_dir / "skill.py"
                 if skill_py.is_file():
                     payload = self._maybe_announce_python_restart(
                         skill_dir.name, 1, skill_py,
+                        registered=is_registered,
                     )
                     if payload is not None:
                         self._pending_restart_events.append(payload)
+
+                if not is_registered:
+                    # No versions/ scanning for unregistered skills —
+                    # that's tracking SUCCESSFUL multi-version skills.
+                    continue
 
                 # v2+ live at <skill_dir>/versions/v<N>.md
                 versions_dir = skill_dir / "versions"
@@ -499,9 +539,11 @@ class SkillsWatcher:
 
     def _maybe_announce_python_restart(
         self, skill_id: str, version: int, file: Path,
+        *,
+        registered: bool = True,
     ) -> "dict | None":
-        """B-333: detect mtime changes on a registered Python skill's
-        ``skill.py``. Returns a payload dict to publish OR None.
+        """B-333: detect mtime changes on a Python skill's ``skill.py``.
+        Returns a payload dict to publish OR None.
 
         Why "return-don't-publish": ``_refresh_changed_bodies`` runs
         in a ``run_in_executor`` thread and has no running event
@@ -516,6 +558,14 @@ class SkillsWatcher:
         needed to pick it up". Pre-B-333 the watcher only watched
         SKILL.md and was silent on skill.py — operators editing a
         Python skill saw no feedback at all until they restarted.
+
+        Epic #27 P0 G-03 (2026-05-19): ``registered`` flag separates
+        "I edited a working skill" from "I just wrote / fixed a
+        broken skill". Both surface a restart-required event but the
+        payload carries ``state="edited"`` vs ``state="fixed_after_failure"``
+        so the UI banner / agent prompt can phrase the message right
+        ("your edit waits on a restart" vs "looks like you fixed the
+        broken skill — restart to load it").
         """
         try:
             mtime = file.stat().st_mtime
@@ -528,14 +578,28 @@ class SkillsWatcher:
         key = (skill_id, version)
         if key in self._py_restart_announced:
             return None  # already announced this daemon — don't spam
-        self._py_restart_announced[key] = str(file)
+        announce_payload: dict[str, object] = {"path": str(file)}
+        # Epic #27 G-03: distinguish edit-of-working from fix-of-broken
+        # via the failure index. If the skill_id is in _load_failures
+        # right now, this edit is most likely the user's fix attempt.
+        # Pre-Epic-#27: `was_failing` checked _load_failures, but
+        # that map clears the second a skill recovers, so a
+        # "broken → fix" edit landed as 'edited' instead of
+        # 'fixed_after_failure'. Now we check the persistent
+        # history set so the recovery path itself is correctly
+        # tagged.
+        was_failing = skill_id in self._skills_with_history_of_failure
+        state = "fixed_after_failure" if was_failing else "edited"
         _log.warning(
             "skills_watcher.python_skill_changed_restart_required "
-            "skill_id=%s version=%d path=%s",
-            skill_id, version, file,
+            "skill_id=%s version=%d path=%s state=%s",
+            skill_id, version, file, state,
         )
+        announce_payload["state"] = state
+        announce_payload["registered"] = registered
+        self._py_restart_announced[key] = announce_payload
         return {
             "skill_id": skill_id,
             "version": version,
-            "path": str(file),
+            **announce_payload,
         }

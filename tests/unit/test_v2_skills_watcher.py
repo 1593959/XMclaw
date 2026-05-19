@@ -698,3 +698,76 @@ async def test_load_failures_gc_when_skill_dir_deleted(
     shutil.rmtree(sd)
     await watcher.tick()
     assert watcher.load_failures() == []
+
+
+# ── Epic #27 P0 G-03 (2026-05-19): requires_restart for fixed-after-failure ─
+
+
+@pytest.mark.asyncio
+async def test_g03_skill_py_fix_after_failure_announces_restart(
+    tmp_path: Path,
+) -> None:
+    """The hyperframes case: user wrote broken skill.py → daemon
+    failed to load → user fixes it → daemon STILL has the cached
+    failure (importlib stale-cache or in-memory registry void).
+    The watcher must surface a requires_restart event with state=
+    'fixed_after_failure' so the agent / UI prompts a reload."""
+    reg = SkillRegistry()
+    canonical = tmp_path / "skills_user"
+    canonical.mkdir()
+    sd = _drop_broken_python_skill(canonical, "hyper-like")
+    watcher = SkillsWatcher(reg, canonical, interval_s=3600.0)
+
+    # Tick 1: skill.py is broken → load_failures has it. seeds mtime.
+    _touch_with_mtime(sd / "skill.py", 1000.0)
+    await watcher.tick()
+    assert len(watcher.load_failures()) == 1
+    assert watcher.pending_restarts() == []  # mtime just seeded, no fire yet
+
+    # User fixes the file — write a valid Skill subclass.
+    (sd / "skill.py").write_text(
+        _PY_SKILL_TEMPLATE.format(skill_id="hyper-like", tag="fixed"),
+        encoding="utf-8",
+    )
+    _touch_with_mtime(sd / "skill.py", 2000.0)
+
+    # Tick 2: mtime change detected. Since the skill was in
+    # load_failures, the announce payload tags state="fixed_after_failure".
+    await watcher.tick()
+    pending = watcher.pending_restarts()
+    assert len(pending) == 1
+    assert pending[0]["skill_id"] == "hyper-like"
+    assert pending[0]["state"] == "fixed_after_failure"
+
+
+@pytest.mark.asyncio
+async def test_g03_skill_py_edit_of_working_skill_announces_edited(
+    tmp_path: Path,
+) -> None:
+    """Already-registered, working skill.py gets edited → state='edited'
+    (not 'fixed_after_failure'). Distinguishes the two ways the
+    user might reach the same "you have to restart" outcome."""
+    from xmclaw.skills.user_loader import UserSkillsLoader
+
+    reg = SkillRegistry()
+    canonical = tmp_path / "skills_user"
+    canonical.mkdir()
+    sd = _drop_python_skill(canonical, "stable-py", tag="v0")
+    UserSkillsLoader(reg, canonical).load_all()
+    assert "stable-py" in reg.list_skill_ids()
+
+    watcher = SkillsWatcher(reg, canonical, interval_s=3600.0)
+    _touch_with_mtime(sd / "skill.py", 1000.0)
+    await watcher.tick()  # seed mtime
+
+    (sd / "skill.py").write_text(
+        _PY_SKILL_TEMPLATE.format(skill_id="stable-py", tag="v1"),
+        encoding="utf-8",
+    )
+    _touch_with_mtime(sd / "skill.py", 2000.0)
+    await watcher.tick()
+
+    pending = watcher.pending_restarts()
+    assert len(pending) == 1
+    assert pending[0]["state"] == "edited"
+    assert pending[0]["registered"] is True
