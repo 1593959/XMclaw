@@ -935,25 +935,43 @@ class MemoryService:
         hits = await self._vec.search(search_query, where=where, limit=k)
 
         # Enrich with relations.
+        # Epic #27 sweep #4 (2026-05-19): the pre-fix loop ran
+        # `await self._graph.neighbors(fact.id)` N times sequentially
+        # for k=8 hits — daemon.log showed `memory_recall` at 175s
+        # on a 902-fact store. LanceDB serves concurrent reads fine;
+        # fan-out via asyncio.gather + Semaphore(20) cuts the worst
+        # case to a single round-trip's worth of latency. Same pattern
+        # llm_topic.py uses for its `_neighbors_many` batch helper.
+        related_map: dict[str, list[Relation]] = {}
+        if include_relations and hits:
+            import asyncio as _asyncio
+            sem = _asyncio.Semaphore(20)
+
+            async def _one(fid: str) -> tuple[str, list[Relation]]:
+                async with sem:
+                    try:
+                        pairs = await self._graph.neighbors(
+                            fid, max_hops=1,
+                        )
+                        return fid, [rel for rel, _ in pairs]
+                    except Exception as exc:  # noqa: BLE001
+                        _log.warning(
+                            "memory_service.recall_relations_failed err=%s",
+                            exc,
+                        )
+                        return fid, []
+
+            results = await _asyncio.gather(
+                *(_one(f.id) for f in hits)
+            )
+            related_map = dict(results)
+
         out: list[RecallHit] = []
         for fact in hits:
-            related: list[Relation] = []
-            if include_relations:
-                try:
-                    pairs = await self._graph.neighbors(
-                        fact.id, max_hops=1,
-                    )
-                    related = [rel for rel, _ in pairs]
-                except Exception as exc:  # noqa: BLE001
-                    _log.warning(
-                        "memory_service.recall_relations_failed err=%s",
-                        exc,
-                    )
-            # Placeholder distance until backends return a real one.
             out.append(RecallHit(
                 fact=fact,
                 distance=0.0,
-                related_relations=related,
+                related_relations=related_map.get(fact.id, []),
             ))
         return out
 
@@ -1038,25 +1056,36 @@ class MemoryService:
         Empty string when no facts. Callers concatenate into the
         existing memory_ctx_block.
         """
-        # Always-on sections.
-        user_facts = await self.recall(
+        # Epic #27 sweep #5 (2026-05-19): always-on + query-conditioned
+        # recalls now fan out via asyncio.gather. Pre-fix this ran 4
+        # sequential `recall()` calls — each one already serialized
+        # through N neighbor lookups (the #4 path). Total cost was
+        # 4 × the slowest recall. With both fixes the render_for_prompt
+        # path drops from ~25s (real-world observed) to ~3s typical.
+        import asyncio as _asyncio
+        user_t = self.recall(
             None, kinds=["preference", "identity", "correction"],
             scopes=["user"], k=20, include_relations=False,
         )
-        project_facts = await self.recall(
+        project_t = self.recall(
             None, kinds=["project", "commitment"],
             scopes=["project"], k=20, include_relations=False,
         )
-        decision_facts = await self.recall(
+        decision_t = self.recall(
             None, kinds=["decision"], k=10, include_relations=False,
         )
-
-        # Query-conditioned.
-        relevant_hits = []
         if query and query.strip():
-            relevant_hits = await self.recall(
+            relevant_t = self.recall(
                 query, k=k, include_relations=True,
             )
+            user_facts, project_facts, decision_facts, relevant_hits = (
+                await _asyncio.gather(user_t, project_t, decision_t, relevant_t)
+            )
+        else:
+            user_facts, project_facts, decision_facts = (
+                await _asyncio.gather(user_t, project_t, decision_t)
+            )
+            relevant_hits = []
 
         sections: list[str] = []
 

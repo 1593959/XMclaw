@@ -61,7 +61,14 @@ _DEFAULT_GROOM_EVERY_TICKS = 86400       # 1 day
 # day one. New default = 60 ticks (~1 min @ 1 Hz) so the operator
 # sees R3 metacognition propose things shortly after boot. Ramp back
 # up to 86400 in cfg when feedback loop stabilises.
-_DEFAULT_METACOGNIZE_EVERY_TICKS = 60
+# 2026-05-19 (Epic #27 sweep #11): bumped 60 → 1800 (~30 min). The
+# 1-minute cadence was burning ~60 LLM-calls/hour in idle, silently
+# racking up token cost — the operator gets the same value at 30-min
+# cadence (metacognition findings rarely turn over faster than that),
+# and the cost per day drops from ~1440 LLM calls to ~48. Wire
+# ``cognition.metacognize.interval_ticks`` in config to override per
+# install — power users who want the 1-min feedback can still get it.
+_DEFAULT_METACOGNIZE_EVERY_TICKS = 1800
 
 # Cap how far back each cycle reaches by default — prevent unbounded
 # work as the journal / memory grows.
