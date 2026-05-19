@@ -1098,17 +1098,31 @@ class SkillToolProvider:
 
         manifest = ref.manifest
         description = self._build_description(skill_id, manifest, ref.version)
+        schema: dict[str, Any] = {
+            "type": "object",
+            "additionalProperties": True,
+            "description": (
+                "Arguments forwarded to Skill.run(SkillInput(args=...)). "
+                "Pass whatever fields the skill's run() expects."
+            ),
+        }
+        # Epic #27 G-05 (2026-05-19): stash conditional-activation
+        # glob list under ``x_paths`` so the prefilter can boost / gate
+        # this skill against the agent's recent file-op paths. JSON-
+        # schema's ``x_`` extension namespace keeps this invisible to
+        # provider wire-formatters that strict-validate the schema.
+        if manifest.paths:
+            schema["x_paths"] = list(manifest.paths)
+        # Same trick for triggers — already read by the prefilter token
+        # matcher, just hadn't been wired through tool_bridge before.
+        # Kept here so the LLM-facing description doesn't have to carry
+        # a redundant copy.
+        if manifest.triggers:
+            schema["x_triggers"] = list(manifest.triggers)
         return ToolSpec(
             name=_to_tool_name(skill_id),
             description=description,
-            parameters_schema={
-                "type": "object",
-                "additionalProperties": True,
-                "description": (
-                    "Arguments forwarded to Skill.run(SkillInput(args=...)). "
-                    "Pass whatever fields the skill's run() expects."
-                ),
-            },
+            parameters_schema=schema,
         )
 
     def _build_description(

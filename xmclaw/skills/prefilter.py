@@ -37,8 +37,9 @@ the LLM has full context for whatever the user is doing.
 """
 from __future__ import annotations
 
+import fnmatch
 import re
-from typing import Any
+from typing import Any, Iterable
 
 # CJK character classes — tokenised individually because there's no
 # whitespace word boundary in Chinese / Japanese / Korean.
@@ -46,6 +47,126 @@ _CJK_RE = re.compile(
     r"[぀-ヿ㐀-䶿一-鿿가-힯]"
 )
 _WORD_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_-]+")
+
+
+# Epic #27 G-05 (2026-05-19): file-op tool names whose ``path`` arg
+# feeds the recent-paths window the prefilter consults for conditional
+# skill activation. Keep this tight — bash isn't here on purpose
+# because its ``command`` is too free-form to reliably extract a path
+# from, and false-positive paths poison the conditional gate.
+_FS_TOOL_NAMES = frozenset({
+    "file_read",
+    "file_write",
+    "list_dir",
+    "file_search",
+    "file_glob",
+    "file_grep",
+    "file_edit",
+})
+
+
+def _norm_path(p: str) -> str:
+    """Normalise a path string for matching.
+
+    fnmatch is case-sensitive on Posix and case-insensitive on Windows
+    by virtue of how the path was written; we coerce to lowercase +
+    forward-slash so a Windows ``C:\\Users\\me\\src\\app.tsx`` glob-
+    matches ``src/**/*.tsx`` exactly like a Posix path would.
+    """
+    return p.replace("\\", "/").lower().strip()
+
+
+def _path_matches_any(path: str, globs: Iterable[str]) -> bool:
+    """True iff ``path`` matches any of ``globs``.
+
+    Accepts ``**`` cross-segment matching (translated to ``*`` for the
+    fnmatch engine, which doesn't natively grok recursive globs).
+    Matches against both the full normalised path and its basename so
+    a manifest ``paths: ["package.json"]`` (no glob, just a name)
+    still fires for ``/path/to/repo/package.json``.
+    """
+    norm = _norm_path(path)
+    base = norm.rsplit("/", 1)[-1]
+    for g in globs:
+        if not isinstance(g, str) or not g.strip():
+            continue
+        gnorm = _norm_path(g)
+        # ``**/`` and ``/**`` cross-segment globs collapse to plain
+        # ``*`` for fnmatch since fnmatch's ``*`` already crosses
+        # segments (unlike pathlib). This is intentionally a fuzzy
+        # match — false negatives hurt more than false positives for
+        # a discovery aid.
+        flat = gnorm.replace("**/", "").replace("/**", "")
+        if fnmatch.fnmatchcase(norm, flat) or fnmatch.fnmatchcase(base, flat):
+            return True
+        # Bare-name globs like ``package.json`` apply to any segment.
+        if "/" not in gnorm and fnmatch.fnmatchcase(base, gnorm):
+            return True
+    return False
+
+
+def extract_recent_paths(
+    messages: Any, *, lookback: int = 8, max_paths: int = 20,
+) -> list[str]:
+    """Walk the conversation messages backwards to harvest recent
+    file-op tool-call paths.
+
+    Used by the agent loop to feed ``select_relevant_skills``'s
+    ``active_paths`` gate. ``lookback`` caps how many tool-result
+    messages we scan (newer first); ``max_paths`` caps the returned
+    list. Returns paths in newest-first order, de-duped. Never raises.
+
+    The walker reads two shapes:
+      * tool_call messages with ``tool_calls=[{name, args:{path:...}}]``
+      * tool_result messages with ``tool_call`` + matching tool_call_id
+
+    Both are emitted by ``AgentLoop`` when it stamps tool invocations
+    onto the running messages list. Bash commands and skill_<id>
+    invocations are deliberately ignored — their args don't fit a
+    single-path model.
+    """
+    if not messages:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    scanned = 0
+    for msg in reversed(list(messages)):
+        if scanned >= lookback:
+            break
+        # Pull tool_calls list either off ``msg.tool_calls`` or
+        # ``msg["tool_calls"]`` — covers both dataclass + dict shapes.
+        tool_calls = (
+            getattr(msg, "tool_calls", None)
+            if not isinstance(msg, dict)
+            else msg.get("tool_calls")
+        )
+        if not tool_calls:
+            continue
+        scanned += 1
+        for tc in tool_calls:
+            name = (
+                tc.get("name") if isinstance(tc, dict)
+                else getattr(tc, "name", None)
+            )
+            if name not in _FS_TOOL_NAMES:
+                continue
+            args = (
+                tc.get("args") if isinstance(tc, dict)
+                else getattr(tc, "args", None)
+            )
+            if not isinstance(args, dict):
+                continue
+            for key in ("path", "file_path", "dir", "directory", "pattern"):
+                v = args.get(key)
+                if isinstance(v, str) and v.strip():
+                    norm = v.strip()
+                    if norm in seen:
+                        continue
+                    seen.add(norm)
+                    out.append(norm)
+                    if len(out) >= max_paths:
+                        return out
+    return out
 
 
 def _tokenize(text: str) -> set[str]:
@@ -145,6 +266,7 @@ def select_relevant_skills(
     top_k: int = 12,
     min_skills_to_filter: int = 30,
     cognitive_state: Any | None = None,
+    active_paths: list[str] | tuple[str, ...] | None = None,
 ) -> list[Any]:
     """Pick the ``top_k`` most query-relevant skill specs.
 
@@ -225,13 +347,49 @@ def select_relevant_skills(
             ctx_parts.append(getattr(a, "content", "") or "")
         context_tokens = _tokenize(" ".join(ctx_parts)) - _STOPWORDS
 
-    if not query_tokens and not context_tokens:
+    paths_signal = bool(active_paths)
+    if not query_tokens and not context_tokens and not paths_signal:
         return list(skill_specs)  # no signal — don't filter blindly
 
-    scored: list[tuple[float, Any]] = [
-        (_score_skill(query_tokens, spec, context_tokens), spec)
-        for spec in skills
-    ]
+    scored: list[tuple[float, Any]] = []
+    for spec in skills:
+        s = _score_skill(query_tokens, spec, context_tokens)
+        # Epic #27 G-05 (2026-05-19): conditional activation via the
+        # manifest ``paths`` glob list (stamped onto the spec schema
+        # under ``x_paths`` by SkillToolProvider._spec_for).
+        #
+        # - Skill declares ``paths`` AND any active_path matches one:
+        #     boost +3.0 — strong signal this skill belongs in the
+        #     current file context.
+        # - Skill declares ``paths`` AND NONE of the active_paths match:
+        #     score = -1.0 (drops out via the > 0 gate below). The
+        #     skill's author explicitly opted in to conditional
+        #     activation; surfacing it for unrelated files is noise.
+        # - Skill doesn't declare ``paths``: untouched (preserves
+        #     legacy behaviour for the majority of skills).
+        #
+        # We deliberately DON'T look at active_paths when no skill has
+        # declared paths — token + context score still drive ranking.
+        spec_paths = None
+        ps = getattr(spec, "parameters_schema", None) or {}
+        if isinstance(ps, dict):
+            spec_paths = ps.get("x_paths")
+        if isinstance(spec_paths, (list, tuple)) and spec_paths:
+            if active_paths:
+                matched = any(
+                    _path_matches_any(p, spec_paths) for p in active_paths
+                )
+                if matched:
+                    s += 3.0
+                else:
+                    s = -1.0  # explicit gate
+            else:
+                # active_paths empty but skill is path-conditional —
+                # don't penalise (we might be in a turn before any
+                # file-op has happened yet); fall through to token
+                # score as the only signal.
+                pass
+        scored.append((s, spec))
     scored.sort(key=lambda x: x[0], reverse=True)
     # Drop zero-score skills entirely. With 400 skills and 12-slot
     # budget, anything that didn't match a single token isn't worth

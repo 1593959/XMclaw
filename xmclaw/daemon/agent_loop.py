@@ -1790,12 +1790,34 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 and s.name != "skill_browse"
             )
             try:
-                from xmclaw.skills.prefilter import select_relevant_skills
+                from xmclaw.skills.prefilter import (
+                    extract_recent_paths,
+                    select_relevant_skills,
+                )
+                # Epic #27 G-05 (2026-05-19): conditional skill
+                # activation. Harvest paths from the last few file-op
+                # tool calls in the running messages list; skills whose
+                # manifest declares ``paths: [...]`` get boosted when
+                # their globs match and gated otherwise. Returns []
+                # safely when messages haven't been built yet.
+                try:
+                    # ``prior`` (line 1099 above) is the per-session
+                    # message history at this point in run_turn — the
+                    # full ``messages`` list isn't assembled yet
+                    # (built below at line ~1857) so we read from
+                    # prior, which is what gets prepended into it
+                    # anyway.
+                    active_paths = extract_recent_paths(
+                        prior, lookback=8, max_paths=20,
+                    )
+                except Exception:  # noqa: BLE001
+                    active_paths = []
                 tool_specs = select_relevant_skills(
                     user_message,
                     tool_specs,
                     top_k=12,
                     cognitive_state=self._cognitive_state,
+                    active_paths=active_paths,
                 )
             except Exception:  # noqa: BLE001 — never break a turn over routing
                 pass
