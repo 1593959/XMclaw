@@ -407,16 +407,19 @@ async def test_holdout_test_explicit_fail() -> None:
 
 @pytest.mark.asyncio
 async def test_holdout_test_id_set_no_executor_returns_none() -> None:
-    """When eval_test_id is registered but no override is supplied
-    AND the executor isn't wired (today's reality), return None
-    so we never score-promote on missing infrastructure."""
+    """When eval_test_id is set but no callable is registered for
+    that id, return None so we never score-promote on missing
+    infrastructure. Sweep #10 (2026-05-19) replaced the
+    ``stub_no_executor_yet`` placeholder with ``unregistered``: the
+    executor IS now wired (via holdout_registry), so the only way
+    to land here is genuinely-missing registration."""
     sig = HoldoutTestSignal()
     score, ev = await sig.probe(_finished(
         call_id="x", result="hi",
         eval_test_id="check_file_exists",
     ))
     assert score is None
-    assert ev.get("status") == "stub_no_executor_yet"
+    assert ev.get("status") == "unregistered"
 
 
 # ── CrossJudgeSignal ─────────────────────────────────────────────────────

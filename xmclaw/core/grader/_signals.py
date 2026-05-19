@@ -283,12 +283,26 @@ class HoldoutTestSignal:
     Z"). On invocation, the grader looks up that callable, executes
     it, and the boolean answer becomes the signal score (1.0 / 0.0).
 
-    **Status: stub.** The skill registry doesn't yet expose
-    ``eval_test_id`` and there's no executor. Returning ``None`` here
-    means "signal not applicable" — the verdict still works, but
-    promote_eligible falls back to whatever other independent signal
-    fired. The abstraction is the load-bearing piece this ticket
-    ships; the executor is a follow-up.
+    **Status (Epic #27 sweep #10, 2026-05-19):** fully wired via
+    :mod:`xmclaw.core.grader.holdout_registry`. Pre-fix this was a
+    stub that always returned ``None`` unless tests passed an
+    explicit ``holdout_test_passed`` payload override; the sweep
+    audit caught that the docs implied multi-signal grading was
+    real while only ``UserFollowupSignal`` actually fired. The
+    registry now lets production code register named checks at
+    boot time + skill load time; ``eval_test_id`` resolves via
+    :func:`holdout_registry.run_check`.
+
+    Resolution order:
+      1. ``holdout_test_passed`` payload override (test escape hatch).
+      2. ``eval_test_id`` → registry lookup → run → bool / None.
+      3. ``None`` (signal not applicable).
+
+    Honest about partial infra: the registry has no automatic
+    population — skills that want a holdout check must either
+    register one at boot or in their loader hook. Empty registry
+    = the signal continues to behave as it did before the fix
+    (returns None for events without payload override).
     """
 
     name = "holdout_test"
@@ -300,13 +314,10 @@ class HoldoutTestSignal:
         history: Iterable[BehavioralEvent] | None = None,  # noqa: ARG002
     ) -> tuple[float | None, dict[str, Any]]:
         eval_test_id = event.payload.get("eval_test_id")
-        if not eval_test_id:
-            # No registered holdout — signal not applicable.
-            return None, {}
-
-        # Today: registry doesn't ship a resolver yet. We honour an
-        # explicit override on the payload (used by tests) so the
-        # signal is exercisable without the eventual infra.
+        # Test escape hatch: ``holdout_test_passed`` short-circuits
+        # the registry lookup so tests can exercise the abstraction
+        # without registering a callable. Preserved for backward
+        # compat with ``tests.unit.test_v2_signals_holdout_cross``.
         override = event.payload.get("holdout_test_passed")
         if isinstance(override, bool):
             return (1.0 if override else 0.0), {
@@ -314,13 +325,31 @@ class HoldoutTestSignal:
                 "passed": override,
                 "source": "payload_override",
             }
+        if not eval_test_id:
+            # No registered holdout — signal not applicable.
+            return None, {}
 
-        # Real path: resolve eval_test_id → callable → run → bool.
-        # Hooked up in a follow-up; we return None instead of a fake
-        # 0/1 so we never score-promote on missing infrastructure.
-        return None, {
+        # Sweep #10 real path: resolve eval_test_id → callable → run.
+        from xmclaw.core.grader.holdout_registry import (
+            lookup as _lookup, run_check as _run_check,
+        )
+        if _lookup(eval_test_id) is None:
+            return None, {
+                "eval_test_id": eval_test_id,
+                "status": "unregistered",
+            }
+        passed = await _run_check(eval_test_id, event.payload)
+        if passed is None:
+            # Callable raised — keep verdict neutral rather than
+            # punishing the skill for a buggy verify hook.
+            return None, {
+                "eval_test_id": eval_test_id,
+                "status": "check_raised",
+            }
+        return (1.0 if passed else 0.0), {
             "eval_test_id": eval_test_id,
-            "status": "stub_no_executor_yet",
+            "passed": passed,
+            "source": "registry",
         }
 
 
