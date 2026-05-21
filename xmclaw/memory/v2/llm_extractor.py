@@ -59,7 +59,7 @@ _EXTRACT_PROMPT = """\
 
 {{
   "text": "事实的陈述句 (一句话，越紧凑越好)",
-  "kind": "preference | decision | identity | commitment | correction | project",
+  "kind": "preference | decision | identity | commitment | correction | project | lesson",
   "scope": "user | project | session",
   "confidence": 0.0-1.0
 }}
@@ -71,6 +71,7 @@ kind 含义：
 - commitment: 待办/承诺/截止（"agent 下次写测试"、"月底前上线"）
 - correction: 纠正信号（"不要再 X / 永远 Y / 必须 Z"）
 - project: 项目参数 (网址/账号/数字目标/技术栈/团队信息)
+- lesson: 经验教训 / 工作流洞察（"下次应该先备份再改"、"X 工具在 Y 场景下会失败"）
 
 scope 含义：
 - user: 长期跨项目的事实（个人偏好、身份、人际关系）
@@ -94,7 +95,7 @@ scope 含义：
 
 _VALID_KINDS = {
     "preference", "decision", "identity",
-    "commitment", "correction", "project",
+    "commitment", "correction", "project", "lesson",
 }
 _VALID_SCOPES = {"user", "project", "session"}
 

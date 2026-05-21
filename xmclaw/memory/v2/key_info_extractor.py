@@ -120,6 +120,24 @@ _GOAL_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# Qualitative goals: "目标是做到行业第一" / "想提升客户满意度" /
+# "追求极致体验" / "vision: be the best" — no numbers involved.
+_QUAL_GOAL_RE = re.compile(
+    r"""(
+        # Chinese qualitative goals
+        (?:目标|愿景|使命|追求|想(?:要)?|希望|立志|计划|打算)
+        (?:\s*(?:是|做|达到|成为|实现|做到))?\s*
+        ([^\d,，。!！?？\n]{3,60})
+        (?=[,，。!！?？\n]|$)
+        |
+        # English qualitative goals
+        \b(?:vision|mission|goal\s+is|aim\s+to|strive\s+for|aspire\s+to)\s+
+        ([A-Za-z][A-Za-z0-9 _-]{3,60})
+        (?=[.!?,;]|$)
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
 # Explicit user memorisation directive: 记住 / 记一下 / 留个底 / 以后都 /
 # 下次都 / never / always / from now on
 _REMEMBER_DIRECT_RE = re.compile(
@@ -441,6 +459,17 @@ def extract_keys(message: str) -> list[ExtractedKey]:
             confidence=0.85, pattern_name="goal",
             span=m.span(),
         )
+
+    # ── Qualitative goals (non-numeric) ──
+    for m in _QUAL_GOAL_RE.finditer(message):
+        text = (m.group(2) or m.group(3) or "").strip()
+        if text:
+            _add(
+                f"目标: {text}",
+                kind="project", scope="project",
+                confidence=0.75, pattern_name="qual_goal",
+                span=m.span(),
+            )
 
     # ── Hard constraints (FIRST — beats remember_directive on same
     # span since constraint preserves the negation prefix ("永远别 X"
