@@ -1842,6 +1842,12 @@ def build_agent_from_config(
             elif isinstance(p, CompositeToolProvider):
                 for child in getattr(p, "_children", []):
                     yield from _walk(child)
+            else:
+                # Unwrap retry-aware and any future wrappers that expose
+                # an inner provider (e.g. ErrorAwareRetryProvider).
+                inner = getattr(p, "_inner", None)
+                if inner is not None:
+                    yield from _walk(inner)
 
         embedder = None
         try:
