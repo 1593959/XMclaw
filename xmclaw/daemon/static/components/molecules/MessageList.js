@@ -79,7 +79,8 @@ export function MessageList({ messages, onAnswerQuestion }) {
       ${empty
         ? html`
             <div class="xmc-msglist__empty">
-              <p>开始一段对话吧 — 在下方输入消息后回车发送。</p>
+              <strong>开始对话</strong>
+              <p>在下方输入消息后回车发送。</p>
               <p class="xmc-msglist__hint">
                 Plan 模式下助手会先列出步骤，再等待你确认。Ultrathink 触发更深的推理（消耗更多 token）。
               </p>

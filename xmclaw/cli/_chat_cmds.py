@@ -20,6 +20,7 @@ def chat(
 
 
 def _run_tui(url: str, session_id: str | None) -> None:
+    import sys
     try:
         from xmclaw.tui import JarvisTUI
     except ImportError as exc:
@@ -27,8 +28,19 @@ def _run_tui(url: str, session_id: str | None) -> None:
         typer.secho("Run: pip install textual websockets", fg=typer.colors.YELLOW, err=True)
         raise typer.Exit(1)
 
+    # Windows: textual Input widget does not support CJK IME in raw mode.
+    # Use inline driver (ANSI sequences) which works better in Windows
+    # Terminal / modern PowerShell, and warn the user.
+    driver = None
+    if sys.platform == "win32":
+        driver = "inline"
+        typer.secho(
+            "提示: Windows TUI 中文输入法支持有限，如遇输入问题请用 xmclaw chat --plain",
+            fg=typer.colors.YELLOW,
+        )
+
     app = JarvisTUI(daemon_ws_url=url, session_id=session_id)
-    app.run()
+    app.run(driver=driver)
 
 
 def _run_plain_chat(url: str, session_id: str | None) -> None:

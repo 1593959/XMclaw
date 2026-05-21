@@ -87,30 +87,11 @@ export function ChatPage({ chat, session, connection, token, onSend, onCancel, o
 
   return html`
     <section class="xmc-h-chat-frame" aria-label="chat workspace">
-      <div class="xmc-h-chat-frame__chrome">
-        <div class="xmc-h-chat-frame__dots" aria-hidden="true">
-          <span class="xmc-h-chat-frame__dot"></span>
-          <span class="xmc-h-chat-frame__dot"></span>
-          <span class="xmc-h-chat-frame__dot"></span>
-        </div>
-        <div class="xmc-h-chat-frame__title">
-          XMclaw · ${sid}
-        </div>
-        <button
-          type="button"
-          class="xmc-h-btn xmc-h-btn--ghost"
-          onClick=${onNewSession}
-          title="新建会话"
-          style="font-size:0.7rem;letter-spacing:0.08em"
-        >
-          + 新会话
-        </button>
-      </div>
       <div class="xmc-h-chat-frame__body">
        <div class="xmc-h-chat-frame__inner xmc-chat">
         <header class="xmc-chat__header">
           <div class="xmc-chat__title">
-            <strong>会话</strong>
+            <strong>XMclaw</strong>
             <code class="xmc-chat__sid">${sid}</code>
           </div>
           <div class="xmc-chat__meta">
@@ -138,6 +119,14 @@ export function ChatPage({ chat, session, connection, token, onSend, onCancel, o
             <${Badge} tone=${connection.status === "connected" ? "success" : "warn"}>
               ${connection.status}
             </${Badge}>
+            <button
+              type="button"
+              class="xmc-chat__newbtn"
+              onClick=${onNewSession}
+              title="新建会话"
+            >
+              + 新会话
+            </button>
           </div>
         </header>
         ${isLoading ? html`

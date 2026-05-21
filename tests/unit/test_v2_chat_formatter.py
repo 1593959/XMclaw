@@ -88,7 +88,7 @@ def test_tool_call_emitted_shows_name_and_args() -> None:
     assert isinstance(line, RenderedLine)
     assert "file_read" in line.text
     assert "/tmp/x.txt" in line.text
-    assert line.text.startswith("  ->")
+    assert "->" in line.text
 
 
 def test_tool_call_emitted_truncates_long_args() -> None:

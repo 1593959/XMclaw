@@ -5,8 +5,7 @@ from typing import Any, Awaitable, Callable
 
 from typing import TYPE_CHECKING
 
-from textual.containers import Horizontal
-from textual.screen import Screen
+from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Input, Static
 
 if TYPE_CHECKING:
@@ -19,7 +18,7 @@ from xmclaw.utils.log import get_logger
 _log = get_logger(__name__)
 
 
-class ChatScreen(Screen[None]):  # type: ignore[misc]
+class ChatScreen(Vertical):  # type: ignore[misc]
     """Displays message history and an input bar."""
 
     CSS = """
@@ -66,13 +65,13 @@ class ChatScreen(Screen[None]):  # type: ignore[misc]
         self._on_send = on_send
         self._agent_name = agent_name
         self._message_box = Static(id="messages")
-        self._input = Input(placeholder="Type a message…", id="msg-input")
+        self._input = Input(placeholder="输入消息后回车发送…", id="msg-input")
 
     def compose(self) -> ComposeResult:
         yield self._message_box
         with Horizontal(id="input-bar"):
             yield self._input
-            yield Button("Send", id="send-btn")
+            yield Button("发送", id="send-btn")
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "send-btn":
@@ -92,7 +91,7 @@ class ChatScreen(Screen[None]):  # type: ignore[misc]
     # ── public append API ──
 
     async def append_user(self, text: str) -> None:
-        await self._append_line(f"[user-msg]You:[/user-msg] {text}")
+        await self._append_line(f"[user-msg]你:[/user-msg] {text}")
 
     async def append_agent(self, text: str) -> None:
         await self._append_line(f"[agent-msg]{self._agent_name}:[/agent-msg] {text}")
@@ -128,15 +127,15 @@ class ChatScreen(Screen[None]):  # type: ignore[misc]
                 await self.append_agent(text)
         elif t == "tool_invocation_started":
             name = payload.get("name", "tool")
-            await self.append_system(f"▶ Running {name}…")
+            await self.append_system(f"▶ 正在运行 {name}…")
         elif t == "tool_invocation_finished":
             name = payload.get("name", "tool")
             ok = payload.get("ok", True)
             icon = "✓" if ok else "✗"
-            await self.append_system(f"{icon} {name} finished")
+            await self.append_system(f"{icon} {name} 已完成")
         elif t == "proactive_proposal":
             text = payload.get("message", "")
             await self.append_system(f"💡 {text}")
         elif t == "error":
             text = payload.get("message", "")
-            await self.append_system(f"[red]Error: {text}[/red]")
+            await self.append_system(f"[red]错误: {text}[/red]")

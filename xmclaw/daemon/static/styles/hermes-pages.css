@@ -151,63 +151,17 @@
   color: var(--midground);
 }
 
-/* ── ChatPage terminal-window frame (port of ChatPage outer wrapper) */
+/* ── ChatPage frame (modern AI-chat workspace) ─────────────────────── */
 
 .xmc-h-chat-frame {
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
-  background:
-    linear-gradient(
-      to bottom,
-      color-mix(in srgb, var(--background-base) 96%, var(--midground-base) 4%),
-      var(--background-base)
-    );
+  background: var(--background-base);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   overflow: hidden;
-  box-shadow:
-    0 1px 0 0 color-mix(in srgb, var(--midground) 8%, transparent) inset,
-    0 32px 64px -32px rgba(0, 0, 0, 0.55);
-}
-
-/* The "title bar" — three-dot fake-mac chrome, brand on right.
-   Hermes chat uses a thin horizontal strip with a copy button and
-   a sidebar toggle on the right (lucide Copy + PanelRight icons). */
-.xmc-h-chat-frame__chrome {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--background-base) 70%, var(--midground-base) 4%);
-}
-
-.xmc-h-chat-frame__dots {
-  display: flex;
-  gap: 0.35rem;
-  margin-right: 0.5rem;
-}
-
-.xmc-h-chat-frame__dot {
-  width: 0.6rem;
-  height: 0.6rem;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--midground) 22%, transparent);
-}
-
-.xmc-h-chat-frame__title {
-  flex: 1 1 auto;
-  font-size: 0.7rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: color-mix(in srgb, var(--midground) 55%, transparent);
-  font-family: var(--theme-font-mono);
-  text-align: center;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* Frame body splits horizontally: messages+composer on the left,
@@ -225,14 +179,7 @@
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
-  background: #0d2626; /* TERMINAL_THEME.background from ChatPage.tsx:64 */
-  color: #f0e6d2;      /* TERMINAL_THEME.foreground */
-}
-
-/* When the user picks a non-default theme, follow the theme palette
-   instead of the hard teal so chat doesn't visually jar. */
-:root:not([data-hermes-theme="default"]) .xmc-h-chat-frame__inner {
-  background: color-mix(in srgb, var(--background-base) 90%, var(--midground-base) 10%);
+  background: color-mix(in srgb, var(--background-base) 95%, var(--midground-base) 5%);
   color: var(--midground);
 }
 
@@ -250,8 +197,7 @@
   text-align: center;
   color: color-mix(in srgb, var(--midground) 60%, transparent);
   font-size: 0.85rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .xmc-h-error {
@@ -293,15 +239,14 @@
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  padding: 0.15rem 0.5rem;
+  padding: 0.2rem 0.55rem;
   border-radius: 999px;
   background: color-mix(in srgb, var(--midground) 8%, transparent);
   border: 1px solid color-mix(in srgb, var(--midground) 18%, transparent);
   color: var(--midground);
-  font-size: 0.7rem;
+  font-size: 0.72rem;
   font-weight: 500;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  letter-spacing: 0.02em;
 }
 
 .xmc-h-badge--success {

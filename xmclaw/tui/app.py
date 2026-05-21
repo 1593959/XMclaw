@@ -30,13 +30,12 @@ class JarvisTUI(App[None]):  # type: ignore[misc]
     """Textual application for XMclaw."""
 
     CSS = """
-    Screen { align: center middle; }
     #main-layout { width: 100%; height: 100%; }
     """
 
     BINDINGS = [
-        ("ctrl+q", "quit", "Quit"),
-        ("ctrl+n", "new_session", "New Session"),
+        ("ctrl+q", "quit", "退出"),
+        ("ctrl+n", "new_session", "新会话"),
     ]
 
     def __init__(
@@ -87,7 +86,7 @@ class JarvisTUI(App[None]):  # type: ignore[misc]
             import websockets
         except ImportError:
             _log.error("tui.websockets_missing: pip install websockets")
-            self._push_system("[red]websockets not installed — run: pip install websockets[/red]")
+            self._push_system("[red]未安装 websockets — 运行: pip install websockets[/red]")
             return
 
         chat = self.query_one(ChatScreen)
@@ -95,7 +94,7 @@ class JarvisTUI(App[None]):  # type: ignore[misc]
             try:
                 async with websockets.connect(self._ws_url) as ws:
                     self._ws = ws
-                    self._push_system("[green]Connected to daemon[/green]")
+                    self._push_system("[green]已连接 daemon[/green]")
                     async for raw in ws:
                         try:
                             msg = json.loads(raw)
@@ -106,12 +105,12 @@ class JarvisTUI(App[None]):  # type: ignore[misc]
                 raise
             except Exception as exc:  # noqa: BLE001
                 _log.warning("tui.ws_error: %s", exc)
-                self._push_system(f"[yellow]Connection lost — retrying in 3s ({exc})[/yellow]")
+                self._push_system(f"[yellow]连接断开 — 3秒后重试 ({exc})[/yellow]")
                 await asyncio.sleep(3.0)
 
     async def _on_user_send(self, text: str) -> None:
         if self._ws is None:
-            self._push_system("[red]Not connected to daemon[/red]")
+            self._push_system("[red]未连接 daemon[/red]")
             return
         try:
             await self._ws.send(json.dumps({
@@ -121,7 +120,7 @@ class JarvisTUI(App[None]):  # type: ignore[misc]
             }))
         except Exception as exc:  # noqa: BLE001
             _log.warning("tui.send_failed: %s", exc)
-            self._push_system(f"[red]Send failed: {exc}[/red]")
+            self._push_system(f"[red]发送失败: {exc}[/red]")
 
     def _push_system(self, text: str) -> None:
         chat = self.query_one(ChatScreen)
@@ -132,4 +131,4 @@ class JarvisTUI(App[None]):  # type: ignore[misc]
         chat = self.query_one(ChatScreen)
         chat.clear()
         self.sub_title = self._session_id
-        self._push_system(f"[dim]New session: {self._session_id}[/dim]")
+        self._push_system(f"[dim]新会话: {self._session_id}[/dim]")

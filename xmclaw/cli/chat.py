@@ -123,7 +123,7 @@ def format_event(event: dict[str, Any]) -> RenderedLine | None:
         meta = f"  ({', '.join(meta_parts)})" if meta_parts else ""
         if hop is not None and hop == 0:
             return RenderedLine(text=f"  ~ thinking...{_C_DIM}{meta}{_C_RESET}")
-        return RenderedLine(text=f"  ~ thinking...{_C_DIM}{meta}{_C_RESET}")
+        return None
 
     if etype == "llm_response":
         if not payload.get("ok", True):

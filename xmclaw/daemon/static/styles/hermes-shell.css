@@ -18,7 +18,6 @@
   overflow: hidden;
   background: black;
   color: var(--midground);
-  text-transform: uppercase;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -211,7 +210,7 @@
   gap: 0.75rem;
   padding: 0.625rem 1.25rem;
   font-size: 0.8rem;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.04em;
   white-space: nowrap;
   text-decoration: none;
   color: var(--midground);
@@ -271,10 +270,10 @@
 
 .xmc-h-sysact__label {
   padding: 0.125rem 1.25rem;
-  font-size: 0.6rem;
-  letter-spacing: 0.15em;
-  text-transform: uppercase;
-  opacity: 0.3;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  font-weight: 500;
+  opacity: 0.35;
 }
 
 .xmc-h-sysact__list {
@@ -295,11 +294,10 @@
   border: none;
   background: transparent;
   font-size: 0.75rem;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.04em;
   color: var(--midground);
   text-align: left;
   white-space: nowrap;
-  text-transform: uppercase;
   cursor: pointer;
   opacity: 0.6;
   transition: opacity 200ms;

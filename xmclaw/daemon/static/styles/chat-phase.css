@@ -97,9 +97,9 @@
 
 .xmc-phasecard__row dt {
   color: var(--xmc-fg-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.03em;
   font-size: var(--xmc-font-size-xs);
+  font-weight: 500;
 }
 
 .xmc-phasecard__row dd {
@@ -123,8 +123,8 @@
 .xmc-phasecard__thinking-label {
   font-size: var(--xmc-font-size-xs);
   color: var(--xmc-fg-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.03em;
+  font-weight: 500;
   margin-bottom: var(--xmc-space-1);
 }
 

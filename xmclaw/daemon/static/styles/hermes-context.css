@@ -22,9 +22,9 @@
 }
 
 .xmc-h-sidebar__ctx-key {
-  font-size: 0.55rem;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
+  font-size: 0.58rem;
+  letter-spacing: 0.06em;
+  font-weight: 500;
   color: color-mix(in srgb, var(--midground) 45%, transparent);
 }
 

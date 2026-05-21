@@ -94,7 +94,7 @@ function NavGroup({ group, activePath, collapsed, onToggle, onItemClick }) {
         onClick=${onToggle}
         aria-expanded=${!isCollapsed}
         title=${isCollapsed ? "展开" : "折叠"}
-        style="display:flex;align-items:center;gap:.4rem;width:100%;padding:.4rem .5rem;background:transparent;border:0;color:var(--xmc-fg-muted);font-size:.7rem;letter-spacing:.05em;text-transform:uppercase;cursor:pointer;border-radius:4px"
+        style="display:flex;align-items:center;gap:.4rem;width:100%;padding:.4rem .5rem;background:transparent;border:0;color:var(--xmc-fg-muted);font-size:.72rem;letter-spacing:.03em;font-weight:500;cursor:pointer;border-radius:4px"
       >
         <${Icon} name=${group.icon} className="xmc-h-nav__group-icon" />
         <span style="flex:1 1 auto;text-align:left">${group.label}</span>

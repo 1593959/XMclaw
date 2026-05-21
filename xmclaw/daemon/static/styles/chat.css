@@ -6,6 +6,26 @@
  */
 
 .xmc-chat {
+  /* Hermes 兼容层：在 Hermes shell 内自动使用其调色板，
+     独立运行时 fallback 到原生值。 */
+  --xmc-bg: var(--background-base, #0e1116);
+  --xmc-bg-elev: color-mix(in srgb, var(--midground-base, #ffe6cb) 4%, var(--background-base, #041c1c));
+  --xmc-bg-elev-2: color-mix(in srgb, var(--midground-base, #ffe6cb) 8%, var(--background-base, #041c1c));
+  --xmc-fg: var(--midground, #e6edf3);
+  --xmc-fg-muted: var(--color-muted-foreground, #8d96a0);
+  --xmc-fg-subtle: color-mix(in srgb, var(--midground-base, #ffe6cb) 35%, transparent);
+  --xmc-border: var(--color-border, #30363d);
+  --xmc-border-strong: color-mix(in srgb, var(--midground-base, #ffe6cb) 25%, transparent);
+  --xmc-accent: var(--color-primary, #4c8bf5);
+  --xmc-accent-fg: var(--background-base, #0e1116);
+  --xmc-accent-soft: color-mix(in srgb, var(--color-primary, #4c8bf5) 18%, transparent);
+  --xmc-success: var(--color-success, #2ea043);
+  --xmc-warn: var(--color-warning, #d29922);
+  --xmc-error: var(--color-destructive, #f85149);
+  --xmc-info: var(--color-primary, #58a6ff);
+  --xmc-font-sans: var(--theme-font-sans, "Inter", "PingFang SC", system-ui, sans-serif);
+  --xmc-font-mono: var(--theme-font-mono, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace);
+
   display: grid;
   grid-template-rows: auto 1fr auto;
   height: 100%;
@@ -102,13 +122,32 @@
   flex-direction: column;
   gap: var(--xmc-space-4);
   min-height: 0;
+  scroll-behavior: smooth;
+}
+
+.xmc-msglist::-webkit-scrollbar { width: 6px; }
+.xmc-msglist::-webkit-scrollbar-track { background: transparent; }
+.xmc-msglist::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--xmc-fg-muted) 20%, transparent);
+  border-radius: 3px;
+}
+.xmc-msglist::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--xmc-fg-muted) 35%, transparent);
 }
 
 .xmc-msglist__empty {
-  margin: var(--xmc-space-8) auto;
-  max-width: 520px;
+  margin: auto;
+  max-width: 420px;
   text-align: center;
   color: var(--xmc-fg-muted);
+  padding: var(--xmc-space-8) var(--xmc-space-4);
+}
+.xmc-msglist__empty strong {
+  display: block;
+  font-size: var(--xmc-font-size-lg);
+  color: var(--xmc-fg);
+  margin-bottom: var(--xmc-space-2);
+  font-weight: 500;
 }
 
 .xmc-msglist__hint {
@@ -125,26 +164,34 @@
   gap: var(--xmc-space-2);
   max-width: 760px;
   border: 1px solid var(--xmc-border);
-  border-radius: var(--xmc-radius-lg);
+  border-radius: 14px;
   padding: var(--xmc-space-3) var(--xmc-space-4);
   background: var(--xmc-bg-elev);
   color: var(--xmc-fg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  transition: box-shadow 200ms ease;
+}
+
+.xmc-msg:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
 }
 
 .xmc-msg--user {
   align-self: flex-end;
   background: var(--xmc-accent-soft);
-  border-color: var(--xmc-accent);
+  border-color: color-mix(in srgb, var(--xmc-accent) 40%, transparent);
 }
 
 .xmc-msg--assistant {
   align-self: flex-start;
+  background: var(--xmc-bg-elev);
+  border-color: var(--xmc-border);
 }
 
 .xmc-msg--system {
   align-self: stretch;
-  border-color: var(--xmc-error);
-  background: var(--xmc-bg-elev-2);
+  border-color: color-mix(in srgb, var(--xmc-error) 40%, transparent);
+  background: color-mix(in srgb, var(--xmc-error) 8%, var(--xmc-bg-elev));
   color: var(--xmc-error);
   font-size: var(--xmc-font-size-sm);
 }
@@ -218,8 +265,8 @@
 .xmc-toolcard__label {
   font-size: var(--xmc-font-size-xs);
   color: var(--xmc-fg-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
+  font-weight: 500;
   margin-bottom: var(--xmc-space-1);
 }
 
@@ -245,6 +292,10 @@
   gap: var(--xmc-space-2);
 }
 
+.xmc-composer:focus-within {
+  background: color-mix(in srgb, var(--xmc-bg-elev) 98%, var(--xmc-accent) 2%);
+}
+
 .xmc-composer__row {
   display: flex;
   align-items: flex-end;
@@ -257,20 +308,20 @@
   background: var(--xmc-bg);
   color: var(--xmc-fg);
   border: 1px solid var(--xmc-border);
-  border-radius: var(--xmc-radius-md);
-  padding: var(--xmc-space-2) var(--xmc-space-3);
+  border-radius: 12px;
+  padding: var(--xmc-space-3) var(--xmc-space-4);
   font-family: var(--xmc-font-sans);
   font-size: var(--xmc-font-size-base);
   line-height: var(--xmc-line-height-base);
   max-height: 200px;
-  min-height: 40px;
-  transition: border-color var(--xmc-transition-fast);
+  min-height: 44px;
+  transition: border-color 200ms ease, box-shadow 200ms ease;
 }
 
 .xmc-composer__input:focus-visible {
   outline: none;
-  border-color: var(--xmc-accent);
-  box-shadow: var(--xmc-shadow-focus);
+  border-color: color-mix(in srgb, var(--xmc-accent) 60%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--xmc-accent) 12%, transparent);
 }
 
 .xmc-composer__toolbar {
@@ -447,8 +498,7 @@
 
 .xmc-msg__status {
   font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.03em;
   color: var(--xmc-fg-muted);
   font-weight: 500;
   margin-left: 0.4rem;
