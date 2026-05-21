@@ -46,7 +46,7 @@ class CodebaseToolProvider(ToolProvider):
                     "concepts. Returns relevant code snippets with file paths and line numbers. "
                     "Use this BEFORE falling back to bash/grep when working inside a known project."
                 ),
-                parameters={
+                parameters_schema={
                     "type": "object",
                     "properties": {
                         "query": {
@@ -77,7 +77,7 @@ class CodebaseToolProvider(ToolProvider):
                     "linter, architecture pattern, key files, etc. Use this to align with the "
                     "project's existing style before proposing changes."
                 ),
-                parameters={
+                parameters_schema={
                     "type": "object",
                     "properties": {
                         "project_root": {
@@ -98,7 +98,7 @@ class CodebaseToolProvider(ToolProvider):
             return await self._search(args)
         if name == "codebase_conventions":
             return self._conventions(args)
-        return ToolResult(error=f"Unknown codebase tool: {name}")
+        return ToolResult(call_id=call.id, ok=False, content=f"Unknown codebase tool: {name}")
 
     async def _search(self, args: dict[str, Any]) -> ToolResult:
         query: str = args.get("query", "")
@@ -107,7 +107,7 @@ class CodebaseToolProvider(ToolProvider):
         k: int = int(args.get("k", 10))
 
         if not query:
-            return ToolResult(error="query is required")
+            return ToolResult(call_id="", ok=False, content="query is required")
 
         prefix = f"{project_root}/" if project_root else None
         results: list[dict[str, Any]] = []
@@ -147,7 +147,7 @@ class CodebaseToolProvider(ToolProvider):
                     results.append(r)
 
         if not results:
-            return ToolResult(output="No results found in the codebase index.")
+            return ToolResult(call_id="", ok=True, content="No results found in the codebase index.")
 
         lines: list[str] = [f"Found {len(results)} result(s):", ""]
         for r in results:
@@ -159,7 +159,7 @@ class CodebaseToolProvider(ToolProvider):
             lines.append(snippet)
             lines.append("")
 
-        return ToolResult(output="\n".join(lines))
+        return ToolResult(call_id="", ok=True, content="\n".join(lines))
 
     def _conventions(self, args: dict[str, Any]) -> ToolResult:
         project_root: str = args.get("project_root", "")
@@ -167,6 +167,6 @@ class CodebaseToolProvider(ToolProvider):
             return ToolResult(error="project_root is required")
         try:
             conv = extract_conventions(self._store, project_root)
-            return ToolResult(output=render_conventions(conv))
+            return ToolResult(call_id="", ok=True, content=render_conventions(conv))
         except Exception as exc:
-            return ToolResult(error=f"Failed to extract conventions: {exc}")
+            return ToolResult(call_id="", ok=False, content=f"Failed to extract conventions: {exc}")
