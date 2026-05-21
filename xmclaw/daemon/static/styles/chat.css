@@ -6,6 +6,26 @@
  */
 
 .xmc-chat {
+  /* Guard against external CSS vars (e.g. Hermes shell) overriding
+     tokens with transparent / low-contrast values. Hard-code the
+     palette inside the chat scope so message bubbles are always
+     visible regardless of the embedding environment. */
+  --xmc-bg: #0e1116;
+  --xmc-bg-elev: #161b22;
+  --xmc-bg-elev-2: #1c2330;
+  --xmc-fg: #e6edf3;
+  --xmc-fg-muted: #8d96a0;
+  --xmc-fg-subtle: color-mix(in srgb, #e6edf3 35%, transparent);
+  --xmc-border: #30363d;
+  --xmc-border-strong: #3d444d;
+  --xmc-accent: #4c8bf5;
+  --xmc-accent-fg: #0e1116;
+  --xmc-accent-soft: rgba(76, 139, 245, 0.18);
+  --xmc-success: #2ea043;
+  --xmc-warn: #d29922;
+  --xmc-error: #f85149;
+  --xmc-info: #58a6ff;
+
   display: grid;
   grid-template-rows: auto 1fr auto;
   height: 100%;
