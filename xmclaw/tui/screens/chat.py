@@ -27,12 +27,16 @@ class ChatScreen(Vertical):  # type: ignore[misc]
     ChatScreen {
         layout: vertical;
         width: 100%;
-        height: 100%;
+        height: 1fr;
     }
-    #messages {
+    #message-scroll {
         height: 1fr;
         border: solid $primary;
         padding: 1;
+    }
+    #messages {
+        width: 100%;
+        height: auto;
     }
     #input-bar {
         height: auto;
@@ -58,7 +62,7 @@ class ChatScreen(Vertical):  # type: ignore[misc]
         self._agent_name = agent_name
         self._lines: list[str] = []
         self._message_static = Static(id="messages")
-        self._message_box = VerticalScroll(self._message_static)
+        self._message_box = VerticalScroll(self._message_static, id="message-scroll")
         self._input = Input(placeholder="输入消息后回车发送…", id="msg-input")
 
     def compose(self) -> ComposeResult:

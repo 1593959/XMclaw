@@ -12,7 +12,6 @@ from typing import Any
 from typing import TYPE_CHECKING
 
 from textual.app import App
-from textual.containers import Horizontal
 from textual.widgets import Footer, Header
 
 if TYPE_CHECKING:
@@ -30,8 +29,8 @@ class JarvisTUI(App[None]):  # type: ignore[misc]
     """Textual application for XMclaw."""
 
     CSS = """
-    #main-layout { width: 100%; height: 100%; }
     """
+
 
     BINDINGS = [
         ("ctrl+q", "quit", "退出"),
@@ -54,12 +53,11 @@ class JarvisTUI(App[None]):  # type: ignore[misc]
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        with Horizontal(id="main-layout"):
-            yield ChatScreen(
-                session_id=self._session_id,
-                on_send=self._on_user_send,
-                agent_name=self._agent_name,
-            )
+        yield ChatScreen(
+            session_id=self._session_id,
+            on_send=self._on_user_send,
+            agent_name=self._agent_name,
+        )
         yield Footer()
 
     async def on_mount(self) -> None:
