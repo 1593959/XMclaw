@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING
 
 from rich.text import Text
 
-from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, Input, RichLog
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.widgets import Button, Input, Static
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -26,13 +26,13 @@ class ChatScreen(Vertical):  # type: ignore[misc]
     CSS = """
     ChatScreen {
         layout: vertical;
+        width: 100%;
         height: 100%;
     }
     #messages {
         height: 1fr;
         border: solid $primary;
         padding: 1;
-        overflow-y: scroll;
     }
     #input-bar {
         height: auto;
@@ -42,18 +42,8 @@ class ChatScreen(Vertical):  # type: ignore[misc]
     #msg-input {
         width: 1fr;
     }
-    .user-msg {
-        color: $text-accent;
-        text-style: bold;
-    }
-    .agent-msg {
-        color: $text;
-    }
-    .system-msg {
-        color: $text-muted;
-        text-style: italic;
-    }
     """
+
 
     def __init__(
         self,
@@ -66,7 +56,9 @@ class ChatScreen(Vertical):  # type: ignore[misc]
         self._session_id = session_id
         self._on_send = on_send
         self._agent_name = agent_name
-        self._message_box = RichLog(id="messages", wrap=True, highlight=False)
+        self._lines: list[str] = []
+        self._message_static = Static(id="messages")
+        self._message_box = VerticalScroll(self._message_static)
         self._input = Input(placeholder="输入消息后回车发送…", id="msg-input")
 
     def compose(self) -> ComposeResult:
@@ -93,18 +85,26 @@ class ChatScreen(Vertical):  # type: ignore[misc]
     # ── public append API ──
 
     async def append_user(self, text: str) -> None:
-        self._message_box.write(Text.assemble(("你: ", "bold cyan"), text))
+        self._lines.append(Text.assemble(("你: ", "bold cyan"), text).markup)
+        self._refresh_messages()
 
     async def append_agent(self, text: str) -> None:
-        self._message_box.write(
-            Text.assemble((f"{self._agent_name}: ", "bold green"), text)
+        self._lines.append(
+            Text.assemble((f"{self._agent_name}: ", "bold green"), text).markup
         )
+        self._refresh_messages()
 
     async def append_system(self, text: str) -> None:
-        self._message_box.write(Text.from_markup(text))
+        self._lines.append(text)
+        self._refresh_messages()
+
+    def _refresh_messages(self) -> None:
+        self._message_static.update("\n".join(self._lines))
+        self._message_box.scroll_end(animate=False)
 
     def clear(self) -> None:
-        self._message_box.clear()
+        self._lines.clear()
+        self._message_static.update("")
 
     # ── daemon message dispatch ──
 
