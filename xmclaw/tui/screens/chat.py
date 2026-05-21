@@ -5,8 +5,10 @@ from typing import Any, Awaitable, Callable
 
 from typing import TYPE_CHECKING
 
+from rich.text import Text
+
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, Input, Static
+from textual.widgets import Button, Input, RichLog
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -64,7 +66,7 @@ class ChatScreen(Vertical):  # type: ignore[misc]
         self._session_id = session_id
         self._on_send = on_send
         self._agent_name = agent_name
-        self._message_box = Static(id="messages")
+        self._message_box = RichLog(id="messages", wrap=True, highlight=False)
         self._input = Input(placeholder="输入消息后回车发送…", id="msg-input")
 
     def compose(self) -> ComposeResult:
@@ -91,26 +93,18 @@ class ChatScreen(Vertical):  # type: ignore[misc]
     # ── public append API ──
 
     async def append_user(self, text: str) -> None:
-        await self._append_line(f"[user-msg]你:[/user-msg] {text}")
+        self._message_box.write(Text.assemble(("你: ", "bold cyan"), text))
 
     async def append_agent(self, text: str) -> None:
-        await self._append_line(f"[agent-msg]{self._agent_name}:[/agent-msg] {text}")
+        self._message_box.write(
+            Text.assemble((f"{self._agent_name}: ", "bold green"), text)
+        )
 
     async def append_system(self, text: str) -> None:
-        await self._append_line(f"[system-msg]{text}[/system-msg]")
-
-    async def _append_line(self, line: str) -> None:
-        current = self._message_box.renderable or ""
-        if current:
-            new_text = f"{current}\n{line}"
-        else:
-            new_text = line
-        self._message_box.update(new_text)
-        # Auto-scroll to bottom.
-        self._message_box.scroll_end(animate=False)
+        self._message_box.write(Text.from_markup(text))
 
     def clear(self) -> None:
-        self._message_box.update("")
+        self._message_box.clear()
 
     # ── daemon message dispatch ──
 
