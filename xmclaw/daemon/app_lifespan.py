@@ -1322,7 +1322,12 @@ def make_lifespan(
                         modpath, clsname = manifest.adapter_factory_path.split(":")
                         mod = __import__(modpath, fromlist=[clsname])
                         AdapterCls = getattr(mod, clsname)
-                        adapter_inst = AdapterCls(ch_cfg)
+                        # Wave-33: try wiring the event bus for adapters
+                        # that support live cards (FeishuAdapter).
+                        try:
+                            adapter_inst = AdapterCls(ch_cfg, bus=bus)
+                        except TypeError:
+                            adapter_inst = AdapterCls(ch_cfg)
                         channel_dispatcher.add(adapter_inst)
                     except Exception as exc:  # noqa: BLE001
                         log.warning(

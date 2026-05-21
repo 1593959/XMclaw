@@ -26,6 +26,10 @@ class OutboundMessage:
     content: str
     reply_to: str | None = None
     attachments: tuple[str, ...] = ()
+    # Wave-33 (2026-05-21): rich-content extension for adapters that
+    # support structured cards / canvas artifacts / interactive blocks.
+    # Each adapter interprets keys it understands and ignores the rest.
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 class ChannelAdapter(abc.ABC):

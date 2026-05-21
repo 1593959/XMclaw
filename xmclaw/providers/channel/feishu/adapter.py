@@ -91,6 +91,9 @@ _MARKDOWN_MARKERS = _re_md.compile(
 # plain text rather than fail the card POST.
 _CARD_MAX_CHARS = 24_000
 
+# Wave-33: max elements per card before we split into multiple cards.
+_CARD_MAX_ELEMENTS = 30
+
 
 def _looks_like_markdown(text: str) -> bool:
     """B-209: True when ``text`` has at least one common markdown
@@ -108,20 +111,196 @@ def _build_lark_markdown_card(content: str) -> dict[str, Any]:
     """
     return {
         "config": {
-            # wide_screen_mode True = use full conversation width;
-            # better for tabular tool output.
             "wide_screen_mode": True,
         },
         "elements": [
             {
                 "tag": "markdown",
                 "content": content,
-                # text_align defaults left; explicit so future Lark
-                # changes don't surprise us.
                 "text_align": "left",
             },
         ],
     }
+
+
+def _build_lark_rich_card(
+    elements: list[dict[str, Any]],
+    *,
+    header: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a Lark interactive card with header + arbitrary elements."""
+    card: dict[str, Any] = {
+        "config": {"wide_screen_mode": True},
+        "elements": list(elements),
+    }
+    if header is not None:
+        card["header"] = header
+    return card
+
+
+def _build_process_card(tool_name: str, status: str) -> dict[str, Any]:
+    """Wave-33: compact process indicator card for tool invocation."""
+    icon = "🛠️"
+    text = f"**{tool_name}**"
+    if status == "running":
+        icon = "🛠️"
+        text = f"🛠️ 正在调用 **{tool_name}** …"
+    elif status == "ok":
+        icon = "✅"
+        text = f"✅ **{tool_name}** 完成"
+    elif status == "fail":
+        icon = "❌"
+        text = f"❌ **{tool_name}** 失败"
+    return {
+        "config": {"wide_screen_mode": True},
+        "elements": [
+            {
+                "tag": "markdown",
+                "content": text,
+            },
+        ],
+    }
+
+
+def _build_canvas_code_card(title: str, kind: str, content: str) -> dict[str, Any]:
+    """Wave-33: render a canvas artifact as a collapsible code-block card."""
+    # Truncate very large content to avoid card size cap.
+    max_content = 8000
+    display = content if len(content) <= max_content else content[:max_content] + "\n\n…（内容已截断）"
+    return {
+        "config": {"wide_screen_mode": True},
+        "elements": [
+            {
+                "tag": "markdown",
+                "content": f"**📎 {title}**  `{kind}`",
+            },
+            {"tag": "hr"},
+            {
+                "tag": "markdown",
+                "content": f"```{kind}\n{display}\n```",
+            },
+        ],
+    }
+
+
+def _table_json_to_markdown(content: str) -> str:
+    """Parse JSON table content and render as markdown table.
+
+    Expected shapes:
+      {"headers": ["A","B"], "rows": [[1,2],[3,4]]}
+      {"rows": [{"A":1,"B":2},{"A":3,"B":4}]}
+    """
+    try:
+        obj = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return content
+
+    # Shape 1: {headers, rows} where rows is list of lists
+    headers = obj.get("headers") if isinstance(obj, dict) else None
+    rows = obj.get("rows") if isinstance(obj, dict) else None
+
+    if not isinstance(rows, list) or not rows:
+        return content
+
+    lines: list[str] = []
+
+    # rows is list of dicts
+    if isinstance(rows[0], dict):
+        keys = list(rows[0].keys())
+        lines.append("| " + " | ".join(keys) + " |")
+        lines.append("| " + " | ".join(["---"] * len(keys)) + " |")
+        for row in rows:
+            vals = [str(row.get(k, "")) for k in keys]
+            lines.append("| " + " | ".join(vals) + " |")
+        return "\n".join(lines)
+
+    # rows is list of lists
+    if isinstance(rows[0], list):
+        if headers and isinstance(headers, list):
+            lines.append("| " + " | ".join(str(h) for h in headers) + " |")
+            lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+        for row in rows:
+            lines.append("| " + " | ".join(str(c) for c in row) + " |")
+        return "\n".join(lines)
+
+    return content
+
+
+def _build_canvas_table_card(title: str, content: str) -> dict[str, Any]:
+    """Wave-33: render a canvas table artifact as a Lark markdown-table card."""
+    md_table = _table_json_to_markdown(content)
+    return {
+        "config": {"wide_screen_mode": True},
+        "elements": [
+            {
+                "tag": "markdown",
+                "content": f"**📊 {title}**",
+            },
+            {"tag": "hr"},
+            {
+                "tag": "markdown",
+                "content": md_table,
+            },
+        ],
+    }
+
+
+_CODE_FENCE_RE = _re_md.compile(
+    r"```(\w*)\n(.*?)```",
+    _re_md.DOTALL,
+)
+
+
+def _extract_code_blocks(text: str) -> list[dict[str, str]]:
+    """Wave-33: extract fenced code blocks from text.
+
+    Returns list of {"lang": str, "code": str, "start": int, "end": int}.
+    Used by ``_split_and_send`` to pull code blocks into their own
+    collapsible card sections."""
+    out: list[dict[str, str]] = []
+    for m in _CODE_FENCE_RE.finditer(text):
+        out.append({
+            "lang": m.group(1) or "",
+            "code": m.group(2),
+            "start": str(m.start()),
+            "end": str(m.end()),
+        })
+    return out
+
+
+def _partition_text(text: str) -> list[dict[str, Any]]:
+    """Wave-33: split assistant reply into structured sections.
+
+    Returns a list of section dicts:
+      {"type": "text", "content": str}
+      {"type": "code", "lang": str, "content": str}
+      {"type": "table", "content": str}  # markdown table detected inline
+    """
+    sections: list[dict[str, Any]] = []
+    code_blocks = _extract_code_blocks(text)
+
+    if not code_blocks:
+        # No code blocks — whole thing is one text section.
+        sections.append({"type": "text", "content": text})
+        return sections
+
+    cursor = 0
+    for cb in code_blocks:
+        start = int(cb["start"])
+        end = int(cb["end"])
+        if start > cursor:
+            pre = text[cursor:start]
+            if pre.strip():
+                sections.append({"type": "text", "content": pre.strip()})
+        sections.append({"type": "code", "lang": cb["lang"], "content": cb["code"]})
+        cursor = end
+
+    if cursor < len(text):
+        post = text[cursor:]
+        if post.strip():
+            sections.append({"type": "text", "content": post.strip()})
+
+    return sections
 
 
 class FeishuAdapter(ChannelAdapter):
@@ -132,11 +311,19 @@ class FeishuAdapter(ChannelAdapter):
                 Optional ``encrypt_key`` / ``verify_token`` if the
                 user enabled event encryption in the open-platform
                 console.
+        bus: optional InProcessEventBus. When wired, the adapter
+             subscribes to TOOL_INVOCATION_* and CANVAS_ARTIFACT_*
+             events so 飞书 users see live progress cards and
+             inline canvas artifacts.
     """
 
     name = "feishu"
 
-    def __init__(self, config: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        config: dict[str, Any],
+        bus: Any | None = None,
+    ) -> None:
         self._cfg = config or {}
         self._app_id = (self._cfg.get("app_id") or "").strip()
         self._app_secret = (self._cfg.get("app_secret") or "").strip()
@@ -152,13 +339,21 @@ class FeishuAdapter(ChannelAdapter):
         self._client: Any = None
         self._ws_task: asyncio.Task[Any] | None = None
         self._handlers: list[Callable[[InboundMessage], Awaitable[None]]] = []
-        # B-196: Lark's WS uses at-least-once event delivery — on
-        # reconnect / network blip the same message_id can land twice
-        # (or more). Without dedup the agent runs the turn N times and
-        # the user sees duplicate replies. LRU keyed by message_id; cap
-        # at 512 keeps memory bounded while covering ~hours of busy chat.
+        # B-196: Lark's WS uses at-least-once event delivery.
         self._seen_msg_ids: OrderedDict[str, float] = OrderedDict()
         self._seen_cap = 512
+
+        # Wave-33: optional event-bus wiring for live cards.
+        self._bus = bus
+        self._event_subs: list[Any] = []
+        self._event_task: asyncio.Task[Any] | None = None
+        self._enable_live_cards = bool(
+            self._cfg.get("enable_live_cards", True)
+        )
+        # session_id (feishu:<chat_id>) → {tool_call_id: message_id}
+        self._session_tool_msgs: dict[str, dict[str, str]] = {}
+        # session_id → {artifact_id: message_id}
+        self._session_artifact_msgs: dict[str, dict[str, str]] = {}
 
     # ── internal helpers ────────────────────────────────────────
 
@@ -183,25 +378,10 @@ class FeishuAdapter(ChannelAdapter):
     async def start(self) -> None:
         if self._ws_task is not None:
             return  # idempotent
-        # Local import keeps lark-oapi as an optional dep.
-        #
-        # 2026-05-11 perf fix: the synchronous ``import lark_oapi``
-        # cascade triggers ``pkg_resources.declare_namespace`` whose
-        # importlib walk costs ~3.75s on cold module cache (Windows +
-        # antivirus scanning is the worst case). Doing it inline in
-        # this coroutine blocks the entire daemon event loop —
-        # uvicorn can't get back to the "Application startup complete"
-        # log line until it finishes, which pushes /health past the
-        # CLI's wait timeout. Pushing it to a worker thread via
-        # ``asyncio.to_thread`` lets the loop keep running other
-        # coroutines (including uvicorn's own ones) while pkg_resources
-        # cooks. The import is a one-shot and after this point
-        # everything is synchronous Python that's already in cache.
         lark, P2ImMessageReceiveV1 = await asyncio.to_thread(
             self._import_lark_modules,
         )
 
-        # lark.Client.builder() is the canonical entry point.
         self._client = (
             lark.Client.builder()
             .app_id(self._app_id)
@@ -209,14 +389,9 @@ class FeishuAdapter(ChannelAdapter):
             .build()
         )
 
-        # Event dispatcher binds handler functions per event type.
-        # Keep a reference to the loop so the lark thread-pool callback
-        # can schedule async work back onto our event loop.
         loop = asyncio.get_running_loop()
 
         def _on_im_message(event: P2ImMessageReceiveV1) -> None:
-            """Lark's dispatcher calls this from a background thread.
-            Translate to InboundMessage + put back on our event loop."""
             try:
                 asyncio.run_coroutine_threadsafe(
                     self._handle_event(event), loop,
@@ -234,18 +409,6 @@ class FeishuAdapter(ChannelAdapter):
             ).register_p2_im_message_receive_v1(_on_im_message)
         dispatcher = dispatcher_builder.build()
 
-        # B-369 (Sprint 1): reconnect loop. Pre-B-369 the lark-oapi WS
-        # client's ``start()`` returned cleanly when the underlying
-        # transport dropped (NAT timeout / ISP idle prune; daemon.log
-        # showed ``[Lark] receive message loop exit, err: no close
-        # frame received or sent`` 1-3 times/day) and ``_runner`` then
-        # exited, leaving the adapter dead but the daemon convinced
-        # the bot was up. The user discovered hours later when their
-        # 飞书 群 wasn't responding. Now: rebuild the ws_client AND
-        # restart in a retry loop with capped exponential backoff.
-        # Each retry is logged so daemon.log + the SetupBanner can
-        # surface "feishu reconnecting" without ambiguity.
-
         def _build_ws_client() -> Any:
             return lark.ws.Client(
                 self._app_id, self._app_secret,
@@ -253,25 +416,8 @@ class FeishuAdapter(ChannelAdapter):
                 log_level=lark.LogLevel.WARNING,
             )
 
-        # Hold the LATEST ws_client on a closure cell so stop() can
-        # call its ._stop / ._exit shape if available (lark-oapi 1.4
-        # private API; we tolerate AttributeError).
         ws_client_holder: dict[str, Any] = {"client": None}
 
-        # ws_client.start() is BLOCKING (lark-oapi's design — it
-        # internally runs an asyncio event loop). Run it in a worker
-        # thread so we don't block the daemon's main loop.
-        #
-        # B-194: lark-oapi 1.4.x captures `loop = asyncio.get_event_loop()`
-        # at module import time (lark_oapi/ws/client.py L25-29). When
-        # daemon imports lark from inside its async context, that
-        # module-level `loop` becomes the daemon's main loop. Then
-        # `Client.start()` does `loop.run_until_complete(...)` on it —
-        # the main loop is already running, so we get
-        # "This event loop is already running" + the WS never connects
-        # (silent failure: adapter shows running=True but no events).
-        # Fix: in the worker thread, give lark its own dedicated event
-        # loop by overriding the module global before calling start().
         def _start_in_thread(client: Any) -> None:
             import asyncio as _asyncio
             new_loop = _asyncio.new_event_loop()
@@ -284,10 +430,6 @@ class FeishuAdapter(ChannelAdapter):
             client.start()
 
         async def _runner() -> None:
-            # B-369: capped exponential backoff. 1s, 2s, 4s, …, 60s,
-            # 60s, 60s. Reset to 1s after a successful long run (≥60s
-            # uptime suggests the connection was healthy and the drop
-            # is transient — don't punish reconnect speed).
             backoff_s = 1.0
             backoff_max_s = 60.0
             while True:
@@ -297,23 +439,16 @@ class FeishuAdapter(ChannelAdapter):
                 try:
                     await asyncio.to_thread(_start_in_thread, client)
                 except asyncio.CancelledError:
-                    raise  # daemon shutdown — propagate
+                    raise
                 except Exception as exc:  # noqa: BLE001
                     _log.warning(
                         "feishu.ws_loop_failed err=%s — will reconnect", exc,
                     )
                 else:
-                    # ``start()`` returned without exception — that's
-                    # the "loop exit, no close frame" path. lark-oapi
-                    # logs the underlying error at ERROR level, we
-                    # log the reconnect intent at WARNING.
                     _log.warning(
                         "feishu.ws_loop_returned — connection dropped, "
                         "will reconnect",
                     )
-                # Reset backoff if the previous run lasted long enough
-                # to count as "stable session that just got pruned"
-                # rather than "instantly failing with bad credentials".
                 uptime_s = time.monotonic() - started_at
                 if uptime_s >= 60:
                     backoff_s = 1.0
@@ -329,31 +464,488 @@ class FeishuAdapter(ChannelAdapter):
 
         self._ws_task = loop.create_task(_runner(), name="feishu-ws")
         self._ws_client_holder = ws_client_holder  # type: ignore[attr-defined]
+
+        # Wave-33: start event-bus listener for live progress + canvas.
+        if self._bus is not None and self._enable_live_cards:
+            self._event_task = loop.create_task(
+                self._event_listener(), name="feishu-events",
+            )
+
         _log.info("feishu.started app_id=%s", self._app_id[:8] + "***")
 
     async def stop(self) -> None:
-        if self._ws_task is None:
-            return
-        self._ws_task.cancel()
-        try:
-            await self._ws_task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
-            pass
-        self._ws_task = None
+        if self._ws_task is not None:
+            self._ws_task.cancel()
+            try:
+                await self._ws_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            self._ws_task = None
+
+        # Wave-33: stop event listener.
+        if self._event_task is not None:
+            self._event_task.cancel()
+            try:
+                await self._event_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            self._event_task = None
+        for sub in list(self._event_subs):
+            try:
+                sub.cancel()
+            except Exception:  # noqa: BLE001
+                pass
+        self._event_subs.clear()
+
         _log.info("feishu.stopped")
+
+
+    # ── Wave-33: event-bus listener for live cards ──────────────
+
+    async def _event_listener(self) -> None:
+        """Subscribe to bus events and fan out live cards to Feishu.
+
+        Runs forever until cancelled. Each event is handled in a
+        fire-and-forget task so a slow send doesn't block the listener."""
+        from xmclaw.core.bus import EventType
+
+        if self._bus is None:
+            return
+
+        handled_types = {
+            EventType.TOOL_INVOCATION_STARTED,
+            EventType.TOOL_INVOCATION_FINISHED,
+            EventType.CANVAS_ARTIFACT_CREATED,
+            EventType.CANVAS_ARTIFACT_UPDATED,
+            EventType.CANVAS_ARTIFACT_CLOSED,
+        }
+
+        def _predicate(event: Any) -> bool:
+            return getattr(event, "type", None) in handled_types
+
+        # Queue-based delivery: bus fan-out spawns tasks that put
+        # events into our own asyncio.Queue so we can control
+        # back-pressure and ordering.
+        queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=256)
+
+        async def _handler(event: Any) -> None:
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                _log.debug("feishu.event_queue_full dropping event")
+
+        sub = self._bus.subscribe(_predicate, _handler)
+        self._event_subs.append(sub)
+
+        while True:
+            try:
+                event = await queue.get()
+            except asyncio.CancelledError:
+                raise
+            try:
+                await self._on_bus_event(event)
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("feishu.event_handle_failed err=%s", exc)
+
+    async def _on_bus_event(self, event: Any) -> None:
+        """Dispatch a single bus event to the appropriate handler."""
+        from xmclaw.core.bus import EventType
+
+        etype = getattr(event, "type", None)
+        session_id = getattr(event, "session_id", "") or ""
+        payload = getattr(event, "payload", {}) or {}
+
+        # Only handle sessions that belong to this channel.
+        if not session_id.startswith("feishu:"):
+            return
+
+        if etype == EventType.TOOL_INVOCATION_STARTED:
+            await self._handle_tool_started(session_id, payload)
+        elif etype == EventType.TOOL_INVOCATION_FINISHED:
+            await self._handle_tool_finished(session_id, payload)
+        elif etype == EventType.CANVAS_ARTIFACT_CREATED:
+            await self._handle_canvas_created(session_id, payload)
+        elif etype == EventType.CANVAS_ARTIFACT_UPDATED:
+            await self._handle_canvas_updated(session_id, payload)
+        elif etype == EventType.CANVAS_ARTIFACT_CLOSED:
+            await self._handle_canvas_closed(session_id, payload)
+
+    async def _chat_id_from_session(self, session_id: str) -> str | None:
+        """Parse chat_id from ``feishu:<chat_id>`` session id."""
+        if session_id.startswith("feishu:"):
+            return session_id[len("feishu:"):]
+        return None
+
+    async def _handle_tool_started(
+        self, session_id: str, payload: dict[str, Any],
+    ) -> None:
+        chat_id = await self._chat_id_from_session(session_id)
+        if not chat_id:
+            return
+        tool_name = payload.get("tool_name") or payload.get("name") or "tool"
+        call_id = payload.get("call_id") or tool_name
+        card = _build_process_card(tool_name, "running")
+        msg_id = await self._send_card_to_chat(chat_id, card)
+        if msg_id:
+            self._session_tool_msgs.setdefault(session_id, {})[call_id] = msg_id
+
+    async def _handle_tool_finished(
+        self, session_id: str, payload: dict[str, Any],
+    ) -> None:
+        chat_id = await self._chat_id_from_session(session_id)
+        if not chat_id:
+            return
+        tool_name = payload.get("tool_name") or payload.get("name") or "tool"
+        call_id = payload.get("call_id") or tool_name
+        ok = payload.get("ok", True)
+        status = "ok" if ok else "fail"
+        card = _build_process_card(tool_name, status)
+        msg_id = self._session_tool_msgs.get(session_id, {}).pop(call_id, None)
+        if msg_id:
+            await self._patch_message(msg_id, card)
+        else:
+            # No prior start card — send a finish-only card.
+            await self._send_card_to_chat(chat_id, card)
+
+    async def _handle_canvas_created(
+        self, session_id: str, payload: dict[str, Any],
+    ) -> None:
+        chat_id = await self._chat_id_from_session(session_id)
+        if not chat_id:
+            return
+        kind = payload.get("kind", "")
+        title = payload.get("title", "")
+        content = payload.get("content", "")
+        artifact_id = payload.get("artifact_id", "")
+
+        if kind == "table":
+            card = _build_canvas_table_card(title, content)
+        else:
+            card = _build_canvas_code_card(title, kind, content)
+
+        msg_id = await self._send_card_to_chat(chat_id, card)
+        if msg_id and artifact_id:
+            self._session_artifact_msgs.setdefault(session_id, {})[artifact_id] = msg_id
+
+    async def _handle_canvas_updated(
+        self, session_id: str, payload: dict[str, Any],
+    ) -> None:
+        artifact_id = payload.get("artifact_id", "")
+        msg_id = self._session_artifact_msgs.get(session_id, {}).get(artifact_id)
+        if not msg_id:
+            return
+        content = payload.get("content", "")
+        # Re-fetch the stored artifact metadata (kind, title) from the
+        # existing card?  We don't have it here — the bus event only
+        # carries content.  Rebuild a generic code card with the new
+        # content.  The title/kind are preserved in the card header
+        # but PATCH replaces the whole card.
+        card = {
+            "config": {"wide_screen_mode": True},
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": f"**📎 Artifact updated**\n\n```\n{content[:8000]}\n```",
+                },
+            ],
+        }
+        await self._patch_message(msg_id, card)
+
+    async def _handle_canvas_closed(
+        self, session_id: str, payload: dict[str, Any],
+    ) -> None:
+        artifact_id = payload.get("artifact_id", "")
+        msg_id = self._session_artifact_msgs.get(session_id, {}).pop(artifact_id, None)
+        if not msg_id:
+            return
+        # Collapse / mark as closed.
+        card = {
+            "config": {"wide_screen_mode": True},
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": "~~已关闭~~",
+                },
+            ],
+        }
+        await self._patch_message(msg_id, card)
+
+    async def _send_card_to_chat(
+        self, chat_id: str, card: dict[str, Any],
+    ) -> str:
+        """Send an interactive card to a chat. Returns message_id or ''."""
+        if self._client is None:
+            return ""
+        from lark_oapi.api.im.v1 import (
+            CreateMessageRequest, CreateMessageRequestBody,
+        )
+        content_str = json.dumps(card, ensure_ascii=False)
+        req = (
+            CreateMessageRequest.builder()
+            .receive_id_type("chat_id")
+            .request_body(
+                CreateMessageRequestBody.builder()
+                .receive_id(chat_id)
+                .content(content_str)
+                .msg_type("interactive")
+                .build()
+            )
+            .build()
+        )
+        try:
+            resp = await asyncio.to_thread(
+                self._client.im.v1.message.create, req,
+            )
+            if resp.success() and getattr(resp, "data", None) is not None:
+                return (
+                    getattr(resp.data, "message_id", "")
+                    or ""
+                )
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("feishu.send_card_failed err=%s", exc)
+        return ""
+
+    async def _patch_message(
+        self, message_id: str, card: dict[str, Any],
+    ) -> bool:
+        """PATCH an existing interactive card message."""
+        if self._client is None:
+            return False
+        try:
+            from lark_oapi.api.im.v1 import (
+                PatchMessageRequest, PatchMessageRequestBody,
+            )
+        except ImportError:
+            return False
+        content_str = json.dumps(card, ensure_ascii=False)
+        req = (
+            PatchMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(
+                PatchMessageRequestBody.builder()
+                .content(content_str)
+                .build()
+            )
+            .build()
+        )
+        try:
+            resp = await asyncio.to_thread(
+                self._client.im.v1.message.patch, req,
+            )
+            return bool(resp.success())
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("feishu.patch_message_failed msg_id=%s err=%s", message_id, exc)
+        return False
+
+    # ── send() — enhanced for Wave-33 ───────────────────────────
+
+    async def send(
+        self, target: ChannelTarget, payload: OutboundMessage,
+    ) -> str:
+        if self._client is None:
+            raise RuntimeError("feishu adapter not started")
+        from lark_oapi.api.im.v1 import (
+            CreateMessageRequest, CreateMessageRequestBody,
+            ReplyMessageRequest, ReplyMessageRequestBody,
+        )
+
+        reply_to = payload.reply_to
+        chat_id = target.ref
+
+        # B-199: image attachments first.
+        last_msg_id = ""
+        for att in (payload.attachments or ()):
+            try:
+                image_key = await self._upload_image(att)
+            except (FileNotFoundError, RuntimeError) as exc:
+                _log.warning("feishu.image_upload_failed path=%s err=%s", att, exc)
+                continue
+            img_content = json.dumps({"image_key": image_key}, ensure_ascii=False)
+            img_req = (
+                CreateMessageRequest.builder()
+                .receive_id_type("chat_id")
+                .request_body(
+                    CreateMessageRequestBody.builder()
+                    .receive_id(chat_id)
+                    .content(img_content)
+                    .msg_type("image")
+                    .build()
+                )
+                .build()
+            )
+            try:
+                img_resp = await asyncio.to_thread(
+                    self._client.im.v1.message.create, img_req,
+                )
+                if img_resp.success() and getattr(img_resp, "data", None) is not None:
+                    last_msg_id = (
+                        getattr(img_resp.data, "message_id", "") or last_msg_id
+                    )
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("feishu.image_send_failed key=%s err=%s", image_key, exc)
+
+        if not payload.content.strip() and last_msg_id:
+            return last_msg_id
+
+        # Wave-33: if payload.extra carries a pre-built Lark card, use it.
+        extra_card = (payload.extra or {}).get("card")
+        if extra_card is not None and isinstance(extra_card, dict):
+            return await self._send_or_reply_card(
+                chat_id, reply_to, extra_card,
+            )
+
+        # Wave-33: rich-card mode for markdown replies.
+        # Partition text into sections (text / code / table) and build
+        # a multi-section interactive card.
+        if _looks_like_markdown(payload.content):
+            return await self._send_rich_card(chat_id, reply_to, payload.content)
+
+        # Fallback: plain text.
+        content_str = json.dumps(
+            {"text": payload.content}, ensure_ascii=False,
+        )
+        if reply_to:
+            req = (
+                ReplyMessageRequest.builder()
+                .message_id(reply_to)
+                .request_body(
+                    ReplyMessageRequestBody.builder()
+                    .content(content_str)
+                    .msg_type("text")
+                    .build()
+                )
+                .build()
+            )
+            resp = await asyncio.to_thread(
+                self._client.im.v1.message.reply, req,
+            )
+        else:
+            req = (
+                CreateMessageRequest.builder()
+                .receive_id_type("chat_id")
+                .request_body(
+                    CreateMessageRequestBody.builder()
+                    .receive_id(chat_id)
+                    .content(content_str)
+                    .msg_type("text")
+                    .build()
+                )
+                .build()
+            )
+            resp = await asyncio.to_thread(
+                self._client.im.v1.message.create, req,
+            )
+        if not resp.success():
+            raise RuntimeError(
+                f"feishu send failed: code={resp.code} msg={resp.msg}"
+            )
+        msg_id = ""
+        if getattr(resp, "data", None) is not None:
+            msg_id = (
+                getattr(resp.data, "message_id", None)
+                or getattr(getattr(resp.data, "message", None), "message_id", "")
+                or ""
+            )
+        return msg_id or f"feishu:{int(time.time())}"
+
+    async def _send_or_reply_card(
+        self, chat_id: str, reply_to: str | None, card: dict[str, Any],
+    ) -> str:
+        """Send or reply with a pre-built interactive card."""
+        from lark_oapi.api.im.v1 import (
+            CreateMessageRequest, CreateMessageRequestBody,
+            ReplyMessageRequest, ReplyMessageRequestBody,
+        )
+        content_str = json.dumps(card, ensure_ascii=False)
+        if reply_to:
+            req = (
+                ReplyMessageRequest.builder()
+                .message_id(reply_to)
+                .request_body(
+                    ReplyMessageRequestBody.builder()
+                    .content(content_str)
+                    .msg_type("interactive")
+                    .build()
+                )
+                .build()
+            )
+            resp = await asyncio.to_thread(
+                self._client.im.v1.message.reply, req,
+            )
+        else:
+            req = (
+                CreateMessageRequest.builder()
+                .receive_id_type("chat_id")
+                .request_body(
+                    CreateMessageRequestBody.builder()
+                    .receive_id(chat_id)
+                    .content(content_str)
+                    .msg_type("interactive")
+                    .build()
+                )
+                .build()
+            )
+            resp = await asyncio.to_thread(
+                self._client.im.v1.message.create, req,
+            )
+        if not resp.success():
+            _log.warning("feishu.card_send_failed code=%s msg=%s", resp.code, resp.msg)
+            return ""
+        msg_id = ""
+        if getattr(resp, "data", None) is not None:
+            msg_id = getattr(resp.data, "message_id", "") or ""
+        return msg_id
+
+    async def _send_rich_card(
+        self, chat_id: str, reply_to: str | None, text: str,
+    ) -> str:
+        """Wave-33: partition text into sections and send as a rich
+        interactive card with collapsible code blocks."""
+        sections = _partition_text(text)
+        elements: list[dict[str, Any]] = []
+
+        for sec in sections:
+            if sec["type"] == "text":
+                # Split long text sections if they exceed card char cap.
+                chunks = _chunk_text(sec["content"], _CARD_MAX_CHARS // 2)
+                for chunk in chunks:
+                    elements.append({
+                        "tag": "markdown",
+                        "content": chunk,
+                    })
+            elif sec["type"] == "code":
+                lang = sec.get("lang", "")
+                title = lang or "代码"
+                # Collapsible code block using Lark's fold-like pattern
+                # (markdown inside a container with a header).
+                code_display = sec["content"]
+                if len(code_display) > 4000:
+                    code_display = code_display[:4000] + "\n\n…（已截断）"
+                elements.append({
+                    "tag": "markdown",
+                    "content": f"**{title}**\n```\n{code_display}\n```",
+                })
+
+            # If we're nearing the element cap, flush as a card and
+            # start a new one.
+            if len(elements) >= _CARD_MAX_ELEMENTS:
+                card = _build_lark_rich_card(elements)
+                await self._send_or_reply_card(chat_id, reply_to, card)
+                elements = []
+                # Subsequent cards in this turn are direct sends (no
+                # reply_to) so they appear as follow-up messages.
+                reply_to = None
+
+        if elements:
+            card = _build_lark_rich_card(elements)
+            return await self._send_or_reply_card(chat_id, reply_to, card)
+        return ""
+
+    # ── internal helpers (images, downloads) ────────────────────
 
     async def _download_message_resource(
         self, message_id: str, file_key: str, *, kind: str = "image",
     ) -> bytes | None:
-        """Wave 12: download an inbound image/file by (message_id, key).
-
-        Returns raw bytes on success, ``None`` on failure (caller logs +
-        skips). Lark's WS push gives us the image_key — fetching the
-        bytes is a separate REST call.
-
-        Uses ``im.v1.message_resource.get`` which supports kind ∈
-        {"image", "file"}.
-        """
         if self._client is None:
             return None
         try:
@@ -387,8 +979,6 @@ class FeishuAdapter(ChannelAdapter):
                 getattr(resp, "code", "?"), getattr(resp, "msg", "?"),
             )
             return None
-        # The response's file-like body lives on resp.file; some
-        # lark-oapi versions also stick the bytes on resp.raw.content.
         candidates = (
             getattr(resp, "file", None),
             getattr(getattr(resp, "raw", None), "content", None),
@@ -408,19 +998,6 @@ class FeishuAdapter(ChannelAdapter):
         return None
 
     async def _upload_image(self, image_path: str) -> str:
-        """B-199: upload a local image to Lark, return image_key.
-
-        Used by ``send`` when ``OutboundMessage.attachments`` carries
-        local image paths. The image_key returned is what the IM API
-        wants in ``content.image_key`` for a ``msg_type=image``
-        message. Lark's image upload is a separate call from the
-        message send.
-
-        Raises ``FileNotFoundError`` / ``RuntimeError`` so callers
-        can surface a meaningful error instead of swallowing into a
-        polite "我没办法" — the original failure mode that triggered
-        this fix (chat-2026-05-03 17:51 sequence).
-        """
         if self._client is None:
             raise RuntimeError("feishu adapter not started")
         from lark_oapi.api.im.v1 import (
@@ -458,130 +1035,7 @@ class FeishuAdapter(ChannelAdapter):
             )
         return image_key
 
-    async def send(
-        self, target: ChannelTarget, payload: OutboundMessage,
-    ) -> str:
-        if self._client is None:
-            raise RuntimeError("feishu adapter not started")
-        from lark_oapi.api.im.v1 import (
-            CreateMessageRequest, CreateMessageRequestBody,
-            ReplyMessageRequest, ReplyMessageRequestBody,
-        )
-
-        # B-199: image attachments. Each path in ``attachments`` is
-        # uploaded then sent as its own ``msg_type=image`` message.
-        # Order is attachments first, then the main text message —
-        # mirrors Slack/Discord conventions where images appear in-
-        # line above the text. Failures upload-side surface as
-        # exceptions; the caller (ChannelDispatcher) decides whether
-        # to fall through to text-only or surface the error.
-        last_msg_id = ""
-        for att in (payload.attachments or ()):
-            try:
-                image_key = await self._upload_image(att)
-            except (FileNotFoundError, RuntimeError) as exc:
-                _log.warning("feishu.image_upload_failed path=%s err=%s", att, exc)
-                continue
-            img_content = json.dumps({"image_key": image_key}, ensure_ascii=False)
-            img_req = (
-                CreateMessageRequest.builder()
-                .receive_id_type("chat_id")
-                .request_body(
-                    CreateMessageRequestBody.builder()
-                    .receive_id(target.ref)
-                    .content(img_content)
-                    .msg_type("image")
-                    .build()
-                )
-                .build()
-            )
-            try:
-                img_resp = await asyncio.to_thread(
-                    self._client.im.v1.message.create, img_req,
-                )
-                if img_resp.success() and getattr(img_resp, "data", None) is not None:
-                    last_msg_id = (
-                        getattr(img_resp.data, "message_id", "") or last_msg_id
-                    )
-            except Exception as exc:  # noqa: BLE001
-                _log.warning("feishu.image_send_failed key=%s err=%s", image_key, exc)
-
-        # Feishu requires JSON-serialised content. Plain text uses
-        # {"text": "..."} shape. Skip the text send entirely when
-        # content is empty AND we already sent images — caller asked
-        # for image-only delivery (e.g. "screenshot please").
-        if not payload.content.strip() and last_msg_id:
-            return last_msg_id
-
-        # B-209: route markdown replies through msg_type=interactive
-        # (card with markdown element) so feishu renders **bold** /
-        # `code` / ## headers / lists properly instead of showing
-        # raw characters. Plain text stays msg_type=text — cards
-        # add chrome that's overkill for "OK 收到" one-liners.
-        # Oversized payloads (> _CARD_MAX_CHARS) fall back to text
-        # so we don't fail the card POST on a huge tool dump.
-        use_card = (
-            _looks_like_markdown(payload.content)
-            and len(payload.content) <= _CARD_MAX_CHARS
-        )
-        if use_card:
-            card = _build_lark_markdown_card(payload.content)
-            content_str = json.dumps(card, ensure_ascii=False)
-            msg_type = "interactive"
-        else:
-            content_str = json.dumps(
-                {"text": payload.content}, ensure_ascii=False,
-            )
-            msg_type = "text"
-
-        if payload.reply_to:
-            req = (
-                ReplyMessageRequest.builder()
-                .message_id(payload.reply_to)
-                .request_body(
-                    ReplyMessageRequestBody.builder()
-                    .content(content_str)
-                    .msg_type(msg_type)
-                    .build()
-                )
-                .build()
-            )
-            resp = await asyncio.to_thread(
-                self._client.im.v1.message.reply, req,
-            )
-        else:
-            # ChannelTarget.ref carries the chat_id (oc_xxx) for
-            # direct sends. receive_id_type=chat_id sends to a group.
-            req = (
-                CreateMessageRequest.builder()
-                .receive_id_type("chat_id")
-                .request_body(
-                    CreateMessageRequestBody.builder()
-                    .receive_id(target.ref)
-                    .content(content_str)
-                    .msg_type(msg_type)
-                    .build()
-                )
-                .build()
-            )
-            resp = await asyncio.to_thread(
-                self._client.im.v1.message.create, req,
-            )
-        if not resp.success():
-            raise RuntimeError(
-                f"feishu send failed: code={resp.code} msg={resp.msg}"
-            )
-        # Lark response.data.message_id (or .message in some shapes)
-        msg_id = ""
-        if getattr(resp, "data", None) is not None:
-            msg_id = (
-                getattr(resp.data, "message_id", None)
-                or getattr(getattr(resp.data, "message", None), "message_id", "")
-                or ""
-            )
-        return msg_id or f"feishu:{int(time.time())}"
-
-    # ── internal ────────────────────────────────────────────────
+    # ── inbound event handling ──────────────────────────────────
 
     async def _handle_event(self, event: Any) -> None:
         """Translate lark P2ImMessageReceiveV1 → InboundMessage and
@@ -591,9 +1045,6 @@ class FeishuAdapter(ChannelAdapter):
             sender = event.event.sender
         except AttributeError:
             return
-        # Wave 12: handle text + image + post (rich text with image).
-        # Other types (file/audio/video/etc.) still skip — those need
-        # heavier processing pipelines than the agent has plumbing for.
         msg_type = getattr(msg, "message_type", "") or ""
         if msg_type not in ("text", "image", "post"):
             _log.debug("feishu.skip_unsupported_type type=%s", msg_type)
@@ -608,13 +1059,10 @@ class FeishuAdapter(ChannelAdapter):
             text = (content_obj.get("text") or "").strip()
             text = _strip_at_mentions(text)
         elif msg_type == "image":
-            # {"image_key": "img_v3_xxx"}
             key = content_obj.get("image_key")
             if isinstance(key, str) and key:
                 image_keys.append(key)
         elif msg_type == "post":
-            # Rich text: nested {"title": "...", "content": [[{"tag":...}]]}
-            # We pull out text spans + image refs.
             text, image_keys = _flatten_post(content_obj)
             text = _strip_at_mentions(text)
         if not text and not image_keys:
@@ -622,15 +1070,11 @@ class FeishuAdapter(ChannelAdapter):
 
         chat_id = getattr(msg, "chat_id", "") or ""
         msg_id = getattr(msg, "message_id", "") or ""
-        # B-196: drop duplicate deliveries by message_id. Lark's WS may
-        # redeliver the same event on reconnect; we'd otherwise process
-        # it twice and the user sees N copies of the same reply.
         if msg_id and msg_id in self._seen_msg_ids:
             _log.info("feishu.duplicate_skipped msg_id=%s", msg_id)
             return
         if msg_id:
             self._seen_msg_ids[msg_id] = time.time()
-            # Trim from the front (oldest) when over cap.
             while len(self._seen_msg_ids) > self._seen_cap:
                 self._seen_msg_ids.popitem(last=False)
         user_id = (
@@ -639,28 +1083,12 @@ class FeishuAdapter(ChannelAdapter):
             or "unknown"
         )
 
-        # B-273: scan inbound text for prompt injection BEFORE handing
-        # off to run_turn. Lark group-chat members are not necessarily
-        # the daemon owner — anyone with chat access can send a
-        # message that gets fed to the agent as if the owner typed it.
-        # Without this scan a hostile group member can stage an
-        # "ignore previous instructions" attack via Feishu. Policy
-        # default is DETECT_ONLY so legit user messages aren't
-        # blocked; operators who run open chat can flip to BLOCK in
-        # config. Scanner is best-effort — failures don't drop the
-        # message (would be worse UX than the residual risk).
         try:
             from xmclaw.security import (
                 PolicyMode,
                 SOURCE_CHANNEL,
                 apply_policy,
             )
-            # B-326: was ``self._config`` — typo against ``self._cfg``
-            # set in __init__. AttributeError was being swallowed by
-            # the broad ``except Exception`` below, so every Feishu
-            # inbound bypassed the injection scanner regardless of the
-            # operator's ``injection_policy`` setting. ``injection_policy:
-            # block`` was a 100% no-op until this fix.
             policy_str = str(self._cfg.get("injection_policy", "detect_only")).lower()
             try:
                 policy = PolicyMode(policy_str)
@@ -684,54 +1112,43 @@ class FeishuAdapter(ChannelAdapter):
                     chat_id, msg_id,
                     [f.pattern_id for f in decision.scan.findings][:5],
                 )
-                return  # drop message — don't fan out to agent
+                return
             text = decision.content
         except Exception as exc:  # noqa: BLE001
             _log.debug("feishu.scan_skipped err=%s", exc)
 
-        # B-337 (audit #8): allowlist gate. The base.py docstring
-        # promised "Allowlist: per-sender authorization gate ...
-        # Phase 4+." but Phase 4 didn't land — every group-chat
-        # member could drive the agent regardless of the operator's
-        # multi-tenant intent. Now: when ``allowed_user_refs`` is set
-        # in config (a list of open_id / user_id strings), inbound
-        # messages from sender ids NOT in the list are dropped with
-        # a clear log line. Empty / missing config = no restriction
-        # (preserves the current default "any group member can use
-        # the agent" behaviour for solo operators).
-        allowed_users = self._cfg.get("allowed_user_refs")
-        if isinstance(allowed_users, list) and allowed_users:
-            allowed_set = {str(u).strip() for u in allowed_users if str(u).strip()}
-            if user_id not in allowed_set:
-                _log.warning(
-                    "feishu.inbound_dropped_unauthorized "
-                    "chat_id=%s msg_id=%s user_ref=%s "
-                    "allowlist_size=%d",
-                    chat_id, msg_id, user_id, len(allowed_set),
-                )
-                return
+        try:
+            from xmclaw.security import (
+                PolicyMode,
+                SOURCE_CHANNEL,
+                apply_policy,
+            )
+            allowed_users = self._cfg.get("allowed_user_refs")
+            if isinstance(allowed_users, list) and allowed_users:
+                allowed_set = {str(u).strip() for u in allowed_users if str(u).strip()}
+                if user_id not in allowed_set:
+                    _log.warning(
+                        "feishu.inbound_dropped_unauthorized "
+                        "chat_id=%s msg_id=%s user_ref=%s "
+                        "allowlist_size=%d",
+                        chat_id, msg_id, user_id, len(allowed_set),
+                    )
+                    return
+        except Exception:  # noqa: BLE001
+            pass
 
-        # Wave 12: download any inbound image bytes and persist to the
-        # workspace uploads dir. Run AFTER injection / allowlist gates
-        # so unauthorized senders don't get free image downloads.
         image_paths: list[str] = []
         if image_keys and msg_id:
             image_paths = await self._fetch_and_save_images(
                 msg_id, image_keys,
             )
         if not text and not image_paths:
-            # All image fetches failed AND no text — nothing for the
-            # agent to act on. Log + drop.
             _log.info(
                 "feishu.inbound_empty_after_fetch msg_id=%s",
                 msg_id,
             )
             return
 
-        # If user only sent image(s) without caption, give the agent a
-        # tiny default prompt so the LLM has SOMETHING textual to ground
-        # its reply on. Otherwise some LLM clients drop messages with
-        # empty text + only image content.
         if not text and image_paths:
             text = "看一下这张图。"
 
@@ -754,9 +1171,6 @@ class FeishuAdapter(ChannelAdapter):
     async def _fetch_and_save_images(
         self, message_id: str, image_keys: list[str],
     ) -> list[str]:
-        """Download every image_key in this message → ~/.xmclaw/v2/
-        uploads/feishu_<msgid>_<i>.<ext>. Returns absolute paths of
-        successfully downloaded images (failures log + skip)."""
         from xmclaw.utils.paths import data_dir
         uploads_dir = data_dir() / "v2" / "uploads"
         try:
@@ -767,14 +1181,12 @@ class FeishuAdapter(ChannelAdapter):
             )
             return []
         out: list[str] = []
-        for i, key in enumerate(image_keys[:4]):  # cap at 4 per msg
+        for i, key in enumerate(image_keys[:4]):
             data = await self._download_message_resource(
                 message_id, key, kind="image",
             )
             if not data:
                 continue
-            # Sniff extension from magic bytes — Lark doesn't return
-            # mime in the resource fetch.
             ext = _sniff_image_ext(data) or ".jpg"
             safe_msg_id = "".join(
                 c if c.isalnum() else "_" for c in message_id
@@ -791,18 +1203,15 @@ class FeishuAdapter(ChannelAdapter):
         return out
 
 
+# ── module-level helpers ──────────────────────────────────────
+
 def _strip_at_mentions(text: str) -> str:
-    """Lark renders @-mentions as ``@_user_<n>`` placeholders. Strip
-    them so the bot doesn't see junk in the prompt."""
     import re
     cleaned = re.sub(r"@_user_\d+\s*", "", text)
     return cleaned.strip()
 
 
 def _flatten_post(content_obj: dict) -> tuple[str, list[str]]:
-    """Walk a Lark ``post`` rich-text payload, return (joined_text,
-    image_keys). Lark's post schema is nested list-of-lists where each
-    leaf is a tagged dict (``text`` / ``a`` / ``at`` / ``img``)."""
     texts: list[str] = []
     images: list[str] = []
     title = content_obj.get("title")
@@ -834,8 +1243,6 @@ def _flatten_post(content_obj: dict) -> tuple[str, list[str]]:
 
 
 def _sniff_image_ext(data: bytes) -> str | None:
-    """Return a file extension based on magic bytes. Used after Lark
-    download since the resource fetch doesn't return mime."""
     if not data or len(data) < 4:
         return None
     if data.startswith(b"\x89PNG"):
@@ -849,3 +1256,29 @@ def _sniff_image_ext(data: bytes) -> str | None:
     if data[:2] == b"BM":
         return ".bmp"
     return None
+
+
+def _chunk_text(text: str, max_chars: int) -> list[str]:
+    """Split text into chunks without breaking markdown blocks.
+
+    Tries to break at paragraph boundaries first, then line boundaries."""
+    if len(text) <= max_chars:
+        return [text]
+    chunks: list[str] = []
+    paragraphs = text.split("\n\n")
+    current = ""
+    for para in paragraphs:
+        if len(current) + len(para) + 2 <= max_chars:
+            current = (current + "\n\n" + para).strip() if current else para
+        else:
+            if current:
+                chunks.append(current)
+            if len(para) > max_chars:
+                # Hard break inside a long paragraph.
+                for i in range(0, len(para), max_chars):
+                    chunks.append(para[i:i + max_chars])
+            else:
+                current = para
+    if current:
+        chunks.append(current)
+    return chunks
