@@ -2183,9 +2183,19 @@ def make_lifespan(
                         def _walk_for_builtin(node):
                             if isinstance(node, BuiltinTools):
                                 yield node
-                            inner = getattr(node, "_providers", None)
-                            if isinstance(inner, list | tuple):
-                                for child in inner:
+                            # CompositeToolProvider stores children in _children.
+                            children = getattr(node, "_children", None)
+                            if isinstance(children, list | tuple):
+                                for child in children:
+                                    yield from _walk_for_builtin(child)
+                            # Retry-aware wrapper and any future wrappers.
+                            inner = getattr(node, "_inner", None)
+                            if inner is not None:
+                                yield from _walk_for_builtin(inner)
+                            # Fallback: some providers use _providers.
+                            providers = getattr(node, "_providers", None)
+                            if isinstance(providers, list | tuple):
+                                for child in providers:
                                     yield from _walk_for_builtin(child)
                         tools_provider = getattr(agent, "_tools", None)
                         if tools_provider is not None:
