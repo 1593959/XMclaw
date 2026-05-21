@@ -40,7 +40,7 @@ def _run_tui(url: str, session_id: str | None) -> None:
         )
 
     app = JarvisTUI(daemon_ws_url=url, session_id=session_id)
-    app.run(driver=driver)
+    app.run(inline=(driver == "inline"))
 
 
 def _run_plain_chat(url: str, session_id: str | None) -> None:
