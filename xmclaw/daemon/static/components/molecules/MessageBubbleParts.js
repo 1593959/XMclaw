@@ -6,6 +6,7 @@
 
 const { h } = window.__xmc.preact;
 const html = window.__xmc.htm.bind(h);
+const { useState, useEffect } = window.__xmc.preact_hooks;
 
 import { lex, renderTokenHtml } from "../../lib/markdown.js";
 import { Spinner } from "../atoms/spinner.js";
@@ -217,12 +218,15 @@ function _stripSystemFences(s) {
 }
 
 export function MarkdownBody({ content }) {
-  // Lex once per render; lex itself memoises by source string identity, so
-  // re-renders with the same content are O(1). When a new chunk arrives,
-  // only the LAST token's html string changes, so Preact's keyed diff
-  // touches a single child node — no flicker, no cursor jump.
+  // Debounce lex so streaming chunks arriving faster than 80ms
+  // coalesce into a single parse pass. Each MarkdownBody instance
+  // owns its own timer — no cross-instance contention.
   const cleaned = _stripSystemFences(content || "");
-  const tokens = lex(cleaned);
+  const [tokens, setTokens] = useState(() => lex(cleaned));
+  useEffect(() => {
+    const id = setTimeout(() => setTokens(lex(cleaned)), 80);
+    return () => clearTimeout(id);
+  }, [cleaned]);
   if (!tokens.length) {
     return html`<div class="xmc-msg__body xmc-md"></div>`;
   }

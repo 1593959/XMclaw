@@ -116,12 +116,32 @@
 
 /* ── Lists ─────────────────────────────────────────────────────────── */
 
-.xmc-md ul,
+.xmc-md ul {
+  list-style: disc;
+  padding-left: 1.4rem;
+}
 .xmc-md ol {
+  list-style: decimal;
   padding-left: 1.4rem;
 }
 .xmc-md li {
   margin: 0.18rem 0;
+}
+
+/* ── Paragraphs ─────────────────────────────────────────────────────── */
+
+.xmc-md p {
+  margin: 0.5rem 0;
+}
+
+/* ── Inline code ────────────────────────────────────────────────────── */
+
+.xmc-md code:not(pre code) {
+  background: var(--xmc-bg);
+  border-radius: var(--xmc-radius-sm);
+  padding: 1px 5px;
+  font-family: var(--xmc-font-mono);
+  font-size: 0.95em;
 }
 
 /* ── Headings ─────────────────────────────────────────────────────── */
