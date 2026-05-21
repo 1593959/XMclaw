@@ -1,0 +1,187 @@
+"""IntentStore — SQLite persistence for learned user patterns.
+
+Lightweight, no vector extension required. Patterns are small,
+structured rows keyed by a hash of their antecedent sequence.
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+import time
+from pathlib import Path
+from typing import Any
+
+from xmclaw.cognition.intent_engine.models import UserPattern
+from xmclaw.utils.log import get_logger
+
+_log = get_logger(__name__)
+
+
+class IntentStore:
+    """Persistent storage for :class:`UserPattern` records.
+
+    Parameters
+    ----------
+    db_path : Path
+        SQLite file location. Parent dirs are created if missing.
+    """
+
+    def __init__(self, db_path: Path) -> None:
+        self._db_path = Path(db_path)
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = self._open_conn()
+        self._ensure_schema()
+
+    def _open_conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        return conn
+
+    def _ensure_schema(self) -> None:
+        cur = self._conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS patterns (
+                pattern_id TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                antecedent TEXT NOT NULL,   -- JSON list of event type strings
+                predicted_intent TEXT NOT NULL,
+                frequency INTEGER DEFAULT 0,
+                confidence REAL DEFAULT 0.0,
+                last_seen REAL DEFAULT 0.0,
+                context_buckets TEXT DEFAULT '{}'  -- JSON dict
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_patterns_intent
+            ON patterns(predicted_intent)
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_patterns_confidence
+            ON patterns(confidence)
+        """)
+        # Feedback log — every time a proposal is shown and the user reacts.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pattern_id TEXT,
+                proposal_ts REAL,
+                reaction TEXT,  -- 'accepted' | 'ignored' | 'dismissed' | 'snoozed'
+                metadata TEXT DEFAULT '{}'
+            )
+        """)
+        self._conn.commit()
+
+    # ── write ──
+
+    def upsert_pattern(self, pattern: UserPattern) -> None:
+        cur = self._conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO patterns (pattern_id, label, antecedent, predicted_intent,
+                                  frequency, confidence, last_seen, context_buckets)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(pattern_id) DO UPDATE SET
+                frequency = excluded.frequency,
+                confidence = excluded.confidence,
+                last_seen = excluded.last_seen,
+                context_buckets = excluded.context_buckets
+            """,
+            (
+                pattern.pattern_id,
+                pattern.label,
+                json.dumps(pattern.antecedent, ensure_ascii=False),
+                pattern.predicted_intent,
+                pattern.frequency,
+                pattern.confidence,
+                pattern.last_seen,
+                json.dumps(pattern.context_buckets, ensure_ascii=False),
+            ),
+        )
+        self._conn.commit()
+
+    def record_feedback(
+        self,
+        pattern_id: str | None,
+        reaction: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        cur = self._conn.cursor()
+        cur.execute(
+            "INSERT INTO feedback (pattern_id, proposal_ts, reaction, metadata) VALUES (?, ?, ?, ?)",
+            (pattern_id, time.time(), reaction, json.dumps(metadata or {}, ensure_ascii=False)),
+        )
+        self._conn.commit()
+
+    def bump_frequency(self, pattern_id: str) -> None:
+        cur = self._conn.cursor()
+        cur.execute(
+            "UPDATE patterns SET frequency = frequency + 1, last_seen = ? WHERE pattern_id = ?",
+            (time.time(), pattern_id),
+        )
+        self._conn.commit()
+
+    def update_confidence(self, pattern_id: str, new_confidence: float) -> None:
+        cur = self._conn.cursor()
+        cur.execute(
+            "UPDATE patterns SET confidence = ? WHERE pattern_id = ?",
+            (max(0.0, min(1.0, new_confidence)), pattern_id),
+        )
+        self._conn.commit()
+
+    # ── read ──
+
+    def get_pattern(self, pattern_id: str) -> UserPattern | None:
+        cur = self._conn.cursor()
+        row = cur.execute(
+            "SELECT * FROM patterns WHERE pattern_id = ?", (pattern_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_pattern(row)
+
+    def list_patterns(
+        self,
+        *,
+        min_confidence: float = 0.0,
+        intent_type: str | None = None,
+        limit: int = 100,
+    ) -> list[UserPattern]:
+        cur = self._conn.cursor()
+        sql = "SELECT * FROM patterns WHERE confidence >= ?"
+        params: list[Any] = [min_confidence]
+        if intent_type:
+            sql += " AND predicted_intent = ?"
+            params.append(intent_type)
+        sql += " ORDER BY confidence DESC, frequency DESC LIMIT ?"
+        params.append(limit)
+        rows = cur.execute(sql, params).fetchall()
+        return [self._row_to_pattern(r) for r in rows]
+
+    def feedback_stats(self, pattern_id: str) -> dict[str, int]:
+        cur = self._conn.cursor()
+        rows = cur.execute(
+            "SELECT reaction, COUNT(*) FROM feedback WHERE pattern_id = ? GROUP BY reaction",
+            (pattern_id,),
+        ).fetchall()
+        return {r["reaction"]: r["COUNT(*)"] for r in rows}
+
+    def close(self) -> None:
+        self._conn.close()
+
+    # ── helpers ──
+
+    @staticmethod
+    def _row_to_pattern(row: sqlite3.Row) -> UserPattern:
+        return UserPattern(
+            pattern_id=row["pattern_id"],
+            label=row["label"],
+            antecedent=json.loads(row["antecedent"]),
+            predicted_intent=row["predicted_intent"],
+            frequency=row["frequency"],
+            confidence=row["confidence"],
+            last_seen=row["last_seen"],
+            context_buckets=json.loads(row["context_buckets"]),
+        )

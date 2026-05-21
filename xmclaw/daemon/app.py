@@ -2150,17 +2150,34 @@ def create_app(
                         # wrap in ``use_current_agent_id`` so tools
                         # invoked during the turn (e.g., agent-to-agent)
                         # can discover which agent initiated them.
+                        #
+                        # Jarvis J2: if a JarvisOrchestrator is wired
+                        # and this is the primary agent (not a worker
+                        # agent), route through it so complex goals get
+                        # PlanEngine → WorkerSwarm treatment.
                         try:
                             with use_current_agent_id(resolved_agent_id):
-                                await active_agent.run_turn(
-                                    session_id, content,
-                                    user_correlation_id=user_corr,
-                                    llm_profile_id=llm_profile_id,
-                                    user_images=(
-                                        tuple(user_image_paths)
-                                        if user_image_paths else None
-                                    ),
+                                jarvis_orch = getattr(
+                                    app.state, "jarvis_orchestrator", None,
                                 )
+                                if (
+                                    jarvis_orch is not None
+                                    and resolved_agent_id == "main"
+                                ):
+                                    await jarvis_orch.handle(
+                                        session_id, content,
+                                        llm_profile_id=llm_profile_id,
+                                    )
+                                else:
+                                    await active_agent.run_turn(
+                                        session_id, content,
+                                        user_correlation_id=user_corr,
+                                        llm_profile_id=llm_profile_id,
+                                        user_images=(
+                                            tuple(user_image_paths)
+                                            if user_image_paths else None
+                                        ),
+                                    )
                         except Exception as exc:  # noqa: BLE001
                             # Surface a structured error frame so the
                             # client sees the failure instead of a

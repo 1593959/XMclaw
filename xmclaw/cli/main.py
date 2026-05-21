@@ -51,8 +51,11 @@ app.add_typer(memory_app, name="memory")
 # command definitions; we just register them here under their CLI
 # names. ``evolution`` gets a second alias ``evolve`` for the
 # verb-style shorthand already used in docs.
+from xmclaw.cli._acp_cmds import acp_app  # noqa: E402  Jarvis Phase J3
 from xmclaw.cli._approvals_cmds import approvals_app  # noqa: E402
 from xmclaw.cli._backup_cmds import backup_app  # noqa: E402
+from xmclaw.cli._chat_cmds import chat_app  # noqa: E402  Jarvis Phase J3
+from xmclaw.cli._codebase_cmds import codebase_app  # noqa: E402  Jarvis Phase J1
 from xmclaw.cli._config_cmds import config_app  # noqa: E402
 from xmclaw.cli._curriculum_cmds import curriculum_app  # noqa: E402
 from xmclaw.cli._evolution_cmds import evolution_app  # noqa: E402
@@ -62,6 +65,8 @@ from xmclaw.cli.skill_marketplace import skill_app  # noqa: E402  B-390
 from xmclaw.cli.eval import eval_app  # noqa: E402  Sprint 4: A/B harness
 app.add_typer(config_app, name="config")
 app.add_typer(backup_app, name="backup")
+app.add_typer(chat_app, name="chat")  # Jarvis Phase J3
+app.add_typer(codebase_app, name="codebase")  # Jarvis Phase J1
 app.add_typer(evolution_app, name="evolution")
 app.add_typer(evolution_app, name="evolve")
 app.add_typer(approvals_app, name="approvals")
@@ -70,6 +75,7 @@ app.add_typer(security_app, name="security")
 app.add_typer(session_app, name="session")
 app.add_typer(skill_app, name="skill")  # B-390 (Sprint 2): skill marketplace
 app.add_typer(eval_app, name="eval")  # Sprint 4: A/B benchmark harness
+app.add_typer(acp_app, name="acp")  # Jarvis Phase J3
 
 # B-325 back-compat re-exports: tests / external callers used to
 # ``from xmclaw.cli.main import _default_config_template`` etc when

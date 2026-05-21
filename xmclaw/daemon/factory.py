@@ -1074,6 +1074,29 @@ def build_tools_from_config(
         from xmclaw.providers.tool.calendar import CalendarToolProvider
         children.append(CalendarToolProvider(ics_path=ics_path.strip()))
 
+    # CodebaseIndex tool provider (Jarvis Phase J1).
+    # Wired when tools.codebase.enabled is true (default true).
+    codebase_cfg = tools_section.get("codebase") or {}
+    if isinstance(codebase_cfg, dict) and codebase_cfg.get("enabled", True):
+        try:
+            from xmclaw.cognition.codebase_index import CodebaseStore, CodebaseToolProvider
+            from xmclaw.providers.memory.embedding import build_embedding_provider
+            from xmclaw.utils.paths import data_dir
+            store_path = data_dir() / "v2" / "codebase" / "index.db"
+            codebase_store = CodebaseStore(
+                store_path,
+                embedding_dim=None,  # lazy-init on first embedding
+            )
+            embedder = build_embedding_provider(cfg)
+            children.append(CodebaseToolProvider(
+                store=codebase_store,
+                embedder=embedder,
+            ))
+        except Exception:  # noqa: BLE001
+            # Lazy-fail: if codebase tools can't load (missing deps,
+            # bad config), daemon still boots — the tools just don't list.
+            pass
+
     if len(children) == 1:
         provider = builtins  # no extras wired -- skip the composite wrapper
     else:

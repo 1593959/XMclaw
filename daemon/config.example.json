@@ -263,7 +263,11 @@
         "_lookback_h_help": "汇总往前看多少小时的事件。",
         "lookback_h": 24.0,
         "urgency": "normal"
-      }
+      },
+      "_intent_engine_help": "Jarvis Phase J2: 意图预测引擎。从事件流学习用户行为模式，替代固定规则触发器。enabled 隐式 true（只要 proactive.enabled=true 就启用）；加 'intent_prediction' 到 disabled_triggers 可单独关闭。",
+      "intent_prediction_cooldown_s": 600,
+      "intent_prediction_threshold": 0.6,
+      "disabled_triggers": []
     }
   },
   "channels": {

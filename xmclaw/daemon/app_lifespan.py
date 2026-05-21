@@ -2457,6 +2457,53 @@ def make_lifespan(
                         "daily_digest.register_failed err=%s", exc,
                     )
 
+                # Jarvis Phase J2: IntentEngine — predictive proactive
+                # assistance that learns from the event stream.
+                try:
+                    from xmclaw.cognition.intent_engine import (
+                        IntentEngine,
+                        IntentPredictionTrigger,
+                        IntentStore,
+                    )
+                    from xmclaw.utils.paths import data_dir as _data_dir
+
+                    intent_store = IntentStore(
+                        _data_dir() / "v2" / "intent_engine" / "patterns.db",
+                    )
+                    intent_engine = IntentEngine(
+                        store=intent_store,
+                        llm=getattr(agent, "_llm", None) if agent else None,
+                    )
+                    # Subscribe to ALL events so the engine can learn patterns.
+                    if bus is not None:
+                        bus.subscribe(
+                            lambda _ev: True,
+                            intent_engine.on_event,
+                        )
+                    if "intent_prediction" not in disabled:
+                        proactive_agent.register_trigger(
+                            IntentPredictionTrigger(
+                                engine=intent_engine,
+                                cooldown_s=float(
+                                    proactive_cfg.get(
+                                        "intent_prediction_cooldown_s", 600.0,
+                                    )
+                                    if isinstance(proactive_cfg, dict) else 600.0
+                                ),
+                                confidence_threshold=float(
+                                    proactive_cfg.get(
+                                        "intent_prediction_threshold", 0.6,
+                                    )
+                                    if isinstance(proactive_cfg, dict) else 0.6
+                                ),
+                            ),
+                        )
+                    _app.state.intent_engine = intent_engine
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "intent_engine.register_failed err=%s", exc,
+                    )
+
                 await proactive_agent.start()
                 _app.state.proactive_agent = proactive_agent
                 # Back-reference so AgentLoop can call note_user_message
@@ -2466,6 +2513,38 @@ def make_lifespan(
                         agent._proactive_agent = proactive_agent
                     except Exception:  # noqa: BLE001
                         pass
+
+                # Jarvis Phase J2: Orchestrator — PlanEngine + WorkerSwarm.
+                # Only wired when agent (AgentLoop) is available.
+                try:
+                    if agent is not None:
+                        from xmclaw.orchestrator import (
+                            JarvisOrchestrator,
+                            PlanEngine,
+                            WorkerSwarm,
+                        )
+                        from xmclaw.cognition.htn_planner import HTNPlanner
+
+                        planner = HTNPlanner(
+                            llm=getattr(agent, "_llm", None),
+                            max_depth=3,
+                            max_sub_goals=6,
+                        )
+                        plan_engine = PlanEngine(planner=planner)
+                        worker_swarm = WorkerSwarm(
+                            agent_loop=agent,
+                            max_workers=4,
+                        )
+                        jarvis_orch = JarvisOrchestrator(
+                            agent_loop=agent,
+                            plan_engine=plan_engine,
+                            worker_swarm=worker_swarm,
+                        )
+                        _app.state.jarvis_orchestrator = jarvis_orch
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "jarvis_orchestrator.init_failed err=%s", exc,
+                    )
 
                 # Wave-32 (2026-05-18): build the user-defined hook
                 # engine from ``config.hooks`` and attach it to the
