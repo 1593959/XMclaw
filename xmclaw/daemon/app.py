@@ -2167,6 +2167,7 @@ def create_app(
                                     await jarvis_orch.handle(
                                         session_id, content,
                                         llm_profile_id=llm_profile_id,
+                                        user_correlation_id=user_corr,
                                     )
                                 else:
                                     await active_agent.run_turn(

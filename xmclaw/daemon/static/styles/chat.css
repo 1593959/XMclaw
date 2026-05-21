@@ -6,26 +6,6 @@
  */
 
 .xmc-chat {
-  /* Hermes 兼容层：在 Hermes shell 内自动使用其调色板，
-     独立运行时 fallback 到原生值。 */
-  --xmc-bg: var(--background-base, #0e1116);
-  --xmc-bg-elev: color-mix(in srgb, var(--midground-base, #ffe6cb) 4%, var(--background-base, #041c1c));
-  --xmc-bg-elev-2: color-mix(in srgb, var(--midground-base, #ffe6cb) 8%, var(--background-base, #041c1c));
-  --xmc-fg: var(--midground, #e6edf3);
-  --xmc-fg-muted: var(--color-muted-foreground, #8d96a0);
-  --xmc-fg-subtle: color-mix(in srgb, var(--midground-base, #ffe6cb) 35%, transparent);
-  --xmc-border: var(--color-border, #30363d);
-  --xmc-border-strong: color-mix(in srgb, var(--midground-base, #ffe6cb) 25%, transparent);
-  --xmc-accent: var(--color-primary, #4c8bf5);
-  --xmc-accent-fg: var(--background-base, #0e1116);
-  --xmc-accent-soft: color-mix(in srgb, var(--color-primary, #4c8bf5) 18%, transparent);
-  --xmc-success: var(--color-success, #2ea043);
-  --xmc-warn: var(--color-warning, #d29922);
-  --xmc-error: var(--color-destructive, #f85149);
-  --xmc-info: var(--color-primary, #58a6ff);
-  --xmc-font-sans: var(--theme-font-sans, "Inter", "PingFang SC", system-ui, sans-serif);
-  --xmc-font-mono: var(--theme-font-mono, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace);
-
   display: grid;
   grid-template-rows: auto 1fr auto;
   height: 100%;

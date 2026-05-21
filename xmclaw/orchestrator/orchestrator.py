@@ -74,6 +74,7 @@ class JarvisOrchestrator:
         llm_profile_id: str | None = None,
         tools_allowlist: set[str] | frozenset[str] | None = None,
         force_complex: bool = False,
+        user_correlation_id: str | None = None,
     ) -> OrchestratorResult:
         """Route a user message to the appropriate execution path."""
         start = time.monotonic()
@@ -87,6 +88,7 @@ class JarvisOrchestrator:
                 user_message=user_message,
                 llm_profile_id=llm_profile_id,
                 tools_allowlist=tools_allowlist,
+                user_correlation_id=user_correlation_id,
             )
             text = getattr(result, "content", "") or getattr(result, "output", "") or ""
             return OrchestratorResult(
@@ -106,6 +108,7 @@ class JarvisOrchestrator:
                 user_message=user_message,
                 llm_profile_id=llm_profile_id,
                 tools_allowlist=tools_allowlist,
+                user_correlation_id=user_correlation_id,
             )
             text = getattr(result, "content", "") or getattr(result, "output", "") or ""
             return OrchestratorResult(
@@ -123,6 +126,7 @@ class JarvisOrchestrator:
                 user_message=user_message,
                 llm_profile_id=llm_profile_id,
                 tools_allowlist=tools_allowlist,
+                user_correlation_id=user_correlation_id,
             )
             text = getattr(result, "content", "") or getattr(result, "output", "") or ""
             return OrchestratorResult(
