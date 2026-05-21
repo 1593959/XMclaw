@@ -112,6 +112,12 @@ from xmclaw.providers.tool.builtin_planmode import (
     BuiltinToolsPlanModeMixin,
     is_blocked_by_plan_mode,
 )
+from xmclaw.providers.tool.builtin_canvas import (
+    BuiltinToolsCanvasMixin,
+    _CANVAS_CLOSE_SPEC,
+    _CANVAS_CREATE_SPEC,
+    _CANVAS_UPDATE_SPEC,
+)
 from xmclaw.providers.tool.builtin_shell import BuiltinToolsShellMixin
 from xmclaw.providers.tool.builtin_user import BuiltinToolsUserMixin
 from xmclaw.providers.tool.builtin_voice import BuiltinToolsVoiceMixin
@@ -146,6 +152,7 @@ def resolve_pending_question(
     return True
 
 class BuiltinTools(
+    BuiltinToolsCanvasMixin,
     BuiltinToolsDbMixin,
     BuiltinToolsFsMixin,
     BuiltinToolsMemoryMixin,
@@ -202,7 +209,9 @@ class BuiltinTools(
         # backend (ddg / bing / brave / google_cse) and look up API
         # keys. None → ddg-only.
         search_config_getter: "object | None" = None,
+        canvas_listener: "object | None" = None,
     ) -> None:
+        self._canvas_listener = canvas_listener
         self._allowed = (
             [Path(d).resolve() for d in allowed_dirs] if allowed_dirs else None
         )
@@ -431,6 +440,15 @@ class BuiltinTools(
             specs.append(_VOICE_TRANSCRIBE_SPEC)
         if self._tts_provider is not None:
             specs.append(_VOICE_SYNTHESIZE_SPEC)
+        # Live Canvas / A2UI tools. Always advertised — they emit events
+        # through the canvas_listener when wired; without it the tool
+        # still works (artifacts are tracked in-memory) but the frontend
+        # won't see live updates.
+        specs.extend([
+            _CANVAS_CREATE_SPEC,
+            _CANVAS_UPDATE_SPEC,
+            _CANVAS_CLOSE_SPEC,
+        ])
         return specs
 
     async def invoke(self, call: ToolCall) -> ToolResult:
@@ -574,6 +592,12 @@ class BuiltinTools(
                         "voice.tts in config)",
                     )
                 return await self._voice_synthesize(call, t0)
+            if call.name == "canvas_create":
+                return await self._canvas_create(call, t0)
+            if call.name == "canvas_update":
+                return await self._canvas_update(call, t0)
+            if call.name == "canvas_close":
+                return await self._canvas_close(call, t0)
             return _fail(call, t0, f"unknown tool: {call.name!r}")
         except PermissionError as exc:
             return _fail(call, t0, f"permission denied: {exc}")

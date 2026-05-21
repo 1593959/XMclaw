@@ -34,6 +34,7 @@ from xmclaw.core.persona.loader import (
     load_persona_files,
     sanitize_for_prompt,
 )
+from xmclaw.core.persona.provider_guidance import provider_guidance
 from xmclaw.core.persona.templates import DEFAULT_IDENTITY_LINE
 
 
@@ -219,6 +220,14 @@ def build_system_prompt(
     persona = _persona_section(files)
     if persona:
         parts.append(persona)
+
+    # Slot 2.5: provider-family operational guidance.
+    # Injected after persona so project-specific rules win, but before
+    # platform/tools so the model sees backend quirks right next to its
+    # operational context.
+    _guidance = provider_guidance(backend_label)
+    if _guidance:
+        parts.append(_guidance)
 
     # Slot 3: platform hint.
     parts.append(_platform_hint())

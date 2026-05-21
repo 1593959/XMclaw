@@ -413,6 +413,22 @@ class EventType(str, Enum):
     #   "would_exceed_at_step": int  # the step index that triggered halt
     PLAN_BUDGET_EXCEEDED = "plan_budget_exceeded"
 
+    # Live Canvas / A2UI (Phase 6+): agent-generated visual artifacts.
+    # Emitted when the agent calls canvas_create / canvas_update / canvas_close
+    # so the frontend can render diagrams, charts, tables, and rich HTML
+    # inline in the chat transcript.
+    #
+    # CANVAS_ARTIFACT_CREATED payload:
+    #   {"artifact_id": str, "kind": "mermaid"|"html"|"svg"|"chart"|"table",
+    #    "title": str, "content": str, "turn_id": str}
+    # CANVAS_ARTIFACT_UPDATED payload:
+    #   {"artifact_id": str, "content": str}
+    # CANVAS_ARTIFACT_CLOSED payload:
+    #   {"artifact_id": str}
+    CANVAS_ARTIFACT_CREATED = "canvas_artifact_created"
+    CANVAS_ARTIFACT_UPDATED = "canvas_artifact_updated"
+    CANVAS_ARTIFACT_CLOSED = "canvas_artifact_closed"
+
 
 @dataclass(frozen=True, slots=True)
 class BehavioralEvent:

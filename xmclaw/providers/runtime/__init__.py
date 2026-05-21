@@ -29,3 +29,19 @@ __all__ = [
     "SkillRuntime",
     "SkillStatus",
 ]
+
+# Lazy re-export for sandbox runtimes so they don't drag heavy deps
+# at import time (docker/paramiko/modal/daytona are runtime-only).
+for _mod, _name in [
+    ("xmclaw.providers.runtime.docker", "DockerSkillRuntime"),
+    ("xmclaw.providers.runtime.ssh", "SSHSkillRuntime"),
+    ("xmclaw.providers.runtime.modal", "ModalSkillRuntime"),
+    ("xmclaw.providers.runtime.daytona", "DaytonaSkillRuntime"),
+    ("xmclaw.providers.runtime.vercel", "VercelSkillRuntime"),
+    ("xmclaw.providers.runtime.singularity", "SingularitySkillRuntime"),
+]:
+    try:
+        exec(f"from {_mod} import {_name}")  # noqa: S102
+        __all__.append(_name)
+    except ImportError:  # pragma: no cover
+        pass

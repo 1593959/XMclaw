@@ -27,6 +27,9 @@ const HANDLED = new Set([
   "skill_promoted",
   "skill_rolled_back",
   "prompt_injection_detected",
+  "canvas_artifact_created",
+  "canvas_artifact_updated",
+  "canvas_artifact_closed",
 ]);
 
 
@@ -337,6 +340,54 @@ export function applySecondaryEvent(chat, envelope, helpers) {
           content: `🛡️ Prompt 注入检测 (源: ${source})${findings ? " — " + findings : ""}`,
           status: "complete",
           ts,
+        }),
+      };
+    }
+
+    case "canvas_artifact_created": {
+      const turnId = payload.turn_id || corr;
+      const idx = chat.messages.findIndex((m) => m.id === turnId);
+      if (idx === -1) return chat;
+      const artifact = {
+        artifact_id: payload.artifact_id,
+        kind: payload.kind,
+        title: payload.title || "Artifact",
+        content: payload.content || "",
+        open: true,
+      };
+      return {
+        ...chat,
+        messages: upsertById(chat.messages, turnId, (m) => ({
+          ...m,
+          canvasArtifacts: (m.canvasArtifacts || []).concat(artifact),
+        })),
+      };
+    }
+
+    case "canvas_artifact_updated": {
+      const aid = payload.artifact_id;
+      return {
+        ...chat,
+        messages: chat.messages.map((m) => {
+          if (!m.canvasArtifacts) return m;
+          const arts = m.canvasArtifacts.map((art) =>
+            art.artifact_id === aid
+              ? { ...art, content: payload.content || art.content }
+              : art
+          );
+          return { ...m, canvasArtifacts: arts };
+        }),
+      };
+    }
+
+    case "canvas_artifact_closed": {
+      const aid = payload.artifact_id;
+      return {
+        ...chat,
+        messages: chat.messages.map((m) => {
+          if (!m.canvasArtifacts) return m;
+          const arts = m.canvasArtifacts.filter((art) => art.artifact_id !== aid);
+          return { ...m, canvasArtifacts: arts };
         }),
       };
     }

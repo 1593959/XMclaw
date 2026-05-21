@@ -496,3 +496,51 @@ def test_sanitize_redacts_chinese_jailbreak():
     out = sanitize_for_prompt(text)
     assert "[redacted:" in out, f"expected redact placeholder in {out!r}"
     assert "你好。" in out  # surrounding prose preserved
+
+
+# ── Provider-family operational guidance ──────────────────────────
+
+def test_provider_guidance_injected_for_gpt():
+    from xmclaw.core.persona.provider_guidance import provider_guidance
+    assert "OpenAI/GPT" in provider_guidance("openai/gpt-4o (default)")
+    assert "OpenAI/GPT" in provider_guidance("azure_openai/gpt-4 (prod)")
+
+
+def test_provider_guidance_injected_for_claude():
+    from xmclaw.core.persona.provider_guidance import provider_guidance
+    assert "Anthropic/Claude" in provider_guidance("anthropic/claude-sonnet-4 (claude)")
+
+
+def test_provider_guidance_injected_for_google():
+    from xmclaw.core.persona.provider_guidance import provider_guidance
+    assert "Google/Gemini" in provider_guidance("google/gemini-2.5-pro (gemini)")
+    assert "Google/Gemini" in provider_guidance("gemini/gemini-2.0-flash (flash)")
+
+
+def test_provider_guidance_returns_none_for_unknown():
+    from xmclaw.core.persona.provider_guidance import provider_guidance
+    assert provider_guidance("unknown/thing (test)") is None
+    assert provider_guidance(None) is None
+
+
+def test_build_system_prompt_includes_provider_guidance(profile_dir: Path):
+    """When backend_label resolves to a known family, the guidance
+    block is injected between persona files and platform hint."""
+    from xmclaw.core.persona.assembler import _platform_hint
+    ensure_default_profile(profile_dir)
+    out = build_system_prompt(
+        profile_dir=profile_dir,
+        backend_label="openai/gpt-4o (default)",
+    )
+    assert "## 后端操作提示（OpenAI/GPT）" in out
+    # Guidance sits BEFORE the platform hint.
+    assert out.index("## 后端操作提示") < out.index("## 运行时环境")
+
+
+def test_build_system_prompt_omits_guidance_when_family_unknown(profile_dir: Path):
+    ensure_default_profile(profile_dir)
+    out = build_system_prompt(
+        profile_dir=profile_dir,
+        backend_label="kimi/k2.6 (default)",
+    )
+    assert "## 后端操作提示" not in out

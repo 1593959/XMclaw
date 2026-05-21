@@ -1,0 +1,142 @@
+/* XMclaw — Canvas Artifact styles
+ *
+ * Inline visual artifacts: mermaid diagrams, charts, tables, HTML, SVG.
+ * Dark-theme first; light theme inherits via CSS variables.
+ */
+
+/* ── artifact chrome (collapsible <details>) ─────────────────────── */
+.xmc-canvas-artifact {
+  margin: 0.6rem 0;
+  border: 1px solid var(--xmc-border-subtle, rgba(255, 255, 255, 0.08));
+  border-radius: 10px;
+  background: var(--xmc-surface-elevated, #1e2430);
+  overflow: hidden;
+}
+
+.xmc-canvas-artifact__summary {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.5rem 0.7rem;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  font-size: 0.88rem;
+  color: var(--xmc-fg-muted, #8b92a8);
+}
+
+.xmc-canvas-artifact__summary::-webkit-details-marker {
+  display: none;
+}
+
+.xmc-canvas-artifact__icon {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.xmc-canvas-artifact__title {
+  font-weight: 600;
+  color: var(--xmc-fg-primary, #e0e4ea);
+}
+
+.xmc-canvas-artifact__kind {
+  margin-left: auto;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  background: var(--xmc-surface-base, #161b26);
+  color: var(--xmc-fg-muted, #8b92a8);
+}
+
+.xmc-canvas-artifact__body {
+  padding: 0.6rem 0.7rem 0.8rem;
+  border-top: 1px solid var(--xmc-border-subtle, rgba(255, 255, 255, 0.06));
+}
+
+/* ── mermaid ────────────────────────────────────────────────────── */
+.xmc-canvas-mermaid svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}
+
+/* ── html iframe ─────────────────────────────────────────────────── */
+.xmc-canvas-html {
+  width: 100%;
+  min-height: 180px;
+  max-height: 520px;
+  border: none;
+  border-radius: 6px;
+  background: #1a1f2a;
+}
+
+/* ── svg ─────────────────────────────────────────────────────────── */
+.xmc-canvas-svg svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* ── chart ───────────────────────────────────────────────────────── */
+.xmc-canvas-chart {
+  max-width: 100%;
+  max-height: 360px;
+}
+
+/* ── table ───────────────────────────────────────────────────────── */
+.xmc-canvas-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.xmc-canvas-table th,
+.xmc-canvas-table td {
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--xmc-border-subtle, rgba(255, 255, 255, 0.08));
+  text-align: left;
+}
+
+.xmc-canvas-table th {
+  background: var(--xmc-surface-base, #161b26);
+  font-weight: 600;
+  color: var(--xmc-fg-primary, #e0e4ea);
+}
+
+.xmc-canvas-table td {
+  color: var(--xmc-fg-secondary, #c4c8d4);
+}
+
+.xmc-canvas-table tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* ── raw fallback / error ────────────────────────────────────────── */
+.xmc-canvas-raw {
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  background: var(--xmc-surface-base, #161b26);
+  border-radius: 6px;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--xmc-fg-secondary, #c4c8d4);
+}
+
+.xmc-canvas-error {
+  color: var(--xmc-error, #e74c3c);
+  font-size: 0.82rem;
+}
+
+.xmc-canvas-loading {
+  padding: 0.5rem 0;
+  font-size: 0.85rem;
+  color: var(--xmc-fg-muted, #8b92a8);
+  font-style: italic;
+}

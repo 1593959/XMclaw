@@ -830,3 +830,76 @@ async def test_b351_tool_invoke_uncaught_exception_still_emits_finish() -> None:
     # contract-violation note so debug is easy.
     assert "RuntimeError" in payload["error"]
     assert "uncaught" in payload["error"].lower() or "contract" in payload["error"].lower()
+
+
+# ── B-25-strict: frozen snapshot immutability ─────────────────────
+
+def test_strict_freeze_keeps_snapshot_across_generation_bump():
+    """When strict_freeze=True, a session's frozen prompt is immutable
+    even when the global generation is bumped."""
+    import xmclaw.daemon.prompt_builder as _pb
+    bus = InProcessEventBus()
+    llm = _ScriptedLLM(script=[
+        LLMResponse(content="hi", tool_calls=()),
+    ])
+    agent = AgentLoop(llm=llm, bus=bus, strict_freeze=True)
+
+    # First turn establishes the frozen snapshot.
+    asyncio.run(agent.run_turn("sess-strict", "hello"))
+    snap = agent._frozen_prompts["sess-strict"]
+    assert snap[0] == _pb._PROMPT_FREEZE_GENERATION
+
+    # Bump generation — simulates a persona edit.
+    _pb.bump_prompt_freeze_generation()
+
+    # Second turn must NOT re-render the snapshot.
+    asyncio.run(agent.run_turn("sess-strict", "again"))
+    snap2 = agent._frozen_prompts["sess-strict"]
+    assert snap2[0] == snap[0], "strict freeze must ignore generation bump"
+
+
+def test_strict_freeze_false_rebuilds_on_generation_bump():
+    """Default behaviour (strict_freeze=False): snapshot is rebuilt
+    when the global generation changes."""
+    import xmclaw.daemon.prompt_builder as _pb
+    bus = InProcessEventBus()
+    llm = _ScriptedLLM(script=[
+        LLMResponse(content="hi", tool_calls=()),
+        LLMResponse(content="hi again", tool_calls=()),
+    ])
+    agent = AgentLoop(llm=llm, bus=bus, strict_freeze=False)
+
+    asyncio.run(agent.run_turn("sess-loose", "hello"))
+    snap = agent._frozen_prompts["sess-loose"]
+
+    _pb.bump_prompt_freeze_generation()
+
+    asyncio.run(agent.run_turn("sess-loose", "again"))
+    snap2 = agent._frozen_prompts["sess-loose"]
+    assert snap2[0] != snap[0], "loose mode must rebuild on generation bump"
+
+
+def test_thaw_session_explicitly_invalidates_snapshot():
+    """thaw_session() allows explicit refresh even under strict_freeze."""
+    bus = InProcessEventBus()
+    llm = _ScriptedLLM(script=[
+        LLMResponse(content="hi", tool_calls=()),
+        LLMResponse(content="hi again", tool_calls=()),
+    ])
+    agent = AgentLoop(llm=llm, bus=bus, strict_freeze=True)
+
+    asyncio.run(agent.run_turn("sess-thaw", "hello"))
+    assert "sess-thaw" in agent._frozen_prompts
+
+    assert agent.thaw_session("sess-thaw") is True
+    assert "sess-thaw" not in agent._frozen_prompts
+
+    # After thaw, next turn rebuilds.
+    asyncio.run(agent.run_turn("sess-thaw", "again"))
+    assert "sess-thaw" in agent._frozen_prompts
+
+
+def test_thaw_session_returns_false_for_unknown_session():
+    bus = InProcessEventBus()
+    agent = AgentLoop(llm=_ScriptedLLM([]), bus=bus)
+    assert agent.thaw_session("nonexistent") is False

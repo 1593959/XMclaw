@@ -61,8 +61,8 @@ from xmclaw.security import (
 from xmclaw.utils.cost import CostTracker
 from xmclaw.daemon.prompt_builder import (
     _DEFAULT_SYSTEM,
-    _PROMPT_FREEZE_GENERATION,
     _with_fresh_time,
+    get_prompt_freeze_generation,
 )
 
 from xmclaw.daemon.turn_context import (
@@ -165,6 +165,8 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # ``async extract(turn_summary, ctx) -> list[ExtractedFact]``
         # works. None → auto-put is silent no-op.
         memory_extractor: Any = None,
+        # B-25-strict: mid-session immutability for prefix-cache stability.
+        strict_freeze: bool = False,
     ) -> None:
         self._llm = llm
         self._bus = bus
@@ -182,6 +184,13 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # Epic #24 Phase 1: removed the learned_skills section that
         # used to ride this cache; persona / agent identity remain.
         self._frozen_prompts: dict[str, tuple[int, str]] = {}
+        # B-25-strict: when True, a session's frozen snapshot is
+        # immutable for the lifetime of that session.  Persona edits,
+        # config changes, and generation bumps do NOT invalidate the
+        # cached base until the session is explicitly thawed or the
+        # agent restarts.  This maximises prefix-cache hit rate on
+        # providers that charge per input token (Claude, GPT-4o).
+        self._strict_freeze = strict_freeze
         # B-30: per-session deferred-LLM-compression queue. When
         # _persist_history detects history overflow it drops the
         # rule-based summary in immediately AND records the raw
@@ -659,6 +668,17 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             get_logger(__name__).warning(
                 "v2_renderer.refresh_failed err=%s", exc,
             )
+
+    def thaw_session(self, session_id: str) -> bool:
+        """Explicitly invalidate the frozen snapshot for *session_id*.
+
+        Returns ``True`` if a cached entry existed and was removed,
+        ``False`` otherwise.  The next turn for this session will
+        rebuild the snapshot from the current ``self._system_prompt``.
+        """
+        existed = session_id in self._frozen_prompts
+        self._frozen_prompts.pop(session_id, None)
+        return existed
 
     async def run_turn(
         self, session_id: str, user_message: str,
@@ -1648,7 +1668,11 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # Time still updates each turn but is appended after the cached
         # prefix, so the provider's prompt-cache prefix stays stable.
         cache_entry = self._frozen_prompts.get(session_id)
-        if cache_entry is None or cache_entry[0] != _PROMPT_FREEZE_GENERATION:
+        _needs_render = cache_entry is None
+        _current_gen = get_prompt_freeze_generation()
+        if cache_entry is not None and not self._strict_freeze:
+            _needs_render = cache_entry[0] != _current_gen
+        if _needs_render:
             # Render once. (Epic #24 Phase 1 stripped the legacy
             # learned_skills layer that used to land here.)
             static_with_skills = _with_fresh_time(self._system_prompt)
@@ -1659,7 +1683,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             if t_idx > 0:
                 static_with_skills = static_with_skills[:t_idx].rstrip()
             self._frozen_prompts[session_id] = (
-                _PROMPT_FREEZE_GENERATION, static_with_skills,
+                _current_gen, static_with_skills,
             )
             cache_entry = self._frozen_prompts[session_id]
         # Build the per-turn time block first (mutable; goes AFTER
@@ -1767,6 +1791,23 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         if _bg_block:
             _parts.append(_bg_block)
         _parts.append(time_block)
+
+        # B-GIT: inject a lightweight git status snapshot when the
+        # primary workspace is a git repo.  Kept small (branch +
+        # dirty flag + 3 recent commits) so it doesn't bloat the
+        # prompt; refreshed every turn because ``git status`` is
+        # cheap (<10 ms) and the agent needs to know about recent
+        # commits or branch switches immediately.
+        try:
+            from xmclaw.core.workspace.git_status import get_git_status
+            ws_path = (self._cfg or {}).get("workspace_root")
+            if ws_path:
+                gs = get_git_status(ws_path)
+                if gs is not None:
+                    _parts.append(gs.render())
+        except Exception:  # noqa: BLE001 — never block a turn over git
+            pass
+
         system_content = (
             "\n\n" + CACHE_BREAKPOINT_MARKER + "\n\n"
         ).join(_parts)

@@ -34,6 +34,7 @@ import {
   ThinkingDots,
   PhaseCard,
 } from "./MessageBubbleParts.js";
+import { CanvasArtifact } from "./CanvasArtifact.js";
 import {
   speak,
   stopSpeaking,
@@ -386,6 +387,9 @@ export function MessageBubble({ message, onAnswerQuestion }) {
                   </div>
                 `
               : null}
+            ${(message.canvasArtifacts || []).map(
+              (art) => html`<${CanvasArtifact} key=${art.artifact_id} artifact=${art} />`
+            )}
           `}
       ${(message.skillNotes || []).map((note, i) => html`
         <${SkillNote} key=${"sn_" + i} note=${note} />

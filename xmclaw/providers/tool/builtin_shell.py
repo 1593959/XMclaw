@@ -326,6 +326,32 @@ class BuiltinToolsShellMixin:
         if len(text) > max_chars:
             text = text[:max_chars]
             truncated = True
+
+        # B-273: scan fetched web content for prompt-injection before
+        # it lands in the agent's context.  A compromised/malicious
+        # webpage can embed invisible-unicode or instruction-override
+        # payloads that the agent would otherwise execute.
+        try:
+            from xmclaw.security import (
+                PolicyMode,
+                SOURCE_WEB_FETCH,
+                apply_policy,
+            )
+            decision = apply_policy(
+                text,
+                policy=PolicyMode.DETECT_ONLY,
+                source=SOURCE_WEB_FETCH,
+                extra={"url": url, "status_code": r.status_code},
+            )
+            if decision.blocked:
+                return _fail(
+                    call, t0,
+                    "web_fetch blocked by prompt-injection policy",
+                )
+            text = decision.content
+        except Exception:  # noqa: BLE001 — never block on scanner failure
+            pass
+
         suffix = f"\n...[truncated to {max_chars} chars]" if truncated else ""
         content = (
             f"[{r.status_code} {r.reason_phrase}] {url}\n"

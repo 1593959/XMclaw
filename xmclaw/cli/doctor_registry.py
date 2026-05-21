@@ -982,6 +982,85 @@ class MemoryDbCheck(DoctorCheck):
             return False
 
 
+class IntentPatternsDbCheck(DoctorCheck):
+    """Probe ``~/.xmclaw/v2/intent_patterns.db`` health.
+
+    Mirrors :class:`EventsDbCheck` / :class:`MemoryDbCheck` shape.
+    The database is created lazily on first write by IntentStore,
+    so absence is OK.  We just verify that an existing file is a
+    valid SQLite with the expected ``patterns`` table.
+    """
+
+    id = "intent_patterns_db"
+    name = "intent_patterns_db"
+
+    def _target(self, ctx: DoctorContext) -> Path:
+        override = ctx.extras.get("intent_patterns_db_path")
+        if isinstance(override, (str, Path)):
+            return Path(override)
+        from xmclaw.utils.paths import data_dir
+        return data_dir() / "v2" / "intent_patterns.db"
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        path = self._target(ctx)
+        if not path.exists():
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"not yet created (will be created on first write): {path}",
+            )
+        if not path.is_file():
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"path exists but is not a file: {path}",
+                advisory="remove or rename the conflicting entry",
+            )
+        import sqlite3
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        except sqlite3.Error as exc:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"cannot open {path.name}: {exc}",
+                advisory="remove the file; IntentStore will recreate it on next start",
+            )
+        try:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='patterns'"
+            ).fetchone()
+        except sqlite3.Error as exc:
+            conn.close()
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"{path.name} looks malformed: {exc}",
+                advisory="remove the file; IntentStore will recreate it on next start",
+            )
+        if row is None:
+            conn.close()
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"{path.name} exists but has no patterns table",
+                advisory="this file isn't an intent_patterns.db; back it up and remove it",
+            )
+        try:
+            count_row = conn.execute(
+                "SELECT COUNT(*) FROM patterns"
+            ).fetchone()
+            count = int(count_row[0]) if count_row else 0
+        except sqlite3.Error:
+            count = -1
+        conn.close()
+        if count < 0:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"intent_patterns.db present at {path} (count unavailable)",
+            )
+        return CheckResult(
+            name=self.name, ok=True,
+            detail=f"intent_patterns.db healthy at {path} ({count} pattern(s))",
+        )
+
+
 class MemoryProviderCheck(DoctorCheck):
     """Verify the live agent has a MemoryManager + at least the
     BuiltinFileMemoryProvider registered (B-30).
@@ -2222,6 +2301,7 @@ def build_default_registry() -> DoctorRegistry:
     reg.register(PortCheck())
     reg.register(EventsDbCheck())
     reg.register(MemoryDbCheck())
+    reg.register(IntentPatternsDbCheck())
     reg.register(MemoryProviderCheck())
     reg.register(MemoryProviderConfigCheck())
     reg.register(MemoryIndexerCheck())

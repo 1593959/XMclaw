@@ -759,6 +759,7 @@ def _persona_writeback(app_state_holder: Any) -> Any:
 def build_tools_from_config(
     cfg: dict[str, Any],
     *,
+    bus: "InProcessEventBus | None" = None,
     approval_service: Any | None = None,
     auditor: Any | None = None,
 ) -> ToolProvider | None:
@@ -933,6 +934,25 @@ def build_tools_from_config(
         except Exception:  # noqa: BLE001
             return {}
 
+    # Live Canvas / A2UI: callback that fires CANVAS_ARTIFACT_* events
+    # onto the bus so the frontend reducer can surface live mutations.
+    def _canvas_listener(event_type, payload):
+        if bus is None:
+            return
+        from xmclaw.core.bus import make_event
+        try:
+            event = make_event(
+                session_id="_system",
+                agent_id="canvas",
+                type=event_type,
+                payload=payload,
+            )
+            # Fire-and-forget; don't block the tool call over bus back-pressure.
+            import asyncio
+            asyncio.create_task(bus.publish(event))
+        except Exception:
+            pass
+
     builtins = BuiltinTools(
         allowed_dirs=allowed_dirs,
         enable_bash=bool(enable_bash),
@@ -946,6 +966,7 @@ def build_tools_from_config(
         tts_provider=_tts_provider,
         undo_cabinet=_undo_cab,
         search_config_getter=_search_cfg_getter,
+        canvas_listener=_canvas_listener,
     )
     children: list[ToolProvider] = [builtins]
 
@@ -1547,7 +1568,7 @@ def build_agent_from_config(
     llm = default_profile.llm if default_profile is not None else None
     if llm is None:
         return None
-    tools = build_tools_from_config(cfg, approval_service=approval_service, auditor=auditor)
+    tools = build_tools_from_config(cfg, bus=bus, approval_service=approval_service, auditor=auditor)
     # 2026-05-12 Batch B.2: plumb the LLM into the ErrorAwareRetryProvider
     # wrapper. The retry wrapper was constructed in build_tools_from_config
     # before the LLM existed; now it does — wire it.
@@ -2003,6 +2024,9 @@ def build_agent_from_config(
         unified_memory=_unified_memory,
         unified_recall_top_k=_unified_top_k,
         memory_extractor=_memory_extractor,
+        strict_freeze=bool(
+            (cfg or {}).get("agent", {}).get("strict_freeze", False)
+        ),
     )
 
     # Wave-27 fix-17: apply the configured tool wall-clock onto the

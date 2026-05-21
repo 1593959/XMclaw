@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8">
+	<meta content="IE=edge" http-equiv="X-UA-Compatible">
+	<title></title>
+	<title>LT凌天电竞</title>
+	<link rel="stylesheet" href="/plugins/fengiy_login/view/assets/css/admin_login.css" />
+	<link href="/static/font-awesome/css/font-awesome.min.css" rel="stylesheet" type="text/css">
+	<style>
+		.login-form .form-group {
+			margin: 20px 0;
+		}
+		.page-login-v3:before {
+			background: url( ? ../../upload/ : '') center center/cover no-repeat !important;
+		}
+	</style>
+</head>
+<body class="page-login-v3">
+<div class="container">
+	<div id="wrapper" class="login-body">
+		<div class="swep-left">
+			<div class="swiper-slide">
+									<img src="/plugins/fengiy_login/view/assets/images/b_bg_illus.png">
+							</div>
+		</div>
+		<div class="login-content" id="login">
+			<h2 class="brand-text">LT凌天电竞</h2>
+			<form id="login-form" class="login-form">
+				<div class="form-group">
+					<i class="fa fa-user"></i>
+					<input name="username" placeholder="请输入用户名" type="text" required>
+				</div>
+				<div class="form-group">
+					<i class="fa fa-lock"></i>
+					<input name="password" placeholder="请输入密码" type="password" required>
+				</div>
+				<!--<div class="form-group">
+                    <i class="fa fa-shield"></i>
+                    <input name="captcha" placeholder="请输入验证码" type="text" required style="width: 50%;float: left;margin-right:10px">
+                    <img src="/new_captcha.html?height=40&width=160px&font_size=18" onclick="this.src='/new_captcha.html?height=40&width=160px&font_size=18&time='+Math.random();" title="换一张" class="captcha captcha-img verify_img" style="cursor: pointer;"/>
+<input type="hidden" name="_captcha_id" value="">
+                </div>-->
+				<div class="form-group" style="margin-bottom:-21px;">
+					<button id="login-submit" type="submit">登录</button>
+				</div>
+			</form>
+		</div>
+	</div>
+</div>
+<div class="copyright">技术支持：微巨宝科技有限公司</div>
+</body>
+<script src="/plugins/fengiy_login/view/assets/js/jquery.js"></script>
+<script src="/plugins/fengiy_login/view/assets/js/layer/layer.js"></script>
+<script src="/plugins/fengiy_login/view/assets/js/jquery.form.min.js"></script>
+<script>
+	// 表单提交
+	var $form = $('#login-form');
+	$form.submit(function() {
+		var $btn_submit = $('#login-submit');
+		$form.ajaxSubmit({
+			type: "post",
+			dataType: "json",
+			url: "/admin/public/doLogin.html",
+			success: function(result) {
+				$btn_submit.attr('disabled', false);
+				if (result.code === 1) {
+					layer.msg(result.msg, {
+						time: 1500,
+						anim: 1,
+						icon: 1
+					}, function() {
+						window.location = result.url;
+					});
+					return true;
+				} else {
+					$('.verify_img').trigger('click')
+				}
+				layer.msg(result.msg, {
+					time: 1500,
+					anim: 6
+				});
+			}
+		});
+		return false;
+	});
+</script>
+</html>

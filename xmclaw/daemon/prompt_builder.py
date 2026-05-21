@@ -14,6 +14,16 @@ def bump_prompt_freeze_generation() -> None:
     _PROMPT_FREEZE_GENERATION += 1
 
 
+def get_prompt_freeze_generation() -> int:
+    """Return the current prompt-freeze generation counter.
+
+    Used by :class:`AgentLoop` instead of a direct value import so
+    that ``bump_prompt_freeze_generation`` mutations are visible
+    without module reload.
+    """
+    return _PROMPT_FREEZE_GENERATION
+
+
 # ---------------------------------------------------------------------------
 # Default system prompt
 # ---------------------------------------------------------------------------
@@ -52,7 +62,12 @@ def _default_system_prompt() -> str:
         "  - web_search: search the web when a fact needs looking up\n"
         "  - skill_*: registered skills — playbooks the user / past you "
         "**already proved work**. Each one is a verb-noun procedure with "
-        "a description matching SOME class of user request.\n\n"
+        "a description matching SOME class of user request.\n"
+        "  - canvas_create / canvas_update / canvas_close: generate "
+        "visual artifacts (mermaid diagrams, charts, tables, HTML snippets, "
+        "SVG) that render inline in the chat. Use these when the user asks "
+        "for a flowchart, data visualization, structured comparison, or any "
+        "explanation that benefits from visual layout.\n\n"
         "★ VISION CAPABILITY — you can see images, use it:\n"
         "  When you call ``screen_capture`` / ``screen_region_capture`` / "
         "``image_read`` / ``camera_capture`` / ``gui_send_chat`` with "

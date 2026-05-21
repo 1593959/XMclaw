@@ -2467,9 +2467,14 @@ def make_lifespan(
                     )
                     from xmclaw.utils.paths import data_dir as _data_dir
 
-                    intent_store = IntentStore(
-                        _data_dir() / "v2" / "intent_engine" / "patterns.db",
-                    )
+                    _intent_db = _data_dir() / "v2" / "intent_patterns.db"
+                    # Auto-migrate old nested path (J2 initial placement)
+                    _old_intent_db = _data_dir() / "v2" / "intent_engine" / "patterns.db"
+                    if _old_intent_db.exists() and not _intent_db.exists():
+                        import shutil
+                        shutil.copy2(str(_old_intent_db), str(_intent_db))
+                        log.info("intent_db.migrated old=%s new=%s", _old_intent_db, _intent_db)
+                    intent_store = IntentStore(_intent_db)
                     intent_engine = IntentEngine(
                         store=intent_store,
                         llm=getattr(agent, "_llm", None) if agent else None,
@@ -2730,6 +2735,14 @@ def make_lifespan(
                     await proactive_agent.stop()
                 except Exception as exc:  # noqa: BLE001
                     log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
+            # Close intent_store (short-connection mode: no-op, but keeps
+            # the lifecycle contract explicit).
+            _intent_store = getattr(_app.state, "intent_engine", None)
+            if _intent_store is not None:
+                try:
+                    _intent_store.store.close()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("intent_store.close_failed err=%s", exc)
             if sweep_task is not None:
                 try:
                     await sweep_task.stop()
