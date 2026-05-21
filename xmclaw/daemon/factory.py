@@ -1665,28 +1665,7 @@ def build_agent_from_config(
         ws_path = ws_section.get("path")
         if isinstance(ws_path, str) and ws_path.strip():
             workspace_root = Path(ws_path).expanduser()
-    tool_specs = tools.list_tools() if tools is not None else []
-    # Wave-27 fix-LAT4: re-render the auto-managed tool list inside
-    # TOOLS.md from the current ToolProvider stack. Without this, the
-    # agent reads a stale list copied from the bundled template (which
-    # listed 7 generic tools and never mentioned cron_*, browser_*,
-    # code_python persistent kernel, skill_browse, etc.) — leading to
-    # the "他跟自己不熟" complaint. Section sits inside marker comments
-    # so manual content elsewhere in TOOLS.md is preserved.
-    try:
-        render_tools_section(profile_dir, tool_specs)
-    except Exception:  # noqa: BLE001
-        pass
-    # Wave-27 fix-LAT6: resolve the active backend label so the agent
-    # can answer "what model are you" truthfully. See
-    # ``_resolve_backend_label`` at module level for the lookup rules.
     backend_label = _resolve_backend_label(cfg)
-    system_prompt = build_system_prompt(
-        profile_dir=profile_dir,
-        workspace_dir=workspace_root,
-        tool_names=[s.name for s in tool_specs],
-        backend_label=backend_label,
-    )
     # Cross-session memory: B-26 builds a MemoryManager with two
     # providers — the BuiltinFileMemoryProvider (always-on, wraps
     # MEMORY.md / USER.md) plus an external SqliteVecMemory when one
@@ -1865,6 +1844,22 @@ def build_agent_from_config(
                     bt.set_embedder(embedder)
             except Exception:  # noqa: BLE001
                 pass
+
+    # Re-compute tool specs + system prompt AFTER memory wiring so
+    # dynamically-gated tools (e.g. memory_search) appear in the
+    # system prompt sent to the LLM.  Prior to this fix tool_specs
+    # were snapshotted before set_memory_manager() ran.
+    tool_specs = tools.list_tools() if tools is not None else []
+    try:
+        render_tools_section(profile_dir, tool_specs)
+    except Exception:  # noqa: BLE001
+        pass
+    system_prompt = build_system_prompt(
+        profile_dir=profile_dir,
+        workspace_dir=workspace_root,
+        tool_names=[s.name for s in tool_specs],
+        backend_label=backend_label,
+    )
 
     # Wave-27 fix-LAT: ``evolution.compression.token_cap`` and the
     # post-turn msg/token gates it fed have been retired. Compression
