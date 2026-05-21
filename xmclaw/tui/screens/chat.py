@@ -64,6 +64,7 @@ class ChatScreen(Vertical):  # type: ignore[misc]
         self._message_static = Static(id="messages")
         self._message_box = VerticalScroll(self._message_static, id="message-scroll")
         self._input = Input(placeholder="输入消息后回车发送…", id="msg-input")
+        self._submitting = False
 
     def compose(self) -> ComposeResult:
         yield self._message_box
@@ -79,12 +80,18 @@ class ChatScreen(Vertical):  # type: ignore[misc]
         await self._submit()
 
     async def _submit(self) -> None:
+        if self._submitting:
+            return
         text = self._input.value.strip()
         if not text:
             return
+        self._submitting = True
         self._input.value = ""
-        await self.append_user(text)
-        await self._on_send(text)
+        try:
+            await self.append_user(text)
+            await self._on_send(text)
+        finally:
+            self._submitting = False
 
     # ── public append API ──
 
