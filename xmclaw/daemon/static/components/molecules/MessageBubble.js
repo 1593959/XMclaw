@@ -108,6 +108,25 @@ function _silentBubbleLabel(toolCalls) {
   return `(直接调用了 ${names.slice(0, 3).join(" / ")} 等 ${names.length} 个工具)`;
 }
 
+// Wave-33: character threshold beyond which an assistant message is
+// initially truncated with an "expand" affordance.
+const _MSG_TRUNCATE_CHARS = 3000;
+
+function _truncateAtBoundary(text, maxChars) {
+  if (!text || text.length <= maxChars) return { truncated: text, wasCut: false };
+  // Try to find a paragraph break (double newline) before the limit.
+  let cut = text.lastIndexOf("\n\n", maxChars);
+  if (cut < maxChars * 0.5) {
+    // No good paragraph break nearby — try a single newline.
+    cut = text.lastIndexOf("\n", maxChars);
+  }
+  if (cut < 0 || cut < maxChars * 0.3) {
+    // Hard break at maxChars.
+    cut = maxChars;
+  }
+  return { truncated: text.slice(0, cut), wasCut: true };
+}
+
 export function MessageBubble({ message, onAnswerQuestion }) {
   // B-92: question-kind bubbles render as QuestionCard, not as
   // markdown text. The reducer creates these on AGENT_ASKED_QUESTION
@@ -174,6 +193,7 @@ export function MessageBubble({ message, onAnswerQuestion }) {
   // 🔊 button lets them replay/start manually too. We track a local
   // playing state purely for the button's visual feedback.
   const [playing, setPlaying] = useState(false);
+  const [msgExpanded, setMsgExpanded] = useState(false);
   const spokenRef = useRef(false);
 
   useEffect(() => {
@@ -337,7 +357,25 @@ export function MessageBubble({ message, onAnswerQuestion }) {
         : html`
             <!-- legacy back-compat path: content + toolCalls aggregates -->
             ${message.content
-              ? html`<${MarkdownBody} content=${message.content} />`
+              ? (() => {
+                  const isAssistant = role === "assistant";
+                  const shouldTrunc = isAssistant && !streaming && !msgExpanded;
+                  const { truncated, wasCut } = shouldTrunc
+                    ? _truncateAtBoundary(message.content, _MSG_TRUNCATE_CHARS)
+                    : { truncated: message.content, wasCut: false };
+                  return html`
+                    <${MarkdownBody} content=${truncated} />
+                    ${wasCut
+                      ? html`
+                          <button
+                            type="button"
+                            class="xmc-msg__expand"
+                            onClick=${() => setMsgExpanded(true)}
+                          >… 展开剩余内容 (${message.content.length - truncated.length} 字符)</button>
+                        `
+                      : null}
+                  `;
+                })()
               : (role === "assistant" && thinking
                   ? html`<div class="xmc-msg__placeholder" style="opacity:.65;font-size:.85em">🌸 收到啦，正在思考中...</div>`
                   : (role === "assistant"

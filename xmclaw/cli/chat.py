@@ -45,6 +45,56 @@ class RenderedLine:
     is_assistant: bool = False     # True for the final-ish assistant text
 
 
+# ANSI color helpers
+_C_RESET = "\x1b[0m"
+_C_GREEN = "\x1b[32m"
+_C_YELLOW = "\x1b[33m"
+_C_RED = "\x1b[31m"
+_C_CYAN = "\x1b[36m"
+_C_DIM = "\x1b[2m"
+_C_BOLD = "\x1b[1m"
+
+
+def _color(text: str, code: str) -> str:
+    return f"{code}{text}{_C_RESET}"
+
+
+def _highlight_md_code_blocks(text: str) -> str:
+    """Wave-33: syntax-highlight fenced code blocks in terminal output.
+
+    Best-effort: if pygments is available, highlight each ``` block
+    with its declared language. Falls back to plain text silently.
+    """
+    try:
+        from pygments import highlight as _pygments_highlight
+        from pygments.lexers import get_lexer_by_name, guess_lexer
+        from pygments.formatters import TerminalFormatter
+    except Exception:  # noqa: BLE001
+        return text
+
+    import re
+
+    def _repl(m: "re.Match[str]") -> str:
+        lang = (m.group(1) or "").strip()
+        code = m.group(2)
+        if not code.strip():
+            return m.group(0)
+        try:
+            if lang:
+                lexer = get_lexer_by_name(lang, stripall=True)
+            else:
+                lexer = guess_lexer(code)
+        except Exception:  # noqa: BLE001
+            return m.group(0)
+        try:
+            highlighted = _pygments_highlight(code, lexer, TerminalFormatter())
+            return f"```\n{highlighted.rstrip()}\n```"
+        except Exception:  # noqa: BLE001
+            return m.group(0)
+
+    return re.sub(r"```(\w*)\n(.*?)```", _repl, text, flags=re.DOTALL)
+
+
 def format_event(event: dict[str, Any]) -> RenderedLine | None:
     """Turn a single BehavioralEvent JSON frame into one terminal line.
 
@@ -64,24 +114,28 @@ def format_event(event: dict[str, Any]) -> RenderedLine | None:
 
     if etype == "llm_request":
         hop = payload.get("hop")
+        model = payload.get("model", "")
+        meta_parts: list[str] = []
+        if hop is not None:
+            meta_parts.append(f"hop {hop}")
+        if model:
+            meta_parts.append(model)
+        meta = f"  ({', '.join(meta_parts)})" if meta_parts else ""
         if hop is not None and hop == 0:
-            return RenderedLine(text="  ~ thinking...")
-        return None  # subsequent hops are silent — we show tool events instead
+            return RenderedLine(text=f"  ~ thinking...{_C_DIM}{meta}{_C_RESET}")
+        return RenderedLine(text=f"  ~ thinking...{_C_DIM}{meta}{_C_RESET}")
 
     if etype == "llm_response":
         if not payload.get("ok", True):
             err = payload.get("error", "unknown error")
-            return RenderedLine(text=f"  [WARN] llm error: {err}")
-        # Terminal-hop responses (no tool calls) are the assistant text
-        # the user actually wants to see. Intermediate hops (preceding
-        # a tool call) usually have empty or short content — render
-        # only when there's something worth showing AND no tool call
-        # is about to follow.
+            return RenderedLine(text=_color(f"  [WARN] llm error: {err}", _C_RED))
         tool_calls_count = int(payload.get("tool_calls_count", 0) or 0)
         content = payload.get("content") or ""
         if tool_calls_count == 0 and content.strip():
+            # Wave-33: syntax-highlight code blocks in terminal.
+            rendered = _highlight_md_code_blocks(content)
             return RenderedLine(
-                text=f"> agent: {content}",
+                text=f"> agent: {rendered}",
                 is_assistant=True,
             )
         return None
@@ -92,30 +146,62 @@ def format_event(event: dict[str, Any]) -> RenderedLine | None:
         args_short = json.dumps(args, ensure_ascii=False)
         if len(args_short) > 80:
             args_short = args_short[:77] + "..."
-        return RenderedLine(text=f"  -> {name}({args_short})")
+        return RenderedLine(
+            text=f"  {_color('->', _C_YELLOW)} {_color(name, _C_BOLD)}({args_short})"
+        )
+
+    if etype == "tool_invocation_started":
+        name = payload.get("name", "?")
+        return RenderedLine(
+            text=f"  {_color('->', _C_YELLOW)} {_color(name, _C_BOLD)} {_C_DIM}(running...){_C_RESET}"
+        )
 
     if etype == "tool_invocation_finished":
         name = payload.get("name", "?")
-        if not payload.get("ok", True):
+        ok = payload.get("ok", True)
+        if not ok:
             err = payload.get("error", "")
-            return RenderedLine(text=f"  <- {name} failed: {err}")
+            return RenderedLine(
+                text=f"  {_color('<-', _C_RED)} {_color(name, _C_BOLD)} failed: {err}"
+            )
         result = payload.get("result")
         side_effects = payload.get("expected_side_effects") or []
         if side_effects:
             return RenderedLine(
-                text=f"  <- {name} ok, wrote: {side_effects}"
+                text=f"  {_color('<-', _C_GREEN)} {_color(name, _C_BOLD)} ok, wrote: {side_effects}"
             )
-        # Summarize the result briefly for the terminal.
         summary: str
         if isinstance(result, str):
             summary = result if len(result) < 80 else result[:77] + "..."
         else:
             summary = type(result).__name__
-        return RenderedLine(text=f"  <- {name} ok: {summary}")
+        return RenderedLine(
+            text=f"  {_color('<-', _C_GREEN)} {_color(name, _C_BOLD)} ok: {summary}"
+        )
+
+    # Wave-33: Canvas Artifact events for terminal
+    if etype == "canvas_artifact_created":
+        kind = payload.get("kind", "")
+        title = payload.get("title", "")
+        return RenderedLine(
+            text=f"  {_color('[canvas]', _C_CYAN)} {kind}: {title}"
+        )
+
+    if etype == "canvas_artifact_updated":
+        art_id = payload.get("artifact_id", "")
+        return RenderedLine(
+            text=f"  {_color('[canvas]', _C_CYAN)} updated {art_id[:20]}"
+        )
+
+    if etype == "canvas_artifact_closed":
+        art_id = payload.get("artifact_id", "")
+        return RenderedLine(
+            text=f"  {_color('[canvas]', _C_CYAN)} closed {art_id[:20]}"
+        )
 
     if etype == "anti_req_violation":
         msg = payload.get("message", "unspecified")
-        return RenderedLine(text=f"  [WARN] violation: {msg}")
+        return RenderedLine(text=_color(f"  [WARN] violation: {msg}", _C_RED))
 
     if etype == "session_lifecycle":
         phase = payload.get("phase", "?")
@@ -125,16 +211,13 @@ def format_event(event: dict[str, Any]) -> RenderedLine | None:
             return RenderedLine(text="  (session closed)")
         return None
 
-    # Evolution / skill-promotion flashes. These are globally broadcast
-    # (not scoped to the current session), so a promotion triggered by
-    # the EvolutionAgent on `session_id="_system"` lands here too — the
-    # user sees a green flash in their REPL the moment HEAD moves.
+    # Evolution / skill-promotion flashes.
     if etype == "skill_promoted":
         skill_id = payload.get("skill_id", "?")
         fv = payload.get("from_version")
         tv = payload.get("to_version")
         return RenderedLine(
-            text=f"  \x1b[32m[evolved] {skill_id} v{fv}→v{tv}\x1b[0m",
+            text=f"  {_color('[evolved]', _C_GREEN)} {skill_id} v{fv}→v{tv}",
         )
 
     if etype == "skill_rolled_back":
@@ -144,14 +227,14 @@ def format_event(event: dict[str, Any]) -> RenderedLine | None:
         reason = payload.get("reason") or ""
         tail = f": {reason}" if reason else ""
         return RenderedLine(
-            text=f"  \x1b[33m[rolled back] {skill_id} v{fv}→v{tv}{tail}\x1b[0m",
+            text=f"  {_color('[rolled back]', _C_YELLOW)} {skill_id} v{fv}→v{tv}{tail}",
         )
 
     if etype == "skill_candidate_proposed":
         skill_id = payload.get("winner_candidate_id", "?")
         ver = payload.get("winner_version")
         return RenderedLine(
-            text=f"  \x1b[2m[candidate] {skill_id} v{ver} proposed\x1b[0m",
+            text=f"  {_color('[candidate]', _C_DIM)} {skill_id} v{ver} proposed",
         )
 
     return None  # unknown types — stay quiet

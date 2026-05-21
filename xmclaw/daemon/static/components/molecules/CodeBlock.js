@@ -97,9 +97,16 @@ async function _getHljsLang(lang) {
   return promise;
 }
 
-export function CodeBlock({ code, lang }) {
+export function CodeBlock({ code, lang, maxLines = 20 }) {
   const [copied, setCopied] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const codeRef = useRef(null);
+
+  const lines = code.split("\n");
+  const shouldFold = lines.length > maxLines && maxLines > 0;
+  const displayCode = (shouldFold && !expanded)
+    ? lines.slice(0, maxLines).join("\n") + "\n"
+    : code;
 
   // Run hljs once mount completes. We highlight imperatively (set
   // innerHTML) instead of mapping tokens to spans because hljs's
@@ -162,14 +169,31 @@ export function CodeBlock({ code, lang }) {
     <div class="xmc-h-codeblock">
       <div class="xmc-h-codeblock__chrome">
         <span class="xmc-h-codeblock__lang">${langLabel}</span>
-        <button
-          type="button"
-          class=${"xmc-h-codeblock__copy " + (copied ? "is-copied" : "")}
-          onClick=${onCopy}
-          title="复制代码"
-        >${copied ? "已复制 ✓" : "复制"}</button>
+        <div style="display:flex;gap:.35rem;align-items:center">
+          ${shouldFold
+            ? html`
+                <button
+                  type="button"
+                  class="xmc-h-codeblock__copy"
+                  onClick=${() => setExpanded((v) => !v)}
+                  title=${expanded ? "折叠代码" : "展开代码"}
+                >${expanded ? "折叠 ↑" : `展开 ↓ (${lines.length - maxLines} 行)`}</button>
+              `
+            : null}
+          <button
+            type="button"
+            class=${"xmc-h-codeblock__copy " + (copied ? "is-copied" : "")}
+            onClick=${onCopy}
+            title="复制代码"
+          >${copied ? "已复制 ✓" : "复制"}</button>
+        </div>
       </div>
-      <pre class="xmc-h-codeblock__pre"><code ref=${codeRef}>${code}</code></pre>
+      <pre class="xmc-h-codeblock__pre" data-folded=${shouldFold && !expanded ? "true" : "false"}>
+        <code ref=${codeRef}>${displayCode}</code>
+        ${shouldFold && !expanded
+          ? html`<div class="xmc-h-codeblock__fade" />`
+          : null}
+      </pre>
     </div>
   `;
 }

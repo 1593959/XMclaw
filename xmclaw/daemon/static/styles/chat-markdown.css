@@ -29,6 +29,22 @@
   font-size: 0.95em;
 }
 
+/* Wave-33: code-block fold fade-out gradient */
+.xmc-h-codeblock__pre[data-folded="true"] {
+  position: relative;
+  max-height: 28em;
+  overflow: hidden;
+}
+.xmc-h-codeblock__fade {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 4rem;
+  background: linear-gradient(to bottom, transparent, var(--xmc-bg-elev, #0f1219));
+  pointer-events: none;
+}
+
 /* ── Tables ───────────────────────────────────────────────────────── */
 
 .xmc-md table {
@@ -53,6 +69,29 @@
 }
 .xmc-md tr:nth-child(2n) td {
   background: color-mix(in srgb, var(--xmc-fg-muted) 4%, transparent);
+}
+/* Wave-33: table row hover + header text color + rounded corners */
+.xmc-md tr:hover td {
+  background: color-mix(in srgb, var(--xmc-fg-muted) 10%, transparent);
+}
+.xmc-md th {
+  color: var(--xmc-fg, #e0e2e8);
+}
+.xmc-md table {
+  border-radius: var(--xmc-radius-md, 6px);
+  border: 1px solid var(--xmc-border);
+}
+.xmc-md th:first-child {
+  border-top-left-radius: var(--xmc-radius-md, 6px);
+}
+.xmc-md th:last-child {
+  border-top-right-radius: var(--xmc-radius-md, 6px);
+}
+.xmc-md tr:last-child td:first-child {
+  border-bottom-left-radius: var(--xmc-radius-md, 6px);
+}
+.xmc-md tr:last-child td:last-child {
+  border-bottom-right-radius: var(--xmc-radius-md, 6px);
 }
 
 /* ── Blockquotes + horizontal rule ────────────────────────────────── */

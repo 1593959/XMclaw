@@ -563,3 +563,22 @@
 /* Markdown rendering for tables / blockquotes / lists / headings lives
    in chat-markdown.css (split out in B-47). */
 
+
+
+/* Wave-33: expand button for truncated long messages */
+.xmc-msg__expand {
+  display: inline-block;
+  margin-top: 0.5rem;
+  padding: 0.35rem 0.7rem;
+  font-size: var(--xmc-font-size-sm);
+  color: var(--xmc-fg-muted);
+  background: var(--xmc-bg-elev);
+  border: 1px solid var(--xmc-border);
+  border-radius: var(--xmc-radius-sm);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.xmc-msg__expand:hover {
+  background: var(--xmc-bg-elev-2);
+  color: var(--xmc-fg);
+}
