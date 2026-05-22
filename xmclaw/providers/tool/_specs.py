@@ -497,11 +497,21 @@ _OPEN_IN_USER_BROWSER_SPEC = ToolSpec(
 _TODO_WRITE_SPEC = ToolSpec(
     name="todo_write",
     description=(
-        "Record the current plan for a multi-step task as a todo list. "
-        "Each item has a 'content' and 'status' (pending|in_progress|done). "
-        "Overwrites the full list; call again with updated statuses as "
-        "work progresses. The user sees a live 'Todos' panel that mirrors "
-        "this state."
+        "将当前多步任务的计划记录为 todo 列表。"
+        "每项包含 content 和 status (pending|in_progress|done)。"
+        "覆盖写入全列表；进度推进时再次调用并更新状态。"
+        "用户在侧边栏看到实时 'Todos' 面板。\n\n"
+        "## 何时使用\n"
+        "  • 任务需要 3 个或以上独立步骤\n"
+        "  • 任务复杂，需要跟踪进度（用户可能中途询问'做到哪了'）\n"
+        "  • 用户明确要求使用 todo\n"
+        "  • 用户一次给出多个任务（编号或逗号分隔）\n"
+        "  • 计划模式（plan mode）中分解工作\n\n"
+        "## 何时不使用\n"
+        "  • 单一步骤的 straightforward 任务\n"
+        "  • 任务 trivial，跟踪它没有任何组织收益\n"
+        "  • 纯对话或信息查询（不需要执行步骤）\n\n"
+        "NOTE: 只有 1 个 trivial 任务时，直接执行，不要写 todo。"
     ),
     parameters_schema={
         "type": "object",
@@ -583,11 +593,18 @@ _UPDATE_FOCUS_SPEC = ToolSpec(
 _REMEMBER_SPEC = ToolSpec(
     name="remember",
     description=(
-        "将跨会话持久事实写入 MEMORY.md。仅在信息对**下一回合**"
-        "仍有价值时使用：项目约定、已做决策、反复出现的约束、"
-        "用户明确要求记住的事。不要用于本会话临时上下文（用 todo），"
-        "不要用于用户个人信息（用 learn_about_user）。每次调用在"
-        "匹配的 ## 分类下追加时间戳 bullet；分类不存在则自动创建。"
+        "将跨会话持久事实写入 MEMORY.md。\n\n"
+        "## 何时使用\n"
+        "  • 用户明确要求'记住'某事\n"
+        "  • 你做出了跨会话仍需的决策（项目约定、技术选型、架构方向）\n"
+        "  • 发现了反复出现的约束或失败模式\n"
+        "  • 用户纠正了你的行为，且该纠正适用于未来\n\n"
+        "## 何时不使用\n"
+        "  • 本会话临时上下文（用 todo_write）\n"
+        "  • 用户个人信息如角色、偏好、沟通风格（用 learn_about_user）\n"
+        "  • 一次性观察，下回合就不再相关\n"
+        "  • 纯执行结果无需记忆（如'ls 返回了 5 个文件'）\n\n"
+        "每次调用在匹配的 ## 分类下追加时间戳 bullet；分类不存在则自动创建。"
         "效果在下一回合立即生效——系统提示会实时重建。"
     ),
     parameters_schema={
@@ -612,10 +629,17 @@ _REMEMBER_SPEC = ToolSpec(
 _LEARN_ABOUT_USER_SPEC = ToolSpec(
     name="learn_about_user",
     description=(
-        "将用户个人信息写入 USER.md。适用于学到的关于用户身份"
-        "或工作方式的持久事实：角色、专业领域、语言偏好、沟通风格、"
-        " recurring 项目、用户纠正过你的地方。跳过噪声（一次性请求、"
-        "会话级变化——那些用 todo）。效果下一回合生效。"
+        "将用户个人信息写入 USER.md。\n\n"
+        "## 何时使用\n"
+        "  • 用户透露了身份相关信息（职业、公司、专业领域）\n"
+        "  • 用户表达了明确的偏好（语言、格式、沟通风格、工具选择）\n"
+        "  • 用户纠正了你的行为方式，且该纠正具有持久价值\n"
+        "  • 用户提到了 recurring 的项目、团队或工作流程\n\n"
+        "## 何时不使用\n"
+        "  • 项目技术决策或代码约定（用 remember）\n"
+        "  • 一次性请求或会话级变化（用 todo_write）\n"
+        "  • 你已经通过 recall_user_preferences 确认该信息已存在\n\n"
+        "效果下一回合生效。"
     ),
     parameters_schema={
         "type": "object",
@@ -689,9 +713,17 @@ _SCHEDULE_FOLLOWUP_SPEC = ToolSpec(
 _MEMORY_SEARCH_SPEC = ToolSpec(
     name="memory_search",
     description=(
-        "搜索长期记忆。在回答关于用户偏好、过往决策、已讨论过"
-        "的话题之前，先调此工具。跨所有已连接后端合并结果（向量"
-        "库优先，关键词补齐）。\n\n"
+        "搜索长期记忆。\n\n"
+        "## 何时使用\n"
+        "  • 用户问'我之前说过什么''我记得提到过'等涉及历史的问题\n"
+        "  • 你需要确认用户的偏好、约束或过往决策再行动\n"
+        "  • 用户要求基于之前的讨论继续工作\n"
+        "  • 代码相关问题：先查 ``kind='code_chunk'`` 看工作区是否已有相关源码索引\n\n"
+        "## 何时不使用\n"
+        "  • 当前会话中刚刚发生的事实（还在上下文里，直接引用）\n"
+        "  • 需要读取具体文件内容时（用 file_read，memory_search 只返回摘要）\n"
+        "  • 结构/定量问题如'今天用了多少次工具'（用 sqlite_query）\n\n"
+        "跨所有已连接后端合并结果（向量库优先，关键词补齐）。\n\n"
         "B-197: 用 ``kind`` 过滤记录类型："
         "``preference`` 用户偏好, ``lesson`` 经验教训, "
         "``principle`` 用户明确决策, ``procedure`` 技能元数据, "

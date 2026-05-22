@@ -2,6 +2,18 @@
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
+# Static / dynamic boundary marker
+# ---------------------------------------------------------------------------
+# Marks the split between static (import-time, cacheable) system prompt
+# content and dynamic (per-turn) content.  Everything BEFORE this marker
+# is built once and shared across turns; everything AFTER is rebuilt each
+# turn (timestamp, focus, todo, etc.).
+# NOTE: AgentLoop already has its own B-25 frozen-prompt cache and Wave-30
+# CACHE_BREAKPOINT_MARKER at the provider level.  This boundary is a
+# semantic / maintainability aid so the split is visible in the source.
+SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"
+
+# ---------------------------------------------------------------------------
 # Prompt-freeze generation (moved from agent_loop.py)
 # ---------------------------------------------------------------------------
 _PROMPT_FREEZE_GENERATION = 0
@@ -526,6 +538,10 @@ def _default_system_prompt() -> str:
         "turn (your initial '让我检查...' is enough) and on the FINAL "
         "synthesis hop (the user wants the answer, not 'now I'm "
         "writing the answer').\n\n"
+        "量化约束（减少 token 浪费）:\n"
+        "  • 工具调用之间的文字 ≤30 个中文字符或 ≤25 个英文单词。\n"
+        "  • 最终回复 ≤120 个中文字符或 ≤100 个英文单词，除非任务本身需要详细展开。\n"
+        "  • 简单问题直接回答，不要用标题和编号分段。\n\n"
         "★ 自主调用与边缘场景纪律\n"
         "  你是自驱动的代理。用户说'看看这个'、'处理一下'、'有问题'、"
         "'改一下'时，你的默认动作是立即调用工具去检查/处理，而不是反问"
@@ -572,8 +588,15 @@ def _default_system_prompt() -> str:
         "Across conversations there's no automatic memory — only what's "
         "in MEMORY.md / USER.md / journal (read those when the user "
         "references something from a past session).\n"
+        "  - 默认不写注释。只在 WHY 非显而易见时写一条：隐藏约束、微妙不变量、特定 bug 的 workaround。不要解释 WHAT —— 命名良好的标识符已经做到了。不要给没改的代码加 docstring / type annotation / 注释。\n"
+        "  - 不要为一次性操作创建 helper / utility / 抽象。不要给不可能发生的场景加 error handling。只在系统边界（用户输入、外部 API）验证。\n"
+        "  - 报告完成前，验证它真的工作了：跑测试、执行脚本、检查输出。无法验证时明确说明，不要假装成功。\n"
         "  - Respond in the language the user writes in."
     )
+    # Append the boundary marker so _with_fresh_time() knows where the
+    # static content ends and dynamic content begins.
+    return system_prompt + "\n\n" + SYSTEM_PROMPT_DYNAMIC_BOUNDARY + "\n"
+
 _DEFAULT_SYSTEM = _default_system_prompt()
 def _with_fresh_time(system_prompt: str) -> str:
     """Append a fresh ``## 当前时刻`` block to the system prompt.
@@ -583,34 +606,37 @@ def _with_fresh_time(system_prompt: str) -> str:
     or years off — and any time-sensitive judgement is broken
     ("what day is it?" / "is the deadline tomorrow?").
 
-    The block is APPENDED rather than baked into the assembler-cached
-    prompt because we don't want to bust the persona-prompt cache on
-    every turn just to update one timestamp. If the prompt already
-    contains a "## 当前时刻" header from a previous build (e.g. the
-    operator pasted one into SOUL.md), we strip the existing block
-    first so we don't end up with two contradictory dates.
+    The block is appended AFTER ``SYSTEM_PROMPT_DYNAMIC_BOUNDARY`` so
+    the static prefix (everything before the boundary) stays stable
+    across turns and can be cached by AgentLoop's B-25 frozen-prompt
+    cache and the provider's prompt-cache prefix.
+
+    If the prompt already contains a "## 当前时刻" header from a
+    previous build (e.g. the operator pasted one into SOUL.md), we
+    strip the existing block first so we don't end up with two
+    contradictory dates.
     """
     import time as _t
-    now_local = _t.localtime()
-    tz = _t.strftime("%Z", now_local) or _t.strftime("%z", now_local)
-    weekday = _t.strftime("%A", now_local)
-    timestamp = _t.strftime("%Y-%m-%d %H:%M:%S", now_local)
-    block = (
-        f"## 当前时刻\n\n"
-        f"{timestamp} ({tz}, weekday: {weekday}). Use this for any "
-        f"reasoning about deadlines, schedules, or \"recent\" events. "
-        f"Trust this over your training-time clock."
-    )
 
-    # Strip a prior "## 当前时刻" block (re-rendered fresh on every turn)
-    # and a legacy "## 已学习的技能" block — that header lived in
-    # persona files when learned-skill markdown was injected into the
-    # prompt; today skills go through SkillToolProvider exclusively, so
-    # any residual header in user-edited persona files would just bloat
-    # the prompt without effect. Strip on the way in to roundtrip cleanly.
+    # ------------------------------------------------------------------
+    # 1. Separate static part (before boundary) from any prior dynamic
+    #    content (after boundary).  If no boundary is present we fall
+    #    back to treating the whole prompt as static — this preserves
+    #    backward compatibility with tests and old callers.
+    # ------------------------------------------------------------------
+    if SYSTEM_PROMPT_DYNAMIC_BOUNDARY in system_prompt:
+        static_part = system_prompt.split(SYSTEM_PROMPT_DYNAMIC_BOUNDARY)[0].rstrip()
+    else:
+        static_part = system_prompt
+
+    # ------------------------------------------------------------------
+    # 2. Strip legacy time / learned-skills blocks that may still be
+    #    embedded in the static part (old persona files, previous
+    #    _with_fresh_time calls that didn't use the boundary, etc.).
+    # ------------------------------------------------------------------
     for hdr in ("## 当前时刻", "## 已学习的技能（XMclaw 自主进化产出）"):
-        if hdr in system_prompt:
-            lines = system_prompt.split("\n")
+        if hdr in static_part:
+            lines = static_part.split("\n")
             out = []
             skip = False
             for line in lines:
@@ -624,6 +650,20 @@ def _with_fresh_time(system_prompt: str) -> str:
                         out.append(line)
                     continue
                 out.append(line)
-            system_prompt = "\n".join(out).rstrip()
+            static_part = "\n".join(out).rstrip()
 
-    return system_prompt + "\n\n" + block
+    # ------------------------------------------------------------------
+    # 3. Build the fresh time block.
+    # ------------------------------------------------------------------
+    now_local = _t.localtime()
+    tz = _t.strftime("%Z", now_local) or _t.strftime("%z", now_local)
+    weekday = _t.strftime("%A", now_local)
+    timestamp = _t.strftime("%Y-%m-%d %H:%M:%S", now_local)
+    time_block = (
+        f"## 当前时刻\n\n"
+        f"{timestamp} ({tz}, weekday: {weekday}). Use this for any "
+        f"reasoning about deadlines, schedules, or \"recent\" events. "
+        f"Trust this over your training-time clock."
+    )
+
+    return static_part + "\n\n" + SYSTEM_PROMPT_DYNAMIC_BOUNDARY + "\n\n" + time_block
