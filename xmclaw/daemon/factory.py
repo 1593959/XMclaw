@@ -762,6 +762,7 @@ def build_tools_from_config(
     bus: "InProcessEventBus | None" = None,
     approval_service: Any | None = None,
     auditor: Any | None = None,
+    session_store: Any | None = None,
 ) -> ToolProvider | None:
     """Return a ``ToolProvider`` built from ``cfg['tools']``.
 
@@ -796,7 +797,7 @@ def build_tools_from_config(
     tools_section = cfg.get("tools")
     if tools_section is None:
         # Default posture: full access, all tool families on.
-        return BuiltinTools()
+        return BuiltinTools(session_store=session_store)
     if not isinstance(tools_section, dict):
         raise ConfigError(
             f"'tools' must be an object, got {type(tools_section).__name__}"
@@ -967,6 +968,7 @@ def build_tools_from_config(
         undo_cabinet=_undo_cab,
         search_config_getter=_search_cfg_getter,
         canvas_listener=_canvas_listener,
+        session_store=session_store,
     )
     children: list[ToolProvider] = [builtins]
 
@@ -1563,12 +1565,22 @@ def build_agent_from_config(
             max_hops = 40
         if max_hops < 1:
             max_hops = 40
+    # Persistent conversation history — create early so it can be wired
+    # into BuiltinTools (read_conversation_history tool).
+    session_store: SessionStore | None
+    try:
+        session_store = SessionStore(default_sessions_db_path())
+    except Exception:  # noqa: BLE001
+        session_store = None
     registry = build_llm_registry_from_config(cfg)
     default_profile = registry.default()
     llm = default_profile.llm if default_profile is not None else None
     if llm is None:
         return None
-    tools = build_tools_from_config(cfg, bus=bus, approval_service=approval_service, auditor=auditor)
+    tools = build_tools_from_config(
+        cfg, bus=bus, approval_service=approval_service, auditor=auditor,
+        session_store=session_store,
+    )
     # 2026-05-12 Batch B.2: plumb the LLM into the ErrorAwareRetryProvider
     # wrapper. The retry wrapper was constructed in build_tools_from_config
     # before the LLM existed; now it does — wire it.
@@ -1615,14 +1627,6 @@ def build_agent_from_config(
         if not isinstance(policy_raw, str):
             policy_raw = None
     policy = PolicyMode.parse(policy_raw, default=PolicyMode.DETECT_ONLY)
-    # Persistent conversation history. Best-effort — if SQLite init
-    # fails (read-only fs, weird permissions) we fall back to in-memory
-    # only so the daemon still boots.
-    session_store: SessionStore | None
-    try:
-        session_store = SessionStore(default_sessions_db_path())
-    except Exception:  # noqa: BLE001
-        session_store = None
     # Persona system: assemble system prompt from the 7-file SOUL pack
     # (xmclaw/core/persona). Mirrors OpenClaw / Hermes / QwenPaw layout.
     # The DEFAULT_IDENTITY_LINE is always slot 0 so identity survives

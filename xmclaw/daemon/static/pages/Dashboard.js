@@ -19,6 +19,7 @@ const html = window.__xmc.htm.bind(h);
 
 import { apiGet } from "../lib/api.js";
 import { Skeleton } from "../components/atoms/skeleton.js";
+import { t } from "../lib/i18n.js";
 
 const REFRESH_INTERVAL_MS = 10_000;
 
@@ -318,6 +319,63 @@ const EVENT_ICONS = {
   evolution_promoted:     "⬆",
 };
 
+function EvolutionCard({ token }) {
+  const [summary, setSummary] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!token) return;
+    const since = (Date.now() - 24 * 60 * 60 * 1000) / 1000;
+    apiGet(`/api/v2/evolution/proposals?since=${since}&limit=50`, token)
+      .then((d) => {
+        const proposals = d.proposals || [];
+        const verdicts = d.verdicts || [];
+        const mutations = [
+          ...(d.promotions || []),
+          ...(d.rollbacks || []),
+        ];
+        const scores = verdicts
+          .map((e) => e.payload?.score)
+          .filter((s) => typeof s === "number");
+        const avg = scores.length
+          ? scores.reduce((a, b) => a + b, 0) / scores.length
+          : null;
+        setSummary({
+          proposalCount: proposals.length,
+          promoteCount: mutations.filter((e) => e.type === "skill_promoted").length,
+          rollbackCount: mutations.filter((e) => e.type === "skill_rolled_back").length,
+          gradeAvg: avg,
+        });
+      })
+      .catch((e) => setError(String(e.message || e)));
+  }, [token]);
+
+  if (error) {
+    return html`<${Card} title=${t("evolution.title")}><div class="xmc-dash__err">${error}</div></${Card}>`;
+  }
+  if (!summary) {
+    return html`<${Card} title=${t("evolution.title")}><${EmptyHint} text="加载中…" /></${Card}>`;
+  }
+  return html`
+    <${Card} title=${t("evolution.title")} hint="近 24h">
+      <div class="xmc-dash__stats-grid">
+        <${Stat} label=${t("evolution.proposals")} value=${summary.proposalCount} />
+        <${Stat} label=${t("evolution.promotes")} value=${summary.promoteCount} />
+        <${Stat} label=${t("evolution.rollbacks")} value=${summary.rollbackCount} />
+        <${Stat}
+          label=${t("evolution.gradeAvg")}
+          value=${summary.gradeAvg != null ? summary.gradeAvg.toFixed(2) : "—"}
+        />
+      </div>
+      <div style="margin-top:.6rem;text-align:right">
+        <a href="/evolution" class="xmc-h-nav__link" style="display:inline;font-size:.78rem">
+          ${t("evolution.viewDetails")}
+        </a>
+      </div>
+    </${Card}>
+  `;
+}
+
 function RecentEventsCard({ recentEvents, now }) {
   // Span the full grid width — this is the "what was the agent doing"
   // timeline and benefits from one long column over multiple short ones.
@@ -427,6 +485,7 @@ export function DashboardPage({ token }) {
         <${TasksCard} tasks=${data.tasks} />
         <${StorageCard} storage=${data.storage} />
         <${CostTodayCard} cost=${data.cost_today} />
+        <${EvolutionCard} token=${token} />
         <${RecentEventsCard} recentEvents=${data.recent_events} now=${now} />
       </div>
     </section>

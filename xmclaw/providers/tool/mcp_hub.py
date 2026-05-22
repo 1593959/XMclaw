@@ -40,6 +40,7 @@ from typing import Any
 from xmclaw.core.ir import ToolCall, ToolResult, ToolSpec
 from xmclaw.providers.tool.base import ToolProvider
 from xmclaw.providers.tool.mcp_bridge import MCPBridge
+from xmclaw.providers.tool.mcp_http_bridge import MCPHttpBridge
 
 _log = logging.getLogger(__name__)
 
@@ -254,20 +255,32 @@ class MCPHub(ToolProvider):
                         config=cfg, status="disabled"
                     )
                     continue
-                if cfg.transport != "stdio" or not cfg.command:
-                    self._servers[name] = _ServerState(
-                        config=cfg,
-                        status="error",
-                        last_error="non-stdio transports not yet supported",
-                    )
-                    continue
                 state = _ServerState(config=cfg, status="connecting")
                 self._servers[name] = state
                 try:
-                    bridge = MCPBridge(
-                        command=[cfg.command, *cfg.args],
-                        env={**os.environ, **cfg.env} if cfg.env else None,
-                    )
+                    if cfg.transport == "stdio":
+                        if not cfg.command:
+                            raise MCPError("stdio transport requires 'command'")
+                        bridge = MCPBridge(
+                            command=[cfg.command, *cfg.args],
+                            env={**os.environ, **cfg.env} if cfg.env else None,
+                            name=name,
+                            request_timeout=cfg.timeout_s,
+                        )
+                    elif cfg.transport in ("sse", "streamableHttp"):
+                        if not cfg.url:
+                            raise MCPError(
+                                f"{cfg.transport} transport requires 'url'"
+                            )
+                        bridge = MCPHttpBridge(
+                            url=cfg.url,
+                            transport=cfg.transport,
+                            name=name,
+                            request_timeout=cfg.timeout_s,
+                            env=cfg.env,
+                        )
+                    else:
+                        raise MCPError(f"unsupported transport: {cfg.transport}")
                     await bridge.start()
                     state.bridge = bridge
                     state.status = "connected"

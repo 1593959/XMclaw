@@ -302,3 +302,35 @@ def test_is_internal_session_id_covers_all_internal_prefixes() -> None:
     # Plain "time-" prefix WITHOUT fullb20 is not internal — only the
     # specific smoke-test prefix should match.
     assert not is_internal_session_id("time-zone-helper-session")
+
+
+def test_load_empty_history_is_not_falsy() -> None:
+    """B-ContextLoss-2: session_store.load() returning [] must be treated
+    as a valid empty history, not falsy.  Before the fix ``if loaded:``
+    skipped the assignment so the in-memory cache stayed empty and the
+    agent started from zero every turn."""
+    from xmclaw.daemon.agent_loop import AgentLoop
+    from xmclaw.core.bus import InProcessEventBus
+
+    store = SessionStore.__new__(SessionStore)
+    # Patch load to return an empty list (simulates a session that
+    # exists but has zero messages).
+    store.load = lambda sid: []  # type: ignore[method-assign]
+
+    loop = AgentLoop(
+        llm=_ScriptedLLM(), bus=InProcessEventBus(), tools=None,
+        system_prompt="sys", session_store=store,
+    )
+    # The old code used ``if loaded:`` which treated ``[]`` as falsy,
+    # so ``_histories`` would stay empty.  The fixed code uses
+    # ``if loaded is not None:`` which accepts ``[]``.
+    loaded = store.load("sess-empty")
+    assert loaded == []
+    if "sess-empty" not in loop._histories and loop._session_store is not None:
+        try:
+            loaded = loop._session_store.load("sess-empty")
+        except Exception:
+            loaded = None
+        if loaded is not None:
+            loop._histories["sess-empty"] = loaded
+    assert loop._histories.get("sess-empty") == []

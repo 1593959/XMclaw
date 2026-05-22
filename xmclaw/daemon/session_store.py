@@ -192,7 +192,7 @@ class SessionStore:
                 """
                 SELECT session_id, message_count, updated_at, history_json
                 FROM session_history
-                ORDER BY updated_at DESC
+                ORDER BY updated_at DESC, rowid DESC
                 LIMIT ?
                 """,
                 (max(1, int(limit)),),

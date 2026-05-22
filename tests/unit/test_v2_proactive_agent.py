@@ -79,6 +79,7 @@ async def test_registered_trigger_fires_once_per_tick():
     pub = _RecordingPublisher()
     agent = ProactiveAgent(
         publish=pub, tick_interval_s=0.1, global_min_gap_s=0.0,
+        quiet_start_hour=0, quiet_end_hour=0,
     )
     trig = _StubTrigger()
     agent.register_trigger(trig)
@@ -95,6 +96,7 @@ async def test_cooldown_prevents_double_fire():
     pub = _RecordingPublisher()
     agent = ProactiveAgent(
         publish=pub, tick_interval_s=0.1, global_min_gap_s=0.0,
+        quiet_start_hour=0, quiet_end_hour=0,
     )
     trig = _StubTrigger(cooldown_s=60.0)
     agent.register_trigger(trig)
@@ -109,6 +111,7 @@ async def test_global_min_gap_throttles():
     pub = _RecordingPublisher()
     agent = ProactiveAgent(
         publish=pub, tick_interval_s=0.1, global_min_gap_s=60.0,
+        quiet_start_hour=0, quiet_end_hour=0,
     )
     t1 = _StubTrigger(name="t1", cooldown_s=0.0)
     t2 = _StubTrigger(name="t2", cooldown_s=0.0)
@@ -126,6 +129,7 @@ async def test_misbehaving_trigger_does_not_crash_loop():
     pub = _RecordingPublisher()
     agent = ProactiveAgent(
         publish=pub, tick_interval_s=0.1, global_min_gap_s=0.0,
+        quiet_start_hour=0, quiet_end_hour=0,
     )
     agent.register_trigger(_RaisingTrigger())
     agent.register_trigger(_StubTrigger(name="ok"))
@@ -141,6 +145,7 @@ async def test_slow_trigger_is_timed_out():
     pub = _RecordingPublisher()
     agent = ProactiveAgent(
         publish=pub, tick_interval_s=0.1, global_min_gap_s=0.0,
+        quiet_start_hour=0, quiet_end_hour=0,
     )
     agent.register_trigger(_SlowTrigger())
     agent.register_trigger(_StubTrigger(name="ok"))
@@ -200,7 +205,7 @@ async def test_quiet_hours_allow_high_urgency():
 @pytest.mark.asyncio
 async def test_re_registering_same_name_replaces():
     pub = _RecordingPublisher()
-    agent = ProactiveAgent(publish=pub)
+    agent = ProactiveAgent(publish=pub, quiet_start_hour=0, quiet_end_hour=0)
     t1 = _StubTrigger(name="same", message="v1")
     t2 = _StubTrigger(name="same", message="v2")
     agent.register_trigger(t1)
@@ -213,7 +218,7 @@ async def test_re_registering_same_name_replaces():
 @pytest.mark.asyncio
 async def test_unregister_removes():
     pub = _RecordingPublisher()
-    agent = ProactiveAgent(publish=pub)
+    agent = ProactiveAgent(publish=pub, quiet_start_hour=0, quiet_end_hour=0)
     agent.register_trigger(_StubTrigger(name="x"))
     assert agent.unregister_trigger("x") is True
     assert agent.unregister_trigger("nope") is False
@@ -488,7 +493,7 @@ async def test_idle_trigger_strips_wrapping_quotes_from_llm():
 @pytest.mark.asyncio
 async def test_note_user_message_updates_context():
     pub = _RecordingPublisher()
-    agent = ProactiveAgent(publish=pub)
+    agent = ProactiveAgent(publish=pub, quiet_start_hour=0, quiet_end_hour=0)
     agent.note_user_message(ts=12345.0)
     assert agent._last_user_message_ts == 12345.0
 
@@ -496,7 +501,7 @@ async def test_note_user_message_updates_context():
 @pytest.mark.asyncio
 async def test_note_user_message_default_now():
     pub = _RecordingPublisher()
-    agent = ProactiveAgent(publish=pub)
+    agent = ProactiveAgent(publish=pub, quiet_start_hour=0, quiet_end_hour=0)
     before = time.time()
     agent.note_user_message()
     after = time.time()
@@ -509,7 +514,7 @@ async def test_note_user_message_default_now():
 @pytest.mark.asyncio
 async def test_start_then_stop_clean():
     pub = _RecordingPublisher()
-    agent = ProactiveAgent(publish=pub, tick_interval_s=0.05)
+    agent = ProactiveAgent(publish=pub, tick_interval_s=0.05, quiet_start_hour=0, quiet_end_hour=0)
     await agent.start()
     await asyncio.sleep(0.15)  # let it run a few ticks
     await agent.stop()
@@ -520,7 +525,7 @@ async def test_start_then_stop_clean():
 @pytest.mark.asyncio
 async def test_double_start_is_idempotent():
     pub = _RecordingPublisher()
-    agent = ProactiveAgent(publish=pub, tick_interval_s=0.1)
+    agent = ProactiveAgent(publish=pub, tick_interval_s=0.1, quiet_start_hour=0, quiet_end_hour=0)
     await agent.start()
     await agent.start()  # should not crash or leak
     await agent.stop()

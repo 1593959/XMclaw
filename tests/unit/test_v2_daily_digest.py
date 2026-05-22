@@ -34,12 +34,16 @@ async def test_does_not_fire_before_schedule():
 
 
 @pytest.mark.asyncio
-async def test_bad_schedule_never_fires():
+async def test_bad_schedule_fallback_to_interval():
     bus = MagicMock()
     trig = DailyDigestTrigger(
         bus=bus, schedule_expr="invalid-cron",
     )
-    assert trig._next_fire_ts is None
+    # Epic #27 sweep #15: bad schedules now fallback to "every 1d"
+    # instead of silently disabling the digest.
+    assert trig._next_fire_ts is not None
+    assert trig._used_interval_fallback is True
+    # Should NOT fire immediately — next_fire_ts is in the future.
     assert await trig.should_fire(_ctx(time.time())) is False
 
 

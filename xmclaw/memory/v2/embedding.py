@@ -18,7 +18,7 @@ Construction:
 
     >>> from xmclaw.memory.v2.embedding import EmbeddingService
     >>> svc = EmbeddingService.from_config({"api_key": "sk-..."})
-    >>> vec = await svc.embed("陪玩店 pw310.wxselling.com")
+    >>> vec = await svc.embed("网店 example.com")
     >>> # vec is tuple[float, ...] of length svc.dim
 
 For tests, pass a ``StubEmbedder`` that returns deterministic vectors

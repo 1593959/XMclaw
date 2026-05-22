@@ -208,8 +208,53 @@ KNOWN_OVERSIZED: dict[str, str] = {
     # B-323 follow-up cleared the original entry
     # ``pages/_panels/memory_providers.js`` (was ~700 lines, now under
     # 500) by extracting its 5 sub-cards (indexer / dream / pinned /
-    # picker / switcher) into sibling files. Empty by design — every
-    # file under SOURCE_GLOBS now clears the 500-line cap.
+    # picker / switcher) into sibling files.
+    # B-395 (2026-05-20): memory_facts_v2_graph.js at ~659 lines.
+    # The D3 force-directed graph + sigma.js dual-renderer setup is
+    # inherently coupled; splitting would create 3 tightly-bound
+    # partial files with no independent consumers. Defer split until
+    # a second graph type forces a generic renderer abstraction.
+    "pages/_panels/memory_facts_v2_graph.js": (
+        "659 lines — D3+sigma dual renderer; split deferred until "
+        "second graph type forces generic abstraction (B-395)"
+    ),
+    # B-395 (2026-05-20): app.js is the root shell orchestrator
+    # (routing + layout + global state). Splitting would fracture
+    # the single-source-of-truth for mount/unmount lifecycle.
+    "app.js": (
+        "577 lines — root shell orchestrator; split deferred until "
+        "layout engine is extracted (B-395)"
+    ),
+    # B-395 (2026-05-20): Composer.js handles input mode switching
+    # (text / voice / image / file) + send orchestration + paste
+    # handling. Each mode's UI is already a separate atom; the
+    # orchestration glue is what remains.
+    "components/molecules/Composer.js": (
+        "540 lines — input-mode orchestration glue; atoms already "
+        "split, glue extraction needs design pass (B-395)"
+    ),
+    # B-395 (2026-05-20): chat_reducer.js is a state-machine reducer
+    # with 12 action types. Splitting by action type would create
+    # 12 single-function files with heavy shared-type imports.
+    "lib/chat_reducer.js": (
+        "580 lines — 12-action reducer state machine; split by "
+        "action type creates import-churn without clarity win (B-395)"
+    ),
+    # B-395 (2026-05-20): chat.css is a theme file with extensive
+    # variable declarations + component overrides. Purely declarative;
+    # split by component would require CSS cascade reordering.
+    "styles/chat.css": (
+        "634 lines — theme variable + override declarations; "
+        "declarative CSS split risks cascade reorder bugs (B-395)"
+    ),
+    # Phase F (2026-05-22): LanguageSwitcher grew from a 7-line stub to
+    # a functional dropdown (~80 lines). Splitting it out creates a
+    # 90-line molecule with no other consumers. Defer until a second
+    # sidebar footer widget justifies a shared dropdown primitive.
+    "components/organisms/AppShellParts.js": (
+        "~502 lines — LanguageSwitcher dropdown added; split deferred "
+        "until second footer widget justifies shared primitive (Phase F)"
+    ),
 }
 
 

@@ -141,7 +141,7 @@ LONG_TERM_PROMOTE_THRESHOLD = 3
 #
 #   * URLs / domains — clearest shared-entity signal
 #   * Quoted strings (file names, account names, codes)
-#   * CJK noun phrases ≥ 2 chars — "陪玩店", "网站", "账号", "密码"
+#   * CJK noun phrases ≥ 2 chars — "网店", "网站", "账号", "密码"
 #   * ASCII identifiers ≥ 4 chars — "admin", "pw310"
 #
 # Common Chinese stopwords / pronouns / verbs are excluded so we
@@ -191,10 +191,10 @@ def _extract_entity_tokens(text: str) -> set[str]:
     For ASCII / URL / quoted strings: emit each whole match.
 
     For CJK runs of length N: emit EVERY 2-char window. A naive
-    greedy match would slurp "陪玩店账号" into a single token that
+    greedy match would slurp "网店账号" into a single token that
     only matches itself; bi-grams of the same run are
-    {"陪玩", "玩店", "店账", "账号"} and DO cross-link to a fact that
-    mentions just "陪玩店" or just "账号". This is the standard
+    {"网店", "店账", "账号"} and DO cross-link to a fact that
+    mentions just "网店" or just "账号". This is the standard
     Chinese-search bi-gram indexing trick.
     """
     if not text:

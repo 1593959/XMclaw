@@ -138,7 +138,8 @@ async def test_hub_marks_disabled_servers(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_hub_rejects_non_stdio_transport(tmp_path):
+async def test_hub_accepts_sse_transport_but_fails_to_connect(tmp_path):
+    """SSE transport is now supported; a bogus URL fails at connect time."""
     settings = tmp_path / "mcpServers.json"
     settings.write_text(
         json.dumps({
@@ -152,7 +153,7 @@ async def test_hub_rejects_non_stdio_transport(tmp_path):
     statuses = await hub.reload()
     assert statuses["remote"] == "error"
     snapshot = hub.status()["remote"]
-    assert "non-stdio" in (snapshot["last_error"] or "")
+    assert "example.com" in (snapshot["last_error"] or "")
 
 
 # ── B-142: reload_from_config (no settings file needed) ────────────
@@ -183,7 +184,7 @@ async def test_reload_from_config_none_or_invalid(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_reload_from_config_rejects_non_stdio(tmp_path):
+async def test_reload_from_config_sse_fails_to_connect(tmp_path):
     hub = MCPHub(settings_path=tmp_path / "x.json")
     statuses = await hub.reload_from_config({
         "remote": {"url": "https://example.com/sse", "transport": "sse"},

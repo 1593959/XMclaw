@@ -6,8 +6,9 @@ Usage::
     from xmclaw.providers.memory.embedding import build_embedding_provider
 
     embedder = build_embedding_provider(cfg)
+    from xmclaw.utils.paths import v2_workspace_dir
     indexer = CodebaseIndexer(
-        store_path=Path.home() / ".xmclaw" / "v2" / "codebase" / "index.db",
+        store_path=v2_workspace_dir() / "codebase" / "index.db",
         embedder=embedder,
     )
     await indexer.index_project(Path("/path/to/repo"))

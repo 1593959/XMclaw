@@ -329,7 +329,7 @@ def _entity_tier(ent_type: str) -> int:
       url      4   — full URL incl. path, near-unique
       domain   3   — domain only, still mostly unique
       ascii_id 2   — admin / pw310 / kebab-case ids
-      cjk_bigram 1 — "陪玩" / "网址" / "账号" — common, weakest
+      cjk_bigram 1 — "电商" / "网址" / "账号" — common, weakest
 
     Unknown types fall to 0. Used by entity-anchored clustering to
     pick a fact's PRIMARY entity (highest-tier one it mentions)

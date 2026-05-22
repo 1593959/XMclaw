@@ -8,7 +8,7 @@ shapes: URLs / accounts / phones / dates / etc. But regex can't see:
   * Disambiguated numbers (5万 = 业务目标 vs 5万 = 客户人数)
   * Cross-sentence references ("他" → 上文提到的人)
   * Soft preferences ("不喜欢太啰嗦的回答" — no "我喜欢" keyword)
-  * Domain knowledge ("陪玩店" → 业务模型 + 用户画像)
+  * Domain knowledge ("电商" → 业务模型 + 用户画像)
 
 LLMFactExtractor closes this gap. Per-message LLM call returns a
 structured JSON array of facts. Runs ASYNC after the user turn
@@ -67,7 +67,7 @@ _EXTRACT_PROMPT = """\
 kind 含义：
 - preference: 用户偏好（"喜欢简短回复"、"用 PowerShell 不用 bash"）
 - decision: 已做的决定（"决定用 LanceDB"）
-- identity: 身份/身份相关事实（"用户做陪玩店生意"、"Windows 11"、"用户 25 岁"）
+- identity: 身份/身份相关事实（"用户做电商生意"、"Windows 11"、"用户 25 岁"）
 - commitment: 待办/承诺/截止（"agent 下次写测试"、"月底前上线"）
 - correction: 纠正信号（"不要再 X / 永远 Y / 必须 Z"）
 - project: 项目参数 (网址/账号/数字目标/技术栈/团队信息)

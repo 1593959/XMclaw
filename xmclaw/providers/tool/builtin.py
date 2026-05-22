@@ -90,6 +90,7 @@ from xmclaw.providers.tool._specs import (  # noqa: F401
     _WEB_FETCH_SPEC as _WEB_FETCH_SPEC,
     _WEB_SEARCH_SPEC as _WEB_SEARCH_SPEC,
     _OPEN_IN_USER_BROWSER_SPEC as _OPEN_IN_USER_BROWSER_SPEC,
+    _READ_CONVERSATION_HISTORY_SPEC as _READ_CONVERSATION_HISTORY_SPEC,
 )
 from xmclaw.providers.tool._helpers import (  # noqa: F401
     PERSONA_CHAR_CAPS as PERSONA_CHAR_CAPS,
@@ -204,6 +205,9 @@ class BuiltinTools(
         # provided, ``file_write`` / ``apply_patch`` / ``file_delete``
         # snapshot pre-state for reversal. None = no recording (testing).
         undo_cabinet: "object | None" = None,
+        # B-ContextLoss: optional session store so the agent can
+        # browse its own conversation history chronologically.
+        session_store: "object | None" = None,
         # Wave-27 fix-LAT8: callable () -> dict returning the
         # ``cfg.evolution.search`` block so ``_web_search`` can pick a
         # backend (ddg / bing / brave / google_cse) and look up API
@@ -212,6 +216,7 @@ class BuiltinTools(
         canvas_listener: "object | None" = None,
     ) -> None:
         self._canvas_listener = canvas_listener
+        self._session_store = session_store
         self._allowed = (
             [Path(d).resolve() for d in allowed_dirs] if allowed_dirs else None
         )
@@ -426,6 +431,10 @@ class BuiltinTools(
         # Always advertised; the handler refuses cleanly when no LLM
         # is wired (which is the only failure mode).
         specs.append(_MEMORY_COMPACT_SPEC)
+        # B-ContextLoss: chronological history browser.
+        # Only advertised when a session_store is wired.
+        if self._session_store is not None:
+            specs.append(_READ_CONVERSATION_HISTORY_SPEC)
         # B-53: memory_pin lands in MEMORY.md's `## Pinned` section.
         # Gated on persona_dir wiring (same as ``remember``); the
         # actual write reuses _append_under_section so pinned bullets
@@ -555,6 +564,14 @@ class BuiltinTools(
                 return await self._agent_status(call, t0)
             if call.name == "memory_compact":
                 return await self._memory_compact(call, t0)
+            if call.name == "read_conversation_history":
+                if self._session_store is None:
+                    return _fail(
+                        call, t0,
+                        "read_conversation_history not configured "
+                        "(no session_store wired)",
+                    )
+                return await self._read_conversation_history(call, t0)
             if call.name == "memory_pin":
                 if self._persona_dir_provider is None:
                     return _fail(call, t0, "memory_pin not configured (no persona dir)")

@@ -101,57 +101,49 @@ def _parse_json_array(text: str) -> list[Any]:
 
 
 _SKILL_SYSTEM_PROMPT = (
-    "You are XMclaw's skill-pattern analyst. Given recent tool-use "
-    "patterns and journal entries, draft any reusable SKILL.md "
-    "candidates the agent should consider. ANSWER FORMAT: a JSON "
-    "array. NO PROSE, NO MARKDOWN FENCES. Each element MUST have "
-    "the exact shape:\n"
+    "你是 XMclaw 的技能模式分析师。根据近期工具使用模式和会话日志，"
+    "起草 agent 应考虑采纳的可复用 SKILL.md 候选。\n\n"
+    "回答格式：严格 JSON 数组，不要有散文或 markdown 代码块。"
+    "每个元素必须具有以下精确结构：\n"
     "{\n"
-    '  "skill_id": "auto-<verb>-<noun>[-<more>]",\n'
-    '  "title": "short human title",\n'
-    '  "description": "one-line description",\n'
-    '  "body": "step-by-step procedure body",\n'
-    '  "triggers": ["keyword1", "keyword2"],\n'
+    '  "skill_id": "auto-<动词>-<名词>[-<更多>]",\n'
+    '  "title": "简短的中文标题",\n'
+    '  "description": "一句话描述，中文",\n'
+    '  "body": "逐步 procedure body，中文",\n'
+    '  "triggers": ["关键词1", "keyword2"],\n'
     '  "confidence": 0.85,\n'
     '  "evidence": ["session_id1", "session_id2"],\n'
-    '  "source_pattern": "tool X used in 4 sessions"\n'
-    "}\n"
-    "B-169 skill_id naming rules (HARD):\n"
-    "  - Starts with literal ``auto-`` so users can tell evolution-"
-    "produced skills apart from curated/skills.sh ones.\n"
-    "  - Kebab-case after the prefix: lowercase a-z, digits 0-9, "
-    "hyphens only. NO dots, NO underscores, NO uppercase, NO spaces.\n"
-    "  - At least TWO segments after ``auto-`` (verb + noun). "
-    "``auto-bash`` is rejected; ``auto-bash-review`` is accepted.\n"
-    "  - 12-60 chars total. Prefer verb-noun structure naming WHAT "
-    "the skill DOES, not which tool it uses.\n"
-    "  - Good: ``auto-summarise-failures``, ``auto-clean-pyc-files``, "
-    "``auto-extract-flask-routes``, ``auto-write-pytest-fixtures``.\n"
-    "  - Bad (rejected): ``auto.bash_review`` (dots/underscores), "
-    "``BashReview`` (case + missing prefix), ``auto-bash`` (single "
-    "segment), ``auto-do-it`` (vague), ``skill_42`` (no prefix).\n"
-    "B-184 anti-redundancy (HARD — joint audit pain):\n"
-    "  - DO NOT propose a skill that is a thin wrapper around a "
-    "single built-in primitive tool. The agent already has these as "
-    "first-class tools and they're better than any wrapper:\n"
-    "    bash, list_dir, file_read, file_write, file_delete, "
-    "glob_files, grep_files, apply_patch, sqlite_query, "
-    "web_fetch, web_search, todo_write, todo_read.\n"
-    "  - REJECT: ``auto-explore-file-system`` (= list_dir+bash), "
-    "``auto-search-code-files`` (= grep_files+file_read), "
-    "``auto-inspect-sqlite-db`` (= sqlite_query alone), "
-    "``auto-run-shell-commands`` (= bash alone), "
-    "``auto-read-matching-files`` (= glob_files+file_read).\n"
-    "  - PROPOSE only when there's a real procedural sequence with "
-    "domain decisions (when to do X vs Y), or when the workflow "
-    "involves THIRD-party / non-primitive tools (skill_*, "
-    "web_search+grader+remember chains, etc.). If the entire "
-    "skill body would just be 'call <primitive_tool> with these "
-    "args' — the agent's existing tool description already covers "
-    "that, your skill adds noise.\n"
-    "Confidence ∈ [0, 1]. Evidence MUST list at least one source "
-    "session_id. If the patterns don't justify any new skill, return "
-    "[]."
+    '  "source_pattern": "tool X 在 4 个 session 中被使用"\n'
+    "}\n\n"
+    "B-169 skill_id 命名规则（强制）：\n"
+    "  - 必须以 ``auto-`` 开头，区分进化产出与人工 curated 技能。\n"
+    "  - 前缀后使用 kebab-case：小写 a-z、数字 0-9、连字符 only。"
+    "禁止点号、下划线、大写、空格。\n"
+    "  - ``auto-`` 后至少两段（动词+名词）。``auto-bash`` 被拒绝；"
+    "``auto-bash-review`` 可接受。\n"
+    "  - 总长度 12-60 字符。优先用「动词-名词」结构描述技能做什么，"
+    "而非使用哪个工具。\n"
+    "  - 好示例：auto-summarise-failures、auto-clean-pyc-files、"
+    "auto-extract-flask-routes、auto-write-pytest-fixtures。\n"
+    "  - 坏示例（会被拒绝）：auto.bash_review（含点/下划线）、"
+    "BashReview（大小写+缺前缀）、auto-bash（仅一段）、"
+    "auto-do-it（模糊）、skill_42（无 auto- 前缀）。\n\n"
+    "B-184 反冗余规则（强制——联合审计痛点）：\n"
+    "  - 不要提议对单个内置基础工具的薄包装。agent 已直接拥有这些工具，"
+    "任何包装都是噪音：bash、list_dir、file_read、file_write、"
+    "file_delete、glob_files、grep_files、apply_patch、sqlite_query、"
+    "web_fetch、web_search、todo_write、todo_read。\n"
+    "  - 拒绝示例：auto-explore-file-system（=list_dir+bash）、"
+    "auto-search-code-files（=grep_files+file_read）、"
+    "auto-inspect-sqlite-db（=sqlite_query）、"
+    "auto-run-shell-commands（=bash）、"
+    "auto-read-matching-files（=glob_files+file_read）。\n"
+    "  - 仅在以下情况提议：存在真正的程序序列+领域决策（何时做 X 而非 Y），"
+    "或涉及第三方/非基础工具（skill_*、web_search+grader+remember 链等）。"
+    "如果整个技能体只是'用这些参数调用 <基础工具>'——agent 已有工具描述，"
+    "你的技能只会增加噪音。\n\n"
+    "confidence ∈ [0, 1]。evidence 必须至少列出一个 source session_id。"
+    "如果模式不足以支撑新技能，返回空数组 []。"
 )
 
 
@@ -335,19 +327,17 @@ def build_skill_extractor(
 
 
 _PROFILE_SYSTEM_PROMPT = (
-    "You are XMclaw's user-profile analyst. Given a recent transcript "
-    "(user / assistant turns), surface any DURABLE preferences, "
-    "constraints, communication styles, or habits that the agent "
-    "should remember. ANSWER FORMAT: a JSON array. NO PROSE, NO "
-    "MARKDOWN FENCES. Each element MUST be:\n"
+    "你是 XMclaw 的用户画像分析师。根据最近对话记录（用户/助手轮次），"
+    "提取 agent 应记住的持久偏好、约束、沟通风格或习惯。\n\n"
+    "回答格式：严格 JSON 数组，不要散文或 markdown 代码块。"
+    "每个元素必须如下：\n"
     "{\n"
     '  "kind": "preference" | "constraint" | "style" | "habit",\n'
-    '  "text": "one-line natural-language statement",\n'
+    '  "text": "一句自然语言陈述，简体中文",\n'
     '  "confidence": 0.85\n'
-    "}\n"
-    "Only emit deltas that are likely to apply across future sessions. "
-    "Single-task observations don't qualify. If nothing durable came "
-    "up, return []."
+    "}\n\n"
+    "只输出可能跨未来会话生效的增量。单任务观察不算。"
+    "如果本轮没有持久信息，返回空数组 []。"
 )
 
 

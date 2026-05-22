@@ -8,6 +8,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added — MCP HTTP transport (SSE / streamableHttp)
+
+- `xmclaw/providers/tool/mcp_http_bridge.py` — new `MCPHttpBridge` class implementing JSON-RPC 2.0 over HTTP. Supports both `sse` (Server-Sent Events) and `streamableHttp` transports via `httpx`.
+- `MCPHub` now accepts `url`-based configs (was rejected with "non-stdio transports not yet supported"). Per-server `transport` field drives bridge selection: `stdio` → `MCPBridge`, `sse`/`streamableHttp` → `MCPHttpBridge`.
+
+### Added — Plugin SDK dynamic loading
+
+- `xmclaw/plugins/loader.py` — entry-point discovery via `importlib.metadata.entry_points(group="xmclaw.plugins")`. Resolves subclasses of `ToolProvider`, `Skill`, or `ChannelAdapter` (or factory callables returning them). Broken plugins are logged and skipped; they never crash daemon boot.
+- `xmclaw/providers/channel/registry.py` — `discover()` now merges external channel plugins from entry points alongside built-in channels.
+
+### Added — Email inbound attachment support
+
+- `xmclaw/providers/channel/email/adapter.py` — `_extract_attachments()` + `_save_email_attachments()`. Attachments up to 25 MB (configurable) are extracted, sanitized, and persisted to `~/.xmclaw/v2/uploads/email/`.
+  - Image attachments are surfaced via `InboundMessage.raw["images"]` so `AgentLoop.run_turn(user_images=...)` vision path works.
+  - Non-image attachments are listed in the inbound text with filename, MIME type, size, and saved path.
+
+### Added — ContextEngine shadow wiring
+
+- `AgentLoop` accepts an optional `context_engine` parameter. When wired, `run_turn` calls `bootstrap()`/`assemble()` for history load and `_persist_history` syncs cleaned history to `engine.after_turn()` via `_sync_engine_history()`. This is a **shadow / observational** integration — `self._histories` remains the primary store for backward compatibility; future refactor will flip the primary/secondary relationship.
+
 ### Added — Epic #25 · 贾维斯化 (R1–R6 主动认知 + 多模态感知 + 自主性)
 
 **Framework-level capability jump.** XMclaw was previously a reactive turn-by-turn REPL — user sends message, agent responds. Epic #25 added a continuous cognition layer that keeps thinking, sensing, and proposing while the user is silent. Lifespan now wires up six R-track subsystems by default; Mind page (`/mind`) makes them visible.

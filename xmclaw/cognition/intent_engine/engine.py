@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from xmclaw.core.bus.events import BehavioralEvent
+from xmclaw.core.ir import Message
 from xmclaw.cognition.intent_engine.models import IntentPrediction, ProactiveProposal, UserPattern
 from xmclaw.cognition.intent_engine.store import IntentStore
 from xmclaw.utils.log import get_logger
@@ -331,15 +332,121 @@ class IntentEngine:
     async def _run_llm_layer(self) -> None:
         """Layer 3: ask the LLM to reason over the past N events.
 
-        Stub — full implementation gated on having a cheap, fast model
-        available (e.g. local 4-bit Qwen 0.6B). We emit a debug log so
-        operators know the hook is live.
+        Compresses the recent event window into a concise summary,
+        asks the LLM to predict the user's next likely intent,
+        and surfaces high-confidence predictions into the cache.
         """
         if self._llm is None:
             return
-        _log.debug("intent_engine.llm_layer_skipped: no cheap local model wired yet")
-        # TODO(Jarvis J2 #14): implement structured LLM call over compressed
-        # event summary. Return IntentPrediction with source_layer="llm".
+
+        # Sample the most recent events (cap to keep prompt small).
+        recent = list(self._context_window)[-32:]
+        if not recent:
+            return
+
+        summary = self._compress_events(recent)
+
+        system_prompt = (
+            "你是一位意图预测分析师。根据下方压缩后的用户-代理交互日志，"
+            "预测用户接下来几分钟内最可能产生的意图。\n\n"
+            "请返回一个纯 JSON 对象（不要 markdown 代码块）：\n"
+            '{"predictions": [{"intent_type": "snake_case_slug", '
+            '"confidence": 0.0-1.0, "rationale": "简要说明", '
+            '"proposed_message": "主动建议的文案", '
+            '"urgency": "low|normal|high"}]}\n\n'
+            "规则：\n"
+            "1. 所有文本字段（rationale、proposed_message）必须使用简体中文。\n"
+            "2. 只有置信度 >= 0.55 的预测才放入 predictions 数组。\n"
+            "3. 如果没什么可预测的，返回空数组 {\"predictions\": []}。\n"
+            "4. proposed_message 要自然、口语化，像一位贴心的中文助手在主动提供帮助。"
+        )
+
+        try:
+            resp = await self._llm.complete(
+                messages=[
+                    Message(role="system", content=system_prompt),
+                    Message(role="user", content=summary),
+                ],
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("intent_engine.llm_layer.failed: %s", exc)
+            return
+
+        text = resp.content.strip()
+        if not text:
+            return
+
+        # Strip markdown fences if the model wrapped JSON.
+        if text.startswith("```"):
+            text = text.removeprefix("```json").removeprefix("```")
+            text = text.removesuffix("```").strip()
+
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            _log.debug("intent_engine.llm_layer.bad_json: %r", text[:200])
+            return
+
+        predictions = parsed.get("predictions")
+        if not isinstance(predictions, list):
+            return
+
+        added = 0
+        for item in predictions:
+            if not isinstance(item, dict):
+                continue
+            conf = float(item.get("confidence", 0))
+            if conf < self._confidence_threshold:
+                continue
+            intent_type = str(item.get("intent_type", "")).strip()
+            if not intent_type:
+                continue
+            pred = IntentPrediction(
+                intent_type=intent_type,
+                confidence=round(conf, 3),
+                rationale=str(item.get("rationale", "")),
+                proposed_action={
+                    "message": str(item.get("proposed_message", "")),
+                    "urgency": str(item.get("urgency", "normal")),
+                },
+                source_layer="llm",
+            )
+            self._prediction_cache.append(pred)
+            added += 1
+
+        if added:
+            self._cache_ts = time.time()
+            _log.info("intent_engine.llm_layer.hit: count=%d", added)
+        else:
+            _log.debug("intent_engine.llm_layer.no_predictions")
+
+        self._trim_cache()
+
+    def _compress_events(self, events: list[dict[str, Any]]) -> str:
+        """Compress a list of events into a concise text summary for the LLM."""
+        lines: list[str] = []
+        for ev in events:
+            ts = ev.get("ts", 0)
+            time_str = time.strftime("%H:%M", time.localtime(ts))
+            ev_type = ev.get("type", "unknown")
+            payload = ev.get("payload", {})
+            # Extract one key piece of info per event type to keep it short.
+            if ev_type == "user_message":
+                text = str(payload.get("content", ""))[:60]
+                lines.append(f"[{time_str}] user: {text}")
+            elif ev_type == "grader_verdict":
+                verdict = payload.get("verdict", "?")
+                lines.append(f"[{time_str}] grader: {verdict}")
+            elif ev_type == "tool_invocation_finished":
+                name = payload.get("tool_name", "?")
+                ok = "ok" if not payload.get("error") else "fail"
+                lines.append(f"[{time_str}] tool {name}: {ok}")
+            elif ev_type == "llm_chunk":
+                continue  # Skip streaming chunks — too noisy.
+            else:
+                # Generic fallback.
+                lines.append(f"[{time_str}] {ev_type}")
+        return "Recent events (newest last):\n" + "\n".join(lines)
 
     # ── helpers ──
 

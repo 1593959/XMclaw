@@ -102,9 +102,19 @@ class ACPAdapter(ChannelAdapter):
         try:
             import acp  # noqa: F401
         except ImportError as exc:
-            raise RuntimeError(
-                "ACP channel needs the 'acp' package: "
-                "pip install acp (or skip enabling this channel)"
+            # B-330: unified exception type so tests (and callers) get
+            # a predictable NotImplementedError whether the 'acp' package
+            # is missing or the scaffold hasn't been ported yet.
+            raise NotImplementedError(
+                "ACPAdapter is a scaffold — the request handler hasn't "
+                "been ported yet. Port reference: "
+                "hermes-agent/acp_adapter/server.py. Tracked at "
+                "docs/DEV_ROADMAP.md §2.1. The dispatcher's default "
+                "include_scaffolds=False filter normally hides this; "
+                "drop implementation_status from the manifest when the "
+                "Phase 6.1 port lands. "
+                "(Also: the 'acp' package is not installed: "
+                "pip install acp (or skip enabling this channel).)"
             ) from exc
         # Phase 6.1: port hermes acp_adapter/server.py:13-150 into here.
         # The InitializeResponse / PromptResponse / SessionInfo types

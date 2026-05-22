@@ -197,8 +197,14 @@ def test_missing_roadmap_returns_exit_code_2(linter, tmp_path):
 
 
 def test_shipped_roadmap_passes(linter):
-    """Regression guard: the real docs/DEV_ROADMAP.md must stay clean."""
+    """Regression guard: the real docs/DEV_ROADMAP.md must stay clean.
+
+    NOTE: DEV_ROADMAP.md was removed during documentation consolidation
+    (Epic #27). If a new roadmap file is added, point this test at it.
+    """
     real = _ROOT / "docs" / "DEV_ROADMAP.md"
+    if not real.exists():
+        pytest.skip("DEV_ROADMAP.md does not exist (removed in doc cleanup)")
     assert linter.lint(real) == []
 
 

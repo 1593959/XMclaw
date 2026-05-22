@@ -30,8 +30,8 @@
     "unified_threshold": 20
   },
   "evolution": {
-    "_comment": "Epic #4 + Sprint 3 honest-disclosure: ``enabled`` defaults to false until Sprint 4 benchmark numbers prove the loop helps more than it costs. Set true to opt into the experimental observers (HonestGrader / JournalWriter / SkillDreamCycle). ``auto_apply=false`` keeps promotion human-gated even when enabled — the orchestrator observes SKILL_CANDIDATE_PROPOSED events but does not mutate HEAD without ``xmclaw evolve approve <id>``. Flip auto_apply to true only after benchmark + user evidence agree.",
-    "enabled": false,
+    "_comment": "Epic #4 + Sprint 3 honest-disclosure: ``enabled`` defaults to true as of Phase 1 (2026-05-20). The experimental observers (HonestGrader / JournalWriter / SkillDreamCycle) are now on by default. ``auto_apply=false`` keeps promotion human-gated even when enabled — the orchestrator observes SKILL_CANDIDATE_PROPOSED events but does not mutate HEAD without ``xmclaw evolve approve <id>``. Flip auto_apply to true only after benchmark + user evidence agree.",
+    "enabled": true,
     "auto_apply": false,
     "interval_minutes": 30,
     "daily_review_hour": 22,

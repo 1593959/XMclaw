@@ -408,17 +408,12 @@ _BASH_SPEC = ToolSpec(
 _WEB_FETCH_SPEC = ToolSpec(
     name="web_fetch",
     description=(
-        "GET a URL and return its response. Follows redirects.\n\n"
-        "★ Auto-detects content-type:\n"
-        "  • text/html / text/* / application/json → returns body as "
-        "text (up to max_chars).\n"
-        "  • image/png|jpeg|gif|webp|bmp|svg → saves bytes to "
-        "~/.xmclaw/web_fetch_cache/, sets metadata.attach_image so "
-        "the NEXT LLM turn sees the image as a vision content block. "
-        "You don't need to OCR, base64, or re-fetch — just refer to "
-        "it directly in your next reasoning.\n\n"
-        "Use whenever the user asks about a specific URL — works for "
-        "text AND image URLs uniformly."
+        "GET 请求 URL 并返回内容。自动跟随重定向。\n\n"
+        "★ 内容类型自动检测：\n"
+        "  • text/html / text/* / application/json → 返回文本（受 max_chars 限制）。\n"
+        "  • image/* → 保存到本地缓存，下一条 LLM 提示自动以 vision 内容块"
+        "附加图片，无需 OCR 或 base64。\n\n"
+        "用户提到具体 URL 时立即调用，支持文本和图片 URL。"
     ),
     parameters_schema={
         "type": "object",
@@ -439,19 +434,13 @@ _WEB_FETCH_SPEC = ToolSpec(
 _WEB_SEARCH_SPEC = ToolSpec(
     name="web_search",
     description=(
-        "Search the web. Backend picked from "
-        "``cfg.evolution.search.provider``:\n"
-        "  • ``ddg`` (default, no API key) — DuckDuckGo HTML scrape. "
-        "Quality is fine for English; mediocre for CJK queries.\n"
-        "  • ``bing`` — Azure Bing v7 Web Search. Needs "
-        "``bing_api_key``. Better CJK relevance, structured JSON.\n"
-        "  • ``brave`` — Brave Web Search API. Needs "
-        "``brave_api_key``. Free tier exists.\n"
-        "  • ``google_cse`` — Google Custom Search. Needs "
-        "``google_api_key`` + ``google_cse_id``. Best quality, paid.\n\n"
-        "Returns 'TITLE\\nURL\\nSNIPPET' blocks for the top N hits. "
-        "Backend name is included in the output so you know which "
-        "engine answered."
+        "网络搜索。后端由配置决定：\n"
+        "  • ddg（默认，无需 API key）— DuckDuckGo，英文尚可，CJK 一般。\n"
+        "  • bing — Azure Bing，需 bing_api_key，CJK 效果更好。\n"
+        "  • brave — Brave Search API，有免费额度。\n"
+        "  • google_cse — Google 自定义搜索，质量最高，付费。\n\n"
+        "返回 'TITLE\\nURL\\nSNIPPET' 格式结果，输出中标注所用引擎。"
+        "需要查事实、找文档、确认信息时主动调用。"
     ),
     parameters_schema={
         "type": "object",
@@ -508,11 +497,21 @@ _OPEN_IN_USER_BROWSER_SPEC = ToolSpec(
 _TODO_WRITE_SPEC = ToolSpec(
     name="todo_write",
     description=(
-        "Record the current plan for a multi-step task as a todo list. "
-        "Each item has a 'content' and 'status' (pending|in_progress|done). "
-        "Overwrites the full list; call again with updated statuses as "
-        "work progresses. The user sees a live 'Todos' panel that mirrors "
-        "this state."
+        "将当前多步任务的计划记录为 todo 列表。"
+        "每项包含 content 和 status (pending|in_progress|done)。"
+        "覆盖写入全列表；进度推进时再次调用并更新状态。"
+        "用户在侧边栏看到实时 'Todos' 面板。\n\n"
+        "## 何时使用\n"
+        "  • 任务需要 3 个或以上独立步骤\n"
+        "  • 任务复杂，需要跟踪进度（用户可能中途询问'做到哪了'）\n"
+        "  • 用户明确要求使用 todo\n"
+        "  • 用户一次给出多个任务（编号或逗号分隔）\n"
+        "  • 计划模式（plan mode）中分解工作\n\n"
+        "## 何时不使用\n"
+        "  • 单一步骤的 straightforward 任务\n"
+        "  • 任务 trivial，跟踪它没有任何组织收益\n"
+        "  • 纯对话或信息查询（不需要执行步骤）\n\n"
+        "NOTE: 只有 1 个 trivial 任务时，直接执行，不要写 todo。"
     ),
     parameters_schema={
         "type": "object",
@@ -594,17 +593,19 @@ _UPDATE_FOCUS_SPEC = ToolSpec(
 _REMEMBER_SPEC = ToolSpec(
     name="remember",
     description=(
-        "Append a durable, cross-session note to MEMORY.md. Use sparingly "
-        "for facts that will still matter NEXT conversation: project "
-        "conventions, decisions made, recurring constraints, things the "
-        "user explicitly told you to remember. NOT for ephemeral session "
-        "context (use todos for that). NOT for facts about the user as a "
-        "person (use learn_about_user for that). Each call appends a "
-        "timestamped bullet under the matching ## category heading; the "
-        "category is created if missing. Categories should be short noun "
-        "phrases like 'Project conventions' / 'User preferences' / "
-        "'Decisions'. Effect lands on the next turn — your system prompt "
-        "is rebuilt the moment this returns."
+        "将跨会话持久事实写入 MEMORY.md。\n\n"
+        "## 何时使用\n"
+        "  • 用户明确要求'记住'某事\n"
+        "  • 你做出了跨会话仍需的决策（项目约定、技术选型、架构方向）\n"
+        "  • 发现了反复出现的约束或失败模式\n"
+        "  • 用户纠正了你的行为，且该纠正适用于未来\n\n"
+        "## 何时不使用\n"
+        "  • 本会话临时上下文（用 todo_write）\n"
+        "  • 用户个人信息如角色、偏好、沟通风格（用 learn_about_user）\n"
+        "  • 一次性观察，下回合就不再相关\n"
+        "  • 纯执行结果无需记忆（如'ls 返回了 5 个文件'）\n\n"
+        "每次调用在匹配的 ## 分类下追加时间戳 bullet；分类不存在则自动创建。"
+        "效果在下一回合立即生效——系统提示会实时重建。"
     ),
     parameters_schema={
         "type": "object",
@@ -628,15 +629,17 @@ _REMEMBER_SPEC = ToolSpec(
 _LEARN_ABOUT_USER_SPEC = ToolSpec(
     name="learn_about_user",
     description=(
-        "Append a fact about the user to USER.md. Use when you learn "
-        "something durable about who they are or how they want to work: "
-        "their role, expertise, language preferences, communication "
-        "style, recurring projects, things they've corrected you on. "
-        "Skip noise (one-off requests, things that change session-to-"
-        "session — those go to todos). Each call appends a timestamped "
-        "bullet under the matching ## section; sections are created on "
-        "demand. Effect lands on the next turn — your system prompt is "
-        "rebuilt the moment this returns."
+        "将用户个人信息写入 USER.md。\n\n"
+        "## 何时使用\n"
+        "  • 用户透露了身份相关信息（职业、公司、专业领域）\n"
+        "  • 用户表达了明确的偏好（语言、格式、沟通风格、工具选择）\n"
+        "  • 用户纠正了你的行为方式，且该纠正具有持久价值\n"
+        "  • 用户提到了 recurring 的项目、团队或工作流程\n\n"
+        "## 何时不使用\n"
+        "  • 项目技术决策或代码约定（用 remember）\n"
+        "  • 一次性请求或会话级变化（用 todo_write）\n"
+        "  • 你已经通过 recall_user_preferences 确认该信息已存在\n\n"
+        "效果下一回合生效。"
     ),
     parameters_schema={
         "type": "object",
@@ -710,24 +713,23 @@ _SCHEDULE_FOLLOWUP_SPEC = ToolSpec(
 _MEMORY_SEARCH_SPEC = ToolSpec(
     name="memory_search",
     description=(
-        "Search the agent's long-term memory across every wired "
-        "backend (persona files MEMORY.md/USER.md, sqlite-vec vector "
-        "store, optional cloud providers like hindsight/supermemory/"
-        "mem0). Use this BEFORE answering questions about prior "
-        "decisions, user preferences, names/dates the user mentioned, "
-        "or anything that might already be on disk from earlier "
-        "sessions.\n\n"
-        "Hits are merged across providers — the external (vector) "
-        "provider's results come first when present, builtin "
-        "(keyword) bullets fill in. Each row carries the originating "
-        "provider in metadata so you can tell.\n\n"
-        "B-197: pass ``kind`` to restrict by record type — "
-        "``preference`` for user style/format/language facts, "
-        "``lesson`` for learned failure modes, ``principle`` for "
-        "explicit user decisions, ``procedure`` for skill metadata, "
-        "``identity`` for stable user-told facts, ``file_chunk`` for "
-        "persona file content, ``session_summary`` for cross-session "
-        "history. Omit ``kind`` to search across everything (default)."
+        "搜索长期记忆。\n\n"
+        "## 何时使用\n"
+        "  • 用户问'我之前说过什么''我记得提到过'等涉及历史的问题\n"
+        "  • 你需要确认用户的偏好、约束或过往决策再行动\n"
+        "  • 用户要求基于之前的讨论继续工作\n"
+        "  • 代码相关问题：先查 ``kind='code_chunk'`` 看工作区是否已有相关源码索引\n\n"
+        "## 何时不使用\n"
+        "  • 当前会话中刚刚发生的事实（还在上下文里，直接引用）\n"
+        "  • 需要读取具体文件内容时（用 file_read，memory_search 只返回摘要）\n"
+        "  • 结构/定量问题如'今天用了多少次工具'（用 sqlite_query）\n\n"
+        "跨所有已连接后端合并结果（向量库优先，关键词补齐）。\n\n"
+        "B-197: 用 ``kind`` 过滤记录类型："
+        "``preference`` 用户偏好, ``lesson`` 经验教训, "
+        "``principle`` 用户明确决策, ``procedure`` 技能元数据, "
+        "``identity`` 用户身份事实, ``file_chunk`` 人格文件内容, "
+        "``session_summary`` 跨会话历史, ``code_chunk`` 代码片段。"
+        "省略 ``kind`` 则全库搜索（默认）。"
     ),
     parameters_schema={
         "type": "object",
@@ -1545,6 +1547,54 @@ _SET_OUTPUT_STYLE_SPEC = ToolSpec(
     },
 )
 
+
+_READ_CONVERSATION_HISTORY_SPEC = ToolSpec(
+    name="read_conversation_history",
+    description=(
+        "Browse the current session's conversation history "
+        "chronologically. Use this when the user refers to "
+        "something said earlier (\"like I mentioned before…\", "
+        "\"going back to what we discussed…\") and the reference "
+        "is NOT in the active context window.\n\n"
+        "Returns a slice of past messages with role and a short "
+        "content preview. The assistant can then call this again "
+        "with a different offset to page through history like a "
+        "chat log.\n\n"
+        "Directions:\n"
+        "  • ``newest`` — start from the most recent message and "
+        "    walk backward (default).\n"
+        "  • ``oldest`` — start from the first user message and "
+        "    walk forward.\n\n"
+        "Tip: if the user says \"what did I ask you to do at the "
+        "start?\" use direction=\"oldest\" with limit=5."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "offset": {
+                "type": "integer",
+                "description": (
+                    "Number of messages to skip from the start of "
+                    "the chosen direction. Default 0."
+                ),
+            },
+            "limit": {
+                "type": "integer",
+                "description": (
+                    "Max messages to return (1-50). Default 10."
+                ),
+            },
+            "direction": {
+                "type": "string",
+                "enum": ["newest", "oldest"],
+                "description": (
+                    "'newest' = recent-first (default); "
+                    "'oldest' = chronological from start."
+                ),
+            },
+        },
+    },
+)
 
 _EXIT_PLAN_MODE_SPEC = ToolSpec(
     name="exit_plan_mode",
