@@ -408,17 +408,12 @@ _BASH_SPEC = ToolSpec(
 _WEB_FETCH_SPEC = ToolSpec(
     name="web_fetch",
     description=(
-        "GET a URL and return its response. Follows redirects.\n\n"
-        "★ Auto-detects content-type:\n"
-        "  • text/html / text/* / application/json → returns body as "
-        "text (up to max_chars).\n"
-        "  • image/png|jpeg|gif|webp|bmp|svg → saves bytes to "
-        "~/.xmclaw/web_fetch_cache/, sets metadata.attach_image so "
-        "the NEXT LLM turn sees the image as a vision content block. "
-        "You don't need to OCR, base64, or re-fetch — just refer to "
-        "it directly in your next reasoning.\n\n"
-        "Use whenever the user asks about a specific URL — works for "
-        "text AND image URLs uniformly."
+        "GET 请求 URL 并返回内容。自动跟随重定向。\n\n"
+        "★ 内容类型自动检测：\n"
+        "  • text/html / text/* / application/json → 返回文本（受 max_chars 限制）。\n"
+        "  • image/* → 保存到本地缓存，下一条 LLM 提示自动以 vision 内容块"
+        "附加图片，无需 OCR 或 base64。\n\n"
+        "用户提到具体 URL 时立即调用，支持文本和图片 URL。"
     ),
     parameters_schema={
         "type": "object",
@@ -439,19 +434,13 @@ _WEB_FETCH_SPEC = ToolSpec(
 _WEB_SEARCH_SPEC = ToolSpec(
     name="web_search",
     description=(
-        "Search the web. Backend picked from "
-        "``cfg.evolution.search.provider``:\n"
-        "  • ``ddg`` (default, no API key) — DuckDuckGo HTML scrape. "
-        "Quality is fine for English; mediocre for CJK queries.\n"
-        "  • ``bing`` — Azure Bing v7 Web Search. Needs "
-        "``bing_api_key``. Better CJK relevance, structured JSON.\n"
-        "  • ``brave`` — Brave Web Search API. Needs "
-        "``brave_api_key``. Free tier exists.\n"
-        "  • ``google_cse`` — Google Custom Search. Needs "
-        "``google_api_key`` + ``google_cse_id``. Best quality, paid.\n\n"
-        "Returns 'TITLE\\nURL\\nSNIPPET' blocks for the top N hits. "
-        "Backend name is included in the output so you know which "
-        "engine answered."
+        "网络搜索。后端由配置决定：\n"
+        "  • ddg（默认，无需 API key）— DuckDuckGo，英文尚可，CJK 一般。\n"
+        "  • bing — Azure Bing，需 bing_api_key，CJK 效果更好。\n"
+        "  • brave — Brave Search API，有免费额度。\n"
+        "  • google_cse — Google 自定义搜索，质量最高，付费。\n\n"
+        "返回 'TITLE\\nURL\\nSNIPPET' 格式结果，输出中标注所用引擎。"
+        "需要查事实、找文档、确认信息时主动调用。"
     ),
     parameters_schema={
         "type": "object",
@@ -594,17 +583,12 @@ _UPDATE_FOCUS_SPEC = ToolSpec(
 _REMEMBER_SPEC = ToolSpec(
     name="remember",
     description=(
-        "Append a durable, cross-session note to MEMORY.md. Use sparingly "
-        "for facts that will still matter NEXT conversation: project "
-        "conventions, decisions made, recurring constraints, things the "
-        "user explicitly told you to remember. NOT for ephemeral session "
-        "context (use todos for that). NOT for facts about the user as a "
-        "person (use learn_about_user for that). Each call appends a "
-        "timestamped bullet under the matching ## category heading; the "
-        "category is created if missing. Categories should be short noun "
-        "phrases like 'Project conventions' / 'User preferences' / "
-        "'Decisions'. Effect lands on the next turn — your system prompt "
-        "is rebuilt the moment this returns."
+        "将跨会话持久事实写入 MEMORY.md。仅在信息对**下一回合**"
+        "仍有价值时使用：项目约定、已做决策、反复出现的约束、"
+        "用户明确要求记住的事。不要用于本会话临时上下文（用 todo），"
+        "不要用于用户个人信息（用 learn_about_user）。每次调用在"
+        "匹配的 ## 分类下追加时间戳 bullet；分类不存在则自动创建。"
+        "效果在下一回合立即生效——系统提示会实时重建。"
     ),
     parameters_schema={
         "type": "object",
@@ -628,15 +612,10 @@ _REMEMBER_SPEC = ToolSpec(
 _LEARN_ABOUT_USER_SPEC = ToolSpec(
     name="learn_about_user",
     description=(
-        "Append a fact about the user to USER.md. Use when you learn "
-        "something durable about who they are or how they want to work: "
-        "their role, expertise, language preferences, communication "
-        "style, recurring projects, things they've corrected you on. "
-        "Skip noise (one-off requests, things that change session-to-"
-        "session — those go to todos). Each call appends a timestamped "
-        "bullet under the matching ## section; sections are created on "
-        "demand. Effect lands on the next turn — your system prompt is "
-        "rebuilt the moment this returns."
+        "将用户个人信息写入 USER.md。适用于学到的关于用户身份"
+        "或工作方式的持久事实：角色、专业领域、语言偏好、沟通风格、"
+        " recurring 项目、用户纠正过你的地方。跳过噪声（一次性请求、"
+        "会话级变化——那些用 todo）。效果下一回合生效。"
     ),
     parameters_schema={
         "type": "object",
@@ -710,24 +689,15 @@ _SCHEDULE_FOLLOWUP_SPEC = ToolSpec(
 _MEMORY_SEARCH_SPEC = ToolSpec(
     name="memory_search",
     description=(
-        "Search the agent's long-term memory across every wired "
-        "backend (persona files MEMORY.md/USER.md, sqlite-vec vector "
-        "store, optional cloud providers like hindsight/supermemory/"
-        "mem0). Use this BEFORE answering questions about prior "
-        "decisions, user preferences, names/dates the user mentioned, "
-        "or anything that might already be on disk from earlier "
-        "sessions.\n\n"
-        "Hits are merged across providers — the external (vector) "
-        "provider's results come first when present, builtin "
-        "(keyword) bullets fill in. Each row carries the originating "
-        "provider in metadata so you can tell.\n\n"
-        "B-197: pass ``kind`` to restrict by record type — "
-        "``preference`` for user style/format/language facts, "
-        "``lesson`` for learned failure modes, ``principle`` for "
-        "explicit user decisions, ``procedure`` for skill metadata, "
-        "``identity`` for stable user-told facts, ``file_chunk`` for "
-        "persona file content, ``session_summary`` for cross-session "
-        "history. Omit ``kind`` to search across everything (default)."
+        "搜索长期记忆。在回答关于用户偏好、过往决策、已讨论过"
+        "的话题之前，先调此工具。跨所有已连接后端合并结果（向量"
+        "库优先，关键词补齐）。\n\n"
+        "B-197: 用 ``kind`` 过滤记录类型："
+        "``preference`` 用户偏好, ``lesson`` 经验教训, "
+        "``principle`` 用户明确决策, ``procedure`` 技能元数据, "
+        "``identity`` 用户身份事实, ``file_chunk`` 人格文件内容, "
+        "``session_summary`` 跨会话历史, ``code_chunk`` 代码片段。"
+        "省略 ``kind`` 则全库搜索（默认）。"
     ),
     parameters_schema={
         "type": "object",

@@ -872,31 +872,29 @@ def _build_planning_prompt(goal_blob: dict[str, Any]) -> str:
     as a belt-and-braces measure (see ``id_rewrite`` in plan()).
     """
     return (
-        "You are an HTN planner. Decompose this goal into atomic steps.\n\n"
-        f"GOAL:\n{json.dumps(goal_blob, ensure_ascii=False, indent=2)}\n\n"
-        "Reply with JSON ONLY (no prose, no fences) shaped as:\n"
+        "你是 HTN 规划器。将以下目标分解为原子步骤。\n\n"
+        f"目标：\n{json.dumps(goal_blob, ensure_ascii=False, indent=2)}\n\n"
+        "仅返回 JSON（不要散文，不要代码块标记），格式如下：\n"
         "{\n"
         '  "steps": [\n'
         '    {\n'
-        '      "id": "<unique-kebab-case-id-for-this-step>",\n'
-        '      "intent": "<short verb phrase>",\n'
+        '      "id": "<此步骤唯一短横线id>",\n'
+        '      "intent": "<简短动词短语，中文>",\n'
         '      "action_kind": "llm_turn|skill_invoke|tool_call|wait_for_percept",\n'
         '      "payload": {...},\n'
-        '      "depends_on": ["<id-of-a-step-listed-earlier>"],\n'
-        '      "expected_outcome": "<what success looks like>",\n'
+        '      "depends_on": ["<此前已列出的步骤id>"],\n'
+        '      "expected_outcome": "<成功标准>",\n'
         '      "retry_policy": {"max_retries": 2, "backoff_s": 1.0}\n'
         '    }\n'
         '  ],\n'
         '  "confidence": 0.6\n'
         "}\n"
         "\n"
-        "Rules for `id`:\n"
-        "  - Each step's id MUST be UNIQUE within this plan.\n"
-        "  - Use a SHORT verb-phrase id describing the step's action, "
-        "not a generic counter like \"step_1\" / \"step_2\".\n"
-        "  - Examples of good ids: \"fetch-issue-body\", \"parse-error-trace\", \"draft-fix\".\n"
-        "  - The runtime will further namespace these under the plan_id, "
-        "so don't worry about cross-plan uniqueness.\n"
+        "id 规则：\n"
+        "  - 每个步骤的 id 必须在本计划内唯一。\n"
+        "  - 使用简短动词短语描述动作，如 fetch-issue-body、"
+        "parse-error-trace、draft-fix。不要用 step_1 / step_2 这种通用计数。\n"
+        "  - 运行时会在 plan_id 下进一步命名空间，无需担心跨计划冲突。\n"
     )
 
 
@@ -927,9 +925,9 @@ def _build_repair_prompt(
         "analogical_grounding": grounding,
     }
     return (
-        "An HTN plan failed. Produce a REPAIRED plan that avoids the "
-        "failure mode. Reply with JSON ONLY in the same schema as plan().\n\n"
-        f"FAILURE_CONTEXT:\n{json.dumps(blob, ensure_ascii=False, indent=2)}\n"
+        "一个 HTN 计划执行失败。请生成修复后的计划，避开已知失败模式。"
+        "仅返回 JSON，格式与 plan() 相同。\n\n"
+        f"失败上下文：\n{json.dumps(blob, ensure_ascii=False, indent=2)}\n"
     )
 
 

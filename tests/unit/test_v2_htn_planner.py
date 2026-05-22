@@ -784,4 +784,4 @@ async def test_planning_prompt_does_not_seed_step_1_as_example_value() -> None:
     assert '"id": "step_0"' not in prompt
     assert '"depends_on": ["step_0"]' not in prompt
     # Must explicitly tell the LLM to pick unique ids.
-    assert "UNIQUE" in prompt.upper() or "unique" in prompt
+    assert "UNIQUE" in prompt.upper() or "unique" in prompt or "唯一" in prompt
