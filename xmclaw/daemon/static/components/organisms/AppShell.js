@@ -72,6 +72,8 @@ const ICONS = {
   Puzzle:        "M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68L2.707 13.707a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z",
   Menu:          "M4 12h16 M4 6h16 M4 18h16",
   X:             "M18 6 6 18 M6 6l12 12",
+  Users:         "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M16 3.128a4 4 0 0 1 0 7.744M22 21v-2a4 4 0 0 0-3-3.87M9 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z",
+  Link:          "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71",
 };
 
 export function Icon({ name, className }) {
@@ -103,8 +105,9 @@ export function Icon({ name, className }) {
 //   ⚙️ 配置       设置 / 文件 / 定时任务 / 工作区
 //   👁️ 观察       分析 / 事件 / 日志
 //
-// 被移除导航但保留路由的页面：/agents /channels /tools /security /doctor
-// /backup /config /docs — 它们的功能已合并到设置页或通过其他入口访问。
+// Phase F (2026-05-22): /agents /channels /tools /security /docs 恢复
+// 导航入口 — 页面本身有独立功能，不应埋没在设置页内。
+// /doctor /backup /config 仍合并到设置页（功能重叠）。
 // 每组可折叠，活跃路由的组自动展开。状态存 localStorage。
 export const NAV_GROUPS = [
   {
@@ -113,6 +116,7 @@ export const NAV_GROUPS = [
       { path: "/dashboard", label: "概览", icon: "BarChart3" },
       { path: "/chat",      label: "对话", icon: "Terminal" },
       { path: "/sessions",  label: "会话", icon: "MessageSquare" },
+      { path: "/channels",  label: "通道", icon: "Link" },
     ],
   },
   {
@@ -123,12 +127,15 @@ export const NAV_GROUPS = [
       { path: "/evolution",   label: "进化",     icon: "Sparkles", accent: true },
       { path: "/cognition",   label: "认知",     icon: "Eye" },
       { path: "/memory",      label: "记忆",     icon: "Database" },
+      { path: "/agents",      label: "代理",     icon: "Users" },
+      { path: "/tools",       label: "工具",     icon: "Wrench" },
     ],
   },
   {
     id: "system", label: "配置", icon: "Settings",
     items: [
       { path: "/settings",  label: "设置",     icon: "Settings" },
+      { path: "/security",  label: "安全",     icon: "Shield" },
       { path: "/files",     label: "文件",     icon: "FileText" },
       { path: "/cron",      label: "定时任务", icon: "Clock" },
       { path: "/workspace", label: "工作区",   icon: "FileText" },
@@ -140,6 +147,7 @@ export const NAV_GROUPS = [
       { path: "/analytics", label: "分析", icon: "BarChart3" },
       { path: "/trace",     label: "事件", icon: "Activity" },
       { path: "/logs",      label: "日志", icon: "FileText" },
+      { path: "/docs",      label: "文档", icon: "BookOpen" },
     ],
   },
 ];

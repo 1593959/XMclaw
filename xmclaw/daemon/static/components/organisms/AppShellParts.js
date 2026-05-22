@@ -168,12 +168,70 @@ export function ThemeSwitcher({ dropUp }) {
 
 
 export function LanguageSwitcher() {
-  // Hermes has a real i18n. Stub for now — visual placement preserved.
+  const { useState, useEffect } = window.__xmc.preact_hooks;
+  const [open, setOpen] = useState(false);
+  const [locale, setLocaleState] = useState(() => {
+    try { return localStorage.getItem("xmc_locale") || "zh_CN"; }
+    catch { return "zh_CN"; }
+  });
+
+  const locales = [
+    { code: "zh_CN", label: "简体中文" },
+    { code: "en",    label: "English" },
+  ];
+
+  const pick = (code) => {
+    try { localStorage.setItem("xmc_locale", code); } catch {}
+    setLocaleState(code);
+    setOpen(false);
+    // Notify i18n subscribers
+    try {
+      const evt = new Event("xmc_locale_change");
+      window.dispatchEvent(evt);
+    } catch {}
+  };
+
+  useEffect(() => {
+    const onClickOutside = (e) => {
+      if (!e.target.closest(".xmc-h-langsw")) setOpen(false);
+    };
+    window.addEventListener("click", onClickOutside);
+    return () => window.removeEventListener("click", onClickOutside);
+  }, []);
+
+  const active = locales.find((l) => l.code === locale) || locales[0];
   return html`
-    <button type="button" class="xmc-h-langsw" title="language">
-      <${Icon} name="Globe" />
-      <span>ZH</span>
-    </button>
+    <div class="xmc-h-langsw" style="position:relative">
+      <button
+        type="button"
+        class="xmc-h-langsw__btn"
+        title="language"
+        onClick=${(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        style="display:flex;align-items:center;gap:.3rem;background:transparent;border:0;color:var(--xmc-fg-muted);cursor:pointer;font-size:.75rem;padding:.2rem .4rem;border-radius:4px"
+      >
+        <${Icon} name="Globe" />
+        <span>${active.label}</span>
+      </button>
+      ${open
+        ? html`
+          <ul
+            style="position:absolute;bottom:120%;right:0;min-width:120px;background:var(--xmc-bg-elevated);border:1px solid var(--color-border);border-radius:6px;padding:.3rem 0;list-style:none;margin:0;box-shadow:0 4px 12px rgba(0,0,0,.3);z-index:200"
+          >
+            ${locales.map((l) => html`
+              <li
+                key=${l.code}
+                onClick=${() => pick(l.code)}
+                style="padding:.4rem .8rem;cursor:pointer;font-size:.78rem;color:${l.code === locale ? 'var(--xmc-accent)' : 'inherit'};background:${l.code === locale ? 'var(--xmc-bg-hover)' : 'transparent'}"
+                onMouseEnter=${(e) => { e.currentTarget.style.background = 'var(--xmc-bg-hover)'; }}
+                onMouseLeave=${(e) => { e.currentTarget.style.background = l.code === locale ? 'var(--xmc-bg-hover)' : 'transparent'; }}
+              >
+                ${l.label}
+              </li>
+            `)}
+          </ul>
+        `
+        : null}
+    </div>
   `;
 }
 

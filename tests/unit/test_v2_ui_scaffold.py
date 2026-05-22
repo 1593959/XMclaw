@@ -247,6 +247,14 @@ KNOWN_OVERSIZED: dict[str, str] = {
         "634 lines — theme variable + override declarations; "
         "declarative CSS split risks cascade reorder bugs (B-395)"
     ),
+    # Phase F (2026-05-22): LanguageSwitcher grew from a 7-line stub to
+    # a functional dropdown (~80 lines). Splitting it out creates a
+    # 90-line molecule with no other consumers. Defer until a second
+    # sidebar footer widget justifies a shared dropdown primitive.
+    "components/organisms/AppShellParts.js": (
+        "~502 lines — LanguageSwitcher dropdown added; split deferred "
+        "until second footer widget justifies shared primitive (Phase F)"
+    ),
 }
 
 

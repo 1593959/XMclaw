@@ -103,6 +103,7 @@ import { DocsPage } from "./pages/Docs.js";
 import { TracePage } from "./pages/Trace.js";
 import { FilesPage } from "./pages/Files.js";
 import { DashboardPage } from "./pages/Dashboard.js";
+import { ConfigViewerPage } from "./pages/ConfigViewer.js";
 
 // ── WS handle (singleton) ─────────────────────────────────────────────
 
@@ -506,8 +507,8 @@ const routes = {
   "/memory": (state) => html`<${MemoryPage} token=${state.auth.token} />`,
   "/tools": (state) => html`<${ToolsPage} token=${state.auth.token} />`,
   "/security": (state) => html`<${SecurityPage} token=${state.auth.token} />`,
-  // Phase F: /config /backup /doctor 合并到 /settings
-  "/config":  () => html`<${Redirect} to="/settings" />`,
+  // Phase F: /backup /doctor 合并到 /settings；/config 改为只读查看器
+  "/config":  (state) => html`<${ConfigViewerPage} token=${state.auth.token} />`,
   "/backup":  () => html`<${Redirect} to="/settings" />`,
   "/doctor":  () => html`<${Redirect} to="/settings" />`,
   "/files":   (state) => html`<${FilesPage}   token=${state.auth.token} />`,
