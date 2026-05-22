@@ -279,6 +279,8 @@
   font-family: var(--xmc-font-mono);
   font-size: var(--xmc-font-size-xs);
   margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* ── Composer ─────────────────────────────────────────────────────── */

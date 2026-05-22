@@ -214,10 +214,22 @@ class BuiltinToolsCanvasMixin:
             except Exception:  # noqa: BLE001
                 pass
 
+        # B-Vis-Fallback: echo the raw content back as plain text so the
+        # user can still read it even if the frontend Canvas renderer
+        # fails (CDN timeout, network partition, etc.).
+        preview = content[:800]
+        if len(content) > 800:
+            preview += "\n... (truncated, full content in artifact above)"
         return ToolResult(
             call_id=call.id,
             ok=True,
-            content=f"Created canvas artifact {artifact_id} ({kind}): {title}",
+            content=(
+                f"已创建可视化产物 [{title}] ({kind}) · ID: {artifact_id}\n"
+                f"---\n"
+                f"{preview}\n"
+                f"---\n"
+                f"如果上方没有正常渲染，请直接阅读以上内容。"
+            ),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 
