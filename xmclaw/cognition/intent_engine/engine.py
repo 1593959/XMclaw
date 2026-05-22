@@ -347,16 +347,18 @@ class IntentEngine:
         summary = self._compress_events(recent)
 
         system_prompt = (
-            "You are an intent-prediction analyst. Given a compressed log of "
-            "recent user-agent interactions, predict the user's MOST LIKELY "
-            "next intent(s) within the next few minutes.\n\n"
-            "Respond with a single JSON object (no markdown fences):\n"
+            "你是一位意图预测分析师。根据下方压缩后的用户-代理交互日志，"
+            "预测用户接下来几分钟内最可能产生的意图。\n\n"
+            "请返回一个纯 JSON 对象（不要 markdown 代码块）：\n"
             '{"predictions": [{"intent_type": "snake_case_slug", '
-            '"confidence": 0.0-1.0, "rationale": "brief explanation", '
-            '"proposed_message": "proactive suggestion text", '
+            '"confidence": 0.0-1.0, "rationale": "简要说明", '
+            '"proposed_message": "主动建议的文案", '
             '"urgency": "low|normal|high"}]}\n\n'
-            "Only emit predictions with confidence >= 0.55. "
-            "If nothing is clearly predictable, return an empty predictions array."
+            "规则：\n"
+            "1. 所有文本字段（rationale、proposed_message）必须使用简体中文。\n"
+            "2. 只有置信度 >= 0.55 的预测才放入 predictions 数组。\n"
+            "3. 如果没什么可预测的，返回空数组 {\"predictions\": []}。\n"
+            "4. proposed_message 要自然、口语化，像一位贴心的中文助手在主动提供帮助。"
         )
 
         try:
