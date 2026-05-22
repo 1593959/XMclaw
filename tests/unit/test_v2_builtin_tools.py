@@ -979,3 +979,105 @@ async def test_sqlite_query_unrelated_error_no_schema_noise(
     assert "syntax error" in err.lower() or "incomplete" in err.lower()
     assert "available tables" not in err
     assert "columns of" not in err
+
+
+# ── read_conversation_history ───────────────────────────────────────────
+
+def test_read_conversation_history_not_advertised_without_store() -> None:
+    """B-ContextLoss-3: tool is hidden when no session_store is wired."""
+    tools = BuiltinTools()
+    names = {t.name for t in tools.list_tools()}
+    assert "read_conversation_history" not in names
+
+
+def test_read_conversation_history_advertised_with_store() -> None:
+    """B-ContextLoss-3: tool surfaces when session_store is wired."""
+    from xmclaw.daemon.session_store import SessionStore
+    store = SessionStore.__new__(SessionStore)
+    tools = BuiltinTools(session_store=store)
+    names = {t.name for t in tools.list_tools()}
+    assert "read_conversation_history" in names
+
+
+@pytest.mark.asyncio
+async def test_read_conversation_history_returns_entries(
+    tmp_path: Path,
+) -> None:
+    """B-ContextLoss-3: chronological browse returns formatted entries."""
+    from xmclaw.daemon.session_store import SessionStore
+    db = tmp_path / "sess.db"
+    store = SessionStore(db)
+    from xmclaw.providers.llm.base import Message
+    store.save("sess-abc", [
+        Message(role="user", content="hello"),
+        Message(role="assistant", content="world"),
+        Message(role="user", content="how are you"),
+    ])
+
+    tools = BuiltinTools(session_store=store)
+    call = ToolCall(
+        name="read_conversation_history",
+        args={"limit": 2, "direction": "newest"},
+        provenance="synthetic", session_id="sess-abc",
+    )
+    result = await tools.invoke(call)
+    assert result.ok is True
+    data = result.content
+    assert isinstance(data, dict)
+    assert data["total_messages"] == 3
+    assert data["returned"] == 2
+    assert data["direction"] == "newest"
+    entries = data["entries"]
+    assert len(entries) == 2
+    # History: user "hello", assistant "world", user "how are you"
+    # newest 2 reversed = [user "how are you", assistant "world"]
+    assert entries[0]["role"] == "user"
+    assert "how are you" in entries[0]["preview"]
+    assert entries[1]["role"] == "assistant"
+    assert "world" in entries[1]["preview"]
+
+
+@pytest.mark.asyncio
+async def test_read_conversation_history_oldest_direction(
+    tmp_path: Path,
+) -> None:
+    """B-ContextLoss-3: direction=oldest walks from the start."""
+    from xmclaw.daemon.session_store import SessionStore
+    db = tmp_path / "sess.db"
+    store = SessionStore(db)
+    from xmclaw.providers.llm.base import Message
+    store.save("sess-def", [
+        Message(role="user", content="first"),
+        Message(role="assistant", content="second"),
+        Message(role="user", content="third"),
+    ])
+
+    tools = BuiltinTools(session_store=store)
+    call = ToolCall(
+        name="read_conversation_history",
+        args={"limit": 2, "direction": "oldest", "offset": 0},
+        provenance="synthetic", session_id="sess-def",
+    )
+    result = await tools.invoke(call)
+    assert result.ok is True
+    data = result.content
+    entries = data["entries"]
+    assert entries[0]["role"] == "user"
+    assert "first" in entries[0]["preview"]
+    assert entries[1]["role"] == "assistant"
+    assert "second" in entries[1]["preview"]
+
+
+@pytest.mark.asyncio
+async def test_read_conversation_history_no_store_refuses() -> None:
+    """B-ContextLoss-3: calling the tool without a wired store returns
+    a structured error."""
+    tools = BuiltinTools()
+    call = ToolCall(
+        name="read_conversation_history",
+        args={},
+        provenance="synthetic", session_id="sess-x",
+    )
+    result = await tools.invoke(call)
+    assert result.ok is False
+    assert "not configured" in (result.error or "")

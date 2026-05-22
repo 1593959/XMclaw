@@ -27,7 +27,7 @@
 
   /* Hide the right rail entirely on narrow tablet — covered by the
      chatsidebar rule, but reassert for any new right-rail siblings. */
-  .xmc-h-chatpage__aside {
+  .xmc-h-chat-frame__sidebar {
     display: none;
   }
 }
@@ -56,11 +56,11 @@
   }
 
   /* Chat area: full width, no padding so bubbles can use the screen. */
-  .xmc-h-chatpage {
+  .xmc-h-chat-frame {
     padding: 0;
     gap: 0;
   }
-  .xmc-h-chatpage__main {
+  .xmc-h-chat-frame__inner {
     padding: 0.4rem;
   }
 
@@ -109,7 +109,7 @@
   }
 
   /* Toolcard images: stay under the screen width. */
-  .xmc-toolcard__image,
+  .xmc-toolcard__media-img,
   .xmc-msg__image {
     max-height: 220px;
     max-width: calc(100vw - 2rem);

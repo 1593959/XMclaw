@@ -697,9 +697,9 @@ class ContextCompressor:
                 )
             else:
                 content_len = len(content)
-            msg_tokens = content_len // _CHARS_PER_TOKEN + 10
+            msg_tokens = _count_tokens_in_text(content) + 10
             for tc in m.tool_calls or ():
-                msg_tokens += _estimate_args_chars(getattr(tc, "args", {}) or {}) // _CHARS_PER_TOKEN
+                msg_tokens += _estimate_args_tokens_cjk(getattr(tc, "args", {}) or {})
 
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
                 break

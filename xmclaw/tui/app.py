@@ -112,9 +112,8 @@ class JarvisTUI(App[None]):  # type: ignore[misc]
             return
         try:
             await self._ws.send(json.dumps({
-                "action": "submit",
-                "session_id": self._session_id,
-                "message": text,
+                "type": "user",
+                "content": text,
             }))
         except Exception as exc:  # noqa: BLE001
             _log.warning("tui.send_failed: %s", exc)

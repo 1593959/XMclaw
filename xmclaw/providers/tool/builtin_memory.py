@@ -571,6 +571,94 @@ class BuiltinToolsMemoryMixin:
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 
+    async def _read_conversation_history(
+        self, call: ToolCall, t0: float,
+    ) -> ToolResult:
+        """Browse current session history chronologically.
+
+        Loads from the wired ``session_store`` (SQLite) so the tool
+        works even if the in-memory cache was lost (daemon restart,
+        /new, etc.).
+        """
+        if self._session_store is None:
+            return _fail(
+                call, t0,
+                "read_conversation_history not configured "
+                "(no session_store wired)",
+            )
+
+        offset_raw = call.args.get("offset", 0)
+        limit_raw = call.args.get("limit", 10)
+        direction = str(call.args.get("direction") or "newest").lower().strip()
+
+        try:
+            offset = max(0, int(offset_raw))
+        except (TypeError, ValueError):
+            return _fail(call, t0, f"offset must be integer (got {offset_raw!r})")
+        try:
+            limit = max(1, min(50, int(limit_raw)))
+        except (TypeError, ValueError):
+            return _fail(call, t0, f"limit must be integer (got {limit_raw!r})")
+        if direction not in ("newest", "oldest"):
+            return _fail(
+                call, t0,
+                f"direction must be 'newest' or 'oldest' (got {direction!r})",
+            )
+
+        sid = call.session_id or "_default"
+        history = self._session_store.load(sid)
+        if history is None:
+            return ToolResult(
+                call_id=call.id, ok=True,
+                content={
+                    "entries": [],
+                    "note": "no persisted history for this session yet",
+                },
+                side_effects=(),
+                latency_ms=(time.perf_counter() - t0) * 1000.0,
+            )
+
+        total = len(history)
+        if direction == "newest":
+            start = max(0, total - limit - offset)
+            end = total - offset
+            slice_ = history[start:end]
+            slice_.reverse()
+        else:
+            start = offset
+            end = min(total, offset + limit)
+            slice_ = history[start:end]
+
+        entries: list[dict[str, Any]] = []
+        for m in slice_:
+            content = m.content or ""
+            if isinstance(content, list):
+                content = "".join(
+                    p.get("text", "") for p in content if isinstance(p, dict)
+                )
+            preview = str(content)[:280]
+            if len(str(content)) > 280:
+                preview += "…"
+            entries.append({
+                "role": m.role,
+                "preview": preview,
+                "has_tool_calls": bool(m.tool_calls),
+                "tool_call_id": m.tool_call_id,
+            })
+
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "entries": entries,
+                "total_messages": total,
+                "returned": len(entries),
+                "offset": offset,
+                "direction": direction,
+            },
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
     async def _memory_compact(self, call: ToolCall, t0: float) -> ToolResult:
         """B-52: trigger Auto-Dream now (instead of waiting for the
         daily cron). Reaches the running compactor via the same

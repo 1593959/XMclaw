@@ -777,5 +777,41 @@ class HistoryCompressionMixin:
                 # never break the live turn. The in-memory copy is the source
                 # of truth for the rest of this process.
                 pass
+        # Epic #2 Phase 2: sync to ContextEngine when wired.
+        # The engine is a shadow store today; future refactor will
+        # make it the primary source of truth.
+        if getattr(self, "_context_engine", None) is not None:
+            try:
+                asyncio.create_task(
+                    self._sync_engine_history(session_id, history)
+                )
+            except Exception:  # noqa: BLE001
+                pass
         return None
+
+    async def _sync_engine_history(
+        self, session_id: str, history: list[Any],
+    ) -> None:
+        """Push cleaned history into the optional ContextEngine.
+
+        Best-effort fire-and-forget: any failure is swallowed so the
+        engine never breaks a turn.
+        """
+        engine = getattr(self, "_context_engine", None)
+        if engine is None:
+            return
+        try:
+            # Re-bootstrap (idempotent) then ingest any messages the
+            # engine doesn't already know about.
+            await engine.bootstrap(session_id)
+            _assembled = await engine.assemble(
+                session_id, token_budget=999_999, include_system=False,
+            )
+            known = list(_assembled.messages)
+            # Ingest only new tail messages.
+            for msg in history[len(known):]:
+                await engine.ingest(session_id, msg)
+            await engine.after_turn(session_id)
+        except Exception:  # noqa: BLE001
+            pass
 

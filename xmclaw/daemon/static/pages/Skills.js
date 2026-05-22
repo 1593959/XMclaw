@@ -325,7 +325,7 @@ export function SkillsPage({ token }) {
               <strong>${loadFailures.length} 个技能加载失败</strong>
               <span style="opacity:.8">
                 · 这些目录被 SkillsWatcher 看到，但实例化时报错。
-                修完 ``skill.py`` 重启 daemon 即可消除；或 file_read
+                修完 'skill.py' 重启 daemon 即可消除；或 file_read
                 <code>${loadFailures[0].path}</code> 看具体错误。
               </span>
               <ul style="margin: 6px 0 0 18px; padding: 0; opacity: .9">

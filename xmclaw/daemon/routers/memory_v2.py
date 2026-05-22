@@ -647,7 +647,7 @@ async def list_facts(
         include_relations=False,
         only_layer=only_layer,
         # UI list view wants substring matches, not nearest-neighbour
-        # similarity — q="陪玩店" should hit "陪玩店业务" but NOT
+        # similarity — q="网店" should hit "网店业务" but NOT
         # every other fact that happens to be vec-close.
         keyword_only=bool(q),
         include_superseded=include_superseded,

@@ -134,6 +134,10 @@ async def test_find_image_below_confidence(tools, tmp_path, monkeypatch):
     cv2.minMaxLoc = lambda res: (0.0, 0.4, (0, 0), (10, 10))
     monkeypatch.setitem(sys.modules, "cv2", cv2)
 
+    # numpy is also imported by _find_image_on_screen; stub it.
+    np = types.ModuleType("numpy")
+    monkeypatch.setitem(sys.modules, "numpy", np)
+
     import xmclaw.providers.tool.computer_use as cu
     monkeypatch.setattr(
         cu, "_grab_for_ocr",

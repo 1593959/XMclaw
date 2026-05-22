@@ -1946,6 +1946,26 @@ def make_lifespan(
                 except Exception as exc:  # noqa: BLE001
                     log.warning("cognition.tick_store_init_failed err=%s", exc)
 
+                # Phase 6.4: GoalGenerator — self-spawns maintenance /
+                # exploration / social goals gated by autonomy level.
+                _goal_generator = None
+                try:
+                    from xmclaw.cognition.goal_generator import (
+                        AutonomyPolicy as _GGAutonomyPolicy,
+                        GoalGenerator,
+                    )
+
+                    _goal_generator = GoalGenerator(
+                        cognitive_state=_cognitive_state,
+                        policy=_GGAutonomyPolicy.from_level(
+                            _cd_cfg.autonomy_level,
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "cognition.goal_generator_init_failed err=%s", exc,
+                    )
+
                 _cognitive_daemon = CognitiveDaemon(
                     config=_cd_cfg,
                     bus=_percept_bus,
@@ -1988,6 +2008,7 @@ def make_lifespan(
                     experiment_loop=_experiment_loop,
                     reasoning=_reasoning,
                     planner=_planner,
+                    goal_generator=_goal_generator,
                     process_watcher=getattr(_app.state, "process_watcher", None),
                     tick_store=_tick_store,
                 )

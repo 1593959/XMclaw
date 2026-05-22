@@ -1546,6 +1546,54 @@ _SET_OUTPUT_STYLE_SPEC = ToolSpec(
 )
 
 
+_READ_CONVERSATION_HISTORY_SPEC = ToolSpec(
+    name="read_conversation_history",
+    description=(
+        "Browse the current session's conversation history "
+        "chronologically. Use this when the user refers to "
+        "something said earlier (\"like I mentioned before…\", "
+        "\"going back to what we discussed…\") and the reference "
+        "is NOT in the active context window.\n\n"
+        "Returns a slice of past messages with role and a short "
+        "content preview. The assistant can then call this again "
+        "with a different offset to page through history like a "
+        "chat log.\n\n"
+        "Directions:\n"
+        "  • ``newest`` — start from the most recent message and "
+        "    walk backward (default).\n"
+        "  • ``oldest`` — start from the first user message and "
+        "    walk forward.\n\n"
+        "Tip: if the user says \"what did I ask you to do at the "
+        "start?\" use direction=\"oldest\" with limit=5."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "offset": {
+                "type": "integer",
+                "description": (
+                    "Number of messages to skip from the start of "
+                    "the chosen direction. Default 0."
+                ),
+            },
+            "limit": {
+                "type": "integer",
+                "description": (
+                    "Max messages to return (1-50). Default 10."
+                ),
+            },
+            "direction": {
+                "type": "string",
+                "enum": ["newest", "oldest"],
+                "description": (
+                    "'newest' = recent-first (default); "
+                    "'oldest' = chronological from start."
+                ),
+            },
+        },
+    },
+)
+
 _EXIT_PLAN_MODE_SPEC = ToolSpec(
     name="exit_plan_mode",
     description=(

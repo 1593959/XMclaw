@@ -759,7 +759,8 @@ class SkillToolProvider:
         try:
             canonical, extras = resolve_skill_roots()
         except Exception:  # noqa: BLE001
-            canonical, extras = (_Path.home() / ".xmclaw/skills_user", [])
+            from xmclaw.utils.paths import user_skills_dir
+            canonical, extras = (user_skills_dir(), [])
         candidate_roots = [canonical, *extras]
         skill_dir: _Path | None = None
         for root in candidate_roots:
@@ -983,7 +984,8 @@ class SkillToolProvider:
         try:
             canonical, extras = resolve_skill_roots()
         except Exception:  # noqa: BLE001
-            canonical, extras = (_Path.home() / ".xmclaw/skills_user", [])
+            from xmclaw.utils.paths import user_skills_dir
+            canonical, extras = (user_skills_dir(), [])
         roots = [canonical, *extras]
         skill_dir = None
         for root in roots:

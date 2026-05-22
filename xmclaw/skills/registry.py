@@ -26,6 +26,7 @@ at ``get()`` time.
 from __future__ import annotations
 
 import json
+import threading
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -86,6 +87,8 @@ class SkillRegistry:
         if self._history_dir is not None:
             self._history_dir.mkdir(parents=True, exist_ok=True)
 
+        self._lock = threading.RLock()
+
     # ── registration ──
 
     def register(
@@ -109,27 +112,28 @@ class SkillRegistry:
         version = skill.version
         key = (skill_id, version)
 
-        if key in self._skills:
-            raise ValueError(
-                f"{skill_id!r} v{version} already registered — bump version "
-                f"rather than re-registering"
-            )
-        if manifest.id != skill_id or manifest.version != version:
-            raise ValueError(
-                f"manifest id/version mismatch: skill={skill_id} v{version}, "
-                f"manifest={manifest.id} v{manifest.version}"
-            )
+        with self._lock:
+            if key in self._skills:
+                raise ValueError(
+                    f"{skill_id!r} v{version} already registered — bump version "
+                    f"rather than re-registering"
+                )
+            if manifest.id != skill_id or manifest.version != version:
+                raise ValueError(
+                    f"manifest id/version mismatch: skill={skill_id} v{version}, "
+                    f"manifest={manifest.id} v{manifest.version}"
+                )
 
-        self._skills[key] = skill
-        self._manifests[key] = manifest
-        versions = self._versions[skill_id]
-        versions.append(version)
-        versions.sort()
+            self._skills[key] = skill
+            self._manifests[key] = manifest
+            versions = self._versions[skill_id]
+            versions.append(version)
+            versions.sort()
 
-        if set_head and skill_id not in self._head:
-            self._head[skill_id] = version
+            if set_head and skill_id not in self._head:
+                self._head[skill_id] = version
 
-        return SkillRef(skill_id=skill_id, version=version, manifest=manifest)
+            return SkillRef(skill_id=skill_id, version=version, manifest=manifest)
 
     # ── lookup ──
 
@@ -140,41 +144,46 @@ class SkillRegistry:
         registered version. This is important: a rollback moves HEAD but
         leaves the latest-registered version in place.
         """
-        if version is None:
-            if skill_id not in self._head:
+        with self._lock:
+            if version is None:
+                if skill_id not in self._head:
+                    raise UnknownSkillError(
+                        f"skill {skill_id!r} has no HEAD — never promoted"
+                    )
+                version = self._head[skill_id]
+            try:
+                return self._skills[(skill_id, version)]
+            except KeyError as exc:
                 raise UnknownSkillError(
-                    f"skill {skill_id!r} has no HEAD — never promoted"
-                )
-            version = self._head[skill_id]
-        try:
-            return self._skills[(skill_id, version)]
-        except KeyError as exc:
-            raise UnknownSkillError(
-                f"skill {skill_id!r} v{version} not registered"
-            ) from exc
+                    f"skill {skill_id!r} v{version} not registered"
+                ) from exc
 
     def ref(self, skill_id: str, version: int | None = None) -> SkillRef:
-        if version is None:
-            if skill_id not in self._head:
-                raise UnknownSkillError(
-                    f"skill {skill_id!r} has no HEAD"
-                )
-            version = self._head[skill_id]
-        key = (skill_id, version)
-        if key not in self._skills:
-            raise UnknownSkillError(f"{skill_id!r} v{version} not registered")
-        return SkillRef(
-            skill_id=skill_id, version=version, manifest=self._manifests[key],
-        )
+        with self._lock:
+            if version is None:
+                if skill_id not in self._head:
+                    raise UnknownSkillError(
+                        f"skill {skill_id!r} has no HEAD"
+                    )
+                version = self._head[skill_id]
+            key = (skill_id, version)
+            if key not in self._skills:
+                raise UnknownSkillError(f"{skill_id!r} v{version} not registered")
+            return SkillRef(
+                skill_id=skill_id, version=version, manifest=self._manifests[key],
+            )
 
     def list_versions(self, skill_id: str) -> list[int]:
-        return list(self._versions.get(skill_id, ()))
+        with self._lock:
+            return list(self._versions.get(skill_id, ()))
 
     def active_version(self, skill_id: str) -> int | None:
-        return self._head.get(skill_id)
+        with self._lock:
+            return self._head.get(skill_id)
 
     def list_skill_ids(self) -> list[str]:
-        return sorted(self._head.keys())
+        with self._lock:
+            return sorted(self._head.keys())
 
     # ── mutation: promote + rollback (anti-req #12) ──
 
@@ -217,42 +226,44 @@ class SkillRegistry:
                 f"describing the grader verdict / bench result that "
                 f"justifies this change."
             )
-        if (skill_id, to_version) not in self._skills:
-            raise UnknownSkillError(
-                f"cannot promote to unregistered version "
-                f"{skill_id!r} v{to_version}"
+
+        with self._lock:
+            if (skill_id, to_version) not in self._skills:
+                raise UnknownSkillError(
+                    f"cannot promote to unregistered version "
+                    f"{skill_id!r} v{to_version}"
+                )
+
+            if not force:
+                danger_evidence = [
+                    e for e in evidence
+                    if isinstance(e, str) and (
+                        "dangerous:" in e.lower()
+                        or "verdict=dangerous" in e.lower()
+                    )
+                ]
+                if danger_evidence:
+                    raise DangerousPromotionError(
+                        f"refusing to promote {skill_id!r} v{to_version}: "
+                        f"grader stamped dangerous verdict ({danger_evidence!r}). "
+                        "Pass ``force=True`` to override (do this ONLY after "
+                        "reviewing the dangerous-evidence rationale)."
+                    )
+
+            from_version = self._head.get(skill_id, 0)
+            self._head[skill_id] = to_version
+            record = PromotionRecord(
+                kind="promote",
+                skill_id=skill_id,
+                from_version=from_version,
+                to_version=to_version,
+                ts=now_ts(),
+                evidence=tuple(evidence),
+                source=source,
             )
-
-        if not force:
-            danger_evidence = [
-                e for e in evidence
-                if isinstance(e, str) and (
-                    "dangerous:" in e.lower()
-                    or "verdict=dangerous" in e.lower()
-                )
-            ]
-            if danger_evidence:
-                raise DangerousPromotionError(
-                    f"refusing to promote {skill_id!r} v{to_version}: "
-                    f"grader stamped dangerous verdict ({danger_evidence!r}). "
-                    "Pass ``force=True`` to override (do this ONLY after "
-                    "reviewing the dangerous-evidence rationale)."
-                )
-
-        from_version = self._head.get(skill_id, 0)
-        self._head[skill_id] = to_version
-        record = PromotionRecord(
-            kind="promote",
-            skill_id=skill_id,
-            from_version=from_version,
-            to_version=to_version,
-            ts=now_ts(),
-            evidence=tuple(evidence),
-            source=source,
-        )
-        self._history[skill_id].append(record)
-        self._persist(record)
-        return record
+            self._history[skill_id].append(record)
+            self._persist(record)
+            return record
 
     def rollback(
         self,
@@ -273,26 +284,28 @@ class SkillRegistry:
                 f"rollback of {skill_id!r} refused without reason. Rollbacks "
                 f"must be explained — callers are never silent about them."
             )
-        if (skill_id, to_version) not in self._skills:
-            raise UnknownSkillError(
-                f"cannot rollback to unregistered version "
-                f"{skill_id!r} v{to_version}"
-            )
 
-        from_version = self._head.get(skill_id, 0)
-        self._head[skill_id] = to_version
-        record = PromotionRecord(
-            kind="rollback",
-            skill_id=skill_id,
-            from_version=from_version,
-            to_version=to_version,
-            ts=now_ts(),
-            reason=reason,
-            source=source,
-        )
-        self._history[skill_id].append(record)
-        self._persist(record)
-        return record
+        with self._lock:
+            if (skill_id, to_version) not in self._skills:
+                raise UnknownSkillError(
+                    f"cannot rollback to unregistered version "
+                    f"{skill_id!r} v{to_version}"
+                )
+
+            from_version = self._head.get(skill_id, 0)
+            self._head[skill_id] = to_version
+            record = PromotionRecord(
+                kind="rollback",
+                skill_id=skill_id,
+                from_version=from_version,
+                to_version=to_version,
+                ts=now_ts(),
+                reason=reason,
+                source=source,
+            )
+            self._history[skill_id].append(record)
+            self._persist(record)
+            return record
 
     # ── audit ──
 
@@ -302,7 +315,8 @@ class SkillRegistry:
         Anti-req #5: rollbacks are a first-class event, not a file edit.
         A skill promoted, rolled back, re-promoted shows three entries.
         """
-        return list(self._history.get(skill_id, ()))
+        with self._lock:
+            return list(self._history.get(skill_id, ()))
 
     # ── B-175: in-place body update for live SKILL.md edits ──
 
@@ -337,39 +351,40 @@ class SkillRegistry:
         Never raises — the watcher path must be exception-free.
         """
         key = (skill_id, version)
-        existing = self._skills.get(key)
-        if existing is None:
-            return False
-        if not isinstance(existing, MarkdownProcedureSkill):
-            # Python skill — body lives in source, importlib-cached.
-            return False
+        with self._lock:
+            existing = self._skills.get(key)
+            if existing is None:
+                return False
+            if not isinstance(existing, MarkdownProcedureSkill):
+                # Python skill — body lives in source, importlib-cached.
+                return False
 
-        # Construct a fresh instance (dataclass, mutable but cleaner
-        # to replace whole than to set body in place).
-        self._skills[key] = MarkdownProcedureSkill(
-            id=skill_id, body=new_body, version=version,
-        )
+            # Construct a fresh instance (dataclass, mutable but cleaner
+            # to replace whole than to set body in place).
+            self._skills[key] = MarkdownProcedureSkill(
+                id=skill_id, body=new_body, version=version,
+            )
 
-        # Refresh the manifest fields the user can edit via SKILL.md
-        # frontmatter. Permissions / max_cpu_seconds / created_by /
-        # evidence stay at whatever the registration set — the YAML
-        # frontmatter parser doesn't surface those, so leaving them
-        # alone is the right call.
-        if any(
-            x is not None for x in (title, description, triggers)
-        ):
-            from dataclasses import replace as _replace
-            old_manifest = self._manifests[key]
-            updates: dict[str, Any] = {}
-            if title is not None:
-                updates["title"] = title
-            if description is not None:
-                updates["description"] = description
-            if triggers is not None:
-                updates["triggers"] = triggers
-            self._manifests[key] = _replace(old_manifest, **updates)
+            # Refresh the manifest fields the user can edit via SKILL.md
+            # frontmatter. Permissions / max_cpu_seconds / created_by /
+            # evidence stay at whatever the registration set — the YAML
+            # frontmatter parser doesn't surface those, so leaving them
+            # alone is the right call.
+            if any(
+                x is not None for x in (title, description, triggers)
+            ):
+                from dataclasses import replace as _replace
+                old_manifest = self._manifests[key]
+                updates: dict[str, Any] = {}
+                if title is not None:
+                    updates["title"] = title
+                if description is not None:
+                    updates["description"] = description
+                if triggers is not None:
+                    updates["triggers"] = triggers
+                self._manifests[key] = _replace(old_manifest, **updates)
 
-        return True
+            return True
 
     def hot_replace(
         self,
@@ -419,13 +434,14 @@ class SkillRegistry:
         path is exception-safe.
         """
         key = (skill_id, version)
-        if key not in self._skills:
-            return False
-        if new_manifest.id != skill_id or new_manifest.version != version:
-            return False
-        self._skills[key] = new_skill
-        self._manifests[key] = new_manifest
-        return True
+        with self._lock:
+            if key not in self._skills:
+                return False
+            if new_manifest.id != skill_id or new_manifest.version != version:
+                return False
+            self._skills[key] = new_skill
+            self._manifests[key] = new_manifest
+            return True
 
     # ── persistence ──
 
@@ -501,14 +517,15 @@ class SkillRegistry:
             if not records:
                 continue
 
-            # Apply chronologically. Skip records whose to_version was
-            # never re-registered this boot (deleted skill).
-            for rec in sorted(records, key=lambda r: r.ts):
-                if (sid, rec.to_version) not in self._skills:
-                    continue
-                self._head[sid] = rec.to_version
-                self._history[sid].append(rec)
-                replayed_heads[sid] = rec.to_version
+            with self._lock:
+                # Apply chronologically. Skip records whose to_version was
+                # never re-registered this boot (deleted skill).
+                for rec in sorted(records, key=lambda r: r.ts):
+                    if (sid, rec.to_version) not in self._skills:
+                        continue
+                    self._head[sid] = rec.to_version
+                    self._history[sid].append(rec)
+                    replayed_heads[sid] = rec.to_version
         return replayed_heads
 
     def _record_from_dict(self, obj: dict[str, Any]) -> PromotionRecord | None:

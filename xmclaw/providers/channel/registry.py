@@ -8,13 +8,19 @@ PluginManifest``; this module enumerates them so the daemon can:
   * Decide whether to auto-start cloudflared (any enabled channel with
     ``needs_tunnel=True`` triggers the bootstrap)
   * Lazy-import adapter classes only when a channel is actually enabled
+
+Epic #2 Phase 2: external channel plugins discovered via
+``xmclaw.plugins`` entry points are merged into the manifest list.
 """
 from __future__ import annotations
 
 import importlib
+import logging
 from typing import Iterable
 
 from xmclaw.providers.channel.base import PluginManifest
+
+_log = logging.getLogger(__name__)
 
 # Canonical channel ids in priority order (Chinese-market first per
 # user's positioning).
@@ -66,6 +72,22 @@ def discover(*, include_scaffolds: bool = False) -> dict[str, PluginManifest]:
                 and getattr(manifest, "implementation_status", "ready") != "ready"):
             continue
         out[manifest.id] = manifest
+
+    # Epic #2 Phase 2: merge external channel plugins from entry points.
+    try:
+        from xmclaw.plugins.loader import discover_plugins
+        plugin_result = discover_plugins()
+        for lp in plugin_result.channels:
+            manifest = getattr(lp.instance, "MANIFEST", None)
+            if not isinstance(manifest, PluginManifest):
+                continue
+            if (not include_scaffolds
+                    and getattr(manifest, "implementation_status", "ready") != "ready"):
+                continue
+            out[manifest.id] = manifest
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("channel_registry.external_discover_failed", err=str(exc))
+
     return out
 
 

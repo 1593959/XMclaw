@@ -167,6 +167,12 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         memory_extractor: Any = None,
         # B-25-strict: mid-session immutability for prefix-cache stability.
         strict_freeze: bool = False,
+        # Epic #2 Phase 2: optional ContextEngine for pluggable context
+        # management. When wired, ``run_turn`` delegates history
+        # bootstrap / ingest / assemble / compact / after_turn to the
+        # engine instead of the inline ``self._histories`` dict.
+        # Default None keeps the legacy code path untouched.
+        context_engine: "Any | None" = None,
     ) -> None:
         self._llm = llm
         self._bus = bus
@@ -191,6 +197,13 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # agent restarts.  This maximises prefix-cache hit rate on
         # providers that charge per input token (Claude, GPT-4o).
         self._strict_freeze = strict_freeze
+        # ContextEngine (optional) — pluggable history management.
+        # When set, run_turn reads history via engine.assemble() and
+        # persists via engine.ingest() + engine.after_turn(). The
+        # inline ``self._histories`` dict stays as a fallback mirror
+        # so non-turn paths (delete_session, _record_finished_runs)
+        # still work without engine-awareness.
+        self._context_engine = context_engine
         # B-30: per-session deferred-LLM-compression queue. When
         # _persist_history detects history overflow it drops the
         # rule-based summary in immediately AND records the raw
@@ -942,7 +955,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # to the user turn. Catches everything regex (Phase 3b)
         # misses: implicit identity ("做电商" → industry), paraphrased
         # facts ("月底前" → deadline without 截止 keyword), domain
-        # knowledge ("陪玩店" → 业务模型 + 用户画像), soft preferences,
+        # knowledge ("电商" → 业务模型 + 用户画像), soft preferences,
         # cross-sentence references. The two layers complement: regex
         # = high precision/fast, LLM = high recall/slow. remember()
         # is idempotent so overlap doesn't double-count.
@@ -1088,12 +1101,22 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # Cross-process resume: if memory has nothing for this sid but the
         # store does (daemon was restarted between turns), hydrate the
         # in-memory cache once so subsequent turns hit memory.
-        if session_id not in self._histories and self._session_store is not None:
+        #
+        # ContextEngine path: bootstrap loads from engine's own store;
+        # session_store hydration happens inside the engine or is
+        # deferred to after_turn.
+        if self._context_engine is not None:
+            try:
+                await self._context_engine.bootstrap(session_id)
+            except Exception as exc:  # noqa: BLE001
+                _log = __import__("logging").getLogger(__name__)
+                _log.debug("context_engine.bootstrap_failed", session_id=session_id, err=str(exc))
+        elif session_id not in self._histories and self._session_store is not None:
             try:
                 loaded = self._session_store.load(session_id)
             except Exception:  # noqa: BLE001
                 loaded = None
-            if loaded:
+            if loaded is not None:
                 self._histories[session_id] = loaded
 
         # B-30: pre-turn LLM-compression upgrade. If a previous turn
@@ -1116,7 +1139,18 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             pass  # never block the turn
         _prep_mark("llm_compression_preroll", _t)
 
-        prior = self._histories.get(session_id, [])
+        if self._context_engine is not None:
+            try:
+                _assembled = await self._context_engine.assemble(
+                    session_id, token_budget=999_999, include_system=False,
+                )
+                prior = list(_assembled.messages)
+            except Exception as exc:  # noqa: BLE001
+                _log = __import__("logging").getLogger(__name__)
+                _log.debug("context_engine.assemble_failed", session_id=session_id, err=str(exc))
+                prior = []
+        else:
+            prior = self._histories.get(session_id, [])
 
         # B-186: continuation-anchor for vague resume messages.
         #
@@ -1746,7 +1780,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                         "``memory_search(query=...)`` with a specific "
                         "phrase. Examples: ``memory_search('user "
                         "preferences')``, ``memory_search('chen "
-                        "xiaoming')``, ``memory_search('陪玩店')``."
+                        "xiaoming')``, ``memory_search('项目参数')``."
                     )
         except Exception:  # noqa: BLE001 — never block a turn over memory
             autobio_block = ""

@@ -106,6 +106,7 @@ class TaskScheduler:
         self._running_tasks: dict[str, asyncio.Task[Any]] = {}
         self._running = False
         self._stop_event = asyncio.Event()
+        self._wake_event = asyncio.Event()
         try:
             self._lock: asyncio.Lock | None = asyncio.Lock()
         except RuntimeError:
@@ -272,12 +273,16 @@ class TaskScheduler:
 
     def _wake_scheduler(self) -> None:
         """唤醒调度循环（如果有正在等待的）。"""
-        # 通过重新创建任务来唤醒
-        pass  # 实际实现中可通过 asyncio.Event 实现
+        self._wake_event.set()
 
     async def _schedule_loop(self) -> None:
         """主调度循环。"""
         while self._running:
+            # 清理已完成的任务
+            done = [tid for tid, t in self._running_tasks.items() if t.done()]
+            for tid in done:
+                del self._running_tasks[tid]
+
             # 获取可运行的 pending 任务
             pending = await self.list_tasks(status="pending", limit=self.max_concurrent * 2)
 
@@ -294,15 +299,19 @@ class TaskScheduler:
                 coro = self._execute_with_timeout(task)
                 self._running_tasks[task.id] = asyncio.create_task(coro, name=f"task-{task.id}")
 
-            try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=1.0)
-            except asyncio.TimeoutError:
-                # 清理已完成的任务
-                done = [tid for tid, t in self._running_tasks.items() if t.done()]
-                for tid in done:
-                    del self._running_tasks[tid]
-                continue
-            break
+            # 等待 stop、wake 或 1 秒超时
+            stop_fut = asyncio.ensure_future(self._stop_event.wait())
+            wake_fut = asyncio.ensure_future(self._wake_event.wait())
+            done_futures, pending_futures = await asyncio.wait(
+                [stop_fut, wake_fut],
+                timeout=1.0,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for f in pending_futures:
+                f.cancel()
+            self._wake_event.clear()
+            if stop_fut in done_futures:
+                break
 
     async def _execute_with_timeout(self, task: Task) -> None:
         """执行任务，带超时控制。"""

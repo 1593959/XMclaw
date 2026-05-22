@@ -40,8 +40,13 @@ def test_system_emitted_as_blocks_with_cache_control() -> None:
     assert system[0]["type"] == "text"
     assert system[0]["text"] == "You are XMclaw."
     assert system[0]["cache_control"] == {"type": "ephemeral"}
-    # User msg passes through unchanged.
-    assert converted == [{"role": "user", "content": "hi"}]
+    # Wave-30: user msg also carries cache_control on its last block
+    # so prior history is cached across hops.
+    assert converted == [{
+        "role": "user",
+        "content": [{"type": "text", "text": "hi",
+                      "cache_control": {"type": "ephemeral"}}],
+    }]
 
 
 def test_empty_system_returns_empty_string() -> None:

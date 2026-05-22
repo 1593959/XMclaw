@@ -4,8 +4,8 @@ Steps the user explicitly asked for: "都做" → catch up with mature
 vector DBs by introducing a canonical entity layer above free-text
 facts. The graph view's "cluster keeps splitting / merging" pain
 comes from facts being **disconnected strings**: when the LLM
-extractor writes "陪玩店账号为admin" and later "陪玩店网站地址为
-https://pw310...", these are SEPARATE facts with no shared
+extractor writes "网店账号为admin" and later "网店网站地址为
+https://example.com...", these are SEPARATE facts with no shared
 identifier — only a regex / cosine bridge can connect them, and
 that bridge is fragile.
 
@@ -605,12 +605,12 @@ def default_entity_store_path() -> "Path":
     """Where the singleton's index lives on disk. Honors
     ``XMC_DATA_DIR`` via :func:`xmclaw.utils.paths.data_dir` so the
     test suite's tmp-path overrides isolate properly."""
-    from pathlib import Path
     try:
         from xmclaw.utils.paths import data_dir
         return data_dir() / "v2" / "entity_index.json"
     except Exception:  # noqa: BLE001
-        return Path.home() / ".xmclaw" / "v2" / "entity_index.json"
+        from xmclaw.utils.paths import data_dir
+        return data_dir() / "v2" / "entity_index.json"
 
 
 def get_entity_store() -> EntityStore:

@@ -1,6 +1,6 @@
 """KeyInfoExtractor — deterministic regex hook (Phase 3).
 
-THE pain-point fix. User typed: "陪玩店 pw310.wxselling.com，账号
+THE pain-point fix. User typed: "网店 example.com，账号
 admin / admin888，月流水目标 5 万". Pre-this-module: agent decided
 whether to call ``remember`` (which it usually didn't). Post-this-
 module: daemon entry hook scans EVERY user message for high-signal

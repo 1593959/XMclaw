@@ -112,9 +112,14 @@ async def test_sessions_are_isolated() -> None:
 
     # Session beta's LLM call should not see the alpha user message.
     beta_msgs = llm.seen_messages[1]
+    # Exclude system messages — they contain environment paths that
+    # may coincidentally include the substring "alpha" (e.g. Windows
+    # home directory). The isolation guarantee is about user/assistant
+    # history, not the static system prompt.
+    non_system = [m for m in beta_msgs if m.role != "system"]
     assert not any(
-        "alpha" in (m.content or "") for m in beta_msgs
-    ), f"session beta saw alpha's history: {beta_msgs}"
+        "alpha" in (m.content or "") for m in non_system
+    ), f"session beta saw alpha's history: {non_system}"
 
 
 @pytest.mark.asyncio

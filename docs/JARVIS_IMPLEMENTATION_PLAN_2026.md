@@ -1,0 +1,2026 @@
+# XMclaw → 贾维斯：代码级重构实施计划（v2）
+
+> **文档性质**: 可执行开发文档（living document）  
+> **基线版本**: v1.0.0  
+> **目标版本**: v1.1.0 "Jarvis"  
+> **日期**: 2026-05-20  
+> **调研深度**: 4路并行审计（Plugin/Backup/Eval + TUI/CLI/Scripts + Static Frontend + Runtime/Channels/MCP）+ 全量代码走查  
+> **原则**: 每次 Phase 独立可交付，内部模块高内聚、跨模块通过 EventBus 松耦合
+
+---
+
+## 执行摘要
+
+本次深度调研发现 **XMclaw v1.0.0 的代码成熟度远超预期**：大量 Phase 6 贾维斯模块已完整实现（ReasoningEngine、SelfExperimentLoop、HTNPlanner、MCP Hub、Docker Runtime、MagicDocs、Speculation、Metacognition Pipeline），但存在系统性 **"代码存在 ↔ 运行时未接线"** 的断层。核心问题不是"缺代码"，而是"缺接线"。
+
+**三大关键发现：**
+
+1. **默认全 OFF 问题**：`evolution.enabled=false`, `memory_v2.enabled=false`, `continuous_loop.enabled=false`, `autonomy_level=0`。Fresh install = 普通聊天机器人，无贾维斯体验。
+2. **感知层 greenfield**：PerceptionBus、AttentionFilter、Planner、ActionDispatcher 代码完整但 daemon 未消费（模块注释明确标注 "Nothing in the daemon imports it yet" / "wiring follow-up"）。
+3. **前端死代码**：VAD 模块（`lib/vad.js`）完整实现但从未被导入；移动端侧边栏 CSS 类名不匹配；5 个页面有路由但无侧边栏导航。
+
+**修正后的实施策略**：从"补代码"转向"接线路 + 清残留 + 开开关"。
+
+---
+
+## 0. 架构总览与模块状态真相
+
+### 0.1 当前架构拓扑（数据流视角）
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              用户层 (Clients)                                │
+│  Web UI ──WS──┬── CLI ──RPC──┬── Feishu/TG/Slack ──Adapter──┬── Voice      │
+│  (Preact+htm) │  (Textual)   │  (ChannelDispatcher)          │  (STT+TTS)   │
+│  22 pages     │  `xmclaw chat`│  Email / Cron                │  VAD=dead    │
+└───────────────┴──────────────┴───────────────────────────────┴──────────────┘
+        │              │                   │
+        └──────────────┴───────────────────┘
+                           │
+            ┌──────────────▼──────────────┐
+            │   FastAPI Daemon (app.py)   │
+            │   /agent/v2/{sid}  WS endpoint│
+            └──────────────┬──────────────┘
+                           │
+        ┌──────────────────┼──────────────────┐
+        │                  │                  │
+┌───────▼──────┐  ┌────────▼────────┐  ┌─────▼──────────┐
+│  AgentLoop   │  │ CognitiveDaemon │  │ ProactiveAgent │
+│  (per session)│  │   (1Hz heartbeat)│  │  (30s tick)    │
+│              │  │                  │  │                │
+│ • run_turn() │  │ ◄─ 理论上应消费  │  │ • Trigger reg  │
+│ • compress   │  │   PerceptionBus  │  │ • Cooldown     │
+│ • memory inj │  │   AttentionFilter│  │ • Proposal pub │
+│ • grader     │  │   ReasoningEngine│  │                │
+└───────┬──────┘  │   Planner        │  └────────────────┘
+        │         │   ActionDispatcher│         │
+        │         │   (实际均未接线)  │         │
+        │         └──────────────────┘         │
+        │                                      │
+┌───────▼──────┐  ┌─────────────┐  ┌─────────▼──────────┐
+│  LLMProvider │  │ ToolProvider│  │   EventBus         │
+│ (anthropic   │  │(builtin/    │  │ (InProcess + SQLite│
+│  /openai/    │  │ browser/mcp/│  │  + FTS5 + WAL)     │
+│  minimax)    │  │ composite)  │  │                    │
+└──────────────┘  └─────────────┘  └────────────────────┘
+        │              │                  │
+        │    ┌─────────┼──────────┬───────┘
+        │    │         │          │
+┌───────▼────▼──┐ ┌───▼────┐ ┌──▼───┐ ┌──────────────┐
+│  MemoryMgr    │ │Security│ │Skills│ │ Evolution    │
+│(sqlite-vec    │ │(prompt │ │Regis-│ │ Pipeline     │
+│ /LanceDB v2)  │ │ scan)  │ │try   │ │(Controller + │
+│ KeyInfoExtr.  │ │        │ │      │ │  Orchestrator)│
+└───────────────┘ └────────┘ └──────┘ └──────────────┘
+```
+
+### 0.2 模块成熟度矩阵（经审计后的真实状态）
+
+| 模块 | 状态 | 代码完成度 | 运行时接线 | 测试覆盖 | 关键缺口 |
+|------|------|-----------|-----------|---------|---------|
+| `AgentLoop` | **生产级** | 100% | ✅ 完整 | ✅ 高 | — |
+| `EventBus` | **生产级** | 100% | ✅ 完整 | ✅ 高 | — |
+| `LLMProvider` | **生产级** | 100% | ✅ 完整 | ✅ 中 | — |
+| `ToolProvider` (builtin) | **生产级** | 100% | ✅ 完整 | ✅ 高 | — |
+| `MemoryManager` (v1) | **生产级** | 100% | ✅ 完整 | ✅ 高 | — |
+| `MemoryManager` (v2) | **功能完整** | 100% | ⚠️ 默认关闭 | ✅ 高 | `enabled=false` |
+| `KeyInfoExtractor` | **功能完整** | 100% | ⚠️ v2关闭时不运行 | ✅ 中 | — |
+| `ContextCompressor` | **功能完整** | 100% | ✅ 完整 | ✅ 高 | `ContextEngine` 未使用 |
+| `EvolutionPipeline` | **功能完整** | 100% | ⚠️ 默认关闭 | ✅ 中 | `auto_apply=false` |
+| `HonestGrader` | **功能完整** | 100% | ✅ 完整 | ✅ 中 | — |
+| `SkillRegistry` | **功能完整** | 100% | ✅ 完整 | ✅ 中 | **无并发锁** |
+| `ProactiveAgent` | **功能完整** | 100% | ✅ 完整 | ✅ 中 | — |
+| `FileWatcher` | **功能完整** | 100% | ✅ 已接线 | ✅ 中 | 5秒轮询 |
+| `ProcessWatcher` | **功能完整** | 100% | ✅ 已接线 | ✅ 低 | — |
+| `CognitiveDaemon` | **消费端完整** | 100% | ⚠️ 感知生产者未接线 | ✅ 低 | 见 0.3 |
+| `PerceptionBus` | **完整但悬空** | 100% | ❌ 无消费者 | ✅ 低 | "nothing imports it" |
+| `AttentionFilter` | **greenfield** | 100% | ❌ 未接线 | ✅ 低 | "greenfield" |
+| `ReasoningEngine` | **完整但悬空** | 100% | ❌ 未接线 | ✅ 低 | 4种推理模式全实现 |
+| `Planner` | **完整但悬空** | 100% | ❌ 未接线 | ✅ 低 | "Nothing imports it" |
+| `HTNPlanner` | **完整但悬空** | 100% | ❌ 未接线 | ✅ 低 | LLM分解+DAG执行 |
+| `ActionDispatcher` | **完整但悬空** | 100% | ❌ 未接线 | ✅ 低 | "wiring follow-up B" |
+| `TaskScheduler` | **功能完整** | 100% | ⚠️ 1秒轮询 | ✅ 中 | `_wake_scheduler` 无操作 |
+| `SelfExperimentLoop` | **完整但悬空** | 100% | ❌ 未接线 | ✅ 低 | A/B+Welch t-test 全实现 |
+| `MagicDocs` | **完整但悬空** | 100% | ⚠️ 未验证 | ✅ 低 | Wave 32+ 新功能 |
+| `Speculation` | **完整但悬空** | 100% | ⚠️ 未验证 | ✅ 低 | Wave 32+ 新功能 |
+| `Metacognition` | **完整但悬空** | 100% | ❌ 未接线 | ✅ 低 | trace/pass/reformer |
+| `ComputerUseTools` | **功能完整** | 100% | ⚠️ 默认关闭 | ✅ 低 | 3层安全 |
+| `MCP Hub` | **功能完整** | 100% | ✅ stdio | ✅ 中 | SSE/WS/streamableHttp 跳过 |
+| `Docker Runtime` | **功能完整** | 100% | ⚠️ 需docker daemon | ✅ 低 | 技能源码未挂载 |
+| `Plugin SDK` | **重导出层** | 100% | ✅ 稳定接口 | ✅ 中 | 无动态加载 |
+| `Backup` | **功能完整** | 100% | ⚠️ auto_daily=false | ✅ 高 | — |
+| `Eval Harness` | **框架完整** | 100% | ⚠️ 未跑过真实benchmark | ✅ 中 | Tier-2 graders未接线 |
+| `ChannelDispatcher` | **功能完整** | 100% | ✅ 完整 | ✅ 中 | Email附件跳过 |
+| `Daemon Routers` (29个) | **生产级** | 100% | ✅ 完整 | ✅ 高 | 零stub，零NotImplementedError |
+| `Frontend` (Web) | **功能完整** | 100% | ✅ 完整 | ❌ 无 | VAD死代码/CSS问题 |
+| `Frontend` (TUI) | **生产级** | 100% | ✅ 完整 | ❌ 无 | Textual实现完整 |
+| `IntentEngine` | **规则层完整** | 80% | ⚠️ 规则层工作 | ✅ 低 | `_run_llm_layer` = TODO stub |
+
+### 0.3 感知层状态（2026-05-22 更新）
+
+`CognitiveDaemon` 在 `app_lifespan.py` 中已启动（心跳 1Hz），其内部 `tick_once()` 每 tick 运行完整管道：
+
+```
+PerceptionBus.drain() → AttentionFilter.tick() → ReasoningEngine.reason()
+                                              → Planner.plan()
+                                              → ActionDispatcher.execute_plan()
+```
+
+**接线状态（经代码审计核实）：**
+
+| 环节 | 状态 | 说明 |
+|------|------|------|
+| **PerceptionBus** | ✅ 已接线 | `app_lifespan.py` 构造并传入 CognitiveDaemon + AttentionFilter |
+| **AttentionFilter** | ✅ 已接线 | `app_lifespan.py` 构造，`tick()` 被 CognitiveDaemon 每 tick 调用 |
+| **ReasoningEngine** | ✅ 已接线 | `app_lifespan.py` 构造并传入 CognitiveDaemon |
+| **Planner** | ✅ 已接线 | `app_lifespan.py` 构造并传入 CognitiveDaemon |
+| **ActionDispatcher** | ✅ 已接线 | `app_lifespan.py` 内联构造并传入 CognitiveDaemon |
+| **PerceptSources** | ✅ 已接线 | FileWatcher、ProcessWatcher、WS、Cron 等已 attach |
+| **GoalGenerator** | ✅ **本次修复** | 此前未构造（`self._goal_generator is None` 导致 `_spawn_goals()` 短路）。现已接线 |
+
+**结论**：感知层核心管道 **已完整接线**，CognitiveDaemon 每 tick 确实在消费 PerceptionBus、运行推理-规划-执行循环。此前的"悬空"判断是过时的（基于早期代码版本）。唯一缺口 GoalGenerator 已在本次修复中关闭。
+
+### 0.4 关键联动约束（红线）
+
+| 联动关系 | 约束 | 违反后果 |
+|----------|------|----------|
+| `core/` → `providers/` | **禁止**。core 不得 import providers | 破坏 DAG，循环依赖 |
+| `core/` → `skills/` | **禁止**。core 不得 import skills | 进化系统无法独立运行 |
+| `utils/` → 其他 `xmclaw.*` | **禁止**。utils 是纯工具层 | 工具层膨胀 |
+| `AgentLoop` → `EventBus` | **单向发布**。AgentLoop 只发事件，不直接调用订阅者 | 紧耦合，难以测试 |
+| `CognitiveDaemon` → `PerceptionBus` | **生产者-消费者**。daemon 消费，watcher 生产 | 如果 bus 未接线，daemon 空转 |
+| `ContextCompressor` → `Message` | **只读**。compressor 不修改原始 Message | 数据完整性破坏 |
+| `SkillRegistry` → 并发 | **必须加锁**。`threading.RLock` 保护所有读写操作（`run_in_executor` 多线程场景） | 竞态条件，数据损坏 |
+
+---
+
+## 1. 核心流程逻辑详图
+
+> 本节基于代码级走查（`agent_loop.py` 2099 行、`hop_loop.py` 1458 行、`app.py` 2385 行、`app_lifespan.py` 3037 行、`grader/verdict.py` 447 行、以及 20+ 支撑模块）和 4 路并行审计代理的输出，精确描述每个核心模块的处理逻辑。
+
+---
+
+### 1.1 AgentLoop.run_turn() — 单次对话回合的完整生命周期
+
+**文件**: `xmclaw/daemon/agent_loop.py:683-2099`  
+**调用方**: `app.py` WS handler / CronTickTask / TUI / CLI
+
+```
+run_turn(session_id, user_message)
+│
+├─ 0. CancelEvent 注册（用户点击 Stop 时触发）
+├─ 1. Hook: USER_PROMPT_SUBMIT（可阻断/改写用户消息）
+├─ 2. publish(USER_MESSAGE) ──► EventBus
+│
+├─ 【Prep Phase】（全部计入 turn_prep_timing）
+│   ├─ ProactiveAgent.note_user_message() ── 更新"用户最后说话时间"
+│   ├─ AutobioMemory.extract_from_message() ── 正则提取"我是X"/"我在做Y"
+│   ├─ Memory v2: regex_extract (bg task) ── KeyInfoExtractor 强制写入 L1
+│   ├─ Memory v2: llm_extract (bg task) ── LLMFactExtractor 语义提取
+│   ├─ PerceptionBus.push(user_msg_percept) ── 推送感知（如 wired）
+│   ├─ CognitiveState.compute_salience() (bg task) ── 计算注意力分数
+│   ├─ _maybe_apply_llm_compression() ── 应用挂起的 LLM 压缩（8s cap）
+│   ├─ Memory recall ── 四层召回管道：
+│   │   ├─ v1 prefetch ── MemoryManager.prefetch() 预取块
+│   │   ├─ v1 query ── sqlite-vec 混合检索（embed 2s timeout → fallback LIKE）
+│   │   ├─ v2 render_for_prompt() ── LanceDB 结构化事实 + CONTRADICTS/SUPERSEDES
+│   │   ├─ Graph proactive_recall ── 关系图谱相关记忆
+│   │   └─ UnifiedMemory query ── 多轴（语义+关系+时间）召回
+│   ├─ Relevant files picker ── LLM 挑选相关笔记文件（可选，默认关）
+│   ├─ Curriculum hint ── 检测到挫败感时注入 propose_curriculum_edit 提示
+│   ├─ StrategyBank retrieve ── 检索历史有效策略
+│   └─ publish(INNER_MONOLOGUE, turn_prep_timing)
+│
+├─ 【System Prompt 组装】
+│   ├─ Frozen base prompt（按 generation 缓存，避免重复渲染）
+│   ├─ Output style prompt（如启用）
+│   ├─ Autobio snapshot（默认 5 facts，或主动召回模式提示）
+│   ├─ Recent autonomous tasks block
+│   ├─ Time block（当前时刻，per-turn mutable）
+│   ├─ Git status snapshot（如 workspace 是 git repo）
+│   └─ CACHE_BREAKPOINT_MARKER 分隔（Anthropic prompt cache 优化）
+│
+├─ 【Tool Spec 准备】
+│   ├─ list_tools() ── 获取全部工具
+│   ├─ Skill prefilter ── 按用户消息筛选 top-12 相关技能（>30 skills 时触发）
+│   ├─ Conditional skill activation ── 按最近文件路径 boost 匹配技能
+│   └─ skill_browse hint ── 当无技能匹配时注入提示
+│
+├─ 【Message 构建】
+│   ├─ system: 组装后的 system prompt
+│   ├─ prior history（跨 turn 持久化到 SessionStore）
+│   └─ user: user_message + memory_ctx_block + memory_files_block
+│            + unified_recall_block + curriculum_hint_block
+│            + curriculum_strategies_block + skill_browse_hint + images
+│
+├─ 【Mode Router】（2026-05-12 Batch D）
+│   └─ 选择 run_mode: instant / thinking / agent / swarm
+│
+├─ 【Plan-First】（非 instant 模式）
+│   └─ PlanFirstGate.is_complex() → plan() ── 复杂查询预分解（15s cap）
+│
+└─ 【Hop Loop】调用 _run_hop_loop() ──► 详见 1.2
+```
+
+**关键设计决策**:
+- **Prep Phase 全部是非阻塞或 bg-task**：regex/LLM 提取、salience 计算、compression 都是后台任务，不阻塞用户首 token
+- **Memory 召回四层管道**：v1 prefetch → v1 query → v2 facts → graph recall → unified recall，每层都是 best-effort
+- **Prompt cache 优化**：frozen base + autobio 在 CACHE_BREAKPOINT_MARKER 之前，time block 之后， Anthropic cache 命中率最大化
+- **Tool spec 预过滤**：404 skills 时 tool schema 达 80K tokens，预过滤后降至 ~12 skills，防止 LLM 信号噪声比归零
+
+---
+
+### 1.2 HopLoop — LLM ↔ 工具的多跳循环
+
+**文件**: `xmclaw/daemon/hop_loop.py:212-1458`  
+**循环变量**: `for hop in range(self._max_hops)`（默认 `max_hops=5`，可配置）
+
+```
+_run_hop_loop()
+│
+for hop in 0..max_hops-1:
+│
+├─ 1. Cancel check ── 用户点击 Stop？→ 返回 cancelled
+├─ 2. Budget check ── CostTracker.check_budget() ── 超预算 → 返回 budget_exceeded
+├─ 3. GoalAnchor injection ── 每 N hops（默认5）或 turn 2+ 的 hop=0
+│   └─ 注入合成提醒：原始目标 + 已调用工具 + 剩余 budget + 未完成 plan steps
+├─ 4. publish(LLM_REQUEST) ── 带 messages_hash fingerprint
+│
+├─ 【LLM Streaming】
+│   ├─ llm.complete_streaming(messages, tools, on_chunk, on_thinking_chunk,
+│   │                         on_tool_block, cancel)
+│   ├─ on_chunk: publish(LLM_CHUNK) ──► WS → UI token-by-token
+│   ├─ on_thinking_chunk: publish(LLM_THINKING_CHUNK) ──► UI PhaseCard
+│   └─ on_tool_block: SpeculationCache 预启动 READ_ONLY_TOOLS（file_read/grep等）
+│
+├─ 【B-227 Classify-and-Retry】
+│   └─ LLM 调用失败时：error_classifier 分类 → 按 reason 退避重试
+│      ├─ rate_limit / overloaded → 指数退避重试（最多3次）
+│      ├─ context_overflow → 强制压缩后重试
+│      └─ 非重试错误 →  surfaced 为 LLM_RESPONSE error
+│
+├─ 【B-230 Auto-Continue】
+│   └─ stop_reason=max_tokens / length 且 content>50 chars
+│      → 追加 assistant content + "[B-230 auto-continue]" prompt，重新调用 LLM
+│      → 最多 3 次 continue
+│
+├─ 5. publish(LLM_RESPONSE) ── 最终 assistant message（含 tool_calls 或纯文本）
+│
+├─ 【If 有 tool_calls】
+│   ├─ for each ToolCall in parallel（受 max_concurrent_tools 限制）:
+│   │   ├─ publish(TOOL_CALL_EMITTED)
+│   │   ├─ publish(TOOL_INVOCATION_STARTED)
+│   │   ├─ _invoke_single_tool()
+│   │   │   ├─ PreToolUse hook（可 deny 或改写 args）
+│   │   │   ├─ asyncio.wait_for(effective_tools.invoke(), 180s)
+│   │   │   │   ├─ Timeout → 结构化 failed ToolResult
+│   │   │   │   └─ Exception → 结构化 failed ToolResult
+│   │   │   ├─ B-17: 瞬态失败重试一次（0.5s delay）
+│   │   │   └─ PostToolUse hook（可 redact result）
+│   │   ├─ publish(TOOL_INVOCATION_FINISHED)
+│   │   ├─ Anti-loop guard ── 检查 stuck_loop_deque（3次相同失败=退出）
+│   │   ├─ StepValidator ── 验证此步是否推进目标（可选，默认关）
+│   │   ├─ HonestGrader.grade() ── 双信号评分
+│   │   ├─ publish(GRADER_VERDICT)
+│   │   ├─ PromptInjectionScanner.scan(result) ── SOURCE_TOOL_RESULT
+│   │   ├─ Guardian 审批（如启用）
+│   │   └─ 结果回注 messages ── 作为 tool/assistant message 追加
+│   ├─ Anti-progress guard ── 5 hops 无成功工具调用 → 提示用户
+│   └─ continue next hop
+│
+└─ 【If 无 tool_calls（terminal）】
+   ├─ Anti-loop guard: 检查重复 assistant content
+   ├─ _persist_history() ── SessionStore.save() + 内存更新
+   ├─ MemoryManager.sync_turn() ── 本 turn 的记忆同步
+   ├─ Post-sampling hooks（bg）
+   ├─ Unified memory auto-put（bg）
+   ├─ publish(TURN_FINISHED)
+   └─ return AgentTurnResult(ok=True)
+```
+
+**关键安全/防呆机制**:
+| 机制 | 位置 | 行为 |
+|------|------|------|
+| **CancelEvent** | hop boundary | 用户点击 Stop 后，当前 hop 完成即退出，不中断 in-flight stream |
+| **Budget cap** | hop boundary | 每 hop 前检查 CostTracker，超预算立即退出 |
+| **Tool timeout** | `_invoke_single_tool()` | 180s wall-clock，可配置。超时返回结构化错误 |
+| **B-227 Retry** | LLM 调用 | 按错误类型分类退避重试，context_overflow 时自动压缩 |
+| **B-230 Auto-continue** | LLM 响应 | max_tokens 截断时自动续写，最多3次 |
+| **Stuck loop guard** | 工具调用后 | 3次相同(tool_name, error_signature) → 合成"stuck in a loop"退出 |
+| **No-progress guard** | 5 hops | 无成功工具调用 → 提示用户任务可能过复杂 |
+| **Prompt injection scan** | 工具结果 | SOURCE_TOOL_RESULT 扫描，blocked 则跳过该结果 |
+| **GoalAnchor** | 每 N hops | 长工具链防漂移，注入目标提醒 |
+| **Speculation** | streaming | 预执行 READ_ONLY_TOOLS，缓存供 Phase B 命中 |
+
+---
+
+### 1.3 EventBus — 事件驱动的神经系统
+
+**架构**: `InProcessEventBus`（内存 pub/sub）+ `SqliteEventBus`（SQLite WAL + FTS5 持久化）
+
+**文件**: `xmclaw/core/bus/memory.py`, `xmclaw/core/bus/sqlite.py`, `xmclaw/core/bus/events.py`
+
+**InProcessEventBus 处理逻辑**:
+```python
+class InProcessEventBus:
+    def publish(event: BehavioralEvent):
+        for sub in self._subs:
+            if not sub.predicate(event): continue
+            task = asyncio.create_task(sub.handler(event))  # 并行 fan-out
+```
+- **Best-effort 交付**：handler 异常被捕获，不传播给 publisher
+- **并行 fan-out**：每个 handler 是独立的 asyncio.Task
+- **Predicate-based 过滤**：subscriber 通过 predicate 函数选择感兴趣的事件
+
+**SqliteEventBus 持久化逻辑**:
+- 每个事件先 `INSERT INTO events`（WAL 模式，synchronous=NORMAL）
+- 触发器自动同步 `events_fts`（FTS5 全文索引）和 `sessions` 表
+- Subscriber 只读取已持久化的事件 → crash 时不会丢失已发布的 event
+
+**核心事件类型（~35种）**:
+
+| 事件类型 | 发布者 | 订阅者 | 频率 |
+|---------|--------|--------|------|
+| `USER_MESSAGE` | AgentLoop | WS forwarder, 日志, 分析 | 每 turn |
+| `LLM_REQUEST` | HopLoop | 分析, 成本追踪 | 每 hop |
+| `LLM_CHUNK` / `LLM_THINKING_CHUNK` | HopLoop | WS forwarder → UI | 每 token |
+| `LLM_RESPONSE` | HopLoop | WS forwarder, Grader | 每 hop |
+| `TOOL_CALL_EMITTED` | HopLoop | 日志, 分析 | 每 tool call |
+| `TOOL_INVOCATION_STARTED` / `FINISHED` | HopLoop | Grader, 日志, 分析 | 每 tool call |
+| `GRADER_VERDICT` | HopLoop | EvolutionOrchestrator, 日志 | 每 tool call |
+| `SKILL_CANDIDATE_PROPOSED` / `PROMOTED` / `ROLLED_BACK` | Evolution | WS forwarder（全局广播） |  sporadic |
+| `PROACTIVE_PROPOSAL` | ProactiveAgent | WS forwarder（全局广播） | ~每 30s |
+| `COGNITIVE_DAEMON_TICK` | CognitiveDaemon | WS forwarder | ~1 Hz |
+| `MEMORY_RECALL` / `MEMORY_OP` | MemoryManager | WS forwarder（Trace page） | 每 turn/op |
+| `CONTEXT_COMPRESSED` | HopLoop | WS forwarder | 触发时 |
+| `SESSION_LIFECYCLE` | WS handler | 日志, 分析 | 每 session |
+| `CONFIG_RELOADED` | app_lifespan | WS forwarder | 配置变更时 |
+| `ANTI_REQ_VIOLATION` | AgentLoop/HopLoop | WS forwarder, 日志 | 违规时 |
+
+**WS 事件转发逻辑** (`app.py:1942-1973`):
+- 每个 WS 连接创建一个 subscriber，predicate = `event.session_id == 当前session_id`
+- 全局事件（SKILL_PROMOTED, PROACTIVE_PROPOSAL 等）额外放行
+- 订阅者收到事件后 `ws.send_text(json.dumps(event))`
+- 会话历史事件在连接时 replay（`replayed: true` 标记）
+
+---
+
+### 1.4 Memory 系统 — 双栈架构
+
+#### 1.4.1 v1 层（sqlite-vec）：扁平分层存储
+
+**文件**: `xmclaw/providers/memory/manager.py`, `xmclaw/providers/memory/sqlite_vec.py`
+
+```
+MemoryManager
+├── BuiltinFileMemoryProvider ── MEMORY.md / USER.md / IDENTITY.md
+└── SqliteVecMemory（可选外部 provider）
+    ├── working layer（短期，默认 7 天 TTL）
+    ├── short layer（中期，默认 30 天 TTL）
+    └── long layer（长期，无 TTL）
+```
+
+**存储流程**:
+1. `remember(text, layer, kind, scope)` → 确定目标层
+2. `embed(text)` → Ollama `qwen3-embedding:0.6b`（dim=1024）或 fallback 到 substring
+3. `upsert(id, text, embedding, metadata)` → sqlite-vec 向量表
+4. TTL sweep：后台任务定期删除过期 working/short 层记录
+
+**召回流程** (`AgentLoop.run_turn:1154-1247`):
+1. `prefetch(user_message)` → 预取块（hindsight 等外部 provider）
+2. `query(layer="long", text, embedding, k, hybrid=True)` → sqlite-vec 混合检索
+   - 有 embedder：向量相似度 + keyword RRF
+   - 无 embedder：fallback 到 LIKE 子串匹配
+3. 过滤：排除当前 session + <60s 近期 + file_chunk/code_chunk + archived
+4. 渲染：时间戳 + kind tag + 截断至 2048 chars total
+5. 注入：`<memory-context>` 块 riding on user message（不污染 system prompt cache）
+
+#### 1.4.2 v2 层（LanceDB）：结构化知识图谱
+
+**文件**: `xmclaw/memory/v2/service.py`（1761 行）
+
+**核心数据模型**:
+- `Fact`: id, text, kind(identity/preference/goal/lesson/...), scope(user/project/session), layer(working/long_term), embedding
+- `Relation`: source_id, target_id, kind(SAME_TOPIC/CONTRADICTS/SUPERSEDES/CAUSED_BY), strength
+- `Entity`: 桥接提到同一现实对象的 facts
+
+**写入流程** (`remember()`）:
+1. 计算 deterministic id: `kind:scope:hash12(text)`
+2. `EmbeddingService.embed()` → 带 LRU cache(1024) + 3次重试 + 指数退避
+3. **矛盾检测**: KNN 搜索 top-3 same-kind facts，distance<0.25 → 标记 CONTRADICTS
+4. `upsert` 到 VectorBackend（`merge_insert`，idempotent）
+5. 如有 source_event_id → 添加 CAUSED_BY 边指向 `event:<id>`
+6. `evidence_count >= 3` → 自动晋升 working → long_term
+
+**自动提取管道**（AgentLoop.run_turn 中触发）:
+```
+用户消息
+├── Layer 1: KeyInfoExtractor（regex，同步/后台）
+│   ├── URL 模式 → kind=url
+│   ├── 账号/密码模式 → kind=credential
+│   ├── 数字目标 → kind=goal
+│   └── explicit-remember → kind=preference
+│   └── 立即 remember() + render_persona_after_writes()
+│
+└── Layer 2: LLMFactExtractor（LLM，纯后台）
+    ├── 语义身份提取（"做电商" → industry）
+    ├── 隐含事实（"月底前" → deadline）
+    ├── 领域知识
+    └── 软偏好
+    └── remember() + render_persona_after_writes()
+```
+
+**召回流程** (`render_for_prompt()`):
+1. KNN 搜索当前 user_message 的语义邻居（k=8）
+2. 对每条 hit，fetch 1-hop neighbors（CONTRADICTS + SUPERSEDES）
+3. 渲染为结构化块：USER 档案 / PROJECT 档案 / DECISIONS / 带矛盾标记的 facts
+
+#### 1.4.3 Autobiographical Memory：结构化用户档案
+
+**文件**: `xmclaw/cognition/autobiographical_memory.py`
+
+- SQL 表：people, projects, typed_facts（身份/偏好/目标/决策）
+- 每 turn 渲染为 markdown snapshot（默认 max_facts=5）
+- 注入 system prompt（frozen base 和 autobio 之间，cache-friendly）
+
+---
+
+### 1.5 ToolProvider 链 — 工具调用全流程
+
+**文件**: `xmclaw/providers/tool/builtin.py`（746 行）, `xmclaw/providers/tool/mcp_hub.py`, `xmclaw/skills/tool_bridge.py`
+
+**Provider 层级**（由内到外）:
+```
+CompositeToolProvider
+├── BuiltinToolProvider ── 40+ 内置工具
+│   ├── filesystem: file_read, file_write, list_dir, glob, grep
+│   ├── shell: bash（enable_bash 控制）
+│   ├── web: web_fetch, web_search（enable_web 控制）
+│   ├── memory: memory_search, remember, memory_compact
+│   ├── persona: update_persona, recall_user_prefs
+│   ├── voice: voice_synthesize, voice_transcribe
+│   ├── canvas: canvas_artifact_create/update
+│   ├── worktree: enter_worktree, exit_worktree
+│   ├── plan_mode: enter_plan_mode, exit_plan_mode
+│   ├── db: sqlite_query
+│   ├── journal: journal_append, journal_recall
+│   ├── todo: todo_read, todo_write
+│   ├── user: ask_user_question, learn_about_user
+│   └── system: agent_status, apply_patch, schedule_followup, ...
+├── SkillToolProvider ── 动态技能工具（skill_*）
+│   └── SkillRegistry ── 注册/升级/回滚/历史
+├── McpHub ── 多 MCP 服务器工具
+│   └── MCPBridge × N（stdio 传输）
+│       └── 64-char 工具名 mangling: {server_uid}__{tool_name}
+├── BrowserToolProvider ── Playwright 浏览器自动化
+└── MemoryBridge ── memory 工具桥接
+```
+
+**工具调用安全链**:
+```
+LLM emits ToolCall
+    │
+    ▼
+PreToolUse Hook（可 deny / 改写 args）
+    │
+    ▼
+asyncio.wait_for(invoke(), 180s)
+    │
+    ▼
+ToolProvider.invoke()
+    │
+    ▼
+实际工具执行
+    │
+    ▼
+PostToolUse Hook（可 redact result）
+    │
+    ▼
+PromptInjectionScanner.scan(result, SOURCE_TOOL_RESULT)
+    │
+    ▼
+Guardian 审批（如启用）
+    │
+    ▼
+HonestGrader.grade()
+    │
+    ▼
+结果回注 messages
+```
+
+**SkillRegistry 处理逻辑**:
+- `register(skill_id, version, spec, impl)` → 追加到 `_skills` dict
+- `promote(skill_id, version)` → 将 version 设为 active HEAD
+- `rollback(skill_id, version)` → 回退到历史版本
+- `_persist()` → JSON 文件序列化（当前非原子写入）
+- **竞态风险**：无 asyncio.Lock，并发 register/promote 可能损坏
+
+---
+
+### 1.6 WebSocket / HTTP — 前端与 Daemon 的通信协议
+
+**文件**: `xmclaw/daemon/app.py:1791-2304`, `xmclaw/daemon/static/lib/ws.js`
+
+#### WS 端点: `/agent/v2/{session_id}`
+
+**连接建立流程**:
+```
+Client ──WS──► /agent/v2/{sid}?token={hex}&agent_id={id}
+    │
+    ▼
+Origin check（B-355）── 防御 ClawJacked CVE
+    │
+    ▼
+Auth check（pairing token 或 Bearer header）
+    ├─ 失败 → close(4401 unauthorized)
+    └─ 成功
+        │
+        ▼
+Agent 选择（agent_id query param）
+    ├─ "main" 或省略 → primary agent (app.state.agent)
+    └─ 其他 → MultiAgentManager 查找
+        └─ 未找到 → close(4404 agent not found)
+        │
+        ▼
+Supersede 旧连接（B-348）
+    ├─ 同一 session 已有 WS → 发送 superseded 帧 → close(4408)
+    └─ 新连接成为 active_ws_for_session
+        │
+        ▼
+Replay 历史事件（如 session 有 prior events）
+    ├─ session_replay:start 帧
+    ├─ 逐条 replayed BehavioralEvent
+    └─ session_replay:end 帧
+        │
+        ▼
+Subscribe EventBus（ predicate: session_id 匹配 或 全局事件类型）
+    │
+    ▼
+publish(SESSION_LIFECYCLE, phase=create)
+```
+
+**消息帧格式**（双向 JSON）:
+```json
+// Client → Server
+{"type": "user", "content": "...", "ultrathink": false,
+ "plan_mode": false, "output_style": "default",
+ "images": ["data:image/png;base64,..."],
+ "correlation_id": "...", "llm_profile_id": "..."}
+
+// Server → Client (BehavioralEvent)
+{"id": "...", "ts": 1234567890.0, "session_id": "...",
+ "agent_id": "...", "type": "llm_chunk", "payload": {"delta": "..."},
+ "correlation_id": "...", "parent_id": "...", "schema_version": 1}
+```
+
+**WS 客户端重连逻辑** (`ws.js`):
+- 指数退避：500ms → 1s → 2s → 4s ... 30s cap + 20% jitter
+- 断线期间消息入队（max 64），重连后 flush
+- 不可重连码：4401(auth), 4403(origin), 4408(superseded)
+- 状态机：disconnected → connecting → connected → reconnecting
+
+#### HTTP 端点（29 个 router）
+
+| 前缀 | 功能 |
+|------|------|
+| `/api/v2/agents` | MultiAgent CRUD |
+| `/api/v2/sessions` | Session 列表/搜索/删除 |
+| `/api/v2/memory` / `/memory/v2` | v1/v2 记忆操作 |
+| `/api/v2/skills` | Skill 注册/升级/回滚/历史 |
+| `/api/v2/evolution` | 进化提案查看/审批 |
+| `/api/v2/cron` | Cron job CRUD |
+| `/api/v2/channels` | 通道配置（Feishu/TG/Slack/Email） |
+| `/api/v2/files` | 文件上传/下载 |
+| `/api/v2/system` | Daemon 重启/升级 |
+| `/api/v2/dashboard` | 仪表板 overview |
+| `/api/v2/sync` | UI 状态同步 |
+| ... | ... |
+
+---
+
+### 1.7 HonestGrader — 双信号评分系统
+
+**文件**: `xmclaw/core/grader/verdict.py`（Sprint 3 Iron Rule #1 重写）
+
+**核心原则**: 任何晋升需要 ≥2 个独立信号；单信号绝不晋升（Hermes 的教训）
+
+**Signal A — 确定性检查**（同步，权重重归一化）:
+| 检查项 | 权重 | 说明 |
+|--------|------|------|
+| `ran` | 0.40 | 工具产生非平凡输出（拒绝 empty/"ok"/"done"） |
+| `returned` | 0.20 | 原始输出存在 |
+| `type_matched` | 0.20 | 声明的返回类型匹配（None=不适用，不加分） |
+| `side_effect_observable` | 0.20 | fs/memory/bus 可观测副作用 |
+
+**Signal B — 独立信号**（异步，第一个非 None 的获胜）:
+| 信号 | 实现状态 | 说明 |
+|------|---------|------|
+| `UserFollowupSignal` | ✅ 完整 | 检查用户后续消息的正/负反馈 |
+| `HoldoutTestSignal` | ⚠️ Stub | 预留的 holdout 测试信号 |
+| `CrossJudgeSignal` | ⚠️ Stub | 预留的交叉评审信号 |
+
+**组合逻辑**:
+```python
+if ind_score is None:
+    final = det_score
+    promote_eligible = False          # Iron Rule #1: 单信号不晋升
+else:
+    final = 0.6 * det_score + 0.4 * ind_score
+    promote_eligible = (
+        det_score >= 0.6 and          # 确定性门槛
+        ind_score >= 0.5              # 独立信号门槛
+    )
+```
+
+**事件流**:
+```
+HopLoop 完成 tool invocation
+    │
+    ▼
+HonestGrader.grade(event, history=session_events)
+    │
+    ▼
+publish(GRADER_VERDICT, verdict.to_payload())
+    │
+    ▼
+EvolutionOrchestrator.subscribe(GRADER_VERDICT)
+    │
+    ▼
+累积评分 → 达到阈值 → publish(SKILL_CANDIDATE_PROPOSED)
+```
+
+---
+
+### 1.8 CognitiveDaemon — 1Hz 心跳认知管道
+
+**文件**: `xmclaw/cognition/cognitive_daemon.py`（47KB）
+
+**设计 Pipeline**（心跳每 tick 执行）:
+```python
+async def tick():
+    percepts = await perception_bus.drain()          # 1. 收集感知
+    filtered = await attention_filter.tick(percepts) # 2. 注意力筛选
+    reasoning = await reasoning_engine.reason(       # 3. 推理判断
+        mode=auto, query=..., llm=..., graph=..., bank=...
+    )
+    if reasoning.needs_action:
+        plan = await planner.plan(reasoning)         # 4. 规划
+        await action_dispatcher.execute_plan(plan)   # 5. 执行
+    
+    # 周期性任务（每 N ticks）
+    if tick_count % goal_interval == 0:
+        goals = await goal_generator.generate()
+    if tick_count % experiment_interval == 0:
+        await self_experiment_loop.tick()
+```
+
+**安全设计**: 每个 pipeline step 独立 try/except，异常记录但不传播
+
+**当前状态**: 消费端完整，但感知生产者未接线 → **空转**
+- `FileWatcher` 已推 EventBus + cognitive_state，但 **不推 PerceptionBus**
+- `ProcessWatcher` 同理
+- WS 消息不推 PerceptionBus（`percept_sources.py` wiring follow-up A）
+- Cron tick 不推 PerceptionBus
+
+---
+
+### 1.9 ProactiveAgent — 30 秒主动扫描
+
+**文件**: `xmclaw/cognition/proactive_agent.py`
+
+**Tick 流程**（每 30s，quiet hours 23:00-07:00 跳过）:
+```python
+async def tick():
+    for trigger in self._triggers:
+        if trigger.should_fire():
+            proposal = trigger.propose()
+            await bus.publish(EventType.PROACTIVE_PROPOSAL, proposal)
+            break  # 每 tick 最多一个提案
+```
+
+**内置触发器**:
+| 触发器 | 条件 | 提案类型 |
+|--------|------|---------|
+| `idle_check_in` | 用户 30min 无消息 | "需要我做什么？" |
+| `system_health` | 检测到异常指标 | 健康报告 |
+| `calendar_reminder` | 日历事件临近 | 提醒 |
+| `stale_project` | 项目 N 天无活动 | 跟进建议 |
+| `cron` | 定时任务 | 执行报告 |
+| `daily_digest` | 每日固定时间 | 日报 |
+
+**Iron Rule #2**: 纯 Python 触发器（无 LLM per tick），LLM 只在触发后调用
+
+---
+
+### 1.10 EvolutionPipeline — 运行时流式进化
+
+**文件**: `xmclaw/cognition/evolution_loop.py`（480 行）, `xmclaw/core/evolution/orchestrator.py`, `xmclaw/core/evolution/controller.py`
+
+**设计哲学**: 进化不直接改写文件，而是写入 `proposals/` 目录，由人类或更高权限代理审批后应用（Iron Rule #2: staged adoption）
+
+**组件架构**:
+```
+EvolutionOrchestrator（观察者）
+├── 订阅 EventBus: GRADER_VERDICT, SKILL_CANDIDATE_PROPOSED
+├── 累积评分 → 达到阈值 → 触发评估
+└── 与 EvolutionController 交互
+
+EvolutionController（决策者）
+├── 接收 candidate 评估请求
+├── 查询 registry: active_version, head_version
+├── 应用 GraderVerdict.promote_eligible 作为晋升门槛
+└── 决策: promote / rollback / 保持观察
+
+EvolutionLoop（后台循环）
+├── SkillPromoter ── 分析工具使用频率
+│   └── 使用 ≥3 次 → propose "skill_promote"
+├── SystemPromptEvolver ── 分析失败模式
+│   └── 同一错误 ≥2 次 → propose "prompt_evolve"
+├── PerformanceAnalyzer ── 成本/延迟分析
+│   └── 异常延迟 → propose "perf_tuning"
+└── PatternExtractor ── 模式提取
+    └── 高频模式 → propose "pattern_extract"
+
+SelfExperimentLoop（A/B 验证）
+├── 假设 → 构建 baseline vs treatment
+├── 并行运行 → 收集指标
+├── Welch's t-test（stdlib-only，无 scipy）
+└── 决策: adopt / reject / extend / abort
+```
+
+**进化生命周期**:
+```
+工具调用完成
+    │
+    ▼
+HonestGrader.grade() → GraderVerdict
+    │
+    ▼
+EvolutionOrchestrator.observe(verdict)
+    ├── 按 skill_id 累积评分窗口
+    ├── 统计: plays, successes, deterministic_scores
+    └── 达到 min_plays + evidence 阈值？
+        │
+        ├─ 否 → 继续观察
+        └─ 是 → 触发评估
+            │
+            ▼
+        EvolutionController.evaluate(candidate)
+            ├── 查询 registry 当前 HEAD
+            ├── 对比 candidate 与 HEAD 的评分分布
+            ├── 检查 promote_eligible（双信号门槛）
+            │   ├─ False → publish(PROMOTION_BLOCKED)，记录原因
+            │   └─ True  → 决策
+            │       │
+            │       ├─ auto_apply=false（默认）
+            │       │   → publish(SKILL_PROMOTION_RECOMMENDED)
+            │       │   → 等待人工审批（xmclaw evolve review）
+            │       │
+            │       └─ auto_apply=true
+            │           → registry.promote(skill_id, version)
+            │           → publish(SKILL_PROMOTED)
+            │           → 全局广播（所有 WS 客户端可见）
+            │
+            ▼
+        SelfExperimentLoop（如启用）
+            ├── 注册假设: "candidate beats HEAD on metric X"
+            ├── 运行 A/B: 10% 流量 → candidate, 90% → HEAD
+            ├── 收集 N 样本 → Welch's t-test
+            └── p<0.05 且 effect>0 → staged adopt event
+```
+
+**关键配置参数**:
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `evolution.enabled` | `false` | 主开关 |
+| `evolution.auto_apply` | `false` | 自动应用进化提案 |
+| `evolution.min_plays` | 5 | 评估所需最小调用次数 |
+| `evolution.success_rate_threshold` | 0.6 | 成功率门槛 |
+
+**补充组件（Phase 5 完整进化链条）**:
+
+```
+EvolutionOrchestrator（观察者/汇总）
+├── 订阅 EventBus: GRADER_VERDICT, SKILL_CANDIDATE_PROPOSED
+├── 累积评分 → 达到阈值 → 触发评估
+└── 与 EvolutionController 交互
+
+EvolutionController（决策者/4阈值门控）
+├── 接收 candidate 评估请求
+├── 查询 registry: active_version, head_version
+├── 应用 GraderVerdict.promote_eligible 作为晋升门槛
+│   ├── success_rate ≥ threshold
+│   ├── deterministic_score ≥ 0.8
+│   └── 双信号缺一不可
+└── 决策: promote / rollback / keep_observing
+
+ReflectiveMutator（提案生成器）
+├── 监听 registry 变化 / user feedback / error patterns
+├── 分析调用失败堆栈 → 生成 fix candidate
+├── 分析高频模式 → 提取通用 skill
+├── 产出: {"name", "description", "code", "rationale"}
+└── publish SKILL_CANDIDATE_PROPOSED
+
+EvolutionAgent（Headless observer）
+├── 聚合多来源 GRADER_VERDICT
+├── 按 skill_id × version 维护 EWMA 评分
+├── 达到评估阈值 → evaluate() → 触发 debounced trigger
+└── 无 EventBus 接线（独立后台线程消费 verdict 队列）
+
+MutationOrchestrator（自动突变引擎）
+├── 监听 GRADER_VERDICT（performance < threshold）
+├── 识别表现不佳的技能 → 触发 mutation
+├── 调用 ReflectiveMutator 生成 fix variant
+└── 注册新 variant → registry 作为候选版本
+
+ProposalMaterializer（决策实体化）
+├── 订阅 SKILL_CANDIDATE_PROPOSED
+├── 验证 decision="propose"（非 "ignore"/"defer"）
+├── 检查 registry 是否已有同名不同实现 skill
+│   └── 有 → 注册为新 version；无 → 注册为新 skill
+└── 写入 ~/.xmclaw/skills/<id>.jsonl
+
+EvolutionEvaluationTrigger（防抖调度器）
+├── Debounced scheduler（cooldown 60s）
+├── 避免 mutation storm：同 skill 60s 内只触发一次评估
+└── 聚合多次 verdict → 批量评估
+
+VariantSelector（A/B 流量分配器）
+├── UCB1 算法: score = avg_reward + C × √(ln N / n_i)
+├── 动态分配流量: 10% candidate / 90% HEAD（默认）
+├── AgentLoop 每 turn 调用 select() 决定使用哪个版本
+└── 与新 agent 创建绑定: 新 session → 重新计算分配
+
+PromotionPolicy（晋升策略配置）
+├── AUTO_ON_PASS_ALL  ── 全部通过则自动晋升
+├── HUMAN_REQUIRED_MAJOR ── major 版本需人工审批
+├── HUMAN_REQUIRED_ALL   ── 任何晋升都需人工审批
+└── 默认: HUMAN_REQUIRED_MAJOR（Iron Rule #2 的 soft 版本）
+
+SkillRegistryView（注册表层级视图）
+├── 暴露只读接口: list_skill_ids(), get_active(skill_id)
+├── 隐藏内部版本历史（防止外部直接操作 _head）
+├── 被 SkillToolProvider 和 SkillPrefilter 消费
+└── 保证并发安全（但底层 registry 无 lock）
+```
+
+**完整进化闭环**:
+```
+ReflectiveMutator.propose() ──► SKILL_CANDIDATE_PROPOSED
+                                    │
+                                    ▼
+                         ProposalMaterializer.verify()
+                                    │
+                                    ▼
+                         SkillRegistry.register(candidate)
+                                    │
+                                    ▼
+                         VariantSelector (UCB1) 分配流量
+                                    │
+                           ┌────────┴────────┐
+                           ▼                 ▼
+                     HEAD (90%)         Candidate (10%)
+                           │                 │
+                           ▼                 ▼
+                    AgentLoop 调用      AgentLoop 调用
+                           │                 │
+                           ▼                 ▼
+                    HonestGrader.grade()  HonestGrader.grade()
+                           │                 │
+                           └────────┬────────┘
+                                    ▼
+                         EvolutionOrchestrator.observe()
+                         EvolutionAgent (EWMA 聚合)
+                                    │
+                                    ▼
+                         EvolutionController.evaluate()
+                         (4阈值门控 + promote_eligible)
+                                    │
+                           ┌────────┴────────┐
+                           ▼                 ▼
+                      promote              keep_observing
+                           │                    │
+                           ▼                    │
+                    PromotionPolicy.check()    │
+                           │                    │
+                  ┌────────┴────────┐          │
+                  ▼                 ▼          │
+              auto_apply          manual       │
+                  │                 │          │
+                  ▼                 ▼          │
+           registry.promote()   SKILL_PROMOTION_RECOMMENDED
+                  │                 │          │
+                  ▼                 ▼          │
+           SKILL_PROMOTED       等待 xmclaw evolve review
+                  │                            │
+                  └────────────────────────────┘
+                                    │
+                                    ▼
+                           SelfExperimentLoop (A/B)
+                           ├── 假设: "candidate beats HEAD"
+                           ├── Welch's t-test (stdlib)
+                           └── p<0.05 → staged adopt event
+```
+
+---
+
+### 1.11 Security 系统 — 三层防护
+
+**文件**: `xmclaw/security/prompt_scanner.py`, `xmclaw/security/policy.py`, `xmclaw/security/guardian.py`, `xmclaw/security/undo_cabinet.py`
+
+XMclaw 的安全架构是**分层防御**，每层在不同阶段介入：
+
+#### Layer 1: PromptInjectionScanner — 输入/输出扫描
+
+**处理逻辑**:
+```python
+# 扫描源类型
+SOURCE_USER_MESSAGE      # 用户直接输入
+SOURCE_TOOL_RESULT       # 工具返回结果
+SOURCE_MEMORY_RECALL     # 记忆召回块
+SOURCE_FILE_CONTENT      # 文件读取内容
+SOURCE_WEB_CONTENT       # 网页抓取内容
+
+# 扫描流程
+scan(text, policy, source)
+├── 规则匹配（regex + heuristics）
+│   ├── "ignore all previous instructions" 变体
+│   ├── 角色扮演注入（"you are now DAN"）
+│   ├── 分隔符逃逸（```, </system>）
+│   └── 间接注入（记忆/文件中的恶意内容）
+├── 决策
+│   ├── block ── 内容被替换为 [BLOCKED: reason]
+│   ├── flag  ── 标记但放行（DETECT_ONLY 模式）
+│   └── pass  ── 无异常
+└── 如 blocked/flagged → publish(PROMPT_INJECTION_DETECTED)
+```
+
+**调用点**:
+- `AgentLoop.run_turn`: 用户消息提交前
+- `HopLoop`: 每个 tool result 回注 messages 前
+- `Memory recall`: 每条召回 chunk 渲染前（B-61）
+
+#### Layer 2: Guardian — 权限审批
+
+**文件**: `xmclaw/providers/tool/guarded.py`
+
+**处理逻辑**:
+```python
+class GuardianToolProvider(ToolProvider):
+    # 包装任意 ToolProvider，在 invoke 前插入审批
+    
+    async def invoke(call):
+        decision = await guardian.check(call)
+        ├─ PermissionLevel.ALLOW → 直接执行
+        ├─ PermissionLevel.ASK   → 阻塞，等待用户确认
+        └─ PermissionLevel.BLOCK → 返回拒绝结果
+```
+
+**权限级别**（当前 3 级，竞品 Claude Code 有 7 级）:
+| 级别 | 行为 | 示例工具 |
+|------|------|---------|
+| `ALLOW` | 无需审批 | file_read, list_dir, web_search |
+| `ASK` | 每次询问 | file_write, bash, apply_patch |
+| `BLOCK` | 完全禁止 | 未配置或显式黑名单 |
+
+#### Layer 3: UndoCabinet — 操作可逆
+
+**文件**: `xmclaw/security/undo_cabinet.py`
+
+**处理逻辑**:
+```python
+# 每个可逆操作在执行前记录 undo 信息
+record_undo(action_type, action_id, undo_fn, metadata)
+
+# 支持的操作类型
+- file_write  → 记录原文件内容 → undo: 恢复原内容
+- file_delete → 记录被删文件 → undo: 重新创建
+- bash        → 记录命令 → undo: 有限（显式不覆盖）
+- memory_put  → 记录旧值   → undo: 删除或恢复
+
+# 调用路径
+BuiltinTools.invoke()
+    │
+    ▼
+undo_cabinet.record_undo(...)  # 执行前
+    │
+    ▼
+实际工具执行
+    │
+    ▼
+如失败 → undo_cabinet.undo(action_id)  # 自动回滚
+```
+
+**限制**: bash 命令因多样性过大，设计上**不自动逆转**（line 15 注释明确说明）
+
+---
+
+### 1.12 Daemon 启动顺序 — app_lifespan.py
+
+**文件**: `xmclaw/daemon/app_lifespan.py`（3037 行）
+
+**初始化顺序**（`_lifespan()` 内）:
+```
+1. 启动 sweep_task（日志清理）
+2. 启动 backup_scheduler（备份调度）
+3. 启动 events_retention_task（事件保留策略）
+4. 启动 CronTickTask（60s 间隔，如 agent wired）
+5. 启动 MemoryFileIndexer（MEMORY.md / USER.md 向量索引）
+6. 构造 PersonaStore + migrate markdown → DB
+7. 构造 MultiAgentManager（ Epic #17）
+8. 构造 Primary AgentLoop（从 config）
+   ├── LLMProvider
+   ├── ToolProvider（builtin + skill + mcp + browser + memory）
+   ├── MemoryManager
+   ├── HonestGrader
+   ├── CostTracker
+   └── ...
+9. 启动 CognitiveDaemon（如 cognition.enabled）
+   ├── FileWatcher（如 continuous_loop.enabled）
+   ├── ProcessWatcher（如 continuous_loop.enabled）
+   ├── EvolutionLoop（如 evolution.enabled）
+   ├── ProactiveAgent（如 proactive.enabled）
+   ├── TaskScheduler（如 wired）
+   ├── HTNPlanner（如 wired）
+   └── SelfExperimentLoop（如 wired）
+10. 启动 ChannelDispatcher（Feishu/TG/Slack/Email/Cron adapters）
+11. 启动 Memory v2 Service（如 cognition.memory_v2.enabled）
+12. 启动 ReflectionMaterializer（如 wired）
+13. 启动 AutobiographicalMemory（如 wired）
+14. 启动 Security components（prompt scanner, guardian）
+15. yield（FastAPI 开始接受请求）
+16. shutdown: 按相反顺序停止所有组件
+```
+
+**关键依赖关系**:
+- AgentLoop 必须在 CronTickTask 之前构造（cron runner 调用 `agent.run_turn()`）
+- CognitiveDaemon 必须在 FileWatcher/ProcessWatcher 之后启动（消费它们的事件）
+- PerceptionBus 必须在 CognitiveDaemon 之前构造，但 **感知生产者接线是独立 follow-up**
+
+---
+
+### 1.13 系统联动关系总图
+
+> 本节专门描述 **记忆 / 进化 / Chat / 技能 / 工具调用** 五大子系统之间的交叉调用、数据流和状态共享。
+
+#### 总览图
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              五大子系统联动全景                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   ┌──────────┐        ┌──────────┐        ┌──────────┐                     │
+│   │  Chat    │◄──────►│  Agent   │◄──────►│  Tool    │                     │
+│   │  System  │  WS    │  Loop    │ invoke │ Provider │                     │
+│   │ (Web/TUI)│        │          │        │  Chain   │                     │
+│   └────┬─────┘        └────┬─────┘        └────┬─────┘                     │
+│        │                   │                   │                            │
+│        │  EventBus         │  Memory Inject    │  Skill Discovery           │
+│        │  (pub/sub)        │  (read)           │  (read)                    │
+│        │                   │                   │                            │
+│        ▼                   ▼                   ▼                            │
+│   ┌──────────┐        ┌──────────┐        ┌──────────┐                     │
+│   │ EventBus │◄───────│ Memory   │◄───────│ Skill    │                     │
+│   │ (SQLite) │ write  │ System   │ write  │ System   │                     │
+│   └────┬─────┘        └────┬─────┘        └────┬─────┘                     │
+│        │                   │                   │                            │
+│        │  GRADER_VERDICT   │  Fact Extract     │  Promote/Rollback          │
+│        │  SKILL_CANDIDATE  │  (bg task)        │  (evidence-gated)          │
+│        │                   │                   │                            │
+│        ▼                   ▼                   ▼                            │
+│   ┌──────────┐             │              ┌──────────┐                     │
+│   │Evolution │─────────────┘─────────────►│Evolution │                     │
+│   │Orchestr. │  observe & accumulate      │Controller│                     │
+│   └──────────┘                            └──────────┘                     │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### A. 记忆系统 ↔ 其他系统联动
+
+**A1. 记忆 → AgentLoop（写入路径）**
+
+```
+用户消息到达 AgentLoop.run_turn()
+    │
+    ├─► AutobioMemory.extract_from_message() ──► 结构化提取"我是X"/"我在做Y"
+    │                                              (同步, 不阻塞)
+    │
+    ├─► Memory v2 regex extract (bg task) ──► KeyInfoExtractor
+    │       ├─ URL 模式       → kind=url
+    │       ├─ 账号/密码模式   → kind=credential
+    │       ├─ 数字目标       → kind=goal
+    │       └─ explicit-remember → kind=preference
+    │       └──► memory_service.remember() ──► LanceDB upsert
+    │           └──► render_persona_after_writes() ──► 更新 IDENTITY.md/USER.md
+    │
+    └─► Memory v2 LLM extract (bg task) ──► LLMFactExtractor
+            ├─ 语义身份        → kind=identity
+            ├─ 隐含事实        → kind=preference/goal
+            └─ 软偏好         → kind=preference
+            └──► memory_service.remember() ──► LanceDB upsert
+                └──► render_persona_after_writes()
+```
+
+**关键**: 两次提取都是 **background asyncio.Task**，不阻塞用户首 token。
+
+**A2. 记忆 → AgentLoop（读取路径）**
+
+```
+AgentLoop 组装 user message 时
+    │
+    ├─► v1 MemoryManager.prefetch() ──► 预取块（hindsight 等外部 provider）
+    │
+    ├─► v1 MemoryManager.query(layer="long", hybrid=True)
+    │       ├─ 有 embedder: 向量相似度 + keyword RRF
+    │       ├─ 无 embedder: fallback LIKE 子串匹配
+    │       └─ 过滤: 排除当前 session / <60s / file_chunk / archived
+    │       └──► 渲染为 <memory-context> 块 (~2KB cap)
+    │
+    ├─► v2 MemoryService.render_for_prompt(k=8)
+    │       ├─ KNN 搜索语义邻居
+    │       ├─ fetch 1-hop CONTRADICTS/SUPERSEDES
+    │       └──► 渲染: USER档案 + PROJECT档案 + DECISIONS + 矛盾标记
+    │
+    ├─► MemoryGraph.proactive_recall(limit=3)
+    │       └──► 关系图谱相关记忆 → 追加到 <memory-context>
+    │
+    ├─► UnifiedMemory.query(semantic=user_message)
+    │       └──► 多轴（语义+关系+时间）召回 → <unified-recall> 块
+    │
+    └─► AutobioMemory.summarize_for_prompt(max_facts=5)
+            └──► 结构化用户档案 → 注入 system prompt (cache-friendly 位置)
+```
+
+**A3. 记忆 → EventBus**
+
+| 事件 | 发布者 | 触发条件 |
+|------|--------|---------|
+| `MEMORY_OP` | MemoryManager | 每次 put/query 操作 |
+| `MEMORY_RECALL` | UnifiedMemory | 每 turn 召回后（即使 hits=[]） |
+| `USER_PROFILE_UPDATED` | ProfileExtractor |  persona 文件被修改 |
+
+**A4. 记忆 ↔ CognitiveDaemon**
+
+- CognitiveDaemon 每 tick 可读取 MemoryGraph 进行关系推理
+- FileWatcher 检测到 MEMORY.md / USER.md 变化 → 触发 MemoryFileIndexer 重新索引
+- 但 **当前未接线**: CognitiveDaemon 不主动写入记忆
+
+---
+
+#### B. 进化系统 ↔ 其他系统联动
+
+**B1. 进化 → EventBus（订阅/发布）**
+
+```
+EvolutionOrchestrator.start() [当 auto_apply=True]
+    │
+    └─► bus.subscribe(SKILL_CANDIDATE_PROPOSED, _on_proposal)
+            │
+            └─► 收到 proposal → registry.promote(skill_id, version, evidence=...)
+                    │
+                    ├─► 成功 → publish(SKILL_PROMOTED) → 全局广播
+                    └─► 失败 → 静默（exception 传播，无 phantom event）
+```
+
+**B2. 进化 → SkillRegistry**
+
+```
+SkillRegistry 数据结构:
+    _skills:    {(skill_id, version): Skill}       ← 所有版本
+    _versions:  {skill_id: [version, ...]}         ← 版本列表
+    _head:      {skill_id: version}                ← 当前 HEAD
+    _history:   {skill_id: [PromotionRecord, ...]} ← 只增历史
+    _manifests: {(skill_id, version): SkillManifest} ← 元数据
+
+EvolutionOrchestrator.promote(skill_id, to_version, evidence)
+    │
+    ├─► registry.promote() ──► 移动 HEAD 指针
+    ├─► 写入 ~/.xmclaw/skills/<id>.jsonl（持久化）
+    └─► publish(SKILL_PROMOTED) ──► EventBus
+
+EvolutionOrchestrator.rollback(skill_id, to_version, reason)
+    │
+    ├─► registry.rollback() ──► 回退 HEAD 指针
+    └─► publish(SKILL_ROLLED_BACK)
+```
+
+**B3. 进化 → HonestGrader（观察链路）**
+
+```
+HopLoop 完成 tool invocation
+    │
+    ├─► HonestGrader.grade(event, history=session_events)
+    │       ├─ Signal A: deterministic checks (ran/returned/type/side_effect)
+    │       └─ Signal B: UserFollowupSignal (检查用户后续反馈)
+    │
+    └─► publish(GRADER_VERDICT)
+            │
+            └─► EvolutionOrchestrator  subscriber
+                    │
+                    ├─ 按 skill_id 累积评分窗口
+                    │   (plays, successes, deterministic_scores)
+                    │
+                    └─ 达到 min_plays + evidence 阈值？
+                        ├─ 否 → 继续观察
+                        └─ 是 → EvolutionController.evaluate(candidate)
+                                    │
+                                    ├─ promote_eligible=False
+                                    │   → publish(PROMOTION_BLOCKED)
+                                    │
+                                    └─ promote_eligible=True
+                                        ├─ auto_apply=false
+                                        │   → publish(SKILL_PROMOTION_RECOMMENDED)
+                                        │   → 等待人工审批
+                                        └─ auto_apply=true
+                                            → EvolutionOrchestrator.promote()
+                                            → publish(SKILL_PROMOTED)
+```
+
+**B4. 进化 → AgentLoop（技能可用性）**
+
+```
+AgentLoop 每 turn:
+    │
+    ├─► effective_tools.list_tools()
+    │       └─► CompositeToolProvider.list_tools()
+    │               ├─ BuiltinTools (41 tools)
+    │               ├─ SkillToolProvider ──► SkillRegistry.list_skill_ids()
+    │               │       └──► 只有 HEAD 版本被暴露
+    │               └─ MCP Hub tools
+    │
+    └─► SkillPrefilter.select_relevant_skills(user_message, tool_specs, top_k=12)
+            ├─ 评分: name-substring(2x) + description(1x) + trigger(0.5x)
+            ├─ 条件激活: 最近文件路径匹配 manifest.paths → boost
+            └─ 如果无技能匹配 → 注入 skill_browse hint
+```
+
+**关键**: 进化修改 registry HEAD 后，**下一 turn** AgentLoop 的 `list_tools()` 自动看到新技能。无重启、无重新加载。
+
+**D3. VariantSelector 联动细节**
+
+```
+AgentLoop.run_turn() 选择技能版本时
+    │
+    └─► VariantSelector.select(skill_id, session_context)
+            │
+            ├─ 新 session → 重新计算 UCB1
+            │       score = avg_reward + C × √(ln N / n_i)
+            │
+            ├─ 返回 version_id → AgentLoop 调用该版本
+            │
+            └─ 数据流:
+                    ┌─ plays[skill_id][version] += 1
+                    ├─ rewards[skill_id][version] += grader_score
+                    └─ N_total += 1
+```
+
+**D4. SkillRegistryView 联动细节**
+
+```
+SkillToolProvider.list_tools()
+    │
+    └─► SkillRegistryView.list_skill_ids()  (只读)
+            │
+            ├─ 遍历 registry._head → 获取 active version
+            ├─ 过滤 UNTRUSTED 状态（默认不暴露）
+            └─ 返回 ToolSpec 列表
+
+SkillPrefilter.select_relevant_skills()
+    │
+    └─► SkillRegistryView.get_active(skill_id)  (只读)
+            └─ 获取 manifest → 评分用 description/trigger
+```
+
+---
+
+#### C. Chat系统 ↔ 其他系统联动
+
+**C1. 端到端数据流**
+
+```
+用户在前端输入消息
+    │
+    ▼
+Preact Composer ──► onSend()
+    │
+    ▼
+wsHandle.send({type: "user", content: "...", images: [...], ultrathink: false})
+    │
+    ▼
+WS Client (lib/ws.js) ──► 指数退避重连 + 断线消息队列(max 64)
+    │
+    ▼
+Server: app.py /agent/v2/{sid} WS endpoint
+    │
+    ├─ Origin check (B-355)
+    ├─ Auth check (pairing token / Bearer)
+    ├─ Agent 选择 (agent_id query param → MultiAgentManager)
+    ├─ Supersede 旧连接 (B-348)
+    ├─ Replay 历史事件
+    └─ Subscribe EventBus
+    │
+    ▼
+收到 user frame → active_agent.run_turn(session_id, content, user_images=...)
+    │
+    ▼
+AgentLoop → HopLoop → LLM + Tools
+    │
+    ▼
+每步 publish(EventType.XXX) ──► EventBus
+    │
+    ▼
+WS Forwarder subscriber ──► ws.send_text(json.dumps(event))
+    │
+    ▼
+WS Client ──► onEvent(envelope)
+    │
+    ▼
+store.setState({chat: applyEvent(chat, envelope)})
+    │
+    ▼
+chat_reducer.js:
+    ├─ USER_MESSAGE      → 添加/更新用户气泡
+    ├─ LLM_REQUEST       → 创建 thinking 气泡
+    ├─ LLM_CHUNK         → 追加 token 到 assistant 内容
+    ├─ LLM_THINKING_CHUNK→ 追加到 thinking 区域
+    ├─ TOOL_CALL_EMITTED → 创建 tool_use 消息
+    ├─ TOOL_INVOCATION_FINISHED → 更新 tool 状态 + 结果
+    ├─ GRADER_VERDICT    → (secondary reducer) 显示评分芯片
+    ├─ SKILL_PROMOTED    → (secondary reducer) 显示进化闪光
+    └─ PROACTIVE_PROPOSAL → 添加系统提案消息
+    │
+    ▼
+Preact re-render ──► DOM 更新
+```
+
+**C2. 前端状态持久化**
+
+```
+localStorage keys:
+    xmc_active_sid        → 当前 session id
+    xmc_sid_list          → 历史 session 列表
+    xmc_active_agent_id   → 当前 agent ("main" or sub-agent)
+    xmc_composer_draft    → composer 草稿
+    xmc_chat_{sid}        → 每 session 的 messages 快照
+
+Boot 序列 (app.js:254-288):
+    1. fetchPairingToken() → /api/v2/pair
+    2. 恢复 activeSid from localStorage (或生成 newSid)
+    3. connectFor(sid, token, agentId)
+    4. hydrateChatHistory(sid) → /api/v2/sessions/{sid} REST 恢复
+    5. rehydratePendingQuestions() → /api/v2/pending_questions
+    6. fetchAgentsForPicker() → /api/v2/agents
+```
+
+**C3. 多 Agent 切换**
+
+```
+用户点击 Agent Picker → switchAgent(agentId)
+    │
+    ├─ persistActiveAgentId(agentId)
+    ├─ disposeWs() + connectFor(newSid, token, agentId)
+    └─ WS 连接带上 ?agent_id={id}
+
+Server (app.py:1842-1852):
+    requested_agent_id = ws.query_params.get("agent_id")
+    if requested_agent_id and requested_agent_id != "main":
+        ws_obj = agents_manager.get(requested_agent_id)
+        active_agent = ws_obj.agent_loop  # 不同的 AgentLoop 实例
+```
+
+**C4. TUI Protocol Mismatch（~~已知问题~~ → ✅ 已修复）**
+
+```
+【修复前 — TUI 发送的帧格式】
+    tui/app.py:on_submit()
+    └── ws.send(json.dumps({"action": "submit", "message": text}))
+
+【修复后 — TUI 发送的帧格式】
+    tui/app.py:on_submit()
+    └── ws.send(json.dumps({"type": "user", "content": text}))
+
+【Daemon WS Handler 期望的格式】
+    app.py:handle_agent_ws()
+    └── frame["type"] == "user" → agent.run_turn(content=frame["content"])
+```
+
+**修复内容**: `tui/app.py` 的 `_on_user_send()` 方法已将帧格式从
+`{"action": "submit", "session_id": "...", "message": text}` 改为
+`{"type": "user", "content": text}`，与 Web 前端和 Daemon WS Handler 的期望完全一致。
+TUI 消息现在完整走 AgentLoop 工具循环。
+
+---
+
+#### D. 技能系统 ↔ 其他系统联动
+
+**D1. 技能生命周期全景**
+
+```
+【阶段 1: 创建/注册】
+    │
+    ├─ 人工编写 SKILL.md → ~/.xmclaw/v2/skills_user/<name>/
+    ├─ 或 Agent 调用 skill_propose (UNTRUSTED 初始状态)
+    └─ UserSkillsLoader 扫描 → SkillRegistry.register(skill, manifest)
+            │
+            └─► _skills[(skill_id, version)] = skill_instance
+            └─► _head[skill_id] = version (如果是第一个版本)
+
+【阶段 2: 发现】
+    │
+    └─ AgentLoop.list_tools() ──► SkillToolProvider.list_tools()
+            └─► 遍历 registry HEAD → 生成 ToolSpec
+                    ├─ tool name: skill_<id> (`.` → `__`)
+                    └─ description: manifest.description
+
+【阶段 3: 调用】
+    │
+    └─ LLM 选择 skill_demo__read_and_summarize
+            │
+            ▼
+    CompositeToolProvider.invoke(call)
+            │
+            ▼
+    SkillToolProvider.invoke(call)
+            │
+            ├─ 反向映射 skill_demo__read_and_summarize → demo.read_and_summarize
+            ├─ registry.get(skill_id) → Skill instance
+            └─ skill.run(SkillInput(args=call.args))
+                    │
+                    └─► 执行 skill 的 MarkdownProcedure / Code / Plugin
+
+【阶段 4: 进化】
+    │
+    ├─ SkillPromoter 观察工具调用频率 → propose
+    ├─ HonestGrader 评分 → GRADER_VERDICT
+    ├─ EvolutionController 评估 → promote / rollback
+    └─ EvolutionOrchestrator 执行 → 修改 registry HEAD
+            │
+            └─► 下一 turn AgentLoop 自动使用新版本
+
+【阶段 5: 回滚】
+    │
+    └─ skill_rollback(skill_id, version) → registry.rollback()
+            └─► HEAD 回退到旧版本
+            └─► publish(SKILL_ROLLED_BACK)
+```
+
+**D2. SkillPrefilter 联动细节**
+
+```
+AgentLoop.run_turn() 构建 tool_specs 时
+    │
+    └─► select_relevant_skills(user_message, all_tool_specs, top_k=12)
+            │
+            ├─ Tokenise query + each skill description
+            │   (CJK char-level, ASCII word-level)
+            │
+            ├─ Score = 2×name_overlap + 1×desc_overlap + 0.5×trigger_match
+            │
+            ├─ Conditional activation (G-05):
+            │   extract_recent_paths(prior_messages, lookback=8)
+            │   → 如果 skill.manifest.paths 匹配最近文件路径 → boost
+            │
+            └─ Return top-12 skills + meta-tools (skill_browse 等)
+                    │
+                    └─► 如果 0 真实技能匹配 → 注入 skill_browse hint
+```
+
+---
+
+#### E. 工具调用逻辑 ↔ 其他系统联动
+
+**E1. ToolProvider 组装顺序（由内到外）**
+
+```
+build_tools_from_config(cfg) 返回的 provider 是一个洋葱:
+
+最外层 (最后被调用, 最先处理):
+    GuardedToolProvider ── 安全审批 (如 security.guardians.enabled)
+        │
+        ├─ CompositeToolProvider
+        │   ├─ ErrorAwareRetryProvider ── LLM 引导的语义重试
+        │   │   ├─ CompositeToolProvider
+        │   │   │   ├─ BuiltinTools ── 41 个内置工具 (always)
+        │   │   │   ├─ BrowserTools ── Playwright (optional)
+        │   │   │   ├─ LSPTools ── LSP (optional)
+        │   │   │   ├─ ComputerUseTools ── GUI 自动化 (optional)
+        │   │   │   ├─ MediaTools ── 麦克风/摄像头 (optional)
+        │   │   │   ├─ ComposioToolProvider ── 7000+ SaaS (optional)
+        │   │   │   ├─ CalendarToolProvider ── ICS 日历 (optional)
+        │   │   │   ├─ CodebaseToolProvider ── 代码库索引 (optional)
+        │   │   │   └─ SkillToolProvider ── 动态技能工具
+        │   │   │       └─ SkillRegistry (HEAD 版本)
+        │   │   └─ MCP Hub ── 多 MCP 服务器 (optional)
+        │   │       └─ MCPBridge × N (stdio JSON-RPC)
+        │   └─ SubagentToolProvider ── 并行子代理 (optional)
+        │
+        └─ UndoCabinet ── 内置在 file_write/file_delete/memory_put 等工具内部
+```
+
+**E2. 单次工具调用完整调用栈**
+
+```
+LLM 在 hop N 输出 ToolCall(id, name, args)
+    │
+    ▼
+HopLoop: for call in response.tool_calls:
+    │
+    ├─ publish(TOOL_CALL_EMITTED)
+    ├─ publish(TOOL_INVOCATION_STARTED)
+    │
+    ▼
+_invoke_single_tool(call, effective_tools, session_id)
+    │
+    ├─ 1. PreToolUse Hook (如果 _hook_engine 存在)
+    │       ├─ decision=deny → 返回 failed ToolResult
+    │       └─ updated_input → 改写 args
+    │
+    ├─ 2. asyncio.wait_for(effective_tools.invoke(call), 180s)
+    │       │
+    │       ▼
+    │   GuardedToolProvider.invoke (如启用)
+    │       ├─ denied_list? → block
+    │       ├─ approval_service.consume_approval? → bypass
+    │       ├─ engine.guard(tool_name, params) → severity
+    │       └─ policy.action_for(severity)
+    │           ├─ DENY    → block
+    │           ├─ APPROVE → return "NEEDS_APPROVAL:<id>"
+    │           └─ ALLOW   → 继续
+    │       │
+    │       ▼
+    │   CompositeToolProvider.invoke
+    │       ├─ _router.get(call.name) → O(1) 路由
+    │       ├─ miss → live re-scan (处理动态技能)
+    │       └─ child.invoke(call)
+    │           │
+    │           ▼
+    │       具体 Provider (Builtin/Skill/MCP/Browser...)
+    │           │
+    │           ├─ BuiltinTools: 直接执行 Python 函数
+    │           ├─ SkillToolProvider: registry.get(id).run(SkillInput)
+    │           ├─ MCPBridge: JSON-RPC tools/call → subprocess
+    │           └─ BrowserTools: Playwright 操作
+    │
+    ├─ 3. B-17: 瞬态失败重试一次 (0.5s delay)
+    │
+    ├─ 4. PostToolUse Hook (如启用)
+    │       └─ updated_input → redact result content
+    │
+    ├─ 5. publish(TOOL_INVOCATION_FINISHED)
+    │
+    ├─ 6. PromptInjectionScanner.scan(result, SOURCE_TOOL_RESULT)
+    │       ├─ blocked → 跳过该结果, 不注入 messages
+    │       └─ flagged → 标记但放行
+    │
+    ├─ 7. Guardian 审批 (如启用, 第二层)
+    │
+    ├─ 8. HonestGrader.grade(event)
+    │       └─ publish(GRADER_VERDICT)
+    │
+    └─ 9. 结果 → 作为 tool message 追加到 messages
+```
+
+**E3. UndoCabinet 联动细节**
+
+```
+UndoCabinet 不是 ToolProvider 包装器，而是**内置在工具实现内部**:
+
+file_write 工具:
+    ├─ 写入前: undo_cabinet.record("file_write", path, old_content)
+    └─ 执行: 写入新内容
+        │
+        └─ 如果后续出错 → undo_cabinet.undo(action_id) → 恢复旧内容
+
+file_delete 工具:
+    ├─ 删除前: 读取并保存内容
+    ├─ record("file_delete", path, content)
+    └─ 执行: 删除文件
+
+memory_put 工具:
+    ├─ 更新前: record 旧值
+    └─ 执行: 写入新值
+
+限制: bash 命令因多样性过大，设计上不自动逆转
+```
+
+---
+
+#### F. 联动关系速查表
+
+| 从 → 到 | 联动方式 | 数据 | 频率 |
+|---------|---------|------|------|
+| Memory → AgentLoop | 函数调用 + bg task | memory_ctx_block, autobio_block | 每 turn |
+| Memory → EventBus | publish | MEMORY_OP, MEMORY_RECALL | 每 turn/op |
+| AgentLoop → Memory | 函数调用 (bg) | extract_and_remember | 每 turn |
+| Evolution → SkillRegistry | 函数调用 | promote/rollback HEAD | sporadic |
+| Evolution → EventBus | publish/subscribe | SKILL_PROMOTED, GRADER_VERDICT | sporadic |
+| AgentLoop → SkillRegistry | 读取 | list_tools(), get() | 每 turn |
+| SkillRegistry → AgentLoop | 回调 (动态) | HEAD 变化 → 下 turn 可见 | 每次 promote |
+| AgentLoop → EventBus | publish | ~15 种事件 | 每 turn/hop |
+| EventBus → Frontend | WS send | BehavioralEvent JSON | 实时 |
+| Frontend → AgentLoop | WS recv | user frame | 每消息 |
+| ToolProvider → AgentLoop | 返回 | ToolResult | 每 tool call |
+| HonestGrader → Evolution | EventBus | GRADER_VERDICT | 每 tool call |
+| Guardian → ToolProvider | 包装器拦截 | ALLOW/ASK/BLOCK | 每 tool call |
+| UndoCabinet → Tool | 内部钩子 | undo record | 每次破坏性操作 |
+| CognitiveDaemon → PerceptionBus | 消费 | Percept drain | 1Hz |
+| ProactiveAgent → EventBus | publish | PROACTIVE_PROPOSAL | ~30s |
+| FileWatcher → EventBus | publish | FILE_SYSTEM_EVENT | 5s 轮询 |
+| FileWatcher → CognitiveState | 直接更新 | attention focus | 5s 轮询 |
+
+---
+
+## Phase 1: 开箱即贾维斯（默认翻转 + 域清理 + 前端修复）
+
+> **目标**: 新用户第一次启动就能感受到"这是个贾维斯"  
+> **时间**: 2-3 天  
+> **风险**: 低（配置变更 + 字符串替换 + 小修复）  
+> **联动影响**: 无架构改动
+
+### 1.1 默认配置翻转
+
+- [ ] **文件**: `daemon/config.example.json`
+- **变更**:
+  ```json
+  // BEFORE:
+  "evolution": { "enabled": false, ... }
+  "cognition": {
+    "enabled": true,
+    "memory_v2": { "enabled": false },
+    "continuous_loop": { "enabled": false },
+    "proactive": { "enabled": true, ... }
+  }
+
+  // AFTER:
+  "evolution": { "enabled": true, "auto_apply": false, ... }
+  "cognition": {
+    "enabled": true,
+    "memory_v2": { "enabled": true },
+    "continuous_loop": { "enabled": true, "autonomy_level": 50 },
+    "proactive": { "enabled": true, ... }
+  }
+  ```
+- **验收**:
+  - [ ] `xmclaw doctor` 通过所有检查
+  - [ ] 启动日志显示 `cognitive_daemon.started`、`proactive_agent.started`、`evolution_loop.started`
+  - [ ] `daemon/config.json` 新字段不破坏旧配置解析
+
+### 1.2 清理"陪玩店"业务域残留
+
+- [ ] **文件清单**:
+  - `xmclaw/memory/v2/key_info_extractor.py`（模块 docstring）
+  - `xmclaw/memory/v2/llm_extractor.py`（identity 示例）
+  - `xmclaw/memory/v2/entity.py`（URL 示例）
+  - `xmclaw/memory/v2/service.py`（CJK 分词示例、bi-gram 注释）
+  - `xmclaw/memory/v2/embedding.py`（docstring 示例）
+  - `xmclaw/memory/v2/llm_topic.py`（CJK bigram 示例）
+  - `xmclaw/daemon/agent_loop.py`（memory_search 示例，~1749 行）
+  - `xmclaw/daemon/prompt_builder.py`（诚实模式示例，~153-176 行）
+  - `scripts/cleanup_smoke_test_facts.py`（DIRECT_POST_TEXTS）
+- **方法**: 将所有"陪玩店" / "pw310.wxselling.com" / "月流水" / "游戏陪玩俱乐部" 替换为中性示例
+
+### 1.3 SkillRegistry 并发锁（竞态修复）
+
+- [ ] **文件**: `xmclaw/skills/registry.py`
+- **变更**: 为 `register()`, `promote()`, `demote()`, `remove()`, `_persist()` 添加 `asyncio.Lock`
+- **注意**: `_persist()` 当前使用非原子文件写入，需改为 `tempfile + rename` 模式
+
+### 1.4 前端修复（审计发现）
+
+- [ ] **VAD 模块激活**: `lib/vad.js` 完整实现但从未被导入。需在 `app.js` 或 `Chat.js` 中条件导入
+- [ ] **移动端 CSS 修复**: `styles/mobile.css:50` 的 `.is-open` 需与 `AppShell.js:248` 的 `.is-mobile-open` 统一
+- [ ] **alert() 替换**: `memory_facts_v2_graph.js:202,205` 的原始 `alert()` 应改用项目内部的 `toast` / `confirmDialog` 模式
+- [ ] **Service Worker 增强**: 当前仅缓存 shell。API 响应缓存策略可后续迭代
+
+### 1.5 密钥安全注释
+
+- [ ] **文件**: `daemon/config.json`
+- **方法**: 在文件顶部添加 JSON 注释（或 `_comment` 字段）说明此文件为测试环境专用，生产环境应使用环境变量
+
+---
+
+## Phase 2: 感知层接线（CognitiveDaemon 管道贯通）
+
+> **目标**: 让 CognitiveDaemon 的 1Hz 心跳真正有意义  
+> **时间**: 3-5 天  
+> **风险**: 中（需改动 `app_lifespan.py` 启动顺序）  
+> **前置**: Phase 1 完成
+
+### 2.1 PerceptionBus 生产者接线（wiring follow-up A）
+
+- [ ] **文件**: `xmclaw/daemon/app_lifespan.py`
+- **变更**: 在 `FileWatcher` / `ProcessWatcher` 已有事件推送的基础上，增加向 `PerceptionBus.push()` 的推送
+- **已有基础**: `FileWatcher` 已推 `EventBus(FILE_SYSTEM_EVENT)` + `cognitive_state attention focus`。需增加 `PerceptionBus.push(FilePercept(...))`
+- **新增源**:
+  - WebSocket 消息 → `PerceptSource.ws`
+  - Cron tick → `PerceptSource.time`
+  - 系统健康检查 → `PerceptSource.internal`
+  - 网络变化 → `PerceptSource.network`（可选）
+
+### 2.2 CognitiveDaemon 消费端完善
+
+- [ ] **文件**: `xmclaw/cognition/cognitive_daemon.py`
+- **变更**: 确保 `tick()` 中调用 `PerceptionBus.drain()` 而非当前可能的空实现
+- **验证**: 添加日志 `percepts_drain_count=N` 以便观察感知流
+
+### 2.3 AttentionFilter → CognitiveDaemon 接线
+
+- [ ] **文件**: `xmclaw/cognition/cognitive_daemon.py`
+- **变更**: 在 `tick()` 中， drained percepts 先经过 `AttentionFilter.tick(percepts)` 筛选
+- **注意**: `AttentionFilter` 当前标注为 greenfield，但代码完整，只需调用
+
+### 2.4 ReasoningEngine → CognitiveDaemon 接线
+
+- [ ] **文件**: `xmclaw/cognition/cognitive_daemon.py`
+- **变更**: 筛选后的 percepts 送入 `ReasoningEngine.reason(mode=auto, query=..., llm=..., graph=..., bank=...)`
+- **注意**: `ReasoningEngine` 是 provider-free 设计，接受 duck-typed 参数，无需硬依赖
+
+### 2.5 Planner + ActionDispatcher 接线（wiring follow-up B）
+
+- [ ] **文件**: `xmclaw/cognition/cognitive_daemon.py`
+- **变更**:
+  ```python
+  # 在 tick() 中，如果 reasoning 判断需要动作：
+  plan = await self.planner.plan(reasoning_result)
+  await self.action_dispatcher.execute_plan(plan)
+  ```
+- **注意**: `Planner` 是单步反应式规划器，`HTNPlanner` 是独立模块用于 Goal 分解。CognitiveDaemon 使用前者。
+
+### 2.6 验收标准
+
+- [ ] 启动日志显示 `perception_bus.ready`, `attention_filter.ready`, `reasoning_engine.ready`
+- [ ] 文件系统变化触发 CognitiveDaemon tick 并产生日志
+- [ ] `tests/unit/test_cognitive_daemon.py` 通过（新增/更新）
+
+---
+
+## Phase 3: 贾维斯能力解锁（让写好的代码真正工作）
+
+> **目标**: 激活已完整实现但悬空的 Phase 6 模块  
+> **时间**: 4-6 天  
+> **风险**: 中（模块交互复杂）  
+> **前置**: Phase 2 完成
+
+### 3.1 SelfExperimentLoop 接入 CognitiveDaemon
+
+- [ ] **文件**: `xmclaw/cognition/cognitive_daemon.py`
+- **变更**: 每 N ticks 调用 `SelfExperimentLoop.tick()`
+- **已有基础**: A/B 测试框架完整（Welch's t-test，stdlib-only），持久化到 `~/.xmclaw/v2/experiments.db`
+
+### 3.2 HTNPlanner 接入 GoalGenerator
+
+- [ ] **文件**: `xmclaw/cognition/goal_generator.py`（或新建）
+- **变更**: 当 `GoalGenerator.generate()` 产生 Goal 时，调用 `HTNPlanner.decompose(goal)` 分解为 Task DAG
+- **约束**: max_depth=3, max_sub_goals=6, max_total_cost_usd=1.0
+
+### 3.3 TaskScheduler 增强
+
+- [ ] **文件**: `xmclaw/cognition/task_scheduler.py`
+- **现状**: `_wake_scheduler` 是 no-op，依赖 1 秒轮询
+- **改进**: 实现事件驱动唤醒（`asyncio.Event`），当新 task submit 时唤醒调度器
+
+### 3.4 MagicDocs 验证与启用
+
+- [ ] **文件**: `xmclaw/cognition/magic_docs.py`
+- **现状**: 检测 `# MAGIC DOC: <title>` 头，每 turn 结束后 schedule_updates，spawn 背景 sub-task
+- **验证**: 创建一个测试 markdown 文件，确认 daemon 能自动更新
+- **注意**: 无持久化状态，daemon 重启后需重新扫描文件重建 tracked 状态
+
+### 3.5 Speculation 验证与启用
+
+- [ ] **文件**: `xmclaw/cognition/speculation.py`
+- **现状**: 在 LLM 流式输出时预执行 READ_ONLY_TOOLS（file_read, glob, grep, list_dir, web_search）
+- **验证**: 运行含工具调用的对话，观察 `hop_loop Phase B` 是否命中缓存
+- **注意**: 流式结束时 drain cache，取消仍在运行的 speculation
+
+### 3.6 Metacognition Pipeline 接入
+
+- [ ] **文件**: `xmclaw/cognition/metacognition/`
+- **模块**: trace / pass / reformer，全部功能完整
+- **变更**: 在 `AgentLoop.run_turn()` 的关键节点插入 metacognition hooks
+
+### 3.7 Intent Engine LLM层补齐
+
+- [ ] **文件**: `xmclaw/cognition/intent_engine.py`
+- **现状**: `_run_llm_layer()` 是 TODO stub，规则层工作正常
+- **变更**: 实现 LLM-based intent classification 作为规则层的 fallback
+
+### 3.8 验收标准
+
+- [ ] SelfExperimentLoop 能在后台运行 A/B 测试并记录结果
+- [ ] HTNPlanner 能将 Goal 分解为可执行的 Task DAG
+- [ ] TaskScheduler 在 task submit 时立即响应（非 1 秒延迟）
+- [ ] MagicDocs 能自动更新标记文件
+- [ ] Speculation 命中率达到可接受水平（>30%）
+
+---
+
+## Phase 4: 评估体系打通（Benchmark CI 化）
+
+> **目标**: 让 HonestGrader 不再"自说自话"，有外部 benchmark 验证  
+> **时间**: 3-4 天  
+> **风险**: 低-中（适配工作）  
+> **前置**: Phase 1-3 完成
+
+### 4.1 Benchmark Runner 接线
+
+- [ ] **文件**: `xmclaw/eval/harness.py`
+- **现状**: 框架完整（Suite + Runner + TaskResult），但从未跑过真实 benchmark
+- **变更**: 创建 `scripts/run_benchmarks.py` CLI，接受 `--suite` 参数
+
+### 4.2 适配器完成
+
+- [ ] **LongMemEval 适配器**: 完成 TODO，接入真实语料
+- [ ] **TerminalBench 适配器**: 完成 TODO，接入 docker 运行时
+- [ ] **SWE-bench 适配器**: 完成 TODO（如 scope 允许）
+- [ ] **LoCoMo 适配器**: 完成 TODO
+
+### 4.3 Tier-2 Sandbox Graders 自动接线
+
+- [ ] **现状**: Tier-2 sandbox graders 未自动接线，Tier 1 是启发式评分
+- [ ] **变更**: 在 Eval Harness 中自动检测 sandbox 环境并启用 Tier-2
+
+### 4.4 CI 集成
+
+- [ ] **GitHub Actions workflow**: 每周/每日定时运行 benchmark，结果上传到 artifact
+
+### 4.5 验收标准
+
+- [ ] `python -m xmclaw.eval.run --suite=longmemeval` 能跑通
+- [ ] Benchmark 结果可比较（保存历史记录）
+- [ ] CI 中 benchmark 不阻塞 PR（信息性）
+
+---
+
+## Phase 5: 能力补齐与差异化强化
+
+> **目标**: 补齐竞品已有的能力，强化 XMclaw 的硬差异化  
+> **时间**: 5-7 天  
+> **风险**: 中-高  
+> **前置**: Phase 1-4 完成
+
+### 5.1 MCP 传输层扩展
+
+- [ ] **文件**: `xmclaw/providers/tool/mcp_hub.py`
+- **现状**: stdio 完整实现，SSE/WS/streamableHttp 被显式跳过
+- **变更**: 实现 SSE 传输（优先级最高，Claude Desktop 已支持）
+
+### 5.2 Docker Runtime 技能挂载
+
+- [ ] **文件**: `xmclaw/skills/docker_runtime.py`
+- **现状**: 容器隔离、网络隔离、资源限制完整，但技能源码未挂载进容器
+- **变更**: 在 `run_in_container()` 中将技能源码目录 mount 为 read-only volume
+
+### 5.3 Plugin SDK 动态加载
+
+- [ ] **文件**: `xmclaw/plugin_sdk/`
+- **现状**: 只有重导出层（`__init__.py`），没有动态插件发现/加载代码
+- **变更**: 实现 entry-point 发现 + 动态 import + 版本兼容性检查
+- **注意**: 需维护 `FROZEN_SURFACE` 兼容性契约
+
+### 5.4 Email 附件支持
+
+- [ ] **文件**: `xmclaw/daemon/channels/email.py`
+- **现状**: 被显式跳过，无提取或转发
+- **变更**: 实现附件提取（基础 MIME 解析）
+
+### 5.5 ComputerUseTools 安全审计
+
+- [ ] **文件**: `xmclaw/cognition/computer_use.py`
+- **现状**: 3层安全（provider off → BLOCK → FAILSAFE）
+- **审计**: 确认 pyautogui FAILSAFE 在跨平台场景下可靠
+
+### 5.6 硬差异化强化
+
+| 差异化点 | 当前状态 | 强化方向 |
+|---------|---------|---------|
+| **运行时流式进化** | EvolutionLoop 完整但默认关闭 | Phase 1 打开后，增加进化可视化（Web UI 面板） |
+| **HonestGrader** | 完整且工作 | 增加 grader verdict 历史趋势图 |
+| **ProactiveAgent** | 完整且工作 | 增加更多触发器（代码审查提醒、依赖更新提醒） |
+| **MCP 多服务器** | stdio 完整 | Phase 5.1 扩展 SSE |
+| **SelfExperiment** | 完整但悬空 | Phase 3 激活后，增加实验报告 UI |
+| **MagicDocs** | 完整但悬空 | Phase 3 验证后，推广到更多文档类型 |
+
+---
+
+## Phase 6: 用户体验打磨与 v1.1.0 发布
+
+> **目标**: 产品级打磨，发布 v1.1.0 "Jarvis"  
+> **时间**: 3-4 天  
+> **风险**: 低  
+> **前置**: Phase 1-5 完成
+
+### 6.1 前端完善
+
+- [ ] **5个隐藏页面导航**: `/agents`, `/channels`, `/tools`, `/security`, `/docs` 添加侧边栏入口（或说明为什么隐藏）
+- [ ] **Config 编辑器**: 在 Web UI 中提供安全的 config.json 只读查看器（或带验证的编辑器）
+- [ ] **i18n 架构**: 虽然当前全中文，但建议预留 i18n 钩子（不强制翻译）
+- [ ] **Dashboard 进化面板**: 展示进化进度、技能候选列表、实验结果
+
+### 6.2 品牌一致性
+
+- [ ] TUI 默认 agent_name: "Jarvis" → 确认是否需要与 CLI/Web 统一
+- [ ] 前端 `index.html` 自称 "Phase 0 scaffold" → 更新为 v1.1.0 稳定版描述
+
+### 6.3 文档与发布
+
+- [ ] 更新 `README.md` 定位描述（从"陪玩店工具"到"自主进化核心的 AI Agent"）
+- [ ] 更新 `CHANGELOG.md` v1.1.0 条目
+- [ ] 发布 GitHub Release，附带 benchmark 报告
+
+---
+
+## 附录 A: 竞品差异化总结
+
+| 维度 | OpenClaw | Claude Code | Hermes | Letta | **XMclaw** |
+|------|----------|-------------|--------|-------|-----------|
+| 自主性 | ❌ 用户驱动 | ⚠️ yoloClassifier | ⚠️ 人类审核 | ⚠️ 有限 | **✅ 运行时流式进化** |
+| 评估诚实度 | ❌ 无 | ❌ 无 | ❌ 无 | ❌ 无 | **✅ HonestGrader** |
+| 主动行为 | ❌ 无 | ⚠️ 被动触发 | ❌ 无 | ❌ 无 | **✅ ProactiveAgent** |
+| 记忆系统 | 基础 RAG | 基础 | 基础 | MemGPT | **✅ LanceDB + KeyInfoExtractor** |
+| 多服务器 MCP | 单服务器 | 无 | 无 | 无 | **✅ 多服务器 + 命名空间隔离** |
+| 自实验 | ❌ 无 | ❌ 无 | ❌ 无 | ❌ 无 | **✅ A/B + Welch t-test** |
+| 权限粒度 | 3级 | 7级+yolo+Denial | 3级 | 3级 | **3级（需追赶）** |
+| 默认体验 | 聊天机器人 | 聊天机器人 | 聊天机器人 | 聊天机器人 | **Phase 1 前=聊天机器人** |
+
+---
+
+## 附录 B: 技术债务清单
+
+| # | 债务 | 位置 | 优先级 | 备注 |
+|---|------|------|--------|------|
+| 1 | ~~SkillRegistry 无并发锁~~ | `skills/registry.py` | ✅ 已修复 | 已添加 `threading.RLock`，覆盖全部读写方法 |
+| 2 | **Cognition 模块 greenfield** | `cognition/*.py` | 🔴 高 | Phase 2-3 解决 |
+| 3 | ~~默认全 OFF~~ | `config.example.json` | ✅ 已修复 | `evolution.enabled` 翻为 true；`autonomy_level` 翻为 50 |
+| 4 | ~~陪玩店域残留~~ | `memory/v2/*`, `agent_loop.py` | ✅ 已修复 | 全部替换为通用业务示例（网店/咨询公司/电商） |
+| 5 | ~~VAD 死代码~~ | `static/lib/vad.js` | ✅ 已修复 | 已删除 237 行无引用死代码 |
+| 6 | ~~前端 CSS 类不匹配~~ | `mobile.css` vs `AppShell.js` | ✅ 已修复 | `xmc-h-chatpage*`→`xmc-h-chat-frame*`；`xmc-toolcard__image`→`xmc-toolcard__media-img` |
+| 7 | **Eval 未跑过真实 benchmark** | `eval/` | 🟡 中 | Phase 4 解决 |
+| 8 | ~~TaskScheduler 轮询~~ | `task_scheduler.py` | ✅ 已修复 | 已实现 `_wake_scheduler()` 事件驱动唤醒，新任务提交后立即调度（替代 1s 忙等） |
+| 9 | ~~Intent Engine LLM stub~~ | `intent_engine.py` | ✅ 已修复 | 已实现 `_run_llm_layer()`：事件压缩→LLM推理→JSON解析→IntentPrediction |
+| 10 | ~~MCP 非stdio传输~~ | `mcp_hub.py` | ✅ 已修复 | 新增 `MCPHttpBridge`（SSE/streamableHttp），`MCPHub` 已支持非 stdio 配置 |
+| 11 | **Docker 技能未挂载** | `docker_runtime.py` | 🟢 低 | Phase 5 解决 |
+| 12 | ~~Plugin SDK 无动态加载~~ | `plugin_sdk/` | ✅ 已修复 | 新增 `xmclaw/plugins/loader.py`，支持 `xmclaw.plugins` entry-point 发现；channel registry 已接入外部插件 |
+| 13 | ~~Email 附件跳过~~ | `channels/email.py` | ✅ 已修复 | `_extract_attachments()` + `_save_email_attachments()`：图片→`raw["images"]`（AgentLoop vision），非图片→`raw["attachments"]` 元数据 |
+| 14 | ~~ContextEngine 未使用~~ | `context/` | ✅ 已修复 | `AgentLoop` 新增 `context_engine` 参数；`run_turn` 中调用 `bootstrap`/`assemble`；`_persist_history` 同步到 `engine.after_turn`（渐进式迁移） |
+| 15 | **权限系统 3级 vs 竞品 7级** | `security/` | 🟢 低 | 架构差距 |
+| 16 | ~~TUI Protocol Mismatch~~ | `tui/app.py` | ✅ 已修复 | 帧格式改为 `{"type":"user","content":text}`，完整走 AgentLoop 工具循环 |
+
+---
+
+## 附录 C: 已删除的过时文档清单
+
+以下文档已被本文件取代，不再维护：
+
+- `AGENTS_TEMPLATE.md`
+- `ARCHITECTURE.md`
+- `AUDIT_2026-05-07_conflicts.md`
+- `AUDIT_2026-05-07_real_architecture.md`
+- `AUDIT_2026-05-10_PATHS_FE_BE.md`
+- `AUDIT_PASS_3_FINDINGS.md`
+- `BACKUP.md`
+- `competitive_gap_analysis.md`
+- `competitive_gap_analysis_v2.md`
+- `CONFIG.md`
+- `DEPLOY.md`
+- `DEV_PLAN.md`
+- `DEV_ROADMAP.md`
+- `DOCTOR.md`
+- `EVENTS.md`
+- `EVOLUTION.md`
+- `EVOLUTION_HONEST_STATE.md`
+- `FRONTEND_BACKEND_ALIGNMENT.md`
+- `FRONTEND_DESIGN.md`
+- `FRONTEND_REWORK.md`
+- `HOOKS.md`
+- `JARVIS_ARCHITECTURE_V2.md`
+- `JARVIS_IMPLEMENTATION_PLAN.md`
+- `JARVIS_PHASE_6_DESIGN.md`
+- `JARVIS_ROADMAP.md`
+- `MEMORY_ARCHITECTURE.md`
+- `MEMORY_EVOLUTION_REDESIGN.md`
+- `MULTI_AGENT.md`
+- `PRODUCT_REDESIGN.md`
+- `PROJECT_DEFINITION_2026-05-10.md`
+- `REWRITE_PLAN.md`
+- `SLEEP_AGENT.md`
+- `TOOLS.md`
+- `UI_FUNCTION_AUDIT_2026-05-10.md`
+- `V2_DEVELOPMENT.md`
+- `V2_STATUS.md`
+- `WORKSPACE.md`
+- `XMCLAW_JARVIS_GAP_ANALYSIS_2026.md`
+
+保留的子目录（资源/档案）：
+- `docs/architecture/` — 架构图资源
+- `docs/archive/` — 历史档案
+- `docs/assets/` — 图片等静态资源
+- `docs/codebase/` — 代码库分析
+
+---
+
+*本文档为 XMclaw v1.1.0 "Jarvis" 的唯一权威开发文档。所有开发决策应以此为准。*

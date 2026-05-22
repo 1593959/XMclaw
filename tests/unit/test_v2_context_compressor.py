@@ -558,3 +558,58 @@ def test_align_boundary_backward_no_pullback_when_no_tool_group() -> None:
         _msg("assistant", "A2"),
     ]
     assert cc._align_boundary_backward(msgs, 3) == 3
+
+
+def test_find_tail_cut_respects_cjk_token_density() -> None:
+    """B-ContextLoss-1: CJK text must not under-count tokens in tail
+    protection.  A message with 120 Han characters is ~80 tokens, not
+    ~30 (120/4).  If we under-count, the tail budget swallows the
+    message and compression may silently drop middle content."""
+    cc = ContextCompressor(
+        model="t", summarize_call=_stub_summarize, quiet_mode=True,
+        context_length=32_768, protect_last_ratio=0.10,
+    )
+    # tail_token_budget = 3276 tokens
+    # Build a history where the last few messages are CJK-heavy.
+    # 200 Han chars ≈ 133 tokens; 4 such messages ≈ 532 tokens.
+    # With the old chars/4 heuristic they would count as 200 tokens,
+    # potentially allowing more messages into the tail than budgeted.
+    han200 = "这是一段测试文本。" * 25  # 200 CJK chars
+    msgs = [
+        _msg("system", "sys"),
+        _msg("user", "start"),
+        _msg("assistant", "ok"),
+        # 4 CJK-heavy messages at the end
+        _msg("user", han200),
+        _msg("assistant", han200),
+        _msg("user", han200),
+        _msg("assistant", han200),
+    ]
+    cut = cc._find_tail_cut_by_tokens(msgs, head_end=1)
+    # The cut should land BEFORE message 3 (index 3) because 4×133
+    # tokens + overhead exceeds the 3276-token budget … actually
+    # 532 < 3276, so all 4 fit.  Let's make them longer.
+    han800 = "这是一段测试文本。" * 100  # 800 CJK chars ≈ 533 tokens each
+    msgs2 = [
+        _msg("system", "sys"),
+        _msg("user", "start"),
+        _msg("assistant", "ok"),
+    ] + [_msg("user" if i % 2 == 0 else "assistant", han800)
+         for i in range(8)]
+    cut2 = cc._find_tail_cut_by_tokens(msgs2, head_end=1)
+    # 8 messages × ~543 tokens = ~4344 tokens > 3276 budget.
+    # The cut should NOT be at the very end (message 10).
+    assert cut2 < len(msgs2)
+    # Verify the cut is anchored to the last user message.
+    last_user = cc._find_last_user_message_idx(msgs2, head_end=1)
+    assert cut2 <= last_user
+
+
+def test_estimate_messages_tokens_rough_cjk_weighting() -> None:
+    """B-ContextLoss-1: _count_tokens_in_text weights CJK at ~1.5
+    chars/token vs ASCII at 4 chars/token."""
+    from xmclaw.context.compressor import _count_tokens_in_text
+    ascii_400 = "a" * 400
+    assert _count_tokens_in_text(ascii_400) == 100  # 400/4
+    cjk_120 = "中" * 120
+    assert _count_tokens_in_text(cjk_120) == 80    # 120*2/3

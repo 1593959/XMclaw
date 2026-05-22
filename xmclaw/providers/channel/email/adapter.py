@@ -53,7 +53,9 @@ import email
 import email.message
 import email.policy
 import email.utils
+import hashlib
 import imaplib
+import os
 import re
 import smtplib
 import time
@@ -61,6 +63,7 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from email.header import decode_header, make_header
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any
 
 from xmclaw.providers.channel.base import (
@@ -231,6 +234,128 @@ def _extract_plain_body(msg: email.message.Message) -> str:
             return html_text.strip()
         return stripper.get_text()
     return ""
+
+
+def _extract_attachments(
+    msg: email.message.Message,
+    *,
+    max_count: int = 10,
+    max_size_bytes: int = 25 * 1024 * 1024,
+) -> list[dict[str, Any]]:
+    """Extract attachment metadata + bytes from a parsed email.
+
+    Returns a list of dicts with keys:
+      * ``filename`` — sanitized name (empty if none provided)
+      * ``content_type`` — MIME type
+      * ``size`` — decoded payload size in bytes
+      * ``payload`` — raw ``bytes``
+
+    Guards:
+      * ``max_count`` — stops after N attachments (defensive against
+        mail-bomb attacks).
+      * ``max_size_bytes`` — skips individual attachments that exceed
+        the limit (prevents disk exhaustion).
+    """
+    attachments: list[dict[str, Any]] = []
+    if not msg.is_multipart():
+        return attachments
+
+    for part in msg.walk():
+        if len(attachments) >= max_count:
+            break
+        disposition = (part.get("Content-Disposition") or "").lower()
+        if "attachment" not in disposition:
+            continue
+
+        # Extract filename safely.
+        filename = part.get_filename() or ""
+        # Sanitize: basename only, no path traversal.
+        if filename:
+            filename = Path(filename).name
+            # Drop any non-printable / control chars.
+            filename = "".join(c for c in filename if c.isprintable())
+        if not filename:
+            # Synthesize a name from content-type.
+            ctype = part.get_content_type() or "application/octet-stream"
+            ext = ctype.split("/")[-1].replace("+", "_")[:20]
+            filename = f"untitled.{ext}"
+
+        payload = part.get_payload(decode=True)
+        if not isinstance(payload, bytes):
+            continue
+        if len(payload) > max_size_bytes:
+            _log.info(
+                "email.attachment_oversized",
+                filename=filename,
+                size=len(payload),
+                limit=max_size_bytes,
+            )
+            continue
+
+        attachments.append({
+            "filename": filename,
+            "content_type": part.get_content_type() or "application/octet-stream",
+            "size": len(payload),
+            "payload": payload,
+        })
+
+    return attachments
+
+
+def _save_email_attachments(
+    attachments: list[dict[str, Any]],
+    *,
+    upload_dir: Path,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Persist extracted attachments to disk.
+
+    Returns ``(image_paths, attachment_metas)`` where:
+      * ``image_paths`` — absolute paths of image attachments that
+        can be fed to ``AgentLoop.run_turn(user_images=...)``.
+      * ``attachment_metas`` — lightweight dicts (no payload bytes)
+        describing non-image attachments for the agent's reference.
+
+    Files are written to ``upload_dir / email /`` with a collision-
+    resistant name: ``{base}_{short_hash}{ext}``.
+    """
+    upload_dir = upload_dir / "email"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    image_paths: list[str] = []
+    attachment_metas: list[dict[str, Any]] = []
+
+    for att in attachments:
+        filename = att["filename"]
+        payload: bytes = att["payload"]
+        content_type: str = att["content_type"]
+
+        # Collision-resistant name.
+        short_hash = hashlib.sha256(payload[:4096]).hexdigest()[:8]
+        stem = Path(filename).stem
+        ext = Path(filename).suffix
+        safe_name = f"{stem}_{short_hash}{ext}"
+        dest = upload_dir / safe_name
+
+        # Deduplicate: if same content already exists, reuse path.
+        if not dest.exists():
+            try:
+                dest.write_bytes(payload)
+            except OSError as exc:
+                _log.warning("email.attachment_save_failed", filename=filename, err=str(exc))
+                continue
+
+        abs_path = str(dest.resolve())
+        if content_type.startswith("image/"):
+            image_paths.append(abs_path)
+        else:
+            attachment_metas.append({
+                "filename": filename,
+                "content_type": content_type,
+                "size": att["size"],
+                "path": abs_path,
+            })
+
+    return image_paths, attachment_metas
 
 
 def _decode_payload(part: email.message.Message) -> str:
@@ -763,7 +888,37 @@ class EmailChannelAdapter(ChannelAdapter):
             return
 
         body = _extract_plain_body(parsed)
-        if not body.strip():
+
+        # B-393 Phase 2: extract + persist attachments. Images are
+        # surfaced via ``user_images`` (AgentLoop vision support);
+        # non-images are listed in the text so the agent knows they
+        # exist and can reference them by path.
+        attachments = _extract_attachments(parsed)
+        image_paths: list[str] = []
+        attachment_metas: list[dict[str, Any]] = []
+        if attachments:
+            try:
+                from xmclaw.utils.paths import uploads_dir
+                image_paths, attachment_metas = _save_email_attachments(
+                    attachments,
+                    upload_dir=uploads_dir(),
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("email.attachment_process_failed", err=str(exc))
+
+        # Build an attachment summary block for non-image files.
+        attachment_block = ""
+        if attachment_metas:
+            lines = ["\n[Attachments:]"]
+            for m in attachment_metas:
+                lines.append(
+                    f"  - {m['filename']} ({m['content_type']}, "
+                    f"{m['size']} bytes) — saved at {m['path']}"
+                )
+            attachment_block = "\n".join(lines)
+
+        # Empty body + no attachments → nothing to process.
+        if not body.strip() and not image_paths and not attachment_metas:
             _log.debug("email.empty_body_skipped", msg_id=msg_id)
             return
 
@@ -775,6 +930,9 @@ class EmailChannelAdapter(ChannelAdapter):
             content = f"Subject: {subject.strip()}\n\n{body}"
         else:
             content = body
+
+        if attachment_block:
+            content += attachment_block
 
         # Epic #14: scan inbound text for prompt injection BEFORE
         # handing off to run_turn. Email is the most spoofable channel
@@ -830,6 +988,8 @@ class EmailChannelAdapter(ChannelAdapter):
                 "from_address": sender_addr,
                 "from_display": sender_display,
                 "subject": subject,
+                "images": image_paths,
+                "attachments": attachment_metas,
             },
         )
         for h in list(self._handlers):
