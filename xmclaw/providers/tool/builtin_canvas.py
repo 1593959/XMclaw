@@ -28,19 +28,38 @@ _VALID_KINDS = {"mermaid", "html", "svg", "chart", "table"}
 _CANVAS_CREATE_SPEC = ToolSpec(
     name="canvas_create",
     description=(
-        "Create a visual artifact that renders inline in the chat. "
-        "Use this when the user asks for diagrams, data visualization, "
-        "structured comparison tables, or any explanation that benefits "
-        "from visual layout.\n\n"
-        "Supported kinds:\n"
-        "  • mermaid — flowcharts, sequence diagrams, class diagrams, "
-        "Gantt charts (Mermaid syntax)\n"
-        "  • html    — rich HTML snippets, styled containers, embedded widgets\n"
-        "  • svg     — inline vector graphics (raw SVG markup)\n"
-        "  • chart   — Chart.js JSON spec (bar, line, pie, radar, doughnut, polarArea)\n"
-        "  • table   — structured data table (Markdown-like rows + columns)\n\n"
-        "Returns an artifact_id. Use ``canvas_update`` to mutate it later, "
-        "and ``canvas_close`` when you're done."
+        "Create a visual artifact that renders inline in the chat transcript. "
+        "This is your primary tool for ANY situation where visual structure "
+        "improves understanding — not just when the user explicitly asks for a diagram.\n\n"
+        "**When to use (proactive, not reactive):**\n"
+        "  • Explaining architecture, workflows, or state machines — draw them.\n"
+        "  • Comparing options (A vs B vs C) — use a table or chart.\n"
+        "  • Walking through a multi-step process — sequence diagram or flowchart.\n"
+        "  • Showing relationships (dependencies, inheritance, data flow) — graph.\n"
+        "  • Presenting time-based events — timeline or Gantt chart.\n"
+        "  • Breaking down a complex decision — decision tree.\n"
+        "  • Summarizing categorical data — bar/pie chart.\n"
+        "  • ANY time you think 'this would be clearer with a picture'.\n\n"
+        "**Supported kinds:**\n"
+        "  • mermaid — Universal diagram language.\n"
+        "      Best for: flowcharts, sequence diagrams, class diagrams, "
+        "      ER diagrams, state diagrams, Gantt charts, Git graphs, "
+        "      mind maps, timelines, C4 architecture diagrams.\n"
+        "  • html    — Rich HTML snippets.\n"
+        "      Best for: styled cards, collapsible sections, "
+        "      color-coded diffs, embedded iframes, dashboards.\n"
+        "  • svg     — Raw vector graphics.\n"
+        "      Best for: custom shapes, badges, icons, geometric art, "
+        "      precise diagrams that Mermaid cannot express.\n"
+        "  • chart   — Chart.js JSON configuration.\n"
+        "      Best for: bar, line, area, scatter, bubble, pie, doughnut, "
+        "      radar, polar area charts. Include labels, colors, datasets.\n"
+        "  • table   — Structured data grid.\n"
+        "      Best for: comparing entities, listing configurations, "
+        "      showing API parameters, matrix comparisons.\n\n"
+        "Returns an artifact_id. Use ``canvas_update`` to mutate it live "
+        "(e.g., streaming partial results, animating progress), "
+        "and ``canvas_close`` when the visual is no longer needed."
     ),
     parameters_schema={
         "type": "object",
@@ -48,21 +67,28 @@ _CANVAS_CREATE_SPEC = ToolSpec(
             "kind": {
                 "type": "string",
                 "enum": ["mermaid", "html", "svg", "chart", "table"],
-                "description": "Visual format of the artifact",
+                "description": (
+                    "Visual format. Choose the ONE best fit:\n"
+                    "  mermaid = diagrams (most common, start here)\n"
+                    "  html    = styled snippets / interactive widgets\n"
+                    "  svg     = custom vector art\n"
+                    "  chart   = data-driven Chart.js visualizations\n"
+                    "  table   = structured row/column data"
+                ),
             },
             "title": {
                 "type": "string",
-                "description": "Short title shown above the artifact",
+                "description": "Short descriptive title shown above the artifact",
             },
             "content": {
                 "type": "string",
                 "description": (
-                    "The artifact payload. Kind-specific:\n"
-                    "  mermaid → Mermaid diagram definition\n"
-                    "  html    → HTML fragment (no <html>/<body> wrappers)\n"
-                    "  svg     → Raw <svg>...</svg> markup\n"
-                    "  chart   → Chart.js config JSON string\n"
-                    "  table   → JSON string: {headers:[], rows:[]})"
+                    "The artifact payload. Kind-specific format:\n"
+                    "  mermaid → Mermaid diagram definition (e.g. 'graph TD; A-->B')\n"
+                    "  html    → HTML fragment WITHOUT <html>/<body> wrappers\n"
+                    "  svg     → Raw <svg>...</svg> markup string\n"
+                    "  chart   → Chart.js config as JSON string\n"
+                    "  table   → JSON string: {headers:['col1','col2'], rows:[['a','b'],...]}"
                 ),
             },
         },
@@ -73,10 +99,15 @@ _CANVAS_CREATE_SPEC = ToolSpec(
 _CANVAS_UPDATE_SPEC = ToolSpec(
     name="canvas_update",
     description=(
-        "Update an existing canvas artifact by replacing its content. "
-        "The kind and title stay the same; only the payload changes. "
-        "Use this for live data updates, progressive diagram building, "
-        "or animation frames."
+        "Update an existing canvas artifact in-place. "
+        "The kind and title remain unchanged; only the payload is replaced.\n\n"
+        "**Use this for:**\n"
+        "  • Streaming incremental results (update a chart as data arrives).\n"
+        "  • Progressive diagram building (add nodes/edges step by step).\n"
+        "  • Live status updates (refresh a dashboard or progress bar).\n"
+        "  • Correcting mistakes in a previously created artifact.\n"
+        "  • Animation frames (flip through states of a state machine).\n\n"
+        "If the artifact_id does not exist in this session, return an error."
     ),
     parameters_schema={
         "type": "object",
@@ -97,8 +128,14 @@ _CANVAS_UPDATE_SPEC = ToolSpec(
 _CANVAS_CLOSE_SPEC = ToolSpec(
     name="canvas_close",
     description=(
-        "Close a canvas artifact. The frontend collapses or removes it. "
-        "Use this when the visual is no longer relevant to the conversation."
+        "Close (remove) a canvas artifact from the chat. "
+        "The frontend collapses or deletes the visual.\n\n"
+        "**Use this when:**\n"
+        "  • The visual has served its purpose and now clutters the conversation.\n"
+        "  • You are about to create a newer, better version of the same concept.\n"
+        "  • The user explicitly asks to hide or remove a diagram.\n"
+        "  • The session is transitioning to a completely unrelated topic.\n\n"
+        "Closing is polite housekeeping — don't leave stale artifacts hanging around."
     ),
     parameters_schema={
         "type": "object",
