@@ -30,6 +30,9 @@ const HANDLED = new Set([
   "canvas_artifact_created",
   "canvas_artifact_updated",
   "canvas_artifact_closed",
+  "worker_started",
+  "worker_completed",
+  "worker_failed",
 ]);
 
 
@@ -389,6 +392,93 @@ export function applySecondaryEvent(chat, envelope, helpers) {
           const arts = m.canvasArtifacts.filter((art) => art.artifact_id !== aid);
           return { ...m, canvasArtifacts: arts };
         }),
+      };
+    }
+
+    case "worker_started": {
+      const wid = payload.worker_id || "?";
+      const tid = payload.task_id || "?";
+      const id = `w_${wid}_${tid}`;
+      const exists = chat.messages.some((m) => m.id === id);
+      if (exists) return chat;
+      return {
+        ...chat,
+        messages: chat.messages.concat({
+          id,
+          role: "system",
+          kind: "worker",
+          content: "",
+          status: "running",
+          ts,
+          workerId: wid,
+          taskId: tid,
+          promptPreview: (payload.prompt_preview || "").slice(0, 240),
+        }),
+      };
+    }
+
+    case "worker_completed": {
+      const wid = payload.worker_id || "?";
+      const tid = payload.task_id || "?";
+      const id = `w_${wid}_${tid}`;
+      const idx = chat.messages.findIndex((m) => m.id === id);
+      if (idx === -1) {
+        // arrived before started — synthesise finished bubble
+        return {
+          ...chat,
+          messages: chat.messages.concat({
+            id,
+            role: "system",
+            kind: "worker",
+            content: "",
+            status: "ok",
+            ts,
+            workerId: wid,
+            taskId: tid,
+            outputPreview: (payload.output_preview || "").slice(0, 500),
+            elapsedSeconds: payload.elapsed_seconds || null,
+          }),
+        };
+      }
+      return {
+        ...chat,
+        messages: upsertById(chat.messages, id, (m) => ({
+          ...m,
+          status: "ok",
+          outputPreview: (payload.output_preview || "").slice(0, 500),
+          elapsedSeconds: payload.elapsed_seconds || null,
+        })),
+      };
+    }
+
+    case "worker_failed": {
+      const wid = payload.worker_id || "?";
+      const tid = payload.task_id || "?";
+      const id = `w_${wid}_${tid}`;
+      const idx = chat.messages.findIndex((m) => m.id === id);
+      if (idx === -1) {
+        return {
+          ...chat,
+          messages: chat.messages.concat({
+            id,
+            role: "system",
+            kind: "worker",
+            content: "",
+            status: "error",
+            ts,
+            workerId: wid,
+            taskId: tid,
+            error: (payload.error || "").slice(0, 500),
+          }),
+        };
+      }
+      return {
+        ...chat,
+        messages: upsertById(chat.messages, id, (m) => ({
+          ...m,
+          status: "error",
+          error: (payload.error || "").slice(0, 500),
+        })),
       };
     }
 

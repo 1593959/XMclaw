@@ -69,6 +69,7 @@ ExecutorRoute = Literal[
     "skill_invoke",
     "tool_call",
     "wait_for_percept",
+    "subagent",
     "stub",
 ]
 
@@ -595,6 +596,8 @@ class ActionDispatcher:
                 return await self._route_tool_call(step, prior_results=priors)
             if kind == "wait_for_percept":
                 return await self._route_wait_for_percept(step)
+            if kind == "subagent":
+                return await self._route_subagent(step, prior_results=priors)
             # Unknown action_kind: stub fallback so we never crash.
             logger.warning(
                 "ActionDispatcher: unknown action_kind %r for step %s; "
@@ -1004,6 +1007,94 @@ class ActionDispatcher:
             pending=True,
             # Effectively zero — we did no blocking work.
             latency_ms=0.0,
+        )
+
+    async def _route_subagent(
+        self,
+        step: Any,
+        *,
+        prior_results: dict[str, dict[str, Any]] | None = None,
+    ) -> StepExecutionResult:
+        """Spawn a sub-agent via the ``parallel_subagents`` tool.
+
+        The step's payload should contain either:
+          * ``subtasks`` — a list of subtask strings (preferred)
+          * ``intent`` / ``prompt`` — a single subtask string
+
+        When ``parallel_subagents`` is not available in the tool
+        provider, falls back to stub. When only one subtask is
+        provided, we synthesise a 2-element list so the tool
+        accepts it (min 2 subtasks).
+        """
+        if self._tool_provider is None:
+            return await self._stub_execute(step)
+
+        step_id = _attr_str(step, "id", _new_id("step"))
+        payload = _attr_dict(step, "payload")
+
+        # Extract subtasks from payload.
+        _subtasks: list[str] = []
+        _raw_subtasks = payload.get("subtasks")
+        if isinstance(_raw_subtasks, list):
+            _subtasks = [str(s) for s in _raw_subtasks if s]
+        if not _subtasks:
+            _single = (
+                payload.get("intent")
+                or payload.get("prompt")
+                or _attr_str(step, "expected_outcome", "")
+            )
+            if _single:
+                _subtasks = [_single]
+
+        if len(_subtasks) < 2:
+            # parallel_subagents requires ≥2 subtasks. Pad with a
+            # meta-synthesis subtask so the tool accepts it.
+            _subtasks.append(
+                "Synthesise the results of the previous subtask(s) into "
+                "a coherent final answer."
+            )
+
+        # Substitute {{step_id.field}} references in subtask strings.
+        priors = prior_results or {}
+        if priors:
+            _subtasks = [
+                _substitute_priors(s, priors) or s for s in _subtasks
+            ]
+
+        call = _make_tool_call_shape(
+            name="parallel_subagents",
+            args={"subtasks": _subtasks},
+        )
+
+        t0 = time.monotonic()
+        try:
+            result = await self._tool_provider.invoke(call)
+        except Exception as exc:  # noqa: BLE001
+            return StepExecutionResult(
+                step_id=step_id,
+                route="subagent",
+                ok=False,
+                output={"subtasks": _subtasks},
+                error=f"{type(exc).__name__}: {exc}",
+                latency_ms=(time.monotonic() - t0) * 1000.0,
+            )
+
+        latency_ms = (time.monotonic() - t0) * 1000.0
+        ok = bool(getattr(result, "ok", True))
+        raw_content = getattr(result, "content", result)
+        content = _coerce_jsonish(raw_content)
+        err = getattr(result, "error", None)
+
+        return StepExecutionResult(
+            step_id=step_id,
+            route="subagent",
+            ok=ok,
+            output={
+                "subtasks": _subtasks,
+                "content": content,
+            },
+            error=None if ok else (str(err) if err else "subagent returned ok=False"),
+            latency_ms=latency_ms,
         )
 
     async def _stub_execute(self, step: Any) -> StepExecutionResult:

@@ -37,7 +37,7 @@ function loadChartJs() {
 
 // ── kind renderers ────────────────────────────────────────────────
 
-function MermaidView({ content }) {
+export function MermaidView({ content }) {
   const ref = useRef(null);
   const [svg, setSvg] = useState(null);
   const [err, setErr] = useState(null);

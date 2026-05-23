@@ -51,6 +51,7 @@ from xmclaw.core.bus import (
 from xmclaw.core.grader.verdict import HonestGrader
 from xmclaw.daemon.llm_registry import LLMRegistry
 from xmclaw.daemon.session_store import SessionStore
+from xmclaw.core.ir.toolcall import ToolSpec
 from xmclaw.providers.llm.base import LLMProvider, Message
 from xmclaw.providers.tool.base import ToolProvider
 from xmclaw.security import (
@@ -357,6 +358,10 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # semantic salience computation works.
         if self._embedder is not None and hasattr(self._cognitive_state, "set_embedder"):
             self._cognitive_state.set_embedder(self._embedder)
+        # Jarvis Phase 6.4: when PlanFirstGate decomposes a complex
+        # query, auto-enter plan mode so the agent explores before
+        # mutating. Configurable — set False to disable.
+        self._auto_plan_mode_enabled = True
 
     def clear_session(self, session_id: str) -> None:
         """Drop a session's conversation history. Called by the WS gateway
@@ -1897,6 +1902,83 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             except Exception:  # noqa: BLE001 — never break a turn over routing
                 pass
 
+        # Jarvis Phase 6.3: active skill routing.
+        #
+        # When a skill_registry is wired (via app.py post-construction
+        # injection), fuzzy-match the user message against HEAD skills
+        # and FORCE the top matches into the tool list regardless of the
+        # prefilter's token-overlap score.  This closes the gap where
+        # prefilter drops a genuinely-relevant skill because the user's
+        # wording didn't share enough tokens with the English skill
+        # description (CJK queries are the canonical victim).
+        skill_router_hint = ""
+        _skill_registry = getattr(self, "_skill_registry", None)
+        if _skill_registry is not None and user_message:
+            try:
+                routed = _skill_registry.find_multi(
+                    user_message, top_k=3,
+                )
+                if routed:
+                    _routed_specs: list[ToolSpec] = []
+                    for _skill in routed:
+                        try:
+                            _ref = _skill_registry.ref(_skill.id)
+                            _desc = (
+                                _ref.manifest.description
+                                or _ref.manifest.title
+                                or _skill.id
+                            )
+                            if _ref.manifest.triggers:
+                                _desc += (
+                                    f"\nUse when: "
+                                    f"{', '.join(_ref.manifest.triggers[:6])}"
+                                )
+                            _safe_id = _skill.id.replace(".", "__")
+                            _routed_specs.append(ToolSpec(
+                                name=f"skill_{_safe_id}"[:64],
+                                description=f"Skill: {_desc}",
+                                parameters_schema={
+                                    "type": "object",
+                                    "additionalProperties": True,
+                                },
+                            ))
+                        except Exception:
+                            pass
+
+                    if _routed_specs:
+                        _existing_names = {
+                            getattr(s, "name", "")
+                            for s in (tool_specs or [])
+                        }
+                        _new_specs = [
+                            s for s in _routed_specs
+                            if getattr(s, "name", "") not in _existing_names
+                        ]
+                        if _new_specs:
+                            # Prepend routed skills BEFORE regular skills
+                            # so the LLM sees them as strongly relevant.
+                            _non_skills = [
+                                s for s in (tool_specs or [])
+                                if not (getattr(s, "name", "") or "").startswith("skill_")
+                            ]
+                            _skills = [
+                                s for s in (tool_specs or [])
+                                if (getattr(s, "name", "") or "").startswith("skill_")
+                            ]
+                            tool_specs = _non_skills + _new_specs + _skills
+
+                            _names = [
+                                getattr(s, "name", "") for s in _new_specs
+                            ]
+                            skill_router_hint = (
+                                "\n\n[系统提示: 根据你的查询，以下技能高度相关，"
+                                "建议优先使用而非 bash / file_* / web_search 手写： "
+                                + ", ".join(_names)
+                                + "]"
+                            )
+            except Exception:  # noqa: BLE001
+                pass
+
         # B-300: turn-local skill_browse nudge.
         #
         # Empirical: with B-299's static system-prompt mention,
@@ -1948,6 +2030,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     + unified_recall_block
                     + curriculum_hint_block
                     + curriculum_strategies_block
+                    + skill_router_hint
                     + skill_browse_hint
                 ),
                 # B-MULTIMODAL-UI: user uploaded images in the composer.
@@ -1994,7 +2077,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             from xmclaw.cognition.mode_router import ModeRouter, RunMode
             _mode_router = getattr(self, "_mode_router", None) or ModeRouter(
                 enable_instant=bool(getattr(self, "_mode_instant_enabled", True)),
-                enable_swarm=bool(getattr(self, "_mode_swarm_enabled", False)),
+                enable_swarm=bool(getattr(self, "_mode_swarm_enabled", True)),
             )
             _route = _mode_router.route(user_message)
             self._active_run_mode = _route.mode.value
@@ -2026,6 +2109,48 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             except Exception:  # noqa: BLE001
                 pass
 
+        # Jarvis Phase 6.4 Fix 2a: SWARM mode prompt injection.
+        # When the ModeRouter detected fanout-shaped cues, strongly
+        # bias the LLM toward using parallel_subagents as its FIRST
+        # action. The hint rides on the user message (not system
+        # prompt) so it doesn't bust the prompt-cache prefix.
+        if self._active_run_mode == "swarm":
+            _has_parallel_subagents = any(
+                getattr(s, "name", "") == "parallel_subagents"
+                for s in (tool_specs or [])
+            )
+            if _has_parallel_subagents:
+                _swarm_hint = (
+                    "\n\n[SWARM MODE] The user's request has parallelizable "
+                    "subtasks. You MUST use the `parallel_subagents` tool to "
+                    "fan out independent work. Decompose the request into 2-8 "
+                    "subtask strings and call `parallel_subagents` as your "
+                    "FIRST action. Do NOT try to do everything in a single "
+                    "linear tool chain."
+                )
+                # Append to the last message (user message).
+                if messages and len(messages) >= 2:
+                    _last = messages[-1]
+                    _new_content = _last.content + _swarm_hint
+                    messages[-1] = Message(
+                        role=_last.role,
+                        content=_new_content,
+                        images=getattr(_last, "images", ()),
+                    )
+                await publish(EventType.INNER_MONOLOGUE, {
+                    "kind": "swarm_mode_prompt_injected",
+                    "has_parallel_subagents": True,
+                })
+            else:
+                await publish(EventType.INNER_MONOLOGUE, {
+                    "kind": "swarm_mode_prompt_injected",
+                    "has_parallel_subagents": False,
+                    "notice": (
+                        "parallel_subagents not in tool list; "
+                        "running normal agent mode"
+                    ),
+                })
+
         # 2026-05-12 Batch B.1: PlanFirstMode — heuristically detect
         # complex queries and run HTNPlanner-style decomposition BEFORE
         # the hop_loop starts. Plan steps land on
@@ -2047,7 +2172,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 _gate = PlanFirstGate(llm=llm)
                 if _gate.is_complex(user_message):
                     _steps = await asyncio.wait_for(
-                        _gate.plan(user_message), timeout=15.0,
+                        _gate.plan(user_message), timeout=25.0,
                     )
                     if _steps:
                         self._active_plan_steps = _steps
@@ -2056,6 +2181,66 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                             "steps_count": len(_steps),
                             "user_msg_len": len(user_message),
                         })
+                        # Jarvis Phase 6.4: complex query → auto plan mode.
+                        # When the query is complex enough to warrant
+                        # decomposition, it's complex enough to warrant
+                        # "explore before mutate".
+                        if (
+                            getattr(self, "_auto_plan_mode_enabled", True)
+                            and session_id
+                        ):
+                            try:
+                                from xmclaw.providers.tool.builtin_planmode import (
+                                    set_plan_mode,
+                                )
+                                set_plan_mode(session_id, True)
+                                await publish(EventType.INNER_MONOLOGUE, {
+                                    "kind": "plan_mode_auto_entered",
+                                    "reason": (
+                                        "PlanFirstGate decomposed complex query"
+                                    ),
+                                })
+                            except Exception:  # noqa: BLE001
+                                pass
+                        # Jarvis Phase 6.3: skill-match each plan step.
+                        # When a skill_registry is wired, fuzzy-match every
+                        # decomposed step against HEAD skills and inject a
+                        # lightweight hint into messages so the LLM sees
+                        # "step X → use skill Y" BEFORE the first hop.
+                        _plan_skill_hint = ""
+                        _skill_registry = getattr(
+                            self, "_skill_registry", None,
+                        )
+                        if _skill_registry is not None:
+                            try:
+                                _hints: list[str] = []
+                                for _step in _steps:
+                                    _match = _skill_registry.find(
+                                        _step, top_k=1,
+                                    )
+                                    if _match is not None:
+                                        _safe = _match.id.replace(
+                                            ".", "__",
+                                        )
+                                        _hints.append(
+                                            f"  - {_step} → 建议优先调用 "
+                                            f"skill_{_safe}"
+                                        )
+                                if _hints:
+                                    _plan_skill_hint = (
+                                        "\n\n[plan-skill-hint] "
+                                        "分解后的步骤与以下技能匹配，"
+                                        "请优先使用对应技能而非 bash / "
+                                        "file_* / web_search 手写：\n"
+                                        + "\n".join(_hints)
+                                    )
+                            except Exception:  # noqa: BLE001
+                                pass
+                        if _plan_skill_hint:
+                            messages.append(Message(
+                                role="user",
+                                content=_plan_skill_hint,
+                            ))
             except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001
                 from xmclaw.utils.log import get_logger as _gl
                 _gl(__name__).warning("plan_first.skipped err=%s", exc)
@@ -2083,6 +2268,52 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 "total_ms=%.1f breakdown=%s",
                 session_id, _prep_total, _prep_timings,
             )
+
+        # Jarvis Phase 6.4 Fix 2b: programmatic SWARM fanout.
+        # When ModeRouter detected SWARM and PlanFirstGate produced
+        # independent steps, invoke parallel_subagents directly
+        # instead of letting the LLM decide. This is the truly
+        # autonomous path — the runtime fans out, not the model.
+        if (
+            self._active_run_mode == "swarm"
+            and self._active_plan_steps
+            and len(self._active_plan_steps) >= 2
+            and effective_tools is not None
+        ):
+            _swarm_fanout_ok = False
+            _swarm_fanout_text = ""
+            try:
+                _subtasks = list(self._active_plan_steps)
+                from xmclaw.core.ir.toolcall import ToolCall
+                _swarm_call = ToolCall(
+                    name="parallel_subagents",
+                    args={"subtasks": _subtasks},
+                    provenance="synthetic",
+                    session_id=session_id,
+                )
+                _swarm_result = await effective_tools.invoke(_swarm_call)
+                if _swarm_result and getattr(_swarm_result, "ok", False):
+                    _raw = getattr(_swarm_result, "content", None)
+                    _swarm_fanout_text = str(_raw) if _raw is not None else ""
+                    _swarm_fanout_ok = bool(_swarm_fanout_text)
+                    await publish(EventType.INNER_MONOLOGUE, {
+                        "kind": "swarm_fanout_completed",
+                        "subtasks_count": len(_subtasks),
+                        "ok": _swarm_fanout_ok,
+                    })
+            except Exception as _swarm_exc:  # noqa: BLE001
+                await publish(EventType.INNER_MONOLOGUE, {
+                    "kind": "swarm_fanout_failed",
+                    "error": str(_swarm_exc),
+                })
+            if _swarm_fanout_ok:
+                return AgentTurnResult(
+                    ok=True,
+                    text=_swarm_fanout_text,
+                    hops=0,
+                    tool_calls=[],
+                    events=[],
+                )
 
         _hop_result = await self._run_hop_loop(
             session_id=session_id,

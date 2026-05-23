@@ -13,6 +13,7 @@ import { Badge } from "../atoms/badge.js";
 import { CodeBlock } from "./CodeBlock.js";
 import { resolveMediaTokenInHtml, _resolveMediaUrl } from "../../lib/chat_reducer.js";
 import { openLightbox } from "../../lib/lightbox.js";
+import { MermaidView } from "./CanvasArtifact.js";
 
 
 export function ToolCard({ call }) {
@@ -26,7 +27,10 @@ export function ToolCard({ call }) {
     call.status === "ok" ? "ok" : call.status === "error" ? "error" : "running";
   const argsPreview = (() => {
     try {
-      return JSON.stringify(call.args, null, 2);
+      // JSON.stringify escapes newlines as \n literals; replace them
+      // back so multi-line strings inside JSON values render with
+      // actual line breaks in the <pre> block.
+      return JSON.stringify(call.args, null, 2).replace(/\\n/g, "\n");
     } catch (_) {
       return String(call.args);
     }
@@ -121,7 +125,14 @@ export function ToolCard({ call }) {
                 <div class="xmc-toolcard__section">
                   <div class="xmc-toolcard__label">${call.status === "error" ? "错误" : "结果"}</div>
                   <${CodeBlock}
-                    code=${typeof call.result === "string" ? call.result : JSON.stringify(call.result, null, 2)}
+                    code=${(() => {
+                      const raw = typeof call.result === "string"
+                        ? call.result
+                        : JSON.stringify(call.result, null, 2);
+                      // Same \n un-escaping as argsPreview so stdout
+                      // and other multi-line JSON strings wrap correctly.
+                      return raw.replace(/\\n/g, "\n");
+                    })()}
                     lang=${call.status === "error" ? "" : "text"}
                   />
                 </div>
@@ -246,6 +257,9 @@ export function MarkdownBody({ content }) {
         // text, lang}. Fallback path emits {type:"text"} with raw HTML
         // — let those through unchanged.
         if (tok.type === "code" && typeof tok.text === "string") {
+          if (tok.lang === "mermaid") {
+            return html`<${MermaidView} key=${tok.idx} content=${tok.text} />`;
+          }
           return html`
             <${CodeBlock}
               key=${tok.idx}
@@ -310,6 +324,70 @@ export function ThinkingDots({ label = "正在思考" }) {
 // reducer captured (model / hop / message_count / tools_count from
 // LLM_REQUEST) plus thinking content if a future LLM_THINKING_CHUNK
 // stream lands one (placeholder slot today).
+// Phase 6.4: WorkerCard — renders a parallel worker execution row
+// inside the parent session transcript. Compact like ToolCard but
+// visually distinct (🐝) so the user sees SWARM parallelism.
+export function WorkerCard({ call }) {
+  const tone =
+    call.status === "ok" ? "success"
+    : call.status === "error" ? "error"
+    : "muted";
+  const label =
+    call.status === "ok" ? "完成"
+    : call.status === "error" ? "失败"
+    : "执行中";
+  const bullet = "🐝";
+  return html`
+    <div class="xmc-toolcard-wrap">
+      <details
+        class=${"xmc-toolcard xmc-toolcard--" + call.status + " xmc-toolcard--worker"}
+        open=${call.status === "error"}
+      >
+        <summary
+          class=${"xmc-toolcard__summary" + (call.status === "running" ? " is-running" : "")}
+        >
+          <span class="xmc-toolcard__bullet" aria-hidden="true">${bullet}</span>
+          <code class="xmc-toolcard__name">worker ${call.workerId || "?"}</code>
+          <small style="color:var(--xmc-fg-muted)">· task <code style="font-family:var(--xmc-font-mono)">${call.taskId || "?"}</code></small>
+          <${Badge} tone=${tone}>${label}</${Badge}>
+          ${call.status === "running"
+            ? html`<${Spinner} size="sm" label="running" hideLabel=${true} />`
+            : null}
+          ${call.elapsedSeconds != null
+            ? html`<small style="color:var(--xmc-fg-muted)">${call.elapsedSeconds}s</small>`
+            : null}
+        </summary>
+        <div class="xmc-toolcard__body">
+          ${call.promptPreview
+            ? html`
+                <div class="xmc-toolcard__section">
+                  <div class="xmc-toolcard__label">任务提示</div>
+                  <pre style="white-space:pre-wrap;font-size:.85em;line-height:1.5">${call.promptPreview}</pre>
+                </div>
+              `
+            : null}
+          ${call.outputPreview
+            ? html`
+                <div class="xmc-toolcard__section">
+                  <div class="xmc-toolcard__label">输出预览</div>
+                  <pre style="white-space:pre-wrap;font-size:.85em;line-height:1.5">${call.outputPreview}</pre>
+                </div>
+              `
+            : null}
+          ${call.error
+            ? html`
+                <div class="xmc-toolcard__section">
+                  <div class="xmc-toolcard__label">错误</div>
+                  <${CodeBlock} code=${call.error} lang="" />
+                </div>
+              `
+            : null}
+        </div>
+      </details>
+    </div>
+  `;
+}
+
 export function PhaseCard({ message, baseLabel, elapsedS, stalled, isWorking, currentHop }) {
   const phase = message.phase;
   const hasThinkingHistory = !!(message.thinking && message.thinking.length > 0);

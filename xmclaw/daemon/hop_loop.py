@@ -338,6 +338,24 @@ class HopLoopMixin:
             # anchor render.
             _current_focus: str | None = get_session_focus(session_id)
 
+            # Jarvis Phase 6.3: active skill matches for GoalAnchor.
+            _skill_matches: list[dict[str, Any]] | None = None
+            _reg = getattr(self, "_skill_registry", None)
+            if _reg is not None and user_message:
+                try:
+                    _matched = _reg.find_multi(user_message, top_k=3)
+                    if _matched:
+                        _skill_matches = [
+                            {
+                                "skill_id": r.skill_id,
+                                "version": r.version,
+                                "title": (r.manifest.title or ""),
+                            }
+                            for r in _matched
+                        ]
+                except Exception:  # noqa: BLE001
+                    pass
+
             _is_multi_turn = bool(
                 _session_goal and _session_goal.strip() != user_message.strip()
             )
@@ -353,6 +371,7 @@ class HopLoopMixin:
                         _session_user_thread if _session_user_thread else None
                     ),
                     current_focus=_current_focus,
+                    skill_matches=_skill_matches,
                     hop=hop,
                     max_hops=self._max_hops,
                     tool_calls_made=tool_calls_made,

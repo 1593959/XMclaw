@@ -846,10 +846,10 @@ class CognitiveDaemon:
         try:
             from xmclaw.core.feature_flags import default_engine
             return bool(default_engine().variant(
-                "cognition.surface_results.enabled", default=False,
+                "cognition.surface_results.enabled", default=True,
             ))
         except Exception:  # noqa: BLE001
-            return False
+            return True
 
     def _get_surface_llm(self) -> "Any | None":
         """Resolve the LLM for the surface-judgment call. Reaches into

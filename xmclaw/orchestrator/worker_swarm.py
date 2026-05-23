@@ -53,13 +53,44 @@ class WorkerAgent:
         self._loop = loop
         self._tools_allowlist = tools_allowlist
 
-    async def execute(self, task: Task) -> TaskResult:
+    async def execute(
+        self, task: Task,
+        *, parent_session_id: str | None = None,
+        parent_goal: str = "",
+        completed_tasks: list[str] | None = None,
+    ) -> TaskResult:
         start = time.monotonic()
         session_id = f"worker:{self.worker_id}:{task.task_id}"
+
+        # Enrich subtask prompt with parent context so the worker
+        # understands WHY it's doing this and WHAT has already been done.
+        _completed = completed_tasks or []
+        _completed_summary = "\n".join(f"  - {c}" for c in _completed) or "  (无)"
+        enriched_prompt = (
+            f"【父任务】{parent_goal}\n\n"
+            f"【已完成的前置步骤】\n{_completed_summary}\n\n"
+            f"【你的子任务】\n{task.prompt}\n\n"
+            f"请专注完成子任务，但始终记住父任务的最终目标。"
+            f"返回简洁、可直接整合的结果，不要冗长叙述。"
+        )
+
+        # Notify parent session that this worker has started.
+        if parent_session_id:
+            await self._notify_parent(
+                parent_session_id,
+                kind="worker_started",
+                payload={
+                    "worker_id": self.worker_id,
+                    "task_id": task.task_id,
+                    "prompt_preview": task.prompt[:200],
+                },
+            )
+
+        result_obj: TaskResult | None = None
         try:
             result = await self._loop.run_turn(
                 session_id=session_id,
-                user_message=task.prompt,
+                user_message=enriched_prompt,
                 tools_allowlist=self._tools_allowlist,
             )
             text = getattr(result, "content", "") or getattr(result, "output", "") or ""
@@ -68,7 +99,7 @@ class WorkerAgent:
             score: float | None = None
             if grader is not None and hasattr(grader, "last_score"):
                 score = grader.last_score
-            return TaskResult(
+            result_obj = TaskResult(
                 task_id=task.task_id,
                 ok=True,
                 output=str(text),
@@ -80,12 +111,59 @@ class WorkerAgent:
                 "worker_agent.execute_failed worker=%s task=%s err=%s",
                 self.worker_id, task.task_id, exc,
             )
-            return TaskResult(
+            result_obj = TaskResult(
                 task_id=task.task_id,
                 ok=False,
                 error=str(exc),
                 elapsed_seconds=time.monotonic() - start,
             )
+            if parent_session_id:
+                await self._notify_parent(
+                    parent_session_id,
+                    kind="worker_failed",
+                    payload={
+                        "worker_id": self.worker_id,
+                        "task_id": task.task_id,
+                        "error": str(exc)[:500],
+                    },
+                )
+
+        # Success — notify parent.
+        if result_obj is not None and result_obj.ok and parent_session_id:
+            await self._notify_parent(
+                parent_session_id,
+                kind="worker_completed",
+                payload={
+                    "worker_id": self.worker_id,
+                    "task_id": task.task_id,
+                    "output_preview": result_obj.output[:500],
+                    "elapsed_seconds": round(result_obj.elapsed_seconds, 2),
+                },
+            )
+        return result_obj
+
+    async def _notify_parent(
+        self, parent_session_id: str, *, kind: str, payload: dict[str, Any],
+    ) -> None:
+        """Fire a worker lifecycle event onto the parent's session bus.
+
+        Swallowed on any error — worker progress is best-effort
+        observability, not control flow.
+        """
+        bus = getattr(self._loop, "_bus", None)
+        if bus is None:
+            return
+        try:
+            from xmclaw.core.bus.events import EventType, make_event
+            event_type = getattr(EventType, kind.upper(), EventType.INNER_MONOLOGUE)
+            await bus.publish(make_event(
+                session_id=parent_session_id,
+                agent_id=f"worker:{self.worker_id}",
+                type=event_type,
+                payload=payload,
+            ))
+        except Exception:  # noqa: BLE001
+            pass
 
 
 class WorkerSwarm:
@@ -108,6 +186,7 @@ class WorkerSwarm:
         plan: ExecutionPlan,
         *,
         synthesize: bool = True,
+        parent_session_id: str | None = None,
     ) -> SwarmResult:
         """Execute all tasks in the plan, respecting dependencies.
 
@@ -138,7 +217,16 @@ class WorkerSwarm:
             coros: list[asyncio.Task[TaskResult]] = []
             for task in batch_tasks:
                 worker = self._get_or_create_worker(task)
-                coros.append(asyncio.create_task(worker.execute(task)))
+                coros.append(asyncio.create_task(worker.execute(
+                    task,
+                    parent_session_id=parent_session_id,
+                    parent_goal=plan.goal,
+                    completed_tasks=[
+                        f"{t.task_id}: {results[t.task_id].output[:80]}"
+                        for t in plan.tasks
+                        if t.task_id in results and results[t.task_id].ok
+                    ],
+                )))
 
             batch_results = await asyncio.gather(*coros, return_exceptions=True)
             for task, res in zip(batch_tasks, batch_results):

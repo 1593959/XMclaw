@@ -428,6 +428,14 @@ class EventType(str, Enum):
     CANVAS_ARTIFACT_CREATED = "canvas_artifact_created"
     CANVAS_ARTIFACT_UPDATED = "canvas_artifact_updated"
     CANVAS_ARTIFACT_CLOSED = "canvas_artifact_closed"
+    # WorkerSwarm lifecycle (2026-05-23): emitted when a WorkerAgent
+    # starts / completes / fails a subtask. The frontend renders these
+    # inline in the parent session's chat transcript so users see
+    # parallel worker progress without the worker sessions cluttering
+    # the sidebar.
+    WORKER_STARTED = "worker_started"
+    WORKER_COMPLETED = "worker_completed"
+    WORKER_FAILED = "worker_failed"
 
 
 @dataclass(frozen=True, slots=True)

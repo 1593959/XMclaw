@@ -31,11 +31,13 @@ from typing import Any, Literal
 logger = logging.getLogger(__name__)
 
 
-ActionKind = Literal["llm_turn", "skill_invoke", "tool_call", "wait_for_percept"]
+ActionKind = Literal[
+    "llm_turn", "skill_invoke", "tool_call", "wait_for_percept", "subagent",
+]
 PlanStatus = Literal["draft", "executing", "completed", "failed", "repaired"]
 
 _VALID_ACTION_KINDS: frozenset[str] = frozenset(
-    ("llm_turn", "skill_invoke", "tool_call", "wait_for_percept")
+    ("llm_turn", "skill_invoke", "tool_call", "wait_for_percept", "subagent")
 )
 
 
@@ -880,7 +882,7 @@ def _build_planning_prompt(goal_blob: dict[str, Any]) -> str:
         '    {\n'
         '      "id": "<此步骤唯一短横线id>",\n'
         '      "intent": "<简短动词短语，中文>",\n'
-        '      "action_kind": "llm_turn|skill_invoke|tool_call|wait_for_percept",\n'
+        '      "action_kind": "llm_turn|skill_invoke|tool_call|wait_for_percept|subagent",\n'
         '      "payload": {...},\n'
         '      "depends_on": ["<此前已列出的步骤id>"],\n'
         '      "expected_outcome": "<成功标准>",\n'

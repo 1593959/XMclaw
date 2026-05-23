@@ -291,6 +291,11 @@ class ProactiveAgent:
                     "trigger.propose_failed name=%s err=%s",
                     trigger.name, exc,
                 )
+                # Back-off so a misbehaving trigger doesn't hammer
+                # the bus on every tick.
+                self._cooldown_until[trigger.name] = (
+                    ctx.now + min(trigger.cooldown_s, 300.0)
+                )
                 continue
             if proposal is None:
                 continue
@@ -506,7 +511,7 @@ class IdleCheckInTrigger(ProactiveTrigger):
                     [Message(role="user", content=prompt)],
                     tools=None,
                 ),
-                timeout=10.0,
+                timeout=1.5,
             )
             text = (getattr(resp, "content", None) or "").strip()
             # Defensive trimming — strip wrapping quotes the model

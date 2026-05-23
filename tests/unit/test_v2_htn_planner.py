@@ -785,3 +785,39 @@ async def test_planning_prompt_does_not_seed_step_1_as_example_value() -> None:
     assert '"depends_on": ["step_0"]' not in prompt
     # Must explicitly tell the LLM to pick unique ids.
     assert "UNIQUE" in prompt.upper() or "unique" in prompt or "唯一" in prompt
+
+
+# ── Jarvis Phase 6.4: subagent action kind ─────────────────────────
+
+
+def test_valid_action_kinds_includes_subagent():
+    """The planner's ActionKind vocabulary must include 'subagent'."""
+    from xmclaw.cognition.planner import _VALID_ACTION_KINDS
+    assert "subagent" in _VALID_ACTION_KINDS
+
+
+@pytest.mark.asyncio
+async def test_materialize_step_honours_explicit_subagent_kind() -> None:
+    """When the LLM explicitly emits action_kind='subagent', the
+    planner preserves it and builds the right payload."""
+    planner = Planner(llm=FakeLLM([json.dumps({
+        "steps": [
+            {
+                "id": "fanout_1",
+                "intent": "compare three options",
+                "action_kind": "subagent",
+                "payload": {"subtasks": ["analyse A", "analyse B", "analyse C"]},
+                "depends_on": [],
+                "expected_outcome": "synthesised comparison",
+            }
+        ],
+        "confidence": 0.8,
+    })]))
+    goal = FakeGoal(id="g1", name="compare", description="compare A, B and C")
+    plan = await planner.plan(goal)
+    assert len(plan.steps) == 1
+    step = plan.steps[0]
+    assert step.action_kind == "subagent"
+    assert step.payload.get("args", {}).get("subtasks") == [
+        "analyse A", "analyse B", "analyse C",
+    ]

@@ -151,9 +151,12 @@ class UnifiedMemorySystem:
             (``async embed(texts) -> list[list[float]]``). When not
             supplied, semantic queries fall through to keyword-only.
 
-    Iron rule #2 alignment (Sprint 3 staging gate): this class is a
-    READ surface; it never writes. Writes go through the existing
-    providers + their own integrity contracts.
+    Stage A (READ-side) shipped ``query()``: dedupe by id; assemble
+    unified view. Stage B (WRITE-side) ships ``put()``, ``delete()``,
+    and consolidation primitives (``promote_durable_short_to_long``,
+    ``merge_near_duplicates``, ``archive_stale_short``): every
+    fan-out write stamps the SAME id into every index, with
+    best-effort compensation if any single index fails.
     """
 
     def __init__(
@@ -161,10 +164,18 @@ class UnifiedMemorySystem:
         memory_manager: Any | None = None,
         memory_graph: Any | None = None,
         embedder: Any | None = None,
+        query_embed_ttl_s: float = 300.0,
     ) -> None:
         self._mm = memory_manager
         self._graph = memory_graph
         self._embedder = embedder
+        # Query-level embedding cache: same semantic query within TTL
+        # avoids redundant embedder calls across turns. Complements the
+        # EmbeddingService's text-hash cache by bounding stale vectors
+        # to a short window (embedding models don't change; query drift
+        # is the only concern, and TTL handles that).
+        self._query_embed_cache: dict[str, tuple[list[float], float]] = {}
+        self._query_embed_ttl_s = max(0.0, float(query_embed_ttl_s))
 
     async def query(
         self,
@@ -259,12 +270,29 @@ class UnifiedMemorySystem:
         keyword-only when no embedder is wired."""
         embedding: list[float] | None = None
         if self._embedder is not None:
-            try:
-                vectors = await self._embedder.embed([text])
-                if vectors:
-                    embedding = vectors[0]
-            except Exception:  # noqa: BLE001 — best effort
-                embedding = None
+            # Check query-level TTL cache first.
+            cache_key = " ".join(text.split())
+            now = time.time()
+            cached = self._query_embed_cache.get(cache_key)
+            if cached is not None:
+                cached_vec, expiry = cached
+                if now < expiry:
+                    embedding = list(cached_vec)
+                else:
+                    # Expired — remove stale entry.
+                    self._query_embed_cache.pop(cache_key, None)
+            if embedding is None:
+                try:
+                    vectors = await self._embedder.embed([text])
+                    if vectors:
+                        embedding = vectors[0]
+                        # Store in TTL cache.
+                        if self._query_embed_ttl_s > 0:
+                            self._query_embed_cache[cache_key] = (
+                                list(embedding), now + self._query_embed_ttl_s,
+                            )
+                except Exception:  # noqa: BLE001 — best effort
+                    embedding = None
         try:
             items = await self._mm.query(
                 layer, text=text, embedding=embedding, k=k,
@@ -653,3 +681,87 @@ class UnifiedMemorySystem:
                 metadata={"node_type": n.type},
             ))
         return out
+
+    # ── Jarvis Phase 6.4: consolidation primitives ─────────────────
+
+    async def promote_durable_short_to_long(
+        self, *, batch: int = 100,
+    ) -> int:
+        """Promote high-quality or ageing short_term entries to
+        long_term. Returns number promoted."""
+        import time as _t
+        entries = await self.query(
+            semantic="", layer="short_term", limit=batch,
+        )
+        promoted = 0
+        cutoff = _t.time() - 3600  # 1 hour old
+        for entry in entries:
+            if entry.score > 0.7 or entry.created_at < cutoff:
+                try:
+                    await self.put(
+                        text=entry.text,
+                        layer="long_term",
+                        metadata=entry.metadata,
+                    )
+                    await self.delete(entry.id)
+                    promoted += 1
+                except Exception:  # noqa: BLE001
+                    pass
+        return promoted
+
+    async def merge_near_duplicates(
+        self, *, batch: int = 100,
+    ) -> int:
+        """Deduplicate entries whose text is identical (case-insensitive
+        after normalisation). Keeps the newest, deletes older copies.
+        Returns number merged (deleted)."""
+        import time as _t
+        entries = await self.query(
+            semantic="", layer="long_term", limit=batch,
+        )
+        seen: dict[str, MemoryEntry] = {}
+        merged = 0
+        for entry in entries:
+            key = (entry.text or "").strip().lower()
+            if not key:
+                continue
+            if key in seen:
+                prior = seen[key]
+                if entry.created_at > prior.created_at:
+                    to_drop = prior.id
+                    seen[key] = entry
+                else:
+                    to_drop = entry.id
+                try:
+                    await self.delete(to_drop)
+                    merged += 1
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                seen[key] = entry
+        return merged
+
+    async def archive_stale_short(
+        self, *, batch: int = 100, stale_s: float = 7200,
+    ) -> int:
+        """Move short_term entries older than ``stale_s`` seconds to
+        long_term. Returns number archived."""
+        import time as _t
+        entries = await self.query(
+            semantic="", layer="short_term", limit=batch,
+        )
+        archived = 0
+        cutoff = _t.time() - stale_s
+        for entry in entries:
+            if entry.created_at < cutoff:
+                try:
+                    await self.put(
+                        text=entry.text,
+                        layer="long_term",
+                        metadata=entry.metadata,
+                    )
+                    await self.delete(entry.id)
+                    archived += 1
+                except Exception:  # noqa: BLE001
+                    pass
+        return archived

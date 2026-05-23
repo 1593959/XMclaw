@@ -294,6 +294,7 @@ def test_is_internal_session_id_covers_all_internal_prefixes() -> None:
     assert is_internal_session_id("smoke-fullb20-basic")
     assert is_internal_session_id("selfmod-fullb20-1779130115")
     assert is_internal_session_id("time-fullb20-1779130215")
+    assert is_internal_session_id("worker:w1:t1")
 
     # User-authored chats → False
     assert not is_internal_session_id("chat-e31f0891")

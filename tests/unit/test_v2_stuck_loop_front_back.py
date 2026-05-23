@@ -329,3 +329,107 @@ def test_reducer_renders_kind_when_message_absent() -> None:
     assert "stuck_loop" in text_blob, (
         f"reducer's payload.kind fallback broken. Messages: {msgs!r}"
     )
+
+
+# ── Phase 6.4: worker lifecycle reducer contract ─────────────────
+
+
+def test_reducer_creates_worker_bubble_on_started() -> None:
+    """WORKER_STARTED creates a system message with kind='worker'
+    and status='running'."""
+    state = _run_reducer_with_secondary([
+        {
+            "type": "worker_started",
+            "payload": {
+                "worker_id": "w0",
+                "task_id": "tA",
+                "prompt_preview": "do the thing",
+            },
+            "ts": 1000,
+        },
+    ])
+    msgs = state.get("messages", [])
+    assert len(msgs) == 1
+    m = msgs[0]
+    assert m["kind"] == "worker"
+    assert m["status"] == "running"
+    assert m["workerId"] == "w0"
+    assert m["taskId"] == "tA"
+    assert "do the thing" in m["promptPreview"]
+
+
+def test_reducer_updates_worker_bubble_on_completed() -> None:
+    """WORKER_COMPLETED upgrades the matching bubble to status='ok'
+    and injects outputPreview + elapsedSeconds."""
+    state = _run_reducer_with_secondary([
+        {
+            "type": "worker_started",
+            "payload": {
+                "worker_id": "w0",
+                "task_id": "tA",
+                "prompt_preview": "do the thing",
+            },
+            "ts": 1000,
+        },
+        {
+            "type": "worker_completed",
+            "payload": {
+                "worker_id": "w0",
+                "task_id": "tA",
+                "output_preview": "result: 42",
+                "elapsed_seconds": 1.23,
+            },
+            "ts": 1001,
+        },
+    ])
+    msgs = state.get("messages", [])
+    assert len(msgs) == 1
+    m = msgs[0]
+    assert m["status"] == "ok"
+    assert m["outputPreview"] == "result: 42"
+    assert m["elapsedSeconds"] == 1.23
+
+
+def test_reducer_creates_worker_bubble_on_failed() -> None:
+    """WORKER_FAILED creates a bubble directly when started never
+    arrived (race / WS reordering)."""
+    state = _run_reducer_with_secondary([
+        {
+            "type": "worker_failed",
+            "payload": {
+                "worker_id": "w0",
+                "task_id": "tA",
+                "error": "something went wrong",
+            },
+            "ts": 1000,
+        },
+    ])
+    msgs = state.get("messages", [])
+    assert len(msgs) == 1
+    m = msgs[0]
+    assert m["kind"] == "worker"
+    assert m["status"] == "error"
+    assert m["error"] == "something went wrong"
+
+
+def test_reducer_synthesises_completed_when_started_missing() -> None:
+    """WORKER_COMPLETED arriving before WORKER_STARTED synthesises
+    the bubble in finished state (defensive against WS reorder)."""
+    state = _run_reducer_with_secondary([
+        {
+            "type": "worker_completed",
+            "payload": {
+                "worker_id": "w0",
+                "task_id": "tA",
+                "output_preview": "all done",
+                "elapsed_seconds": 2.0,
+            },
+            "ts": 1000,
+        },
+    ])
+    msgs = state.get("messages", [])
+    assert len(msgs) == 1
+    m = msgs[0]
+    assert m["status"] == "ok"
+    assert m["outputPreview"] == "all done"
+    assert m["elapsedSeconds"] == 2.0

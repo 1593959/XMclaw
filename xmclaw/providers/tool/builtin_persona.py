@@ -486,7 +486,11 @@ class BuiltinToolsPersonaMixin:
                     new_text = enforce_char_cap(new_text, cap)
                     evicted = before_len - len(new_text)
                 try:
-                    await store.set_manual(basename, new_text)
+                    # B-65 deadlock fix: hold fs_lock only for the DB write;
+                    # skip render_to_disk inside the lock since it acquires
+                    # the SAME get_lock(path) singleton and asyncio.Lock is
+                    # not re-entrant.
+                    await store.set_manual(basename, new_text, render=False)
                 except Exception as exc:  # noqa: BLE001
                     # Wave 26 fix-5: broadened from (OSError, ValueError)
                     # to catch sqlite3.IntegrityError too. Pre-fix, vec0's
@@ -498,6 +502,15 @@ class BuiltinToolsPersonaMixin:
                     # ``running`` forever. Catching broadly here ensures
                     # the user sees an error instead of a frozen spinner.
                     return _fail(call, t0, f"store write failed: {exc}")
+                # Render to disk AFTER releasing fs_lock — same lock
+                # is used by render_to_disk via get_lock(path).
+                try:
+                    await store.render_to_disk(basename)
+                except Exception as exc:  # noqa: BLE001
+                    # render_to_disk failure is non-fatal — the DB row is
+                    # already committed; disk cache will refresh on next
+                    # read or daemon tick.
+                    pass
             else:
                 try:
                     existing = (

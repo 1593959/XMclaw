@@ -106,7 +106,7 @@ class EmbeddingService:
         self,
         provider: EmbeddingProviderLike,
         *,
-        cache_capacity: int = 1024,
+        cache_capacity: int = 8192,
         retry_attempts: int = 3,
         retry_backoff_s: float = 0.5,
         circuit_breaker_threshold: int = 5,
@@ -333,7 +333,7 @@ class EmbeddingService:
 def build_embedding_service(
     *,
     cfg: dict[str, Any] | None = None,
-    cache_capacity: int = 1024,
+    cache_capacity: int = 8192,
     retry_attempts: int = 3,
     retry_backoff_s: float = 0.5,
 ) -> EmbeddingService | None:
@@ -343,12 +343,31 @@ def build_embedding_service(
     the legacy ``build_embedding_provider`` reads). Returns None when
     no provider is configured / available — caller falls back to
     keyword-only search for that session.
+
+    Config override::
+
+        {
+          "evolution": {
+            "memory": {
+              "embedding": {
+                "cache_capacity": 16384   # default 8192
+              }
+            }
+          }
+        }
     """
     from xmclaw.providers.memory.embedding import build_embedding_provider
     provider = build_embedding_provider(cfg=cfg)
     if provider is None or not provider.is_available():
         _log.info("embedding_service.no_provider — falling back to text-only mode")
         return None
+    # Allow config-driven cache capacity override.
+    if cfg:
+        sec = (((cfg.get("evolution") or {}).get("memory") or {}).get("embedding") or {})
+        if isinstance(sec, dict):
+            cfg_cap = sec.get("cache_capacity")
+            if isinstance(cfg_cap, int) and cfg_cap > 0:
+                cache_capacity = cfg_cap
     return EmbeddingService(
         provider,
         cache_capacity=cache_capacity,

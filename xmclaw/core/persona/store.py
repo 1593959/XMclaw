@@ -238,13 +238,17 @@ class PersonaStore:
 
     # ── writes ──
 
-    async def set_manual(self, basename: str, text: str) -> None:
+    async def set_manual(self, basename: str, text: str, *, render: bool = True) -> None:
         """Write the manual portion of a persona file.
 
         ``text`` may include the auto section (if the user roundtripped
         a render through the Web UI without changes); we strip it
         before persisting so the manual row stays clean. Auto-section
         edits are silently ignored — they're derived from fact rows.
+
+        ``render=False`` skips the disk-cache refresh — useful when the
+        caller already holds the per-path fs lock and will call
+        ``render_to_disk`` after releasing it (B-65 deadlock avoidance).
         """
         if basename not in AUTO_SECTIONS:
             raise ValueError(f"unknown persona file: {basename!r}")
@@ -257,7 +261,8 @@ class PersonaStore:
         await self._write_manual(basename, manual_only)
         # Refresh the cached file on disk so external readers / Web UI
         # see the new content immediately.
-        await self.render_to_disk(basename)
+        if render:
+            await self.render_to_disk(basename)
 
     async def add_fact(
         self,

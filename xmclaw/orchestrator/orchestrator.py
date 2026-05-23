@@ -136,7 +136,9 @@ class JarvisOrchestrator:
                 path="trivial",
             )
 
-        swarm = await self._worker_swarm.execute_plan(plan)
+        swarm = await self._worker_swarm.execute_plan(
+            plan, parent_session_id=session_id,
+        )
         return OrchestratorResult(
             ok=swarm.ok,
             output=swarm.synthesized_output,

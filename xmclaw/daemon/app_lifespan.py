@@ -1588,12 +1588,14 @@ def make_lifespan(
                 log.warning("swarm.orchestrator_init_failed err=%s", exc)
                 _app.state.swarm_orchestrator = None
 
-        # Phase 6.7: continuous cognitive daemon. Disabled by default —
-        # opted-in via ``cognition.continuous_loop.enabled = true``.
+        # Phase 6.7: continuous cognitive daemon. Enabled by default
+        # (Jarvis Phase 6.4); opt-out via
+        # ``cognition.continuous_loop.enabled = false``.
         # This commit ships only the consumer side (heartbeat tick
         # consuming PerceptionBus); percept-source wiring (WS / file /
         # cron pushing INTO the bus) is a separate follow-up.
         _cognitive_daemon = None
+        _percept_bus = None
         _cont_loop_cfg = ((config or {}).get("cognition") or {}).get(
             "continuous_loop"
         ) or {}
@@ -1991,7 +1993,7 @@ def make_lifespan(
                         cost_tracker=getattr(agent, "_cost_tracker", None),
                         plan_budget_usd=float(
                             (
-                                (cfg.get("cognition") or {})
+                                (config.get("cognition") or {})
                                 .get("autonomous") or {}
                             ).get("plan_budget_usd", 1.0),
                         ),
@@ -1999,7 +2001,7 @@ def make_lifespan(
                         # so plans survive restart + UI Autonomous
                         # Tasks panel can show timeline.
                         plan_store=getattr(
-                            app.state, "plan_store", None,
+                            _app.state, "plan_store", None,
                         ),
                     ),
                     reflection_cycle=_reflection_cycle,
@@ -2082,6 +2084,30 @@ def make_lifespan(
         _app.state.cognitive_daemon = _cognitive_daemon
         _app.state.experiment_loop = _experiment_loop
 
+        # Jarvis Phase 6.4: ensure AgentLoop always pushes user-message
+        # percepts to the bus, even when the continuous cognitive loop
+        # is disabled. ProactiveAgent and other consumers need this.
+        if agent is not None:
+            if _percept_bus is None:
+                try:
+                    from xmclaw.cognition.perception_bus import PerceptionBus
+                    _percept_bus = PerceptionBus()
+                except Exception:  # noqa: BLE001
+                    pass
+            if _percept_bus is not None:
+                _app.state.perception_bus = _percept_bus
+                try:
+                    from xmclaw.cognition.percept_sources import (
+                        PerceptSourceRegistry,
+                    )
+                    _psr = PerceptSourceRegistry(_percept_bus)
+                    _psr.attach_user_message_hook(agent)
+                    _app.state.percept_sources = getattr(
+                        _app.state, "percept_sources", None,
+                    ) or _psr
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("percept_sources.attach_failed err=%s", exc)
+
         # 2026-05-11: log lifespan startup duration. /api/v2/status
         # surfaces this so the UI can show "daemon ready in 1.2s"
         # and we can spot regressions (Epic #25 broke this when
@@ -2143,8 +2169,7 @@ def make_lifespan(
 
         # Wave 27: Memory v2 — Fact/Relation + LanceDB-backed L1 +
         # deterministic key-info extractor on every user message.
-        # Opt-in via cognition.memory_v2.enabled (default False during
-        # rollout). When enabled:
+        # Enabled by default (Jarvis Phase 6.4). When enabled:
         #   * facts live under ~/.xmclaw/v2/facts/ (LanceDB dataset)
         #   * agent_loop.run_turn force-extracts URL/account/numeric-
         #     goal/explicit-remember patterns from every user message
@@ -2158,7 +2183,7 @@ def make_lifespan(
         memory_v2_service = None
         if (
             isinstance(memory_v2_cfg, dict)
-            and memory_v2_cfg.get("enabled", False)
+            and memory_v2_cfg.get("enabled", True)
         ):
             try:
                 from xmclaw.memory.v2 import (
@@ -2570,6 +2595,7 @@ def make_lifespan(
                             llm=getattr(agent, "_llm", None),
                             max_depth=3,
                             max_sub_goals=6,
+                            timeout_s=60.0,
                         )
                         plan_engine = PlanEngine(planner=planner)
                         worker_swarm = WorkerSwarm(

@@ -60,6 +60,7 @@ INTERNAL_SESSION_PREFIXES: tuple[str, ...] = (
     "selfmod-",
     "time-fullb20",  # specific smoke-test prefix, not general "time-"
     "smoke-fullb20",
+    "worker:",       # WorkerSwarm subagent sessions (Jarvis J2)
 )
 
 

@@ -26,6 +26,7 @@ at ``get()`` time.
 from __future__ import annotations
 
 import json
+import re
 import threading
 from collections import defaultdict
 from dataclasses import asdict, dataclass
@@ -184,6 +185,83 @@ class SkillRegistry:
     def list_skill_ids(self) -> list[str]:
         with self._lock:
             return sorted(self._head.keys())
+
+    # ── fuzzy lookup: find / find_multi (Jarvis Phase 6.3) ──
+
+    def find(self, intent: str, top_k: int = 1) -> Skill | None:
+        """Return the single best-matching Skill for ``intent``, or None.
+
+        This is the compatibility shim that Planner._materialize_step
+        and ActionDispatcher._route_skill_invoke expect: a callable
+        ``find(intent) -> Skill | None``.  Under the hood it delegates
+        to :meth:`find_multi` and returns the first item.
+        """
+        matches = self.find_multi(intent, top_k=max(1, top_k))
+        return matches[0] if matches else None
+
+    def find_multi(self, intent: str, top_k: int = 3) -> list[Skill]:
+        """Fuzzy-match ``intent`` against every HEAD skill.
+
+        Scoring mirrors the prefilter (xmclaw/skills/prefilter.py) so
+        the agent loop and the planner agree on what "relevant" means:
+
+          * name-substring overlap:  +2.0 per query token in skill_id
+          * description/title tokens: +1.0 per shared token
+          * trigger keyword match:    +0.5 per shared trigger token
+
+        Returns an empty list when ``intent`` is empty or nothing scores
+        above zero.  Never raises.
+        """
+        intent = (intent or "").strip().lower()
+        if not intent:
+            return []
+
+        query_tokens = _tokenize(intent) - _STOPWORDS
+        if not query_tokens:
+            # Fallback: raw intent as a single probe (catches id literals
+            # like "deploy-to-vercel" that the tokenizer may have split).
+            query_tokens = {intent}
+
+        scored: list[tuple[float, Skill]] = []
+        with self._lock:
+            for skill_id in self._head:
+                version = self._head[skill_id]
+                manifest = self._manifests.get((skill_id, version))
+                if manifest is None:
+                    continue
+
+                score = 0.0
+                sid_lower = skill_id.lower()
+
+                # 1. Name-substring (strongest signal).
+                for tok in query_tokens:
+                    if len(tok) >= 2 and tok in sid_lower:
+                        score += 2.0
+
+                # 2. Title + description token overlap.
+                corpus = " ".join(
+                    filter(None, [manifest.title, manifest.description])
+                ).lower()
+                corpus_tokens = _tokenize(corpus)
+                for tok in query_tokens:
+                    if tok in corpus_tokens:
+                        score += 1.0
+
+                # 3. Trigger keyword match.
+                if manifest.triggers:
+                    for trig in manifest.triggers:
+                        trig_tokens = _tokenize(str(trig).lower())
+                        for tok in query_tokens:
+                            if tok in trig_tokens:
+                                score += 0.5
+
+                if score > 0:
+                    skill = self._skills.get((skill_id, version))
+                    if skill is not None:
+                        scored.append((score, skill))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [skill for _score, skill in scored[:max(1, top_k)]]
 
     # ── mutation: promote + rollback (anti-req #12) ──
 
@@ -596,6 +674,16 @@ class SkillRegistryView:
     def list_versions(self, skill_id: str) -> list[int]:
         return self._base.list_versions(skill_id)
 
+    # ── fuzzy lookup delegation ──
+
+    def find(self, intent: str, top_k: int = 1) -> Any | None:
+        """Delegate to the base registry."""
+        return self._base.find(intent, top_k=top_k)
+
+    def find_multi(self, intent: str, top_k: int = 3) -> list[Any]:
+        """Delegate to the base registry."""
+        return self._base.find_multi(intent, top_k=top_k)
+
     def register(self, *args: Any, **kwargs: Any) -> Any:
         """Not supported — the view is read-only."""
         raise NotImplementedError("SkillRegistryView is read-only")
@@ -603,3 +691,42 @@ class SkillRegistryView:
     def promote(self, *args: Any, **kwargs: Any) -> Any:
         """Not supported — the view is read-only."""
         raise NotImplementedError("SkillRegistryView is read-only")
+
+
+# ── Jarvis Phase 6.3: fuzzy-match tokenizer (duplicated from prefilter
+# to avoid a circular import: registry → prefilter → tool_bridge → registry)
+
+_CJK_RE = re.compile(
+    r"[぀-ヿ㐀-䶿一-鿿가-힯]"
+)
+_WORD_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_-]+")
+
+_STOPWORDS = frozenset({
+    "the", "and", "for", "you", "your", "this", "that", "with",
+    "from", "what", "when", "where", "how", "why", "use", "using",
+    "skill", "tool", "agent", "please", "can", "would", "could",
+    "help", "want", "need", "make", "create", "build", "run",
+    # Chinese stopwords (single-char so they tokenise via _CJK_RE)
+    "的", "了", "是", "我", "你", "他", "她", "它", "在", "和",
+    "也", "都", "就", "要", "不", "有", "没", "去", "来", "下",
+    "上", "里", "好", "把", "给", "让", "对", "为", "请", "能",
+})
+
+
+def _tokenize(text: str) -> set[str]:
+    """Return the set of normalised tokens in ``text``.
+
+    ASCII: lowercase words ≥ 2 chars (skip single letters, they
+    over-match noise like "a" / "I" / "x").
+    CJK: each Han / Hangul / Kana character is its own token.
+    """
+    if not text:
+        return set()
+    text_lower = text.lower()
+    tokens: set[str] = set()
+    for w in _WORD_RE.findall(text_lower):
+        if len(w) >= 2:
+            tokens.add(w)
+    for c in _CJK_RE.findall(text):
+        tokens.add(c)
+    return tokens

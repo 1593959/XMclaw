@@ -158,7 +158,7 @@ class ModeRouter:
         *,
         default_mode: RunMode = RunMode.AGENT,
         enable_instant: bool = True,
-        enable_swarm: bool = False,
+        enable_swarm: bool = True,
         min_chars_for_agent: int = 200,
     ) -> None:
         self._default = default_mode

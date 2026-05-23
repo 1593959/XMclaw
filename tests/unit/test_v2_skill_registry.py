@@ -527,3 +527,128 @@ def test_view_is_read_only() -> None:
         view.register(_skill("s", 2), _manifest("s", 2))
     with pytest.raises(NotImplementedError):
         view.promote("s", 1, evidence=["x"])
+
+
+# ── Jarvis Phase 6.3: find / find_multi ───────────────────────────────────
+
+
+def _manifest_with_desc(
+    id_: str, v: int, *, description: str = "", triggers: tuple[str, ...] = (),
+) -> SkillManifest:
+    return SkillManifest(
+        id=id_, version=v,
+        description=description,
+        triggers=triggers,
+    )
+
+
+def test_find_empty_intent_returns_none() -> None:
+    reg = SkillRegistry()
+    reg.register(_skill("deploy-vercel", 1), _manifest_with_desc("deploy-vercel", 1))
+    reg.promote("deploy-vercel", 1, evidence=["x"])
+    assert reg.find("") is None
+    assert reg.find("   ") is None
+
+
+def test_find_matches_skill_id_literal() -> None:
+    reg = SkillRegistry()
+    reg.register(_skill("deploy-vercel", 1), _manifest_with_desc("deploy-vercel", 1))
+    reg.promote("deploy-vercel", 1, evidence=["x"])
+    matched = reg.find("deploy-vercel")
+    assert matched is not None
+    assert matched.id == "deploy-vercel"
+
+
+def test_find_matches_description_tokens() -> None:
+    reg = SkillRegistry()
+    reg.register(
+        _skill("git-commit", 1),
+        _manifest_with_desc("git-commit", 1, description="Generate conventional commit messages"),
+    )
+    reg.promote("git-commit", 1, evidence=["x"])
+    matched = reg.find("generate commit message")
+    assert matched is not None
+    assert matched.id == "git-commit"
+
+
+def test_find_matches_triggers() -> None:
+    reg = SkillRegistry()
+    reg.register(
+        _skill("create-readme", 1),
+        _manifest_with_desc(
+            "create-readme", 1,
+            description="README generator",
+            triggers=("write readme", "documentation"),
+        ),
+    )
+    reg.promote("create-readme", 1, evidence=["x"])
+    matched = reg.find("documentation")
+    assert matched is not None
+    assert matched.id == "create-readme"
+
+
+def test_find_no_match_returns_none() -> None:
+    reg = SkillRegistry()
+    reg.register(_skill("foo", 1), _manifest_with_desc("foo", 1, description="foo thing"))
+    reg.promote("foo", 1, evidence=["x"])
+    assert reg.find("bar baz qux") is None
+
+
+def test_find_multi_returns_ranked_list() -> None:
+    reg = SkillRegistry()
+    reg.register(
+        _skill("deploy-vercel", 1),
+        _manifest_with_desc("deploy-vercel", 1, description="Deploy to Vercel"),
+    )
+    reg.register(
+        _skill("deploy-aws", 1),
+        _manifest_with_desc("deploy-aws", 1, description="Deploy to AWS"),
+    )
+    reg.register(
+        _skill("git-commit", 1),
+        _manifest_with_desc("git-commit", 1, description="Generate commit messages"),
+    )
+    for sid in ("deploy-vercel", "deploy-aws", "git-commit"):
+        reg.promote(sid, 1, evidence=["x"])
+
+    results = reg.find_multi("deploy to vercel", top_k=3)
+    assert len(results) >= 1
+    # deploy-vercel should be first because both "deploy" and "vercel"
+    # appear in its id/description.
+    assert results[0].id == "deploy-vercel"
+
+
+def test_find_multi_respects_top_k() -> None:
+    reg = SkillRegistry()
+    for i in range(5):
+        sid = f"skill-{i}"
+        reg.register(
+            _skill(sid, 1),
+            _manifest_with_desc(sid, 1, description=f"description {i}"),
+        )
+        reg.promote(sid, 1, evidence=["x"])
+
+    results = reg.find_multi("description", top_k=2)
+    assert len(results) <= 2
+
+
+def test_find_multi_empty_registry() -> None:
+    reg = SkillRegistry()
+    assert reg.find_multi("anything") == []
+
+
+def test_view_find_delegates_to_base() -> None:
+    reg = SkillRegistry()
+    reg.register(_skill("deploy-vercel", 1), _manifest_with_desc("deploy-vercel", 1))
+    reg.promote("deploy-vercel", 1, evidence=["x"])
+
+    from xmclaw.skills.registry import SkillRegistryView
+
+    view = SkillRegistryView(reg, {})
+    matched = view.find("deploy-vercel")
+    assert matched is not None
+    assert matched.id == "deploy-vercel"
+
+    multi = view.find_multi("deploy", top_k=2)
+    assert len(multi) == 1
+    assert multi[0].id == "deploy-vercel"

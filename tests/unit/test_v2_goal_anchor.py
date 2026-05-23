@@ -401,3 +401,73 @@ def test_session_focus_registry_isolates_sessions():
     set_session_focus("b", "focus B")
     assert get_session_focus("a") == "focus A"
     assert get_session_focus("b") == "focus B"
+
+
+# ── Jarvis Phase 6.3: skill_matches rendering ────────────────────────────
+
+
+def test_format_renders_skill_matches():
+    t = GoalAnchorTracker()
+    out = t.format(GoalAnchorState(
+        original_goal="deploy my app",
+        hop=5, max_hops=30, tool_calls_made=[],
+        skill_matches=[
+            {"skill_id": "deploy-vercel", "version": 1,
+             "title": "Deploy to Vercel"},
+            {"skill_id": "deploy-aws", "version": 2,
+             "title": "Deploy to AWS"},
+        ],
+    ))
+    assert "已匹配技能 (Matched skills" in out
+    assert "skill_deploy-vercel (v1) — Deploy to Vercel" in out
+    assert "skill_deploy-aws (v2) — Deploy to AWS" in out
+
+
+def test_format_omits_skill_matches_when_empty():
+    t = GoalAnchorTracker()
+    out = t.format(GoalAnchorState(
+        original_goal="deploy my app",
+        hop=5, max_hops=30, tool_calls_made=[],
+        skill_matches=[],
+    ))
+    assert "已匹配技能" not in out
+
+
+def test_format_omits_skill_matches_when_none():
+    t = GoalAnchorTracker()
+    out = t.format(GoalAnchorState(
+        original_goal="deploy my app",
+        hop=5, max_hops=30, tool_calls_made=[],
+        skill_matches=None,
+    ))
+    assert "已匹配技能" not in out
+
+
+def test_format_skill_match_without_title():
+    t = GoalAnchorTracker()
+    out = t.format(GoalAnchorState(
+        original_goal="deploy my app",
+        hop=5, max_hops=30, tool_calls_made=[],
+        skill_matches=[
+            {"skill_id": "foo", "version": 1, "title": ""},
+        ],
+    ))
+    assert "skill_foo (v1)" in out
+    # No stray " — " when title is blank.
+    assert "skill_foo (v1) —" not in out
+
+
+def test_format_skill_matches_capped_at_five():
+    t = GoalAnchorTracker()
+    matches = [
+        {"skill_id": f"skill-{i}", "version": 1, "title": f"Title {i}"}
+        for i in range(8)
+    ]
+    out = t.format(GoalAnchorState(
+        original_goal="deploy my app",
+        hop=5, max_hops=30, tool_calls_made=[],
+        skill_matches=matches,
+    ))
+    # All 8 should appear because we only filter in display loop... wait,
+    # let me check the code. Yes, `[:5]` is used.
+    assert out.count("skill_skill-") == 5

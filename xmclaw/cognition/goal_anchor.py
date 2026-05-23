@@ -87,6 +87,10 @@ class GoalAnchorState:
     # on how Claude uses TodoWrite to externalise its own working
     # focus across turns.
     current_focus: str | None = None
+    # Jarvis Phase 6.3: skills matched by active skill router. Shown
+    # in the anchor so the model is reminded which skills are
+    # available and relevant on every anchor injection.
+    skill_matches: list[dict[str, Any]] | None = None
 
     @property
     def hops_remaining(self) -> int:
@@ -207,6 +211,18 @@ class GoalAnchorTracker:
             for i, step in enumerate(state.plan_steps):
                 mark = "[x]" if i in done else "[ ]"
                 lines.append(f"  {mark} {i + 1}. {self._truncate(step, 240)}")
+            lines.append("")
+
+        # Jarvis Phase 6.3: surface matched skills so the model is
+        # continuously reminded of relevant skill tools.
+        if state.skill_matches:
+            lines.append("## 已匹配技能 (Matched skills — try these FIRST)")
+            for sm in state.skill_matches[:5]:
+                sid = sm.get("skill_id", "?")
+                ver = sm.get("version", "?")
+                title = sm.get("title", "")
+                hint = f" — {title}" if title else ""
+                lines.append(f"  • skill_{sid} (v{ver}){hint}")
             lines.append("")
 
         tools = state.tool_calls_made or []

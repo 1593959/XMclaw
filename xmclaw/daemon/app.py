@@ -751,6 +751,11 @@ def create_app(
                 unified_threshold=_unified_threshold,
             )
             agent._tools = CompositeToolProvider(agent._tools, _skill_tools)
+            # Jarvis Phase 6.3: inject the registry into AgentLoop so
+            # run_turn can do active skill intent routing (find_multi).
+            # This is a post-construction injection because the registry
+            # lives on the orchestrator which is built upstream by the CLI.
+            agent._skill_registry = orchestrator.registry
 
         # Wave-27 fix-LAT7: re-render TOOLS.md auto-block now that the
         # full tool stack is wired (factory's earlier render call saw

@@ -107,8 +107,7 @@ GOAL:
 判断准则:
 - 一句话能让 agent 一次 run_turn 跑完 → atomic
 - 涉及多个独立步骤 / 需要多次 LLM 调用 / 需要分阶段验证 → compound
-- 拆分时 sub_goals 应该是**正交**的 (互相不重叠)，且**完整覆盖**父 goal
-- edges 不能有环；空列表表示子 goal 全部并行
+- edges 表示依赖关系，空列表表示全部并行
 
 绝对不要输出 JSON 之外的字符 (没有代码块标记，没有解释)。
 """
@@ -186,7 +185,7 @@ class HTNPlanner:
         max_depth: int = 3,
         max_sub_goals: int = 6,
         max_total_cost_usd: float = 1.0,
-        timeout_s: float = 15.0,
+        timeout_s: float = 30.0,
     ) -> None:
         self._llm = llm
         self._max_depth = max(1, int(max_depth))
@@ -330,7 +329,7 @@ class HTNPlanner:
                 task_prompt=description,
                 estimated_cost_usd=0.05,
                 depth=depth,
-                error="llm_failed_or_unparseable",
+                error="llm_timeout_or_unparseable",
             )
 
         kind = envelope.get("kind", "atomic")

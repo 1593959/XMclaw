@@ -30,6 +30,7 @@ import { QuestionCard } from "./QuestionCard.js";
 // presentation pieces, no shared mutable state.
 import {
   ToolCard,
+  WorkerCard,
   MarkdownBody,
   ThinkingDots,
   PhaseCard,
@@ -152,6 +153,16 @@ export function MessageBubble({ message, onAnswerQuestion }) {
     return html`
       <article class="xmc-msg xmc-msg--assistant xmc-msg--tool-row" data-msg-id=${message.id}>
         <${ToolCard} call=${message} />
+      </article>
+    `;
+  }
+
+  // Phase 6.4: worker execution card rendered inline in the parent
+  // session transcript so the user sees parallel SWARM progress.
+  if (message.kind === "worker") {
+    return html`
+      <article class="xmc-msg xmc-msg--system xmc-msg--tool-row" data-msg-id=${message.id}>
+        <${WorkerCard} call=${message} />
       </article>
     `;
   }

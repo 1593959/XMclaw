@@ -1193,7 +1193,7 @@ def build_tools_from_config(
     # Epic #3: optionally wrap with security guardians
     security_cfg = cfg.get("security", {})
     guardians_cfg = security_cfg.get("guardians", {})
-    if guardians_cfg.get("enabled", False):
+    if guardians_cfg.get("enabled", True):
         from xmclaw.security.tool_guard.engine import ToolGuardEngine
         from xmclaw.security.tool_guard.file_guardian import FilePathToolGuardian
         from xmclaw.security.tool_guard.rule_guardian import RuleBasedToolGuardian
@@ -1536,6 +1536,7 @@ def build_agent_from_config(
     approval_service: Any | None = None,
     cognitive_state: Any | None = None,
     auditor: Any | None = None,
+    perception_bus: Any | None = None,
 ) -> AgentLoop | None:
     """Assemble an AgentLoop from config. Returns None if no LLM is set.
 
@@ -2029,6 +2030,7 @@ def build_agent_from_config(
         unified_memory=_unified_memory,
         unified_recall_top_k=_unified_top_k,
         memory_extractor=_memory_extractor,
+        perception_bus=perception_bus,
         strict_freeze=bool(
             (cfg or {}).get("agent", {}).get("strict_freeze", False)
         ),

@@ -202,3 +202,20 @@ def test_custom_default_mode():
 ])
 def test_coerce_mode(s, expected):
     assert _coerce_mode(s) == expected
+
+
+# ── Jarvis Phase 6.4: SWARM enabled by default ─────────────────
+
+
+def test_swarm_enabled_by_default():
+    """ModeRouter should detect swarm cues without explicit enable_swarm=True."""
+    router = ModeRouter()  # default enable_swarm
+    decision = router.route("compare these three options side-by-side")
+    assert decision.mode == RunMode.SWARM
+
+
+def test_swarm_can_be_explicitly_disabled():
+    """When opt-out, swarm cues fall back to agent."""
+    router = ModeRouter(enable_swarm=False)
+    decision = router.route("compare these three options side-by-side")
+    assert decision.mode == RunMode.AGENT

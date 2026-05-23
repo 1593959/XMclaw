@@ -143,7 +143,7 @@ class PlanFirstGate:
         min_chars: int = 80,
         threshold: int = 2,
         max_steps: int = 8,
-        timeout_s: float = 12.0,
+        timeout_s: float = 25.0,
     ) -> None:
         self._llm = llm
         self._min_chars = max(20, int(min_chars))

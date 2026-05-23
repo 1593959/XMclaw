@@ -1020,3 +1020,91 @@ async def test_b_bus_publish_failure_does_not_break_plan() -> None:
     plan = make_plan(steps=[step])
     result = await disp.execute_plan(plan)
     assert result.all_ok is True  # Plan still completed.
+
+
+# ── Jarvis Phase 6.4: subagent route ────────────────────────────────
+
+
+class FakeSubagentToolProvider:
+    """Tool provider that supports parallel_subagents."""
+
+    def __init__(self, result_ok: bool = True, content: str = "synthesised") -> None:
+        self.result_ok = result_ok
+        self.content = content
+        self.last_call: Any = None
+
+    async def invoke(self, call: Any) -> Any:
+        self.last_call = call
+        from xmclaw.core.ir.toolcall import ToolResult
+        return ToolResult(
+            call_id=getattr(call, "id", "c1"),
+            ok=self.result_ok,
+            content=self.content if self.result_ok else None,
+            error=None if self.result_ok else "fanout failed",
+        )
+
+
+@pytest.mark.asyncio
+async def test_route_subagent_happy_path() -> None:
+    """_route_subagent invokes parallel_subagents and returns content."""
+    tp = FakeSubagentToolProvider(content="all done")
+    disp = ActionDispatcher(tool_provider=tp)
+    step = make_step(
+        id="s1",
+        action_kind="subagent",
+        payload={"subtasks": ["task A", "task B"]},
+    )
+    result = await disp.execute_step(step)
+    assert result.ok is True
+    assert result.route == "subagent"
+    assert result.output["content"] == "all done"
+    assert result.output["subtasks"] == ["task A", "task B"]
+    assert tp.last_call is not None
+    assert getattr(tp.last_call, "name", None) == "parallel_subagents"
+
+
+@pytest.mark.asyncio
+async def test_route_subagent_falls_back_to_stub_when_no_tool_provider() -> None:
+    """No tool_provider → stub fallback."""
+    disp = ActionDispatcher()
+    step = make_step(
+        id="s1",
+        action_kind="subagent",
+        payload={"subtasks": ["task A"]},
+    )
+    result = await disp.execute_step(step)
+    assert result.route == "stub"
+    assert result.ok is False
+
+
+@pytest.mark.asyncio
+async def test_route_subagent_pads_single_subtask() -> None:
+    """parallel_subagents requires ≥2 subtasks; single subtask gets padded."""
+    tp = FakeSubagentToolProvider(content="ok")
+    disp = ActionDispatcher(tool_provider=tp)
+    step = make_step(
+        id="s1",
+        action_kind="subagent",
+        payload={"intent": "just one thing"},
+    )
+    result = await disp.execute_step(step)
+    assert result.ok is True
+    subtasks = result.output["subtasks"]
+    assert len(subtasks) >= 2
+    assert subtasks[0] == "just one thing"
+
+
+@pytest.mark.asyncio
+async def test_route_subagent_tool_failure() -> None:
+    """When parallel_subagents returns ok=False, step reflects it."""
+    tp = FakeSubagentToolProvider(result_ok=False)
+    disp = ActionDispatcher(tool_provider=tp)
+    step = make_step(
+        id="s1",
+        action_kind="subagent",
+        payload={"subtasks": ["a", "b"]},
+    )
+    result = await disp.execute_step(step)
+    assert result.ok is False
+    assert result.route == "subagent"
+    assert "fanout failed" in (result.error or "")
