@@ -2173,6 +2173,10 @@ def create_app(
                                         session_id, content,
                                         llm_profile_id=llm_profile_id,
                                         user_correlation_id=user_corr,
+                                        user_images=(
+                                            tuple(user_image_paths)
+                                            if user_image_paths else None
+                                        ),
                                     )
                                 else:
                                     await active_agent.run_turn(
