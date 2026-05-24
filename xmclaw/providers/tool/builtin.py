@@ -91,6 +91,7 @@ from xmclaw.providers.tool._specs import (  # noqa: F401
     _WEB_SEARCH_SPEC as _WEB_SEARCH_SPEC,
     _OPEN_IN_USER_BROWSER_SPEC as _OPEN_IN_USER_BROWSER_SPEC,
     _READ_CONVERSATION_HISTORY_SPEC as _READ_CONVERSATION_HISTORY_SPEC,
+    _THINK_SPEC as _THINK_SPEC,
 )
 from xmclaw.providers.tool._helpers import (  # noqa: F401
     PERSONA_CHAR_CAPS as PERSONA_CHAR_CAPS,
@@ -435,6 +436,10 @@ class BuiltinTools(
         # Only advertised when a session_store is wired.
         if self._session_store is not None:
             specs.append(_READ_CONVERSATION_HISTORY_SPEC)
+        # Think tool: gives the model a dedicated channel for internal
+        # reasoning. The thought is recorded in session logs but not
+        # shown to the user — keeping the chat stream clean.
+        specs.append(_THINK_SPEC)
         # B-53: memory_pin lands in MEMORY.md's `## Pinned` section.
         # Gated on persona_dir wiring (same as ``remember``); the
         # actual write reuses _append_under_section so pinned bullets
@@ -615,6 +620,8 @@ class BuiltinTools(
                 return await self._canvas_update(call, t0)
             if call.name == "canvas_close":
                 return await self._canvas_close(call, t0)
+            if call.name == "think":
+                return await self._think(call, t0)
             return _fail(call, t0, f"unknown tool: {call.name!r}")
         except PermissionError as exc:
             return _fail(call, t0, f"permission denied: {exc}")
@@ -663,6 +670,18 @@ class BuiltinTools(
                 f"the next assistant turn — your CURRENT response is "
                 f"still in the previous style."
             ),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _think(self, call: ToolCall, t0: float) -> ToolResult:
+        """Dedicated thinking channel — thought is recorded internally
+        but not surfaced to the user chat stream."""
+        from xmclaw.core.ir import ToolResult as _TR
+
+        return _TR(
+            call_id=call.id,
+            ok=True,
+            content="",
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 

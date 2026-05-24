@@ -165,7 +165,7 @@ class MemoryFileIndexer:
         self,
         *,
         persona_dir_provider,                    # callable () -> Path
-        sqlite_vec: "SqliteVecMemory",
+        vec: "MemoryProvider",
         embedder: "EmbeddingProvider",
         poll_interval_s: float = 10.0,
         layer: str = "long",
@@ -180,7 +180,7 @@ class MemoryFileIndexer:
         workspace_paths: list[str] | None = None,
     ) -> None:
         self._persona_dir_provider = persona_dir_provider
-        self._vec = sqlite_vec
+        self._vec = vec
         self._embedder = embedder
         self._poll_s = max(1.0, float(poll_interval_s))
         self._layer = layer
@@ -548,7 +548,7 @@ class MemoryFileIndexer:
         for cid in to_drop:
             await self._vec.forget(cid)
 
-        from xmclaw.providers.memory.base import MemoryItem
+        from xmclaw.providers.memory.base import MemoryItem, MemoryProvider
         added = 0
         for (cid, chunk), vec in zip(to_embed, vectors):
             if not vec:

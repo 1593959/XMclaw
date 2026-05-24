@@ -175,21 +175,12 @@ def test_b208_active_problem_solving_rule_present() -> None:
     assert "chat-2026-05-03" in p
 
 
-def test_b206_narration_discipline_present() -> None:
-    """B-206: probe data showed MiniMax M2.7 / OpenAI-compat models
-    emit empty content on intermediate hops, leaving the user staring
-    at silent tool cards between hop 0 narration and the final
-    synthesis. Fix is a hard system-prompt rule. This test pins the
-    rule so a refactor doesn't silently delete it."""
+def test_think_tool_advertised() -> None:
+    """Think tool must be advertised in the system prompt so the
+    model knows it has a dedicated channel for internal reasoning."""
     p = _DEFAULT_SYSTEM
-    assert "Narration discipline" in p
-    # Must explicitly call out the OpenAI-compat model class —
-    # Anthropic users don't need this rule, but the rule must
-    # survive even if the user runs Claude (it's a no-op there).
-    assert "OpenAI-compatible" in p or "MiniMax" in p
-    # The "before next tool call" framing is the load-bearing part;
-    # without it the rule degrades to "narrate sometimes".
-    assert "BEFORE emitting the next tool call" in p
+    assert "think:" in p or "- think" in p
+    assert "internal reasoning" in p or "NEVER write reasoning" in p
 
 
 def test_b302_honesty_rule_about_memory_claims_present() -> None:

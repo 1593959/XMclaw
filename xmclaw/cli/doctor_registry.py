@@ -982,6 +982,101 @@ class MemoryDbCheck(DoctorCheck):
             return False
 
 
+class MemoryV1RetiredCheck(DoctorCheck):
+    """Phase 7.B.4: verify V1 memory modules are fully retired.
+
+    Checks three signals:
+      1. Source files ``unified.py`` / ``_id.py`` / ``extractor.py`` are
+         absent from ``xmclaw/memory/`` (physically deleted).
+      2. ``memory.db`` does not contain V1 tables (memory_entries,
+         memory_graph, temporal_index, extracted_facts).
+      3. No pycache debris from the old modules.
+
+    Any hit means the retirement is incomplete — the user should run
+    the Phase-7 migration script or clean up manually.
+    """
+
+    id = "memory_v1_retired"
+    name = "memory_v1_retired"
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        pkg_dir = Path(__file__).parent.parent / "memory"
+        v1_sources = {"unified.py", "_id.py", "extractor.py"}
+        found_sources = {f for f in v1_sources if (pkg_dir / f).exists()}
+
+        # pycache debris
+        pycache = pkg_dir / "__pycache__"
+        v1_pyc = set()
+        if pycache.is_dir():
+            for suffix in ("unified", "_id", "extractor"):
+                for p in pycache.glob(f"{suffix}.*.pyc"):
+                    v1_pyc.add(p.name)
+
+        # DB tables
+        v1_tables: set[str] = set()
+        from xmclaw.utils.paths import default_memory_db_path
+
+        db_path = default_memory_db_path()
+        if db_path.exists():
+            import sqlite3
+            try:
+                conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+                rows = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'",
+                ).fetchall()
+                all_tables = {r[0] for r in rows}
+                v1_tables = all_tables & {
+                    "memory_entries", "memory_graph", "temporal_index",
+                    "extracted_facts", "unified_memory",
+                }
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+        issues: list[str] = []
+        if found_sources:
+            issues.append(f"source files: {sorted(found_sources)}")
+        if v1_pyc:
+            issues.append(f"pycache debris: {sorted(v1_pyc)[:3]}")
+        if v1_tables:
+            issues.append(f"db tables: {sorted(v1_tables)}")
+
+        if issues:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail="V1 memory retirement incomplete",
+                advisory="; ".join(issues) + " — run Phase-7 migration or rm manually",
+                fix_available=bool(v1_pyc or found_sources),
+            )
+        return CheckResult(
+            name=self.name, ok=True,
+            detail="V1 fully retired (no source, no tables, no pycache)",
+        )
+
+    def fix(self, ctx: DoctorContext) -> bool:
+        """Clean up pycache debris and any lingering source files."""
+        pkg_dir = Path(__file__).parent.parent / "memory"
+        cleaned = 0
+        pycache = pkg_dir / "__pycache__"
+        if pycache.is_dir():
+            for suffix in ("unified", "_id", "extractor"):
+                for p in list(pycache.glob(f"{suffix}.*.pyc")):
+                    try:
+                        p.unlink()
+                        cleaned += 1
+                    except OSError:
+                        pass
+        for f in ("unified.py", "_id.py", "extractor.py"):
+            src = pkg_dir / f
+            if src.exists():
+                try:
+                    src.unlink()
+                    cleaned += 1
+                except OSError:
+                    pass
+        return cleaned > 0
+
+
 class IntentPatternsDbCheck(DoctorCheck):
     """Probe ``~/.xmclaw/v2/intent_patterns.db`` health.
 
@@ -2301,6 +2396,7 @@ def build_default_registry() -> DoctorRegistry:
     reg.register(PortCheck())
     reg.register(EventsDbCheck())
     reg.register(MemoryDbCheck())
+    reg.register(MemoryV1RetiredCheck())
     reg.register(IntentPatternsDbCheck())
     reg.register(MemoryProviderCheck())
     reg.register(MemoryProviderConfigCheck())

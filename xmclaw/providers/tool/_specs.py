@@ -1626,3 +1626,24 @@ _EXIT_PLAN_MODE_SPEC = ToolSpec(
         "required": ["plan"],
     },
 )
+
+_THINK_SPEC = ToolSpec(
+    name="think",
+    description=(
+        "Use this tool to record your internal reasoning, analysis, or plan. "
+        "The thought is saved to the session log but is NOT shown to the user. "
+        "Use it when you need to work through complex logic before taking action, "
+        "or when analyzing a tool result before deciding the next step. "
+        "NEVER output reasoning as plain text in your response — always use this tool."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "thought": {
+                "type": "string",
+                "description": "Your internal thought process, reasoning, or analysis.",
+            }
+        },
+        "required": ["thought"],
+    },
+)

@@ -2094,6 +2094,11 @@ def create_app(
                     # them as vision content blocks.
                     user_image_paths: list[str] = []
                     raw_images = frame.get("images")
+                    log.debug(
+                        "ws.user_frame: images_count=%s type=%s",
+                        len(raw_images) if isinstance(raw_images, list) else "n/a",
+                        type(raw_images).__name__,
+                    )
                     if isinstance(raw_images, list):
                         from xmclaw.utils.paths import data_dir as _data_dir
                         import base64 as _b64
@@ -2105,8 +2110,10 @@ def create_app(
                         uploads_dir.mkdir(parents=True, exist_ok=True)
                         for entry in raw_images[:8]:
                             if not isinstance(entry, str):
+                                log.debug("ws.user_frame: skip non-str image entry")
                                 continue
                             if not entry.startswith("data:"):
+                                log.debug("ws.user_frame: skip non-data image entry: %s...", entry[:40])
                                 continue
                             try:
                                 header, payload_b64 = entry.split(",", 1)
@@ -2129,12 +2136,16 @@ def create_app(
                                 ext = ext_map.get(mime, ".bin")
                                 raw_bytes = _b64.b64decode(payload_b64)
                                 if len(raw_bytes) > 8 * 1024 * 1024:
+                                    log.warning("ws.user_frame: reject oversized image: %s bytes", len(raw_bytes))
                                     continue  # reject huge uploads
                                 out = uploads_dir / f"{int(time.time())}_{_uuid.uuid4().hex[:8]}{ext}"
                                 out.write_bytes(raw_bytes)
                                 user_image_paths.append(str(out))
-                            except Exception:  # noqa: BLE001 — skip bad blobs
+                                log.debug("ws.user_frame: saved image to %s", out)
+                            except Exception as _img_exc:  # noqa: BLE001 — skip bad blobs
+                                log.warning("ws.user_frame: image save failed: %s", _img_exc)
                                 continue
+                    log.debug("ws.user_frame: user_image_paths=%s", user_image_paths)
                     # Ultrathink (borrowed from the /ultrathink pattern):
                     # when set, prepend a directive to make the model
                     # slow down and think step-by-step before answering.

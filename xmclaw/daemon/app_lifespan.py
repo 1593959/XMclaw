@@ -364,9 +364,31 @@ def make_lifespan(
                 _workspace_paths = [
                     str(p) for p in _ws_paths_raw if isinstance(p, str)
                 ]
+                # Phase 7+: use LanceDB for workspace index when
+                # ``evolution.memory.indexer.backend`` is "lancedb".
+                _idx_backend = _idx_section.get("backend", "sqlite_vec")
+                if _idx_backend == "lancedb":
+                    from xmclaw.providers.memory.lancedb import (
+                        LanceDBMemoryProvider,
+                    )
+                    from xmclaw.utils.paths import data_dir
+
+                    _lance_path = str(data_dir() / "v2" / "facts")
+                    _lance_dim = (
+                        ((_cfg.get("evolution") or {}).get("memory") or {})
+                        .get("embedding", {})
+                        .get("dimensions", 1536)
+                    )
+                    _idx_vec = LanceDBMemoryProvider(
+                        db_path=_lance_path,
+                        table_name="workspace_chunks",
+                        embedding_dim=int(_lance_dim),
+                    )
+                else:
+                    _idx_vec = vec_provider
                 memory_indexer = MemoryFileIndexer(
                     persona_dir_provider=_pdir,
-                    sqlite_vec=vec_provider,
+                    vec=_idx_vec,
                     embedder=embedder,
                     poll_interval_s=float(_idx_section.get("poll_interval_s", 10.0)),
                     bus=bus,
