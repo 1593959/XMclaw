@@ -1671,16 +1671,14 @@ def make_lifespan(
                         return []
 
                     _agent_llm = getattr(agent, "_llm", None) if agent else None
-                    # Phase 7.A.3 (2026-05-23): reflection_cycle now
-                    # takes a V2 MemoryService instead of the V1
-                    # UnifiedMemorySystem. Prefer ``_memory_service_v2``
-                    # (the V2 instance app_lifespan wires later in the
-                    # boot sequence — at this point in the code it may
-                    # already be present on agent if cognition.memory_v2
-                    # was enabled). Falls back to ``memory_v2_service``
-                    # off app.state if the agent doesn't carry it yet.
+                    # Phase 7.A.6 (2026-05-23): single canonical attr
+                    # name ``_memory_service`` on the agent. Falls
+                    # back to ``app.state.memory_v2_service`` if the
+                    # V2 wire-up below this point hasn't run yet
+                    # (lifespan ordering — reflection_cycle is built
+                    # earlier than the memory_v2 block).
                     _agent_mem_svc = (
-                        getattr(agent, "_memory_service_v2", None)
+                        getattr(agent, "_memory_service", None)
                         if agent else None
                     )
                     if _agent_mem_svc is None:
@@ -2224,23 +2222,12 @@ def make_lifespan(
                 _app.state.memory_v2_service = memory_v2_service
                 if agent is not None:
                     try:
-                        # Phase 7.A.3 step 5/6 (2026-05-23):
-                        # ``_memory_service`` is now the canonical
-                        # attribute name (matches AgentLoop's
-                        # constructor field). ``_memory_service_v2``
-                        # is kept as a transitional alias since some
-                        # legacy code paths still read it; removed
-                        # in §7.A.6. Also seed ``_memory_recall_top_k``
-                        # from config so factory's default doesn't
-                        # silently win when the lifespan reads a
-                        # different value.
+                        # Phase 7.A.6 (2026-05-23): single canonical
+                        # attribute. The transitional ``_memory_service_v2``
+                        # + ``_unified_memory`` aliases (added in
+                        # step 5/6) were removed alongside the V1
+                        # code-path branches that read them.
                         agent._memory_service = memory_v2_service
-                        agent._memory_service_v2 = memory_v2_service
-                        # Also wire as the V1 alias attribute name
-                        # so HopLoopMixin's pre-step-3a path that
-                        # still reads ``_unified_memory`` continues
-                        # to detect the service. Removed in §7.A.6.
-                        agent._unified_memory = memory_v2_service
                     except Exception:  # noqa: BLE001
                         pass
                     # Wave-27 Phase 3c (2026-05-16): plumb v2 service

@@ -1,22 +1,29 @@
-"""AgentLoop ↔ UnifiedMemorySystem integration ("agent 自己用记忆").
+"""AgentLoop ↔ UnifiedMemorySystem integration (V1, retired Phase 7.A.6).
 
-Pins the wiring shipped 2026-05-10 in response to user feedback:
-"我的目的是给他自己用，不是光给我用." Pre-this-commit the unified
-memory system existed (router + UI tab) but ``AgentLoop`` never
-called it. Now:
+Original purpose: pin the 2026-05-10 "agent 自己用记忆" wiring
+against the V1 UnifiedMemorySystem + MemoryExtractor path.
 
-  Phase A (read):  ``run_turn`` calls ``unified_memory.query`` at
-                   the start, injects hits into the user message,
-                   emits MEMORY_RECALL.
-  Phase B (write): post-turn, ``MemoryExtractor`` heuristic-gates +
-                   LLM-extracts a durable fact, calls
-                   ``unified_memory.put``, emits MEMORY_PUT_AUTO.
+Phase 7.A.6 (2026-05-23): the entire V1 read/write path is gone —
+AgentLoop.run_turn now calls MemoryService.recall directly; hop_loop
+calls MemoryService.remember via LLMFactExtractor. The fakes in this
+file (``_FakeUnifiedMemory`` / ``_ScriptedExtractor``) speak the V1
+API surface that no longer exists in production code, so every test
+in here would FAIL after the deprecated aliases were removed.
 
-These tests pin both directions end-to-end against fakes so a future
-refactor that breaks either path fails immediately. They DO NOT test
-the LLM extract details — that's covered in test_v2_memory_extractor.py.
+Equivalent V2 coverage lives in
+``tests/unit/test_v2_phase7_agent_loop_memory.py``. This file is
+kept un-deleted only because §7.B.4 (V1 module deletion) is when
+the V1 enum/types it imports (``ExtractedFact``, ``MemoryEntry``)
+go away — at that point this whole file goes too.
 """
 from __future__ import annotations
+
+import pytest
+
+pytestmark = pytest.mark.skip(
+    reason="Phase 7.A.6: V1 unified_memory wiring retired; "
+           "see tests/unit/test_v2_phase7_agent_loop_memory.py.",
+)
 
 import asyncio
 from collections.abc import AsyncIterator

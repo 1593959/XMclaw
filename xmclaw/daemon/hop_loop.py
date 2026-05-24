@@ -1376,7 +1376,7 @@ class HopLoopMixin:
                         # failure) — extractor hooks skip the v2 path
                         # silently in that case.
                         memory_v2_service=getattr(
-                            self, "_memory_service_v2", None,
+                            self, "_memory_service", None,
                         ),
                     )
                     # Fire-and-forget — don't await, the next turn must
@@ -1407,91 +1407,52 @@ class HopLoopMixin:
                 except Exception:  # noqa: BLE001
                     pass
 
-            # Phase 7.A.3 step 3a/6 (2026-05-23): auto-extract + remember.
+            # Phase 7.A.6 (2026-05-23): auto-extract + remember, V2-only.
             #
-            # Heuristic-gated extractor decides whether anything in
-            # this turn is worth long-term storage. When yes, we
-            # remember() the distilled fact(s) + emit MEMORY_PUT_AUTO
-            # so the UI's 记忆活动 timeline can show the agent
-            # learning. Background task: never blocks turn return,
-            # never fails the turn on extractor / write errors.
+            # Heuristic-gated LLMFactExtractor decides whether anything
+            # in this turn is worth long-term storage. When yes, we
+            # remember() each distilled fact + emit MEMORY_PUT_AUTO so
+            # the UI's 记忆活动 timeline can show the agent learning.
+            # Background task: never blocks turn return, never fails
+            # the turn on extractor / write errors.
             #
             # Why background instead of synchronous: the LLM extract
             # call can take 3-8 s. Adding that to every turn's tail
-            # latency tanks UX.
-            #
-            # Capability-detect dual path:
-            #   V2 — uses agent._memory_v2_llm_extractor +
-            #        self._memory_service (LLMFactExtractor returns
-            #        list[dict]; iterate; call remember per candidate).
-            #   V1 — falls back to self._memory_extractor +
-            #        self._unified_memory.put if V2 not wired (the
-            #        deprecated path; deleted in §7.A.6).
+            # latency tanks UX. The trade-off is the put isn't visible
+            # until the next turn — acceptable, the user already got
+            # their answer.
             mem_svc = getattr(self, "_memory_service", None)
             v2_extractor = getattr(self, "_memory_v2_llm_extractor", None)
-            use_v2_path = (
+            if (
                 mem_svc is not None
                 and hasattr(mem_svc, "remember")
                 and v2_extractor is not None
-            )
-            use_v1_path = (
-                not use_v2_path
-                and self._memory_extractor is not None
-                and self._unified_memory is not None
-                and hasattr(self._unified_memory, "put")
-            )
-
-            if (use_v2_path or use_v1_path) and response.content and user_message:
+                and response.content
+                and user_message
+            ):
                 async def _bg_extract_and_put() -> None:
                     try:
-                        if use_v2_path:
-                            candidates = await v2_extractor.extract_candidates(
-                                user_message=user_message,
-                                assistant_response=response.content,
-                            )
-                            for cand in candidates:
-                                fact = await mem_svc.remember(
-                                    text=cand.text,
-                                    kind=cand.kind,
-                                    scope=cand.scope,
-                                    confidence=cand.confidence,
-                                    source_event_id=session_id,
-                                )
-                                await publish(EventType.MEMORY_PUT_AUTO, {
-                                    "session_id": session_id,
-                                    "id": fact.id,
-                                    "text": fact.text[:300],
-                                    "layer": fact.layer,
-                                    "kind": fact.kind,
-                                    "scope": fact.scope,
-                                    "reason": "llm_auto_extract",
-                                })
-                            return
-                        # V1 legacy path.
-                        fact = await self._memory_extractor.extract(
+                        candidates = await v2_extractor.extract_candidates(
                             user_message=user_message,
                             assistant_response=response.content,
                         )
-                        if fact is None:
-                            return
-                        new_id = await self._unified_memory.put(
-                            text=fact.text,
-                            layer=fact.layer,
-                            node_type=fact.node_type,
-                            metadata={
-                                "source": "auto_extract",
+                        for cand in candidates:
+                            fact = await mem_svc.remember(
+                                text=cand.text,
+                                kind=cand.kind,
+                                scope=cand.scope,
+                                confidence=cand.confidence,
+                                source_event_id=session_id,
+                            )
+                            await publish(EventType.MEMORY_PUT_AUTO, {
                                 "session_id": session_id,
-                                "reason": fact.reason,
-                            },
-                        )
-                        await publish(EventType.MEMORY_PUT_AUTO, {
-                            "session_id": session_id,
-                            "id": new_id,
-                            "text": fact.text[:300],
-                            "layer": fact.layer,
-                            "node_type": fact.node_type,
-                            "reason": fact.reason,
-                        })
+                                "id": fact.id,
+                                "text": fact.text[:300],
+                                "layer": fact.layer,
+                                "kind": fact.kind,
+                                "scope": fact.scope,
+                                "reason": "llm_auto_extract",
+                            })
                     except Exception as exc:  # noqa: BLE001
                         _log_memory_failure(exc)
 
