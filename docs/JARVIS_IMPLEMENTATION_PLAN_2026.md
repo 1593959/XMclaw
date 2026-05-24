@@ -2010,11 +2010,11 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 
 > **目标**：底层数据完全跑在 LanceDB，sqlite_vec + MemoryGraph 退役；用户数据一次性迁移；`memory.*` 配置段退役。
 
-- [ ] **7.B.1 补 V2 缺的 4 块能力**
-  - **TTL / retention**（2-3 天）：移植 V1 `xmclaw/providers/memory/sqlite_vec.py` 的 sweep 逻辑，落到 `MemoryService.sweep()`；配置段 `cognition.memory_v2.retention.{ttl, max_items, max_bytes}`；后台任务每小时跑一次
-  - **`procedural` 层**（1 天）：`FactLayer.procedural` 枚举值；不参与 TTL；render_for_prompt 单独处理（procedural facts 优先级高于 working）
-  - **temporal 索引**（1-2 天）：LanceDB scalar index on `created_at`；`recall(time_range=(start, end), ...)` 参数；reflection_cycle / cognitive_daemon 等时序消费者切过去
-  - **写入原子性**（1 天）：`MemoryServiceWriteError`（mirror V1 `UnifiedWriteError.compensated`）；vector 写成功 + graph 写失败 → 删 vector 行回滚
+- [x] **7.B.1 补 V2 缺的 4 块能力** (commit 0adcdb8 + §7.A.2 backfill)
+  - **TTL / retention** ✅：`MemoryService.sweep(ttl=, max_items=, max_bytes=)` 落地 + app_lifespan 1h 后台 loop；config 段 `cognition.memory_v2.retention.{sweep_interval_s, ttl, max_items, max_bytes}`；默认 mirror V1 `memory.retention`；procedural 层 + identity/persona_manual kinds 永久 exempt。
+  - **`procedural` 层** ✅ (§7.A.2 done)：`FactLayer.PROCEDURAL` 枚举值 + sweep 不触碰。render_for_prompt 优先级提升留到 §7.B 后续 polish。
+  - **temporal 索引** ✅ (§7.A.2 done)：`recall(time_range=(start, end), ...)` 参数原生支持；reflection_cycle 已切过去（§7.A.3 step 1）。LanceDB scalar index on `ts_last` 是性能优化，P2。
+  - **写入原子性** ✅ (§7.A.2 done)：`MemoryServiceWriteError` 类落地；`delete()` 完整实现 vector→graph rollback；`remember()` 的原子性增强是 P2（当前 LanceDB merge_insert 已是 atomic 单步写）。
 - [ ] **7.B.2 数据迁移脚本**（2-3 天）
   - 验证已有 `scripts/migrate_memory_db_to_v2.py` 覆盖率（当前覆盖 lessons + preferences，可能漏 persona_manual / file_chunk / code_chunk）
   - 补全缺失类型；加 dry-run 模式；加迁移前自动 backup `memory.db` → `memory.db.pre-phase7.bak`
@@ -2058,6 +2058,8 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 - 2026-05-23: §7.A.3 step 4/6 — /memory/unified_query + /memory/unified_put router 内部走 V2 MemoryService (commit 293afbd)。URL 保留前端兼容；返回 schema 加 kind/scope/distance，retain V1 score+matched_axes 字段。short_term 层折叠为 working；legacy node_type 经 helper 映射到 V2 kind。新增 10 个跨前后端测试 + skip 4 个老 V1 TestClient 测试（迁移到新文件）。73 passed + 4 skipped + 0 regression。
 - 2026-05-23: §7.A.3 step 5/6 — factory.py 停止构造 V1 UnifiedMemorySystem + MemoryExtractor，AgentLoop 改用 memory_service=/memory_recall_top_k= 新关键字；app_lifespan 把 V2 service 挂到 agent._memory_service (新规范名) + 保留 _memory_service_v2 / _unified_memory 过渡别名 (commit ea30063)。recall_top_k 配置位移 memory.unified_recall.top_k → cognition.memory_v2.recall_top_k (旧块有 deprecation warning)。71 factory tests + 73 cross-suite 全通过。
 - 2026-05-23: **§7.A.3 step 6/6 — §7.A 全部完成** (commit 31a7487)。删除 AgentLoop 的 unified_memory / unified_recall_top_k 弃用构造参数；删除 _unified_memory / _unified_recall_top_k / _memory_service_v2 self-attr 别名；删除 agent_loop recall 块 V1 elif 分支；删除 hop_loop auto-put V1 fallback；app_lifespan 单一 _memory_service 挂载；老 test_v2_agent_loop_unified_memory.py 整体 skip（§7.B.4 删除）；新增 test_v2_phase7_agent_loop_memory.py 7 个 V2 等价测试。**142 tests pass + 4 skipped + 0 regression**。§7.A 用 21 commits 收口完成，下一步进入 §7.B 后端替换。
+- 2026-05-24: §7.A 全部 push 到 main（30 commits 上去）。
+- 2026-05-24: **§7.B.1 完成** (commit 0adcdb8)。`MemoryService.sweep()` 实现 TTL + max_items + max_bytes 三轴 retention（mirror V1 `prune` + `evict`）；app_lifespan 加 1h 后台 sweep loop；config.example 加 `cognition.memory_v2.retention.*` 段。procedural 层 + identity/persona_manual kinds 永久 exempt。171 cross-suite 全通过。
 
 ---
 
