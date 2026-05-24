@@ -2055,6 +2055,7 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 - 2026-05-23: Phase 7 立项 + 元文档收口（CLAUDE.md / JARVIS_PLAN 7 节 / memory/AGENTS.md）(commit 2beb326)
 - 2026-05-23: §7.A.1 V1 callsite 盘点完成 — 25 文件 9 分类，输出 7 P0 shim + 6 步迁移序 (commit 1e37d7d)
 - 2026-05-23: §7.A.2 partial — 4 个低风险 shim 落地 (FactLayer.PROCEDURAL / MemoryService.delete / MemoryServiceWriteError / legacy_node_type_to_kind)，20 个新测试全通过 + 61 个老测试无回归 (commit 8163ff2)
+- 2026-05-23: §7.A.2 complete — recall(time_range=...) + LLMFactExtractor.extract_candidates 落地 (commit dbe0bf1)。shim #4 (query_layer for short_term) 弃用 — reflection_cycle 改用 `recall(only_layer="working", time_range=(N hours ago, None))` 表达 V1 short_term walk 语义，保持 V2 二层模型干净。27 shim tests + 76 V2 memory regression tests 全通过。
 
 ---
 
