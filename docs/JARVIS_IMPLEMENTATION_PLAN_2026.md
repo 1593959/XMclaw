@@ -2059,6 +2059,7 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 - 2026-05-23: §7.A.3 step 1/6 — reflection_cycle 迁到 V2 MemoryService (commit 4ad31bd)。consolidate_memory 改用 deduplicate + recall(working/time_range) + remember(long_term)，删除 V1 duck-typed 钩子。16 reflection tests + 78 cross-suite regression 全通过。
 - 2026-05-23: §7.A.3 step 2a/6 — AgentLoop.run_turn recall 路径切到 V2 MemoryService (commit e86d199)。capability-detect 双轨：V2 走 `<memory-recall>` 块；V1 通过 deprecated `unified_memory=` 别名仍可用（warning + 走 `<unified-recall>` 旧路径）。step 2b 别名删除待 step 6/6 测试重写后做。87 cross-suite 全通过。
 - 2026-05-23: §7.A.3 step 3a/6 — hop_loop.run_hop auto-put 路径切到 V2 MemoryService (commit 6bc2705)。capability-detect 双轨：V2 走 LLMFactExtractor.extract_candidates → 多次 MemoryService.remember；V1 保持原路径。MEMORY_PUT_AUTO 事件载荷在 V2 路径下用 kind/scope 替换 node_type。52 cross-suite 全通过。
+- 2026-05-23: §7.A.3 step 4/6 — /memory/unified_query + /memory/unified_put router 内部走 V2 MemoryService (commit 293afbd)。URL 保留前端兼容；返回 schema 加 kind/scope/distance，retain V1 score+matched_axes 字段。short_term 层折叠为 working；legacy node_type 经 helper 映射到 V2 kind。新增 10 个跨前后端测试 + skip 4 个老 V1 TestClient 测试（迁移到新文件）。73 passed + 4 skipped + 0 regression。
 
 ---
 
