@@ -2057,6 +2057,7 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 - 2026-05-23: §7.A.2 partial — 4 个低风险 shim 落地 (FactLayer.PROCEDURAL / MemoryService.delete / MemoryServiceWriteError / legacy_node_type_to_kind)，20 个新测试全通过 + 61 个老测试无回归 (commit 8163ff2)
 - 2026-05-23: §7.A.2 complete — recall(time_range=...) + LLMFactExtractor.extract_candidates 落地 (commit dbe0bf1)。shim #4 (query_layer for short_term) 弃用 — reflection_cycle 改用 `recall(only_layer="working", time_range=(N hours ago, None))` 表达 V1 short_term walk 语义，保持 V2 二层模型干净。27 shim tests + 76 V2 memory regression tests 全通过。
 - 2026-05-23: §7.A.3 step 1/6 — reflection_cycle 迁到 V2 MemoryService (commit 4ad31bd)。consolidate_memory 改用 deduplicate + recall(working/time_range) + remember(long_term)，删除 V1 duck-typed 钩子。16 reflection tests + 78 cross-suite regression 全通过。
+- 2026-05-23: §7.A.3 step 2a/6 — AgentLoop.run_turn recall 路径切到 V2 MemoryService (commit e86d199)。capability-detect 双轨：V2 走 `<memory-recall>` 块；V1 通过 deprecated `unified_memory=` 别名仍可用（warning + 走 `<unified-recall>` 旧路径）。step 2b 别名删除待 step 6/6 测试重写后做。87 cross-suite 全通过。
 
 ---
 
