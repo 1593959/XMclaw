@@ -72,7 +72,7 @@
     }
   },
   "memory": {
-    "_comment": "Epic #5: v2 sqlite-vec memory. db_path defaults to ~/.xmclaw/v2/memory.db. ttl is seconds-per-layer (null disables TTL prune for that layer). pinned_tags are metadata tags whose items are never evicted. retention runs periodic prune+cap sweeps in the daemon; set enabled: false to disable the store entirely.",
+    "_comment": "Workspace indexing (sqlite-vec): file_chunk + code_chunk rows written by MemoryFileIndexer for memory_search retrieval over MEMORY.md / USER.md / workspace_paths. **Phase 7 (2026-05-24)**: user-facing facts (lessons / preferences / identity / persona_manual) moved to V2 LanceDB — see cognition.memory_v2. The settings here govern ONLY workspace indexing storage. db_path defaults to ~/.xmclaw/v2/memory.db. ttl is seconds-per-layer (null = no TTL). pinned_tags / retention apply to workspace chunks. Set enabled=false to disable the workspace indexer entirely.",
     "enabled": true,
     "db_path": null,
     "embedding_dim": null,
