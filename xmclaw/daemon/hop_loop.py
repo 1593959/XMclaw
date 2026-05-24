@@ -1407,29 +1407,67 @@ class HopLoopMixin:
                 except Exception:  # noqa: BLE001
                     pass
 
-            # 2026-05-10 Phase B: UnifiedMemorySystem auto-put.
+            # Phase 7.A.3 step 3a/6 (2026-05-23): auto-extract + remember.
             #
-            # Heuristic-gated MemoryExtractor decides whether anything
-            # in this turn is worth long-term storage. When yes, we
-            # ``unified_memory.put()`` the distilled fact + emit
-            # MEMORY_PUT_AUTO so the UI's 记忆活动 timeline can show
-            # the agent learning. Same posture as Phase A: fire-and-
-            # forget background task, never blocks turn return, never
-            # fails the turn on extractor / write errors.
+            # Heuristic-gated extractor decides whether anything in
+            # this turn is worth long-term storage. When yes, we
+            # remember() the distilled fact(s) + emit MEMORY_PUT_AUTO
+            # so the UI's 记忆活动 timeline can show the agent
+            # learning. Background task: never blocks turn return,
+            # never fails the turn on extractor / write errors.
             #
             # Why background instead of synchronous: the LLM extract
             # call can take 3-8 s. Adding that to every turn's tail
-            # latency tanks UX. The trade-off is the put isn't visible
-            # until the next turn — acceptable, the user already got
-            # their answer.
-            if (
-                self._memory_extractor is not None
+            # latency tanks UX.
+            #
+            # Capability-detect dual path:
+            #   V2 — uses agent._memory_v2_llm_extractor +
+            #        self._memory_service (LLMFactExtractor returns
+            #        list[dict]; iterate; call remember per candidate).
+            #   V1 — falls back to self._memory_extractor +
+            #        self._unified_memory.put if V2 not wired (the
+            #        deprecated path; deleted in §7.A.6).
+            mem_svc = getattr(self, "_memory_service", None)
+            v2_extractor = getattr(self, "_memory_v2_llm_extractor", None)
+            use_v2_path = (
+                mem_svc is not None
+                and hasattr(mem_svc, "remember")
+                and v2_extractor is not None
+            )
+            use_v1_path = (
+                not use_v2_path
+                and self._memory_extractor is not None
                 and self._unified_memory is not None
-                and response.content
-                and user_message
-            ):
+                and hasattr(self._unified_memory, "put")
+            )
+
+            if (use_v2_path or use_v1_path) and response.content and user_message:
                 async def _bg_extract_and_put() -> None:
                     try:
+                        if use_v2_path:
+                            candidates = await v2_extractor.extract_candidates(
+                                user_message=user_message,
+                                assistant_response=response.content,
+                            )
+                            for cand in candidates:
+                                fact = await mem_svc.remember(
+                                    text=cand.text,
+                                    kind=cand.kind,
+                                    scope=cand.scope,
+                                    confidence=cand.confidence,
+                                    source_event_id=session_id,
+                                )
+                                await publish(EventType.MEMORY_PUT_AUTO, {
+                                    "session_id": session_id,
+                                    "id": fact.id,
+                                    "text": fact.text[:300],
+                                    "layer": fact.layer,
+                                    "kind": fact.kind,
+                                    "scope": fact.scope,
+                                    "reason": "llm_auto_extract",
+                                })
+                            return
+                        # V1 legacy path.
                         fact = await self._memory_extractor.extract(
                             user_message=user_message,
                             assistant_response=response.content,
@@ -1459,7 +1497,7 @@ class HopLoopMixin:
 
                 bg_extract = asyncio.create_task(
                     _bg_extract_and_put(),
-                    name=f"unified-extract-{session_id[:8]}",
+                    name=f"memory-extract-{session_id[:8]}",
                 )
                 # Reuse the post_sampling_bg set so background hooks
                 # all share one GC-anchor — same shape as the existing
