@@ -2015,10 +2015,13 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
   - **`procedural` 层** ✅ (§7.A.2 done)：`FactLayer.PROCEDURAL` 枚举值 + sweep 不触碰。render_for_prompt 优先级提升留到 §7.B 后续 polish。
   - **temporal 索引** ✅ (§7.A.2 done)：`recall(time_range=(start, end), ...)` 参数原生支持；reflection_cycle 已切过去（§7.A.3 step 1）。LanceDB scalar index on `ts_last` 是性能优化，P2。
   - **写入原子性** ✅ (§7.A.2 done)：`MemoryServiceWriteError` 类落地；`delete()` 完整实现 vector→graph rollback；`remember()` 的原子性增强是 P2（当前 LanceDB merge_insert 已是 atomic 单步写）。
-- [ ] **7.B.2 数据迁移脚本**（2-3 天）
-  - 验证已有 `scripts/migrate_memory_db_to_v2.py` 覆盖率（当前覆盖 lessons + preferences，可能漏 persona_manual / file_chunk / code_chunk）
-  - 补全缺失类型；加 dry-run 模式；加迁移前自动 backup `memory.db` → `memory.db.pre-phase7.bak`
-  - 加 verify 子命令：对每条 V1 记录确认 V2 有对应 fact
+- [x] **7.B.2 数据迁移脚本** (commit fbd6d29)
+  - ✅ 覆盖：lessons (已存在) + persona_manual (已存在) + **persona_bullet (新增)**
+  - ✅ 显式 skip + 计数：file_chunk / code_chunk / 未知 kind / malformed
+  - ✅ dry-run 是默认行为（无 --execute 就是 scan-only）
+  - ✅ 自动 backup：--execute 时默认拷贝 memory.db → memory.db.pre-phase7.bak (idempotent)，可 --no-backup 关闭
+  - ✅ `verify` 子命令：对比 V1 user-facing 行数 vs V2 fact count（容忍 V2 dedup collapse）
+  - 9 个新测试覆盖 scan 分类 + backup 行为
 - [ ] **7.B.3 一次性迁移 + 切换**
   - 用户在 `xmclaw doctor --fix` 中触发；幂等；失败 rollback
   - V1 `UnifiedMemorySystem` 切到 "read-only + warn" 模式
@@ -2060,6 +2063,7 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 - 2026-05-23: **§7.A.3 step 6/6 — §7.A 全部完成** (commit 31a7487)。删除 AgentLoop 的 unified_memory / unified_recall_top_k 弃用构造参数；删除 _unified_memory / _unified_recall_top_k / _memory_service_v2 self-attr 别名；删除 agent_loop recall 块 V1 elif 分支；删除 hop_loop auto-put V1 fallback；app_lifespan 单一 _memory_service 挂载；老 test_v2_agent_loop_unified_memory.py 整体 skip（§7.B.4 删除）；新增 test_v2_phase7_agent_loop_memory.py 7 个 V2 等价测试。**142 tests pass + 4 skipped + 0 regression**。§7.A 用 21 commits 收口完成，下一步进入 §7.B 后端替换。
 - 2026-05-24: §7.A 全部 push 到 main（30 commits 上去）。
 - 2026-05-24: **§7.B.1 完成** (commit 0adcdb8)。`MemoryService.sweep()` 实现 TTL + max_items + max_bytes 三轴 retention（mirror V1 `prune` + `evict`）；app_lifespan 加 1h 后台 sweep loop；config.example 加 `cognition.memory_v2.retention.*` 段。procedural 层 + identity/persona_manual kinds 永久 exempt。171 cross-suite 全通过。
+- 2026-05-24: **§7.B.2 完成** (commit fbd6d29)。migration script 扩展：新增 persona_bullet 覆盖、自动 backup（--execute 时默认拷贝 .pre-phase7.bak）、`verify` 子命令、显式 skip 计数（file_chunk / code_chunk / 未知 kind）、--verbose 开关。9 个 scan + backup 测试通过。**§7.B.3 待用户 OK 才能跑**（涉及用户真实数据迁移）。
 
 ---
 
