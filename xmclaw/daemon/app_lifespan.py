@@ -2224,7 +2224,23 @@ def make_lifespan(
                 _app.state.memory_v2_service = memory_v2_service
                 if agent is not None:
                     try:
+                        # Phase 7.A.3 step 5/6 (2026-05-23):
+                        # ``_memory_service`` is now the canonical
+                        # attribute name (matches AgentLoop's
+                        # constructor field). ``_memory_service_v2``
+                        # is kept as a transitional alias since some
+                        # legacy code paths still read it; removed
+                        # in §7.A.6. Also seed ``_memory_recall_top_k``
+                        # from config so factory's default doesn't
+                        # silently win when the lifespan reads a
+                        # different value.
+                        agent._memory_service = memory_v2_service
                         agent._memory_service_v2 = memory_v2_service
+                        # Also wire as the V1 alias attribute name
+                        # so HopLoopMixin's pre-step-3a path that
+                        # still reads ``_unified_memory`` continues
+                        # to detect the service. Removed in §7.A.6.
+                        agent._unified_memory = memory_v2_service
                     except Exception:  # noqa: BLE001
                         pass
                     # Wave-27 Phase 3c (2026-05-16): plumb v2 service

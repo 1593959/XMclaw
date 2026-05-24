@@ -1969,44 +1969,39 @@ def build_agent_from_config(
         cfg, memory=vec_memory, embedder=agent_embedder,
     )
 
-    # 2026-05-10 ("agent 自己用记忆"): wire the UnifiedMemorySystem +
-    # MemoryExtractor so the agent_loop's Phase A (auto-recall on turn
-    # start) and Phase B (auto-put on turn end) actually run. Pre-this
-    # wiring, both the unified system and its UI tab existed but the
-    # agent never called either — user feedback "我的目的是给他自己用，
-    # 不是光给我用" surfaced the gap.
+    # Phase 7.A.3 step 5/6 (2026-05-23): factory no longer constructs
+    # V1 UnifiedMemorySystem or MemoryExtractor — that pipeline was the
+    # 2026-05-10 "agent 自己用记忆" wire-up; it's superseded by the V2
+    # MemoryService + LLMFactExtractor wired in app_lifespan after
+    # this factory returns (see app_lifespan.py memory_v2 block).
     #
-    # Default ON (mirrors Phase 6 cognition default): users with a
-    # SqliteVec + MemoryGraph backend (the standard config) get the
-    # auto-memory pipeline for free. Disable via:
-    #   ``cfg["memory"]["unified_recall"]["enabled"] = false``
-    _mem_section = (cfg or {}).get("memory") or {}
-    _unified_cfg = (_mem_section.get("unified_recall") or {})
-    _unified_enabled = _unified_cfg.get("enabled", True)
-    _unified_top_k = max(1, int(_unified_cfg.get("top_k", 5)))
-    _unified_memory = None
-    _memory_extractor = None
-    if _unified_enabled and (vec_memory is not None or _graph is not None):
+    # AgentLoop is constructed here with ``memory_service=None``; the
+    # V2 service gets attached post-construction via ``agent._memory_service``
+    # by app_lifespan. The recall_top_k config moves from
+    # ``cfg.memory.unified_recall.top_k`` to ``cfg.cognition.memory_v2.recall_top_k``
+    # (default 5). The old config block is read for one more release
+    # as a deprecated fallback — emits a log warning when present.
+    _v2_cfg = (
+        (cfg or {}).get("cognition", {}).get("memory_v2", {})
+        if isinstance(cfg, dict) else {}
+    )
+    _recall_top_k = max(1, int(_v2_cfg.get("recall_top_k", 5)))
+    _legacy_mem_section = (cfg or {}).get("memory") or {}
+    _legacy_unified_cfg = (_legacy_mem_section.get("unified_recall") or {})
+    if _legacy_unified_cfg:
         try:
-            from xmclaw.memory import (
-                MemoryExtractor as _MemoryExtractor,
-                UnifiedMemorySystem as _UnifiedSystem,
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "config.memory.unified_recall is deprecated since "
+                "Phase 7.A.3; move recall_top_k to "
+                "cognition.memory_v2.recall_top_k. Old block will "
+                "stop being read in §7.A.6.",
             )
-            _unified_memory = _UnifiedSystem(
-                memory_manager=memory_manager,
-                memory_graph=_graph,
-                embedder=agent_embedder,
-            )
-            # Phase B extractor — gated by the same config block but
-            # depends on a working LLM (which we always have at this
-            # point — `llm` is guaranteed non-None in factory).
-            _memory_extractor = _MemoryExtractor(llm=llm)
         except Exception:  # noqa: BLE001
-            # Best-effort wire-up: if the unified system fails to
-            # construct, fall back to legacy memory_ctx_block path
-            # rather than crashing daemon boot.
-            _unified_memory = None
-            _memory_extractor = None
+            pass
+        # Honour the old top_k value during the deprecation window.
+        if "top_k" in _legacy_unified_cfg and _v2_cfg.get("recall_top_k") is None:
+            _recall_top_k = max(1, int(_legacy_unified_cfg.get("top_k", 5)))
 
     agent_loop = AgentLoop(
         llm=llm, bus=bus, tools=tools,
@@ -2027,9 +2022,14 @@ def build_agent_from_config(
         cost_tracker=_cost_tracker,
         cognitive_state=_cognitive_state,
         strategy_bank=strategy_bank,
-        unified_memory=_unified_memory,
-        unified_recall_top_k=_unified_top_k,
-        memory_extractor=_memory_extractor,
+        # Phase 7.A.3 step 5/6: V2 service injected post-factory by
+        # app_lifespan (agent._memory_service = memory_v2_service).
+        # Pass None here; AgentLoop tolerates missing service and
+        # silently skips the V2 recall + auto-extract paths until
+        # the post-construction wire-up runs.
+        memory_service=None,
+        memory_recall_top_k=_recall_top_k,
+        memory_extractor=None,
         perception_bus=perception_bus,
         strict_freeze=bool(
             (cfg or {}).get("agent", {}).get("strict_freeze", False)
