@@ -2060,6 +2060,7 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 - 2026-05-23: §7.A.3 step 2a/6 — AgentLoop.run_turn recall 路径切到 V2 MemoryService (commit e86d199)。capability-detect 双轨：V2 走 `<memory-recall>` 块；V1 通过 deprecated `unified_memory=` 别名仍可用（warning + 走 `<unified-recall>` 旧路径）。step 2b 别名删除待 step 6/6 测试重写后做。87 cross-suite 全通过。
 - 2026-05-23: §7.A.3 step 3a/6 — hop_loop.run_hop auto-put 路径切到 V2 MemoryService (commit 6bc2705)。capability-detect 双轨：V2 走 LLMFactExtractor.extract_candidates → 多次 MemoryService.remember；V1 保持原路径。MEMORY_PUT_AUTO 事件载荷在 V2 路径下用 kind/scope 替换 node_type。52 cross-suite 全通过。
 - 2026-05-23: §7.A.3 step 4/6 — /memory/unified_query + /memory/unified_put router 内部走 V2 MemoryService (commit 293afbd)。URL 保留前端兼容；返回 schema 加 kind/scope/distance，retain V1 score+matched_axes 字段。short_term 层折叠为 working；legacy node_type 经 helper 映射到 V2 kind。新增 10 个跨前后端测试 + skip 4 个老 V1 TestClient 测试（迁移到新文件）。73 passed + 4 skipped + 0 regression。
+- 2026-05-23: §7.A.3 step 5/6 — factory.py 停止构造 V1 UnifiedMemorySystem + MemoryExtractor，AgentLoop 改用 memory_service=/memory_recall_top_k= 新关键字；app_lifespan 把 V2 service 挂到 agent._memory_service (新规范名) + 保留 _memory_service_v2 / _unified_memory 过渡别名 (commit ea30063)。recall_top_k 配置位移 memory.unified_recall.top_k → cognition.memory_v2.recall_top_k (旧块有 deprecation warning)。71 factory tests + 73 cross-suite 全通过。
 
 ---
 
