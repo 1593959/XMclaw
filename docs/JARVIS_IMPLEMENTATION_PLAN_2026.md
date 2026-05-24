@@ -365,39 +365,28 @@ class InProcessEventBus:
 
 ---
 
-### 1.4 Memory 系统 — 双栈架构
+### 1.4 Memory 系统 — 单栈 V2（LanceDB）
 
-#### 1.4.1 v1 层（sqlite-vec）：扁平分层存储
+> **Phase 7 (2026-05-23/24)**: V1 双栈架构已退役。原 V1 `UnifiedMemorySystem` +
+> sqlite-vec 用户 fact 存储被物理删除（commit 70e0ee6）；用户态 facts
+> 全部走 V2 `MemoryService` + LanceDB。
+> `xmclaw/providers/memory/sqlite_vec.py` 保留但 **不再用于用户 fact**
+> ——它现在只服务于 workspace 索引（`MemoryFileIndexer` 写 file_chunk /
+> code_chunk）。
 
-**文件**: `xmclaw/providers/memory/manager.py`, `xmclaw/providers/memory/sqlite_vec.py`
+#### 1.4.1 workspace 索引（sqlite-vec，非用户 fact）
 
-```
-MemoryManager
-├── BuiltinFileMemoryProvider ── MEMORY.md / USER.md / IDENTITY.md
-└── SqliteVecMemory（可选外部 provider）
-    ├── working layer（短期，默认 7 天 TTL）
-    ├── short layer（中期，默认 30 天 TTL）
-    └── long layer（长期，无 TTL）
-```
+**文件**: `xmclaw/daemon/memory_indexer.py` + `xmclaw/providers/memory/sqlite_vec.py`
 
-**存储流程**:
-1. `remember(text, layer, kind, scope)` → 确定目标层
-2. `embed(text)` → Ollama `qwen3-embedding:0.6b`（dim=1024）或 fallback 到 substring
-3. `upsert(id, text, embedding, metadata)` → sqlite-vec 向量表
-4. TTL sweep：后台任务定期删除过期 working/short 层记录
+工作区文件索引（MEMORY.md / USER.md / 用户配置的 workspace 路径）经
+`MemoryFileIndexer` 切块 + 嵌入 + 写到 sqlite-vec。`memory_search` 工具
+查 file_chunk / code_chunk 时走这条路。这与下文的"用户态 facts"是
+两个 orthogonal 的概念 —— file_chunk 是大量内容片段（千 KB 级），
+fact 是少量原子知识单元（句子级）。
 
-**召回流程** (`AgentLoop.run_turn:1154-1247`):
-1. `prefetch(user_message)` → 预取块（hindsight 等外部 provider）
-2. `query(layer="long", text, embedding, k, hybrid=True)` → sqlite-vec 混合检索
-   - 有 embedder：向量相似度 + keyword RRF
-   - 无 embedder：fallback 到 LIKE 子串匹配
-3. 过滤：排除当前 session + <60s 近期 + file_chunk/code_chunk + archived
-4. 渲染：时间戳 + kind tag + 截断至 2048 chars total
-5. 注入：`<memory-context>` 块 riding on user message（不污染 system prompt cache）
+#### 1.4.2 用户态 facts（V2 LanceDB）
 
-#### 1.4.2 v2 层（LanceDB）：结构化知识图谱
-
-**文件**: `xmclaw/memory/v2/service.py`（1761 行）
+**文件**: `xmclaw/memory/v2/service.py`
 
 **核心数据模型**:
 - `Fact`: id, text, kind(identity/preference/goal/lesson/...), scope(user/project/session), layer(working/long_term), embedding
@@ -1936,7 +1925,7 @@ memory_put 工具:
 
 ## Phase 7: Memory V1→V2 收口（双栈合一）
 
-> **状态**: 🟡 进行中（2026-05-23 — §7.A 全部完成；§7.B 后端替换待启动）
+> **状态**: 🟡 进行中（2026-05-24 — §7.A + §7.B.1/2/4/5 完成；§7.B.3 用户数据 live 迁移待 OK）
 > **目标**: 彻底退役 V1 (`xmclaw/memory/unified.py` + sqlite_vec + MemoryGraph)，所有读写收口到 V2 (`MemoryService` + LanceDB)。消灭双 import 入口 / 双数据目录 / `memory_search` 双查桥接。
 > **时间**: 3 周（阶段 1 ~1 周 facade 收口 + 阶段 2 ~2 周后端替换）
 > **风险**: 中（用户已有真实数据需要迁移，需要回滚预案）
@@ -2022,17 +2011,21 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
   - ✅ 自动 backup：--execute 时默认拷贝 memory.db → memory.db.pre-phase7.bak (idempotent)，可 --no-backup 关闭
   - ✅ `verify` 子命令：对比 V1 user-facing 行数 vs V2 fact count（容忍 V2 dedup collapse）
   - 9 个新测试覆盖 scan 分类 + backup 行为
-- [ ] **7.B.3 一次性迁移 + 切换**
-  - 用户在 `xmclaw doctor --fix` 中触发；幂等；失败 rollback
-  - V1 `UnifiedMemorySystem` 切到 "read-only + warn" 模式
-- [ ] **7.B.4 退役 V1 代码 + 配置**
-  - 删 `xmclaw/memory/unified.py` / `_id.py` / `extractor.py`
-  - 删 `xmclaw/providers/memory/sqlite_vec.py` + `manager.py`（保留 `base.py` / `embedding.py`，V2 在用）
-  - 删 `config.example.json` 的 `memory.*` 段；retention 配置改在 `cognition.memory_v2.retention`
-  - 更新 `xmclaw/memory/AGENTS.md` 反映新结构
-- [ ] **7.B.5 文档收尾**
-  - JARVIS_PLAN §1.4 改写："双栈架构" → "单栈 LanceDB"
-  - 附录 B 技术债务清单加一条 "V1 memory 已退役 ✅"
+- [ ] **7.B.3 一次性迁移 + 切换** ⏳ 等用户 OK
+  - 用户跑 `python scripts/migrate_memory_db_to_v2.py --execute`（默认自动 backup）
+  - 跑 `... verify` 子命令确认覆盖
+  - 涉及用户真实数据，不自动化
+- [x] **7.B.4 退役 V1 代码** (commit 70e0ee6)
+  - ✅ 删 `xmclaw/memory/unified.py` / `_id.py` / `extractor.py`
+  - ✅ 删 4 个 V1 测试文件（unified / unified_write / extractor / agent_loop_unified_memory）
+  - ❌ **不删** `sqlite_vec.py` + `manager.py` —— 它们是 workspace 索引后端
+    （`MemoryFileIndexer` 写 file_chunk / code_chunk），与用户态 fact 存储无关
+  - ✅ 更新 `xmclaw/memory/__init__.py` 只 re-export V2；V1 名字 import 直接报 ImportError
+  - ✅ 更新 `xmclaw/memory/AGENTS.md` + `CLAUDE.md` 反映新结构
+  - 仍待做（§7.B.3 后）：删 `config.example.json` 的 `memory.*` 顶级段
+- [x] **7.B.5 文档收尾** (本 commit)
+  - ✅ JARVIS_PLAN §1.4 改写："双栈架构" → "单栈 LanceDB"，§1.4.1 改述 sqlite-vec 现在的 workspace 索引角色
+  - 仍待做：附录 B 技术债务清单加 "V1 memory 已退役 ✅"
 
 ### 7.C 验收标准
 
@@ -2064,6 +2057,8 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 - 2026-05-24: §7.A 全部 push 到 main（30 commits 上去）。
 - 2026-05-24: **§7.B.1 完成** (commit 0adcdb8)。`MemoryService.sweep()` 实现 TTL + max_items + max_bytes 三轴 retention（mirror V1 `prune` + `evict`）；app_lifespan 加 1h 后台 sweep loop；config.example 加 `cognition.memory_v2.retention.*` 段。procedural 层 + identity/persona_manual kinds 永久 exempt。171 cross-suite 全通过。
 - 2026-05-24: **§7.B.2 完成** (commit fbd6d29)。migration script 扩展：新增 persona_bullet 覆盖、自动 backup（--execute 时默认拷贝 .pre-phase7.bak）、`verify` 子命令、显式 skip 计数（file_chunk / code_chunk / 未知 kind）、--verbose 开关。9 个 scan + backup 测试通过。**§7.B.3 待用户 OK 才能跑**（涉及用户真实数据迁移）。
+- 2026-05-24: **§7.B.4 完成** (commit 70e0ee6)。物理删除 V1 用户态 fact 模块：`xmclaw/memory/unified.py` + `_id.py` + `extractor.py` + 4 个老测试文件，共 2799 行减除。`xmclaw/memory/__init__.py` 只 re-export V2；V1 名字 import 直接报 ImportError。**注**：`sqlite_vec.py` + `manager.py` 不删 — 它们是 workspace 索引后端，跟用户态 fact 无关。
+- 2026-05-24: **§7.B.5 部分完成** (本 commit)。JARVIS_PLAN §1.4 从"双栈架构"改写为"单栈 V2 LanceDB"，§1.4.1 说明 sqlite-vec 现在专门做 workspace 索引（不再服务用户 fact）。附录 B 技术债务清单更新待 §7.B.3 之后做。
 
 ---
 
