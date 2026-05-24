@@ -1209,6 +1209,151 @@ class MemoryService:
     async def get_fact(self, fact_id: str) -> Fact | None:
         return await self._vec.get(fact_id)
 
+    async def sweep(
+        self,
+        *,
+        ttl: dict[str, float | None] | None = None,
+        max_items: dict[str, int | None] | None = None,
+        max_bytes: dict[str, int | None] | None = None,
+        protected_kinds: tuple[str, ...] = (
+            "identity", "persona_manual",
+        ),
+    ) -> dict[str, Any]:
+        """Phase 7.B.1 V1→V2 retention port.
+
+        Three-axis retention sweep, run periodically by the daemon
+        (see app_lifespan memory_v2 block). For each layer in
+        {working, long_term}:
+
+          * **TTL prune** — delete facts whose ``ts_last`` is older
+            than ``ttl[layer]`` seconds ago. ``None`` disables the
+            TTL axis for that layer (V1's default for ``long``).
+          * **max_items cap** — if `count(layer)` exceeds the cap,
+            delete the oldest non-protected rows until the cap is
+            met.
+          * **max_bytes cap** — sum ``len(text.encode('utf-8'))``
+            across non-protected rows; drop oldest until the sum
+            fits.
+
+        ``procedural`` layer is exempt from all three axes —
+        procedural facts (skills / persona) outlive aging policies
+        by design (see FactLayer docstring).
+
+        ``protected_kinds`` rows are exempt regardless of layer.
+        Default protects identity + persona_manual (V1's
+        equivalent of pinned_tags=['identity', 'user-profile']).
+
+        Returns a summary dict::
+
+            {
+              "ttl_pruned":  {"working": N, "long_term": M},
+              "cap_evicted": {"working": N, "long_term": M},
+              "elapsed_ms":  float,
+            }
+
+        Best-effort: each axis is independent and isolated; one
+        axis failing doesn't abort the others (logged).
+        """
+        import time as _t
+        t0 = _t.perf_counter()
+        ttl_map: dict[str, float | None] = dict(ttl or {})
+        items_map: dict[str, int | None] = dict(max_items or {})
+        bytes_map: dict[str, int | None] = dict(max_bytes or {})
+
+        ttl_pruned: dict[str, int] = {}
+        cap_evicted: dict[str, int] = {}
+        prot_set: set[str] = set(protected_kinds)
+
+        for layer in ("working", "long_term"):
+            # Pull the whole layer once — we filter protected_kinds
+            # Python-side rather than via SQL NOT IN, because the
+            # in-memory backend's where parser doesn't support
+            # NOT IN. Cheaper anyway (one scan covers both axes).
+            try:
+                listing = await self._vec.search(
+                    None,
+                    where=f"layer = '{layer}'",
+                    limit=_MAINTENANCE_SCAN_LIMIT,
+                )
+                _maybe_warn_scan_truncated(
+                    f"sweep.{layer}", len(listing),
+                    _MAINTENANCE_SCAN_LIMIT,
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "memory_service.sweep.scan_failed layer=%s err=%s",
+                    layer, exc,
+                )
+                ttl_pruned[layer] = 0
+                cap_evicted[layer] = 0
+                continue
+
+            # Filter out protected kinds — those are exempt from
+            # every sweep axis.
+            unprotected = [f for f in listing if f.kind not in prot_set]
+
+            # ── Axis 1: TTL prune ────────────────────────────────
+            ttl_v = ttl_map.get(layer)
+            ttl_victim_ids: set[str] = set()
+            if ttl_v is not None and ttl_v > 0:
+                cutoff = _t.time() - float(ttl_v)
+                ttl_victim_ids = {
+                    f.id for f in unprotected if f.ts_last < cutoff
+                }
+            ttl_pruned[layer] = len(ttl_victim_ids)
+
+            # ── Axis 2 + 3: cap-based eviction ───────────────────
+            items_cap = items_map.get(layer)
+            bytes_cap = bytes_map.get(layer)
+            cap_victim_ids: set[str] = set()
+            # Cap math runs over remaining (post-TTL) rows.
+            remaining = [
+                f for f in unprotected if f.id not in ttl_victim_ids
+            ]
+            remaining.sort(key=lambda f: f.ts_last)  # oldest-first
+
+            if items_cap is not None and len(remaining) > items_cap:
+                overflow = len(remaining) - items_cap
+                for f in remaining[:overflow]:
+                    cap_victim_ids.add(f.id)
+
+            if bytes_cap is not None:
+                budget = int(bytes_cap)
+                keep: set[str] = set()
+                for f in reversed(remaining):
+                    nbytes = len((f.text or "").encode("utf-8"))
+                    if nbytes <= budget:
+                        keep.add(f.id)
+                        budget -= nbytes
+                    else:
+                        break
+                for f in remaining:
+                    if f.id not in keep:
+                        cap_victim_ids.add(f.id)
+
+            # Single combined delete (TTL + cap victims).
+            all_victims = ttl_victim_ids | cap_victim_ids
+            if all_victims:
+                try:
+                    ids_list = ", ".join(f"'{vid}'" for vid in all_victims)
+                    await self._vec.delete(f"id IN ({ids_list})")
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning(
+                        "memory_service.sweep.delete_failed layer=%s err=%s",
+                        layer, exc,
+                    )
+                    # Reset counts since deletion didn't happen.
+                    ttl_pruned[layer] = 0
+                    cap_victim_ids = set()
+            cap_evicted[layer] = len(cap_victim_ids)
+
+        elapsed_ms = (_t.perf_counter() - t0) * 1000.0
+        return {
+            "ttl_pruned": ttl_pruned,
+            "cap_evicted": cap_evicted,
+            "elapsed_ms": round(elapsed_ms, 2),
+        }
+
     async def delete(self, fact_id: str) -> bool:
         """Remove a Fact + all incident edges. Idempotent.
 

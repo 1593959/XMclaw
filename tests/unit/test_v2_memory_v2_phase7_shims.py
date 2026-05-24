@@ -397,3 +397,132 @@ async def test_extract_candidates_empty_on_no_user_message() -> None:
     ex = LLMFactExtractor(llm=_StubLLM("[]"))
     out = await ex.extract_candidates(user_message="")
     assert out == []
+
+
+# ── Phase 7.B.1: MemoryService.sweep TTL + cap eviction ──────────
+
+
+@pytest.mark.asyncio
+async def test_sweep_ttl_prunes_old_working_facts() -> None:
+    """TTL axis: working-layer facts older than ttl get deleted."""
+    import time as _t
+    svc = _make_service()
+    f_old = await svc.remember(
+        "old fact", kind=FactKind.LESSON, scope=FactScope.PROJECT,
+        layer="working",
+    )
+    f_fresh = await svc.remember(
+        "fresh fact", kind=FactKind.LESSON, scope=FactScope.PROJECT,
+        layer="working",
+    )
+    now = _t.time()
+    svc._vec._rows[f_old.id].ts_last = now - 7200.0  # type: ignore[attr-defined]
+    svc._vec._rows[f_fresh.id].ts_last = now  # type: ignore[attr-defined]
+
+    result = await svc.sweep(ttl={"working": 3600.0, "long_term": None})
+    assert result["ttl_pruned"]["working"] == 1
+    assert result["ttl_pruned"]["long_term"] == 0
+    assert (await svc.get_fact(f_old.id)) is None
+    assert (await svc.get_fact(f_fresh.id)) is not None
+
+
+@pytest.mark.asyncio
+async def test_sweep_max_items_evicts_oldest() -> None:
+    """Cap axis: when count exceeds max_items, oldest get evicted.
+
+    Uses semantically distinct texts so near-dup detection (cosine
+    distance < 0.15) doesn't merge writes into the same fact —
+    StubEmbedder's 4-dim vectors can be close enough that short
+    similar strings collide.
+    """
+    import time as _t
+    svc = _make_service()
+    distinct_texts = [
+        "用户最早决定使用 PostgreSQL 数据库",
+        "agent 在 2025 年学会了 Python async",
+        "项目 X 的 staging 环境在新加坡",
+        "deadline 是十二月二十五号",
+        "团队成员包括 Alice Bob Charlie",
+    ]
+    ids = []
+    for i, text in enumerate(distinct_texts):
+        f = await svc.remember(
+            text, kind=FactKind.LESSON, scope=FactScope.PROJECT,
+            layer="working",
+        )
+        ids.append(f.id)
+        # Stamp distinct ts so oldest-first ordering is deterministic.
+        svc._vec._rows[f.id].ts_last = _t.time() - (5 - i) * 10  # type: ignore[attr-defined]
+
+    # Sanity: all 5 are distinct facts (no near-dup merging).
+    assert len(set(ids)) == 5
+
+    result = await svc.sweep(max_items={"working": 3})
+    assert result["cap_evicted"]["working"] == 2
+    # Oldest two (i=0, i=1) gone.
+    assert (await svc.get_fact(ids[0])) is None
+    assert (await svc.get_fact(ids[1])) is None
+    # Newer three survive.
+    for i in (2, 3, 4):
+        assert (await svc.get_fact(ids[i])) is not None
+
+
+@pytest.mark.asyncio
+async def test_sweep_procedural_layer_exempt() -> None:
+    """Procedural-layer facts never get touched by sweep."""
+    import time as _t
+    svc = _make_service()
+    f = await svc.remember(
+        "skill-fact", kind=FactKind.LESSON, scope=FactScope.PROJECT,
+        layer="procedural",
+    )
+    svc._vec._rows[f.id].ts_last = _t.time() - 999999.0  # type: ignore[attr-defined]
+
+    result = await svc.sweep(
+        ttl={"working": 1.0, "long_term": 1.0},
+        max_items={"working": 0, "long_term": 0},
+    )
+    # Procedural not in returned summary.
+    assert "procedural" not in result["ttl_pruned"]
+    assert "procedural" not in result["cap_evicted"]
+    # Fact still alive.
+    assert (await svc.get_fact(f.id)) is not None
+
+
+@pytest.mark.asyncio
+async def test_sweep_protected_kinds_exempt() -> None:
+    """identity + persona_manual facts survive both TTL + cap axes
+    regardless of layer."""
+    import time as _t
+    svc = _make_service()
+    f_id = await svc.remember(
+        "用户叫 Alice",
+        kind=FactKind.IDENTITY, scope=FactScope.USER,
+        layer="working",
+    )
+    f_ord = await svc.remember(
+        "regular fact",
+        kind=FactKind.LESSON, scope=FactScope.PROJECT,
+        layer="working",
+    )
+    svc._vec._rows[f_id.id].ts_last = _t.time() - 99999.0  # type: ignore[attr-defined]
+    svc._vec._rows[f_ord.id].ts_last = _t.time() - 99999.0  # type: ignore[attr-defined]
+
+    result = await svc.sweep(ttl={"working": 3600.0})
+    # Only regular fact deleted.
+    assert result["ttl_pruned"]["working"] == 1
+    assert (await svc.get_fact(f_id.id)) is not None
+    assert (await svc.get_fact(f_ord.id)) is None
+
+
+@pytest.mark.asyncio
+async def test_sweep_no_config_is_noop() -> None:
+    """With no ttl/max_items/max_bytes specified, sweep does nothing."""
+    svc = _make_service()
+    f = await svc.remember(
+        "stays", kind=FactKind.LESSON, scope=FactScope.PROJECT,
+    )
+    result = await svc.sweep()
+    assert all(v == 0 for v in result["ttl_pruned"].values())
+    assert all(v == 0 for v in result["cap_evicted"].values())
+    assert (await svc.get_fact(f.id)) is not None

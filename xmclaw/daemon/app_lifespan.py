@@ -2360,6 +2360,80 @@ def make_lifespan(
                     log.warning(
                         "memory_v2.persona_render_boot_failed err=%s", exc,
                     )
+
+                # Phase 7.B.1 (2026-05-24): periodic retention sweep.
+                # Mirror of V1's SqliteVecMemory sweep_task — runs
+                # TTL prune + max_items / max_bytes cap eviction on
+                # working + long_term layers (procedural exempt).
+                # Config: ``cognition.memory_v2.retention.*``:
+                #   sweep_interval_s — default 3600 (1h)
+                #   ttl: {working: 86400, long_term: null}  (1d / never)
+                #   max_items: {working: 20000, long_term: null}
+                #   max_bytes: {working: 104857600, long_term: null}
+                # Defaults mirror V1's `memory.retention.*` so users
+                # migrating don't get a behavior surprise. Set
+                # sweep_interval_s=0 to disable the loop entirely.
+                _retention_cfg = (
+                    memory_v2_cfg.get("retention", {})
+                    if isinstance(memory_v2_cfg, dict) else {}
+                ) or {}
+                _sweep_interval = float(
+                    _retention_cfg.get("sweep_interval_s", 3600),
+                )
+                if _sweep_interval > 0:
+                    _ttl_cfg = _retention_cfg.get("ttl") or {
+                        "working": 86400.0, "long_term": None,
+                    }
+                    _items_cfg = _retention_cfg.get("max_items") or {
+                        "working": 20000, "long_term": None,
+                    }
+                    _bytes_cfg = _retention_cfg.get("max_bytes") or {
+                        "working": 104857600, "long_term": None,
+                    }
+
+                    async def _memory_v2_sweep_loop() -> None:
+                        # First sweep happens AFTER one interval so
+                        # the daemon doesn't block boot. Loop never
+                        # raises — every iteration is wrapped.
+                        try:
+                            while True:
+                                await asyncio.sleep(_sweep_interval)
+                                try:
+                                    summary = await memory_v2_service.sweep(
+                                        ttl=_ttl_cfg,
+                                        max_items=_items_cfg,
+                                        max_bytes=_bytes_cfg,
+                                    )
+                                    log.info(
+                                        "memory_v2.sweep "
+                                        "ttl_pruned=%s cap_evicted=%s "
+                                        "elapsed_ms=%.1f",
+                                        summary["ttl_pruned"],
+                                        summary["cap_evicted"],
+                                        summary["elapsed_ms"],
+                                    )
+                                except asyncio.CancelledError:
+                                    raise
+                                except Exception as exc:  # noqa: BLE001
+                                    log.warning(
+                                        "memory_v2.sweep_failed err=%s "
+                                        "(loop continues)", exc,
+                                    )
+                        except asyncio.CancelledError:
+                            return
+
+                    _sweep_task = asyncio.create_task(
+                        _memory_v2_sweep_loop(),
+                        name="memory_v2_sweep",
+                    )
+                    _app.state.memory_v2_sweep_task = _sweep_task
+                    log.info(
+                        "memory_v2.sweep_loop_started interval_s=%.0f",
+                        _sweep_interval,
+                    )
+                else:
+                    _app.state.memory_v2_sweep_task = None
+                    log.info("memory_v2.sweep_loop_disabled")
             except Exception as exc:  # noqa: BLE001
                 log.warning(
                     "memory_v2.start_failed err=%s "
@@ -2909,6 +2983,14 @@ def make_lifespan(
                     await orchestrator.stop()
                 except Exception as exc:  # noqa: BLE001
                     log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
+            # Phase 7.B.1 (2026-05-24): stop the memory_v2 sweep loop.
+            _v2_sweep = getattr(_app.state, "memory_v2_sweep_task", None)
+            if _v2_sweep is not None and not _v2_sweep.done():
+                _v2_sweep.cancel()
+                try:
+                    await _v2_sweep
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
             # B-294: stop the evaluation trigger BEFORE the observer so
             # any in-flight debounce timer doesn't try to call .evaluate()
             # on a stopped observer.
