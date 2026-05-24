@@ -1936,7 +1936,7 @@ memory_put 工具:
 
 ## Phase 7: Memory V1→V2 收口（双栈合一）
 
-> **状态**: ⬜ 未启动（2026-05-23 立项）
+> **状态**: 🟡 进行中（2026-05-23 起 — §7.A.1 完成）
 > **目标**: 彻底退役 V1 (`xmclaw/memory/unified.py` + sqlite_vec + MemoryGraph)，所有读写收口到 V2 (`MemoryService` + LanceDB)。消灭双 import 入口 / 双数据目录 / `memory_search` 双查桥接。
 > **时间**: 3 周（阶段 1 ~1 周 facade 收口 + 阶段 2 ~2 周后端替换）
 > **风险**: 中（用户已有真实数据需要迁移，需要回滚预案）
@@ -1993,9 +1993,7 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 
 > **目标**：用户态只剩 V2 一个 import 入口；V1 继续跑、但只作 internal backend；`memory_search` 双查桥接退役。**完成后用户体感 V1/V2 之争已经消失。**
 
-- [ ] **7.A.1 callsite 盘点（半天）**
-  - 跑脚本：`rg -l "from xmclaw.memory import|from xmclaw\.memory\.unified|UnifiedMemorySystem" --type py`
-  - 输出 21 个文件分类表：每个 callsite 的 (调用 API、能否直接换 V2 等价 API、V2 缺什么)
+- [x] **7.A.1 callsite 盘点（半天）** — 完成报告 `docs/audit/AUDIT_2026-05-23_phase7_memory_v1_callsites.md`，25 个文件分 9 类，输出 §7.A.2 必须补的 7 个 P0 shim 清单 + §7.A.3 的 6 步迁移顺序。
 - [ ] **7.A.2 在 V2 加 shim API（1-2 天）**
   - `MemoryService.query(time_range=...)` — 暂时转发到 V1 `UnifiedMemorySystem.query` 的时序通道
   - `MemoryService.put(layer="procedural", ...)` — 暂时落到 V1 procedural 层
@@ -2054,7 +2052,8 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 
 ### 7.E 进度日志
 
-（首条由启动 commit 写入）
+- 2026-05-23: Phase 7 立项 + 元文档收口（CLAUDE.md / JARVIS_PLAN 7 节 / memory/AGENTS.md）(commit 2beb326)
+- 2026-05-23: §7.A.1 V1 callsite 盘点完成 — 25 文件 9 分类，输出 7 P0 shim + 6 步迁移序 (commit 1e37d7d)
 
 ---
 
