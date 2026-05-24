@@ -152,15 +152,22 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # zero behavior change when continuous_loop is off.
         perception_bus: Any = None,
         # 2026-05-10 ("agent 自己用记忆" Phase A/B): optional
-        # UnifiedMemorySystem. When wired, ``run_turn`` does a
-        # multi-axis recall (semantic + relation + temporal) at the
-        # start of each turn and a MemoryExtractor-driven put() at
-        # the end. ``None`` is the safe default — pre-2026-05-10
-        # callers see zero behavioural change. The factory wires
-        # this in when ``cfg["memory"]["unified_recall"] = true``
-        # (default true post-2026-05-10).
+        # MemoryService (V2). When wired, ``run_turn`` does a
+        # semantic recall at the start of each turn and a
+        # MemoryExtractor-driven remember() at the end. ``None`` is
+        # the safe default — silent no-op when not wired. Phase 7.A.3
+        # (2026-05-23) replaced the legacy ``unified_memory`` keyword
+        # (a V1 UnifiedMemorySystem instance); the old keyword is
+        # still accepted as a deprecated alias for now to keep the
+        # multi-commit migration green — it will be removed in §7.A.6
+        # together with the V1 module deletion.
+        memory_service: Any = None,
+        memory_recall_top_k: int = 5,
+        # Deprecated — Phase 7.A.3 alias. Pass ``memory_service=``
+        # instead. Emits a DeprecationWarning when used; mapped onto
+        # ``_memory_service`` so existing call paths keep working.
         unified_memory: Any = None,
-        unified_recall_top_k: int = 5,
+        unified_recall_top_k: int | None = None,
         # 2026-05-10 Phase B: optional MemoryExtractor for auto-put.
         # Duck-typed: any object exposing
         # ``async extract(turn_summary, ctx) -> list[ExtractedFact]``
@@ -347,13 +354,38 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         else:
             from xmclaw.cognition.state import CognitiveState
             self._cognitive_state = CognitiveState()
-        # 2026-05-10 Phase A/B: UnifiedMemorySystem + MemoryExtractor.
-        # Both optional; None means the unified-recall + auto-put
-        # paths are silent no-ops (legacy memory_ctx_block path still
-        # runs unchanged via self._memory_manager).
-        self._unified_memory = unified_memory
-        self._unified_recall_top_k = max(1, int(unified_recall_top_k))
+        # Phase 7.A.3 (2026-05-23): MemoryService (V2) + MemoryExtractor.
+        # Both optional; None means the recall + auto-remember paths
+        # are silent no-ops (legacy memory_ctx_block path still runs
+        # unchanged via self._memory_manager).
+        #
+        # Backward-compat shim for the V1 ``unified_memory`` kwarg:
+        # if memory_service wasn't passed but unified_memory was, use
+        # it and warn. Mirror the same for the top-k knob.
+        if memory_service is None and unified_memory is not None:
+            import warnings as _w
+            _w.warn(
+                "AgentLoop(unified_memory=...) is deprecated since "
+                "Phase 7.A.3; pass memory_service= (a V2 MemoryService) "
+                "instead. This alias will be removed in Phase 7.A.6.",
+                DeprecationWarning, stacklevel=2,
+            )
+            memory_service = unified_memory
+        if unified_recall_top_k is not None and (
+            memory_recall_top_k == 5  # i.e. caller left it default
+        ):
+            memory_recall_top_k = unified_recall_top_k
+        self._memory_service = memory_service
+        self._memory_recall_top_k = max(1, int(memory_recall_top_k))
         self._memory_extractor = memory_extractor
+        # Phase 7.A.3 step 2a alias — HopLoopMixin still reads
+        # ``self._unified_memory`` and is migrated in step 3/6.
+        # Until then, expose the same object under both names so
+        # the existing hop_loop auto-put path keeps working.
+        # NOTE: this is a SHARED reference, not a copy — mutating
+        # via either attribute is reflected on both.
+        self._unified_memory = memory_service
+        self._unified_recall_top_k = self._memory_recall_top_k
         # Jarvisification Phase 4: hand embedder to cognitive state so
         # semantic salience computation works.
         if self._embedder is not None and hasattr(self._cognitive_state, "set_embedder"):
@@ -1526,85 +1558,132 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             except Exception as exc:  # noqa: BLE001 — best-effort
                 _log_memory_failure(exc)
 
-        # 2026-05-10 Phase A: UnifiedMemorySystem auto-recall.
+        # Phase 7.A.3 (2026-05-23): MemoryService auto-recall.
         #
-        # Until now ``unified_memory`` was UI-only — a tab in
-        # /ui/memory let the operator hand-type a multi-axis query.
-        # Agent itself never used it. User feedback (literal): "我的
-        # 目的是给他自己用，不是光给我用." This wires the recall side
-        # so EVERY turn the agent benefits from the multi-axis index.
+        # User feedback (literal): "我的目的是给他自己用，不是光给我用."
+        # This wires the recall side so EVERY turn the agent benefits
+        # from L1 facts (Fact + Relation, V2 MemoryService).
         #
         # Why a separate block from ``memory_ctx_block`` (above):
         #   * memory_ctx_block uses the legacy MemoryManager — pure
-        #     vector + keyword over the working/short/long layers.
-        #   * unified_recall_block uses UnifiedMemorySystem — adds
-        #     the relation + temporal axes, returns ``matched_axes``
-        #     so the LLM can see WHY each hit was retrieved.
+        #     vector + keyword over working/short/long layers
+        #     (V1 SqliteVecMemory, to be retired in §7.B).
+        #   * unified-recall block uses MemoryService.recall — typed
+        #     Fact hits with kind/scope + 1-hop relations (CONTRADICTS
+        #     / SUPERSEDES) so the LLM can see fact context.
         # Both ride the user-message tail (no system-prompt cache
-        # invalidation). When ``self._unified_memory is None``
-        # (factory didn't wire it / config disabled), this is a
-        # silent no-op and the agent_loop behaves identically to
-        # pre-2026-05-10.
+        # invalidation). When the service isn't wired this is a
+        # silent no-op.
+        #
+        # Backward-compat shim: if a V1 UnifiedMemorySystem was passed
+        # via the deprecated kwarg, ``self._memory_service`` is that
+        # instance (still has ``.query``). Detect by capability —
+        # ``recall`` = V2 path, ``query`` = legacy V1 path. The
+        # legacy branch is deleted in §7.A.6.
         unified_recall_block = ""
-        if self._unified_memory is not None and user_message:
+        svc = self._memory_service
+        if svc is not None and user_message:
             try:
                 import time as _t
                 _t0 = _t.perf_counter()
-                hits = await self._unified_memory.query(
-                    semantic=user_message,
-                    limit=self._unified_recall_top_k,
-                )
-                elapsed_ms = (_t.perf_counter() - _t0) * 1000.0
-                if hits:
-                    rendered: list[str] = []
-                    for h in hits:
-                        # Each hit shows which axes contributed so the
-                        # LLM can disambiguate "matched semantically AND
-                        # temporally" from "only matched on relation".
-                        axes = "/".join(h.matched_axes) or "?"
-                        rendered.append(
-                            f"[{axes} | score={h.score:.2f}] {h.text}"
-                        )
-                    unified_recall_block = (
-                        "\n\n<unified-recall>\n"
-                        "[System note: the following are recalled "
-                        "memory entries matching your current query "
-                        "across semantic + relation + temporal axes "
-                        "(NOT new user input). Each entry shows the "
-                        "axes it matched on so you can judge "
-                        "relevance.]\n\n"
-                        + "\n".join(rendered)
-                        + "\n</unified-recall>"
+                if hasattr(svc, "recall"):
+                    # V2 native path.
+                    v2_hits = await svc.recall(
+                        query=user_message,
+                        k=self._memory_recall_top_k,
                     )
-                # Always emit the recall event — even when hits=[] —
-                # so the UI's "记忆活动" timeline can show that the
-                # agent DID query (just nothing relevant came back).
-                # NOTE: don't ``from xmclaw.core.bus import ...`` here —
-                # ``EventType`` is already imported at module top, and
-                # a local re-import would shadow it for the whole
-                # ``run_turn`` function (Python local-scope rules) and
-                # break the USER_MESSAGE publish above.
-                await self._bus.publish(make_event(
-                    session_id=session_id,
-                    agent_id=self._agent_id,
-                    type=EventType.MEMORY_RECALL,
-                    payload={
-                        "session_id": session_id,
-                        "query": user_message[:500],
-                        "hits": [
-                            {
-                                "id": h.id,
-                                "text": h.text[:300],
-                                "score": round(h.score, 3),
-                                "matched_axes": list(h.matched_axes),
-                                "layer": h.layer,
-                            }
-                            for h in hits
-                        ],
-                        "elapsed_ms": round(elapsed_ms, 2),
-                        "limit": self._unified_recall_top_k,
-                    },
-                ))
+                    elapsed_ms = (_t.perf_counter() - _t0) * 1000.0
+                    rendered: list[str] = []
+                    event_hits: list[dict[str, Any]] = []
+                    for h in v2_hits:
+                        fact = h.fact
+                        kind = getattr(fact, "kind", "?")
+                        scope = getattr(fact, "scope", "?")
+                        layer = getattr(fact, "layer", "?")
+                        text = getattr(fact, "text", "")
+                        fid = getattr(fact, "id", "")
+                        dist = float(getattr(h, "distance", 0.0) or 0.0)
+                        rendered.append(
+                            f"[{kind}/{scope} | d={dist:.2f}] {text}"
+                        )
+                        event_hits.append({
+                            "id": fid,
+                            "text": text[:300],
+                            "distance": round(dist, 3),
+                            "kind": kind,
+                            "scope": scope,
+                            "layer": layer,
+                        })
+                    if rendered:
+                        unified_recall_block = (
+                            "\n\n<memory-recall>\n"
+                            "[System note: the following are recalled "
+                            "L1 facts matching your current query "
+                            "(NOT new user input). Each entry shows "
+                            "its kind/scope so you can judge "
+                            "relevance.]\n\n"
+                            + "\n".join(rendered)
+                            + "\n</memory-recall>"
+                        )
+                    await self._bus.publish(make_event(
+                        session_id=session_id,
+                        agent_id=self._agent_id,
+                        type=EventType.MEMORY_RECALL,
+                        payload={
+                            "session_id": session_id,
+                            "query": user_message[:500],
+                            "hits": event_hits,
+                            "elapsed_ms": round(elapsed_ms, 2),
+                            "limit": self._memory_recall_top_k,
+                        },
+                    ))
+                elif hasattr(svc, "query"):
+                    # Legacy V1 path — kept until §7.A.6 deletes the
+                    # deprecated ``unified_memory`` constructor alias.
+                    hits = await svc.query(
+                        semantic=user_message,
+                        limit=self._memory_recall_top_k,
+                    )
+                    elapsed_ms = (_t.perf_counter() - _t0) * 1000.0
+                    if hits:
+                        rendered = []
+                        for h in hits:
+                            axes = "/".join(h.matched_axes) or "?"
+                            rendered.append(
+                                f"[{axes} | score={h.score:.2f}] {h.text}"
+                            )
+                        unified_recall_block = (
+                            "\n\n<unified-recall>\n"
+                            "[System note: the following are recalled "
+                            "memory entries matching your current query "
+                            "across semantic + relation + temporal axes "
+                            "(NOT new user input). Each entry shows the "
+                            "axes it matched on so you can judge "
+                            "relevance.]\n\n"
+                            + "\n".join(rendered)
+                            + "\n</unified-recall>"
+                        )
+                    await self._bus.publish(make_event(
+                        session_id=session_id,
+                        agent_id=self._agent_id,
+                        type=EventType.MEMORY_RECALL,
+                        payload={
+                            "session_id": session_id,
+                            "query": user_message[:500],
+                            "hits": [
+                                {
+                                    "id": h.id,
+                                    "text": h.text[:300],
+                                    "score": round(h.score, 3),
+                                    "matched_axes": list(h.matched_axes),
+                                    "layer": h.layer,
+                                }
+                                for h in hits
+                            ],
+                            "elapsed_ms": round(elapsed_ms, 2),
+                            "limit": self._memory_recall_top_k,
+                        },
+                    ))
             except Exception as exc:  # noqa: BLE001
                 # Recall is best-effort; never kill a turn over it.
                 _log_memory_failure(exc)
