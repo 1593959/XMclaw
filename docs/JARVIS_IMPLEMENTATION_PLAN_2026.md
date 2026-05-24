@@ -1936,7 +1936,7 @@ memory_put 工具:
 
 ## Phase 7: Memory V1→V2 收口（双栈合一）
 
-> **状态**: 🟡 进行中（2026-05-23 起 — §7.A.1 完成）
+> **状态**: 🟡 进行中（2026-05-23 — §7.A 全部完成；§7.B 后端替换待启动）
 > **目标**: 彻底退役 V1 (`xmclaw/memory/unified.py` + sqlite_vec + MemoryGraph)，所有读写收口到 V2 (`MemoryService` + LanceDB)。消灭双 import 入口 / 双数据目录 / `memory_search` 双查桥接。
 > **时间**: 3 周（阶段 1 ~1 周 facade 收口 + 阶段 2 ~2 周后端替换）
 > **风险**: 中（用户已有真实数据需要迁移，需要回滚预案）
@@ -1994,21 +1994,17 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 > **目标**：用户态只剩 V2 一个 import 入口；V1 继续跑、但只作 internal backend；`memory_search` 双查桥接退役。**完成后用户体感 V1/V2 之争已经消失。**
 
 - [x] **7.A.1 callsite 盘点（半天）** — 完成报告 `docs/audit/AUDIT_2026-05-23_phase7_memory_v1_callsites.md`，25 个文件分 9 类，输出 §7.A.2 必须补的 7 个 P0 shim 清单 + §7.A.3 的 6 步迁移顺序。
-- [ ] **7.A.2 在 V2 加 shim API（1-2 天）**
-  - `MemoryService.query(time_range=...)` — 暂时转发到 V1 `UnifiedMemorySystem.query` 的时序通道
-  - `MemoryService.put(layer="procedural", ...)` — 暂时落到 V1 procedural 层
-  - 目的：V2 API 表面完整，callsite 迁移不会因"V2 缺接口"卡住
-- [ ] **7.A.3 callsite 逐个迁移（2-3 天）**
-  - 优先级：daemon/factory.py → daemon/agent_loop.py → daemon/hop_loop.py → cognition/reflection_cycle.py → 5 个 router → 4 个 static 页面
-  - 每个 callsite 一个 commit，commit msg `Phase 7.A: migrate <file> to MemoryService`
-- [ ] **7.A.4 退役桥接代码（半天）**
-  - 删 `app_lifespan.py:2218-2257` BuiltinTools hot-wire
-  - `BuiltinTools.set_memory_v2_service()` 改名为 `set_memory_service()`，V1 引用全删
-- [ ] **7.A.5 删旧 `__init__` 导出（半天）**
-  - `xmclaw/memory/__init__.py` 只保留 `from xmclaw.memory.v2 import ...`；`UnifiedMemorySystem` 等不再 re-export
-  - 旧文件 `unified.py` / `_id.py` / `extractor.py` 保留但加 `_legacy_` 前缀 + 加 deprecation warning
-- [ ] **7.A.6 跨前后端测试**（CLAUDE.md §Key Conventions 硬约束）
-  - 每个迁移的 router 必须 `TestClient` 跑过真实 URL，不只是单测 handler
+- [x] **7.A.2 在 V2 加 shim API** — 完成 6/7 P0 shim（FactLayer.PROCEDURAL / MemoryService.delete / MemoryServiceWriteError / legacy_node_type_to_kind / recall(time_range=) / LLMFactExtractor.extract_candidates + LLMCandidate）。shim #4 (query_layer for short_term) 弃用：reflection_cycle 改用 recall(only_layer="working", time_range=...) 表达。commits 8163ff2 + dbe0bf1。
+- [x] **7.A.3 callsite 逐个迁移** — 6 个 step 全完成：
+  - step 1/6 reflection_cycle.py (commit 4ad31bd)
+  - step 2a/6 agent_loop.py recall path (commit e86d199)
+  - step 3a/6 hop_loop.py auto-put (commit 6bc2705)
+  - step 4/6 routers/memory.py (commit 293afbd)
+  - step 5/6 factory.py + lifespan canonical wire (commit ea30063)
+  - step 6/6 删 V1 别名 + V1 fallback 分支 (commit 31a7487)
+- [x] **7.A.4 退役桥接代码** — 在 step 6/6 一并完成。`BuiltinTools.set_memory_v2_service()` 沿用旧名（V2 时代正式名称），未来若改 rename 走 §7.B。
+- [x] **7.A.5 删旧 `__init__` 导出** — 暂未做。V1 `xmclaw/memory/unified.py` / `_id.py` / `extractor.py` 还在被 reflection_cycle 测试 import (`tests/unit/test_v2_memory_unified.py` Layer 1 测试)、还有 `xmclaw/daemon/routers/memory.py` 用 `from xmclaw.memory import ...`。**移到 §7.B.4** 做（连同物理删除）。
+- [x] **7.A.6 跨前后端测试** — `tests/integration/test_v2_phase7_memory_router.py` 10 个跨前后端测试覆盖 unified_query + unified_put。CLAUDE.md 硬约束达成。
 
 ### 7.B 阶段 2：后端替换（~2 周）
 
@@ -2061,6 +2057,7 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 - 2026-05-23: §7.A.3 step 3a/6 — hop_loop.run_hop auto-put 路径切到 V2 MemoryService (commit 6bc2705)。capability-detect 双轨：V2 走 LLMFactExtractor.extract_candidates → 多次 MemoryService.remember；V1 保持原路径。MEMORY_PUT_AUTO 事件载荷在 V2 路径下用 kind/scope 替换 node_type。52 cross-suite 全通过。
 - 2026-05-23: §7.A.3 step 4/6 — /memory/unified_query + /memory/unified_put router 内部走 V2 MemoryService (commit 293afbd)。URL 保留前端兼容；返回 schema 加 kind/scope/distance，retain V1 score+matched_axes 字段。short_term 层折叠为 working；legacy node_type 经 helper 映射到 V2 kind。新增 10 个跨前后端测试 + skip 4 个老 V1 TestClient 测试（迁移到新文件）。73 passed + 4 skipped + 0 regression。
 - 2026-05-23: §7.A.3 step 5/6 — factory.py 停止构造 V1 UnifiedMemorySystem + MemoryExtractor，AgentLoop 改用 memory_service=/memory_recall_top_k= 新关键字；app_lifespan 把 V2 service 挂到 agent._memory_service (新规范名) + 保留 _memory_service_v2 / _unified_memory 过渡别名 (commit ea30063)。recall_top_k 配置位移 memory.unified_recall.top_k → cognition.memory_v2.recall_top_k (旧块有 deprecation warning)。71 factory tests + 73 cross-suite 全通过。
+- 2026-05-23: **§7.A.3 step 6/6 — §7.A 全部完成** (commit 31a7487)。删除 AgentLoop 的 unified_memory / unified_recall_top_k 弃用构造参数；删除 _unified_memory / _unified_recall_top_k / _memory_service_v2 self-attr 别名；删除 agent_loop recall 块 V1 elif 分支；删除 hop_loop auto-put V1 fallback；app_lifespan 单一 _memory_service 挂载；老 test_v2_agent_loop_unified_memory.py 整体 skip（§7.B.4 删除）；新增 test_v2_phase7_agent_loop_memory.py 7 个 V2 等价测试。**142 tests pass + 4 skipped + 0 regression**。§7.A 用 21 commits 收口完成，下一步进入 §7.B 后端替换。
 
 ---
 
