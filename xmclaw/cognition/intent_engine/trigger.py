@@ -34,6 +34,16 @@ class IntentPredictionTrigger(ProactiveTrigger):
         self._surfaced: dict[str, float] = {}
 
     async def should_fire(self, ctx: ProactiveContext) -> bool:
+        # 2026-05-24 user report: intent_prediction kept butting in
+        # mid-turn ("我注意到你的计划连续失败了好几次..."), interrupting
+        # the user/agent flow. Proactive triggers are for IDLE moments,
+        # not for narrating over an in-flight turn. Guard against any
+        # currently-running turn before considering predictions.
+        agent_loop = getattr(ctx, "agent_loop", None)
+        if agent_loop is not None:
+            active = getattr(agent_loop, "_cancel_events", None)
+            if active:
+                return False
         predictions = self._engine.top_predictions(
             k=1, min_confidence=self._confidence_threshold,
         )

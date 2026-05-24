@@ -32,6 +32,9 @@ from xmclaw.providers.llm.base import (
     OnThinkingChunkCallback,
     Pricing,
 )
+from xmclaw.utils.log import get_logger
+
+_log = get_logger(__name__)
 
 
 class AnthropicLLM(LLMProvider):
@@ -497,6 +500,16 @@ class AnthropicLLM(LLMProvider):
         text_parts: list[str] = []
         cancelled = False
         t0 = time.perf_counter()
+
+        # B-270 (reverted 2026-05-24): the prefix-based heuristic
+        # separator was too fragile — any LLM reply opening with
+        # "用户/我需要/让我..." was misrouted to thinking channel
+        # and the user saw an empty bubble. The right fix for Kimi's
+        # plain-text reasoning leak is the system-prompt-side ``think``
+        # tool guidance added in prompt_builder._default_system_prompt
+        # (which tells the model to route reasoning through the tool
+        # instead of inlining it). Heuristic removed; structural fix
+        # carries the day.
         # B-219: one-shot raw event dump — diagnose "peer sees thinking
         # on same endpoint but we don't". The first 100 events of the
         # NEXT request are written to ``~/.xmclaw/v2/anthropic_dump.json``
@@ -775,12 +788,14 @@ def _img_to_anthropic_block(src: str) -> dict[str, Any] | None:
     behaviour is identical across both translators.
     """
     if not src:
+        _log.debug("_img_to_anthropic_block: empty src")
         return None
     if src.startswith("data:"):
         # data URL — parse media type + base64 payload back out.
         try:
             header, b64 = src.split(",", 1)
             media_type = header.split(";")[0][len("data:"):]
+            _log.debug("_img_to_anthropic_block: data URL media_type=%s", media_type)
             return {
                 "type": "image",
                 "source": {
@@ -789,11 +804,14 @@ def _img_to_anthropic_block(src: str) -> dict[str, Any] | None:
                     "data": b64,
                 },
             }
-        except Exception:  # noqa: BLE001
+        except Exception as _exc:  # noqa: BLE001
+            _log.debug("_img_to_anthropic_block: data URL parse failed: %s", _exc)
             return None
     p = Path(src)
     if not p.is_file():
+        _log.debug("_img_to_anthropic_block: not a file: %s", src)
         return None
+    _log.debug("_img_to_anthropic_block: processing %s", src)
     try:
         from PIL import Image  # type: ignore
         from io import BytesIO
@@ -810,6 +828,7 @@ def _img_to_anthropic_block(src: str) -> dict[str, Any] | None:
         buf = BytesIO()
         img.save(buf, format="JPEG", quality=_VISION_JPEG_QUALITY)
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        _log.debug("_img_to_anthropic_block: resized %s → %d bytes b64", src, len(b64))
         return {
             "type": "image",
             "source": {
@@ -818,7 +837,8 @@ def _img_to_anthropic_block(src: str) -> dict[str, Any] | None:
                 "data": b64,
             },
         }
-    except Exception:  # noqa: BLE001
+    except Exception as _exc:  # noqa: BLE001
+        _log.debug("_img_to_anthropic_block: PIL failed for %s: %s", src, _exc)
         # Last-ditch: ship original bytes, no resize.
         try:
             raw = p.read_bytes()
@@ -827,6 +847,7 @@ def _img_to_anthropic_block(src: str) -> dict[str, Any] | None:
                 "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
                 "gif": "image/gif", "webp": "image/webp",
             }.get(ext, "image/png")
+            _log.debug("_img_to_anthropic_block: fallback raw bytes %s → %d bytes", src, len(raw))
             return {
                 "type": "image",
                 "source": {
@@ -835,5 +856,6 @@ def _img_to_anthropic_block(src: str) -> dict[str, Any] | None:
                     "data": base64.b64encode(raw).decode("ascii"),
                 },
             }
-        except Exception:  # noqa: BLE001
+        except Exception as _exc2:  # noqa: BLE001
+            _log.warning("_img_to_anthropic_block: fallback failed for %s: %s", src, _exc2)
             return None

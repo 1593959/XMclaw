@@ -290,13 +290,17 @@ export function MessageBubble({ message, onAnswerQuestion }) {
   const elapsedS = isWorking && message.ts
     ? Math.max(0, Math.floor(Date.now() / 1000 - message.ts))
     : null;
-  // B-46 / Wave-32+ status clarity: stall detector. Originally 120 s
-  // — too lenient given typical LLM responses are well under 30 s.
-  // Drop to 30 s so the "可能卡住" warning fires before the user
-  // starts wondering if the daemon crashed. The warning is non-
-  // destructive (it doesn't cancel anything, just opens the
-  // PhaseCard automatically + adds a hint), so being eager is safe.
-  const stalled = elapsedS != null && elapsedS > 30;
+  // B-46 / Wave-32+ status clarity: stall detector.
+  // 2026-05-24: bumped 30 s → 90 s. User report — 30 s was triggering
+  // "可能卡住" mid-hop for normal reasoning models (Kimi K2.6 on hop
+  // 9 with deep context regularly takes 60-80 s for a single LLM
+  // call; that's NOT stalled). 30 s came from "typical LLM under
+  // 30 s" assumption which doesn't hold for reasoning models +
+  // long context. 90 s lets normal long-thought hops through but
+  // still surfaces a true freeze before the user gives up. The
+  // warning is non-destructive (auto-opens PhaseCard + hint, no
+  // cancel) so eagerness costs only attention.
+  const stalled = elapsedS != null && elapsedS > 90;
   // Hop badge — pulled from the most recent phase meta. When the
   // agent is mid-tool-loop, this jumps from 1 → 2 → 3 so the user
   // can SEE progress even when individual hops fail.
