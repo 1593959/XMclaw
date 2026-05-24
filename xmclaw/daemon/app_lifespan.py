@@ -1671,10 +1671,22 @@ def make_lifespan(
                         return []
 
                     _agent_llm = getattr(agent, "_llm", None) if agent else None
-                    _agent_unified = (
-                        getattr(agent, "_unified_memory", None)
+                    # Phase 7.A.3 (2026-05-23): reflection_cycle now
+                    # takes a V2 MemoryService instead of the V1
+                    # UnifiedMemorySystem. Prefer ``_memory_service_v2``
+                    # (the V2 instance app_lifespan wires later in the
+                    # boot sequence — at this point in the code it may
+                    # already be present on agent if cognition.memory_v2
+                    # was enabled). Falls back to ``memory_v2_service``
+                    # off app.state if the agent doesn't carry it yet.
+                    _agent_mem_svc = (
+                        getattr(agent, "_memory_service_v2", None)
                         if agent else None
                     )
+                    if _agent_mem_svc is None:
+                        _agent_mem_svc = getattr(
+                            _app.state, "memory_v2_service", None,
+                        )
 
                     # R3: build the metacognition pipeline. Recorder
                     # owns its own decisions.db (sibling of events.db)
@@ -1738,7 +1750,7 @@ def make_lifespan(
 
                     _reflection_cycle = ReflectionCycle(
                         llm=_agent_llm,
-                        unified_memory=_agent_unified,
+                        memory_service=_agent_mem_svc,
                         cognitive_state=_cognitive_state,
                         bus=bus,
                         recent_events_fn=_recent_events,

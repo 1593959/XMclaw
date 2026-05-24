@@ -11,10 +11,19 @@ percepts" into "actually has an inner life":
     ``REFLECTION_CYCLE_RAN`` summary.
 
 * **1-h consolidate_memory**:
-    Walk the short-term layer of UnifiedMemorySystem; promote durable
-    entries to long-term, merge near-duplicates by cosine + textual
-    similarity, archive stale ones (>30d untouched). Emits
-    ``MEMORY_CONSOLIDATED``.
+    Walk the working layer of MemoryService; promote durable entries
+    to long_term (re-remember to bump evidence_count past the
+    promote threshold), merge near-duplicates via the built-in
+    deduplicate() pass, archive stale (>1h working-layer) entries by
+    moving them to long_term. Emits ``MEMORY_CONSOLIDATED``.
+
+    Phase 7 V1→V2 (2026-05-23): switched from V1 ``UnifiedMemorySystem``
+    duck-typed ``promote_durable_short_to_long`` /
+    ``merge_near_duplicates`` / ``archive_stale_short`` hooks to V2
+    native ``recall(only_layer="working", time_range=...)`` +
+    ``remember(layer="long_term")`` + ``deduplicate()``. The
+    ``short_term`` layer is gone — its semantic (recent + untrusted)
+    is now expressed as "working + within last 1h" via time_range.
 
 * **1-d groom_goals**:
     Walk CognitiveState.current_goals; archive completed ones, drop
@@ -148,8 +157,11 @@ class ReflectionCycle:
         llm: any object exposing ``async complete(messages, tools=None)``
             with ``LLMResponse.content``. Used by reflect_recent;
             consolidate_memory and groom_goals are LLM-free.
-        unified_memory: optional ``UnifiedMemorySystem`` for the 1h
-            consolidate cycle. None disables consolidation.
+        memory_service: optional ``MemoryService`` (V2) for the 1h
+            consolidate cycle. None disables consolidation. Phase 7
+            replaced the legacy ``unified_memory`` parameter; callers
+            still passing the old keyword get a TypeError — update to
+            pass a ``MemoryService`` instance.
         cognitive_state: optional ``CognitiveState`` for goal grooming.
             None disables groom.
         bus: event bus to publish INNER_MONOLOGUE / REFLECTION_CYCLE_RAN
@@ -167,7 +179,7 @@ class ReflectionCycle:
         self,
         *,
         llm: Any | None = None,
-        unified_memory: Any | None = None,
+        memory_service: Any | None = None,
         cognitive_state: Any | None = None,
         bus: Any | None = None,
         recent_events_fn: Callable[[int], Awaitable[list[Any]]] | None = None,
@@ -188,7 +200,7 @@ class ReflectionCycle:
         metacognize_lookback: int = 100,
     ) -> None:
         self._llm = llm
-        self._unified_memory = unified_memory
+        self._memory_service = memory_service
         self._cognitive_state = cognitive_state
         self._bus = bus
         self._recent_events_fn = recent_events_fn
@@ -305,50 +317,107 @@ class ReflectionCycle:
     # ── Scope 2: consolidate_memory (1-h) ────────────────────────
 
     async def consolidate_memory(self, *, tick: int) -> CycleResult:
-        """Compress short-term memory: promote durable entries,
-        merge near-duplicates, archive stale ones.
+        """Compress working-layer memory: promote durable entries to
+        long_term, merge near-duplicates, archive stale ones.
 
-        v0 implementation is conservative: only counts what WOULD be
-        consolidated (dry-run shape) when the underlying
-        UnifiedMemorySystem doesn't expose mutation hooks. The shape
-        of the summary stays stable so the UI can render it; future
-        UnifiedMemorySystem versions can plug in real
-        promote/merge/archive primitives.
+        V2-native implementation (Phase 7, 2026-05-23). Replaces the
+        former duck-typed lookup of UnifiedMemorySystem's
+        ``promote_durable_short_to_long`` / ``merge_near_duplicates``
+        / ``archive_stale_short`` rich-API hooks with three direct
+        MemoryService calls:
+
+          * ``merged``   = ``memory_service.deduplicate(...)``
+          * ``promoted`` = walk recent high-confidence working facts
+                           (last 1h, conf >= 0.7) → call
+                           ``remember(..., layer="long_term")``
+                           which bumps evidence + sets the layer.
+          * ``archived`` = walk very-stale working facts (older than
+                           1h) → ``remember(..., layer="long_term")``
+                           so they survive any working-layer TTL
+                           sweep but stop crowding fresh recall.
+
+        Any per-step failure is logged + suppressed — consolidate is
+        best-effort and never fails the cycle.
         """
         t0 = time.perf_counter()
-        if self._unified_memory is None:
+        svc = self._memory_service
+        if svc is None:
             return CycleResult(scope="consolidate", ran=False)
 
         promoted = 0
         merged = 0
         archived = 0
+        now = time.time()
+        recent_cutoff = now - 3600.0   # 1 hour
+        stale_cutoff = recent_cutoff   # same threshold — recent =
+                                       # "recently active working
+                                       # fact" vs stale = "old
+                                       # working fact" relative to it.
 
-        # Try the rich-API path first (future UnifiedMemorySystem
-        # versions). If the methods don't exist we fall back to a
-        # dry count via query() — never raise on missing methods.
+        # Step 1 — merge near-duplicates via V2's built-in pass.
         try:
-            for method, counter in (
-                ("promote_durable_short_to_long", "promoted"),
-                ("merge_near_duplicates", "merged"),
-                ("archive_stale_short", "archived"),
-            ):
-                fn = getattr(self._unified_memory, method, None)
-                if fn is None:
-                    continue
-                try:
-                    n = await fn(batch=self._consolidate_batch)
-                    if counter == "promoted":
-                        promoted = int(n)
-                    elif counter == "merged":
-                        merged = int(n)
-                    else:
-                        archived = int(n)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "consolidate.%s_failed err=%s", method, exc,
-                    )
+            merged_result = await svc.deduplicate()
+            # V2 deduplicate returns either an int or a dict; handle
+            # both shapes defensively.
+            if isinstance(merged_result, dict):
+                merged = int(merged_result.get("merged", 0))
+            else:
+                merged = int(merged_result or 0)
+        except AttributeError:
+            # MemoryService instance missing deduplicate — older snapshot.
+            logger.warning("consolidate.deduplicate_missing")
         except Exception as exc:  # noqa: BLE001
-            logger.warning("consolidate.outer_failed err=%s", exc)
+            logger.warning("consolidate.deduplicate_failed err=%s", exc)
+
+        # Step 2 — promote recent high-confidence working facts.
+        try:
+            recent_working = await svc.recall(
+                only_layer="working",
+                time_range=(recent_cutoff, None),
+                k=self._consolidate_batch,
+                keyword_only=True,
+                min_confidence=0.7,
+                include_relations=False,
+            )
+            for hit in recent_working:
+                try:
+                    await svc.remember(
+                        text=hit.fact.text,
+                        kind=hit.fact.kind,
+                        scope=hit.fact.scope,
+                        layer="long_term",
+                    )
+                    promoted += 1
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("consolidate.promote_failed err=%s", exc)
+
+        # Step 3 — archive stale working facts (older than cutoff)
+        # by moving them to long_term so they survive any future
+        # working-layer TTL sweep.
+        try:
+            stale_working = await svc.recall(
+                only_layer="working",
+                time_range=(None, stale_cutoff),
+                k=self._consolidate_batch,
+                keyword_only=True,
+                min_confidence=0.0,
+                include_relations=False,
+            )
+            for hit in stale_working:
+                try:
+                    await svc.remember(
+                        text=hit.fact.text,
+                        kind=hit.fact.kind,
+                        scope=hit.fact.scope,
+                        layer="long_term",
+                    )
+                    archived += 1
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("consolidate.archive_failed err=%s", exc)
 
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         summary = {
