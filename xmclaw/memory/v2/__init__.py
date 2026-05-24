@@ -40,6 +40,7 @@ from xmclaw.memory.v2.key_info_extractor import (
     extract_keys,
 )
 from xmclaw.memory.v2.llm_extractor import (
+    LLMCandidate,
     LLMFactExtractor,
     llm_extract_and_remember,
 )
@@ -85,6 +86,7 @@ __all__ = [
     "EmbeddingFailure",
     "EmbeddingService",
     "ExtractedKey",
+    "LLMCandidate",
     "LLMFactExtractor",
     "Fact",
     "FactKind",

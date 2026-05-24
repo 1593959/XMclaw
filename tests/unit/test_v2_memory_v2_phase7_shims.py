@@ -1,15 +1,18 @@
 """Phase 7.A.2 — V1→V2 shim API tests.
 
-Covers the four low-risk P0 shims from
+Covers six of the seven P0 shims from
 ``docs/audit/AUDIT_2026-05-23_phase7_memory_v1_callsites.md``:
 
+  * recall(time_range=...) (#1)
   * FactLayer.PROCEDURAL enum value (#2)
   * MemoryService.delete(fact_id) (#3)
   * MemoryServiceWriteError (#5)
   * legacy_node_type_to_kind() mapping (#6)
+  * LLMFactExtractor.extract_candidates + LLMCandidate (#7)
 
-The three more-complex shims (time_range / query_layer /
-extract_candidates) land in a later commit with their own tests.
+Shim #4 (query_layer) was dropped — reflection_cycle migration uses
+``recall(only_layer="working", time_range=...)`` instead of adding a
+short_term layer (decision: keep V2's 2-layer model clean).
 """
 from __future__ import annotations
 
@@ -22,6 +25,8 @@ from xmclaw.memory.v2 import (
     FactScope,
     InMemoryGraphBackend,
     InMemoryVectorBackend,
+    LLMCandidate,
+    LLMFactExtractor,
     MemoryService,
     MemoryServiceWriteError,
     Relation,
@@ -211,3 +216,184 @@ async def test_delete_raises_write_error_when_graph_sweep_fails() -> None:
     # Vector row is still gone (we don't roll back the user-visible
     # "fact is gone" signal).
     assert (await svc.get_fact(fact.id)) is None
+
+
+# ── Shim 1: recall(time_range=...) ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_recall_time_range_window() -> None:
+    """Bounded (start, end) window returns only facts whose ts_last
+    sits inside the inclusive interval."""
+    import time as _t
+    svc = _make_service()
+    # Make 3 facts with monotonically increasing timestamps. We can't
+    # set ts_last via remember() so we patch in place after upsert.
+    old_fact = await svc.remember("old", kind=FactKind.LESSON, scope=FactScope.PROJECT)
+    mid_fact = await svc.remember("mid", kind=FactKind.LESSON, scope=FactScope.PROJECT)
+    new_fact = await svc.remember("new", kind=FactKind.LESSON, scope=FactScope.PROJECT)
+
+    now = _t.time()
+    # Stamp directly in the in-memory backend so the where clause has
+    # something to filter on.
+    backend = svc._vec
+    backend._rows[old_fact.id].ts_last = now - 100.0  # type: ignore[attr-defined]
+    backend._rows[mid_fact.id].ts_last = now - 50.0  # type: ignore[attr-defined]
+    backend._rows[new_fact.id].ts_last = now  # type: ignore[attr-defined]
+
+    # Window: last 75s → mid + new, NOT old.
+    hits = await svc.recall(
+        time_range=(now - 75.0, now + 10.0),
+        k=20, keyword_only=True, min_confidence=0.0,
+    )
+    ids = {h.fact.id for h in hits}
+    assert mid_fact.id in ids
+    assert new_fact.id in ids
+    assert old_fact.id not in ids
+
+
+@pytest.mark.asyncio
+async def test_recall_time_range_since_only() -> None:
+    """(start, None) = open-ended since-start."""
+    import time as _t
+    svc = _make_service()
+    f1 = await svc.remember("old1", kind=FactKind.LESSON, scope=FactScope.PROJECT)
+    f2 = await svc.remember("new2", kind=FactKind.LESSON, scope=FactScope.PROJECT)
+    now = _t.time()
+    svc._vec._rows[f1.id].ts_last = now - 100.0  # type: ignore[attr-defined]
+    svc._vec._rows[f2.id].ts_last = now  # type: ignore[attr-defined]
+
+    hits = await svc.recall(
+        time_range=(now - 50.0, None),
+        k=20, keyword_only=True, min_confidence=0.0,
+    )
+    ids = {h.fact.id for h in hits}
+    assert f2.id in ids
+    assert f1.id not in ids
+
+
+@pytest.mark.asyncio
+async def test_recall_time_range_until_only() -> None:
+    """(None, end) = open-ended until-end."""
+    import time as _t
+    svc = _make_service()
+    f1 = await svc.remember("old1", kind=FactKind.LESSON, scope=FactScope.PROJECT)
+    f2 = await svc.remember("new2", kind=FactKind.LESSON, scope=FactScope.PROJECT)
+    now = _t.time()
+    svc._vec._rows[f1.id].ts_last = now - 100.0  # type: ignore[attr-defined]
+    svc._vec._rows[f2.id].ts_last = now  # type: ignore[attr-defined]
+
+    hits = await svc.recall(
+        time_range=(None, now - 50.0),
+        k=20, keyword_only=True, min_confidence=0.0,
+    )
+    ids = {h.fact.id for h in hits}
+    assert f1.id in ids
+    assert f2.id not in ids
+
+
+@pytest.mark.asyncio
+async def test_recall_time_range_composes_with_layer_filter() -> None:
+    """Phase 7 reflection_cycle shape: ``only_layer='working' +
+    time_range=(N hours ago, now)`` replaces V1's short_term walk."""
+    import time as _t
+    svc = _make_service()
+    working_recent = await svc.remember(
+        "fresh working fact",
+        kind=FactKind.LESSON, scope=FactScope.PROJECT,
+        layer="working",
+    )
+    working_old = await svc.remember(
+        "stale working fact",
+        kind=FactKind.LESSON, scope=FactScope.PROJECT,
+        layer="working",
+    )
+    long_term_recent = await svc.remember(
+        "promoted recent fact",
+        kind=FactKind.LESSON, scope=FactScope.PROJECT,
+        layer="long_term",
+    )
+    now = _t.time()
+    svc._vec._rows[working_recent.id].ts_last = now  # type: ignore[attr-defined]
+    svc._vec._rows[working_old.id].ts_last = now - 7200.0  # type: ignore[attr-defined]
+    svc._vec._rows[long_term_recent.id].ts_last = now  # type: ignore[attr-defined]
+
+    # "Last 1h of working layer" — reflection_cycle's new shape.
+    hits = await svc.recall(
+        only_layer="working",
+        time_range=(now - 3600.0, None),
+        k=20, keyword_only=True, min_confidence=0.0,
+    )
+    ids = {h.fact.id for h in hits}
+    assert working_recent.id in ids
+    assert working_old.id not in ids  # outside time window
+    assert long_term_recent.id not in ids  # wrong layer
+
+
+# ── Shim 7: LLMFactExtractor.extract_candidates + LLMCandidate ──
+
+
+class _StubLLM:
+    """Async LLM stub returning a fixed JSON-array response."""
+
+    def __init__(self, payload: str) -> None:
+        self._payload = payload
+        self.calls: list[str] = []
+
+    async def complete(self, messages, tools=None):  # noqa: ARG002
+        prompt = messages[0].content if messages else ""
+        self.calls.append(prompt)
+
+        class _Resp:
+            content = self._payload  # type: ignore[name-defined]
+
+        # Bind self._payload at call-time so calls can vary if needed.
+        _Resp.content = self._payload
+        return _Resp()
+
+
+@pytest.mark.asyncio
+async def test_extract_candidates_returns_typed_dataclass() -> None:
+    """Typed wrapper around extract() — V1 parity for hop_loop."""
+    stub = _StubLLM(
+        '[{"text": "用户喜欢简短回复",'
+        ' "kind": "preference",'
+        ' "scope": "user",'
+        ' "confidence": 0.9}]'
+    )
+    ex = LLMFactExtractor(llm=stub)
+    candidates = await ex.extract_candidates(
+        user_message="我希望你尽量简短一些",
+    )
+    assert len(candidates) == 1
+    cand = candidates[0]
+    assert isinstance(cand, LLMCandidate)
+    assert cand.text == "用户喜欢简短回复"
+    assert cand.kind == "preference"
+    assert cand.scope == "user"
+    assert cand.confidence == 0.9
+
+
+@pytest.mark.asyncio
+async def test_extract_candidates_with_assistant_response() -> None:
+    """assistant_response (Phase 7 shim) gets appended to the prompt
+    so the extractor can see agent-confirmed facts."""
+    stub = _StubLLM('[]')
+    ex = LLMFactExtractor(llm=stub)
+    await ex.extract_candidates(
+        user_message="刚刚那个决定算最终的吗？",
+        assistant_response="是的，已经定了用 LanceDB 作为后端。",
+    )
+    # Verify the prompt the LLM received includes the assistant text.
+    assert len(stub.calls) == 1
+    prompt = stub.calls[0]
+    assert "已经定了用 LanceDB" in prompt
+    assert "助手回复" in prompt
+    assert "刚刚那个决定" in prompt
+
+
+@pytest.mark.asyncio
+async def test_extract_candidates_empty_on_no_user_message() -> None:
+    ex = LLMFactExtractor(llm=_StubLLM("[]"))
+    out = await ex.extract_candidates(user_message="")
+    assert out == []

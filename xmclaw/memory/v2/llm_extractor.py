@@ -38,6 +38,7 @@ import asyncio
 import json
 import re
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from xmclaw.utils.log import get_logger
@@ -100,6 +101,31 @@ _VALID_KINDS = {
 _VALID_SCOPES = {"user", "project", "session"}
 
 
+# ── Typed candidate (Phase 7 shim #7) ───────────────────────────
+
+
+@dataclass(slots=True, frozen=True)
+class LLMCandidate:
+    """One un-remembered candidate fact from ``extract_candidates``.
+
+    Phase 7 V1→V2 shim. V1's ``MemoryExtractor.extract`` returned a
+    single typed ``ExtractedFact`` (or None); callers (notably
+    ``hop_loop._bg_extract_and_put``) then decided whether to call
+    ``unified_memory.put``. V2's ``extract`` returned a list[dict] —
+    same data, no types. This dataclass closes the type gap so the
+    "extract → decide → remember" pattern works the same as V1.
+
+    Fields mirror ``MemoryService.remember`` kwargs so callers can
+    do ``await svc.remember(**asdict(candidate))`` (or pass through
+    individually) without remapping.
+    """
+
+    text: str
+    kind: str
+    scope: str
+    confidence: float
+
+
 # ── Extractor ────────────────────────────────────────────────────
 
 
@@ -153,9 +179,18 @@ class LLMFactExtractor:
     async def extract(
         self,
         user_message: str,
+        assistant_response: str | None = None,
     ) -> list[dict[str, Any]]:
         """Return a list of fact dicts. Empty list on any failure —
-        never raises (background path can't kill the turn)."""
+        never raises (background path can't kill the turn).
+
+        ``assistant_response`` (Phase 7 shim #7): optional assistant
+        turn text. When provided, the prompt includes it as context
+        so the extractor can pick up facts visible only in the
+        assistant's reply (e.g. agent confirms a number / decision
+        the user implied). Mirrors V1 ``MemoryExtractor.extract``'s
+        2-arg signature.
+        """
         if not user_message or not user_message.strip():
             return []
         # Skip extremely short messages (likely "好的" / "ok" — no
@@ -163,7 +198,20 @@ class LLMFactExtractor:
         if len(user_message.strip()) < 8:
             return []
 
-        prompt = _EXTRACT_PROMPT.format(user_message=user_message[:3000])
+        if assistant_response and assistant_response.strip():
+            # Append the assistant turn as additional context after
+            # the user message. The extractor is still primarily
+            # about the user's message — assistant context is
+            # supplementary (helps disambiguate references / picks
+            # up agent-confirmed facts).
+            combined = (
+                f"{user_message[:2000]}\n\n"
+                f"[助手回复，仅作上下文参考]：\n"
+                f"{assistant_response[:1000]}"
+            )
+            prompt = _EXTRACT_PROMPT.format(user_message=combined)
+        else:
+            prompt = _EXTRACT_PROMPT.format(user_message=user_message[:3000])
 
         # Skip immediately when the LLM channel is already busy —
         # don't queue, don't wait. The next user message will retry
@@ -257,6 +305,30 @@ class LLMFactExtractor:
             elapsed_ms, len(facts),
         )
         return facts
+
+    async def extract_candidates(
+        self,
+        user_message: str,
+        assistant_response: str | None = None,
+    ) -> list[LLMCandidate]:
+        """Typed variant of :meth:`extract`. Phase 7 shim #7.
+
+        Same semantics as ``extract`` but returns a list of
+        :class:`LLMCandidate` dataclasses so callers writing the V1→V2
+        migration get IDE-completion + mypy on candidate fields. Use
+        ``MemoryService.remember`` to persist each candidate the
+        caller chooses to keep.
+        """
+        raw = await self.extract(user_message, assistant_response)
+        return [
+            LLMCandidate(
+                text=d["text"],
+                kind=d["kind"],
+                scope=d["scope"],
+                confidence=d["confidence"],
+            )
+            for d in raw
+        ]
 
 
 # ── Convenience: extract + remember ──────────────────────────────

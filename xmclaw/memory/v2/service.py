@@ -1086,6 +1086,7 @@ class MemoryService:
         keyword_only: bool = False,
         include_superseded: bool = False,
         buckets: list[str] | None = None,
+        time_range: tuple[float | None, float | None] | None = None,
     ) -> list[RecallHit]:
         """Search L1 and return top-k facts enriched with relations.
 
@@ -1127,6 +1128,19 @@ class MemoryService:
             # absent); in-memory backend exposes it the same way in
             # its row dict for filter eval. Equality on '' covers both.
             clauses.append("superseded_by = ''")
+        if time_range is not None:
+            # Phase 7 shim (P0 #1): time-window filter on ts_last.
+            # ``(start, None)`` = since-start; ``(None, end)`` = until-end;
+            # ``(start, end)`` = bounded window. Both endpoints inclusive
+            # to mirror the V1 ``UnifiedMemorySystem`` TimeRange contract.
+            # Native path — no V1 bridge — because Fact already has
+            # ts_last on every row and both backends (InMemory eval +
+            # LanceDB SQL) accept >= / <= against it.
+            start, end = time_range
+            if start is not None:
+                clauses.append(f"ts_last >= {float(start)}")
+            if end is not None:
+                clauses.append(f"ts_last <= {float(end)}")
         where = " AND ".join(clauses) if clauses else None
 
         # Choose the actual search input.
