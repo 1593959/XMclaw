@@ -868,22 +868,33 @@ async def unified_query(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    from xmclaw.memory import TimeRange, UnifiedMemorySystem
-    tr: TimeRange | None = None
+    # Phase 7.A.3 step 4/6 (2026-05-23): handler now routes through
+    # the V2 MemoryService living on ``app.state.memory_v2_service``.
+    # URL preserved for frontend backward-compat (the Memory.js panel
+    # still POSTs to /memory/unified_query). Returned schema kept as
+    # close to V1 as possible — added fields ``kind`` / ``scope`` /
+    # ``distance``; ``matched_axes`` retained but now reflects which
+    # filters were active (one of "semantic" / "temporal" / "layer")
+    # so the frontend's axis-badge UI doesn't break.
+    #
+    # ``relation`` axis is no longer first-class — V2 expresses
+    # relations as 1-hop neighbor enrichment via ``include_relations``.
+    # If the caller supplies ``relation`` we still accept the request
+    # but treat it as a hint for keyword scoring (no separate axis).
+    time_range: tuple[float | None, float | None] | None = None
     if isinstance(temporal_raw, dict):
         try:
-            tr = TimeRange(
-                since=(
-                    float(temporal_raw["since"])
-                    if temporal_raw.get("since") is not None
-                    else None
-                ),
-                until=(
-                    float(temporal_raw["until"])
-                    if temporal_raw.get("until") is not None
-                    else None
-                ),
+            since_v = (
+                float(temporal_raw["since"])
+                if temporal_raw.get("since") is not None
+                else None
             )
+            until_v = (
+                float(temporal_raw["until"])
+                if temporal_raw.get("until") is not None
+                else None
+            )
+            time_range = (since_v, until_v)
         except (TypeError, ValueError) as exc:
             return JSONResponse(
                 {"error": f"bad temporal range: {exc}"},
@@ -891,39 +902,69 @@ async def unified_query(request: Request) -> JSONResponse:
             )
 
     state = request.app.state
-    system = UnifiedMemorySystem(
-        memory_manager=getattr(state, "memory_manager", None)
-            or getattr(state, "memory", None),
-        memory_graph=getattr(state, "memory_graph", None),
-        embedder=getattr(state, "embedder", None),
-    )
+    svc = getattr(state, "memory_v2_service", None)
+    if svc is None:
+        return JSONResponse(
+            {"error": "memory_v2_service not wired — set "
+                      "cognition.memory_v2.enabled=true in config "
+                      "and restart the daemon"},
+            status_code=503,
+        )
+
+    # V2 only accepts working / long_term / procedural — drop V1's
+    # short_term layer name silently (callers using it would be hitting
+    # 0 results anyway after migration).
+    v2_layer = layer if layer in (
+        "working", "long_term", "procedural",
+    ) else None
+
     try:
-        entries = await system.query(
-            semantic=semantic if isinstance(semantic, str) else None,
-            relation=relation if isinstance(relation, str) else None,
-            temporal=tr,
-            layer=layer if layer in ("working", "short_term",
-                                     "long_term", "procedural") else None,
-            limit=limit,
+        hits = await svc.recall(
+            query=semantic if isinstance(semantic, str) and semantic else (
+                relation if isinstance(relation, str) and relation else None
+            ),
+            k=limit,
+            only_layer=v2_layer,
+            time_range=time_range,
+            keyword_only=False,
+            include_relations=True,
+            min_confidence=0.0,
         )
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(
             {"error": f"query failed: {exc!s}"},
             status_code=500,
         )
+
+    axes_used: list[str] = []
+    if semantic or relation:
+        axes_used.append("semantic")
+    if time_range is not None:
+        axes_used.append("temporal")
+    if v2_layer:
+        axes_used.append("layer")
+
     return JSONResponse({
-        "n": len(entries),
+        "n": len(hits),
         "results": [
             {
-                "id": e.id,
-                "layer": e.layer,
-                "text": e.text,
-                "score": round(e.score, 4),
-                "created_at": e.created_at,
-                "metadata": e.metadata,
-                "matched_axes": list(e.matched_axes),
+                "id": h.fact.id,
+                "layer": h.fact.layer,
+                "text": h.fact.text,
+                "score": round(1.0 - h.distance, 4),  # back-compat
+                "distance": round(h.distance, 4),
+                "created_at": h.fact.ts_first,
+                "kind": h.fact.kind,
+                "scope": h.fact.scope,
+                "metadata": {
+                    "kind": h.fact.kind,
+                    "scope": h.fact.scope,
+                    "evidence_count": h.fact.evidence_count,
+                    "bucket": h.fact.bucket,
+                },
+                "matched_axes": axes_used,
             }
-            for e in entries
+            for h in hits
         ],
     })
 
@@ -972,14 +1013,32 @@ async def unified_put(request: Request) -> JSONResponse:
             status_code=400,
         )
 
+    # Phase 7.A.3 step 4/6 (2026-05-23): now routes through V2
+    # MemoryService.remember. V1 ``layer`` values map: working/long_term/
+    # procedural pass through; ``short_term`` collapses to working (V2
+    # has no short_term layer; see §7.A.2 decision). V1 ``node_type``
+    # gets translated to V2 ``kind`` via legacy_node_type_to_kind.
     layer = body.get("layer", "long_term")
-    if layer not in ("working", "short_term", "long_term", "procedural"):
+    if layer == "short_term":
+        layer = "working"
+    if layer not in ("working", "long_term", "procedural"):
         layer = "long_term"
 
     node_type = body.get("node_type", "event")
-    if node_type not in ("event", "entity", "state", "intent"):
-        node_type = "event"
+    # V1 also accepted entity/state/intent here — translate every
+    # legacy variant to a V2 FactKind via the centralised helper.
+    from xmclaw.memory.v2 import (
+        FactScope,
+        MemoryServiceWriteError,
+        legacy_node_type_to_kind,
+    )
+    kind = legacy_node_type_to_kind(node_type)
 
+    # V1 metadata + relations + embedding are accepted but mostly
+    # advisory under V2: relations get inserted via relate() after
+    # the remember(); embedding is recomputed by the service so
+    # caller-supplied vectors are ignored (intentional — keeps the
+    # embedding model authoritative).
     raw_relations = body.get("relations") or []
     relations: list[tuple[str, str]] = []
     if isinstance(raw_relations, list):
@@ -993,32 +1052,39 @@ async def unified_put(request: Request) -> JSONResponse:
                 relations.append((rel[0], rel[1]))
 
     metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else None
-    raw_embedding = body.get("embedding")
-    embedding: list[float] | None = None
-    if isinstance(raw_embedding, list) and raw_embedding:
-        try:
-            embedding = [float(x) for x in raw_embedding]
-        except (TypeError, ValueError):
-            embedding = None
-
-    from xmclaw.memory import UnifiedMemorySystem, UnifiedWriteError
-    state = request.app.state
-    system = UnifiedMemorySystem(
-        memory_manager=getattr(state, "memory_manager", None)
-            or getattr(state, "memory", None),
-        memory_graph=getattr(state, "memory_graph", None),
-        embedder=getattr(state, "embedder", None),
+    scope = (
+        metadata.get("scope") if isinstance(metadata, dict) else None
     )
-    try:
-        new_id = await system.put(
-            text=text,
-            layer=layer,
-            node_type=node_type,
-            relations=relations or None,
-            metadata=metadata,
-            embedding=embedding,
+    if scope not in (FactScope.USER.value, FactScope.PROJECT.value,
+                     FactScope.SESSION.value):
+        scope = FactScope.PROJECT.value
+
+    state = request.app.state
+    svc = getattr(state, "memory_v2_service", None)
+    if svc is None:
+        return JSONResponse(
+            {"ok": False, "error": "memory_v2_service not wired"},
+            status_code=503,
         )
-    except UnifiedWriteError as exc:
+
+    try:
+        fact = await svc.remember(
+            text=text,
+            kind=kind,
+            scope=scope,
+            layer=layer,
+        )
+        # Wire any caller-supplied relations.
+        for target_id, rel_kind in relations:
+            try:
+                await svc.relate(
+                    source_fact_id=fact.id,
+                    target_fact_id=target_id,
+                    kind=rel_kind,
+                )
+            except Exception:  # noqa: BLE001 - best-effort
+                pass
+    except MemoryServiceWriteError as exc:
         return JSONResponse(
             {
                 "ok": False,
@@ -1033,7 +1099,7 @@ async def unified_put(request: Request) -> JSONResponse:
             {"ok": False, "error": f"unexpected error: {exc!s}"},
             status_code=500,
         )
-    return JSONResponse({"ok": True, "id": new_id})
+    return JSONResponse({"ok": True, "id": fact.id})
 
 
 @router.get("/{filename}")

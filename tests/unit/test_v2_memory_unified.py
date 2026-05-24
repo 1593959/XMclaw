@@ -210,6 +210,20 @@ async def test_embedder_used_when_available() -> None:
 
 # ── Layer 2 — TestClient end-to-end ───────────────────────────────
 
+# Phase 7.A.3 step 4/6 (2026-05-23): the four router-layer tests
+# below originally wired V1 ``memory_manager`` + ``memory_graph``
+# fakes onto app.state and expected the router to construct a
+# UnifiedMemorySystem per request. After the router migrated to
+# the V2 MemoryService (via ``app.state.memory_v2_service``) those
+# fakes are no longer consulted — the router returns 503. The V2
+# equivalents live in ``tests/integration/test_v2_phase7_memory_router.py``
+# (proper V2 service wiring). These will be deleted in §7.B.4
+# alongside the V1 module itself.
+_PHASE7_ROUTER_MIGRATED = pytest.mark.skip(
+    reason="Phase 7.A.3 step 4/6: V1 router fixture replaced by V2 "
+           "service; see tests/integration/test_v2_phase7_memory_router.py.",
+)
+
 
 @pytest.fixture
 def memory_client() -> TestClient:
@@ -232,6 +246,7 @@ def memory_client() -> TestClient:
     return TestClient(app)
 
 
+@_PHASE7_ROUTER_MIGRATED
 def test_unified_query_endpoint_resolves_not_404(
     memory_client: TestClient,
 ) -> None:
@@ -260,6 +275,7 @@ def test_unified_query_empty_body_400(memory_client: TestClient) -> None:
     assert "at least one" in body.get("error", "").lower()
 
 
+@_PHASE7_ROUTER_MIGRATED
 def test_unified_query_semantic_returns_seeded_hit(
     memory_client: TestClient,
 ) -> None:
@@ -275,6 +291,7 @@ def test_unified_query_semantic_returns_seeded_hit(
     assert "semantic" in entry["matched_axes"]
 
 
+@_PHASE7_ROUTER_MIGRATED
 def test_unified_query_temporal_validates_range(
     memory_client: TestClient,
 ) -> None:
@@ -292,6 +309,7 @@ def test_unified_query_temporal_validates_range(
            "since" in body.get("error", "").lower()
 
 
+@_PHASE7_ROUTER_MIGRATED
 def test_unified_query_invalid_layer_falls_through_to_default(
     memory_client: TestClient,
 ) -> None:
