@@ -101,16 +101,24 @@ class FactScope(str, Enum):
 class FactLayer(str, Enum):
     """Tiered storage layer.
 
-    - ``working`` — fresh, evidence_count < 3, may be evicted on cap
-    - ``long_term`` — promoted, durable
+    - ``working``    — fresh, evidence_count < 3, may be evicted on cap
+    - ``long_term``  — promoted, durable
+    - ``procedural`` — never expires, not subject to TTL / dedupe
+                       sweeps. Holds skill / persona / workflow facts
+                       that must outlive working / long_term aging
+                       policies. Phase 7 (V1→V2 consolidation) added
+                       this enum value so the legacy V1
+                       ``UnifiedMemorySystem.put(layer='procedural')``
+                       path has a direct V2 equivalent.
 
     Promotion criterion: ``evidence_count >= 3`` OR explicit user
     "记住" command. Demotion criterion: 30 days no retrieval +
-    layer=working.
+    layer=working. ``procedural`` rows are exempt from both.
     """
 
     WORKING = "working"
     LONG_TERM = "long_term"
+    PROCEDURAL = "procedural"
 
 
 class RelationKind(str, Enum):
@@ -145,7 +153,7 @@ FactKindStr = Literal[
     "lesson", "persona_manual",
 ]
 FactScopeStr = Literal["user", "project", "session"]
-FactLayerStr = Literal["working", "long_term"]
+FactLayerStr = Literal["working", "long_term", "procedural"]
 RelationKindStr = Literal[
     "CONTRADICTS", "SUPERSEDES", "CAUSED_BY",
     "PART_OF", "REFERS_TO", "SAME_TOPIC",

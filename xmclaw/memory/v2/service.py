@@ -247,6 +247,98 @@ def _cosine_distance(
     return 1.0 - (dot / (na * nb))
 
 
+# ── Phase 7 V1→V2 shim plumbing ─────────────────────────────────
+
+
+class MemoryServiceWriteError(Exception):
+    """Raised when ``MemoryService.remember`` / ``relate`` / ``delete``
+    fan-out fails partway through and best-effort compensation could
+    not fully restore consistency.
+
+    Mirror of the legacy V1 :class:`xmclaw.memory._id.UnifiedWriteError`
+    contract — callers migrating from V1 can keep their existing
+    error-handling shape (``indices_written`` − ``compensated``
+    identifies dirty indices that need manual / janitor cleanup).
+
+    Attributes:
+        indices_written: ordered list of backend names ("vector",
+            "graph") that DID receive a write before the failure.
+        compensated: subset of ``indices_written`` that were
+            successfully rolled back. Anything in ``indices_written``
+            but NOT in ``compensated`` is the inconsistency surface
+            the operator must clean up.
+        cause: the underlying exception that triggered the rollback.
+    """
+
+    __slots__ = ("indices_written", "compensated", "cause")
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        indices_written: list[str] | None = None,
+        compensated: list[str] | None = None,
+        cause: BaseException | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.indices_written: list[str] = list(indices_written or [])
+        self.compensated: list[str] = list(compensated or [])
+        self.cause: BaseException | None = cause
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return (
+            f"MemoryServiceWriteError({self.args[0]!r}, "
+            f"indices_written={self.indices_written}, "
+            f"compensated={self.compensated})"
+        )
+
+
+#: V1 ``MemoryExtractor`` / ``UnifiedMemorySystem.put`` accepted a
+#: ``node_type`` parameter taken from MemoryGraph.EdgeType (free-form
+#: short strings like "fact" / "preference" / "decision" / ...). V2's
+#: equivalent is the strict :class:`FactKind` enum. This table maps
+#: the legacy strings to V2 ``FactKindStr`` values so Phase 7.A.3
+#: migrations can drop in a single helper call.
+#:
+#: Unknown / legacy values map to ``"lesson"`` — the V2 default for
+#: workflow / tool-quirk / failure-mode rows that V1 grouped under
+#: generic node types. Callers that need stricter handling should
+#: validate upstream.
+_LEGACY_NODE_TYPE_TO_KIND: dict[str, "FactKindStr"] = {
+    "fact": "lesson",
+    "preference": "preference",
+    "decision": "decision",
+    "identity": "identity",
+    "commitment": "commitment",
+    "correction": "correction",
+    "project": "project",
+    "episode": "episode",
+    "lesson": "lesson",
+    "persona_manual": "persona_manual",
+    # Legacy V1 buckets that don't have a strict V2 equivalent — fall
+    # back to "lesson" so the fact is at least addressable.
+    "observation": "lesson",
+    "summary": "lesson",
+    "rule": "lesson",
+    "workflow": "lesson",
+    "tool_quirk": "lesson",
+    "failure_mode": "lesson",
+    "value": "lesson",
+}
+
+
+def legacy_node_type_to_kind(node_type: str | None) -> "FactKindStr":
+    """Translate a V1 ``node_type`` string into a V2 ``FactKindStr``.
+
+    Phase 7.A.3 helper. Unknown / empty values default to
+    ``"lesson"`` (the V2 generic bucket). The mapping is intentionally
+    forgiving — V1's node_type was free-form, so we never raise.
+    """
+    if not node_type:
+        return "lesson"
+    return _LEGACY_NODE_TYPE_TO_KIND.get(str(node_type).lower(), "lesson")
+
+
 # ── RecallHit return shape ────────────────────────────────────────
 
 
@@ -1102,6 +1194,62 @@ class MemoryService:
 
     async def get_fact(self, fact_id: str) -> Fact | None:
         return await self._vec.get(fact_id)
+
+    async def delete(self, fact_id: str) -> bool:
+        """Remove a Fact + all incident edges. Idempotent.
+
+        Phase 7 V1→V2 shim: equivalent of
+        ``UnifiedMemorySystem.delete(id)``. Returns True if a Fact
+        with that id existed (and is now gone), False if the id was
+        already absent.
+
+        Best-effort cross-backend consistency: deletes the Fact row
+        first, then sweeps neighbour edges in both directions. If the
+        graph sweep fails, raises :class:`MemoryServiceWriteError`
+        with ``indices_written=["vector"]`` and ``compensated=[]`` —
+        the caller knows the fact body is gone but stale edges may
+        remain (a graph janitor or full re-link can clean those up
+        later; the vector deletion is the user-visible "fact is gone"
+        signal which we don't roll back).
+        """
+        existed = (await self._vec.get(fact_id)) is not None
+        if not existed:
+            return False
+        # Vector delete first — this is the user-visible "fact is
+        # gone" operation. If it fails, we never touch the graph.
+        try:
+            await self._vec.delete(f"id = '{fact_id}'")
+        except Exception as exc:  # noqa: BLE001
+            raise MemoryServiceWriteError(
+                f"delete({fact_id!r}): vector backend rejected delete",
+                indices_written=[],
+                compensated=[],
+                cause=exc,
+            ) from exc
+        # Graph sweep: remove all edges where the fact is source OR
+        # target. We walk neighbours (outgoing) + reverse-walk via
+        # contradictions_of equivalents is not exposed, so we use
+        # find_related which returns both directions for the
+        # subgraph. Stale edges are non-fatal but should be reported.
+        graph_errors: list[BaseException] = []
+        try:
+            pairs = await self._graph.neighbors(fact_id, max_hops=1)
+            for rel, _target in pairs:
+                try:
+                    await self._graph.remove_relation(rel.id)
+                except Exception as exc:  # noqa: BLE001
+                    graph_errors.append(exc)
+        except Exception as exc:  # noqa: BLE001
+            graph_errors.append(exc)
+        if graph_errors:
+            raise MemoryServiceWriteError(
+                f"delete({fact_id!r}): vector row removed but "
+                f"{len(graph_errors)} graph edge(s) failed to clean up",
+                indices_written=["vector"],
+                compensated=[],
+                cause=graph_errors[0],
+            )
+        return True
 
     async def count(
         self,

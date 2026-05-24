@@ -59,8 +59,10 @@ from xmclaw.memory.v2.service import (
     CONTRADICTS_DISTANCE_THRESHOLD,
     LONG_TERM_PROMOTE_THRESHOLD,
     MemoryService,
+    MemoryServiceWriteError,
     RecallHit,
     SAME_TOPIC_DISTANCE_THRESHOLD,
+    legacy_node_type_to_kind,
 )
 
 # LanceDB backends lazy-imported via helper so importing
@@ -96,6 +98,7 @@ __all__ = [
     "InMemoryVectorBackend",
     "LONG_TERM_PROMOTE_THRESHOLD",
     "MemoryService",
+    "MemoryServiceWriteError",
     "RecallHit",
     "Relation",
     "RelationKind",
@@ -106,6 +109,7 @@ __all__ = [
     "build_embedding_service",
     "extract_and_remember",
     "extract_keys",
+    "legacy_node_type_to_kind",
     "llm_extract_and_remember",
     "get_lancedb_graph_backend",
     "get_lancedb_vector_backend",
