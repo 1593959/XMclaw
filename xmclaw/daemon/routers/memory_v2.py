@@ -678,6 +678,23 @@ async def list_facts(
 # ── Single fact + neighbors ──────────────────────────────────────
 
 
+@router.get("/facts/count")
+async def get_fact_count(request: Request) -> Any:
+    """Phase 7.B.3 (2026-05-24): cheap row count for verify scripts.
+
+    Returns ``{"count": int}``. Used by
+    ``scripts/migrate_memory_db_to_v2.py verify`` to spot-check that
+    facts actually landed after a migration. Registered BEFORE the
+    catch-all ``/facts/{fact_id}`` so the literal "count" path
+    doesn't get treated as a fact id.
+    """
+    svc = _get_service(request)
+    if svc is None:
+        return _v2_disabled_response()
+    n = await svc.count()
+    return {"count": n}
+
+
 @router.get("/facts/{fact_id}")
 async def get_fact_detail(
     request: Request, fact_id: str,
@@ -769,8 +786,17 @@ async def create_fact(request: Request) -> Any:
         return JSONResponse(
             {"error": "invalid_scope", "scope": scope}, status_code=400,
         )
+    # Phase 7.B.3 (2026-05-24): accept optional ``layer`` so the
+    # migration script can land V1 procedure rows on the procedural
+    # layer (exempt from sweep). Defaults to working — the V2 promote
+    # pipeline auto-bumps to long_term on evidence_count threshold.
+    layer = body.get("layer", "working")
+    if layer not in ("working", "long_term", "procedural"):
+        return JSONResponse(
+            {"error": "invalid_layer", "layer": layer}, status_code=400,
+        )
     fact = await svc.remember(
-        text, kind=kind, scope=scope,
+        text, kind=kind, scope=scope, layer=layer,
         confidence=confidence, bucket=bucket,
     )
     return {"created": fact.to_dict()}

@@ -59,7 +59,7 @@ def test_scan_classifies_lessons(tmp_path: Path) -> None:
             "metadata": {"kind": "lesson", "bucket": "workflow"},
         },
     ])
-    lessons, manuals, bullets, skipped = _scan_rows(db)
+    lessons, manuals, bullets, _generic, skipped = _scan_rows(db)
     assert len(lessons) == 1
     assert lessons[0]["bucket"] == "workflow"
     assert lessons[0]["text"] == "always run tests before push"
@@ -75,7 +75,7 @@ def test_scan_classifies_persona_manual(tmp_path: Path) -> None:
             "metadata": {"kind": "persona_manual", "file": "IDENTITY.md"},
         },
     ])
-    _, manuals, _, _ = _scan_rows(db)
+    _, manuals, _, _, _ = _scan_rows(db)
     assert len(manuals) == 1
     assert manuals[0]["basename"] == "IDENTITY.md"
 
@@ -88,7 +88,7 @@ def test_scan_classifies_persona_bullet(tmp_path: Path) -> None:
             "metadata": {"kind": "persona_bullet", "path": "MEMORY.md"},
         },
     ])
-    _, _, bullets, _ = _scan_rows(db)
+    _, _, bullets, _, _ = _scan_rows(db)
     assert len(bullets) == 1
     assert bullets[0]["source_path"] == "MEMORY.md"
 
@@ -104,7 +104,7 @@ def test_scan_skips_file_chunk_and_code_chunk(tmp_path: Path) -> None:
             "metadata": {"kind": "code_chunk"},
         },
     ])
-    lessons, manuals, bullets, skipped = _scan_rows(db)
+    lessons, manuals, bullets, _generic, skipped = _scan_rows(db)
     assert lessons == manuals == bullets == []
     assert skipped["file_chunk"] == 1
     assert skipped["code_chunk"] == 1
@@ -119,7 +119,7 @@ def test_scan_skips_lesson_without_bucket(tmp_path: Path) -> None:
             "metadata": {"kind": "lesson"},  # no bucket
         },
     ])
-    lessons, _, _, skipped = _scan_rows(db)
+    lessons, _, _, _, skipped = _scan_rows(db)
     assert lessons == []
     assert skipped["_lesson_no_bucket"] == 1
 
@@ -131,7 +131,7 @@ def test_scan_skips_malformed_rows(tmp_path: Path) -> None:
         {"id": "y", "text": "valid",
          "metadata": "not-a-dict"},  # serialized as JSON string "not-a-dict"
     ])
-    lessons, manuals, bullets, skipped = _scan_rows(db)
+    lessons, manuals, bullets, _generic, skipped = _scan_rows(db)
     assert lessons == manuals == bullets == []
     assert skipped["_malformed"] >= 1
 
@@ -143,8 +143,83 @@ def test_scan_records_unknown_kinds_under_their_name(tmp_path: Path) -> None:
         {"id": "x", "text": "summary text",
          "metadata": {"kind": "session_summary"}},
     ])
-    _, _, _, skipped = _scan_rows(db)
+    _, _, _, _, skipped = _scan_rows(db)
     assert skipped["session_summary"] == 1
+
+
+# ── Phase 7.B.3: generic-kind coverage ────────────────────────────
+
+
+def test_scan_generic_preference_maps_to_user_scope(tmp_path: Path) -> None:
+    """preference rows → V2 kind=preference, scope=user, layer=working."""
+    db = _make_db(tmp_path, [
+        {"id": "p1", "text": "user likes terse replies",
+         "metadata": {"kind": "preference"}},
+    ])
+    _, _, _, generic, _ = _scan_rows(db)
+    assert len(generic) == 1
+    g = generic[0]
+    assert g["v1_kind"] == "preference"
+    assert g["v2_kind"] == "preference"
+    assert g["v2_scope"] == "user"
+    assert g["v2_layer"] == "working"
+
+
+def test_scan_generic_procedure_maps_to_procedural_layer(tmp_path: Path) -> None:
+    """procedure rows → V2 kind=lesson, layer=procedural (sweep-exempt)."""
+    db = _make_db(tmp_path, [
+        {"id": "p1", "text": "skill: scrape pages",
+         "metadata": {
+             "kind": "procedure", "skill_id": "scrape",
+             "skill_path": "/x/y.md",
+         }},
+    ])
+    _, _, _, generic, _ = _scan_rows(db)
+    assert len(generic) == 1
+    g = generic[0]
+    assert g["v1_kind"] == "procedure"
+    assert g["v2_kind"] == "lesson"
+    assert g["v2_scope"] == "project"
+    assert g["v2_layer"] == "procedural"
+
+
+def test_scan_no_kind_with_auto_extract_routed_to_generic(tmp_path: Path) -> None:
+    """No metadata.kind BUT source=auto_extract → real V1 hop_loop
+    output; rescue as kind=lesson rather than silently skipping."""
+    db = _make_db(tmp_path, [
+        {"id": "x", "text": "user is Alice, ML engineer",
+         "metadata": {"source": "auto_extract", "session_id": "s1"}},
+    ])
+    _, _, _, generic, skipped = _scan_rows(db)
+    assert len(generic) == 1
+    assert generic[0]["v1_kind"] == "_no_kind_auto_extract"
+    assert generic[0]["v2_kind"] == "lesson"
+    assert "_no_kind" not in skipped
+
+
+def test_scan_no_kind_without_auto_extract_still_skipped(tmp_path: Path) -> None:
+    """Bare no-kind rows with no auto_extract marker stay in
+    skipped — they're truly mystery rows."""
+    db = _make_db(tmp_path, [
+        {"id": "x", "text": "mystery row",
+         "metadata": {"random": "garbage"}},
+    ])
+    _, _, _, generic, skipped = _scan_rows(db)
+    assert generic == []
+    assert skipped["_no_kind"] == 1
+
+
+def test_scan_curriculum_proposal_is_skipped_transient(tmp_path: Path) -> None:
+    """curriculum_proposal rows are pending suggestions; skip
+    (added to _SKIP_KINDS in Phase 7.B.3)."""
+    db = _make_db(tmp_path, [
+        {"id": "x", "text": "- propose to remove X",
+         "metadata": {"kind": "curriculum_proposal",
+                      "status": "pending"}},
+    ])
+    _, _, _, generic, skipped = _scan_rows(db)
+    assert generic == []
+    assert skipped["curriculum_proposal"] == 1
 
 
 def test_backup_creates_sibling_file(tmp_path: Path) -> None:

@@ -63,7 +63,29 @@ BACKUP_SUFFIX = ".pre-phase7.bak"
 # Kinds we explicitly DON'T migrate — workspace indexing artefacts,
 # not user-facing facts. Reported with counts so the operator sees
 # what got skipped intentionally.
-_SKIP_KINDS = {"file_chunk", "code_chunk"}
+_SKIP_KINDS = {
+    "file_chunk", "code_chunk",
+    # Phase 7.B.3 (2026-05-24): transient — curriculum_proposal
+    # rows are pending suggestions that get applied to persona MD
+    # then discarded; not durable facts worth migrating.
+    "curriculum_proposal",
+}
+
+# Phase 7.B.3 (2026-05-24): generic-kind table — V1 stored several
+# kinds beyond lesson/persona_manual/persona_bullet that have direct
+# V2 equivalents. Each entry says (V2 FactKind, V2 FactScope,
+# V2 layer). Maps to the same /api/v2/memory/v2/facts wire format
+# the lesson path uses.
+_GENERIC_KIND_TARGETS: dict[str, tuple[str, str, str]] = {
+    # 107 preference rows in the wild — auto-extracted by the
+    # cognition layer. Default scope=user (long-lived); evidence-
+    # count promotes them to long_term automatically on re-write.
+    "preference": ("preference", "user", "working"),
+    # 25 procedure rows — skill metadata (title/description/triggers).
+    # Lands in procedural layer (exempt from sweep), kind=lesson
+    # since V2 has no separate "procedure" kind.
+    "procedure": ("lesson", "project", "procedural"),
+}
 
 
 # ── memory.db schema probe ───────────────────────────────────────
@@ -71,8 +93,16 @@ _SKIP_KINDS = {"file_chunk", "code_chunk"}
 
 def _scan_rows(
     db_path: Path,
-) -> tuple[list[dict], list[dict], list[dict], Counter]:
-    """Return ``(lesson_rows, persona_manual_rows, bullet_rows, skipped_counter)``.
+) -> tuple[list[dict], list[dict], list[dict], list[dict], Counter]:
+    """Return ``(lesson_rows, persona_manual_rows, bullet_rows,
+    generic_rows, skipped_counter)``.
+
+    ``generic_rows`` covers Phase 7.B.3 additions (preference /
+    procedure / _no_kind facts that the original Wave-27 script
+    silently skipped because the script only knew lesson +
+    persona_manual). Each generic row carries the V2 mapping
+    pre-resolved (kind / scope / layer) so the executor doesn't
+    re-derive it.
 
     Skipped counter records kinds we deliberately ignore + the count
     of malformed rows.
@@ -91,6 +121,7 @@ def _scan_rows(
     lessons: list[dict] = []
     manuals: list[dict] = []
     bullets: list[dict] = []
+    generic: list[dict] = []
     skipped: Counter = Counter()
 
     for rid, layer, text, md, ts, ev, conf in rows:
@@ -109,6 +140,21 @@ def _scan_rows(
         kind = meta.get("kind")
         if kind in _SKIP_KINDS:
             skipped[str(kind)] += 1
+            continue
+
+        # Phase 7.B.3: generic-kind table catches preference / procedure.
+        if isinstance(kind, str) and kind in _GENERIC_KIND_TARGETS:
+            v2_kind, v2_scope, v2_layer = _GENERIC_KIND_TARGETS[kind]
+            generic.append({
+                "memory_id": rid,
+                "text": text.strip(),
+                "v2_kind": v2_kind,
+                "v2_scope": v2_scope,
+                "v2_layer": v2_layer,
+                "confidence": conf or 0.7,
+                "ts": ts,
+                "v1_kind": kind,
+            })
             continue
 
         if kind == "lesson":
@@ -149,10 +195,31 @@ def _scan_rows(
                 "confidence": conf or 0.7,
                 "ts": ts,
             })
+        elif kind is None:
+            # Phase 7.B.3: rows from V1's hop_loop Phase B auto-extract
+            # came in without a kind tag (the V1 MemoryExtractor wrote
+            # metadata.source='auto_extract' + reason but no kind). They
+            # ARE real user facts (identity / preference / decision) —
+            # default to lesson + scope=project rather than silently
+            # drop them. The user can re-tag in the UI if needed.
+            source = meta.get("source")
+            if source == "auto_extract":
+                generic.append({
+                    "memory_id": rid,
+                    "text": text.strip(),
+                    "v2_kind": "lesson",
+                    "v2_scope": "project",
+                    "v2_layer": "working",
+                    "confidence": conf or 0.7,
+                    "ts": ts,
+                    "v1_kind": "_no_kind_auto_extract",
+                })
+            else:
+                skipped["_no_kind"] += 1
         else:
             skipped[str(kind or "_no_kind")] += 1
 
-    return lessons, manuals, bullets, skipped
+    return lessons, manuals, bullets, generic, skipped
 
 
 # ── HTTP helpers ─────────────────────────────────────────────────
@@ -180,6 +247,36 @@ def _post_fact(
             "confidence": confidence,
             "bucket": bucket,
         },
+        headers=headers, timeout=timeout,
+    )
+    if r.status_code != 200:
+        return False, {"status_code": r.status_code, "body": r.text[:200]}
+    try:
+        return True, r.json()
+    except Exception:  # noqa: BLE001
+        return True, None
+
+
+def _post_generic_fact(
+    *, base: str, headers: dict, text: str,
+    kind: str, scope: str, layer: str, confidence: float,
+    timeout: float = 30.0,
+) -> tuple[bool, dict | None]:
+    """POST a generic-kind fact (preference / procedure / no-kind
+    auto-extract). Same wire shape as ``_post_fact`` but caller
+    supplies kind + scope + layer explicitly."""
+    payload: dict = {
+        "text": text,
+        "kind": kind,
+        "scope": scope,
+        "confidence": confidence,
+    }
+    # The remember endpoint accepts an optional layer override.
+    if layer:
+        payload["layer"] = layer
+    r = httpx.post(
+        f"{base}/api/v2/memory/v2/facts",
+        json=payload,
         headers=headers, timeout=timeout,
     )
     if r.status_code != 200:
@@ -247,18 +344,19 @@ def _cmd_migrate(args: argparse.Namespace) -> int:
         print(f"[error] memory.db not found at {args.db}")
         return 1
 
-    lessons, manuals, bullets, skipped = _scan_rows(args.db)
+    lessons, manuals, bullets, generic, skipped = _scan_rows(args.db)
 
     print(f"scanned {args.db}:")
     print(f"  {len(lessons)} lesson row(s)")
     print(f"  {len(manuals)} persona_manual row(s)")
     print(f"  {len(bullets)} persona_bullet row(s)")
+    print(f"  {len(generic)} generic row(s) (preference/procedure/auto_extract)")
     if skipped:
         print("\nskipped:")
         for k, c in sorted(skipped.items()):
             print(f"  {k:24}: {c}")
 
-    if not (lessons or manuals or bullets):
+    if not (lessons or manuals or bullets or generic):
         print("nothing to migrate — exiting.")
         return 0
 
@@ -278,9 +376,18 @@ def _cmd_migrate(args: argparse.Namespace) -> int:
         print("\npersona_bullet sources:")
         for p, c in ps.most_common(10):
             print(f"  {p[:34]:34}: {c}")
+    if generic:
+        gs = Counter(g["v1_kind"] for g in generic)
+        print("\ngeneric V1 kinds → V2 mapping:")
+        for k, c in gs.most_common():
+            sample = next(g for g in generic if g["v1_kind"] == k)
+            print(
+                f"  {k:24}: {c}  → kind={sample['v2_kind']!r} "
+                f"scope={sample['v2_scope']!r} layer={sample['v2_layer']!r}"
+            )
 
     if not args.execute:
-        total = len(lessons) + len(manuals) + len(bullets)
+        total = len(lessons) + len(manuals) + len(bullets) + len(generic)
         print(
             f"\n[dry-run] would migrate {total} row(s). "
             f"Re-run with --execute (auto-backups memory.db first).",
@@ -353,6 +460,30 @@ def _cmd_migrate(args: argparse.Namespace) -> int:
             fail_count += 1
             print(f"  [bullet {i}/{len(bullets)}] FAIL: {payload}")
 
+    # Generic kinds (Phase 7.B.3): preference / procedure / auto_extract.
+    for i, g in enumerate(generic, 1):
+        ok, payload = _post_generic_fact(
+            base=args.base, headers=headers,
+            text=g["text"],
+            kind=g["v2_kind"],
+            scope=g["v2_scope"],
+            layer=g["v2_layer"],
+            confidence=float(g["confidence"]),
+            timeout=args.timeout,
+        )
+        if ok:
+            ok_count += 1
+            if args.verbose:
+                print(
+                    f"  [{g['v1_kind']} {i}/{len(generic)}] ok "
+                    f"→ {g['v2_kind']}/{g['v2_scope']}"
+                )
+        else:
+            fail_count += 1
+            print(
+                f"  [{g['v1_kind']} {i}/{len(generic)}] FAIL: {payload}"
+            )
+
     elapsed = time.perf_counter() - t0
     print(
         f"\n=== done: {ok_count} ok / {fail_count} failed "
@@ -378,12 +509,15 @@ def _cmd_verify(args: argparse.Namespace) -> int:
         print(f"[error] memory.db not found at {args.db}")
         return 1
 
-    lessons, manuals, bullets, skipped = _scan_rows(args.db)
-    v1_user_facing = len(lessons) + len(manuals) + len(bullets)
+    lessons, manuals, bullets, generic, skipped = _scan_rows(args.db)
+    v1_user_facing = (
+        len(lessons) + len(manuals) + len(bullets) + len(generic)
+    )
     print(f"V1 user-facing rows in {args.db}: {v1_user_facing}")
     print(f"  lessons:        {len(lessons)}")
     print(f"  persona_manual: {len(manuals)} ({len({m['basename'] for m in manuals})} unique files)")
     print(f"  persona_bullet: {len(bullets)}")
+    print(f"  generic:        {len(generic)}")
     if skipped:
         print("  (skipped non-user-facing kinds:)")
         for k, c in sorted(skipped.items()):
