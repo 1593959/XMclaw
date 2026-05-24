@@ -1934,6 +1934,130 @@ memory_put 工具:
 
 ---
 
+## Phase 7: Memory V1→V2 收口（双栈合一）
+
+> **状态**: ⬜ 未启动（2026-05-23 立项）
+> **目标**: 彻底退役 V1 (`xmclaw/memory/unified.py` + sqlite_vec + MemoryGraph)，所有读写收口到 V2 (`MemoryService` + LanceDB)。消灭双 import 入口 / 双数据目录 / `memory_search` 双查桥接。
+> **时间**: 3 周（阶段 1 ~1 周 facade 收口 + 阶段 2 ~2 周后端替换）
+> **风险**: 中（用户已有真实数据需要迁移，需要回滚预案）
+> **前置**: 无（独立于 Phase 1-6）；与 Phase 1-6 并行推进，但 §7.A 完成前不动后端
+> **决策记录**: 2026-05-23 用户拍板方案 A，否决方案 B（V1 降为 V2 backend）。决定性因素：用户"统一路径原则"——B 永久保留 LanceDB + SQLite 双引擎、写路径仍分两条只是被 facade 遮盖；A 是唯一根治"写在 /a 读在 /b"的方案。
+
+### 7.0 现状诊断（why this Phase exists）
+
+- **V1**：`xmclaw/memory/unified.py` 暴露 `UnifiedMemorySystem(query/put/delete)`，底层 sqlite_vec（向量）+ MemoryGraph（图）+ temporal 索引，4 层语义（working/short_term/long_term/procedural），有 TTL/retention，跨轴写带补偿（`UnifiedWriteError`）。21 个 callsite。
+- **V2**：`xmclaw/memory/v2/` 暴露 `MemoryService(remember/recall/relate/neighbors)`，底层 LanceDB（vector + graph），Fact + Relation 类型化模型（kind/scope/layer），contradicts 检测，确定性 ID，LLM 抽取管道。31 个 callsite。
+- **当下并存代价**：
+  1. 数据双写：`~/.xmclaw/v2/memory.db` + `~/.xmclaw/v2/facts/` 各活各的
+  2. `memory_search` 工具在 [app_lifespan.py:2218-2257](../xmclaw/daemon/app_lifespan.py:2218) 需 hot-wire 桥接才能同时查两套
+  3. 心智模型分裂：调用方要知道"lesson 走 V2、procedural 走 V1"
+- **`v2/__init__.py:20-23`** 写明 "kept untouched during migration ... until Phase 5 swap" — Phase 5 swap 从未发生，本 Phase 即兑现该承诺。
+
+### 7.1 设计 spec（MEMORY_EVOLUTION_REDESIGN 内嵌版）
+
+> 原 `docs/MEMORY_EVOLUTION_REDESIGN.md`（1274 行）于 commit f4e57c8 退役并入本文件。代码内引用该路径的 4 处（`v2/__init__.py:6`、`v2/service.py:8`、`v2/models.py`、`app_lifespan.py:2178`）后续 PR 一并改为指向本节。
+
+#### 7.1.1 四层金字塔（L0→L1→L2→L3）
+
+```
+L0 events        events.db (不变)                 — 原始事件流（observer 写入）
+L1 facts         ~/.xmclaw/v2/facts/  (LanceDB)   — 类型化 Fact + Relation（V2 当前已覆盖）
+L2 experience    ~/.xmclaw/v2/experiences/        — 多 fact 聚合的"经历单元"（本 Phase 新增）
+L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L2 提炼
+```
+
+- **L0 → L1**：`KeyInfoExtractor`（regex 同步路径）+ `LLMFactExtractor`（后台路径），见 `agent_loop.run_turn`
+- **L1 → L2**：`ExperienceDistiller`（待建），按主题/时间窗聚合相关 facts → Experience 单元
+- **L2 → L3**：`SkillDreamCycle`（已存在），从 Experience 中提炼候选 skill
+
+#### 7.1.2 Fact / Relation 模型（V2 现状即终态）
+
+- `Fact(id, text, kind, scope, layer, embedding, evidence_count, contradicts[], superseded_by, created_at, updated_at)`
+- `id = kind:scope:hash12(text)` 确定性，内容去重免费
+- `kind` ∈ {identity, preference, goal, lesson, url, credential, decision, fact, topic, ...}
+- `scope` ∈ {global, user, project, session, persona}
+- `layer` ∈ {working, long_term} —— **本 Phase 新增 procedural**
+- `Relation(source_id, target_id, kind, strength)`, `kind` ∈ {SAME_TOPIC, CONTRADICTS, SUPERSEDES, CAUSED_BY, RELATED_TO, MENTIONS}
+
+#### 7.1.3 后端契约（替换 V1 sqlite_vec + MemoryGraph 后必须等价）
+
+| V1 能力 | V2 当前 | 本 Phase 补齐方式 |
+|---|---|---|
+| TTL / max_items / max_bytes per layer | ❌ | §7.5 新增 `MemoryService.sweep()` + `retention` 配置段 |
+| `query_by_time_range(start, end)` | 二次过滤 | §7.6 LanceDB 上加 `ts` 列索引，新增 `recall(time_range=...)` 参数 |
+| `FactLayer.procedural` | ❌（只 working/long_term）| §7.7 新增 `procedural` enum 值 + 不参与 TTL 回收 |
+| 跨轴写补偿 (`UnifiedWriteError`) | 单后端写 | §7.8 LanceDB merge_insert 已天然原子；图边写失败回滚 vector 写 |
+| 时序 axis 作为 first-class | ❌ | §7.6 同上 |
+
+### 7.A 阶段 1：Facade 收口（~1 周）
+
+> **目标**：用户态只剩 V2 一个 import 入口；V1 继续跑、但只作 internal backend；`memory_search` 双查桥接退役。**完成后用户体感 V1/V2 之争已经消失。**
+
+- [ ] **7.A.1 callsite 盘点（半天）**
+  - 跑脚本：`rg -l "from xmclaw.memory import|from xmclaw\.memory\.unified|UnifiedMemorySystem" --type py`
+  - 输出 21 个文件分类表：每个 callsite 的 (调用 API、能否直接换 V2 等价 API、V2 缺什么)
+- [ ] **7.A.2 在 V2 加 shim API（1-2 天）**
+  - `MemoryService.query(time_range=...)` — 暂时转发到 V1 `UnifiedMemorySystem.query` 的时序通道
+  - `MemoryService.put(layer="procedural", ...)` — 暂时落到 V1 procedural 层
+  - 目的：V2 API 表面完整，callsite 迁移不会因"V2 缺接口"卡住
+- [ ] **7.A.3 callsite 逐个迁移（2-3 天）**
+  - 优先级：daemon/factory.py → daemon/agent_loop.py → daemon/hop_loop.py → cognition/reflection_cycle.py → 5 个 router → 4 个 static 页面
+  - 每个 callsite 一个 commit，commit msg `Phase 7.A: migrate <file> to MemoryService`
+- [ ] **7.A.4 退役桥接代码（半天）**
+  - 删 `app_lifespan.py:2218-2257` BuiltinTools hot-wire
+  - `BuiltinTools.set_memory_v2_service()` 改名为 `set_memory_service()`，V1 引用全删
+- [ ] **7.A.5 删旧 `__init__` 导出（半天）**
+  - `xmclaw/memory/__init__.py` 只保留 `from xmclaw.memory.v2 import ...`；`UnifiedMemorySystem` 等不再 re-export
+  - 旧文件 `unified.py` / `_id.py` / `extractor.py` 保留但加 `_legacy_` 前缀 + 加 deprecation warning
+- [ ] **7.A.6 跨前后端测试**（CLAUDE.md §Key Conventions 硬约束）
+  - 每个迁移的 router 必须 `TestClient` 跑过真实 URL，不只是单测 handler
+
+### 7.B 阶段 2：后端替换（~2 周）
+
+> **目标**：底层数据完全跑在 LanceDB，sqlite_vec + MemoryGraph 退役；用户数据一次性迁移；`memory.*` 配置段退役。
+
+- [ ] **7.B.1 补 V2 缺的 4 块能力**
+  - **TTL / retention**（2-3 天）：移植 V1 `xmclaw/providers/memory/sqlite_vec.py` 的 sweep 逻辑，落到 `MemoryService.sweep()`；配置段 `cognition.memory_v2.retention.{ttl, max_items, max_bytes}`；后台任务每小时跑一次
+  - **`procedural` 层**（1 天）：`FactLayer.procedural` 枚举值；不参与 TTL；render_for_prompt 单独处理（procedural facts 优先级高于 working）
+  - **temporal 索引**（1-2 天）：LanceDB scalar index on `created_at`；`recall(time_range=(start, end), ...)` 参数；reflection_cycle / cognitive_daemon 等时序消费者切过去
+  - **写入原子性**（1 天）：`MemoryServiceWriteError`（mirror V1 `UnifiedWriteError.compensated`）；vector 写成功 + graph 写失败 → 删 vector 行回滚
+- [ ] **7.B.2 数据迁移脚本**（2-3 天）
+  - 验证已有 `scripts/migrate_memory_db_to_v2.py` 覆盖率（当前覆盖 lessons + preferences，可能漏 persona_manual / file_chunk / code_chunk）
+  - 补全缺失类型；加 dry-run 模式；加迁移前自动 backup `memory.db` → `memory.db.pre-phase7.bak`
+  - 加 verify 子命令：对每条 V1 记录确认 V2 有对应 fact
+- [ ] **7.B.3 一次性迁移 + 切换**
+  - 用户在 `xmclaw doctor --fix` 中触发；幂等；失败 rollback
+  - V1 `UnifiedMemorySystem` 切到 "read-only + warn" 模式
+- [ ] **7.B.4 退役 V1 代码 + 配置**
+  - 删 `xmclaw/memory/unified.py` / `_id.py` / `extractor.py`
+  - 删 `xmclaw/providers/memory/sqlite_vec.py` + `manager.py`（保留 `base.py` / `embedding.py`，V2 在用）
+  - 删 `config.example.json` 的 `memory.*` 段；retention 配置改在 `cognition.memory_v2.retention`
+  - 更新 `xmclaw/memory/AGENTS.md` 反映新结构
+- [ ] **7.B.5 文档收尾**
+  - JARVIS_PLAN §1.4 改写："双栈架构" → "单栈 LanceDB"
+  - 附录 B 技术债务清单加一条 "V1 memory 已退役 ✅"
+
+### 7.C 验收标准
+
+- [ ] `grep -r "UnifiedMemorySystem\|from xmclaw.memory.unified" xmclaw/ tests/` 零结果
+- [ ] `~/.xmclaw/v2/memory.db` 在迁移后不再被读写（lsof 验证）
+- [ ] `config.example.json` 无 `memory.*` 顶级段
+- [ ] 全量 pytest 通过；smart-gate 的 `memory` lane 全绿
+- [ ] `xmclaw doctor` 加 "memory_v1_retired" 检查项并通过
+- [ ] 用户实测：fresh install + 老 `memory.db` 升级，identity facts 都还在、`memory_search` 返回完整结果
+
+### 7.D 风险与回滚
+
+- **R1 用户数据丢失**：迁移前自动 backup；verify 子命令 hash 比对；失败 rollback 到 `memory.db.pre-phase7.bak`
+- **R2 LanceDB 性能崩盘**：阶段 1 不动后端，先观察一周 callsite 都收口后 LanceDB 单独承压情况
+- **R3 callsite 漏迁**：阶段 1 末加 import-direction 检查，禁止 `xmclaw/` 下任何文件 import V1 modules
+
+### 7.E 进度日志
+
+（首条由启动 commit 写入）
+
+---
+
 ## 附录 A: 竞品差异化总结
 
 | 维度 | OpenClaw | Claude Code | Hermes | Letta | **XMclaw** |
@@ -2002,7 +2126,7 @@ memory_put 工具:
 - `JARVIS_PHASE_6_DESIGN.md`
 - `JARVIS_ROADMAP.md`
 - `MEMORY_ARCHITECTURE.md`
-- `MEMORY_EVOLUTION_REDESIGN.md`
+- `MEMORY_EVOLUTION_REDESIGN.md` （内容并入本文件 Phase 7.1，2026-05-23）
 - `MULTI_AGENT.md`
 - `PRODUCT_REDESIGN.md`
 - `PROJECT_DEFINITION_2026-05-10.md`

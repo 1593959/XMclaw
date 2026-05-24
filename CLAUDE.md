@@ -4,23 +4,25 @@ Top-level navigation for Claude Code (and other AI coding assistants).
 **Per-directory contracts live in `xmclaw/<subdir>/AGENTS.md`** — read
 those before editing code in that subdir.
 
-## ★ 开发纪律（硬约束，2026-04-22 起）
+## ★ 开发纪律（硬约束，2026-05-23 起 — 文档体系收敛于 JARVIS_PLAN）
 
-任何涉及 Epic / Milestone 的代码改动，**必须**同时更新 [docs/DEV_ROADMAP.md](docs/DEV_ROADMAP.md)：
+历史背景：2026-05-22 commit f4e57c8 批量退役了 DEV_ROADMAP / ARCHITECTURE / EVENTS / MEMORY_ARCHITECTURE 等 28 份分散文档，**唯一 source of truth 收敛到 [docs/JARVIS_IMPLEMENTATION_PLAN_2026.md](docs/JARVIS_IMPLEMENTATION_PLAN_2026.md)**（架构、Phase 路线图、模块状态矩阵、设计决策全部在内）。原 Epic 体系作废，改用 JARVIS plan 的 Phase 体系。
 
-1. **开工前**：在对应 Epic §4 把状态 ⬜→🟡，填负责人 + 起始日期
-2. **子步骤完成**：勾 checkbox + **进度日志**追加一行 `YYYY-MM-DD: <摘要> (commit <sha7>)`
-3. **遇阻塞**：状态 🟡→🔴，进度日志写 reason + 等什么
-4. **Epic 收尾**：状态 ✅ + 完成日期 + §7 对应 Milestone 的退出标准同步打勾
-5. **Commit 消息**必须引用 Epic 号：`Epic #6: <动作>` / `Epic #3 partial: <动作>` / `Epic #14 blocked: <原因>`
+任何涉及 Phase / Milestone 的代码改动，**必须**同时更新 `docs/JARVIS_IMPLEMENTATION_PLAN_2026.md`：
 
-**不遵守 = PR 不合格。** 详见 [DEV_ROADMAP.md §3.6 执行协议](docs/DEV_ROADMAP.md#36-执行协议execution-protocol-每次开发必读)。
+1. **开工前**：在对应 Phase 章节把待办项 `- [ ]` 标成 `- [x]`（启动状态由 commit 引用建立）；如启动整个 Phase，章节顶 `> **状态**: 🟡 进行中 (YYYY-MM-DD 起)`
+2. **子步骤完成**：勾 checkbox + 章节末 `**进度日志**` 块追加 `YYYY-MM-DD: <摘要> (commit <sha7>)`
+3. **遇阻塞**：状态翻 🔴，进度日志写 reason + 等什么
+4. **Phase 收尾**：状态 ✅ + 完成日期 + "验收标准"章节内 checkbox 全勾
+5. **Commit 消息**必须引用 Phase 号：`Phase 1: <动作>` / `Phase 3 partial: <动作>` / `Phase 7 blocked: <原因>`
 
-配套策略背景见 [docs/archive/COMPETITIVE_GAP_ANALYSIS.archived.md](docs/archive/COMPETITIVE_GAP_ANALYSIS.archived.md)（为什么做这些 Epic）。
+**不遵守 = PR 不合格。**
+
+配套策略背景见 [docs/archive/COMPETITIVE_GAP_ANALYSIS.archived.md](docs/archive/COMPETITIVE_GAP_ANALYSIS.archived.md)（为什么做这些 Phase）。
 
 ## Project
 
-**XMclaw** is a local-first, self-evolving AI agent runtime written in Python. A single FastAPI daemon hosts the AgentLoop and composes LLM / Tool / Memory / Channel providers over a streaming `BehavioralEvent` bus; the Honest Grader + SkillScheduler + EvolutionController pipeline drives evidence-based skill promotion. Clients (Web UI, CLI, future desktop tray) connect to the daemon over WebSocket at `/agent/v2/{session_id}`. See [README.md](README.md) for the user-facing overview and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the definitive system design.
+**XMclaw** is a local-first, self-evolving AI agent runtime written in Python. A single FastAPI daemon hosts the AgentLoop and composes LLM / Tool / Memory / Channel providers over a streaming `BehavioralEvent` bus; the Honest Grader + SkillScheduler + EvolutionController pipeline drives evidence-based skill promotion. Clients (Web UI, CLI, future desktop tray) connect to the daemon over WebSocket at `/agent/v2/{session_id}`. See [README.md](README.md) for the user-facing overview and [docs/JARVIS_IMPLEMENTATION_PLAN_2026.md](docs/JARVIS_IMPLEMENTATION_PLAN_2026.md) §0–§1 for the definitive architecture + module status matrix.
 
 ## Repository Layout
 
@@ -34,19 +36,22 @@ xmclaw/              Python package — see per-subdir AGENTS.md for contracts
 ├── skills/          SkillBase + registry + demo skills     → xmclaw/skills/AGENTS.md
 ├── cli/             `xmclaw` entry points + doctor         → xmclaw/cli/AGENTS.md
 ├── utils/           Path / log / redact / cost helpers     → xmclaw/utils/AGENTS.md
-└── plugins/         Third-party plugins (Epic #2 WIP)
+├── memory/          UnifiedMemorySystem (V1, being retired) + v2/ (MemoryService + LanceDB)
+│                    → xmclaw/memory/AGENTS.md (V1→V2 consolidation: JARVIS_PLAN Phase 7)
+└── plugins/         Third-party plugins
 
 xmclaw/daemon/static/ Web UI (Preact + htm via ESM, no build step) — served at
                      `/ui/` via FastAPI `StaticFiles`. No Node.js required.
 daemon/              Runtime config (config.json gitignored; config.example.json is the template)
-docs/                ARCHITECTURE, DEV_ROADMAP, EVENTS, DOCTOR, WORKSPACE, V2_DEVELOPMENT, …
-                     AGENTS_TEMPLATE.md is the template per-subdir AGENTS.md files follow.
+docs/                JARVIS_IMPLEMENTATION_PLAN_2026.md = single source of truth
+                     (architecture, Phase roadmap, module status, design decisions).
+                     architecture/, audit/, codebase/, archive/ hold supporting material.
 tests/               pytest suites — see scripts/test_lanes.yaml for the smart-gate mapping
 scripts/             Dev/ops — setup.{ps1,bat}, test_changed.py, check_import_direction.py, …
 .github/workflows/   python-ci.yml (lint + smart-gate tests), release.yml, python-publish.yml
 ```
 
-Runtime data (events.db, memory.db, pairing_token.txt, daemon.pid, …) lives under `~/.xmclaw/v2/`, *not* inside the repo — see [docs/WORKSPACE.md](docs/WORKSPACE.md). Anything not in the tree above is either gitignored dev scratch or legacy scaffolding — check `.gitignore` before assuming a root-level file belongs in git.
+Runtime data (events.db, memory.db, pairing_token.txt, daemon.pid, …) lives under `~/.xmclaw/v2/`, *not* inside the repo. Anything not in the tree above is either gitignored dev scratch or legacy scaffolding — check `.gitignore` before assuming a root-level file belongs in git.
 
 ## Common Commands
 
@@ -69,12 +74,12 @@ xmclaw stop
 xmclaw chat                      # interactive CLI
 xmclaw chat --plan               # plan mode (approve steps first)
 xmclaw config init               # interactive config
-xmclaw doctor                    # diagnostics (see docs/DOCTOR.md)
+xmclaw doctor                    # diagnostics
 xmclaw doctor --fix              # auto-remediate fixable check failures
 
 # Test & lint
 python -m pytest tests/ -v                    # full suite (slow)
-python scripts/test_changed.py --dry-run      # smart-gate: only affected lanes (Epic #11)
+python scripts/test_changed.py --dry-run      # smart-gate: only affected lanes
 python scripts/test_changed.py --all          # forced full suite via selector
 python -m pytest tests/ --cov=xmclaw --cov-report=html
 ruff check xmclaw/ --fix
@@ -93,9 +98,9 @@ Dev env is Windows-first; scripts use `.bat` / `.ps1`. Use `bash` syntax on Git 
 - **Import direction is enforced.** `scripts/check_import_direction.py` blocks upward edges in the DAG (`core/` cannot import `providers/`, etc). Rules live in each subdir's AGENTS.md.
 - **Tests must cross the front-back boundary** (rule established 2026-05-09). When a feature spans backend (route/handler) + frontend (page/component), tests MUST exercise the full HTTP path the frontend actually uses (`TestClient.get(real_url)` against the real `create_app`), not just inspect router internals or unit-test the handler in isolation. Pure backend tests miss real-world matching bugs (route order, prefix collisions, request-validation mismatch); pure frontend tests miss handler logic. Ship BOTH layers per touched route. See `tests/unit/test_v2_cognition_router_order.py` for the canonical pattern (router-inspection + TestClient end-to-end in the same file).
 - **Config with secrets is gitignored.** `daemon/config.json` holds API keys — never commit. Use `daemon/config.example.json` or env vars prefixed with `XMC__` (e.g. `XMC__llm__anthropic__api_key`).
-- **Events are the contract.** The daemon emits a typed event stream — see [docs/EVENTS.md](docs/EVENTS.md). Clients must not assume fields outside that schema.
-- **Tool additions go to `xmclaw/providers/tool/`.** Register via `ToolProvider` ABC; update [docs/TOOLS.md](docs/TOOLS.md) + the `tools` lane in `scripts/test_lanes.yaml`.
-- **Skill evolution is in-memory.** `xmclaw/skills/` + `xmclaw/core/scheduler/` + `xmclaw/core/evolution/` run the Honest-Grader-driven promotion pipeline; versions live in `SkillRegistry`, not in `shared/skill_*.py` files. See [docs/V2_DEVELOPMENT.md](docs/V2_DEVELOPMENT.md) §1–§3 for the controller / grader / scheduler contract.
+- **Events are the contract.** The daemon emits a typed event stream — schema lives in `xmclaw/core/bus/events.py` and is documented in JARVIS_PLAN §1.3. Clients must not assume fields outside that schema.
+- **Tool additions go to `xmclaw/providers/tool/`.** Register via `ToolProvider` ABC; update the `tools` lane in `scripts/test_lanes.yaml` and the relevant section of JARVIS_PLAN §1.5.
+- **Skill evolution is in-memory.** `xmclaw/skills/` + `xmclaw/core/scheduler/` + `xmclaw/core/evolution/` run the Honest-Grader-driven promotion pipeline; versions live in `SkillRegistry`, not in `shared/skill_*.py` files. See JARVIS_PLAN §1.10 for the controller / grader / scheduler contract.
 
 ## Git Workflow
 
@@ -103,7 +108,7 @@ Dev env is Windows-first; scripts use `.bat` / `.ps1`. Use `bash` syntax on Git 
 - The exception is when the user explicitly says "open a PR" / "use a branch" / "需要 review" — then create `feat/...` / `fix/...` / `docs/...` and run `gh pr create`.
 - Push-to-main runs the full smart-gate via CI; that's the safety net, not pre-merge review.
 - Keep commit messages in English (or Chinese — both fine; user is bilingual). Conventional Commits encouraged (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`).
-- Epic-touching commits must cite the Epic number (`Epic #11:`, `Epic #14 partial:`, etc). See the 开发纪律 section above.
+- Phase-touching commits must cite the Phase number (`Phase 1:`, `Phase 3 partial:`, etc). See the 开发纪律 section above.
 
 ## Releasing
 
