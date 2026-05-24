@@ -36,8 +36,8 @@ xmclaw/              Python package — see per-subdir AGENTS.md for contracts
 ├── skills/          SkillBase + registry + demo skills     → xmclaw/skills/AGENTS.md
 ├── cli/             `xmclaw` entry points + doctor         → xmclaw/cli/AGENTS.md
 ├── utils/           Path / log / redact / cost helpers     → xmclaw/utils/AGENTS.md
-├── memory/          UnifiedMemorySystem (V1, being retired) + v2/ (MemoryService + LanceDB)
-│                    → xmclaw/memory/AGENTS.md (V1→V2 consolidation: JARVIS_PLAN Phase 7)
+├── memory/          MemoryService (V2, LanceDB-backed) — V1 retired 2026-05-24
+│                    → xmclaw/memory/AGENTS.md
 └── plugins/         Third-party plugins
 
 xmclaw/daemon/static/ Web UI (Preact + htm via ESM, no build step) — served at

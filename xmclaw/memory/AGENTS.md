@@ -2,22 +2,23 @@
 
 ## 1. 职责
 
-Memory 用户态入口。当前处于 **V1→V2 收口过渡期**（JARVIS_PLAN Phase 7，
-2026-05-23 立项）。
+Memory 用户态入口。Phase 7 完成（2026-05-24）后 **V2 单栈**：
 
-- **`v2/`** — 终态。`MemoryService`（remember / recall / relate /
-  neighbors）+ LanceDB（Vector + Graph backend）+ 类型化 Fact / Relation
-  模型 + 确定性 ID + contradicts 检测 + LLM 抽取管道。**所有新代码必须只
-  调用 `xmclaw.memory.v2`。**
-- **`unified.py` + `_id.py` + `extractor.py`** — V1 遗产，待退役。
-  `UnifiedMemorySystem` 包 sqlite_vec（providers/memory/）+ MemoryGraph，
-  提供 4 层（working / short_term / long_term / procedural）+ 时序索引 +
-  跨轴写补偿。**禁止新代码 import**；现有 callsite 按 Phase 7.A 逐个迁
-  到 V2。
+- **`v2/`** — 唯一 API。`MemoryService`（remember / recall / relate /
+  neighbors / sweep / delete）+ LanceDB（Vector + Graph backend）+
+  类型化 Fact / Relation 模型 + 确定性 ID + contradicts 检测 + LLM
+  抽取管道。
+- **`__init__.py`** — 顶层 re-export V2。`from xmclaw.memory import
+  MemoryService, FactKind, ...` 直接可用。
+- **`unified.py` / `_id.py` / `extractor.py`**（V1）— **已删除**
+  (Phase 7.B.4, commit pending)。如果你看到任何 import 这些名字的
+  代码，那是错误，立刻报告。
 
 数据落盘：
-- V1: `~/.xmclaw/v2/memory.db`（Phase 7.B 完成后迁走 + 删除）
 - V2: `~/.xmclaw/v2/facts/`（LanceDB dataset）
+- 老 `~/.xmclaw/v2/memory.db`（V1）：用户态 fact 已迁出，仅剩
+  workspace 索引（file_chunk / code_chunk，由 `providers/memory/sqlite_vec`
+  负责，不归本目录管）
 
 ## 2. 依赖规则
 
@@ -26,9 +27,11 @@ Memory 用户态入口。当前处于 **V1→V2 收口过渡期**（JARVIS_PLAN 
   provider 的高阶包装）、stdlib、`lancedb`、`pyarrow`、embedding SDK。
 - ❌ MUST NOT import: `xmclaw.daemon.*`、`xmclaw.cli.*`、`xmclaw.skills.*`、
   `xmclaw.cognition.*`。memory 是被调用方，反向是非法依赖。
-- ❌ **新代码不许 `from xmclaw.memory import UnifiedMemorySystem`** 或
-  `from xmclaw.memory.unified import ...`。`check_import_direction.py`
-  会在 Phase 7.A 末加 V1 import 黑名单检查。
+- ❌ V1 名字已物理消失（Phase 7.B.4）。
+  `from xmclaw.memory import UnifiedMemorySystem` / `MemoryExtractor` /
+  `MemoryEntry` / `TimeRange` / `mint_unified_id` / `UnifiedWriteError`
+  / `ExtractedFact` / `TriggerKind` 全部报 ImportError，不是 deprecation
+  warning。
 
 ## 3. 测试入口
 
@@ -72,16 +75,16 @@ Memory 用户态入口。当前处于 **V1→V2 收口过渡期**（JARVIS_PLAN 
 - `v2/llm_topic.py` — 主题聚类，建 SAME_TOPIC 边。
 - `v2/entity.py` — Entity 桥接（多 fact 指同一现实对象）。
 
-### V1（待退役 — Phase 7.B 删除）
-- `unified.py` — `UnifiedMemorySystem`（query / put / delete 三轴）。
-- `_id.py` — `mint_unified_id` + `UnifiedWriteError`。
-- `extractor.py` — 老的 `MemoryExtractor`。
-
 ## 6. Phase 7 当前状态
 
 见 `docs/JARVIS_IMPLEMENTATION_PLAN_2026.md` §Phase 7。
-- §7.A facade 收口（V2 作为唯一入口）— ⬜ 未启动
-- §7.B 后端替换（删 sqlite_vec + MemoryGraph）— ⬜ 未启动
+- §7.A facade 收口（V2 作为唯一入口）— ✅ 2026-05-23 完成
+- §7.B.1 sweep / retention — ✅ 2026-05-24 完成
+- §7.B.2 migration script — ✅ 2026-05-24 完成
+- §7.B.3 live 用户数据迁移 — ⏳ 等用户 OK
+- §7.B.4 V1 物理删除（本目录三文件）— ✅ 2026-05-24 完成
+- §7.B.5 文档收尾 — ⏳ 待 §7.B.3 收尾后做
 
-任何对本目录的改动 commit message 必须前缀 `Phase 7.A:` / `Phase 7.B:`，
-并按 CLAUDE.md §开发纪律更新 Phase 7 章节的 checkbox + 进度日志。
+注：`xmclaw/providers/memory/sqlite_vec.py` + `manager.py` **不属于
+本 Phase 删除范围** —— 它们是 workspace 索引（file_chunk / code_chunk
+by `MemoryFileIndexer`），与用户态 fact 存储无关。它们的退役另外规划。

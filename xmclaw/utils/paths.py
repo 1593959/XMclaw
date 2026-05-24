@@ -298,11 +298,12 @@ def default_cognitive_state_path() -> Path:
 
 
 def default_graph_db_path() -> Path:
-    """MemoryGraph SQLite — ``<v2>/graph.db``.
+    """Cognition MemoryGraph SQLite — ``<v2>/graph.db``.
 
-    Holds the graph index that powers ``UnifiedMemorySystem``'s
-    relation + temporal axes. Honors narrow
-    ``XMC_V2_GRAPH_DB_PATH``.
+    Used by ``xmclaw.cognition.memory_graph`` for proactive recall.
+    NOTE: this is NOT the V1 user-fact graph (which was deleted in
+    Phase 7.B.4 along with UnifiedMemorySystem); it's a separate
+    cognition-layer concern. Honors ``XMC_V2_GRAPH_DB_PATH``.
     """
     override = os.environ.get("XMC_V2_GRAPH_DB_PATH")
     if override:
