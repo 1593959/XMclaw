@@ -61,6 +61,15 @@ INTERNAL_SESSION_PREFIXES: tuple[str, ...] = (
     "time-fullb20",  # specific smoke-test prefix, not general "time-"
     "smoke-fullb20",
     "worker:",       # WorkerSwarm subagent sessions (Jarvis J2)
+    # 2026-05-24 user-report follow-up: CognitiveDaemon emits sessions
+    # named ``goal-from-percept-<pid>`` when a percept (file watcher,
+    # proactive trigger, cron job, idle detector, process_watcher, …)
+    # is auto-converted into a goal + dispatched plan. Same nature
+    # as ``autonomous:`` / ``step_`` — agent's own internal reaction,
+    # not a user-initiated conversation. Was being surfaced to the
+    # Sessions UI by mistake (no prefix entry covered it).
+    # See cognition/cognitive_daemon.py:1066 for the construction site.
+    "goal-from-percept-",
 )
 
 
