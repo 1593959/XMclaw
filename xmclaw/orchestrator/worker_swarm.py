@@ -246,6 +246,42 @@ class WorkerSwarm:
         if synthesize and task_results:
             synthesized = await self._synthesize(plan, task_results)
 
+        # 2026-05-24 user-report fix: pre-fix the synthesized output
+        # only travelled back via the return value, which app.py:2183
+        # was discarding. User saw worker_completed status rows in the
+        # chat but never the final answer the workers merged into —
+        # so two parallel paths (this WorkerSwarm + the main session's
+        # parallel_subagents tool call) both fired, the UI showed a
+        # race-looking jumble of "worker 执行中" stacked under another
+        # path's "修完了" reply.
+        # Publish the synthesized output as a fake LLM_RESPONSE on the
+        # parent session so the chat UI renders it as a normal
+        # assistant message bubble. Best-effort — never raise from
+        # the swarm path over a publish failure.
+        if parent_session_id and synthesized:
+            try:
+                from xmclaw.core.bus.events import EventType, make_event
+                bus = getattr(self._agent_loop, "_bus", None)
+                if bus is not None:
+                    await bus.publish(make_event(
+                        session_id=parent_session_id,
+                        agent_id="swarm",
+                        type=EventType.LLM_RESPONSE,
+                        payload={
+                            "content": synthesized,
+                            "ok": all_ok,
+                            "source": "worker_swarm",
+                            "tool_calls_count": 0,
+                            "elapsed_s": round(
+                                time.monotonic() - start, 2,
+                            ),
+                        },
+                    ))
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "worker_swarm.publish_synthesized_failed err=%s", exc,
+                )
+
         return SwarmResult(
             plan_id=plan.plan_id,
             ok=all_ok,
