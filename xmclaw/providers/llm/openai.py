@@ -240,14 +240,39 @@ class OpenAILLM(LLMProvider):
                 content_blocks: list[dict[str, Any]] = []
                 if m.content:
                     content_blocks.append({"type": "text", "text": m.content})
+                image_blocks: list[dict[str, Any]] = []
                 for img in m.images:
                     data_url = _img_to_data_url(img)
                     if data_url is None:
                         continue
-                    content_blocks.append({
+                    image_blocks.append({
                         "type": "image_url",
                         "image_url": {"url": data_url},
                     })
+                # 2026-05-24 anti-self-poisoning defense — see
+                # anthropic.py _messages_to_anthropic for the full
+                # story. Short: a prior model hallucinated "I can't
+                # see chat images", LanceDB stored that as a high-
+                # confidence fact, every new session inherited the
+                # lie. Plant ground truth right next to the image
+                # blocks so the input itself overrides any prior
+                # claim from memory/facts/persona. Kept inside the
+                # user message (not the system) to preserve the
+                # cached system prefix on image-free turns.
+                if image_blocks:
+                    content_blocks.append({
+                        "type": "text",
+                        "text": (
+                            "[Ground truth — image(s) attached below "
+                            "are visible to you in this turn. You DO "
+                            "see them. Disregard any prior claim "
+                            "(in memory, facts, or earlier turns) "
+                            "that you cannot see pasted/uploaded "
+                            "images — those claims are stale and "
+                            "wrong.]"
+                        ),
+                    })
+                    content_blocks.extend(image_blocks)
                 entry = {"role": m.role, "content": content_blocks}
                 out.append(entry)
                 continue

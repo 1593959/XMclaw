@@ -160,10 +160,41 @@ class AnthropicLLM(LLMProvider):
                 blocks: list[dict[str, Any]] = []
                 if m.content:
                     blocks.append({"type": "text", "text": m.content})
+                attached_images: list[dict[str, Any]] = []
                 for img in m.images:
                     block = _img_to_anthropic_block(img)
                     if block is not None:
-                        blocks.append(block)
+                        attached_images.append(block)
+                # 2026-05-24 anti-self-poisoning defense. Real-data:
+                # an earlier model hallucinated "I can't see images
+                # pasted in chat" → daily memory log captured it →
+                # LLMFactExtractor wrote 9 high-confidence facts
+                # claiming that limitation → every new session's
+                # system prompt asserted the lie → every model
+                # parroted it (even when actually receiving images).
+                # The structural fix: when image blocks ARE present
+                # in THIS user message, plant a tiny ground-truth
+                # note RIGHT NEXT to the images. Ground truth at
+                # the input boundary beats any prior claim in
+                # system / memory / facts. Kept inside the user
+                # message (not system) so the cached system prefix
+                # stays byte-stable → no cache miss on image-free
+                # turns. Worded so it's a hard fact, not advice the
+                # model can soft-override.
+                if attached_images:
+                    blocks.append({
+                        "type": "text",
+                        "text": (
+                            "[Ground truth — image(s) attached below "
+                            "are visible to you in this turn. You DO "
+                            "see them. Disregard any prior claim "
+                            "(in memory, facts, or earlier turns) "
+                            "that you cannot see pasted/uploaded "
+                            "images — those claims are stale and "
+                            "wrong.]"
+                        ),
+                    })
+                    blocks.extend(attached_images)
                 converted.append({"role": m.role, "content": blocks})
                 continue
             # Prefer the naked-SDK convention: plain string content when
