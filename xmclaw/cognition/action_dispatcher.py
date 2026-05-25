@@ -719,6 +719,38 @@ class ActionDispatcher:
                 _attr_str(step, "expected_outcome", ""), priors,
             )
         )
+        # 2026-05-24 user-report fix: pre-fix this prompt was JUST the
+        # LLM-authored step.prompt string (e.g. "分析用户消息意图"),
+        # with no hint about why this step was firing. Agent's only
+        # option was to hallucinate. planner.py now stamps the
+        # triggering goal's name/description/completion_criteria
+        # onto step.payload — splice them in as a context preamble
+        # so the agent sees: (a) which percept / goal kicked this
+        # off, (b) what the step is supposed to deliver. Falls
+        # through cleanly when the payload doesn't carry context
+        # (older plans, manual invocations).
+        goal_desc = payload.get("goal_description") or ""
+        goal_name = payload.get("goal_name") or ""
+        goal_criteria = payload.get("goal_criteria") or {}
+        ctx_lines: list[str] = []
+        if goal_name and goal_name != goal_desc:
+            ctx_lines.append(f"[触发原因] {goal_name}")
+        if goal_desc:
+            ctx_lines.append(f"[Goal] {goal_desc}")
+        if isinstance(goal_criteria, dict) and goal_criteria:
+            # Render only the human-meaningful keys (skip booleans /
+            # internal flags like ``from_percept: true``).
+            interesting = {
+                k: v for k, v in goal_criteria.items()
+                if k not in {"from_percept"} and v not in (True, False, None, "")
+            }
+            if interesting:
+                ctx_lines.append(
+                    "[完成条件] "
+                    + ", ".join(f"{k}={v}" for k, v in interesting.items())
+                )
+        if ctx_lines and prompt:
+            prompt = "\n".join(ctx_lines) + "\n\n" + str(prompt)
         # Use the goal_id from the step's plan context when present —
         # the CognitiveDaemon parks the goal_id on the step's payload
         # under "goal_id" when materialising the plan; we tolerate its

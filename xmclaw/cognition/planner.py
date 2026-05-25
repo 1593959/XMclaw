@@ -211,6 +211,17 @@ class Planner:
             rid: f"{plan_id}:{rid}" for rid in llm_ids
         }
 
+        # 2026-05-24 user-report: HTN-spawned llm_turn sessions were
+        # firing into the agent with NO context — just the LLM-authored
+        # step.prompt (e.g. "分析用户消息意图"), no hint about which
+        # goal/percept triggered it. Agent had to make stuff up.
+        # Plumb the goal's name / description / completion_criteria
+        # through every step.payload so the dispatcher can put them
+        # next to the prompt before it hits AgentLoop.run_turn.
+        goal_name = str(goal_blob.get("name") or "")
+        goal_description = str(goal_blob.get("description") or "")
+        goal_criteria = goal_blob.get("completion_criteria") or {}
+
         steps: list[PlanStep] = []
         seen_ids: set[str] = set()
         for raw in raw_steps:
@@ -219,6 +230,9 @@ class Planner:
                 sibling_ids=seen_ids,
                 plan_id=plan_id,
                 goal_id=goal_id,
+                goal_name=goal_name,
+                goal_description=goal_description,
+                goal_criteria=goal_criteria,
                 id_rewrite=id_rewrite,
             )
             if step is None:
@@ -305,6 +319,9 @@ class Planner:
         *,
         plan_id: str = "",
         goal_id: str = "",
+        goal_name: str = "",
+        goal_description: str = "",
+        goal_criteria: dict[str, Any] | None = None,
         id_rewrite: dict[str, str] | None = None,
     ) -> PlanStep | None:
         """Convert one LLM step descriptor into a :class:`PlanStep`.
@@ -401,6 +418,18 @@ class Planner:
             base_payload["plan_id"] = plan_id
         if goal_id:
             base_payload["goal_id"] = goal_id
+        # 2026-05-24: ground-context payload — dispatcher prepends
+        # these to the LLM-authored step.prompt before run_turn so
+        # the agent knows WHY this step is firing (which goal /
+        # percept), not just what one-line action the planner LLM
+        # named it. Without this every autonomous turn was "what's
+        # 分析用户消息意图 about?" — pure hallucination.
+        if goal_name:
+            base_payload["goal_name"] = goal_name
+        if goal_description:
+            base_payload["goal_description"] = goal_description
+        if goal_criteria:
+            base_payload["goal_criteria"] = dict(goal_criteria)
 
         if skill is not None:
             payload: dict[str, Any] = {

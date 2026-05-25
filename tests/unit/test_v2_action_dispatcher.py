@@ -210,6 +210,57 @@ async def test_llm_turn_routes_through_agent_loop() -> None:
 
 
 @pytest.mark.asyncio
+async def test_llm_turn_prepends_goal_context_to_prompt() -> None:
+    """2026-05-24 user-report fix: when planner stamped the goal's
+    name / description / completion_criteria onto step.payload, the
+    dispatcher must splice them in front of the LLM-authored
+    step.prompt as a context preamble. Before this fix the agent
+    received just '分析用户消息意图' with no clue which percept
+    triggered it and had to hallucinate."""
+    al = FakeAgentLoop(answer={"reply": "ok"})
+    disp = ActionDispatcher(agent_loop=al)
+    step = make_step(
+        action_kind="llm_turn",
+        payload={
+            "prompt": "分析用户消息意图",
+            "goal_id": "goal-from-percept-abc",
+            "goal_name": "react_to_file_watcher_file_system_event",
+            "goal_description": "~/MEMORY.md was modified",
+            "goal_criteria": {
+                "percept_id": "p-xyz",
+                "from_percept": True,  # internal flag — should be filtered
+            },
+        },
+    )
+    out = await disp.execute_step(step)
+    assert out.ok is True
+    msg = al.calls[0]["user_message"]
+    # Preamble lines present.
+    assert "[触发原因] react_to_file_watcher_file_system_event" in msg
+    assert "[Goal] ~/MEMORY.md was modified" in msg
+    assert "[完成条件]" in msg and "percept_id=p-xyz" in msg
+    # Internal flag (`from_percept: True`) NOT echoed — filtered out.
+    assert "from_percept" not in msg
+    # Original prompt still arrives after the preamble.
+    assert msg.endswith("分析用户消息意图")
+
+
+@pytest.mark.asyncio
+async def test_llm_turn_no_context_preamble_when_payload_lacks_goal() -> None:
+    """Manual / legacy invocations that pass only `prompt` + maybe
+    `goal_id` should NOT get a preamble (would be empty noise)."""
+    al = FakeAgentLoop(answer={"reply": "ok"})
+    disp = ActionDispatcher(agent_loop=al)
+    step = make_step(
+        action_kind="llm_turn",
+        payload={"prompt": "hi", "goal_id": "g1"},
+    )
+    out = await disp.execute_step(step)
+    assert out.ok is True
+    assert al.calls[0]["user_message"] == "hi"
+
+
+@pytest.mark.asyncio
 async def test_llm_turn_falls_back_to_stub_when_agent_loop_missing() -> None:
     """Epic #27 sweep #3 (2026-05-19): stub fallback now returns
     ok=False by default because nothing actually ran. Test harnesses
