@@ -268,6 +268,117 @@ def _extract_code_blocks(text: str) -> list[dict[str, str]]:
     return out
 
 
+def _extract_markdown_tables(text: str) -> list[dict[str, Any]]:
+    """Extract markdown tables from text with character positions.
+
+    Expected format::
+
+        | Header1 | Header2 |
+        |---------|---------|
+        | cell1   | cell2   |
+
+    Returns a list of dicts::
+
+        {"table_text": str, "start": int, "end": int}
+    """
+    tables: list[dict[str, Any]] = []
+    lines = text.split("\n")
+    i = 0
+    char_pos = 0
+
+    while i < len(lines):
+        line = lines[i]
+        # Line without | can't be part of a markdown table
+        if "|" not in line:
+            char_pos += len(line) + 1  # +1 for \n
+            i += 1
+            continue
+
+        # Potential table start — look ahead
+        start_line = i
+        start_pos = char_pos
+        table_lines: list[str] = []
+
+        while i < len(lines) and "|" in lines[i]:
+            table_lines.append(lines[i])
+            char_pos += len(lines[i]) + 1
+            i += 1
+
+        # Validate: at least 2 lines, 2nd line is separator
+        if len(table_lines) >= 2:
+            sep_content = table_lines[1].replace("|", "").strip()
+            if sep_content and all(c in "-=:| " for c in sep_content):
+                header_cells = [c.strip() for c in table_lines[0].split("|") if c.strip()]
+                if header_cells:
+                    end_pos = char_pos - 1  # exclude trailing \n
+                    tables.append({
+                        "table_text": "\n".join(table_lines),
+                        "start": start_pos,
+                        "end": end_pos,
+                    })
+                    continue
+
+        # Not a valid table — reset cursor to just after the first line
+        char_pos = start_pos + len(lines[start_line]) + 1
+        i = start_line + 1
+
+    return tables
+
+
+def _markdown_table_to_lark_table_element(table_text: str) -> dict[str, Any]:
+    """Convert a markdown table into a Lark interactive-card ``table`` element.
+
+    Falls back to a plain ``markdown`` element if parsing fails.
+    """
+    lines = [line.strip() for line in table_text.strip().split("\n") if line.strip()]
+    if len(lines) < 2:
+        return {"tag": "markdown", "content": table_text}
+
+    header_cells = [cell.strip() for cell in lines[0].split("|") if cell.strip()]
+    if not header_cells:
+        return {"tag": "markdown", "content": table_text}
+
+    columns = [
+        {
+            "data_index": f"col{idx}",
+            "name": name,
+            "width": "auto",
+            "horizontal_align": "left",
+        }
+        for idx, name in enumerate(header_cells)
+    ]
+
+    rows: list[dict[str, str]] = []
+    for line in lines[2:]:
+        cells = [cell.strip() for cell in line.split("|") if cell.strip()]
+        if not cells:
+            continue
+        row: dict[str, str] = {}
+        for idx, cell in enumerate(cells):
+            if idx < len(header_cells):
+                row[f"col{idx}"] = cell
+        if row:
+            rows.append(row)
+
+    return {
+        "tag": "table",
+        "columns": columns,
+        "rows": rows,
+        "border": True,
+        "header_style": {
+            "background_style": "grey",
+            "text_size": "normal",
+            "text_color": "default",
+            "text_align": "center",
+        },
+        "row_style": {
+            "text_size": "normal",
+            "text_color": "default",
+            "text_align": "left",
+        },
+    }
+
+
 def _partition_text(text: str) -> list[dict[str, Any]]:
     """Wave-33: split assistant reply into structured sections.
 
@@ -276,24 +387,47 @@ def _partition_text(text: str) -> list[dict[str, Any]]:
       {"type": "code", "lang": str, "content": str}
       {"type": "table", "content": str}  # markdown table detected inline
     """
+    # Collect all special blocks with positions
+    blocks: list[dict[str, Any]] = []
+
+    # Code blocks
+    for cb in _extract_code_blocks(text):
+        blocks.append({
+            "start": int(cb["start"]),
+            "end": int(cb["end"]),
+            "type": "code",
+            "lang": cb["lang"],
+            "content": cb["code"],
+        })
+
+    # Markdown tables (skip those inside code blocks)
+    for tb in _extract_markdown_tables(text):
+        inside_code = any(
+            b["type"] == "code" and b["start"] <= tb["start"] < b["end"]
+            for b in blocks
+        )
+        if not inside_code:
+            blocks.append({
+                "start": tb["start"],
+                "end": tb["end"],
+                "type": "table",
+                "content": tb["table_text"],
+            })
+
+    blocks.sort(key=lambda b: b["start"])
+
     sections: list[dict[str, Any]] = []
-    code_blocks = _extract_code_blocks(text)
-
-    if not code_blocks:
-        # No code blocks — whole thing is one text section.
-        sections.append({"type": "text", "content": text})
-        return sections
-
     cursor = 0
-    for cb in code_blocks:
-        start = int(cb["start"])
-        end = int(cb["end"])
-        if start > cursor:
-            pre = text[cursor:start]
+    for b in blocks:
+        if b["start"] > cursor:
+            pre = text[cursor:b["start"]]
             if pre.strip():
                 sections.append({"type": "text", "content": pre.strip()})
-        sections.append({"type": "code", "lang": cb["lang"], "content": cb["code"]})
-        cursor = end
+        if b["type"] == "code":
+            sections.append({"type": "code", "lang": b["lang"], "content": b["content"]})
+        else:
+            sections.append({"type": "table", "content": b["content"]})
+        cursor = b["end"]
 
     if cursor < len(text):
         post = text[cursor:]
@@ -900,7 +1034,7 @@ class FeishuAdapter(ChannelAdapter):
         self, chat_id: str, reply_to: str | None, text: str,
     ) -> str:
         """Wave-33: partition text into sections and send as a rich
-        interactive card with collapsible code blocks."""
+        interactive card with collapsible code blocks and native tables."""
         sections = _partition_text(text)
         elements: list[dict[str, Any]] = []
 
@@ -925,6 +1059,8 @@ class FeishuAdapter(ChannelAdapter):
                     "tag": "markdown",
                     "content": f"**{title}**\n```\n{code_display}\n```",
                 })
+            elif sec["type"] == "table":
+                elements.append(_markdown_table_to_lark_table_element(sec["content"]))
 
             # If we're nearing the element cap, flush as a card and
             # start a new one.

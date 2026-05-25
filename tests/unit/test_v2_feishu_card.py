@@ -22,6 +22,8 @@ import json
 from xmclaw.providers.channel.feishu.adapter import (
     _CARD_MAX_CHARS,
     _build_lark_markdown_card,
+    _extract_markdown_tables,
+    _markdown_table_to_lark_table_element,
     _looks_like_markdown,
 )
 
@@ -122,3 +124,71 @@ def test_card_payload_serialises_to_lark_format() -> None:
     assert back == card
     # No bytes-y fallback that would garble Chinese.
     assert "标题" in s
+
+
+# ── _extract_markdown_tables ─────────────────────────────────────
+
+
+def test_extracts_simple_markdown_table() -> None:
+    text = "before\n| A | B |\n|---|---|\n| 1 | 2 |\nafter"
+    tables = _extract_markdown_tables(text)
+    assert len(tables) == 1
+    assert "| A | B |" in tables[0]["table_text"]
+    assert "| 1 | 2 |" in tables[0]["table_text"]
+
+
+def test_extracts_multiple_tables() -> None:
+    text = (
+        "| A | B |\n|---|---|\n| 1 | 2 |\n\n"
+        "middle\n\n"
+        "| X | Y |\n|---|---|\n| 3 | 4 |"
+    )
+    tables = _extract_markdown_tables(text)
+    assert len(tables) == 2
+
+
+def test_skips_non_table_pipe_text() -> None:
+    text = "some | pipe | in a sentence\nand another line"
+    tables = _extract_markdown_tables(text)
+    assert len(tables) == 0
+
+
+def test_skips_single_pipe_line() -> None:
+    text = "| just one line with pipes |\nnext line"
+    tables = _extract_markdown_tables(text)
+    assert len(tables) == 0
+
+
+# ── _markdown_table_to_lark_table_element ────────────────────────
+
+
+def test_converts_md_table_to_lark_table_element() -> None:
+    md = "| 方向 | 利润率 |\n|------|--------|\n| 工具 | 80%+ |"
+    el = _markdown_table_to_lark_table_element(md)
+    assert el["tag"] == "table"
+    assert el["border"] is True
+    assert len(el["columns"]) == 2
+    assert el["columns"][0]["name"] == "方向"
+    assert el["columns"][1]["name"] == "利润率"
+    assert len(el["rows"]) == 1
+    assert el["rows"][0]["col0"] == "工具"
+    assert el["rows"][0]["col1"] == "80%+"
+    assert el["header_style"]["background_style"] == "grey"
+
+
+def test_table_with_emoji_cells() -> None:
+    md = "| 评级 | 匹配度 |\n|------|--------|\n| ⭐⭐⭐⭐⭐ | 完美匹配 |"
+    el = _markdown_table_to_lark_table_element(md)
+    assert el["tag"] == "table"
+    assert el["rows"][0]["col0"] == "⭐⭐⭐⭐⭐"
+    assert el["rows"][0]["col1"] == "完美匹配"
+
+
+def test_table_fallback_on_invalid_input() -> None:
+    el = _markdown_table_to_lark_table_element("not a table")
+    assert el["tag"] == "markdown"
+
+
+def test_table_fallback_on_single_line() -> None:
+    el = _markdown_table_to_lark_table_element("| only header |")
+    assert el["tag"] == "markdown"
