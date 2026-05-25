@@ -2011,6 +2011,20 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     "继续提问, 系统会重新评估。"
                 )
 
+        # 2026-05-26: correction-detector hint (chat-b3c614bc follow-up).
+        # When the user's message looks like they're correcting a
+        # previously-captured fact, append a one-line nudge so the
+        # LLM knows to call ``memory_correct`` / ``memory_forget``
+        # this turn instead of letting ProfileExtractor append a
+        # contradiction next to the wrong fact.
+        try:
+            from xmclaw.cognition.correction_detector import (
+                detect_correction,
+            )
+            _correction_hint = detect_correction(user_message) or ""
+        except Exception:  # noqa: BLE001 — never block a turn on this
+            _correction_hint = ""
+
         messages: list[Message] = [
             Message(role="system", content=system_content),
             *prior,
@@ -2026,6 +2040,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     + curriculum_strategies_block
                     + skill_router_hint
                     + skill_browse_hint
+                    + _correction_hint
                 ),
                 # B-MULTIMODAL-UI: user uploaded images in the composer.
                 # WS handler wrote them to ~/.xmclaw/v2/uploads/ and passed

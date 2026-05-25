@@ -827,6 +827,187 @@ _MEMORY_COMPACT_SPEC = ToolSpec(
 )
 
 
+# 2026-05-26: memory curation tools (chat-b3c614bc follow-up).
+# Pre-fix the agent's only memory mutators were ``remember`` /
+# ``memory_pin`` (append-only) and ``update_persona`` (append /
+# overwrite-whole-file / delete-file). When the user corrected a
+# fact ("I'm not 张伟"), the agent could only APPEND a contradiction
+# ("user is not 张伟"), leaving the original lie + the contradiction
+# both visible to future system prompts. The 3 tools below close
+# that gap. Backed by MemoryService.forget/correct/dedup_scope.
+
+_MEMORY_FORGET_SPEC = ToolSpec(
+    name="memory_forget",
+    description=(
+        "Soft-delete a fact (or facts) from L1 memory + persona "
+        "files. Use this when the user tells you a previously "
+        "captured fact is WRONG with no replacement value (\"我不是"
+        "张伟\", \"forget that\", \"I never said that\"), OR when "
+        "you're cleaning up demonstrably stale data.\n\n"
+        "How it works: searches the memory store with ``query`` and "
+        "marks up to ``max_matches`` best matches as forgotten. "
+        "Forgotten facts are skipped by recall + persona render but "
+        "remain on disk under a tombstone — recoverable via the "
+        "admin path if needed.\n\n"
+        "Distinct from ``memory_correct``: ``forget`` removes; "
+        "``correct`` REPLACES. Pick ``correct`` when the user "
+        "supplies the right value, ``forget`` when they don't."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": (
+                    "Search phrase to locate the bad fact(s) — uses "
+                    "the same semantic search as memory_search. "
+                    "Pass a short, specific phrase ('user name 张伟', "
+                    "'works at LT凌天电竞') not whole sentences."
+                ),
+            },
+            "max_matches": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10,
+                "description": (
+                    "Cap on how many top hits to forget. Default 3. "
+                    "Raise when you know multiple paraphrases of the "
+                    "same wrong fact exist (typical after a long "
+                    "test-conversation where one error got "
+                    "re-extracted under different wording)."
+                ),
+            },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Optional one-line explanation for the audit log "
+                    "(e.g. 'user clarified they're not 张伟'). Not "
+                    "shown to the model on future turns."
+                ),
+            },
+        },
+        "required": ["query"],
+    },
+)
+
+
+_MEMORY_CORRECT_SPEC = ToolSpec(
+    name="memory_correct",
+    description=(
+        "Replace a previously-captured fact with the corrected "
+        "value. Use this whenever the user says \"actually X, not "
+        "Y\" / \"I'm not Y, I'm X\" / \"that was wrong, it's X\".\n\n"
+        "Finds the closest matching old fact via semantic search, "
+        "writes a NEW fact carrying ``new_text`` (high confidence "
+        "0.9 since the user just asserted it), and links the two "
+        "via a SUPERSEDES edge. The renderer drops the old one, "
+        "the new one ships in the next system prompt.\n\n"
+        "If no fact crosses the similarity floor, the new fact is "
+        "still written (so the corrected value is captured) but "
+        "nothing is superseded — caller sees ``matched=false`` in "
+        "the result. Do NOT use ``memory_correct`` to introduce "
+        "fresh facts unrelated to anything in memory — that's what "
+        "``remember`` is for."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "old_text": {
+                "type": "string",
+                "description": (
+                    "The wrong claim to find + replace. Doesn't have "
+                    "to be the verbatim stored text — semantic "
+                    "search is fine. 'user is named 张伟' will match "
+                    "'user profile loaded: 张伟 / LT凌天电竞'."
+                ),
+            },
+            "new_text": {
+                "type": "string",
+                "description": (
+                    "The correct value, as a complete fact sentence "
+                    "(not just the delta). 'user is named 何鹏', not "
+                    "just '何鹏'."
+                ),
+            },
+            "kind": {
+                "type": "string",
+                "description": (
+                    "Optional fact-kind filter for the search "
+                    "(preference / lesson / identity / etc.). When "
+                    "omitted, search spans all kinds."
+                ),
+            },
+            "scope": {
+                "type": "string",
+                "description": (
+                    "Optional scope filter (user / project / "
+                    "session). When omitted, search spans all "
+                    "scopes."
+                ),
+            },
+        },
+        "required": ["old_text", "new_text"],
+    },
+)
+
+
+_MEMORY_DEDUP_SPEC = ToolSpec(
+    name="memory_dedup",
+    description=(
+        "Run semantic dedup on one bucket of memory (e.g. all "
+        "user-scoped preferences) and merge near-duplicate facts. "
+        "Use when you notice the persona file has many bullets "
+        "saying basically the same thing — usually after a long "
+        "session where ProfileExtractor captured the same insight "
+        "under 5 different phrasings.\n\n"
+        "Per cluster: keeps the highest-confidence + most-evidence "
+        "+ newest survivor; supersedes the rest. Returns the "
+        "merge groups so you can describe to the user what was "
+        "consolidated.\n\n"
+        "Default is ``dry_run=true`` — surfaces the preview "
+        "without writing. Call again with ``dry_run=false`` once "
+        "you've reviewed."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "kind": {
+                "type": "string",
+                "description": (
+                    "Optional kind filter (preference / lesson / "
+                    "identity / etc.). Omit to dedup across all "
+                    "kinds within the scope."
+                ),
+            },
+            "scope": {
+                "type": "string",
+                "description": (
+                    "Optional scope filter (user / project / "
+                    "session). Default is no scope filter — but "
+                    "most useful runs target one scope at a time."
+                ),
+            },
+            "bucket": {
+                "type": "string",
+                "description": (
+                    "Optional persona-renderer bucket "
+                    "('user_preference' / 'workflow' / 'values' / "
+                    "etc.). Empty = no bucket filter."
+                ),
+            },
+            "dry_run": {
+                "type": "boolean",
+                "description": (
+                    "When true (default), returns the preview "
+                    "without superseding anything. Pass false to "
+                    "commit."
+                ),
+            },
+        },
+    },
+)
+
+
 _AGENT_STATUS_SPEC = ToolSpec(
     name="agent_status",
     description=(

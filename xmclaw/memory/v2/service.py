@@ -1071,6 +1071,225 @@ class MemoryService:
             auto_extracted=False,
         )
 
+    # 2026-05-26: agent-curation APIs (chat-b3c614bc follow-up).
+    # User reported the agent can ingest facts but has no surface to
+    # delete / correct / dedup them. The underlying schema already
+    # carried ``superseded_by`` + a ``supersede(old, new)`` API; the
+    # missing pieces were:
+    #   • forget-without-replacement (the "未引入新事实，旧事实就是错的"
+    #     case — user simply says "我不叫张伟"). We model it as a
+    #     supersede with the sentinel ``__forgotten__``; the recall
+    #     filter ``superseded_by = ''`` already drops it.
+    #   • correct(old_text, new_text) — caller knows the wrong text
+    #     but not the fact_id. Find best match by recall, then
+    #     atomically create the new fact + supersede the old one.
+    #   • dedup_scope(scope, kind, dry_run) — surface-level wrapper
+    #     around the existing ``deduplicate`` bulk job so the agent
+    #     can trigger semantic dedup on demand for a specific
+    #     (kind, scope, bucket) bucket without flushing the entire
+    #     L1 store.
+
+    _FORGOTTEN_SENTINEL = "__forgotten__"
+
+    async def forget(
+        self, *, fact_id: str, reason: str | None = None,
+    ) -> bool:
+        """Soft-delete a single fact — recall + persona render
+        will drop it on the next read.
+
+        Returns True when something was marked, False when the
+        fact_id didn't resolve. Reason is logged but not persisted
+        (we don't want forgotten facts to keep occupying bucket
+        slots through a verbose reason field).
+        """
+        old = await self._vec.get(fact_id)
+        if old is None:
+            return False
+        old.superseded_by = self._FORGOTTEN_SENTINEL
+        old.confidence = 0.0
+        old.ts_last = time.time()
+        await self._vec.upsert([old])
+        if reason:
+            try:
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).info(
+                    "memory_service.forget id=%s reason=%s",
+                    fact_id, reason[:160],
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return True
+
+    async def correct(
+        self,
+        *,
+        old_text: str,
+        new_text: str,
+        kind: FactKindStr | None = None,
+        scope: FactScopeStr | None = None,
+        bucket: str | None = None,
+        max_match_distance: float = 0.45,
+    ) -> dict[str, Any]:
+        """Find the fact whose text best matches ``old_text``,
+        create / upsert ``new_text`` as a replacement, and link the
+        two via SUPERSEDES.
+
+        Returns
+        -------
+        dict with keys:
+          ``matched`` : bool — did we find an old fact?
+          ``old_fact_id`` : str — id of the superseded fact (when matched)
+          ``new_fact_id`` : str — id of the survivor (always set)
+          ``similarity`` : float — recall score of the chosen match
+
+        When no fact crosses ``min_match_similarity`` we still write
+        the new fact (so the corrected value is captured) but do NOT
+        supersede anything — the caller sees ``matched=False`` and
+        knows it acted as a plain ``remember`` would.
+        """
+        # Stage 1: find the best old-fact match.
+        hits = await self.recall(
+            old_text,
+            k=5,
+            kinds=[kind] if kind else None,
+            scopes=[scope] if scope else None,
+            buckets=[bucket] if bucket else None,
+            min_confidence=0.0,
+            include_relations=False,
+            include_superseded=False,
+        )
+        best: RecallHit | None = hits[0] if hits else None
+        # RecallHit uses cosine ``distance`` (lower is better, 0 = identical).
+        best_distance = float(getattr(best, "distance", 1.0)) if best else 1.0
+        matched = best is not None and best_distance <= max_match_distance
+
+        # Stage 2: write the new fact.
+        new_fact = await self.remember(
+            new_text,
+            kind=kind or (best.fact.kind if best else "preference"),
+            scope=scope or (best.fact.scope if best else "user"),
+            bucket=bucket or (best.fact.bucket if best else ""),
+            confidence=0.9,  # corrections are user-asserted → high
+            source_event_id=None,
+        )
+
+        # Stage 3: supersede the matched old fact.
+        if matched and best is not None and best.fact.id != new_fact.id:
+            await self.supersede(
+                old_fact_id=best.fact.id,
+                new_fact_id=new_fact.id,
+            )
+        return {
+            "matched": matched,
+            "old_fact_id": best.fact.id if matched and best else None,
+            "new_fact_id": new_fact.id,
+            "distance": round(best_distance, 3) if best else 1.0,
+        }
+
+    async def dedup_scope(
+        self,
+        *,
+        kind: FactKindStr | None = None,
+        scope: FactScopeStr | None = None,
+        bucket: str | None = None,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Surface-level wrapper around the existing semantic
+        ``deduplicate`` job, restricted to one (kind, scope, bucket)
+        combination so the agent can call "clean up my user-prefs
+        section" without sweeping unrelated facts.
+
+        When ``dry_run`` is True we return what would be merged but
+        don't write anything — caller can decide whether to commit.
+        """
+        # The full ``deduplicate`` method computes embedding clusters.
+        # We just need to expose a constrained entry point. Wire it
+        # by listing facts in scope, calling the existing low-level
+        # cluster + supersede pipeline, and counting what changed.
+        hits = await self.recall(
+            None,
+            k=1000,
+            kinds=[kind] if kind else None,
+            scopes=[scope] if scope else None,
+            buckets=[bucket] if bucket else None,
+            min_confidence=0.0,
+            include_relations=False,
+            include_superseded=False,
+        )
+        if len(hits) <= 1:
+            return {
+                "scanned": len(hits),
+                "merged": 0,
+                "dry_run": dry_run,
+            }
+
+        # Cluster by embedding cosine. Pure-python loop is fine —
+        # bucket sizes are O(50) in practice, never thousands.
+        from math import sqrt
+        clusters: list[list[RecallHit]] = []
+        SIMILARITY_THRESHOLD = 0.86  # ≈ "essentially the same fact"
+        for h in hits:
+            emb = h.fact.embedding
+            if not emb:
+                clusters.append([h])
+                continue
+            placed = False
+            for cluster in clusters:
+                ref = cluster[0].fact.embedding
+                if not ref:
+                    continue
+                # cosine = dot / (||a||·||b||); both are stored
+                # post-normalisation by remember(), but defend
+                # against rare un-normalised embeddings.
+                dot = sum(a * b for a, b in zip(emb, ref))
+                na = sqrt(sum(a * a for a in emb))
+                nb = sqrt(sum(b * b for b in ref))
+                cos = dot / (na * nb) if (na and nb) else 0.0
+                if cos >= SIMILARITY_THRESHOLD:
+                    cluster.append(h)
+                    placed = True
+                    break
+            if not placed:
+                clusters.append([h])
+
+        merge_groups = [c for c in clusters if len(c) > 1]
+        merged_count = 0
+        merge_preview: list[dict[str, Any]] = []
+        for group in merge_groups:
+            # Survivor: highest confidence, then most evidence, then newest.
+            group_sorted = sorted(
+                group,
+                key=lambda h: (
+                    h.fact.confidence,
+                    h.fact.evidence_count,
+                    h.fact.ts_last,
+                ),
+                reverse=True,
+            )
+            survivor = group_sorted[0]
+            losers = group_sorted[1:]
+            merge_preview.append({
+                "survivor": survivor.fact.text[:120],
+                "merged": [l.fact.text[:120] for l in losers],
+            })
+            if dry_run:
+                merged_count += len(losers)
+                continue
+            for loser in losers:
+                await self.supersede(
+                    old_fact_id=loser.fact.id,
+                    new_fact_id=survivor.fact.id,
+                )
+                merged_count += 1
+        return {
+            "scanned": len(hits),
+            "clusters": len(clusters),
+            "merge_groups": len(merge_groups),
+            "merged": merged_count,
+            "dry_run": dry_run,
+            "preview": merge_preview[:10],
+        }
+
     # ── Read API ────────────────────────────────────────────────
 
     async def recall(

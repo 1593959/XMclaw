@@ -1,0 +1,145 @@
+/* XMclaw — Design System v2
+ *
+ * Semantic token layer. Decouples component styles from specific
+ * color values. Three built-in themes: dark, light, teal.
+ *
+ * Theme switching: JS sets data-theme on <html>; CSS vars update
+ * automatically via [data-theme] selectors.
+ *
+ * This file is loaded AFTER hermes-tokens.css so its :root overrides
+ * take precedence, while the general styles (html, body, keyframes)
+ * from hermes-tokens.css are preserved.
+ */
+
+/* ── Extra utilities ────────────────────────────────────────────── */
+
+/* Smooth transition for theme-aware properties. Add this class to
+   any element that should animate when the theme switches. */
+.xmc-theme-transition,
+.xmc-theme-transition * {
+  transition-property: background-color, border-color, color, fill, stroke;
+  transition-duration: 200ms;
+  transition-timing-function: ease;
+}
+
+/* Focus ring using ds tokens */
+.xmc-focus-ring:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ds-bg-base), 0 0 0 4px var(--ds-ring);
+}
+
+/* Scrollbar styling (lightweight, theme-aware) */
+.xmc-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+.xmc-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.xmc-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--ds-border-strong);
+  border-radius: 3px;
+}
+.xmc-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: var(--ds-fg-muted);
+}
+
+/* ── Override html color for correct default text in all themes ─── */
+
+html {
+  color: var(--ds-fg-primary);
+}
+
+/* ── Semantic Tokens (default = dark) ───────────────────────────── */
+
+:root {
+  /* Surfaces */
+  --ds-bg-base: #0a0a0f;
+  --ds-bg-surface: #13131a;
+  --ds-bg-elevated: #1a1a24;
+  --ds-bg-inset: #050508;
+
+  /* Foregrounds */
+  --ds-fg-primary: #e8e8ef;
+  --ds-fg-secondary: #a0a0b0;
+  --ds-fg-tertiary: #6e6e80;
+  --ds-fg-muted: #4a4a5c;
+  --ds-fg-on-accent: #ffffff;
+
+  /* Accents */
+  --ds-accent: #7c8cff;
+  --ds-accent-hover: #9aa8ff;
+  --ds-accent-subtle: rgba(124, 140, 255, 0.12);
+
+  /* Status */
+  --ds-success: #4ade80;
+  --ds-warning: #ffbd38;
+  --ds-destructive: #fb2c36;
+
+  /* Borders */
+  --ds-border: rgba(255, 255, 255, 0.08);
+  --ds-border-strong: rgba(255, 255, 255, 0.15);
+  --ds-ring: #7c8cff;
+
+  /* Typography scale */
+  --ds-font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --ds-font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --ds-base-size: 15px;
+  --ds-line-height: 1.55;
+
+  /* Layout */
+  --ds-radius-sm: 4px;
+  --ds-radius-md: 6px;
+  --ds-radius-lg: 10px;
+  --ds-radius-xl: 16px;
+  --ds-spacing-unit: 4px;
+}
+
+/* ── Light Theme ────────────────────────────────────────────────── */
+
+[data-theme="light"] {
+  --ds-bg-base: #ffffff;
+  --ds-bg-surface: #f7f7f9;
+  --ds-bg-elevated: #ffffff;
+  --ds-bg-inset: #f0f0f4;
+
+  --ds-fg-primary: #1a1a24;
+  --ds-fg-secondary: #4a4a5c;
+  --ds-fg-tertiary: #6e6e80;
+  --ds-fg-muted: #a0a0b0;
+  --ds-fg-on-accent: #ffffff;
+
+  --ds-accent: #4f5dff;
+  --ds-accent-hover: #3a48e0;
+  --ds-accent-subtle: rgba(79, 93, 255, 0.08);
+
+  --ds-success: #22c55e;
+  --ds-warning: #f59e0b;
+  --ds-destructive: #ef4444;
+
+  --ds-border: rgba(0, 0, 0, 0.08);
+  --ds-border-strong: rgba(0, 0, 0, 0.15);
+  --ds-ring: #4f5dff;
+}
+
+/* ── Teal Theme (Hermes canonical) ──────────────────────────────── */
+
+[data-theme="teal"] {
+  --ds-bg-base: #041c1c;
+  --ds-bg-surface: #0a2e2e;
+  --ds-bg-elevated: #0d3d3d;
+  --ds-bg-inset: #021414;
+
+  --ds-fg-primary: #ffe6cb;
+  --ds-fg-secondary: #d4b896;
+  --ds-fg-tertiary: #a08060;
+  --ds-fg-muted: #6a5040;
+  --ds-fg-on-accent: #041c1c;
+
+  --ds-accent: #ffe6cb;
+  --ds-accent-hover: #fff0dc;
+  --ds-accent-subtle: rgba(255, 230, 203, 0.12);
+
+  --ds-success: #4ade80;
+  --ds-warning: #ffbd38;
+  --ds-destructive: #fb2c36;
+
+  --ds-border: rgba(255, 230, 203, 0.12);
+  --ds-border-strong: rgba(255, 230, 203, 0.20);
+  --ds-ring: #ffe6cb;
+}

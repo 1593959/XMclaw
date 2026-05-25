@@ -249,6 +249,40 @@ class DreamCompactor:
                 except OSError as exc:
                     return {"ok": False, "error": f"write failed: {exc}"}
 
+        # 2026-05-26: dream now sweeps ALL persona buckets, not just
+        # MEMORY.md. Pre-fix the daily compact only rewrote
+        # MEMORY.md, so USER.md / SOUL.md / TOOLS.md / AGENTS.md
+        # accumulated duplicate facts indefinitely (one user
+        # surfaced 7 paraphrases of "user prefers brief Chinese
+        # messages" in USER.md). We call ``dedup_scope`` per bucket
+        # — cheap O(50) embedding cluster pass each — so the
+        # post-dream persona file stays tight without an LLM
+        # round-trip per bucket.
+        bucket_dedup_report: dict[str, Any] = {}
+        if v2_svc is not None:
+            for _bucket in (
+                "user_identity", "user_preference",
+                "workflow", "tool_quirks", "failure_modes",
+                "values", "rules", "agent_identity",
+            ):
+                try:
+                    res = await v2_svc.dedup_scope(
+                        bucket=_bucket, dry_run=False,
+                    )
+                    if res.get("merged"):
+                        bucket_dedup_report[_bucket] = res.get("merged")
+                except Exception as exc:  # noqa: BLE001
+                    bucket_dedup_report[_bucket] = f"error: {exc}"
+            # Re-render the bucketed persona files once after the
+            # dedup pass so the surviving facts land in MD.
+            try:
+                from xmclaw.core.persona.v2_renderer import (
+                    render_all_persona_files,
+                )
+                await render_all_persona_files(v2_svc, pdir)
+            except Exception:  # noqa: BLE001
+                pass
+
         # Bump prompt-freeze generation so live sessions pick up.
         try:
             from xmclaw.daemon.prompt_builder import bump_prompt_freeze_generation
@@ -264,6 +298,7 @@ class DreamCompactor:
             "saved_chars": len(current) - len(new_text),
             "backup_path": str(backup_path),
             "memory_path": str(memory_path),
+            "bucket_dedup": bucket_dedup_report,
             "ts": time.time(),
         }
         if self._bus is not None:

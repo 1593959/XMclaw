@@ -1,0 +1,30 @@
+/* XMclaw — Token Compatibility Layer
+ *
+ * Maps legacy xmc-* tokens to new ds-* tokens so existing components
+ * continue to work while we migrate to the Design System v2.
+ *
+ * This file should be REMOVED once all components have been updated
+ * to use ds-* tokens directly. At that point xmc-* becomes dead code.
+ */
+
+:root {
+  --xmc-bg:        var(--ds-bg-base);
+  --xmc-bg-elev:   var(--ds-bg-surface);
+  --xmc-bg-elev-2: var(--ds-bg-elevated);
+
+  --xmc-fg:        var(--ds-fg-primary);
+  --xmc-fg-muted:  var(--ds-fg-muted);
+  --xmc-fg-subtle: var(--ds-fg-tertiary);
+
+  --xmc-border:        var(--ds-border);
+  --xmc-border-strong: var(--ds-border-strong);
+
+  --xmc-accent:      var(--ds-accent);
+  --xmc-accent-fg:   var(--ds-fg-on-accent);
+  --xmc-accent-soft: var(--ds-accent-subtle);
+
+  --xmc-success: var(--ds-success);
+  --xmc-warn:    var(--ds-warning);
+  --xmc-error:   var(--ds-destructive);
+  --xmc-info:    var(--ds-accent);
+}

@@ -127,6 +127,19 @@ def _render_section_body(facts: list[Any], prefix: str = "") -> str:
         key=lambda f: getattr(f, "ts_first", 0.0),
         reverse=True,
     )
+
+    # 2026-05-26: render-time semantic dedup cap. When a single
+    # section has more than ``_DEDUP_CAP`` facts we cluster by
+    # embedding cosine similarity and emit only the survivor of each
+    # cluster (highest confidence + most evidence + newest). This is
+    # a read-time defense — bulk dedup via MemoryService.dedup_scope
+    # is the proper fix, this just keeps the rendered file from
+    # ballooning when no one has run dedup recently. Pre-fix, USER.md
+    # had 7 bullets all paraphrasing "user prefers brief Chinese
+    # messages" which crowded out genuinely distinct facts.
+    if len(sorted_facts) > _DEDUP_CAP:
+        sorted_facts = _cluster_representatives(sorted_facts)
+
     lines: list[str] = []
     from xmclaw.utils.log import get_logger
     _log = get_logger(__name__)
@@ -149,6 +162,69 @@ def _render_section_body(facts: list[Any], prefix: str = "") -> str:
         conf_str = f" _(conf {conf:.2f})_" if conf else ""
         lines.append(f"- {date_str}: {prefix}{text}{conf_str}")
     return "\n".join(lines)
+
+
+# 2026-05-26: cluster representatives for the render-time dedup cap.
+# Public-ish (no leading underscore on the file-scope constant) so
+# tests can monkey-patch the cap when probing the cluster path.
+_DEDUP_CAP = 12
+_DEDUP_COSINE_THRESHOLD = 0.86
+
+
+def _cluster_representatives(facts: list[Any]) -> list[Any]:
+    """Cosine-cluster facts that carry an embedding and return only
+    one survivor per cluster. Facts without embeddings pass through
+    unchanged (we can't measure them, so we don't drop them).
+
+    Survivor pick within a cluster: max(confidence) → max(evidence_count)
+    → max(ts_last). Pure-Python loop is fine; clusters of O(50) at
+    most in practice. Preserves the original order of the survivors
+    by ts_first (the caller already sorted that way).
+    """
+    from math import sqrt
+
+    clusters: list[list[Any]] = []
+    for f in facts:
+        emb = getattr(f, "embedding", None)
+        if not emb:
+            clusters.append([f])
+            continue
+        placed = False
+        for cluster in clusters:
+            ref = getattr(cluster[0], "embedding", None)
+            if not ref:
+                continue
+            dot = sum(a * b for a, b in zip(emb, ref))
+            na = sqrt(sum(a * a for a in emb))
+            nb = sqrt(sum(b * b for b in ref))
+            cos = dot / (na * nb) if (na and nb) else 0.0
+            if cos >= _DEDUP_COSINE_THRESHOLD:
+                cluster.append(f)
+                placed = True
+                break
+        if not placed:
+            clusters.append([f])
+
+    survivors: list[Any] = []
+    for cluster in clusters:
+        if len(cluster) == 1:
+            survivors.append(cluster[0])
+            continue
+        survivors.append(max(
+            cluster,
+            key=lambda g: (
+                float(getattr(g, "confidence", 0.0)),
+                int(getattr(g, "evidence_count", 0)),
+                float(getattr(g, "ts_last", 0.0)),
+            ),
+        ))
+    # Re-sort survivors by ts_first DESC to preserve the caller's
+    # original ordering contract.
+    survivors.sort(
+        key=lambda g: float(getattr(g, "ts_first", 0.0)),
+        reverse=True,
+    )
+    return survivors
 
 
 def _replace_section(text: str, header: str, new_body: str) -> str:

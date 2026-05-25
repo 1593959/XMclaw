@@ -70,6 +70,9 @@ from xmclaw.providers.tool._specs import (  # noqa: F401
     _LEARN_ABOUT_USER_SPEC as _LEARN_ABOUT_USER_SPEC,
     _LIST_DIR_SPEC as _LIST_DIR_SPEC,
     _MEMORY_COMPACT_SPEC as _MEMORY_COMPACT_SPEC,
+    _MEMORY_CORRECT_SPEC as _MEMORY_CORRECT_SPEC,
+    _MEMORY_DEDUP_SPEC as _MEMORY_DEDUP_SPEC,
+    _MEMORY_FORGET_SPEC as _MEMORY_FORGET_SPEC,
     _MEMORY_PIN_SPEC as _MEMORY_PIN_SPEC,
     _MEMORY_SEARCH_SPEC as _MEMORY_SEARCH_SPEC,
     _NOTE_WRITE_SPEC as _NOTE_WRITE_SPEC,
@@ -432,6 +435,13 @@ class BuiltinTools(
         # Always advertised; the handler refuses cleanly when no LLM
         # is wired (which is the only failure mode).
         specs.append(_MEMORY_COMPACT_SPEC)
+        # 2026-05-26: agent curation surface — forget / correct / dedup.
+        # Always advertised; handlers fail-loud when memory_v2_service
+        # isn't wired so the agent gets a clear "no memory backend"
+        # error rather than silent no-op.
+        specs.append(_MEMORY_FORGET_SPEC)
+        specs.append(_MEMORY_CORRECT_SPEC)
+        specs.append(_MEMORY_DEDUP_SPEC)
         # B-ContextLoss: chronological history browser.
         # Only advertised when a session_store is wired.
         if self._session_store is not None:
@@ -569,6 +579,12 @@ class BuiltinTools(
                 return await self._agent_status(call, t0)
             if call.name == "memory_compact":
                 return await self._memory_compact(call, t0)
+            if call.name == "memory_forget":
+                return await self._memory_forget(call, t0)
+            if call.name == "memory_correct":
+                return await self._memory_correct(call, t0)
+            if call.name == "memory_dedup":
+                return await self._memory_dedup(call, t0)
             if call.name == "read_conversation_history":
                 if self._session_store is None:
                     return _fail(

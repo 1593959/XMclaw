@@ -659,6 +659,123 @@ class BuiltinToolsMemoryMixin:
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 
+    # 2026-05-26: agent-callable curation handlers. See _specs.py
+    # for the user-facing tool descriptions. Each handler resolves
+    # the v2 MemoryService via the same _LAST_APP_STATE indirection
+    # _memory_compact uses, so the tool stays usable from worktrees
+    # / agents that never reach into factory.py.
+
+    @staticmethod
+    def _resolve_memory_v2_service() -> "Any":
+        """Best-effort lookup of the running daemon's MemoryService.
+
+        Returns ``None`` when the daemon isn't up or the v2 store
+        wasn't wired (in-process tests, --no-memory boot, ...).
+        """
+        try:
+            from xmclaw.daemon import app as _app_mod
+            state = getattr(_app_mod, "_LAST_APP_STATE", None)
+        except Exception:  # noqa: BLE001
+            return None
+        if state is None:
+            return None
+        return getattr(state, "memory_v2_service", None)
+
+    async def _memory_forget(self, call: ToolCall, t0: float) -> ToolResult:
+        svc = self._resolve_memory_v2_service()
+        if svc is None:
+            return _fail(
+                call, t0,
+                "memory_forget unavailable: v2 memory service not wired",
+            )
+        query = str(call.args.get("query") or "").strip()
+        if not query:
+            return _fail(call, t0, "missing or empty 'query'")
+        max_matches = int(call.args.get("max_matches") or 3)
+        max_matches = max(1, min(10, max_matches))
+        reason = str(call.args.get("reason") or "").strip() or None
+
+        hits = await svc.recall(
+            query,
+            k=max_matches,
+            min_confidence=0.0,
+            include_relations=False,
+            include_superseded=False,
+        )
+        forgotten: list[dict[str, Any]] = []
+        for h in hits:
+            ok = await svc.forget(fact_id=h.fact.id, reason=reason)
+            if ok:
+                forgotten.append({
+                    "id": h.fact.id,
+                    "text": (h.fact.text or "")[:200],
+                    "distance": round(float(h.distance), 3),
+                })
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "query": query,
+                "forgotten_count": len(forgotten),
+                "forgotten": forgotten,
+                "reason": reason,
+            },
+            error=None,
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _memory_correct(self, call: ToolCall, t0: float) -> ToolResult:
+        svc = self._resolve_memory_v2_service()
+        if svc is None:
+            return _fail(
+                call, t0,
+                "memory_correct unavailable: v2 memory service not wired",
+            )
+        old_text = str(call.args.get("old_text") or "").strip()
+        new_text = str(call.args.get("new_text") or "").strip()
+        if not old_text:
+            return _fail(call, t0, "missing or empty 'old_text'")
+        if not new_text:
+            return _fail(call, t0, "missing or empty 'new_text'")
+        kind = call.args.get("kind") or None
+        scope = call.args.get("scope") or None
+
+        result = await svc.correct(
+            old_text=old_text,
+            new_text=new_text,
+            kind=str(kind) if kind else None,
+            scope=str(scope) if scope else None,
+        )
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content=result,
+            error=None,
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _memory_dedup(self, call: ToolCall, t0: float) -> ToolResult:
+        svc = self._resolve_memory_v2_service()
+        if svc is None:
+            return _fail(
+                call, t0,
+                "memory_dedup unavailable: v2 memory service not wired",
+            )
+        kind = call.args.get("kind") or None
+        scope = call.args.get("scope") or None
+        bucket = call.args.get("bucket") or None
+        dry_run = bool(call.args.get("dry_run", True))
+        result = await svc.dedup_scope(
+            kind=str(kind) if kind else None,
+            scope=str(scope) if scope else None,
+            bucket=str(bucket) if bucket else None,
+            dry_run=dry_run,
+        )
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content=result,
+            error=None,
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
     async def _memory_compact(self, call: ToolCall, t0: float) -> ToolResult:
         """B-52: trigger Auto-Dream now (instead of waiting for the
         daily cron). Reaches the running compactor via the same

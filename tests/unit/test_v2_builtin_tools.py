@@ -70,6 +70,11 @@ def test_list_tools_schemas_well_formed() -> None:
         "enter_plan_mode",  # Wave-32+ — no-arg flag flip
         "journal_recall",
         "recall_user_preferences",  # Epic #24 Phase 4.2
+        # 2026-05-26: memory_dedup defaults to dry_run + every-scope —
+        # the agent calls it with zero args to preview "anything I
+        # could clean up?". Required fields would force premature
+        # commitment to a scope.
+        "memory_dedup",
     }
     for spec in BuiltinTools().list_tools():
         assert spec.parameters_schema["type"] == "object"
