@@ -394,6 +394,75 @@ export function WorkerCard({ call }) {
   `;
 }
 
+// 2026-05-25: SubagentCard — renders one ephemeral ``parallel_subagents``
+// leaf as an auto-expanded inline card. Sibling of WorkerCard but
+// visually distinguished (⚡ ephemeral vs 🐝 long-lived swarm) so the
+// user can tell which fanout system fired even after the WorkerSwarm
+// auto-dispatch was retired.
+export function SubagentCard({ call }) {
+  const tone =
+    call.status === "ok" ? "success"
+    : call.status === "error" ? "error"
+    : "muted";
+  const label =
+    call.status === "ok" ? "完成"
+    : call.status === "error" ? "失败"
+    : "执行中";
+  const bullet = "⚡";
+  const idx = call.subagentIndex ?? "?";
+  const role = call.role_hint || "general";
+  return html`
+    <div class="xmc-toolcard-wrap">
+      <details
+        class=${"xmc-toolcard xmc-toolcard--" + call.status + " xmc-toolcard--subagent"}
+        open=${call.expanded !== false}
+      >
+        <summary
+          class=${"xmc-toolcard__summary" + (call.status === "running" ? " is-running" : "")}
+        >
+          <span class="xmc-toolcard__bullet" aria-hidden="true">${bullet}</span>
+          <code class="xmc-toolcard__name">subagent #${idx}</code>
+          <small style="color:var(--xmc-fg-muted)">· ${role}</small>
+          <${Badge} tone=${tone}>${label}</${Badge}>
+          ${call.status === "running"
+            ? html`<${Spinner} size="sm" label="running" hideLabel=${true} />`
+            : null}
+          ${call.hops ? html`<small style="color:var(--xmc-fg-muted)">${call.hops} hops</small>` : null}
+          ${call.elapsedSeconds != null
+            ? html`<small style="color:var(--xmc-fg-muted)">${call.elapsedSeconds}s</small>`
+            : null}
+        </summary>
+        <div class="xmc-toolcard__body">
+          ${call.promptPreview
+            ? html`
+                <div class="xmc-toolcard__section">
+                  <div class="xmc-toolcard__label">子任务</div>
+                  <pre style="white-space:pre-wrap;font-size:.85em;line-height:1.5">${call.promptPreview}</pre>
+                </div>
+              `
+            : null}
+          ${call.outputPreview
+            ? html`
+                <div class="xmc-toolcard__section">
+                  <div class="xmc-toolcard__label">产出</div>
+                  <${MarkdownBody} content=${call.outputPreview} />
+                </div>
+              `
+            : null}
+          ${call.error
+            ? html`
+                <div class="xmc-toolcard__section">
+                  <div class="xmc-toolcard__label">错误</div>
+                  <${CodeBlock} code=${call.error} lang="" />
+                </div>
+              `
+            : null}
+        </div>
+      </details>
+    </div>
+  `;
+}
+
 export function PhaseCard({ message, baseLabel, elapsedS, stalled, isWorking, currentHop }) {
   const phase = message.phase;
   const hasThinkingHistory = !!(message.thinking && message.thinking.length > 0);

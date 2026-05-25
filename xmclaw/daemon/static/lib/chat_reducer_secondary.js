@@ -33,6 +33,8 @@ const HANDLED = new Set([
   "worker_started",
   "worker_completed",
   "worker_failed",
+  "subagent_started",
+  "subagent_completed",
 ]);
 
 
@@ -447,6 +449,69 @@ export function applySecondaryEvent(chat, envelope, helpers) {
           status: "ok",
           outputPreview: (payload.output_preview || "").slice(0, 500),
           elapsedSeconds: payload.elapsed_seconds || null,
+        })),
+      };
+    }
+
+    case "subagent_started": {
+      const idx = payload.index ?? "?";
+      const id = `sub_${ts}_${idx}`;
+      const exists = chat.messages.some((m) => m.id === id);
+      if (exists) return chat;
+      return {
+        ...chat,
+        messages: chat.messages.concat({
+          id,
+          role: "system",
+          kind: "subagent",
+          content: "",
+          status: "running",
+          ts,
+          subagentIndex: idx,
+          role_hint: payload.role || "general",
+          promptPreview: (payload.subtask || "").slice(0, 240),
+          expanded: true,
+        }),
+      };
+    }
+
+    case "subagent_completed": {
+      const idx = payload.index ?? "?";
+      // Match the most recent running subagent card with this index.
+      const candidates = chat.messages
+        .filter((m) => m.kind === "subagent" && m.subagentIndex === idx)
+        .sort((a, b) => (b.ts || 0) - (a.ts || 0));
+      const target = candidates[0];
+      const newFields = {
+        status: payload.ok ? "ok" : "error",
+        outputPreview: (payload.output || "").slice(0, 2000),
+        error: (payload.error || "").slice(0, 500),
+        hops: payload.hops || 0,
+        elapsedSeconds: payload.elapsed_s || null,
+        expanded: true,
+      };
+      if (!target) {
+        const id = `sub_${ts}_${idx}`;
+        return {
+          ...chat,
+          messages: chat.messages.concat({
+            id,
+            role: "system",
+            kind: "subagent",
+            content: "",
+            ts,
+            subagentIndex: idx,
+            role_hint: payload.role || "general",
+            promptPreview: (payload.subtask || "").slice(0, 240),
+            ...newFields,
+          }),
+        };
+      }
+      return {
+        ...chat,
+        messages: upsertById(chat.messages, target.id, (m) => ({
+          ...m,
+          ...newFields,
         })),
       };
     }

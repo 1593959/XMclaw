@@ -63,6 +63,35 @@ from xmclaw.utils.log import get_logger
 logger = get_logger(__name__)
 
 
+# 2026-05-25: WorkerSwarm retired — its specialty + per-worker hop
+# budget are absorbed here as optional per-call params so the LLM
+# can request the same shaping inside a single observable fanout.
+_VALID_ROLES = ("general", "code", "research", "ops", "comm")
+
+_ROLE_HINTS = {
+    "general": (
+        "You are a focused generalist sub-agent. Stay tight; return a "
+        "leaf answer the parent can integrate."
+    ),
+    "code": (
+        "You are a code-focused sub-agent. Read files before editing, "
+        "keep diffs minimal, and report file:line for any change."
+    ),
+    "research": (
+        "You are a research sub-agent. Search the web / docs / repo, "
+        "cite specific sources, and prefer primary evidence."
+    ),
+    "ops": (
+        "You are an ops/shell sub-agent. Prefer dry-run / read-only "
+        "commands first; never run anything destructive without a "
+        "clear signal from the parent."
+    ),
+    "comm": (
+        "You are a communications sub-agent. Compose / format the "
+        "message; do not actually send anything — return draft text."
+    ),
+}
+
 _PARALLEL_SUBAGENTS_SPEC = ToolSpec(
     name="parallel_subagents",
     description=(
@@ -72,7 +101,8 @@ _PARALLEL_SUBAGENTS_SPEC = ToolSpec(
         "INDEPENDENT pieces (e.g. \"summarise these 3 files\", "
         "\"compare options A/B/C\"). Do NOT use when subtasks depend on "
         "each other — sub-agents share no context with each other. "
-        "Sub-agents have a 6-hop cap and no further fanout capability."
+        "Sub-agents have a 6-hop cap (raise via max_hops up to 12 if a "
+        "task is heavier) and no further fanout capability."
     ),
     parameters_schema={
         "type": "object",
@@ -87,6 +117,28 @@ _PARALLEL_SUBAGENTS_SPEC = ToolSpec(
                     "becomes one sub-agent's user message. Keep each "
                     "subtask self-contained — include any context "
                     "from the parent turn the subagent will need."
+                ),
+            },
+            "roles": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": list(_VALID_ROLES),
+                },
+                "description": (
+                    "Optional. One role per subtask (same length as "
+                    "subtasks). Shapes the sub-agent's system prompt. "
+                    "general (default) | code | research | ops | comm."
+                ),
+            },
+            "max_hops": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 12,
+                "description": (
+                    "Optional. Per-subagent hop budget override "
+                    "(default 6, cap 12). Use higher for sub-tasks "
+                    "that need multiple tool round-trips."
                 ),
             },
             "goal": {
@@ -154,6 +206,7 @@ class SubagentToolProvider(ToolProvider):
         fanout_timeout_s: float = 120.0,
         per_subagent_timeout_s: float = 45.0,
         enabled: bool = True,
+        bus: Any | None = None,
     ) -> None:
         self._llm = llm
         self._tools = tools
@@ -162,6 +215,11 @@ class SubagentToolProvider(ToolProvider):
         self._fanout_timeout = max(10.0, float(fanout_timeout_s))
         self._per_timeout = max(5.0, float(per_subagent_timeout_s))
         self._enabled = bool(enabled)
+        # 2026-05-25: optional bus + parent session id are late-bound
+        # so we can publish per-subagent lifecycle events for the UI
+        # (replaces the WorkerSwarm worker_started/completed stream).
+        self._bus = bus
+        self._parent_session_id: str | None = None
 
     def set_llm(self, llm: Any) -> None:
         """Late-binding hook used by ``build_agent_from_config`` after
@@ -172,6 +230,17 @@ class SubagentToolProvider(ToolProvider):
         """Late-binding hook so the subagent can share the parent's
         tool catalogue."""
         self._tools = tools
+
+    def set_bus(self, bus: Any) -> None:
+        """Late-binding hook so the fanout can publish per-subagent
+        events onto the parent session bus. Optional — when unset,
+        fanout is silent and only the final ToolResult is visible."""
+        self._bus = bus
+
+    def bind_session(self, session_id: str | None) -> None:
+        """Per-invocation hook. The agent_loop sets this before each
+        tool call so fanout events land on the right session."""
+        self._parent_session_id = session_id
 
     def list_tools(self) -> list[ToolSpec]:
         if not self._enabled:
@@ -190,6 +259,10 @@ class SubagentToolProvider(ToolProvider):
                 error="parallel_subagents disabled or LLM not wired",
             )
 
+        # Bind session for per-subagent event publishing. hop_loop
+        # stamps the call with the parent session id before invoke.
+        self._parent_session_id = getattr(call, "session_id", None) or None
+
         subtasks = call.args.get("subtasks")
         if (
             not isinstance(subtasks, list)
@@ -206,10 +279,27 @@ class SubagentToolProvider(ToolProvider):
         if synthesis not in ("concat", "llm"):
             synthesis = "concat"
 
+        # Per-call role hints. Pad / truncate to len(subtasks).
+        raw_roles = call.args.get("roles") or []
+        if not isinstance(raw_roles, list):
+            raw_roles = []
+        roles: list[str] = []
+        for i in range(len(subtasks)):
+            r = raw_roles[i] if i < len(raw_roles) else "general"
+            r = str(r).lower() if isinstance(r, str) else "general"
+            roles.append(r if r in _VALID_ROLES else "general")
+
+        # Per-call max_hops override (capped at 12; default to instance value).
+        raw_hops = call.args.get("max_hops")
+        if isinstance(raw_hops, int) and raw_hops > 0:
+            effective_hops = min(12, raw_hops)
+        else:
+            effective_hops = self._max_hops
+
         t0 = time.perf_counter()
         try:
             results = await asyncio.wait_for(
-                self._fanout(subtasks),
+                self._fanout(subtasks, roles=roles, max_hops=effective_hops),
                 timeout=self._fanout_timeout,
             )
         except asyncio.TimeoutError:
@@ -255,16 +345,27 @@ class SubagentToolProvider(ToolProvider):
 
     # ── Internals ─────────────────────────────────────────────────
 
-    async def _fanout(self, subtasks: list[str]) -> list[_SubResult]:
+    async def _fanout(
+        self,
+        subtasks: list[str],
+        *,
+        roles: list[str],
+        max_hops: int,
+    ) -> list[_SubResult]:
         async def _one(i: int, s: str) -> _SubResult:
             async with self._sem:
-                return await self._run_one(i, s)
+                return await self._run_one(
+                    i, s, role=roles[i], max_hops=max_hops,
+                )
 
         return await asyncio.gather(
             *(_one(i, s) for i, s in enumerate(subtasks)),
         )
 
-    async def _run_one(self, index: int, subtask: str) -> _SubResult:
+    async def _run_one(
+        self, index: int, subtask: str,
+        *, role: str = "general", max_hops: int | None = None,
+    ) -> _SubResult:
         """Mini tool-use loop for one sub-agent.
 
         Each sub-agent has its own messages list (no shared history),
@@ -272,26 +373,79 @@ class SubagentToolProvider(ToolProvider):
         the final assistant text or a structured error.
         """
         t0 = time.perf_counter()
+        await self._publish_subagent_event(
+            "subagent_started",
+            index=index, subtask=subtask, role=role,
+        )
         try:
-            return await asyncio.wait_for(
-                self._do_run_one(index, subtask, t0),
+            res = await asyncio.wait_for(
+                self._do_run_one(
+                    index, subtask, t0,
+                    role=role, max_hops=max_hops or self._max_hops,
+                ),
                 timeout=self._per_timeout,
             )
+            await self._publish_subagent_event(
+                "subagent_completed",
+                index=index, subtask=subtask, role=role,
+                ok=res.ok, output=res.content, error=res.error,
+                hops=res.hops, elapsed_s=res.elapsed_s,
+            )
+            return res
         except asyncio.TimeoutError:
+            err = f"subagent timed out after {self._per_timeout}s"
+            await self._publish_subagent_event(
+                "subagent_completed",
+                index=index, subtask=subtask, role=role,
+                ok=False, output="", error=err,
+                hops=0, elapsed_s=time.perf_counter() - t0,
+            )
             return _SubResult(
                 index=index, subtask=subtask, ok=False,
-                error=f"subagent timed out after {self._per_timeout}s",
+                error=err,
                 elapsed_s=time.perf_counter() - t0,
             )
         except Exception as exc:  # noqa: BLE001
+            err = f"subagent failed: {type(exc).__name__}: {exc}"
+            await self._publish_subagent_event(
+                "subagent_completed",
+                index=index, subtask=subtask, role=role,
+                ok=False, output="", error=err,
+                hops=0, elapsed_s=time.perf_counter() - t0,
+            )
             return _SubResult(
                 index=index, subtask=subtask, ok=False,
-                error=f"subagent failed: {type(exc).__name__}: {exc}",
+                error=err,
                 elapsed_s=time.perf_counter() - t0,
             )
 
+    async def _publish_subagent_event(
+        self, kind: str, **payload: Any,
+    ) -> None:
+        """Fire a subagent lifecycle event onto the parent session bus.
+
+        Best-effort — never raises. When bus or session is unset
+        (e.g. unit tests), this is a no-op.
+        """
+        if self._bus is None or not self._parent_session_id:
+            return
+        try:
+            from xmclaw.core.bus.events import EventType, make_event
+            etype = getattr(EventType, kind.upper(), None)
+            if etype is None:
+                return
+            await self._bus.publish(make_event(
+                session_id=self._parent_session_id,
+                agent_id=f"subagent:{payload.get('index', '?')}",
+                type=etype,
+                payload=payload,
+            ))
+        except Exception:  # noqa: BLE001
+            pass
+
     async def _do_run_one(
         self, index: int, subtask: str, t0: float,
+        *, role: str = "general", max_hops: int | None = None,
     ) -> _SubResult:
         from xmclaw.providers.llm.base import Message
         sys_prompt = (
@@ -300,6 +454,10 @@ class SubagentToolProvider(ToolProvider):
             "Keep responses focused and concise — return a clear leaf "
             "answer the parent can integrate, NOT a verbose narrative."
         )
+        role_hint = _ROLE_HINTS.get(role)
+        if role_hint:
+            sys_prompt = f"{sys_prompt}\n\n{role_hint}"
+        hop_cap = max(1, int(max_hops or self._max_hops))
         messages: list[Any] = [
             Message(role="system", content=sys_prompt),
             Message(role="user", content=subtask),
@@ -308,7 +466,7 @@ class SubagentToolProvider(ToolProvider):
             self._tools.list_tools() if self._tools is not None else None
         )
 
-        for hop in range(self._max_hops):
+        for hop in range(hop_cap):
             resp = await self._llm.complete(messages, tools=tool_specs)
             content = (getattr(resp, "content", "") or "").strip()
             tool_calls = getattr(resp, "tool_calls", None) or []

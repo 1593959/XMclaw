@@ -436,6 +436,12 @@ class EventType(str, Enum):
     WORKER_STARTED = "worker_started"
     WORKER_COMPLETED = "worker_completed"
     WORKER_FAILED = "worker_failed"
+    # parallel_subagents fanout lifecycle (2026-05-25): emitted per
+    # ephemeral sub-agent so the chat UI can render a live, expanded
+    # output card for each fanout leaf — replaces the silent-then-
+    # synthesised flow that hid intermediate progress.
+    SUBAGENT_STARTED = "subagent_started"
+    SUBAGENT_COMPLETED = "subagent_completed"
 
 
 @dataclass(frozen=True, slots=True)

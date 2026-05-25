@@ -1,12 +1,24 @@
 """JarvisOrchestrator — top-level dispatch layer.
 
-Receives every inbound user message (or proactive intent) and decides:
-  * trivial  → direct AgentLoop.run_turn()   (today's behaviour)
-  * complex  → PlanEngine → WorkerSwarm      (Jarvis J2)
+2026-05-25 architectural decision (user request — see CLAUDE.md
+开发纪律 Phase note in JARVIS_PLAN): the dual-path
+"trivial AgentLoop vs complex PlanEngine→WorkerSwarm" design
+caused two independent execution paths to publish to the same
+parent session, producing UI races (worker status rows stacked
+under another path's final reply). The complex path is now
+*disabled* — every turn goes through ``AgentLoop.run_turn`` and
+the LLM decides whether to fan out via the ``parallel_subagents``
+tool (which is in the catalogue and obeys a single, observable
+event timeline in the parent session).
 
-Design constraints (from JARVIS_ROADMAP):
-  * AgentLoop is NOT deleted — it becomes the execution engine.
-  * Orchestrator only adds routing + planning; all event contracts stay.
+PlanEngine + WorkerSwarm remain wired but are no longer reachable
+from ``handle()``. They are kept in-tree for one release so that
+external callers (tests, future cognition pathways) can still
+import them; a follow-up release will remove them entirely.
+
+The ``force_complex`` parameter is retained for tests but routed
+back to ``run_turn`` with a logged warning so the surface area
+stays stable.
 """
 from __future__ import annotations
 
@@ -77,98 +89,48 @@ class JarvisOrchestrator:
         user_correlation_id: str | None = None,
         user_images: tuple[str, ...] | None = None,
     ) -> OrchestratorResult:
-        """Route a user message to the appropriate execution path."""
+        """Route a user message to ``AgentLoop.run_turn``.
+
+        The complex (PlanEngine→WorkerSwarm) branch is disabled —
+        see module docstring. ``force_complex`` is honoured only to
+        the extent of logging an audit line so callers know it was
+        ignored.
+        """
         start = time.monotonic()
 
-        is_complex = force_complex or self._is_complex(user_message)
-
-        if not is_complex:
-            # Trivial path — behave exactly like today's AgentLoop.
-            result = await self._agent_loop.run_turn(
-                session_id=session_id,
-                user_message=user_message,
-                llm_profile_id=llm_profile_id,
-                tools_allowlist=tools_allowlist,
-                user_correlation_id=user_correlation_id,
-                user_images=user_images,
-            )
-            text = getattr(result, "content", "") or getattr(result, "output", "") or ""
-            return OrchestratorResult(
-                ok=True,
-                output=str(text),
-                elapsed_seconds=time.monotonic() - start,
-                path="trivial",
+        if force_complex:
+            _log.info(
+                "orchestrator.force_complex_ignored session=%s "
+                "(complex path retired 2026-05-25; LLM should fan out "
+                "via parallel_subagents)",
+                session_id,
             )
 
-        # Complex path — Plan → Worker Swarm.
-        if self._plan_engine is None or self._worker_swarm is None:
-            _log.warning(
-                "orchestrator.complex_path_unwired: falling back to trivial"
-            )
-            result = await self._agent_loop.run_turn(
-                session_id=session_id,
-                user_message=user_message,
-                llm_profile_id=llm_profile_id,
-                tools_allowlist=tools_allowlist,
-                user_correlation_id=user_correlation_id,
-                user_images=user_images,
-            )
-            text = getattr(result, "content", "") or getattr(result, "output", "") or ""
-            return OrchestratorResult(
-                ok=True,
-                output=str(text),
-                elapsed_seconds=time.monotonic() - start,
-                path="trivial",
-            )
-
-        plan = await self._plan_engine.create_plan(user_message)
-        if plan is None or not plan.tasks:
-            _log.warning("orchestrator.plan_failed: falling back to trivial")
-            result = await self._agent_loop.run_turn(
-                session_id=session_id,
-                user_message=user_message,
-                llm_profile_id=llm_profile_id,
-                tools_allowlist=tools_allowlist,
-                user_correlation_id=user_correlation_id,
-                user_images=user_images,
-            )
-            text = getattr(result, "content", "") or getattr(result, "output", "") or ""
-            return OrchestratorResult(
-                ok=True,
-                output=str(text),
-                elapsed_seconds=time.monotonic() - start,
-                path="trivial",
-            )
-
-        swarm = await self._worker_swarm.execute_plan(
-            plan, parent_session_id=session_id,
+        result = await self._agent_loop.run_turn(
+            session_id=session_id,
+            user_message=user_message,
+            llm_profile_id=llm_profile_id,
+            tools_allowlist=tools_allowlist,
+            user_correlation_id=user_correlation_id,
+            user_images=user_images,
+        )
+        text = (
+            getattr(result, "content", "")
+            or getattr(result, "output", "")
+            or ""
         )
         return OrchestratorResult(
-            ok=swarm.ok,
-            output=swarm.synthesized_output,
-            plan=plan,
-            swarm_result=swarm,
+            ok=True,
+            output=str(text),
             elapsed_seconds=time.monotonic() - start,
-            path="complex",
+            path="trivial",
         )
 
-    # ── classification ──
+    # ── classification (kept for tests; no longer wired) ──
 
-    def _is_complex(self, message: str) -> bool:
-        """Heuristic classifier.  Returns True when the message looks
-        like a multi-step goal.
-
-        Current heuristic (cheap, no LLM call):
-          * message length > threshold, OR
-          * contains conjunction words like '然后', '接着', '并且', '再',
-            'first', 'then', 'and also', 'refactor X to Y'
+    def _is_complex(self, message: str) -> bool:  # pragma: no cover
+        """Retained for back-compat with tests that introspect the
+        classifier. Always returns False now — the LLM owns the
+        fanout decision via the ``parallel_subagents`` tool.
         """
-        text = message.lower()
-        if len(message) > self._classify_threshold:
-            return True
-        indicators = (
-            "然后", "接着", "并且", "再", "同时", "先", "后",
-            "first ", "then ", "and also", "refactor", "rewrite",
-            "migrate", "upgrade", "implement", "create a",
-        )
-        return any(ind in text for ind in indicators)
+        return False

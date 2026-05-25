@@ -255,6 +255,31 @@ KNOWN_OVERSIZED: dict[str, str] = {
         "~502 lines — LanguageSwitcher dropdown added; split deferred "
         "until second footer widget justifies shared primitive (Phase F)"
     ),
+    # 2026-05-25 (subagent unification): MessageBubble routes a new
+    # `subagent` kind to SubagentCard alongside the existing worker/
+    # tool/question routing; MessageBubbleParts gained the
+    # SubagentCard component (mirrors WorkerCard). Both sit at the
+    # routing/presentation boundary — extracting would create one
+    # 70-line sibling file per card type. Defer split until ≥5 system
+    # card kinds (today: tool, worker, subagent, question, canvas).
+    "components/molecules/MessageBubble.js": (
+        "~514 lines — added subagent kind routing; split deferred "
+        "until ≥5 system card kinds force a card-registry abstraction"
+    ),
+    "components/molecules/MessageBubbleParts.js": (
+        "~572 lines — added SubagentCard component; split deferred "
+        "with MessageBubble.js for the same reason"
+    ),
+    # 2026-05-25: chat_reducer_secondary holds the secondary action
+    # case map (workers, subagents, canvas, plan steps). Two new
+    # subagent_* cases added; same shared-type import argument as
+    # chat_reducer.js — splitting by action type would just churn
+    # imports.
+    "lib/chat_reducer_secondary.js": (
+        "~553 lines — secondary action reducer; subagent_* cases "
+        "added 2026-05-25; split-by-action-type creates churn "
+        "without clarity win (mirrors chat_reducer.js rationale)"
+    ),
 }
 
 

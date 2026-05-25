@@ -235,6 +235,18 @@ class HopLoopMixin:
         _STUCK_LOOP_THRESHOLD = 3
         _NO_PROGRESS_THRESHOLD = 5
         _no_progress_counter = 0
+        # 2026-05-25: narration enforcement. Soft prompt guidance asks
+        # the LLM to emit short plain-text updates between tool calls;
+        # in practice models drift silent for N hops, which leaves the
+        # user staring at a tool-call wall with no idea what's
+        # happening. Track consecutive tool-only hops; once we cross
+        # the threshold, INJECT a system reminder for the next hop and
+        # also publish a synthetic INNER_MONOLOGUE / system bubble so
+        # the user sees *something* even if the LLM still won't talk.
+        _silent_hops = 0
+        _NARRATION_SOFT_NUDGE_AFTER = 2  # inject system reminder
+        _NARRATION_HARD_BUBBLE_AFTER = 3  # also publish a marker bubble
+        _narration_nudge_pending = False
 
         # 2026-05-12 Batch A.1: GoalAnchor — runtime trick to make
         # weak/short-context models do long tool chains. Every N hops
@@ -462,6 +474,19 @@ class HopLoopMixin:
                 # Replaces the simple greedy-drop in _persist_history
                 # for the "context too long" case while keeping that
                 # path as the fallback in case compression fails.
+                # 2026-05-25: narration hard-enforcement. If prior
+                # hops were tool-only with no plain text, inject a
+                # nudge before the next LLM call. Cheap (one short
+                # user-role hint), only fires when actually needed.
+                if _narration_nudge_pending:
+                    nudge = (
+                        "[narration nudge] 已连续 "
+                        f"{_silent_hops} 个 hop 没有给用户的进度更新。"
+                        "下一步先用一句 plain text 告诉用户你刚做了什么/"
+                        "接下来要做什么，再继续工具调用。"
+                    )
+                    messages.append(Message(role="user", content=nudge))
+                    _narration_nudge_pending = False
                 _did_compress, _did_emit = False, False
                 try:
                     _new_msgs, _did_compress = await self._maybe_compress_messages(
@@ -786,6 +811,38 @@ class HopLoopMixin:
                 # still meaningful for the Dashboard widget.
                 _tick_payload["cost_usd"] = None
             await publish(EventType.COST_TICK, _tick_payload)
+
+            # 2026-05-25: narration tracking. A "silent" hop = the
+            # model emitted tool calls but no visible plain-text
+            # content (think-tool counts as hidden — already routed
+            # through INNER_MONOLOGUE elsewhere). Two consecutive
+            # silent hops → nudge prompt on next hop. Three → also
+            # publish a synthetic progress marker so the user isn't
+            # staring at silence.
+            _visible_text = (response.content or "").strip()
+            if response.tool_calls and not _visible_text:
+                _silent_hops += 1
+                if _silent_hops >= _NARRATION_SOFT_NUDGE_AFTER:
+                    _narration_nudge_pending = True
+                if _silent_hops == _NARRATION_HARD_BUBBLE_AFTER:
+                    try:
+                        _tool_names = ", ".join(
+                            getattr(tc, "name", "?")
+                            for tc in response.tool_calls
+                        )[:120]
+                        await publish(EventType.INNER_MONOLOGUE, {
+                            "content": (
+                                f"[进度] 已连续 {_silent_hops} 个工具调用 "
+                                f"hop（{_tool_names}）无文字汇报，已注入"
+                                f"narration 提示。"
+                            ),
+                            "kind": "narration_enforcement",
+                            "hop": hop,
+                        })
+                    except Exception:  # noqa: BLE001
+                        pass
+            else:
+                _silent_hops = 0
 
             # 3. If the model made tool calls, execute them and feed
             # results back into the conversation.

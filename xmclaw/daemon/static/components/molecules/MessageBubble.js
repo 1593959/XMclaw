@@ -31,6 +31,7 @@ import { QuestionCard } from "./QuestionCard.js";
 import {
   ToolCard,
   WorkerCard,
+  SubagentCard,
   MarkdownBody,
   ThinkingDots,
   PhaseCard,
@@ -163,6 +164,16 @@ export function MessageBubble({ message, onAnswerQuestion }) {
     return html`
       <article class="xmc-msg xmc-msg--system xmc-msg--tool-row" data-msg-id=${message.id}>
         <${WorkerCard} call=${message} />
+      </article>
+    `;
+  }
+
+  // 2026-05-25: subagent card — ephemeral parallel_subagents fanout leaf.
+  // Auto-expanded so the user sees the per-leaf output without clicking.
+  if (message.kind === "subagent") {
+    return html`
+      <article class="xmc-msg xmc-msg--system xmc-msg--tool-row" data-msg-id=${message.id}>
+        <${SubagentCard} call=${message} />
       </article>
     `;
   }

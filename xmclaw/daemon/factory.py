@@ -1610,6 +1610,11 @@ def build_agent_from_config(
             if isinstance(cur, SubagentToolProvider):
                 cur.set_llm(llm)
                 cur.set_tools(tools)
+                # 2026-05-25: wire the parent bus so per-subagent
+                # lifecycle events can be published onto the parent
+                # session (UI renders them as inline cards).
+                if bus is not None:
+                    cur.set_bus(bus)
                 break
             for attr in ("_inner", "_providers", "_children"):
                 v = getattr(cur, attr, None)
