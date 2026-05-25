@@ -17,7 +17,9 @@ gives us all the coverage we need without lark-oapi mocks.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+from unittest.mock import AsyncMock, patch
 
 from xmclaw.providers.channel.feishu.adapter import (
     _CARD_MAX_CHARS,
@@ -25,6 +27,7 @@ from xmclaw.providers.channel.feishu.adapter import (
     _extract_markdown_tables,
     _markdown_table_to_lark_table_element,
     _looks_like_markdown,
+    FeishuAdapter,
 )
 
 
@@ -192,3 +195,80 @@ def test_table_fallback_on_invalid_input() -> None:
 def test_table_fallback_on_single_line() -> None:
     el = _markdown_table_to_lark_table_element("| only header |")
     assert el["tag"] == "markdown"
+
+
+# ── FeishuAdapter tool-finished image caching ────────────────────
+
+
+def test_tool_finished_caches_image_side_effects() -> None:
+    adapter = FeishuAdapter({"app_id": "test", "app_secret": "test"})
+    asyncio.run(adapter._handle_tool_finished("feishu:chat1", {
+        "name": "browser_screenshot",
+        "call_id": "abc",
+        "ok": True,
+        "expected_side_effects": [
+            "C:\\Users\\test\\.xmclaw\\v2\\screenshots\\shot_123.png",
+            "some_log.txt",
+        ],
+    }))
+    assert adapter._session_tool_images.get("feishu:chat1") == [
+        "C:\\Users\\test\\.xmclaw\\v2\\screenshots\\shot_123.png",
+    ]
+
+
+def test_tool_finished_skips_non_image_side_effects() -> None:
+    adapter = FeishuAdapter({"app_id": "test", "app_secret": "test"})
+    asyncio.run(adapter._handle_tool_finished("feishu:chat1", {
+        "name": "browser_click",
+        "call_id": "abc",
+        "ok": True,
+        "expected_side_effects": ["some_log.txt", "data.json"],
+    }))
+    assert "feishu:chat1" not in adapter._session_tool_images
+
+
+def test_tool_finished_does_not_cache_on_failure() -> None:
+    adapter = FeishuAdapter({"app_id": "test", "app_secret": "test"})
+    asyncio.run(adapter._handle_tool_finished("feishu:chat1", {
+        "name": "browser_screenshot",
+        "call_id": "abc",
+        "ok": False,
+        "expected_side_effects": ["C:\\Users\\test\\shot.png"],
+    }))
+    assert "feishu:chat1" not in adapter._session_tool_images
+
+
+# ── FeishuAdapter LLM_RESPONSE narration relay ───────────────────
+
+
+async def test_llm_response_sends_mid_turn_narration() -> None:
+    adapter = FeishuAdapter({"app_id": "test", "app_secret": "test"})
+    with patch.object(adapter, "_send_text_to_chat", new_callable=AsyncMock) as mock_send:
+        await adapter._handle_llm_response("feishu:chat1", {
+            "content": "让我跳官网看看",
+            "tool_calls_count": 2,
+            "ok": True,
+        })
+        mock_send.assert_awaited_once_with("chat1", "让我跳官网看看")
+
+
+async def test_llm_response_skips_terminal_reply() -> None:
+    adapter = FeishuAdapter({"app_id": "test", "app_secret": "test"})
+    with patch.object(adapter, "_send_text_to_chat", new_callable=AsyncMock) as mock_send:
+        await adapter._handle_llm_response("feishu:chat1", {
+            "content": "最终答案",
+            "tool_calls_count": 0,
+            "ok": True,
+        })
+        mock_send.assert_not_awaited()
+
+
+async def test_llm_response_skips_empty_content() -> None:
+    adapter = FeishuAdapter({"app_id": "test", "app_secret": "test"})
+    with patch.object(adapter, "_send_text_to_chat", new_callable=AsyncMock) as mock_send:
+        await adapter._handle_llm_response("feishu:chat1", {
+            "content": "   ",
+            "tool_calls_count": 1,
+            "ok": True,
+        })
+        mock_send.assert_not_awaited()

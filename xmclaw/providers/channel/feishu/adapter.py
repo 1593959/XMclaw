@@ -488,6 +488,8 @@ class FeishuAdapter(ChannelAdapter):
         self._session_tool_msgs: dict[str, dict[str, str]] = {}
         # session_id → {artifact_id: message_id}
         self._session_artifact_msgs: dict[str, dict[str, str]] = {}
+        # session_id → list of image paths produced by tools in this turn
+        self._session_tool_images: dict[str, list[str]] = {}
 
     # ── internal helpers ────────────────────────────────────────
 
@@ -652,6 +654,7 @@ class FeishuAdapter(ChannelAdapter):
             EventType.CANVAS_ARTIFACT_CREATED,
             EventType.CANVAS_ARTIFACT_UPDATED,
             EventType.CANVAS_ARTIFACT_CLOSED,
+            EventType.LLM_RESPONSE,
         }
 
         def _predicate(event: Any) -> bool:
@@ -703,6 +706,8 @@ class FeishuAdapter(ChannelAdapter):
             await self._handle_canvas_updated(session_id, payload)
         elif etype == EventType.CANVAS_ARTIFACT_CLOSED:
             await self._handle_canvas_closed(session_id, payload)
+        elif etype == EventType.LLM_RESPONSE:
+            await self._handle_llm_response(session_id, payload)
 
     async def _chat_id_from_session(self, session_id: str) -> str | None:
         """Parse chat_id from ``feishu:<chat_id>`` session id."""
@@ -740,6 +745,15 @@ class FeishuAdapter(ChannelAdapter):
         else:
             # No prior start card — send a finish-only card.
             await self._send_card_to_chat(chat_id, card)
+
+        # Harvest image paths from tool side-effects for later delivery.
+        if ok:
+            for path in payload.get("expected_side_effects", ()):
+                if (
+                    isinstance(path, str)
+                    and path.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"))
+                ):
+                    self._session_tool_images.setdefault(session_id, []).append(path)
 
     async def _handle_canvas_created(
         self, session_id: str, payload: dict[str, Any],
@@ -803,6 +817,28 @@ class FeishuAdapter(ChannelAdapter):
             ],
         }
         await self._patch_message(msg_id, card)
+
+    async def _handle_llm_response(
+        self, session_id: str, payload: dict[str, Any],
+    ) -> None:
+        """Wave-33 follow-up: relay mid-turn narration to Feishu so
+        users see the agent's reasoning between tool calls."""
+        chat_id = await self._chat_id_from_session(session_id)
+        if not chat_id:
+            return
+        content = payload.get("content", "")
+        tool_calls_count = payload.get("tool_calls_count", 0)
+        ok = payload.get("ok", True)
+
+        if not isinstance(content, str) or not content.strip():
+            return
+
+        # Skip terminal replies — ChannelDispatcher sends the final
+        # assistant message after run_turn() returns.
+        if tool_calls_count == 0 and ok:
+            return
+
+        await self._send_text_to_chat(chat_id, content.strip())
 
     async def _send_card_to_chat(
         self, chat_id: str, card: dict[str, Any],
@@ -886,9 +922,17 @@ class FeishuAdapter(ChannelAdapter):
         reply_to = payload.reply_to
         chat_id = target.ref
 
+        # Merge tool-generated images collected during the turn.
+        session_id = f"feishu:{chat_id}"
+        extra_images = self._session_tool_images.pop(session_id, [])
+        seen = set(payload.attachments or ())
+        all_attachments = list(payload.attachments or ()) + [
+            p for p in extra_images if p not in seen
+        ]
+
         # B-199: image attachments first.
         last_msg_id = ""
-        for att in (payload.attachments or ()):
+        for att in all_attachments:
             try:
                 image_key = await self._upload_image(att)
             except (FileNotFoundError, RuntimeError) as exc:
@@ -1024,6 +1068,55 @@ class FeishuAdapter(ChannelAdapter):
             )
         if not resp.success():
             _log.warning("feishu.card_send_failed code=%s msg=%s", resp.code, resp.msg)
+            return ""
+        msg_id = ""
+        if getattr(resp, "data", None) is not None:
+            msg_id = getattr(resp.data, "message_id", "") or ""
+        return msg_id
+
+    async def _send_text_to_chat(
+        self, chat_id: str, text: str, reply_to: str | None = None,
+    ) -> str:
+        """Send a plain text message to a chat."""
+        if self._client is None:
+            return ""
+        from lark_oapi.api.im.v1 import (
+            CreateMessageRequest, CreateMessageRequestBody,
+            ReplyMessageRequest, ReplyMessageRequestBody,
+        )
+        content_str = json.dumps({"text": text}, ensure_ascii=False)
+        if reply_to:
+            req = (
+                ReplyMessageRequest.builder()
+                .message_id(reply_to)
+                .request_body(
+                    ReplyMessageRequestBody.builder()
+                    .content(content_str)
+                    .msg_type("text")
+                    .build()
+                )
+                .build()
+            )
+            resp = await asyncio.to_thread(
+                self._client.im.v1.message.reply, req,
+            )
+        else:
+            req = (
+                CreateMessageRequest.builder()
+                .receive_id_type("chat_id")
+                .request_body(
+                    CreateMessageRequestBody.builder()
+                    .receive_id(chat_id)
+                    .content(content_str)
+                    .msg_type("text")
+                    .build()
+                )
+                .build()
+            )
+            resp = await asyncio.to_thread(
+                self._client.im.v1.message.create, req,
+            )
+        if not resp.success():
             return ""
         msg_id = ""
         if getattr(resp, "data", None) is not None:
