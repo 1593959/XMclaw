@@ -210,12 +210,18 @@ function ToolMediaImages({ images }) {
 // the LLM still receives the full context — only the human-facing
 // render is filtered.
 const _SYSTEM_FENCES = [
-  "memory-context",
-  "memory-v2-facts",      // ← MemoryService.render_for_prompt output
-  "unified-recall",
-  "curriculum-hint",
-  "curriculum-strategies",
-  "memory-files",
+  // Audited 2026-05-24 against xmclaw/daemon/agent_loop.py +
+  // xmclaw/memory/v2/service.py + xmclaw/cognition/* — these are
+  // ALL the XML-ish fences the backend opens in the user message
+  // body. Keep this list strictly aligned with the producer side
+  // or "[System note: ...]" walls leak into the chat UI again.
+  "memory-context",         // legacy memory_manager prefetch
+  "memory-recall",          // L1 facts matching current query (agent_loop:1581)
+  "memory-v2-facts",        // MemoryService.render_for_prompt durable facts
+  "unified-recall",         // cross-session memory recall (legacy)
+  "curriculum-hint",        // in-prompt skill nudge
+  "curriculum-strategies",  // strategy-bank inject
+  "recalled-memory-files",  // relevant file picker (agent_loop:1519)
 ];
 const _FENCE_RE = new RegExp(
   "\\n*<(" + _SYSTEM_FENCES.join("|") + ")\\b[^>]*>[\\s\\S]*?<\\/\\1>\\n*",
