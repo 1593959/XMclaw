@@ -203,7 +203,11 @@ class SubagentToolProvider(ToolProvider):
         tools: ToolProvider | None = None,
         max_hops_per_subagent: int = 6,
         max_concurrency: int = 4,
-        fanout_timeout_s: float = 120.0,
+        # 2026-05-25: both caps bumped to 5 min per user request.
+        # Previous 120s fanout cap aborted mid-way through real-world
+        # swarm-mode fan-outs (multi-file refactor, parallel research)
+        # where individual leaves legitimately needed more than 120s.
+        fanout_timeout_s: float = 300.0,
         per_subagent_timeout_s: float = 300.0,
         enabled: bool = True,
         bus: Any | None = None,

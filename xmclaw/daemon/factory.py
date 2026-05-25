@@ -1179,7 +1179,7 @@ def build_tools_from_config(
                     subagent_cfg.get("max_concurrency", 4)
                 ),
                 fanout_timeout_s=float(
-                    subagent_cfg.get("fanout_timeout_s", 120.0)
+                    subagent_cfg.get("fanout_timeout_s", 300.0)
                 ),
                 per_subagent_timeout_s=float(
                     subagent_cfg.get("per_subagent_timeout_s", 300.0)
