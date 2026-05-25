@@ -204,7 +204,7 @@ class SubagentToolProvider(ToolProvider):
         max_hops_per_subagent: int = 6,
         max_concurrency: int = 4,
         fanout_timeout_s: float = 120.0,
-        per_subagent_timeout_s: float = 45.0,
+        per_subagent_timeout_s: float = 300.0,
         enabled: bool = True,
         bus: Any | None = None,
     ) -> None:
