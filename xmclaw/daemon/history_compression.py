@@ -403,9 +403,15 @@ class HistoryCompressionMixin:
         history[0] = _dc.replace(head, content=llm_summary)
         self._histories[session_id] = history
         # Persist the upgrade so future loads from disk see it too.
+        # 2026-05-24 user-report fix: drive the sync sqlite write off
+        # the event loop so it doesn't block other in-flight turns
+        # (especially WorkerSwarm fanout publishing many events/sec).
         if self._session_store is not None:
             try:
-                self._session_store.save(session_id, history)
+                import asyncio as _asyncio
+                await _asyncio.to_thread(
+                    self._session_store.save, session_id, history,
+                )
             except Exception:  # noqa: BLE001
                 pass
 
@@ -770,8 +776,28 @@ class HistoryCompressionMixin:
         # token-aware. We just persist the cleaned history.
         self._histories[session_id] = history
         if self._session_store is not None:
+            # 2026-05-24 user-report fix: _persist_history is a SYNC
+            # function called from async hop_loop.py:1308; the inline
+            # ``self._session_store.save(...)`` was a sync sqlite
+            # write inside an async caller, blocking the event loop
+            # while concurrent WorkerSwarm event publishes piled up.
+            # Bounce to a worker thread fire-and-forget — persistence
+            # is best-effort (per the comment below), so we don't even
+            # need to await the result; the in-memory ``_histories``
+            # write above already updated the source of truth.
             try:
-                self._session_store.save(session_id, history)
+                import asyncio as _asyncio
+                _loop = _asyncio.get_running_loop()
+                _loop.create_task(_asyncio.to_thread(
+                    self._session_store.save, session_id, history,
+                ))
+            except RuntimeError:
+                # No running loop (sync test context) — fall back to
+                # inline sync save.
+                try:
+                    self._session_store.save(session_id, history)
+                except Exception:  # noqa: BLE001
+                    pass
             except Exception:  # noqa: BLE001
                 # Persistence is best-effort -- a corrupt sessions.db should
                 # never break the live turn. The in-memory copy is the source

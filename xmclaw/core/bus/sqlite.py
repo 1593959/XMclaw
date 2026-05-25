@@ -278,23 +278,49 @@ class SqliteEventBus(InProcessEventBus):
     async def publish(self, event: BehavioralEvent) -> None:
         """Append then fan out. Append failures are not swallowed — the
         agent loop needs to know if the durable log breaks.
+
+        2026-05-24 user-report: under WorkerSwarm fanout (4-8 concurrent
+        agents emitting llm_chunk / tool_call_emitted / tool_invocation_
+        finished hundreds of events / sec) the inline sync execute was
+        observed to block the event loop long enough that worker_
+        completed → WebSocket fanout fell minutes behind real time. The
+        user saw "完成 160s" appear on the page seconds AFTER the task
+        actually finished, and intermediate "执行中" status frames
+        stayed frozen.
+        Fix: bounce the sync insert to a worker thread via
+        ``asyncio.to_thread``. ``_write_lock`` (asyncio.Lock) still
+        serialises so concurrent publishes don't race on the sqlite3
+        connection. ``check_same_thread=False`` is already set at
+        ``__init__`` (line 175) so threaded use is sanctioned.
+        Throughput / per-insert latency unchanged; what changes is the
+        event loop now keeps spinning during the I/O wait, so the
+        WebSocket forwarder + heartbeat ticks + LLM streams all stay
+        responsive.
         """
+        import asyncio as _asyncio
         async with self._write_lock:
-            # sqlite3 stdlib is sync; this is a single small insert so we
-            # do it inline rather than bounce off an executor.
-            self._conn.execute(_INSERT_SQL, _event_to_row(event))
+            await _asyncio.to_thread(
+                self._conn.execute, _INSERT_SQL, _event_to_row(event),
+            )
         await super().publish(event)
 
     async def publish_many(self, events: Sequence[BehavioralEvent]) -> None:
         """Batch-append multiple events in a single transaction, then fan
         each out individually. Useful for replaying imported logs.
+
+        Same 2026-05-24 fix: drive the multi-row executemany off-loop.
         """
         if not events:
             return
         rows = [_event_to_row(e) for e in events]
-        async with self._write_lock:
+
+        def _do_executemany() -> None:
             with self._txn():
                 self._conn.executemany(_INSERT_SQL, rows)
+
+        import asyncio as _asyncio
+        async with self._write_lock:
+            await _asyncio.to_thread(_do_executemany)
         for e in events:
             await super().publish(e)
 
