@@ -2092,60 +2092,24 @@ def create_app(
                     # ABSOLUTE PATH to run_turn — agent_loop then sets
                     # Message.images so the LLM translator encodes
                     # them as vision content blocks.
-                    user_image_paths: list[str] = []
-                    raw_images = frame.get("images")
-                    log.debug(
-                        "ws.user_frame: images_count=%s type=%s",
-                        len(raw_images) if isinstance(raw_images, list) else "n/a",
-                        type(raw_images).__name__,
+                    # 2026-05-26 refactor: the inline save block here
+                    # had a NameError on ``time.time()`` for weeks
+                    # (no module-level ``import time`` in app.py; the
+                    # only ``time as _time`` imports were scoped to
+                    # other helpers). The broad try/except below ate
+                    # the error as "image save failed" so every
+                    # upload silently dropped. Lifted to
+                    # ``ws_image_intake.save_user_frame_images`` so
+                    # the helper is testable and this WS scope
+                    # carries no implicit name dependencies.
+                    from xmclaw.utils.paths import data_dir as _data_dir
+                    from xmclaw.daemon.ws_image_intake import (
+                        save_user_frame_images as _save_user_frame_images,
                     )
-                    if isinstance(raw_images, list):
-                        from xmclaw.utils.paths import data_dir as _data_dir
-                        import base64 as _b64
-                        import uuid as _uuid
-                        from pathlib import Path as _P
-                        uploads_dir = (
-                            _data_dir() / "v2" / "uploads"
-                        )
-                        uploads_dir.mkdir(parents=True, exist_ok=True)
-                        for entry in raw_images[:8]:
-                            if not isinstance(entry, str):
-                                log.debug("ws.user_frame: skip non-str image entry")
-                                continue
-                            if not entry.startswith("data:"):
-                                log.debug("ws.user_frame: skip non-data image entry: %s...", entry[:40])
-                                continue
-                            try:
-                                header, payload_b64 = entry.split(",", 1)
-                                # e.g. "data:image/png;base64"
-                                meta = header[len("data:"):]
-                                mime = (meta.split(";")[0] or "image/png").lower()
-                                ext_map = {
-                                    "image/png": ".png",
-                                    "image/jpeg": ".jpg",
-                                    "image/jpg": ".jpg",
-                                    "image/gif": ".gif",
-                                    "image/webp": ".webp",
-                                    "image/bmp": ".bmp",
-                                    "video/mp4": ".mp4",
-                                    "video/webm": ".webm",
-                                    "audio/wav": ".wav",
-                                    "audio/mpeg": ".mp3",
-                                    "audio/ogg": ".ogg",
-                                }
-                                ext = ext_map.get(mime, ".bin")
-                                raw_bytes = _b64.b64decode(payload_b64)
-                                if len(raw_bytes) > 8 * 1024 * 1024:
-                                    log.warning("ws.user_frame: reject oversized image: %s bytes", len(raw_bytes))
-                                    continue  # reject huge uploads
-                                out = uploads_dir / f"{int(time.time())}_{_uuid.uuid4().hex[:8]}{ext}"
-                                out.write_bytes(raw_bytes)
-                                user_image_paths.append(str(out))
-                                log.debug("ws.user_frame: saved image to %s", out)
-                            except Exception as _img_exc:  # noqa: BLE001 — skip bad blobs
-                                log.warning("ws.user_frame: image save failed: %s", _img_exc)
-                                continue
-                    log.debug("ws.user_frame: user_image_paths=%s", user_image_paths)
+                    user_image_paths = _save_user_frame_images(
+                        frame.get("images"),
+                        _data_dir() / "v2" / "uploads",
+                    )
                     # Ultrathink (borrowed from the /ultrathink pattern):
                     # when set, prepend a directive to make the model
                     # slow down and think step-by-step before answering.
