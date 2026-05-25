@@ -112,12 +112,24 @@ def _render_section_body(facts: list[Any], prefix: str = "") -> str:
     """
     if not facts:
         return ""
+    # 2026-05-25 (chat-b3c614bc fix): read-time defense in depth.
+    # Even if a poisoned fact somehow got past the write-time gate
+    # (e.g. it was written before the gate existed, or via a tool
+    # path that bypasses _write_facts_to_memory), skip it at render
+    # time so the persona MD file stops re-asserting the lie. This
+    # also means existing poisoned LanceDB rows clean themselves
+    # out of the rendered output the moment the renderer runs.
+    from xmclaw.core.persona.toxic_facts import (
+        is_toxic_self_capability_denial,
+    )
     sorted_facts = sorted(
         facts,
         key=lambda f: getattr(f, "ts_first", 0.0),
         reverse=True,
     )
     lines: list[str] = []
+    from xmclaw.utils.log import get_logger
+    _log = get_logger(__name__)
     for f in sorted_facts:
         date_str = _time.strftime(
             "%Y-%m-%d",
@@ -125,6 +137,13 @@ def _render_section_body(facts: list[Any], prefix: str = "") -> str:
         )
         text = (getattr(f, "text", "") or "").strip().replace("\n", " ")
         if not text:
+            continue
+        toxic, pid = is_toxic_self_capability_denial(text)
+        if toxic:
+            _log.info(
+                "v2_renderer.toxic_fact_filtered pattern=%s text=%s",
+                pid, text[:160],
+            )
             continue
         conf = getattr(f, "confidence", 0.0)
         conf_str = f" _(conf {conf:.2f})_" if conf else ""

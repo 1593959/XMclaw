@@ -197,6 +197,37 @@ async def _write_facts_to_memory(
     if not facts:
         return
 
+    # 2026-05-25 (chat-b3c614bc fix): drop self-capability-denial facts
+    # BEFORE they reach memory. Background:
+    #   When the model hallucinates "我看不到聊天里的图片", the
+    #   extractor would capture that as a high-conf fact, render it
+    #   into USER.md, and every subsequent turn would re-inject it
+    #   as ground truth → the model parrots the lie forever. Prior
+    #   fixes (06d3ba3 anti-poisoning ground-truth note at the
+    #   message boundary) only worked at READ time; the persona MD
+    #   file kept growing. This is the WRITE-time gate.
+    from xmclaw.core.persona.toxic_facts import (
+        is_toxic_self_capability_denial,
+    )
+    cleaned_facts: list[str] = []
+    for _f in facts:
+        toxic, pid = is_toxic_self_capability_denial(_f)
+        if toxic:
+            try:
+                from xmclaw.utils.log import get_logger as _gl
+                _gl(__name__).warning(
+                    "toxic_fact.rejected_at_write pattern=%s "
+                    "kind=%s text=%s",
+                    pid, kind, (_f or "")[:160],
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            continue
+        cleaned_facts.append(_f)
+    if not cleaned_facts:
+        return
+    facts = cleaned_facts
+
     # Wave-27 follow-up: v2 facts write runs FIRST + independently so
     # the legacy memory.db None-path doesn't short-circuit it. Lessons
     # (workflow / tool_quirks / failure_modes / values / rules) and

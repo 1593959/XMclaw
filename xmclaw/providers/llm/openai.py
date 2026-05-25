@@ -78,6 +78,60 @@ def _default_prompt_cache_enabled(model: str, base_url: str | None) -> bool:
     return False
 
 
+def _model_supports_vision(model: str | None, base_url: str | None) -> bool:
+    """Return True only when the (model, endpoint) pair is known to
+    accept ``image_url`` blocks on user messages.
+
+    Default OFF — sending image blocks to a text-only model (e.g.
+    ``kimi-k2-0905-preview``, ``deepseek-chat``) makes the model emit
+    a canned "I can't see images" refusal trained into its base, even
+    though the API silently accepted the request. The user saw this
+    bug repeatedly with Kimi K2 in chat-b3c614bc (2026-05-25); prior
+    fixes patched the upload path, never the capability gate.
+
+    Conservative allow-list — better to occasionally miss a
+    vision-capable model than to confidently lie to a user that the
+    model "couldn't see" their picture because the LLM emitted its
+    canned refusal.
+    """
+    mdl = (model or "").lower()
+    base = (base_url or "").lower()
+    if not mdl:
+        return False
+    # OpenAI vision-capable: 4o / 4-turbo / 4.1+ / o-series. Reject
+    # 3.5 + the explicit non-vision o1-mini-2024-09-12 family.
+    if "gpt-4o" in mdl or "gpt-4-turbo" in mdl or "gpt-4.1" in mdl:
+        return True
+    if "gpt-5" in mdl:  # forward-compat — assume modern OAI flagships ship vision.
+        return True
+    # Anthropic — every Claude 3+ accepts image blocks.
+    if mdl.startswith("claude-3") or mdl.startswith("claude-opus") or mdl.startswith("claude-sonnet") or mdl.startswith("claude-haiku"):
+        return True
+    # Moonshot vision-preview (NOT kimi-k2-*-preview, which is the
+    # coding model — the user's exact case in chat-b3c614bc).
+    if "moonshot-v1" in mdl and "vision" in mdl:
+        return True
+    # Qwen-VL series.
+    if "qwen-vl" in mdl or "qwen2-vl" in mdl or "qwen2.5-vl" in mdl or "qwen3-vl" in mdl:
+        return True
+    # GLM-4V (the V suffix is the vision variant; plain glm-4 / glm-4-plus is text-only).
+    if "glm-4v" in mdl:
+        return True
+    # Gemini vision-capable (pro-vision, 1.5+ all multimodal).
+    if "gemini-1.5" in mdl or "gemini-2" in mdl or "gemini-pro-vision" in mdl:
+        return True
+    # LLaVA / Pixtral / InternVL — open-weights multimodal commonly
+    # exposed via OpenAI-compat shims.
+    if "llava" in mdl or "pixtral" in mdl or "internvl" in mdl:
+        return True
+    # Route-by-base-url last-resort: an OpenRouter / together / fireworks
+    # path with one of the model names above ANYWHERE in the slug.
+    if "openrouter" in base or "together" in base or "fireworks" in base:
+        if any(t in mdl for t in ("vl", "vision", "4o", "claude-3", "claude-opus", "claude-sonnet")):
+            return True
+    return False
+
+
 class OpenAILLM(LLMProvider):
     """OpenAI / OpenAI-compat provider.
 
@@ -153,6 +207,8 @@ class OpenAILLM(LLMProvider):
         messages: list[Message],
         *,
         prompt_cache_enabled: bool = False,
+        model: str | None = None,
+        base_url: str | None = None,
     ) -> list[dict[str, Any]]:
         """Convert internal Messages to OpenAI chat-completions shape.
 
@@ -412,7 +468,10 @@ class OpenAILLM(LLMProvider):
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": self._messages_to_openai(
-                messages, prompt_cache_enabled=self._prompt_cache_enabled,
+                messages,
+                prompt_cache_enabled=self._prompt_cache_enabled,
+                model=self.model,
+                base_url=self.base_url,
             ),
             "stream": True,
         }
@@ -450,7 +509,10 @@ class OpenAILLM(LLMProvider):
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": self._messages_to_openai(
-                messages, prompt_cache_enabled=self._prompt_cache_enabled,
+                messages,
+                prompt_cache_enabled=self._prompt_cache_enabled,
+                model=self.model,
+                base_url=self.base_url,
             ),
         }
         tool_defs = self._tools_to_openai(
@@ -518,7 +580,10 @@ class OpenAILLM(LLMProvider):
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": self._messages_to_openai(
-                messages, prompt_cache_enabled=self._prompt_cache_enabled,
+                messages,
+                prompt_cache_enabled=self._prompt_cache_enabled,
+                model=self.model,
+                base_url=self.base_url,
             ),
             "stream": True,
             "stream_options": {"include_usage": True},
