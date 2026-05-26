@@ -725,3 +725,72 @@ async def test_b198_fact_writer_failure_logs_but_does_not_crash(
     # No crash, no exception leak — the daemon keeps running.
     # The markdown file may be absent (writer never called the
     # render-to-disk step) — this is the new normal under B-198.
+
+
+# 2026-05-26 (cheap-path): ProfileExtractor skips trivial turns
+
+
+@pytest.mark.asyncio
+async def test_trivial_user_messages_skipped(
+    bus: InProcessEventBus, user_md: Path,
+) -> None:
+    """When agent_loop stamps ``is_trivial=true`` on USER_MESSAGE,
+    the extractor must NOT buffer or flush against it. Greetings /
+    acks carry zero new user-profile signal."""
+    captured: list[list[dict]] = []
+
+    def watcher(messages, _meta):
+        captured.append(list(messages))
+        return [_delta("anything", conf=0.9)]
+
+    pe = ProfileExtractor(
+        bus, _provider(user_md),
+        extractor_callable=watcher, flush_threshold=1,
+    )
+    await pe.start()
+    try:
+        # Three trivial messages — should produce zero extractor calls.
+        for _ in range(3):
+            await bus.publish(make_event(
+                session_id="s", agent_id="a",
+                type=EventType.USER_MESSAGE,
+                payload={"content": "hi", "is_trivial": True},
+            ))
+        await bus.drain()
+    finally:
+        await pe.stop()
+    assert not captured, (
+        f"extractor fired on trivial turns: {captured}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_substantive_turn_still_fires(
+    bus: InProcessEventBus, user_md: Path,
+) -> None:
+    """Sanity counter-test: a turn WITHOUT the is_trivial flag still
+    drives the threshold to flush. We didn't break the happy path."""
+    captured: list[list[dict]] = []
+
+    def watcher(messages, _meta):
+        captured.append(list(messages))
+        return [_delta("user codes in python", conf=0.9)]
+
+    pe = ProfileExtractor(
+        bus, _provider(user_md),
+        extractor_callable=watcher, flush_threshold=1,
+    )
+    await pe.start()
+    try:
+        await bus.publish(make_event(
+            session_id="s", agent_id="a",
+            type=EventType.USER_MESSAGE,
+            payload={"content": "I want to refactor the auth module"},
+        ))
+        await bus.drain()
+    finally:
+        await pe.stop()
+    # Threshold-flush + stop()-destroy-flush can each fire; either
+    # way the extractor ran at least once on a substantive turn —
+    # we didn't break the happy path with the trivial-skip gate.
+    assert len(captured) >= 1

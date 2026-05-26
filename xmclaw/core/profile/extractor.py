@@ -209,6 +209,14 @@ class ProfileExtractor:
 
             payload = event.payload or {}
             if event.type == EventType.USER_MESSAGE:
+                # 2026-05-26 cheap-path: trivial turns (greetings,
+                # acks, one-liner factoids) carry zero new user-profile
+                # signal. agent_loop stamps ``is_trivial=true`` on the
+                # event payload; skip buffering it so the flush
+                # threshold isn't burned by chit-chat — saves an LLM
+                # extractor call every ~3 chit-chat turns.
+                if payload.get("is_trivial") is True:
+                    return
                 buf.messages.append({
                     "role": "user",
                     "content": str(payload.get("content", "")),

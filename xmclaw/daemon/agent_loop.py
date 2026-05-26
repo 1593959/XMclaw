@@ -857,12 +857,38 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             for p in user_images:
                 if isinstance(p, str) and p:
                     _user_image_urls.append(f"/api/v2/media/{_P(p).name}")
+        # 2026-05-26: cheap-path triviality classifier. Computed here
+        # (BEFORE the USER_MESSAGE publish) so subscribers
+        # (ProfileExtractor / fact extractors / etc.) can read the
+        # ``is_trivial`` flag off the event payload and short-circuit
+        # their expensive LLM passes for greetings / acks. See the
+        # gate block below for the full latency / cost rationale.
+        _is_trivial_turn = False
+        try:
+            from xmclaw.cognition.mode_router import (
+                _GREETING_RE,
+                _TRIVIAL_QUESTIONS_RE,
+            )
+            _msg = (user_message or "").strip()
+            if 0 < len(_msg) <= 80:
+                _is_trivial_turn = bool(
+                    _GREETING_RE.match(_msg)
+                    or _TRIVIAL_QUESTIONS_RE.match(_msg)
+                )
+        except Exception:  # noqa: BLE001
+            _is_trivial_turn = False
+        self._active_is_trivial = _is_trivial_turn
+
         await publish(
             EventType.USER_MESSAGE,
             {
                 "content": user_message,
                 "channel": "agent_loop",
                 "images": _user_image_urls,
+                # Subscribers (ProfileExtractor / LLMFactExtractor /
+                # post-sampling hooks) check this and skip their LLM
+                # passes for trivial inputs.
+                "is_trivial": _is_trivial_turn,
             },
             correlation_id=user_correlation_id,
         )
@@ -966,7 +992,12 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # cross-sentence references. The two layers complement: regex
         # = high precision/fast, LLM = high recall/slow. remember()
         # is idempotent so overlap doesn't double-count.
-        if memory_v2 is not None and user_message:
+        if memory_v2 is not None and user_message and not _is_trivial_turn:
+            # 2026-05-26 cheap-path: trivial turns (greetings, acks)
+            # never yield extractable identity / preference facts. The
+            # regex layer above already caught any URL / account /
+            # numeric goal. Skipping the LLM extractor saves ~5-10
+            # cents per greeting turn.
             try:
                 # Wired by app_lifespan into the AgentLoop when
                 # cognition.memory_v2.enabled. None when not wired
@@ -2170,7 +2201,12 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # the ``instant`` mode (single-shot, no tool chain).
         self._active_plan_steps = None
         self._active_plan_completed = set()
-        if self._active_run_mode != "instant":
+        # 2026-05-26 cheap-path: a trivial turn (greeting / ack) has
+        # nothing to decompose. Skip the PlanFirst LLM call so the
+        # user-perceived latency on "hi" is just the main hop.
+        if self._active_run_mode != "instant" and not getattr(
+            self, "_active_is_trivial", False,
+        ):
             # B-LATENCY-prep: plan-first decomposition fires a real LLM
             # call before the first hop. Cap at 15s — past that, run
             # the turn without a pre-decomposed plan rather than burning
