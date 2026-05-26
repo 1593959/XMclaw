@@ -572,6 +572,19 @@ class OpenAILLM(LLMProvider):
         *,
         on_chunk: OnChunkCallback | None = None,
         on_thinking_chunk: OnThinkingChunkCallback | None = None,
+        # 2026-05-26 (hotfix): hop_loop always passes on_tool_block
+        # (Wave-32+ speculation cache). Anthropic + base class accept
+        # it; OpenAI shape was missing it → ``TypeError: got an
+        # unexpected keyword argument 'on_tool_block'`` for every
+        # OpenAI-compat provider (DeepSeek, Kimi via openai-shim,
+        # Zhipu, etc.). User hit it switching from Kimi-anthropic
+        # to deepseek-v4-pro. Degenerate impl fires the callback
+        # AFTER the full response — same as the base-class fallback;
+        # OpenAI-shape streaming doesn't surface tool-block lifecycle
+        # events the way Anthropic does, so speculation gets the
+        # tool calls in one batch rather than as soon as the model
+        # finishes each block.
+        on_tool_block: Any | None = None,
         cancel: asyncio.Event | None = None,
     ) -> LLMResponse:
         from xmclaw.providers.llm.translators import openai_tool_shape as translator
@@ -768,6 +781,24 @@ class OpenAILLM(LLMProvider):
             parsed = translator.decode_from_provider(tool_acc[idx])
             if parsed is not None:
                 tool_calls.append(parsed)
+
+        # 2026-05-26 (hotfix): fire on_tool_block once per parsed
+        # tool call. Matches the base-class fallback semantic.
+        # Anthropic fires this DURING streaming (per content-block
+        # close), enabling speculation prefetch. OpenAI-shape
+        # streaming doesn't surface that lifecycle, so speculation
+        # gets the batch in one go — still useful (cache is
+        # populated by the time hop_loop dispatches), just less
+        # latency-hidden.
+        if on_tool_block is not None and tool_calls:
+            for _tc in tool_calls:
+                try:
+                    on_tool_block(_tc)
+                except Exception:  # noqa: BLE001 — callback failure
+                    # must not corrupt the response. Speculation
+                    # is an optimisation; downstream invoke still
+                    # fires.
+                    pass
 
         return LLMResponse(
             content="".join(text_parts),

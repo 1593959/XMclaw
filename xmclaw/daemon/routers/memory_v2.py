@@ -666,6 +666,15 @@ async def list_facts(
                 "contradicts": list(h.fact.contradicts),
                 "superseded_by": h.fact.superseded_by,
                 "layer": h.fact.layer,
+                # 2026-05-26 (B6): bucket determines which persona MD
+                # this fact renders into; UI needs it to show "where
+                # does this fact land" and to filter by bucket. Was
+                # missing from the response shape until now.
+                "bucket": getattr(h.fact, "bucket", "") or "",
+                # Distinguish soft-forget (__forgotten__) from real
+                # supersede (points at a survivor fact_id). UI uses
+                # this to render different status badges.
+                "forgotten": h.fact.superseded_by == "__forgotten__",
                 "ts_first": h.fact.ts_first,
                 "ts_last": h.fact.ts_last,
             }
@@ -809,12 +818,137 @@ async def create_fact(request: Request) -> Any:
 async def delete_fact(
     request: Request, fact_id: str,
 ) -> Any:
+    """HARD delete — physically removes the row from LanceDB.
+
+    2026-05-26: prefer ``POST /facts/{id}/forget`` for everyday user
+    actions. Hard delete is for ops / migration / GDPR-style erase
+    requests where the row truly must not survive.
+    """
     svc = _get_service(request)
     if svc is None:
         return _v2_disabled_response()
     safe = fact_id.replace("'", "''")
     n = await svc._vec.delete(f"id = '{safe}'")  # type: ignore[attr-defined]
     return {"deleted": n}
+
+
+@router.post("/facts/{fact_id}/forget")
+async def forget_fact(request: Request, fact_id: str) -> Any:
+    """2026-05-26: soft-delete — mirrors the ``memory_forget`` agent
+    tool. The fact is marked ``superseded_by="__forgotten__"`` so
+    recall + persona render skip it, but the row stays on disk for
+    audit / restore.
+
+    Body (optional): ``{"reason": "user clicked trash"}`` — logged
+    for the audit trail, not persisted.
+
+    Returns ``{ok: bool}``. ``ok=false`` when the fact_id doesn't
+    resolve (already deleted or never existed).
+    """
+    svc = _get_service(request)
+    if svc is None:
+        return _v2_disabled_response()
+    try:
+        body = await request.json() if request.headers.get("content-length") else {}
+    except Exception:  # noqa: BLE001
+        body = {}
+    reason = str(body.get("reason") or "").strip() or None
+    ok = await svc.forget(fact_id=fact_id, reason=reason)
+    return {"ok": ok}
+
+
+@router.post("/facts/{fact_id}/restore")
+async def restore_fact(request: Request, fact_id: str) -> Any:
+    """2026-05-26: undo a forget/supersede — clears the
+    ``superseded_by`` sentinel + restores confidence to 0.5 (mid)
+    so the fact reappears in recall / persona render.
+
+    No-op when the fact doesn't exist or isn't marked superseded.
+    Returns ``{ok: bool, fact: <restored fact dict>}``.
+    """
+    svc = _get_service(request)
+    if svc is None:
+        return _v2_disabled_response()
+    fact = await svc._vec.get(fact_id)  # type: ignore[attr-defined]
+    if fact is None:
+        return {"ok": False, "reason": "fact_not_found"}
+    if not fact.superseded_by:
+        return {"ok": False, "reason": "fact_not_superseded"}
+    fact.superseded_by = None
+    if fact.confidence < 0.5:
+        fact.confidence = 0.5
+    import time as _time
+    fact.ts_last = _time.time()
+    await svc._vec.upsert([fact])  # type: ignore[attr-defined]
+    return {"ok": True, "fact": fact.to_dict()}
+
+
+@router.post("/facts/correct")
+async def correct_fact(request: Request) -> Any:
+    """2026-05-26: replace a previously-captured fact with the
+    corrected value. Mirrors the ``memory_correct`` agent tool.
+
+    Body:
+      {"old_text": "...", "new_text": "...",
+       "kind": null, "scope": null, "bucket": null,
+       "max_match_distance": 0.45}
+
+    Returns ``{matched, old_fact_id, new_fact_id, distance}``. When
+    no old fact crosses the distance threshold, ``matched=false``
+    but the new fact is still written (so the corrected value is
+    captured) — caller sees ``old_fact_id: null``.
+    """
+    svc = _get_service(request)
+    if svc is None:
+        return _v2_disabled_response()
+    body = await request.json()
+    old_text = str(body.get("old_text") or "").strip()
+    new_text = str(body.get("new_text") or "").strip()
+    if not old_text or not new_text:
+        return JSONResponse(
+            {"error": "old_text and new_text required"},
+            status_code=400,
+        )
+    kwargs: dict[str, Any] = {"old_text": old_text, "new_text": new_text}
+    for k in ("kind", "scope", "bucket"):
+        v = body.get(k)
+        if v:
+            kwargs[k] = str(v)
+    if "max_match_distance" in body:
+        try:
+            kwargs["max_match_distance"] = float(body["max_match_distance"])
+        except (TypeError, ValueError):
+            pass
+    return await svc.correct(**kwargs)
+
+
+@router.post("/dedup_scope")
+async def dedup_scope(request: Request) -> Any:
+    """2026-05-26: bucket-aware dedup wrapper around
+    ``MemoryService.dedup_scope``. Lighter than the global
+    ``/deduplicate`` — useful for "clean up user_preference
+    section only" workflows.
+
+    Body:
+      {"kind": null, "scope": null, "bucket": null,
+       "dry_run": true}
+
+    Returns ``{scanned, clusters, merge_groups, merged, dry_run,
+    preview}``.
+    """
+    svc = _get_service(request)
+    if svc is None:
+        return _v2_disabled_response()
+    try:
+        body = await request.json() if request.headers.get("content-length") else {}
+    except Exception:  # noqa: BLE001
+        body = {}
+    return await svc.dedup_scope(
+        kind=body.get("kind") or None,
+        scope=body.get("scope") or None,
+        bucket=body.get("bucket") or None,
+        dry_run=bool(body.get("dry_run", True)),
+    )
 
 
 # ── Graph for UI viz ─────────────────────────────────────────────

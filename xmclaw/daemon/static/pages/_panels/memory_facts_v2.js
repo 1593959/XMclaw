@@ -180,13 +180,26 @@ function FilterBar({ kind, scope, q, onChange }) {
 // ── Sub-component: fact row ───────────────────────────────────────
 
 
-function FactRow({ fact, onDelete, onSelect }) {
+function FactRow({
+  fact, onForget, onHardDelete, onCorrect, onRestore, onSelect,
+}) {
   const color = KIND_COLOR[fact.kind] || "#888";
   const tsStr = new Date(fact.ts_last * 1000).toISOString().replace("T", " ").slice(0, 19);
+  // 2026-05-26: distinguish soft-forget tombstone vs real supersede
+  // (which points at a survivor fact_id). Surface both so the user
+  // can either restore (if they regret deletion) or follow the
+  // supersede chain.
+  const isForgotten = fact.forgotten || fact.superseded_by === "__forgotten__";
+  const isSuperseded = !isForgotten && Boolean(fact.superseded_by);
   return html`
     <article
       class="xmc-mem-fact"
-      style="display:flex;gap:.6rem;align-items:flex-start;padding:.6rem .8rem;border:1px solid var(--color-border);border-radius:6px;margin-bottom:.4rem;background:var(--xmc-bg-elev)"
+      style=${
+        `display:flex;gap:.6rem;align-items:flex-start;padding:.6rem .8rem;`
+        + `border:1px solid var(--color-border);border-radius:6px;`
+        + `margin-bottom:.4rem;background:var(--xmc-bg-elev);`
+        + (isForgotten || isSuperseded ? "opacity:.55;" : "")
+      }
     >
       <span
         class="xmc-mem-fact__kind-dot"
@@ -194,9 +207,16 @@ function FactRow({ fact, onDelete, onSelect }) {
         title=${fact.kind}
       ></span>
       <div style="flex:1;min-width:0">
-        <div style="font-size:.92rem;line-height:1.5;word-break:break-word">${fact.text}</div>
+        <div style="font-size:.92rem;line-height:1.5;word-break:break-word">
+          ${isForgotten || isSuperseded
+            ? html`<s>${fact.text}</s>`
+            : fact.text}
+        </div>
         <div style="margin-top:.3rem;display:flex;gap:.8rem;font-size:.72rem;color:var(--xmc-fg-muted);flex-wrap:wrap">
           <span><code>${fact.kind}</code> · <code>${fact.scope}</code></span>
+          ${fact.bucket
+            ? html`<span title="renders into persona MD bucket">→ <code>${fact.bucket}</code></span>`
+            : null}
           <span>conf <strong>${fact.confidence.toFixed(2)}</strong></span>
           <span>evidence <strong>${fact.evidence_count}</strong></span>
           <span>layer ${fact.layer}</span>
@@ -212,8 +232,21 @@ function FactRow({ fact, onDelete, onSelect }) {
               </div>
             `
           : null}
+        ${isForgotten
+          ? html`
+              <div style="margin-top:.25rem;font-size:.72rem;color:var(--color-warning,#c98a3a)">
+                🗑 已 forget — recall / persona render 跳过
+              </div>
+            `
+          : isSuperseded
+          ? html`
+              <div style="margin-top:.25rem;font-size:.72rem;color:var(--xmc-fg-muted)">
+                ↻ 已被 <code>${fact.superseded_by.slice(0, 18)}…</code> 替代
+              </div>
+            `
+          : null}
       </div>
-      <div style="display:flex;gap:.3rem;flex-shrink:0">
+      <div style="display:flex;gap:.3rem;flex-shrink:0;flex-wrap:wrap;max-width:160px;justify-content:flex-end">
         <button
           type="button"
           class="xmc-h-btn"
@@ -221,13 +254,39 @@ function FactRow({ fact, onDelete, onSelect }) {
           style="font-size:.72rem;padding:.25rem .55rem"
           title="查看关系图"
         >🔗</button>
-        <button
-          type="button"
-          class="xmc-h-btn"
-          onClick=${() => onDelete(fact)}
-          style="font-size:.72rem;padding:.25rem .55rem"
-          title="删除"
-        >🗑</button>
+        ${(isForgotten || isSuperseded)
+          ? html`
+              <button
+                type="button"
+                class="xmc-h-btn"
+                onClick=${() => onRestore(fact)}
+                style="font-size:.72rem;padding:.25rem .55rem"
+                title="撤销 forget/supersede，让 fact 重新生效"
+              >↺ 恢复</button>
+              <button
+                type="button"
+                class="xmc-h-btn"
+                onClick=${() => onHardDelete(fact)}
+                style="font-size:.72rem;padding:.25rem .55rem"
+                title="彻底删除（不可恢复）"
+              >🗑×</button>
+            `
+          : html`
+              <button
+                type="button"
+                class="xmc-h-btn"
+                onClick=${() => onCorrect(fact)}
+                style="font-size:.72rem;padding:.25rem .55rem"
+                title="改正这条事实（旧的标 superseded，新的写入）"
+              >✎ 改正</button>
+              <button
+                type="button"
+                class="xmc-h-btn"
+                onClick=${() => onForget(fact)}
+                style="font-size:.72rem;padding:.25rem .55rem"
+                title="软删除（可恢复）"
+              >🗑</button>
+            `}
       </div>
     </article>
   `;
@@ -309,6 +368,11 @@ export function FactsV2Tab({ token }) {
   const [status, setStatus] = useState(null);
   const [facts, setFacts] = useState([]);
   const [filters, setFilters] = useState({ kind: "", scope: "", q: "" });
+  // 2026-05-26: surface forgotten / superseded rows so the user can
+  // audit + restore. Default off — most-of-the-time view is the
+  // active set; flip on when debugging or after an accidental
+  // forget.
+  const [showSuperseded, setShowSuperseded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [selectedFactId, setSelectedFactId] = useState(null);
   // Phase 5c — view toggle: list | graph. Default list for low-jank
@@ -322,6 +386,7 @@ export function FactsV2Tab({ token }) {
       if (filters.kind) params.set("kind", filters.kind);
       if (filters.scope) params.set("scope", filters.scope);
       if (filters.q) params.set("q", filters.q);
+      if (showSuperseded) params.set("include_superseded", "true");
       params.set("limit", "100");
       const url = `/api/v2/memory/v2/facts?${params.toString()}`;
       const r = await apiGet(url, token);
@@ -344,7 +409,7 @@ export function FactsV2Tab({ token }) {
     } finally {
       setLoading(false);
     }
-  }, [filters, token]);
+  }, [filters, showSuperseded, token]);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -389,15 +454,94 @@ export function FactsV2Tab({ token }) {
     }
   }, [status, refresh]);
 
-  const handleDelete = async (fact) => {
-    if (!window.confirm(`删除 "${fact.text.slice(0, 60)}"？`)) return;
+  // 2026-05-26 (F1 hotfix): default action is SOFT forget — the
+  // row stays on disk under a tombstone so the user can restore.
+  // Hard delete is a separate "permanently remove" action exposed
+  // via shift-click on the trash icon (escape hatch for ops / GDPR).
+  const handleForget = async (fact) => {
+    if (!window.confirm(
+      `软删除 "${fact.text.slice(0, 60)}"？\n\n` +
+      `(标 forgotten；下次 recall / persona render 跳过它，` +
+      `但保留在 LanceDB 可恢复)`
+    )) return;
     try {
-      await apiDelete(`/api/v2/memory/v2/facts/${encodeURIComponent(fact.id)}`, token);
-      toast.success("已删除");
+      await apiPost(
+        `/api/v2/memory/v2/facts/${encodeURIComponent(fact.id)}/forget`,
+        { reason: "user clicked trash in memory panel" },
+        token,
+      );
+      toast.success("已 forget（可恢复）");
       refresh();
       refreshStatus();
     } catch (e) {
-      toast.error("删除失败: " + (e?.message || e));
+      toast.error("forget 失败: " + (e?.message || e));
+    }
+  };
+
+  const handleHardDelete = async (fact) => {
+    if (!window.confirm(
+      `**彻底删除** "${fact.text.slice(0, 60)}"？\n\n` +
+      `这会从 LanceDB 物理移除该行，无法恢复。` +
+      `一般用 forget 即可；只在需要满足 GDPR 风格的 ` +
+      `"必须彻底擦除" 场景才用 hard delete。`
+    )) return;
+    try {
+      await apiDelete(
+        `/api/v2/memory/v2/facts/${encodeURIComponent(fact.id)}`,
+        token,
+      );
+      toast.success("已彻底删除");
+      refresh();
+      refreshStatus();
+    } catch (e) {
+      toast.error("delete 失败: " + (e?.message || e));
+    }
+  };
+
+  const handleRestore = async (fact) => {
+    try {
+      await apiPost(
+        `/api/v2/memory/v2/facts/${encodeURIComponent(fact.id)}/restore`,
+        {},
+        token,
+      );
+      toast.success("已恢复");
+      refresh();
+      refreshStatus();
+    } catch (e) {
+      toast.error("restore 失败: " + (e?.message || e));
+    }
+  };
+
+  const handleCorrect = async (fact) => {
+    const newText = window.prompt(
+      `改正 "${fact.text.slice(0, 80)}"\n\n` +
+      `输入正确的事实文本（新事实会标 high-confidence, ` +
+      `旧事实会被 superseded）：`,
+      fact.text,
+    );
+    if (!newText || newText.trim() === "" || newText.trim() === fact.text) return;
+    try {
+      const r = await apiPost(
+        "/api/v2/memory/v2/facts/correct",
+        {
+          old_text: fact.text,
+          new_text: newText.trim(),
+          kind: fact.kind,
+          scope: fact.scope,
+          bucket: fact.bucket,
+        },
+        token,
+      );
+      if (r.matched) {
+        toast.success(`已纠正（distance=${r.distance}）`);
+      } else {
+        toast.info("匹配距离太大，已作为新事实写入（未 supersede 旧的）");
+      }
+      refresh();
+      refreshStatus();
+    } catch (e) {
+      toast.error("correct 失败: " + (e?.message || e));
     }
   };
 
@@ -488,6 +632,17 @@ export function FactsV2Tab({ token }) {
                     >🧹 一键去重</button>
                   </div>
                   <${FilterBar} ...${filters} onChange=${setFilters} />
+                  <label
+                    style="display:inline-flex;align-items:center;gap:.3rem;margin:.3rem 0 .6rem;font-size:.78rem;color:var(--xmc-fg-muted);cursor:pointer"
+                    title="包含已 forget 或被 supersede 的 fact（默认隐藏）"
+                  >
+                    <input
+                      type="checkbox"
+                      checked=${showSuperseded}
+                      onChange=${(e) => setShowSuperseded(e.target.checked)}
+                    />
+                    显示 forgotten / superseded 事实
+                  </label>
                   ${loading
                     ? html`<div style="opacity:.7;padding:1rem 0">加载中…</div>`
                     : facts.length === 0
@@ -500,7 +655,10 @@ export function FactsV2Tab({ token }) {
                             <${FactRow}
                               key=${f.id}
                               fact=${f}
-                              onDelete=${handleDelete}
+                              onForget=${handleForget}
+                              onHardDelete=${handleHardDelete}
+                              onCorrect=${handleCorrect}
+                              onRestore=${handleRestore}
                               onSelect=${(fid) => { setSelectedFactId(fid); setView("graph"); }}
                             />
                           `)}

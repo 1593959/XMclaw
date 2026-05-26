@@ -422,3 +422,160 @@ def test_endpoints_return_503_when_service_missing() -> None:
             r = client.get(path)
             assert r.status_code == 503
             assert r.json()["error"] == "memory_v2_disabled"
+
+
+# 2026-05-26: new curation endpoints — forget / restore / correct /
+# dedup_scope. Mirrors the agent-tool surface so the UI can do
+# everything the LLM can.
+
+
+def test_forget_endpoint_soft_deletes(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _build_app()
+    with TestClient(app) as client:
+        # Plant a fact.
+        r = client.post(
+            "/api/v2/memory/v2/facts",
+            json={"text": "user is 张伟", "kind": "identity", "scope": "user"},
+        )
+        assert r.status_code == 200
+        fact_id = r.json()["created"]["id"]
+
+        # Forget it.
+        r = client.post(
+            f"/api/v2/memory/v2/facts/{fact_id}/forget",
+            json={"reason": "user clicked trash"},
+        )
+        assert r.status_code == 200
+        assert r.json() == {"ok": True}
+
+        # Default list hides it.
+        r = client.get("/api/v2/memory/v2/facts")
+        ids = {f["id"] for f in r.json()["facts"]}
+        assert fact_id not in ids
+
+        # include_superseded=true surfaces it with forgotten=true.
+        r = client.get(
+            "/api/v2/memory/v2/facts?include_superseded=true",
+        )
+        rows = [f for f in r.json()["facts"] if f["id"] == fact_id]
+        assert len(rows) == 1
+        assert rows[0]["forgotten"] is True
+        assert rows[0]["superseded_by"] == "__forgotten__"
+
+
+def test_forget_unknown_id_returns_ok_false() -> None:
+    app = _build_app()
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/v2/memory/v2/facts/does:not:exist/forget",
+            json={},
+        )
+        assert r.status_code == 200
+        assert r.json()["ok"] is False
+
+
+def test_restore_endpoint_clears_supersede() -> None:
+    app = _build_app()
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/v2/memory/v2/facts",
+            json={"text": "test bullet", "kind": "preference", "scope": "user"},
+        )
+        fact_id = r.json()["created"]["id"]
+        # Forget then restore.
+        client.post(f"/api/v2/memory/v2/facts/{fact_id}/forget", json={})
+        r = client.post(f"/api/v2/memory/v2/facts/{fact_id}/restore", json={})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert body["fact"]["superseded_by"] in (None, "")
+        # Should reappear in default list.
+        r = client.get("/api/v2/memory/v2/facts")
+        ids = {f["id"] for f in r.json()["facts"]}
+        assert fact_id in ids
+
+
+def test_restore_unknown_returns_ok_false() -> None:
+    app = _build_app()
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/v2/memory/v2/facts/does:not:exist/restore", json={},
+        )
+        assert r.json()["ok"] is False
+
+
+def test_correct_endpoint_supersedes_match() -> None:
+    app = _build_app()
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/v2/memory/v2/facts",
+            json={"text": "user is 张伟", "kind": "identity", "scope": "user"},
+        )
+        old_id = r.json()["created"]["id"]
+        r = client.post(
+            "/api/v2/memory/v2/facts/correct",
+            json={
+                "old_text": "user is 张伟",
+                "new_text": "user is 何鹏",
+                "kind": "identity", "scope": "user",
+            },
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["matched"] is True
+        assert body["old_fact_id"] == old_id
+        assert body["new_fact_id"] != old_id
+
+
+def test_correct_missing_args_returns_400() -> None:
+    app = _build_app()
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/v2/memory/v2/facts/correct",
+            json={"old_text": "", "new_text": "x"},
+        )
+        assert r.status_code == 400
+
+
+def test_dedup_scope_dry_run() -> None:
+    app = _build_app()
+    with TestClient(app) as client:
+        # Plant some facts in a bucket.
+        for txt in ("a", "b"):
+            client.post(
+                "/api/v2/memory/v2/facts",
+                json={
+                    "text": txt, "kind": "preference",
+                    "scope": "user", "bucket": "user_preference",
+                },
+            )
+        r = client.post(
+            "/api/v2/memory/v2/dedup_scope",
+            json={
+                "scope": "user", "bucket": "user_preference",
+                "dry_run": True,
+            },
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["dry_run"] is True
+        assert body["scanned"] >= 2
+
+
+def test_list_facts_includes_bucket_field() -> None:
+    """B6: bucket was missing from the GET /facts response shape."""
+    app = _build_app()
+    with TestClient(app) as client:
+        client.post(
+            "/api/v2/memory/v2/facts",
+            json={
+                "text": "x", "kind": "preference", "scope": "user",
+                "bucket": "user_preference",
+            },
+        )
+        r = client.get("/api/v2/memory/v2/facts")
+        facts = r.json()["facts"]
+        assert facts, "no facts returned"
+        assert "bucket" in facts[0]
+        assert facts[0]["bucket"] == "user_preference"
+        assert facts[0]["forgotten"] is False
