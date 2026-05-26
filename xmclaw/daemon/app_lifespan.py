@@ -2382,47 +2382,74 @@ def make_lifespan(
                 # stayed as the pristine template forever even when
                 # LanceDB had a perfectly fine "AI 的名字是小咪" fact.
                 #
-                # Boot-time backfill heals legacy data WITHOUT a wipe
-                # (every install with v2 facts gets fixed on next
-                # daemon start). The follow-up render pass rebuilds
-                # every persona MD's auto sections from the now-
-                # tagged facts, so the agent's very first turn after
-                # boot sees the right names + preferences in its
-                # system prompt.
-                try:
-                    n_backfilled = await memory_v2_service.backfill_buckets()
-                    log.info(
-                        "memory_v2.bucket_backfill n_updated=%d",
-                        n_backfilled,
-                    )
-                except Exception as exc:  # noqa: BLE001 — never block
-                    # daemon start over a heal pass.
-                    log.warning(
-                        "memory_v2.bucket_backfill_failed err=%s", exc,
-                    )
-
-                try:
-                    from xmclaw.core.persona.v2_renderer import (
-                        render_all_persona_files,
-                    )
-                    from xmclaw.daemon.factory import (
-                        _resolve_persona_profile_dir,
-                    )
-                    pdir = _resolve_persona_profile_dir(config or {})
-                    if pdir is not None:
-                        render_report = await render_all_persona_files(
-                            memory_v2_service, pdir,
-                        )
+                # 2026-05-26 (lazy-init): backfill + persona-render
+                # boot pass moved to a background task.
+                #
+                # Pre-fix both were awaited synchronously inside the
+                # lifespan body. On the user's install with ~2000
+                # facts they took ~30s (backfill) + ~20s (render)
+                # respectively — blocking /health from responding for
+                # ~50s after every restart. User complained: '打开
+                # 慢, 容易崩' (the CLI's 60s health-wait fired before
+                # these finished, the operator re-ran ``xmclaw start``,
+                # zombie processes stacked on 8765 — see the
+                # 6666b1c hotfix that bumped wait_seconds to 180s and
+                # made daemon self-stamp pid).
+                #
+                # Both ops are idempotent + best-effort:
+                #   * backfill heals legacy facts with empty buckets.
+                #     New writes already get the right bucket, so a
+                #     few seconds of stale recall during boot doesn't
+                #     break anything.
+                #   * persona render rebuilds the auto sections from
+                #     current L1 state. The agent's first turn after
+                #     a fresh restart reads from the EXISTING MD on
+                #     disk (which is correct for the prior session);
+                #     the fresh render lands one turn later.
+                #
+                # Deferring both to a background task gates /health
+                # ~50s earlier on a typical install + ~80s earlier on
+                # large installs. Lifespan stays fast; the heal pass
+                # finishes in the background while the user types.
+                async def _memory_v2_boot_heal() -> None:
+                    try:
+                        n_backfilled = await memory_v2_service.backfill_buckets()
                         log.info(
-                            "memory_v2.persona_render_boot pdir=%s "
-                            "files=%s",
-                            pdir,
-                            {k: v for k, v in render_report.items() if v},
+                            "memory_v2.bucket_backfill n_updated=%d "
+                            "(lazy)", n_backfilled,
                         )
-                except Exception as exc:  # noqa: BLE001
-                    log.warning(
-                        "memory_v2.persona_render_boot_failed err=%s", exc,
-                    )
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning(
+                            "memory_v2.bucket_backfill_failed err=%s", exc,
+                        )
+                    try:
+                        from xmclaw.core.persona.v2_renderer import (
+                            render_all_persona_files,
+                        )
+                        from xmclaw.daemon.factory import (
+                            _resolve_persona_profile_dir,
+                        )
+                        pdir = _resolve_persona_profile_dir(config or {})
+                        if pdir is not None:
+                            render_report = await render_all_persona_files(
+                                memory_v2_service, pdir,
+                            )
+                            log.info(
+                                "memory_v2.persona_render_boot pdir=%s "
+                                "files=%s (lazy)",
+                                pdir,
+                                {k: v for k, v in render_report.items() if v},
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning(
+                            "memory_v2.persona_render_boot_failed err=%s", exc,
+                        )
+
+                _memory_v2_heal_task = asyncio.create_task(
+                    _memory_v2_boot_heal(),
+                    name="memory_v2_boot_heal",
+                )
+                _app.state.memory_v2_heal_task = _memory_v2_heal_task
 
                 # Phase 7.B.1 (2026-05-24): periodic retention sweep.
                 # Mirror of V1's SqliteVecMemory sweep_task — runs
