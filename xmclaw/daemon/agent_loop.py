@@ -2214,7 +2214,17 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             _t = time.monotonic()
             try:
                 from xmclaw.cognition.plan_first import PlanFirstGate
-                _gate = PlanFirstGate(llm=llm)
+                from xmclaw.daemon.aux_llm import resolve_aux_llm
+                # 2026-05-26: route plan-first through the fast tier
+                # when one is registered. Pre-fix plan-first burned
+                # flagship rates on a job that's just "decompose this
+                # user goal into 2-4 bullets" — perfectly servable by
+                # a cheap model. ``resolve_aux_llm`` falls back to
+                # the main LLM when no fast tier is registered.
+                _plan_llm = resolve_aux_llm(
+                    getattr(self, "_llm_registry", None), llm,
+                )
+                _gate = PlanFirstGate(llm=_plan_llm)
                 if _gate.is_complex(user_message):
                     _steps = await asyncio.wait_for(
                         _gate.plan(user_message), timeout=25.0,

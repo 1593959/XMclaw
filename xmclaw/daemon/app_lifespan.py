@@ -2355,13 +2355,25 @@ def make_lifespan(
                 # (haiku / kimi-flash) to drop cost.
                 try:
                     from xmclaw.memory.v2 import LLMFactExtractor
-                    llm_obj = getattr(agent, "_llm", None) if agent else None
-                    if llm_obj is not None:
-                        llm_fact_extractor = LLMFactExtractor(llm_obj)
+                    from xmclaw.daemon.aux_llm import resolve_aux_llm
+                    main_llm = getattr(agent, "_llm", None) if agent else None
+                    # 2026-05-26: auxiliary tasks (fact extraction,
+                    # planning, reflection) route through the cheap
+                    # tier when the user has a ``fast`` profile
+                    # registered. Falls back to main_llm when not.
+                    registry = (
+                        getattr(agent, "_llm_registry", None) if agent else None
+                    )
+                    aux_llm = resolve_aux_llm(registry, main_llm)
+                    if aux_llm is not None:
+                        llm_fact_extractor = LLMFactExtractor(aux_llm)
                         if agent is not None:
                             agent._memory_v2_llm_extractor = llm_fact_extractor
                         _app.state.memory_v2_llm_extractor = llm_fact_extractor
-                        log.info("memory_v2.llm_extractor.wired")
+                        log.info(
+                            "memory_v2.llm_extractor.wired aux_model=%s",
+                            getattr(aux_llm, "model", "?"),
+                        )
                 except Exception as exc:  # noqa: BLE001
                     log.warning(
                         "memory_v2.llm_extractor.wire_failed err=%s "
