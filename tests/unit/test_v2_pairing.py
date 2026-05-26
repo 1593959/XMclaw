@@ -44,7 +44,10 @@ def test_load_or_create_creates_file_on_first_call(tmp_path: Path) -> None:
     tok = load_or_create_token(p)
     assert p.exists()
     assert len(tok) == 64
-    assert p.read_text(encoding="utf-8").strip() == tok
+    # 2026-05-26 (audit F1): file now has 2 lines (token + created_ts).
+    # The token is line 1; line 2 is a unix timestamp.
+    body = p.read_text(encoding="utf-8")
+    assert body.splitlines()[0].strip() == tok
 
 
 def test_load_or_create_is_idempotent(tmp_path: Path) -> None:
@@ -77,7 +80,9 @@ def test_rotate_produces_a_different_token(tmp_path: Path) -> None:
     a = load_or_create_token(p)
     b = rotate_token(p)
     assert a != b
-    assert p.read_text(encoding="utf-8").strip() == b
+    # 2026-05-26 (audit F1): file now has 2 lines (token + created_ts).
+    body = p.read_text(encoding="utf-8")
+    assert body.splitlines()[0].strip() == b
 
 
 def test_rotate_when_no_existing_token_still_creates_one(tmp_path: Path) -> None:
@@ -145,3 +150,68 @@ def test_no_env_var_returns_home_default(monkeypatch: pytest.MonkeyPatch) -> Non
     # suffix matches.
     assert p.name == "pairing_token.txt"
     assert "v2" in p.parts
+
+
+# 2026-05-26 (audit F1): TTL + revoke
+
+
+def test_token_age_seconds_reports_age(tmp_path: Path) -> None:
+    from xmclaw.daemon.pairing import token_age_seconds
+    p = tmp_path / "pair.txt"
+    load_or_create_token(p)
+    age = token_age_seconds(p)
+    assert age is not None
+    assert 0.0 <= age < 5.0  # just created — must be young
+
+
+def test_token_age_seconds_none_for_missing_file(tmp_path: Path) -> None:
+    from xmclaw.daemon.pairing import token_age_seconds
+    assert token_age_seconds(tmp_path / "nope.txt") is None
+
+
+def test_validate_rejects_expired_token(tmp_path: Path) -> None:
+    """Token older than ttl_days must fail validate even when hex matches."""
+    import time
+    from xmclaw.daemon.pairing import validate_token, _write_token_file
+    p = tmp_path / "pair.txt"
+    tok = "0" * 64
+    # Pin created_ts to 100 days ago.
+    _write_token_file(p, tok, time.time() - 100 * 86400)
+    # ttl_days = 30 → should reject.
+    assert validate_token(tok, tok, path=p, ttl_days=30.0) is False
+    # ttl_days = 0 (disable) → accept.
+    assert validate_token(tok, tok, path=p, ttl_days=0.0) is True
+
+
+def test_validate_accepts_fresh_token(tmp_path: Path) -> None:
+    from xmclaw.daemon.pairing import validate_token
+    p = tmp_path / "pair.txt"
+    tok = load_or_create_token(p)
+    assert validate_token(tok, tok, path=p, ttl_days=30.0) is True
+
+
+def test_legacy_single_line_file_gets_timestamp(tmp_path: Path) -> None:
+    """A legacy file containing only the hex token must keep working —
+    load_or_create stamps the current time so future TTL checks have
+    a reference point. The original token survives."""
+    p = tmp_path / "pair.txt"
+    legacy = "a" * 64
+    p.write_text(legacy + "\n", encoding="utf-8")
+    tok = load_or_create_token(p)
+    assert tok == legacy
+    body = p.read_text(encoding="utf-8")
+    assert len(body.splitlines()) == 2  # token + ts
+
+
+def test_revoke_token_deletes_file(tmp_path: Path) -> None:
+    from xmclaw.daemon.pairing import revoke_token
+    p = tmp_path / "pair.txt"
+    load_or_create_token(p)
+    assert p.exists()
+    assert revoke_token(p) is True
+    assert not p.exists()
+
+
+def test_revoke_token_idempotent_when_missing(tmp_path: Path) -> None:
+    from xmclaw.daemon.pairing import revoke_token
+    assert revoke_token(tmp_path / "never_existed.txt") is False

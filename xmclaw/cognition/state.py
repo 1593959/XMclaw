@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 
 @dataclass
@@ -236,9 +236,26 @@ class CognitiveState:
         """获取会话标记。"""
         return self.session_flags.get(session_id, {}).get(key, default)
 
+    # 2026-05-26 (audit B2): session_flags used to grow unbounded
+    # (one entry per session id). After hundreds of chat sessions
+    # the cognitive_state.json snapshot bloated past 80 KB with
+    # stale flags from sessions no one will ever resume. Now we
+    # cap at SESSION_FLAGS_CAP entries — oldest 25% evicted when
+    # we cross the line (LRU by insertion order, fine for this).
+    SESSION_FLAGS_CAP: ClassVar[int] = 200
+
     def set_session_flag(self, session_id: str, key: str, value: Any) -> None:
         """设置会话标记。"""
         if session_id not in self.session_flags:
+            # New session — check cap before adding.
+            if len(self.session_flags) >= self.SESSION_FLAGS_CAP:
+                # Evict the oldest quartile so we don't thrash the
+                # cap on every new session.
+                victims = list(self.session_flags.keys())[
+                    : self.SESSION_FLAGS_CAP // 4
+                ]
+                for v in victims:
+                    self.session_flags.pop(v, None)
             self.session_flags[session_id] = {}
         self.session_flags[session_id][key] = value
 

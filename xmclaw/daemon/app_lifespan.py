@@ -80,6 +80,7 @@ def make_lifespan(
     sweep_task: Any | None,
     backup_scheduler: Any | None,
     events_retention_task: Any | None,
+    journal_retention_task: Any | None = None,
     config: dict[str, Any] | None,
     agent: Any | None,
     orchestrator: Any | None,
@@ -110,6 +111,12 @@ def make_lifespan(
                 await events_retention_task.start()
             except Exception as exc:  # noqa: BLE001
                 log.warning("events_retention.start_failed err=%s", exc)
+        # 2026-05-26 (audit B1): journal directory retention.
+        if journal_retention_task is not None:
+            try:
+                await journal_retention_task.start()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("journal_retention.start_failed err=%s", exc)
 
         # Cron tick: only start once the primary agent is live; without
         # it run_turn would have nowhere to land. Wraps a per-tick
@@ -2929,6 +2936,11 @@ def make_lifespan(
             if events_retention_task is not None:
                 try:
                     await events_retention_task.stop()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
+            if journal_retention_task is not None:
+                try:
+                    await journal_retention_task.stop()
                 except Exception as exc:  # noqa: BLE001
                     log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             if cron_tick is not None:

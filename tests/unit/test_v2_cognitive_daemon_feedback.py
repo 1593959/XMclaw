@@ -210,3 +210,26 @@ async def test_surface_results_skipped_when_flag_off() -> None:
         if "PROACTIVE_PROPOSAL" in str(getattr(ev, "type", ""))
     ]
     assert proactive_events == []
+
+
+# 2026-05-26 (audit B2): session_flags cap regression
+
+
+def test_session_flags_evict_when_cap_hit() -> None:
+    """``session_flags`` used to grow unbounded; after hundreds of
+    sessions ``cognitive_state.json`` bloated with stale entries.
+    Now we cap at ``SESSION_FLAGS_CAP`` and evict the oldest 25%
+    when crossing the line."""
+    state = CognitiveState()
+    cap = state.SESSION_FLAGS_CAP
+    # Fill exactly to cap → no eviction yet.
+    for i in range(cap):
+        state.set_session_flag(f"sid-{i:05d}", "k", "v")
+    assert len(state.session_flags) == cap
+    # One more → eviction fires (drops oldest 25%).
+    state.set_session_flag("sid-final", "k", "v")
+    assert len(state.session_flags) <= cap
+    # The newest entry survived.
+    assert "sid-final" in state.session_flags
+    # Some of the oldest entries are gone.
+    assert "sid-00000" not in state.session_flags

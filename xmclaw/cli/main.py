@@ -532,6 +532,28 @@ def stop(
         raise typer.Exit(code=1)
 
 
+# 2026-05-26 (audit F1): explicit pairing-token revocation. Pre-fix
+# a leaked token stayed valid forever — there was no way to
+# invalidate it short of manually deleting the file. ``revoke-token``
+# does that deletion + reminds the operator that the daemon needs
+# a restart for live WS connections to be re-challenged.
+@app.command(name="revoke-token")
+def revoke_token_cmd() -> None:
+    """Delete the on-disk pairing token. The next daemon start mints a fresh one."""
+    from xmclaw.daemon.pairing import default_token_path, revoke_token
+    path = default_token_path()
+    if revoke_token(path):
+        typer.echo(f"  [ok]  pairing token at {path} deleted")
+        typer.echo(
+            "        Run `xmclaw restart` so live WS connections are "
+            "re-challenged with the new token."
+        )
+    else:
+        typer.echo(
+            f"  [!]   no pairing token at {path} -- nothing to revoke"
+        )
+
+
 @app.command()
 def trust(
     workspace: str = typer.Argument(

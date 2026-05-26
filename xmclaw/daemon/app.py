@@ -497,9 +497,30 @@ def create_app(
         log.warning("events_retention.build_failed err=%s", exc)
         events_retention_task = None
 
+    # 2026-05-26 (audit B1): journal directory retention. The audit
+    # caught one install with 413 jsonl files in ~/.xmclaw/v2/journal/
+    # after three weeks of normal use — no rotation existed. Mirrors
+    # the events_retention config dial; defaults match (30 days, 24h
+    # interval).
+    journal_retention_task = None
+    try:
+        from xmclaw.daemon.journal_retention import JournalRetentionTask
+        from xmclaw.utils.paths import journal_dir
+        _journal_cfg = (config or {}).get("journal_retention", {}) or {}
+        journal_retention_task = JournalRetentionTask(
+            journal_dir(),
+            max_age_days=float(_journal_cfg.get("max_age_days", 30.0)),
+            interval_hours=float(_journal_cfg.get("interval_hours", 24.0)),
+            enabled=bool(_journal_cfg.get("enabled", True)),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("journal_retention.build_failed err=%s", exc)
+        journal_retention_task = None
+
     _lifespan = make_lifespan(
         bus=bus, memory=memory, sweep_task=sweep_task,
         backup_scheduler=backup_scheduler, events_retention_task=events_retention_task,
+        journal_retention_task=journal_retention_task,
         config=config, agent=agent, orchestrator=orchestrator,
         agents_manager=agents_manager, shared_cognitive_state=_shared_cognitive_state,
         cognition_cfg=_cognition_cfg, memory_build_error=memory_build_error,
