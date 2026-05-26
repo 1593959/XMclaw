@@ -178,8 +178,11 @@ def check_pairing_token(path: Path) -> CheckResult:
             detail="not yet created (will be created on `xmclaw serve`)",
             advisory=f"expected location: {path}",
         )
+    # 2026-05-26 (hotfix): use the canonical reader so we measure the
+    # actual hex token, not the F1 2-line format's whole contents.
     try:
-        content = path.read_text(encoding="utf-8").strip()
+        from xmclaw.daemon.pairing import read_token
+        content = read_token(path) or ""
     except OSError as exc:
         return CheckResult(
             name="pairing", ok=False,

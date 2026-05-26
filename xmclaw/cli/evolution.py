@@ -137,12 +137,14 @@ def _events_db_path() -> Path:
 
 
 def _pairing_token() -> str | None:
-    """Read the daemon's pairing token. Returns None if missing."""
-    p = data_dir() / "v2" / "pairing_token.txt"
-    try:
-        return p.read_text(encoding="utf-8").strip() or None
-    except OSError:
-        return None
+    """Read the daemon's pairing token. Returns None if missing.
+
+    2026-05-26 (hotfix): route through ``pairing.read_token`` so we
+    pick up only the hex line, not the timestamp the F1 TTL fix
+    appended on a second line.
+    """
+    from xmclaw.daemon.pairing import read_token
+    return read_token(data_dir() / "v2" / "pairing_token.txt")
 
 
 def _query_pending_candidates() -> list[dict[str, Any]]:

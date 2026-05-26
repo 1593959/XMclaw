@@ -215,3 +215,42 @@ def test_revoke_token_deletes_file(tmp_path: Path) -> None:
 def test_revoke_token_idempotent_when_missing(tmp_path: Path) -> None:
     from xmclaw.daemon.pairing import revoke_token
     assert revoke_token(tmp_path / "never_existed.txt") is False
+
+
+# 2026-05-26 (hotfix): read_token canonical reader
+
+
+def test_read_token_returns_only_hex(tmp_path: Path) -> None:
+    """``read_token`` MUST return only the hex line of the F1
+    2-line file, never the timestamp. Pre-fix the /api/v2/pair
+    endpoint did ``read_text().strip()`` which left the embedded
+    \n intact → UI sent ``hex\nts`` as the token → every page
+    hit 401 → memory page showed "未启用"."""
+    from xmclaw.daemon.pairing import read_token
+    p = tmp_path / "pair.txt"
+    # Write the canonical 2-line shape directly.
+    p.write_text("a" * 64 + "\n1779770000.123\n", encoding="utf-8")
+    tok = read_token(p)
+    assert tok == "a" * 64
+    assert "\n" not in tok
+    assert "1779770000" not in tok
+
+
+def test_read_token_handles_legacy_single_line(tmp_path: Path) -> None:
+    """Pre-F1 files had no timestamp line."""
+    from xmclaw.daemon.pairing import read_token
+    p = tmp_path / "pair.txt"
+    p.write_text("b" * 64 + "\n", encoding="utf-8")
+    assert read_token(p) == "b" * 64
+
+
+def test_read_token_missing_returns_none(tmp_path: Path) -> None:
+    from xmclaw.daemon.pairing import read_token
+    assert read_token(tmp_path / "nope.txt") is None
+
+
+def test_read_token_empty_returns_none(tmp_path: Path) -> None:
+    from xmclaw.daemon.pairing import read_token
+    p = tmp_path / "pair.txt"
+    p.write_text("\n\n", encoding="utf-8")
+    assert read_token(p) is None

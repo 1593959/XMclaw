@@ -886,14 +886,14 @@ def create_app(
     async def pair() -> JSONResponse:
         token: str | None = None
         if auth_check is not None:
-            # Read the pairing file from the same location the daemon
-            # created it in. Local import to avoid coupling the app
-            # module to the pairing module's surface.
+            # 2026-05-26 (hotfix): use the canonical reader so we
+            # return ONLY the hex line. Pre-fix this did
+            # ``read_text(...).strip()`` which leaked the F1
+            # timestamp line into the response → UI sent
+            # ``hex\nts`` as the token → every page hit 401.
             try:
-                from xmclaw.daemon.pairing import default_token_path
-                token_path = default_token_path()
-                if token_path.exists():
-                    token = token_path.read_text(encoding="utf-8").strip()
+                from xmclaw.daemon.pairing import read_token
+                token = read_token()
             except Exception:  # noqa: BLE001
                 token = None
         return JSONResponse({"token": token})

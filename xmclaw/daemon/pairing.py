@@ -103,6 +103,32 @@ def _read_token_file(path: Path) -> tuple[str, float | None]:
     return token, created
 
 
+def read_token(path: Path | str | None = None) -> str | None:
+    """2026-05-26 (hotfix): canonical public reader. Returns ONLY the
+    hex token, never the timestamp line.
+
+    Pre-fix several callers (``/api/v2/pair``, ``cli/evolution.py``,
+    backup scripts) called ``path.read_text().strip()`` directly.
+    That worked while the file was 1 line; after the F1 TTL fix made
+    it 2 lines, ``.strip()`` removed outer whitespace but left the
+    embedded newline, leaking the timestamp into the value those
+    callers handed to clients. UI then sent ``hex\\n<ts>`` as the
+    ``?token=`` query param → daemon's hmac compare failed →
+    every page hit 401 → memory page interpreted the failure as
+    "Memory v2 未启用". Use this helper everywhere instead.
+
+    Returns None when the file doesn't exist or is empty.
+    """
+    p = Path(path) if path is not None else default_token_path()
+    if not p.exists():
+        return None
+    try:
+        token, _ = _read_token_file(p)
+    except OSError:
+        return None
+    return token or None
+
+
 def _write_token_file(path: Path, token: str, created_ts: float) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"{token}\n{created_ts:.6f}\n", encoding="utf-8")

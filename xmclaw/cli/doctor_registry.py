@@ -394,7 +394,11 @@ class PairingCheck(DoctorCheck):
         if not path.exists():
             return None
         try:
-            content = path.read_text(encoding="utf-8").strip()
+            # 2026-05-26 (hotfix): canonical reader handles the F1
+            # 2-line file format. Empty-file detection still works
+            # — read_token returns None for empty / unreadable.
+            from xmclaw.daemon.pairing import read_token
+            content = read_token(path) or ""
         except OSError:
             return None
         if content == "":
@@ -1179,7 +1183,11 @@ class MemoryProviderCheck(DoctorCheck):
             import urllib.error as _ue
             url = f"http://{ctx.host}:{ctx.port}/api/v2/memory/providers"
             try:
-                token = ctx.token_path.read_text(encoding="utf-8").strip() if ctx.token_path else ""
+                # 2026-05-26 (hotfix): canonical reader strips the
+                # F1 timestamp line — bare ``read_text().strip()``
+                # would have leaked it into the URL.
+                from xmclaw.daemon.pairing import read_token
+                token = (read_token(ctx.token_path) or "") if ctx.token_path else ""
             except OSError:
                 token = ""
             if token:
