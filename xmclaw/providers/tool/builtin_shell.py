@@ -102,6 +102,26 @@ class BuiltinToolsShellMixin:
         command = call.args.get("command")
         if not isinstance(command, str) or not command.strip():
             return _fail(call, t0, "missing or empty 'command' argument")
+        # 2026-05-26 (audit F3 Layer 1): pre-flight the command against
+        # the guardrail patterns BEFORE spawning a subprocess.
+        # ``deny`` short-circuits with a refusal; ``confirm`` is also
+        # treated as a refusal at this layer with a guidance message
+        # pointing the LLM at ``ask_user_question`` — wiring it
+        # through to an actual user confirmation is the follow-up.
+        from xmclaw.providers.tool.bash_guardrails import classify_command
+        _verdict = classify_command(command)
+        if _verdict.decision == "deny":
+            return _fail(
+                call, t0,
+                f"[bash_guardrail/{_verdict.pattern_id}] {_verdict.reason}",
+            )
+        if _verdict.decision == "confirm":
+            return _fail(
+                call, t0,
+                f"[bash_guardrail/{_verdict.pattern_id}] {_verdict.reason} "
+                f"Call ask_user_question first to get a YES/NO from "
+                f"the user, then proceed if they approve.",
+            )
         cwd = call.args.get("cwd")
         if cwd is not None and not isinstance(cwd, str):
             return _fail(
