@@ -1432,10 +1432,18 @@ _UPDATE_PERSONA_SPEC = ToolSpec(
         "description. Yours to evolve.\n"
         "  • BOOTSTRAP.md — first-run interview marker. Delete "
         "after writing IDENTITY/USER on first install.\n\n"
-        "Three modes:\n"
+        "Four modes:\n"
         "  • ``append_section`` — add a bullet or block under a "
         "section header. Args: section, content. The MOST common "
         "mode and the safest.\n"
+        "  • ``remove_bullet`` — surgically drop one or more list "
+        "bullets from the file. Args: match (case-sensitive "
+        "substring; every bullet whose line contains it is removed). "
+        "Use this to delete a single wrong bullet without nuking "
+        "the rest of the file. NOTE: only touches the manual / "
+        "user-curated portion. Auto-extracted bullets live in "
+        "LanceDB — use ``memory_forget`` for those (and the next "
+        "render will drop them from the MD).\n"
         "  • ``replace`` — overwrite the whole file. Use sparingly; "
         "discards prior state. Good for cleanups after a refactor.\n"
         "  • ``delete`` — remove from disk. Only safe for "
@@ -1456,7 +1464,9 @@ _UPDATE_PERSONA_SPEC = ToolSpec(
             },
             "mode": {
                 "type": "string",
-                "enum": ["append_section", "replace", "delete"],
+                "enum": [
+                    "append_section", "remove_bullet", "replace", "delete",
+                ],
                 "description": "How to mutate the file.",
             },
             "section": {
@@ -1470,7 +1480,16 @@ _UPDATE_PERSONA_SPEC = ToolSpec(
                 "description": "Content to write. For append_section: "
                 "the block to append (one bullet, multiple bullets, "
                 "or a paragraph). For replace: the full new file body. "
-                "Ignored for delete.",
+                "Ignored for delete / remove_bullet.",
+            },
+            "match": {
+                "type": "string",
+                "description": "Required for remove_bullet mode. "
+                "Case-sensitive substring of the bullet line(s) you "
+                "want removed. Every list bullet (- / *) whose line "
+                "contains this substring is dropped. Use a unique "
+                "snippet of the bullet text — be more specific than "
+                "less, to avoid accidentally dropping siblings.",
             },
         },
         "required": ["file", "mode"],

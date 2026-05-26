@@ -214,11 +214,19 @@ class ProfileExtractor:
                     "content": str(payload.get("content", "")),
                 })
                 buf.last_user_event_id = event.id
-            elif event.type == EventType.LLM_RESPONSE:
-                buf.messages.append({
-                    "role": "assistant",
-                    "content": str(payload.get("content", "")),
-                })
+            # 2026-05-26 (audit A1, chat-b3c614bc follow-up): LLM_RESPONSE
+            # used to be buffered + fed to the extractor too, on the
+            # theory that "the model's reply contains hints about the
+            # user". Real-data outcome: the model HALLUCINATED self-
+            # capability limitations ("I can't see chat images") and
+            # those hallucinations got extracted as high-confidence
+            # facts about the agent, written to USER.md / SOUL.md,
+            # then re-injected as ground truth on the next turn —
+            # forming a feedback loop that took multiple weeks +
+            # several patch rounds to unwind. Structural fix: the
+            # extractor ONLY listens to user messages. Anything the
+            # agent says about itself is not evidence; the user has
+            # to assert it for it to count as a fact.
 
             should_flush = self._should_flush(buf)
 

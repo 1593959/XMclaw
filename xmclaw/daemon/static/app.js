@@ -79,7 +79,7 @@ import { appendPromptHistory } from "./components/molecules/Composer.js";
 import { AppShell as HermesAppShell } from "./components/organisms/AppShell.js";
 // Side-effect: applies the persisted Hermes theme (or LENS_0 default)
 // to :root before the first paint. Mirrors Hermes ThemeProvider.
-import "./lib/hermes-themes.js";
+import "./lib/theme-engine.js";
 import { ChatPage } from "./pages/Chat.js";
 import { SettingsPage } from "./pages/Settings.js";
 // Phase F (2026-05-12): Doctor / Backup / Config 合并进 Settings 后死代码删除。

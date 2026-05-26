@@ -195,13 +195,36 @@ class MultiAgentManager:
         # daemon restart.
         self._write_config(agent_id, ws.config)
         # Background work (Phase 7 evolution observers) starts before
-        # the workspace enters the public dict — a caller that races a
-        # create+list should never see a workspace that's visible but
-        # not yet subscribed to the bus.
+        # the workspace enters the public dict — a caller that races
+        # a create+list should never see a workspace that's visible
+        # but not yet subscribed to the bus. NOTE 2026-05-26 (audit
+        # E1): the bus subscription happens INSIDE the observer (see
+        # Workspace.start). LLM-kind workspaces are inert until a turn
+        # arrives and intentionally do not subscribe. The manager
+        # itself never subscribes — it publishes lifecycle events
+        # below so other subscribers can react.
         await ws.start()
         async with self._lock:
             self._agents[agent_id] = ws
         log.info("multi_agent.registered", extra={"agent_id": agent_id})
+        # 2026-05-26 (audit E1): publish a SESSION_LIFECYCLE event
+        # so the UI + observers can update their views without
+        # polling. Pre-fix the manager held a reference to ``self._bus``
+        # but never used it; the Web UI's agents panel had to refetch
+        # on a timer. Best-effort — never fails the create.
+        try:
+            from xmclaw.core.bus.events import EventType, make_event
+            await self._bus.publish(make_event(
+                session_id=f"agent:{agent_id}",
+                agent_id=agent_id,
+                type=EventType.SESSION_LIFECYCLE,
+                payload={
+                    "phase": "registered",
+                    "kind": str(ws.config.get("kind") or "llm"),
+                },
+            ))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("multi_agent.publish_registered_failed err=%s", exc)
         return ws
 
     async def remove(self, agent_id: str) -> bool:
@@ -230,6 +253,18 @@ class MultiAgentManager:
                 )
         self._delete_config(stripped)
         log.info("multi_agent.removed", extra={"agent_id": stripped})
+        # 2026-05-26 (audit E1): publish a SESSION_LIFECYCLE event
+        # so the UI updates without polling. See create() above.
+        try:
+            from xmclaw.core.bus.events import EventType, make_event
+            await self._bus.publish(make_event(
+                session_id=f"agent:{stripped}",
+                agent_id=stripped,
+                type=EventType.SESSION_LIFECYCLE,
+                payload={"phase": "removed"},
+            ))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("multi_agent.publish_removed_failed err=%s", exc)
         return True
 
     async def load_from_disk(self) -> list[str]:

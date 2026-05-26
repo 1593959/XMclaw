@@ -1,0 +1,273 @@
+/* XMclaw — Navigation v2
+ *
+ * AppHeader + IconRail + collapsible Sidebar layout.
+ *
+ * Desktop (≥1024px):
+ *   ┌────────────────────────────────────────────────────┐
+ *   │ AppHeader                                          │
+ *   ├────┬────────┬──────────────────────────────────────┤
+ *   │Rail│Sidebar │ Main content                         │
+ *   │48px│(208px) │                                      │
+ *   │    │        │                                      │
+ *   └────┴────────┴──────────────────────────────────────┘
+ *
+ * Mobile (<1024px):
+ *   ┌────────────────────────────────────────────────────┐
+ *   │ Mobile header (hamburger + brand)                  │
+ *   ├────────────────────────────────────────────────────┤
+ *   │ Main content                                       │
+ *   │                                                    │
+ *   └────────────────────────────────────────────────────┘
+ *   (Sidebar overlays full-screen; Rail & AppHeader hidden)
+ */
+
+/* ── IconRail (desktop only) ────────────────────────────────────── */
+
+.xmc-h-rail {
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  .xmc-h-rail {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    align-items: center;
+    width: 48px;
+    height: 100dvh;
+    max-height: 100dvh;
+    border-right: 1px solid var(--ds-border);
+    background: var(--ds-bg-base);
+    padding: 0.5rem 0;
+    gap: 0.25rem;
+    z-index: 50;
+  }
+
+  .xmc-h-rail__brand {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--ds-radius-md);
+    background: var(--ds-accent-subtle);
+    color: var(--ds-accent);
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.5rem;
+    user-select: none;
+    flex-shrink: 0;
+  }
+
+  .xmc-h-rail__sep {
+    width: 24px;
+    height: 1px;
+    background: var(--ds-border);
+    margin: 0.25rem 0;
+    flex-shrink: 0;
+  }
+
+  .xmc-h-rail__btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border: none;
+    border-radius: var(--ds-radius-md);
+    background: transparent;
+    color: var(--ds-fg-secondary);
+    cursor: pointer;
+    transition: background 150ms, color 150ms;
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  .xmc-h-rail__btn:hover {
+    background: var(--ds-accent-subtle);
+    color: var(--ds-fg-primary);
+  }
+
+  .xmc-h-rail__btn.is-active {
+    background: var(--ds-accent-subtle);
+    color: var(--ds-accent);
+  }
+
+  .xmc-h-rail__btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--ds-ring);
+  }
+
+  /* Tooltip on hover */
+  .xmc-h-rail__btn[title]:hover::after {
+    content: attr(title);
+    position: absolute;
+    left: calc(100% + 8px);
+    top: 50%;
+    transform: translateY(-50%);
+    padding: 0.25rem 0.5rem;
+    background: var(--ds-bg-elevated);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-sm);
+    font-size: 0.7rem;
+    color: var(--ds-fg-primary);
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 100;
+  }
+
+  .xmc-h-rail__spacer {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .xmc-h-rail__toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border: none;
+    border-radius: var(--ds-radius-md);
+    background: transparent;
+    color: var(--ds-fg-muted);
+    cursor: pointer;
+    transition: background 150ms, color 150ms;
+    flex-shrink: 0;
+  }
+
+  .xmc-h-rail__toggle:hover {
+    background: var(--ds-accent-subtle);
+    color: var(--ds-fg-primary);
+  }
+}
+
+/* ── Sidebar collapsible (desktop) ──────────────────────────────── */
+
+@media (min-width: 1024px) {
+  .xmc-h-sidebar {
+    position: relative;
+    top: auto;
+    left: auto;
+    width: 208px;
+    flex-shrink: 0;
+    transform: none !important;
+    transition: width 200ms ease, opacity 200ms ease, padding 200ms ease;
+    border-right: 1px solid var(--ds-border);
+    background: var(--ds-bg-base);
+  }
+
+  .xmc-h-sidebar.is-collapsed {
+    width: 0;
+    opacity: 0;
+    overflow: hidden;
+    padding-left: 0;
+    padding-right: 0;
+    border-right: none;
+  }
+
+  /* Hide brand block in collapsed sidebar — IconRail has the brand */
+  .xmc-h-sidebar .xmc-h-sidebar__brand {
+    display: none;
+  }
+
+  /* Also hide close button (desktop only) */
+  .xmc-h-sidebar .xmc-h-sidebar__close {
+    display: none;
+  }
+}
+
+/* ── Content area wrapper ───────────────────────────────────────── */
+
+.xmc-h-content-area {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ── AppHeader ──────────────────────────────────────────────────── */
+
+.xmc-h-appheader {
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  .xmc-h-appheader {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    height: 48px;
+    min-height: 48px;
+    padding: 0 1rem;
+    border-bottom: 1px solid var(--ds-border);
+    background: var(--ds-bg-surface);
+  }
+
+  .xmc-h-appheader__left {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+
+  .xmc-h-appheader__title {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--ds-fg-primary);
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .xmc-h-appheader__right {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-shrink: 0;
+  }
+
+  .xmc-h-appheader__btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-md);
+    background: var(--ds-bg-elevated);
+    color: var(--ds-fg-secondary);
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: background 150ms, border-color 150ms;
+    font-family: inherit;
+    white-space: nowrap;
+  }
+
+  .xmc-h-appheader__btn:hover {
+    background: var(--ds-accent-subtle);
+    border-color: var(--ds-accent);
+    color: var(--ds-fg-primary);
+  }
+
+  .xmc-h-appheader__btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--ds-ring);
+  }
+}
+
+/* ── Main pane adjustments ──────────────────────────────────────── */
+
+@media (min-width: 1024px) {
+  .xmc-h-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+  }
+}

@@ -76,20 +76,35 @@ async def main() -> int:
     args = parser.parse_args()
 
     # Open the v2 memory service against the standard daemon paths.
-    # This mirrors how the daemon boots it — no daemon needs to be
-    # running.
+    # Mirrors how app_lifespan boots it (see "facts live under
+    # ~/.xmclaw/v2/facts/" at app_lifespan.py:2205 — the earlier
+    # draft of this script used ~/.xmclaw/v2/lancedb/ which doesn't
+    # exist on disk).
     from xmclaw.utils.paths import data_dir
-    from xmclaw.memory.v2.service import MemoryService
-    from xmclaw.memory.v2.backend_lancedb import LanceDbFactsBackend
+    from xmclaw.memory.v2 import (
+        MemoryService,
+        get_lancedb_graph_backend,
+        get_lancedb_vector_backend,
+    )
 
-    db_path = data_dir() / "v2" / "lancedb"
-    if not db_path.exists():
-        print(f"no v2 store at {db_path} — nothing to clean", flush=True)
+    facts_dir = data_dir() / "v2" / "facts"
+    if not facts_dir.exists():
+        print(f"no v2 store at {facts_dir} — nothing to clean", flush=True)
         return 0
 
-    backend = LanceDbFactsBackend(db_path=db_path)
-    await backend.open()
-    svc = MemoryService(vec_backend=backend, embedder=None)
+    # Embedding dim defaults to 1536 (OpenAI text-embedding-3-small),
+    # matching the daemon's default. We only do exact-keyword scans
+    # here so the choice of dim doesn't affect correctness as long
+    # as it matches what's already on disk.
+    vec_backend = get_lancedb_vector_backend(
+        str(facts_dir), embedding_dim=1536,
+    )
+    graph_backend = get_lancedb_graph_backend(str(facts_dir))
+    svc = MemoryService(
+        vector_backend=vec_backend,
+        graph_backend=graph_backend,
+        embedder=None,
+    )
 
     # Find every fact whose text matches any keyword.
     print(

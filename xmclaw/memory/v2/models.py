@@ -234,6 +234,14 @@ class Fact:
             "contradicts": list(self.contradicts),
             "superseded_by": self.superseded_by,
             "layer": self.layer,
+            # 2026-05-26 (audit D1): bucket was added 2026-05-16 but
+            # got missed in to_dict / from_dict for ~10 days. Any
+            # round-trip through the bus / WS / backup / restore path
+            # silently dropped the routing label → fact survived in
+            # LanceDB but never rendered into a persona MD again
+            # (orphaned, invisible to the next system prompt). Now
+            # explicitly serialized.
+            "bucket": self.bucket,
             "ts_first": self.ts_first,
             "ts_last": self.ts_last,
         }
@@ -253,6 +261,7 @@ class Fact:
             contradicts=tuple(d.get("contradicts") or ()),
             superseded_by=d.get("superseded_by"),
             layer=d.get("layer", "working"),
+            bucket=str(d.get("bucket") or ""),
             ts_first=float(d.get("ts_first") or time.time()),
             ts_last=float(d.get("ts_last") or time.time()),
         )

@@ -143,3 +143,30 @@ html {
   --ds-border-strong: rgba(255, 230, 203, 0.20);
   --ds-ring: #ffe6cb;
 }
+
+/* ── High-Contrast Theme ────────────────────────────────────────── */
+
+[data-theme="high-contrast"] {
+  --ds-bg-base: #000000;
+  --ds-bg-surface: #000000;
+  --ds-bg-elevated: #111111;
+  --ds-bg-inset: #000000;
+
+  --ds-fg-primary: #ffffff;
+  --ds-fg-secondary: #ffffff;
+  --ds-fg-tertiary: #cccccc;
+  --ds-fg-muted: #888888;
+  --ds-fg-on-accent: #000000;
+
+  --ds-accent: #ffff00;
+  --ds-accent-hover: #ffff88;
+  --ds-accent-subtle: rgba(255, 255, 0, 0.20);
+
+  --ds-success: #00ff00;
+  --ds-warning: #ffaa00;
+  --ds-destructive: #ff0000;
+
+  --ds-border: #ffffff;
+  --ds-border-strong: #ffffff;
+  --ds-ring: #ffff00;
+}

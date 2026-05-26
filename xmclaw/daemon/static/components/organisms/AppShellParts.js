@@ -28,7 +28,7 @@ import { apiGet } from "../../lib/api.js";
 import { confirmDialog } from "../../lib/dialog.js";
 import {
   THEMES, listThemes, applyTheme, readActiveTheme,
-} from "../../lib/hermes-themes.js";
+} from "../../lib/theme-engine.js";
 
 
 export function NavLink({ item, active, onClick }) {

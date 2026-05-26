@@ -32,8 +32,14 @@ class BuiltinToolsPersonaMixin:
         mode = call.args.get("mode")
         if not isinstance(file_arg, str) or not file_arg.strip():
             return _fail(call, t0, "missing or empty 'file'")
-        if mode not in ("append_section", "replace", "delete"):
-            return _fail(call, t0, f"invalid 'mode' {mode!r}; expected append_section|replace|delete")
+        if mode not in (
+            "append_section", "replace", "delete", "remove_bullet",
+        ):
+            return _fail(
+                call, t0,
+                f"invalid 'mode' {mode!r}; expected "
+                f"append_section|replace|delete|remove_bullet",
+            )
 
         canonical = _PERSONA_BASENAMES_LOOKUP.get(file_arg.strip().lower())
         if canonical is None:
@@ -110,6 +116,64 @@ class BuiltinToolsPersonaMixin:
                         summary = (
                             f"replaced {canonical} ({written_size} bytes)"
                         )
+                elif mode == "remove_bullet":
+                    # 2026-05-26 (audit G2): surgical bullet removal.
+                    # Pre-fix the agent had to ``replace`` the whole
+                    # file just to drop one wrong bullet — losing
+                    # every other curated bullet in the same write.
+                    # Now: read manual portion, drop any list bullet
+                    # (``- `` or ``* `` prefix) whose body contains
+                    # ``match`` (case-sensitive substring), write back.
+                    match = call.args.get("match")
+                    if not isinstance(match, str) or not match.strip():
+                        return _fail(
+                            call, t0,
+                            "'match' required for remove_bullet mode "
+                            "(case-sensitive substring of the bullet "
+                            "to delete)",
+                        )
+                    if store is not None:
+                        existing_text = await store.read_manual(canonical)
+                    else:
+                        existing_text = (
+                            target.read_text(encoding="utf-8")
+                            if target.is_file() else ""
+                        )
+                    new_lines: list[str] = []
+                    dropped = 0
+                    for ln in existing_text.splitlines():
+                        stripped = ln.lstrip()
+                        is_bullet = (
+                            stripped.startswith("- ")
+                            or stripped.startswith("* ")
+                        )
+                        if is_bullet and match in ln:
+                            dropped += 1
+                            continue
+                        new_lines.append(ln)
+                    if dropped == 0:
+                        return _fail(
+                            call, t0,
+                            f"remove_bullet: no bullet containing "
+                            f"{match!r} found in manual portion of "
+                            f"{canonical}. (auto-extracted bullets "
+                            f"live in LanceDB — use memory_forget for "
+                            f"those)",
+                        )
+                    new_text = "\n".join(new_lines)
+                    # Preserve trailing newline if original had one.
+                    if existing_text.endswith("\n") and not new_text.endswith("\n"):
+                        new_text += "\n"
+                    if store is not None:
+                        await store.set_manual(canonical, new_text)
+                    else:
+                        from xmclaw.utils.fs_locks import atomic_write_text
+                        atomic_write_text(target, new_text)
+                    written_size = len(new_text.encode("utf-8"))
+                    summary = (
+                        f"remove_bullet: dropped {dropped} bullet(s) "
+                        f"matching {match!r} from {canonical}"
+                    )
                 else:  # append_section
                     section = call.args.get("section")
                     content = call.args.get("content")
@@ -170,6 +234,8 @@ class BuiltinToolsPersonaMixin:
             snippet = (call.args.get("content") or "")[:200]
         elif mode == "delete":
             snippet = "(deleted)"
+        elif mode == "remove_bullet":
+            snippet = f"(removed bullet matching {call.args.get('match')!r})"[:200]
         self._record_agent_write(
             pdir, canonical,
             call.args.get("section") if mode == "append_section" else None,

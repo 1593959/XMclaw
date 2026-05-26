@@ -41,6 +41,8 @@ import {
   ContextStrip,
   useDaemonStatus,
 } from "./AppShellParts.js";
+import { IconRail } from "./IconRail.js";
+import { AppHeader } from "./AppHeader.js";
 
 // Lucide-style inline SVG icons. Each takes className for sizing.
 // Direct shape ports of the Hermes nav-icon set so visual size + stroke
@@ -74,6 +76,8 @@ const ICONS = {
   X:             "M18 6 6 18 M6 6l12 12",
   Users:         "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M16 3.128a4 4 0 0 1 0 7.744M22 21v-2a4 4 0 0 0-3-3.87M9 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z",
   Link:          "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71",
+  ChevronRight:  "M9 18l6-6-6-6",
+  ChevronLeft:   "M15 18l-6-6 6-6",
 };
 
 export function Icon({ name, className }) {
@@ -174,10 +178,35 @@ export function persistCollapsedGroups(set) {
 }
 
 
+const SIDEBAR_COLLAPSE_KEY = "xmc.sidebar.collapsed";
+
+function readSidebarCollapsed() {
+  try { return localStorage.getItem(SIDEBAR_COLLAPSE_KEY) === "1"; }
+  catch (_) { return false; }
+}
+
+function persistSidebarCollapsed(v) {
+  try { localStorage.setItem(SIDEBAR_COLLAPSE_KEY, v ? "1" : "0"); }
+  catch (_) {}
+}
+
 export function AppShell({ activePath, brand = "XMclaw", subBrand = "Agent", token, tokenUsage, children }) {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
   const status = useDaemonStatus(token);
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      persistSidebarCollapsed(next);
+      return next;
+    });
+  }, []);
+
+  const navigateTo = useCallback((path) => {
+    window.dispatchEvent(new CustomEvent("xmc-navigate", { detail: { path } }));
+  }, []);
 
   // Close on Escape (Hermes parity).
   useEffect(() => {
@@ -251,9 +280,16 @@ export function AppShell({ activePath, brand = "XMclaw", subBrand = "Agent", tok
         : null}
 
       <div class="xmc-h-shell-body">
+        <${IconRail}
+          activePath=${activePath === "/" ? "/sessions" : activePath}
+          sidebarCollapsed=${sidebarCollapsed}
+          onToggleSidebar=${toggleSidebar}
+          onNavigate=${navigateTo}
+        />
+
         <aside
           id="app-sidebar"
-          class=${"xmc-h-sidebar " + (mobileOpen ? "is-mobile-open" : "")}
+          class=${"xmc-h-sidebar " + (mobileOpen ? "is-mobile-open" : "") + (sidebarCollapsed ? " is-collapsed" : "")}
           aria-label="primary navigation"
           onTouchStart=${onSidebarTouchStart}
           onTouchEnd=${onSidebarTouchEnd}
@@ -291,10 +327,13 @@ export function AppShell({ activePath, brand = "XMclaw", subBrand = "Agent", tok
           <${SidebarFooter} />
         </aside>
 
-        <main class="xmc-h-main" role="main">
-          <${SetupBanner} token=${token} />
-          ${children}
-        </main>
+        <div class="xmc-h-content-area">
+          <${AppHeader} activePath=${activePath === "/" ? "/sessions" : activePath} />
+          <main class="xmc-h-main" role="main">
+            <${SetupBanner} token=${token} />
+            ${children}
+          </main>
+        </div>
       </div>
       <${BuddyMascot} />
     </div>

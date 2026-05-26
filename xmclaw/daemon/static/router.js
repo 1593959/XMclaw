@@ -89,6 +89,13 @@ export function installRouter(store, routes) {
   window.addEventListener("popstate", applyLocation);
   document.addEventListener("click", onClick);
 
+  // B-400: support programmatic navigation from components (e.g. IconRail)
+  // that don't have direct access to the navigate() closure.
+  window.addEventListener("xmc-navigate", (e) => {
+    const path = e.detail && e.detail.path;
+    if (path) navigate(path);
+  });
+
   applyLocation(); // initial sync
   return { navigate, resolve };
 }

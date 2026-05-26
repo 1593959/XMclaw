@@ -1,0 +1,71 @@
+/* XMclaw — PageLayout template styles
+ *
+ * Unified page chrome for non-Chat pages (Settings, Skills, Agents, …).
+ * Uses ds-* tokens so every page looks consistent across themes.
+ */
+
+.xmc-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.xmc-page__header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--ds-border);
+  background: var(--ds-bg-surface);
+}
+
+.xmc-page__title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.xmc-page__title {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--ds-fg-primary);
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+
+.xmc-page__subtitle {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--ds-fg-muted);
+  line-height: 1.4;
+}
+
+.xmc-page__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.xmc-page__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1.25rem 1.5rem 2rem;
+}
+
+/* Mobile adjustments */
+@media (max-width: 640px) {
+  .xmc-page__header {
+    padding: 1rem;
+  }
+  .xmc-page__body {
+    padding: 1rem 1rem 1.5rem;
+  }
+}

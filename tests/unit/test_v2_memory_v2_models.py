@@ -88,6 +88,30 @@ def test_fact_to_from_dict_roundtrip() -> None:
     assert f2.layer == "long_term"
 
 
+def test_fact_bucket_survives_round_trip() -> None:
+    """2026-05-26 (audit D1): bucket was missing from to_dict /
+    from_dict for ~10 days, silently dropping the persona-renderer
+    routing label on any cross-process / bus / backup round-trip.
+    Lock the field into serialization so a regression goes loud."""
+    f = Fact(
+        id="preference:user:abcdef000002",
+        kind="preference", scope="user",
+        text="user prefers Chinese",
+        bucket="user_preference",
+    )
+    d = f.to_dict()
+    assert d["bucket"] == "user_preference"
+    f2 = Fact.from_dict(d)
+    assert f2.bucket == "user_preference"
+    # Default bucket "" also round-trips cleanly.
+    g = Fact(
+        id="lesson:project:abcdef000003",
+        kind="lesson", scope="project", text="x",
+    )
+    g2 = Fact.from_dict(g.to_dict())
+    assert g2.bucket == ""
+
+
 def test_fact_embedding_optional() -> None:
     """Fact without embedding round-trips with None preserved."""
     f = Fact(

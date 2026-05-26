@@ -6,7 +6,7 @@
  *
  * Defaults are LENS_0 (Hermes Teal). Theme switching is handled by
  * setting these custom properties on `:root` from JS — see
- * `lib/hermes-themes.js`.
+ * `lib/theme-engine.js`.
  */
 
 :root {

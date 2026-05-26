@@ -49,6 +49,72 @@ def _delta(text: str, *, conf: float = 0.9, kind: str = "preference") -> Profile
     )
 
 
+# ── 2026-05-26 (audit A1, chat-b3c614bc): assistant turns ignored ───
+
+
+@pytest.mark.asyncio
+async def test_assistant_messages_are_not_buffered(
+    bus: InProcessEventBus, user_md: Path,
+) -> None:
+    """ProfileExtractor must NOT feed LLM_RESPONSE content into the
+    extractor — the model's self-statements are not facts about the
+    user. Pre-fix the model hallucinated "I can't see chat images",
+    the extractor captured it as a high-confidence preference, and
+    every subsequent turn re-injected the lie as ground truth.
+
+    Pins:
+      * LLM_RESPONSE event arrives → no flush, no extractor call,
+        no message buffered.
+      * User-only thread still flushes at threshold.
+    """
+    captured: list[list[dict]] = []
+
+    def watcher(messages, _meta):
+        captured.append(list(messages))
+        return [_delta("user prefers brief replies", conf=0.9)]
+
+    pe = ProfileExtractor(
+        bus, _provider(user_md),
+        extractor_callable=watcher, flush_threshold=2,
+    )
+    await pe.start()
+    try:
+        # 2 user turns interleaved with 2 LLM responses. Assistant
+        # turns should NOT advance the count and should NOT show up
+        # in the extractor's message list.
+        await bus.publish(make_event(
+            session_id="s", agent_id="a",
+            type=EventType.USER_MESSAGE, payload={"content": "hi"},
+        ))
+        await bus.publish(make_event(
+            session_id="s", agent_id="a",
+            type=EventType.LLM_RESPONSE,
+            payload={"content": "I can't see chat images"},
+        ))
+        await bus.publish(make_event(
+            session_id="s", agent_id="a",
+            type=EventType.USER_MESSAGE, payload={"content": "ok"},
+        ))
+        await bus.publish(make_event(
+            session_id="s", agent_id="a",
+            type=EventType.LLM_RESPONSE,
+            payload={"content": "vision is limited"},
+        ))
+        await bus.drain()
+    finally:
+        await pe.stop()
+
+    assert captured, "extractor should have run at user-turn threshold"
+    for msgs in captured:
+        roles = {m["role"] for m in msgs}
+        assert roles == {"user"}, (
+            f"assistant content leaked into extractor input: {msgs}"
+        )
+        contents = " ".join(m["content"] for m in msgs)
+        assert "can't see" not in contents.lower()
+        assert "vision is limited" not in contents
+
+
 # ── threshold flush ─────────────────────────────────────────────────
 
 
