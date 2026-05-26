@@ -409,10 +409,23 @@ class MemoryService:
         vector_backend: VectorBackend,
         graph_backend: GraphBackend,
         embedder: EmbeddingService | None,
+        bus: Any | None = None,
     ) -> None:
         self._vec = vector_backend
         self._graph = graph_backend
         self._embedder = embedder
+        # 2026-05-26: optional bus for curation event publishing
+        # (MEMORY_FORGOT / MEMORY_CORRECTED / MEMORY_DEDUPED). When
+        # None, the new APIs operate exactly as before — they just
+        # don't surface on the "记忆活动" UI timeline. Late-bindable
+        # via :meth:`set_bus` because the daemon wires the bus
+        # before the service in some startup paths.
+        self._bus = bus
+
+    def set_bus(self, bus: Any) -> None:
+        """Late-binding hook for the optional event bus. Lifespan
+        wiring calls this once the bus is ready."""
+        self._bus = bus
 
     @property
     def embedder(self) -> EmbeddingService | None:
@@ -1091,6 +1104,43 @@ class MemoryService:
 
     _FORGOTTEN_SENTINEL = "__forgotten__"
 
+    async def _publish_curation(
+        self, kind: str, payload: dict[str, Any],
+    ) -> None:
+        """Best-effort publish of a memory-curation event.
+
+        ``kind`` is "forgot" / "corrected" / "deduped" — mapped to
+        the matching ``EventType.MEMORY_*`` enum value. Failures are
+        swallowed; curation correctness must not depend on the bus
+        being up.
+        """
+        if self._bus is None:
+            return
+        try:
+            from xmclaw.core.bus.events import EventType, make_event
+            type_map = {
+                "forgot": EventType.MEMORY_FORGOT,
+                "corrected": EventType.MEMORY_CORRECTED,
+                "deduped": EventType.MEMORY_DEDUPED,
+            }
+            et = type_map.get(kind)
+            if et is None:
+                return
+            await self._bus.publish(make_event(
+                session_id="_memory",
+                agent_id="memory_service",
+                type=et,
+                payload=payload,
+            ))
+        except Exception as _exc:  # noqa: BLE001
+            try:
+                from xmclaw.utils.swallowed_exceptions import (
+                    record as _swallow,
+                )
+                _swallow("memory_service.publish_curation", _exc)
+            except Exception:  # noqa: BLE001
+                pass
+
     async def forget(
         self, *, fact_id: str, reason: str | None = None,
     ) -> bool:
@@ -1105,6 +1155,7 @@ class MemoryService:
         old = await self._vec.get(fact_id)
         if old is None:
             return False
+        old_text = old.text or ""
         old.superseded_by = self._FORGOTTEN_SENTINEL
         old.confidence = 0.0
         old.ts_last = time.time()
@@ -1118,6 +1169,11 @@ class MemoryService:
                 )
             except Exception:  # noqa: BLE001
                 pass
+        await self._publish_curation("forgot", {
+            "fact_id": fact_id,
+            "text": old_text[:200],
+            "reason": (reason or "")[:200],
+        })
         return True
 
     async def correct(
@@ -1179,12 +1235,18 @@ class MemoryService:
                 old_fact_id=best.fact.id,
                 new_fact_id=new_fact.id,
             )
-        return {
+        result = {
             "matched": matched,
             "old_fact_id": best.fact.id if matched and best else None,
             "new_fact_id": new_fact.id,
             "distance": round(best_distance, 3) if best else 1.0,
         }
+        await self._publish_curation("corrected", {
+            **result,
+            "old_text": old_text[:200],
+            "new_text": new_text[:200],
+        })
+        return result
 
     async def dedup_scope(
         self,
@@ -1281,7 +1343,7 @@ class MemoryService:
                     new_fact_id=survivor.fact.id,
                 )
                 merged_count += 1
-        return {
+        result = {
             "scanned": len(hits),
             "clusters": len(clusters),
             "merge_groups": len(merge_groups),
@@ -1289,6 +1351,17 @@ class MemoryService:
             "dry_run": dry_run,
             "preview": merge_preview[:10],
         }
+        # Only fire event for live runs — dry-runs aren't audit events.
+        if not dry_run and merged_count > 0:
+            await self._publish_curation("deduped", {
+                "kind": kind,
+                "scope": scope,
+                "bucket": bucket,
+                "scanned": result["scanned"],
+                "merged": merged_count,
+                "merge_groups": result["merge_groups"],
+            })
+        return result
 
     # ── Read API ────────────────────────────────────────────────
 

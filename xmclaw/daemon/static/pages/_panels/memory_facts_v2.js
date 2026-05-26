@@ -545,6 +545,56 @@ export function FactsV2Tab({ token }) {
     }
   };
 
+  // 2026-05-26: bucket-aware dedup via the new /dedup_scope
+  // endpoint. Restricts the cosine cluster pass to one
+  // (kind, scope, bucket) combo so the user can clean up "the
+  // user_preference bullets" without sweeping unrelated facts.
+  const runBucketDedup = async (dryRun) => {
+    const bucket = window.prompt(
+      "按 bucket 去重 — 哪个 bucket？\n\n" +
+      "常用值: user_preference / user_identity / workflow / " +
+      "tool_quirks / values / rules\n\n" +
+      "(留空 = 不按 bucket 过滤，仍走范围内 dedup)",
+      filters.scope === "user" ? "user_preference" : "",
+    );
+    if (bucket === null) return;  // cancelled
+    try {
+      const r = await apiPost(
+        "/api/v2/memory/v2/dedup_scope",
+        {
+          dry_run: dryRun,
+          scope: filters.scope || null,
+          kind: filters.kind || null,
+          bucket: bucket.trim() || null,
+        },
+        token,
+      );
+      const lines = [
+        `${dryRun ? "dry-run" : "执行"}: bucket=${bucket || "(全部)"}` +
+          `, scope=${filters.scope || "(全部)"}`,
+        `扫描 ${r.scanned} 条 · 聚成 ${r.clusters} 簇 · ` +
+          `${r.merge_groups} 簇有重复 · ${dryRun ? "可合并" : "已合并"} ${r.merged} 条`,
+      ];
+      if (r.preview && r.preview.length) {
+        lines.push("");
+        lines.push("前 5 簇示例:");
+        for (const c of r.preview.slice(0, 5)) {
+          lines.push(`• 保留: ${c.survivor}`);
+          for (const t of (c.merged || []).slice(0, 2)) {
+            lines.push(`   合并: ${t}`);
+          }
+        }
+      }
+      window.alert(lines.join("\n"));
+      if (!dryRun) {
+        refresh();
+        refreshStatus();
+      }
+    } catch (e) {
+      toast.error("bucket dedup 失败: " + (e?.message || e));
+    }
+  };
+
   const runDedup = async (dryRun) => {
     try {
       const r = await apiPost(
@@ -630,6 +680,21 @@ export function FactsV2Tab({ token }) {
                       style="font-size:.78rem;padding:.25rem .6rem"
                       title="扫描所有事实，把 cosine 距离 < 0.15 的近似项合并到同一行"
                     >🧹 一键去重</button>
+                    <span style="margin:0 .3rem;color:var(--xmc-fg-muted);font-size:.78rem">|</span>
+                    <button
+                      type="button"
+                      class="xmc-h-btn"
+                      onClick=${() => runBucketDedup(true)}
+                      style="font-size:.78rem;padding:.25rem .6rem"
+                      title="只对一个 bucket 去重 — 比'一键去重'范围更窄，适合清理 USER.md 等单一文件"
+                    >🎯 bucket 预览</button>
+                    <button
+                      type="button"
+                      class="xmc-h-btn"
+                      onClick=${() => runBucketDedup(false)}
+                      style="font-size:.78rem;padding:.25rem .6rem"
+                      title="按指定 bucket 执行去重（会写入）"
+                    >🎯 bucket 执行</button>
                   </div>
                   <${FilterBar} ...${filters} onChange=${setFilters} />
                   <label

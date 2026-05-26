@@ -2276,6 +2276,11 @@ def make_lifespan(
                     vector_backend=vec_backend,
                     graph_backend=graph_backend,
                     embedder=embedder,
+                    # 2026-05-26: pass the bus so the new curation
+                    # APIs (forget / correct / dedup_scope) surface
+                    # on the "记忆活动" UI tab as MEMORY_FORGOT /
+                    # MEMORY_CORRECTED / MEMORY_DEDUPED events.
+                    bus=bus,
                 )
                 _app.state.memory_v2_service = memory_v2_service
                 if agent is not None:

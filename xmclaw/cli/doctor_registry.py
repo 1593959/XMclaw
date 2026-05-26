@@ -2451,6 +2451,63 @@ class SwallowedExceptionsCheck(DoctorCheck):
         )
 
 
+# 2026-05-26: vis-network vendor file check. The Memory ▸ Graph
+# view falls back to a CDN (~250 KB) when the local vendor file
+# is missing. In China that fallback is slow / sometimes blocked.
+# Doctor surfaces "vendor missing — graph load slow" + a --fix
+# that runs the vendor download script.
+class VisNetworkVendorCheck(DoctorCheck):
+    id: ClassVar[str] = "vis_network_vendor"
+    name: ClassVar[str] = "vis-network vendor"
+
+    def _target(self) -> Path:
+        from xmclaw import daemon
+        return (
+            Path(daemon.__file__).parent
+            / "static" / "vendor" / "vis-network.min.js"
+        )
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        p = self._target()
+        if p.is_file() and p.stat().st_size > 50_000:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"vendored at {p.name} ({p.stat().st_size:,} B)",
+            )
+        return CheckResult(
+            name=self.name, ok=False,
+            detail=(
+                "missing — Memory ▸ L1 Facts ▸ Graph will pull "
+                "~250 KB from a CDN on first open (slow/blocked "
+                "in some networks)"
+            ),
+            advisory=(
+                "run `python scripts/vendor_vis_network.py` "
+                "(or `xmclaw doctor --fix`) to vendor the bundle "
+                "locally and load the graph instantly"
+            ),
+            fix_available=True,
+        )
+
+    def fix(self, ctx: DoctorContext) -> bool:
+        import subprocess
+        import sys
+        try:
+            from xmclaw import daemon as _daemon
+            project_root = Path(_daemon.__file__).parent.parent.parent
+            script = project_root / "scripts" / "vendor_vis_network.py"
+            if not script.is_file():
+                return False
+            proc = subprocess.run(
+                [sys.executable, str(script)],
+                cwd=str(project_root),
+                capture_output=True, text=True, timeout=60,
+            )
+            return proc.returncode == 0 and self._target().is_file()
+        except Exception:  # noqa: BLE001
+            return False
+
+
 def build_default_registry() -> DoctorRegistry:
     """Return a registry populated with the built-in checks.
 
@@ -2485,4 +2542,5 @@ def build_default_registry() -> DoctorRegistry:
     reg.register(EvolutionRuntimeCheck())      # Epic #24 Phase 1
     reg.register(EvolutionPipelineCheck())     # Epic #24 Phase 4.3
     reg.register(SwallowedExceptionsCheck())   # 2026-05-26 audit A3
+    reg.register(VisNetworkVendorCheck())      # 2026-05-26: graph CDN
     return reg

@@ -109,7 +109,13 @@ function PutRow({ ev }) {
 
 export function ActivityTab({ token }) {
   const [data, setData] = useState({ events: [] });
-  const url = "/api/v2/events?types=memory_recall,memory_put_auto&limit=200";
+  // 2026-05-26: include the new curation events so users can see
+  // what got forgotten / corrected / deduped on this timeline,
+  // not just recall / auto-put.
+  const url = (
+    "/api/v2/events?types=memory_recall,memory_put_auto,"
+    + "memory_forgot,memory_corrected,memory_deduped&limit=200"
+  );
   const { loading, error, refresh } = useSafeFetch(url, token, setData);
 
   const onRefresh = useCallback(() => { refresh(); }, [refresh]);

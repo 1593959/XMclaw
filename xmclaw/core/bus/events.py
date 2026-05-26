@@ -442,6 +442,22 @@ class EventType(str, Enum):
     # synthesised flow that hid intermediate progress.
     SUBAGENT_STARTED = "subagent_started"
     SUBAGENT_COMPLETED = "subagent_completed"
+    # 2026-05-26: memory curation events. Pre-fix the new
+    # forget / correct / dedup_scope service methods only logged to
+    # stdlib — the "记忆活动" UI tab + audit replay had no way to
+    # show "agent forgot fact X at time T". Now each curation op
+    # emits a structured event so the timeline carries the audit
+    # trail. Payload shapes:
+    #   MEMORY_FORGOT:    {fact_id, text, reason, source}
+    #   MEMORY_CORRECTED: {old_fact_id, new_fact_id, old_text,
+    #                      new_text, matched, distance, source}
+    #   MEMORY_DEDUPED:   {scope, bucket, scanned, merged, dry_run,
+    #                      source}
+    # ``source`` is "tool" / "api" / "agent" — discriminates UI vs
+    # agent-tool vs HTTP-router triggers.
+    MEMORY_FORGOT = "memory_forgot"
+    MEMORY_CORRECTED = "memory_corrected"
+    MEMORY_DEDUPED = "memory_deduped"
 
 
 @dataclass(frozen=True, slots=True)
