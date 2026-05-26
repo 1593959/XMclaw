@@ -101,6 +101,35 @@ def make_lifespan(
         # uptime widget. perf_counter is monotonic + unhelpful for "when
         # did the daemon start" — time.time() is what we want here.
         _app.state.boot_ts = time_module.time()
+        # 2026-05-26: stamp the REAL listener pid into the daemon.pid
+        # file. Background:
+        #
+        # On Windows with a venv (``.venv/Scripts/python.exe``), the
+        # venv stub re-execs to the base interpreter — the Popen pid
+        # the ``xmclaw start`` launcher recorded points at the stub
+        # which exits seconds later, while the actual listener
+        # process runs under a different pid (often a different
+        # python binary entirely). Result: ``xmclaw stop`` reads
+        # the stale stub pid, finds it dead, declares "stopped" —
+        # leaving the real daemon orphaned, holding port 8765.
+        #
+        # Fix: when lifespan starts, overwrite the pid file with
+        # ``os.getpid()``. By definition this is the process that
+        # owns the bound socket. The next ``xmclaw stop`` reads the
+        # right pid and terminates the right process.
+        try:
+            import os as _os
+            from xmclaw.utils.paths import default_pid_path as _pid_path
+            _real_pid = _os.getpid()
+            _p = _pid_path()
+            _p.parent.mkdir(parents=True, exist_ok=True)
+            _p.write_text(str(_real_pid), encoding="utf-8")
+            log.info(
+                "daemon.pid_self_stamped pid=%d path=%s",
+                _real_pid, _p,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("daemon.pid_self_stamp_failed err=%s", exc)
         # cron_tick is now a local variable in the closure
         if sweep_task is not None:
             await sweep_task.start()

@@ -149,3 +149,19 @@ def test_start_refuses_when_already_running(
     finally:
         proc.kill()
         proc.wait(timeout=5)
+
+
+# 2026-05-26 (lifecycle hotfix): default wait_seconds bumped to 180
+# because real-data boots routinely take 90-100s.
+
+
+def test_start_daemon_default_wait_seconds_is_generous() -> None:
+    """Real-data fact: a fully-wired install (persona files + memory v2
+    + skill loader + perception bus + evolution observers) takes
+    ~90-100s to reach the healthy milestone. The launcher's deadline
+    must accommodate that or it lies "did not answer" while the daemon
+    is still successfully booting, causing the operator to re-run
+    start and stack zombies on the same port."""
+    import inspect
+    sig = inspect.signature(lifecycle.start_daemon)
+    assert sig.parameters["wait_seconds"].default >= 180.0

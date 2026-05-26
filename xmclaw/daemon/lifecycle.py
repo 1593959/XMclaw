@@ -173,12 +173,21 @@ def start_daemon(
     port: int,
     config: str,
     no_auth: bool = False,
-    wait_seconds: float = 60.0,
+    wait_seconds: float = 180.0,
 ) -> DaemonStatus:
     """Spawn ``xmclaw serve`` detached, wait for /health, write pid+meta.
 
     Raises RuntimeError if the daemon is already running or fails to
     become healthy within ``wait_seconds``.
+
+    2026-05-26: bumped default from 60s → 180s. Real-data finding: a
+    fully-wired install with persona files + memory v2 + skill loader
+    + perception bus + evolution observers takes ~90-100s to reach the
+    "healthy" milestone (39s lifespan + 30s memory backfill + 20s
+    persona render + skill warmup). The previous 60s window made the
+    CLI report "did not answer" while the daemon was still booting
+    successfully — operator would re-run ``xmclaw start``, stacking
+    multiple half-booted daemons fighting for port 8765.
     """
     status = read_status()
     if status.state == "running":
