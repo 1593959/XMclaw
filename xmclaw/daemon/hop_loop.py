@@ -848,10 +848,17 @@ class HopLoopMixin:
                     )
 
                 # Record the assistant turn (text + tool_calls together).
+                # 2026-05-26: also carry thinking so DeepSeek V4 (and
+                # any other provider that hard-requires thinking-echo
+                # on subsequent hops) sees its own prior reasoning.
                 messages.append(Message(
                     role="assistant",
                     content=response.content,
                     tool_calls=response.tool_calls,
+                    thinking=getattr(response, "thinking", "") or "",
+                    thinking_signature=getattr(
+                        response, "thinking_signature", "",
+                    ) or "",
                 ))
 
                 # Phase A: emit start events (serial, lightweight).
@@ -1344,9 +1351,15 @@ class HopLoopMixin:
 
             # 4. No tool calls -- terminal assistant text.
             # Append the assistant turn to messages so it becomes part of
-            # the saved history for the next turn.
+            # the saved history for the next turn. 2026-05-26: include
+            # thinking so the next user turn (if any) doesn't 400 on
+            # DeepSeek V4 thinking mode.
             messages.append(Message(
                 role="assistant", content=response.content,
+                thinking=getattr(response, "thinking", "") or "",
+                thinking_signature=getattr(
+                    response, "thinking_signature", "",
+                ) or "",
             ))
             compression_info = self._persist_history(session_id, messages)
             if compression_info is not None:

@@ -9,37 +9,11 @@ const { h } = window.__xmc.preact;
 const { useState, useEffect, useCallback } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
+// 2026-05-26: consolidated onto lib/api.js. See memory_identity.js
+// header note for why. Arg order is (path, body, token).
 // B-344: see memory_identity.js — same one-level-too-shallow bug.
-import { apiGet } from "../../lib/api.js";
+import { apiGet, apiPost, apiPut } from "../../lib/api.js";
 import { toast } from "../../lib/toast.js";
-
-async function apiPut(path, token, body) {
-  const url = path + (token ? `?token=${encodeURIComponent(token)}` : "");
-  const res = await fetch(url, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body || {}),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.error || data.ok === false) {
-    throw new Error(data.error || `HTTP ${res.status}`);
-  }
-  return data;
-}
-
-async function apiPost(path, token, body) {
-  const url = path + (token ? `?token=${encodeURIComponent(token)}` : "");
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body || {}),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.error || data.ok === false) {
-    throw new Error(data.error || `HTTP ${res.status}`);
-  }
-  return data;
-}
 
 function todayIso() {
   const d = new Date();
@@ -102,11 +76,15 @@ export function NotesTab({ token }) {
     if (!active) return;
     setBusy(true);
     try {
-      await apiPost(`/api/v2/memory/${encodeURIComponent(active)}`, token, {
-        content: draft,
-        description: desc.trim() || undefined,
-        tags: _parseTags(tags),
-      });
+      await apiPost(
+        `/api/v2/memory/${encodeURIComponent(active)}`,
+        {
+          content: draft,
+          description: desc.trim() || undefined,
+          tags: _parseTags(tags),
+        },
+        token,
+      );
       setPristine(draft);
       setPristineMeta({ desc, tags });
       toast.success(`已保存 ${active}`);
@@ -124,11 +102,15 @@ export function NotesTab({ token }) {
     if (!name.endsWith(".md")) name += ".md";
     setBusy(true);
     try {
-      await apiPost(`/api/v2/memory/${encodeURIComponent(name)}`, token, {
-        content: `# ${name.replace(/\.md$/, "")}\n\n`,
-        description: newDesc.trim() || undefined,
-        tags: _parseTags(newTags),
-      });
+      await apiPost(
+        `/api/v2/memory/${encodeURIComponent(name)}`,
+        {
+          content: `# ${name.replace(/\.md$/, "")}\n\n`,
+          description: newDesc.trim() || undefined,
+          tags: _parseTags(newTags),
+        },
+        token,
+      );
       toast.success(`已创建 ${name}`);
       setNewName("");
       setNewDesc("");
@@ -317,7 +299,11 @@ export function JournalTab({ token }) {
   const onSave = async () => {
     setBusy(true);
     try {
-      await apiPut(`/api/v2/journal/${encodeURIComponent(activeDate)}`, token, { content: draft });
+      await apiPut(
+        `/api/v2/journal/${encodeURIComponent(activeDate)}`,
+        { content: draft },
+        token,
+      );
       setPristine(draft);
       toast.success(`已保存 ${activeDate} 日记`);
       load();

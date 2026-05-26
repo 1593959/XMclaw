@@ -37,6 +37,15 @@ class Message:
     # roles. Empty tuple = plain text-only message (default,
     # backwards-compatible).
     images: tuple[str, ...] = ()
+    # 2026-05-26: extended-thinking / reasoning text. Set on
+    # assistant-role messages when the prior LLM hop emitted a
+    # thinking block (Anthropic) or ``reasoning_content`` (DeepSeek
+    # V4 / MiniMax / Moonshot reasoning models). The translator
+    # re-emits it on the next hop so the model sees its own prior
+    # reasoning — DeepSeek-V4 thinking mode 400s without this echo.
+    # Empty string for non-thinking turns / providers.
+    thinking: str = ""
+    thinking_signature: str = ""
 
 
 __all__ = ["Message"]

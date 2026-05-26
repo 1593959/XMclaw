@@ -17,37 +17,16 @@ const html = window.__xmc.htm.bind(h);
 // fallback returns the index HTML and the browser rejects the
 // import as MIME-mismatched. The matching pages just hadn't been
 // opened until B-341/B-342 work surfaced the bug.
-import { apiGet } from "../../lib/api.js";
+// 2026-05-26: consolidated onto lib/api.js. Pre-fix three sibling
+// panels (this one, memory_notes_journal, memory_providers) each
+// duplicated apiPut/apiPost with subtly different signatures
+// (local: (path, token, body); lib: (path, body, token)). Pulling
+// in from lib means a single error-handling path + uniform
+// TokenNotReadyError behaviour. Note the arg order swap at every
+// callsite below.
+import { apiGet, apiPost, apiPut } from "../../lib/api.js";
 import { toast } from "../../lib/toast.js";
 import { confirmDialog } from "../../lib/dialog.js";
-
-async function apiPut(path, token, body) {
-  const url = path + (token ? `?token=${encodeURIComponent(token)}` : "");
-  const res = await fetch(url, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body || {}),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.error || data.ok === false) {
-    throw new Error(data.error || `HTTP ${res.status}`);
-  }
-  return data;
-}
-
-async function apiPost(path, token, body) {
-  const url = path + (token ? `?token=${encodeURIComponent(token)}` : "");
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body || {}),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.error || data.ok === false) {
-    throw new Error(data.error || `HTTP ${res.status}`);
-  }
-  return data;
-}
 
 export function IdentityTab({ token }) {
   const [state, setState] = useState({ status: "loading", data: null, error: null });
@@ -97,9 +76,11 @@ export function IdentityTab({ token }) {
     if (!active) return;
     setBusy(true);
     try {
-      await apiPut(`/api/v2/profiles/active/${encodeURIComponent(active)}`, token, {
-        content: draft,
-      });
+      await apiPut(
+        `/api/v2/profiles/active/${encodeURIComponent(active)}`,
+        { content: draft },
+        token,
+      );
       toast.success(`已保存 ${active} — 下一轮对话生效`);
       load();
     } catch (e) {
@@ -118,7 +99,7 @@ export function IdentityTab({ token }) {
     if (!ok) return;
     setBusy(true);
     try {
-      const r = await apiPost("/api/v2/profiles/active/dedupe", token, {});
+      const r = await apiPost("/api/v2/profiles/active/dedupe", {}, token);
       const removed = (r.files || []).reduce((acc, f) => acc + (f.removed_lines || 0), 0);
       toast.success(`整理完成 — 删除 ${removed} 行重复内容`);
       load();

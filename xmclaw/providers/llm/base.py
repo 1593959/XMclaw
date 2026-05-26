@@ -95,6 +95,17 @@ class LLMResponse:
     # report a hit rate + actual token savings.
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
+    # 2026-05-26: extended-thinking / reasoning content from this hop.
+    # Anthropic exposes ``thinking`` blocks (signed); OpenAI-shape
+    # providers (DeepSeek V4 / MiniMax M2 / Moonshot / Qwen reasoning)
+    # surface it as ``reasoning_content``. Stored here so the hop
+    # loop can build the next-hop assistant Message with the thinking
+    # block echoed back — DeepSeek-V4 thinking mode hard-requires
+    # this echo or it 400s on hop ≥ 2.
+    thinking: str = ""
+    # Anthropic-only: signature accompanying the thinking block.
+    # OpenAI-shape providers don't sign — left empty.
+    thinking_signature: str = ""
 
 
 @dataclass(frozen=True, slots=True)

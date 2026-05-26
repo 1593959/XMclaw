@@ -350,7 +350,33 @@ class OpenAILLM(LLMProvider):
                     content_str = content_str.replace(
                         CACHE_BREAKPOINT_MARKER, "\n\n",
                     )
-            entry: dict[str, Any] = {"role": m.role, "content": content_str}
+            # 2026-05-26: echo thinking on assistant messages.
+            # DeepSeek V4 thinking mode hard-requires the prior
+            # reasoning to be passed back or it 400s with
+            # "content[].thinking in the thinking mode must be passed
+            # back to the API". The error phrasing ``content[].``
+            # tells us the shape: ``content`` becomes a block list
+            # with a ``{type: thinking, thinking: ...}`` entry
+            # (Anthropic-compatible). We BOTH set top-level
+            # ``reasoning_content`` (matches DeepSeek docs' description
+            # of the response shape) AND emit the block in content,
+            # because providers vary on which one they validate.
+            thinking_text = (
+                m.thinking if (m.role == "assistant" and getattr(m, "thinking", "")) else ""
+            )
+            if thinking_text:
+                blocks: list[dict[str, Any]] = [{
+                    "type": "thinking",
+                    "thinking": thinking_text,
+                }]
+                if content_str:
+                    blocks.append({"type": "text", "text": content_str})
+                entry = {"role": m.role, "content": blocks}
+                # Also stamp reasoning_content for providers that read
+                # it from the top level (per DeepSeek response docs).
+                entry["reasoning_content"] = thinking_text
+            else:
+                entry = {"role": m.role, "content": content_str}
             if m.tool_calls:
                 entry["tool_calls"] = [
                     translator.encode_to_provider(tc) for tc in m.tool_calls
@@ -608,6 +634,11 @@ class OpenAILLM(LLMProvider):
             kwargs["tools"] = tool_defs
 
         text_parts: list[str] = []
+        # 2026-05-26: accumulate thinking/reasoning chunks so the
+        # final LLMResponse carries them. Previously discarded after
+        # the on_thinking_chunk callback — DeepSeek V4 thinking mode
+        # then 400'd on the next hop ("thinking must be passed back").
+        thinking_parts: list[str] = []
         # Tool-call assembly: deltas arrive index-by-index, accumulate by index.
         tool_acc: dict[int, dict[str, Any]] = {}
         prompt_tokens = 0
@@ -639,7 +670,36 @@ class OpenAILLM(LLMProvider):
         # and the in-loop ``cancel.is_set()`` check never reached.
         # Stop button now actually works mid-call.
         from xmclaw.providers.llm.streaming_utils import start_cancel_watchdog
-        _cancel_watchdog = start_cancel_watchdog(cancel, stream.aclose)
+
+        # 2026-05-26: defensive resolver. Some OpenAI-compat SDK
+        # versions (DeepSeek's pinned older fork in particular) return
+        # an AsyncStream that lacks ``aclose`` — accessing the attr
+        # raised AttributeError BEFORE the watchdog even started,
+        # killing the whole turn with no useful diagnostic. Fall back
+        # in order:
+        #   1. .aclose()  (modern openai-python)
+        #   2. .close()   (older shim)
+        #   3. response.close() if exposed
+        #   4. no-op coroutine — degrade to "stop button might lag
+        #      by one chunk" rather than crash the turn.
+        async def _close_stream() -> None:
+            for attr in ("aclose", "close"):
+                fn = getattr(stream, attr, None)
+                if fn is not None:
+                    res = fn()
+                    if hasattr(res, "__await__"):
+                        await res
+                    return
+            # Last-ditch: try the underlying response object.
+            resp_obj = getattr(stream, "response", None)
+            if resp_obj is not None:
+                close_fn = getattr(resp_obj, "aclose", None) or getattr(resp_obj, "close", None)
+                if close_fn is not None:
+                    res = close_fn()
+                    if hasattr(res, "__await__"):
+                        await res
+
+        _cancel_watchdog = start_cancel_watchdog(cancel, _close_stream)
 
         async for chunk in stream:
             # B-39: bail mid-stream when the WS-side cancel event fires.
@@ -683,7 +743,28 @@ class OpenAILLM(LLMProvider):
                             if not (isinstance(think_delta, str) and think_delta):
                                 think_delta = extra_bag.get(attr)
                             if isinstance(think_delta, str) and think_delta:
+                                thinking_parts.append(think_delta)
                                 await on_thinking_chunk(think_delta)
+                                break
+                    else:
+                        # 2026-05-26: even when no on_thinking_chunk
+                        # callback is wired we still need to accumulate
+                        # thinking so the LLMResponse can echo it
+                        # back. DeepSeek V4 thinking mode hard-
+                        # requires this on subsequent hops.
+                        extra_bag2: dict[str, Any] = {}
+                        try:
+                            me2 = getattr(delta, "model_extra", None)
+                            if isinstance(me2, dict):
+                                extra_bag2.update(me2)
+                        except Exception:  # noqa: BLE001
+                            pass
+                        for attr in ("reasoning_content", "reasoning", "thinking"):
+                            d = getattr(delta, attr, None)
+                            if not (isinstance(d, str) and d):
+                                d = extra_bag2.get(attr)
+                            if isinstance(d, str) and d:
+                                thinking_parts.append(d)
                                 break
                     content = getattr(delta, "content", None)
                     if content:
@@ -811,6 +892,9 @@ class OpenAILLM(LLMProvider):
             # when the provider doesn't surface them).
             cache_creation_input_tokens=cache_creation_input_tokens,
             cache_read_input_tokens=cache_read_input_tokens,
+            # 2026-05-26: thinking accumulated from the stream so
+            # hop_loop can echo it back on the next assistant turn.
+            thinking="".join(thinking_parts),
         )
 
     @property

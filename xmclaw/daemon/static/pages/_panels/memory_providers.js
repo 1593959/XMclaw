@@ -12,7 +12,9 @@ const { h } = window.__xmc.preact;
 const { useState, useEffect, useCallback } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
-import { apiGet } from "../../lib/api.js";
+// 2026-05-26: consolidated onto lib/api.js. See memory_identity.js
+// header note for why. Arg order is (path, body, token).
+import { apiGet, apiPost } from "../../lib/api.js";
 import { toast } from "../../lib/toast.js";
 import { confirmDialog } from "../../lib/dialog.js";
 // B-323 follow-up: ProvidersTab's 5 sub-cards live in their own files
@@ -27,21 +29,6 @@ import {
   ProviderSwitcher,
   WriteProviderHelp,
 } from "./memory_providers_switcher.js";
-
-
-async function apiPost(path, token, body) {
-  const url = path + (token ? `?token=${encodeURIComponent(token)}` : "");
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body || {}),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.error || data.ok === false) {
-    throw new Error(data.error || `HTTP ${res.status}`);
-  }
-  return data;
-}
 
 
 // Same shape as the helper in Memory.js — diagnose apiGet failure
@@ -205,7 +192,10 @@ export function ProvidersTab({ token }) {
     });
     if (!ok) return;
     try {
-      const r = await apiPost(`/api/v2/memory/dream/restore/${encodeURIComponent(name)}`, token, {});
+      const r = await apiPost(
+        `/api/v2/memory/dream/restore/${encodeURIComponent(name)}`,
+        {}, token,
+      );
       if (r.ok) {
         toast.success(`已还原（前一份 MEMORY.md 备份为 ${r.pre_restore_backup}）`);
         loadBackups();
@@ -225,7 +215,7 @@ export function ProvidersTab({ token }) {
     if (!ok) return;
     setDreamRunning(true);
     try {
-      const res = await apiPost("/api/v2/memory/dream/run", token, {});
+      const res = await apiPost("/api/v2/memory/dream/run", {}, token);
       if (res.ok) {
         toast.success(`压缩完成 — ${res.before_chars} → ${res.after_chars} 字符`);
         reload();
@@ -254,7 +244,7 @@ export function ProvidersTab({ token }) {
     setEmbSaving(true);
     try {
       const r = await apiPost(
-        "/api/v2/memory/embedding/configure", token, embForm,
+        "/api/v2/memory/embedding/configure", embForm, token,
       );
       if (r.ok) {
         toast.success("已保存 — 重启 daemon 生效");
@@ -275,7 +265,7 @@ export function ProvidersTab({ token }) {
     if (!content) return;
     setPinBusy(true);
     try {
-      await apiPost("/api/v2/memory/pinned", token, { content });
+      await apiPost("/api/v2/memory/pinned", { content }, token);
       setPinDraft("");
       apiGet("/api/v2/memory/pinned", token)
         .then((d) => setPinned(Array.isArray(d.items) ? d.items : []))
@@ -322,7 +312,7 @@ export function ProvidersTab({ token }) {
     setPickerSaving(true);
     try {
       const r = await apiPost(
-        "/api/v2/memory/relevant_picker/configure", token, pickerForm,
+        "/api/v2/memory/relevant_picker/configure", pickerForm, token,
       );
       if (r.ok) {
         toast.success("已保存 — 重启 daemon 生效");
@@ -342,9 +332,11 @@ export function ProvidersTab({ token }) {
     if (!newProvider || newProvider === selected) return;
     setBusy(true);
     try {
-      const r = await apiPost("/api/v2/memory/providers/switch", token, {
-        provider: newProvider,
-      });
+      const r = await apiPost(
+        "/api/v2/memory/providers/switch",
+        { provider: newProvider },
+        token,
+      );
       if (r.ok) {
         setSelected(newProvider);
         toast.success(

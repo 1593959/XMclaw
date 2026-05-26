@@ -484,3 +484,144 @@ async def test_b320_complete_surfaces_cache_tokens() -> None:
     resp = await llm.complete([Message(role="user", content="hi")])
     assert resp.cache_creation_input_tokens == 80
     assert resp.cache_read_input_tokens == 900
+
+
+# 2026-05-26: DeepSeek V4 thinking-mode echo-back
+
+
+def test_thinking_echoed_as_content_block_and_top_level() -> None:
+    """Assistant messages with ``thinking`` set must emit content as
+    a block list with a ``thinking`` block AND a top-level
+    ``reasoning_content`` field. DeepSeek V4 thinking mode 400s
+    without this echo (``content[].thinking in the thinking mode
+    must be passed back to the API``)."""
+    msgs = OpenAILLM._messages_to_openai([
+        Message(role="user", content="hi"),
+        Message(
+            role="assistant",
+            content="Hello there.",
+            thinking="The user said hi. I should reply warmly.",
+        ),
+        Message(role="user", content="and what now?"),
+    ])
+    # User messages unaffected.
+    assert msgs[0]["content"] == "hi"
+    assert msgs[2]["content"] == "and what now?"
+    # Assistant entry has block-list content + top-level
+    # reasoning_content.
+    asst = msgs[1]
+    assert isinstance(asst["content"], list)
+    types = [b.get("type") for b in asst["content"]]
+    assert "thinking" in types
+    assert "text" in types
+    thinking_block = next(b for b in asst["content"] if b["type"] == "thinking")
+    assert "user said hi" in thinking_block["thinking"]
+    assert asst["reasoning_content"] == thinking_block["thinking"]
+
+
+def test_assistant_without_thinking_stays_plain_string() -> None:
+    """Back-compat: assistant messages with no thinking field must
+    keep emitting ``content`` as a plain string (the historical
+    shape that every other test pins). No reasoning_content
+    leakage on non-thinking turns."""
+    msgs = OpenAILLM._messages_to_openai([
+        Message(role="user", content="hi"),
+        Message(role="assistant", content="Hello there."),
+    ])
+    asst = msgs[1]
+    assert asst["content"] == "Hello there."
+    assert "reasoning_content" not in asst
+
+
+def test_assistant_thinking_with_tool_calls() -> None:
+    """Assistant turn with BOTH thinking and tool calls — both must
+    survive translation. (DeepSeek thinking-mode reasoning often
+    precedes a tool call; if we drop either side the next hop
+    400s or the tool dispatch breaks.)"""
+    from xmclaw.core.ir import ToolCall, ToolCallShape
+    tc = ToolCall(
+        id="t1", name="bash", args={"command": "ls"},
+        provenance=ToolCallShape.OPENAI_TOOL.value,
+    )
+    msgs = OpenAILLM._messages_to_openai([
+        Message(role="user", content="run ls"),
+        Message(
+            role="assistant",
+            content="",
+            thinking="Plan: invoke bash with `ls`.",
+            tool_calls=(tc,),
+        ),
+    ])
+    asst = msgs[1]
+    assert isinstance(asst["content"], list)
+    assert any(b.get("type") == "thinking" for b in asst["content"])
+    assert asst.get("tool_calls"), "tool_calls dropped"
+    assert asst["reasoning_content"].startswith("Plan:")
+
+
+def test_streaming_capture_records_thinking_in_response() -> None:
+    """The streaming consume loop must accumulate reasoning_content
+    chunks into ``LLMResponse.thinking`` so hop_loop can echo them
+    on the next hop. Pre-fix the chunks were only fired into the
+    on_thinking_chunk callback and discarded after that."""
+    import asyncio
+    from xmclaw.providers.llm.openai import OpenAILLM
+    from xmclaw.providers.llm.base import LLMResponse
+
+    class _FakeChunk:
+        def __init__(self, content="", reasoning_content="", finish_reason=None):
+            self.choices = [_FakeChoice(content, reasoning_content, finish_reason)]
+            self.usage = None
+
+    class _FakeChoice:
+        def __init__(self, content, reasoning_content, finish_reason):
+            self.delta = _FakeDelta(content, reasoning_content)
+            self.finish_reason = finish_reason
+
+    class _FakeDelta:
+        def __init__(self, content, reasoning_content):
+            self.content = content or None
+            self.reasoning_content = reasoning_content or None
+            self.tool_calls = None
+        @property
+        def model_extra(self):
+            return {}
+
+    class _FakeStream:
+        def __init__(self, chunks):
+            self._chunks = chunks
+        def __aiter__(self):
+            self._it = iter(self._chunks)
+            return self
+        async def __anext__(self):
+            try:
+                return next(self._it)
+            except StopIteration:
+                raise StopAsyncIteration
+        async def aclose(self):
+            return None
+
+    class _FakeCompletions:
+        async def create(self, **_):
+            return _FakeStream([
+                _FakeChunk(reasoning_content="reason A "),
+                _FakeChunk(reasoning_content="reason B."),
+                _FakeChunk(content="Hello, "),
+                _FakeChunk(content="world.", finish_reason="stop"),
+            ])
+
+    class _FakeChat:
+        completions = _FakeCompletions()
+
+    class _FakeClient:
+        chat = _FakeChat()
+
+    llm = OpenAILLM(api_key="x", model="deepseek-v4-pro")
+    llm._client = _FakeClient()
+
+    async def _run():
+        return await llm.complete_streaming([Message(role="user", content="hi")])
+    resp = asyncio.run(_run())
+    assert isinstance(resp, LLMResponse)
+    assert resp.thinking == "reason A reason B."
+    assert resp.content == "Hello, world."
