@@ -418,3 +418,78 @@ async def test_upsert_persona_manual_rejects_empty_basename():
     svc = _make_service()
     with pytest.raises(ValueError):
         await svc.upsert_persona_manual("", "anything")
+
+
+# ── 2026-05-26 (audit A2): user edits inside auto section preserved ──
+
+
+@pytest.mark.asyncio
+async def test_render_preserves_user_bullets_inside_auto_section(
+    tmp_path: Path,
+):
+    """User edits within the ``## Auto-extracted`` heading but
+    OUTSIDE the daemon-managed marker block must survive renders.
+
+    Pre-fix the renderer wiped everything between the heading and
+    the next ``## `` heading — any bullet a user added to correct
+    a fact in place got blown away on the next fact write. Now
+    only the content between ``<!-- XMC-AUTO-EXTRACTED:BEGIN -->``
+    and ``<!-- XMC-AUTO-EXTRACTED:END -->`` is replaced.
+    """
+    target = tmp_path / "USER.md"
+    # First render: produces the markers automatically.
+    svc = _make_service()
+    await svc.remember(
+        "user prefers brief answers",
+        kind="preference", scope="user", bucket="user_preference",
+    )
+    await render_persona_file(svc, tmp_path, "USER.md")
+    first = target.read_text(encoding="utf-8")
+    assert ":BEGIN " in first
+    assert ":END -->" in first
+
+    # User manually adds a bullet UNDER ## Auto-extracted but
+    # OUTSIDE the marker block — simulates them correcting a fact
+    # in place via a text editor. Markers are slugged per section
+    # so we find the first END marker and insert after its line.
+    end_idx = first.find(":END -->")
+    assert end_idx > 0
+    end_line_break = first.find("\n", end_idx) + 1
+    edited = (
+        first[:end_line_break]
+        + "- 2026-05-26 USER-NOTE: my real name is 何鹏\n"
+        + first[end_line_break:]
+    )
+    target.write_text(edited, encoding="utf-8")
+
+    # Add a new fact and re-render — user's bullet should survive.
+    await svc.remember(
+        "user codes in Python",
+        kind="preference", scope="user", bucket="user_preference",
+    )
+    await render_persona_file(svc, tmp_path, "USER.md")
+    after = target.read_text(encoding="utf-8")
+
+    # User's manual bullet survived.
+    assert "USER-NOTE: my real name is 何鹏" in after
+    # New auto fact landed.
+    assert "user codes in Python" in after
+    # Markers still present.
+    assert ":BEGIN " in after
+    assert ":END -->" in after
+
+
+@pytest.mark.asyncio
+async def test_render_first_pass_emits_markers(tmp_path: Path):
+    """A fresh file (no markers yet) gets the markers on first
+    render so subsequent renders use the marker-aware code path."""
+    svc = _make_service()
+    await svc.remember(
+        "fact A",
+        kind="preference", scope="user", bucket="user_preference",
+    )
+    await render_persona_file(svc, tmp_path, "USER.md")
+    body = (tmp_path / "USER.md").read_text(encoding="utf-8")
+    assert ":BEGIN " in body
+    assert ":END -->" in body
+    assert "fact A" in body

@@ -2043,6 +2043,15 @@ def create_app(
                     # substitute the rendered prompt as the user
                     # message. Unknown slash commands fall through
                     # to the existing channel_slash_router path.
+                    # 2026-05-26 (audit C2): when a markdown command's
+                    # frontmatter declares ``allowed-tools``, enforce
+                    # it as a per-turn tools_allowlist. Pre-fix the
+                    # field was parsed and stored on ``MarkdownCommand``
+                    # but never consumed — silently ignored. That's
+                    # both a security gap (operator thinks the cmd is
+                    # tool-scoped, agent has full access) and a UX
+                    # gap (no way to actually scope a slash command).
+                    md_tools_allowlist: "set[str] | frozenset[str] | None" = None
                     if content.startswith("/") and " " not in content[:32]:
                         # Possible slash command — try the markdown
                         # registry. Single token (or token+args
@@ -2069,6 +2078,19 @@ def create_app(
                                     f"[Slash command /{head}]\n\n"
                                     f"{_rendered.rendered}"
                                 )
+                                # C2: extract the allowed-tools set so
+                                # the agent_loop sees only those tools
+                                # this turn. Cleaned tokens (Bash → bash,
+                                # punctuation trimmed) so config
+                                # ``Bash(git add:*)`` matches the
+                                # registered tool name ``bash``.
+                                _raw_allowed = tuple(_md_cmd.allowed_tools)
+                                if _raw_allowed:
+                                    md_tools_allowlist = frozenset(
+                                        _t.split("(")[0].strip().lower()
+                                        for _t in _raw_allowed
+                                        if _t and _t.strip()
+                                    )
                         except Exception:  # noqa: BLE001 — fall through on error
                             pass
                     elif content.startswith("/"):
@@ -2152,6 +2174,9 @@ def create_app(
                                             tuple(user_image_paths)
                                             if user_image_paths else None
                                         ),
+                                        # C2: per-turn tool-allowlist
+                                        # from /<command> frontmatter.
+                                        tools_allowlist=md_tools_allowlist,
                                     )
                                 else:
                                     await active_agent.run_turn(
@@ -2162,6 +2187,7 @@ def create_app(
                                             tuple(user_image_paths)
                                             if user_image_paths else None
                                         ),
+                                        tools_allowlist=md_tools_allowlist,
                                     )
                         except Exception as exc:  # noqa: BLE001
                             # Surface a structured error frame so the

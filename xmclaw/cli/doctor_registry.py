@@ -2380,6 +2380,69 @@ class EvolutionPipelineCheck(DoctorCheck):
         )
 
 
+# 2026-05-26 (audit A3): swallowed-exception observability check.
+# Surfaces the in-process counter from
+# ``xmclaw.utils.swallowed_exceptions`` so operators can spot
+# silent failure modes (the chat-image NameError was hidden inside
+# a broad ``except Exception`` for weeks; nobody grepped the WARN
+# log line). Local-only: reads ``xmclaw.utils.swallowed_exceptions``
+# snapshot from the doctor's own process. To inspect a running
+# daemon's counters, hit the matching status endpoint instead.
+class SwallowedExceptionsCheck(DoctorCheck):
+    id: ClassVar[str] = "swallowed_exceptions"
+    name: ClassVar[str] = "Swallowed exceptions"
+
+    # Threshold above which a single (scope, exc) pair is flagged
+    # as "this is firing too often, look at it". 5 was picked
+    # because the image bug was firing 1-2x per turn for weeks;
+    # at 5 the doctor would have flagged it within ~3 turns of
+    # use, well before "weeks of silent failure".
+    THRESHOLD: ClassVar[int] = 5
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        try:
+            from xmclaw.utils.swallowed_exceptions import hottest, total
+        except Exception as exc:  # noqa: BLE001 — defensive
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"counter unavailable in this process: {exc}",
+            )
+        grand_total = total()
+        if grand_total == 0:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="no swallowed exceptions recorded this uptime",
+            )
+        top = hottest(limit=5)
+        offenders = [t for t in top if t[2] >= self.THRESHOLD]
+        if not offenders:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=(
+                    f"{grand_total} total swallow(s) across "
+                    f"{len(top)} site(s) — all below threshold "
+                    f"({self.THRESHOLD})"
+                ),
+            )
+        details = "; ".join(
+            f"{scope}={cls}x{n}" for scope, cls, n in offenders
+        )
+        return CheckResult(
+            name=self.name, ok=False,
+            detail=(
+                f"{len(offenders)} site(s) over threshold "
+                f"({self.THRESHOLD}): {details}"
+            ),
+            advisory=(
+                "These swallows are firing too often. Grep the "
+                "daemon log for the matching scope name to see the "
+                "specific exceptions. Pattern: WARN ``<scope>...err=...``. "
+                "Each top offender is a candidate for narrower "
+                "except clauses or proper error propagation."
+            ),
+        )
+
+
 def build_default_registry() -> DoctorRegistry:
     """Return a registry populated with the built-in checks.
 
@@ -2413,4 +2476,5 @@ def build_default_registry() -> DoctorRegistry:
     reg.register(EvolutionPathHygieneCheck())  # Epic #24 Phase 1
     reg.register(EvolutionRuntimeCheck())      # Epic #24 Phase 1
     reg.register(EvolutionPipelineCheck())     # Epic #24 Phase 4.3
+    reg.register(SwallowedExceptionsCheck())   # 2026-05-26 audit A3
     return reg

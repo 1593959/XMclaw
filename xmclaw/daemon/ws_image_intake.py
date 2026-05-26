@@ -119,6 +119,14 @@ def save_user_frame_images(
             log.debug("ws.user_frame: saved image to %s", out)
         except Exception as exc:  # noqa: BLE001 — skip bad blobs
             log.warning("ws.user_frame: image save failed: %s", exc)
+            # 2026-05-26 (audit A3): count this swallow so the doctor
+            # check can surface "this is firing every turn" before
+            # it becomes a multi-week silent failure (chat-b3c614bc).
+            try:
+                from xmclaw.utils.swallowed_exceptions import record as _swallow
+                _swallow("ws_image_intake.save", exc)
+            except Exception:  # noqa: BLE001
+                pass
             continue
 
     log.debug("ws.user_frame: user_image_paths=%s", out_paths)

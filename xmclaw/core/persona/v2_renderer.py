@@ -227,6 +227,25 @@ def _cluster_representatives(facts: list[Any]) -> list[Any]:
     return survivors
 
 
+def _section_markers(header: str) -> tuple[str, str]:
+    """Return per-section BEGIN/END marker strings.
+
+    Keyed by the section header so multiple auto sections in the
+    same file (e.g. USER.md has both ``## Auto-identity`` and
+    ``## Auto-extracted preferences``) get independent marker blocks
+    that don't collide.
+    """
+    # Strip leading "## " + sanitise for HTML-comment safety.
+    slug = header.lstrip("# ").strip()
+    slug_safe = "".join(c if c.isalnum() else "-" for c in slug).strip("-")
+    begin = (
+        f"<!-- XMC-AUTO-EXTRACTED:{slug_safe}:BEGIN — "
+        f"daemon-managed, edit between markers loses on next render -->"
+    )
+    end = f"<!-- XMC-AUTO-EXTRACTED:{slug_safe}:END -->"
+    return begin, end
+
+
 def _replace_section(text: str, header: str, new_body: str) -> str:
     """Replace the ``header`` section's body (everything up to the
     next ``## `` heading or EOF) with ``new_body``.
@@ -236,11 +255,44 @@ def _replace_section(text: str, header: str, new_body: str) -> str:
     + a single placeholder line so the user sees the section exists
     but isn't populated yet.
     """
+    begin_marker, end_marker = _section_markers(header)
     rendered_section = (
-        f"{header}\n{new_body}\n"
+        f"{header}\n{begin_marker}\n{new_body}\n{end_marker}\n"
         if new_body
-        else f"{header}\n_(nothing extracted yet)_\n"
+        else
+        f"{header}\n{begin_marker}\n_(nothing extracted yet)_\n{end_marker}\n"
     )
+
+    # 2026-05-26 (audit A2): preserve user-authored content inside
+    # the auto section.
+    #
+    # Old behaviour: replace EVERYTHING between ``header`` and the
+    # next ``## `` — wiped any bullet the user manually added under
+    # the auto-extracted heading (e.g. correcting a wrong fact in
+    # place).
+    #
+    # New behaviour: emit BEGIN/END markers around the daemon-
+    # managed bullets, KEYED BY SECTION HEADER so multiple auto
+    # sections in the same file don't collide. Future renders only
+    # touch what's between THIS section's markers. Anything the
+    # user adds above / below the markers (but still under the
+    # same heading) is preserved. Pattern mirrors the existing
+    # ``<!-- XMC-AUTO-TOOLS:BEGIN -->`` block in TOOLS.md.
+    if begin_marker in text and end_marker in text:
+        begin_idx = text.find(begin_marker)
+        end_idx = text.find(end_marker, begin_idx + 1)
+        if end_idx > begin_idx:
+            begin_line_start = text.rfind("\n", 0, begin_idx) + 1
+            after_end = end_idx + len(end_marker)
+            if after_end < len(text) and text[after_end] == "\n":
+                after_end += 1
+            new_block = (
+                f"{begin_marker}\n{new_body}\n{end_marker}\n"
+                if new_body
+                else
+                f"{begin_marker}\n_(nothing extracted yet)_\n{end_marker}\n"
+            )
+            return text[:begin_line_start] + new_block + text[after_end:]
 
     lines = text.splitlines()
     out: list[str] = []
@@ -269,6 +321,11 @@ def _replace_section(text: str, header: str, new_body: str) -> str:
         result += rendered_section
         return result
     return "\n".join(out).rstrip("\n") + "\n"
+
+
+# Markers are now computed per section by ``_section_markers``
+# (defined above), keyed by header slug so multiple auto sections in
+# the same file don't collide.
 
 
 # ── Public API ───────────────────────────────────────────────────

@@ -52,10 +52,15 @@ Highest priority wins on name collision (project > user).
 Safety
 ======
 
-The ``allowed-tools`` frontmatter field is RECORDED but not yet
-enforced — XMclaw's tool allowlist mechanism (Wave-32+ Plan-mode
-gate, B-332 ``tools_allowlist``) can later read it to scope what
-the rendered prompt's downstream LLM call is allowed to do.
+The ``allowed-tools`` frontmatter field is parsed AND enforced
+(2026-05-26 audit C2). When a slash command's frontmatter declares
+``allowed-tools: bash, file_read, web_fetch``, the WS handler in
+``daemon/app.py`` extracts the names, cleans the tokens (stripping
+``Bash(git add:*)`` style arguments → ``bash``), and passes the
+resulting frozenset as ``tools_allowlist`` to ``handle`` /
+``run_turn``. The agent_loop then filters its tool catalogue to
+just those names for this single turn. The next turn (without a
+slash command) sees the full catalogue again.
 
 Shell escapes (``!``cmd``) ARE executed — that's the whole point of
 the format. They run with the daemon's process privileges in the

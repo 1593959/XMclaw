@@ -272,6 +272,16 @@ async def _write_facts_to_memory(
                     "post_sampling.v2_dual_write_failed kind=%s err=%s",
                     kind, exc,
                 )
+                # 2026-05-26 (audit A3): every fact write that gets
+                # swallowed here is a silently-lost user fact. Count
+                # so doctor can flag persistent failures.
+                try:
+                    from xmclaw.utils.swallowed_exceptions import (
+                        record as _swallow,
+                    )
+                    _swallow("post_sampling.v2_write", exc)
+                except Exception:  # noqa: BLE001
+                    pass
 
     # Phase 3a (2026-05-16): when v2 actually accepted writes for
     # this batch, SKIP the legacy memory.db dual-write entirely.
