@@ -65,8 +65,42 @@ const KIND_COLOR = {
 // ── Sub-component: status banner ──────────────────────────────────
 
 
-function StatusBanner({ status }) {
+function StatusBanner({ status, onRetry }) {
   if (!status) return null;
+  // 2026-05-26 (followup): three distinct failure modes used to all
+  // render as "Memory v2 未启用" — confusing both for users (the
+  // pairing-token hotfix surfaced this) and operators trying to
+  // debug. Now we distinguish:
+  //   * transportError → 401 / network / token-not-ready / generic
+  //   * enabled === false  → real config flag off (503 + body
+  //                          ``error: memory_v2_disabled``)
+  //   * healthy === false  → service constructed but degraded
+  if (status.transportError) {
+    return html`
+      <div
+        class="xmc-h-error"
+        role="alert"
+        style="margin:.6rem 0;padding:.7rem .9rem;border:1px solid var(--color-destructive);border-radius:6px;background:color-mix(in srgb, var(--color-destructive) 8%, transparent)"
+      >
+        <strong>无法加载 Memory v2 状态</strong>
+        <div style="font-size:.85rem;margin-top:.3rem;line-height:1.5">
+          ${status.reason || "（未知错误）"}
+        </div>
+        <div style="font-size:.78rem;margin-top:.35rem;color:var(--xmc-fg-muted)">
+          常见原因：daemon 未启动 · 配对 token 不一致 ·
+          /api/v2/pair 返回了非 hex 格式。检查 daemon 日志 +
+          浏览器控制台。
+        </div>
+        ${onRetry ? html`
+          <button
+            type="button"
+            onClick=${onRetry}
+            style="margin-top:.5rem;padding:.3rem .7rem;font-size:.8rem"
+          >重试</button>
+        ` : null}
+      </div>
+    `;
+  }
   if (status.enabled === false) {
     return html`
       <div
@@ -295,8 +329,16 @@ export function FactsV2Tab({ token }) {
         setFacts(r.facts);
       }
     } catch (e) {
-      // 503 → v2 disabled, status banner will catch it
-      if (!String(e?.message || "").includes("503")) {
+      // 503 → v2 disabled, status banner will catch it. Use the
+      // structured ``err.status`` rather than substring-matching
+      // the message (which broke when error formatting changed).
+      // TokenNotReadyError is also silent — the auth slice will
+      // catch up and re-trigger refresh via the callback dep.
+      const silent = (
+        e?.status === 503
+        || e?.name === "TokenNotReadyError"
+      );
+      if (!silent) {
         toast.error("加载失败: " + (e?.message || e));
       }
     } finally {
@@ -309,7 +351,31 @@ export function FactsV2Tab({ token }) {
       const r = await apiGet("/api/v2/memory/v2/status", token);
       setStatus(r);
     } catch (e) {
-      setStatus({ enabled: false, reason: String(e?.message || e) });
+      // 2026-05-26 (followup): distinguish "v2 config flag is off"
+      // (server's deliberate 503 with body.error === memory_v2_disabled)
+      // from every other failure mode (401, network, token-not-
+      // ready, generic). Pre-fix all of these collapsed to
+      // ``enabled: false`` which surfaced as "Memory v2 未启用" —
+      // the same misleading banner the user hit after the F1
+      // hotfix landed, even though the service was fine.
+      const isDisabled = (
+        e?.status === 503
+        && e?.body?.error === "memory_v2_disabled"
+      );
+      if (isDisabled) {
+        setStatus({ enabled: false, reason: e?.body?.detail || "" });
+      } else if (e?.name === "TokenNotReadyError") {
+        // Token still propagating from the auth slice — don't
+        // render anything yet. The useCallback dep on ``token``
+        // will trigger another refresh once the value lands.
+        setStatus(null);
+      } else {
+        setStatus({
+          transportError: true,
+          reason: String(e?.message || e),
+          status: e?.status || null,
+        });
+      }
     }
   }, [token]);
 
@@ -395,7 +461,7 @@ export function FactsV2Tab({ token }) {
 
   return html`
     <section>
-      <${StatusBanner} status=${status} />
+      <${StatusBanner} status=${status} onRetry=${refreshStatus} />
       ${status && status.enabled
         ? html`
             <${ViewToggle} />
