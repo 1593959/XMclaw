@@ -323,6 +323,23 @@ _INDIRECT_INJECTION = [
         r"refusals|guardrails|policies)\b",
         Severity.HIGH, "indirect_injection",
     ),
+    _compile(
+        "fake_system_update",
+        r"\b(?:you\s+have\s+been\s+(?:\w+\s+)*(?:updated|upgraded|patched)\s+to|"
+        r"new\s+(?:\w+\s+)*policy|updated\s+(?:\w+\s+)*guidelines|revised\s+(?:\w+\s+)*instructions)\b",
+        Severity.MEDIUM, "indirect_injection",
+    ),
+    _compile(
+        "consensus_hijacking",
+        r"\b(?:all\s+other\s+(?:agents?|models?|AIs?)\s+agree|the\s+consensus\s+is|"
+        r"every\s+(?:agent|model|AI)\s+(?:has\s+)?(?:agreed|confirmed))\b",
+        Severity.MEDIUM, "indirect_injection",
+    ),
+    _compile(
+        "delegate_to_attacker",
+        r"\b(?:delegate|forward|route|send)\s+(?:this|that|the|all)?\s*(?:task|request|message|conversation)\s+(?:to|toward)\s+(?:the\s+)?(?:attacker|hacker|adversary|malicious)\b",
+        Severity.HIGH, "indirect_injection",
+    ),
 ]
 
 # "tool_hijack" — tool results that try to trick the agent into
@@ -384,6 +401,103 @@ _TOOL_HIJACK = [
 # positive. \b word boundaries don't apply to CJK so they're omitted;
 # IGNORECASE is harmless for CJK chars and matters for the Latin
 # fragments (XMclaw / DAN / API key) that mix in.
+_C2_PROMPTWARE = [
+    # C2 / Brainworm-style promptware — attacks that exist entirely as
+    # natural language within the agent's context window (Hermes threat_patterns
+    # §C2 / Brainworm-style promptware port). These anchor on C2-specific
+    # vocabulary rather than bossy English, keeping false positives low.
+    _compile(
+        "c2_node_registration",
+        r"\bregister\s+(as\s+)?a?\s*node\b",
+        Severity.HIGH, "c2_promptware",
+    ),
+    _compile(
+        "c2_heartbeat",
+        r"\b(heartbeat|beacon|check[\s\-]?in)\s+(to|with)\s+",
+        Severity.HIGH, "c2_promptware",
+    ),
+    _compile(
+        "c2_task_pull",
+        r"\bpull\s+(down\s+)?(?:new\s+)?task(?:ing|s)?\b",
+        Severity.HIGH, "c2_promptware",
+    ),
+    _compile(
+        "c2_network_connect",
+        r"\bconnect\s+to\s+the\s+network\b",
+        Severity.MEDIUM, "c2_promptware",
+    ),
+    _compile(
+        "c2_forced_action",
+        r"\byou\s+must\s+(?:\w+\s+){0,3}(register|connect|report|beacon)\b",
+        Severity.HIGH, "c2_promptware",
+    ),
+    _compile(
+        "c2_anti_forensic_oneliner",
+        r"\bonly\s+use\s+one[\s\-]?liners?\b",
+        Severity.HIGH, "c2_promptware",
+    ),
+    _compile(
+        "c2_anti_forensic_disk",
+        r"\bnever\s+(?:\w+\s+)*(?:create|write)\s+(?:\w+\s+)*(?:script|file)\s+(?:\w+\s+)*disk\b",
+        Severity.HIGH, "c2_promptware",
+    ),
+    _compile(
+        "c2_env_unset_agent",
+        r"\bunset\s+\w*(?:CLAUDE|CODEX|HERMES|AGENT|OPENAI|ANTHROPIC)\w*",
+        Severity.HIGH, "c2_promptware",
+    ),
+    _compile(
+        "c2_known_framework",
+        r"\b(?:praxis|cobalt\s*strike|sliver|havoc|mythic|metasploit|brainworm)\b",
+        Severity.HIGH, "c2_promptware",
+    ),
+    _compile(
+        "c2_explicit",
+        r"\bc2\s+(?:server|channel|infrastructure|beacon)\b",
+        Severity.HIGH, "c2_promptware",
+    ),
+    _compile(
+        "c2_command_and_control",
+        r"\bcommand\s+and\s+control\b",
+        Severity.HIGH, "c2_promptware",
+    ),
+]
+
+_SUPPLY_CHAIN = [
+    # Supply-chain attacks: download-and-execute, unpinned dependencies,
+    # runtime resource fetching (Hermes skills_guard.py §supply_chain port).
+    _compile(
+        "curl_pipe_shell",
+        r"\bcurl\s+[^|\n]*?\|\s*(?:bash|sh|zsh|python|perl|node|ruby)\b",
+        Severity.HIGH, "supply_chain",
+    ),
+    _compile(
+        "wget_pipe_shell",
+        r"\bwget\s+[^|\n]*?-O-\s*\|\s*(?:bash|sh)\b",
+        Severity.HIGH, "supply_chain",
+    ),
+    _compile(
+        "unpinned_pip_install",
+        r"\bpip\s+install\s+(?!-r\s)(?!.*==)",
+        Severity.MEDIUM, "supply_chain",
+    ),
+    _compile(
+        "unpinned_npm_install",
+        r"\bnpm\s+install\s+(?!.*@\d)",
+        Severity.MEDIUM, "supply_chain",
+    ),
+    _compile(
+        "runtime_git_clone",
+        r"\bgit\s+clone\s+",
+        Severity.LOW, "supply_chain",
+    ),
+    _compile(
+        "runtime_docker_pull",
+        r"\bdocker\s+pull\s+",
+        Severity.LOW, "supply_chain",
+    ),
+]
+
 _CHINESE_INJECTION = [
     # instruction_override 中文版.  Patterns require BOTH the action verb
     # (忽略/忘记/覆盖) AND at least one scope qualifier (上面/之前/所有/
@@ -445,8 +559,12 @@ _CHINESE_INJECTION = [
     ),
     _compile(
         "zh_no_restrictions",
-        r"(?:解除|去除|移除|绕过)(?:所有|任何)?(?:的)?"
-        r"(?:限制|约束|安全|规则|过滤|审查|防护)",
+        # Must match the full phrase "解除所有安全限制" rather than
+        # stopping at "安全" so the span is at least as long as
+        # ``zh_disregard_safety`` (which overlaps the same text).
+        r"(?:解除|去除|移除|绕过)(?:所有|任何)?(?:的)?\s*"
+        r"(?:安全\s*(?:限制|约束|规则|过滤|审查|防护)|"
+        r"限制|约束|规则|过滤|审查|防护)",
         Severity.HIGH, "jailbreak",
     ),
     _compile(
@@ -507,10 +625,72 @@ _CHINESE_INJECTION = [
 ]
 
 
+def _load_yaml_patterns() -> list[_PatternSpec]:
+    """Load YAML rules from ``security/rules/*.yaml`` and convert to
+    :class:`_PatternSpec` so they participate in :func:`scan_text`.
+
+    Pre-B-350 the ``prompt_injection.yaml`` rules (ported from QwenPaw)
+    were only wired into ``tool_guard`` — they never scanned free-form
+    text such as tool results, memory recall, or web-fetch bodies. This
+    helper bridges the gap: YAML rules without per-tool scoping
+    (``tools`` / ``params`` empty) are treated as universal text patterns.
+
+    ``rule_loader.Severity.CRITICAL`` is mapped to ``HIGH`` because
+    ``prompt_scanner`` maxes out at HIGH; the caller (``apply_policy``)
+    still sees the full severity in the event payload via the YAML rule
+    metadata when we later enrich findings.
+    """
+    try:
+        from xmclaw.security.rule_loader import (
+            Severity as YamlSeverity,
+            load_rules,
+        )
+    except Exception:  # noqa: BLE001
+        return []
+
+    try:
+        yaml_rules = load_rules()
+    except Exception:  # noqa: BLE001
+        return []
+
+    severity_map = {
+        YamlSeverity.LOW: Severity.LOW,
+        YamlSeverity.MEDIUM: Severity.MEDIUM,
+        YamlSeverity.HIGH: Severity.HIGH,
+        YamlSeverity.CRITICAL: Severity.HIGH,
+    }
+
+    specs: list[_PatternSpec] = []
+    for rule in yaml_rules:
+        # Tool-scoped rules belong to tool_guard, not the text scanner.
+        if rule.tools or rule.params:
+            continue
+        # Binary-only rules don't apply to text.
+        if rule.file_types == ["binary"]:
+            continue
+        # Manifest-only rules are for SKILL.md metadata, not free-form text.
+        if rule.file_types == ["manifest"]:
+            continue
+        if not rule.patterns:
+            continue
+        sev = severity_map.get(rule.severity, Severity.MEDIUM)
+        for pat in rule.patterns:
+            specs.append(
+                _PatternSpec(
+                    pattern_id=rule.id,
+                    regex=pat,
+                    severity=sev,
+                    category=rule.category,
+                )
+            )
+    return specs
+
+
 _ALL_PATTERNS: tuple[_PatternSpec, ...] = tuple(
     _INSTRUCTION_OVERRIDE + _ROLE_FORGERY + _EXFILTRATION
     + _JAILBREAK + _INDIRECT_INJECTION + _TOOL_HIJACK
-    + _CHINESE_INJECTION,
+    + _C2_PROMPTWARE + _SUPPLY_CHAIN + _CHINESE_INJECTION
+    + _load_yaml_patterns()
 )
 
 
@@ -583,7 +763,11 @@ def scan_text(
             ))
 
     # Sort by span so the redactor can walk them deterministically.
-    findings.sort(key=lambda f: f.span)
+    # B-350: deduplicate findings whose spans overlap. When multiple
+    # patterns hit the same text (e.g. YAML rule + inline rule both
+    # match "ignore previous instructions") we keep the longest span
+    # and drop the shorter one so the redactor doesn't corrupt indices.
+    findings = _deduplicate_findings(findings)
 
     invisibles = len(_INVISIBLE_CHARS.findall(text))
     return ScanResult(
@@ -591,6 +775,58 @@ def scan_text(
         invisible_chars=invisibles,
         scanned_length=len(text),
     )
+
+
+# B-350: when two findings overlap the same text the redactor must
+# only see one of them or the right-to-left splice corrupts indices.
+# Priority: longer span wins; same-length ties are broken by category
+# severity (jailbreak > instruction_override > role_forgery > …) so
+# the most actionable label is preserved.
+_CATEGORY_PRIORITY: dict[str, int] = {
+    "jailbreak": 0,
+    "instruction_override": 1,
+    "role_forgery": 2,
+    "exfiltration": 3,
+    "indirect_injection": 4,
+    "tool_hijack": 5,
+    "c2_promptware": 6,
+    "supply_chain": 7,
+}
+
+
+def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
+    """Remove findings whose spans overlap with a more important one.
+
+    Priority:
+      1. Longer span wins (covers more of the attack surface).
+      2. Same-length ties → lower ``_CATEGORY_PRIORITY`` value wins
+         (jailbreak beats indirect_injection).
+      3. Exact ties → first-encountered wins (stable sort).
+
+    Restores span-ascending order before returning so the redactor
+    can walk left-to-right deterministically.
+    """
+    if len(findings) <= 1:
+        return findings
+    # Sort by (length descending, category priority ascending, original order).
+    by_len = sorted(
+        findings,
+        key=lambda f: (
+            -(f.span[1] - f.span[0]),  # longer first
+            _CATEGORY_PRIORITY.get(f.category, 99),  # more severe first
+        ),
+    )
+    kept: list[Finding] = []
+    for f in by_len:
+        if any(
+            f.span[0] < k.span[1] and f.span[1] > k.span[0]
+            for k in kept
+        ):
+            continue
+        kept.append(f)
+    # Restore span-ascending order for downstream consumers.
+    kept.sort(key=lambda f: f.span)
+    return kept
 
 
 def redact(text: str, result: ScanResult) -> str:

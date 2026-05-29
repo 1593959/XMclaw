@@ -34,6 +34,7 @@ from xmclaw.core.persona.loader import (
     load_persona_files,
     sanitize_for_prompt,
 )
+from xmclaw.core.persona.platform_guidance import platform_guidance
 from xmclaw.core.persona.provider_guidance import provider_guidance
 from xmclaw.core.persona.templates import DEFAULT_IDENTITY_LINE
 
@@ -150,6 +151,7 @@ def build_system_prompt(
     tool_names: Iterable[str] | None = None,
     use_cache: bool = True,
     backend_label: str | None = None,
+    channel_name: str | None = None,
 ) -> str:
     """Assemble the full system prompt for one turn.
 
@@ -186,6 +188,7 @@ def build_system_prompt(
         _fingerprint(files),
         tools_tuple,
         backend_label or "",
+        channel_name or "",
     )
     if use_cache and cache_key in _CACHE:
         return _CACHE[cache_key]
@@ -229,7 +232,14 @@ def build_system_prompt(
     if _guidance:
         parts.append(_guidance)
 
-    # Slot 3: platform hint.
+    # Slot 2.6: channel-specific rendering guidance.
+    # Tells the model how to format replies for the current IM platform
+    # (char limits, mention syntax, card payloads, etc.).
+    _plat = platform_guidance(channel_name)
+    if _plat:
+        parts.append(_plat)
+
+    # Slot 3: platform hint (OS / shell).
     parts.append(_platform_hint())
 
     # Slot 4: tools digest.

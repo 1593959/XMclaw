@@ -414,81 +414,105 @@ def has_bootstrap_pending(
     return False
 
 
-# Heuristic for prompt-injection: filter known threat tokens from
-# user-edited persona files before they land in the system prompt.
-# Mirrors hermes `prompt_builder.py:36-71` — the user is welcome to write
-# anything in SOUL.md but we don't want a malicious external skill that
-# wrote into MEMORY.md to redefine the agent.
-_CONTEXT_THREAT_PATTERNS: tuple[str, ...] = (
-    "ignore previous instructions",
-    "disregard your instructions",
-    "ignore your system prompt",
-    "you are no longer xmclaw",
-    "from now on you are",
-    "<|system|>",
-    "<|im_start|>",
-    "</system>",
+# B-350: Upgraded from the pre-B-79 naive 8-string blacklist to a
+# regex-based fast-path that mirrors ``prompt_scanner._INVISIBLE_CHARS``
+# and covers the same threat surface with line-level removal (so the
+# rest of the persona file stays readable).
+import re as _re
+
+_INVISIBLE_CHARS_RE = _re.compile(
+    "["
+    "\u200b-\u200f"    # zero-width joiners, LTR/RTL marks
+    "\u202a-\u202e"    # bidi embedding / override
+    "\u2060-\u2064"    # word joiner family
+    "\u2066-\u2069"    # isolate family
+    "]",
 )
 
-_INVISIBLE_CHARS = "​‌‍﻿‮‭"
+# Fast-path regexes — run line-by-line before the heavy prompt_scanner.
+# Each entry is (compiled_regex, pattern_id, description).
+_CONTEXT_THREAT_PATTERNS: tuple[tuple[_re.Pattern[str], str, str], ...] = (
+    # Classic instruction override
+    (_re.compile(r"\bignore\s+(?:(?:all|the|any|every)\s+)?(?:previous|prior|above|earlier)\s+(?:instruction|message|prompt|direction|rule|constraint)s?\b", _re.IGNORECASE), "ignore_previous", "instruction override"),
+    (_re.compile(r"\bdisregard\s+(?:all|the|any|everything|your)\s+(?:previous|prior|above|earlier)\s+(?:instruction|message|prompt|context|rule)s?\b", _re.IGNORECASE), "disregard_prior", "instruction override"),
+    (_re.compile(r"\bforget\s+(?:all|your|the|any)\s+(?:previous|prior|above|earlier)?\s*(?:instruction|message|prompt|rule|constraint)s?\b", _re.IGNORECASE), "forget_instructions", "instruction override"),
+    (_re.compile(r"\boverride\s+(?:the\s+)?(?:system|previous)\s+(?:prompt|instruction|message|rule)s?\b", _re.IGNORECASE), "override_system", "instruction override"),
+    # Role hijack / identity override
+    (_re.compile(r"\byou\s+are\s+(?:no\s+longer\s+)?(?:not\s+)?(?:xmclaw|小爪|主人)\b", _re.IGNORECASE), "identity_override", "role hijack"),
+    (_re.compile(r"\bfrom\s+now\s+on\s+you\s+(?:are|will\s+be|should\s+act\s+as)\b", _re.IGNORECASE), "from_now_on", "role hijack"),
+    # Chat-template forgery
+    (_re.compile(r"<\|im_start\|>\s*(?:system|developer|assistant)\b", _re.IGNORECASE), "openai_im_start", "role forgery"),
+    (_re.compile(r"<\s*system\s*>[\s\S]{0,400}?<\s*/\s*system\s*>", _re.IGNORECASE), "xml_system", "role forgery"),
+    (_re.compile(r"</system>", _re.IGNORECASE), "xml_system_close", "role forgery"),
+    (_re.compile(r"\[INST\][\s\S]{0,400}?\[/INST\]", _re.IGNORECASE), "inst_block", "role forgery"),
+    # Exfiltration
+    (_re.compile(r"\b(?:reveal|show|print|send|email|upload|post|leak|dump|exfiltrate)\s+(?:your|the|all)?\s*(?:system\s+prompt|api[_\s]*key|password|credential|secret|token|private\s+key|\.env|env\s+var|environment\s+variable)s?\b", _re.IGNORECASE), "reveal_secrets", "exfiltration"),
+    # Jailbreak
+    (_re.compile(r"\b(?:enter|enable|activate|switch\s+to)\s+(?:developer|dev|admin|god|debug|unrestricted|jailbreak|root)\s+mode\b", _re.IGNORECASE), "developer_mode", "jailbreak"),
+    (_re.compile(r"\b(?:you\s+are\s+now\s+|act\s+as\s+|pretend\s+to\s+be\s+|roleplay\s+as\s+)?DAN\b", _re.IGNORECASE), "dan_mode", "jailbreak"),
+    # C2 / promptware (B-350)
+    (_re.compile(r"\bregister\s+(as\s+)?a?\s*node\b", _re.IGNORECASE), "c2_node_registration", "C2/promptware"),
+    (_re.compile(r"\b(heartbeat|beacon|check[\s\-]?in)\s+(to|with)\s+", _re.IGNORECASE), "c2_heartbeat", "C2/promptware"),
+    (_re.compile(r"\b(?:praxis|cobalt\s*strike|sliver|havoc|mythic|metasploit|brainworm)\b", _re.IGNORECASE), "c2_framework", "C2/promptware"),
+    # Chinese counterparts
+    (_re.compile(r"忽略(?:(?:上面|之前|以前|前面|所有|全部|你的|你)\s*的?\s*){1,4}(?:指令|提示|规则|要求|约束|系统提示|系统消息|对话)", _re.IGNORECASE), "zh_ignore_previous", "instruction override"),
+    (_re.compile(r"(?:进入|启用|激活|切换到|开启)(?:开发者|调试|debug|管理员|admin|root|无限制|越狱|jailbreak|god|上帝)模式", _re.IGNORECASE), "zh_developer_mode", "jailbreak"),
+)
 
 
 def sanitize_for_prompt(text: str) -> str:
     """Strip prompt-injection markers from user-edited context.
 
-    Two layers (B-79):
+    Three layers (B-79 → B-350):
 
-    1. The legacy 8-pattern English blacklist + zero-width-char strip
-       (this module's ``_CONTEXT_THREAT_PATTERNS`` + ``_INVISIBLE_CHARS``).
-       Cheap, runs first.
-    2. The full :mod:`xmclaw.security.prompt_scanner` — 70+ patterns
-       covering Chinese phrasing, jailbreaks, indirect injection, tool
-       hijack, and ``<|system|>``-style role markers. Used to be wired
-       only on the SOURCE_TOOL_RESULT / SOURCE_MEMORY_RECALL paths in
-       agent_loop; persona files (which are equally untrusted when
-       restored from a backup, pulled from a tampered branch, or
-       cross-written by another agent) had nothing.
+    1. **Zero-width / bidi character strip** — same Unicode range as
+       ``prompt_scanner._INVISIBLE_CHARS_RE`` so persona files can't
+       hide instructions with invisible characters.
+    2. **Fast-path regex scan** — 18 compiled patterns covering English
+       and Chinese instruction overrides, role forgery, exfiltration,
+       jailbreak, and C2/promptware markers. Runs line-by-line so the
+       rest of the file stays readable; matching lines are replaced
+       with a ``[XMclaw: line removed …]`` notice.
+    3. **Deep scan** — the full :mod:`xmclaw.security.prompt_scanner`
+       (now 60+ patterns including C2, supply-chain, and YAML rules).
+       Findings at HIGH or above are redacted in place via
+       :func:`redact`, leaving ``[redacted:<pattern_id>]`` placeholders
+       so the user knows something was flagged rather than silently
+       swallowed.
 
-    Findings at HIGH or above are redacted in place via
-    :func:`xmclaw.security.prompt_scanner.redact` — they leave a
-    ``[redacted:<pattern_id>]`` placeholder, surfacing to the user
-    that something looked off rather than silently swallowing it.
     LOW / MEDIUM hits pass through (a SOUL.md line discussing the
     *concept* of prompt injection should not break the prompt).
     """
-    out = text
-    for ch in _INVISIBLE_CHARS:
-        out = out.replace(ch, "")
-    lower = out.lower()
-    for marker in _CONTEXT_THREAT_PATTERNS:
-        if marker in lower:
-            # Replace the line containing it with a notice. Keeps the rest
-            # of the file usable.
-            new_lines = []
-            for line in out.split("\n"):
-                if marker in line.lower():
-                    new_lines.append(
-                        "[XMclaw: line removed — looked like a prompt-injection marker]"
-                    )
-                else:
-                    new_lines.append(line)
-            out = "\n".join(new_lines)
-            lower = out.lower()
+    out = _INVISIBLE_CHARS_RE.sub("", text)
 
-    # B-79: defer-import to avoid a hard core->security edge at module
-    # load time (security is a peer subpackage, not a dependency of
-    # core). The import is cheap; this function is only called during
-    # persona assembly, not on every turn.
+    # Layer 2: fast-path line-by-line removal.
+    lines = out.split("\n")
+    new_lines: list[str] = []
+    for line in lines:
+        line_stripped = line.strip()
+        flagged = False
+        for rx, pid, desc in _CONTEXT_THREAT_PATTERNS:
+            if rx.search(line_stripped):
+                new_lines.append(
+                    f"[XMclaw: line removed — {desc} ({pid})]"
+                )
+                flagged = True
+                break
+        if not flagged:
+            new_lines.append(line)
+    out = "\n".join(new_lines)
+
+    # Layer 3: deep scan via prompt_scanner.
+    # Defer-import to avoid a hard core->security edge at module load time.
     try:
         from xmclaw.security.prompt_scanner import (
             Severity, redact, scan_text,
         )
-    except Exception:  # noqa: BLE001 — security pkg load failure must
-        # not break the agent's ability to read its own SOUL.md.
+    except Exception:  # noqa: BLE001
         return out
     try:
         result = scan_text(out, severity_threshold=Severity.HIGH)
-    except Exception:  # noqa: BLE001 — same reason as above.
+    except Exception:  # noqa: BLE001
         return out
     if not result.any_findings:
         return out
