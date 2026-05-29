@@ -90,11 +90,23 @@ export function applyStreamingEvent(chat, envelope, helpers) {
       if (chat.cancelledTurnIds && chat.cancelledTurnIds.has(id)) {
         return chat;
       }
+      // B-DEDUP: WS reconnect or bus retry can deliver the same chunk
+      // twice. Skip duplicates by (turn_id, seq) so the user never
+      // sees "hellohello" stutter.
+      const seq = payload.seq;
+      const chunkKey = seq != null ? `${id}:${seq}` : null;
+      const seen = chat._seenChunks || {};
+      if (chunkKey && seen[chunkKey]) {
+        return chat;
+      }
+      const nextSeen = chunkKey
+        ? { ...seen, [chunkKey]: true }
+        : seen;
       const delta = typeof payload.delta === "string"
         ? payload.delta
         : typeof payload.content === "string"
           ? payload.content
-          : "";
+          : ""
       // B-89: stop any prior abandoned-streaming bubble before this
       // turn starts producing chunks. Some providers skip llm_request
       // and start straight from llm_chunk, so we need this guard here
@@ -104,6 +116,7 @@ export function applyStreamingEvent(chat, envelope, helpers) {
       if (idx === -1) {
         return {
           ...chat,
+          _seenChunks: nextSeen,
           pendingAssistantId: id,
           messages: cleaned.concat({
             id,
@@ -122,6 +135,7 @@ export function applyStreamingEvent(chat, envelope, helpers) {
       }
       return {
         ...chat,
+        _seenChunks: nextSeen,
         pendingAssistantId: id,
         messages: upsertById(cleaned, id, (m) => ({
           ...m,
@@ -151,6 +165,16 @@ export function applyStreamingEvent(chat, envelope, helpers) {
       if (chat.cancelledTurnIds && chat.cancelledTurnIds.has(id)) {
         return chat;
       }
+      // B-DEDUP: same seq-based dedup as llm_chunk.
+      const thinkSeq = payload.seq;
+      const thinkKey = thinkSeq != null ? `${id}:k:${thinkSeq}` : null;
+      const seen2 = chat._seenChunks || {};
+      if (thinkKey && seen2[thinkKey]) {
+        return chat;
+      }
+      const nextSeen2 = thinkKey
+        ? { ...seen2, [thinkKey]: true }
+        : seen2;
       const delta = typeof payload.delta === "string"
         ? payload.delta
         : "";
@@ -160,6 +184,7 @@ export function applyStreamingEvent(chat, envelope, helpers) {
       if (idx === -1) {
         return {
           ...chat,
+          _seenChunks: nextSeen2,
           pendingAssistantId: id,
           messages: cleaned.concat({
             id,
@@ -176,6 +201,7 @@ export function applyStreamingEvent(chat, envelope, helpers) {
       }
       return {
         ...chat,
+        _seenChunks: nextSeen2,
         pendingAssistantId: id,
         messages: upsertById(cleaned, id, (m) => ({
           ...m,
