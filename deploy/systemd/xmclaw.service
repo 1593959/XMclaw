@@ -44,7 +44,7 @@ Environment=XMC_DATA_DIR=%h/.xmclaw
 
 # `xmclaw serve` runs the FastAPI app as PID 1 for this unit — no
 # background fork, no pidfile juggling, systemd owns the lifecycle.
-ExecStart=/usr/local/bin/xmclaw serve --host 127.0.0.1 --port 8765
+ExecStart=/usr/local/bin/xmclaw serve --host 127.0.0.1 --port 8766
 
 Restart=on-failure
 RestartSec=5s

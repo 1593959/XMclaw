@@ -1345,7 +1345,7 @@ def create_app(
         ctx = DoctorContext(
             config_path=Path(target_path),
             host="127.0.0.1",
-            port=8765,
+            port=8766,
             probe_daemon=False,  # avoid recursing into our own /health
         )
         reg = build_default_registry()
@@ -1625,7 +1625,7 @@ def create_app(
 
     # ── /ui/ static files + root redirect ──
     # Phase 4.6: serve a single-page UI bundled with the package, so
-    # users can open `http://127.0.0.1:8765/` in a browser and get a
+    # users can open `http://127.0.0.1:8766/` in a browser and get a
     # working chat interface. The UI files live in
     # xmclaw/daemon/static and are not auth-gated — the WebSocket
     # the UI connects to still requires the pairing token.
@@ -1819,7 +1819,7 @@ def create_app(
         # B-355 (Sprint 1): Origin check. Defense-in-depth against
         # the OpenClaw "ClawJacked" CVE family — a malicious page on
         # http://evil.com running in the user's browser does
-        # ``new WebSocket("ws://127.0.0.1:8765/agent/v2/foo")``.
+        # ``new WebSocket("ws://127.0.0.1:8766/agent/v2/foo")``.
         # Without the Origin check the daemon would happily upgrade
         # if the attacker can leak the pairing token (XSS in any
         # page user visits). With it, we reject the upgrade before
@@ -2320,7 +2320,7 @@ def create_app(
                     history_len = 0
                     if active_agent is not None:
                         try:
-                            res = active_agent.pop_last_turn(session_id)
+                            res = await active_agent.pop_last_turn(session_id)
                             removed = int(res.get("removed", 0))
                             history_len = int(res.get("history_len", 0))
                         except Exception:  # noqa: BLE001

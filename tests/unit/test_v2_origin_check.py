@@ -31,8 +31,8 @@ def test_b355_null_origin_allowed() -> None:
 
 
 def test_b355_loopback_127_allowed() -> None:
-    """The Web UI itself sends ``http://127.0.0.1:8765``. Must allow."""
-    assert _origin_allowed("http://127.0.0.1:8765", {})
+    """The Web UI itself sends ``http://127.0.0.1:8766``. Must allow."""
+    assert _origin_allowed("http://127.0.0.1:8766", {})
 
 
 def test_b355_loopback_localhost_allowed() -> None:
@@ -43,7 +43,7 @@ def test_b355_loopback_localhost_allowed() -> None:
 
 def test_b355_loopback_ipv6_allowed() -> None:
     """IPv6 loopback ``[::1]``. Must allow."""
-    assert _origin_allowed("http://[::1]:8765", {})
+    assert _origin_allowed("http://[::1]:8766", {})
 
 
 def test_b355_loopback_https_allowed() -> None:
@@ -64,7 +64,7 @@ def test_b355_lan_origin_rejected_by_default() -> None:
     """LAN origins are rejected unless explicitly opted in. A user
     on 192.168.x.x exposing the daemon non-loopback should know
     they need the allowlist."""
-    assert not _origin_allowed("http://192.168.1.10:8765", {})
+    assert not _origin_allowed("http://192.168.1.10:8766", {})
 
 
 def test_b355_https_external_rejected() -> None:
@@ -77,8 +77,8 @@ def test_b355_https_external_rejected() -> None:
 def test_b355_explicit_lan_origin_allowed_via_config() -> None:
     """Operator with intentional LAN exposure can allowlist via
     ``gateway.allowed_origins``."""
-    cfg = {"gateway": {"allowed_origins": ["http://192.168.1.10:8765"]}}
-    assert _origin_allowed("http://192.168.1.10:8765", cfg)
+    cfg = {"gateway": {"allowed_origins": ["http://192.168.1.10:8766"]}}
+    assert _origin_allowed("http://192.168.1.10:8766", cfg)
 
 
 def test_b355_allowlist_does_not_match_partial() -> None:
@@ -107,4 +107,4 @@ def test_b355_origin_case_insensitive_host() -> None:
     """Hostname comparison must be case-insensitive (RFC 3986
     says hostnames are case-insensitive)."""
     assert _origin_allowed("http://LOCALHOST:3000", {})
-    assert _origin_allowed("http://127.0.0.1:8765", {})  # already lowercase
+    assert _origin_allowed("http://127.0.0.1:8766", {})  # already lowercase

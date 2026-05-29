@@ -132,7 +132,7 @@ async def test_clear_session_drops_history() -> None:
     agent = AgentLoop(llm=llm, bus=InProcessEventBus())
 
     await agent.run_turn("s1", "remember this")
-    agent.clear_session("s1")
+    await agent.clear_session("s1")
     await agent.run_turn("s1", "new topic")
 
     # The second run's LLM call should see only [system, new_user]

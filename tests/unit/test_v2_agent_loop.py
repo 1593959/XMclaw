@@ -755,7 +755,7 @@ async def test_b202_hint_resets_on_clear_session() -> None:
     )
     agent = AgentLoop(llm=llm, bus=bus, tools=tools)
     await agent.run_turn("sess-b202-5", "为什么又错")
-    agent.clear_session("sess-b202-5")
+    await agent.clear_session("sess-b202-5")
     await agent.run_turn("sess-b202-5", "你看看，错了")
     await bus.drain()
 

@@ -771,11 +771,11 @@ def test_env_override_coerces_numbers() -> None:
     _apply_env_overrides(
         cfg,
         env={
-            "XMC__daemon__port": "8765",
+            "XMC__daemon__port": "8766",
             "XMC__llm__temperature": "0.25",
         },
     )
-    assert cfg["daemon"]["port"] == 8765
+    assert cfg["daemon"]["port"] == 8766
     assert cfg["llm"]["temperature"] == 0.25
 
 

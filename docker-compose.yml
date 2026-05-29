@@ -17,10 +17,10 @@ services:
     restart: unless-stopped
     # Publish to 127.0.0.1 by default — the daemon has no auth besides
     # the pairing token, so exposing it to 0.0.0.0 on a shared host is a
-    # footgun. Change to "8765:8765" intentionally if you know what
+    # footgun. Change to "8766:8766" intentionally if you know what
     # you're doing (and consider running behind a reverse proxy).
     ports:
-      - "127.0.0.1:8765:8765"
+      - "127.0.0.1:8766:8766"
     volumes:
       - xmclaw-data:/data
     environment:
@@ -30,7 +30,7 @@ services:
       XMC__llm__anthropic__api_key: "${ANTHROPIC_API_KEY:-}"
       XMC__llm__openai__api_key: "${OPENAI_API_KEY:-}"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/health',timeout=2).status==200 else 1)"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8766/health',timeout=2).status==200 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3

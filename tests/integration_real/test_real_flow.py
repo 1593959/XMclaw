@@ -28,8 +28,8 @@ from pathlib import Path
 import websockets
 
 TOKEN = "0742a465d518053bc9a013940065f50d1d3801a49d093ea653421df662766f2f"
-BASE = "http://127.0.0.1:8765"
-WS = "ws://127.0.0.1:8765"
+BASE = "http://127.0.0.1:8766"
+WS = "ws://127.0.0.1:8766"
 
 
 def _ascii(s: str, n: int = 200) -> str:

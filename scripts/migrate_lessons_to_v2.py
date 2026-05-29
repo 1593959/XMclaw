@@ -51,7 +51,7 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 
-DEFAULT_BASE = "http://127.0.0.1:8765"
+DEFAULT_BASE = "http://127.0.0.1:8766"
 DEFAULT_DB = Path.home() / ".xmclaw" / "v2" / "memory.db"
 DEFAULT_TOKEN_FILE = Path.home() / ".xmclaw" / "v2" / "pairing_token.txt"
 

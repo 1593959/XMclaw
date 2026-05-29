@@ -111,7 +111,7 @@ def make_lifespan(
         # process runs under a different pid (often a different
         # python binary entirely). Result: ``xmclaw stop`` reads
         # the stale stub pid, finds it dead, declares "stopped" —
-        # leaving the real daemon orphaned, holding port 8765.
+        # leaving the real daemon orphaned, holding port 8766.
         #
         # Fix: when lifespan starts, overwrite the pid file with
         # ``os.getpid()``. By definition this is the process that
@@ -2355,7 +2355,7 @@ def make_lifespan(
                 # ~50s after every restart. User complained: '打开
                 # 慢, 容易崩' (the CLI's 60s health-wait fired before
                 # these finished, the operator re-ran ``xmclaw start``,
-                # zombie processes stacked on 8765 — see the
+                # zombie processes stacked on 8766 — see the
                 # 6666b1c hotfix that bumped wait_seconds to 180s and
                 # made daemon self-stamp pid).
                 #

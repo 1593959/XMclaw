@@ -14,7 +14,7 @@ Install once, configure, start:
 ```powershell
 # as Administrator
 choco install nssm   # or: scoop install nssm
-nssm install XMclaw "C:\Path\To\Python\Scripts\xmclaw.exe" "serve --host 127.0.0.1 --port 8765"
+nssm install XMclaw "C:\Path\To\Python\Scripts\xmclaw.exe" "serve --host 127.0.0.1 --port 8766"
 nssm set XMclaw AppEnvironmentExtra XMC_DATA_DIR=C:\ProgramData\XMclaw
 nssm set XMclaw AppStdout C:\ProgramData\XMclaw\logs\stdout.log
 nssm set XMclaw AppStderr C:\ProgramData\XMclaw\logs\stderr.log

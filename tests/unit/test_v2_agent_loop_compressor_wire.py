@@ -136,7 +136,7 @@ async def test_clear_session_resets_compressor_state() -> None:
 
     cc._state("s1").ineffective_count = 5
     cc._state("s1").previous_summary = "OLD"
-    agent.clear_session("s1")
+    await agent.clear_session("s1")
     assert "s1" not in cc._states
 
 

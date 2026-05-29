@@ -12,10 +12,10 @@
   <img src="https://img.shields.io/badge/Status-1.0%20stable-brightgreen?style=for-the-badge" alt="1.0 stable">
 </p>
 
-XMclaw is **not a chatbot**. It is a runtime that thinks, acts, remembers, and — when you enable it — **speaks up on its own**: calendar reminders, idle check-ins, stale-project nudges, scheduled daily briefings. It runs in a single Python daemon on `127.0.0.1:8765` — your data, your tools, your shell, your filesystem. Nothing leaves the box unless you ask.
+XMclaw is **not a chatbot**. It is a runtime that thinks, acts, remembers, and — when you enable it — **speaks up on its own**: calendar reminders, idle check-ins, stale-project nudges, scheduled daily briefings. It runs in a single Python daemon on `127.0.0.1:8766` — your data, your tools, your shell, your filesystem. Nothing leaves the box unless you ask.
 
 Reach it however suits the moment:
-- **Web UI** at `http://127.0.0.1:8765/ui/` — full chat + Dashboard + Settings (PWA-installable, mobile-responsive)
+- **Web UI** at `http://127.0.0.1:8766/ui/` — full chat + Dashboard + Settings (PWA-installable, mobile-responsive)
 - **CLI** — `xmclaw chat` for terminal-native, `xmclaw chat --plan` for approval-gated turns
 - **Feishu / Lark** — `enabled: true` + `app_id` in config and the daemon's bot relays everything through 飞书's WebSocket long-poll (no public IP needed). Group + DM + image inbound + slash commands (`/订阅` / `/状态` / `/日程` / `/任务`) ride the same AgentLoop as the web UI. Phone notifications come for free via 飞书's native push.
 - **Continuous voice** — one toggle in the web UI's "🔁 对话" mode and you're in a hands-free state machine: listen → submit → TTS reply → listen again. Energy-based VAD ships as a lib for noisy environments.
@@ -32,10 +32,10 @@ Use any model — Anthropic / OpenAI / MiniMax / Moonshot / DashScope / Qwen / �
 ```bash
 git clone https://github.com/1593959/XMclaw.git && cd XMclaw
 pip install -e .
-xmclaw start                  # daemon up on 127.0.0.1:8765
+xmclaw start                  # daemon up on 127.0.0.1:8766
 ```
 
-Then open `http://127.0.0.1:8765/ui/` — the web UI shows a **first-run setup banner** with three inline forms (LLM key · persona · embedding). Fill them in, restart, and you're talking to an agent that owns your machine.
+Then open `http://127.0.0.1:8766/ui/` — the web UI shows a **first-run setup banner** with three inline forms (LLM key · persona · embedding). Fill them in, restart, and you're talking to an agent that owns your machine.
 
 Prefer a wizard? `xmclaw onboard` walks the same three steps in the terminal.
 

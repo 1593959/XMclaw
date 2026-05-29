@@ -14,7 +14,7 @@ import typer
 from xmclaw.utils.i18n import _
 
 
-_DEFAULT_BASE_URL = os.environ.get("XMC_DAEMON_URL", "http://127.0.0.1:8765")
+_DEFAULT_BASE_URL = os.environ.get("XMC_DAEMON_URL", "http://127.0.0.1:8766")
 
 
 def _api(path: str) -> str:

@@ -33,6 +33,6 @@ def default_config_template() -> dict[str, Any]:
                 "default_model": "",
             },
         },
-        "gateway": {"host": "127.0.0.1", "port": 8765},
+        "gateway": {"host": "127.0.0.1", "port": 8766},
         "security": {"prompt_injection": "detect_only"},
     }

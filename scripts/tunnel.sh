@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # XMclaw — cloudflared tunnel helper (Linux / macOS / WSL, Wave 17).
 #
-# Exposes the local daemon (port 8765) via Cloudflare quick tunnel.
+# Exposes the local daemon (port 8766) via Cloudflare quick tunnel.
 # See scripts/tunnel.ps1 header for the why / when / security note.
 #
 # Install cloudflared first:
@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-PORT="${PORT:-8765}"
+PORT="${PORT:-8766}"
 HOST="${HOST:-127.0.0.1}"
 
 c=$'\033[36m'

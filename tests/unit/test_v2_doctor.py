@@ -415,6 +415,9 @@ def test_default_registry_builtin_check_order() -> None:
         "evolution_path_hygiene", "evolution_runtime",
         # Epic #24 Phase 4.3: 4-observer + LLM-extractor wiring scan.
         "evolution_pipeline",
+        # 2026-05-29 sync: doctor registry grew two more guards
+        # (audit batch 4 — Swallowed exceptions + UI vendor pinning).
+        "swallowed_exceptions", "vis_network_vendor",
     ]
 
 
@@ -481,7 +484,7 @@ def test_run_doctor_still_returns_old_check_result_type(tmp_path: Path) -> None:
     assert all(isinstance(r, CheckResult) for r in results)
     assert [r.name for r in results] == [
         "config", "config dead fields",
-        "llm", "tools", "workspace", "pairing", "port 8765",
+        "llm", "tools", "workspace", "pairing", "port 8766",
         "events_db", "memory_db", "memory_v1_retired", "intent_patterns_db",
         "memory_providers", "memory_provider_config",
         "memory_indexer", "persona_profile", "dream_cron",
@@ -492,6 +495,10 @@ def test_run_doctor_still_returns_old_check_result_type(tmp_path: Path) -> None:
         "evolution path hygiene", "evolution runtime",
         # Epic #24 Phase 4.3.
         "evolution pipeline wiring",
+        # 2026-05-29 sync: doctor registry grew two extra checks
+        # since this list was last touched — keep the pin tight
+        # so we notice the next time the registry grows again.
+        "Swallowed exceptions", "vis-network vendor",
     ]
 
 

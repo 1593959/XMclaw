@@ -177,9 +177,9 @@ def serve(
     port: int = typer.Option(
         0,
         help=(
-            "Port to bind. 0 = read XMC_DAEMON_PORT env (default 8765). "
-            "B-315: set explicitly (e.g. --port 8766) to run multiple "
-            "worktrees side-by-side without colliding on 8765."
+            "Port to bind. 0 = read XMC_DAEMON_PORT env (default 8766). "
+            "B-315: set explicitly (e.g. --port 8767) to run multiple "
+            "worktrees side-by-side without colliding."
         ),
     ),
     config: str = typer.Option(
@@ -233,15 +233,15 @@ def serve(
     setup_logging()
 
     # B-315: resolve port. --port 0 (default) → XMC_DAEMON_PORT env →
-    # 8765 fallback. Lets multiple worktrees coexist without colliding
-    # on 8765 by setting env per-worktree (e.g. ``XMC_DAEMON_PORT=8766
+    # 8766 fallback. Lets multiple worktrees coexist without colliding
+    # by setting env per-worktree (e.g. ``XMC_DAEMON_PORT=8767
     # xmclaw start``).
     if port == 0:
         import os as _os
         try:
-            port = int(_os.environ.get("XMC_DAEMON_PORT", "8765"))
+            port = int(_os.environ.get("XMC_DAEMON_PORT", "8766"))
         except ValueError:
-            port = 8765
+            port = 8766
 
     # Epic #13: persistent event log. Subscribers only see events after
     # the row is on disk, so a crash mid-publish can't silently desync the
@@ -466,7 +466,7 @@ def serve(
 @app.command()
 def start(
     host: str = typer.Option("127.0.0.1", help="Bind address."),
-    port: int = typer.Option(8765, help="Port to bind."),
+    port: int = typer.Option(8766, help="Port to bind."),
     config: str = typer.Option(
         "daemon/config.json", help="Path to config JSON.",
     ),
@@ -618,7 +618,7 @@ def trust(
 @app.command()
 def restart(
     host: str = typer.Option("127.0.0.1", help="Bind address."),
-    port: int = typer.Option(8765, help="Port to bind."),
+    port: int = typer.Option(8766, help="Port to bind."),
     config: str = typer.Option(
         "daemon/config.json", help="Path to config JSON.",
     ),
@@ -723,7 +723,7 @@ def tools(
 @app.command()
 def chat(
     url: str = typer.Option(
-        "ws://127.0.0.1:8765/agent/v2/{session_id}",
+        "ws://127.0.0.1:8766/agent/v2/{session_id}",
         help=(
             "Daemon WS URL. ``{session_id}`` in the URL is substituted "
             "by the chosen / generated session id."
@@ -841,7 +841,7 @@ def doctor(
         "daemon/config.json", help="Path to config JSON.",
     ),
     host: str = typer.Option("127.0.0.1", help="Daemon host to probe."),
-    port: int = typer.Option(8765, help="Daemon port to probe."),
+    port: int = typer.Option(8766, help="Daemon port to probe."),
     no_daemon_probe: bool = typer.Option(
         False, "--no-daemon-probe",
         help="Skip the HTTP health probe (offline mode).",

@@ -41,7 +41,7 @@ import websockets
 
 TOKEN_PATH = Path.home() / ".xmclaw" / "v2" / "pairing_token.txt"
 EVOLUTION_DIR = Path.home() / ".xmclaw" / "v2" / "evolution" / "evo-main"
-WS_BASE = "ws://127.0.0.1:8765/agent/v2"
+WS_BASE = "ws://127.0.0.1:8766/agent/v2"
 
 
 # ── scenarios ──────────────────────────────────────────────────────

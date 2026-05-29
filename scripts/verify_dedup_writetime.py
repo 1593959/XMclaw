@@ -29,7 +29,7 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 
-BASE = "http://127.0.0.1:8765"
+BASE = "http://127.0.0.1:8766"
 TOKEN_FILE = Path.home() / ".xmclaw" / "v2" / "pairing_token.txt"
 
 

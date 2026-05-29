@@ -541,10 +541,10 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
 
 **工作量**: 2-3 周  
 **验收标准**:
-- [ ] `curl -X POST http://localhost:8765/v1/chat/completions -d '{"model":"claude-sonnet-4","messages":[{"role":"user","content":"hi"}]}'` 返回正确 JSON
+- [ ] `curl -X POST http://localhost:8766/v1/chat/completions -d '{"model":"claude-sonnet-4","messages":[{"role":"user","content":"hi"}]}'` 返回正确 JSON
 - [ ] `stream=true` 时返回 SSE 格式 (`data: {...}\n\n`)
 - [ ] `tools` 参数传递正确，tool_calls 返回标准 OpenAI 格式
-- [ ] 与 `openai` Python SDK 兼容（`base_url=http://localhost:8765/v1`）
+- [ ] 与 `openai` Python SDK 兼容（`base_url=http://localhost:8766/v1`）
 - [ ] 与 Continue.dev / Cline / Cursor 兼容
 
 ---

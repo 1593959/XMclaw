@@ -40,7 +40,7 @@ class JarvisTUI(App[None]):  # type: ignore[misc]
     def __init__(
         self,
         *,
-        daemon_ws_url: str = "ws://127.0.0.1:8765/agent/v2/default",
+        daemon_ws_url: str = "ws://127.0.0.1:8766/agent/v2/default",
         session_id: str | None = None,
         agent_name: str = "Jarvis",
     ) -> None:

@@ -34,6 +34,7 @@ from typing import Any
 from fastapi import APIRouter
 from starlette.responses import JSONResponse
 
+from xmclaw.daemon.lifecycle import _resolve_python_executable
 from xmclaw.utils.log import get_logger
 from xmclaw.utils.paths import data_dir
 
@@ -156,7 +157,7 @@ def _resolve_relaunch_cmd() -> list[str] | None:
     xm = shutil.which("xmclaw")
     if xm:
         return [xm, "start"]
-    return [sys.executable, "-m", "xmclaw.cli.entry", "start"]
+    return [_resolve_python_executable(), "-m", "xmclaw.cli.entry", "start"]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -193,11 +194,12 @@ async def upgrade_xmclaw() -> JSONResponse:
         f"# xmclaw upgrade started @ {time.strftime('%Y-%m-%d %H:%M:%S')}\n",
     )
 
-    # ``sys.executable -m pip`` because the installed-as-script ``pip``
+    # ``python_exe -m pip`` because the installed-as-script ``pip``
     # may be in a different env than the daemon — using the daemon's own
     # interpreter guarantees we upgrade the env that's actually running
-    # XMclaw.
-    cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "xmclaw"]
+    # XMclaw. Use ``_resolve_python_executable()`` so we target the real
+    # python.exe, not a Windows launcher stub (see lifecycle.py).
+    cmd = [_resolve_python_executable(), "-m", "pip", "install", "--upgrade", "xmclaw"]
 
     try:
         log_fp = log_path.open("a", encoding="utf-8")

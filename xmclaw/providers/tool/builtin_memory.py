@@ -618,7 +618,10 @@ class BuiltinToolsMemoryMixin:
             )
 
         sid = call.session_id or "_default"
-        history = self._session_store.load(sid)
+        # B-PERF: offload SQLite read to thread so the event loop
+        # isn't blocked on disk I/O inside the tool invoke path.
+        import asyncio as _asyncio
+        history = await _asyncio.to_thread(self._session_store.load, sid)
         if history is None:
             return ToolResult(
                 call_id=call.id, ok=True,

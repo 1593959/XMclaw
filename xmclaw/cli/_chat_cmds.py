@@ -53,7 +53,7 @@ def _ws_url_with_token(ws_url: str, token: str | None) -> str:
 def chat(
     plain: bool = typer.Option(False, "--plain", help="Use basic stdin/stdout instead of TUI"),
     session: str | None = typer.Option(None, "--session", help="Resume a session ID"),
-    daemon_url: str = typer.Option("ws://127.0.0.1:8765/agent/v2/default", "--url"),
+    daemon_url: str = typer.Option("ws://127.0.0.1:8766/agent/v2/default", "--url"),
 ) -> None:
     """Launch XMclaw chat interface."""
     if plain:

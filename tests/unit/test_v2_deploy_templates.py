@@ -44,7 +44,7 @@ def test_dockerfile_exists_and_exposes_daemon_port() -> None:
     assert df.exists(), "Dockerfile missing"
     text = df.read_text(encoding="utf-8")
     assert "FROM python:" in text, "expected a python: base image"
-    assert "EXPOSE 8765" in text, "container should expose 8765"
+    assert "EXPOSE 8766" in text, "container should expose 8766"
     # The entrypoint binds 0.0.0.0 so the Docker port publish flag
     # controls reachability rather than the app.
     assert '"--host", "0.0.0.0"' in text or '"--host","0.0.0.0"' in text
@@ -67,10 +67,10 @@ def test_docker_compose_parses_and_matches_expose() -> None:
     services = data.get("services", {})
     assert "xmclaw" in services, "missing top-level xmclaw service"
     ports = services["xmclaw"].get("ports", [])
-    # Allow either "8765:8765" or "127.0.0.1:8765:8765" — just assert
+    # Allow either "8766:8766" or "127.0.0.1:8766:8766" — just assert
     # the container side is the Dockerfile EXPOSE.
-    assert any(str(p).endswith(":8765") for p in ports), (
-        f"no port mapping to container port 8765: {ports}"
+    assert any(str(p).endswith(":8766") for p in ports), (
+        f"no port mapping to container port 8766: {ports}"
     )
 
 
@@ -99,7 +99,7 @@ def test_fly_toml_parses_and_internal_port_matches() -> None:
     assert fly.exists()
     data = _toml.loads(fly.read_text(encoding="utf-8"))
     assert "app" in data
-    assert data.get("http_service", {}).get("internal_port") == 8765
+    assert data.get("http_service", {}).get("internal_port") == 8766
     # Template's volume name matches mount source.
     source = data.get("mounts", {}).get("source")
     assert source, "fly.toml missing mounts.source"

@@ -44,8 +44,8 @@ else:
                                   errors="replace", line_buffering=True)
 
 
-DAEMON = "http://127.0.0.1:8765"
-WS_BASE = "ws://127.0.0.1:8765"
+DAEMON = "http://127.0.0.1:8766"
+WS_BASE = "ws://127.0.0.1:8766"
 LOG_DIR = Path(__file__).parent / "_artifacts"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 

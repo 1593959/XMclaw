@@ -31,7 +31,7 @@ async def main() -> int:
     token = PAIRING_TOKEN_PATH.read_text(encoding="utf-8").strip()
     session_id = f"wechat-test-{uuid.uuid4().hex[:8]}"
     url = (
-        f"ws://127.0.0.1:8765/agent/v2/{session_id}"
+        f"ws://127.0.0.1:8766/agent/v2/{session_id}"
         f"?token={token}"
     )
     print(f"[driver] session={session_id}")
@@ -43,7 +43,7 @@ async def main() -> int:
         ws = await websockets.connect(
             url,
             open_timeout=60.0,
-            additional_headers={"Origin": "http://127.0.0.1:8765"},
+            additional_headers={"Origin": "http://127.0.0.1:8766"},
         )
     except Exception as exc:
         print(f"[driver] ws connect failed: {exc}")

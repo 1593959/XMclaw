@@ -51,7 +51,7 @@ class TunnelManager:
 
     Use::
 
-        mgr = TunnelManager(port=8765)
+        mgr = TunnelManager(port=8766)
         await mgr.start()
         url = mgr.url  # e.g. "https://abc-def.trycloudflare.com"
         ...

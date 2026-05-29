@@ -24,7 +24,7 @@ from pathlib import Path
 import websockets
 
 TOKEN_PATH = Path.home() / ".xmclaw" / "v2" / "pairing_token.txt"
-WS_BASE = "ws://127.0.0.1:8765/agent/v2"
+WS_BASE = "ws://127.0.0.1:8766/agent/v2"
 
 
 # 20 complex scenarios. Each demands tool chains, not single-shot

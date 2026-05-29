@@ -69,7 +69,7 @@ pip-compile pyproject.toml --output-file requirements-lock.txt --strip-extras
 pip-compile pyproject.toml --extra dev --output-file requirements-dev-lock.txt --strip-extras
 
 # Run
-xmclaw start                     # launch daemon + open web UI (http://127.0.0.1:8765)
+xmclaw start                     # launch daemon + open web UI (http://127.0.0.1:8766)
 xmclaw stop
 xmclaw chat                      # interactive CLI
 xmclaw chat --plan               # plan mode (approve steps first)

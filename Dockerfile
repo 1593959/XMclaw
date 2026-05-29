@@ -8,11 +8,11 @@
 #     onto python:3.11-slim. Result is ~150 MiB vs ~900 MiB for a naive
 #     single-stage build with ``pip install -e .``.
 #
-# The daemon binds 0.0.0.0:8765 inside the container — localhost-only
+# The daemon binds 0.0.0.0:8766 inside the container — localhost-only
 # is the host default, but a container's network namespace is already
 # isolated, so exposing to the container's own 0.0.0.0 is correct. The
 # user-facing surface is still controlled by the port publish flag
-# (`-p 127.0.0.1:8765:8765` keeps it local; `-p 8765:8765` opens it).
+# (`-p 127.0.0.1:8766:8766` keeps it local; `-p 8766:8766` opens it).
 #
 # Persistent state (events.db, memory.db, skills/, pairing token) lives
 # under ``/data`` inside the container, exported via VOLUME. Mount a host
@@ -72,9 +72,9 @@ VOLUME ["/data"]
 USER xmclaw
 WORKDIR /home/xmclaw
 
-EXPOSE 8765
+EXPOSE 8766
 
 # ``xmclaw serve`` runs the FastAPI app in-process without spawning a
 # background daemon; that's the right shape for container PID-1. Binding
 # to 0.0.0.0 lets the Docker port-publish flag decide reachability.
-ENTRYPOINT ["xmclaw", "serve", "--host", "0.0.0.0", "--port", "8765"]
+ENTRYPOINT ["xmclaw", "serve", "--host", "0.0.0.0", "--port", "8766"]

@@ -35,7 +35,7 @@ class XMclawService(win32serviceutil.ServiceFramework):
     _svc_display_name_ = "XMclaw Agent Daemon"
     _svc_description_ = (
         "Local-first AI agent runtime. Serves WebSocket + HTTP on "
-        "127.0.0.1:8765 by default."
+        "127.0.0.1:8766 by default."
     )
 
     def __init__(self, args: list[str]) -> None:
@@ -67,7 +67,7 @@ class XMclawService(win32serviceutil.ServiceFramework):
         app = create_app(config)
 
         host = os.environ.get("XMCLAW_HOST", "127.0.0.1")
-        port = int(os.environ.get("XMCLAW_PORT", "8765"))
+        port = int(os.environ.get("XMCLAW_PORT", "8766"))
 
         # Running uvicorn's Server directly (rather than uvicorn.run)
         # lets SvcStop flip `should_exit` cleanly without hammering the

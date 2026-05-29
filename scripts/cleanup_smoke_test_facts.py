@@ -21,7 +21,7 @@ if sys.platform == "win32":
 TOKEN = (Path.home() / ".xmclaw" / "v2" / "pairing_token.txt").read_text(
     encoding="utf-8",
 ).strip()
-BASE = "http://127.0.0.1:8765/api/v2/memory/v2"
+BASE = "http://127.0.0.1:8766/api/v2/memory/v2"
 
 DIRECT_POST_TEXTS = {
     "陪玩店业务: pw310.wxselling.com",

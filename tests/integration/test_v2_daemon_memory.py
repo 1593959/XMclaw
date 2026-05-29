@@ -183,7 +183,7 @@ def test_clear_session_still_available_for_explicit_reset() -> None:
 
     import asyncio
     asyncio.run(agent.run_turn("reset-me", "first user msg"))
-    agent.clear_session("reset-me")
+    asyncio.run(agent.clear_session("reset-me"))
     asyncio.run(agent.run_turn("reset-me", "second user msg"))
 
     second = llm.seen_messages[1]

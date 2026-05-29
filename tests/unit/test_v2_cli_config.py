@@ -34,7 +34,7 @@ def test_config_init_writes_skeleton(tmp_path: Path) -> None:
     assert data["llm"]["default_provider"] == "anthropic"
     assert data["llm"]["anthropic"]["api_key"] == ""
     assert data["llm"]["openai"]["api_key"] == ""
-    assert data["gateway"] == {"host": "127.0.0.1", "port": 8765}
+    assert data["gateway"] == {"host": "127.0.0.1", "port": 8766}
     assert data["security"]["prompt_injection"] == "detect_only"
 
 
@@ -113,7 +113,7 @@ def _seed(tmp_path: Path) -> Path:
             "default_provider": "anthropic",
             "anthropic": {"api_key": ""},
         },
-        "gateway": {"host": "127.0.0.1", "port": 8765},
+        "gateway": {"host": "127.0.0.1", "port": 8766},
     }, indent=2), encoding="utf-8")
     return target
 
@@ -327,13 +327,13 @@ def test_config_show_preserves_nested_structure(tmp_path: Path) -> None:
     runner = CliRunner()
     target = tmp_path / "config.json"
     _write_cfg(target, {
-        "gateway": {"host": "127.0.0.1", "port": 8765},
+        "gateway": {"host": "127.0.0.1", "port": 8766},
         "security": {"prompt_injection": "detect_only"},
         "tools": {"allowed_dirs": [".", "~/work"]},
     })
     r = runner.invoke(app, ["config", "show", "--path", str(target), "--json"])
     out = json.loads(r.stdout)
-    assert out["gateway"] == {"host": "127.0.0.1", "port": 8765}
+    assert out["gateway"] == {"host": "127.0.0.1", "port": 8766}
     assert out["security"]["prompt_injection"] == "detect_only"
     assert out["tools"]["allowed_dirs"] == [".", "~/work"]
 
@@ -496,7 +496,7 @@ def test_config_get_reveal_on_non_sensitive_is_noop(tmp_path: Path) -> None:
     """--reveal on a plain key shouldn't change the output."""
     runner = CliRunner()
     target = tmp_path / "config.json"
-    _write_cfg(target, {"gateway": {"port": 8765}})
+    _write_cfg(target, {"gateway": {"port": 8766}})
     r_plain = runner.invoke(app, ["config", "get", "gateway.port", "--path", str(target)])
     r_reveal = runner.invoke(
         app, ["config", "get", "gateway.port", "--path", str(target), "--reveal"]

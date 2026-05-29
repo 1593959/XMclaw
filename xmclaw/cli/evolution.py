@@ -243,7 +243,7 @@ def run_evolve_review(as_json: bool = False) -> int:
 
 def _http_call(
     method: str, path: str, *, body: dict[str, Any] | None = None,
-    daemon_url: str = "http://127.0.0.1:8765",
+    daemon_url: str = "http://127.0.0.1:8766",
 ) -> tuple[int, dict[str, Any]]:
     """Call daemon HTTP with pairing-token auth. Returns (status, body)."""
     token = _pairing_token()

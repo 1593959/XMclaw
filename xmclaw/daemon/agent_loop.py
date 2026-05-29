@@ -372,7 +372,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # mutating. Configurable — set False to disable.
         self._auto_plan_mode_enabled = True
 
-    def clear_session(self, session_id: str) -> None:
+    async def clear_session(self, session_id: str) -> None:
         """Drop a session's conversation history. Called by the WS gateway
         on SESSION_LIFECYCLE destroy, or by a ``/reset`` user intent."""
         self._histories.pop(session_id, None)
@@ -393,11 +393,16 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             except Exception:  # noqa: BLE001
                 pass
         if self._session_store is not None:
-            self._session_store.delete(session_id)
+            try:
+                await asyncio.to_thread(
+                    self._session_store.delete, session_id,
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     # ── P0-1 Context compression integration ────────────────────────
 
-    def pop_last_turn(self, session_id: str) -> dict[str, Any]:
+    async def pop_last_turn(self, session_id: str) -> dict[str, Any]:
         """B-106: drop the last user/assistant pair from a session's
         history. Used by ``/undo`` slash command. Returns a small
         summary dict the WS handler echoes back so the UI can confirm
@@ -427,7 +432,11 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         self._histories[session_id] = kept
         if self._session_store is not None:
             try:
-                self._session_store.save(session_id, kept)  # overwrite
+                # B-PERF: offload SQLite write to thread so the
+                # event loop isn't blocked on fsync.
+                await asyncio.to_thread(
+                    self._session_store.save, session_id, kept,
+                )
             except Exception:  # noqa: BLE001 — best-effort
                 pass
         return {"removed": removed, "history_len": len(kept)}

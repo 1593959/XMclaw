@@ -45,7 +45,7 @@ def test_scan_benign_tool_output_is_clean() -> None:
     text = (
         "line 1\n"
         "pid   command\n"
-        "1234  xmclaw serve --port 8765\n"
+        "1234  xmclaw serve --port 8766\n"
         "ok\n"
     )
     r = scan_text(text)

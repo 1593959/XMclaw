@@ -48,6 +48,38 @@ def default_pid_path() -> Path:
     return _central_default_pid_path()
 
 
+def _resolve_python_executable() -> str:
+    """Return the real Python interpreter, not a Windows launcher stub.
+
+    On Windows with a venv created from a conda/base environment,
+    ``sys.executable`` points at ``.venv\Scripts\python.exe`` which is
+    actually ``py.exe`` (``InternalName = "Python Launcher"``). When
+    ``subprocess.Popen`` spawns it, the returned PID belongs to the
+    launcher — the launcher then starts ``sys._base_executable`` (the
+    real ``python.exe``) as a child and exits seconds later.
+
+    This causes two production bugs:
+
+    1. **Stale PID file**: ``xmclaw start`` writes the launcher's PID
+       to ``daemon.pid``. ``xmclaw stop`` finds it dead, declares
+       "stopped", but the real worker is still alive and holding the
+       port + databases.
+    2. **Orphan daemon stacking**: The operator re-runs ``xmclaw start``
+       → a second daemon starts → both compete for the same SQLite
+       files → WAL contention → multi-minute reply delays.
+
+    Fix: on Windows, if ``sys._base_executable`` exists and differs from
+    ``sys.executable``, use the base executable directly so the PID we
+    record is the PID of the process that actually owns the socket.
+    """
+    exe = sys.executable
+    if sys.platform == "win32" and hasattr(sys, "_base_executable"):
+        base = sys._base_executable
+        if base and base != exe and Path(base).exists():
+            return base
+    return exe
+
+
 def default_meta_path() -> Path:
     # Tied to the PID-file location so a narrow override cascades: if a
     # test reroutes pid to /tmp/foo.pid, meta lands at /tmp/foo.meta.
@@ -187,7 +219,7 @@ def start_daemon(
     persona render + skill warmup). The previous 60s window made the
     CLI report "did not answer" while the daemon was still booting
     successfully — operator would re-run ``xmclaw start``, stacking
-    multiple half-booted daemons fighting for port 8765.
+    multiple half-booted daemons fighting for port 8766.
     """
     status = read_status()
     if status.state == "running":
@@ -202,8 +234,9 @@ def start_daemon(
     log_path = default_log_path()
     pid_path.parent.mkdir(parents=True, exist_ok=True)
 
+    python_exe = _resolve_python_executable()
     cmd = [
-        sys.executable, "-m", "xmclaw.cli.main", "serve",
+        python_exe, "-m", "xmclaw.cli.main", "serve",
         "--host", host, "--port", str(port), "--config", config,
     ]
     if no_auth:

@@ -74,7 +74,7 @@ class DoctorContext:
 
     config_path: Path
     host: str = "127.0.0.1"
-    port: int = 8765
+    port: int = 8766
     probe_daemon: bool = True
     # Off by default — the doctor otherwise does no outbound HTTP, so
     # it stays runnable on air-gapped machines and in CI without a
@@ -1541,7 +1541,7 @@ class DreamCronCheck(DoctorCheck):
             import urllib.request as _ur
             import urllib.error as _ue
             import json as _json
-            url = "http://127.0.0.1:8765/api/v2/memory/dream/status"
+            url = "http://127.0.0.1:8766/api/v2/memory/dream/status"
             with _ur.urlopen(url, timeout=3.0) as resp:
                 data = _json.loads(resp.read().decode("utf-8"))
         except _ue.URLError:

@@ -1,6 +1,6 @@
 """B-310: cross-worktree mutex for integration_real tests.
 
-These tests hit a live daemon on 127.0.0.1:8765, send realistic WS
+These tests hit a live daemon on 127.0.0.1:8766, send realistic WS
 messages, and exercise multi-minute flows (flow-a-s2 ran 27 min in
 one observed instance). When two Claude Code worktrees both run
 ``pytest tests/integration_real/`` they share the same daemon port

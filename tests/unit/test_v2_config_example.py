@@ -120,6 +120,6 @@ def test_example_builds_full_agent_when_api_key_filled(
     assert {"file_read", "file_write"} <= names
 
 
-def test_gateway_port_is_8765(example_cfg: dict) -> None:
-    """CLAUDE.md documents port 8765; the example should agree."""
-    assert example_cfg["gateway"]["port"] == 8765
+def test_gateway_port_is_8766(example_cfg: dict) -> None:
+    """CLAUDE.md documents port 8766; the example should agree."""
+    assert example_cfg["gateway"]["port"] == 8766

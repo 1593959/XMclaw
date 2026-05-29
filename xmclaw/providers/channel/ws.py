@@ -81,8 +81,12 @@ class WSChannelAdapter(ChannelAdapter):
             # B-CONN: keepalive so silently-dropped TCP sockets
             # (client power loss, mobile backgrounding, network
             # partition) are reaped instead of leaking forever.
+            # ping_timeout MUST be < ping_interval so a slightly
+            # delayed pong doesn't race the next ping and trigger a
+            # false disconnect (was 20/20, caused frequent reconnects
+            # on Windows).
             ping_interval=20,
-            ping_timeout=20,
+            ping_timeout=10,
             close_timeout=10,
         )
         # Resolve the actual port (handles port=0 case)

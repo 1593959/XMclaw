@@ -30,7 +30,7 @@
     "unified_threshold": 20
   },
   "evolution": {
-    "_comment": "Epic #4 + Sprint 3 honest-disclosure: ``enabled`` defaults to true as of Phase 1 (2026-05-20). ``auto_apply`` defaults to true as of B-387 (2026-05-29) — skills auto-promote when evidence passes the HonestGrader gate. Set auto_apply=false to keep promotion human-gated (``xmclaw evolve approve <id>``)."
+    "_comment": "Epic #4 + Sprint 3 honest-disclosure: ``enabled`` defaults to true as of Phase 1 (2026-05-20). ``auto_apply`` defaults to true as of B-387 (2026-05-29) — skills auto-promote when evidence passes the HonestGrader gate. Set auto_apply=false to keep promotion human-gated (``xmclaw evolve approve <id>``).",
     "enabled": true,
     "auto_apply": true,
     "interval_minutes": 30,
@@ -162,7 +162,7 @@
   "gateway": {
     "_consumer": "lifespan (uvicorn host/port binding); also where the daemon picks --port if --port flag not passed (B-305).",
     "host": "127.0.0.1",
-    "port": 8765
+    "port": 8766
   },
   "agent": {
     "_comment_b190": "B-190: agent loop limits. max_hops caps the LLM⇄tool round-trips per turn (default 40). Audit-style tasks calling many list_dir/file_read may need 60-80; set higher and restart the daemon. Hitting the cap returns a friendly truncation message rather than a silent crash.",

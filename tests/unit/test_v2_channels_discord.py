@@ -87,10 +87,10 @@ def test_adapter_accepts_int_strings_in_allowlist() -> None:
     positive 64-bit ints."""
     adapter = DiscordAdapter({
         "bot_token": "x.y.z",
-        "allowed_user_ids": [123456789012345678, "987654321098765432"],
+        "allowed_user_ids": [123456789012345678, "987664321098766432"],
         "allowed_channel_ids": ["111222333444555666"],
     })
-    assert adapter._allowed_user_ids == {123456789012345678, 987654321098765432}
+    assert adapter._allowed_user_ids == {123456789012345678, 987664321098766432}
     assert adapter._allowed_channel_ids == {111222333444555666}
 
 
@@ -121,16 +121,16 @@ async def test_inbound_message_produces_correct_session_id() -> None:
 
     adapter.subscribe(handler)
     await adapter._on_message_async(
-        _make_message(content="hello", channel_id=98765, user_id=12345),
+        _make_message(content="hello", channel_id=98766, user_id=12345),
     )
     assert len(inbox) == 1
     msg = inbox[0]
     assert msg.target.channel == "discord"
-    assert msg.target.ref == "98765"  # channel_id stringified
+    assert msg.target.ref == "98766"  # channel_id stringified
     assert msg.content == "hello"
     assert msg.user_ref == "12345"
-    # Dispatcher will compose "discord:98765" from these fields.
-    assert f"{msg.target.channel}:{msg.target.ref}" == "discord:98765"
+    # Dispatcher will compose "discord:98766" from these fields.
+    assert f"{msg.target.channel}:{msg.target.ref}" == "discord:98766"
 
 
 @pytest.mark.asyncio
@@ -285,10 +285,10 @@ async def test_send_hits_correct_channel_id() -> None:
     adapter._client = fake_client
 
     await adapter.send(
-        ChannelTarget(channel="discord", ref="98765"),
+        ChannelTarget(channel="discord", ref="98766"),
         OutboundMessage(content="hi from agent"),
     )
-    fake_client.get_channel.assert_called_once_with(98765)
+    fake_client.get_channel.assert_called_once_with(98766)
     fake_channel.send.assert_called_once()
     kwargs = fake_channel.send.call_args.kwargs
     assert kwargs["content"] == "hi from agent"
@@ -308,7 +308,7 @@ async def test_send_passes_reply_reference() -> None:
     adapter._client = fake_client
 
     await adapter.send(
-        ChannelTarget(channel="discord", ref="98765"),
+        ChannelTarget(channel="discord", ref="98766"),
         OutboundMessage(content="reply text", reply_to="100"),
     )
     fake_channel.fetch_message.assert_awaited_once_with(100)
@@ -677,7 +677,7 @@ def test_coerce_id_set_handles_none_and_empty() -> None:
 
 def test_to_int_or_none_parses_snowflakes() -> None:
     # Discord snowflakes are positive 64-bit ints
-    assert _to_int_or_none("987654321098765432") == 987654321098765432
+    assert _to_int_or_none("987664321098766432") == 987664321098766432
     assert _to_int_or_none("not-a-number") is None
     assert _to_int_or_none(None) is None
     assert _to_int_or_none(42) == 42

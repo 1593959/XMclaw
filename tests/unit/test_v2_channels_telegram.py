@@ -121,17 +121,17 @@ async def test_inbound_message_produces_correct_session_id() -> None:
 
     adapter.subscribe(handler)
     await adapter._on_message_async(
-        _make_update(text="hello", chat_id=98765, user_id=12345),
+        _make_update(text="hello", chat_id=98766, user_id=12345),
         context=None,
     )
     assert len(inbox) == 1
     msg = inbox[0]
     assert msg.target.channel == "telegram"
-    assert msg.target.ref == "98765"  # chat_id stringified
+    assert msg.target.ref == "98766"  # chat_id stringified
     assert msg.content == "hello"
     assert msg.user_ref == "12345"
-    # Dispatcher will compose "telegram:98765" from these fields.
-    assert f"{msg.target.channel}:{msg.target.ref}" == "telegram:98765"
+    # Dispatcher will compose "telegram:98766" from these fields.
+    assert f"{msg.target.channel}:{msg.target.ref}" == "telegram:98766"
 
 
 @pytest.mark.asyncio
@@ -263,12 +263,12 @@ async def test_send_hits_correct_chat_id() -> None:
     adapter._application = SimpleNamespace(bot=fake_bot)
 
     await adapter.send(
-        ChannelTarget(channel="telegram", ref="98765"),
+        ChannelTarget(channel="telegram", ref="98766"),
         OutboundMessage(content="hi from agent"),
     )
     fake_bot.send_message.assert_called_once()
     kwargs = fake_bot.send_message.call_args.kwargs
-    assert kwargs["chat_id"] == 98765
+    assert kwargs["chat_id"] == 98766
     assert kwargs["text"] == "hi from agent"
     assert kwargs["reply_to_message_id"] is None  # no reply_to
 
@@ -283,7 +283,7 @@ async def test_send_passes_reply_to_message_id() -> None:
     adapter._application = SimpleNamespace(bot=fake_bot)
 
     await adapter.send(
-        ChannelTarget(channel="telegram", ref="98765"),
+        ChannelTarget(channel="telegram", ref="98766"),
         OutboundMessage(content="reply text", reply_to="100"),
     )
     kwargs = fake_bot.send_message.call_args.kwargs

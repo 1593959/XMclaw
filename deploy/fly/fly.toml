@@ -34,7 +34,7 @@ primary_region = "iad"
   destination = "/data"
 
 [http_service]
-  internal_port = 8765
+  internal_port = 8766
   force_https = true
   auto_stop_machines = "stop"
   auto_start_machines = true

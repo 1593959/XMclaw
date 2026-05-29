@@ -43,7 +43,7 @@ The daemon side (`xmclaw/daemon/app.py`) MAY mount this folder via
 - **Manual smoke**:
   ```
   xmclaw start
-  # open http://127.0.0.1:8765/ui/
+  # open http://127.0.0.1:8766/ui/
   ```
   The shell should render with `bootstrap: cdn` (or `vendor` when
   offline). Click each sidebar item — the placeholder page should swap

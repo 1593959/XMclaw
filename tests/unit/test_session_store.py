@@ -198,7 +198,7 @@ async def test_clear_session_drops_persisted_history(tmp_path) -> None:
     await bus.drain()
     assert store.load("sess-clear") is not None
 
-    agent.clear_session("sess-clear")
+    await agent.clear_session("sess-clear")
     assert store.load("sess-clear") is None
 
 

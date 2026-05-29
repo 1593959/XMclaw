@@ -3,11 +3,11 @@
 B-73 closes a real gap. The WebSocket handler at ``/agent/v2/{sid}``
 already enforces ``auth_check``, but the HTTP routers (sessions,
 config, memory, profiles, agents, …) don't. With the default daemon
-binding (127.0.0.1:8765) any process on the user's machine could:
+binding (127.0.0.1:8766) any process on the user's machine could:
 
-  curl 127.0.0.1:8765/api/v2/sessions/<id>   # read full chat history
-  curl -X DELETE 127.0.0.1:8765/api/v2/sessions/<id>   # wipe session
-  curl -X PUT 127.0.0.1:8765/api/v2/config -d '...'    # rewrite config
+  curl 127.0.0.1:8766/api/v2/sessions/<id>   # read full chat history
+  curl -X DELETE 127.0.0.1:8766/api/v2/sessions/<id>   # wipe session
+  curl -X PUT 127.0.0.1:8766/api/v2/config -d '...'    # rewrite config
 
 The Web UI already attaches the pairing token as ``?token=...`` on every
 request (``static/lib/api.js`` ``withToken``) and the daemon ignored it.

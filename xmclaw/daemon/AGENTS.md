@@ -38,7 +38,7 @@ the whole point of the daemon/client split.
 - Smart-gate lanes: `daemon` (for `app.py` / `factory.py` /
   `lifecycle.py` / `pairing.py`), `agent_loop` (for `agent_loop.py`).
 - Manual smoke: `xmclaw start` → `curl -H "X-XMC-Token: …"
-  http://127.0.0.1:8765/healthz`.
+  http://127.0.0.1:8766/healthz`.
 
 ## 4. 禁止事项
 

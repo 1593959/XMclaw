@@ -1,12 +1,12 @@
 """End-to-end smoke test: realistic user message -> daemon -> L1 facts.
 
-Run against a live daemon (port 8765 by default). Verifies the
+Run against a live daemon (port 8766 by default). Verifies the
 two-layer extraction (regex + LLM) catches everything from a
 real-world business-onboarding message.
 
 Usage:
     python scripts/smoke_memory_v2_e2e.py
-    python scripts/smoke_memory_v2_e2e.py --port 8765
+    python scripts/smoke_memory_v2_e2e.py --port 8766
 
 Exits non-zero on any verification failure so it can wire into CI
 smoke gates later.
@@ -309,7 +309,7 @@ async def main_async(port: int) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=8766)
     args = parser.parse_args()
     sys.exit(asyncio.run(main_async(args.port)))
 

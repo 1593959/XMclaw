@@ -123,7 +123,7 @@ async def run_agent(self, agent_id: str, user_input: str):
 
 ```
 feat: add multi-agent team creation
-fix: correct desktop port 8080 -> 8765
+fix: correct desktop port 8080 -> 8766
 docs: add CONTRIBUTING.md
 refactor: simplify tool registry initialization
 test: add orchestrator unit tests

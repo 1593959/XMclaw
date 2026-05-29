@@ -1,6 +1,6 @@
 # XMclaw — cloudflared tunnel helper (Windows / PowerShell, Wave 17).
 #
-# Exposes the local daemon (port 8765) to the public internet via a
+# Exposes the local daemon (port 8766) to the public internet via a
 # Cloudflare quick tunnel. No login, no domain, no DNS setup — you get
 # a one-shot ``*.trycloudflare.com`` URL that's valid until you Ctrl+C
 # this process.
@@ -24,7 +24,7 @@
 # Or download from: https://github.com/cloudflare/cloudflared/releases
 
 param(
-    [int]$Port = 8765,
+    [int]$Port = 8766,
     [string]$Host = "127.0.0.1"
 )
 
