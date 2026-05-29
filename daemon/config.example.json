@@ -203,13 +203,24 @@
       "enabled": true,
       "_comment_recall": "Phase 7.A.3 (2026-05-23): top_k controls how many V2 facts AgentLoop.run_turn injects into the prompt via <memory-recall> per turn. Lowered from V1's default 10 to 5 — V2 facts are typed (Fact+kind+scope) so each carries more signal than a raw V1 row; 5 is enough for most chats without spending prompt budget.",
       "recall_top_k": 5,
-      "_comment_retention": "Phase 7.B.1 (2026-05-24): periodic sweep on the v2 facts store. sweep_interval_s=0 disables. Default mirrors V1 memory.retention so existing users don't see a behaviour change at migration. ttl per layer (seconds-per-layer; null = no TTL); max_items / max_bytes are LRU caps. ``identity`` + ``persona_manual`` kinds are always exempt regardless of layer (matches V1 pinned_tags). ``procedural`` layer is exempt from every axis — skill / persona facts outlive aging policies by design.",
+      "_comment_retention": "Phase 7.B.1 (2026-05-24): periodic sweep on the v2 facts store. sweep_interval_s=0 disables. Default mirrors V1 memory.retention so existing users don't see a behaviour change at migration. ttl per layer (seconds-per-layer; null = no TTL); max_items / max_bytes are LRU caps. ``identity`` + ``persona_manual`` kinds are always exempt regardless of layer (matches V1 pinned_tags). ``procedural`` layer is exempt from every axis — skill / persona facts outlive aging policies by design. **Memory v3 phase 4 (2026-05-28)** adds an auto-dedup tick on top of the retention loop: every ``dedup_every_n_sweeps`` retention cycles, the loop also runs ``MemoryService.dedup_scope(dry_run=False)`` across ``dedup_scopes``. Default fires once per day (24 hourly sweeps); set ``dedup_every_n_sweeps=0`` to disable while still running TTL/cap sweep. The agent can also trigger dedup manually via the ``memory_dedup`` and ``memory_inspect(auto_dedup=true)`` tools.",
       "retention": {
         "sweep_interval_s": 3600,
         "ttl": {"working": 86400, "long_term": null},
         "max_items": {"working": 20000, "long_term": null},
-        "max_bytes": {"working": 104857600, "long_term": null}
+        "max_bytes": {"working": 104857600, "long_term": null},
+        "dedup_every_n_sweeps": 24,
+        "dedup_scopes": ["user", "project", "session"]
       }
+    },
+    "_comment_auto_recall": "Memory v3 phase 2 (2026-05-28): per-turn similarity recall against the LanceDB store. Runs BEFORE the LLM call on the user-turn critical path, so it's **OFF by default** — turning it on adds an embedding call + LanceDB query (~100–500ms typical) to every turn. When enabled, results are prepended to the user message itself (NOT the system prompt) as a ``<recalled>`` block, so prompt-cache hits stay intact. Hard-bounded by ``timeout_s`` (default 1.0s) — if recall stalls, the turn proceeds without it. ``use_hybrid=true`` fuses BM25 + vector via ``MemoryService.recall_hybrid`` (requires ``pip install 'xmclaw[memory-bm25]'``); defaults to vector-only because the current Python-side BM25 rebuild is per-query (LanceDB native FTS lands in Phase 5). The agent can also call ``memory_search`` explicitly any time.",
+    "auto_recall": {
+      "enabled": false,
+      "k": 8,
+      "min_similarity": 0.65,
+      "use_hybrid": false,
+      "timeout_s": 1.0,
+      "exclude_buckets": []
     },
     "context_compression": {
       "_comment": "Wave 27 fix-6 (2026-05-15)：上下文压缩 = 按 token 预算压，不按消息条数压。模型上下文窗口三层解析：(1) llm.<provider>.context_length 配置覆盖（最高优先级 — 任何 endpoint 都能用，无需代码改动）；(2) 静态表 _provider_profiles.get_model_context_length() — 主流模型自动识别；(3) 动态 ratchet — 每次 LLM 成功返回的 prompt_tokens 都会抬高估值，所以未注册的模型经过 1-2 轮就自我校准。压缩规则：触发后保留头 N 条（系统提示 / 开局）+ 尾部 token_budget 字节原文 + 中间压成 summary。protect_last_ratio 是核心 — 取上下文窗口的 % 作为尾部预算（默认 20%），所以 1M 窗模型保留 ~150K 原文 / 256K 模型保留 ~51K / 32K 模型保留 ~6K。protect_last_n 是整数地板（默认 5），防小窗模型尾部一条都没。",
