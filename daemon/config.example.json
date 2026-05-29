@@ -30,9 +30,9 @@
     "unified_threshold": 20
   },
   "evolution": {
-    "_comment": "Epic #4 + Sprint 3 honest-disclosure: ``enabled`` defaults to true as of Phase 1 (2026-05-20). The experimental observers (HonestGrader / JournalWriter / SkillDreamCycle) are now on by default. ``auto_apply=false`` keeps promotion human-gated even when enabled — the orchestrator observes SKILL_CANDIDATE_PROPOSED events but does not mutate HEAD without ``xmclaw evolve approve <id>``. Flip auto_apply to true only after benchmark + user evidence agree.",
+    "_comment": "Epic #4 + Sprint 3 honest-disclosure: ``enabled`` defaults to true as of Phase 1 (2026-05-20). ``auto_apply`` defaults to true as of B-387 (2026-05-29) — skills auto-promote when evidence passes the HonestGrader gate. Set auto_apply=false to keep promotion human-gated (``xmclaw evolve approve <id>``)."
     "enabled": true,
-    "auto_apply": false,
+    "auto_apply": true,
     "interval_minutes": 30,
     "daily_review_hour": 22,
     "vfm_threshold": 5.0,

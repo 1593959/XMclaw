@@ -139,6 +139,16 @@ class OpenRouterLLM(OpenAILLM):
         self._http_referer = http_referer
         self._x_title = x_title
 
+        # B-387: warm the OpenRouter model directory cache so that
+        # ``get_model_context_length`` and ``lookup_pricing`` can resolve
+        # OpenRouter model ids accurately without relying on stale static
+        # tables. The call is non-blocking when a warm disk cache exists.
+        try:
+            from xmclaw.providers.llm._openrouter_discovery import warm_cache
+            warm_cache()
+        except Exception:  # noqa: BLE001 — best-effort; never break init
+            pass
+
     def _get_client(self) -> Any:
         """Override OpenAILLM's lazy client to attach OpenRouter
         attribution headers via ``default_headers``.

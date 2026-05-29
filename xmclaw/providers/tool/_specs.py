@@ -19,6 +19,7 @@ from xmclaw.core.ir import ToolSpec
 
 _FILE_READ_SPEC = ToolSpec(
     name="file_read",
+    read_only=True,
     description=(
         "Read a UTF-8 text file. Defaults to the first ~100KB; use "
         "``offset`` + ``limit`` (1-indexed lines) to read a range, or "
@@ -82,6 +83,7 @@ _FILE_WRITE_SPEC = ToolSpec(
 
 _LIST_DIR_SPEC = ToolSpec(
     name="list_dir",
+    read_only=True,
     description=(
         "List entries in a directory. Returns a text block with one "
         "entry per line: '<type> <size> <name>' where type is 'd' for "
@@ -150,6 +152,7 @@ _APPLY_PATCH_SPEC = ToolSpec(
 
 _GLOB_FILES_SPEC = ToolSpec(
     name="glob_files",
+    read_only=True,
     description=(
         "Find files matching a glob pattern. Cross-platform — no "
         "shell required, works on Windows where ``find`` /  ``ls`` "
@@ -179,6 +182,7 @@ _GLOB_FILES_SPEC = ToolSpec(
 
 _GREP_FILES_SPEC = ToolSpec(
     name="grep_files",
+    read_only=True,
     description=(
         "Search file contents for a regex pattern across one or "
         "more files. Cross-platform stdlib re — no ``grep`` / "
@@ -250,6 +254,7 @@ _FILE_DELETE_SPEC = ToolSpec(
 
 _UNDO_LIST_SPEC = ToolSpec(
     name="undo_list",
+    read_only=True,
     description=(
         "List recent destructive file operations that can be undone. "
         "Sprint 0 trust infrastructure: every ``file_write``, "
@@ -276,6 +281,7 @@ _UNDO_LIST_SPEC = ToolSpec(
 
 _UNDO_RECENT_SPEC = ToolSpec(
     name="undo_recent",
+    read_only=True,
     description=(
         "Reverse recent destructive file operations. By default undoes "
         "every active record within the last 10 seconds (newest first) "
@@ -407,6 +413,7 @@ _BASH_SPEC = ToolSpec(
 
 _WEB_FETCH_SPEC = ToolSpec(
     name="web_fetch",
+    read_only=True,
     description=(
         "GET 请求 URL 并返回内容。自动跟随重定向。\n\n"
         "★ 内容类型自动检测：\n"
@@ -433,6 +440,7 @@ _WEB_FETCH_SPEC = ToolSpec(
 
 _WEB_SEARCH_SPEC = ToolSpec(
     name="web_search",
+    read_only=True,
     description=(
         "网络搜索。后端由配置决定：\n"
         "  • ddg（默认，无需 API key）— DuckDuckGo，英文尚可，CJK 一般。\n"
@@ -538,6 +546,7 @@ _TODO_WRITE_SPEC = ToolSpec(
 
 _TODO_READ_SPEC = ToolSpec(
     name="todo_read",
+    read_only=True,
     description=(
         "Read back the current todo list for this session. Use this "
         "before updating statuses to make sure nothing was missed."
@@ -712,6 +721,7 @@ _SCHEDULE_FOLLOWUP_SPEC = ToolSpec(
 
 _MEMORY_SEARCH_SPEC = ToolSpec(
     name="memory_search",
+    read_only=True,
     description=(
         "搜索长期记忆。\n\n"
         "## 何时使用\n"
@@ -818,6 +828,7 @@ def _bucket_enum() -> list[str]:
 
 _MEMORY_SPEC = ToolSpec(
     name="memory",
+    read_only=True,
     description=_build_memory_spec_description(),
     parameters_schema={
         "type": "object",
@@ -912,6 +923,7 @@ _MEMORY_SPEC = ToolSpec(
 
 _MEMORY_GET_SPEC = ToolSpec(
     name="memory_get",
+    read_only=True,
     description=(
         "**Read a persona MD file (or a section of one) verbatim** "
         "from disk. Use when you need full structure / context that "
@@ -1139,6 +1151,7 @@ _MEMORY_CORRECT_SPEC = ToolSpec(
 
 _MEMORY_INSPECT_SPEC = ToolSpec(
     name="memory_inspect",
+    read_only=True,
     description=(
         "Inspect the LanceDB fact store's health: total fact count, "
         "breakdown by (scope, kind), suspected near-duplicate ratio "
@@ -1242,6 +1255,7 @@ _MEMORY_DEDUP_SPEC = ToolSpec(
 
 _AGENT_STATUS_SPEC = ToolSpec(
     name="agent_status",
+    read_only=True,
     description=(
         "Self-introspection — returns the daemon's current state in "
         "one shot: indexer (running? last tick? chunks indexed?), "
@@ -1371,6 +1385,7 @@ _RECALL_USER_PREFS_SPEC = ToolSpec(
 
 _JOURNAL_RECALL_SPEC = ToolSpec(
     name="journal_recall",
+    read_only=True,
     description=(
         "Read past session journal entries written by JournalWriter "
         "(Epic #24 Phase 2.1). Each entry summarises ONE WS session: "
@@ -1452,6 +1467,7 @@ _JOURNAL_APPEND_SPEC = ToolSpec(
 
 _SQLITE_QUERY_SPEC = ToolSpec(
     name="sqlite_query",
+    read_only=True,
     description=(
         "Read-only SQL query against XMclaw's own state DBs. Use this "
         "instead of shelling out to ``sqlite3`` — works on Windows where "
@@ -1982,6 +1998,7 @@ _SET_OUTPUT_STYLE_SPEC = ToolSpec(
 
 _READ_CONVERSATION_HISTORY_SPEC = ToolSpec(
     name="read_conversation_history",
+    read_only=True,
     description=(
         "Browse the current session's conversation history "
         "chronologically. Use this when the user refers to "
@@ -2061,6 +2078,7 @@ _EXIT_PLAN_MODE_SPEC = ToolSpec(
 
 _THINK_SPEC = ToolSpec(
     name="think",
+    read_only=True,
     description=(
         "Use this tool to record your internal reasoning, analysis, or plan. "
         "The thought is saved to the session log but is NOT shown to the user. "

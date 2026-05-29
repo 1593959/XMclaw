@@ -873,21 +873,48 @@ class HopLoopMixin:
                         "call_id": call.id, "name": call.name,
                     })
 
-                # Phase B: invoke all tools in parallel. Wave-32+:
-                # check the speculation cache first — a read-only
-                # tool that was already started during streaming
-                # gets awaited here instead of re-invoked.
+                # Phase B: invoke tools with read-parallel / write-serial
+                # semantics (B-7).  Read-only tools (file_read, list_dir,
+                # web_search, …) run concurrently; anything that mutates
+                # state runs one-at-a-time in the order the model emitted
+                # it, so consecutive writes can't race on shared files or
+                # DB rows.
                 from xmclaw.cognition.speculation import maybe_await_cached
-                _invoke_tasks = [
-                    maybe_await_cached(
+
+                _read_only_names = {
+                    spec.name for spec in (effective_tools.list_tools() or [])
+                    if getattr(spec, "read_only", False)
+                }
+
+                async def _invoke_one(call: Any) -> Any:
+                    return await maybe_await_cached(
                         _spec_cache, call,
                         lambda c=call: self._invoke_single_tool(
                             c, effective_tools, session_id,
                         ),
                     )
-                    for call in response.tool_calls
-                ]
-                _invoke_results = await asyncio.gather(*_invoke_tasks)
+
+                _invoke_results: list[Any] = []
+                _idx = 0
+                _tc_list = response.tool_calls
+                while _idx < len(_tc_list):
+                    if _tc_list[_idx].name in _read_only_names:
+                        # Collect a contiguous run of read-only calls
+                        _batch: list[Any] = []
+                        while (
+                            _idx < len(_tc_list)
+                            and _tc_list[_idx].name in _read_only_names
+                        ):
+                            _batch.append(_tc_list[_idx])
+                            _idx += 1
+                        _invoke_results.extend(
+                            await asyncio.gather(*[_invoke_one(c) for c in _batch])
+                        )
+                    else:
+                        # Serial write (or unknown) tool
+                        _invoke_results.append(await _invoke_one(_tc_list[_idx]))
+                        _idx += 1
+
                 # Cancel any speculated tools whose ToolCall didn't
                 # end up in the response — defensive cleanup, should
                 # be rare (LLM emitting then retracting a tool_use is

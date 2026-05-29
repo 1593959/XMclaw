@@ -903,3 +903,179 @@ def test_thaw_session_returns_false_for_unknown_session():
     bus = InProcessEventBus()
     agent = AgentLoop(llm=_ScriptedLLM([]), bus=bus)
     assert agent.thaw_session("nonexistent") is False
+
+
+# ── B-7: read-parallel / write-serial tool concurrency ───────────────────
+
+
+@dataclass
+class _TrackingToolProvider(ToolProvider):
+    """Records start/end timestamps so tests can verify concurrency."""
+
+    specs: list[ToolSpec] = field(default_factory=list)
+    results: dict[str, ToolResult] = field(default_factory=dict)
+    delays: dict[str, float] = field(default_factory=dict)
+    invocations: list[dict[str, Any]] = field(default_factory=list)
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    def list_tools(self) -> list[ToolSpec]:
+        return list(self.specs)
+
+    async def invoke(self, call: ToolCall) -> ToolResult:
+        t0 = asyncio.get_event_loop().time()
+        delay = self.delays.get(call.name, 0.0)
+        if delay:
+            await asyncio.sleep(delay)
+        t1 = asyncio.get_event_loop().time()
+        self.invocations.append({
+            "name": call.name,
+            "start": t0,
+            "end": t1,
+            "call_id": call.id,
+        })
+        result = self.results.get(call.name)
+        if result is None:
+            return ToolResult(
+                call_id=call.id, ok=False, content=None,
+                error=f"no stub for {call.name}",
+            )
+        return ToolResult(
+            call_id=call.id, ok=result.ok, content=result.content,
+            error=result.error, latency_ms=result.latency_ms,
+            side_effects=result.side_effects,
+        )
+
+
+@pytest.mark.asyncio
+async def test_read_tools_parallel_write_tools_serial() -> None:
+    """B-7: read-only tools run concurrently; write tools run one-at-a-time."""
+    bus = InProcessEventBus()
+    llm = _ScriptedLLM(script=[
+        # Hop 1: read, write, read, read (mixed)
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(name="read_a", args={}, provenance="anthropic", id="r1"),
+                ToolCall(name="write_x", args={}, provenance="anthropic", id="w1"),
+                ToolCall(name="read_b", args={}, provenance="anthropic", id="r2"),
+                ToolCall(name="read_c", args={}, provenance="anthropic", id="r3"),
+            ),
+        ),
+        # Hop 2: two writes back-to-back
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(name="write_x", args={}, provenance="anthropic", id="w2"),
+                ToolCall(name="write_y", args={}, provenance="anthropic", id="w3"),
+            ),
+        ),
+        LLMResponse(content="done", tool_calls=()),
+    ])
+    tools = _TrackingToolProvider(
+        specs=[
+            ToolSpec(name="read_a", description="ra",
+                     parameters_schema={}, read_only=True),
+            ToolSpec(name="read_b", description="rb",
+                     parameters_schema={}, read_only=True),
+            ToolSpec(name="read_c", description="rc",
+                     parameters_schema={}, read_only=True),
+            ToolSpec(name="write_x", description="wx",
+                     parameters_schema={}, read_only=False),
+            ToolSpec(name="write_y", description="wy",
+                     parameters_schema={}, read_only=False),
+        ],
+        results={
+            "read_a": ToolResult(call_id="", ok=True, content="a"),
+            "read_b": ToolResult(call_id="", ok=True, content="b"),
+            "read_c": ToolResult(call_id="", ok=True, content="c"),
+            "write_x": ToolResult(call_id="", ok=True, content="wx"),
+            "write_y": ToolResult(call_id="", ok=True, content="wy"),
+        },
+        delays={
+            "read_a": 0.05,
+            "read_b": 0.05,
+            "read_c": 0.05,
+            "write_x": 0.05,
+            "write_y": 0.05,
+        },
+    )
+    agent = AgentLoop(llm=llm, bus=bus, tools=tools)
+    result = await agent.run_turn("sess", "mixed batch")
+    await bus.drain()
+
+    assert result.ok
+    inv = tools.invocations
+    names = [i["name"] for i in inv]
+
+    # Order must match the model's emission order across hops.
+    assert names == [
+        "read_a", "write_x", "read_b", "read_c",  # hop 1
+        "write_x", "write_y",                      # hop 2
+    ]
+
+    # Helper to check overlap.
+    def _overlaps(i1: dict[str, Any], i2: dict[str, Any]) -> bool:
+        return i1["start"] < i2["end"] and i2["start"] < i1["end"]
+
+    # read_a is alone in the first batch (before the write), so it does
+    # NOT overlap with read_b/read_c.  read_b and read_c are in the same
+    # parallel batch after write_x — they MUST overlap.
+    read_a = inv[0]
+    read_b = inv[2]
+    read_c = inv[3]
+    assert _overlaps(read_b, read_c), (
+        "consecutive read-only tools should run in parallel"
+    )
+    # Sanity: read_a finished before write_x started.
+    assert read_a["end"] <= inv[1]["start"], "first read should finish before write"
+
+    # write_x1 is between read_a and read_b — it must not overlap with either.
+    write_x1 = inv[1]
+    assert not _overlaps(write_x1, read_a), (
+        "write tool should not overlap with preceding read"
+    )
+    assert not _overlaps(write_x1, read_b), (
+        "write tool should not overlap with following read"
+    )
+
+    # The two writes in hop 2 must not overlap.
+    write_x2 = inv[4]
+    write_y = inv[5]
+    assert not _overlaps(write_x2, write_y), (
+        "consecutive write tools should run serially"
+    )
+
+
+@pytest.mark.asyncio
+async def test_unknown_tools_treated_as_serial() -> None:
+    """Tools not advertised by the provider default to serial (safe fallback)."""
+    bus = InProcessEventBus()
+    llm = _ScriptedLLM(script=[
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(name="mystery", args={}, provenance="anthropic"),
+                ToolCall(name="mystery2", args={}, provenance="anthropic"),
+            ),
+        ),
+        LLMResponse(content="done", tool_calls=()),
+    ])
+    # Provider advertises NO tools, so neither is in _read_only_names.
+    tools = _TrackingToolProvider(
+        specs=[],
+        results={},
+        delays={"mystery": 0.03, "mystery2": 0.03},
+    )
+    agent = AgentLoop(llm=llm, bus=bus, tools=tools)
+    result = await agent.run_turn("sess", "unknown tools")
+    await bus.drain()
+
+    assert result.ok
+    inv = tools.invocations
+    names = [i["name"] for i in inv]
+    assert names == ["mystery", "mystery2"]
+
+    # Serial execution means no overlap.
+    assert inv[0]["end"] <= inv[1]["start"] or not (
+        inv[0]["start"] < inv[1]["end"] and inv[1]["start"] < inv[0]["end"]
+    )

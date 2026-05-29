@@ -145,6 +145,10 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # Jarvisification: optional CognitiveState for unified
         # cross-session cognition (goals, attention, fatigue).
         cognitive_state: Any = None,
+        # B-6: optional CognitiveDaemon reference so run_turn can
+        # query pending proposals before the turn and report results
+        # after the turn.
+        cognitive_daemon: Any = None,
         # Jarvis Phase 6 wiring A: optional PerceptionBus. When set,
         # ``run_turn`` pushes a ``user_msg`` percept on each turn so
         # the continuous cognitive loop can react to user input.
@@ -183,6 +187,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # agent loop side. Push failures must NEVER fail a turn — the
         # try/except in run_turn enforces that.
         self._perception_bus = perception_bus
+        self._cognitive_daemon = cognitive_daemon
         # B-25 Hermes parity: per-session frozen snapshot of the
         # static system-prompt portion (= base prompt + persona, NO
         # time). Time is appended fresh on every turn; the rest is
@@ -190,7 +195,9 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # prompt cache wants.
         # Epic #24 Phase 1: removed the learned_skills section that
         # used to ride this cache; persona / agent identity remain.
-        self._frozen_prompts: dict[str, tuple[int, str]] = {}
+        # B-3: value is (generation, frozen_prompt_text, channel_name) so
+        # that a channel switch for the same session invalidates the cache.
+        self._frozen_prompts: dict[str, tuple[int, str, str | None]] = {}
         # B-25-strict: when True, a session's frozen snapshot is
         # immutable for the lifetime of that session.  Persona edits,
         # config changes, and generation bumps do NOT invalidate the
@@ -420,7 +427,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         self._histories[session_id] = kept
         if self._session_store is not None:
             try:
-                self._session_store.put(session_id, kept)  # overwrite
+                self._session_store.save(session_id, kept)  # overwrite
             except Exception:  # noqa: BLE001 — best-effort
                 pass
         return {"removed": removed, "history_len": len(kept)}
@@ -706,6 +713,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         llm_profile_id: str | None = None,
         tools_allowlist: "set[str] | frozenset[str] | None" = None,
         user_images: "tuple[str, ...] | None" = None,
+        channel_name: str | None = None,
     ) -> AgentTurnResult:
         # B-38: register a fresh per-session cancel event. Cleared via
         # ``cancel_session`` (set by the WS handler when the user clicks
@@ -731,10 +739,25 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     cancel_event=cancel_event,
                     tools_allowlist=tools_allowlist,
                     user_images=user_images,
+                    channel_name=channel_name,
                 )
                 return _result
         finally:
             self._cancel_events.pop(session_id, None)
+            # B-1 fix: persist session history after every turn so that
+            # ``xmclaw chat --resume <id>`` and fresh AgentLoop instances
+            # see the full conversation. Runs in finally so even crashed
+            # turns are recorded (the error message itself becomes the
+            # assistant entry).
+            if self._session_store is not None:
+                try:
+                    history = self._histories.get(session_id, [])
+                    self._session_store.save(session_id, history)
+                except Exception:  # noqa: BLE001
+                    from xmclaw.utils.log import get_logger
+                    get_logger(__name__).warning(
+                        "session.save_failed", session_id=session_id
+                    )
             # Wave-32+: record a "recently finished" entry so the
             # 后台任务 panel can surface autonomous-session results
             # AFTER the turn ends. Without this every spawned task
@@ -746,6 +769,15 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 result=_result,
                 user_message=user_message,
             )
+            # B-6: notify CognitiveDaemon that the turn completed so it
+            # can update its internal state (e.g. mark proposals as seen).
+            if self._cognitive_daemon is not None and _result is not None:
+                try:
+                    self._cognitive_daemon.on_turn_completed(
+                        session_id, _result
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
 
 
     async def _run_turn_inner(
@@ -755,6 +787,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         cancel_event: asyncio.Event,
         tools_allowlist: "set[str] | frozenset[str] | None" = None,
         user_images: "tuple[str, ...] | None" = None,
+        channel_name: str | None = None,
     ) -> AgentTurnResult:
         # B-332: per-call tool-name allowlist. When set, the rest of
         # this method routes all ``list_tools()`` / ``invoke()``
@@ -913,6 +946,21 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 "auto_recall.failed err=%s (turn continues without recall)",
                 _exc,
             )
+
+        # B-6: CognitiveDaemon integration. Query pending proposals for
+        # this session and prepend them as a system note so the agent
+        # is aware of autonomous tasks waiting for attention.
+        if self._cognitive_daemon is not None:
+            try:
+                _pending = self._cognitive_daemon.pop_proposals_for(session_id)
+                if _pending:
+                    _proposal_note = "\n".join(f"- {p}" for p in _pending)
+                    user_message = (
+                        f"[系统提示：你有 {len(_pending)} 个待处理事项]\n"
+                        f"{_proposal_note}\n\n{user_message}"
+                    )
+            except Exception:  # noqa: BLE001 — never block a turn
+                pass
 
         # 1. Announce the user message. We propagate the client-supplied
         # correlation_id so the optimistic local-echo bubble in the web
@@ -1896,7 +1944,10 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         _needs_render = cache_entry is None
         _current_gen = get_prompt_freeze_generation()
         if cache_entry is not None and not self._strict_freeze:
-            _needs_render = cache_entry[0] != _current_gen
+            _needs_render = (
+                cache_entry[0] != _current_gen
+                or cache_entry[2] != channel_name
+            )
         if _needs_render:
             # Render once. (Epic #24 Phase 1 stripped the legacy
             # learned_skills layer that used to land here.)
@@ -1907,8 +1958,19 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             t_idx = static_with_skills.rfind("## 当前时刻")
             if t_idx > 0:
                 static_with_skills = static_with_skills[:t_idx].rstrip()
+            # B-3: inject platform guidance when channel_name is known.
+            if channel_name:
+                try:
+                    from xmclaw.core.persona.platform_guidance import platform_guidance
+                    _plat = platform_guidance(channel_name)
+                    if _plat:
+                        static_with_skills = (
+                            f"{static_with_skills}\n\n{_plat}"
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
             self._frozen_prompts[session_id] = (
-                _current_gen, static_with_skills,
+                _current_gen, static_with_skills, channel_name,
             )
             cache_entry = self._frozen_prompts[session_id]
         # Build the per-turn time block first (mutable; goes AFTER

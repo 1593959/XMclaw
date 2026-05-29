@@ -34,6 +34,9 @@ class ToolSpec:
     name: str
     description: str
     parameters_schema: dict[str, Any]  # JSON Schema
+    # B-7: read-only tools may be executed in parallel; write tools
+    # are serialized to prevent race conditions on shared resources.
+    read_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)

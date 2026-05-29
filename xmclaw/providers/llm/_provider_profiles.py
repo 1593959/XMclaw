@@ -493,6 +493,8 @@ def get_model_context_length(
     """Return the context-window size in tokens for a given model id.
 
     Lookup order:
+      0. OpenRouter live directory (cached, TTL 24h) — for
+         ``anthropic/claude-sonnet-4`` style ids.
       1. Exact match in :data:`_MODEL_CONTEXT_LENGTHS`.
       2. Substring pattern in :data:`_CONTEXT_LENGTH_PATTERNS`
          (first-match wins; ordered most-specific-first).
@@ -513,6 +515,18 @@ def get_model_context_length(
             if profile:
                 return profile.context_length
         return DEFAULT_CONTEXT_LENGTH
+
+    # Step 0 — OpenRouter live directory (cached).
+    # This handles the ``provider/model`` form (e.g. ``anthropic/claude-sonnet-4``)
+    # that OpenRouter uses, which our static tables may not cover yet.
+    try:
+        from xmclaw.providers.llm._openrouter_discovery import get_context_length as _or_ctx
+        discovered = _or_ctx(model)
+        if discovered is not None:
+            return discovered
+    except Exception:  # noqa: BLE001 — silent fallback to static tables
+        pass
+
     lowered = model.lower()
     exact = _MODEL_CONTEXT_LENGTHS.get(lowered)
     if exact is not None:

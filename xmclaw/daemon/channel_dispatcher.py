@@ -204,7 +204,9 @@ class ChannelDispatcher:
             ) or None
         try:
             await agent.run_turn(
-                session_id, msg.content, user_images=user_images_arg,
+                session_id, msg.content,
+                user_images=user_images_arg,
+                channel_name=msg.target.channel,
             )
         except Exception as exc:  # noqa: BLE001
             _log.warning("channel.run_turn_failed err=%s", exc)

@@ -2092,6 +2092,14 @@ def make_lifespan(
         _app.state.cognitive_daemon = _cognitive_daemon
         _app.state.experiment_loop = _experiment_loop
 
+        # B-6: wire CognitiveDaemon into AgentLoop so run_turn can query
+        # pending proposals and report turn completion.
+        if agent is not None and _cognitive_daemon is not None:
+            try:
+                agent._cognitive_daemon = _cognitive_daemon
+            except Exception:  # noqa: BLE001
+                pass
+
         # Jarvis Phase 6.4: ensure AgentLoop always pushes user-message
         # percepts to the bus, even when the continuous cognitive loop
         # is disabled. ProactiveAgent and other consumers need this.

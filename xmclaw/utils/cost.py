@@ -104,12 +104,25 @@ def lookup_pricing(model: str) -> Pricing:
     """B-335: single source of truth for model-name → Pricing.
 
     Resolution order:
+      0. OpenRouter live directory (cached, TTL 24h) — for
+         ``provider/model`` style ids (e.g. ``anthropic/claude-sonnet-4``).
       1. Exact match in DEFAULT_PRICING.
       2. First substring match in MODEL_PRICING_PATTERNS.
       3. DEFAULT_FALLBACK_PRICING.
     """
     if not model:
         return DEFAULT_FALLBACK_PRICING
+
+    # Step 0 — OpenRouter live directory (cached).
+    # Lazy import to keep ``cost.py`` free of providers-layer deps.
+    try:
+        from xmclaw.providers.llm._openrouter_discovery import get_pricing as _or_pricing
+        discovered = _or_pricing(model)
+        if discovered is not None:
+            return discovered
+    except Exception:  # noqa: BLE001 — silent fallback
+        pass
+
     direct = DEFAULT_PRICING.get(model)
     if direct is not None:
         return direct

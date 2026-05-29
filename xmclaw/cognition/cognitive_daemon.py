@@ -1072,4 +1072,23 @@ class CognitiveDaemon:
         }
 
 
+    # B-6: AgentLoop integration hooks — called at turn boundaries so
+    # the daemon can surface pending proposals and observe turn results.
+    def pop_proposals_for(self, session_id: str) -> list[str]:
+        """Return pending proposals for *session_id* and clear them.
+
+        Stub: returns an empty list until the proposal queue is
+        implemented in a follow-up sprint.
+        """
+        return []
+
+    def on_turn_completed(
+        self, session_id: str, result: "Any",
+    ) -> None:
+        """Notify the daemon that a turn finished.
+
+        Stub: no-op until result-tracking is wired.
+        """
+
+
 __all__ = ["CognitiveDaemon", "CognitiveDaemonConfig"]

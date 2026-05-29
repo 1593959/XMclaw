@@ -342,7 +342,7 @@ def serve(
             from xmclaw.skills.registry import SkillRegistry
             from xmclaw.utils.paths import skills_dir
             registry = SkillRegistry(history_dir=skills_dir())
-            auto_apply = bool(ev_cfg.get("auto_apply", False))
+            auto_apply = bool(ev_cfg.get("auto_apply", True))
             orchestrator = EvolutionOrchestrator(
                 registry, bus, auto_apply=auto_apply,
             )
