@@ -36,9 +36,46 @@
 
 ## 已完成的修复
 
-| # | 修复项 | 状态 | 相关文件 | 说明 |
+> **2026-05-29 audit re-judgement**：原计划 28 项 Phase 0/1/2/3/4 大多已在
+> `4e986ad` / `9eaa15e` / `95b0a98` / `bc731fd` 等近期 commit 中完成或
+> 通过其他方式覆盖。本表追踪所有确认完成的项，剩余未完成的在下方
+> 列出推荐做 / 不推荐做的判定。
+
+| # | 修复项 | 状态 | commit / 文件 | 说明 |
 |---|--------|------|----------|------|
+| ✅ | **B-1 session_store.save 接线** | 已完成 | agent_loop.py:438, 768 (4e986ad) | run_turn 结束后通过 asyncio.to_thread 异步持久化。 |
+| ✅ | **B-2 pop_last_turn .put → .save** | 已完成 | agent_loop.py:405-446 (4e986ad) | pop_last_turn 改为 async，调 .save。 |
+| ✅ | **B-3 platform guidance / channel_name** | 已完成 | agent_loop.py:725, 751, 804, 1967 (4e986ad) | run_turn 接 channel_name + frozen-prompt cache key 三元组包含通道。 |
+| ✅ | **B-4 autonomy_level default 50** | 已完成 | cognition.continuous_loop.autonomy_level=50 (config.example.json) | 默认值在 config.example 中明确为 50。 |
+| ✅ | **B-5 evolution.auto_apply default true** | 已完成 | config.example.json (4e986ad 提交日志确认) | 默认 true。 |
+| ✅ | **B-6 CognitiveDaemon ↔ AgentLoop 接线** | 已完成 | agent_loop.py:148, 151, 190 (4e986ad) | AgentLoop.__init__ 接 cognitive_daemon 参数。 |
+| ✅ | **B-7 工具读并发** | 已完成 | hop_loop.py:889 (4e986ad) | asyncio.gather 并发 read 类工具。 |
+| ✅ | **P1-2 / P2-5 fallback provider** | 已完成 | llm_registry.py:115 fallback_chain | LLMRegistry 支持 fallback_chain，429/5xx 时按顺序降级。 |
+| ✅ | **P1-4 Schema validation**（本次）| 已完成 | **新 xmclaw/daemon/config_schema.py** + factory.load_config 接入 (本 commit) | 启动时跑静态 validator，autonomy/port/timeout/types 越界一次性聚合报错。20 测试覆盖。 |
+| ✅ | **P3-4 部署模板** | 已完成 | Dockerfile + docker-compose.yml + deploy/systemd + deploy/launchd + deploy/fly | 4 种部署目标都有模板。 |
+| ✅ | **P4-3 voice 基础** | 已完成 | xmclaw/providers/voice/{whisper,edge_tts}.py | STT (Whisper) + TTS (Edge TTS) 基础版可用；唤醒词 / RL 调优在 P4 完整版未做。 |
+| ✅ | **P4-5 release pipeline** | 已完成 | .github/workflows/{release,python-publish,docker-publish,python-ci}.yml | tag 触发 release，PyPI + Docker 自动发布。 |
 | ✅ | **OpenRouter 模型目录自动拉取 (B-387)** | 已完成 | _openrouter_discovery.py, _provider_profiles.py, cost.py, openrouter.py | 新增 _openrouter_discovery 模块，从 https://openrouter.ai/api/v1/models 自动拉取模型元数据（context_length + pricing），TTL 24h 缓存。get_model_context_length() 和 lookup_pricing() 现在优先查询动态缓存，回退到静态表。 |
+
+## 重新判定 —— 剩余项推荐做 / 不推荐做
+
+| # | 项 | 工作量 | 推荐 | 理由 |
+|---|---|---|---|---|
+| **B-8** | test_v2_persona_timeout 1 个 pre-existing 故障 | 1h | **推荐** | `_SlowStore.set_manual()` kwarg 不匹配，跟 audit 无关，但是 CI 红点 |
+| **P1-1** | Planner / ReasoningEngine 接 turn 流程 | 1 周 | **推荐**（但拆小做）| cognitive_daemon 已接，Planner 进 turn 是下一步 |
+| **P1-3 / P3-6** | Prometheus metrics + tracing | 2-3 周 | **推荐**（小步）| 可以先做 `/metrics` 基础导出，~150 LOC，本地观察用 |
+| **P2-1** | OpenAI compat API `/v1/chat/completions` | 2-3 周 | **推荐** | 生态位关键，Continue/Cursor 零改动接入 |
+| **P2-2** | 设备配对 HMAC + JWT | 2 周 | **不推荐**（暂时）| 当前 pairing-token + 127.0.0.1 binding 已够本地用 |
+| **P2-3** | WhatsApp / Signal / iMessage 通道 | 4-6 周 × 3 | **不推荐**（暂时）| 8 个通道已是行业天花板水平 |
+| **P2-4** | Docker sandbox runtime（区分于 daemon Dockerfile）| 1-2 周 | **可选** | 真正想跑陌生 skill 才需要；现有 allowed_dirs 已是初级 sandbox |
+| **P3-1** | ACP + VS Code 扩展 | 4-6 周 | **不推荐**（暂时）| stub 已存在，未必比 Cline + xmclaw OpenAI API 接入更好 |
+| **P3-2** | 自主技能创建 | 4-6 周 | **不推荐**（暂时）| SkillDreamCycle 已 draft，等真实使用数据 |
+| **P3-3** | Ollama / xAI / DeepSeek native provider | 2-3 周 | **不推荐** | 全部走现有 anthropic + openai-compat shim 已可用，重复造轮 |
+| **P3-5** | WebUI 重写为 React + TS | 2-3 月 | **不推荐**（暂时）| Preact+htm 够用，重写收益 vs 成本不划算 |
+| **P4-1** | RL 训练环境 | 2-3 月 | **不推荐**（暂时）| evolution 真实数据未积累 |
+| **P4-2** | 多 Agent 完整路由 | 2-3 月 | **可选** | sub-agent / workspace 概念架构在，启用需要单独 ADR |
+| **P4-4** | 技能市场 server-side | 1-2 月 | **可选** | 当前 GitHub-backed catalog 够 MVP；服务端要等用户量 |
+
 
 ---
 

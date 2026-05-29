@@ -260,6 +260,13 @@ def load_config(
     merged = _apply_env_overrides(data, env=env)
     if resolve_secrets:
         merged = _resolve_secret_placeholders(merged)
+    # REMEDIATION_PLAN_2026 P1-4 (2026-05-29): static schema check
+    # before the merged dict reaches any builder. Catches numeric
+    # ranges, type mismatches, and obvious shape errors with a
+    # single clear ``ConfigError`` instead of crashing deep in a
+    # feature module hours later.
+    from xmclaw.daemon.config_schema import validate_or_raise
+    validate_or_raise(merged)
     return merged
 
 
