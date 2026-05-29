@@ -49,6 +49,15 @@ def test_list_tools_complete_roster_even_without_playwright() -> None:
         "browser_get_console",
         "browser_screenshot", "browser_snapshot",
         "browser_eval", "browser_close",
+        # 2026-05-28: third browser path — user's REAL Chrome with
+        # full agent control (CDP attach / launch real profile /
+        # side-profile fallback).
+        "browser_use_my_browser",
+        # 2026-05-28 P0.1 + P0.2: [N] ref system + dialog supervisor.
+        "browser_click_ref", "browser_type_ref",
+        "browser_dialog",
+        # 2026-05-28 P2.4 + P3.5: dialog pre-arm + network log.
+        "browser_dialog_arm", "browser_network_log",
     }
 
 
@@ -745,15 +754,30 @@ async def test_screenshot_spills_to_disk_when_over_cap(
 
 
 @pytest.mark.asyncio
-async def test_open_default_headless(patched_browser: BrowserTools) -> None:
+async def test_open_default_visible(patched_browser: BrowserTools) -> None:
     """No ``visible`` arg → session inherits BrowserTools' default
-    (headless=True from constructor)."""
+    (headless=False from 2026-05-28; user is watching by default)."""
     r = await patched_browser.invoke(_call(
         "browser_open", {"url": "https://example.com"}, session_id="s1",
     ))
     assert r.ok is True
+    assert r.content["visible"] is True
+    assert patched_browser._session_headless["s1"] is False
+
+
+@pytest.mark.asyncio
+async def test_open_explicit_false_goes_headless(
+    patched_browser: BrowserTools,
+) -> None:
+    """``visible=False`` is the explicit opt-out for background work."""
+    r = await patched_browser.invoke(_call(
+        "browser_open",
+        {"url": "https://example.com", "visible": False},
+        session_id="s_bg",
+    ))
+    assert r.ok is True
     assert r.content["visible"] is False
-    assert patched_browser._session_headless["s1"] is True
+    assert patched_browser._session_headless["s_bg"] is True
 
 
 @pytest.mark.asyncio
@@ -807,13 +831,13 @@ async def test_close_forgets_pinned_mode(
         "browser_close", {}, session_id="s_close",
     ))
     assert "s_close" not in patched_browser._session_headless
-    # Re-open without flag → falls back to default (headless).
+    # Re-open without flag → falls back to default (visible).
     r3 = await patched_browser.invoke(_call(
         "browser_open",
         {"url": "https://example.com"},
         session_id="s_close",
     ))
-    assert r3.content["visible"] is False
+    assert r3.content["visible"] is True
 
 
 @pytest.mark.asyncio
@@ -823,7 +847,9 @@ async def test_headless_and_visible_browsers_independent(
     """Two sessions in different modes should land in different
     browser handles — verified via the internal cache attrs."""
     await patched_browser.invoke(_call(
-        "browser_open", {"url": "https://h.example"}, session_id="hidden",
+        "browser_open",
+        {"url": "https://h.example", "visible": False},
+        session_id="hidden",
     ))
     await patched_browser.invoke(_call(
         "browser_open",
@@ -1092,7 +1118,9 @@ async def test_browser_launches_with_anti_automation_flag(
     await patched_browser.invoke(_call(
         "browser_open", {"url": "https://example.com"}, session_id="s1",
     ))
-    launched = patched_browser._browser_headless
+    # 2026-05-28: default flipped to visible=true, so the headed
+    # browser handle is the one that booted on this open.
+    launched = patched_browser._browser_headed
     assert launched is not None
     assert any(
         "AutomationControlled" in a for a in launched.last_launch_args

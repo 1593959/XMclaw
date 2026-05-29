@@ -774,6 +774,192 @@ _MEMORY_SEARCH_SPEC = ToolSpec(
 )
 
 
+def _build_memory_spec_description() -> str:
+    """2026-05-29 cleanup: bucket judgement list is rendered from
+    the central registry instead of hand-maintained here. Adding a
+    bucket to ``xmclaw.memory.v2.buckets.BUCKETS`` automatically
+    surfaces it in this tool's description — no copy-paste, no
+    drift. Phase 1's ``render_for_prompt()`` was built for exactly
+    this purpose.
+    """
+    from xmclaw.memory.v2.buckets import render_for_prompt
+    return (
+        "**Preferred** single-call interface for managing your long-"
+        "term memory (2026-05-28 memory v3). Four actions cover the "
+        "CRUD lifecycle:\n\n"
+        "  • ``add``   — record a NEW fact. Required: text, bucket, "
+        "scope. Optional: kind, confidence, due_ts (commitment only).\n"
+        "  • ``replace`` — supersede an old fact with a corrected one. "
+        "Required: text + EITHER ``old_fid`` (precise) OR ``old_text`` "
+        "(semantic search). Optional: bucket, kind, scope, reason.\n"
+        "  • ``forget`` — soft-delete fact(s). Required: EITHER "
+        "``old_fid`` OR ``query`` (semantic search). Optional: "
+        "max_matches (default 3), reason.\n"
+        "  • ``pin``   — record a fact that must never be auto-deleted "
+        "by dedup/compact. Args same as ``add``.\n\n"
+        "★ Bucket selection (required for add / pin / replace):\n"
+        f"{render_for_prompt()}\n\n"
+        "When in doubt, use ``misc`` — facts there still land in "
+        "MEMORY.md ## Other facts (recent) and are searchable.\n\n"
+        "Replaces the legacy single-purpose tools (``remember`` / "
+        "``memory_correct`` / ``memory_forget`` / ``memory_pin``). "
+        "Those tools still work for backward compat but new code "
+        "should use ``memory`` to keep the choice tree simple."
+    )
+
+
+def _bucket_enum() -> list[str]:
+    """All registered bucket tags — single source of truth for both
+    the multi-action ``memory`` tool's JSON schema enum and any
+    future introspection (UI dropdowns, doctor checks, etc.)."""
+    from xmclaw.memory.v2.buckets import BUCKETS
+    return list(BUCKETS.keys())
+
+
+_MEMORY_SPEC = ToolSpec(
+    name="memory",
+    description=_build_memory_spec_description(),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["add", "replace", "forget", "pin"],
+            },
+            "text": {
+                "type": "string",
+                "description": (
+                    "For add/pin/replace: the fact text (one sentence). "
+                    "For forget: ignored (use ``query`` instead)."
+                ),
+            },
+            "bucket": {
+                "type": "string",
+                "enum": _bucket_enum(),
+                "description": (
+                    "Required for add/pin. For replace: where the NEW "
+                    "fact should land (omit to inherit the old fact's "
+                    "bucket). Ignored for forget."
+                ),
+            },
+            "scope": {
+                "type": "string",
+                "enum": ["session", "user", "project", "global"],
+                "description": "Default: 'user'.",
+            },
+            "kind": {
+                "type": "string",
+                "description": (
+                    "preference / decision / identity / commitment / "
+                    "correction / project / lesson / fact. Default is "
+                    "derived from the bucket."
+                ),
+            },
+            "confidence": {
+                "type": "number",
+                "description": "0.0-1.0. Default 0.85.",
+            },
+            "due_ts": {
+                "type": "number",
+                "description": (
+                    "Unix timestamp. **Required** for "
+                    "``bucket=commitment``. When set, a cron entry "
+                    "fires at due_ts to surface a proactive notification "
+                    "and auto-forget the commitment fact."
+                ),
+            },
+            "old_fid": {
+                "type": "string",
+                "description": (
+                    "For replace/forget: the EXACT fid of the fact to "
+                    "supersede or remove. Pull from a recent "
+                    "memory_search result, or from the "
+                    "``<!-- fid:xxx -->`` markers in rendered .md files."
+                ),
+            },
+            "old_text": {
+                "type": "string",
+                "description": (
+                    "For replace: semantic search phrase to locate the "
+                    "wrong fact. ``old_fid`` wins if both supplied."
+                ),
+            },
+            "query": {
+                "type": "string",
+                "description": (
+                    "For forget: semantic search phrase to locate the "
+                    "fact(s) to remove."
+                ),
+            },
+            "max_matches": {
+                "type": "integer",
+                "description": (
+                    "For forget: cap on how many top hits to remove. "
+                    "Default 3, max 10."
+                ),
+            },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Optional one-line audit note for replace/forget."
+                ),
+            },
+        },
+        "required": ["action"],
+    },
+)
+
+
+_MEMORY_GET_SPEC = ToolSpec(
+    name="memory_get",
+    description=(
+        "**Read a persona MD file (or a section of one) verbatim** "
+        "from disk. Use when you need full structure / context that "
+        "``memory_search``'s top-K snippets won't give you — for "
+        "example after seeing a MEMORY.md ## Other facts (recent) "
+        "entry referenced as ``<!-- fid:abc -->`` and wanting the "
+        "surrounding bullets in the same section.\n\n"
+        "Memory v3 file roles (all under ``~/.xmclaw/persona/"
+        "profiles/<profile>/``):\n"
+        "  • IDENTITY.md   — agent's own identity\n"
+        "  • USER.md       — user identity + preferences\n"
+        "  • AGENTS.md     — workflows\n"
+        "  • TOOLS.md      — tool quirks\n"
+        "  • SOUL.md       — agent values\n"
+        "  • LEARNING.md   — hard rules\n"
+        "  • MEMORY.md     — failure modes + project facts + "
+        "commitments + other recent facts\n\n"
+        "Output preserves ``<!-- fid:xxx -->`` markers so you can "
+        "use those fids in subsequent ``memory(action=replace/forget)`` "
+        "calls."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "file": {
+                "type": "string",
+                "description": "Persona MD basename (case-insensitive).",
+            },
+            "section": {
+                "type": "string",
+                "description": (
+                    "Optional ``## Section header`` to extract just "
+                    "that segment. ``## `` prefix is optional."
+                ),
+            },
+            "lines": {
+                "type": "string",
+                "description": (
+                    "Optional line range like '10-50' (1-indexed, "
+                    "inclusive). Applied AFTER section filtering."
+                ),
+            },
+        },
+        "required": ["file"],
+    },
+)
+
+
 _MEMORY_PIN_SPEC = ToolSpec(
     name="memory_pin",
     description=(
@@ -947,6 +1133,52 @@ _MEMORY_CORRECT_SPEC = ToolSpec(
             },
         },
         "required": ["old_text", "new_text"],
+    },
+)
+
+
+_MEMORY_INSPECT_SPEC = ToolSpec(
+    name="memory_inspect",
+    description=(
+        "Inspect the LanceDB fact store's health: total fact count, "
+        "breakdown by (scope, kind), suspected near-duplicate ratio "
+        "per scope, and oldest / largest entries. **Call this when "
+        "you suspect memory bloat** — e.g., before / after a long "
+        "session, before deciding whether to run memory_dedup / "
+        "memory_forget.\n\n"
+        "★ Self-grooming workflow (you can run this without being "
+        "asked):\n"
+        "  1. ``memory_inspect`` — see the picture\n"
+        "  2. if ``dup_ratio > 0.15`` in some scope → "
+        "``memory_dedup(scope=..., dry_run=true)`` to preview\n"
+        "  3. if preview looks right → ``memory_dedup(scope=..., "
+        "dry_run=false)`` to commit\n"
+        "  4. if specific facts are demonstrably stale → "
+        "``memory_forget(query=...)``\n\n"
+        "Read-only — never modifies the store. Cheap; safe to call "
+        "often."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "scope": {
+                "type": "string",
+                "description": (
+                    "Restrict inspection to one scope (user / "
+                    "project / session). Omit for global picture."
+                ),
+            },
+            "sample_dup_check": {
+                "type": "integer",
+                "minimum": 50,
+                "maximum": 2000,
+                "description": (
+                    "How many facts to sample when estimating "
+                    "duplicate ratio. Higher = more accurate, "
+                    "slower. Default 500."
+                ),
+            },
+        },
     },
 )
 

@@ -75,6 +75,15 @@ memory-v2 = [
     "lancedb>=0.30.0",
     "pyarrow>=16",
 ]
+# 2026-05-28 memory v3 phase 3.2: BM25 second-axis recall fused
+# with the vector cosine path. Solves the chronic mediocre
+# pure-vector recall on Chinese keywords and rare identifiers
+# (the case OpenClaw LanceDB Pro plugin documented). Optional —
+# without it, MemoryService.recall_hybrid silently degrades to
+# pure-vector behaviour.
+memory-bm25 = [
+    "rank_bm25>=0.2.2",
+]
 # B-145: 双向聊天 channel adapters (飞书 + 钉钉 + 企微 + telegram)。
 # Each picks lazy: only the channels the user enables in
 # ``config.channels`` actually import their SDK at runtime.

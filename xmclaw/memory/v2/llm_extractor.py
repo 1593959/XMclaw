@@ -49,7 +49,22 @@ _log = get_logger(__name__)
 # ── Prompt ───────────────────────────────────────────────────────
 
 
-_EXTRACT_PROMPT = """\
+def _build_extract_prompt(user_message: str) -> str:
+    """2026-05-28 memory v3 phase 1.4: bucket choices are now
+    rendered from the central ``buckets.BUCKETS`` registry so the
+    extractor prompt stays automatically in sync when buckets are
+    added/removed/edited. Pre-v3, bucket assignment lived as
+    hardcoded if/elif in the Python caller — which silently dropped
+    any fact that didn't match the 3 cases (the "dark facts" bug).
+    """
+    from xmclaw.memory.v2.buckets import render_for_prompt
+    return _EXTRACT_PROMPT_TEMPLATE.format(
+        user_message=user_message,
+        bucket_choices=render_for_prompt(),
+    )
+
+
+_EXTRACT_PROMPT_TEMPLATE = """\
 你是一个事实抽取器。从下面这一条用户消息里抽取出**所有**值得长期\
 记住的事实/偏好/决定/约束。
 
@@ -62,6 +77,7 @@ _EXTRACT_PROMPT = """\
   "text": "事实的陈述句 (一句话，越紧凑越好)",
   "kind": "preference | decision | identity | commitment | correction | project | lesson",
   "scope": "user | project | session",
+  "bucket": "<见下方 bucket 选项，必填>",
   "confidence": 0.0-1.0
 }}
 
@@ -79,11 +95,14 @@ scope 含义：
 - project: 当前项目的事实（URL/账号/目标/截止）
 - session: 仅本会话相关，不应长期保留
 
+{bucket_choices}
+
 判断准则：
 - text 必须是**事实陈述句**，不是问题或闲聊
 - 跨越多个事实的复杂消息应拆成多条
 - 不要复述消息原文，要**归纳**成简洁陈述
 - 拿不准时**宁可输出**（remember 是幂等的），不要漏
+- **bucket 字段必填**，无法分类时填 "misc"（不要填空字符串）
 - 闲聊 / 单次操作细节 / 临时上下文 → 不要输出
 - 输出 JSON 数组之外**不要**任何字符（包括代码块标记）
 
@@ -209,9 +228,9 @@ class LLMFactExtractor:
                 f"[助手回复，仅作上下文参考]：\n"
                 f"{assistant_response[:1000]}"
             )
-            prompt = _EXTRACT_PROMPT.format(user_message=combined)
+            prompt = _build_extract_prompt(combined)
         else:
-            prompt = _EXTRACT_PROMPT.format(user_message=user_message[:3000])
+            prompt = _build_extract_prompt(user_message[:3000])
 
         # Skip immediately when the LLM channel is already busy —
         # don't queue, don't wait. The next user message will retry
@@ -359,25 +378,30 @@ async def llm_extract_and_remember(
     if not facts_raw:
         return []
     written = []
+    # 2026-05-28 memory v3 phase 1.4: bucket is now whatever the LLM
+    # tagged it with (the extractor prompt is auto-generated from
+    # the BUCKETS registry — see ``llm_extractor.py`` prompt). The
+    # legacy hardcoded if/elif fallback below only triggers for old
+    # extractor payloads / fact dicts that pre-date the prompt
+    # update. ``MemoryService.remember`` coerces empty/unknown to
+    # ``misc`` so we can never accidentally write a dark fact.
     for f in facts_raw:
         try:
-            # Wave-27 fix-12: tag identity/preference facts with the
-            # bucket the persona renderer reads. Without this the
-            # bucket column stays empty → IDENTITY.md / USER.md
-            # would still render empty even though the fact lives
-            # in L1.
             kind = f["kind"]
             scope = f["scope"]
-            bucket = ""
-            if kind == "identity":
-                # session-scope identity = "AI 自己是谁" → IDENTITY.md
-                # user-scope identity   = "用户身份信息"  → USER.md
-                if scope == "session":
-                    bucket = "agent_identity"
-                elif scope == "user":
-                    bucket = "user_identity"
-            elif kind == "preference" and scope == "user":
-                bucket = "user_preference"
+            bucket = (f.get("bucket") or "").strip()
+            if not bucket:
+                # Legacy fallback for payloads from a pre-v3 extractor:
+                # infer from (kind, scope). New extractor sets bucket
+                # explicitly. Empty bucket here will get coerced to
+                # "misc" by remember() — both paths converge.
+                if kind == "identity":
+                    if scope == "session":
+                        bucket = "agent_identity"
+                    elif scope == "user":
+                        bucket = "user_identity"
+                elif kind == "preference" and scope == "user":
+                    bucket = "user_preference"
             fact = await memory_service.remember(
                 f["text"],
                 kind=kind,

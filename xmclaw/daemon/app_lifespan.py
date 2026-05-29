@@ -334,6 +334,8 @@ def make_lifespan(
             # serve the system prompt). Migration is idempotent — re-
             # running after rows exist is a no-op.
             _app.state.persona_store = None
+            _migrate_task = None
+            _persona_store = None
             if vec_provider is not None:
                 try:
                     from xmclaw.core.persona.store import PersonaStore
@@ -347,23 +349,15 @@ def make_lifespan(
                     _persona_store = PersonaStore(
                         vec_provider, _persona_pdir,
                         item_factory=MemoryItem,
-                        # B-211: pass the embedder so set_manual writes
-                        # are vectorised — pre-B-211 audit showed 0%
-                        # embedding coverage on persona_manual rows.
                         embedder=embedder,
                     )
-                    report = await _persona_store.migrate_from_disk()
-                    _app.state.persona_store = _persona_store
-                    log.info(
-                        "persona_store.migrated profile=%s files=%s",
-                        _persona_pdir.name, dict(report),
+                    # 2026-05-29 perf fix: kick off migration in the
+                    # background so it runs in parallel with the
+                    # MemoryFileIndexer start below.
+                    _migrate_task = asyncio.create_task(
+                        _persona_store.migrate_from_disk(),
                     )
-                    # Hand the store to the primary AgentLoop so
-                    # post-sampling hooks can render-to-disk after
-                    # fact upserts. AgentLoop was constructed earlier
-                    # in the lifespan (factory build); we attach via
-                    # attribute since the constructor signature was
-                    # locked before this Phase 3 work landed.
+                    _app.state.persona_store = _persona_store
                     _agent_obj = getattr(_app.state, "agent", None)
                     if _agent_obj is not None:
                         _agent_obj._persona_store = _persona_store
@@ -373,6 +367,7 @@ def make_lifespan(
                         "falling back to legacy markdown reads", exc,
                     )
 
+            _indexer_started = False
             if embedder is not None and vec_provider is not None:
                 # Resolve persona dir lazily — same path the agent's
                 # remember tool writes to.
@@ -386,13 +381,6 @@ def make_lifespan(
                     ((_cfg.get("evolution") or {}).get("memory") or {})
                     .get("indexer") or {}
                 )
-                # B-210: optional workspace code paths to also index.
-                # Lives under ``evolution.memory.workspace_paths`` (list
-                # of dir strings). Empty / missing → indexer behaves as
-                # before (persona/journal only). Each path is filtered
-                # by the indexer's denylist + extension allowlist so
-                # ``node_modules`` / ``.git`` / build outputs don't end
-                # up in the vector store.
                 _ws_paths_raw = (
                     ((_cfg.get("evolution") or {}).get("memory") or {})
                     .get("workspace_paths") or []
@@ -400,8 +388,6 @@ def make_lifespan(
                 _workspace_paths = [
                     str(p) for p in _ws_paths_raw if isinstance(p, str)
                 ]
-                # Phase 7+: use LanceDB for workspace index when
-                # ``evolution.memory.indexer.backend`` is "lancedb".
                 _idx_backend = _idx_section.get("backend", "sqlite_vec")
                 if _idx_backend == "lancedb":
                     from xmclaw.providers.memory.lancedb import (
@@ -432,8 +418,23 @@ def make_lifespan(
                 )
                 await memory_indexer.start()
                 _app.state.memory_indexer = memory_indexer
+                _indexer_started = True
             else:
                 _app.state.memory_indexer = None
+
+            # Await the background persona migration now that the
+            # indexer (the other slow boot step) has finished.
+            if _migrate_task is not None:
+                try:
+                    report = await _migrate_task
+                    log.info(
+                        "persona_store.migrated profile=%s files=%s",
+                        _persona_pdir.name, dict(report),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "persona_store.migrate_failed err=%s", exc,
+                    )
         except Exception as exc:  # noqa: BLE001 — indexer failures
             # must not block daemon boot. Without it, memory_search
             # falls back to keyword scan over MEMORY.md — degraded
@@ -767,22 +768,9 @@ def make_lifespan(
         # here must not prevent the daemon from serving WS traffic —
         # evolution is a best-effort observability layer, not a
         # critical path.
-        if orchestrator is not None:
-            try:
-                await orchestrator.start()
-            except Exception:  # noqa: BLE001
-                pass
-
-        # Epic #24 Phase 1: default-start a single EvolutionAgent
-        # observer subscribed to GRADER_VERDICT (no longer requires
-        # an explicit ``POST /workspaces`` with ``kind="evolution"``).
-        # The observer aggregates per (skill_id, version) and writes
-        # PROMOTE / ROLLBACK proposals through SKILL_CANDIDATE_PROPOSED
-        # events; the orchestrator above (auto_apply=False by default)
-        # publishes them but does NOT mutate HEAD until a human / CLI
-        # approves. This wires the closed loop without giving the
-        # agent unsupervised authority over its own version pointer.
-        # Failures must not block boot.
+        #
+        # 2026-05-29 perf fix: run orchestrator + evolution_observer
+        # in parallel to cut ~2-4s from the serial boot path.
         _app.state.evolution_observer = None
         _app.state.evolution_evaluation_trigger = None
 
@@ -794,18 +782,30 @@ def make_lifespan(
             getattr(agent, "_tools", None),
         )
 
-        try:
-            from xmclaw.daemon.evolution_agent import EvolutionAgent
-            evo_agent = EvolutionAgent("evo-main", bus, registry=_evo_registry)
-            await evo_agent.start()
-            _app.state.evolution_observer = evo_agent
-        except Exception as exc:  # noqa: BLE001
-            from xmclaw.utils.log import get_logger
-            get_logger(__name__).warning(
-                "evolution_observer.start_failed err=%s", exc,
-            )
-            _app.state.evolution_observer = None
-            evo_agent = None  # type: ignore[assignment]
+        evo_agent = None
+        async def _start_orchestrator():
+            if orchestrator is not None:
+                try:
+                    await orchestrator.start()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        async def _start_evo_observer():
+            nonlocal evo_agent
+            try:
+                from xmclaw.daemon.evolution_agent import EvolutionAgent
+                evo_agent = EvolutionAgent("evo-main", bus, registry=_evo_registry)
+                await evo_agent.start()
+                _app.state.evolution_observer = evo_agent
+            except Exception as exc:  # noqa: BLE001
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).warning(
+                    "evolution_observer.start_failed err=%s", exc,
+                )
+                _app.state.evolution_observer = None
+                evo_agent = None
+
+        await asyncio.gather(_start_orchestrator(), _start_evo_observer())
 
         # B-294: wire the evaluation trigger. Phase 3.1 left ``evaluate()``
         # implemented but UNCALLED in production — verdicts accumulated
@@ -814,73 +814,65 @@ def make_lifespan(
         # onwards. Fires evaluate() ~30s after a verdict-burst settles,
         # capped at 1 fire / 5min, with min 10 new verdicts to skip
         # tiny bursts.
-        if evo_agent is not None:
+        # B-295: VariantSelector wires UCB1 over (skill_id, version)
+        # arms into the SkillToolProvider's invoke path.
+        # 2026-05-29: run evaluation_trigger + variant_selector in
+        # parallel since they have no inter-dependency.
+        async def _start_eval_trigger():
+            if evo_agent is not None:
+                try:
+                    from xmclaw.daemon.evolution_evaluation_trigger import (
+                        EvolutionEvaluationTrigger,
+                    )
+                    _eval_cfg = (
+                        (config or {}).get("evolution", {}).get("evaluation", {})
+                    )
+                    eval_trigger = EvolutionEvaluationTrigger(
+                        evo_agent, bus,
+                        debounce_s=float(_eval_cfg.get("debounce_s", 30.0)),
+                        cooldown_s=float(_eval_cfg.get("cooldown_s", 300.0)),
+                        min_new_verdicts=int(
+                            _eval_cfg.get("min_new_verdicts", 10),
+                        ),
+                        enabled=bool(_eval_cfg.get("enabled", True)),
+                    )
+                    await eval_trigger.start()
+                    _app.state.evolution_evaluation_trigger = eval_trigger
+                except Exception as exc:  # noqa: BLE001
+                    from xmclaw.utils.log import get_logger
+                    get_logger(__name__).warning(
+                        "evolution_evaluation_trigger.start_failed err=%s", exc,
+                    )
+                    _app.state.evolution_evaluation_trigger = None
+
+        async def _start_variant_selector():
+            _app.state.variant_selector = None
             try:
-                from xmclaw.daemon.evolution_evaluation_trigger import (
-                    EvolutionEvaluationTrigger,
+                _vs_cfg = (config or {}).get("evolution", {}).get(
+                    "variant_selector", {},
                 )
-                _eval_cfg = (
-                    (config or {}).get("evolution", {}).get("evaluation", {})
-                )
-                eval_trigger = EvolutionEvaluationTrigger(
-                    evo_agent, bus,
-                    debounce_s=float(_eval_cfg.get("debounce_s", 30.0)),
-                    cooldown_s=float(_eval_cfg.get("cooldown_s", 300.0)),
-                    min_new_verdicts=int(
-                        _eval_cfg.get("min_new_verdicts", 10),
-                    ),
-                    enabled=bool(_eval_cfg.get("enabled", True)),
-                )
-                await eval_trigger.start()
-                _app.state.evolution_evaluation_trigger = eval_trigger
+                if (
+                    _vs_cfg.get("enabled", True)
+                    and _evo_registry is not None
+                    and _stp_ref is not None
+                ):
+                    from xmclaw.skills.variant_selector import VariantSelector
+                    selector = VariantSelector(
+                        registry=_evo_registry,
+                        exploration_c=float(_vs_cfg.get("exploration_c", 2.0)),
+                        head_warmup_plays=int(_vs_cfg.get("head_warmup_plays", 5)),
+                    )
+                    await selector.start(bus)
+                    _stp_ref._variant_selector = selector
+                    _app.state.variant_selector = selector
             except Exception as exc:  # noqa: BLE001
                 from xmclaw.utils.log import get_logger
                 get_logger(__name__).warning(
-                    "evolution_evaluation_trigger.start_failed err=%s", exc,
+                    "variant_selector.start_failed err=%s", exc,
                 )
-                _app.state.evolution_evaluation_trigger = None
+                _app.state.variant_selector = None
 
-        # B-295: VariantSelector wires UCB1 over (skill_id, version)
-        # arms into the SkillToolProvider's invoke path. Without this,
-        # candidate skill versions never get traffic → never get plays
-        # → controller's ``min_plays`` threshold never clears →
-        # B-294's evaluate() trigger fires but always finds the same
-        # winner (HEAD) and proposes nothing. With this wired, new
-        # variants get explore-traffic via UCB1, accumulate plays,
-        # and the loop closes.
-        # OPT-IN: ``config.evolution.variant_selector.enabled`` (default
-        # True). Operators who want pure HEAD-only behaviour can flip
-        # to False; the SkillToolProvider falls back transparently.
-        _app.state.variant_selector = None
-        try:
-            _vs_cfg = (config or {}).get("evolution", {}).get(
-                "variant_selector", {},
-            )
-            # B-298: reuse the (_stp_ref, _evo_registry) the recursive
-            # walk found above. If the agent has no SkillToolProvider
-            # in its tool stack, both are None and we silently skip —
-            # there's nothing to multiplex.
-            if (
-                _vs_cfg.get("enabled", True)
-                and _evo_registry is not None
-                and _stp_ref is not None
-            ):
-                from xmclaw.skills.variant_selector import VariantSelector
-                selector = VariantSelector(
-                    registry=_evo_registry,
-                    exploration_c=float(_vs_cfg.get("exploration_c", 2.0)),
-                    head_warmup_plays=int(_vs_cfg.get("head_warmup_plays", 5)),
-                )
-                await selector.start(bus)
-                # Inject into the SkillToolProvider so invoke() consults it.
-                _stp_ref._variant_selector = selector
-                _app.state.variant_selector = selector
-        except Exception as exc:  # noqa: BLE001
-            from xmclaw.utils.log import get_logger
-            get_logger(__name__).warning(
-                "variant_selector.start_failed err=%s", exc,
-            )
-            _app.state.variant_selector = None
+        await asyncio.gather(_start_eval_trigger(), _start_variant_selector())
 
         # Epic #24 Phase 2.3: default-start JournalWriter + Profile
         # Extractor. JournalWriter buffers session events and writes
@@ -892,129 +884,108 @@ def make_lifespan(
         # the active persona's ``USER.md``. Phase 2.3 wires the
         # *harness* — both default to no-op extractors. Phase 2.4
         # plugs in a real LLM-driven extractor.
+        # 2026-05-29 perf fix: journal_writer + profile_extractor are
+        # independent background services — start them in parallel.
         _app.state.journal_writer = None
-        try:
-            from xmclaw.core.journal import JournalWriter
-            jw = JournalWriter(bus)
-            await jw.start()
-            _app.state.journal_writer = jw
-        except Exception as exc:  # noqa: BLE001
-            log.warning("journal.writer_start_failed err=%s", exc)
-            _app.state.journal_writer = None
-
         _app.state.profile_extractor = None
-        try:
-            from xmclaw.core.profile import ProfileExtractor, noop_extractor
-            from xmclaw.daemon.factory import _resolve_persona_profile_dir
-            _cfg = config or {}
 
-            def _user_md_path():
-                return _resolve_persona_profile_dir(_cfg) / "USER.md"
-
-            # Phase 3.5: pull a real LLM-backed extractor if an agent
-            # (and therefore an LLM provider) is wired. Falls back to
-            # the bench-friendly no-op when there's no LLM (echo-only
-            # mode, fresh install before LLM key is set).
-            extractor = noop_extractor
+        async def _start_journal():
             try:
-                if agent is not None and getattr(agent, "_llm", None) is not None:
-                    from xmclaw.daemon.llm_extractors import (
-                        build_profile_extractor,
-                    )
-                    extractor = build_profile_extractor(agent._llm)
+                from xmclaw.core.journal import JournalWriter
+                jw = JournalWriter(bus)
+                await jw.start()
+                _app.state.journal_writer = jw
             except Exception as exc:  # noqa: BLE001
-                log.warning(
-                    "profile.llm_extractor_build_failed err=%s — "
-                    "falling back to noop", exc,
-                )
+                log.warning("journal.writer_start_failed err=%s", exc)
+                _app.state.journal_writer = None
 
-            # B-197: build a fact_writer callback that translates
-            # (text, metadata) → MemoryItem + embed + put. Kept as a
-            # callback so xmclaw/core/ stays free of providers/
-            # imports per the layering rule.
-            #
-            # B-198 Phase 3: after writing the row, route through
-            # PersonaStore.render_to_disk(USER.md) so the on-disk
-            # file becomes a fresh render of the DB. Disk is now a
-            # cache; DB is truth. (We default to USER.md because
-            # ProfileExtractor exclusively produces kind=preference
-            # which lives in USER.md per AUTO_SECTIONS.)
-            _vec = getattr(_app.state, "vec_provider", None)
-            _embed = getattr(_app.state, "embedder", None)
-            _store = getattr(_app.state, "persona_store", None)
-            _fact_writer = None
-            if _vec is not None:
-                async def _fact_writer_impl(  # type: ignore[no-redef]
-                    text: str, metadata: dict,  # noqa: ANN001
-                ) -> None:
-                    # B-197 Phase 2: route through upsert_fact so
-                    # repeated facts strengthen an existing row
-                    # (evidence_count++) instead of stacking new ones.
-                    # The auto-promote rule (working → long after
-                    # evidence_count >= 3 + confidence >= 0.7) lives
-                    # inside upsert_fact / _strengthen.
-                    emb = None
-                    if _embed is not None:
-                        try:
-                            vecs = await _embed.embed([text])
-                            if vecs and vecs[0]:
-                                emb = list(vecs[0])
-                        except Exception:  # noqa: BLE001
-                            emb = None
-                    layer_name = str(metadata.get("layer") or "working")
-                    upsert = getattr(_vec, "upsert_fact", None)
-                    wrote_ok = False
-                    if upsert is not None:
-                        try:
-                            await upsert(
-                                text=text,
-                                embedding=emb,
-                                layer=layer_name,
-                                metadata=metadata,
-                            )
-                            wrote_ok = True
-                        except Exception:  # noqa: BLE001
-                            wrote_ok = False
-                    if not wrote_ok:
-                        # Fallback: legacy put for providers without
-                        # upsert (mostly tests / non-default backends).
-                        import uuid as _uuid
-                        import time as _t
-                        from xmclaw.providers.memory.base import MemoryItem
-                        item = MemoryItem(
-                            id=_uuid.uuid4().hex,
-                            layer=layer_name,
-                            text=text,
-                            metadata=metadata,
-                            embedding=tuple(emb) if emb else None,
-                            ts=_t.time(),
+        async def _start_profile():
+            try:
+                from xmclaw.core.profile import ProfileExtractor, noop_extractor
+                from xmclaw.daemon.factory import _resolve_persona_profile_dir
+                _cfg = config or {}
+
+                def _user_md_path():
+                    return _resolve_persona_profile_dir(_cfg) / "USER.md"
+
+                extractor = noop_extractor
+                try:
+                    if agent is not None and getattr(agent, "_llm", None) is not None:
+                        from xmclaw.daemon.llm_extractors import (
+                            build_profile_extractor,
                         )
-                        await _vec.put(layer_name, item)
-                    # B-198 Phase 3: re-render USER.md from DB so the
-                    # on-disk file (still read by the persona
-                    # assembler each turn) reflects the new row. Best
-                    # effort — render failure logs but doesn't poison
-                    # the write.
-                    if _store is not None:
-                        try:
-                            await _store.render_to_disk("USER.md")
-                        except Exception as exc:  # noqa: BLE001
-                            log.warning(
-                                "persona_store.render_after_write_failed "
-                                "file=USER.md err=%s", exc,
-                            )
-                _fact_writer = _fact_writer_impl
+                        extractor = build_profile_extractor(agent._llm)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "profile.llm_extractor_build_failed err=%s — "
+                        "falling back to noop", exc,
+                    )
 
-            pe = ProfileExtractor(
-                bus, _user_md_path,
-                extractor_callable=extractor,
-                fact_writer=_fact_writer,
-            )
-            await pe.start()
-            _app.state.profile_extractor = pe
-        except Exception as exc:  # noqa: BLE001
-            log.warning("profile.extractor_start_failed err=%s", exc)
-            _app.state.profile_extractor = None
+                _vec = getattr(_app.state, "vec_provider", None)
+                _embed = getattr(_app.state, "embedder", None)
+                _store = getattr(_app.state, "persona_store", None)
+                _fact_writer = None
+                if _vec is not None:
+                    async def _fact_writer_impl(  # type: ignore[no-redef]
+                        text: str, metadata: dict,  # noqa: ANN001
+                    ) -> None:
+                        emb = None
+                        if _embed is not None:
+                            try:
+                                vecs = await _embed.embed([text])
+                                if vecs and vecs[0]:
+                                    emb = list(vecs[0])
+                            except Exception:  # noqa: BLE001
+                                emb = None
+                        layer_name = str(metadata.get("layer") or "working")
+                        upsert = getattr(_vec, "upsert_fact", None)
+                        wrote_ok = False
+                        if upsert is not None:
+                            try:
+                                await upsert(
+                                    text=text,
+                                    embedding=emb,
+                                    layer=layer_name,
+                                    metadata=metadata,
+                                )
+                                wrote_ok = True
+                            except Exception:  # noqa: BLE001
+                                wrote_ok = False
+                        if not wrote_ok:
+                            import uuid as _uuid
+                            import time as _t
+                            from xmclaw.providers.memory.base import MemoryItem
+                            item = MemoryItem(
+                                id=_uuid.uuid4().hex,
+                                layer=layer_name,
+                                text=text,
+                                metadata=metadata,
+                                embedding=tuple(emb) if emb else None,
+                                ts=_t.time(),
+                            )
+                            await _vec.put(layer_name, item)
+                        if _store is not None:
+                            try:
+                                await _store.render_to_disk("USER.md")
+                            except Exception as exc:  # noqa: BLE001
+                                log.warning(
+                                    "persona_store.render_after_write_failed "
+                                    "file=USER.md err=%s", exc,
+                                )
+                    _fact_writer = _fact_writer_impl
+
+                pe = ProfileExtractor(
+                    bus, _user_md_path,
+                    extractor_callable=extractor,
+                    fact_writer=_fact_writer,
+                )
+                await pe.start()
+                _app.state.profile_extractor = pe
+            except Exception as exc:  # noqa: BLE001
+                log.warning("profile.extractor_start_failed err=%s", exc)
+                _app.state.profile_extractor = None
+
+        await asyncio.gather(_start_journal(), _start_profile())
 
         # Epic #24 Phase 2.4: invalidate the system-prompt cache when
         # USER.md gets new auto-extracted preferences. Without this,
@@ -1173,14 +1144,17 @@ def make_lifespan(
             log.warning("sleep_worker.start_failed err=%s", exc)
             _app.state.sleep_worker = None
 
-        # B-173: SkillsWatcher — periodic user_loader.load_all() so
-        # `npx skills add` / `git clone <url> ~/.xmclaw/skills_user/<name>` /
-        # manual SKILL.md drops appear without a daemon restart. ~10s
-        # tick is cheap (UserSkillsLoader is idempotent on already-
-        # registered (id, version) pairs).
-        # Configurable via ``evolution.skills_watcher.{enabled,interval_s}``.
+        # 2026-05-29 perf fix: skills_watcher, mutation_orchestrator,
+        # proposal_materializer, reflection_materializer are all
+        # independent background services — start them in parallel.
         _app.state.skills_watcher = None
-        if orchestrator is not None:
+        _app.state.mutation_orchestrator = None
+        _app.state.proposal_materializer = None
+        _app.state.reflection_materializer = None
+
+        async def _start_skills_watcher():
+            if orchestrator is None:
+                return
             try:
                 from xmclaw.daemon.skills_watcher import SkillsWatcher
                 from xmclaw.skills.user_loader import resolve_skill_roots
@@ -1197,10 +1171,6 @@ def make_lifespan(
                         extra_roots=extras,
                         interval_s=sw_interval,
                         enabled=True,
-                        # B-333: bus needed so the watcher can emit
-                        # SKILL_UPDATE_REQUIRES_RESTART when it spots
-                        # a skill.py mtime change (importlib-cached,
-                        # restart needed to pick up).
                         bus=bus,
                     )
                     await watcher.start()
@@ -1209,19 +1179,9 @@ def make_lifespan(
                 log.warning("skills_watcher.start_failed err=%s", exc)
                 _app.state.skills_watcher = None
 
-        # B-172: MutationOrchestrator — runs the SkillMutator
-        # (DSPy/GEPA via xmclaw.core.evolution.mutator) when
-        # GRADER_VERDICT EWMA shows a skill is underperforming. Writes
-        # the candidate to ``<id>/versions/v<N>.md`` (so daemon
-        # restart preserves it via user_loader B-172 extension), then
-        # emits SKILL_CANDIDATE_PROPOSED with decision="promote" for
-        # the existing EvolutionOrchestrator to handle. ``set_head=False``
-        # on register means a worse-than-baseline mutation is audited
-        # but never live without explicit promote.
-        # Configurable via ``evolution.mutation.{enabled, threshold,
-        # min_samples, cooldown_s, score_delta, ewma_alpha}``.
-        _app.state.mutation_orchestrator = None
-        if orchestrator is not None:
+        async def _start_mutation():
+            if orchestrator is None:
+                return
             try:
                 from xmclaw.daemon.mutation_orchestrator import (
                     MutationOrchestrator,
@@ -1231,10 +1191,6 @@ def make_lifespan(
                     or {}
                 )
                 if bool(m_cfg.get("enabled", True)):
-                    # Sprint 3 #5: wire ReflectiveMutator as fallback
-                    # when DSPy is not installed. Pure-Python, no heavy
-                    # deps — closes the "mutation engine is wired but
-                    # inert" gap identified in the evolution audit.
                     fallback = None
                     if agent is not None and config is not None:
                         llm = getattr(agent, "_llm", None)
@@ -1263,17 +1219,9 @@ def make_lifespan(
                 )
                 _app.state.mutation_orchestrator = None
 
-        # B-167: ProposalMaterializer — closes the missing link between
-        # SkillProposer drafts (decision="propose") and SkillRegistry.
-        # Pre-B-167 a draft sat in proposals.jsonl + events.db and the
-        # "approve" button forwarded to /promote, which 404'd because
-        # winner_version=0 was never registered. Now: every proposal
-        # writes ~/.xmclaw/skills_user/<id>/SKILL.md + register +
-        # set_head — the agent uses it on the next turn, no manual
-        # gate. Disable via ``evolution.materialize.enabled = false``
-        # if the user prefers the old (broken) approve-first flow.
-        _app.state.proposal_materializer = None
-        if orchestrator is not None:
+        async def _start_proposal():
+            if orchestrator is None:
+                return
             try:
                 from xmclaw.daemon.proposal_materializer import (
                     ProposalMaterializer,
@@ -1284,9 +1232,6 @@ def make_lifespan(
                 )
                 pm_enabled = bool(pm_cfg.get("enabled", True))
                 if pm_enabled:
-                    # B-197: hand vec store + embedder so each
-                    # newly-materialized skill lands as a DB row
-                    # (kind=procedure) for memory_search retrieval.
                     materializer = ProposalMaterializer(
                         orchestrator.registry, bus, enabled=True,
                         memory_provider=getattr(
@@ -1302,43 +1247,38 @@ def make_lifespan(
                 )
                 _app.state.proposal_materializer = None
 
-        # 2026-05-12: ReflectionMaterializer — closes the reflection
-        # loop. Pre-this, INNER_MONOLOGUE + METACOGNITION_PROPOSAL
-        # events landed in events.db + Mind UI but had ZERO downstream
-        # Python consumer — agent's next turn rebuilt its system prompt
-        # from persona files that had no memory of its own reflections.
-        # Now: ``plan`` thoughts → AGENTS.md, ``concern`` thoughts →
-        # MEMORY.md, preference_update / curriculum_edit proposals →
-        # USER.md / AGENTS.md. ``skill_propose`` proposals still flow
-        # through ProposalMaterializer (above) — one materializer per
-        # artifact type, no dual writes.
-        _app.state.reflection_materializer = None
-        try:
-            from xmclaw.cognition.reflection_materializer import (
-                ReflectionMaterializer,
-            )
-            from xmclaw.daemon.factory import (
-                _resolve_persona_profile_dir,
-            )
-            _rm_cfg_dict = config or {}
+        async def _start_reflection():
+            try:
+                from xmclaw.cognition.reflection_materializer import (
+                    ReflectionMaterializer,
+                )
+                from xmclaw.daemon.factory import (
+                    _resolve_persona_profile_dir,
+                )
+                _rm_cfg_dict = config or {}
 
-            def _rm_persona_dir() -> Any:
-                # Resolved per-event so persona-switch mid-session is
-                # honoured (mirrors ProfileExtractor's contract).
-                return _resolve_persona_profile_dir(_rm_cfg_dict)
+                def _rm_persona_dir() -> Any:
+                    return _resolve_persona_profile_dir(_rm_cfg_dict)
 
-            _rm = ReflectionMaterializer(
-                bus=bus,
-                persona_dir_provider=_rm_persona_dir,
-                cfg=_rm_cfg_dict,
-            )
-            await _rm.start()
-            _app.state.reflection_materializer = _rm
-        except Exception as exc:  # noqa: BLE001
-            log.warning(
-                "reflection_materializer.start_failed err=%s", exc,
-            )
-            _app.state.reflection_materializer = None
+                _rm = ReflectionMaterializer(
+                    bus=bus,
+                    persona_dir_provider=_rm_persona_dir,
+                    cfg=_rm_cfg_dict,
+                )
+                await _rm.start()
+                _app.state.reflection_materializer = _rm
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "reflection_materializer.start_failed err=%s", exc,
+                )
+                _app.state.reflection_materializer = None
+
+        await asyncio.gather(
+            _start_skills_watcher(),
+            _start_mutation(),
+            _start_proposal(),
+            _start_reflection(),
+        )
 
         # B-145: channel adapters (飞书 / 钉钉 / 企微 / Telegram).
         # Each enabled channel gets a long-running adapter that listens
@@ -2492,14 +2432,37 @@ def make_lifespan(
                     _bytes_cfg = _retention_cfg.get("max_bytes") or {
                         "working": 104857600, "long_term": None,
                     }
+                    # 2026-05-28: auto-dedup. The retention sweep
+                    # above does TTL + cap eviction but NOT semantic
+                    # dedup — the LanceDB store accumulates duplicate
+                    # facts (same insight extracted under 5 different
+                    # phrasings over a long session) and the agent
+                    # had no autonomous way to clean them. Now: every
+                    # ``dedup_every_n_sweeps`` retention cycles, run
+                    # ``dedup_scope(dry_run=False)`` across each scope
+                    # in ``dedup_scopes``. Defaults: every 24 sweeps
+                    # (= once a day if interval is 1h) across user /
+                    # project / session scopes. Set
+                    # ``dedup_every_n_sweeps=0`` to disable; agent
+                    # can still invoke ``memory_dedup`` manually.
+                    _dedup_every_n = int(
+                        _retention_cfg.get("dedup_every_n_sweeps", 24),
+                    )
+                    _dedup_scopes = list(
+                        _retention_cfg.get("dedup_scopes") or [
+                            "user", "project", "session",
+                        ],
+                    )
 
                     async def _memory_v2_sweep_loop() -> None:
                         # First sweep happens AFTER one interval so
                         # the daemon doesn't block boot. Loop never
                         # raises — every iteration is wrapped.
+                        sweep_count = 0
                         try:
                             while True:
                                 await asyncio.sleep(_sweep_interval)
+                                sweep_count += 1
                                 try:
                                     summary = await memory_v2_service.sweep(
                                         ttl=_ttl_cfg,
@@ -2520,6 +2483,35 @@ def make_lifespan(
                                     log.warning(
                                         "memory_v2.sweep_failed err=%s "
                                         "(loop continues)", exc,
+                                    )
+                                # ── Auto-dedup tick ───────────────
+                                if (
+                                    _dedup_every_n > 0
+                                    and sweep_count % _dedup_every_n == 0
+                                ):
+                                    total_merged = 0
+                                    for _scope in _dedup_scopes:
+                                        try:
+                                            d = await memory_v2_service.dedup_scope(
+                                                scope=_scope, dry_run=False,
+                                            )
+                                            total_merged += int(
+                                                d.get("merged", 0)
+                                            )
+                                        except asyncio.CancelledError:
+                                            raise
+                                        except Exception as exc:  # noqa: BLE001
+                                            log.warning(
+                                                "memory_v2.auto_dedup_failed "
+                                                "scope=%s err=%s",
+                                                _scope, exc,
+                                            )
+                                    log.info(
+                                        "memory_v2.auto_dedup_done "
+                                        "scopes=%s merged=%d "
+                                        "after_sweep=%d",
+                                        _dedup_scopes, total_merged,
+                                        sweep_count,
                                     )
                         except asyncio.CancelledError:
                             return

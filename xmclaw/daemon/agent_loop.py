@@ -844,6 +844,76 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     "user_prompt_submit_hook.dispatch_failed err=%s", _exc,
                 )
 
+        # 2026-05-28 memory v3 phase 2: similarity-axis auto-recall.
+        # Embed the (possibly hook-rewritten) user message, pull the
+        # top-K most-related LanceDB facts that AREN'T already in the
+        # .md system prompt (structural axis), and prepend them as a
+        # <recalled> block. The block rides on the USER MESSAGE so
+        # we don't bust the system prompt cache — peers' (Hermes /
+        # OpenClaw) pattern.
+        #
+        # 2026-05-29 incident (chat-b09a3ad4): the first version put
+        # this on the critical path with no timeout and called
+        # ``recall_hybrid`` (which rebuilds a Python BM25 index per
+        # query over the full corpus). A 5K-fact store took 6245s
+        # per turn. Hermes avoids this by running recall as a
+        # **background prefetch between turns** and caching the
+        # result before the next user message arrives; OpenClaw's
+        # hybrid plugin uses LanceDB's native FTS index (C++) so the
+        # keyword leg stays O(log N). We have neither yet, so this
+        # path now:
+        #   - defaults to **OFF** (``enabled`` opt-in via config)
+        #   - **never blocks** longer than ``timeout_s`` (1.0s default)
+        #   - **never calls recall_hybrid** unless ``use_hybrid``
+        #     is explicitly set (pure vector by default)
+        # The proper Hermes-style background prefetch lands in
+        # Phase 5; this is the safety net.
+        try:
+            cog_cfg = (
+                self._cfg.get("cognition", {})
+                if isinstance(getattr(self, "_cfg", None), dict) else {}
+            )
+            ar_cfg = (cog_cfg.get("auto_recall") or {}) if isinstance(
+                cog_cfg, dict,
+            ) else {}
+            ar_enabled = bool(ar_cfg.get("enabled", False))  # default OFF
+            mem_svc = getattr(self, "_memory_service", None)
+            if ar_enabled and mem_svc is not None and user_message:
+                from xmclaw.daemon.auto_recall import (
+                    _DEFAULT_EXCLUDE_BUCKETS as _AR_DEFAULTS,
+                    _DEFAULT_TIMEOUT_S as _AR_DEFAULT_TIMEOUT,
+                    prepend_recalled_block as _prepend_recalled,
+                    recall_for_message as _recall_for_message,
+                )
+                excludes = set(_AR_DEFAULTS) | set(
+                    ar_cfg.get("exclude_buckets") or [],
+                )
+                hits = await _recall_for_message(
+                    mem_svc, user_message,
+                    k=int(ar_cfg.get("k", 8)),
+                    min_similarity=float(
+                        ar_cfg.get("min_similarity", 0.65),
+                    ),
+                    exclude_buckets=excludes,
+                    use_hybrid=bool(ar_cfg.get("use_hybrid", False)),
+                    timeout_s=float(
+                        ar_cfg.get("timeout_s", _AR_DEFAULT_TIMEOUT),
+                    ),
+                )
+                if hits:
+                    user_message = _prepend_recalled(user_message, hits)
+                    from xmclaw.utils.log import get_logger
+                    get_logger(__name__).info(
+                        "auto_recall.injected k=%d top_sim=%.2f",
+                        len(hits), hits[0].similarity,
+                    )
+        except Exception as _exc:  # noqa: BLE001
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).warning(
+                "auto_recall.failed err=%s (turn continues without recall)",
+                _exc,
+            )
+
         # 1. Announce the user message. We propagate the client-supplied
         # correlation_id so the optimistic local-echo bubble in the web
         # UI dedupes against the mirrored event (otherwise the user sees
@@ -1435,18 +1505,38 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     _intent_emb: list[float] | None = None
                     if self._embedder is not None:
                         try:
-                            _intent_emb = await self._embedder.embed(
-                                [user_message],
+                            # 2026-05-29 perf fix: embed call on hot path
+                            # must have a hard timeout. Ollama connect
+                            # hangs can block the event loop for 30s+.
+                            _intent_emb = await asyncio.wait_for(
+                                self._embedder.embed([user_message]),
+                                timeout=2.0,
                             )
                             if _intent_emb:
                                 _intent_emb = _intent_emb[0]
+                        except asyncio.TimeoutError:
+                            from xmclaw.utils.log import get_logger
+                            get_logger(__name__).debug(
+                                "memory_graph.embed_timeout"
+                            )
+                            _intent_emb = None
                         except Exception:  # noqa: BLE001
-                            pass
-                    _graph_recall = await _graph.proactive_recall(
-                        context=user_message,
-                        intent_embedding=_intent_emb,
-                        limit=3,
-                    )
+                            _intent_emb = None
+                    try:
+                        _graph_recall = await asyncio.wait_for(
+                            _graph.proactive_recall(
+                                context=user_message,
+                                intent_embedding=_intent_emb,
+                                limit=3,
+                            ),
+                            timeout=3.0,
+                        )
+                    except asyncio.TimeoutError:
+                        from xmclaw.utils.log import get_logger
+                        get_logger(__name__).debug(
+                            "memory_graph.proactive_recall_timeout"
+                        )
+                        _graph_recall = ""
                     if _graph_recall:
                         if memory_ctx_block:
                             memory_ctx_block = (
@@ -1471,16 +1561,69 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # by Phase 3b's KeyInfoExtractor shows up here automatically.
         # See §8.3.1 of MEMORY_EVOLUTION_REDESIGN.md.
         memory_v2_service = getattr(self, "_memory_service", None)
+        # 2026-05-29 emergency kill switch: ``XMC_DISABLE_V2_RECALL=1``
+        # short-circuits BOTH the ``render_for_prompt`` block below and
+        # the ``unified_recall_block`` further down. Use this to
+        # isolate whether memory-side recall is the slow path. The
+        # auto_recall block (Phase 2) is already gated by
+        # ``cognition.auto_recall.enabled`` (default false) so it
+        # doesn't need a separate switch.
+        import os as _os
+        _disable_v2_recall = _os.environ.get("XMC_DISABLE_V2_RECALL") in (
+            "1", "true", "yes",
+        )
+        if _disable_v2_recall:
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).info(
+                "memory_v2.recall_disabled XMC_DISABLE_V2_RECALL=1 set",
+            )
+            memory_v2_service = None
         if memory_v2_service is not None:
+            # 2026-05-29 (chat-b09a3ad4): time-box this. It runs 4
+            # concurrent recalls (user/project/decision/relevant) +
+            # 1-hop graph fan-out per turn — already ~3s typical
+            # in the published optimisation comment, but cold caches
+            # / slow embedders push it to minutes. Without the
+            # wait_for the entire turn waits, and that wait is THE
+            # reason the daemon felt unresponsive even after the
+            # auto_recall timeout shipped.
+            import asyncio as _ar_asyncio
             try:
-                v2_block = await memory_v2_service.render_for_prompt(
-                    user_message or "", k=8,
+                v2_block = await _ar_asyncio.wait_for(
+                    memory_v2_service.render_for_prompt(
+                        user_message or "", k=8,
+                    ),
+                    timeout=2.0,
                 )
                 if v2_block:
                     memory_ctx_block = (
                         memory_ctx_block.rstrip() + v2_block
                         if memory_ctx_block
                         else v2_block
+                    )
+            except _ar_asyncio.TimeoutError:
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).info(
+                    "memory_v2.render_for_prompt timed out "
+                    "after 2s (turn proceeds without v2 block)",
+                )
+                # 2026-05-29 perf fix: if V2 recall times out once,
+                # assume the backend is unhealthy and disable it for
+                # the rest of this turn to avoid cascading stalls.
+                memory_v2_service = None
+            except RuntimeError as exc:
+                if "lance error" in str(exc).lower():
+                    from xmclaw.utils.log import get_logger
+                    get_logger(__name__).error(
+                        "memory_v2.lance_corrupted err=%s — "
+                        "disabling V2 recall for this session", exc,
+                    )
+                    memory_v2_service = None
+                else:
+                    from xmclaw.utils.log import get_logger
+                    get_logger(__name__).warning(
+                        "memory_v2.render_failed session=%s err=%s",
+                        session_id, exc,
                     )
             except Exception as exc:  # noqa: BLE001
                 from xmclaw.utils.log import get_logger
@@ -1577,14 +1720,32 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # silent no-op.
         unified_recall_block = ""
         svc = self._memory_service
+        # 2026-05-29: respect the same XMC_DISABLE_V2_RECALL kill switch.
+        if _disable_v2_recall:
+            svc = None
         if svc is not None and user_message:
+            # 2026-05-29 (chat-b09a3ad4): time-box this too.
+            # Sibling of the render_for_prompt block above — same
+            # failure mode (slow embedder / cold LanceDB cache).
             try:
+                import asyncio as _ur_asyncio
                 import time as _t
                 _t0 = _t.perf_counter()
-                v2_hits = await svc.recall(
-                    query=user_message,
-                    k=self._memory_recall_top_k,
-                )
+                try:
+                    v2_hits = await _ur_asyncio.wait_for(
+                        svc.recall(
+                            query=user_message,
+                            k=self._memory_recall_top_k,
+                        ),
+                        timeout=1.5,
+                    )
+                except _ur_asyncio.TimeoutError:
+                    from xmclaw.utils.log import get_logger
+                    get_logger(__name__).info(
+                        "memory_v2.unified_recall timed out "
+                        "after 1.5s (turn proceeds without recall block)",
+                    )
+                    v2_hits = []
                 elapsed_ms = (_t.perf_counter() - _t0) * 1000.0
                 rendered: list[str] = []
                 event_hits: list[dict[str, Any]] = []

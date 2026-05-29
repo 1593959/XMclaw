@@ -73,6 +73,9 @@ from xmclaw.providers.tool._specs import (  # noqa: F401
     _MEMORY_CORRECT_SPEC as _MEMORY_CORRECT_SPEC,
     _MEMORY_DEDUP_SPEC as _MEMORY_DEDUP_SPEC,
     _MEMORY_FORGET_SPEC as _MEMORY_FORGET_SPEC,
+    _MEMORY_GET_SPEC as _MEMORY_GET_SPEC,
+    _MEMORY_INSPECT_SPEC as _MEMORY_INSPECT_SPEC,
+    _MEMORY_SPEC as _MEMORY_SPEC,
     _MEMORY_PIN_SPEC as _MEMORY_PIN_SPEC,
     _MEMORY_SEARCH_SPEC as _MEMORY_SEARCH_SPEC,
     _NOTE_WRITE_SPEC as _NOTE_WRITE_SPEC,
@@ -442,6 +445,19 @@ class BuiltinTools(
         specs.append(_MEMORY_FORGET_SPEC)
         specs.append(_MEMORY_CORRECT_SPEC)
         specs.append(_MEMORY_DEDUP_SPEC)
+        # 2026-05-28: memory_inspect — read-only health probe.
+        # Agent calls this autonomously to decide whether forget /
+        # dedup is warranted. Read-only so always advertised.
+        specs.append(_MEMORY_INSPECT_SPEC)
+        # 2026-05-28 memory v3 phase 4: preferred multi-action
+        # memory tool + memory_get for file reads. Replaces the
+        # 4 legacy single-purpose tools (``remember`` /
+        # ``memory_correct`` / ``memory_forget`` / ``memory_pin``)
+        # which remain registered for backward compat. Always
+        # advertised; handlers fail-loud when memory_v2_service
+        # isn't wired so the agent gets a clean diagnostic.
+        specs.append(_MEMORY_SPEC)
+        specs.append(_MEMORY_GET_SPEC)
         # B-ContextLoss: chronological history browser.
         # Only advertised when a session_store is wired.
         if self._session_store is not None:
@@ -585,6 +601,12 @@ class BuiltinTools(
                 return await self._memory_correct(call, t0)
             if call.name == "memory_dedup":
                 return await self._memory_dedup(call, t0)
+            if call.name == "memory_inspect":
+                return await self._memory_inspect(call, t0)
+            if call.name == "memory":
+                return await self._memory_multi_action(call, t0)
+            if call.name == "memory_get":
+                return await self._memory_get(call, t0)
             if call.name == "read_conversation_history":
                 if self._session_store is None:
                     return _fail(

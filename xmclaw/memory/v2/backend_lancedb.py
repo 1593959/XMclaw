@@ -205,37 +205,57 @@ class LanceDBVectorBackend:
         # Columns the code REQUIRES to be present (any write requires
         # them). Keep in sync with _MIGRATIONS below.
         self._required_columns: frozenset[str] = frozenset({"bucket"})
+        # 2026-05-29 perf fix: when LanceDB data files are corrupted on
+        # disk, every table access can hang the event loop for minutes
+        # (Rust I/O never yields back to Python asyncio).  Once we see
+        # a lance error we permanently short-circuit this backend so the
+        # daemon stays responsive and falls back to V1 memory.
+        self._corrupted: bool = False
 
     async def _ensure_ready(self) -> None:
+        if self._corrupted:
+            return
         import lancedb
-        if self._db is None:
-            self._db = await lancedb.connect_async(self._db_path)
-        if self._schema_cls is None:
-            self._schema_cls = _build_fact_schema(self._dim)
-        if self._table is None:
-            # LanceDB 0.30+: list_tables() returns a pageable with
-            # a .tables attribute; older releases had table_names().
-            # Use the new API + fall back gracefully.
-            page = await self._db.list_tables()
-            existing = list(getattr(page, "tables", []) or page)
-            if self._table_name in existing:
-                self._table = await self._db.open_table(self._table_name)
-                # Wave-27 fix-LAT15 (2026-05-17): migrate schema when
-                # the on-disk table predates a code-side schema
-                # addition. The 2026-05-15 ``bucket`` field add
-                # (refactor B Phase 1) shipped without a migration
-                # step, so every prod install with a table created
-                # before that date silently fails every fact write
-                # with "Field 'bucket' not found in target schema".
-                # Real-data: chat-c7040f1e on 2026-05-17 logged
-                # ``key_info_extractor.remember_failed`` every user
-                # message because of this. add_columns() is
-                # idempotent through the missing-check below.
-                await self._maybe_add_missing_columns()
-            else:
-                self._table = await self._db.create_table(
-                    self._table_name, schema=self._schema_cls,
+        try:
+            if self._db is None:
+                self._db = await lancedb.connect_async(self._db_path)
+            if self._schema_cls is None:
+                self._schema_cls = _build_fact_schema(self._dim)
+            if self._table is None:
+                # LanceDB 0.30+: list_tables() returns a pageable with
+                # a .tables attribute; older releases had table_names().
+                # Use the new API + fall back gracefully.
+                page = await self._db.list_tables()
+                existing = list(getattr(page, "tables", []) or page)
+                if self._table_name in existing:
+                    self._table = await self._db.open_table(self._table_name)
+                    # Wave-27 fix-LAT15 (2026-05-17): migrate schema when
+                    # the on-disk table predates a code-side schema
+                    # addition. The 2026-05-15 ``bucket`` field add
+                    # (refactor B Phase 1) shipped without a migration
+                    # step, so every prod install with a table created
+                    # before that date silently fails every fact write
+                    # with "Field 'bucket' not found in target schema".
+                    # Real-data: chat-c7040f1e on 2026-05-17 logged
+                    # ``key_info_extractor.remember_failed`` every user
+                    # message because of this. add_columns() is
+                    # idempotent through the missing-check below.
+                    await self._maybe_add_missing_columns()
+                else:
+                    self._table = await self._db.create_table(
+                        self._table_name, schema=self._schema_cls,
+                    )
+        except RuntimeError as exc:
+            if "lance error" in str(exc).lower():
+                self._corrupted = True
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).error(
+                    "lancedb.corrupted path=%s err=%s — "
+                    "backend short-circuited, V2 memory disabled",
+                    self._db_path, exc,
                 )
+                return
+            raise
 
     async def _maybe_add_missing_columns(self) -> None:
         """Add columns that the code-side schema declares but the
@@ -304,9 +324,11 @@ class LanceDBVectorBackend:
     # ── Protocol surface ────────────────────────────────────────
 
     async def upsert(self, records: list[Fact]) -> int:
-        if not records:
+        if not records or self._corrupted:
             return 0
         await self._ensure_ready()
+        if self._corrupted:
+            return 0
         # Epic #27 sweep #7 (2026-05-19): refuse early when the
         # on-disk schema is known to be missing a required column.
         # Pre-fix every doomed write produced "Field 'bucket' not
@@ -328,14 +350,25 @@ class LanceDBVectorBackend:
         # accumulation, max confidence) live in memory_service.remember,
         # NOT here, because the backend doesn't know L1 business rules.
         assert self._table is not None
-        await (
-            self._table
-                .merge_insert("id")
-                .when_matched_update_all()
-                .when_not_matched_insert_all()
-                .execute(rows)
-        )
-        return len(rows)
+        try:
+            await (
+                self._table
+                    .merge_insert("id")
+                    .when_matched_update_all()
+                    .when_not_matched_insert_all()
+                    .execute(rows)
+            )
+            return len(rows)
+        except RuntimeError as exc:
+            if "lance error" in str(exc).lower():
+                self._corrupted = True
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).error(
+                    "lancedb.corrupted_upsert err=%s — disabling V2 backend",
+                    exc,
+                )
+                return 0
+            raise
 
     async def search(
         self,
@@ -344,65 +377,125 @@ class LanceDBVectorBackend:
         where: str | None = None,
         limit: int = 8,
     ) -> list[Fact]:
+        if self._corrupted:
+            return []
         await self._ensure_ready()
+        if self._corrupted:
+            return []
         assert self._table is not None
-        if query is None:
-            # Pure-filter listing — order by ts_last DESC.
-            builder = self._table.query()
+        try:
+            if query is None:
+                # Pure-filter listing — order by ts_last DESC.
+                builder = self._table.query()
+                if where:
+                    builder = builder.where(where)
+                rows = await builder.limit(limit).to_list()
+                rows.sort(key=lambda r: r.get("ts_last", 0.0), reverse=True)
+                return [_record_to_fact(r) for r in rows[:limit]]
+
+            if isinstance(query, str):
+                # Keyword: LanceDB FTS requires an FTS index — Phase
+                # 1a skips that and falls back to LIKE-style filter. The
+                # MaterializeFTSIndex phase is Phase 5b (vis-network search).
+                safe = query.replace("'", "''")
+                where_combined = f"text LIKE '%{safe}%'"
+                if where:
+                    where_combined = f"({where_combined}) AND ({where})"
+                builder = self._table.query().where(where_combined)
+                rows = await builder.limit(limit).to_list()
+                return [_record_to_fact(r) for r in rows[:limit]]
+
+            # Vector query.
+            # LanceDB's async API: ``table.search(vec)`` itself returns a
+            # coroutine that yields the QueryBuilder — must await before
+            # chaining .where / .limit. The 0.30+ AsyncStandardQuery.where
+            # API no longer accepts a ``prefilter`` kwarg (filtering is
+            # always applied pre-KNN); pass plain string.
+            builder = await self._table.search(list(query))
             if where:
                 builder = builder.where(where)
             rows = await builder.limit(limit).to_list()
-            rows.sort(key=lambda r: r.get("ts_last", 0.0), reverse=True)
             return [_record_to_fact(r) for r in rows[:limit]]
-
-        if isinstance(query, str):
-            # Keyword: LanceDB FTS requires an FTS index — Phase
-            # 1a skips that and falls back to LIKE-style filter. The
-            # MaterializeFTSIndex phase is Phase 5b (vis-network search).
-            safe = query.replace("'", "''")
-            where_combined = f"text LIKE '%{safe}%'"
-            if where:
-                where_combined = f"({where_combined}) AND ({where})"
-            builder = self._table.query().where(where_combined)
-            rows = await builder.limit(limit).to_list()
-            return [_record_to_fact(r) for r in rows[:limit]]
-
-        # Vector query.
-        # LanceDB's async API: ``table.search(vec)`` itself returns a
-        # coroutine that yields the QueryBuilder — must await before
-        # chaining .where / .limit. The 0.30+ AsyncStandardQuery.where
-        # API no longer accepts a ``prefilter`` kwarg (filtering is
-        # always applied pre-KNN); pass plain string.
-        builder = await self._table.search(list(query))
-        if where:
-            builder = builder.where(where)
-        rows = await builder.limit(limit).to_list()
-        return [_record_to_fact(r) for r in rows[:limit]]
+        except RuntimeError as exc:
+            if "lance error" in str(exc).lower():
+                self._corrupted = True
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).error(
+                    "lancedb.corrupted_search err=%s — disabling V2 backend",
+                    exc,
+                )
+                return []
+            raise
 
     async def delete(self, where: str) -> int:
+        if self._corrupted:
+            return 0
         await self._ensure_ready()
+        if self._corrupted:
+            return 0
         assert self._table is not None
-        before = await self._table.count_rows()
-        await self._table.delete(where)
-        after = await self._table.count_rows()
-        return max(0, before - after)
+        try:
+            before = await self._table.count_rows()
+            await self._table.delete(where)
+            after = await self._table.count_rows()
+            return max(0, before - after)
+        except RuntimeError as exc:
+            if "lance error" in str(exc).lower():
+                self._corrupted = True
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).error(
+                    "lancedb.corrupted_delete err=%s — disabling V2 backend",
+                    exc,
+                )
+                return 0
+            raise
 
     async def count(self, where: str | None = None) -> int:
+        if self._corrupted:
+            return 0
         await self._ensure_ready()
+        if self._corrupted:
+            return 0
         assert self._table is not None
-        if where:
-            rows = await self._table.query().where(where).to_list()
-            return len(rows)
-        return await self._table.count_rows()
+        try:
+            if where:
+                rows = await self._table.query().where(where).to_list()
+                return len(rows)
+            return await self._table.count_rows()
+        except RuntimeError as exc:
+            if "lance error" in str(exc).lower():
+                self._corrupted = True
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).error(
+                    "lancedb.corrupted_count err=%s — disabling V2 backend",
+                    exc,
+                )
+                return 0
+            raise
 
     async def get(self, fact_id: str) -> Fact | None:
-        await self._ensure_ready()
-        assert self._table is not None
-        safe = fact_id.replace("'", "''")
-        rows = await self._table.query().where(f"id = '{safe}'").limit(1).to_list()
-        if not rows:
+        if self._corrupted:
             return None
-        return _record_to_fact(rows[0])
+        await self._ensure_ready()
+        if self._corrupted:
+            return None
+        assert self._table is not None
+        try:
+            safe = fact_id.replace("'", "''")
+            rows = await self._table.query().where(f"id = '{safe}'").limit(1).to_list()
+            if not rows:
+                return None
+            return _record_to_fact(rows[0])
+        except RuntimeError as exc:
+            if "lance error" in str(exc).lower():
+                self._corrupted = True
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).error(
+                    "lancedb.corrupted_get err=%s — disabling V2 backend",
+                    exc,
+                )
+                return None
+            raise
 
     async def close(self) -> None:
         # LanceDB async connection has no explicit close API yet;
@@ -434,25 +527,41 @@ class LanceDBGraphBackend:
         self._db: Any | None = None
         self._table: Any | None = None
         self._schema_cls: Any | None = None
+        # 2026-05-29 perf fix: mirror VectorBackend corruption guard.
+        self._corrupted: bool = False
 
     async def _ensure_ready(self) -> None:
+        if self._corrupted:
+            return
         import lancedb
-        if self._db is None:
-            self._db = await lancedb.connect_async(self._db_path)
-        if self._schema_cls is None:
-            self._schema_cls = _build_relation_schema()
-        if self._table is None:
-            # LanceDB 0.30+: list_tables() returns a pageable with
-            # a .tables attribute; older releases had table_names().
-            # Use the new API + fall back gracefully.
-            page = await self._db.list_tables()
-            existing = list(getattr(page, "tables", []) or page)
-            if self._table_name in existing:
-                self._table = await self._db.open_table(self._table_name)
-            else:
-                self._table = await self._db.create_table(
-                    self._table_name, schema=self._schema_cls,
+        try:
+            if self._db is None:
+                self._db = await lancedb.connect_async(self._db_path)
+            if self._schema_cls is None:
+                self._schema_cls = _build_relation_schema()
+            if self._table is None:
+                # LanceDB 0.30+: list_tables() returns a pageable with
+                # a .tables attribute; older releases had table_names().
+                # Use the new API + fall back gracefully.
+                page = await self._db.list_tables()
+                existing = list(getattr(page, "tables", []) or page)
+                if self._table_name in existing:
+                    self._table = await self._db.open_table(self._table_name)
+                else:
+                    self._table = await self._db.create_table(
+                        self._table_name, schema=self._schema_cls,
+                    )
+        except RuntimeError as exc:
+            if "lance error" in str(exc).lower():
+                self._corrupted = True
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).error(
+                    "lancedb.graph_corrupted path=%s err=%s — "
+                    "backend short-circuited",
+                    self._db_path, exc,
                 )
+                return
+            raise
 
     # ── Protocol surface ────────────────────────────────────────
 
@@ -460,25 +569,53 @@ class LanceDBGraphBackend:
         await self.add_relations([rel])
 
     async def add_relations(self, rels: list[Relation]) -> int:
-        if not rels:
+        if not rels or self._corrupted:
             return 0
         await self._ensure_ready()
+        if self._corrupted:
+            return 0
         assert self._table is not None
         rows = [_relation_to_record(r) for r in rels]
-        await (
-            self._table
-                .merge_insert("id")
-                .when_matched_update_all()
-                .when_not_matched_insert_all()
-                .execute(rows)
-        )
-        return len(rels)
+        try:
+            await (
+                self._table
+                    .merge_insert("id")
+                    .when_matched_update_all()
+                    .when_not_matched_insert_all()
+                    .execute(rows)
+            )
+            return len(rels)
+        except RuntimeError as exc:
+            if "lance error" in str(exc).lower():
+                self._corrupted = True
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).error(
+                    "lancedb.graph_corrupted_add err=%s — disabling",
+                    exc,
+                )
+                return 0
+            raise
 
     async def remove_relation(self, rel_id: str) -> None:
+        if self._corrupted:
+            return
         await self._ensure_ready()
+        if self._corrupted:
+            return
         assert self._table is not None
         safe = rel_id.replace("'", "''")
-        await self._table.delete(f"id = '{safe}'")
+        try:
+            await self._table.delete(f"id = '{safe}'")
+        except RuntimeError as exc:
+            if "lance error" in str(exc).lower():
+                self._corrupted = True
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).error(
+                    "lancedb.graph_corrupted_remove err=%s — disabling",
+                    exc,
+                )
+                return
+            raise
 
     async def neighbors(
         self,
@@ -487,32 +624,47 @@ class LanceDBGraphBackend:
         relation_types: list[str] | None = None,
         max_hops: int = 1,
     ) -> list[tuple[Relation, str]]:
+        if self._corrupted:
+            return []
         await self._ensure_ready()
+        if self._corrupted:
+            return []
         assert self._table is not None
         seen: set[str] = {fact_id}
         frontier = [fact_id]
         out: list[tuple[Relation, str]] = []
-        for _ in range(max(1, max_hops)):
-            if not frontier:
-                break
-            quoted = ", ".join(
-                f"'{f.replace(chr(39), chr(39) + chr(39))}'" for f in frontier
-            )
-            where_parts = [f"source_fact_id IN ({quoted})"]
-            if relation_types:
-                rels = ", ".join(f"'{r}'" for r in relation_types)
-                where_parts.append(f"relation IN ({rels})")
-            where = " AND ".join(where_parts)
-            rows = await self._table.query().where(where).to_list()
-            next_frontier: list[str] = []
-            for row in rows:
-                rel = _record_to_relation(row)
-                out.append((rel, rel.target_fact_id))
-                if rel.target_fact_id not in seen:
-                    seen.add(rel.target_fact_id)
-                    next_frontier.append(rel.target_fact_id)
-            frontier = next_frontier
-        return out
+        try:
+            for _ in range(max(1, max_hops)):
+                if not frontier:
+                    break
+                quoted = ", ".join(
+                    f"'{f.replace(chr(39), chr(39) + chr(39))}'" for f in frontier
+                )
+                where_parts = [f"source_fact_id IN ({quoted})"]
+                if relation_types:
+                    rels = ", ".join(f"'{r}'" for r in relation_types)
+                    where_parts.append(f"relation IN ({rels})")
+                where = " AND ".join(where_parts)
+                rows = await self._table.query().where(where).to_list()
+                next_frontier: list[str] = []
+                for row in rows:
+                    rel = _record_to_relation(row)
+                    out.append((rel, rel.target_fact_id))
+                    if rel.target_fact_id not in seen:
+                        seen.add(rel.target_fact_id)
+                        next_frontier.append(rel.target_fact_id)
+                frontier = next_frontier
+            return out
+        except RuntimeError as exc:
+            if "lance error" in str(exc).lower():
+                self._corrupted = True
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).error(
+                    "lancedb.graph_corrupted_neighbors err=%s — disabling",
+                    exc,
+                )
+                return []
+            raise
 
     async def find_related(
         self,
@@ -522,6 +674,8 @@ class LanceDBGraphBackend:
         relation_types: list[str] | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
+        if self._corrupted:
+            return {"nodes": [], "edges": []}
         nodes: set[str] = set(fact_ids)
         edges: list[Relation] = []
         for fid in fact_ids:
@@ -539,6 +693,8 @@ class LanceDBGraphBackend:
         }
 
     async def contradictions_of(self, fact_id: str) -> list[str]:
+        if self._corrupted:
+            return []
         out = []
         for rel, target in await self.neighbors(
             fact_id, relation_types=[RelationKind.CONTRADICTS.value],

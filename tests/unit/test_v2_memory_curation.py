@@ -111,6 +111,39 @@ async def test_correct_with_no_match_still_writes_new_fact() -> None:
     assert any(h.fact.id == result["new_fact_id"] for h in hits)
 
 
+@pytest.mark.asyncio
+async def test_correct_by_old_fact_id_skips_recall_and_supersedes() -> None:
+    """2026-05-29 cleanup: ``correct(old_fact_id=...)`` lets the
+    multi-action ``memory(action='replace', old_fid=...)`` tool
+    flow through the supersede pipeline without re-running the
+    embedding query. Pre-fix the tool took a forget+remember
+    shortcut and left no SUPERSEDES edge, orphaning the relation
+    graph."""
+    svc = _make_service()
+    old = await svc.remember(
+        "用户叫张伟",
+        kind=FactKind.IDENTITY, scope=FactScope.USER,
+        bucket="user_identity",
+    )
+    result = await svc.correct(
+        old_fact_id=old.id,
+        new_text="用户叫敬宇",
+        kind="identity", scope="user", bucket="user_identity",
+    )
+    assert result["matched"] is True
+    assert result["old_fact_id"] == old.id
+    new_fid = result["new_fact_id"]
+    assert new_fid and new_fid != old.id
+
+    # Old fact superseded — not in default recall.
+    hits_default = await svc.recall("张伟", k=5)
+    assert all(h.fact.id != old.id for h in hits_default)
+
+    # New fact recallable.
+    hits_new = await svc.recall("敬宇", k=5)
+    assert any(h.fact.id == new_fid for h in hits_new)
+
+
 # ── dedup_scope ────────────────────────────────────────────────────
 
 

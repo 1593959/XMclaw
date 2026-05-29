@@ -530,11 +530,18 @@ class MemoryService:
         Returns the post-upsert Fact (with up-to-date
         evidence_count + ts_last).
 
-        ``bucket`` (Wave-27 fix-12): persona-renderer routing label.
-        See ``Fact.bucket`` in models.py for valid values. The
-        rendered persona MD files (IDENTITY.md / USER.md / etc.)
-        query by ``(kind, scope, bucket)`` triple to build their
-        auto sections.
+        ``bucket`` (Wave-27 fix-12, memory v3 phase 1.3): persona
+        renderer routing label. See ``xmclaw.memory.v2.buckets.BUCKETS``
+        for the registered set. The rendered persona MD files
+        (IDENTITY.md / USER.md / etc.) query by ``bucket`` to build
+        their auto sections.
+
+        **2026-05-28 memory v3 phase 1.3**: ``bucket=""`` was the
+        "dark fact" source — facts that landed in LanceDB but never
+        in any .md, so the agent never saw them without explicit
+        ``memory_search``. We now coerce empty/unknown buckets to
+        ``misc`` (rendered to ``MEMORY.md ## Other facts (recent)``)
+        so every fact has a render destination.
         """
         if not text or not text.strip():
             raise ValueError("remember(): empty text")
@@ -726,11 +733,28 @@ class MemoryService:
         # which silently broke the persona-renderer routing — agent
         # would learn "AI 叫小咪" into LanceDB but IDENTITY.md
         # stayed pristine forever).
+        # 2026-05-28 memory v3 phase 1.3: 3-tier bucket resolution.
+        # Order: explicit caller > existing row's bucket >
+        # kind+scope inference > "misc" (catch-all). The final
+        # ``misc`` fallback closes the dark-fact loophole — pre-v3,
+        # facts that fell through all three earlier tiers persisted
+        # with ``bucket=""`` and were invisible to the persona
+        # renderer (no .md → not in system prompt). Unknown bucket
+        # names from the LLM also coerce to misc (logged once).
+        from xmclaw.memory.v2.buckets import DEFAULT_BUCKET, is_known
         effective_bucket = (
             bucket
             or (existing.bucket if existing else "")
             or self._infer_bucket(kind_str, scope_str)
+            or DEFAULT_BUCKET
         )
+        if not is_known(effective_bucket):
+            _log.info(
+                "memory_service.remember.unknown_bucket=%r "
+                "(fell back to %r) text=%r",
+                effective_bucket, DEFAULT_BUCKET, text[:80],
+            )
+            effective_bucket = DEFAULT_BUCKET
         new_fact = Fact(
             id=fact_id,
             kind=kind_str,
@@ -1179,16 +1203,29 @@ class MemoryService:
     async def correct(
         self,
         *,
-        old_text: str,
+        old_text: str = "",
         new_text: str,
+        old_fact_id: str | None = None,
         kind: FactKindStr | None = None,
         scope: FactScopeStr | None = None,
         bucket: str | None = None,
         max_match_distance: float = 0.45,
     ) -> dict[str, Any]:
-        """Find the fact whose text best matches ``old_text``,
-        create / upsert ``new_text`` as a replacement, and link the
-        two via SUPERSEDES.
+        """Replace an old fact with ``new_text``, linking the two via
+        SUPERSEDES.
+
+        Old-fact location:
+        * ``old_fact_id`` (preferred when known) — direct lookup, no
+          embedding query. The found fact is treated as ``matched``
+          unconditionally; ``max_match_distance`` is ignored.
+        * ``old_text`` (fallback) — semantic search; the best hit
+          within ``max_match_distance`` is the superseded fact.
+
+        2026-05-29 cleanup: ``old_fact_id`` lets the multi-action
+        ``memory(action='replace', old_fid=...)`` tool flow through
+        the same supersede pipeline as the legacy ``memory_correct``
+        tool. Pre-fix it took the ``forget + remember`` shortcut and
+        left no SUPERSEDES edge — orphaning the relation graph.
 
         Returns
         -------
@@ -1196,28 +1233,38 @@ class MemoryService:
           ``matched`` : bool — did we find an old fact?
           ``old_fact_id`` : str — id of the superseded fact (when matched)
           ``new_fact_id`` : str — id of the survivor (always set)
-          ``similarity`` : float — recall score of the chosen match
+          ``distance`` : float — recall score (1.0 when located by fid)
 
-        When no fact crosses ``min_match_similarity`` we still write
-        the new fact (so the corrected value is captured) but do NOT
-        supersede anything — the caller sees ``matched=False`` and
-        knows it acted as a plain ``remember`` would.
+        When no fact crosses ``max_match_distance`` (text path only),
+        the new fact is still written so the corrected value is
+        captured; caller sees ``matched=False``.
         """
         # Stage 1: find the best old-fact match.
-        hits = await self.recall(
-            old_text,
-            k=5,
-            kinds=[kind] if kind else None,
-            scopes=[scope] if scope else None,
-            buckets=[bucket] if bucket else None,
-            min_confidence=0.0,
-            include_relations=False,
-            include_superseded=False,
-        )
-        best: RecallHit | None = hits[0] if hits else None
-        # RecallHit uses cosine ``distance`` (lower is better, 0 = identical).
-        best_distance = float(getattr(best, "distance", 1.0)) if best else 1.0
-        matched = best is not None and best_distance <= max_match_distance
+        best: RecallHit | None = None
+        best_distance = 1.0
+        matched = False
+        if old_fact_id:
+            old_fact = await self._vec.get(old_fact_id)
+            if old_fact is not None:
+                best = RecallHit(
+                    fact=old_fact, distance=0.0, related_relations=[],
+                )
+                best_distance = 0.0
+                matched = True
+        else:
+            hits = await self.recall(
+                old_text,
+                k=5,
+                kinds=[kind] if kind else None,
+                scopes=[scope] if scope else None,
+                buckets=[bucket] if bucket else None,
+                min_confidence=0.0,
+                include_relations=False,
+                include_superseded=False,
+            )
+            best = hits[0] if hits else None
+            best_distance = float(getattr(best, "distance", 1.0)) if best else 1.0
+            matched = best is not None and best_distance <= max_match_distance
 
         # Stage 2: write the new fact.
         new_fact = await self.remember(
@@ -1243,7 +1290,7 @@ class MemoryService:
         }
         await self._publish_curation("corrected", {
             **result,
-            "old_text": old_text[:200],
+            "old_text": old_text[:200] if old_text else "",
             "new_text": new_text[:200],
         })
         return result
@@ -1500,6 +1547,196 @@ class MemoryService:
 
     async def get_fact(self, fact_id: str) -> Fact | None:
         return await self._vec.get(fact_id)
+
+    async def recall_hybrid(
+        self,
+        query: str,
+        *,
+        k: int = 8,
+        kinds: list[FactKindStr] | None = None,
+        scopes: list[FactScopeStr] | None = None,
+        buckets: list[str] | None = None,
+        min_confidence: float = 0.0,
+        include_superseded: bool = False,
+        vec_weight: float = 0.6,
+        bm25_weight: float = 0.4,
+        corpus_cap: int = 500,
+        bm25_deadline_s: float = 0.5,
+    ) -> list[RecallHit]:
+        """2026-05-28 memory v3 phase 3.2 — hybrid recall.
+
+        Combines the existing vector recall (cosine over embeddings)
+        with a BM25 keyword pass. Returns the union ranked by fused
+        score. Fixes the chronic mediocre-on-Chinese-keywords and
+        mediocre-on-rare-identifier failure modes of pure cosine.
+
+        Fusion strategy: vector RANK score (1.0 for top hit,
+        decreasing linearly) plus BM25 normalised score, weighted
+        ``vec_weight`` / ``bm25_weight``. Defaults 0.6 / 0.4 mirror
+        OpenClaw's LanceDB-Pro plugin's published numbers.
+
+        2026-05-29 (chat-b09a3ad4 incident): hard caps tightened to
+        avoid stalling the user-turn critical path.
+
+        * ``corpus_cap`` dropped from 5000 → 500. The hybrid path
+          full-scans LanceDB and rebuilds a Python BM25 index every
+          call (until LanceDB native FTS lands in Phase 5). 500
+          covers the recent + relevant facts for typical XMclaw
+          users; bigger stores still get vector recall + BM25 over
+          the most-recent slice.
+        * ``bm25_deadline_s`` (new, 500ms) — wall-clock budget for
+          the BM25 leg only. If the corpus scan + tokenisation +
+          BM25 build exceeds this, we abandon the BM25 path and
+          return the vector hits we already have. Vector recall is
+          fast (O(log N) LanceDB ANN); BM25 is the failure mode.
+
+        When ``rank_bm25`` isn't installed, this degrades cleanly to
+        the standard vector path — no error, no warning beyond the
+        one-time bm25.is_available() log. Callers don't have to
+        branch on availability.
+
+        Filters compose like ``recall``: kinds / scopes / buckets /
+        min_confidence / include_superseded.
+        """
+        if not isinstance(query, str) or not query.strip():
+            return []
+        # Always run the vector path first — it produces the candidate
+        # pool we score BM25 against AND the RecallHit objects we
+        # return. We pull 3× k to leave room for BM25 to swap in
+        # candidates the cosine missed.
+        vec_pool = max(k * 3, 16)
+        vec_hits = await self.recall(
+            query,
+            k=vec_pool,
+            kinds=kinds,
+            scopes=scopes,
+            buckets=buckets,
+            min_confidence=min_confidence,
+            include_superseded=include_superseded,
+            include_relations=False,
+        )
+
+        from xmclaw.memory.v2 import bm25
+        if not bm25.is_available():
+            return vec_hits[:k]
+
+        # Build a corpus snapshot for BM25. Cap so 100K-fact stores
+        # don't blow the budget — for typical XMclaw usage 5K is
+        # plenty. Filters re-apply here so BM25 only ranks facts
+        # the caller would have accepted from the vector path.
+        clauses: list[str] = []
+        if kinds:
+            clauses.append(
+                f"kind IN ({', '.join(repr(k_) for k_ in kinds)})",
+            )
+        if scopes:
+            clauses.append(
+                f"scope IN ({', '.join(repr(s) for s in scopes)})",
+            )
+        if buckets:
+            clauses.append(
+                f"bucket IN ({', '.join(repr(b) for b in buckets)})",
+            )
+        if min_confidence > 0:
+            clauses.append(f"confidence >= {min_confidence}")
+        if not include_superseded:
+            clauses.append("superseded_by = ''")
+        where = " AND ".join(clauses) if clauses else None
+        # BM25 leg wall-clock budget — see method docstring. We run
+        # the corpus scan + Python BM25 build under a single
+        # ``wait_for`` so any slow step (LanceDB scan, tokenisation,
+        # BM25Okapi.__init__) trips the same fast-fail back to
+        # pure-vector. Without this, a 50K-fact store would spin
+        # the user-turn critical path for tens of seconds.
+        import asyncio as _asyncio
+        import time as _t
+
+        async def _bm25_leg() -> list[tuple[str, float]]:
+            corpus_facts = await self._vec.search(
+                None, where=where, limit=corpus_cap,
+            )
+            # Tokenisation + BM25 build is CPU-bound Python. Yield
+            # the loop once before we burn the budget on it so the
+            # ``wait_for`` deadline can actually fire if needed.
+            await _asyncio.sleep(0)
+            t_build = _t.perf_counter()
+            idx = bm25.BM25Index(corpus_facts)
+            result = idx.search(query, k=max(k * 3, 16))
+            _log.debug(
+                "memory_service.recall_hybrid.bm25_built "
+                "corpus=%d elapsed_ms=%.0f",
+                len(corpus_facts),
+                (_t.perf_counter() - t_build) * 1000.0,
+            )
+            return result
+
+        try:
+            bm25_results = await _asyncio.wait_for(
+                _bm25_leg(), timeout=bm25_deadline_s,
+            )
+        except _asyncio.TimeoutError:
+            _log.info(
+                "memory_service.recall_hybrid.bm25_deadline "
+                "exceeded=%.2fs (falling back to pure vector)",
+                bm25_deadline_s,
+            )
+            return vec_hits[:k]
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "memory_service.recall_hybrid.bm25_leg_failed "
+                "err=%s (falling back to pure vector)", exc,
+            )
+            return vec_hits[:k]
+
+        if not bm25_results:
+            return vec_hits[:k]
+
+        # Fuse. Vector score = (pool - rank) / pool, so top-of-pool
+        # → 1.0 and bottom → ~0. BM25 score already normalised to
+        # [0, 1] inside BM25Index.search.
+        vec_pool_size = max(len(vec_hits), 1)
+        fused: dict[str, float] = {}
+        for rank, hit in enumerate(vec_hits):
+            fid = hit.fact.id
+            vec_score = (vec_pool_size - rank) / vec_pool_size
+            fused[fid] = fused.get(fid, 0.0) + vec_weight * vec_score
+        for fid, bm25_score in bm25_results:
+            fused[fid] = fused.get(fid, 0.0) + bm25_weight * bm25_score
+
+        # Resolve fact ids that BM25 found but the vector path didn't.
+        by_id: dict[str, RecallHit] = {h.fact.id: h for h in vec_hits}
+        missing_ids = [fid for fid in fused if fid not in by_id]
+        if missing_ids:
+            # Fetch in parallel; small batch.
+            import asyncio as _asyncio
+            sem = _asyncio.Semaphore(20)
+
+            async def _fetch(fid: str) -> tuple[str, Fact | None]:
+                async with sem:
+                    try:
+                        return fid, await self._vec.get(fid)
+                    except Exception:  # noqa: BLE001
+                        return fid, None
+
+            for fid, fact in await _asyncio.gather(
+                *(_fetch(fid) for fid in missing_ids)
+            ):
+                if fact is not None:
+                    by_id[fid] = RecallHit(
+                        fact=fact, distance=0.0,
+                        related_relations=[],
+                    )
+
+        # Sort fused descending, take top-K.
+        ranked = sorted(fused.items(), key=lambda x: x[1], reverse=True)
+        out: list[RecallHit] = []
+        for fid, _score in ranked:
+            hit = by_id.get(fid)
+            if hit is not None:
+                out.append(hit)
+            if len(out) >= k:
+                break
+        return out
 
     async def sweep(
         self,
@@ -1780,6 +2017,15 @@ class MemoryService:
         Empty string when no facts. Callers concatenate into the
         existing memory_ctx_block.
         """
+        # 2026-05-29 perf fix: if the LanceDB backend has detected
+        # on-disk corruption, short-circuit immediately.  Corrupted
+        # LanceDB can hang the event loop for minutes on Windows
+        # because the Rust I/O layer never yields back to asyncio.
+        _vec = getattr(self, "_vec", None)
+        _graph = getattr(self, "_graph", None)
+        if getattr(_vec, "_corrupted", False) or getattr(_graph, "_corrupted", False):
+            _log.info("memory_v2.render_for_prompt.short_circuit corrupted_backend")
+            return ""
         # Epic #27 sweep #5 (2026-05-19): always-on + query-conditioned
         # recalls now fan out via asyncio.gather. Pre-fix this ran 4
         # sequential `recall()` calls — each one already serialized

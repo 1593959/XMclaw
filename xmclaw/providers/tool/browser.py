@@ -111,10 +111,14 @@ _BROWSER_OPEN_SPEC = ToolSpec(
         "user only sees what I take screenshots of (browser_screenshot) "
         "or describe.\n\n"
         "★ Decision rule — pick the right tool:\n"
-        "  • ``open_in_user_browser(url)`` → the USER'S real desktop "
-        "browser (Chrome/Edge), with their bookmarks / extensions / "
-        "saved logins / 2FA. Use when the user needs to SEE, INTERACT, "
-        "CAPTCHA, log in manually, or just look at a result link.\n"
+        "  • ``browser_use_my_browser(url)`` → user's REAL Chrome "
+        "WITH my agent control (CDP attach or launch their real "
+        "profile). Use for login-walled sites (Twitter/Gmail/bank/"
+        "exam reg) where I need their cookies AND need to drive the "
+        "page myself. **Default choice when the user is watching.**\n"
+        "  • ``open_in_user_browser(url)`` → user's real browser, "
+        "FIRE-AND-FORGET. I cannot drive the page after. Use only "
+        "for 'please go look at this link yourself' nudges.\n"
         "  • ``browser_open(url)`` (THIS tool) → my own Playwright "
         "instance. Use for automation: scraping, data extraction, "
         "filling forms FOR the user (not BY the user), running JS, "
@@ -127,10 +131,15 @@ _BROWSER_OPEN_SPEC = ToolSpec(
         "browser_open(url=..., load_state=name) — that's how you get "
         "MY headless browser into a logged-in state without me ever "
         "touching the user's password.\n\n"
-        "``visible``: false (default) → headless. true → real visible "
-        "Chromium window — but this is STILL MY Playwright instance, "
-        "NOT the user's normal browser; bookmarks/extensions/cookies "
-        "are all empty fresh state by default.\n\n"
+        "``visible``: **DEFAULT TRUE** — open a real visible Chromium "
+        "window that pops to the user's foreground. Only set "
+        "``visible=false`` for genuinely unattended background work "
+        "(scraping a feed, batch data extraction, anything the user "
+        "isn't watching). When in doubt, leave visible=true: the user "
+        "wants to SEE the agent operate. Note this is still MY "
+        "Playwright instance, NOT the user's normal browser; "
+        "bookmarks/extensions/cookies are empty fresh state by default "
+        "(combine with ``persistent_profile=true`` to retain them).\n\n"
         "★ PERSISTENT PROFILE mode (Wave-27 fix-LAT14, OpenClaw-style): "
         "set ``persistent_profile=true`` + ``profile_name=<name>`` to "
         "spin a real Chrome profile under "
@@ -161,11 +170,12 @@ _BROWSER_OPEN_SPEC = ToolSpec(
             "visible": {
                 "type": "boolean",
                 "description": (
-                    "Show a real browser window (default false = "
-                    "headless). Visible mode uses a separate browser "
-                    "process; subsequent browser_* calls in the same "
-                    "session keep using whichever mode the session "
-                    "started in."
+                    "Show a real browser window. **Default TRUE** — "
+                    "the user is watching by default; only set false "
+                    "for unattended background work (scraping etc). "
+                    "Visible mode uses a separate browser process; "
+                    "subsequent browser_* calls in the same session "
+                    "keep using whichever mode the session started in."
                 ),
             },
             "load_state": {
@@ -332,7 +342,12 @@ _BROWSER_SCREENSHOT_SPEC = ToolSpec(
         "writing a file under ~/.xmclaw/v2/screenshots/ and returns "
         "the path instead — so a full-page capture of a long article "
         "doesn't blow the LLM context window. Full-page screenshots "
-        "are opt-in via ``full_page=true``."
+        "are opt-in via ``full_page=true``.\n\n"
+        "★ 2026-05-28 P1.4: pass ``annotate=true`` to overlay [N] "
+        "labels at every ref'd element's bounding box (ref numbers "
+        "match the last browser_snapshot). Vision-capable models can "
+        "then say 'click 5' off the image directly. Falls back to a "
+        "plain screenshot if PIL isn't installed."
     ),
     parameters_schema={
         "type": "object",
@@ -352,6 +367,13 @@ _BROWSER_SCREENSHOT_SPEC = ToolSpec(
             "max_inline_bytes": {
                 "type": "integer",
                 "description": "Cap on the inline data_url. Larger captures spill to disk. Default 524288.",
+            },
+            "annotate": {
+                "type": "boolean",
+                "description": (
+                    "Overlay [N] ref labels from the last "
+                    "browser_snapshot. Default false."
+                ),
             },
         },
     },
@@ -405,6 +427,263 @@ _BROWSER_CLOSE_SPEC = ToolSpec(
     name="browser_close",
     description="Close this session's browser page + context.",
     parameters_schema={"type": "object", "properties": {}},
+)
+
+
+_BROWSER_DIALOG_ARM_SPEC = ToolSpec(
+    name="browser_dialog_arm",
+    description=(
+        "Pre-arm the dialog handler: the NEXT dialog on this session "
+        "is auto-resolved with the armed action and the arm "
+        "self-clears. Useful when an action you're about to trigger "
+        "is known to pop a confirm() and you don't want a round-trip "
+        "through browser_snapshot + browser_dialog.\n\n"
+        "Pass action='clear' to drop a pending arm without firing."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["accept", "dismiss", "clear"],
+            },
+            "text": {
+                "type": "string",
+                "description": (
+                    "If action='accept' and the dialog turns out to be "
+                    "a prompt(), this text is submitted as the answer."
+                ),
+            },
+        },
+        "required": ["action"],
+    },
+)
+
+
+_BROWSER_NETWORK_LOG_SPEC = ToolSpec(
+    name="browser_network_log",
+    description=(
+        "Return recent network activity on this session's page. "
+        "**Each new page auto-captures requests + responses** into a "
+        "bounded ring buffer (200 entries); call this tool to read "
+        "them back, optionally filtered. With ``with_body=true`` "
+        "the response body bytes are returned for matching entries "
+        "— the canonical way to scrape an API response WITHOUT "
+        "re-issuing the request via browser_eval(fetch(...)).\n\n"
+        "★ 2026-05-28 P3.5: mirrors OpenClaw 'responsebody' tool.\n"
+        "Filtering: ``url_glob`` accepts shell-glob patterns (e.g. "
+        "``**/api/login`` or ``*.json``). Default: return all "
+        "entries in the buffer.\n"
+        "Output: list of {method, url, status, request_headers, "
+        "response_headers, ts, body?}."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "url_glob": {
+                "type": "string",
+                "description": "Filter entries by URL glob (e.g. **/api/*).",
+            },
+            "method": {
+                "type": "string",
+                "description": "Filter by HTTP method (GET/POST/...).",
+            },
+            "status_min": {
+                "type": "integer",
+                "description": "Only entries with status >= this. Default 0.",
+            },
+            "with_body": {
+                "type": "boolean",
+                "description": (
+                    "Include response body. Body is capped at 64 KB "
+                    "per entry. Default false."
+                ),
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max entries returned. Default 20.",
+            },
+            "clear": {
+                "type": "boolean",
+                "description": "Clear the buffer after reading. Default false.",
+            },
+        },
+    },
+)
+
+
+_BROWSER_CLICK_REF_SPEC = ToolSpec(
+    name="browser_click_ref",
+    description=(
+        "Click an element by its [N] ref number from the last "
+        "browser_snapshot. **Preferred over browser_click(selector)** "
+        "— refs are dead-simple ('click 5') vs CSS selectors which "
+        "LLMs commonly mistype. Refs are valid until the next "
+        "browser_snapshot or any navigation; if a ref is stale you'll "
+        "get a clear 'ref not found' error and should re-snapshot.\n\n"
+        "Usage: ``browser_snapshot`` → see ``[3] button \"Login\"`` → "
+        "``browser_click_ref(ref=3)``."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "ref": {
+                "type": "integer",
+                "description": "Ref number from the last snapshot.",
+            },
+            "wait_for_navigation_ms": {
+                "type": "integer",
+                "description": (
+                    "Settle window after click for SPA route changes "
+                    "or full nav. Default 2000."
+                ),
+            },
+        },
+        "required": ["ref"],
+    },
+)
+
+
+_BROWSER_TYPE_REF_SPEC = ToolSpec(
+    name="browser_type_ref",
+    description=(
+        "Type text into an element by its [N] ref number from the "
+        "last browser_snapshot. Equivalent to browser_fill but "
+        "reference-based. Preferred for the same reason as "
+        "browser_click_ref: no CSS-selector reasoning required."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "ref": {
+                "type": "integer",
+                "description": "Ref number from the last snapshot.",
+            },
+            "text": {
+                "type": "string",
+                "description": "Text to type.",
+            },
+            "submit": {
+                "type": "boolean",
+                "description": (
+                    "If true, press Enter after typing. Useful for "
+                    "search bars / single-field login forms. "
+                    "Default false."
+                ),
+            },
+        },
+        "required": ["ref", "text"],
+    },
+)
+
+
+_BROWSER_DIALOG_SPEC = ToolSpec(
+    name="browser_dialog",
+    description=(
+        "Respond to a JS dialog (alert / confirm / prompt / "
+        "beforeunload) that's blocking the page. Without this tool, "
+        "clicks on a confirm() can stall the page indefinitely.\n\n"
+        "Workflow: browser_snapshot's ``pending_dialogs`` field "
+        "shows blocking dialogs; pick the ``id``, call "
+        "``browser_dialog(id=..., action='accept'|'dismiss'|"
+        "'respond', text='...')``. ``respond`` is only valid for "
+        "prompt() dialogs (where ``text`` becomes the input)."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "id": {
+                "type": "string",
+                "description": (
+                    "Dialog id from snapshot's pending_dialogs. "
+                    "Omit to act on the oldest pending dialog."
+                ),
+            },
+            "action": {
+                "type": "string",
+                "description": "'accept' | 'dismiss' | 'respond'.",
+                "enum": ["accept", "dismiss", "respond"],
+            },
+            "text": {
+                "type": "string",
+                "description": (
+                    "For action='respond' on a prompt() dialog: "
+                    "the text to submit. Ignored otherwise."
+                ),
+            },
+        },
+        "required": ["action"],
+    },
+)
+
+
+_BROWSER_USE_MY_BROWSER_SPEC = ToolSpec(
+    name="browser_use_my_browser",
+    description=(
+        "Open a URL in the USER'S real Chrome (or Edge/Brave) WITH "
+        "AGENT CONTROL. Unlike open_in_user_browser (fire-and-forget "
+        "URL dispatch — agent can't see or operate the page after), "
+        "this gives me full driver access: every subsequent "
+        "browser_click / browser_fill / browser_snapshot / "
+        "browser_screenshot / browser_eval in the same session "
+        "operates on this real-Chrome page. Unlike browser_open "
+        "(visible=true), this uses the USER'S cookies + logins + "
+        "bookmarks + extensions — login-walled sites just work.\n\n"
+        "★ 3-mode resolution (transparent to you, pick automatically):\n"
+        "  1. If user's Chrome is already running with "
+        "--remote-debugging-port=9222 → attach via CDP.\n"
+        "  2. Else if user's Chrome is NOT currently running → "
+        "launch their real profile (~LOCALAPPDATA/Google/Chrome/"
+        "User Data) directly.\n"
+        "  3. Else (their Chrome IS running, profile is locked) → "
+        "fall back to a side profile under ~/.xmclaw/v2/. User logs "
+        "in there once; future sessions inherit.\n\n"
+        "★ Hard rule: ``browser_close`` on a use_my_browser session "
+        "ONLY closes the agent page. It NEVER closes the user's "
+        "Chrome — that would lose all their tabs.\n\n"
+        "★ Decision tree:\n"
+        "  • User watches + needs login (Twitter/Gmail/banking/exam) "
+        "→ ``browser_use_my_browser`` (this tool)\n"
+        "  • User watches + no login needed (search/news/wiki) → "
+        "``browser_open(visible=true)``\n"
+        "  • Pure background scrape (no user watching, no login) → "
+        "``browser_open(visible=false)``\n"
+        "  • User opens URL themselves, no agent control needed → "
+        "``open_in_user_browser`` (legacy stub)."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "Full http(s) URL to navigate to.",
+            },
+            "browser": {
+                "type": "string",
+                "description": (
+                    "Which browser family. 'auto' (default) picks the "
+                    "first detected: chrome → edge → brave. Use a "
+                    "specific name to pin."
+                ),
+                "enum": ["auto", "chrome", "edge", "brave"],
+            },
+            "profile": {
+                "type": "string",
+                "description": (
+                    "Chrome profile directory name. 'Default' is the "
+                    "main one most users have. Other examples: "
+                    "'Profile 1', 'Profile 2' (work / personal splits). "
+                    "Only used in launch modes — CDP-attach uses "
+                    "whatever profile is already running."
+                ),
+            },
+            "wait_until": {
+                "type": "string",
+                "description": "'load' | 'domcontentloaded' | 'networkidle'. Default 'load'.",
+            },
+        },
+        "required": ["url"],
+    },
 )
 
 
@@ -485,18 +764,43 @@ _BROWSER_UPLOAD_SPEC = ToolSpec(
 _BROWSER_WAIT_FOR_SPEC = ToolSpec(
     name="browser_wait_for",
     description=(
-        "Explicit wait until a selector reaches a state — useful for "
-        "post-AJAX content where auto-wait isn't enough. ``state`` ∈ "
-        "{'attached','detached','visible','hidden'}, default 'visible'."
+        "Wait until one or more page-state conditions hold. **All** "
+        "supplied conditions must be satisfied before this returns "
+        "(logical AND). Specify at least one — selector / url_glob / "
+        "load_state / js_predicate.\n\n"
+        "★ 2026-05-28 P3.7: composite wait (OpenClaw-style). One "
+        "call can replace 'wait for selector → wait for URL change "
+        "→ wait for network idle → wait for JS flag' chains.\n\n"
+        "Conditions:\n"
+        "  - selector + state: wait until DOM element matches "
+        "(attached/detached/visible/hidden, default visible).\n"
+        "  - url_glob: wait until ``page.url`` matches the glob "
+        "(supports ``*`` and ``**``).\n"
+        "  - load_state: 'load' | 'domcontentloaded' | "
+        "'networkidle' — wait until the page reaches that state.\n"
+        "  - js_predicate: JS expression that evaluates to truthy "
+        "when ready (polled, not a one-shot eval). Example: "
+        "``window.app && window.app.ready === true``."
     ),
     parameters_schema={
         "type": "object",
         "properties": {
             "selector": {"type": "string"},
             "state": {"type": "string"},
+            "url_glob": {
+                "type": "string",
+                "description": "Glob (* / **) the page URL must match.",
+            },
+            "load_state": {
+                "type": "string",
+                "description": "'load' | 'domcontentloaded' | 'networkidle'.",
+            },
+            "js_predicate": {
+                "type": "string",
+                "description": "Truthy-when-ready JS expression.",
+            },
             "timeout_ms": {"type": "integer"},
         },
-        "required": ["selector"],
     },
 )
 
@@ -718,13 +1022,25 @@ class BrowserTools(ToolProvider):
         self,
         allowed_hosts: list[str] | None = None,
         *,
-        headless: bool = True,
+        headless: bool = False,
         timeout_ms: int = 15_000,
+        evaluate_enabled: bool = True,
     ) -> None:
         self._allowed = set(allowed_hosts) if allowed_hosts else None
-        # ``headless`` is now the DEFAULT for sessions that don't pass
-        # ``visible`` explicitly. Sessions request visible mode on
-        # first browser_open; once chosen, the session sticks with it.
+        # 2026-05-28 P2.8: gate on arbitrary JS execution. When False,
+        # browser_eval returns a structured refusal instead of running
+        # the agent's expression. Matches OpenClaw's
+        # ``evaluateEnabled=true`` config flag — useful for audit /
+        # untrusted-skill scenarios where the agent driving the
+        # browser shouldn't have arbitrary-JS reach.
+        self._evaluate_enabled = bool(evaluate_enabled)
+        # ``headless`` is the DEFAULT for sessions that don't pass
+        # ``visible`` explicitly. Sessions request visibility on first
+        # browser_open; once chosen, the session sticks with it.
+        # 2026-05-28: default flipped from True → False. The user is
+        # watching the chat — they want to see the agent operate, not
+        # have it scrape silently in the background. Background-only
+        # tasks must opt into headless by passing visible=false.
         self._default_headless = headless
         self._timeout_ms = timeout_ms
         # Shared across sessions -- Playwright / browser are expensive
@@ -765,6 +1081,56 @@ class BrowserTools(ToolProvider):
         # init so _ensure_persistent_context can read it without a
         # getattr-default dance.
         self._session_persistent_chrome_channel: dict[str, str | None] = {}
+        # 2026-05-28: user-CDP attach. Third browser path beside the
+        # headless / headed-clean-profile pair: connect into the USER'S
+        # real Chrome (their cookies / logins / extensions / bookmarks)
+        # so login-walled sites just work and the user watches their
+        # familiar browser drive itself. See ``browser_use_my_browser``
+        # tool + ``_user_browser_detect`` module.
+        #
+        # ``_user_browser`` is the Playwright Browser/Context handle
+        # (cached process-wide — connecting to a CDP endpoint is ~50ms
+        # but creating a context once is fine). ``_session_user_cdp``
+        # is a per-session bool pinning the session to this path; once
+        # set, ``_page_for`` routes through user-CDP rather than the
+        # standard headless/headed launch.
+        self._user_browser_context: Any = None
+        self._user_browser_handle: Any = None  # only set in CDP-attach mode
+        self._session_user_cdp: dict[str, bool] = {}
+        # 2026-05-28 P0.1: per-session [N] ref system. browser_snapshot
+        # assigns sequential refs to every interactive element and
+        # stores ``{selector, bbox, kind, label}`` per ref here. The
+        # next browser_click_ref(n) / browser_type_ref(n, text) call
+        # resolves via this map — agent never has to handcraft CSS
+        # selectors. Mirrors OpenClaw's ``aria-ref`` system + Hermes's
+        # element-numbering snapshot. Refs are scoped to the page
+        # current at snapshot time; ``_open`` clears the map (new
+        # page = new refs) and each snapshot rebuilds it.
+        self._session_refs: dict[str, dict[int, dict[str, Any]]] = {}
+        # 2026-05-28 P0.2: dialog supervisor. Per-session pending +
+        # recent JS dialog records (alert / confirm / prompt /
+        # beforeunload). page.on('dialog') populates these; the
+        # browser_dialog tool resolves pending ones; browser_snapshot
+        # surfaces both lists so the agent SEES the dialog instead
+        # of hanging on a blocked page. ``recent`` is a ring-buffer
+        # capped at 20 entries per session.
+        self._session_dialogs_pending: dict[str, list[dict[str, Any]]] = {}
+        self._session_dialogs_recent: dict[str, list[dict[str, Any]]] = {}
+        # Pending dialog objects await resolution; the live Playwright
+        # ``Dialog`` handle lives here, keyed by ``(sid, dialog_id)``.
+        # Removed once accepted/dismissed.
+        self._dialog_handles: dict[tuple[str, str], Any] = {}
+        # 2026-05-28 P2.4: dialog pre-arm. If set, the NEXT dialog on
+        # this session is auto-resolved with the armed action and the
+        # arm is cleared. Set via browser_dialog_arm.
+        self._session_dialog_armed: dict[str, dict[str, Any]] = {}
+        # 2026-05-28 P3.5: per-session network log. ``page.on('request')``
+        # appends a stub; ``page.on('response')`` fills in status +
+        # response headers. Buffer is bounded — ring-buffer pop on
+        # overflow. Body capture is opt-in per browser_network_log
+        # call to avoid storing huge payloads we don't need.
+        self._network_buffers: dict[str, list[dict[str, Any]]] = {}
+        self._network_buffer_cap = 200
         # Wave 25.3: per-session console log buffer. Bounded list so
         # a noisy page doesn't grow unbounded — drops oldest first.
         self._console_buffers: dict[str, list[dict[str, Any]]] = {}
@@ -797,6 +1163,13 @@ class BrowserTools(ToolProvider):
             _BROWSER_GET_CONSOLE_SPEC,
             _BROWSER_SCREENSHOT_SPEC,
             _BROWSER_SNAPSHOT_SPEC, _BROWSER_EVAL_SPEC, _BROWSER_CLOSE_SPEC,
+            _BROWSER_USE_MY_BROWSER_SPEC,
+            # 2026-05-28 P0.1 + P0.2: ref-based action tools +
+            # dialog supervisor — major LLM accuracy wins.
+            _BROWSER_CLICK_REF_SPEC, _BROWSER_TYPE_REF_SPEC,
+            _BROWSER_DIALOG_SPEC,
+            # 2026-05-28 P2.4 + P3.5: dialog pre-arm + network log.
+            _BROWSER_DIALOG_ARM_SPEC, _BROWSER_NETWORK_LOG_SPEC,
         ]
 
     async def invoke(self, call: ToolCall) -> ToolResult:
@@ -818,6 +1191,18 @@ class BrowserTools(ToolProvider):
                 return await self._eval(call, t0)
             if call.name == "browser_close":
                 return await self._close(call, t0)
+            if call.name == "browser_use_my_browser":
+                return await self._use_my_browser(call, t0)
+            if call.name == "browser_click_ref":
+                return await self._click_ref(call, t0)
+            if call.name == "browser_type_ref":
+                return await self._type_ref(call, t0)
+            if call.name == "browser_dialog":
+                return await self._dialog(call, t0)
+            if call.name == "browser_dialog_arm":
+                return await self._dialog_arm(call, t0)
+            if call.name == "browser_network_log":
+                return await self._network_log(call, t0)
             if call.name == "browser_hover":
                 return await self._hover(call, t0)
             if call.name == "browser_scroll":
@@ -904,8 +1289,15 @@ class BrowserTools(ToolProvider):
         is_persistent = self._session_persistent_profile.pop(
             session_id, None,
         )
+        # 2026-05-28: user-CDP sessions share the user's real browser
+        # context. CLOSING THAT CONTEXT WOULD CLOSE THE USER'S CHROME
+        # AND LOSE ALL THEIR TABS — explicit hard rule. Detach by
+        # forgetting the per-session page only; the shared context
+        # stays alive for other sessions / future
+        # browser_use_my_browser calls.
+        is_user_cdp = self._session_user_cdp.pop(session_id, False)
         ctx = self._contexts.pop(session_id, None)
-        if ctx is not None and is_persistent is None:
+        if ctx is not None and is_persistent is None and not is_user_cdp:
             try:
                 await ctx.close()
             except Exception:  # noqa: BLE001,S110
@@ -918,6 +1310,17 @@ class BrowserTools(ToolProvider):
         # Wave 25.2 / 25.3 / 25.4: drop per-session state.
         self._session_storage_state.pop(session_id, None)
         self._console_buffers.pop(session_id, None)
+        # 2026-05-28 P0.1 / P0.2 / P2.4 / P3.5: drop ref map +
+        # dialog records + pre-arm + network log on session close.
+        self._session_refs.pop(session_id, None)
+        self._session_dialogs_pending.pop(session_id, None)
+        self._session_dialogs_recent.pop(session_id, None)
+        self._session_dialog_armed.pop(session_id, None)
+        self._network_buffers.pop(session_id, None)
+        # Forget any cached Dialog handles for this session.
+        for k in list(self._dialog_handles):
+            if k[0] == session_id:
+                self._dialog_handles.pop(k, None)
         # Cancel any pending download tasks tied to this session.
         for key in list(self._pending_downloads):
             if key[0] == session_id:
@@ -941,6 +1344,35 @@ class BrowserTools(ToolProvider):
                 await ctx.close()
             except Exception:  # noqa: BLE001,S110
                 pass
+        # 2026-05-28: user-CDP cleanup. Two cases:
+        #   - cdp_attach: we hold a Browser handle; DETACH it (calling
+        #     ``browser.close()`` on a CDP-attached Browser does NOT
+        #     close the underlying Chrome — Playwright docs are
+        #     explicit — it only tears down our websocket. Safe.)
+        #   - launched_real_profile: we own the context. The user's
+        #     Chrome IS our spawned process — closing it shuts that
+        #     instance down, which IS what we want on daemon shutdown
+        #     (otherwise the orphan Chrome lives past the daemon).
+        #   - side_profile_fallback: ctx lives in _persistent_contexts
+        #     already and got closed above.
+        if self._user_browser_handle is not None:
+            try:
+                await self._user_browser_handle.close()
+            except Exception:  # noqa: BLE001,S110
+                pass
+            self._user_browser_handle = None
+            self._user_browser_context = None
+        elif self._user_browser_context is not None:
+            mode = getattr(
+                self._user_browser_context,
+                "_xmclaw_user_browser_mode", "",
+            )
+            if mode == "launched_real_profile":
+                try:
+                    await self._user_browser_context.close()
+                except Exception:  # noqa: BLE001,S110
+                    pass
+            self._user_browser_context = None
         self._persistent_contexts.clear()
         for attr in ("_browser_headless", "_browser_headed"):
             b = getattr(self, attr, None)
@@ -984,12 +1416,26 @@ class BrowserTools(ToolProvider):
             # not a real version check). Drop the AutomationControlled
             # blink feature so navigator.webdriver isn't set, and we
             # override UA per-context so the stamp matches normal Chrome.
+            # Visibility args — when headed, force the window into a
+            # known foreground-friendly position and size. Without
+            # these the daemon-launched Chromium often opens behind
+            # the active window (Windows focus-stealing prevention
+            # blocks SetForegroundWindow from background processes)
+            # OR lands at 0,0 with viewport-only size, easily hidden
+            # under the chat window. Symptom the user reported
+            # 2026-05-28: "他说他打开了浏览器但我看不到".
+            launch_args = [
+                "--disable-blink-features=AutomationControlled",
+                "--disable-features=IsolateOrigins,site-per-process",
+            ]
+            if not headless:
+                launch_args.extend([
+                    "--start-maximized",
+                    "--new-window",
+                ])
             browser = await self._playwright.chromium.launch(
                 headless=headless,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-features=IsolateOrigins,site-per-process",
-                ],
+                args=launch_args,
             )
             setattr(self, attr, browser)
 
@@ -1057,11 +1503,27 @@ class BrowserTools(ToolProvider):
             )
             channel = channel_map.get(session_id)
 
+            # Same visibility args as the non-persistent path —
+            # headed mode needs the window forced into a
+            # foreground-friendly state or the daemon-launched
+            # Chrome lands behind everything. ``viewport`` is
+            # intentionally None for headed persistent so
+            # ``--start-maximized`` actually fills the screen;
+            # leaving the viewport explicit pins the inner-page
+            # size and defeats the maximize args.
+            persistent_args = [
+                "--disable-blink-features=AutomationControlled",
+                "--disable-features=IsolateOrigins,site-per-process",
+            ]
+            if not headless:
+                persistent_args.extend([
+                    "--start-maximized",
+                    "--new-window",
+                ])
             launch_kwargs: dict[str, Any] = {
                 "user_data_dir": str(user_data_dir),
                 "headless": headless,
                 "accept_downloads": True,
-                "viewport": {"width": 1280, "height": 800},
                 # Wave-27 fix-LAT14b: real Chrome UA to defeat the
                 # "HeadlessChrome" pattern blacklists that show
                 # "your browser is too old" banners. Same UA the
@@ -1072,11 +1534,15 @@ class BrowserTools(ToolProvider):
                 # the user switches between bundled Chromium and
                 # system Chrome.
                 "user_agent": _REAL_CHROME_UA,
-                "args": [
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-features=IsolateOrigins,site-per-process",
-                ],
+                "args": persistent_args,
             }
+            # Headless still needs a fixed viewport (no window manager
+            # to maximize against); headed lets the window's actual
+            # size dictate page viewport so --start-maximized works.
+            if headless:
+                launch_kwargs["viewport"] = {"width": 1280, "height": 800}
+            else:
+                launch_kwargs["no_viewport"] = True
             if channel:
                 launch_kwargs["channel"] = channel
 
@@ -1113,6 +1579,25 @@ class BrowserTools(ToolProvider):
             )
         pinned = self._session_headless[session_id]
 
+        # 2026-05-28: user-CDP branch. If this session was opened via
+        # browser_use_my_browser, route through the shared user
+        # browser context (CDP attach OR launched user real profile
+        # OR side-profile fallback — all three modes look the same
+        # at this point: one BrowserContext we share + a per-session
+        # Page).
+        if self._session_user_cdp.get(session_id):
+            ctx, _mode = await self._ensure_user_browser_context()
+            page = self._pages.get(session_id)
+            if page is not None and not page.is_closed():
+                return page
+            self._contexts[session_id] = ctx
+            page = await ctx.new_page()
+            self._attach_console_listeners(session_id, page)
+            self._attach_dialog_listener(session_id, page)
+            self._attach_network_listener(session_id, page)
+            self._pages[session_id] = page
+            return page
+
         # Wave-27 fix-LAT14: persistent profile branch. Sessions
         # tagged with a profile_name route through a
         # ``launch_persistent_context``-managed shared context keyed
@@ -1130,6 +1615,8 @@ class BrowserTools(ToolProvider):
             self._contexts[session_id] = ctx
             page = await ctx.new_page()
             self._attach_console_listeners(session_id, page)
+            self._attach_dialog_listener(session_id, page)
+            self._attach_network_listener(session_id, page)
             self._pages[session_id] = page
             return page
 
@@ -1168,8 +1655,182 @@ class BrowserTools(ToolProvider):
         # page so the agent can query the buffer later via
         # browser_get_console. Idempotent — Playwright dedups handlers.
         self._attach_console_listeners(session_id, page)
+        self._attach_dialog_listener(session_id, page)
+        self._attach_network_listener(session_id, page)
         self._pages[session_id] = page
         return page
+
+    def _attach_network_listener(
+        self, session_id: str, page: Any,
+    ) -> None:
+        """2026-05-28 P3.5: capture every request + response into a
+        bounded per-session ring buffer. Read back via
+        ``browser_network_log`` — agent doesn't have to re-issue
+        fetches via browser_eval to inspect API responses.
+        """
+        buf = self._network_buffers.setdefault(session_id, [])
+        cap = self._network_buffer_cap
+
+        # Index by request id ((url, method, ts)) so the response
+        # handler can patch in status + headers without scanning.
+        # Playwright assigns a Request object identity; we use id().
+        index: dict[int, dict[str, Any]] = {}
+
+        def _on_request(request: Any) -> None:
+            try:
+                entry = {
+                    "method": getattr(request, "method", ""),
+                    "url": getattr(request, "url", ""),
+                    "request_headers": (
+                        dict(getattr(request, "headers", {}) or {})
+                    ),
+                    "ts": time.time(),
+                    # Filled in by _on_response.
+                    "status": None,
+                    "response_headers": None,
+                    "_request_obj": request,
+                    "_response_obj": None,
+                }
+                buf.append(entry)
+                while len(buf) > cap:
+                    dropped = buf.pop(0)
+                    index.pop(id(dropped["_request_obj"]), None)
+                index[id(request)] = entry
+            except Exception:  # noqa: BLE001
+                pass
+
+        def _on_response(response: Any) -> None:
+            try:
+                req = getattr(response, "request", None)
+                entry = index.get(id(req)) if req is not None else None
+                if entry is None:
+                    return
+                entry["status"] = getattr(response, "status", None)
+                entry["response_headers"] = dict(
+                    getattr(response, "headers", {}) or {},
+                )
+                entry["_response_obj"] = response
+            except Exception:  # noqa: BLE001
+                pass
+
+        try:
+            page.on("request", _on_request)
+            page.on("response", _on_response)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _attach_dialog_listener(
+        self, session_id: str, page: Any,
+    ) -> None:
+        """2026-05-28 P0.2: Auto-capture JS dialogs on this page.
+
+        ``page.on('dialog')`` fires when the page calls alert() /
+        confirm() / prompt() / triggers beforeunload. Without a
+        handler, Playwright auto-dismisses the dialog AND the agent
+        never sees it happened. With our handler, we:
+
+          1. Stash the live ``Dialog`` handle in
+             ``_dialog_handles[(sid, id)]`` so ``browser_dialog`` can
+             resolve it later.
+          2. Append a record to ``_session_dialogs_pending`` so
+             ``browser_snapshot`` surfaces it to the agent.
+          3. Do NOT auto-accept/dismiss — the policy is "agent must
+             respond" (matches Hermes ``must_respond``). The page
+             stays blocked until ``browser_dialog`` resolves it.
+        """
+        pending = self._session_dialogs_pending.setdefault(session_id, [])
+
+        def _on_dialog(dialog: Any) -> None:
+            try:
+                # 2026-05-28 P2.4: pre-arm. If browser_dialog_arm was
+                # called before this dialog fired, auto-resolve and
+                # self-clear the arm — agent doesn't need a snapshot
+                # / dialog round-trip per modal.
+                armed = self._session_dialog_armed.pop(session_id, None)
+                if armed is not None:
+                    action = armed.get("action")
+                    text = armed.get("text") or ""
+                    if action == "accept":
+                        coro = (
+                            dialog.accept(text)
+                            if getattr(dialog, "type", "") == "prompt"
+                            else dialog.accept()
+                        )
+                        asyncio.ensure_future(coro)
+                    elif action == "dismiss":
+                        asyncio.ensure_future(dialog.dismiss())
+                    # Record in recent for visibility.
+                    rec = {
+                        "id": "armed_" + str(int(time.time())),
+                        "type": getattr(dialog, "type", "unknown"),
+                        "message": (
+                            getattr(dialog, "message", "") or ""
+                        )[:500],
+                        "resolved_action": f"pre_armed_{action}",
+                        "resolved_ts": time.time(),
+                    }
+                    recent = self._session_dialogs_recent.setdefault(
+                        session_id, [],
+                    )
+                    recent.append(rec)
+                    while len(recent) > 20:
+                        recent.pop(0)
+                    return
+
+                import uuid as _uuid
+                did = _uuid.uuid4().hex[:8]
+                record = {
+                    "id": did,
+                    "type": getattr(dialog, "type", "unknown"),
+                    "message": (getattr(dialog, "message", "") or "")[:500],
+                    "default_value": (
+                        getattr(dialog, "default_value", "") or ""
+                    )[:500],
+                    "ts": time.time(),
+                }
+                pending.append(record)
+                self._dialog_handles[(session_id, did)] = dialog
+                # Safety timeout: if the agent never resolves this
+                # within 5min, auto-dismiss so the page isn't blocked
+                # forever. Matches Hermes's 300s safety net.
+                loop = asyncio.get_event_loop()
+                loop.call_later(
+                    300.0,
+                    lambda: self._auto_dismiss_stale_dialog(session_id, did),
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+        try:
+            page.on("dialog", _on_dialog)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _auto_dismiss_stale_dialog(
+        self, session_id: str, dialog_id: str,
+    ) -> None:
+        """5-min safety net — dismiss a dialog the agent forgot."""
+        handle = self._dialog_handles.pop((session_id, dialog_id), None)
+        if handle is None:
+            return
+        try:
+            asyncio.ensure_future(handle.dismiss())
+        except Exception:  # noqa: BLE001
+            pass
+        # Move from pending → recent with stale marker.
+        pending = self._session_dialogs_pending.get(session_id) or []
+        for i, rec in enumerate(pending):
+            if rec.get("id") == dialog_id:
+                rec = dict(
+                    rec, resolved_action="auto_dismiss_stale",
+                    resolved_ts=time.time(),
+                )
+                pending.pop(i)
+                recent = self._session_dialogs_recent.setdefault(session_id, [])
+                recent.append(rec)
+                while len(recent) > 20:
+                    recent.pop(0)
+                break
 
     def _attach_console_listeners(
         self, session_id: str, page: Any,
@@ -1210,6 +1871,289 @@ class BrowserTools(ToolProvider):
             page.on("pageerror", _on_pageerror)
         except Exception:  # noqa: BLE001
             pass
+
+    async def _ensure_user_browser_context(
+        self,
+        *,
+        browser_name: str | None = None,
+        profile_dir: str = "Default",
+    ) -> tuple[Any, str]:
+        """Resolve a Playwright BrowserContext bound to the USER'S
+        real Chrome-family browser.
+
+        Returns ``(context, mode)`` where ``mode`` is one of:
+
+          - ``"cdp_attach"`` — attached to an already-running Chrome
+            via CDP at 127.0.0.1:9222. Most natural — uses the user's
+            current session, current tabs, current login state. We
+            DO NOT own this Browser process; the Browser handle
+            stays in ``self._user_browser_handle`` and is detached
+            (not closed) on cleanup.
+
+          - ``"launched_real_profile"`` — user's Chrome is NOT
+            running, so we spawned it ourselves via
+            ``launch_persistent_context`` against the real
+            ``%LOCALAPPDATA%\\Google\\Chrome\\User Data`` dir. Their
+            cookies / logins / bookmarks are all present. Same
+            no-close rule applies: if we close this context, the
+            user's profile lock file may get corrupted.
+
+          - ``"side_profile_fallback"`` — user's main Chrome IS
+            running on the target profile (lock detected) so we
+            couldn't grab the real User Data dir. Falls back to the
+            existing ``persistent_profile`` machinery — a side
+            profile under ``~/.xmclaw/v2/browser_profiles/<name>``
+            that the user logs into separately. This dir IS owned
+            by us, so close-on-cleanup is allowed.
+        """
+        if self._user_browser_context is not None:
+            # Liveness probe — same pattern as
+            # ``_ensure_persistent_context``. ``.pages`` raises after
+            # the context is closed.
+            try:
+                _ = len(self._user_browser_context.pages)
+                # Stored mode lives on the context object itself as
+                # a custom attribute set on creation. Default to
+                # cdp_attach for backward-safe handling.
+                mode = getattr(
+                    self._user_browser_context, "_xmclaw_user_browser_mode",
+                    "cdp_attach",
+                )
+                return self._user_browser_context, mode
+            except Exception:  # noqa: BLE001
+                self._user_browser_context = None
+                self._user_browser_handle = None
+
+        from xmclaw.providers.tool._user_browser_detect import (
+            BrowserInstall,
+            detect_browsers,
+            is_user_data_dir_locked,
+            pick_browser,
+            probe_cdp_endpoint,
+        )
+
+        async with self._boot_lock:
+            if self._user_browser_context is not None:
+                return self._user_browser_context, getattr(
+                    self._user_browser_context, "_xmclaw_user_browser_mode",
+                    "cdp_attach",
+                )
+            if self._playwright is None:
+                try:
+                    from playwright.async_api import async_playwright
+                except ImportError as exc:
+                    raise _PlaywrightMissing(
+                        "playwright not installed -- run "
+                        "`pip install xmclaw[browser]` then "
+                        "`playwright install chromium`"
+                    ) from exc
+                self._playwright = await async_playwright().start()
+
+            # ── Tier 1: CDP attach (best — uses live user session) ──
+            cdp = probe_cdp_endpoint(9222)
+            if cdp is not None:
+                try:
+                    browser = await self._playwright.chromium.connect_over_cdp(cdp)
+                except Exception as exc:  # noqa: BLE001
+                    from xmclaw.utils.log import get_logger
+                    get_logger(__name__).warning(
+                        "user_browser: CDP attach at %s failed: %s",
+                        cdp, exc,
+                    )
+                else:
+                    # Take the first existing context (the user's
+                    # main window). Fall back to creating one if
+                    # they have no contexts (shouldn't happen with
+                    # a real running Chrome).
+                    ctx = (
+                        browser.contexts[0] if browser.contexts
+                        else await browser.new_context()
+                    )
+                    ctx._xmclaw_user_browser_mode = "cdp_attach"
+                    self._user_browser_handle = browser
+                    self._user_browser_context = ctx
+                    return ctx, "cdp_attach"
+
+            # ── Tier 2 / 3: need to spawn a browser ourselves ──
+            install: BrowserInstall | None = pick_browser(browser_name)
+            if install is None:
+                installed = [b.name for b in detect_browsers()]
+                raise RuntimeError(
+                    "could not find Chrome / Edge / Brave on this "
+                    f"system (detected: {installed!r}). Install one, "
+                    "or use browser_open(visible=true) for a clean "
+                    "Playwright Chromium window."
+                )
+
+            # ── Tier 2: launch user's real profile (if not locked) ──
+            locked = is_user_data_dir_locked(install.user_data_dir)
+            if not locked:
+                launch_kwargs: dict[str, Any] = {
+                    "user_data_dir": str(install.user_data_dir),
+                    "executable_path": str(install.exe_path),
+                    "headless": False,
+                    "accept_downloads": True,
+                    "no_viewport": True,
+                    "args": [
+                        "--start-maximized",
+                        "--new-window",
+                        f"--profile-directory={profile_dir}",
+                        "--disable-blink-features=AutomationControlled",
+                    ],
+                }
+                # Use the Playwright channel only if it maps to a
+                # known one — Brave goes through plain chromium with
+                # ``executable_path`` doing the redirect.
+                if install.playwright_channel in ("chrome", "msedge"):
+                    launch_kwargs["channel"] = install.playwright_channel
+                try:
+                    ctx = await self._playwright.chromium.launch_persistent_context(
+                        **launch_kwargs,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    from xmclaw.utils.log import get_logger
+                    get_logger(__name__).info(
+                        "user_browser: real-profile launch failed (%s) — "
+                        "falling back to side profile.", exc,
+                    )
+                else:
+                    ctx._xmclaw_user_browser_mode = "launched_real_profile"
+                    self._user_browser_context = ctx
+                    return ctx, "launched_real_profile"
+
+            # ── Tier 3: side-profile fallback (user's Chrome already
+            # running). Reuses the existing persistent_profile dir
+            # machinery so the side profile persists across daemon
+            # restarts — user logs in once, future sessions inherit.
+            side_profile_name = f"user_{install.name}_{profile_dir}"
+            ctx = await self._ensure_persistent_context(
+                side_profile_name,
+                headless=False,
+                session_id="__user_browser_side__",
+            )
+            ctx._xmclaw_user_browser_mode = "side_profile_fallback"
+            self._user_browser_context = ctx
+            return ctx, "side_profile_fallback"
+
+    async def _bring_to_foreground(self, session_id: str, page: Any) -> None:
+        """Force the browser window into the user's foreground.
+
+        Layered, best-effort — each layer covers a different failure
+        mode of the previous one. None of them throw on failure;
+        worst case we still log so the doctor can diagnose later.
+
+        Layer 1 — Playwright ``page.bring_to_front()``: brings this
+            page's TAB to front within the browser. Fast, no OS calls.
+            Doesn't touch the OS-level window z-order.
+
+        Layer 2 — Windows ``SetForegroundWindow`` via ctypes: the
+            actual fix for "Chrome window opens behind chat". Windows
+            blocks foreground stealing from background processes by
+            default, so we do the standard trick: send a self-keypress
+            first which marks the process as "user interacted",
+            unlocking ``SetForegroundWindow``. Only fires on Windows
+            and only when the session is headed.
+
+        Headless sessions are a no-op (no window to focus).
+        """
+        if self._session_headless.get(session_id, self._default_headless):
+            return
+        # Layer 1: tab to front within the browser.
+        try:
+            await page.bring_to_front()
+        except Exception as exc:  # noqa: BLE001
+            # noqa: BLE001 — best-effort; log+continue.
+            try:
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).debug(
+                    "browser._bring_to_foreground: bring_to_front failed: %s",
+                    exc,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        # Layer 2: Windows OS-level focus steal. Other platforms get
+        # their window-manager defaults (which usually work because
+        # Linux/macOS don't have Windows' foreground-stealing block).
+        import sys as _sys
+        if _sys.platform != "win32":
+            return
+        try:
+            await self._win32_focus_browser_window(page)
+        except Exception as exc:  # noqa: BLE001
+            try:
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).debug(
+                    "browser._bring_to_foreground: win32 focus failed: %s",
+                    exc,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+    async def _win32_focus_browser_window(self, page: Any) -> None:
+        """Windows-specific: find the Chrome window owning ``page`` and
+        force it foreground.
+
+        The standard ``SetForegroundWindow`` from a background process
+        is silently denied by Windows (returns 0) unless the calling
+        process recently had user input. The unlock trick: send a
+        keystroke to our OWN process (which counts as user input from
+        Windows' POV) immediately before the SetForegroundWindow call.
+
+        We can't reliably get Chrome's HWND from Playwright (no API),
+        so we enumerate top-level windows and pick the most recent
+        Chromium one — good enough when there's only one agent
+        browser, and the user is using their own Chrome separately.
+        """
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        # 1. Find Chrome-family windows owned by the Playwright-spawned
+        # Chrome process tree. We don't have the PID directly from
+        # Playwright; instead we filter by window class name —
+        # Chromium uses "Chrome_WidgetWin_1" for its main browser
+        # frame. This catches our window AND any other Chrome on
+        # screen; we pick the most-recently-created one.
+        candidates: list[int] = []
+
+        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        def _enum_cb(hwnd: int, _lparam: int) -> bool:
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            cls_buf = ctypes.create_unicode_buffer(64)
+            user32.GetClassNameW(hwnd, cls_buf, 64)
+            if cls_buf.value == "Chrome_WidgetWin_1":
+                # Skip "no title" frames (devtools, popups w/o title).
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length > 0:
+                    candidates.append(hwnd)
+            return True
+
+        user32.EnumWindows(_enum_cb, 0)
+        if not candidates:
+            return
+
+        # Pick the most recently created Chrome window — heuristic for
+        # "the one we just spawned". Z-order from EnumWindows is
+        # top-of-stack first, so reverse.
+        target_hwnd = candidates[0]
+
+        # 2. Unlock foreground stealing by simulating a keystroke
+        # to our OWN window. Per Microsoft docs, ``SetForegroundWindow``
+        # only succeeds if "the foreground process is allowing the
+        # current process to set the foreground window" — a
+        # ``keybd_event`` self-input flips the allow bit.
+        VK_MENU = 0x12
+        KEYEVENTF_KEYUP = 0x0002
+        user32.keybd_event(VK_MENU, 0, 0, 0)
+        user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+
+        # 3. Restore if minimized, then bring to front.
+        SW_RESTORE = 9
+        user32.ShowWindow(target_hwnd, SW_RESTORE)
+        user32.SetForegroundWindow(target_hwnd)
 
     def _check_host(self, url: str) -> None:
         if self._allowed is None:
@@ -1313,6 +2257,14 @@ class BrowserTools(ToolProvider):
             self._session_storage_state[sid] = str(state_path)
         page = await self._page_for(sid, headless=headless)
         resp = await page.goto(url, wait_until=wait_until)
+        # Headed mode: pop the window to the user's foreground so
+        # they actually SEE the navigation. Without this the Chrome
+        # window often opens behind the chat (Windows blocks
+        # background-process foreground-stealing by default) — the
+        # user-visible symptom is "agent says it opened the page
+        # but I see nothing." See ``_bring_to_foreground`` for the
+        # layered fallback strategy.
+        await self._bring_to_foreground(sid, page)
         final_url = page.url
         title = await page.title()
         status = resp.status if resp is not None else None
@@ -1440,6 +2392,10 @@ class BrowserTools(ToolProvider):
                 pass
         navigated = new_url != url_before
 
+        # Keep the headed window in front as the agent operates —
+        # otherwise the user loses sight of what's happening when
+        # navigation/click triggers a popup or new tab.
+        await self._bring_to_foreground(self._sid(call), page)
         return ToolResult(
             call_id=call.id, ok=True,
             content={
@@ -1487,6 +2443,7 @@ class BrowserTools(ToolProvider):
             new_title = await page.title()
         except Exception:  # noqa: BLE001
             new_title = ""
+        await self._bring_to_foreground(self._sid(call), page)
         return ToolResult(
             call_id=call.id, ok=True,
             content={
@@ -1522,6 +2479,7 @@ class BrowserTools(ToolProvider):
             return _fail(call, t0, str(exc))
         except Exception as exc:  # noqa: BLE001
             return _fail(call, t0, f"fill failed: {type(exc).__name__}: {exc}")
+        await self._bring_to_foreground(self._sid(call), page)
         return ToolResult(
             call_id=call.id, ok=True,
             content=f"filled {sel!r} with {len(val)} chars",
@@ -1543,6 +2501,27 @@ class BrowserTools(ToolProvider):
         if fmt == "jpeg":
             shot_kwargs["quality"] = max(1, min(100, quality))
         png_or_jpeg = await page.screenshot(**shot_kwargs)
+        # 2026-05-28 P1.4: annotate=true overlays [N] labels matching
+        # the last browser_snapshot's refs onto the image. Vision LLMs
+        # can then say "click 5" off the screenshot directly. PIL is
+        # the only dep; absence = silent skip (returns plain image).
+        annotated = False
+        if call.args.get("annotate"):
+            sid = self._sid(call)
+            ref_map = self._session_refs.get(sid) or {}
+            if ref_map:
+                try:
+                    png_or_jpeg = _draw_ref_overlay(
+                        png_or_jpeg, ref_map, fmt=fmt,
+                    )
+                    annotated = True
+                except _PILUnavailable:
+                    pass  # silent fallback to unannotated
+                except Exception as exc:  # noqa: BLE001
+                    from xmclaw.utils.log import get_logger
+                    get_logger(__name__).debug(
+                        "browser._screenshot: annotate failed: %s", exc,
+                    )
         mime = "image/png" if fmt == "png" else "image/jpeg"
         b64 = base64.b64encode(png_or_jpeg).decode("ascii")
         inline_size = len(b64) + len(f"data:{mime};base64,")
@@ -1552,6 +2531,7 @@ class BrowserTools(ToolProvider):
             "url": page.url,
             "bytes": len(png_or_jpeg),
             "full_page": full,
+            "annotated": annotated,
         }
 
         # Wave-27 fix-LAT10 (2026-05-17): ALWAYS spill the screenshot
@@ -1637,20 +2617,36 @@ class BrowserTools(ToolProvider):
         page = await self._page_for(self._sid(call))
         if page is None or page.url == "about:blank":
             return _fail(call, t0, "no page open -- call browser_open first")
+        sid = self._sid(call)
         title = await page.title()
         # Pull visible innerText (simpler than the a11y tree; works
         # well enough for LLM reasoning over content).
         text = await page.evaluate("() => document.body ? document.body.innerText : ''")
         if text and len(text) > max_chars:
             text = text[:max_chars] + "\n...[truncated]"
-        # Top N links.
+        # 2026-05-28 P0.1: links are now ref'd too — clicking a link
+        # by ref number is the common case for "follow that link in
+        # the search results".
         links = await page.evaluate(
             """(max) => {
                 const out = [];
                 for (const a of document.querySelectorAll('a[href]')) {
                     const label = (a.innerText || a.title || a.href || '').trim();
                     if (!label) continue;
-                    out.push({label: label.slice(0, 120), href: a.href});
+                    const r = a.getBoundingClientRect();
+                    const cssEscape = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : s.replace(/[^\\w-]/g, ''));
+                    const sel = a.id
+                        ? `#${cssEscape(a.id)}`
+                        : `a[href="${a.getAttribute('href').replace(/"/g, '\\\\"')}"]`;
+                    out.push({
+                        label: label.slice(0, 120),
+                        href: a.href,
+                        selector: sel,
+                        bbox: r.width && r.height
+                            ? {x: Math.round(r.left), y: Math.round(r.top),
+                               w: Math.round(r.width), h: Math.round(r.height)}
+                            : null,
+                    });
                     if (out.length >= max) break;
                 }
                 return out;
@@ -1692,6 +2688,7 @@ class BrowserTools(ToolProvider):
                     if (seen.has(key)) return;
                     seen.add(key);
                     if (!visible(el)) return;
+                    const r = el.getBoundingClientRect();
                     out.push({
                         kind,
                         selector: sel,
@@ -1701,6 +2698,10 @@ class BrowserTools(ToolProvider):
                         value: typeof el.value === 'string' ? el.value.slice(0, 120) : null,
                         label: labelFor(el),
                         text: kind === 'button' ? (el.innerText || el.value || '').slice(0, 60) : null,
+                        bbox: {
+                            x: Math.round(r.left), y: Math.round(r.top),
+                            w: Math.round(r.width), h: Math.round(r.height),
+                        },
                     });
                 };
                 for (const el of document.querySelectorAll('input, textarea, select')) {
@@ -1716,6 +2717,53 @@ class BrowserTools(ToolProvider):
                 return out;
             }""", max_inputs,
         )
+
+        # ── 2026-05-28 P0.1: build [N] ref system ─────────────────
+        # Assign sequential refs to all interactive elements: form
+        # inputs/buttons first, then links. The agent can call
+        # browser_click_ref(ref=N) / browser_type_ref(ref=N, text=...)
+        # instead of crafting CSS selectors. Map is per-session,
+        # invalidated whenever a new snapshot rebuilds it.
+        ref_map: dict[int, dict[str, Any]] = {}
+        next_ref = 1
+        for inp in (inputs or []):
+            label_parts: list[str] = []
+            if inp.get("kind") == "button":
+                label_parts.append(inp.get("text") or inp.get("label") or "button")
+            else:
+                kind_tag = inp.get("type") or inp.get("kind") or "input"
+                label_parts.append(kind_tag)
+                if inp.get("label"):
+                    label_parts.append(f'"{inp["label"]}"')
+                elif inp.get("placeholder"):
+                    label_parts.append(f'placeholder="{inp["placeholder"]}"')
+                elif inp.get("name"):
+                    label_parts.append(f'name="{inp["name"]}"')
+            ref_map[next_ref] = {
+                "selector": inp.get("selector"),
+                "bbox": inp.get("bbox"),
+                "kind": inp.get("kind"),
+                "label": " ".join(label_parts)[:80],
+            }
+            inp["ref"] = next_ref
+            next_ref += 1
+        for link in (links or []):
+            ref_map[next_ref] = {
+                "selector": link.get("selector"),
+                "bbox": link.get("bbox"),
+                "kind": "link",
+                "label": f'link "{(link.get("label") or "")[:60]}"',
+            }
+            link["ref"] = next_ref
+            next_ref += 1
+        # Replace the session's prior ref map atomically (next ref
+        # numbers always start from 1 on each snapshot).
+        self._session_refs[sid] = ref_map
+
+        # ── 2026-05-28 P0.2: dialog surface for the agent ─────────
+        pending_dialogs = list(self._session_dialogs_pending.get(sid, []))
+        recent_dialogs = list(self._session_dialogs_recent.get(sid, []))
+
         return ToolResult(
             call_id=call.id, ok=True,
             content={
@@ -1724,12 +2772,214 @@ class BrowserTools(ToolProvider):
                 "text": text or "",
                 "links": links or [],
                 "inputs": inputs or [],
+                # P0.1: tells the agent the ref range is [1, next_ref-1]
+                # and how to act on those refs.
+                "ref_count": len(ref_map),
+                "ref_hint": (
+                    "Each input/button/link has a 'ref' field. Use "
+                    "browser_click_ref(ref=N) / browser_type_ref(ref=N, "
+                    "text=...) instead of crafting CSS selectors."
+                ) if ref_map else None,
+                # P0.2: blocking + recent dialog records. Empty lists
+                # are the normal case.
+                "pending_dialogs": pending_dialogs,
+                "recent_dialogs": recent_dialogs,
+            },
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _click_ref(self, call: ToolCall, t0: float) -> ToolResult:
+        """2026-05-28 P0.1: click via [N] ref number from last snapshot."""
+        ref = call.args.get("ref")
+        if not isinstance(ref, int):
+            return _fail(call, t0, "missing or non-integer 'ref'")
+        sid = self._sid(call)
+        ref_map = self._session_refs.get(sid) or {}
+        entry = ref_map.get(ref)
+        if entry is None:
+            return _fail(
+                call, t0,
+                f"ref {ref} not found in current snapshot. Call "
+                f"browser_snapshot first to get fresh refs "
+                f"(valid range: 1..{len(ref_map) or 'none'}).",
+            )
+        # Delegate to the standard click handler by forging the call's
+        # selector arg. Inherits the visible-only / nav-wait logic.
+        forged = ToolCall(
+            name="browser_click",
+            args={
+                "selector": entry["selector"],
+                "wait_for_navigation_ms": call.args.get(
+                    "wait_for_navigation_ms", 2000,
+                ),
+            },
+            provenance=getattr(call, "provenance", "ref_dispatch"),
+            session_id=getattr(call, "session_id", None),
+        )
+        return await self._click(forged, t0)
+
+    async def _type_ref(self, call: ToolCall, t0: float) -> ToolResult:
+        """2026-05-28 P0.1: fill via [N] ref number from last snapshot."""
+        ref = call.args.get("ref")
+        text = call.args.get("text")
+        submit = bool(call.args.get("submit", False))
+        if not isinstance(ref, int):
+            return _fail(call, t0, "missing or non-integer 'ref'")
+        if not isinstance(text, str):
+            return _fail(call, t0, "missing or non-string 'text'")
+        sid = self._sid(call)
+        ref_map = self._session_refs.get(sid) or {}
+        entry = ref_map.get(ref)
+        if entry is None:
+            return _fail(
+                call, t0,
+                f"ref {ref} not found in current snapshot. Call "
+                f"browser_snapshot first to get fresh refs "
+                f"(valid range: 1..{len(ref_map) or 'none'}).",
+            )
+        forged = ToolCall(
+            name="browser_fill",
+            args={"selector": entry["selector"], "value": text},
+            provenance=getattr(call, "provenance", "ref_dispatch"),
+            session_id=getattr(call, "session_id", None),
+        )
+        result = await self._fill(forged, t0)
+        if result.ok and submit:
+            # Common case: search box / single-field form. Press
+            # Enter on the same selector after filling.
+            page = await self._page_for(sid)
+            try:
+                await self._resolve_locator(page, entry["selector"]).press("Enter")
+                await self._bring_to_foreground(sid, page)
+            except Exception as exc:  # noqa: BLE001
+                # The fill succeeded; report partial success.
+                return ToolResult(
+                    call_id=call.id, ok=True,
+                    content=(
+                        f"typed into ref {ref} but submit (Enter) "
+                        f"failed: {type(exc).__name__}: {exc}"
+                    ),
+                    side_effects=(),
+                    latency_ms=(time.perf_counter() - t0) * 1000.0,
+                )
+        return result
+
+    async def _dialog_arm(self, call: ToolCall, t0: float) -> ToolResult:
+        """2026-05-28 P2.4: pre-arm the next dialog."""
+        action = call.args.get("action")
+        if action not in ("accept", "dismiss", "clear"):
+            return _fail(
+                call, t0,
+                f"action must be accept/dismiss/clear, got {action!r}",
+            )
+        sid = self._sid(call)
+        if action == "clear":
+            cleared = self._session_dialog_armed.pop(sid, None)
+            return ToolResult(
+                call_id=call.id, ok=True,
+                content={"cleared": cleared is not None},
+                side_effects=(),
+                latency_ms=(time.perf_counter() - t0) * 1000.0,
+            )
+        self._session_dialog_armed[sid] = {
+            "action": action,
+            "text": call.args.get("text") or "",
+        }
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "armed_action": action,
+                "note": (
+                    "The next dialog on this session will be "
+                    f"auto-{action}-ed and the arm will self-clear."
+                ),
+            },
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _dialog(self, call: ToolCall, t0: float) -> ToolResult:
+        """2026-05-28 P0.2: resolve a blocking JS dialog."""
+        action = call.args.get("action")
+        if action not in ("accept", "dismiss", "respond"):
+            return _fail(
+                call, t0,
+                f"action must be 'accept' | 'dismiss' | 'respond', "
+                f"got {action!r}",
+            )
+        sid = self._sid(call)
+        pending = self._session_dialogs_pending.get(sid) or []
+        if not pending:
+            return _fail(call, t0, "no pending dialog on this session")
+        dialog_id = call.args.get("id")
+        if dialog_id is None:
+            # Default to oldest pending — usually what the agent wants.
+            target = pending[0]
+        else:
+            target = next(
+                (d for d in pending if d.get("id") == dialog_id), None,
+            )
+            if target is None:
+                return _fail(
+                    call, t0,
+                    f"dialog id={dialog_id!r} not pending (pending ids: "
+                    f"{[d.get('id') for d in pending]})",
+                )
+        handle = self._dialog_handles.get((sid, target["id"]))
+        if handle is None:
+            return _fail(call, t0, "dialog handle expired (page may have closed)")
+        try:
+            if action == "accept":
+                await handle.accept()
+            elif action == "dismiss":
+                await handle.dismiss()
+            else:  # respond
+                text = call.args.get("text") or ""
+                if target.get("type") != "prompt":
+                    return _fail(
+                        call, t0,
+                        f"'respond' only valid for prompt() dialogs, "
+                        f"this is a {target.get('type')!r}",
+                    )
+                await handle.accept(text)
+        except Exception as exc:  # noqa: BLE001
+            return _fail(
+                call, t0,
+                f"dialog {action} failed: {type(exc).__name__}: {exc}",
+            )
+        # Move from pending → recent (ring-buffered).
+        self._session_dialogs_pending[sid] = [
+            d for d in pending if d.get("id") != target["id"]
+        ]
+        target = dict(target, resolved_action=action, resolved_ts=time.time())
+        recent = self._session_dialogs_recent.setdefault(sid, [])
+        recent.append(target)
+        while len(recent) > 20:
+            recent.pop(0)
+        self._dialog_handles.pop((sid, target["id"]), None)
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "id": target["id"],
+                "type": target.get("type"),
+                "action": action,
+                "message": target.get("message"),
             },
             side_effects=(),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 
     async def _eval(self, call: ToolCall, t0: float) -> ToolResult:
+        if not self._evaluate_enabled:
+            return _fail(
+                call, t0,
+                "browser_eval is disabled by config "
+                "(tools.browser.evaluate_enabled=false). Use targeted "
+                "tools (browser_click_ref / browser_type_ref / "
+                "browser_snapshot / browser_network_log) instead of "
+                "arbitrary-JS reach.",
+            )
         expr = call.args.get("expression")
         if not isinstance(expr, str) or not expr.strip():
             return _fail(call, t0, "missing or empty 'expression'")
@@ -1756,6 +3006,179 @@ class BrowserTools(ToolProvider):
             side_effects=(), latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 
+    async def _network_log(self, call: ToolCall, t0: float) -> ToolResult:
+        """2026-05-28 P3.5: read recent request/response entries.
+
+        Filters: ``url_glob`` (shell glob), ``method``, ``status_min``.
+        Optionally fetches response bodies (``with_body``) — capped
+        at 64 KB per entry to bound the payload.
+        """
+        import fnmatch
+        sid = self._sid(call)
+        buf = self._network_buffers.get(sid) or []
+        url_glob = call.args.get("url_glob")
+        # fnmatch's '*' already matches '/'; ergonomic alias '**' → '*'
+        # so shell-style ``**/api/*`` patterns just work.
+        if isinstance(url_glob, str):
+            url_glob = url_glob.replace("**", "*")
+        method = call.args.get("method")
+        status_min = int(call.args.get("status_min", 0) or 0)
+        with_body = bool(call.args.get("with_body", False))
+        limit = int(call.args.get("limit", 20))
+        clear = bool(call.args.get("clear", False))
+
+        # Walk newest-first so the LLM gets the most-recent responses
+        # (most relevant after a click that fired XHR).
+        out: list[dict[str, Any]] = []
+        for entry in reversed(buf):
+            url = entry.get("url") or ""
+            if url_glob and not fnmatch.fnmatch(url, url_glob):
+                continue
+            if method and (entry.get("method") or "").upper() != method.upper():
+                continue
+            status = entry.get("status")
+            if status is None and status_min > 0:
+                continue
+            if status is not None and status < status_min:
+                continue
+            record = {
+                "method": entry.get("method"),
+                "url": url,
+                "status": status,
+                "request_headers": entry.get("request_headers"),
+                "response_headers": entry.get("response_headers"),
+                "ts": entry.get("ts"),
+            }
+            if with_body:
+                resp_obj = entry.get("_response_obj")
+                if resp_obj is not None:
+                    try:
+                        body = await resp_obj.body()
+                        if isinstance(body, bytes):
+                            if len(body) > 64 * 1024:
+                                body = body[:64 * 1024]
+                                record["body_truncated"] = True
+                            try:
+                                record["body"] = body.decode("utf-8")
+                            except UnicodeDecodeError:
+                                record["body_base64"] = (
+                                    base64.b64encode(body).decode("ascii")
+                                )
+                    except Exception as exc:  # noqa: BLE001
+                        record["body_error"] = (
+                            f"{type(exc).__name__}: {exc}"
+                        )
+            out.append(record)
+            if len(out) >= limit:
+                break
+
+        if clear:
+            self._network_buffers[sid] = []
+
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "total_in_buffer": len(buf),
+                "returned": len(out),
+                "entries": out,
+            },
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _use_my_browser(self, call: ToolCall, t0: float) -> ToolResult:
+        """Open ``url`` in the user's real Chrome with full agent
+        control. The 3-mode resolution lives in
+        ``_ensure_user_browser_context``; this handler just pins the
+        session, navigates, and reports back which mode landed.
+
+        Once a session has been opened via this tool, EVERY other
+        browser_* call in the same session routes through the same
+        user-Chrome context — agent gets click/fill/snapshot/eval
+        the same way as a normal browser_open session.
+        """
+        url = call.args.get("url")
+        if not isinstance(url, str) or not url.strip():
+            return _fail(call, t0, "missing or empty 'url'")
+        if not (url.startswith("http://") or url.startswith("https://")):
+            return _fail(call, t0, f"url must start with http(s)://, got {url!r}")
+        self._check_host(url)
+        wait_until = call.args.get("wait_until") or "load"
+        if wait_until not in ("load", "domcontentloaded", "networkidle", "commit"):
+            return _fail(call, t0, f"wait_until={wait_until!r} not supported")
+
+        browser_name = call.args.get("browser") or "auto"
+        profile = call.args.get("profile") or "Default"
+
+        sid = self._sid(call)
+        # Pin the session to user-CDP routing before _page_for runs.
+        # Once pinned, every subsequent browser_* call on this sid
+        # routes through ``_ensure_user_browser_context``.
+        self._session_user_cdp[sid] = True
+        # Headed mode is implicit (the user's real Chrome is visible
+        # by definition). Pin so _bring_to_foreground does its work.
+        self._session_headless[sid] = False
+
+        try:
+            ctx, mode = await self._ensure_user_browser_context(
+                browser_name=browser_name if browser_name != "auto" else None,
+                profile_dir=profile,
+            )
+        except _PlaywrightMissing as exc:
+            self._session_user_cdp.pop(sid, None)
+            return _fail(call, t0, str(exc))
+        except Exception as exc:  # noqa: BLE001
+            self._session_user_cdp.pop(sid, None)
+            return _fail(
+                call, t0,
+                f"user_browser setup failed: {type(exc).__name__}: {exc}",
+            )
+
+        page = await self._page_for(sid)
+        try:
+            resp = await page.goto(url, wait_until=wait_until)
+        except Exception as exc:  # noqa: BLE001
+            return _fail(
+                call, t0,
+                f"navigation failed: {type(exc).__name__}: {exc}",
+            )
+        await self._bring_to_foreground(sid, page)
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "url": page.url,
+                "title": await page.title(),
+                "status": resp.status if resp is not None else None,
+                "mode": mode,
+                "uses_user_real_session": mode in (
+                    "cdp_attach", "launched_real_profile",
+                ),
+                "note": {
+                    "cdp_attach": (
+                        "Attached to user's already-running Chrome via "
+                        "CDP. All their tabs / cookies / logins are "
+                        "live. Closing this session does NOT close "
+                        "their browser."
+                    ),
+                    "launched_real_profile": (
+                        "Spawned user's Chrome with their real "
+                        "profile dir. Cookies / logins / bookmarks "
+                        "all present. Daemon shutdown closes this "
+                        "Chrome instance."
+                    ),
+                    "side_profile_fallback": (
+                        "User's Chrome is already running on this "
+                        "profile so we couldn't grab the lock. Opened "
+                        "a side profile under ~/.xmclaw/ — first time "
+                        "the user must log in to target sites in this "
+                        "window; logins persist thereafter."
+                    ),
+                }[mode],
+            },
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
     # ── Wave 24 handlers ──────────────────────────────────────────
 
     async def _hover(self, call: ToolCall, t0: float) -> ToolResult:
@@ -1771,6 +3194,7 @@ class BrowserTools(ToolProvider):
             return _fail(call, t0, str(exc))
         except Exception as exc:  # noqa: BLE001
             return _fail(call, t0, f"hover failed: {type(exc).__name__}: {exc}")
+        await self._bring_to_foreground(self._sid(call), page)
         return ToolResult(
             call_id=call.id, ok=True,
             content={"selector": sel, "url": page.url},
@@ -1792,6 +3216,7 @@ class BrowserTools(ToolProvider):
                 return _fail(call, t0, str(exc))
             except Exception as exc:  # noqa: BLE001
                 return _fail(call, t0, f"scroll-to-selector failed: {exc}")
+            await self._bring_to_foreground(self._sid(call), page)
             return ToolResult(
                 call_id=call.id, ok=True,
                 content={"mode": "to_selector", "selector": to_sel},
@@ -1815,6 +3240,7 @@ class BrowserTools(ToolProvider):
                 call, t0,
                 f"direction must be up/down/top/bottom, got {direction!r}",
             )
+        await self._bring_to_foreground(self._sid(call), page)
         return ToolResult(
             call_id=call.id, ok=True,
             content={"mode": "direction", "direction": direction, "amount": amount},
@@ -1867,6 +3293,7 @@ class BrowserTools(ToolProvider):
                 return _fail(call, t0, f"select_option failed: {exc}")
         else:
             return _fail(call, t0, "'value' must be string or list")
+        await self._bring_to_foreground(self._sid(call), page)
         return ToolResult(
             call_id=call.id, ok=True,
             content={"selector": sel, "selected": chosen},
@@ -1906,33 +3333,86 @@ class BrowserTools(ToolProvider):
         )
 
     async def _wait_for(self, call: ToolCall, t0: float) -> ToolResult:
+        """2026-05-28 P3.7: composite wait — AND of {selector, url_glob,
+        load_state, js_predicate}. Legacy single-selector calls keep
+        working unchanged (selector is just one of N possible
+        conditions).
+        """
         sel = call.args.get("selector")
-        if not isinstance(sel, str) or not sel:
-            return _fail(call, t0, "missing or empty 'selector'")
+        url_glob = call.args.get("url_glob")
+        load_state = call.args.get("load_state")
+        js_predicate = call.args.get("js_predicate")
         state = (call.args.get("state") or "visible").lower()
+        timeout = int(call.args.get("timeout_ms", 10_000))
+
         if state not in ("attached", "detached", "visible", "hidden"):
             return _fail(
                 call, t0,
                 f"state must be attached/detached/visible/hidden, got {state!r}",
             )
-        timeout = int(call.args.get("timeout_ms", 10_000))
+        if load_state and load_state not in (
+            "load", "domcontentloaded", "networkidle",
+        ):
+            return _fail(
+                call, t0,
+                f"load_state must be load/domcontentloaded/networkidle, "
+                f"got {load_state!r}",
+            )
+
+        conds: list[tuple[str, Any]] = []
+        if isinstance(sel, str) and sel:
+            conds.append(("selector", sel))
+        if isinstance(url_glob, str) and url_glob:
+            conds.append(("url_glob", url_glob))
+        if isinstance(load_state, str) and load_state:
+            conds.append(("load_state", load_state))
+        if isinstance(js_predicate, str) and js_predicate.strip():
+            conds.append(("js_predicate", js_predicate))
+        if not conds:
+            return _fail(
+                call, t0,
+                "at least one condition required: selector / url_glob / "
+                "load_state / js_predicate",
+            )
+
         page = await self._page_for(self._sid(call))
         if page is None or page.url == "about:blank":
             return _fail(call, t0, "no page open -- call browser_open first")
+
+        satisfied: list[str] = []
         try:
-            await self._resolve_locator(page, sel).wait_for(
-                state=state, timeout=timeout,
-            )
+            for kind, value in conds:
+                if kind == "selector":
+                    await self._resolve_locator(page, value).wait_for(
+                        state=state, timeout=timeout,
+                    )
+                elif kind == "url_glob":
+                    await page.wait_for_url(value, timeout=timeout)
+                elif kind == "load_state":
+                    await page.wait_for_load_state(value, timeout=timeout)
+                elif kind == "js_predicate":
+                    # Wrap so JS expressions like `x === true` work
+                    # without the agent writing `() => (x === true)`.
+                    wrapped = f"() => Boolean({value})"
+                    await page.wait_for_function(wrapped, timeout=timeout)
+                satisfied.append(kind)
         except ValueError as exc:
             return _fail(call, t0, str(exc))
         except Exception as exc:  # noqa: BLE001
             return _fail(
                 call, t0,
-                f"wait_for timed out / failed: {type(exc).__name__}: {exc}",
+                f"wait_for timed out on condition={kind!r}: "
+                f"{type(exc).__name__}: {exc}. Satisfied so far: "
+                f"{satisfied}.",
             )
         return ToolResult(
             call_id=call.id, ok=True,
-            content={"selector": sel, "state": state, "url": page.url},
+            content={
+                "satisfied": satisfied,
+                "url": page.url,
+                "selector": sel,
+                "state": state if sel else None,
+            },
             side_effects=(),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
@@ -2570,6 +4050,97 @@ def _persistent_profile_dir(name: str) -> Any:
             f"profile_name {name!r} must match [A-Za-z0-9_-]+"
         )
     return _P(data_dir() / "v2" / "browser_profiles" / name / "user-data")
+
+
+class _PILUnavailable(RuntimeError):
+    """Raised when ``Pillow`` isn't installed and an annotate=true
+    screenshot was requested. Callers catch this and fall back to a
+    plain image (the annotation is a nice-to-have, not a hard
+    dependency)."""
+
+
+def _draw_ref_overlay(
+    image_bytes: bytes,
+    ref_map: dict[int, dict[str, Any]],
+    *,
+    fmt: str = "png",
+) -> bytes:
+    """2026-05-28 P1.4: overlay ``[N]`` labels on a screenshot.
+
+    Draws a small filled badge at each ref'd element's bounding box
+    upper-left corner. Vision-capable models read these directly:
+    "click 5" maps unambiguously to the element wrapped in [5].
+
+    Returns the re-encoded image bytes (same format as input).
+    Raises ``_PILUnavailable`` if Pillow isn't installed.
+    """
+    try:
+        from PIL import Image, ImageDraw, ImageFont  # type: ignore
+    except ImportError as exc:
+        raise _PILUnavailable("Pillow not installed") from exc
+
+    import io
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    # Try a decent system font; fall back to PIL's bitmap default
+    # (worse-looking but always present).
+    font = None
+    for font_name in ("arial.ttf", "DejaVuSans-Bold.ttf", "Arial.ttf"):
+        try:
+            font = ImageFont.truetype(font_name, 14)
+            break
+        except (OSError, IOError):
+            continue
+    if font is None:
+        font = ImageFont.load_default()
+
+    for ref_num, entry in ref_map.items():
+        bbox = entry.get("bbox")
+        if not bbox:
+            continue
+        x = int(bbox.get("x") or 0)
+        y = int(bbox.get("y") or 0)
+        # Bounding-box outline so the user knows which element each
+        # number refers to.
+        w = int(bbox.get("w") or 0)
+        h = int(bbox.get("h") or 0)
+        if w > 0 and h > 0:
+            draw.rectangle(
+                [(x, y), (x + w, y + h)],
+                outline=(255, 50, 50, 220), width=2,
+            )
+        # Badge at upper-left of element with the ref number.
+        label = f"[{ref_num}]"
+        # Background rectangle for legibility.
+        try:
+            text_w, text_h = draw.textsize(label, font=font)  # type: ignore[attr-defined]
+        except AttributeError:
+            # Pillow >=10 dropped textsize. Use textbbox.
+            l, t, r, b = draw.textbbox((0, 0), label, font=font)
+            text_w, text_h = r - l, b - t
+        pad = 3
+        badge_x0 = max(0, x - 2)
+        badge_y0 = max(0, y - text_h - pad * 2)
+        badge_x1 = badge_x0 + text_w + pad * 2
+        badge_y1 = badge_y0 + text_h + pad * 2
+        draw.rectangle(
+            [(badge_x0, badge_y0), (badge_x1, badge_y1)],
+            fill=(255, 50, 50, 230),
+        )
+        draw.text(
+            (badge_x0 + pad, badge_y0 + pad),
+            label, fill=(255, 255, 255, 255), font=font,
+        )
+
+    composited = Image.alpha_composite(img, overlay).convert("RGB")
+    out = io.BytesIO()
+    if fmt == "jpeg":
+        composited.save(out, format="JPEG", quality=85)
+    else:
+        composited.save(out, format="PNG", optimize=True)
+    return out.getvalue()
 
 
 class _PlaywrightMissing(RuntimeError):

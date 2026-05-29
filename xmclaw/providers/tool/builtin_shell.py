@@ -12,7 +12,11 @@ import time
 from urllib.parse import urlparse
 
 from xmclaw.core.ir import ToolCall, ToolResult
-from xmclaw.providers.tool._helpers import _fail as _fail, _parse_ddg_html as _parse_ddg_html
+from xmclaw.providers.tool._helpers import (
+    _fail as _fail,
+    _parse_bing_html as _parse_bing_html,
+    _parse_ddg_html as _parse_ddg_html,
+)
 
 _BASH_DEFAULT_TIMEOUT = 30.0
 _BASH_MAX_OUTPUT = 100_000
@@ -258,27 +262,88 @@ class BuiltinToolsShellMixin:
         except (TypeError, ValueError):
             max_chars = _MAX_WEB_BYTES
 
+        import asyncio as _asyncio
         import httpx
-        try:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as c:
-                r = await c.get(url, headers={
-                    "User-Agent": "XMclaw/2.x (+local)",
-                })
-        except httpx.HTTPError as exc:
-            # B-233: ``str(exc)`` is EMPTY for several httpx exception
-            # types (ConnectError without a wrapped OSError, ProtocolError,
-            # certain TLS handshake aborts). Pre-B-233 the agent saw
-            # ``http error: `` with nothing after the colon and kept
-            # retrying the same URL, eating context — real-data
-            # (chat-18e1711d) had 5+ identical empty-error retries
-            # adding up to a 262K-token request. Always include the
-            # exception class name; fall back to ``repr(exc)`` when
-            # ``str()`` returns empty so SOMETHING surfaces.
-            err_msg = str(exc) or repr(exc)
+        # 2026-05-28: public sites reject the bot-looking
+        # "XMclaw/2.x" UA with 403/empty, AND fail TLS / handshake
+        # without proper Accept-* headers. Use a real Chrome 145 UA
+        # plus the headers a modern browser actually sends so
+        # Cloudflare / Akamai / Datadome don't trip on day one.
+        # The ``Sec-*`` quartet is what real Chrome ships; without
+        # them many anti-bot middleboxes return 403 for "missing
+        # client hints".
+        _BROWSER_HEADERS = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/145.0.0.0 Safari/537.36"
+            ),
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;"
+                "q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
+            ),
+            "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Sec-Ch-Ua": '"Chromium";v="145", "Not?A_Brand";v="24"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+        }
+        # Split timeout: 10s to establish TCP+TLS, 30s for the body —
+        # slow CN sites that take 25s to first byte but stream fast
+        # used to die on a flat 15s.
+        _timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
+        # Up to 3 attempts on transient network errors (each with a
+        # small backoff). Bot-blocked / 4xx responses don't retry —
+        # those will fail the same way again and just waste time.
+        _MAX_ATTEMPTS = 3
+        last_exc: Exception | None = None
+        r = None
+        for attempt in range(_MAX_ATTEMPTS):
+            try:
+                async with httpx.AsyncClient(
+                    follow_redirects=True,
+                    timeout=_timeout,
+                    http2=False,  # h2 occasionally hangs on poorly-tuned servers
+                ) as c:
+                    r = await c.get(url, headers=_BROWSER_HEADERS)
+                last_exc = None
+                break
+            except (
+                httpx.ConnectError, httpx.ReadTimeout,
+                httpx.RemoteProtocolError, httpx.ConnectTimeout,
+                httpx.PoolTimeout,
+            ) as exc:
+                last_exc = exc
+                if attempt < _MAX_ATTEMPTS - 1:
+                    # Exponential backoff: 0.5s, 1s before retry.
+                    await _asyncio.sleep(0.5 * (2 ** attempt))
+                    continue
+            except httpx.HTTPError as exc:
+                # Non-transient HTTP error (TLS verify fail, invalid
+                # URL, etc.) — surface immediately, no retry.
+                last_exc = exc
+                break
+        if r is None and last_exc is not None:
+            # B-233 + 2026-05-28: structured error with retry count
+            # and fallback hint. Pre-fix the agent kept hammering the
+            # same URL because the message gave no actionable info.
+            err_msg = str(last_exc) or repr(last_exc)
             return _fail(
                 call, t0,
-                f"http error: {type(exc).__name__}: {err_msg}",
+                f"http error after {_MAX_ATTEMPTS} attempts: "
+                f"{type(last_exc).__name__}: {err_msg}. "
+                f"If this is a site that bot-blocks (Cloudflare, "
+                f"Akamai), try ``browser_open(url=..., visible=true)`` "
+                f"or ``browser_use_my_browser(url=...)`` to fetch via "
+                f"a real Chromium — those defeat most fingerprint "
+                f"checks the raw HTTP client trips on.",
             )
+        assert r is not None  # mypy/runtime — guard above ensures this
 
         # Wave-27 fix-LAT8 (2026-05-17): image content-type → vision
         # pipeline. Pre-fix, web_fetch on a PNG/JPG URL decoded the
@@ -377,11 +442,35 @@ class BuiltinToolsShellMixin:
             f"[{r.status_code} {r.reason_phrase}] {url}\n"
             f"{text}{suffix}"
         )
+        ok = 200 <= r.status_code < 400
+        # 2026-05-28: when a public site returns a 4xx that looks
+        # like anti-bot (403 / 429 / 503 with "cloudflare" / "captcha"
+        # in body), point the agent at browser_open. Today the agent
+        # often retries the exact same web_fetch and loses budget.
+        err = None
+        if not ok:
+            err = f"HTTP {r.status_code}"
+            if r.status_code in (403, 429, 503):
+                lower_body = (text or "")[:2000].lower()
+                if any(
+                    needle in lower_body
+                    for needle in (
+                        "cloudflare", "just a moment", "captcha",
+                        "ddos protection", "access denied",
+                        "请完成验证", "人机验证",
+                    )
+                ):
+                    err += (
+                        " — looks like bot-blocked; retry with "
+                        "``browser_open(url=..., visible=true)`` "
+                        "or ``browser_use_my_browser(url=...)`` "
+                        "for a real Chromium session."
+                    )
         return ToolResult(
             call_id=call.id,
-            ok=(200 <= r.status_code < 400),
+            ok=ok,
             content=content,
-            error=None if 200 <= r.status_code < 400 else f"HTTP {r.status_code}",
+            error=err,
             side_effects=(),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
@@ -488,48 +577,108 @@ class BuiltinToolsShellMixin:
             getattr(self, "_search_config_getter", None) is not None
         ) else {}
         provider = (cfg.get("provider") or "ddg").lower()
-        try:
-            if provider == "bing":
-                results = await self._search_bing(
-                    query.strip(), max_results, cfg,
-                )
-            elif provider == "brave":
-                results = await self._search_brave(
-                    query.strip(), max_results, cfg,
-                )
-            elif provider == "google_cse":
-                results = await self._search_google_cse(
-                    query.strip(), max_results, cfg,
-                )
-            else:
-                results = await self._search_ddg(
+        # 2026-05-28: multi-engine fallback for CN networks. DDG is
+        # often unreachable from mainland China; when the configured
+        # backend either errors OR returns 0 results, automatically
+        # try Bing CN HTML (no key, reachable in CN). The agent never
+        # has to know — it just gets results. Disable via
+        # ``cfg.disable_fallback = true``.
+        disable_fallback = bool(cfg.get("disable_fallback", False))
+        used_engines: list[str] = []
+        last_error: str | None = None
+        results: list[dict[str, str]] = []
+
+        async def _try_engine(name: str):
+            used_engines.append(name)
+            if name == "ddg":
+                return await self._search_ddg(query.strip(), max_results)
+            if name == "bing_cn":
+                return await self._search_bing_cn_html(
                     query.strip(), max_results,
                 )
-        except _SearchBackendError as exc:
-            return _fail(call, t0, f"search backend error: {exc}")
-        except Exception as exc:  # noqa: BLE001
-            return _fail(
-                call, t0,
-                f"search error ({type(exc).__name__}): {exc}",
-            )
+            if name == "bing":
+                return await self._search_bing(
+                    query.strip(), max_results, cfg,
+                )
+            if name == "brave":
+                return await self._search_brave(
+                    query.strip(), max_results, cfg,
+                )
+            if name == "google_cse":
+                return await self._search_google_cse(
+                    query.strip(), max_results, cfg,
+                )
+            raise _SearchBackendError(f"unknown engine: {name}")
+
+        # Build the engine try-order. Primary = configured provider;
+        # if primary is DDG (the default) and fallback is enabled,
+        # tack Bing CN on the end.
+        try_order = [provider]
+        if not disable_fallback:
+            if provider == "ddg" and "bing_cn" not in try_order:
+                try_order.append("bing_cn")
+            elif provider == "bing_cn" and "ddg" not in try_order:
+                try_order.append("ddg")  # other direction too
+
+        for engine in try_order:
+            try:
+                results = await _try_engine(engine)
+            except _SearchBackendError as exc:
+                last_error = f"{engine}: {exc}"
+                continue
+            except Exception as exc:  # noqa: BLE001
+                last_error = (
+                    f"{engine}: {type(exc).__name__}: {exc}"
+                )
+                continue
+            if results:
+                break
 
         if not results:
+            # All engines failed or returned 0. Surface the LAST error
+            # so the agent has something concrete + which engines we
+            # tried (so it doesn't pick the same one on retry).
+            if last_error is not None:
+                return _fail(
+                    call, t0,
+                    f"search failed across engines {used_engines}: "
+                    f"{last_error}. If this is from a CN network and "
+                    f"DDG is blocked, configure a Bing API key via "
+                    f"``evolution.search.bing_api_key`` for higher "
+                    f"quality results — Bing CN HTML scrape is the "
+                    f"current fallback but is rate-limited.",
+                )
             return ToolResult(
                 call_id=call.id, ok=True,
                 content=(
-                    f"(no results for {query!r} via {provider})"
+                    f"(no results for {query!r} via "
+                    f"{', '.join(used_engines)})"
                 ),
                 side_effects=(),
                 latency_ms=(time.perf_counter() - t0) * 1000.0,
             )
+
+        # Tag which engine actually returned the results — useful
+        # debug signal in chat ("via bing_cn (DDG was unreachable)").
+        winning_engine = used_engines[-1] if used_engines else provider
         blocks = [
             f"{i+1}. {r['title']}\n   {r['url']}\n   {r['snippet']}"
             for i, r in enumerate(results)
         ]
+        # If primary failed and fallback won, surface that — saves the
+        # agent a context cycle of "why am I getting Bing results?".
+        engine_note = (
+            f" (via {winning_engine})"
+            if winning_engine == provider
+            else (
+                f" (via {winning_engine}; primary {provider} "
+                f"unreachable: {last_error})"
+            )
+        )
         return ToolResult(
             call_id=call.id, ok=True,
             content=(
-                f"{len(results)} results for {query!r} (via {provider}):"
+                f"{len(results)} results for {query!r}{engine_note}:"
                 "\n\n" + "\n\n".join(blocks)
             ),
             side_effects=(),
@@ -539,20 +688,80 @@ class BuiltinToolsShellMixin:
     async def _search_ddg(
         self, query: str, max_results: int,
     ) -> list[dict[str, str]]:
+        """2026-05-28: fail-fast on DDG so CN-network users hit the
+        Bing CN fallback in ~8s instead of hanging 15-30s on a
+        connection that's never going to succeed. UA upgraded to real
+        Chrome so the few cases DDG IS reachable don't return CAPTCHA."""
         import httpx
         url = "https://duckduckgo.com/html/"
+        # Use the same browser-realistic headers as web_fetch so DDG
+        # doesn't 403 / CAPTCHA us on UA fingerprint alone.
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/145.0.0.0 Safari/537.36"
+            ),
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;"
+                "q=0.9,*/*;q=0.8"
+            ),
+            "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+        }
+        # Tight connect timeout — DDG is either reachable in 5s or
+        # not at all (most often "not at all" from CN networks).
+        timeout = httpx.Timeout(connect=5.0, read=8.0, write=5.0, pool=5.0)
         async with httpx.AsyncClient(
-            follow_redirects=True, timeout=15.0,
+            follow_redirects=True, timeout=timeout,
         ) as c:
-            r = await c.post(
-                url, data={"q": query},
-                headers={"User-Agent": "Mozilla/5.0 XMclaw/2.x"},
-            )
+            r = await c.post(url, data={"q": query}, headers=headers)
         if r.status_code != 200:
             raise _SearchBackendError(
                 f"DDG returned HTTP {r.status_code}"
             )
         return _parse_ddg_html(r.text, max_results)
+
+    async def _search_bing_cn_html(
+        self, query: str, max_results: int,
+    ) -> list[dict[str, str]]:
+        """2026-05-28: Bing CN HTML scrape — no API key, reachable
+        from CN networks where DDG is blocked. Result shape matches
+        the other backends ({title, url, snippet}).
+
+        Endpoint is ``cn.bing.com`` (not ``www.bing.com``) — the CN
+        host is friendlier to mainland networks and returns the
+        same SERP HTML.
+        """
+        import httpx
+        import re
+        from urllib.parse import quote_plus
+        endpoint = (
+            f"https://cn.bing.com/search?q={quote_plus(query)}&form=QBLH"
+        )
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/145.0.0.0 Safari/537.36"
+            ),
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;"
+                "q=0.9,*/*;q=0.8"
+            ),
+            "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+        }
+        timeout = httpx.Timeout(connect=8.0, read=15.0, write=5.0, pool=5.0)
+        async with httpx.AsyncClient(
+            follow_redirects=True, timeout=timeout,
+        ) as c:
+            r = await c.get(endpoint, headers=headers)
+        if r.status_code != 200:
+            raise _SearchBackendError(
+                f"Bing CN returned HTTP {r.status_code}"
+            )
+        return _parse_bing_html(r.text, max_results)
 
     async def _search_bing(
         self, query: str, max_results: int, cfg: dict,

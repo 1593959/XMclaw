@@ -180,17 +180,23 @@ async def test_render_affected_only_touches_files_with_changed_buckets(
 
 
 @pytest.mark.asyncio
-async def test_render_affected_skips_facts_without_bucket(tmp_path: Path):
-    """Facts written without a bucket label (e.g. project URLs from
-    KeyInfoExtractor's URL pattern) don't trigger any render."""
+async def test_render_affected_misc_bucket_routes_to_memory_md(
+    tmp_path: Path,
+):
+    """2026-05-28 memory v3 phase 1.3: facts that pre-v3 would have
+    landed at ``bucket=""`` (the "dark fact" hole) now coerce to
+    ``misc`` and render into ``MEMORY.md ## Other facts (recent)``.
+    The fact remains visible to the agent on the next turn instead
+    of vanishing into the LanceDB without any .md trace."""
     svc = _make_service()
     f = await svc.remember(
         "网址: https://example.com",
         kind="project", scope="project",
-        # bucket="" implicit
+        # bucket arg omitted — pre-v3 would persist "", now → "misc"
     )
+    assert f.bucket == "misc"
     affected = await render_affected_files(svc, tmp_path, [f])
-    assert affected == set()
+    assert "MEMORY.md" in affected
 
 
 # ── render_all_persona_files ─────────────────────────────────────
@@ -223,13 +229,17 @@ async def test_render_all_processes_every_routed_file(tmp_path: Path):
 def test_phase2_routes_cover_five_lesson_buckets():
     """All five lesson buckets ExtractLessonsHook emits today must
     map to their corresponding persona MD file. Header strings
-    must match the legacy AUTO_SECTIONS so the agent's read path
-    sees consistent section names regardless of which renderer
-    wrote the file.
+    are sourced from the central BUCKETS registry (memory v3).
+
+    2026-05-28 memory v3: AGENTS.md / TOOLS.md sections were
+    renamed from the generic ``## Auto-extracted`` to topic-
+    specific ``## Workflows`` / ``## Tool quirks`` for clarity.
+    The agent read path still works the same — it reads the whole
+    file regardless of section names.
     """
     expected = {
-        "workflow":      ("AGENTS.md",   "## Auto-extracted"),
-        "tool_quirks":   ("TOOLS.md",    "## Auto-extracted"),
+        "workflow":      ("AGENTS.md",   "## Workflows"),
+        "tool_quirks":   ("TOOLS.md",    "## Tool quirks"),
         "failure_modes": ("MEMORY.md",   "## Failure Modes"),
         "values":        ("SOUL.md",     "## Auto-extracted"),
         "rules":         ("LEARNING.md", "## Auto-extracted"),

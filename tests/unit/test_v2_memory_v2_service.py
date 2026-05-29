@@ -854,25 +854,47 @@ async def test_remember_auto_infers_bucket_when_caller_omits() -> None:
 @pytest.mark.asyncio
 async def test_remember_caller_supplied_bucket_wins_over_inference() -> None:
     """Explicit bucket arg overrides inference — e.g. a custom
-    integration wants to route a fact to a non-default file."""
+    integration wants to route a fact to a non-default file.
+
+    2026-05-28 memory v3: the explicit bucket MUST be a registered
+    bucket from xmclaw.memory.v2.buckets.BUCKETS. Unknown strings
+    now coerce to the ``misc`` catch-all rather than persisting as
+    garbage. Test uses ``project_fact`` (registered) instead of
+    ``custom_route`` (the old free-form behaviour the v3 audit
+    flagged as a source of inconsistency)."""
     svc = _make_service()
     f = await svc.remember(
         "x", kind="identity", scope="session",
-        bucket="custom_route",
+        bucket="project_fact",
     )
-    assert f.bucket == "custom_route"
+    assert f.bucket == "project_fact"
 
 
 @pytest.mark.asyncio
-async def test_remember_no_inference_for_unmapped_kind_scope() -> None:
-    """Combinations outside the BUCKET_TO_FILE map (e.g. preference
-    + scope=project, decision kind) get bucket=''. These facts
-    are still persisted, just not routed to any MD file."""
+async def test_remember_unknown_bucket_coerced_to_misc() -> None:
+    """2026-05-28 memory v3 phase 1.3: unknown bucket names from
+    LLM hallucination / legacy callers get coerced to ``misc``
+    (the registered catch-all), never persist as the garbage
+    string. Closes the "dark fact" hole."""
+    svc = _make_service()
+    f = await svc.remember(
+        "x", kind="identity", scope="session",
+        bucket="totally_made_up_bucket",
+    )
+    assert f.bucket == "misc"
+
+
+@pytest.mark.asyncio
+async def test_remember_unmapped_kind_scope_lands_in_misc() -> None:
+    """2026-05-28 memory v3 phase 1.3: (kind, scope) combinations
+    outside the inference table no longer produce ``bucket=''``.
+    They land in ``misc`` so the fact still surfaces in
+    MEMORY.md ## Other facts (recent) — no more dark facts."""
     svc = _make_service()
     f = await svc.remember(
         "X is the project deadline", kind="preference", scope="project",
     )
-    assert f.bucket == ""
+    assert f.bucket == "misc"
 
 
 @pytest.mark.asyncio

@@ -40,9 +40,13 @@ from xmclaw.core.ir import ToolCall, ToolResult
 # name table is available to the helpers below + any module that
 # imports them.
 _PERSONA_BASENAMES_LOOKUP: dict[str, str] = {}
+# 2026-05-29 cleanup: LEARNING.md was missing pre-v3 — the table
+# pre-dated the bucket→file routing's ``rules`` bucket which renders
+# to LEARNING.md. Added so ``update_persona`` and the v3 ``memory_get``
+# tool agree on the canonical persona file set.
 for _b in (
     "AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md",
-    "TOOLS.md", "BOOTSTRAP.md", "MEMORY.md",
+    "TOOLS.md", "BOOTSTRAP.md", "MEMORY.md", "LEARNING.md",
 ):
     _PERSONA_BASENAMES_LOOKUP[_b.lower()] = _b
     _PERSONA_BASENAMES_LOOKUP[_b.lower().removesuffix(".md")] = _b
@@ -379,4 +383,65 @@ def _parse_ddg_html(html: str, max_results: int) -> list[dict[str, str]]:
         if not title:
             continue
         results.append({"title": title, "url": url, "snippet": snippet})
+    return results
+
+
+def _parse_bing_html(html: str, max_results: int) -> list[dict[str, str]]:
+    """2026-05-28: parser for Bing CN SERP HTML.
+
+    Bing's organic results all live in ``<li class="b_algo">`` blocks.
+    Each block has a ``<h2><a href="...">TITLE</a></h2>`` and a
+    snippet container — typically ``<div class="b_caption">...<p>SNIPPET</p>``
+    or ``<p class="b_lineclamp...">SNIPPET</p>`` depending on the
+    Bing UI version. We grab both possibilities; if Bing changes
+    the markup we degrade to zero results rather than crashing
+    (same posture as ``_parse_ddg_html``).
+    """
+    import html as _html
+    import re
+
+    def _clean(s: str) -> str:
+        s = re.sub(r"<[^>]+>", "", s)
+        s = _html.unescape(s)
+        return " ".join(s.split())
+
+    # Match each <li class="b_algo">...</li> block individually so
+    # title/snippet stay paired. Bing emits the closing </li> at the
+    # next li or the end of the results container — accept either.
+    block_re = re.compile(
+        r'<li[^>]*class="[^"]*\bb_algo\b[^"]*"[^>]*>(.*?)(?=<li[^>]*class="[^"]*\bb_algo\b|</ol>|</main>)',
+        re.DOTALL,
+    )
+    title_re = re.compile(
+        r'<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+        re.DOTALL,
+    )
+    # Bing puts snippet inside either:
+    #   <div class="b_caption">...<p>SNIPPET</p>
+    #   <p class="b_lineclamp...">SNIPPET</p>
+    snippet_p_re = re.compile(
+        r'<p[^>]*class="[^"]*(?:b_lineclamp|b_paractl)[^"]*"[^>]*>(.*?)</p>',
+        re.DOTALL,
+    )
+    snippet_caption_re = re.compile(
+        r'<div[^>]*class="[^"]*\bb_caption\b[^"]*"[^>]*>.*?<p[^>]*>(.*?)</p>',
+        re.DOTALL,
+    )
+
+    results: list[dict[str, str]] = []
+    for block_html in block_re.findall(html):
+        t = title_re.search(block_html)
+        if not t:
+            continue
+        url = _html.unescape(t.group(1))
+        title = _clean(t.group(2))
+        if not title or not url:
+            continue
+        snippet = ""
+        m = snippet_p_re.search(block_html) or snippet_caption_re.search(block_html)
+        if m:
+            snippet = _clean(m.group(1))
+        results.append({"title": title, "url": url, "snippet": snippet})
+        if len(results) >= max_results:
+            break
     return results

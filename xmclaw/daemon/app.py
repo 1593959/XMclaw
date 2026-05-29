@@ -2153,6 +2153,47 @@ def create_app(
                         frame.get("images"),
                         _data_dir() / "v2" / "uploads",
                     )
+                    # 2026-05-28: intake-time image routing (Hermes
+                    # pattern). If the target LLM profile lacks
+                    # vision, OCR the images locally NOW and fold
+                    # the text into ``content`` — so history,
+                    # translators, and hop loops never have to know
+                    # about "is this model vision-capable". See
+                    # xmclaw/daemon/image_routing.py for the design
+                    # rationale and OpenClaw #29290 lessons.
+                    if user_image_paths:
+                        try:
+                            from xmclaw.daemon.image_routing import (
+                                decide_image_mode as _decide_img_mode,
+                                enrich_user_message as _enrich_img_msg,
+                            )
+                            _cfg_for_routing = getattr(
+                                app.state, "config", None,
+                            )
+                            _effective_profile_id = (
+                                llm_profile_id
+                                or (_cfg_for_routing or {})
+                                .get("llm", {})
+                                .get("default_profile_id")
+                            )
+                            _img_mode = _decide_img_mode(
+                                _cfg_for_routing, _effective_profile_id,
+                            )
+                            content, user_image_paths = _enrich_img_msg(
+                                content, user_image_paths, _img_mode,
+                                config=_cfg_for_routing,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            # Never let routing errors swallow the
+                            # turn — if anything blows up, leave
+                            # the original (content, image_paths)
+                            # untouched and log loudly so the user
+                            # can diagnose.
+                            from xmclaw.utils.log import get_logger as _gl
+                            _gl(__name__).warning(
+                                "image_routing failed, fallback to raw "
+                                "passthrough: %s", exc,
+                            )
                     # Ultrathink (borrowed from the /ultrathink pattern):
                     # when set, prepend a directive to make the model
                     # slow down and think step-by-step before answering.

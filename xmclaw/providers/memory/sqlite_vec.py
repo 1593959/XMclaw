@@ -577,7 +577,12 @@ class SqliteVecMemory(MemoryProvider):
                   {filter_clause}
                 ORDER BY v.distance
             """
-            rows = cur.execute(sql, (qblob, k, layer, *filter_params)).fetchall()
+            # 2026-05-29 perf fix: sqlite3 execute() blocks the event
+            # loop under WAL contention or large tables. Move to a
+            # background thread so asyncio stays responsive.
+            rows = await asyncio.to_thread(
+                lambda: cur.execute(sql, (qblob, k, layer, *filter_params)).fetchall()
+            )
         elif text:
             sql = f"""
                 SELECT id, layer, text, metadata, ts, has_embedding,
@@ -590,9 +595,11 @@ class SqliteVecMemory(MemoryProvider):
                 ORDER BY ts DESC
                 LIMIT ?
             """
-            rows = cur.execute(
-                sql, (layer, f"%{text}%", *filter_params, k),
-            ).fetchall()
+            rows = await asyncio.to_thread(
+                lambda: cur.execute(
+                    sql, (layer, f"%{text}%", *filter_params, k),
+                ).fetchall()
+            )
         else:
             sql = f"""
                 SELECT id, layer, text, metadata, ts, has_embedding,
@@ -604,14 +611,18 @@ class SqliteVecMemory(MemoryProvider):
                 ORDER BY ts DESC
                 LIMIT ?
             """
-            rows = cur.execute(sql, (layer, *filter_params, k)).fetchall()
+            rows = await asyncio.to_thread(
+                lambda: cur.execute(sql, (layer, *filter_params, k)).fetchall()
+            )
 
         items = [self._row_to_item(r) for r in rows]
         # B-197 Phase 2: bump retrieval_count on every hit so the
         # demoter knows which rows are actually being used. Best-effort
         # — failure to update doesn't poison the read result.
         if items:
-            self._bump_retrieval_count([i.id for i in items])
+            await asyncio.to_thread(
+                self._bump_retrieval_count, [i.id for i in items]
+            )
         return items
 
     async def hybrid_query(

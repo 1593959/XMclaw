@@ -1,13 +1,25 @@
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from typing import Any
 
 from xmclaw.core.ir import ToolCall, ToolResult
-from xmclaw.providers.tool._helpers import _fail as _fail
+from xmclaw.providers.tool._helpers import (
+    _PERSONA_BASENAMES_LOOKUP as _PERSONA_BASENAMES_LOOKUP,
+    _fail as _fail,
+)
 
 _VALID_TODO_STATUSES = {"pending", "in_progress", "done"}
+
+# 2026-05-29 cleanup: pre-compile the read-side regexes used by
+# ``_memory_get`` so they're not re-parsed per tool call. Python's
+# internal pattern cache makes the practical cost negligible, but
+# module-level constants match the codebase convention and let the
+# pattern serve as a published contract for the fid marker format.
+_FID_MARKER_RE = re.compile(r"<!--\s*fid:([0-9a-fA-F]{4,})\s*-->")
+_LINES_RANGE_RE = re.compile(r"^\s*(\d+)\s*-\s*(\d+)\s*$")
 
 
 class BuiltinToolsMemoryMixin:
@@ -691,26 +703,20 @@ class BuiltinToolsMemoryMixin:
         query = str(call.args.get("query") or "").strip()
         if not query:
             return _fail(call, t0, "missing or empty 'query'")
-        max_matches = int(call.args.get("max_matches") or 3)
-        max_matches = max(1, min(10, max_matches))
+        max_matches = max(1, min(10, int(call.args.get("max_matches") or 3)))
         reason = str(call.args.get("reason") or "").strip() or None
 
-        hits = await svc.recall(
-            query,
-            k=max_matches,
-            min_confidence=0.0,
-            include_relations=False,
-            include_superseded=False,
+        # 2026-05-29 cleanup: share the recall→forget loop with the
+        # v3 multi-action ``memory(action='forget')`` path. The
+        # legacy wire format used ``"id"`` instead of ``"fid"``;
+        # remap here so existing chat history / UI doesn't break.
+        forgotten_internal = await self._forget_by_query(
+            svc, query=query, max_matches=max_matches, reason=reason,
         )
-        forgotten: list[dict[str, Any]] = []
-        for h in hits:
-            ok = await svc.forget(fact_id=h.fact.id, reason=reason)
-            if ok:
-                forgotten.append({
-                    "id": h.fact.id,
-                    "text": (h.fact.text or "")[:200],
-                    "distance": round(float(h.distance), 3),
-                })
+        forgotten = [
+            {"id": f["fid"], "text": f["text"], "distance": f["distance"]}
+            for f in forgotten_internal
+        ]
         return ToolResult(
             call_id=call.id, ok=True,
             content={
@@ -772,6 +778,571 @@ class BuiltinToolsMemoryMixin:
         return ToolResult(
             call_id=call.id, ok=True,
             content=result,
+            error=None,
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    def _schedule_commitment_cron(
+        self,
+        *,
+        fid: str,
+        text: str,
+        due_ts: float,
+    ) -> dict[str, Any]:
+        """2026-05-28 memory v3 phase 4.3: schedule a one-shot cron
+        that fires the commitment back as a proactive prompt at
+        ``due_ts``.
+
+        Always returns the same dict shape so the caller doesn't
+        have to branch on key presence::
+
+            {
+              "scheduled":      bool,
+              "cron_id":        str | None,
+              "fires_at":       float | None,
+              "skipped_reason": str | None,
+            }
+
+        Never raises.
+
+        Implementation note (2026-05-29 cleanup): ``CronStore.add``
+        only calls ``parse_schedule`` when ``next_run_at == 0``, so
+        we pre-fill ``next_run_at=due_ts`` directly on the
+        ``CronJob`` and use a sentinel ``schedule`` string that the
+        store never re-parses (``run_once=True`` deletes the job
+        after firing, so the schedule string is effectively dead
+        metadata). This avoids inventing a ``"@once <ts>"`` syntax
+        that ``parse_schedule`` doesn't accept — earlier draft hit
+        the silent-fallback path that schedules everything 1 hour
+        from now.
+        """
+        import time as _time
+        skipped = {
+            "scheduled": False,
+            "cron_id": None,
+            "fires_at": None,
+            "skipped_reason": None,
+        }
+        try:
+            from xmclaw.core.scheduler.cron import CronJob, default_cron_store
+        except Exception as exc:  # noqa: BLE001
+            return {**skipped, "skipped_reason": f"cron module unavailable: {exc}"}
+        try:
+            store = default_cron_store()
+        except Exception as exc:  # noqa: BLE001
+            return {**skipped, "skipped_reason": f"cron store unavailable: {exc}"}
+
+        now = _time.time()
+        delta_s = max(0.0, float(due_ts) - now)
+        if delta_s < 1.0:
+            return {**skipped, "skipped_reason": "due_ts is in the past or now"}
+
+        import uuid as _uuid
+        cron_id = f"commitment-{fid[:8]}-{_uuid.uuid4().hex[:6]}"
+        # Cron prompt fires as if the user said this; AgentLoop
+        # treats it like any other turn — including auto-recall,
+        # so the agent gets the full context (fid + bucket).
+        prompt = (
+            f"[Commitment due — fid:{fid}] {text}\n\n"
+            f"Resolve this commitment. When fully handled, call "
+            f"``memory(action='forget', old_fid='{fid}', reason='commitment fulfilled')``."
+        )
+        # See class docstring above: bypass parse_schedule by
+        # pre-filling next_run_at. The ``schedule`` string is kept
+        # human-readable for the cron list UI; it's never re-parsed
+        # because ``run_once=True`` removes the job on first fire.
+        job = CronJob(
+            id=cron_id,
+            name=f"commitment {fid[:8]}",
+            schedule=f"one-shot @ {int(due_ts)}",
+            prompt=prompt,
+            enabled=True,
+            run_once=True,
+            next_run_at=float(due_ts),
+        )
+        try:
+            store.add(job)
+        except Exception as exc:  # noqa: BLE001
+            return {**skipped, "skipped_reason": f"cron add failed: {exc}"}
+        return {
+            "scheduled": True,
+            "cron_id": cron_id,
+            "fires_at": float(due_ts),
+            "skipped_reason": None,
+        }
+
+    async def _forget_by_query(
+        self,
+        svc: Any,
+        *,
+        query: str,
+        max_matches: int,
+        reason: str | None,
+    ) -> list[dict[str, Any]]:
+        """2026-05-29 cleanup: shared recall-then-forget loop used by
+        both ``_memory_forget`` (legacy single-purpose tool) and
+        ``_memory_multi_action(action='forget', query=...)``. Pre-
+        cleanup the loop was implemented in both places — drift
+        risk on any future change to forget semantics. Returns the
+        ``forgotten`` list (one dict per successful forget)."""
+        hits = await svc.recall(
+            query, k=max_matches,
+            min_confidence=0.0,
+            include_relations=False,
+            include_superseded=False,
+        )
+        forgotten: list[dict[str, Any]] = []
+        for h in hits:
+            if await svc.forget(fact_id=h.fact.id, reason=reason):
+                forgotten.append({
+                    "fid": h.fact.id,
+                    "text": (h.fact.text or "")[:200],
+                    "distance": round(float(h.distance), 3),
+                })
+        return forgotten
+
+    def _build_due_marker(self, text: str, due_ts: Any) -> str:
+        """Inline ``[due:YYYY-MM-DDTHH:MMZ]`` marker for commitments.
+        Returns the original text unchanged if ``due_ts`` can't be
+        parsed. The marker is intentionally schema-neutral — see the
+        ``due_ts`` reservation note in the Phase 4.5 follow-up."""
+        try:
+            iso = time.strftime(
+                "%Y-%m-%dT%H:%MZ", time.gmtime(float(due_ts)),
+            )
+            return f"[due:{iso}] {text}"
+        except (TypeError, ValueError):
+            return text
+
+    async def _memory_multi_action(
+        self, call: ToolCall, t0: float,
+    ) -> ToolResult:
+        """2026-05-28 memory v3 phase 4.1 — single tool, 4 actions.
+
+        Dispatches to the existing MemoryService primitives via the
+        same indirection (``_resolve_memory_v2_service``). The
+        legacy single-purpose tools (``remember`` / ``memory_pin`` /
+        ``memory_correct`` / ``memory_forget``) keep working
+        unchanged for backward compat.
+
+        Bucket inference / validation lives in
+        ``xmclaw.memory.v2.buckets`` (registry). Unknown buckets
+        coerce to ``misc`` at service-level so the agent never gets
+        a "wrong bucket name" error — the fact still lands, just
+        in the catch-all section of MEMORY.md.
+        """
+        action = (call.args.get("action") or "").strip()
+        if action not in ("add", "replace", "forget", "pin"):
+            return _fail(
+                call, t0,
+                f"action must be add/replace/forget/pin, got {action!r}",
+            )
+
+        svc = self._resolve_memory_v2_service()
+        if svc is None:
+            return _fail(
+                call, t0,
+                f"memory({action!r}) unavailable: v2 memory service not wired",
+            )
+
+        from xmclaw.memory.v2.buckets import resolve as _resolve_bucket
+
+        text = (call.args.get("text") or "").strip()
+        bucket = (call.args.get("bucket") or "").strip()
+        scope = (call.args.get("scope") or "user").strip()
+        kind = (call.args.get("kind") or "").strip()
+        confidence = float(call.args.get("confidence") or 0.85)
+        due_ts = call.args.get("due_ts")
+        reason = (call.args.get("reason") or "").strip() or None
+
+        # ── action: add / pin ─────────────────────────────────────
+        # Pin = add with a confidence floor. v3 phase 4.1 note: this
+        # is a soft pin — dedup/compact see it as a high-priority
+        # survivor, but ``forget(fid)`` will still remove it. True
+        # hard-pin needs a ``pinned`` column on the Fact model
+        # (Phase 4.5 schema bump, paired with ``due_ts``).
+        if action in ("add", "pin"):
+            if not text:
+                return _fail(call, t0, f"memory({action}) requires 'text'")
+            bdef = _resolve_bucket(bucket)
+            effective_kind = kind or bdef.default_kind
+            if bdef.tag == "commitment" and not due_ts:
+                return _fail(
+                    call, t0,
+                    f"memory({action} bucket=commitment) requires 'due_ts'.",
+                )
+            text_to_store = (
+                self._build_due_marker(text, due_ts)
+                if bdef.tag == "commitment" and due_ts else text
+            )
+            effective_conf = (
+                max(0.95, confidence) if action == "pin" else confidence
+            )
+            fact = await svc.remember(
+                text_to_store,
+                kind=effective_kind,
+                scope=scope,
+                confidence=effective_conf,
+                bucket=bdef.tag,
+                source_event_id=getattr(call, "id", None),
+            )
+            cron_info: dict[str, Any] | None = None
+            if action == "add" and bdef.tag == "commitment" and due_ts:
+                try:
+                    cron_info = self._schedule_commitment_cron(
+                        fid=fact.id, text=text, due_ts=float(due_ts),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    cron_info = {
+                        "scheduled": False, "cron_id": None,
+                        "fires_at": None,
+                        "skipped_reason": f"{type(exc).__name__}: {exc}",
+                    }
+            return ToolResult(
+                call_id=call.id, ok=True,
+                content={
+                    "action": action,
+                    "fid": fact.id,
+                    "bucket": fact.bucket,
+                    "rendered_to": [bdef.target_file],
+                    "section": bdef.section,
+                    "confidence": fact.confidence,
+                    "cron": cron_info,
+                },
+                error=None,
+                latency_ms=(time.perf_counter() - t0) * 1000.0,
+            )
+
+        # ── action: replace ───────────────────────────────────────
+        # Both old_fid and old_text paths now flow through
+        # ``service.correct`` — single supersede pipeline, no
+        # duplicate forget+remember code, SUPERSEDES edge always
+        # created.
+        if action == "replace":
+            if not text:
+                return _fail(call, t0, "memory(replace) requires 'text' (new value)")
+            old_fid = (call.args.get("old_fid") or "").strip()
+            old_text = (call.args.get("old_text") or "").strip()
+            if not old_fid and not old_text:
+                return _fail(
+                    call, t0,
+                    "memory(replace) requires 'old_fid' OR 'old_text'",
+                )
+            result = await svc.correct(
+                old_text=old_text,
+                new_text=text,
+                old_fact_id=old_fid or None,
+                kind=kind or None,
+                scope=scope or None,
+                bucket=bucket or None,
+            )
+            return ToolResult(
+                call_id=call.id, ok=True,
+                content={
+                    "action": "replace",
+                    "via": "old_fid" if old_fid else "old_text",
+                    **result,
+                },
+                error=None,
+                latency_ms=(time.perf_counter() - t0) * 1000.0,
+            )
+
+        # ── action: forget ────────────────────────────────────────
+        # (action == "forget" — the only branch left after the
+        # validation gate at the top of the method)
+        old_fid = (call.args.get("old_fid") or "").strip()
+        query = (call.args.get("query") or "").strip()
+        if old_fid:
+            ok = await svc.forget(fact_id=old_fid, reason=reason)
+            return ToolResult(
+                call_id=call.id, ok=True,
+                content={
+                    "action": "forget",
+                    "via": "old_fid",
+                    "forgotten": [{"fid": old_fid, "ok": ok}],
+                },
+                error=None,
+                latency_ms=(time.perf_counter() - t0) * 1000.0,
+            )
+        if not query:
+            return _fail(
+                call, t0,
+                "memory(forget) requires 'old_fid' OR 'query'",
+            )
+        max_matches = max(1, min(10, int(call.args.get("max_matches") or 3)))
+        forgotten = await self._forget_by_query(
+            svc, query=query, max_matches=max_matches, reason=reason,
+        )
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "action": "forget",
+                "via": "query",
+                "query": query,
+                "forgotten_count": len(forgotten),
+                "forgotten": forgotten,
+                "reason": reason,
+            },
+            error=None,
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _memory_get(self, call: ToolCall, t0: float) -> ToolResult:
+        """2026-05-28 memory v3 phase 4.2 — read a persona MD file
+        verbatim, optionally narrowed by section or line range.
+
+        The output preserves ``<!-- fid:xxx -->`` markers so the
+        agent can grab fids straight out of the file and feed them
+        into ``memory(action='replace'/'forget', old_fid=...)``.
+
+        Canonical-name resolution: the shared
+        ``_PERSONA_BASENAMES_LOOKUP`` table from ``_helpers`` is the
+        single source of truth — the same one ``update_persona``
+        uses, so a file the agent can edit via one tool is also
+        readable via the other. The empty-but-known fallback uses
+        ``buckets.known_files()`` so adding a new persona file
+        anywhere in the registry automatically expands what
+        ``memory_get`` recognises.
+        """
+        file_arg = (call.args.get("file") or "").strip()
+        if not file_arg:
+            return _fail(call, t0, "memory_get requires 'file'")
+        try:
+            pdir = self._persona_dir_provider() if (
+                self._persona_dir_provider is not None
+            ) else None
+        except Exception as exc:  # noqa: BLE001
+            return _fail(
+                call, t0,
+                f"persona dir lookup failed: {type(exc).__name__}: {exc}",
+            )
+        if pdir is None:
+            return _fail(
+                call, t0,
+                "memory_get unavailable: persona profile dir not configured",
+            )
+        # Canonical name from the shared lookup. Falls back to the
+        # raw arg if the user passed a non-persona-managed file the
+        # daemon happens to have under the profile dir.
+        canonical = _PERSONA_BASENAMES_LOOKUP.get(
+            file_arg.lower().removesuffix(".md"),
+            _PERSONA_BASENAMES_LOOKUP.get(file_arg.lower(), file_arg),
+        )
+        target = Path(pdir) / canonical
+        if not target.is_file():
+            # Known persona file but not rendered yet — return empty
+            # content with a helpful note rather than an error.
+            from xmclaw.memory.v2.buckets import known_files
+            known = {n.lower() for n in known_files()} | {"bootstrap.md"}
+            if canonical.lower() in known:
+                return ToolResult(
+                    call_id=call.id, ok=True,
+                    content={
+                        "file": canonical,
+                        "content": "",
+                        "fids_present": [],
+                        "note": "file doesn't exist on disk yet (no facts in any of its buckets)",
+                    },
+                    error=None,
+                    latency_ms=(time.perf_counter() - t0) * 1000.0,
+                )
+            return _fail(
+                call, t0,
+                f"file {file_arg!r} not found in persona dir {pdir}",
+            )
+        try:
+            full_text = target.read_text(encoding="utf-8")
+        except OSError as exc:
+            return _fail(
+                call, t0,
+                f"read failed: {type(exc).__name__}: {exc}",
+            )
+
+        # Section filter — extract everything between this ## header
+        # and the next ## (or EOF). The header arg accepts both
+        # ``## Foo`` and ``Foo``; we always normalise to the former.
+        section = call.args.get("section")
+        if isinstance(section, str) and section.strip():
+            header = "## " + section.strip().lstrip("#").strip()
+            lines_all = full_text.splitlines(keepends=True)
+            keep: list[str] = []
+            inside = False
+            for line in lines_all:
+                stripped = line.strip()
+                if stripped == header:
+                    inside = True
+                    keep.append(line)
+                    continue
+                if inside and stripped.startswith("## "):
+                    break
+                if inside:
+                    keep.append(line)
+            full_text = "".join(keep) if keep else (
+                f"(section {header!r} not found in {canonical})"
+            )
+
+        # Line range — 'start-end' (1-indexed, inclusive).
+        line_arg = call.args.get("lines")
+        if isinstance(line_arg, str) and line_arg.strip():
+            m = _LINES_RANGE_RE.match(line_arg)
+            if not m:
+                return _fail(
+                    call, t0,
+                    f"lines must match 'start-end' (1-indexed), got {line_arg!r}",
+                )
+            start = max(1, int(m.group(1)))
+            end = max(start, int(m.group(2)))
+            lines_all = full_text.splitlines()
+            full_text = "\n".join(lines_all[start - 1: end])
+
+        # Pull fids out of the kept content so the agent has them
+        # ready for the next memory(...) call.
+        fids_present = _FID_MARKER_RE.findall(full_text)
+
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "file": canonical,
+                "section": section if isinstance(section, str) else None,
+                "lines": line_arg if isinstance(line_arg, str) else None,
+                "content": full_text,
+                "fids_present": list(dict.fromkeys(fids_present)),
+                "chars": len(full_text),
+            },
+            error=None,
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _memory_inspect(self, call: ToolCall, t0: float) -> ToolResult:
+        """2026-05-28: read-only health probe.
+
+        Reports total fact count, per-(scope, kind) breakdown, top
+        oldest entries, top largest entries, and an estimated
+        duplicate ratio per scope (from a sample of facts vs
+        embedding cosine).
+
+        The agent uses this to decide whether to run memory_dedup /
+        memory_forget without being asked.
+        """
+        svc = self._resolve_memory_v2_service()
+        if svc is None:
+            return _fail(
+                call, t0,
+                "memory_inspect unavailable: v2 memory service not wired",
+            )
+        scope = call.args.get("scope") or None
+        sample = int(call.args.get("sample_dup_check", 500) or 500)
+        sample = max(50, min(2000, sample))
+
+        # List facts to inspect. Cap the scan so big stores don't
+        # block the turn — 5K is plenty for the breakdown.
+        try:
+            facts = await svc.recall(
+                None,
+                k=5000,
+                scopes=[scope] if scope else None,
+                min_confidence=0.0,
+                include_relations=False,
+                include_superseded=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _fail(
+                call, t0,
+                f"memory_inspect scan failed: "
+                f"{type(exc).__name__}: {exc}",
+            )
+
+        # Aggregate counts by (scope, kind).
+        breakdown: dict[str, dict[str, int]] = {}
+        oldest: list[tuple[float, str, str]] = []  # (ts, scope, text)
+        largest: list[tuple[int, str, str]] = []   # (size, scope, text)
+        for h in facts:
+            f = h.fact
+            s = str(getattr(f, "scope", "?") or "?")
+            k = str(getattr(f, "kind", "?") or "?")
+            breakdown.setdefault(s, {}).setdefault(k, 0)
+            breakdown[s][k] += 1
+            ts = float(getattr(f, "ts_last", 0) or 0)
+            oldest.append((ts, s, (f.text or "")[:120]))
+            largest.append((len(f.text or ""), s, (f.text or "")[:120]))
+
+        oldest.sort(key=lambda x: x[0])
+        largest.sort(key=lambda x: x[0], reverse=True)
+
+        # Estimate duplicate ratio per scope by sampling and
+        # cosine-clustering at the same 0.86 threshold dedup uses.
+        from math import sqrt
+        dup_ratios: dict[str, dict[str, float | int]] = {}
+        for s, by_kind in breakdown.items():
+            sample_set = [
+                h for h in facts
+                if str(getattr(h.fact, "scope", "?") or "?") == s
+            ][:sample]
+            if len(sample_set) < 2:
+                continue
+            clusters: list[list[Any]] = []
+            for h in sample_set:
+                emb = h.fact.embedding
+                if not emb:
+                    clusters.append([h])
+                    continue
+                placed = False
+                for cluster in clusters:
+                    ref = cluster[0].fact.embedding
+                    if not ref:
+                        continue
+                    dot = sum(a * b for a, b in zip(emb, ref))
+                    na = sqrt(sum(a * a for a in emb))
+                    nb = sqrt(sum(b * b for b in ref))
+                    cos = dot / (na * nb) if (na and nb) else 0.0
+                    if cos >= 0.86:
+                        cluster.append(h)
+                        placed = True
+                        break
+                if not placed:
+                    clusters.append([h])
+            n_dup_clusters = sum(1 for c in clusters if len(c) > 1)
+            n_excess = sum(len(c) - 1 for c in clusters if len(c) > 1)
+            ratio = (
+                n_excess / len(sample_set)
+                if sample_set else 0.0
+            )
+            dup_ratios[s] = {
+                "sample_size": len(sample_set),
+                "dup_clusters": n_dup_clusters,
+                "excess_facts": n_excess,
+                "dup_ratio": round(ratio, 3),
+            }
+
+        # Recommendation hint — gives the agent an explicit signal.
+        recommendations: list[str] = []
+        for s, stats in dup_ratios.items():
+            ratio_v = stats.get("dup_ratio") or 0.0
+            if isinstance(ratio_v, (int, float)) and ratio_v >= 0.15:
+                recommendations.append(
+                    f"memory_dedup(scope={s!r}, dry_run=true) — "
+                    f"{stats['excess_facts']} excess in {stats['sample_size']}-sample"
+                )
+
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "total_facts": len(facts),
+                "scope_filter": scope,
+                "breakdown": breakdown,
+                "oldest_5": [
+                    {"ts": ts, "scope": s, "text": t}
+                    for ts, s, t in oldest[:5]
+                ],
+                "largest_5": [
+                    {"chars": n, "scope": s, "text": t}
+                    for n, s, t in largest[:5]
+                ],
+                "dup_estimate": dup_ratios,
+                "recommendations": recommendations or [
+                    "no action needed — store looks tidy.",
+                ],
+            },
             error=None,
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )

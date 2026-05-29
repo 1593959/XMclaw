@@ -265,11 +265,13 @@ class MemoryGraph:
     # ── 读操作 ──
 
     async def get_node(self, node_id: str) -> GraphNode | None:
-        cur = self._conn.cursor()
-        row = cur.execute("SELECT * FROM graph_nodes WHERE id = ?", (node_id,)).fetchone()
+        def _run():
+            cur = self._conn.cursor()
+            return cur.execute("SELECT * FROM graph_nodes WHERE id = ?", (node_id,)).fetchone()
+        row = await asyncio.to_thread(_run)
         return self._row_to_node(row) if row else None
 
-    async def get_neighbors(
+    def _get_neighbors_sync(
         self,
         node_id: str,
         *,
@@ -277,14 +279,12 @@ class MemoryGraph:
         depth: int = 1,
         min_strength: float = 0.0,
     ) -> list[tuple[GraphEdge, GraphNode]]:
-        """获取节点的邻居（支持多跳）。"""
+        """Synchronous variant for use inside threaded callers."""
         if depth < 1:
             return []
-
         results: list[tuple[GraphEdge, GraphNode]] = []
         visited: set[str] = {node_id}
         current_level = {node_id}
-
         for _ in range(depth):
             next_level: set[str] = set()
             for nid in current_level:
@@ -296,57 +296,64 @@ class MemoryGraph:
                 if min_strength > 0:
                     where += " AND strength >= ?"
                     params.append(min_strength)
-
                 cur = self._conn.cursor()
                 rows = cur.execute(
                     f"SELECT * FROM graph_edges WHERE {where}", params
                 ).fetchall()
-
                 for row in rows:
                     edge = self._row_to_edge(row)
                     if edge.target_id in visited:
                         continue
                     visited.add(edge.target_id)
                     next_level.add(edge.target_id)
-
                     node_row = cur.execute(
                         "SELECT * FROM graph_nodes WHERE id = ?", (edge.target_id,)
                     ).fetchone()
                     if node_row:
                         results.append((edge, self._row_to_node(node_row)))
-
             current_level = next_level
             if not current_level:
                 break
-
         return results
 
-    async def find_path(
+    async def get_neighbors(
+        self,
+        node_id: str,
+        *,
+        relation: EdgeType | None = None,
+        depth: int = 1,
+        min_strength: float = 0.0,
+    ) -> list[tuple[GraphEdge, GraphNode]]:
+        """获取节点的邻居（支持多跳）。"""
+        return await asyncio.to_thread(
+            self._get_neighbors_sync,
+            node_id,
+            relation=relation,
+            depth=depth,
+            min_strength=min_strength,
+        )
+
+    def _find_path_sync(
         self,
         source_id: str,
         target_id: str,
         *,
         max_depth: int = 5,
     ) -> list[GraphEdge] | None:
-        """查找两节点之间的最短路径（BFS）。"""
+        """Synchronous BFS variant."""
         if source_id == target_id:
             return []
-
         from collections import deque
-
         queue: deque[tuple[str, list[GraphEdge]]] = deque([(source_id, [])])
         visited: set[str] = {source_id}
-
         while queue:
             current, path = queue.popleft()
             if len(path) >= max_depth:
                 continue
-
             cur = self._conn.cursor()
             rows = cur.execute(
                 "SELECT * FROM graph_edges WHERE source_id = ?", (current,)
             ).fetchall()
-
             for row in rows:
                 edge = self._row_to_edge(row)
                 if edge.target_id in visited:
@@ -356,8 +363,33 @@ class MemoryGraph:
                     return new_path
                 visited.add(edge.target_id)
                 queue.append((edge.target_id, new_path))
-
         return None
+
+    async def find_path(
+        self,
+        source_id: str,
+        target_id: str,
+        *,
+        max_depth: int = 5,
+    ) -> list[GraphEdge] | None:
+        """查找两节点之间的最短路径（BFS）。"""
+        return await asyncio.to_thread(
+            self._find_path_sync, source_id, target_id, max_depth=max_depth,
+        )
+
+    def _query_by_type_sync(
+        self,
+        type: NodeType,  # noqa: A002
+        *,
+        limit: int = 10,
+    ) -> list[GraphNode]:
+        """Synchronous variant."""
+        cur = self._conn.cursor()
+        rows = cur.execute(
+            "SELECT * FROM graph_nodes WHERE type = ? ORDER BY created_at DESC LIMIT ?",
+            (type, limit),
+        ).fetchall()
+        return [self._row_to_node(r) for r in rows]
 
     async def query_by_type(
         self,
@@ -366,14 +398,9 @@ class MemoryGraph:
         limit: int = 10,
     ) -> list[GraphNode]:
         """按类型查询节点。"""
-        cur = self._conn.cursor()
-        rows = cur.execute(
-            "SELECT * FROM graph_nodes WHERE type = ? ORDER BY created_at DESC LIMIT ?",
-            (type, limit),
-        ).fetchall()
-        return [self._row_to_node(r) for r in rows]
+        return await asyncio.to_thread(self._query_by_type_sync, type, limit=limit)
 
-    async def query_by_time_range(
+    def _query_by_time_range_sync(
         self,
         since: float | None = None,
         until: float | None = None,
@@ -381,18 +408,7 @@ class MemoryGraph:
         type: NodeType | None = None,  # noqa: A002
         limit: int = 50,
     ) -> list[GraphNode]:
-        """``xmclaw-architecture-redesign.md §3.3.2`` temporal-index API.
-
-        Time-range query — "what events happened between T1 and T2?".
-        ``since`` / ``until`` are unix timestamps; either or both may
-        be omitted (None → unbounded). ``type`` further filters by
-        NodeType (event / entity / state / intent). Results ordered
-        DESC by created_at (newest first); cap at ``limit``.
-
-        Implementation: leverages ``graph_nodes.created_at`` which is
-        already indexed (B-... TODO confirm), so this is O(log n)
-        for the range-scan portion and O(k) for materialization.
-        """
+        """Synchronous temporal-index variant."""
         cur = self._conn.cursor()
         clauses: list[str] = []
         params: list[Any] = []
@@ -413,6 +429,20 @@ class MemoryGraph:
             params,
         ).fetchall()
         return [self._row_to_node(r) for r in rows]
+
+    async def query_by_time_range(
+        self,
+        since: float | None = None,
+        until: float | None = None,
+        *,
+        type: NodeType | None = None,  # noqa: A002
+        limit: int = 50,
+    ) -> list[GraphNode]:
+        """``xmclaw-architecture-redesign.md §3.3.2`` temporal-index API."""
+        return await asyncio.to_thread(
+            self._query_by_time_range_sync,
+            since, until, type=type, limit=limit,
+        )
 
     # ── 主动回忆 ──
 
@@ -439,106 +469,111 @@ class MemoryGraph:
         if not context.strip():
             return ""
 
-        now = time.time()
-        since = now - (time_window_hours * 3600)
-        scored: dict[str, tuple[GraphNode, float]] = {}  # id → (node, score)
+        # 2026-05-29 perf fix: proactive_recall 内部大量同步 sqlite3
+        # 查询会阻塞 event loop。把整个计算放到后台线程。
+        def _run():
+            now = time.time()
+            since = now - (time_window_hours * 3600)
+            scored: dict[str, tuple[GraphNode, float]] = {}  # id → (node, score)
 
-        # ── Strategy 1: intent vector similarity + multi-hop expansion ──
-        intent_nodes: list[tuple[GraphNode, float]] = []
-        if intent_embedding:
-            intent_nodes = await self._find_similar_node_raw(
-                intent_embedding, "intent", k=3,
-            )
-        # Fallback: 无 embedding 时取最近 intent 作为种子
-        if not intent_nodes:
-            recent_intents = await self.query_by_type("intent", limit=3)
-            intent_nodes = [(n, 0.0) for n in recent_intents]
-
-        for intent_node, intent_dist in intent_nodes:
-            # 多跳邻居扩展（LEADS_TO / RELATED_TO）
-            neighbors = await self.get_neighbors(
-                intent_node.id,
-                depth=neighbor_depth,
-                min_strength=0.3,
-            )
-            for edge, node in neighbors:
-                if node.type not in ("event", "entity", "state"):
-                    continue
-                # 综合分数 = 相关性 + 边强度 + 时间衰减
-                recency = max(0.0, 1.0 - (now - node.created_at) / (time_window_hours * 3600))
-                score = (1.0 - intent_dist) * 0.4 + edge.strength * 0.3 + recency * 0.3
-                if node.id in scored:
-                    # 同一节点多路径到达，取最高分
-                    old_node, old_score = scored[node.id]
-                    if score > old_score:
-                        scored[node.id] = (node, score)
-                else:
-                    scored[node.id] = (node, score)
-
-        # ── Strategy 2: entity keyword match ──
-        # 简单启发：把 context 按空白切分为候选词，长度>2 的当作关键词
-        keywords = {w.strip(".,!?;:\"'()[]{}「」『』") for w in context.split() if len(w) > 2}
-        if keywords:
-            cur = self._conn.cursor()
-            # 用 LIKE 做前缀匹配（SQLite 无全文索引时的轻量回退）
-            rows = cur.execute(
-                "SELECT * FROM graph_nodes WHERE type = 'entity' AND ("
-                + " OR ".join("content LIKE ?" for _ in keywords)
-                + ")",
-                [f"%{kw}%" for kw in keywords],
-            ).fetchall()
-            for row in rows:
-                node = self._row_to_node(row)
-                recency = max(0.0, 1.0 - (now - node.created_at) / (time_window_hours * 3600))
-                score = 0.5 + recency * 0.3  # 关键词命中给中等基础分
-                if node.id in scored:
-                    _old_node, old_score = scored[node.id]
-                    scored[node.id] = (node, max(score, old_score))
-                else:
-                    scored[node.id] = (node, score)
-                # 再扩展一步取关联 event
-                ent_neighbors = await self.get_neighbors(
-                    node.id, depth=1, min_strength=0.2,
+            # ── Strategy 1: intent vector similarity + multi-hop expansion ──
+            intent_nodes: list[tuple[GraphNode, float]] = []
+            if intent_embedding:
+                intent_nodes = self._find_similar_node_raw_sync(
+                    intent_embedding, "intent", k=3,
                 )
-                for edge, nbr in ent_neighbors:
-                    if nbr.type != "event":
+            # Fallback: 无 embedding 时取最近 intent 作为种子
+            if not intent_nodes:
+                recent_intents = self._query_by_type_sync("intent", limit=3)
+                intent_nodes = [(n, 0.0) for n in recent_intents]
+
+            for intent_node, intent_dist in intent_nodes:
+                # 多跳邻居扩展（LEADS_TO / RELATED_TO）
+                neighbors = self._get_neighbors_sync(
+                    intent_node.id,
+                    depth=neighbor_depth,
+                    min_strength=0.3,
+                )
+                for edge, node in neighbors:
+                    if node.type not in ("event", "entity", "state"):
                         continue
-                    recency = max(0.0, 1.0 - (now - nbr.created_at) / (time_window_hours * 3600))
-                    nbr_score = edge.strength * 0.4 + recency * 0.3
-                    if nbr.id in scored:
-                        _old_node, old_score = scored[nbr.id]
-                        scored[nbr.id] = (nbr, max(nbr_score, old_score))
+                    # 综合分数 = 相关性 + 边强度 + 时间衰减
+                    recency = max(0.0, 1.0 - (now - node.created_at) / (time_window_hours * 3600))
+                    score = (1.0 - intent_dist) * 0.4 + edge.strength * 0.3 + recency * 0.3
+                    if node.id in scored:
+                        # 同一节点多路径到达，取最高分
+                        old_node, old_score = scored[node.id]
+                        if score > old_score:
+                            scored[node.id] = (node, score)
                     else:
-                        scored[nbr.id] = (nbr, nbr_score)
+                        scored[node.id] = (node, score)
 
-        # ── Strategy 3: temporal recency ──
-        recent_events = await self.query_by_time_range(
-            since=since, type="event", limit=limit * 2,
-        )
-        for node in recent_events:
-            if node.id in scored:
-                continue
-            recency = max(0.0, 1.0 - (now - node.created_at) / (time_window_hours * 3600))
-            scored[node.id] = (node, recency * 0.5)
+            # ── Strategy 2: entity keyword match ──
+            # 简单启发：把 context 按空白切分为候选词，长度>2 的当作关键词
+            keywords = {w.strip(".,!?;:\"'()[]{}「」『』") for w in context.split() if len(w) > 2}
+            if keywords:
+                cur = self._conn.cursor()
+                # 用 LIKE 做前缀匹配（SQLite 无全文索引时的轻量回退）
+                rows = cur.execute(
+                    "SELECT * FROM graph_nodes WHERE type = 'entity' AND ("
+                    + " OR ".join("content LIKE ?" for _ in keywords)
+                    + ")",
+                    [f"%{kw}%" for kw in keywords],
+                ).fetchall()
+                for row in rows:
+                    node = self._row_to_node(row)
+                    recency = max(0.0, 1.0 - (now - node.created_at) / (time_window_hours * 3600))
+                    score = 0.5 + recency * 0.3  # 关键词命中给中等基础分
+                    if node.id in scored:
+                        _old_node, old_score = scored[node.id]
+                        scored[node.id] = (node, max(score, old_score))
+                    else:
+                        scored[node.id] = (node, score)
+                    # 再扩展一步取关联 event
+                    ent_neighbors = self._get_neighbors_sync(
+                        node.id, depth=1, min_strength=0.2,
+                    )
+                    for edge, nbr in ent_neighbors:
+                        if nbr.type != "event":
+                            continue
+                        recency = max(0.0, 1.0 - (now - nbr.created_at) / (time_window_hours * 3600))
+                        nbr_score = edge.strength * 0.4 + recency * 0.3
+                        if nbr.id in scored:
+                            _old_node, old_score = scored[nbr.id]
+                            scored[nbr.id] = (nbr, max(nbr_score, old_score))
+                        else:
+                            scored[nbr.id] = (nbr, nbr_score)
 
-        if not scored:
-            return ""
-
-        # 排序并格式化
-        ranked = sorted(scored.values(), key=lambda x: x[1], reverse=True)
-        lines = ["💡 相关历史记忆:"]
-        for i, (node, _score) in enumerate(ranked[:limit], 1):
-            prefix = {"event": "📌", "entity": "🏷", "state": "📊", "intent": "🎯"}.get(
-                node.type, "•"
+            # ── Strategy 3: temporal recency ──
+            recent_events = self._query_by_time_range_sync(
+                since=since, type="event", limit=limit * 2,
             )
-            lines.append(f"   {i}. {prefix} {node.content}")
-        return "\n".join(lines)
+            for node in recent_events:
+                if node.id in scored:
+                    continue
+                recency = max(0.0, 1.0 - (now - node.created_at) / (time_window_hours * 3600))
+                scored[node.id] = (node, recency * 0.5)
+
+            if not scored:
+                return ""
+
+            # 排序并格式化
+            ranked = sorted(scored.values(), key=lambda x: x[1], reverse=True)
+            lines = ["💡 相关历史记忆:"]
+            for i, (node, _score) in enumerate(ranked[:limit], 1):
+                prefix = {"event": "📌", "entity": "🏷", "state": "📊", "intent": "🎯"}.get(
+                    node.type, "•"
+                )
+                lines.append(f"   {i}. {prefix} {node.content}")
+            return "\n".join(lines)
+
+        return await asyncio.to_thread(_run)
 
     # ── 维护 ──
 
     async def prune_orphaned(self) -> int:
         """删除无连接的孤立节点。"""
-        async with self._get_write_lock():
+        def _run():
             cur = self._conn.cursor()
             cur.execute("""
                 DELETE FROM graph_nodes
@@ -547,23 +582,26 @@ class MemoryGraph:
             """)
             count = cur.rowcount
             self._conn.commit()
-        return count
+            return count
+        return await asyncio.to_thread(_run)
 
     async def stats(self) -> dict[str, Any]:
-        cur = self._conn.cursor()
-        node_count = cur.execute("SELECT COUNT(*) FROM graph_nodes").fetchone()[0]
-        edge_count = cur.execute("SELECT COUNT(*) FROM graph_edges").fetchone()[0]
-        type_counts = {
-            row["type"]: row["c"]
-            for row in cur.execute(
-                "SELECT type, COUNT(*) as c FROM graph_nodes GROUP BY type"
-            )
-        }
-        return {
-            "nodes": node_count,
-            "edges": edge_count,
-            "by_type": type_counts,
-        }
+        def _run():
+            cur = self._conn.cursor()
+            node_count = cur.execute("SELECT COUNT(*) FROM graph_nodes").fetchone()[0]
+            edge_count = cur.execute("SELECT COUNT(*) FROM graph_edges").fetchone()[0]
+            type_counts = {
+                row["type"]: row["c"]
+                for row in cur.execute(
+                    "SELECT type, COUNT(*) as c FROM graph_nodes GROUP BY type"
+                )
+            }
+            return {
+                "nodes": node_count,
+                "edges": edge_count,
+                "by_type": type_counts,
+            }
+        return await asyncio.to_thread(_run)
 
     def close(self) -> None:
         self._conn.close()
@@ -587,16 +625,14 @@ class MemoryGraph:
             return _node.id
         return None
 
-    async def _find_similar_node_raw(
+    def _find_similar_node_raw_sync(
         self,
         embedding: list[float],
         type: NodeType,  # noqa: A002
         k: int,
     ) -> list[tuple[GraphNode, float]]:
-        """找相似节点，返回 [(node, distance), ...] 按 distance 升序。"""
+        """Synchronous variant."""
         import struct
-
-        # Fast path: sqlite-vec KNN.
         if self._vec_supported and self._vec_dim and len(embedding) == self._vec_dim:
             qblob = struct.pack(f"{len(embedding)}f", *embedding)
             cur = self._conn.cursor()
@@ -616,18 +652,27 @@ class MemoryGraph:
                     if r["distance"] is not None
                 ]
             except sqlite3.OperationalError:
-                pass  # Fall through to manual compute.
+                pass
+        return self._manual_similarity_search_sync(embedding, type, k)
 
-        # Fallback: manual cosine similarity over all nodes of the type.
-        return await self._manual_similarity_search(embedding, type, k)
-
-    async def _manual_similarity_search(
+    async def _find_similar_node_raw(
         self,
         embedding: list[float],
         type: NodeType,  # noqa: A002
         k: int,
     ) -> list[tuple[GraphNode, float]]:
-        """纯 Python cosine-distance 回退（O(n) 扫描）。"""
+        """找相似节点，返回 [(node, distance), ...] 按 distance 升序。"""
+        return await asyncio.to_thread(
+            self._find_similar_node_raw_sync, embedding, type, k,
+        )
+
+    def _manual_similarity_search_sync(
+        self,
+        embedding: list[float],
+        type: NodeType,  # noqa: A002
+        k: int,
+    ) -> list[tuple[GraphNode, float]]:
+        """纯 Python cosine-distance 回退（O(n) 扫描）——同步版本。"""
         q_norm = self._l2_norm(embedding)
         if q_norm == 0:
             return []
@@ -644,12 +689,22 @@ class MemoryGraph:
             d_norm = self._l2_norm(list(node.embedding))
             if d_norm == 0:
                 continue
-            # Cosine distance = 1 - cosine similarity
             sim = sum(a * b for a, b in zip(embedding, node.embedding)) / (q_norm * d_norm)
-            sim = max(-1.0, min(1.0, sim))  # clamp
+            sim = max(-1.0, min(1.0, sim))
             scored.append((node, 1.0 - sim))
         scored.sort(key=lambda x: x[1])
         return scored[:k]
+
+    async def _manual_similarity_search(
+        self,
+        embedding: list[float],
+        type: NodeType,  # noqa: A002
+        k: int,
+    ) -> list[tuple[GraphNode, float]]:
+        """纯 Python cosine-distance 回退（O(n) 扫描）。"""
+        return await asyncio.to_thread(
+            self._manual_similarity_search_sync, embedding, type, k,
+        )
 
     @staticmethod
     def _l2_norm(vec: list[float]) -> float:
@@ -657,13 +712,14 @@ class MemoryGraph:
         return math.sqrt(sum(v * v for v in vec))
 
     async def _update_node_content(self, node_id: str, content: str) -> None:
-        async with self._get_write_lock():
+        def _run():
             cur = self._conn.cursor()
             cur.execute(
                 "UPDATE graph_nodes SET content = ? WHERE id = ?",
                 (content, node_id),
             )
             self._conn.commit()
+        return await asyncio.to_thread(_run)
 
     @staticmethod
     def _row_to_node(row: sqlite3.Row) -> GraphNode:

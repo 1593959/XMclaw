@@ -75,6 +75,10 @@ def test_list_tools_schemas_well_formed() -> None:
         # could clean up?". Required fields would force premature
         # commitment to a scope.
         "memory_dedup",
+        # 2026-05-28: memory_inspect is read-only health probe —
+        # zero-arg "show me the whole picture" usage is the primary
+        # mode; restricting by scope is optional.
+        "memory_inspect",
     }
     for spec in BuiltinTools().list_tools():
         assert spec.parameters_schema["type"] == "object"
@@ -438,6 +442,137 @@ async def test_web_fetch_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_web_fetch_sends_real_chrome_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-05-28: public sites 403'd the old XMclaw/2.x UA. Verify
+    we now ship a Chrome UA + Accept-* + Sec-* headers — the
+    minimum a modern browser sends so anti-bot middleboxes don't
+    bounce us on day one."""
+    import httpx
+
+    captured: dict = {}
+
+    class _Resp:
+        status_code = 200
+        reason_phrase = "OK"
+        text = "ok"
+        headers = {"content-type": "text/html"}
+        content = b"ok"
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return None
+        async def get(self, url, headers=None):
+            captured["headers"] = headers or {}
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    tools = BuiltinTools()
+    await tools.invoke(_call("web_fetch", {"url": "https://example.com/"}))
+
+    h = captured["headers"]
+    assert "Chrome/" in h["User-Agent"]
+    assert "Mozilla/5.0" in h["User-Agent"]
+    assert "Accept" in h
+    assert "Accept-Language" in h
+    assert "Accept-Encoding" in h
+    assert h.get("Sec-Fetch-Mode") == "navigate"
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_retries_on_transient_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Transient ConnectError → retry → success. Without retry the
+    agent would see the failure and burn context on identical
+    re-fetches."""
+    import httpx
+
+    class _Resp:
+        status_code = 200
+        reason_phrase = "OK"
+        text = "ok"
+        headers = {"content-type": "text/html"}
+        content = b"ok"
+
+    attempts = {"n": 0}
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return None
+        async def get(self, url, headers=None):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise httpx.ConnectError("flaky")
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    tools = BuiltinTools()
+    r = await tools.invoke(_call("web_fetch", {"url": "https://example.com/"}))
+    assert r.ok is True
+    assert attempts["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_exhausts_retries_returns_actionable_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All 3 attempts fail → error must (a) include the exception
+    class name, (b) report attempts count, (c) point at browser_open
+    as the fallback so the agent doesn't keep hammering."""
+    import httpx
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return None
+        async def get(self, url, headers=None):
+            raise httpx.ConnectError("")  # empty message — the B-233 trap
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    tools = BuiltinTools()
+    r = await tools.invoke(_call("web_fetch", {"url": "https://example.com/"}))
+    assert r.ok is False
+    assert "3 attempts" in r.error
+    assert "ConnectError" in r.error
+    assert "browser_open" in r.error
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_403_with_cloudflare_body_hints_browser_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 403 from a Cloudflare-protected page now appends the
+    browser_open hint so the agent knows the next step."""
+    import httpx
+
+    class _Resp:
+        status_code = 403
+        reason_phrase = "Forbidden"
+        text = "<html>Just a moment... Cloudflare verification</html>"
+        headers = {"content-type": "text/html"}
+        content = b""
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return None
+        async def get(self, url, headers=None):
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    tools = BuiltinTools()
+    r = await tools.invoke(_call("web_fetch", {"url": "https://example.com/"}))
+    assert r.ok is False
+    assert "403" in r.error
+    assert "bot-blocked" in r.error.lower()
+    assert "browser_open" in r.error
+
+
+@pytest.mark.asyncio
 async def test_web_fetch_rejects_non_http() -> None:
     tools = BuiltinTools()
     r = await tools.invoke(_call("web_fetch", {"url": "file:///etc/passwd"}))
@@ -531,6 +666,145 @@ async def test_web_search_disabled_refuses() -> None:
     r = await tools.invoke(_call("web_search", {"query": "x"}))
     assert r.ok is False
     assert "disabled" in r.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_web_search_falls_back_to_bing_when_ddg_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-05-28: from CN networks DDG is often blocked → tool would
+    hang or 0-result. Now: DDG times out / errors → auto-fallback to
+    Bing CN HTML, agent gets real results, agent never has to know."""
+    import httpx
+
+    bing_html = '''
+    <ol id="b_results">
+      <li class="b_algo">
+        <h2><a href="https://example.com/monaco">Monaco Editor CDN</a></h2>
+        <div class="b_caption"><p>Monaco editor v0.45 on jsdelivr.</p></div>
+      </li>
+      <li class="b_algo">
+        <h2><a href="https://unpkg.com/monaco-editor/">unpkg link</a></h2>
+        <p class="b_lineclamp2">Latest monaco-editor on unpkg.</p>
+      </li>
+    </ol>
+    '''
+
+    class _BingResp:
+        status_code = 200
+        text = bing_html
+
+    class _FakeClient:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return None
+
+        async def post(self, url, data=None, headers=None):
+            # DDG path always called via POST in our impl.
+            raise httpx.ConnectError("connect timeout (simulated CN block)")
+
+        async def get(self, url, headers=None, params=None):
+            # Bing CN HTML scrape uses GET — return our fake SERP.
+            assert "cn.bing.com" in url
+            return _BingResp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    tools = BuiltinTools()
+    r = await tools.invoke(_call("web_search", {
+        "query": "monaco-editor CDN", "max_results": 5,
+    }))
+    assert r.ok is True
+    assert "Monaco Editor CDN" in r.content
+    assert "unpkg" in r.content
+    # The result note should say bing_cn won + primary ddg failed.
+    assert "bing_cn" in r.content
+    assert "ddg" in r.content.lower()
+
+
+@pytest.mark.asyncio
+async def test_web_search_all_engines_fail_gives_actionable_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When both DDG and Bing CN are unreachable, surface the last
+    error + which engines were tried + a config-hint."""
+    import httpx
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return None
+        async def post(self, url, data=None, headers=None):
+            raise httpx.ConnectError("no route to host")
+        async def get(self, url, headers=None, params=None):
+            raise httpx.ConnectError("no route to host")
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    tools = BuiltinTools()
+    r = await tools.invoke(_call("web_search", {"query": "x"}))
+    assert r.ok is False
+    assert "ddg" in r.error and "bing_cn" in r.error
+    assert "bing_api_key" in r.error  # config-hint surfaces
+
+
+@pytest.mark.asyncio
+async def test_web_search_disable_fallback_respected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If user sets evolution.search.disable_fallback=True, DDG
+    failure stays terminal — no auto-Bing."""
+    import httpx
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return None
+        async def post(self, url, data=None, headers=None):
+            raise httpx.ConnectError("ddg down")
+        async def get(self, url, headers=None, params=None):
+            raise AssertionError(
+                "fallback to Bing CN should NOT happen when disabled"
+            )
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    tools = BuiltinTools(
+        search_config_getter=lambda: {
+            "provider": "ddg", "disable_fallback": True,
+        },
+    )
+    r = await tools.invoke(_call("web_search", {"query": "x"}))
+    assert r.ok is False
+    assert "ddg" in r.error
+    assert "bing_cn" not in r.error  # never tried
+
+
+def test_parse_bing_html_extracts_typical_serp():
+    """Cover both b_caption-wrapped and b_lineclamp snippet shapes."""
+    from xmclaw.providers.tool._helpers import _parse_bing_html
+    html = '''
+    <ol id="b_results">
+      <li class="b_algo">
+        <h2><a href="https://a.example/path">Title A</a></h2>
+        <div class="b_caption"><p>Snippet A here.</p></div>
+      </li>
+      <li class="b_algo">
+        <h2><a href="https://b.example/">Title B</a></h2>
+        <p class="b_lineclamp2">Snippet B here.</p>
+      </li>
+      <li class="b_algo">
+        <h2><a href="https://c.example/">Title C</a></h2>
+      </li>
+    </ol>
+    '''
+    out = _parse_bing_html(html, max_results=5)
+    assert len(out) == 3
+    assert out[0] == {
+        "title": "Title A",
+        "url": "https://a.example/path",
+        "snippet": "Snippet A here.",
+    }
+    assert out[1]["snippet"] == "Snippet B here."
+    # Third entry has no snippet — empty string is fine, not None.
+    assert out[2]["snippet"] == ""
 
 
 # ── apply_patch ──────────────────────────────────────────────────────────

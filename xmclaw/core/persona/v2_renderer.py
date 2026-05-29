@@ -74,22 +74,29 @@ from xmclaw.utils.fs_locks import atomic_write_text
 # legacy PersonaStore's AUTO_SECTIONS so the agent's existing
 # read path (full MD file → system prompt) sees the same section
 # names it always saw.
+# 2026-05-28 memory v3 phase 1.2: BUCKET_TO_FILE and FILE_TO_BUCKETS
+# are now derived from the central registry in
+# ``xmclaw.memory.v2.buckets``. The registry is the single source of
+# truth for bucket → (file, section) mapping; any new bucket has to
+# land in the registry. Three new buckets land here vs v2:
+#
+#   - project_fact      → MEMORY.md ## Project facts
+#   - commitment        → MEMORY.md ## Active commitments
+#   - misc              → MEMORY.md ## Other facts (recent)
+#
+# ``misc`` is the catch-all that closes the "dark facts" hole — any
+# fact whose bucket can't be classified ends up in misc instead of
+# being invisible to the agent.
+from xmclaw.memory.v2.buckets import BUCKETS as _BUCKETS
+
 BUCKET_TO_FILE: dict[str, tuple[str, str, str]] = {
-    # ── Phase 1 ────────────────────────────────────────────────
-    "agent_identity":  ("IDENTITY.md", "## Auto-extracted",             ""),
-    "user_identity":   ("USER.md",     "## Auto-identity",              ""),
-    "user_preference": ("USER.md",     "## Auto-extracted preferences", ""),
-    # ── Phase 2 ────────────────────────────────────────────────
-    "workflow":        ("AGENTS.md",   "## Auto-extracted",             ""),
-    "tool_quirks":     ("TOOLS.md",    "## Auto-extracted",             ""),
-    "failure_modes":   ("MEMORY.md",   "## Failure Modes",              ""),
-    "values":          ("SOUL.md",     "## Auto-extracted",             ""),
-    "rules":           ("LEARNING.md", "## Auto-extracted",             ""),
+    tag: (b.target_file, b.section, "") for tag, b in _BUCKETS.items()
 }
 
 # Reverse map: which buckets feed which filename. Needed when one MD
 # file aggregates multiple buckets (USER.md gets both identity AND
-# preferences, each in its own section).
+# preferences; MEMORY.md collects failure_modes / project_fact /
+# commitment / misc as four independent sections).
 FILE_TO_BUCKETS: dict[str, list[str]] = {}
 for _bucket, (_fn, _sec, _pfx) in BUCKET_TO_FILE.items():
     FILE_TO_BUCKETS.setdefault(_fn, []).append(_bucket)
@@ -160,7 +167,17 @@ def _render_section_body(facts: list[Any], prefix: str = "") -> str:
             continue
         conf = getattr(f, "confidence", 0.0)
         conf_str = f" _(conf {conf:.2f})_" if conf else ""
-        lines.append(f"- {date_str}: {prefix}{text}{conf_str}")
+        # 2026-05-28 memory v3 phase 1.3: fid back-reference.
+        # Append ``<!-- fid:<short> -->`` after each bullet so the
+        # agent / human reader can jump back to the LanceDB row
+        # that produced this line. Without this, .md and LanceDB
+        # are effectively two disjoint views — the v3 audit's
+        # core complaint. Now they're bidirectionally addressable.
+        fid = (getattr(f, "id", "") or "")[:12]
+        fid_marker = f" <!-- fid:{fid} -->" if fid else ""
+        lines.append(
+            f"- {date_str}: {prefix}{text}{conf_str}{fid_marker}",
+        )
     return "\n".join(lines)
 
 
