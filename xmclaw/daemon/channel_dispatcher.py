@@ -106,8 +106,8 @@ class ChannelDispatcher:
         for a in self._adapters:
             try:
                 await a.stop()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("channel.stop_failed name=%s err=%s", a.name, exc)
 
     # ── inbound routing ────────────────────────────────────────
 

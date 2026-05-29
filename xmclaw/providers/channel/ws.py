@@ -78,6 +78,12 @@ class WSChannelAdapter(ChannelAdapter):
             self._handle_connection,
             self.host,
             self._requested_port,
+            # B-CONN: keepalive so silently-dropped TCP sockets
+            # (client power loss, mobile backgrounding, network
+            # partition) are reaped instead of leaking forever.
+            ping_interval=20,
+            ping_timeout=20,
+            close_timeout=10,
         )
         # Resolve the actual port (handles port=0 case)
         # websockets server exposes sockets on ``.sockets`` (may be list of

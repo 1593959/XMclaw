@@ -464,17 +464,17 @@ def make_lifespan(
         try:
             from xmclaw.cognition.plan_store import PlanStore
             from xmclaw.utils.paths import default_plans_db_path
-            _plan_store = PlanStore(default_plans_db_path())
-            n_orphaned = _plan_store.mark_orphaned()
+            # B-PERF: PlanStore init + mark_orphaned are sync SQLite
+            # writes; thread-offload so lifespan doesn't stall.
+            _plan_store = await asyncio.to_thread(
+                PlanStore, default_plans_db_path()
+            )
+            n_orphaned = await asyncio.to_thread(_plan_store.mark_orphaned)
             if n_orphaned > 0:
-                import logging as _logging
-                _logging.getLogger(__name__).info(
-                    "plan_store.boot_orphan_sweep count=%d", n_orphaned,
-                )
+                log.info("plan_store.boot_orphan_sweep count=%d", n_orphaned)
             _app.state.plan_store = _plan_store
         except Exception as exc:  # noqa: BLE001
-            import logging as _logging
-            _logging.getLogger(__name__).warning(
+            log.warning(
                 "plan_store.boot_init_failed err=%s — autonomous "
                 "plans will not persist this session", exc,
             )
@@ -1408,154 +1408,157 @@ def make_lifespan(
         # ``cognition.enabled = true`` in daemon/config.json to
         # opt in.
         if cognition_cfg.get("enabled", False) and _cognitive_state is not None:
+            # B-PERF: start the four cognition services in parallel
+            # instead of serial await chains. They have no inter-deps.
 
-            try:
-                from xmclaw.cognition.file_watcher import FileWatcher
-                _watch_paths = cognition_cfg.get("watch_paths", [str(Path.home() / "Desktop" / "XMclaw")])
-                _fw = FileWatcher(
-                    watch_paths=_watch_paths,
-                    bus=bus,
-                    cognitive_state=_cognitive_state,
-                )
-                await _fw.start()
-                _app.state.file_watcher = _fw
-            except Exception as exc:  # noqa: BLE001
-                log.warning("cognition.file_watcher_start_failed err=%s", exc)
-                _app.state.file_watcher = None
+            async def _start_file_watcher() -> None:
+                try:
+                    from xmclaw.cognition.file_watcher import FileWatcher
+                    _watch_paths = cognition_cfg.get(
+                        "watch_paths",
+                        [str(Path.home() / "Desktop" / "XMclaw")],
+                    )
+                    _fw = FileWatcher(
+                        watch_paths=_watch_paths,
+                        bus=bus,
+                        cognitive_state=_cognitive_state,
+                    )
+                    await _fw.start()
+                    _app.state.file_watcher = _fw
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("cognition.file_watcher_start_failed err=%s", exc)
+                    _app.state.file_watcher = None
 
-            try:
-                from xmclaw.cognition.process_watcher import ProcessWatcher
-                _pw = ProcessWatcher(
-                    bus=bus,
-                    poll_interval_s=float(
-                        cognition_cfg.get("process_poll_interval_s", 30.0)
-                    ),
-                )
-                await _pw.start()
-                _app.state.process_watcher = _pw
-            except Exception as exc:  # noqa: BLE001
-                log.warning("cognition.process_watcher_start_failed err=%s", exc)
-                _app.state.process_watcher = None
+            async def _start_process_watcher() -> None:
+                try:
+                    from xmclaw.cognition.process_watcher import ProcessWatcher
+                    _pw = ProcessWatcher(
+                        bus=bus,
+                        poll_interval_s=float(
+                            cognition_cfg.get("process_poll_interval_s", 30.0)
+                        ),
+                    )
+                    await _pw.start()
+                    _app.state.process_watcher = _pw
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("cognition.process_watcher_start_failed err=%s", exc)
+                    _app.state.process_watcher = None
 
-            try:
-                from xmclaw.cognition.evolution_loop import EvolutionLoop
-                _evo_loop = EvolutionLoop(
-                    bus=bus,
-                    agent_loop=agent,
-                    interval_seconds=float(cognition_cfg.get("evolution_interval_s", 3600.0)),
-                )
-                await _evo_loop.start()
-                _app.state.evolution_loop = _evo_loop
-                # Wire into AgentLoop so run_turn can feed tool calls +
-                # latencies into the evolution pipeline.
-                if agent is not None:
-                    agent._evolution_loop = _evo_loop
-            except Exception as exc:  # noqa: BLE001
-                log.warning("cognition.evolution_loop_start_failed err=%s", exc)
-                _app.state.evolution_loop = None
+            async def _start_evolution_loop() -> None:
+                try:
+                    from xmclaw.cognition.evolution_loop import EvolutionLoop
+                    _evo_loop = EvolutionLoop(
+                        bus=bus,
+                        agent_loop=agent,
+                        interval_seconds=float(
+                            cognition_cfg.get("evolution_interval_s", 3600.0)
+                        ),
+                    )
+                    await _evo_loop.start()
+                    _app.state.evolution_loop = _evo_loop
+                    if agent is not None:
+                        agent._evolution_loop = _evo_loop
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("cognition.evolution_loop_start_failed err=%s", exc)
+                    _app.state.evolution_loop = None
 
-            try:
-                from xmclaw.cognition.task_scheduler import TaskScheduler
+            async def _start_task_scheduler() -> None:
+                try:
+                    from xmclaw.cognition.task_scheduler import TaskScheduler
 
-                async def _task_executor(task):
-                    # Route by agent_id so submit_to_agent tasks land on
-                    # the correct sub-agent, not always the primary.
-                    _mgr = getattr(_app.state, "agents", None)
-                    if task.agent_id == "main" or task.agent_id == getattr(
-                        _app.state, "agent_id", "main"
-                    ):
-                        target_agent = _app.state.agent
-                    elif _mgr is not None:
-                        _ws = _mgr.get(task.agent_id)
-                        target_agent = _ws.agent_loop if _ws is not None else None
-                    else:
-                        target_agent = None
-                    if target_agent is None:
-                        return f"(no agent wired for {task.agent_id!r})"
+                    async def _task_executor(task):
+                        _mgr = getattr(_app.state, "agents", None)
+                        if task.agent_id == "main" or task.agent_id == getattr(
+                            _app.state, "agent_id", "main"
+                        ):
+                            target_agent = _app.state.agent
+                        elif _mgr is not None:
+                            _ws = _mgr.get(task.agent_id)
+                            target_agent = _ws.agent_loop if _ws is not None else None
+                        else:
+                            target_agent = None
+                        if target_agent is None:
+                            return f"(no agent wired for {task.agent_id!r})"
 
-                    # Extract caller from the agent-inter caller marker
-                    # so a2a tasks get consistent session ids.
-                    caller = getattr(
-                        _app.state, "agent_id", "main"
-                    ) or "main"
-                    prompt = task.prompt
-                    if prompt.startswith("[Agent "):
-                        end = prompt.find(" requesting]")
-                        if end > 8:
-                            caller = prompt[8:end]
+                        caller = getattr(_app.state, "agent_id", "main") or "main"
+                        prompt = task.prompt
+                        if prompt.startswith("[Agent "):
+                            end = prompt.find(" requesting]")
+                            if end > 8:
+                                caller = prompt[8:end]
 
-                    # Use a2a session-id format for agent-inter tasks so
-                    # they are visually distinct in logs / history.
-                    if task.agent_id != "main":
-                        stamp = int(time_module.time() * 1000)
-                        suffix = uuid.uuid4().hex[:8]
-                        sid = f"{caller}:to:{task.agent_id}:{stamp}:{suffix}"
-                    else:
-                        sid = f"task:{task.id}:{int(time_module.time())}"
+                        if task.agent_id != "main":
+                            stamp = int(time_module.time() * 1000)
+                            suffix = uuid.uuid4().hex[:8]
+                            sid = f"{caller}:to:{task.agent_id}:{stamp}:{suffix}"
+                        else:
+                            sid = f"task:{task.id}:{int(time_module.time())}"
 
-                    res = await target_agent.run_turn(sid, prompt)
+                        res = await target_agent.run_turn(sid, prompt)
 
-                    # Extract the last assistant message — same logic as
-                    # AgentInterTools._run_background so check_agent_task
-                    # returns a clean reply rather than a formatted blob.
-                    history = target_agent._histories.get(sid, [])
-                    raw_reply = ""
-                    for msg in reversed(history):
-                        if getattr(msg, "role", None) == "assistant":
-                            raw_reply = getattr(msg, "content", "") or ""
-                            break
-                    if not raw_reply and res is not None:
-                        raw_reply = getattr(res, "text", "") or ""
+                        history = target_agent._histories.get(sid, [])
+                        raw_reply = ""
+                        for msg in reversed(history):
+                            if getattr(msg, "role", None) == "assistant":
+                                raw_reply = getattr(msg, "content", "") or ""
+                                break
+                        if not raw_reply and res is not None:
+                            raw_reply = getattr(res, "text", "") or ""
 
-                    # B-307 parity: scan the sub-agent reply for prompt
-                    # injection before it lands in the task result.
-                    try:
-                        from xmclaw.security import (
-                            PolicyMode,
-                            SOURCE_SUB_AGENT,
-                            apply_policy,
-                        )
-                        policy = getattr(
-                            target_agent, "_injection_policy",
-                            PolicyMode.DETECT_ONLY,
-                        )
-                        decision = apply_policy(
-                            raw_reply,
-                            policy=policy,
-                            source=SOURCE_SUB_AGENT,
-                            extra={
-                                "caller": caller,
-                                "callee": task.agent_id,
-                                "task_id": task.id,
-                                "async": True,
-                            },
-                        )
-                        if decision.blocked:
-                            return (
-                                "[B-307 sub-agent reply blocked by "
-                                "prompt-injection policy — see "
-                                "PROMPT_INJECTION_DETECTED event]"
+                        try:
+                            from xmclaw.security import (
+                                PolicyMode,
+                                SOURCE_SUB_AGENT,
+                                apply_policy,
                             )
-                        return decision.content
-                    except Exception:  # noqa: BLE001
-                        return raw_reply
+                            policy = getattr(
+                                target_agent, "_injection_policy",
+                                PolicyMode.DETECT_ONLY,
+                            )
+                            decision = apply_policy(
+                                raw_reply,
+                                policy=policy,
+                                source=SOURCE_SUB_AGENT,
+                                extra={
+                                    "caller": caller,
+                                    "callee": task.agent_id,
+                                    "task_id": task.id,
+                                    "async": True,
+                                },
+                            )
+                            if decision.blocked:
+                                return (
+                                    "[B-307 sub-agent reply blocked by "
+                                    "prompt-injection policy — see "
+                                    "PROMPT_INJECTION_DETECTED event]"
+                                )
+                            return decision.content
+                        except Exception:  # noqa: BLE001
+                            return raw_reply
 
-                # Phase 5: derive db_path from the event bus so tasks
-                # live in events.db (same WAL, same backup, same prune).
-                _task_db_path = None
-                if hasattr(bus, "db_path"):
-                    _task_db_path = bus.db_path
-                _task_sched = TaskScheduler(
-                    db_path=_task_db_path,
-                    bus=bus,
-                    max_concurrent=int(cognition_cfg.get("max_concurrent_tasks", 3)),
-                    executor=_task_executor,
-                )
-                await _task_sched.start()
-                _app.state.task_scheduler = _task_sched
-            except Exception as exc:  # noqa: BLE001
-                log.warning("cognition.task_scheduler_start_failed err=%s", exc)
-                _app.state.task_scheduler = None
+                    _task_db_path = None
+                    if hasattr(bus, "db_path"):
+                        _task_db_path = bus.db_path
+                    _task_sched = TaskScheduler(
+                        db_path=_task_db_path,
+                        bus=bus,
+                        max_concurrent=int(
+                            cognition_cfg.get("max_concurrent_tasks", 3)
+                        ),
+                        executor=_task_executor,
+                    )
+                    await _task_sched.start()
+                    _app.state.task_scheduler = _task_sched
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("cognition.task_scheduler_start_failed err=%s", exc)
+                    _app.state.task_scheduler = None
+
+            await asyncio.gather(
+                _start_file_watcher(),
+                _start_process_watcher(),
+                _start_evolution_loop(),
+                _start_task_scheduler(),
+            )
 
         # Phase C-4/4: swarm orchestrator.  Wires HTNPlanner + TaskScheduler
         # + MultiAgentManager so the primary agent can dispatch complex goals

@@ -258,6 +258,46 @@ class HopLoopMixin:
         # successful tool call emits an INNER_MONOLOGUE verdict chip.
         _step_validator = getattr(self, "_step_validator", None)
 
+        # B-PERF: pre-compute session-level GoalAnchor state once per
+        # turn instead of re-scanning the full history on every hop.
+        # User messages don't change mid-turn, so this is pure waste.
+        _session_history = self._histories.get(session_id) or []
+        _session_user_thread: list[str] = []
+        for _msg in _session_history:
+            if getattr(_msg, "role", None) == "user":
+                _content = getattr(_msg, "content", None) or ""
+                if isinstance(_content, str) and _content.strip():
+                    s = _content.lstrip()
+                    if s.startswith("[GOAL-ANCHOR]") or s.startswith("[turn hint]"):
+                        continue
+                    _session_user_thread.append(_content)
+        _session_goal: str | None = (
+            _session_user_thread[0] if _session_user_thread else None
+        )
+        _current_focus: str | None = get_session_focus(session_id)
+
+        # Jarvis Phase 6.3: active skill matches for GoalAnchor.
+        _skill_matches: list[dict[str, Any]] | None = None
+        _reg = getattr(self, "_skill_registry", None)
+        if _reg is not None and user_message:
+            try:
+                _matched = _reg.find_multi(user_message, top_k=3)
+                if _matched:
+                    _skill_matches = [
+                        {
+                            "skill_id": r.skill_id,
+                            "version": r.version,
+                            "title": (r.manifest.title or ""),
+                        }
+                        for r in _matched
+                    ]
+            except Exception:  # noqa: BLE001
+                pass
+
+        _is_multi_turn = bool(
+            _session_goal and _session_goal.strip() != user_message.strip()
+        )
+
         for hop in range(self._max_hops):
             hop_corr = f"{turn_uuid}-{hop}"
             # B-38: cancel fence — if the user clicked Stop, bail out
@@ -303,68 +343,6 @@ class HopLoopMixin:
             # goal + progress so the LLM doesn't drift on long chains.
             # Carries the ``[GOAL-ANCHOR]`` marker that turn_context.py's
             # sanitiser strips before history-to-disk persistence.
-            #
-            # Wave-27 fix-7: TWO trigger conditions now —
-            #   (a) Standard hop-cadence anchor (every N hops within a
-            #       single turn — the original use case: 100+ tool
-            #       calls deep, remind the LLM of THIS turn's goal).
-            #   (b) Session-start anchor at hop=0 if this is turn 2+ of
-            #       the conversation. Reminds the LLM of the SESSION's
-            #       opening ask, not just current turn input. Without
-            #       this, a chat with zero tool calls per turn never
-            #       saw an anchor at all → "聊着聊着就忘了最初的目的".
-            # Wave-27 fix-8: collect the FULL user-message thread of
-            # the session (evolution of intent), not just the first
-            # message. User pushback: "就像我们之间的对话,是第一句
-            # 就把任务理清的吗" — real tasks evolve across multiple
-            # asks; pinning history[0] discards the chain.
-            _session_history = self._histories.get(session_id) or []
-            _session_user_thread: list[str] = []
-            for _msg in _session_history:
-                if getattr(_msg, "role", None) == "user":
-                    _content = getattr(_msg, "content", None) or ""
-                    if isinstance(_content, str) and _content.strip():
-                        # Filter out our own scaffolding messages —
-                        # GOAL-ANCHOR / [turn hint] are NOT real user
-                        # asks even though they ride on role=user.
-                        s = _content.lstrip()
-                        if s.startswith("[GOAL-ANCHOR]") or s.startswith("[turn hint]"):
-                            continue
-                        _session_user_thread.append(_content)
-            # Back-compat: also surface the first one as session_goal
-            # for callers / tests that still key on the old field.
-            _session_goal: str | None = (
-                _session_user_thread[0] if _session_user_thread else None
-            )
-            # Agent-self-declared current focus (Wave-27 fix-8 / C).
-            # The ``update_focus`` builtin tool writes into a
-            # module-level per-session registry in goal_anchor.py.
-            # When the agent hasn't called update_focus yet for this
-            # session this is None and the block is omitted from the
-            # anchor render.
-            _current_focus: str | None = get_session_focus(session_id)
-
-            # Jarvis Phase 6.3: active skill matches for GoalAnchor.
-            _skill_matches: list[dict[str, Any]] | None = None
-            _reg = getattr(self, "_skill_registry", None)
-            if _reg is not None and user_message:
-                try:
-                    _matched = _reg.find_multi(user_message, top_k=3)
-                    if _matched:
-                        _skill_matches = [
-                            {
-                                "skill_id": r.skill_id,
-                                "version": r.version,
-                                "title": (r.manifest.title or ""),
-                            }
-                            for r in _matched
-                        ]
-                except Exception:  # noqa: BLE001
-                    pass
-
-            _is_multi_turn = bool(
-                _session_goal and _session_goal.strip() != user_message.strip()
-            )
             _should_anchor = (
                 _goal_anchor_tracker.should_anchor(hop)
                 or (hop == 0 and _is_multi_turn)

@@ -752,7 +752,12 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             if self._session_store is not None:
                 try:
                     history = self._histories.get(session_id, [])
-                    self._session_store.save(session_id, history)
+                    # B-PERF: offload SQLite write to thread so the
+                    # event loop isn't blocked on fsync (WAL mode helps
+                    # but INSERT ... ON CONFLICT still touches disk).
+                    await asyncio.to_thread(
+                        self._session_store.save, session_id, history
+                    )
                 except Exception:  # noqa: BLE001
                     from xmclaw.utils.log import get_logger
                     get_logger(__name__).warning(
@@ -1269,7 +1274,11 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 _log.debug("context_engine.bootstrap_failed", session_id=session_id, err=str(exc))
         elif session_id not in self._histories and self._session_store is not None:
             try:
-                loaded = self._session_store.load(session_id)
+                # B-PERF: SQLite read blocks the event loop on first
+                # turn of a session; thread-offload keeps latency low.
+                loaded = await asyncio.to_thread(
+                    self._session_store.load, session_id
+                )
             except Exception:  # noqa: BLE001
                 loaded = None
             if loaded is not None:
