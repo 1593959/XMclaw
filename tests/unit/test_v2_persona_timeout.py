@@ -34,9 +34,17 @@ class _SlowStore:
     async def read_manual(self, _basename: str) -> str:
         return ""
 
-    async def set_manual(self, _basename: str, _text: str) -> None:
+    async def set_manual(
+        self, _basename: str, _text: str, **_kwargs: object,
+    ) -> None:
         # Sleep way past the inner timeout; if not wrapped, _append_persona
         # would block here for the full duration.
+        # 2026-05-29 (B-8): ``**_kwargs`` swallow lets us stay forward-
+        # compatible with new optional kwargs the real PersonaStore
+        # grew (most recently ``render=...`` for write-time render
+        # control). Pre-fix, this stub raised TypeError on the kwarg
+        # and the surrounding test saw a ``store write failed`` error
+        # instead of the ``timed out`` it was trying to assert on.
         await asyncio.sleep(60.0)
 
 

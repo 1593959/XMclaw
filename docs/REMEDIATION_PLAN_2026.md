@@ -51,7 +51,9 @@
 | ✅ | **B-6 CognitiveDaemon ↔ AgentLoop 接线** | 已完成 | agent_loop.py:148, 151, 190 (4e986ad) | AgentLoop.__init__ 接 cognitive_daemon 参数。 |
 | ✅ | **B-7 工具读并发** | 已完成 | hop_loop.py:889 (4e986ad) | asyncio.gather 并发 read 类工具。 |
 | ✅ | **P1-2 / P2-5 fallback provider** | 已完成 | llm_registry.py:115 fallback_chain | LLMRegistry 支持 fallback_chain，429/5xx 时按顺序降级。 |
-| ✅ | **P1-4 Schema validation**（本次）| 已完成 | **新 xmclaw/daemon/config_schema.py** + factory.load_config 接入 (本 commit) | 启动时跑静态 validator，autonomy/port/timeout/types 越界一次性聚合报错。20 测试覆盖。 |
+| ✅ | **P1-4 Schema validation** | 已完成 | xmclaw/daemon/config_schema.py + factory.load_config 接入 (ee2e4d7) | 启动时跑静态 validator，autonomy/port/timeout/types 越界一次性聚合报错。20 测试覆盖。 |
+| ✅ | **B-8 修 pre-existing test_v2_persona_timeout**（本次）| 已完成 | tests/unit/test_v2_persona_timeout.py:37 (本 commit) | `_SlowStore.set_manual()` 加 `**_kwargs` 吞掉 `render=...` 等真 PersonaStore 长出来的新字段，去掉 CI 红点。 |
+| ✅ | **P1-3 / P3-6 Prometheus /metrics**（本次）| 已完成 | **新 xmclaw/daemon/routers/metrics.py** + app.py mount + app_lifespan.py 接 bus (本 commit) | 手写 Prometheus text exposition（无 prometheus_client dep）。导出 7 项指标：daemon_uptime / turns_total / llm_requests_total / llm_response_latency_seconds (histogram 8 buckets) / tool_invocations_total{name,ok} / cost_usd_total / active_sessions（5min 滑窗）。`/metrics` 端点不在 `/api/v2/*` 自动 bypass auth。14 测试覆盖（histogram cumulative buckets、aggregator handlers、render、subscription wiring）。 |
 | ✅ | **P3-4 部署模板** | 已完成 | Dockerfile + docker-compose.yml + deploy/systemd + deploy/launchd + deploy/fly | 4 种部署目标都有模板。 |
 | ✅ | **P4-3 voice 基础** | 已完成 | xmclaw/providers/voice/{whisper,edge_tts}.py | STT (Whisper) + TTS (Edge TTS) 基础版可用；唤醒词 / RL 调优在 P4 完整版未做。 |
 | ✅ | **P4-5 release pipeline** | 已完成 | .github/workflows/{release,python-publish,docker-publish,python-ci}.yml | tag 触发 release，PyPI + Docker 自动发布。 |

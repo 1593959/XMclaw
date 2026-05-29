@@ -2144,6 +2144,25 @@ def make_lifespan(
             _lifespan_elapsed_s,
         )
 
+        # REMEDIATION_PLAN P1-3 (2026-05-29): Prometheus metrics
+        # aggregator. Subscribes to the bus right after startup
+        # completes so we count from a clean baseline (zero
+        # turns / zero llm calls until the first user message).
+        # Best-effort — wiring errors get logged, /metrics still
+        # serves the "disabled" sentinel payload.
+        try:
+            from xmclaw.daemon.routers.metrics import (
+                _MetricsAggregator,
+                install_metrics_subscriptions,
+            )
+            _metrics_agg = _MetricsAggregator()
+            install_metrics_subscriptions(bus, _metrics_agg)
+            _app.state.metrics = _metrics_agg
+            log.info("metrics.aggregator_wired")
+        except Exception as exc:  # noqa: BLE001
+            _app.state.metrics = None
+            log.warning("metrics.wire_failed err=%s", exc)
+
         # Sprint 1 Wave 2: AutobiographicalMemory — structured "who
         # the user is" store. Hooked into AgentLoop for extraction on
         # user message + recall at turn start.

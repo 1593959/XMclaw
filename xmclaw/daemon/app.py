@@ -593,6 +593,7 @@ def create_app(
     from xmclaw.daemon.routers import skill_marketplace as _skill_marketplace_router  # B-390
     from xmclaw.daemon.routers import cognition as _cognition_router
     from xmclaw.daemon.routers import dashboard as _dashboard_router  # Sprint 2 Wave 6
+    from xmclaw.daemon.routers import metrics as _metrics_router  # P1-3 2026-05-29
     from xmclaw.daemon.routers import sync as _sync_router  # Sprint 2 Wave 13
     app.include_router(_files_router.router)
     app.include_router(_llm_profiles_router.router)
@@ -616,6 +617,7 @@ def create_app(
     app.include_router(_skill_marketplace_router.router)  # B-390 (Sprint 2)
     app.include_router(_cognition_router.router)
     app.include_router(_dashboard_router.router)  # Sprint 2 Wave 6
+    app.include_router(_metrics_router.router)  # P1-3 — Prometheus /metrics
     app.include_router(_sync_router.router)  # Sprint 2 Wave 13
 
     # Phase 3: ASGI middleware for X-Agent-Id → ContextVar plumbing
