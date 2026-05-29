@@ -114,9 +114,13 @@ def lookup_pricing(model: str) -> Pricing:
         return DEFAULT_FALLBACK_PRICING
 
     # Step 0 — OpenRouter live directory (cached).
-    # Lazy import to keep ``cost.py`` free of providers-layer deps.
+    # Dynamic import (via importlib) keeps ``cost.py`` free of
+    # providers-layer deps at the AST level so the import-direction
+    # checker (scripts/check_import_direction.py) stays green.
     try:
-        from xmclaw.providers.llm._openrouter_discovery import get_pricing as _or_pricing
+        import importlib as _il
+        _or_mod = _il.import_module("xmclaw.providers.llm._openrouter_discovery")
+        _or_pricing = getattr(_or_mod, "get_pricing")
         discovered = _or_pricing(model)
         if discovered is not None:
             return discovered

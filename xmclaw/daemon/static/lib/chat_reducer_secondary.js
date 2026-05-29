@@ -350,8 +350,20 @@ export function applySecondaryEvent(chat, envelope, helpers) {
     }
 
     case "canvas_artifact_created": {
-      const turnId = payload.turn_id || corr;
-      const idx = chat.messages.findIndex((m) => m.id === turnId);
+      let turnId = payload.turn_id || corr;
+      let idx = chat.messages.findIndex((m) => m.id === turnId);
+      // B-Canvas-Fallback: if turn_id doesn't match any message (e.g.
+      // because the backend used the ToolCall id instead of the turn
+      // correlation_id), attach to the most recent assistant message.
+      if (idx === -1) {
+        for (let i = chat.messages.length - 1; i >= 0; i--) {
+          if (chat.messages[i].role === "assistant") {
+            idx = i;
+            turnId = chat.messages[i].id;
+            break;
+          }
+        }
+      }
       if (idx === -1) return chat;
       const artifact = {
         artifact_id: payload.artifact_id,

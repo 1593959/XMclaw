@@ -27,10 +27,24 @@ export function ToolCard({ call }) {
     call.status === "ok" ? "ok" : call.status === "error" ? "error" : "running";
   const argsPreview = (() => {
     try {
+      // B-Canvas: if content is a JSON string (canvas_create/update),
+      // pretty-print it inline so the user sees a formatted table spec
+      // instead of one escaped wall of text.
+      const prettyArgs = { ...(call.args || {}) };
+      if (
+        (call.name === "canvas_create" || call.name === "canvas_update")
+        && typeof prettyArgs.content === "string"
+      ) {
+        try {
+          prettyArgs.content = JSON.parse(prettyArgs.content);
+        } catch (_) {
+          /* not valid JSON, keep raw */
+        }
+      }
       // JSON.stringify escapes newlines as \n literals; replace them
       // back so multi-line strings inside JSON values render with
       // actual line breaks in the <pre> block.
-      return JSON.stringify(call.args, null, 2).replace(/\\n/g, "\n");
+      return JSON.stringify(prettyArgs, null, 2).replace(/\\n/g, "\n");
     } catch (_) {
       return String(call.args);
     }
@@ -97,7 +111,7 @@ export function ToolCard({ call }) {
     <div class=${"xmc-toolcard-wrap" + (hasMedia ? " has-media" : "")}>
       <details
         class=${"xmc-toolcard xmc-toolcard--" + call.status + cardModifier}
-        open=${call.status === "error"}
+        open=${call.status === "error" || call.name === "canvas_create" || call.name === "canvas_update"}
       >
         <summary
           class=${"xmc-toolcard__summary" + (call.status === "running" ? " is-running" : "")}
