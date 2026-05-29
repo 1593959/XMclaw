@@ -1,7 +1,7 @@
 # 🦞 XMclaw
 
 <p align="center">
-  <strong>A local-first AI agent that lives on your machine, remembers across sessions, speaks up on its own when it should, and reaches you on whatever device you're holding — web UI, CLI, or 飞书. Skill self-evolution architecture is in place but human-gated by default until benchmark numbers land.</strong>
+  <strong>A local-first AI agent runtime. Single Python daemon on your machine, remembers across sessions, drives your browser and desktop, speaks up on its own when it should, and reaches you on web / CLI / 飞书 / Telegram / Slack / 钉钉 / 企微 / Discord / 邮件 — all from the same agent loop. Your data, your tools, your shell. Nothing leaves the box unless you ask.</strong>
 </p>
 
 <p align="center">
@@ -9,21 +9,22 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.10+-blue.svg?style=for-the-badge" alt="Python"></a>
   <img src="https://img.shields.io/badge/Platform-Win%20%7C%20macOS%20%7C%20Linux-blue?style=for-the-badge" alt="Cross-platform">
-  <img src="https://img.shields.io/badge/Status-1.0%20stable-brightgreen?style=for-the-badge" alt="1.0 stable">
+  <img src="https://img.shields.io/badge/Version-1.0.0-brightgreen?style=for-the-badge" alt="1.0.0">
 </p>
 
-XMclaw is **not a chatbot**. It is a runtime that thinks, acts, remembers, and — when you enable it — **speaks up on its own**: calendar reminders, idle check-ins, stale-project nudges, scheduled daily briefings. It runs in a single Python daemon on `127.0.0.1:8766` — your data, your tools, your shell, your filesystem. Nothing leaves the box unless you ask.
+XMclaw is **not a chatbot**. It is a runtime that thinks, acts, remembers across sessions, and — when you enable it — **speaks up on its own**: calendar reminders, idle check-ins, stale-project nudges, scheduled daily briefings. A single FastAPI daemon binds `127.0.0.1:8766`, hosts the **AgentLoop**, and composes pluggable **LLM / Tool / Memory / Channel** providers over a streaming `BehavioralEvent` bus.
 
 Reach it however suits the moment:
-- **Web UI** at `http://127.0.0.1:8766/ui/` — full chat + Dashboard + Settings (PWA-installable, mobile-responsive)
-- **CLI** — `xmclaw chat` for terminal-native, `xmclaw chat --plan` for approval-gated turns
-- **Feishu / Lark** — `enabled: true` + `app_id` in config and the daemon's bot relays everything through 飞书's WebSocket long-poll (no public IP needed). Group + DM + image inbound + slash commands (`/订阅` / `/状态` / `/日程` / `/任务`) ride the same AgentLoop as the web UI. Phone notifications come for free via 飞书's native push.
-- **Continuous voice** — one toggle in the web UI's "🔁 对话" mode and you're in a hands-free state machine: listen → submit → TTS reply → listen again. Energy-based VAD ships as a lib for noisy environments.
-- **Any WebSocket client** — daemon speaks a typed event stream at `/agent/v2/{session}`.
 
-Use any model — Anthropic / OpenAI / MiniMax / Moonshot / DashScope / Qwen / 本地 Ollama — switch with one config change. Plus tier-based routing (Sprint 0): cheap models for trivial turns, strong models for tools/complex work, automatic.
+- **Web UI** at `http://127.0.0.1:8766/ui/` — chat + dashboard + memory + settings (Preact+htm ESM, no Node build, PWA-installable)
+- **CLI** — `xmclaw chat` for terminal-native; `xmclaw chat --plan` for approval-gated turns
+- **8 channel adapters** — 飞书 / Telegram / Slack / 钉钉 / 企微 / Discord / 邮件 / 微信 (all in `xmclaw/providers/channel/`). Configure `app_id` + `app_secret` (or equivalent), restart, and the agent answers in chat with the **same memory, tools, and history** as the web UI — no public IP needed (WebSocket long-poll where the platform allows it)
+- **Continuous voice** — one toggle in the web UI's "🔁 对话" mode and you're in a hands-free state machine: listen → submit → TTS reply → listen again
+- **Any WebSocket client** — daemon speaks a typed event stream at `/agent/v2/{session_id}`
 
-[Quick Start](#-quick-start) · [What's different](#-whats-different) · [Docs](./docs) · [Architecture](./docs/ARCHITECTURE.md) · [Roadmap](./docs/DEV_ROADMAP.md) · [Changelog](./CHANGELOG.md)
+Use any model — Anthropic / OpenAI / OpenRouter / Moonshot Kimi / DeepSeek / MiniMax / DashScope / Qwen / 本地 Ollama — switch with one config change. Plus **tier-based routing**: cheap models for trivial turns, strong models for tools/complex work, automatic via regex classifier (no LLM call to decide what model to call).
+
+[Quick Start](#-quick-start) · [What's different](#-whats-different) · [Architecture](#-architecture-briefly) · [Memory v3](#-memory-v3) · [Tools](#-tools) · [Docs](./docs/JARVIS_IMPLEMENTATION_PLAN_2026.md) · [Changelog](./CHANGELOG.md)
 
 ---
 
@@ -35,28 +36,37 @@ pip install -e .
 xmclaw start                  # daemon up on 127.0.0.1:8766
 ```
 
-Then open `http://127.0.0.1:8766/ui/` — the web UI shows a **first-run setup banner** with three inline forms (LLM key · persona · embedding). Fill them in, restart, and you're talking to an agent that owns your machine.
+Open `http://127.0.0.1:8766/ui/` — the web UI's **first-run setup banner** has three inline forms (LLM key · persona · embedding). Fill in, restart, talk to an agent that owns your machine.
 
 Prefer a wizard? `xmclaw onboard` walks the same three steps in the terminal.
 
 ```bash
 xmclaw chat                   # interactive REPL
 xmclaw chat --plan            # plan mode — agent proposes steps, you approve
-xmclaw doctor                 # 21 health checks, 5 auto-fixable
-xmclaw skill list-marketplace # browse the curated skill catalog (B-390)
+xmclaw doctor                 # 28 health checks, 5 auto-fixable
+xmclaw skill list-marketplace # browse the curated skill catalog
 xmclaw skill install <id>     # clone + scan + register a community skill
 xmclaw stop
-
-# Mobile / outside-the-LAN access:
-scripts/tunnel.ps1            # Windows — wraps cloudflared quick tunnel
-scripts/tunnel.sh             # Linux / macOS / WSL
-                              # Gives a *.trycloudflare.com URL valid until Ctrl+C.
-                              # Pairing-token auth still gates every /api/v2/* request.
 ```
 
-Python ≥ 3.10. Cross-platform (Windows is a first-class target). The web UI is plain ESM served by FastAPI — no Node.js build step or runtime needed.
+**Isolated dev sandbox** (recommended for hacking on XMclaw itself):
 
-**Want it on your phone right now?** Easiest path: set `channels.feishu.enabled = true` in `daemon/config.json` with your app_id / app_secret (飞书 open platform → 创建应用 → 启用机器人 + 订阅 `im.message.receive_v1` over WebSocket long-poll). After restart, `@` the bot in any 飞书 chat and you're talking to the same AgentLoop the web UI hits. Drop `/订阅` in that chat to register it as the proactive-push target — calendar reminders + idle check-ins land on 飞书's native push, lock screen and all.
+```powershell
+./start-dev.ps1   # PowerShell — XMC_DATA_DIR=./.data, port 8766, no prod ~/.xmclaw collision
+```
+
+**Mobile / outside-the-LAN access**:
+
+```bash
+scripts/tunnel.ps1            # Windows — wraps cloudflared quick tunnel
+scripts/tunnel.sh             # Linux / macOS / WSL
+                              # *.trycloudflare.com URL until Ctrl+C
+                              # Pairing-token auth still gates every /api/v2/* request
+```
+
+Python ≥ 3.10. Cross-platform (Windows is a first-class target). Web UI is plain ESM served by FastAPI `StaticFiles` — no Node.js build step or runtime required.
+
+**Phone-first**: set `channels.feishu.enabled = true` + `app_id` / `app_secret` in `daemon/config.json` (飞书 open platform → 创建应用 → 启用机器人 + 订阅 `im.message.receive_v1` over WebSocket long-poll). After restart, `@` the bot in any 飞书 chat and you're talking to the same AgentLoop the web UI hits. Drop `/订阅` in that chat to register it as the proactive-push target — calendar reminders + idle check-ins land on 飞书's native push, lock screen and all.
 
 ---
 
@@ -64,34 +74,75 @@ Python ≥ 3.10. Cross-platform (Windows is a first-class target). The web UI is
 
 | | |
 |---|---|
-| **Proactive cognition (Sprint 2)** | `ProactiveAgent` ticks every 30 s and lets registered triggers speak unprompted. Built-ins: `idle_check_in` (gentle ping when you go quiet mid-task), `system_health` (low disk / runaway process), `calendar_reminder` (reads your `.ics` export, fires 5 min before any event), `stale_project` (your autobiographical memory says you said you'd ship X 10 days ago), `cron` (arbitrary `0 8 * * *`-style schedules from `daemon/config.json`), `daily_digest` (22:00 markdown summary of today's autonomous activity). Each respects per-trigger cooldowns + global quiet hours (default 23:00–07:00). Web UI bubbles + (when configured) push straight to your 飞书 chat as a native phone notification. |
-| **Channel adapters: 飞书 / Telegram / Slack / DingTalk / WeCom** | First-class bidirectional IM bridges. Configure `app_id` + `app_secret` (or equivalent), restart, and the agent answers in chat with the same memory, tools, and history as the web UI — no public IP required (WebSocket long-poll). 飞书 today supports text + image inbound (auto-routes through the multimodal pipeline), markdown-auto-card outbound (`**bold**` / lists / tables render natively), prompt-injection scanning on every inbound, an `allowed_user_refs` allowlist for group safety, optional per-sender session partitioning (`session_per_user`) so张三李四 in the same group keep independent conversations, and slash-command short-circuits that don't burn LLM tokens. |
-| **Dashboard "control tower"** | `/ui/dashboard` aggregates 9 cards in one fetch: daemon uptime + version, proactive trigger registry + last fire, autobiographical memory snapshot (people / projects / facts), cognitive state (goals + attention focus + fatigue), pending suggestions, task queue, local storage footprint, today's LLM spend (per-model + cache hit-rate), and a 25-item activity timeline (📢 主动发声 / 🪞 反思 / 🧠 记忆整理 / 🎯 目标梳理 / 💡 元认知 / 🔄 任务状态 / ⬆ 技能晋升). Auto-refreshes every 10 s. Each card best-effort: a failing subsystem renders a placeholder, never 500s the page. |
-| **Continuous voice + read-write calendar** | Web UI's "🔁 对话" toggle enters a 4-state machine (listening → submitting → speaking → listening) — say a sentence, agent answers via TTS, recognizer auto-restarts. Energy-based VAD lib (`lib/vad.js`) ready for noisy environments. Calendar is bidirectional: `CalendarReminderTrigger` reads your ICS for upcoming events, the `calendar_create_event` tool writes new VEVENTs back to the same file (atomic append, RFC-5545-compliant), so "帮我加个周三晚 7 点的提醒" lands and the reminder pipeline picks it up on the next 60 s cache miss. |
-| **Skill evolution (experimental, opt-in until Sprint 4 benchmark)** | Architecture is in place; **default `evolution.enabled = false`** until LongMemEval / TerminalBench / SWE-bench A/B numbers prove the loop helps more than it costs. Today the observers run as **passive instrumentation** when enabled: **HonestGrader** scores tool results on evidence (ran / returned / type-matched / side-effect-observable, summed at 0.80; LLM self-rating capped at 0.20). **JournalWriter** logs one row per session under `~/.xmclaw/v2/journal/<YYYY-MM>/`. **ExtractFactsHook** routes turn-end facts to AGENTS.md / TOOLS.md / MEMORY.md / SOUL.md / LEARNING.md / USER.md. `recall_user_preferences` + `journal_recall` tools let the agent read its own memory. **SkillDreamCycle / RealtimeEvolutionTrigger / ProposalMaterializer** can draft new v1 skills from journal patterns, but **promotion stays human-gated** (`xmclaw evolve review` / `approve <id>`). A new `skill_pattern_detector` (Wave 19) cross-session-counts repeated tool-call n-grams as additional skill-draft candidates. Honest disclosure: "self-evolving" is the **goal of the architecture**, not a current verified property — see [docs/EVOLUTION_HONEST_STATE.md](docs/EVOLUTION_HONEST_STATE.md) for what works, what's a stub, and the Sprint 3/4 plan. |
-| **Local-first, all of it** | Events, vector memory, pairing token, persona files, daily logs, autobiographical memory, calendar all live in `~/.xmclaw/v2/` (SQLite WAL + sqlite-vec + JSON). `XMC_DATA_DIR` moves the whole workspace in one lever. No cloud, no telemetry, no upload. |
-| **Cross-session memory that compacts itself** | An always-on file provider (MEMORY.md / USER.md / daily journal) plus an embedded vector index plus an **autobiographical memory** (people / projects / facts extracted from your messages via regex + LLM — "我朋友小张" / "我喜欢咖啡" / "我在做 XMclaw" land as durable rows). A nightly **Auto-Dream** pass dedupes, crystallizes, and evicts stale bullets so memory stays useful instead of bloating into noise. |
-| **Cross-device UI sync (Wave 13)** | `/api/v2/sync/ui-state` stores active session, model pick, theme, density, audio prefs server-side so picking up on phone where you left off on desktop just works. Last-write-wins, atomic JSON persistence, debounced client lib. |
+| **Memory v3 — bucket-routed facts with bidirectional .md projection** | Every fact lands in LanceDB with a registered `bucket` tag. The renderer projects each bucket into a specific `.md` section (USER.md ## Auto-extracted preferences, MEMORY.md ## Failure Modes, AGENTS.md ## Workflows, …) so the agent reads its memory verbatim in every system prompt — no semantic recall guesswork for durable facts. The `<!-- fid:abc123 -->` markers on every rendered bullet make .md and LanceDB **bidirectionally addressable**: the agent can pull a fid off the file and call `memory(action='replace', old_fid=...)` in one shot. Per-turn **similarity recall** rides the user message as a `<recalled>` block (NOT the system prompt — preserves prompt-cache hits), time-boxed to 1s so it can never wedge a turn. See [Memory v3](#-memory-v3) below. |
+| **Proactive cognition** | `ProactiveAgent` ticks every 30 s, lets registered triggers speak unprompted: `idle_check_in` (gentle ping when you go quiet mid-task), `system_health` (low disk / runaway process), `calendar_reminder` (reads your `.ics`, fires 5 min before any event), `stale_project` (autobio memory says you said you'd ship X 10 days ago), `cron` (arbitrary `0 8 * * *`-style schedules), `daily_digest` (22:00 markdown summary of today's autonomous activity). Per-trigger cooldowns + global quiet hours (default 23:00–07:00). Web UI bubbles + (when configured) push straight to your 飞书 chat as native phone notification. |
+| **8 channel adapters, one agent loop** | First-class bidirectional IM bridges in `xmclaw/providers/channel/`: 飞书 / Telegram / Slack / 钉钉 / 企微 / Discord / 邮件 / 微信. Each adapter shares the same `AgentLoop`, same memory, same tools, same session store — switching surface mid-conversation just works. Text + image inbound (auto-routes through multimodal), markdown-auto-card outbound (`**bold**` / lists / tables render natively where the platform allows), prompt-injection scanning on every inbound, `allowed_user_refs` allowlist for group safety, optional per-sender session partitioning so张三李四 in the same group keep independent conversations, slash-command short-circuits that don't burn LLM tokens. |
+| **Browser automation, 30 tools, default-on** | Playwright-backed Chromium with `browser_open` / `click` / `fill` / `screenshot` / `snapshot` / `eval` / `close` / `hover` / `scroll` / `select_option` / `upload` / `wait_for` / `back` / `forward` / `reload` / `tabs` / `tab_switch` / `tab_close` / `save_state` / `import_cookies` / `get_console` / `download_next` / **`use_my_browser`** (CDP-attach to your real Chrome/Edge/Brave so login-walled sites just work) / **`click_ref`** / **`type_ref`** (ref-by-number after snapshot — no CSS selector reasoning) / **`dialog`** + **`dialog_arm`** (handle JS alert/confirm/prompt without hanging) / **`network_log`** (read XHR/fetch responses) / **`screenshot(annotate=true)`** (overlay `[N]` labels on elements). Per-session BrowserContext (open → fill → click → screenshot keeps state). `allowed_hosts` whitelist. `download_dir` off by default. **One-time setup**: `pip install 'xmclaw[browser]'` + `playwright install chromium` (~150 MB). Skip it and the tools just don't list — daemon boots clean. |
+| **OCR + vision routing for text-only models** | `xmclaw/daemon/image_routing.py` decides per-turn: if the active LLM profile is vision-capable (Kimi K2.6, Claude, GPT-4o), pass image attachments as raw blocks. If it's text-only (DeepSeek V3/V4, smaller open-source), run **local OCR** (RapidOCR singleton, ~1s warm, fallback PaddleOCR → Tesseract) and fold the extracted text into the user message as `[image OCR \| name.png]`. The model "sees" the image content as text without you having to think about it. Config: `llm.profiles[].supports_vision: true/false`. |
+| **Chinese-first web stack** | `web_search` defaults to DDG → **automatic fallback to Bing CN HTML scrape** (no key needed, works from CN networks where DDG is blocked). `web_fetch` ships **real Chrome 145 headers** + retry-with-backoff + clear "this looks bot-blocked, try browser_open" hints on 403 Cloudflare pages. |
+| **Skill evolution architecture (opt-in)** | Architecture is in place; **default `evolution.enabled = false`** until LongMemEval / TerminalBench / SWE-bench A/B numbers prove the loop helps more than it costs. Observers run as passive instrumentation when enabled: **HonestGrader** scores tool results on evidence (ran / returned / type-matched / side-effect-observable, summed at 0.80; LLM self-rating capped at 0.20). **JournalWriter** logs one row per session under `~/.xmclaw/v2/journal/<YYYY-MM>/`. **SkillDreamCycle / RealtimeEvolutionTrigger / ProposalMaterializer / skill_pattern_detector** draft new skills from journal patterns + repeated tool-call n-grams, but **promotion stays human-gated** (`xmclaw evolve review` / `approve <id>`). Honest disclosure: "self-evolving" is the **goal of the architecture**, not a current verified property — see [docs/EVOLUTION_HONEST_STATE.md](docs/EVOLUTION_HONEST_STATE.md). |
+| **Skill marketplace MVP** | Curated GitHub-backed catalog at `docs/skill_marketplace_index.json`. `xmclaw skill install <id>` clones into `~/.xmclaw/skills_user/<id>/`, runs the security scanner against every `*.py` (fail-closed on CRITICAL), registers via `UserSkillsLoader` on next boot. Browse + 1-click install from the web UI's "技能商店". Trust tiers: `verified` (XMclaw-vetted) / `community` (third-party). |
+| **Local-first, all of it** | Events DB, fact store, pairing token, persona files, daily logs, autobio memory, calendar all under `~/.xmclaw/v2/`. **LanceDB** powers the vector store; SQLite WAL + FTS5 power the event log. `XMC_DATA_DIR` moves the whole workspace in one lever. No cloud, no telemetry, no upload. |
 | **Replayable everything** | Reconnect a WebSocket and the daemon re-emits the session's events so the UI rehydrates without re-hitting the LLM. `GET /api/v2/events` supports session/since/types filters + FTS5 search across payloads. Audit any decision months later. |
-| **Browser automation, default-on (2026-05-14)** | Playwright-backed headless browser comes wired up out of the box: 7 tools — `browser_open` / `browser_click` / `browser_fill` / `browser_screenshot` / `browser_snapshot` (text + link list, token-cheap) / `browser_eval` / `browser_close`. Per-session context (open → fill → click → screenshot keeps state across one agent turn), `allowed_hosts` whitelist, `download_dir` off by default. **One-time setup**: `pip install 'xmclaw[browser]'` + `playwright install chromium` (~150 MB). If you skip it, the 7 tools just don't list — daemon still boots clean. |
-| **MCP + provider model + tier routing** | Tools compose from `ToolProvider` backends: `builtin` (file / bash / web / vector recall / calendar / undo cabinet), `browser` (Playwright, default-on), `computer_use` (pyautogui — operates ANY desktop app via OCR + pixels, opt-in), `mcp_bridge` (stdio / SSE / WS), `composio` (7000+ pre-integrated SaaS). Drop in your own with `list_tools()` + `invoke()`. **Tier router** picks `fast` / `balanced` / `strong` / `vision` per turn via a pure regex classifier — no LLM call to decide what model to call. |
-| **Chinese-first by design** | Web UI is Chinese. Built-in prompt-injection scanner covers Chinese patterns (instruction overrides, role forgery, jailbreaks, exfiltration) alongside English. Default config snippet ships pointing at local Ollama (`qwen3-embedding:0.6b`) so 国产模型 just works. |
-| **Secure by default** | Pairing-token auth on both WebSocket AND every `/api/v2/*` HTTP route. 10 MB request body cap. Atomic file writes (tmp + os.replace) — daemon crash mid-write can't truncate your SOUL.md. **Undo cabinet** (Sprint 0) auto-snapshots every destructive file op so an over-eager turn is reversible. Filesystem sandbox via `tools.allowed_dirs`. Full prompt-injection scan on tool output, recalled memory, AND persona files. |
-| **Skill marketplace MVP (B-390, Sprint 2)** | A curated GitHub-backed catalog at `docs/skill_marketplace_index.json` lets you discover community skills. `xmclaw skill install <id>` clones into `~/.xmclaw/skills_user/<id>/`, runs the security scanner against every `*.py` (fail-closed on CRITICAL), and registers via the daemon's `UserSkillsLoader` on next boot. Browse + 1-click install from the web UI's "技能商店" page. Trust tiers: `verified` (XMclaw-vetted) / `community` (third-party). Not yet: ratings, reviews, signing — that's Epic #16 territory. |
+| **Cross-device UI sync** | `/api/v2/sync/ui-state` stores active session, model pick, theme, density, audio prefs server-side so picking up on phone where you left off on desktop just works. Last-write-wins, atomic JSON persistence, debounced client lib. |
+| **Tier router, MCP, Composio, computer use** | Tools compose from `ToolProvider` backends: **builtin** (37 tools — file / bash / web / persona / memory / calendar / cron / undo cabinet / canvas / subagent), **browser** (30 tools, Playwright), **computer_use** (22 tools — pyautogui drives ANY desktop app via OCR + pixels, opt-in), **automation** (8 tools — cron CRUD / code_python / process inspection), **media** (5 tools — mic / TTS / camera), **mcp_bridge** (stdio + SSE + streamableHttp), **composio** (7000+ pre-integrated SaaS). Drop in your own with `list_tools()` + `invoke()`. **Tier router** picks `fast` / `balanced` / `strong` / `vision` per turn via a pure regex classifier — no LLM call to decide what model to call. |
+| **Secure by default** | Pairing-token auth on WS + every `/api/v2/*` HTTP route (constant-time compare; allowlist: `/health`, `/api/v2/pair`). 10 MB request body cap. Atomic file writes (tmp + `os.replace`) — daemon crash mid-write can't truncate your SOUL.md. Filesystem sandbox via `tools.allowed_dirs`. **Undo cabinet** auto-snapshots every destructive file op so an over-eager turn is reversible. Full **prompt-injection scan** on tool output, recalled memory, AND persona files (~90 patterns covering English + Chinese instruction overrides, role forgery, jailbreaks, exfiltration, indirect injection, tool hijack). `xmclaw doctor` audits the lot; `xmclaw doctor --fix` auto-remediates 5 checks. |
 
 ---
 
-## 🧭 First-Run Onboarding
+## 🧠 Memory v3
 
-The web UI greets every fresh install with a **Setup Banner** — a contextual checklist of what's missing. Each row has an inline form so you don't dig through Config:
+The fact layer is **two complementary tracks**, both writing through one store:
 
-| Missing | What it means | Fix it from the UI |
+### Structural axis (cache-friendly, always-on)
+
+Every fact lands in LanceDB with a **registered `bucket` tag** from `xmclaw/memory/v2/buckets.py::BUCKETS` (11 buckets covering `agent_identity` / `user_identity` / `user_preference` / `values` / `workflow` / `tool_quirks` / `rules` / `failure_modes` / `project_fact` / `commitment` / `misc`). The renderer projects each bucket into a specific section of a specific `.md` file:
+
+```
+user_preference   → USER.md     ## Auto-extracted preferences
+project_fact      → MEMORY.md   ## Project facts
+workflow          → AGENTS.md   ## Workflows
+tool_quirks       → TOOLS.md    ## Tool quirks
+failure_modes     → MEMORY.md   ## Failure Modes
+commitment        → MEMORY.md   ## Active commitments
+…                                                                   …
+misc              → MEMORY.md   ## Other facts (recent)   ← catch-all (no "dark facts")
+```
+
+Each rendered bullet carries a `<!-- fid:abc123 -->` marker — the agent can pull a fid off `.md` and call `memory(action='replace', old_fid='abc123')` to fix it in one shot. `.md` files ride the **stable prefix** of the system prompt (Anthropic `cache_control` breakpoint inserted between stable and volatile sections), so persistent facts get cached on the LLM side.
+
+### Similarity axis (per-turn, time-boxed)
+
+`auto_recall` embeds the user's message, queries LanceDB, filters out facts already in the structural axis, and prepends a `<recalled>` block to the user message itself — **NOT** the system prompt. Hybrid retrieval available (vector + BM25 fusion, OpenClaw-style — requires `pip install 'xmclaw[memory-bm25]'`). Hard-bounded with `asyncio.wait_for(timeout_s=1.0)`; if recall stalls, the turn proceeds without it. Off by default (`cognition.auto_recall.enabled = false`); opt-in via config.
+
+### The agent's 4-tool memory surface
+
+| Tool | Purpose |
+|---|---|
+| `memory(action="add"\|"replace"\|"forget"\|"pin", ...)` | Multi-action CRUD. `add` requires a bucket; unknown bucket coerces to `misc`. `replace(old_fid=...)` flows through `service.correct` so the SUPERSEDES edge is properly recorded. `commitment` bucket requires `due_ts` and auto-schedules a one-shot cron to fire the reminder. |
+| `memory_search(query, ...)` | Explicit semantic search (vector + optional BM25 hybrid). Filters by scope / kind / bucket / confidence / time range. |
+| `memory_get(file, section?, lines?)` | Read a persona MD file (or section, or line range) verbatim. Preserves `<!-- fid:xxx -->` markers so the agent can grab fids and feed them straight back into `memory(action=...)`. |
+| `memory_inspect(scope?, auto_dedup=false)` | Read-only health probe. Reports fact counts, per-(scope, kind) breakdown, suspected duplicate ratio, oldest / largest entries. Optionally runs dedup in-place when ratio > 15%. |
+
+### Background maintenance
+
+The retention loop (hourly) runs TTL / cap eviction; every 24 sweeps (daily by default) it also runs `dedup_scope` across `user` / `project` / `session` scopes. Plus the 03:00 Dream Compactor pass on MEMORY.md (LLM-driven dedup + crystallization, refuses any rewrite that shrinks the file > 70%). All gated by config; all skippable.
+
+---
+
+## 🔧 Tools
+
+**102 tools** registered across 5 provider modules — every tool has a typed schema, a description, and a clean error envelope (`ToolResult(error=...)`).
+
+| Provider | Count | What it covers |
 |---|---|---|
-| **LLM API key** | Agent runs in echo mode (just mirrors your messages) | Click "立即配置" — opens a 4-field form (provider / key / base_url / default_model) right there. Submit, restart daemon. |
-| **Persona files** | No SOUL.md / IDENTITY.md — agent has no identity or working goal | Click "复制命令" to grab `xmclaw onboard`, paste in terminal, follow the wizard. |
-| **Vector embedding** | `memory_search` falls back to keyword scan, no semantic recall | Memory page → Providers → "配置 embedding". Defaults pre-filled for local Ollama (`qwen3-embedding:0.6b @ 1024`). |
+| **builtin** | 37 | file_read / write / list / delete · bash · python_run · web_search · web_fetch · open_in_user_browser · todo_read/write · remember · learn_about_user · update_persona · memory (multi-action) · memory_search · memory_get · memory_inspect · memory_pin · memory_compact · memory_correct · memory_forget · memory_dedup · schedule_followup · sqlite_query · journal_recall · recall_user_preferences · propose_curriculum_edit · list_curriculum_proposals · think · 等 |
+| **browser** | 30 | Playwright Chromium — `open` / `click` / `fill` / `screenshot` / `snapshot` / `eval` / `close` / `hover` / `scroll` / `select_option` / `upload` / `wait_for` / `back` / `forward` / `reload` / `tabs` / `tab_switch` / `tab_close` / `save_state` / `import_cookies` / `get_console` / `download_next` / `use_my_browser` (CDP-attach to real Chrome) / `click_ref` / `type_ref` (snapshot-numbered actions) / `dialog` / `dialog_arm` / `network_log` |
+| **computer_use** | 22 | pyautogui — `screen_capture` / `screen_size` / `cursor_position` / `mouse_move` / `mouse_click` / `mouse_drag` / `mouse_scroll` / `keyboard_type` / `keyboard_press` / `window_list` / `window_focus` / `screen_ocr` / `find_on_screen` / `click_on_text` / `wait_for_text` / `screen_region_capture` / `find_image_on_screen` / `click_on_image` / `scroll_to_text` / `ui_inspect` / `ui_click` / `gui_send_chat`. Failsafe always on: drag mouse to (0,0) to abort any GUI action. |
+| **automation** | 8 | cron CRUD (`cron_create` / `cron_list` / `cron_pause` / `cron_resume` / `cron_remove`) · `code_python` (subprocess + IPython kernel pool) · `process_list` · `process_kill` |
+| **media** | 5 | `mic_record` · `voice_listen` · `speak` (TTS) · `camera_capture` · `camera_list` |
 
-The banner auto-disappears once everything checks out and re-surfaces if state regresses. Per-item dismiss is per-browser (localStorage). Backed by `GET /api/v2/setup`.
+Plus dynamic backends: **MCP bridge** (stdio + SSE + streamableHttp transports) auto-discovers tools from any MCP server; **Composio** exposes 7000+ pre-integrated SaaS tools; **user skills** under `~/.xmclaw/skills_user/` register via `UserSkillsLoader` on boot.
 
 ---
 
@@ -107,23 +158,60 @@ XMclaw treats anything it didn't generate as untrusted. Defenses in depth:
 - **Prompt-injection scanner** on tool output, recalled memory chunks, AND persona files. ~90 patterns covering English + Chinese instruction overrides, role forgery, jailbreaks, exfiltration, indirect injection, tool hijack. HIGH severity findings get redacted in place.
 - **XSS-safe markdown** — chat panel falls back to escape-only rendering if the DOMPurify CDN fails to load.
 - **Secret redaction** before events / logs / UI rendering.
+- **Undo cabinet** auto-snapshots every destructive file op (Sprint 0) so an over-eager turn is reversible.
 
-`xmclaw doctor` audits the lot. `xmclaw doctor --fix` auto-remediates 5 of them. Full disclosure policy in [SECURITY.md](SECURITY.md).
+`xmclaw doctor` runs 28 checks today. `xmclaw doctor --fix` auto-remediates 5. Full disclosure policy in [SECURITY.md](SECURITY.md).
 
 ---
 
 ## 🧱 Architecture, briefly
 
-A single FastAPI daemon hosts an **AgentLoop** that composes pluggable providers: LLM (Anthropic / OpenAI / OpenAI-compatible — including B-320 prompt-cache parity for Moonshot Kimi & Zhipu GLM via the Anthropic-style `cache_control` marker), Tool (`builtin` / `browser` / `mcp_bridge` / `composio` / `calendar` / composite), Memory (`builtin_file` + `sqlite_vec` + autobiographical SQLite + optional Hindsight / Mem0 / Supermemory), Channel (WebSocket + 飞书 / Telegram / Slack / DingTalk / WeCom / Discord adapters). A streaming **EventBus** (in-process + SQLite WAL + FTS5) connects everything.
+A single FastAPI daemon hosts an **AgentLoop** that composes pluggable providers:
 
-Two loops ride that bus:
+- **LLM** — Anthropic / OpenAI / OpenAI-compatible (Moonshot Kimi / DeepSeek / MiniMax / DashScope / Qwen / Ollama) / OpenRouter. Per-profile `supports_vision` flag drives the OCR-or-image-block decision in `image_routing.py`. Tier router picks `fast` / `balanced` / `strong` / `vision` per turn.
+- **Tool** — `builtin` (37) / `browser` (30) / `computer_use` (22) / `automation` (8) / `media` (5) / `mcp_bridge` (stdio + SSE + streamableHttp) / `composio` (7000+ SaaS) / `composite` (union of any subset).
+- **Memory** — LanceDB-backed `MemoryService` (V2; V1 SqliteVecMemory retired 2026-05-24). Bucket registry (`xmclaw/memory/v2/buckets.py`) + v2 renderer (`xmclaw/core/persona/v2_renderer.py`) project facts into `.md` files; optional BM25 hybrid recall (`xmclaw/memory/v2/bm25.py`); auto-recall (`xmclaw/daemon/auto_recall.py`) injects `<recalled>` block per turn; nightly Dream Compactor; hourly retention sweep + daily auto-dedup.
+- **Channel** — WebSocket gateway + 8 IM adapters (`xmclaw/providers/channel/{feishu, telegram, slack, dingtalk, wecom, discord, email, weixin}/`).
 
-- **Reactive turn loop** — user message → `AgentLoop.run_turn` → LLM ↔ tool hops → assistant reply. Same path whether the message came from the web UI, CLI, or a channel adapter.
-- **Proactive tick loop** — `ProactiveAgent` polls registered triggers every 30 s (idle / calendar / stale_project / cron / daily_digest / system_health). On fire, publishes `PROACTIVE_PROPOSAL`. Web UI subscribers render a bubble; `ProactiveChannelBridge` (Wave 9) fans it out to every channel that opted in via `proactive_chat_id` so your phone wakes up.
+A streaming **EventBus** (in-process + SQLite WAL + FTS5) connects everything. Two loops ride that bus:
 
-The **HonestGrader → EvolutionAgent → EvolutionEvaluationTrigger → EvolutionController → EvolutionOrchestrator → SkillRegistry** pipeline rides the same bus to drive skill version promotion (gated by default — see "Skill evolution" above), with **MutationOrchestrator** synthesising new versions and **SkillDreamCycle / RealtimeEvolutionTrigger / ProposalMaterializer / `skill_pattern_detector`** drafting brand-new skills from journal patterns + repeated tool-call n-grams. Every step is evidence-gated; nothing reaches the agent's prompt or tool list without passing through it.
+- **Reactive turn loop** — user message → `AgentLoop.run_turn` → LLM ↔ tool hops → assistant reply. Same path whether the message came from web UI, CLI, or a channel adapter.
+- **Proactive tick loop** — `ProactiveAgent` polls registered triggers every 30 s. On fire, publishes `PROACTIVE_PROPOSAL`. Web UI subscribers render a bubble; `ProactiveChannelBridge` fans it out to every channel that opted in via `proactive_chat_id` so your phone wakes up.
 
-Authoritative design — including data flows, wire protocol, and event contract — in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Per-directory contracts under `xmclaw/<subdir>/AGENTS.md`.
+The **HonestGrader → EvolutionAgent → EvolutionEvaluationTrigger → EvolutionController → EvolutionOrchestrator → SkillRegistry** pipeline drives skill version promotion (off by default), with **MutationOrchestrator** synthesising new versions and **SkillDreamCycle / RealtimeEvolutionTrigger / ProposalMaterializer / `skill_pattern_detector`** drafting brand-new skills from journal patterns + repeated tool-call n-grams. Every step is evidence-gated; nothing reaches the agent's prompt or tool list without passing through it.
+
+Authoritative design — including data flows, wire protocol, event contract, Phase roadmap, and module status matrix — in [docs/JARVIS_IMPLEMENTATION_PLAN_2026.md](docs/JARVIS_IMPLEMENTATION_PLAN_2026.md). Per-directory contracts under `xmclaw/<subdir>/AGENTS.md`.
+
+---
+
+## 📁 Repository layout
+
+```
+xmclaw/                     # Python package
+├── core/                   # Bus, IR, grader, evolution, scheduler, persona renderer
+├── daemon/                 # FastAPI + WS + AgentLoop + lifecycle + auto_recall + image_routing
+├── providers/
+│   ├── llm/                # Anthropic / OpenAI / OpenAI-compat translators + tier router
+│   ├── tool/               # builtin / browser / computer_use / automation / media / mcp / composio
+│   ├── memory/             # builtin_file + (legacy) sqlite_vec shim
+│   ├── channel/            # feishu / telegram / slack / dingtalk / wecom / discord / email / weixin / ws
+│   └── voice/              # STT (Whisper / Vosk) + TTS adapters
+├── memory/
+│   └── v2/                 # MemoryService + LanceDB backend + buckets + bm25 + llm_extractor
+├── cognition/              # ProactiveAgent + triggers + autobio memory + cognitive_daemon + tier_router
+├── security/               # Prompt-injection scanner + redactor
+├── skills/                 # SkillBase + registry + marketplace + demo skills
+├── cli/                    # `xmclaw` entry points + doctor (28 checks)
+├── utils/                  # paths / log / redact / cost / fs_locks / tunnel
+└── plugins/                # Third-party plugin loader (entry-point discovery)
+
+daemon/                     # Runtime config (config.json gitignored; .example.json template)
+docs/                       # JARVIS_IMPLEMENTATION_PLAN_2026.md = single source of truth
+tests/                      # pytest suites — smart-gate lanes in scripts/test_lanes.yaml
+scripts/                    # tunnel / migrate / probe / setup / test_changed
+```
+
+Runtime data (events.db, LanceDB facts, pairing token, daemon.pid, persona files, journal …) lives under `~/.xmclaw/v2/` — *not* inside the repo.
 
 ---
 
@@ -131,22 +219,21 @@ Authoritative design — including data flows, wire protocol, and event contract
 
 | | |
 |---|---|
-| [Architecture](./docs/ARCHITECTURE.md) | System design, data flows, wire protocol |
-| [Tools](./docs/TOOLS.md) | Built-in tools (file / bash / web / vector / journal / 等) |
-| [Events](./docs/EVENTS.md) | Typed event stream contract |
-| [Config](./docs/CONFIG.md) | `daemon/config.json` fields + `XMC__` env overrides |
-| [Doctor](./docs/DOCTOR.md) | Diagnostic checks + `--fix` runner + plugin API |
-| [Workspace](./docs/WORKSPACE.md) | `~/.xmclaw/` layout + `XMC_DATA_DIR` |
-| [Dev Roadmap](./docs/DEV_ROADMAP.md) | Epics, milestones, execution protocol |
-| [Changelog](./CHANGELOG.md) | What shipped per version |
+| [docs/JARVIS_IMPLEMENTATION_PLAN_2026.md](docs/JARVIS_IMPLEMENTATION_PLAN_2026.md) | **Single source of truth** — architecture, Phase roadmap, module status matrix, design decisions |
+| [docs/COMPREHENSIVE_TRIPARTITE_AUDIT_2026.md](docs/COMPREHENSIVE_TRIPARTITE_AUDIT_2026.md) | Latest audit findings + remediation plan |
+| [docs/REMEDIATION_PLAN_2026.md](docs/REMEDIATION_PLAN_2026.md) | Active gap-closing work tracking |
+| [CHANGELOG.md](CHANGELOG.md) | What shipped per version |
+| [CLAUDE.md](CLAUDE.md) | Onboarding notes for AI coding assistants |
+| Per-directory `AGENTS.md` | Subdir contracts — read before editing `xmclaw/<subdir>/*` |
 
 ---
 
 ## 🤝 Contributing
 
 ```bash
-pip install -e ".[dev]"           # ruff, mypy, pytest, pip-tools
-python -m pytest tests/ -v        # full suite
+pip install -e ".[dev]"                       # ruff, mypy, pytest, pip-tools
+python -m pytest tests/ -v                    # full suite (slow)
+python scripts/test_changed.py --dry-run      # smart-gate: only affected lanes
 ruff check xmclaw/ --fix
 mypy xmclaw/
 ```
@@ -155,9 +242,8 @@ mypy xmclaw/
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 - [SECURITY.md](SECURITY.md) — vulnerability disclosure (private advisories preferred)
 - [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md) — anti-req checklist + roadmap discipline reminders
-- [CLAUDE.md](CLAUDE.md) — onboarding notes for AI coding assistants
 
-Epic-touching PRs must cite the Epic number (`Epic #11:`, `Epic #14 partial:`, …) and update [docs/DEV_ROADMAP.md](docs/DEV_ROADMAP.md) per the [execution protocol](docs/DEV_ROADMAP.md#36-执行协议execution-protocol-每次开发必读).
+**Phase-touching PRs** must cite the Phase number (`Phase 1: ...`, `Phase 3 partial: ...`, ...) and update [docs/JARVIS_IMPLEMENTATION_PLAN_2026.md](docs/JARVIS_IMPLEMENTATION_PLAN_2026.md) per the execution protocol in `CLAUDE.md`. Direct push to `main` is the default workflow for this repo (single-author project; full smart-gate runs via CI as the safety net).
 
 ---
 
