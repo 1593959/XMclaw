@@ -201,6 +201,20 @@ def validate_config(cfg: dict[str, Any]) -> list[str]:
                             f"cognition.memory_v2.retention.dedup_every_n_sweeps: "
                             f"must be >= 0, got {dens}"
                         )
+                ldens = ret.get("llm_dedup_every_n_sweeps")
+                if ldens is not None:
+                    if isinstance(ldens, bool) or not isinstance(ldens, int):
+                        errors.append(
+                            f"cognition.memory_v2.retention."
+                            f"llm_dedup_every_n_sweeps: expected int, "
+                            f"got {type(ldens).__name__}"
+                        )
+                    elif ldens < 0:
+                        errors.append(
+                            f"cognition.memory_v2.retention."
+                            f"llm_dedup_every_n_sweeps: must be >= 0, "
+                            f"got {ldens}"
+                        )
                 dsc = ret.get("dedup_scopes")
                 if dsc is not None:
                     if not isinstance(dsc, list) or not all(

@@ -2500,6 +2500,20 @@ def make_lifespan(
                             "user", "project", "session",
                         ],
                     )
+                    # 2026-05-29 (memory convergence): semantic dedup
+                    # tick. The vector dedup above (cosine ≥ 0.86) only
+                    # collapses near-identical phrasings. Paraphrases
+                    # of the same rule ("空消息超3轮停止" said 7 ways)
+                    # survive forever and the store never converges —
+                    # the gap the user flagged. ``llm_dedup_every_n_sweeps``
+                    # runs the LLM semantic pass on top, less often than
+                    # vector dedup because it costs an LLM call per ~60
+                    # facts. Default 0 = OFF (opt-in: requires an LLM
+                    # wired via set_llm AND a deliberate config choice,
+                    # since it spends tokens autonomously).
+                    _llm_dedup_every_n = int(
+                        _retention_cfg.get("llm_dedup_every_n_sweeps", 0),
+                    )
 
                     async def _memory_v2_sweep_loop() -> None:
                         # First sweep happens AFTER one interval so
@@ -2558,6 +2572,41 @@ def make_lifespan(
                                         "scopes=%s merged=%d "
                                         "after_sweep=%d",
                                         _dedup_scopes, total_merged,
+                                        sweep_count,
+                                    )
+                                # ── LLM semantic dedup tick ───────
+                                # Catches paraphrases the vector pass
+                                # above can't. Gated by config + an
+                                # actually-wired LLM (set_llm). When
+                                # the LLM isn't wired, llm_dedup_scope
+                                # returns a clean "no llm" error and
+                                # we just log + move on.
+                                if (
+                                    _llm_dedup_every_n > 0
+                                    and sweep_count % _llm_dedup_every_n == 0
+                                ):
+                                    llm_merged = 0
+                                    for _scope in _dedup_scopes:
+                                        try:
+                                            d = await memory_v2_service.llm_dedup_scope(
+                                                scope=_scope, dry_run=False,
+                                            )
+                                            llm_merged += int(
+                                                d.get("merged", 0)
+                                            )
+                                        except asyncio.CancelledError:
+                                            raise
+                                        except Exception as exc:  # noqa: BLE001
+                                            log.warning(
+                                                "memory_v2.llm_dedup_failed "
+                                                "scope=%s err=%s",
+                                                _scope, exc,
+                                            )
+                                    log.info(
+                                        "memory_v2.llm_dedup_done "
+                                        "scopes=%s merged=%d "
+                                        "after_sweep=%d",
+                                        _dedup_scopes, llm_merged,
                                         sweep_count,
                                     )
                         except asyncio.CancelledError:
