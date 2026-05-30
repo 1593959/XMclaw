@@ -772,12 +772,25 @@ class BuiltinToolsMemoryMixin:
         scope = call.args.get("scope") or None
         bucket = call.args.get("bucket") or None
         dry_run = bool(call.args.get("dry_run", True))
-        result = await svc.dedup_scope(
-            kind=str(kind) if kind else None,
-            scope=str(scope) if scope else None,
-            bucket=str(bucket) if bucket else None,
-            dry_run=dry_run,
-        )
+        # 2026-05-29: mode="llm" runs paraphrase-level semantic dedup
+        # (catches "空消息超3轮停止" said 7 different ways that cosine
+        # clustering misses). mode="vector" (default) is the fast
+        # embedding-cosine pass.
+        mode = str(call.args.get("mode") or "vector").lower()
+        if mode == "llm":
+            result = await svc.llm_dedup_scope(
+                kind=str(kind) if kind else None,
+                scope=str(scope) if scope else None,
+                bucket=str(bucket) if bucket else None,
+                dry_run=dry_run,
+            )
+        else:
+            result = await svc.dedup_scope(
+                kind=str(kind) if kind else None,
+                scope=str(scope) if scope else None,
+                bucket=str(bucket) if bucket else None,
+                dry_run=dry_run,
+            )
         return ToolResult(
             call_id=call.id, ok=True,
             content=result,

@@ -2253,6 +2253,23 @@ def make_lifespan(
                     bus=bus,
                 )
                 _app.state.memory_v2_service = memory_v2_service
+                # 2026-05-29: wire the aux/fast-tier LLM for semantic
+                # (paraphrase-level) dedup. Routes through the fast
+                # tier when registered so llm_dedup_scope doesn't burn
+                # flagship rates on a "are these two sentences the
+                # same?" job. Falls back to the agent's main LLM.
+                try:
+                    from xmclaw.daemon.aux_llm import resolve_aux_llm
+                    _dedup_llm = resolve_aux_llm(
+                        getattr(agent, "_llm_registry", None)
+                        if agent is not None else None,
+                        getattr(agent, "_llm", None)
+                        if agent is not None else None,
+                    )
+                    if _dedup_llm is not None:
+                        memory_v2_service.set_llm(_dedup_llm)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("memory_v2.set_llm_failed err=%s", exc)
                 if agent is not None:
                     try:
                         # Phase 7.A.6 (2026-05-23): single canonical

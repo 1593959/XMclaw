@@ -1211,11 +1211,29 @@ _MEMORY_DEDUP_SPEC = ToolSpec(
         "consolidated.\n\n"
         "Default is ``dry_run=true`` — surfaces the preview "
         "without writing. Call again with ``dry_run=false`` once "
-        "you've reviewed."
+        "you've reviewed.\n\n"
+        "★ ``mode`` (2026-05-29):\n"
+        "  • ``vector`` (default) — fast embedding-cosine clustering "
+        "(≥0.86). Catches near-identical re-phrasings.\n"
+        "  • ``llm`` — **semantic** dedup: asks an LLM to cluster "
+        "entries that MEAN the same thing even when worded very "
+        "differently. Use this when you see the same rule/insight "
+        "stored in 7-8 different phrasings that vector clustering "
+        "left behind (e.g. \"空消息超3轮停止分析\" / \"连续3次空消息后"
+        "中止\" / \"若3轮都空则停\"). Slower (one LLM call per ~60 "
+        "facts) but catches what cosine can't."
     ),
     parameters_schema={
         "type": "object",
         "properties": {
+            "mode": {
+                "type": "string",
+                "enum": ["vector", "llm"],
+                "description": (
+                    "'vector' (default, fast cosine) or 'llm' "
+                    "(semantic, catches paraphrases)."
+                ),
+            },
             "kind": {
                 "type": "string",
                 "description": (

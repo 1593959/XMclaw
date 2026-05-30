@@ -421,11 +421,24 @@ class MemoryService:
         # via :meth:`set_bus` because the daemon wires the bus
         # before the service in some startup paths.
         self._bus = bus
+        # 2026-05-29: optional LLM for semantic (paraphrase-level)
+        # dedup. Cosine-clustering misses "空消息超过3轮停止分析" vs
+        # "连续3次空消息后中止" (same meaning, similarity < 0.86).
+        # When an LLM is wired, ``llm_dedup_scope`` asks it to cluster
+        # paraphrases. None → that method raises a clear "no llm"
+        # error; embedding-based ``dedup_scope`` still works.
+        self._llm: Any | None = None
 
     def set_bus(self, bus: Any) -> None:
         """Late-binding hook for the optional event bus. Lifespan
         wiring calls this once the bus is ready."""
         self._bus = bus
+
+    def set_llm(self, llm: Any) -> None:
+        """Late-binding hook for the optional LLM used by
+        ``llm_dedup_scope``. Lifespan wires this with the aux/fast
+        tier model so semantic dedup doesn't burn flagship rates."""
+        self._llm = llm
 
     @property
     def embedder(self) -> EmbeddingService | None:
@@ -1407,6 +1420,185 @@ class MemoryService:
                 "scanned": result["scanned"],
                 "merged": merged_count,
                 "merge_groups": result["merge_groups"],
+            })
+        return result
+
+    async def llm_dedup_scope(
+        self,
+        *,
+        kind: FactKindStr | None = None,
+        scope: FactScopeStr | None = None,
+        bucket: str | None = None,
+        dry_run: bool = True,
+        llm: Any | None = None,
+        max_facts: int = 200,
+        batch_size: int = 60,
+    ) -> dict[str, Any]:
+        """2026-05-29 — **semantic** dedup that catches paraphrases
+        cosine-clustering misses.
+
+        Problem this solves: ``dedup_scope`` clusters by embedding
+        cosine ≥ 0.86. Facts that mean the same thing but are phrased
+        very differently ("空消息超过3轮停止分析" / "连续3次空消息后
+        中止分析" / "若 3 轮都是空消息则停") sit below that threshold
+        and survive as duplicates. Over a long session the store
+        accumulates 7-8 phrasings of one rule.
+
+        Approach: pull the facts in scope, batch them, and ask the
+        LLM "which of these say essentially the same thing? group
+        them, pick the clearest phrasing as canonical." Then supersede
+        the non-canonical members of each group onto the canonical
+        one — same supersede pipeline as ``dedup_scope`` so the
+        relation graph stays consistent.
+
+        ``llm`` arg overrides the late-bound ``self._llm``. When
+        neither is set we raise a clear error rather than silently
+        no-op (the caller asked for LLM dedup specifically).
+
+        ``dry_run`` (default True) returns the proposed merge groups
+        without writing — review before committing.
+        """
+        import json as _json
+
+        active_llm = llm or self._llm
+        if active_llm is None:
+            return {
+                "error": "no llm wired — call set_llm() or pass llm=",
+                "scanned": 0,
+                "merged": 0,
+                "dry_run": dry_run,
+            }
+
+        hits = await self.recall(
+            None,
+            k=max_facts,
+            kinds=[kind] if kind else None,
+            scopes=[scope] if scope else None,
+            buckets=[bucket] if bucket else None,
+            min_confidence=0.0,
+            include_relations=False,
+            include_superseded=False,
+        )
+        if len(hits) <= 1:
+            return {
+                "scanned": len(hits),
+                "merge_groups": 0,
+                "merged": 0,
+                "dry_run": dry_run,
+            }
+
+        # id → hit for fast lookup when applying merges.
+        by_id = {h.fact.id: h for h in hits}
+
+        # Process in batches so the prompt stays bounded. Each batch
+        # is independent — we don't try to merge across batches in one
+        # pass (a follow-up run catches cross-batch dups). Number the
+        # facts 1..N within the batch so the LLM references compact
+        # indices instead of echoing full fids.
+        all_groups: list[dict[str, Any]] = []
+        merged_count = 0
+        for start in range(0, len(hits), batch_size):
+            batch = hits[start: start + batch_size]
+            numbered = "\n".join(
+                f"{i+1}. {h.fact.text}"
+                for i, h in enumerate(batch)
+            )
+            system_prompt = (
+                "你是一个记忆去重助手。下面是一批已存储的事实/规则条目，"
+                "每条带编号。请找出**语义上说的是同一件事**的条目分组"
+                "（措辞不同没关系，只看意思）。\n\n"
+                "返回纯 JSON（不要 markdown 代码块）：\n"
+                '{"groups": [{"members": [编号,...], '
+                '"canonical": 编号, "reason": "为什么是同一件事"}]}\n\n'
+                "规则：\n"
+                "1. 只把**意思相同**的归一组——意思不同的条目绝不能合并。\n"
+                "2. canonical 选这组里**表述最清晰完整**的那条编号。\n"
+                "3. 单独一条、没有同义条目的，不要放进任何 group。\n"
+                "4. 拿不准是否同义时，**宁可不合并**（保守）。\n"
+                "5. 没有任何可合并的组就返回 {\"groups\": []}。"
+            )
+            try:
+                from xmclaw.core.ir import Message
+                resp = await active_llm.complete(
+                    messages=[
+                        Message(role="system", content=system_prompt),
+                        Message(role="user", content=numbered),
+                    ],
+                )
+                text = (resp.content or "").strip()
+                if text.startswith("```"):
+                    text = text.removeprefix("```json").removeprefix("```")
+                    text = text.removesuffix("```").strip()
+                parsed = _json.loads(text)
+            except Exception as exc:  # noqa: BLE001 — never crash dedup
+                _log.warning(
+                    "memory_service.llm_dedup.batch_failed err=%s", exc,
+                )
+                continue
+
+            groups = parsed.get("groups")
+            if not isinstance(groups, list):
+                continue
+            for g in groups:
+                if not isinstance(g, dict):
+                    continue
+                members = g.get("members")
+                canonical_idx = g.get("canonical")
+                if (
+                    not isinstance(members, list)
+                    or len(members) < 2
+                    or not isinstance(canonical_idx, int)
+                ):
+                    continue
+                # Map 1-based batch indices → facts. Guard out-of-range.
+                def _fact_at(idx: int):
+                    if 1 <= idx <= len(batch):
+                        return batch[idx - 1].fact
+                    return None
+
+                canonical_fact = _fact_at(canonical_idx)
+                if canonical_fact is None:
+                    continue
+                loser_facts = [
+                    _fact_at(m) for m in members if m != canonical_idx
+                ]
+                loser_facts = [f for f in loser_facts if f is not None]
+                if not loser_facts:
+                    continue
+                all_groups.append({
+                    "canonical": canonical_fact.text[:120],
+                    "merged": [f.text[:120] for f in loser_facts],
+                    "reason": str(g.get("reason", ""))[:200],
+                })
+                if not dry_run:
+                    for lf in loser_facts:
+                        if lf.id == canonical_fact.id:
+                            continue
+                        await self.supersede(
+                            old_fact_id=lf.id,
+                            new_fact_id=canonical_fact.id,
+                        )
+                        merged_count += 1
+                else:
+                    merged_count += len(loser_facts)
+
+        result = {
+            "scanned": len(hits),
+            "merge_groups": len(all_groups),
+            "merged": merged_count,
+            "dry_run": dry_run,
+            "preview": all_groups[:15],
+            "method": "llm_semantic",
+        }
+        if not dry_run and merged_count > 0:
+            await self._publish_curation("deduped", {
+                "kind": kind,
+                "scope": scope,
+                "bucket": bucket,
+                "scanned": result["scanned"],
+                "merged": merged_count,
+                "merge_groups": result["merge_groups"],
+                "method": "llm_semantic",
             })
         return result
 
