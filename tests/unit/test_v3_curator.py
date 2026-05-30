@@ -411,6 +411,56 @@ async def test_curate_crystallize_ignores_singleton_group():
     assert report.crystallized == 0
 
 
+# ─── wall-clock schedule persistence (the restart-proof fix) ──────
+
+
+def test_schedule_due_when_never_curated(tmp_path):
+    from xmclaw.memory.v2.curator import is_curation_due
+    state = tmp_path / "curator_state.json"
+    # No file yet → ts=0 → always due.
+    assert is_curation_due(state, interval_s=86400) is True
+
+
+def test_schedule_not_due_right_after_curate(tmp_path):
+    from xmclaw.memory.v2.curator import (
+        is_curation_due,
+        load_last_curate_ts,
+        save_last_curate_ts,
+    )
+    state = tmp_path / "curator_state.json"
+    now = time.time()
+    assert save_last_curate_ts(state, now) is True
+    assert abs(load_last_curate_ts(state) - now) < 1.0
+    # Just curated → not due for another interval.
+    assert is_curation_due(state, interval_s=86400, now=now + 10) is False
+    # …but due once the interval elapses.
+    assert is_curation_due(state, interval_s=86400, now=now + 86401) is True
+
+
+def test_schedule_survives_corrupt_state(tmp_path):
+    """A corrupt state file must read as ts=0 (due), never raise —
+    this is what makes the scheduler restart-proof instead of
+    crash-prone."""
+    from xmclaw.memory.v2.curator import is_curation_due, load_last_curate_ts
+    state = tmp_path / "curator_state.json"
+    state.write_text("{ not valid json", encoding="utf-8")
+    assert load_last_curate_ts(state) == 0.0
+    assert is_curation_due(state, interval_s=86400) is True
+
+
+def test_schedule_persists_across_reload(tmp_path):
+    """The whole point: the ts survives a process restart (simulated by
+    a fresh read of the same path)."""
+    from xmclaw.memory.v2.curator import (
+        load_last_curate_ts,
+        save_last_curate_ts,
+    )
+    state = tmp_path / "v2" / "curator_state.json"  # nested → mkdir
+    save_last_curate_ts(state, 1234567890.0)
+    # Simulate restart: brand-new read of the same file.
+    assert load_last_curate_ts(state) == 1234567890.0
+
+
 @pytest.mark.asyncio
 async def test_curate_llm_passes_survive_bad_json():
     svc = _make_service()

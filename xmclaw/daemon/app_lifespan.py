@@ -2479,41 +2479,16 @@ def make_lifespan(
                     _bytes_cfg = _retention_cfg.get("max_bytes") or {
                         "working": 104857600, "long_term": None,
                     }
-                    # 2026-05-28: auto-dedup. The retention sweep
-                    # above does TTL + cap eviction but NOT semantic
-                    # dedup — the LanceDB store accumulates duplicate
-                    # facts (same insight extracted under 5 different
-                    # phrasings over a long session) and the agent
-                    # had no autonomous way to clean them. Now: every
-                    # ``dedup_every_n_sweeps`` retention cycles, run
-                    # ``dedup_scope(dry_run=False)`` across each scope
-                    # in ``dedup_scopes``. Defaults: every 24 sweeps
-                    # (= once a day if interval is 1h) across user /
-                    # project / session scopes. Set
-                    # ``dedup_every_n_sweeps=0`` to disable; agent
-                    # can still invoke ``memory_dedup`` manually.
-                    _dedup_every_n = int(
-                        _retention_cfg.get("dedup_every_n_sweeps", 24),
-                    )
-                    _dedup_scopes = list(
-                        _retention_cfg.get("dedup_scopes") or [
-                            "user", "project", "session",
-                        ],
-                    )
-                    # 2026-05-29 (memory convergence): semantic dedup
-                    # tick. The vector dedup above (cosine ≥ 0.86) only
-                    # collapses near-identical phrasings. Paraphrases
-                    # of the same rule ("空消息超3轮停止" said 7 ways)
-                    # survive forever and the store never converges —
-                    # the gap the user flagged. ``llm_dedup_every_n_sweeps``
-                    # runs the LLM semantic pass on top, less often than
-                    # vector dedup because it costs an LLM call per ~60
-                    # facts. Default 0 = OFF (opt-in: requires an LLM
-                    # wired via set_llm AND a deliberate config choice,
-                    # since it spends tokens autonomously).
-                    _llm_dedup_every_n = int(
-                        _retention_cfg.get("llm_dedup_every_n_sweeps", 0),
-                    )
+                    # 2026-05-30: dedup / semantic-convergence used to
+                    # live here as two "every N sweeps" ticks. Both were
+                    # retired — sweep-counting reset on every daemon
+                    # restart so they fired ZERO times in practice (the
+                    # root cause the user flagged: "向量 dedup 以前也是
+                    # 这个，但是没用啊"). All of dedup + prune +
+                    # contradiction + crystallization now lives in the
+                    # MemoryCurator loop below, scheduled by a wall-clock
+                    # timestamp persisted to disk so it survives restarts.
+                    # This sweep loop is back to pure TTL + cap eviction.
 
                     async def _memory_v2_sweep_loop() -> None:
                         # First sweep happens AFTER one interval so
@@ -2545,70 +2520,6 @@ def make_lifespan(
                                         "memory_v2.sweep_failed err=%s "
                                         "(loop continues)", exc,
                                     )
-                                # ── Auto-dedup tick ───────────────
-                                if (
-                                    _dedup_every_n > 0
-                                    and sweep_count % _dedup_every_n == 0
-                                ):
-                                    total_merged = 0
-                                    for _scope in _dedup_scopes:
-                                        try:
-                                            d = await memory_v2_service.dedup_scope(
-                                                scope=_scope, dry_run=False,
-                                            )
-                                            total_merged += int(
-                                                d.get("merged", 0)
-                                            )
-                                        except asyncio.CancelledError:
-                                            raise
-                                        except Exception as exc:  # noqa: BLE001
-                                            log.warning(
-                                                "memory_v2.auto_dedup_failed "
-                                                "scope=%s err=%s",
-                                                _scope, exc,
-                                            )
-                                    log.info(
-                                        "memory_v2.auto_dedup_done "
-                                        "scopes=%s merged=%d "
-                                        "after_sweep=%d",
-                                        _dedup_scopes, total_merged,
-                                        sweep_count,
-                                    )
-                                # ── LLM semantic dedup tick ───────
-                                # Catches paraphrases the vector pass
-                                # above can't. Gated by config + an
-                                # actually-wired LLM (set_llm). When
-                                # the LLM isn't wired, llm_dedup_scope
-                                # returns a clean "no llm" error and
-                                # we just log + move on.
-                                if (
-                                    _llm_dedup_every_n > 0
-                                    and sweep_count % _llm_dedup_every_n == 0
-                                ):
-                                    llm_merged = 0
-                                    for _scope in _dedup_scopes:
-                                        try:
-                                            d = await memory_v2_service.llm_dedup_scope(
-                                                scope=_scope, dry_run=False,
-                                            )
-                                            llm_merged += int(
-                                                d.get("merged", 0)
-                                            )
-                                        except asyncio.CancelledError:
-                                            raise
-                                        except Exception as exc:  # noqa: BLE001
-                                            log.warning(
-                                                "memory_v2.llm_dedup_failed "
-                                                "scope=%s err=%s",
-                                                _scope, exc,
-                                            )
-                                    log.info(
-                                        "memory_v2.llm_dedup_done "
-                                        "scopes=%s merged=%d "
-                                        "after_sweep=%d",
-                                        _dedup_scopes, llm_merged,
-                                        sweep_count,
-                                    )
                         except asyncio.CancelledError:
                             return
 
@@ -2624,6 +2535,172 @@ def make_lifespan(
                 else:
                     _app.state.memory_v2_sweep_task = None
                     log.info("memory_v2.sweep_loop_disabled")
+
+                # ── MemoryCurator loop (Curator 3, 2026-05-30) ───────
+                # Holistic memory gardening: dedup + prune +
+                # contradiction detection + crystallization, in ONE
+                # time-budgeted run, scheduled by a WALL-CLOCK timestamp
+                # persisted to disk. This is the real fix for "向量
+                # dedup 以前也是这个，但是没用啊": the old sweep-count
+                # tick reset on every restart and never fired; a
+                # persisted ts means a daemon that bounces 48×/day still
+                # curates exactly once per ``interval_s``.
+                #
+                # Config: ``cognition.memory_v2.curator.*``
+                #   enabled          — default True
+                #   interval_s       — wall-clock gap between curations
+                #                      (default 86400 = once a day)
+                #   check_interval_s — how often to poll due-ness
+                #                      (default 1800 = 30 min)
+                #   warmup_s         — first due-check after boot
+                #                      (default 180)
+                #   time_budget_s    — per-run wall-clock cap (default 30)
+                #   scopes           — default user/project/session
+                #   do_dedup/do_prune/do_contradict/do_crystallize — all
+                #                      default True (LLM passes auto-skip
+                #                      when no LLM is wired)
+                #   announce         — send an HONEST proactive message
+                #                      when real work happened (default
+                #                      True). Never announces a no-op.
+                _curator_cfg = (
+                    memory_v2_cfg.get("curator", {})
+                    if isinstance(memory_v2_cfg, dict) else {}
+                ) or {}
+                if _curator_cfg.get("enabled", True):
+                    from xmclaw.memory.v2.curator import (
+                        MemoryCurator,
+                        is_curation_due,
+                        save_last_curate_ts,
+                    )
+                    from xmclaw.utils.paths import data_dir as _cur_data_dir
+
+                    _cur_state_path = (
+                        _cur_data_dir() / "v2" / "curator_state.json"
+                    )
+                    _cur_interval = float(
+                        _curator_cfg.get("interval_s", 86400),
+                    )
+                    _cur_check = float(
+                        _curator_cfg.get("check_interval_s", 1800),
+                    )
+                    _cur_warmup = float(_curator_cfg.get("warmup_s", 180))
+                    _cur_budget = float(
+                        _curator_cfg.get("time_budget_s", 30),
+                    )
+                    _cur_scopes = list(
+                        _curator_cfg.get("scopes") or [
+                            "user", "project", "session",
+                        ],
+                    )
+                    _cur_announce = bool(_curator_cfg.get("announce", True))
+                    _cur_flags = dict(
+                        do_dedup=bool(_curator_cfg.get("do_dedup", True)),
+                        do_prune=bool(_curator_cfg.get("do_prune", True)),
+                        do_contradict=bool(
+                            _curator_cfg.get("do_contradict", True)
+                        ),
+                        do_crystallize=bool(
+                            _curator_cfg.get("do_crystallize", True)
+                        ),
+                    )
+
+                    async def _memory_v2_curator_loop() -> None:
+                        # Warm up, then poll due-ness on a short cadence.
+                        # The DECISION to curate is wall-clock based
+                        # (persisted ts), not poll-count based, so it's
+                        # restart-proof. Loop never raises.
+                        curator = MemoryCurator(memory_v2_service)
+                        try:
+                            await asyncio.sleep(_cur_warmup)
+                            while True:
+                                try:
+                                    if is_curation_due(
+                                        _cur_state_path, _cur_interval,
+                                    ):
+                                        report = await curator.curate(
+                                            scopes=_cur_scopes,
+                                            time_budget_s=_cur_budget,
+                                            dry_run=False,
+                                            **_cur_flags,
+                                        )
+                                        # Stamp FIRST so a crash mid-
+                                        # announce doesn't re-run.
+                                        save_last_curate_ts(
+                                            _cur_state_path,
+                                            time_module.time(),
+                                        )
+                                        log.info(
+                                            "memory_v2.curator_done "
+                                            "scanned=%d merged=%d pruned=%d "
+                                            "contradictions=%d "
+                                            "crystallized=%d elapsed_s=%.1f "
+                                            "budget_exhausted=%s",
+                                            report.scanned, report.merged,
+                                            report.pruned,
+                                            report.contradictions_found,
+                                            report.crystallized,
+                                            report.elapsed_s,
+                                            report.budget_exhausted,
+                                        )
+                                        # HONEST proactive message — only
+                                        # when real work happened. no-op
+                                        # → honest_summary_zh()=="" →
+                                        # stay silent (the dishonesty the
+                                        # user flagged: never claim work
+                                        # we didn't do).
+                                        if (
+                                            _cur_announce
+                                            and report.did_anything
+                                        ):
+                                            summary = report.honest_summary_zh()
+                                            if summary:
+                                                try:
+                                                    from xmclaw.core.bus import (
+                                                        EventType, make_event,
+                                                    )
+                                                    await bus.publish(
+                                                        make_event(
+                                                            session_id="proactive",
+                                                            agent_id="memory_curator",
+                                                            type=EventType.PROACTIVE_PROPOSAL,
+                                                            payload={
+                                                                "trigger": "memory_curation",
+                                                                "message": summary,
+                                                                "urgency": "low",
+                                                                "ts": time_module.time(),
+                                                                "report": report.to_dict(),
+                                                            },
+                                                        )
+                                                    )
+                                                except Exception as exc:  # noqa: BLE001
+                                                    log.warning(
+                                                        "memory_v2.curator_announce_failed err=%s",
+                                                        exc,
+                                                    )
+                                except asyncio.CancelledError:
+                                    raise
+                                except Exception as exc:  # noqa: BLE001
+                                    log.warning(
+                                        "memory_v2.curator_failed err=%s "
+                                        "(loop continues)", exc,
+                                    )
+                                await asyncio.sleep(_cur_check)
+                        except asyncio.CancelledError:
+                            return
+
+                    _curator_task = asyncio.create_task(
+                        _memory_v2_curator_loop(),
+                        name="memory_v2_curator",
+                    )
+                    _app.state.memory_v2_curator_task = _curator_task
+                    log.info(
+                        "memory_v2.curator_loop_started interval_s=%.0f "
+                        "check_interval_s=%.0f scopes=%s",
+                        _cur_interval, _cur_check, _cur_scopes,
+                    )
+                else:
+                    _app.state.memory_v2_curator_task = None
+                    log.info("memory_v2.curator_loop_disabled")
             except Exception as exc:  # noqa: BLE001
                 log.warning(
                     "memory_v2.start_failed err=%s "
@@ -3184,6 +3261,14 @@ def make_lifespan(
                 _v2_sweep.cancel()
                 try:
                     await _v2_sweep
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+            # Phase 8 (2026-05-30): stop the MemoryCurator loop.
+            _v2_curator = getattr(_app.state, "memory_v2_curator_task", None)
+            if _v2_curator is not None and not _v2_curator.done():
+                _v2_curator.cancel()
+                try:
+                    await _v2_curator
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
             # B-294: stop the evaluation trigger BEFORE the observer so

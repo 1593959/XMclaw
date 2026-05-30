@@ -213,6 +213,20 @@
         "dedup_every_n_sweeps": 24,
         "dedup_scopes": ["user", "project", "session"],
         "llm_dedup_every_n_sweeps": 0
+      },
+      "_comment_curator": "Phase 8 (2026-05-30): MemoryCurator — holistic memory gardening (dedup + prune + 矛盾检测 + 语义结晶) in ONE time-budgeted run, scheduled by a WALL-CLOCK timestamp persisted to ~/.xmclaw/v2/curator_state.json. This REPLACES the old retention.dedup_every_n_sweeps / llm_dedup_every_n_sweeps ticks (those reset their counter on every daemon restart and in practice never fired — the root cause behind '向量 dedup 以前也是这个但没用'). The curator decides 'is curation due?' by real elapsed time, so a daemon that bounces 48×/day still curates exactly once per interval_s. LLM passes (contradict/crystallize) auto-skip when no LLM is wired to the memory service. announce=true sends an HONEST proactive message ('刚整理了记忆：已合并 X 条…') ONLY when real work happened — never a no-op claim. Set enabled=false to disable; the agent can still run memory_dedup manually. See docs/audit/MEMORY_SYSTEMS_SOTA_RESEARCH_2026.md (Letta sleep-time agents = the same idea).",
+      "curator": {
+        "enabled": true,
+        "interval_s": 86400,
+        "check_interval_s": 1800,
+        "warmup_s": 180,
+        "time_budget_s": 30,
+        "scopes": ["user", "project", "session"],
+        "do_dedup": true,
+        "do_prune": true,
+        "do_contradict": true,
+        "do_crystallize": true,
+        "announce": true
       }
     },
     "_comment_auto_recall": "Memory v3 phase 2 (2026-05-28): per-turn similarity recall against the LanceDB store. Runs BEFORE the LLM call on the user-turn critical path, so it's **OFF by default** — turning it on adds an embedding call + LanceDB query (~100–500ms typical) to every turn. When enabled, results are prepended to the user message itself (NOT the system prompt) as a ``<recalled>`` block, so prompt-cache hits stay intact. Hard-bounded by ``timeout_s`` (default 1.0s) — if recall stalls, the turn proceeds without it. ``use_hybrid=true`` fuses BM25 + vector via ``MemoryService.recall_hybrid`` (requires ``pip install 'xmclaw[memory-bm25]'``); defaults to vector-only because the current Python-side BM25 rebuild is per-query (LanceDB native FTS lands in Phase 5). The agent can also call ``memory_search`` explicitly any time.",

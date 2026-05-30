@@ -226,6 +226,48 @@ def validate_config(cfg: dict[str, Any]) -> list[str]:
                             f"{type(dsc).__name__}"
                         )
 
+            # memory_v2.curator shape (Phase 8 — MemoryCurator)
+            cur = mv2.get("curator")
+            if isinstance(cur, dict):
+                for fld in (
+                    "enabled", "announce", "do_dedup", "do_prune",
+                    "do_contradict", "do_crystallize",
+                ):
+                    v = cur.get(fld)
+                    if v is not None and not isinstance(v, bool):
+                        errors.append(
+                            f"cognition.memory_v2.curator.{fld}: "
+                            f"expected bool, got {type(v).__name__}"
+                        )
+                for fld in (
+                    "interval_s", "check_interval_s", "warmup_s",
+                    "time_budget_s",
+                ):
+                    v = cur.get(fld)
+                    if v is not None:
+                        if isinstance(v, bool) or not isinstance(
+                            v, (int, float)
+                        ):
+                            errors.append(
+                                f"cognition.memory_v2.curator.{fld}: "
+                                f"expected number, got {type(v).__name__}"
+                            )
+                        elif v <= 0:
+                            errors.append(
+                                f"cognition.memory_v2.curator.{fld}: "
+                                f"must be > 0, got {v}"
+                            )
+                csc = cur.get("scopes")
+                if csc is not None:
+                    if not isinstance(csc, list) or not all(
+                        isinstance(s, str) for s in csc
+                    ):
+                        errors.append(
+                            f"cognition.memory_v2.curator.scopes: "
+                            f"expected list of strings, got "
+                            f"{type(csc).__name__}"
+                        )
+
     # ── evolution ────────────────────────────────────────────────
     ev = cfg.get("evolution")
     if isinstance(ev, dict):

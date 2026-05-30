@@ -644,4 +644,68 @@ class MemoryCurator:
         return crystallized
 
 
-__all__ = ["MemoryCurator", "CurationReport"]
+# ─── wall-clock schedule persistence ──────────────────────────────
+#
+# THE root-cause fix (#1 in the module docstring). The old dedup tick
+# counted background sweeps ("every 24 sweeps") and reset to zero on
+# every daemon restart — during development the daemon bounces every
+# ~30 min, so the counter never reached 24 and the tick fired ZERO
+# times in practice. We replace sweep-counting with a wall-clock
+# timestamp persisted to disk, so "is curation due?" is answered by
+# real elapsed time and SURVIVES restarts. A daemon that bounces 48
+# times a day still curates exactly once a day.
+
+
+def load_last_curate_ts(state_path: Any) -> float:
+    """Read the persisted last-curation unix ts. Returns 0.0 when the
+    file is missing or unreadable (→ "due immediately"). Never raises."""
+    import json
+    from pathlib import Path
+
+    try:
+        p = Path(state_path)
+        if not p.exists():
+            return 0.0
+        data = json.loads(p.read_text(encoding="utf-8"))
+        ts = data.get("last_curate_ts", 0.0)
+        return float(ts) if isinstance(ts, (int, float)) else 0.0
+    except Exception:  # noqa: BLE001 — corrupt state → treat as due
+        return 0.0
+
+
+def save_last_curate_ts(state_path: Any, ts: float) -> bool:
+    """Persist the last-curation ts atomically. Returns True on success.
+    Never raises — a failed write just means we recurate sooner."""
+    import json
+    from pathlib import Path
+
+    try:
+        p = Path(state_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps({"last_curate_ts": float(ts)}),
+            encoding="utf-8",
+        )
+        tmp.replace(p)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def is_curation_due(state_path: Any, interval_s: float, *, now: float | None = None) -> bool:
+    """True when ``interval_s`` has elapsed since the persisted ts.
+    A never-curated store (ts=0) is always due."""
+    if now is None:
+        now = time.time()
+    last = load_last_curate_ts(state_path)
+    return (now - last) >= max(0.0, float(interval_s))
+
+
+__all__ = [
+    "MemoryCurator",
+    "CurationReport",
+    "load_last_curate_ts",
+    "save_last_curate_ts",
+    "is_curation_due",
+]
