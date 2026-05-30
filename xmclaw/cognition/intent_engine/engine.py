@@ -45,6 +45,53 @@ _STATISTICAL_INTERVAL_S = 60.0
 _LLM_INTERVAL_S = 300.0
 
 
+# 2026-05-29 honesty guard. A proactive prediction is just a string
+# shown to the user — no code runs behind it. So a message that
+# claims (first person) the agent is doing / has done / will do work
+# is a lie. These patterns catch the common Chinese phrasings; the
+# proper framing is a question/offer ("要不要我帮你…？"), which none
+# of these match. Kept intentionally tight to avoid nuking honest
+# offers — only present-progressive / completed / future-commitment
+# self-claims trip it.
+import re as _re
+
+_FALSE_ACTION_CLAIM_RE = _re.compile(
+    r"我(?:已经|正在|现在|刚刚|马上|这就)?"
+    r"(?:在)?"
+    r"(?:处理|分析|整理|去重|合并|清理|执行|运行|生成|"
+    r"帮你|给你|完成|搞定|做完|跑完|算完)"
+    r"|处理完(?:后|了)?我(?:会|将|来|给)"
+    r"|我会(?:把|给|帮|去|来|开始)"
+    r"|稍后(?:我|给你)"
+)
+
+# Offer / question framing — when present, a "我帮你…" is an honest
+# OFFER ("要不要我帮你去重？"), not a false claim of in-progress
+# work. We exempt these so the guard doesn't nuke legitimate
+# proactive offers.
+_OFFER_MARKER_RE = _re.compile(
+    r"要不要|需不需要|想不想|是否(?:需要|要)|需要的话|"
+    r"要(?:我|不要我)|我可以(?:帮|给|为)|"
+    r"如果(?:你)?(?:需要|愿意|想)|"
+    r"[?？]"
+)
+
+
+def _claims_false_action(message: str) -> bool:
+    """True if ``message`` makes a first-person claim of doing /
+    having done / committing-to-do work. Proactive proposals carry
+    no execution, so such a claim misleads the user.
+
+    An offer/question framing (``要不要我帮你…？``) is honest by
+    construction — it proposes, doesn't claim — so those are
+    exempt even when they contain a work verb."""
+    if not message:
+        return False
+    if _OFFER_MARKER_RE.search(message):
+        return False
+    return bool(_FALSE_ACTION_CLAIM_RE.search(message))
+
+
 @dataclass
 class _RuleLayer:
     """Fast heuristic layer — evaluates every incoming event immediately."""
@@ -358,7 +405,16 @@ class IntentEngine:
             "1. 所有文本字段（rationale、proposed_message）必须使用简体中文。\n"
             "2. 只有置信度 >= 0.55 的预测才放入 predictions 数组。\n"
             "3. 如果没什么可预测的，返回空数组 {\"predictions\": []}。\n"
-            "4. proposed_message 要自然、口语化，像一位贴心的中文助手在主动提供帮助。"
+            "4. proposed_message 要自然、口语化。\n\n"
+            "★ 诚实性硬规则（最重要）：proposed_message 只是一条**主动提议**，"
+            "发出后**没有任何实际动作会被执行**——它只是显示给用户看的一句话。\n"
+            "  • **禁止**用第一人称声称你正在做或已经做了任何工作。"
+            "不允许出现'我已经在处理…'/'我正在…'/'我已经帮你…'/"
+            "'处理完后我会给你…'/'我会去做…'这类表述——这是撒谎，"
+            "因为背后根本没有代码在跑。\n"
+            "  • 正确写法是**询问式的提议**：'要不要我帮你…？'/"
+            "'我注意到…，需要的话我可以…'/'看起来你在…，是否需要我…？'。\n"
+            "  • 把它想成：你只是在**举手提议**，等用户点头你才会真正动手。"
         )
 
         try:
@@ -401,12 +457,25 @@ class IntentEngine:
             intent_type = str(item.get("intent_type", "")).strip()
             if not intent_type:
                 continue
+            message = str(item.get("proposed_message", ""))
+            # 2026-05-29 honesty guard (chat report): even with the
+            # prompt rule, the LLM occasionally emits a first-person
+            # work-claim ("我已经在处理…我会给你合并摘要") for a
+            # proactive proposal that runs NO actual code. Such a
+            # message lies to the user. Drop the prediction rather
+            # than surface a false claim of action.
+            if _claims_false_action(message):
+                _log.info(
+                    "intent_engine.dropped_false_action_claim msg=%r",
+                    message[:120],
+                )
+                continue
             pred = IntentPrediction(
                 intent_type=intent_type,
                 confidence=round(conf, 3),
                 rationale=str(item.get("rationale", "")),
                 proposed_action={
-                    "message": str(item.get("proposed_message", "")),
+                    "message": message,
                     "urgency": str(item.get("urgency", "normal")),
                 },
                 source_layer="llm",
