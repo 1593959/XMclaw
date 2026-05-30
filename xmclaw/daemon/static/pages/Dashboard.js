@@ -284,6 +284,8 @@ function CostTodayCard({ cost }) {
   }
   const total = (cost.total_usd ?? 0).toFixed(4);
   const tokensTotal = (cost.prompt_tokens || 0) + (cost.completion_tokens || 0);
+  const live = cost.live || {};
+  const hasLive = live.cache_hit_rate != null;
   return html`
     <${Card} title="今日花费" hint=${`过去 24h · ${cost.call_count} 次调用`}>
       <div class="xmc-dash__stats-grid">
@@ -304,6 +306,18 @@ function CostTodayCard({ cost }) {
             </li>
           `)}
         </ul>
+      ` : null}
+      ${hasLive ? html`
+        <div class="xmc-dash__subhead">实时缓存效率 · ${live.provider || "未知模型"}</div>
+        <div class="xmc-dash__stats-grid">
+          <${Stat} label="命中" value=${`${(live.cache_hit_rate * 100).toFixed(1)}%`} />
+          ${live.tokens_saved != null ? html`
+            <${Stat} label="节省 token" value=${live.tokens_saved.toLocaleString()} />
+          ` : null}
+          ${live.hop_count != null ? html`
+            <${Stat} label="hop 数" value=${live.hop_count.toLocaleString()} />
+          ` : null}
+        </div>
       ` : null}
     </${Card}>
   `;

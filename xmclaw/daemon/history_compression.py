@@ -715,6 +715,8 @@ class HistoryCompressionMixin:
             # the marker-detection here AND turn_context's regex
             # stripper need to know about it.
             "[turn hint]",
+            # Jarvis Phase 1-2: time_block moved system → user msg.
+            "## 当前时刻",
         )
         for m in history:
             # 2026-05-17: drop GOAL-ANCHOR user messages entirely from

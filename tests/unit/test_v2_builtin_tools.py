@@ -1058,7 +1058,7 @@ async def test_failed_tool_content_is_error_string_not_None_str() -> None:
         async def complete_streaming(
             self, messages, tools=None, *,
             on_chunk=None, on_thinking_chunk=None,
-            on_tool_block=None, cancel=None,
+            on_tool_block=None, on_stream_fallback=None, cancel=None,
         ):
             # B-39 / B-91 / Wave-32+: AgentLoop passes ``cancel``,
             # ``on_thinking_chunk``, and ``on_tool_block``. Mock

@@ -190,7 +190,8 @@ class _StuckLoopLLM:
     async def complete_streaming(
         self, messages: list[Message], *, tools: Any = None,
         on_chunk: Any = None, on_thinking_chunk: Any = None,
-        on_tool_block: Any = None, cancel: Any = None,
+        on_tool_block: Any = None, on_stream_fallback: Any = None,
+        cancel: Any = None,
     ) -> LLMResponse:
         assert self.captured_messages is not None
         self.captured_messages.append(list(messages))

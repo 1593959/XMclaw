@@ -33,6 +33,12 @@ class EventType(str, Enum):
     # before it answered" in the PhaseCard body.
     LLM_THINKING_CHUNK = "llm_thinking_chunk"
     LLM_RESPONSE = "llm_response"
+    # 2026-05-30: stream() degraded to non-streaming complete() for this
+    # hop — UI shows a transient banner so the long no-token gap doesn't
+    # read as a hang. Payload: ``{reason, hop, provider}`` where reason
+    # is ``"risk_reject"`` (Anthropic refused the prompt) or
+    # ``"shim_no_stream"`` (compat shim lacking /stream).
+    LLM_STREAM_FALLBACK = "llm_stream_fallback"
     # B-92: agent stops mid-turn to ask the user a question with N
     # options (single- or multi-select). Tool invocation blocks on a
     # future that the WS handler resolves when the user clicks an
@@ -65,6 +71,15 @@ class EventType(str, Enum):
     # name="skill_<id>".
     GRADER_VERDICT = "grader_verdict"
     COST_TICK = "cost_tick"
+    # Jarvis Phase 1-2: per-session cache-efficiency summary. Emitted
+    # periodically (every N hops or on session end) so the dashboard /
+    # UI can show cache hit rates without recomputing from the full
+    # event log. Payload: see CacheMetricsAggregator.build_summary_payload.
+    CACHE_METRICS_SUMMARY = "cache_metrics_summary"
+    # Plan #3: memory extraction latency — emitted after LLM-based fact
+    # extraction completes (or fails/times out). Payload:
+    # {session_id, latency_ms, facts_count, status, layer}.
+    MEMORY_EXTRACTION_LATENCY = "memory_extraction_latency"
     SESSION_LIFECYCLE = "session_lifecycle"
     # SKILL_CANDIDATE_PROPOSED carries 3 different semantics distinguished
     # by ``payload.decision``:

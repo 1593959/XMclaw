@@ -25,6 +25,7 @@ ENV/
 
 # Project build & cache
 *.log
+*.err
 *.db
 *.db-journal
 *.db-shm

@@ -329,7 +329,7 @@ class HTNPlanner:
                 task_prompt=description,
                 estimated_cost_usd=0.05,
                 depth=depth,
-                error="llm_timeout_or_unparseable",
+                error="llm_failed_or_unparseable",
             )
 
         kind = envelope.get("kind", "atomic")

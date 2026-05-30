@@ -29,9 +29,12 @@ stay well under a millisecond even for 100-KB outputs.
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from enum import Enum
+
+logger = logging.getLogger(__name__)
 
 
 class PolicyMode(str, Enum):
@@ -638,6 +641,69 @@ _CHINESE_INJECTION = [
     ),
 ]
 
+# B-350: encoded-attack patterns — catch base64, rot13, and HTML-entity
+# injections that bypass naive regex.  These are MEDIUM because the
+# encoding itself is not necessarily hostile (legitimate code blocks
+# contain base64 strings), but combined with other patterns they raise
+# the composite risk.
+_ENCODED_ATTACK = [
+    _compile(
+        "base64_instruction_block",
+        r"(?:base64|b64)\s*[:=]\s*[`\"']?\s*"
+        r"[A-Za-z0-9+/=]{40,}",
+        Severity.MEDIUM, "indirect_injection",
+    ),
+    _compile(
+        "html_entity_injection",
+        r"&(?:#x?[a-fA-F0-9]+|#[0-9]+|[a-zA-Z]+);"
+        r"(?:\s*&(?:#x?[a-fA-F0-9]+|#[0-9]+|[a-zA-Z]+);){4,}",
+        Severity.MEDIUM, "indirect_injection",
+    ),
+]
+
+# B-350: soft-jailbreak patterns — polite framing that asks the model
+# to relax its constraints without explicit "ignore" language.
+_SOFT_JAILBREAK = [
+    _compile(
+        "ignore_your_training",
+        r"\bignore\s+(?:your|the)\s+(?:training|guidelines|safety|ethical)\s+"
+        r"(?:guidelines|rules|training|protocols|restrictions)?\b",
+        Severity.HIGH, "jailbreak",
+    ),
+    _compile(
+        "no_restrictions_assistant",
+        r"\b(?:you\s+are\s+a\s+helpful\s+assistant\s+with\s+no\s+restrictions|"
+        r"you\s+have\s+no\s+restrictions|no\s+restrictions\s+apply)\b",
+        Severity.HIGH, "jailbreak",
+    ),
+    _compile(
+        "ethics_are_subjective",
+        r"\bethics?\s+(?:are|is)\s+subjective|"
+        r"\bthere\s+are\s+no\s+(?:objective|universal)\s+ethics?\b",
+        Severity.MEDIUM, "jailbreak",
+    ),
+    _compile(
+        "hypothetical_dan",
+        r"\b(?:DAN|do\s+anything\s+now)\b",
+        Severity.HIGH, "jailbreak",
+    ),
+]
+
+# B-350: markdown-based exfiltration — hidden data-URI links that
+# smuggle HTML / JS inside what looks like a benign markdown link.
+_MARKDOWN_EXFIL = [
+    _compile(
+        "markdown_data_uri",
+        r"\[\s*[^\]]*\]\s*\(\s*data:text/html;base64,",
+        Severity.HIGH, "exfiltration",
+    ),
+    _compile(
+        "hidden_markdown_link",
+        r"\[\s*\]\s*\(\s*https?://[^)]+\)\s*\{[^}]*display\s*:\s*none",
+        Severity.HIGH, "exfiltration",
+    ),
+]
+
 
 def _load_yaml_patterns() -> list[_PatternSpec]:
     """Load YAML rules from ``security/rules/*.yaml`` and convert to
@@ -664,7 +730,8 @@ def _load_yaml_patterns() -> list[_PatternSpec]:
 
     try:
         yaml_rules = load_rules()
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("prompt_scanner.yaml_load_failed err=%s", exc)
         return []
 
     severity_map = {
@@ -704,6 +771,7 @@ _ALL_PATTERNS: tuple[_PatternSpec, ...] = tuple(
     _INSTRUCTION_OVERRIDE + _ROLE_FORGERY + _EXFILTRATION
     + _JAILBREAK + _INDIRECT_INJECTION + _TOOL_HIJACK
     + _C2_PROMPTWARE + _SUPPLY_CHAIN + _CHINESE_INJECTION
+    + _ENCODED_ATTACK + _SOFT_JAILBREAK + _MARKDOWN_EXFIL
     + _load_yaml_patterns()
 )
 

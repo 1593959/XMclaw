@@ -17,6 +17,7 @@ Scope of this module:
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -273,37 +274,65 @@ def load_config(
 # Sprint 0 multi-model routing: rough tier inference from model name
 # strings. Used when the user didn't explicitly set ``tier`` in their
 # profile config. Conservative — when in doubt return "balanced".
+
+_TIER_JSON_PATH = Path(__file__).resolve().parent.parent / "data" / "model_tiers.json"
+
+
+@functools.lru_cache(maxsize=1)
+def _load_tier_mappings() -> dict[str, tuple[str, ...]]:
+    """Load substring -> tier mappings from ``xmclaw/data/model_tiers.json``.
+
+    The JSON shape is ``{"fast": [...], "strong": [...], "vision": [...]}``.
+    Returns a dict mapping tier name to a tuple of lowercase substrings.
+    If the file is missing or malformed, falls back to the built-in hardcoded
+    set so the daemon never fails to boot because of a missing data file.
+    """
+    try:
+        raw = json.loads(_TIER_JSON_PATH.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        # Fallback — keep the daemon bootable even if the JSON is missing.
+        raw = {
+            "fast": [
+                "haiku", "mini", "gpt-3.5", "phi", "qwen-7b", "qwen2-7b",
+                "llama-3-8b", "llama3-8b", "deepseek-v2-lite",
+                "moonshot-v1-8k", "yi-6b", "gemma-2b", "gemma-7b",
+                "8b-instruct", "tinyllama",
+            ],
+            "strong": [
+                "opus", "gpt-4.1", "gpt-4-turbo", "kimi-k2", "qwen-max",
+                "llama-3-405b", "llama3-405b", "deepseek-v3", "deepseek-r1",
+                "claude-opus", "o1", "o3",
+            ],
+            "vision": [
+                "sonnet", "gpt-4o", "gpt-4.5",
+                "ui-tars", "qwen2-vl", "qwen-vl", "vl-",
+                "cogvlm", "showui",
+            ],
+        }
+    return {
+        tier: tuple(str(x).lower() for x in substrings)
+        for tier, substrings in raw.items()
+        if tier in ("fast", "strong", "vision") and isinstance(substrings, list)
+    }
+
+
 def _infer_tier_from_model(model: str) -> str:
     """Heuristic tier mapping based on common Anthropic / OpenAI /
-    open-source model name fragments."""
+    open-source model name fragments.
+
+    Reads mappings from ``xmclaw/data/model_tiers.json`` so new model
+    families can be added without editing Python code.
+    """
     m = (model or "").lower()
     if not m:
         return "balanced"
-    # Fast tier — small chitchat models
-    if any(x in m for x in (
-        "haiku", "mini", "gpt-3.5", "phi", "qwen-7b", "qwen2-7b",
-        "llama-3-8b", "llama3-8b", "deepseek-v2-lite",
-        "moonshot-v1-8k", "yi-6b", "gemma-2b", "gemma-7b",
-        "8b-instruct", "tinyllama",
-    )):
-        return "fast"
-    # Strong tier — long-chain reasoning heavyweights
-    if any(x in m for x in (
-        "opus", "gpt-4.1", "gpt-4-turbo", "kimi-k2", "qwen-max",
-        "llama-3-405b", "llama3-405b", "deepseek-v3", "deepseek-r1",
-        "claude-opus", "o1", "o3",
-    )):
-        return "strong"
-    # Vision tier — vision-tuned for GUI / image grounding
-    if any(x in m for x in (
-        "sonnet", "gpt-4o", "gpt-4.5",
-        "ui-tars", "qwen2-vl", "qwen-vl", "vl-",
-        "cogvlm", "showui",
-    )):
-        # Most "sonnet" / "4o" are both balanced AND vision-capable.
-        # We bucket them as "vision" so vision turns pick them first;
-        # fallback chain catches non-vision needs.
-        return "vision"
+    mappings = _load_tier_mappings()
+    # Evaluation order: fast -> strong -> vision -> balanced.
+    # This order matters: e.g. "gpt-4o-mini" should hit "fast" before
+    # "vision" because the "mini" suffix dominates.
+    for tier in ("fast", "strong", "vision"):
+        if any(x in m for x in mappings.get(tier, ())):
+            return tier
     return "balanced"
 
 

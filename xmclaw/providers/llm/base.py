@@ -39,6 +39,11 @@ OnThinkingChunkCallback = Callable[[str], Awaitable[None]]
 # Imported lazily inside annotations to avoid pulling in core.ir at
 # module load (DAG check).
 OnToolBlockCallback = Callable[["ToolCall"], None]  # noqa: F821
+# 2026-05-30: fired the moment ``complete_streaming`` has to fall back
+# to non-streaming ``complete()`` — agent loop publishes a UI banner
+# immediately so the no-token-drip wait doesn't read as a hang.
+# Argument: reason string ("risk_reject" | "shim_no_stream" | …).
+OnStreamFallbackCallback = Callable[[str], Awaitable[None]]
 
 
 # Wave-30 prompt-cache optimisation (2026-05-18). A literal sentinel
@@ -106,6 +111,13 @@ class LLMResponse:
     # Anthropic-only: signature accompanying the thinking block.
     # OpenAI-shape providers don't sign — left empty.
     thinking_signature: str = ""
+    # 2026-05-30: stream() fell back to non-streaming complete() for
+    # this response. Agent loop publishes a UI notice so users see
+    # "no live tokens this turn — please wait" instead of mistaking
+    # silence for a hang. Triggered by Anthropic risk rejects +
+    # compat shims that don't implement /stream.
+    stream_fallback: bool = False
+    stream_fallback_reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +160,7 @@ class LLMProvider(abc.ABC):
         on_chunk: OnChunkCallback | None = None,
         on_thinking_chunk: OnThinkingChunkCallback | None = None,
         on_tool_block: "OnToolBlockCallback | None" = None,
+        on_stream_fallback: OnStreamFallbackCallback | None = None,
         cancel: asyncio.Event | None = None,
     ) -> LLMResponse:
         """Stream text deltas to ``on_chunk`` while collecting the final response.

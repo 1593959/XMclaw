@@ -229,3 +229,91 @@ def test_default_prompt_size_bounded() -> None:
         f"default system prompt is only {len(p)} chars — likely "
         "truncated or missing major sections."
     )
+
+
+# ── Phase 4: section-based architecture invariants ──────────────────
+
+
+_EXPECTED_SECTIONS = [
+    "identity",
+    "capabilities",
+    "rules_harder",
+    "rules_honesty",
+    "rules_plan",
+    "rules_approval",
+    "rules_skill",
+    "self_management",
+    "notes_journal",
+    "self_evolution",
+    "constraints",
+]
+
+
+def test_section_stamps_present() -> None:
+    """Phase 4: every section carries a version stamp so diffs know
+    which semantic block changed."""
+    p = _DEFAULT_SYSTEM
+    stamps = [line for line in p.splitlines() if line.startswith("<!-- section:")]
+    assert len(stamps) == len(_EXPECTED_SECTIONS), (
+        f"Expected {len(_EXPECTED_SECTIONS)} section stamps, found {len(stamps)}"
+    )
+    for expected in _EXPECTED_SECTIONS:
+        assert any(f"section:{expected} version:" in s for s in stamps), (
+            f"Missing stamp for section '{expected}'"
+        )
+
+
+def test_section_order_preserved() -> None:
+    """Phase 4: sections appear in the expected order.  Reordering
+    changes cache-breakpoint semantics (earlier sections are more
+    stable) so this is load-bearing."""
+    p = _DEFAULT_SYSTEM
+    positions: list[tuple[str, int]] = []
+    for sec in _EXPECTED_SECTIONS:
+        marker = f"<!-- section:{sec} version:"
+        idx = p.find(marker)
+        assert idx >= 0, f"Section '{sec}' not found in prompt"
+        positions.append((sec, idx))
+    # Every section must appear after the previous one.
+    for i in range(1, len(positions)):
+        prev_sec, prev_pos = positions[i - 1]
+        cur_sec, cur_pos = positions[i]
+        assert cur_pos > prev_pos, (
+            f"Section order violation: '{cur_sec}' at {cur_pos} "
+            f"should come after '{prev_sec}' at {prev_pos}"
+        )
+
+
+def test_version_stamp_format() -> None:
+    """Phase 4: stamps use HTML-comment shape so they're invisible to
+    the LLM but visible to diff tooling."""
+    p = _DEFAULT_SYSTEM
+    import re
+    pat = re.compile(r"<!-- section:(\w+) version:(\d+\.\d+\.\d+) -->")
+    matches = pat.findall(p)
+    assert len(matches) == len(_EXPECTED_SECTIONS), (
+        f"Expected {len(_EXPECTED_SECTIONS)} well-formed stamps, "
+        f"found {len(matches)}"
+    )
+    for name, version in matches:
+        assert name in _EXPECTED_SECTIONS
+        parts = version.split(".")
+        assert len(parts) == 3 and all(p.isdigit() for p in parts)
+
+
+def test_no_trailing_whitespace() -> None:
+    """Phase 4: _assemble_sections rstrip()s each section so the
+    _DEFAULT_SYSTEM tail is clean — _get_static_system_prompt()
+    must return byte-identical output."""
+    p = _DEFAULT_SYSTEM
+    assert not p.endswith(" ") and not p.endswith("\n"), (
+        "_DEFAULT_SYSTEM must not end with trailing whitespace"
+    )
+
+
+def test_boundary_not_in_default() -> None:
+    """Phase 4: SYSTEM_PROMPT_DYNAMIC_BOUNDARY is appended by
+    _with_fresh_time(), not _default_system_prompt().  Keeping it
+    separate means the static prefix is pure content."""
+    from xmclaw.daemon.prompt_builder import SYSTEM_PROMPT_DYNAMIC_BOUNDARY
+    assert SYSTEM_PROMPT_DYNAMIC_BOUNDARY not in _DEFAULT_SYSTEM

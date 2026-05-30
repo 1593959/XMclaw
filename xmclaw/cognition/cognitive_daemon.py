@@ -379,7 +379,10 @@ class CognitiveDaemon:
         # 2. For each actionable percept: reason → plan → dispatch.
         for percept in actionable:
             try:
-                await _timed("react", self._react_to_percept(percept))
+                await _timed(
+                    "react",
+                    self._react_to_percept(percept, latency_ms=latency_ms),
+                )
                 n_plans_executed += 1
             except Exception as exc:  # noqa: BLE001
                 logger.exception(
@@ -576,24 +579,44 @@ class CognitiveDaemon:
     # Per-tick subsystems
     # ------------------------------------------------------------------
 
-    async def _react_to_percept(self, percept: Any) -> None:
+    async def _react_to_percept(
+        self, percept: Any,
+        *, latency_ms: dict[str, float] | None = None,
+    ) -> None:
         """Reason → Plan → Dispatch for one actionable percept.
 
         Each sub-call is independently fault-tolerant: a missing
         collaborator (e.g. no planner) just truncates the pipeline
         instead of erroring.
+
+        ``latency_ms`` is an optional mutable dict that receives
+        per-subsystem timings (``react.reason``, ``react.plan``,
+        ``react.dispatch``) so ``tick_once`` can surface them in the
+        tick summary.
         """
+        def _record(name: str, t0: float) -> None:
+            if latency_ms is None:
+                return
+            key = f"react.{name}"
+            latency_ms[key] = round(
+                latency_ms.get(key, 0.0)
+                + (time.perf_counter() - t0) * 1000, 2,
+            )
+
         # Reasoning is optional; we still try to plan even when it's
         # absent (the planner can drive off the percept directly).
         reasoning_result = None
         if self._reasoning is not None:
             query = self._percept_to_query(percept)
+            _t0 = time.perf_counter()
             try:
                 reasoning_result = await self._reasoning.reason(query)
             except Exception:  # noqa: BLE001
                 logger.exception(
                     "CognitiveDaemon: reasoning.reason raised; continuing"
                 )
+            finally:
+                _record("reason", _t0)
 
         if self._planner is None or self._dispatcher is None:
             # No way to act. The percept already updated working memory
@@ -609,24 +632,30 @@ class CognitiveDaemon:
                 goal_blob, reasoning_result,
             )
 
+        _t0 = time.perf_counter()
         try:
             plan = await self._planner.plan(goal_blob)
         except Exception:  # noqa: BLE001
             logger.exception("CognitiveDaemon: planner.plan raised; skipping dispatch")
             return
+        finally:
+            _record("plan", _t0)
 
         # Empty / failed plan: nothing to dispatch.
         if not plan or not getattr(plan, "steps", None):
             return
 
+        _t0 = time.perf_counter()
         try:
-            exec_result = await self._dispatcher.execute_plan(plan)
+            await self._dispatcher.execute_plan(plan)
         except Exception:  # noqa: BLE001
             logger.exception(
                 "CognitiveDaemon: dispatcher.execute_plan raised; "
                 "plan dropped"
             )
             return
+        finally:
+            _record("dispatch", _t0)
 
         # Wave-32+ feedback loop closure: the pre-fix path discarded
         # exec_result entirely. The user reasonably complained

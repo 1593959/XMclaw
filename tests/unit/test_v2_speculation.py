@@ -41,12 +41,20 @@ def test_known_read_only_tools_are_speculatable() -> None:
 def test_mutating_tools_are_not_speculatable() -> None:
     for name in [
         "file_write", "apply_patch", "file_delete", "bash",
-        "remember", "memory_pin", "note_write",
+        "memory_pin", "note_write",
         "enter_worktree", "enter_plan_mode",
         # undo_recent mutates; undo_list reads
         "undo_recent",
     ]:
         assert not is_speculatable(name), name
+
+
+def test_idempotent_write_tools_are_speculatable() -> None:
+    """Wave-32+ Phase 2: remember / learn_about_user / todo_write
+    are idempotent upserts — safe to speculate because duplicate
+    calls with the same args are no-ops."""
+    for name in ["remember", "learn_about_user", "todo_write"]:
+        assert is_speculatable(name), name
 
 
 def test_unknown_tools_default_to_not_speculatable() -> None:

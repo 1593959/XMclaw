@@ -427,6 +427,37 @@ def _cost_today_block(st: Any) -> dict[str, Any] | None:
         cache_hit_rate = round(
             cache_read_tokens / total_input_tokens, 3,
         )
+
+    # ── Live cache efficiency from CACHE_METRICS_SUMMARY (Phase 5) ──
+    # Per-session aggregator emits a summary every 5 hops; picking the
+    # most recent one gives a "current active session" view that
+    # complements the 24-hour aggregate above.
+    live: dict[str, Any] = {}
+    try:
+        live_evs = query(
+            since=time.time() - 3600.0,  # last 1h
+            types=["cache_metrics_summary"],
+            limit=50,
+        )
+        if live_evs:
+            # Most recent event carries the freshest snapshot.
+            latest = live_evs[-1]
+            lp = getattr(latest, "payload", None) or {}
+            if isinstance(lp, dict):
+                live = {
+                    "session_id": lp.get("session_id"),
+                    "provider": lp.get("provider"),
+                    "hop_count": lp.get("hop_count"),
+                    "cache_hit_rate": lp.get("cache_hit_rate"),
+                    "tokens_saved": lp.get("tokens_saved"),
+                    "total_input_tokens": lp.get("total_input_tokens"),
+                    "cache_read_tokens": lp.get("cache_read_tokens"),
+                    "cache_creation_tokens": lp.get("cache_creation_tokens"),
+                    "duration_s": lp.get("duration_s"),
+                }
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("dashboard.cache_metrics_summary_query_failed err=%s", exc)
+
     return {
         "call_count": len(evs),
         "total_usd": round(total_usd, 4),
@@ -436,6 +467,7 @@ def _cost_today_block(st: Any) -> dict[str, Any] | None:
         "cache_read_tokens": cache_read_tokens,
         "cache_hit_rate": cache_hit_rate,
         "by_model": model_rows[:5],   # top 5 to keep card readable
+        "live": live,
     }
 
 

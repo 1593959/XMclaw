@@ -44,6 +44,13 @@ _GOAL_ANCHOR_MARKER_RE = _re_mem.compile(
 _TURN_HINT_MARKER_RE = _re_mem.compile(
     r"\[turn hint\][\s\S]*", _re_mem.IGNORECASE,
 )
+# Jarvis Phase 1-2: time_block moved from system prompt → user message.
+# Strip it before persistence so the on-disk record shows what the
+# user actually typed, not the injected timestamp.
+_TIME_BLOCK_RE = _re_mem.compile(
+    r"##\s*当前时刻\s*\n\n.*?Trust this over your training-time clock\.\s*\n?",
+    _re_mem.IGNORECASE,
+)
 # B-202: curriculum-edit hint also rides on the user message and
 # must be stripped before persistence — otherwise the on-disk
 # history records a "[System note: ...]" framing as if the user
@@ -245,4 +252,6 @@ def _sanitize_memory_context(text: str) -> str:
     # nudge appended by agent_loop when no skill matched. See the
     # regex's docstring for the failure mode.
     out = _TURN_HINT_MARKER_RE.sub("", out)
+    # Jarvis Phase 1-2: strip injected time block from user message.
+    out = _TIME_BLOCK_RE.sub("", out)
     return out.rstrip()

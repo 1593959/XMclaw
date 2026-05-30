@@ -46,10 +46,15 @@ class NarrationDecision:
     the next LLM call. ``progress_marker_event`` is None unless
     we've crossed the "publish a synthetic INNER_MONOLOGUE so the
     user sees SOMETHING" threshold.
+
+    ``force_text_response`` (strict mode only) tells the caller to
+    discard any tool_calls from this hop and re-prompt the LLM with
+    a stronger instruction to emit plain text BEFORE making tools.
     """
 
     nudge_message: str | None = None
     progress_marker: dict[str, Any] | None = None
+    force_text_response: bool = False
 
 
 class NarrationEnforcer:
@@ -60,13 +65,20 @@ class NarrationEnforcer:
     routed through INNER_MONOLOGUE). Two consecutive silent hops →
     inject a nudge prompt on the next hop. Three → also publish a
     progress marker so the user isn't staring at silence.
+
+    **Strict mode** (``strict=True``): when the hard threshold is
+    reached, the enforcer returns ``force_text_response=True`` so
+    the caller can strip tool calls and force the LLM to produce
+    plain text before proceeding. This prevents the model from
+    ignoring soft nudges indefinitely.
     """
 
     SOFT_NUDGE_AFTER: int = 2
     HARD_BUBBLE_AFTER: int = 3
 
-    def __init__(self) -> None:
+    def __init__(self, *, strict: bool = False) -> None:
         self._silent_hops = 0
+        self._strict = strict
 
     @property
     def silent_hops(self) -> int:
@@ -102,7 +114,7 @@ class NarrationEnforcer:
                 "下一步先用一句 plain text 告诉用户你刚做了什么/"
                 "接下来要做什么，再继续工具调用。"
             )
-        if self._silent_hops == self.HARD_BUBBLE_AFTER:
+        if self._silent_hops >= self.HARD_BUBBLE_AFTER:
             tool_names_str = ", ".join((tool_names or [])[:5])[:120]
             decision.progress_marker = {
                 "content": (
@@ -113,6 +125,15 @@ class NarrationEnforcer:
                 "kind": "narration_enforcement",
                 "hop": hop,
             }
+            # Strict mode: force the LLM to produce text before tools.
+            if self._strict:
+                decision.force_text_response = True
+                decision.nudge_message = (
+                    "[narration ENFORCED] 已连续 "
+                    f"{self._silent_hops} 个 hop 没有文字汇报。"
+                    "**本回合禁止调用工具** — 你必须先用 1-2 句 plain "
+                    "text 告诉用户当前进展，然后本轮结束。"
+                )
         return decision
 
 

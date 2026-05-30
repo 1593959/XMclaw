@@ -81,6 +81,25 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset({
     "list_agent_tasks",
 })
 
+# Wave-32+ Phase 2: speculatable WRITE tools.
+#
+# These tools mutate state, but they are IDEMPOTENT — running them
+# twice with the same args produces the same end state.  If a
+# speculation completes and the LLM later emits the same tool_call,
+# the result is valid.  If the LLM never emits it (or streaming
+# aborts), the mutation is still harmless because the data is
+# derived from the same user turn that produced the tool_use block.
+#
+# * ``remember`` / ``learn_about_user`` — LanceDB upserts with
+#   deterministic fact IDs.  Duplicate writes are no-ops.
+# * ``todo_write`` — replaces the entire TODO list atomically.
+#   Idempotent when the same list is written again.
+SPECULATABLE_WRITE_TOOLS: frozenset[str] = frozenset({
+    "remember",
+    "learn_about_user",
+    "todo_write",
+})
+
 
 @dataclass
 class SpeculationCache:
@@ -126,9 +145,10 @@ def is_speculatable(tool_name: str) -> bool:
 
     Centralised so the LLM provider's stream hook + hop_loop's
     Phase B agree on the allowlist. Adding to the allowlist should
-    go through :data:`READ_ONLY_TOOLS`, not via overrides at the
+    go through :data:`READ_ONLY_TOOLS` or
+    :data:`SPECULATABLE_WRITE_TOOLS`, not via overrides at the
     call site."""
-    return tool_name in READ_ONLY_TOOLS
+    return tool_name in READ_ONLY_TOOLS or tool_name in SPECULATABLE_WRITE_TOOLS
 
 
 def make_speculation_callback(

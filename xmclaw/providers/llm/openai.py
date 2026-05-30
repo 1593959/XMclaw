@@ -611,6 +611,12 @@ class OpenAILLM(LLMProvider):
         # tool calls in one batch rather than as soon as the model
         # finishes each block.
         on_tool_block: Any | None = None,
+        # 2026-05-30: hop_loop wires this for Anthropic risk-reject
+        # banners. OpenAI-shape providers don't have an equivalent
+        # "stream available but rejected" path — their streaming
+        # either works or the whole request 4xxs — so this is accepted
+        # for signature parity and left unused.
+        on_stream_fallback: Any | None = None,
         cancel: asyncio.Event | None = None,
     ) -> LLMResponse:
         from xmclaw.providers.llm.translators import openai_tool_shape as translator

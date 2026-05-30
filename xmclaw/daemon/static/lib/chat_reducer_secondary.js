@@ -27,6 +27,7 @@ const HANDLED = new Set([
   "skill_promoted",
   "skill_rolled_back",
   "prompt_injection_detected",
+  "llm_stream_fallback",
   "canvas_artifact_created",
   "canvas_artifact_updated",
   "canvas_artifact_closed",
@@ -320,6 +321,30 @@ export function applySecondaryEvent(chat, envelope, helpers) {
         skillProposals: (chat.skillProposals || []).filter(
           (p) => p.skill_id !== sid,
         ),
+      };
+    }
+
+    case "llm_stream_fallback": {
+      // 2026-05-30: Anthropic 流式被风控拒 / compat shim 不支持 /stream，
+      // provider 回落到非流式 complete()。30s+ 没有 token 滴答会被
+      // 误读成卡死，所以塞一个 inline system 提示。
+      const id = "sfb_" + corr;
+      const exists = chat.messages.some((m) => m.id === id);
+      if (exists) return chat;
+      const reason = payload.reason || "";
+      const hint = reason === "risk_reject"
+        ? "提供方风控拒绝了流式接口，已切换为整段返回 — 请稍候，没有卡住"
+        : "上游不支持流式，已切换为整段返回 — 请稍候，没有卡住";
+      return {
+        ...chat,
+        messages: chat.messages.concat({
+          id,
+          role: "system",
+          kind: "stream_fallback",
+          content: `⏳ ${hint}`,
+          status: "complete",
+          ts,
+        }),
       };
     }
 

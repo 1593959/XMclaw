@@ -62,8 +62,11 @@ from xmclaw.security import (
 from xmclaw.utils.cost import CostTracker
 from xmclaw.daemon.prompt_builder import (
     _DEFAULT_SYSTEM,
-    _with_fresh_time,
+    _build_time_block,
+    _get_static_system_prompt,
+    clear_session_invalidation,
     get_prompt_freeze_generation,
+    is_session_invalidated,
 )
 
 from xmclaw.daemon.turn_context import (
@@ -397,6 +400,20 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # query, auto-enter plan mode so the agent explores before
         # mutating. Configurable — set False to disable.
         self._auto_plan_mode_enabled = True
+        # Jarvis Phase 1-2: cache metrics aggregator. Subscribes to
+        # COST_TICK events and maintains per-session running totals.
+        # Lightweight — no I/O, pure in-memory counters.
+        try:
+            from xmclaw.analytics.cache_metrics import CacheMetricsAggregator
+            self._cache_metrics = CacheMetricsAggregator(bus)
+        except Exception:  # noqa: BLE001 — analytics must never break a turn
+            self._cache_metrics = None
+        # Jarvis Phase 1-2: narration strict mode. When True, the
+        # enforcer forces the LLM to emit plain text before tools
+        # after HARD_BUBBLE_AFTER consecutive silent hops.
+        self._narration_strict = bool(
+            (cfg or {}).get("agent", {}).get("narration_strict", False)
+        )
 
     async def clear_session(self, session_id: str) -> None:
         """Drop a session's conversation history. Called by the WS gateway
@@ -416,6 +433,12 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         if self._compressor is not None:
             try:
                 self._compressor.on_session_reset(session_id)
+            except Exception:  # noqa: BLE001
+                pass
+        # Jarvis Phase 1-2: clean up per-session cache metrics.
+        if self._cache_metrics is not None:
+            try:
+                self._cache_metrics.clear_session(session_id)
             except Exception:  # noqa: BLE001
                 pass
         if self._session_store is not None:
@@ -1116,20 +1139,41 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             src_event = user_correlation_id or session_id
 
             async def _bg_regex_extract() -> None:
+                _t0 = time.monotonic()
+                _status = "ok"
+                _written_count = 0
                 try:
                     from xmclaw.memory.v2 import extract_and_remember
                     written = await extract_and_remember(
                         user_message, memory_v2,
                         source_event_id=src_event,
                     )
+                    _written_count = len(written) if written else 0
                     if written:
                         await self._render_persona_after_writes(written)
                 except Exception as exc:  # noqa: BLE001
+                    _status = "error"
                     from xmclaw.utils.log import get_logger
                     get_logger(__name__).warning(
                         "memory_v2.extract_failed session=%s err=%s",
                         session_id, exc,
                     )
+                finally:
+                    try:
+                        await publish(
+                            EventType.MEMORY_EXTRACTION_LATENCY,
+                            {
+                                "session_id": session_id,
+                                "latency_ms": round(
+                                    (time.monotonic() - _t0) * 1000, 1
+                                ),
+                                "facts_count": _written_count,
+                                "status": _status,
+                                "layer": "regex",
+                            },
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
 
             bg_task = asyncio.create_task(
                 _bg_regex_extract(),
@@ -1168,6 +1212,9 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     src_event = user_correlation_id or session_id
 
                     async def _bg_llm_extract() -> None:
+                        _t0 = time.monotonic()
+                        _status = "ok"
+                        _written_count = 0
                         try:
                             written = await llm_extract_and_remember(
                                 user_message,
@@ -1175,6 +1222,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                                 llm_fact_extractor,
                                 source_event_id=src_event,
                             )
+                            _written_count = len(written) if written else 0
                             # Wave-27 fix-12 / refactor B Phase 1:
                             # re-render persona MD files affected
                             # by the new LLM-extracted facts (e.g.
@@ -1187,12 +1235,29 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                                     written,
                                 )
                         except Exception as exc:  # noqa: BLE001
+                            _status = "error"
                             from xmclaw.utils.log import get_logger
                             get_logger(__name__).warning(
                                 "memory_v2.llm_extract_failed "
                                 "session=%s err=%s",
                                 session_id, exc,
                             )
+                        finally:
+                            try:
+                                await publish(
+                                    EventType.MEMORY_EXTRACTION_LATENCY,
+                                    {
+                                        "session_id": session_id,
+                                        "latency_ms": round(
+                                            (time.monotonic() - _t0) * 1000, 1
+                                        ),
+                                        "facts_count": _written_count,
+                                        "status": _status,
+                                        "layer": "llm",
+                                    },
+                                )
+                            except Exception:  # noqa: BLE001
+                                pass
 
                     bg_task = asyncio.create_task(
                         _bg_llm_extract(),
@@ -1451,22 +1516,46 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                             q_embedding = None
                         except Exception:  # noqa: BLE001
                             q_embedding = None
+                    # 2026-05-30: hard 2.5s wall-clock cap on V1 long-layer
+                    # hybrid recall. Without it, a fat events.db (200MB+)
+                    # makes RRF over vec+keyword take 60–160s on the hot
+                    # path (real trace: turn_prep memory_recall=107125ms),
+                    # blocking the streaming reply before the LLM call
+                    # even starts. V2 paths below (render_for_prompt /
+                    # unified_recall) already have analogous guards;
+                    # V1 was the last unguarded leg. Per the V1→V2
+                    # retirement plan this is a safety net until V1 is
+                    # removed.
                     try:
-                        hits = await self._memory_manager.query(
-                            layer="long",
-                            text=user_message,
-                            embedding=q_embedding,
-                            k=max(self._memory_top_k * 4, 12),
-                            hybrid=True,
+                        try:
+                            hits = await asyncio.wait_for(
+                                self._memory_manager.query(
+                                    layer="long",
+                                    text=user_message,
+                                    embedding=q_embedding,
+                                    k=max(self._memory_top_k * 4, 12),
+                                    hybrid=True,
+                                ),
+                                timeout=2.5,
+                            )
+                        except TypeError:
+                            # Older MemoryManager without hybrid kwarg.
+                            hits = await asyncio.wait_for(
+                                self._memory_manager.query(
+                                    layer="long",
+                                    text=user_message,
+                                    embedding=q_embedding,
+                                    k=max(self._memory_top_k * 4, 12),
+                                ),
+                                timeout=2.5,
+                            )
+                    except asyncio.TimeoutError:
+                        from xmclaw.utils.log import get_logger
+                        get_logger(__name__).info(
+                            "memory_v1.long_recall timed out after 2.5s "
+                            "(turn proceeds without V1 memory-context block)"
                         )
-                    except TypeError:
-                        # Older MemoryManager without hybrid kwarg.
-                        hits = await self._memory_manager.query(
-                            layer="long",
-                            text=user_message,
-                            embedding=q_embedding,
-                            k=max(self._memory_top_k * 4, 12),
-                        )
+                        hits = []
                     # B-85: when no embedder is wired, the query above
                     # degrades to a substring LIKE — for "Where did the
                     # build break?" against a stored "The build broke at
@@ -1479,13 +1568,16 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     # genuine "nothing semantically close").
                     if not hits and q_embedding is None:
                         try:
-                            hits = await self._memory_manager.query(
-                                layer="long",
-                                text=None,
-                                embedding=None,
-                                k=max(self._memory_top_k * 4, 12),
+                            hits = await asyncio.wait_for(
+                                self._memory_manager.query(
+                                    layer="long",
+                                    text=None,
+                                    embedding=None,
+                                    k=max(self._memory_top_k * 4, 12),
+                                ),
+                                timeout=1.5,
                             )
-                        except Exception:  # noqa: BLE001
+                        except (asyncio.TimeoutError, Exception):  # noqa: BLE001
                             hits = []
                 else:
                     hits = []
@@ -1688,10 +1780,26 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             # reason the daemon felt unresponsive even after the
             # auto_recall timeout shipped.
             import asyncio as _ar_asyncio
+            # Jarvis Phase 1-2: embed user query once and pass the
+            # vector to render_for_prompt so always-on sections
+            # (user/project/decision) can be re-sorted by query
+            # similarity instead of recency-only.
+            _query_emb: list[float] | None = None
+            if self._embedder is not None and user_message:
+                try:
+                    _vecs = await _ar_asyncio.wait_for(
+                        self._embedder.embed([user_message]),
+                        timeout=1.5,
+                    )
+                    if _vecs and _vecs[0]:
+                        _query_emb = list(_vecs[0])
+                except _ar_asyncio.TimeoutError:
+                    pass  # degrade to recency-only; don't block turn
             try:
                 v2_block = await _ar_asyncio.wait_for(
                     memory_v2_service.render_for_prompt(
                         user_message or "", k=8,
+                        query_embedding=_query_emb,
                     ),
                     timeout=2.0,
                 )
@@ -1987,11 +2095,15 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 curriculum_strategies_block = "\n".join(_lines)
 
         # B-25: frozen system-prompt snapshot per session.
-        # _with_fresh_time builds (base + time). Cache the base part
-        # keyed by (session_id, generation); only re-render when the
-        # global generation is bumped (persona write triggers it).
-        # Time still updates each turn but is appended after the cached
-        # prefix, so the provider's prompt-cache prefix stays stable.
+        # _get_static_system_prompt strips the boundary + any legacy
+        # time blocks. Cache the base part keyed by (session_id,
+        # generation); only re-render when the global generation is
+        # bumped (persona write triggers it).
+        # B-25: per-session targeted invalidation.
+        if is_session_invalidated(session_id):
+            self._frozen_prompts.pop(session_id, None)
+            clear_session_invalidation(session_id)
+
         cache_entry = self._frozen_prompts.get(session_id)
         _needs_render = cache_entry is None
         _current_gen = get_prompt_freeze_generation()
@@ -2003,13 +2115,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         if _needs_render:
             # Render once. (Epic #24 Phase 1 stripped the legacy
             # learned_skills layer that used to land here.)
-            static_with_skills = _with_fresh_time(self._system_prompt)
-            # Strip the trailing "## 当前时刻" block we just appended —
-            # we'll add a fresh one right below. This is a tiny waste
-            # but keeps the rendering helper centralised.
-            t_idx = static_with_skills.rfind("## 当前时刻")
-            if t_idx > 0:
-                static_with_skills = static_with_skills[:t_idx].rstrip()
+            static_with_skills = _get_static_system_prompt(self._system_prompt)
             # B-3: inject platform guidance when channel_name is known.
             if channel_name:
                 try:
@@ -2025,18 +2131,12 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 _current_gen, static_with_skills, channel_name,
             )
             cache_entry = self._frozen_prompts[session_id]
-        # Build the per-turn time block first (mutable; goes AFTER
-        # the cache boundary so it doesn't poison the cached prefix).
-        import time as _t
-        now_local = _t.localtime()
-        time_block = (
-            f"## 当前时刻\n\n"
-            f"{_t.strftime('%Y-%m-%d %H:%M:%S', now_local)} "
-            f"({_t.strftime('%Z', now_local) or _t.strftime('%z', now_local)}, "
-            f"weekday: {_t.strftime('%A', now_local)}). Use this for any "
-            f"reasoning about deadlines, schedules, or \"recent\" events. "
-            f"Trust this over your training-time clock."
-        )
+        # Jarvis Phase 1-2: time_block moves from system prompt → user
+        # message so the system prompt is byte-identical across turns.
+        # This maximises prefix-cache hit rates for ALL providers,
+        # including OpenAI / DeepSeek / Ollama which don't support
+        # explicit cache_control but DO hash-match the system prefix.
+        time_block = _build_time_block()
 
         # Sprint 1 Wave 2 + Wave-32+ active-recall mode:
         # autobiographical memory snapshot. Renders the structured
@@ -2129,8 +2229,6 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         _bg_block = self._build_recent_autonomous_block()
         if _bg_block:
             _parts.append(_bg_block)
-        _parts.append(time_block)
-
         # B-GIT: inject a lightweight git status snapshot when the
         # primary workspace is a git repo.  Kept small (branch +
         # dirty flag + 3 recent commits) so it doesn't bloat the
@@ -2279,6 +2377,30 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             except Exception:  # noqa: BLE001
                 pass
 
+        # Jarvis Phase 1-2: tool description compressor.
+        # After skill prefilter + active routing, further reduce token
+        # volume by compressing descriptions of low-relevance non-core
+        # tools. Core tools (bash, file_*, etc.) keep full descriptions;
+        # high-overlap skills keep full descriptions; everything else
+        # gets progressively truncated. This cuts 30-50%% of tool-spec
+        # tokens on sessions with 100+ installed skills.
+        if tool_specs and user_message:
+            try:
+                from xmclaw.skills.tool_description_compressor import (
+                    compress_tool_descriptions,
+                )
+                tool_specs = compress_tool_descriptions(
+                    tool_specs,
+                    user_message,
+                    core_tools={
+                        "bash", "file_read", "file_write", "list_dir",
+                        "glob_files", "grep_files", "web_fetch", "web_search",
+                        "think", "ask_user_question", "memory_search",
+                    },
+                )
+            except Exception:  # noqa: BLE001 — never break a turn over compression
+                pass
+
         # B-300: turn-local skill_browse nudge.
         #
         # Empirical: with B-299's static system-prompt mention,
@@ -2338,6 +2460,8 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 role="user",
                 content=(
                     continuation_anchor
+                    + time_block
+                    + "\n\n"
                     + user_message
                     + memory_ctx_block
                     + memory_files_block
@@ -2389,7 +2513,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # override, agent mode (status quo) runs.
         self._active_run_mode = None
         try:
-            from xmclaw.cognition.mode_router import ModeRouter, RunMode
+            from xmclaw.cognition.mode_router import ModeRouter
             _mode_router = getattr(self, "_mode_router", None) or ModeRouter(
                 enable_instant=bool(getattr(self, "_mode_instant_enabled", True)),
                 enable_swarm=bool(getattr(self, "_mode_swarm_enabled", True)),

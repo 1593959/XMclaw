@@ -1,0 +1,45 @@
+{
+  "_comment": "Model name substring -> tier mapping. Used by _infer_tier_from_model() when the user does not explicitly set 'tier' in their profile config. Order of evaluation: fast -> strong -> vision -> balanced (fallback). First match wins.",
+  "fast": [
+    "haiku",
+    "mini",
+    "gpt-3.5",
+    "phi",
+    "qwen-7b",
+    "qwen2-7b",
+    "llama-3-8b",
+    "llama3-8b",
+    "deepseek-v2-lite",
+    "moonshot-v1-8k",
+    "yi-6b",
+    "gemma-2b",
+    "gemma-7b",
+    "8b-instruct",
+    "tinyllama"
+  ],
+  "strong": [
+    "opus",
+    "gpt-4.1",
+    "gpt-4-turbo",
+    "kimi-k2",
+    "qwen-max",
+    "llama-3-405b",
+    "llama3-405b",
+    "deepseek-v3",
+    "deepseek-r1",
+    "claude-opus",
+    "o1",
+    "o3"
+  ],
+  "vision": [
+    "sonnet",
+    "gpt-4o",
+    "gpt-4.5",
+    "ui-tars",
+    "qwen2-vl",
+    "qwen-vl",
+    "vl-",
+    "cogvlm",
+    "showui"
+  ]
+}

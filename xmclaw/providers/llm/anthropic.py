@@ -486,6 +486,7 @@ class AnthropicLLM(LLMProvider):
         on_chunk: OnChunkCallback | None = None,
         on_thinking_chunk: OnThinkingChunkCallback | None = None,
         on_tool_block: Any | None = None,  # Wave-32+ Speculation
+        on_stream_fallback: Any | None = None,  # 2026-05-30
         cancel: asyncio.Event | None = None,
     ) -> LLMResponse:
         from xmclaw.providers.llm.translators import anthropic_native as translator
@@ -709,7 +710,33 @@ class AnthropicLLM(LLMProvider):
                 )
             except Exception:  # noqa: BLE001
                 pass
-            return await self.complete(messages, tools)
+            # 2026-05-30: tag the fallback so agent_loop can publish a
+            # UI notice — "considered high risk" / shim-no-stream looks
+            # like a hang to the user otherwise (no token drip for 30s+).
+            _msg = str(exc)[:300]
+            _reason = (
+                "risk_reject" if "high risk" in _msg
+                else "shim_no_stream"
+            )
+            # Fire the immediate UI notice BEFORE blocking on complete() —
+            # that's the whole point: tell the user "no token drip this
+            # turn" while the non-streaming reply is still in flight, not
+            # after it finishes 30s later.
+            if on_stream_fallback is not None:
+                try:
+                    await on_stream_fallback(_reason)
+                except Exception:  # noqa: BLE001 — never break the fallback path
+                    pass
+            _fallback = await self.complete(messages, tools)
+            try:
+                import dataclasses as _dc
+                return _dc.replace(
+                    _fallback,
+                    stream_fallback=True,
+                    stream_fallback_reason=_reason,
+                )
+            except Exception:  # noqa: BLE001
+                return _fallback
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
         # B-229: capture stop_reason so the agent loop can detect

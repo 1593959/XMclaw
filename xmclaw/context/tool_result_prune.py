@@ -41,6 +41,17 @@ from typing import Any
 # and is allowed.
 from xmclaw.providers.llm.base import Message
 
+# Jarvis Phase 1-2: semantic summarizer for very large tool outputs.
+# Imported lazily to avoid circular deps at module load time.
+_semantic_summarizer: Any = None
+
+def _get_semantic_summarizer() -> Any:
+    global _semantic_summarizer
+    if _semantic_summarizer is None:
+        from xmclaw.context.tool_result_summarizer import summarize_tool_result
+        _semantic_summarizer = summarize_tool_result
+    return _semantic_summarizer
+
 # Same default chars/4 ≈ token estimate as Hermes + agent_loop.
 _CHARS_PER_TOKEN = 4
 
@@ -299,6 +310,34 @@ def prune_old_tool_results(
             pruned += 1
         else:
             seen_hashes[h] = i
+
+    # Pass 1.5 (Jarvis Phase 1-2): semantic summarizer for very large
+    # tool outputs (> 3000 chars) in the prune zone. The rule-driven
+    # summarizer preserves tool-type-specific signal (file head/tail,
+    # grep match count, bash stderr) while cutting token volume by
+    # 60-90%%. Runs BEFORE the 1-line summary so we don't lose
+    # structure on outputs that still have useful detail after shrinking.
+    _SEMANTIC_THRESHOLD = 3000
+    _summarizer = _get_semantic_summarizer()
+    for i in range(prune_boundary):
+        m = result[i]
+        if m.role != "tool":
+            continue
+        content = m.content or ""
+        if not isinstance(content, str) or len(content) < _SEMANTIC_THRESHOLD:
+            continue
+        if content.startswith("[Duplicate tool output"):
+            continue
+        cid = m.tool_call_id or ""
+        name, _ = call_lookup.get(cid, ("unknown", {}))
+        try:
+            summary = _summarizer(name, content, user_query=None)
+        except Exception:  # noqa: BLE001 — never break pruning over summarizer
+            continue
+        # Only accept the summary if it actually shrank things.
+        if len(summary) < len(content) * 0.8:
+            result[i] = dataclasses.replace(m, content=summary)
+            pruned += 1
 
     # Pass 2: replace old tool results outside protected tail with
     # a 1-line summary derived from the matching tool_call.
