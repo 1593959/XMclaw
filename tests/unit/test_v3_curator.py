@@ -21,6 +21,23 @@ from xmclaw.memory.v2 import (
 from xmclaw.memory.v2.curator import CurationReport, MemoryCurator
 
 
+class _FakeLLM:
+    """Returns a pre-baked JSON response for every complete() call."""
+
+    def __init__(self, response: dict):
+        import json
+        self._payload = json.dumps(response, ensure_ascii=False)
+        self.calls = 0
+
+    async def complete(self, *, messages, **kwargs):
+        self.calls += 1
+        payload = self._payload
+
+        class _R:
+            content = payload
+        return _R()
+
+
 def _make_service() -> MemoryService:
     return MemoryService(
         vector_backend=InMemoryVectorBackend(),
@@ -218,3 +235,198 @@ async def test_curate_skips_disabled_passes():
     assert "prune" in report.passes_skipped
     assert report.merged == 0
     assert report.pruned == 0
+
+
+# ─── contradiction pass (LLM) ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_curate_skips_llm_passes_without_llm():
+    """No LLM bound → contradict + crystallize are skipped, not run."""
+    svc = _make_service()
+    await svc.remember("x", kind=FactKind.PROJECT, scope=FactScope.PROJECT)
+    curator = MemoryCurator(svc)  # no llm
+    report = await curator.curate(scopes=["project"])
+    assert "contradict" in report.passes_skipped
+    assert "crystallize" in report.passes_skipped
+    assert report.contradictions_found == 0
+    assert report.crystallized == 0
+
+
+@pytest.mark.asyncio
+async def test_curate_marks_contradiction_and_downweights_weaker():
+    svc = _make_service()
+    strong = await svc.remember(
+        "用户喜欢喝咖啡", kind=FactKind.PREFERENCE,
+        scope=FactScope.USER, confidence=0.9,
+    )
+    weak = await svc.remember(
+        "用户从不喝咖啡", kind=FactKind.PREFERENCE,
+        scope=FactScope.USER, confidence=0.5,
+    )
+    llm = _FakeLLM({
+        "contradictions": [
+            {"a": 1, "b": 2, "reason": "一个说喜欢喝，一个说从不喝"},
+        ],
+    })
+    curator = MemoryCurator(svc, llm=llm)
+    report = await curator.curate(
+        scopes=["user"], do_dedup=False, do_prune=False,
+        do_crystallize=False, dry_run=False,
+    )
+    assert "contradict" in report.passes_run
+    assert report.contradictions_found == 1
+    # The lower-confidence side got down-ranked + stamped.
+    refreshed_weak = await svc.get_fact(weak.id)
+    assert refreshed_weak.confidence <= 0.4
+    assert strong.id in refreshed_weak.contradicts
+    # The stronger claim is untouched.
+    refreshed_strong = await svc.get_fact(strong.id)
+    assert refreshed_strong.confidence == 0.9
+
+
+@pytest.mark.asyncio
+async def test_curate_contradiction_dry_run_no_write():
+    svc = _make_service()
+    a = await svc.remember(
+        "项目用 PostgreSQL", kind=FactKind.DECISION,
+        scope=FactScope.PROJECT, confidence=0.6,
+    )
+    b = await svc.remember(
+        "项目用 MySQL 不用 PostgreSQL", kind=FactKind.DECISION,
+        scope=FactScope.PROJECT, confidence=0.5,
+    )
+    llm = _FakeLLM({"contradictions": [{"a": 1, "b": 2, "reason": "数据库冲突"}]})
+    curator = MemoryCurator(svc, llm=llm)
+    report = await curator.curate(
+        scopes=["project"], do_dedup=False, do_prune=False,
+        do_crystallize=False, dry_run=True,
+    )
+    assert report.contradictions_found == 1  # detected…
+    # …but nothing written in dry-run.
+    refreshed = await svc.get_fact(b.id)
+    assert refreshed.confidence == 0.5
+    assert refreshed.contradicts == ()
+
+
+@pytest.mark.asyncio
+async def test_curate_contradiction_ignores_bad_indices():
+    svc = _make_service()
+    await svc.remember(
+        "fact one", kind=FactKind.PROJECT, scope=FactScope.PROJECT,
+    )
+    await svc.remember(
+        "fact two", kind=FactKind.PROJECT, scope=FactScope.PROJECT,
+    )
+    llm = _FakeLLM({"contradictions": [{"a": 1, "b": 99}]})  # 99 OOB
+    curator = MemoryCurator(svc, llm=llm)
+    report = await curator.curate(
+        scopes=["project"], do_dedup=False, do_prune=False,
+        do_crystallize=False, dry_run=False,
+    )
+    assert report.contradictions_found == 0
+
+
+# ─── crystallization pass (LLM) ───────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_curate_crystallizes_fragments_into_canonical():
+    svc = _make_service()
+    f1 = await svc.remember(
+        "部署脚本在 scripts/deploy.sh", kind=FactKind.PROJECT,
+        scope=FactScope.PROJECT, bucket="ops", confidence=0.6,
+    )
+    f2 = await svc.remember(
+        "部署需要先跑测试", kind=FactKind.PROJECT,
+        scope=FactScope.PROJECT, bucket="ops", confidence=0.7,
+    )
+    f3 = await svc.remember(
+        "部署后要重启 daemon", kind=FactKind.PROJECT,
+        scope=FactScope.PROJECT, bucket="ops", confidence=0.5,
+    )
+    llm = _FakeLLM({
+        "crystals": [
+            {
+                "members": [1, 2, 3],
+                "canonical_text": "部署流程：先跑测试 → 执行 scripts/deploy.sh → 重启 daemon",
+                "reason": "都是部署流程的片段",
+            },
+        ],
+    })
+    curator = MemoryCurator(svc, llm=llm)
+    report = await curator.curate(
+        scopes=["project"], do_dedup=False, do_prune=False,
+        do_contradict=False, dry_run=False,
+    )
+    assert "crystallize" in report.passes_run
+    assert report.crystallized == 1
+    hits = await svc.recall(None, scopes=["project"], k=10)
+    texts = {h.fact.text for h in hits}
+    # The canonical exists; the fragments are superseded out of recall.
+    assert any("部署流程" in t for t in texts)
+    surviving = {h.fact.id for h in hits}
+    assert f1.id not in surviving
+    assert f2.id not in surviving
+    assert f3.id not in surviving
+
+
+@pytest.mark.asyncio
+async def test_curate_crystallize_dry_run_no_write():
+    svc = _make_service()
+    for i, t in enumerate(["碎片A", "碎片B", "碎片C"]):
+        await svc.remember(
+            t, kind=FactKind.PROJECT, scope=FactScope.PROJECT,
+        )
+    before = await svc.recall(None, scopes=["project"], k=10)
+    llm = _FakeLLM({
+        "crystals": [
+            {"members": [1, 2, 3], "canonical_text": "统一表述", "reason": "x"},
+        ],
+    })
+    curator = MemoryCurator(svc, llm=llm)
+    report = await curator.curate(
+        scopes=["project"], do_dedup=False, do_prune=False,
+        do_contradict=False, dry_run=True,
+    )
+    assert report.crystallized == 1  # previewed…
+    after = await svc.recall(None, scopes=["project"], k=10)
+    assert len(after) == len(before)  # …nothing written
+
+
+@pytest.mark.asyncio
+async def test_curate_crystallize_ignores_singleton_group():
+    svc = _make_service()
+    await svc.remember("a", kind=FactKind.PROJECT, scope=FactScope.PROJECT)
+    await svc.remember("b", kind=FactKind.PROJECT, scope=FactScope.PROJECT)
+    await svc.remember("c", kind=FactKind.PROJECT, scope=FactScope.PROJECT)
+    llm = _FakeLLM({
+        "crystals": [{"members": [1], "canonical_text": "solo", "reason": "x"}],
+    })
+    curator = MemoryCurator(svc, llm=llm)
+    report = await curator.curate(
+        scopes=["project"], do_dedup=False, do_prune=False,
+        do_contradict=False, dry_run=False,
+    )
+    assert report.crystallized == 0
+
+
+@pytest.mark.asyncio
+async def test_curate_llm_passes_survive_bad_json():
+    svc = _make_service()
+    await svc.remember("a", kind=FactKind.PROJECT, scope=FactScope.PROJECT)
+    await svc.remember("b", kind=FactKind.PROJECT, scope=FactScope.PROJECT)
+
+    class _BadLLM:
+        async def complete(self, *, messages, **kwargs):
+            class _R:
+                content = "not json at all"
+            return _R()
+
+    curator = MemoryCurator(svc, llm=_BadLLM())
+    report = await curator.curate(
+        scopes=["project"], do_dedup=False, do_prune=False, dry_run=False,
+    )
+    # Degrades to no-op, never crashes.
+    assert report.contradictions_found == 0
+    assert report.crystallized == 0

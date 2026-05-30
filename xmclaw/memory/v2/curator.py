@@ -154,6 +154,8 @@ class MemoryCurator:
         dry_run: bool = False,
         do_dedup: bool = True,
         do_prune: bool = True,
+        do_contradict: bool = True,
+        do_crystallize: bool = True,
         max_facts_per_scope: int = 2000,
     ) -> CurationReport:
         """Run the maintenance passes within ``time_budget_s``.
@@ -214,13 +216,55 @@ class MemoryCurator:
         elif not do_prune:
             report.passes_skipped.append("prune")
 
+        # ── Pass 3: contradiction detection (LLM) ─────────────────
+        if do_contradict and self._llm is not None and not _over_budget():
+            report.passes_run.append("contradict")
+            for sc in target_scopes:
+                if _over_budget():
+                    report.budget_exhausted = True
+                    break
+                try:
+                    n = await self._detect_contradictions_scope(
+                        scope=sc, deadline=deadline, dry_run=dry_run,
+                        max_facts=max_facts_per_scope,
+                    )
+                    report.contradictions_found += n
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning(
+                        "curator.contradict_failed scope=%s err=%s", sc, exc,
+                    )
+        elif not do_contradict or self._llm is None:
+            report.passes_skipped.append("contradict")
+
+        # ── Pass 4: semantic crystallization (LLM) ────────────────
+        if do_crystallize and self._llm is not None and not _over_budget():
+            report.passes_run.append("crystallize")
+            for sc in target_scopes:
+                if _over_budget():
+                    report.budget_exhausted = True
+                    break
+                try:
+                    n = await self._crystallize_scope(
+                        scope=sc, deadline=deadline, dry_run=dry_run,
+                        max_facts=max_facts_per_scope,
+                    )
+                    report.crystallized += n
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning(
+                        "curator.crystallize_failed scope=%s err=%s", sc, exc,
+                    )
+        elif not do_crystallize or self._llm is None:
+            report.passes_skipped.append("crystallize")
+
         report.elapsed_s = time.perf_counter() - t0
         _log.info(
             "curator.done scopes=%s scanned=%d merged=%d pruned=%d "
-            "elapsed_s=%.2f budget_exhausted=%s dry_run=%s",
+            "contradictions=%d crystallized=%d elapsed_s=%.2f "
+            "budget_exhausted=%s dry_run=%s",
             target_scopes, report.scanned, report.merged,
-            report.pruned, report.elapsed_s, report.budget_exhausted,
-            dry_run,
+            report.pruned, report.contradictions_found,
+            report.crystallized, report.elapsed_s,
+            report.budget_exhausted, dry_run,
         )
         return report
 
@@ -361,6 +405,243 @@ class MemoryCurator:
             except Exception as exc:  # noqa: BLE001
                 _log.debug("curator.prune_one_failed id=%s err=%s", f.id, exc)
         return pruned
+
+
+    async def _detect_contradictions_scope(
+        self,
+        *,
+        scope: str,
+        deadline: float,
+        dry_run: bool,
+        max_facts: int,
+    ) -> int:
+        """LLM pass: find pairs of facts in scope that DIRECTLY
+        contradict each other (X says A, Y says not-A), record a
+        CONTRADICTS edge both ways + stamp the ``contradicts`` field,
+        and floor the LOWER-confidence side so the contradiction
+        surfaces in recall as a ⚠ marker. Returns # contradictions
+        found.
+
+        Conservative: the prompt requires a DIRECT logical conflict,
+        not mere topical overlap. We never delete — a contradiction
+        is information ("the user changed their mind"), so both facts
+        survive; we just down-rank the stale-looking one and mark the
+        relation so the agent sees it."""
+        import json as _json
+
+        hits = await self._svc.recall(
+            None,
+            k=min(max_facts, 120),  # bound the prompt
+            scopes=[scope],
+            min_confidence=0.0,
+            include_relations=False,
+            include_superseded=False,
+        )
+        if len(hits) < 2:
+            return 0
+        if time.perf_counter() >= deadline:
+            return 0
+
+        numbered = "\n".join(
+            f"{i+1}. {h.fact.text}" for i, h in enumerate(hits)
+        )
+        system_prompt = (
+            "你是记忆一致性审查员。下面是一批已存储的事实，每条带编号。"
+            "找出**直接互相矛盾**的事实对——一条断言 A，另一条断言"
+            "非 A（例如 '用户喜欢咖啡' vs '用户不喝咖啡'）。\n\n"
+            "返回纯 JSON（不要 markdown）：\n"
+            '{"contradictions": [{"a": 编号, "b": 编号, '
+            '"reason": "为什么矛盾"}]}\n\n'
+            "规则：\n"
+            "1. 只标**逻辑上直接冲突**的对——同主题但不冲突的绝不算。\n"
+            "2. 措辞不同但意思一致的不是矛盾（那是重复，不归你管）。\n"
+            "3. 拿不准是否真矛盾时，**不要标**（保守）。\n"
+            "4. 没有矛盾就返回 {\"contradictions\": []}。"
+        )
+        try:
+            from xmclaw.core.ir import Message
+            resp = await self._llm.complete(messages=[
+                Message(role="system", content=system_prompt),
+                Message(role="user", content=numbered),
+            ])
+            text = (resp.content or "").strip()
+            if text.startswith("```"):
+                text = text.removeprefix("```json").removeprefix("```")
+                text = text.removesuffix("```").strip()
+            parsed = _json.loads(text)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("curator.contradict.llm_failed err=%s", exc)
+            return 0
+
+        pairs = parsed.get("contradictions")
+        if not isinstance(pairs, list):
+            return 0
+
+        from xmclaw.memory.v2.models import RelationKind
+        found = 0
+        for p in pairs:
+            if time.perf_counter() >= deadline:
+                break
+            if not isinstance(p, dict):
+                continue
+            ia, ib = p.get("a"), p.get("b")
+            if not isinstance(ia, int) or not isinstance(ib, int):
+                continue
+            if not (1 <= ia <= len(hits)) or not (1 <= ib <= len(hits)):
+                continue
+            if ia == ib:
+                continue
+            fa, fb = hits[ia - 1].fact, hits[ib - 1].fact
+            found += 1
+            if dry_run:
+                continue
+            try:
+                # CONTRADICTS edge both directions (idempotent).
+                await self._svc.relate(
+                    source_fact_id=fa.id, target_fact_id=fb.id,
+                    kind=RelationKind.CONTRADICTS, auto_extracted=True,
+                )
+                await self._svc.relate(
+                    source_fact_id=fb.id, target_fact_id=fa.id,
+                    kind=RelationKind.CONTRADICTS, auto_extracted=True,
+                )
+                # Down-rank the lower-confidence side so recall favours
+                # the stronger claim while keeping both visible.
+                weaker = fa if fa.confidence <= fb.confidence else fb
+                weaker.confidence = min(weaker.confidence, 0.4)
+                weaker.contradicts = tuple(
+                    set(weaker.contradicts) | {
+                        (fb.id if weaker is fa else fa.id),
+                    }
+                )
+                weaker.ts_last = time.time()
+                await self._svc._vec.upsert([weaker])
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("curator.contradict.apply_failed err=%s", exc)
+        return found
+
+    async def _crystallize_scope(
+        self,
+        *,
+        scope: str,
+        deadline: float,
+        dry_run: bool,
+        max_facts: int,
+    ) -> int:
+        """LLM pass: consolidate clusters of many small same-topic
+        facts into ONE clearer canonical fact. Distinct from dedup
+        (which merges things that already SAY the same thing):
+        crystallization SYNTHESIZES a better single statement from
+        several related-but-fragmentary ones.
+
+        Returns # of new crystallized facts written. Conservative:
+        only fires when a group is genuinely about one coherent topic;
+        the LLM is told to leave unrelated facts alone. The source
+        facts are superseded onto the new crystallized one.
+        """
+        import json as _json
+
+        hits = await self._svc.recall(
+            None,
+            k=min(max_facts, 100),
+            scopes=[scope],
+            min_confidence=0.0,
+            include_relations=False,
+            include_superseded=False,
+        )
+        if len(hits) < 3:
+            return 0
+        if time.perf_counter() >= deadline:
+            return 0
+
+        numbered = "\n".join(
+            f"{i+1}. {h.fact.text}" for i, h in enumerate(hits)
+        )
+        system_prompt = (
+            "你是记忆结晶助手。下面是一批零散的事实/规则，每条带编号。"
+            "找出**讲的是同一个连贯主题、但被拆成多条琐碎条目**的组，"
+            "为每组合成**一条更清晰完整的规范表述**。\n\n"
+            "返回纯 JSON（不要 markdown）：\n"
+            '{"crystals": [{"members": [编号,...], '
+            '"canonical_text": "合成后的一句话规范表述", '
+            '"reason": "为什么属于同一主题"}]}\n\n'
+            "规则：\n"
+            "1. 只合成**确实属于同一连贯主题**的组（≥2 条）。\n"
+            "2. canonical_text 要涵盖这组所有要点，但简洁、单句优先。\n"
+            "3. 主题不相关的条目绝不要放进任何 group。\n"
+            "4. 这跟去重不同：去重是合并重复，结晶是从多条碎片提炼"
+            "一条更好的。拿不准就**不结晶**（保守）。\n"
+            "5. 没有可结晶的就返回 {\"crystals\": []}。"
+        )
+        try:
+            from xmclaw.core.ir import Message
+            resp = await self._llm.complete(messages=[
+                Message(role="system", content=system_prompt),
+                Message(role="user", content=numbered),
+            ])
+            text = (resp.content or "").strip()
+            if text.startswith("```"):
+                text = text.removeprefix("```json").removeprefix("```")
+                text = text.removesuffix("```").strip()
+            parsed = _json.loads(text)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("curator.crystallize.llm_failed err=%s", exc)
+            return 0
+
+        crystals = parsed.get("crystals")
+        if not isinstance(crystals, list):
+            return 0
+
+        crystallized = 0
+        for c in crystals:
+            if time.perf_counter() >= deadline:
+                break
+            if not isinstance(c, dict):
+                continue
+            members = c.get("members")
+            canonical_text = str(c.get("canonical_text") or "").strip()
+            if (
+                not isinstance(members, list)
+                or len(members) < 2
+                or not canonical_text
+            ):
+                continue
+            member_facts = [
+                hits[m - 1].fact
+                for m in members
+                if isinstance(m, int) and 1 <= m <= len(hits)
+            ]
+            if len(member_facts) < 2:
+                continue
+            crystallized += 1
+            if dry_run:
+                continue
+            try:
+                # Write the crystallized fact carrying the group's
+                # strongest kind/scope/bucket, then supersede the
+                # fragments onto it.
+                anchor = max(
+                    member_facts,
+                    key=lambda f: (f.confidence, f.evidence_count),
+                )
+                new_fact = await self._svc.remember(
+                    canonical_text,
+                    kind=anchor.kind,
+                    scope=anchor.scope,
+                    bucket=anchor.bucket or "misc",
+                    confidence=min(0.9, max(
+                        f.confidence for f in member_facts
+                    )),
+                )
+                for mf in member_facts:
+                    if mf.id == new_fact.id:
+                        continue
+                    await self._svc.supersede(
+                        old_fact_id=mf.id, new_fact_id=new_fact.id,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("curator.crystallize.apply_failed err=%s", exc)
+        return crystallized
 
 
 __all__ = ["MemoryCurator", "CurationReport"]
