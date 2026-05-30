@@ -475,7 +475,7 @@ def start(
         help="DANGEROUS: skip pairing-token validation.",
     ),
     wait: float = typer.Option(
-        60.0, help="Seconds to wait for /health before giving up.",
+        180.0, help="Seconds to wait for /health before giving up.",
     ),
 ) -> None:
     """Spawn the daemon in the background, return once /health answers.

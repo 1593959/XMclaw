@@ -75,6 +75,32 @@ from xmclaw.daemon.history_compression import HistoryCompressionMixin
 from xmclaw.daemon.hop_loop import HopLoopMixin
 
 
+# B-398 (2026-05-29): session-id prefixes/markers that identify a turn
+# as INTERNAL agent work rather than a real user message. Turns from
+# these sessions must NOT be pushed onto the PerceptionBus — doing so
+# makes the CognitiveDaemon react to its own output, minting a
+# ``react_to_ws_user_msg`` goal that spawns another internal turn,
+# which pushes another percept… an infinite self-reaction loop the
+# user observed as a "react_to_ws_user_…" task spinning for 1000+s.
+#   * ``autonomous:…``        — ActionDispatcher plan/step sessions
+#   * ``goal-from-percept-…`` — CognitiveDaemon's reaction goals
+#                               (CognitiveDaemon._percept_to_goal)
+#   * ``reflect:…``           — reflection turns
+#   * ``_system:…``           — daemon-internal bookkeeping turns
+#   * ``…:to:…``              — agent-to-agent delegation sessions
+_INTERNAL_SESSION_PREFIXES = ("autonomous:", "goal-from-percept-", "reflect:", "_system:")
+
+
+def _is_internal_session(session_id: str) -> bool:
+    """True for sessions that represent the agent's OWN work, not real
+    user input. Used to break the percept self-reaction loop (B-398)."""
+    if not session_id:
+        return False
+    if ":to:" in session_id:
+        return True
+    return any(session_id.startswith(p) for p in _INTERNAL_SESSION_PREFIXES)
+
+
 @dataclass
 class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
     """Explicit state machine — one method, ``run_turn``, orchestrates
@@ -1195,22 +1221,30 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # that don't run the cognitive daemon.
         _perception_bus = getattr(self, "_perception_bus", None)
         if _perception_bus is not None and user_message:
-            try:
-                from xmclaw.cognition.percept_sources import (
-                    make_user_msg_percept,
-                )
-                # ``ultrathink`` isn't a kwarg on the public ``run_turn``
-                # signature — read it off the user-correlation marker
-                # if the caller propagated one, else default False. The
-                # important field is session_id + content; ultrathink is
-                # advisory metadata for downstream attention scoring.
-                await _perception_bus.push(
-                    make_user_msg_percept(
-                        session_id, user_message, ultrathink=False,
+            # B-398: skip percept push for internal sessions (autonomous
+            # turns, reflection turns, agent-to-agent turns). These are
+            # NOT real user input — pushing them as percepts creates a
+            # recursive loop where CognitiveDaemon reacts to its own
+            # work, minting a "react_to_ws_user_msg" goal on every tick
+            # and spamming the user with empty or duplicate proposals.
+            # See ``_is_internal_session`` (module top) for the rule.
+            if not _is_internal_session(session_id):
+                try:
+                    from xmclaw.cognition.percept_sources import (
+                        make_user_msg_percept,
                     )
-                )
-            except Exception:  # noqa: BLE001 — perception is observational
-                pass  # never fail a turn over percept push
+                    # ``ultrathink`` isn't a kwarg on the public ``run_turn``
+                    # signature — read it off the user-correlation marker
+                    # if the caller propagated one, else default False. The
+                    # important field is session_id + content; ultrathink is
+                    # advisory metadata for downstream attention scoring.
+                    await _perception_bus.push(
+                        make_user_msg_percept(
+                            session_id, user_message, ultrathink=False,
+                        )
+                    )
+                except Exception:  # noqa: BLE001 — perception is observational
+                    pass  # never fail a turn over percept push
 
         # Jarvisification: register the user message as an attention
         # focus so the cognitive state can track salience across turns.
