@@ -2366,6 +2366,27 @@ def make_lifespan(
                         "memory_v2.llm_extractor.wire_failed err=%s "
                         "(regex layer still active)", exc,
                     )
+                # Phase 8 ⑨ (2026-05-30): write-time memory decision
+                # (Mem0 route). When enabled, the background extractor
+                # routes each candidate fact through
+                # MemoryService.remember_with_decision (ADD/UPDATE/
+                # DELETE/NOOP against nearest neighbours) instead of a
+                # blind remember(). Default ON — it only spends an LLM
+                # call when a candidate actually has a close neighbour,
+                # and falls back to plain remember() when no LLM/embedder
+                # is wired. Opt out via
+                # cognition.memory_v2.write_decision.enabled=false.
+                try:
+                    _wd_cfg = (
+                        memory_v2_cfg.get("write_decision", {})
+                        if isinstance(memory_v2_cfg, dict) else {}
+                    ) or {}
+                    if agent is not None:
+                        agent._memory_write_decision = bool(
+                            _wd_cfg.get("enabled", True)
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
                 log.info(
                     "memory_v2.started path=%s dim=%d embedder=%s",
                     facts_dir, dim,

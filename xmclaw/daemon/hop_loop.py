@@ -6,6 +6,7 @@ Contains the LLM ↔ tool hop loop execution logic.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -24,12 +25,231 @@ from xmclaw.security import SOURCE_TOOL_RESULT, apply_policy
 from xmclaw.utils.cost import BudgetExceeded
 
 
+# B-302: mechanistic honesty guard. Detects when the assistant claims
+# to have remembered something without actually invoking the tool.
+_MEMORY_HONESTY_TRIGGERS: tuple[str, ...] = (
+    "记下了", "记住了", "已记录", "已经记录",
+    "我记住了", "我记下了", "我已经记录",
+)
+_MEMORY_TOOLS: frozenset[str] = frozenset({"remember", "learn_about_user"})
+
+
+def _check_memory_honesty(
+    assistant_text: str | None,
+    tool_calls_made: list[Any],
+) -> str | None:
+    """Return a corrective nudge if the assistant claims memory without
+    actually calling a memory tool.  None means honest or no claim."""
+    text = (assistant_text or "").strip()
+    if not text:
+        return None
+    # Did the assistant claim to have remembered?
+    claimed = any(t in text for t in _MEMORY_HONESTY_TRIGGERS)
+    if not claimed:
+        return None
+    # Did any memory tool actually run this hop?
+    actually_called = any(
+        getattr(tc, "name", "") in _MEMORY_TOOLS
+        for tc in tool_calls_made
+    )
+    if actually_called:
+        return None
+    return (
+        "[B-302 honesty check] 你刚才说记住了/记下了，但我没有检测到 "
+        "`remember` 或 `learn_about_user` 工具的调用。"
+        "如果信息确实需要长期保存，请立即调用对应工具；"
+        "如果只是口头确认，请改说'了解了'或'收到'，"
+        "避免让用户误以为数据已持久化。"
+    )
+
+
+async def _invoke_single_tool(
+    call: Any,
+    effective_tools: Any,
+    session_id: str,
+    *,
+    tool_timeout_s: float = 180.0,
+    hook_engine: Any = None,
+    agent_id: str = "main",
+) -> Any:
+    """Invoke one tool with defensive error handling and retry.
+
+    Standalone async function — does NOT depend on HopLoopMixin or
+    AgentLoop state.  All dependencies are passed as parameters so
+    the function is trivially testable in isolation.
+
+    Returns the raw ``ToolResult``.  Event publishing and loop-state
+    mutation are the caller's responsibility so that multiple calls
+    can be executed in parallel.
+    """
+    import dataclasses as _dc
+    import asyncio as _asyncio
+    from xmclaw.core.ir import ToolResult as _ToolResult
+    call_with_sid = _dc.replace(call, session_id=session_id)
+
+    # Wave-32: PreToolUse hook dispatch.
+    if hook_engine is not None:
+        try:
+            from xmclaw.core.hooks import HookEvent as _HE
+            _pre = await hook_engine.dispatch(
+                _HE.PRE_TOOL_USE,
+                session_id=session_id,
+                agent_id=agent_id,
+                payload={
+                    "tool_name": call_with_sid.name,
+                    "args": dict(call_with_sid.args or {}),
+                    "call_id": call_with_sid.id,
+                },
+            )
+            if (
+                _pre.decision == "deny"
+                or _pre.continue_ is False
+            ):
+                return _ToolResult(
+                    call_id=call.id,
+                    ok=False,
+                    content=None,
+                    error=(
+                        f"[hook denied] {_pre.block_reason or ''}".strip()
+                    ),
+                )
+            if isinstance(_pre.updated_input, dict):
+                call_with_sid = _dc.replace(
+                    call_with_sid, args=_pre.updated_input,
+                )
+        except Exception as _exc:  # noqa: BLE001
+            from xmclaw.utils.log import get_logger as _gl
+            _gl(__name__).warning(
+                "pre_tool_use_hook.failed tool=%s err=%s",
+                call.name, _exc,
+            )
+
+    try:
+        result = await _asyncio.wait_for(
+            effective_tools.invoke(call_with_sid),
+            timeout=tool_timeout_s,
+        )
+    except _asyncio.TimeoutError:
+        from xmclaw.utils.log import get_logger as _gl
+        _gl(__name__).warning(
+            "tool.invoke_wall_clock_exceeded tool=%s timeout=%.1fs",
+            call.name, tool_timeout_s,
+        )
+        result = _ToolResult(
+            call_id=call.id,
+            ok=False,
+            content=None,
+            error=(
+                f"tool '{call.name}' exceeded {tool_timeout_s:.0f}s "
+                f"wall-clock and was aborted. The tool was likely "
+                f"stuck waiting for an external event (page nav, "
+                f"subprocess stdout, MCP server reply). Try a "
+                f"different approach or add an explicit shorter "
+                f"timeout in the tool args if it supports one."
+            ),
+        )
+    except Exception as _invoke_exc:  # noqa: BLE001
+        from xmclaw.utils.log import get_logger as _gl
+        _gl(__name__).warning(
+            "tool.invoke_uncaught_exception tool=%s err=%s",
+            call.name, _invoke_exc,
+        )
+        result = _ToolResult(
+            call_id=call.id,
+            ok=False,
+            content=None,
+            error=(
+                f"{type(_invoke_exc).__name__}: {_invoke_exc} "
+                f"(uncaught — ToolProvider contract violation; "
+                f"the tool's ``invoke`` should have returned "
+                f"a failed ToolResult instead of raising)"
+            ),
+        )
+    # B-17: retry once on transient failures.
+    if not result.ok and result.error and _is_transient_tool_error(result.error):
+        await _asyncio.sleep(0.5)
+        try:
+            retry = await _asyncio.wait_for(
+                effective_tools.invoke(call_with_sid),
+                timeout=tool_timeout_s,
+            )
+        except _asyncio.TimeoutError:
+            retry = _ToolResult(
+                call_id=call.id,
+                ok=False,
+                content=None,
+                error=(
+                    f"tool '{call.name}' retry also exceeded "
+                    f"{tool_timeout_s:.0f}s wall-clock"
+                ),
+            )
+        except Exception as _retry_exc:  # noqa: BLE001
+            retry = _ToolResult(
+                call_id=call.id,
+                ok=False,
+                content=None,
+                error=(
+                    f"{type(_retry_exc).__name__}: {_retry_exc} "
+                    f"(retry also raised uncaught — "
+                    f"ToolProvider contract violation)"
+                ),
+            )
+        if retry.ok:
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).info(
+                "tool.retry_succeeded tool=%s first_error=%s",
+                call.name, (result.error or "")[:120],
+            )
+            result = retry
+
+    # Wave-32: PostToolUse hook dispatch.
+    if hook_engine is not None:
+        try:
+            from xmclaw.core.hooks import HookEvent as _HE2
+            _post = await hook_engine.dispatch(
+                _HE2.POST_TOOL_USE,
+                session_id=session_id,
+                agent_id=agent_id,
+                payload={
+                    "tool_name": call.name,
+                    "call_id": call.id,
+                    "ok": result.ok,
+                    "error": result.error or "",
+                },
+            )
+            if (
+                isinstance(_post.updated_input, (str, dict))
+                and result.ok
+            ):
+                result = _dc.replace(
+                    result, content=_post.updated_input,
+                )
+        except Exception as _exc:  # noqa: BLE001
+            from xmclaw.utils.log import get_logger as _gl
+            _gl(__name__).warning(
+                "post_tool_use_hook.failed tool=%s err=%s",
+                call.name, _exc,
+            )
+
+    return result
+
+
 class HopLoopMixin:
     """Provides the LLM ↔ tool hop loop."""
 
     async def _invoke_single_tool(
         self, call: Any, effective_tools: Any, session_id: str,
     ) -> Any:
+        """Thin wrapper around the module-level function that forwards
+        instance-level configuration."""
+        return await _invoke_single_tool(
+            call, effective_tools, session_id,
+            tool_timeout_s=float(
+                getattr(self, "_tool_invoke_timeout_s", 180.0),
+            ),
+            hook_engine=getattr(self, "_hook_engine", None),
+            agent_id=getattr(self, "_agent_id", "main"),
+        )
         """Invoke one tool with defensive error handling and retry.
 
         Returns the raw ``ToolResult``. Event publishing and loop-state
@@ -235,11 +455,16 @@ class HopLoopMixin:
         _STUCK_LOOP_THRESHOLD = 3
         _NO_PROGRESS_THRESHOLD = 5
         _no_progress_counter = 0
+        # B-302: honesty guard — max 1 correction per turn to avoid loops.
+        _B302_MAX_CORRECTIONS = 1
+        _b302_corrected = 0
         # 2026-05-26 (audit G1 phase 2): narration tracking moved to
         # ``narration_enforcer.NarrationEnforcer``. Hop loop just
         # observes per-hop and gets back a NarrationDecision.
         from xmclaw.daemon.narration_enforcer import NarrationEnforcer
-        _narration = NarrationEnforcer()
+        _narration = NarrationEnforcer(
+            strict=getattr(self, "_narration_strict", False),
+        )
         _narration_nudge_pending: str | None = None
 
         # 2026-05-12 Batch A.1: GoalAnchor — runtime trick to make
@@ -499,6 +724,26 @@ class HopLoopMixin:
                     tc, effective_tools, session_id,
                 )
                 _on_tool_block = make_speculation_callback(_spec_cache, _spec_invoke)
+
+                # 2026-05-30: immediate UI banner when stream() degrades
+                # to non-streaming complete() (Anthropic risk reject /
+                # compat shim missing /stream). Fires the MOMENT the
+                # provider knows it has to fall back — not 30s later
+                # when the non-streamed reply lands — so the user
+                # doesn't read the silent wait as a hang.
+                async def _on_stream_fallback(reason: str) -> None:
+                    try:
+                        await publish(EventType.LLM_STREAM_FALLBACK, {
+                            "hop": hop,
+                            "reason": reason,
+                            "provider": getattr(
+                                llm, "__class__", type(llm),
+                            ).__name__,
+                            "session_id": session_id,
+                        })
+                    except Exception:  # noqa: BLE001
+                        pass
+
                 while True:  # outer = B-230 auto-continue
                     while True:  # inner = B-227 classify-and-retry
                         try:
@@ -507,6 +752,7 @@ class HopLoopMixin:
                                     messages, tools=tool_specs, on_chunk=_emit_chunk,
                                     on_thinking_chunk=_emit_thinking_chunk,
                                     on_tool_block=_on_tool_block,
+                                    on_stream_fallback=_on_stream_fallback,
                                     cancel=cancel_event,
                                 ),
                                 timeout=self._llm_timeout_s,
@@ -590,8 +836,26 @@ class HopLoopMixin:
                         and not cancel_event.is_set()
                     ):
                         _b230_acc_content += response.content
-                        messages = list(messages) + [
-                            Message(role="assistant", content=_b230_acc_content),
+                        # B-230 fix: remove the previous continuation
+                        # pair (assistant + user) so accumulated content
+                        # doesn't duplicate across continues, preserving
+                        # context window budget.
+                        _msgs = list(messages)
+                        if (
+                            _b230_continue_count > 0
+                            and len(_msgs) >= 2
+                            and _msgs[-1].role == "user"
+                            and "[B-230 auto-continue]" in (
+                                _msgs[-1].content or ""
+                            )
+                            and _msgs[-2].role == "assistant"
+                        ):
+                            _msgs = _msgs[:-2]
+                        messages = _msgs + [
+                            Message(
+                                role="assistant",
+                                content=_b230_acc_content,
+                            ),
                             Message(
                                 role="user",
                                 content=(
@@ -781,6 +1045,21 @@ class HopLoopMixin:
                 _tick_payload["cost_usd"] = None
             await publish(EventType.COST_TICK, _tick_payload)
 
+            # Jarvis Phase 1-2: emit cache metrics summary every 5 hops
+            # so the dashboard can show live cache hit rates without
+            # recomputing from the full event log.
+            _cache_metrics = getattr(self, "_cache_metrics", None)
+            if _cache_metrics is not None and hop % 5 == 0:
+                try:
+                    _provider = getattr(llm, "__class__", type(llm)).__name__
+                    _summary = _cache_metrics.build_summary_payload(
+                        session_id, provider=_provider,
+                    )
+                    if _summary is not None:
+                        await publish(EventType.CACHE_METRICS_SUMMARY, _summary)
+                except Exception:  # noqa: BLE001
+                    pass
+
             # 2026-05-25: narration tracking. A "silent" hop = the
             # model emitted tool calls but no visible plain-text
             # content (think-tool counts as hidden — already routed
@@ -807,6 +1086,14 @@ class HopLoopMixin:
                     )
                 except Exception:  # noqa: BLE001
                     pass
+            # Jarvis Phase 1-2: strict narration enforcement. When the
+            # enforcer says "force text response", discard tool_calls
+            # from this hop so the model must produce plain text on
+            # the next hop (nudge is already queued).
+            if _decision.force_text_response and response.tool_calls:
+                # Strip tool_calls but keep any text content so the
+                # model sees its own (empty) response in context.
+                response = dataclasses.replace(response, tool_calls=())
 
             # 3. If the model made tool calls, execute them and feed
             # results back into the conversation.
@@ -1351,6 +1638,17 @@ class HopLoopMixin:
                             error="no_progress",
                         )
 
+                # B-302: honesty guard — did the assistant claim to have
+                # remembered without actually calling a memory tool?
+                if _b302_corrected < _B302_MAX_CORRECTIONS:
+                    _nudge = _check_memory_honesty(
+                        response.content, tool_calls_made,
+                    )
+                    if _nudge:
+                        messages.append(Message(role="user", content=_nudge))
+                        _b302_corrected += 1
+                        continue  # give the model one more hop to fix it
+
                 # Next hop: send tool results back to the LLM.
                 continue
 
@@ -1366,6 +1664,19 @@ class HopLoopMixin:
                     response, "thinking_signature", "",
                 ) or "",
             ))
+
+            # B-302: honesty guard on terminal text.
+            if _b302_corrected < _B302_MAX_CORRECTIONS:
+                _nudge = _check_memory_honesty(
+                    response.content, tool_calls_made,
+                )
+                if _nudge:
+                    messages.append(Message(role="user", content=_nudge))
+                    _b302_corrected += 1
+                    # Don't return yet — give the model one hop to
+                    # actually call the memory tool.
+                    continue
+
             compression_info = self._persist_history(session_id, messages)
             if compression_info is not None:
                 # B-33: emit a CONTEXT_COMPRESSED event so the Trace
@@ -1497,14 +1808,35 @@ class HopLoopMixin:
                             user_message=user_message,
                             assistant_response=response.content,
                         )
+                        # Phase 8 ⑨: route through the Mem0-style
+                        # write-time decision (ADD/UPDATE/DELETE/NOOP)
+                        # when enabled + available, else blind remember().
+                        _use_decision = (
+                            getattr(self, "_memory_write_decision", False)
+                            and hasattr(mem_svc, "remember_with_decision")
+                        )
                         for cand in candidates:
-                            fact = await mem_svc.remember(
-                                text=cand.text,
-                                kind=cand.kind,
-                                scope=cand.scope,
-                                confidence=cand.confidence,
-                                source_event_id=session_id,
-                            )
+                            if _use_decision:
+                                result = await mem_svc.remember_with_decision(
+                                    text=cand.text,
+                                    kind=cand.kind,
+                                    scope=cand.scope,
+                                    confidence=cand.confidence,
+                                    source_event_id=session_id,
+                                )
+                                fact = result.get("fact")
+                                _action = result.get("action", "ADD")
+                            else:
+                                fact = await mem_svc.remember(
+                                    text=cand.text,
+                                    kind=cand.kind,
+                                    scope=cand.scope,
+                                    confidence=cand.confidence,
+                                    source_event_id=session_id,
+                                )
+                                _action = "ADD"
+                            if fact is None:
+                                continue
                             await publish(EventType.MEMORY_PUT_AUTO, {
                                 "session_id": session_id,
                                 "id": fact.id,
@@ -1512,7 +1844,7 @@ class HopLoopMixin:
                                 "layer": fact.layer,
                                 "kind": fact.kind,
                                 "scope": fact.scope,
-                                "reason": "llm_auto_extract",
+                                "reason": f"llm_auto_extract:{_action.lower()}",
                             })
                     except Exception as exc:  # noqa: BLE001
                         _log_memory_failure(exc)

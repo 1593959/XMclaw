@@ -867,6 +867,218 @@ class MemoryService:
 
         return new_fact
 
+    async def remember_with_decision(
+        self,
+        text: str,
+        *,
+        kind: FactKind | FactKindStr,
+        scope: FactScope | FactScopeStr = FactScope.PROJECT,
+        confidence: float = 0.8,
+        source_event_id: str | None = None,
+        llm: Any | None = None,
+        relate_distance: float = 0.40,
+        max_neighbors: int = 8,
+    ) -> dict[str, Any]:
+        """Phase 8 ⑨ — Mem0-style write-time memory decision
+        (arXiv:2504.19413).
+
+        Instead of always inserting (and letting an offline sweep clean
+        up later — the root cause behind the 1760-fact pile-up), we
+        decide what to do with the new fact AT WRITE TIME against its
+        nearest existing neighbours:
+
+          * **ADD**    — genuinely new → insert.
+          * **UPDATE** — an existing neighbour says the same thing but
+            the new text is more complete → write the merged text and
+            supersede the old one onto it.
+          * **DELETE** — the new fact contradicts a neighbour → insert
+            the new fact AND time-fail the neighbour (Zep ``invalid_at``
+            — we never hard-delete; the old assertion stays for
+            history).
+          * **NOOP**   — already known → evidence-vote the neighbour,
+            no new row.
+
+        Cost control: the LLM is consulted ONLY when there is at least
+        one *plausibly related* neighbour (cosine distance ≤
+        ``relate_distance``). A fact with no close neighbour is a pure
+        ADD and skips the LLM entirely. Falls back to plain
+        :meth:`remember` (which still does near-dup evidence voting)
+        when no LLM is wired or anything goes wrong — so this is always
+        safe to call.
+
+        Returns ``{"action", "fact", "reason"}`` where ``fact`` is the
+        resulting/affected Fact (or None).
+        """
+        import json as _json
+
+        kind_str = kind.value if isinstance(kind, FactKind) else str(kind)
+        scope_str = scope.value if isinstance(scope, FactScope) else str(scope)
+        active_llm = llm or self._llm
+
+        async def _plain_add(reason: str) -> dict[str, Any]:
+            f = await self.remember(
+                text, kind=kind_str, scope=scope_str,
+                confidence=confidence, source_event_id=source_event_id,
+            )
+            return {"action": "ADD", "fact": f, "reason": reason}
+
+        # No LLM → fall back to the existing safe path.
+        if active_llm is None or self._embedder is None:
+            return await _plain_add("no_llm_or_embedder")
+
+        # Embed + fetch plausibly-related neighbours in the same scope.
+        try:
+            qvec = list(await self._embedder.embed(text))
+        except Exception:  # noqa: BLE001
+            return await _plain_add("embed_failed")
+
+        try:
+            neighbours = await self._vec.search(
+                qvec,
+                where=f"scope = '{scope_str}' AND superseded_by = ''",
+                limit=max_neighbors,
+            )
+        except Exception:  # noqa: BLE001
+            return await _plain_add("neighbour_search_failed")
+
+        # Keep only genuinely-related ones (and drop already-invalidated
+        # rows — a contradicted past fact shouldn't drive the decision).
+        now = time.time()
+        related: list[Fact] = []
+        for nb in neighbours:
+            if getattr(nb, "invalid_at", None) and nb.invalid_at <= now:
+                continue
+            emb = getattr(nb, "embedding", None)
+            if not emb:
+                continue
+            d = _cosine_distance(qvec, emb)
+            if d <= relate_distance:
+                related.append(nb)
+        if not related:
+            # Nothing close → pure ADD, no LLM spend.
+            return await _plain_add("no_related_neighbour")
+
+        # Ask the LLM to choose ADD / UPDATE / DELETE / NOOP.
+        numbered = "\n".join(
+            f"{i+1}. {nb.text}" for i, nb in enumerate(related)
+        )
+        system_prompt = (
+            "你是记忆写入决策器(Mem0 风格)。下面有一条【新事实】和若干"
+            "【已存在的相关记忆】(带编号)。判断对这条新事实该执行哪个操作,"
+            "只返回纯 JSON(不要 markdown):\n"
+            '{"action": "ADD|UPDATE|DELETE|NOOP", "target": 编号或null, '
+            '"merged_text": "仅 UPDATE 时给出合并后的更完整表述", '
+            '"reason": "简述"}\n\n'
+            "规则:\n"
+            "- ADD:新事实是全新信息,已有记忆里没有 → target=null。\n"
+            "- UPDATE:某条已有记忆讲的是同一件事,但新事实更完整/更准 → "
+            "target=该编号,merged_text=融合两者的单条规范表述。\n"
+            "- DELETE:新事实与某条已有记忆**直接矛盾**(旧的过时了) → "
+            "target=该矛盾编号(旧事实会被时间失效保留为历史,新事实照常写入)。\n"
+            "- NOOP:已有记忆已完全覆盖该新事实,无需改动 → target=该编号。\n"
+            "- 拿不准就用 ADD(保守,不丢信息)。"
+        )
+        user_prompt = f"【新事实】\n{text}\n\n【已存在的相关记忆】\n{numbered}"
+        try:
+            from xmclaw.core.ir import Message
+            resp = await active_llm.complete(messages=[
+                Message(role="system", content=system_prompt),
+                Message(role="user", content=user_prompt),
+            ])
+            raw = (resp.content or "").strip()
+            if raw.startswith("```"):
+                raw = raw.removeprefix("```json").removeprefix("```")
+                raw = raw.removesuffix("```").strip()
+            decision = _json.loads(raw)
+        except Exception as exc:  # noqa: BLE001 — never crash a write
+            _log.warning("memory_service.write_decision.llm_failed err=%s", exc)
+            return await _plain_add("llm_decision_failed")
+
+        action = str(decision.get("action") or "ADD").upper()
+        target = decision.get("target")
+        reason = str(decision.get("reason") or "")[:200]
+
+        def _target_fact() -> Fact | None:
+            if isinstance(target, int) and 1 <= target <= len(related):
+                return related[target - 1]
+            return None
+
+        try:
+            if action == "NOOP":
+                tgt = _target_fact()
+                if tgt is not None:
+                    # Evidence-vote the existing fact (already known).
+                    tgt.evidence_count += 1
+                    tgt.confidence = min(
+                        0.99,
+                        max(tgt.confidence, confidence)
+                        + 0.05 * min(tgt.confidence, confidence),
+                    )
+                    tgt.ts_last = now
+                    if tgt.evidence_count >= LONG_TERM_PROMOTE_THRESHOLD:
+                        tgt.layer = FactLayer.LONG_TERM.value
+                    await self._vec.upsert([tgt])
+                    return {"action": "NOOP", "fact": tgt, "reason": reason}
+                return await _plain_add("noop_without_target")
+
+            if action == "UPDATE":
+                tgt = _target_fact()
+                merged = str(decision.get("merged_text") or "").strip()
+                if tgt is not None and merged:
+                    new_fact = await self.remember(
+                        merged, kind=kind_str, scope=scope_str,
+                        confidence=max(confidence, tgt.confidence),
+                        source_event_id=source_event_id,
+                    )
+                    if new_fact.id != tgt.id:
+                        await self.supersede(
+                            old_fact_id=tgt.id, new_fact_id=new_fact.id,
+                        )
+                    return {
+                        "action": "UPDATE", "fact": new_fact,
+                        "reason": reason,
+                    }
+                return await _plain_add("update_without_target_or_text")
+
+            if action == "DELETE":
+                # New fact wins; time-fail the contradicted neighbour
+                # (Zep route — keep it for history).
+                tgt = _target_fact()
+                new_fact = await self.remember(
+                    text, kind=kind_str, scope=scope_str,
+                    confidence=confidence, source_event_id=source_event_id,
+                )
+                if tgt is not None and tgt.id != new_fact.id:
+                    if tgt.invalid_at is None:
+                        tgt.invalid_at = now
+                    tgt.confidence = min(tgt.confidence, 0.4)
+                    tgt.contradicts = tuple(
+                        set(tgt.contradicts) | {new_fact.id}
+                    )
+                    tgt.ts_last = now
+                    await self._vec.upsert([tgt])
+                    try:
+                        await self.relate(
+                            source_fact_id=new_fact.id,
+                            target_fact_id=tgt.id,
+                            kind=RelationKind.CONTRADICTS,
+                            auto_extracted=True,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                return {
+                    "action": "DELETE", "fact": new_fact, "reason": reason,
+                }
+
+            # Default / ADD.
+            return await _plain_add(reason or "llm_add")
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "memory_service.write_decision.apply_failed "
+                "action=%s err=%s", action, exc,
+            )
+            return await _plain_add("apply_failed")
+
     async def _find_near_duplicate(
         self,
         *,

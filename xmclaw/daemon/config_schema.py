@@ -268,6 +268,16 @@ def validate_config(cfg: dict[str, Any]) -> list[str]:
                             f"{type(csc).__name__}"
                         )
 
+            # memory_v2.write_decision shape (Phase 8 ⑨ — Mem0 route)
+            wd = mv2.get("write_decision")
+            if isinstance(wd, dict):
+                en = wd.get("enabled")
+                if en is not None and not isinstance(en, bool):
+                    errors.append(
+                        f"cognition.memory_v2.write_decision.enabled: "
+                        f"expected bool, got {type(en).__name__}"
+                    )
+
     # ── evolution ────────────────────────────────────────────────
     ev = cfg.get("evolution")
     if isinstance(ev, dict):
