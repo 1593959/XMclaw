@@ -54,7 +54,8 @@
 | ✅ | **P1-4 Schema validation** | 已完成 | xmclaw/daemon/config_schema.py + factory.load_config 接入 (ee2e4d7) | 启动时跑静态 validator，autonomy/port/timeout/types 越界一次性聚合报错。20 测试覆盖。 |
 | ✅ | **B-8 修 pre-existing test_v2_persona_timeout**（本次）| 已完成 | tests/unit/test_v2_persona_timeout.py:37 (本 commit) | `_SlowStore.set_manual()` 加 `**_kwargs` 吞掉 `render=...` 等真 PersonaStore 长出来的新字段，去掉 CI 红点。 |
 | ✅ | **P1-3 / P3-6 Prometheus /metrics** | 已完成 | xmclaw/daemon/routers/metrics.py + app.py mount + app_lifespan.py 接 bus (fa9ecfd) | 手写 Prometheus text exposition（无 prometheus_client dep）。导出 7 项指标：daemon_uptime / turns_total / llm_requests_total / llm_response_latency_seconds (histogram 8 buckets) / tool_invocations_total{name,ok} / cost_usd_total / active_sessions（5min 滑窗）。`/metrics` 端点不在 `/api/v2/*` 自动 bypass auth。14 测试覆盖。 |
-| ✅ | **P2-1 OpenAI compat /v1/chat/completions**（本次，非流式 MVP）| 已完成 | **新 xmclaw/daemon/routers/openai_compat.py** + app.py mount (本 commit) | `POST /v1/chat/completions` 非流式：OpenAI Message[] → XMclaw history 翻译，prepopulate session，跑 AgentLoop，返回标准 OpenAI shape（id/object/choices/finish_reason）。`GET /v1/models` 列 llm.profiles[]。`req.model` 命中 profile id 则 pin，否则 fall through 到 default（不 404）。multimodal content parts → text marker。`/v1` 不在 `/api/v2/*` 自动 bypass auth。18 测试（helper 单测 + TestClient end-to-end 跨前后边界）。**Streaming / tools[] / function_call 留后续 ADR**。 |
+| ✅ | **P2-1 OpenAI compat /v1/chat/completions**（非流式 MVP）| 已完成 | xmclaw/daemon/routers/openai_compat.py + app.py mount (d7c779d) | `POST /v1/chat/completions` 非流式：OpenAI Message[] → XMclaw history 翻译，prepopulate session，跑 AgentLoop，返回标准 OpenAI shape。`GET /v1/models` 列 llm.profiles[]。`req.model` 命中 profile id 则 pin，否则 fall through 到 default。`/v1` 不在 `/api/v2/*` 自动 bypass auth。18 测试。**Streaming / tools[] / function_call 留后续 ADR**。 |
+| ✅ | **skill_marketplace_index.json 兜底**（本次）| 已完成 | **新 docs/skill_marketplace_index.json** + 测试 (本 commit) | README + marketplace.py 引用此文件但它从未提交 → `xmclaw skill list-marketplace` 直接 404 / IndexFetchError。创建 schema 正确的空 catalog（version=1, skills=[]）+ 内嵌 `_schema` 字段文档。**不编造装不上的假条目**（诚实）。6 测试 pin 文件存在 + 能被 `MarketplaceIndex.from_dict` 解析 + trust_tier 合法 + id 唯一。 |
 | ✅ | **P3-4 部署模板** | 已完成 | Dockerfile + docker-compose.yml + deploy/systemd + deploy/launchd + deploy/fly | 4 种部署目标都有模板。 |
 | ✅ | **P4-3 voice 基础** | 已完成 | xmclaw/providers/voice/{whisper,edge_tts}.py | STT (Whisper) + TTS (Edge TTS) 基础版可用；唤醒词 / RL 调优在 P4 完整版未做。 |
 | ✅ | **P4-5 release pipeline** | 已完成 | .github/workflows/{release,python-publish,docker-publish,python-ci}.yml | tag 触发 release，PyPI + Docker 自动发布。 |
@@ -65,7 +66,7 @@
 | # | 项 | 工作量 | 推荐 | 理由 |
 |---|---|---|---|---|
 | **B-8** | test_v2_persona_timeout 1 个 pre-existing 故障 | 1h | **推荐** | `_SlowStore.set_manual()` kwarg 不匹配，跟 audit 无关，但是 CI 红点 |
-| **P1-1** | Planner / ReasoningEngine 接 turn 流程 | 1 周 | **推荐**（但拆小做）| cognitive_daemon 已接，Planner 进 turn 是下一步 |
+| **P1-1** | Planner / ReasoningEngine 接 turn 流程 | — | **判定陈旧，基本已完成** | 2026-05-29 代码核查：**PlanFirst（HTN 式分解）已经接进 `AgentLoop.run_turn`**（agent_loop.py:2435 `PlanFirstGate`，复杂 query hop_loop 前先分解，25s 超时 + trivial-turn 跳过）。**ReasoningEngine + SelfExperimentLoop 已接进 CognitiveDaemon**（autonomy 循环），这是它们正确的归属 —— 强行塞进每个 reactive turn 会给关键路径加一次 LLM 调用，重蹈 auto_recall 卡死覆辙，**故意不做**。剩余真正缺口（marketplace index 404）已在本 commit 修复。 |
 | **P1-3 / P3-6** | Prometheus metrics + tracing | 2-3 周 | **推荐**（小步）| 可以先做 `/metrics` 基础导出，~150 LOC，本地观察用 |
 | **P2-1** | OpenAI compat API `/v1/chat/completions` | 2-3 周 | **推荐** | 生态位关键，Continue/Cursor 零改动接入 |
 | **P2-2** | 设备配对 HMAC + JWT | 2 周 | **不推荐**（暂时）| 当前 pairing-token + 127.0.0.1 binding 已够本地用 |

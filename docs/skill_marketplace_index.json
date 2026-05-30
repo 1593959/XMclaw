@@ -1,0 +1,21 @@
+{
+  "_comment": "XMclaw skill marketplace catalog. Single source of truth for `xmclaw skill list-marketplace` and the web UI's 技能商店 page. The daemon fetches this file from https://raw.githubusercontent.com/1593959/XMclaw/main/docs/skill_marketplace_index.json (override with XMC_SKILL_MARKETPLACE_URL), caches it for 1h under ~/.xmclaw/cache/, and resolves `xmclaw skill install <id>` against the `source` field. Entries are curated by PR review — add a skill by appending to the `skills` array. Every install runs the security scanner against every *.py (fail-closed on CRITICAL findings) before registration.",
+  "_schema": {
+    "version": "int — index format version, bump on breaking schema changes",
+    "updated": "str — ISO date of last edit (informational)",
+    "skills[].id": "str — unique stable id, used by `skill install <id>`",
+    "skills[].name": "str — display name",
+    "skills[].description": "str — one-line what-it-does",
+    "skills[].version": "str — semver of the skill",
+    "skills[].source": "str — install source: 'github:<owner>/<repo>' | 'git+<url>' | 'https://<url>.git' | 'https://<tarball-url>' | local path",
+    "skills[].license": "str — SPDX id",
+    "skills[].tags": "list[str] — for search/filter",
+    "skills[].author": "str",
+    "skills[].trust_tier": "'verified' (XMclaw-vetted) | 'community' (third-party, scanner-gated only)",
+    "skills[].install_size_kb": "int — approximate repo size for the install confirmation",
+    "skills[].min_xmclaw": "str — minimum XMclaw version (semver), informational"
+  },
+  "version": 1,
+  "updated": "2026-05-29",
+  "skills": []
+}
