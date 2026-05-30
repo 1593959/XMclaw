@@ -136,6 +136,8 @@ def _fact_to_row(fact: Fact) -> dict[str, Any]:
         "text": fact.text,
         "superseded_by": fact.superseded_by or "",
         "bucket": fact.bucket or "",  # Wave-27 fix-12
+        "valid_at": fact.valid_at or 0.0,      # Phase 8 ⑩
+        "invalid_at": fact.invalid_at or 0.0,  # Phase 8 ⑩
     }
 
 

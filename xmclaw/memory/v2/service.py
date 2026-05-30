@@ -1164,14 +1164,21 @@ class MemoryService:
         """Mark ``old_fact_id`` as ``superseded_by=new_fact_id`` and
         add a SUPERSEDES edge new → old.
 
-        Sets old.confidence floor so it ranks lower in recall.
+        Sets old.confidence floor so it ranks lower in recall, and
+        (Phase 8 ⑩) stamps ``invalid_at`` — a superseded fact stopped
+        being the current truth as of now. ``invalid_at`` keeps it
+        recoverable for history (Zep route) while hiding it from
+        default recall, same as ``superseded_by``.
         """
         old = await self._vec.get(old_fact_id)
         if old is None:
             return
+        now = time.time()
         old.superseded_by = new_fact_id
         old.confidence = min(old.confidence, 0.3)
-        old.ts_last = time.time()
+        old.ts_last = now
+        if old.invalid_at is None:
+            old.invalid_at = now
         await self._vec.upsert([old])
         await self.relate(
             source_fact_id=new_fact_id,
@@ -1675,6 +1682,7 @@ class MemoryService:
         only_layer: FactLayerStr | None = None,
         keyword_only: bool = False,
         include_superseded: bool = False,
+        include_invalidated: bool = False,
         buckets: list[str] | None = None,
         time_range: tuple[float | None, float | None] | None = None,
     ) -> list[RecallHit]:
@@ -1754,6 +1762,23 @@ class MemoryService:
             search_query = list(query)
 
         hits = await self._vec.search(search_query, where=where, limit=k)
+
+        # Phase 8 ⑩ (2026-05-30): temporal-validity filter. A fact whose
+        # ``invalid_at`` is set and already in the past has been
+        # contradicted/superseded by a newer assertion (Zep route). We
+        # hide it from default recall but KEEP it on disk for history —
+        # never delete on contradiction. Post-filter (not SQL) so it's
+        # backend-agnostic and avoids an OR clause the where-parser
+        # doesn't support.
+        if not include_invalidated:
+            _now = time.time()
+            hits = [
+                f for f in hits
+                if not (
+                    getattr(f, "invalid_at", None)
+                    and f.invalid_at <= _now
+                )
+            ]
 
         # Enrich with relations.
         # Epic #27 sweep #4 (2026-05-19): the pre-fix loop ran

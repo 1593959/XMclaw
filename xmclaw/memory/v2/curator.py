@@ -505,17 +505,29 @@ class MemoryCurator:
                     source_fact_id=fb.id, target_fact_id=fa.id,
                     kind=RelationKind.CONTRADICTS, auto_extracted=True,
                 )
-                # Down-rank the lower-confidence side so recall favours
-                # the stronger claim while keeping both visible.
-                weaker = fa if fa.confidence <= fb.confidence else fb
-                weaker.confidence = min(weaker.confidence, 0.4)
-                weaker.contradicts = tuple(
-                    set(weaker.contradicts) | {
-                        (fb.id if weaker is fa else fa.id),
-                    }
+                # Phase 8 ⑩ — temporal invalidation (Zep route): the
+                # OLDER assertion loses. We stamp ``invalid_at`` on the
+                # stale side so recall hides it by default but KEEPS it
+                # for history ("2 月喜欢咖啡 / 5 月戒了" are both true
+                # over different intervals — never delete). "Newer" =
+                # larger ts_last. Tie-break by confidence. We also stamp
+                # the ``contradicts`` field + floor confidence so the
+                # relation is visible and the loser ranks last even if a
+                # caller passes include_invalidated=True.
+                if fa.ts_last != fb.ts_last:
+                    stale = fa if fa.ts_last < fb.ts_last else fb
+                else:
+                    stale = fa if fa.confidence <= fb.confidence else fb
+                fresh = fb if stale is fa else fa
+                now = time.time()
+                if stale.invalid_at is None:
+                    stale.invalid_at = now
+                stale.confidence = min(stale.confidence, 0.4)
+                stale.contradicts = tuple(
+                    set(stale.contradicts) | {fresh.id}
                 )
-                weaker.ts_last = time.time()
-                await self._svc._vec.upsert([weaker])
+                stale.ts_last = now
+                await self._svc._vec.upsert([stale])
             except Exception as exc:  # noqa: BLE001
                 _log.debug("curator.contradict.apply_failed err=%s", exc)
         return found

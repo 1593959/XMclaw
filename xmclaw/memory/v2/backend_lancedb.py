@@ -74,6 +74,11 @@ def _build_fact_schema(dim: int):
         bucket: str
         ts_first: float
         ts_last: float
+        # Phase 8 ⑩: bi-temporal validity. Stored as float with 0.0
+        # as the "None / unset" sentinel (real timestamps are always
+        # > 0). See models.py:Fact.valid_at / invalid_at.
+        valid_at: float
+        invalid_at: float
 
     return FactRecord
 
@@ -115,6 +120,8 @@ def _fact_to_record(fact: Fact, dim: int) -> dict[str, Any]:
         "bucket": fact.bucket or "",
         "ts_first": fact.ts_first,
         "ts_last": fact.ts_last,
+        "valid_at": fact.valid_at or 0.0,
+        "invalid_at": fact.invalid_at or 0.0,
     }
 
 
@@ -138,6 +145,15 @@ def _record_to_fact(row: dict[str, Any]) -> Fact:
         bucket=row.get("bucket") or "",  # Wave-27 fix-12; absent on legacy rows.
         ts_first=float(row["ts_first"]),
         ts_last=float(row["ts_last"]),
+        # Phase 8 ⑩: 0.0 sentinel ⇒ None. Absent on legacy rows.
+        valid_at=(
+            float(row["valid_at"])
+            if row.get("valid_at") not in (None, 0, 0.0) else None
+        ),
+        invalid_at=(
+            float(row["invalid_at"])
+            if row.get("invalid_at") not in (None, 0, 0.0) else None
+        ),
     )
 
 
@@ -288,6 +304,8 @@ class LanceDBVectorBackend:
         # Lance SQL expressions evaluated per-row.
         _MIGRATIONS: list[tuple[str, str]] = [
             ("bucket", "''"),  # Wave-27 fix-LAT15 / refactor B Phase 1
+            ("valid_at", "0.0"),    # Phase 8 ⑩ — bi-temporal validity
+            ("invalid_at", "0.0"),  # Phase 8 ⑩ — bi-temporal validity
         ]
         for col, default in _MIGRATIONS:
             if col in on_disk:

@@ -195,6 +195,20 @@ class Fact:
     bucket: str = ""
     ts_first: float = field(default_factory=time.time)
     ts_last: float = field(default_factory=time.time)
+    # Phase 8 ⑩ (2026-05-30): bi-temporal validity, Zep/Graphiti
+    # style (arXiv:2501.13956). ``ts_first/ts_last`` are SYSTEM time
+    # (when the fact was recorded / last touched); ``valid_at/
+    # invalid_at`` are REAL-WORLD time (the interval during which the
+    # assertion actually holds true).
+    #   * ``valid_at=None``   — held true since always / unknown start.
+    #   * ``invalid_at=None``  — still true now.
+    #   * ``invalid_at`` set + in the past — the fact has been
+    #     contradicted/superseded by a newer one; recall hides it by
+    #     default but KEEPS it for history ("用户 2 月喜欢咖啡 / 5 月
+    #     戒了" are both true, just over different intervals). We never
+    #     delete on contradiction — we time-bound.
+    valid_at: float | None = None
+    invalid_at: float | None = None
 
     # ── id derivation ────────────────────────────────────────────
 
@@ -244,6 +258,8 @@ class Fact:
             "bucket": self.bucket,
             "ts_first": self.ts_first,
             "ts_last": self.ts_last,
+            "valid_at": self.valid_at,
+            "invalid_at": self.invalid_at,
         }
 
     @classmethod
@@ -264,6 +280,16 @@ class Fact:
             bucket=str(d.get("bucket") or ""),
             ts_first=float(d.get("ts_first") or time.time()),
             ts_last=float(d.get("ts_last") or time.time()),
+            valid_at=(
+                float(d["valid_at"])
+                if d.get("valid_at") not in (None, 0, 0.0)
+                else None
+            ),
+            invalid_at=(
+                float(d["invalid_at"])
+                if d.get("invalid_at") not in (None, 0, 0.0)
+                else None
+            ),
         )
 
 
