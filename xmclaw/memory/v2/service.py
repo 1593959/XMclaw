@@ -131,6 +131,65 @@ CONTRADICTS_DISTANCE_THRESHOLD = 0.25
 #: evidence_count at which a working-layer fact is auto-promoted.
 LONG_TERM_PROMOTE_THRESHOLD = 3
 
+# ── Three-factor recall ranking (Phase 8 ⑦, Generative Agents) ────
+# Stanford Generative Agents (arXiv:2304.03442) ranks retrieved
+# memories by `recency + importance + relevance` (all weights = 1).
+# We mirror that: relevance = query cosine, recency = exponential
+# decay on ts_last, importance = the fact's own confidence (which
+# already rises with evidence_count). Pre-Phase-8 the prompt ranker
+# used relevance ALONE, so a stale-but-on-topic fact outranked a
+# fresh high-confidence one. Weights are equal by default like the
+# paper; tune via the constants if one factor should dominate.
+RANK_W_RELEVANCE = 1.0
+RANK_W_RECENCY = 1.0
+RANK_W_IMPORTANCE = 1.0
+#: recency half-life — a fact last touched this many seconds ago
+#: contributes 0.5 recency; older decays toward 0. 7 days balances
+#: "recent conversation context" against "durable profile facts"
+#: (the latter also score high on importance, so they don't vanish).
+RANK_RECENCY_HALFLIFE_S = 60 * 60 * 24 * 7
+#: reinforcement — when a fact is actually injected into the prompt
+#: as query-relevant, bump its ts_last so frequently-useful memories
+#: stay "recent" (MemoryBank's recall-strengthens-memory effect,
+#: arXiv:2305.10250). Only re-write if at least this many seconds
+#: elapsed since the last bump, to avoid write amplification on
+#: rapid multi-turn exchanges.
+REINFORCE_MIN_INTERVAL_S = 60 * 30  # 30 min
+
+
+def _three_factor_score(
+    fact: Any,
+    *,
+    query_vec: list[float] | None,
+    query_norm: float,
+    now: float,
+) -> float:
+    """Generative-Agents-style score: weighted relevance + recency +
+    importance. All three sub-scores are normalised to [0, 1] so the
+    weights are comparable. Pure function — no I/O."""
+    # relevance — query cosine, clamped to [0, 1] (negative cosine →
+    # irrelevant, not anti-relevant).
+    relevance = 0.0
+    if query_vec and query_norm > 0:
+        emb = getattr(fact, "embedding", None)
+        if emb:
+            dot = sum(a * b for a, b in zip(query_vec, emb))
+            emb_norm = sum(v * v for v in emb) ** 0.5
+            if emb_norm > 0:
+                relevance = max(0.0, dot / (query_norm * emb_norm))
+    # recency — exponential decay on ts_last (0.5 at one half-life).
+    ts_last = float(getattr(fact, "ts_last", now) or now)
+    age = max(0.0, now - ts_last)
+    recency = 0.5 ** (age / RANK_RECENCY_HALFLIFE_S)
+    # importance — confidence already lives in [0, 1] and climbs with
+    # evidence_count, so it's a ready-made importance proxy.
+    importance = max(0.0, min(1.0, float(getattr(fact, "confidence", 0.0))))
+    return (
+        RANK_W_RELEVANCE * relevance
+        + RANK_W_RECENCY * recency
+        + RANK_W_IMPORTANCE * importance
+    )
+
 
 # ── Wave-32+ entity-token extractor ──────────────────────────────
 
@@ -2189,6 +2248,7 @@ class MemoryService:
         query: str,
         *,
         k: int = 8,
+        query_embedding: list[float] | None = None,
     ) -> str:
         """Render an L1 facts block ready to be injected into the
         agent's system prompt.
@@ -2260,6 +2320,29 @@ class MemoryService:
             )
             relevant_hits = []
 
+        # Phase 8 ⑦ (2026-05-30): three-factor ranking (Generative
+        # Agents). Re-order always-on facts by relevance + recency +
+        # importance instead of relevance alone. Recency + importance
+        # work even with NO query embedding (so always-on sections are
+        # now ranked freshest-and-strongest-first rather than left in
+        # the backend's ts_last DESC order).
+        _now = time.time()
+        _qvec = query_embedding if query_embedding else None
+        _qnorm = sum(v * v for v in _qvec) ** 0.5 if _qvec else 0.0
+
+        def _rank(hits: list[RecallHit]) -> list[RecallHit]:
+            return sorted(
+                hits,
+                key=lambda h: _three_factor_score(
+                    h.fact, query_vec=_qvec, query_norm=_qnorm, now=_now,
+                ),
+                reverse=True,
+            )
+
+        user_facts = _rank(user_facts)
+        project_facts = _rank(project_facts)
+        decision_facts = _rank(decision_facts)
+
         sections: list[str] = []
 
         if user_facts:
@@ -2288,7 +2371,14 @@ class MemoryService:
         if relevant_hits:
             sections.append("### 与本轮相关的事实 (top-K, 向量召回)")
             seen_ids = {h.fact.id for h in (user_facts + project_facts + decision_facts)}
-            new_hits = [h for h in relevant_hits if h.fact.id not in seen_ids]
+            new_hits = _rank(
+                [h for h in relevant_hits if h.fact.id not in seen_ids]
+            )
+            # Phase 8 ⑪ (2026-05-30): reinforcement. These query-relevant
+            # facts were actually useful this turn → bump their ts_last
+            # so recall-frequency feeds back into the recency score
+            # (MemoryBank effect). Fire-and-forget; never blocks render.
+            self._reinforce_facts([h.fact for h in new_hits])
             for h in new_hits:
                 # Annotate with CONTRADICTS / SUPERSEDES inline so the
                 # agent sees the relation graph at glance.
@@ -2317,6 +2407,44 @@ class MemoryService:
             + "\n".join(sections)
             + "\n</memory-v2-facts>"
         )
+
+    def _reinforce_facts(self, facts: list[Fact]) -> None:
+        """Phase 8 ⑪: bump ts_last on facts that were just injected as
+        query-relevant, so recall-frequency strengthens their recency
+        score (MemoryBank, arXiv:2305.10250). Fire-and-forget — schedules
+        a background upsert and returns immediately; never raises into
+        the render path. Skips facts touched within
+        ``REINFORCE_MIN_INTERVAL_S`` to avoid write amplification."""
+        if not facts:
+            return
+        now = time.time()
+        stale = [
+            f for f in facts
+            if (now - float(getattr(f, "ts_last", now) or now))
+            >= REINFORCE_MIN_INTERVAL_S
+        ]
+        if not stale:
+            return
+
+        async def _bump() -> None:
+            try:
+                for f in stale:
+                    f.ts_last = now
+                await self._vec.upsert(stale)
+                _log.debug(
+                    "memory_service.reinforced n=%d", len(stale),
+                )
+            except Exception as exc:  # noqa: BLE001 — never break render
+                _log.debug("memory_service.reinforce_failed err=%s", exc)
+
+        try:
+            import asyncio as _asyncio
+            _asyncio.get_running_loop().create_task(_bump())
+        except RuntimeError:
+            # No running loop (sync test context) — skip silently;
+            # reinforcement is a best-effort optimisation, not a
+            # correctness requirement.
+            pass
 
     # ── Bulk dedup (offline consolidation) ──────────────────────
 
