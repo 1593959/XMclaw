@@ -189,6 +189,38 @@ async def test_agent_loop_persists_after_each_turn(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_failed_turn_still_persists_user_message(tmp_path) -> None:
+    """B-RESUME (2026-05-31): a turn that ERRORS / times out must still
+    persist the user's message so the conversation isn't lost and the
+    user can say '继续' instead of retyping from scratch. Pre-fix,
+    history was committed ONLY on the terminal-success path, so a failed
+    turn vanished entirely (user report: '只有报错那一轮丢')."""
+    db = tmp_path / "sessions.db"
+    bus = InProcessEventBus()
+    store = SessionStore(db)
+
+    class _BoomLLM(_ScriptedLLM):
+        async def complete(self, messages, tools=None):
+            raise RuntimeError("simulated provider timeout")
+
+    agent = AgentLoop(llm=_BoomLLM(), bus=bus, session_store=store)
+    try:
+        await agent.run_turn("sess-fail", "do the big multi-step task")
+    except Exception:
+        pass  # the turn fails — that's the scenario under test
+    await bus.drain()
+
+    saved = store.load("sess-fail")
+    assert saved is not None and len(saved) >= 1
+    # The user's prompt survived the failure.
+    assert saved[0].role == "user"
+    assert saved[0].content == "do the big multi-step task"
+    # A placeholder assistant terminates the turn so the NEXT turn's API
+    # call sees valid role alternation (no two consecutive user msgs).
+    assert saved[-1].role == "assistant"
+
+
+@pytest.mark.asyncio
 async def test_clear_session_drops_persisted_history(tmp_path) -> None:
     bus = InProcessEventBus()
     store = SessionStore(tmp_path / "sessions.db")

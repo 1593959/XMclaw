@@ -807,9 +807,52 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             # see the full conversation. Runs in finally so even crashed
             # turns are recorded (the error message itself becomes the
             # assistant entry).
+            # B-RESUME (2026-05-31): if the turn FAILED (exception /
+            # timeout / max-hops / no-progress), the terminal-success
+            # persist (_persist_history) never ran, so _histories still
+            # lacks THIS turn's user message — saving it as-is would lose
+            # the user's prompt and force a retype from scratch (user
+            # report: "只有报错那一轮丢"). Append the user message + a
+            # placeholder assistant (keeps role alternation valid for the
+            # next turn's API call) so the failed turn is recoverable and
+            # the user can just say「继续」. We do this in the finally —
+            # AFTER the hop loop — so it never perturbs mid-turn logic
+            # (e.g. GoalAnchor's multi-turn detection at hop_loop:489).
+            _turn_failed = (_result is None) or (
+                not getattr(_result, "ok", True)
+            )
             if self._session_store is not None:
                 try:
                     history = self._histories.get(session_id, [])
+                    if (
+                        _turn_failed
+                        and isinstance(user_message, str)
+                        and user_message.strip()
+                    ):
+                        recovered = list(history)
+                        _tail = recovered[-1] if recovered else None
+                        already = (
+                            _tail is not None
+                            and getattr(_tail, "role", None) == "user"
+                            and getattr(_tail, "content", None) == user_message
+                        )
+                        if not already:
+                            recovered.append(Message(
+                                role="user", content=user_message,
+                            ))
+                        recovered.append(Message(
+                            role="assistant",
+                            content=(
+                                "⚠️ 这一轮没能完成(出错或超时)。"
+                                "你的消息已经保留——直接说「继续」，"
+                                "我就接着做。"
+                            ),
+                        ))
+                        history = recovered
+                        # Update in-memory too so the NEXT turn (which
+                        # reads _histories, not disk) sees the recovered
+                        # exchange.
+                        self._histories[session_id] = history
                     # B-PERF: offload SQLite write to thread so the
                     # event loop isn't blocked on fsync (WAL mode helps
                     # but INSERT ... ON CONFLICT still touches disk).
