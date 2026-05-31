@@ -2333,12 +2333,58 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     )
                 except Exception:  # noqa: BLE001
                     active_paths = []
+                # §⑫ autonomous-invocation fix (2026-05-31): compute a
+                # LANGUAGE-AGNOSTIC semantic score per skill so the
+                # prefilter surfaces the right skill even when the user's
+                # (e.g. Chinese) query shares ZERO tokens with the
+                # English skill description — the exact case the
+                # token-overlap prefilter drops, leaving the agent unable
+                # to autonomously call a skill it can't see. Reuses the
+                # memory system's EmbeddingService; best-effort (any
+                # failure → None → pure token fallback, no regression).
+                # Config: skills.semantic_discovery.{enabled,floor}.
+                semantic_scores = None
+                try:
+                    _sem_cfg = (
+                        (self._cfg or {}).get("skills", {})
+                        .get("semantic_discovery", {})
+                        if isinstance(self._cfg, dict) else {}
+                    ) or {}
+                    if _sem_cfg.get("enabled", True):
+                        _emb = getattr(
+                            getattr(self, "_memory_service", None),
+                            "_embedder", None,
+                        )
+                        if _emb is not None:
+                            _idx = getattr(
+                                self, "_skill_semantic_index", None,
+                            )
+                            if _idx is None:
+                                from xmclaw.skills.semantic_index import (
+                                    SkillSemanticIndex,
+                                )
+                                _idx = SkillSemanticIndex(_emb)
+                                self._skill_semantic_index = _idx
+                            _skill_only = [
+                                s for s in tool_specs
+                                if (getattr(s, "name", "") or "")
+                                .startswith("skill_")
+                            ]
+                            semantic_scores = await _idx.scores(
+                                user_message, _skill_only,
+                                floor=float(
+                                    _sem_cfg.get("floor", 0.30)
+                                ),
+                            )
+                except Exception:  # noqa: BLE001 — never break a turn
+                    semantic_scores = None
                 tool_specs = select_relevant_skills(
                     user_message,
                     tool_specs,
                     top_k=12,
                     cognitive_state=self._cognitive_state,
                     active_paths=active_paths,
+                    semantic_scores=semantic_scores,
                 )
             except Exception:  # noqa: BLE001 — never break a turn over routing
                 pass

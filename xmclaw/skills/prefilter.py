@@ -48,6 +48,16 @@ _CJK_RE = re.compile(
 )
 _WORD_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_-]+")
 
+# §⑫ autonomous-invocation fix (2026-05-31): weight on the semantic
+# (embedding-cosine) score when fused with the token-overlap score.
+# A cosine of ~0.5 then contributes ~1.5 (≈ a weak token match) and a
+# strong ~0.8 contributes ~2.4 (≈ a skill-name hit) — enough for a
+# semantically-relevant skill to clear the ``score > 0`` admission gate
+# even when the literal token overlap is ZERO (the CJK-query case the
+# token prefilter drops). See semantic_index.SkillSemanticIndex and
+# docs/audit/SKILL_SYSTEM_SOTA_RESEARCH_2026.md §⑫.
+_SEMANTIC_WEIGHT = 3.0
+
 
 # Epic #27 G-05 (2026-05-19): file-op tool names whose ``path`` arg
 # feeds the recent-paths window the prefilter consults for conditional
@@ -267,6 +277,7 @@ def select_relevant_skills(
     min_skills_to_filter: int = 30,
     cognitive_state: Any | None = None,
     active_paths: list[str] | tuple[str, ...] | None = None,
+    semantic_scores: dict[str, float] | None = None,
 ) -> list[Any]:
     """Pick the ``top_k`` most query-relevant skill specs.
 
@@ -360,12 +371,27 @@ def select_relevant_skills(
         context_tokens = _tokenize(" ".join(ctx_parts)) - _STOPWORDS
 
     paths_signal = bool(active_paths)
-    if not query_tokens and not context_tokens and not paths_signal:
+    sem_signal = bool(semantic_scores)
+    if (
+        not query_tokens
+        and not context_tokens
+        and not paths_signal
+        and not sem_signal
+    ):
         return list(skill_specs)  # no signal — don't filter blindly
 
     scored: list[tuple[float, Any]] = []
     for spec in skills:
         s = _score_skill(query_tokens, spec, context_tokens)
+        # §⑫ semantic fusion: add the embedding-cosine signal so a
+        # skill with zero literal token overlap (CJK query vs English
+        # description) can still clear the ``> 0`` gate. Applied BEFORE
+        # the path gate so an explicit path opt-out (``s = -1.0``) still
+        # vetoes — author intent wins over fuzzy semantic match.
+        if semantic_scores:
+            _sem = semantic_scores.get(getattr(spec, "name", "") or "", 0.0)
+            if _sem > 0:
+                s += _SEMANTIC_WEIGHT * _sem
         # Epic #27 G-05 (2026-05-19): conditional activation via the
         # manifest ``paths`` glob list (stamped onto the spec schema
         # under ``x_paths`` by SkillToolProvider._spec_for).

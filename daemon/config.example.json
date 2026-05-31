@@ -27,7 +27,12 @@
   "skills": {
     "_comment": "Epic #27 G-04 (2026-05-19) — skill 工具暴露的渐进披露 (progressive disclosure)。disclosure_mode 决定 LLM 一回合看到几个 skill 工具：'inline' = 每个注册 skill 单独一个 skill_<id> 工具（受 prefilter top-12 收窄，legacy 行为）；'unified' = 只暴露 6 个 meta-tool (browse / view / status / install / uninstall / run)，所有调用走 skill_run(skill_id, args)，强制 LLM 走显式 browse→view→run 三步流程，大库下显著省 prompt token 预算；'auto' = 默认，注册 skill 数 > unified_threshold (默认 20) 时自动切 unified，否则保持 inline 的直接调用便利。",
     "disclosure_mode": "auto",
-    "unified_threshold": 20
+    "unified_threshold": 20,
+    "_comment_semantic_discovery": "§⑫ 自主调用修复 (2026-05-31)。token-overlap prefilter (B-238) 把 ~404 个技能收窄到每回合 ~12 个塞给 LLM；它的死穴是『中文 query 对英文技能描述命中归零』——于是中文场景下相关 skill_<id> 工具根本不进 agent 工具列表,agent 看不见→无法自主调用→退回 bash/web。semantic_discovery 用 embedding 余弦(语言无关)补一路语义召回:复用记忆系统的 EmbeddingService,把技能描述嵌成向量(embed_batch 缓存,只有新增/改动的描述才打 provider),每回合 embed 一次 query 做余弦,与 token 分数融合。研究依据见 docs/audit/SKILL_SYSTEM_SOTA_RESEARCH_2026.md §⑫ (RAG-of-tools / 语义路由:>100 工具不做语义选择即不可用;RAG-MCP 实测准确率 3.2×)。enabled 默认 true,但仅在有 embedder wired 时生效,任何失败都静默回退到纯 token(无回归)。floor=语义召回的余弦下限(默认 0.30,低于此视作不相关、不召回)。",
+    "semantic_discovery": {
+      "enabled": true,
+      "floor": 0.30
+    }
   },
   "evolution": {
     "_comment": "Epic #4 + Sprint 3 honest-disclosure: ``enabled`` defaults to true as of Phase 1 (2026-05-20). ``auto_apply`` defaults to true as of B-387 (2026-05-29) — skills auto-promote when evidence passes the HonestGrader gate. Set auto_apply=false to keep promotion human-gated (``xmclaw evolve approve <id>``).",

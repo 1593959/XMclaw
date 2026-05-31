@@ -289,6 +289,30 @@ def validate_config(cfg: dict[str, Any]) -> list[str]:
                     f"{type(v).__name__}"
                 )
 
+    # ── skills.semantic_discovery (§⑫ autonomous invocation) ─────
+    sk = cfg.get("skills")
+    if isinstance(sk, dict):
+        sd = sk.get("semantic_discovery")
+        if isinstance(sd, dict):
+            en = sd.get("enabled")
+            if en is not None and not isinstance(en, bool):
+                errors.append(
+                    f"skills.semantic_discovery.enabled: expected bool, "
+                    f"got {type(en).__name__}"
+                )
+            fl = sd.get("floor")
+            if fl is not None:
+                if isinstance(fl, bool) or not isinstance(fl, (int, float)):
+                    errors.append(
+                        f"skills.semantic_discovery.floor: expected number, "
+                        f"got {type(fl).__name__}"
+                    )
+                elif not (0.0 <= fl <= 1.0):
+                    errors.append(
+                        f"skills.semantic_discovery.floor: must be in "
+                        f"[0.0, 1.0], got {fl}"
+                    )
+
     return errors
 
 
