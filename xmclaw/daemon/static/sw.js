@@ -17,7 +17,14 @@
  * the user when a long-running task completes or the proactive
  * agent fires a high-urgency proposal.
  */
-const CACHE_VERSION = "xmclaw-v1";
+// 2026-05-31: bumped v1→v2 to PURGE the old cache. The previous
+// policy cache-FIRST'd .js modules under a static version that never
+// invalidated, so once a module was cached the SW served that stale
+// (or partial/broken) copy FOREVER — even across daemon restarts —
+// which blanked the whole app after any JS update. v2 is network-first
+// for app code (see fetch handler) and the activate purge below wipes
+// the poisoned v1 cache on first load of this file.
+const CACHE_VERSION = "xmclaw-v2";
 const APP_SHELL_PATHS = [
   "/ui/",
   "/ui/chat",
@@ -59,6 +66,48 @@ self.addEventListener("fetch", (event) => {
   if (url.search.includes("v=") || url.search.includes("bv=")) {
     return;
   }
+
+  // App CODE (HTML navigations + JS/CSS/MJS modules) → NETWORK-FIRST.
+  // This is the fix for the blank-screen-after-update bug: a daemon
+  // update must ALWAYS be picked up. We only fall back to cache when
+  // the network genuinely fails (true offline). Caching code at all is
+  // just a last-resort offline nicety — for a localhost daemon the
+  // "network" is 127.0.0.1, so freshness >> the marginal cache speed-up.
+  const isNavigation = req.mode === "navigate";
+  const p = url.pathname;
+  const isCode =
+    isNavigation
+    || p.endsWith(".js")
+    || p.endsWith(".mjs")
+    || p.endsWith(".css");
+  if (isCode) {
+    event.respondWith(
+      fetch(req)
+        .then((res) => {
+          // Only cache real, complete responses. Never cache an HTML
+          // SPA-fallback that came back for a missing .js (wrong MIME
+          // → import() would choke on the cached copy next time).
+          if (res && res.ok && res.type !== "opaqueredirect") {
+            const ct = res.headers.get("content-type") || "";
+            const looksHtml = ct.includes("text/html");
+            const wantsHtml = isNavigation;
+            if (wantsHtml === looksHtml) {
+              const clone = res.clone();
+              caches.open(CACHE_VERSION).then((c) => c.put(req, clone));
+            }
+          }
+          return res;
+        })
+        .catch(() =>
+          caches.match(req).then(
+            (cached) => cached || caches.match("/ui/"),
+          ),
+        ),
+    );
+    return;
+  }
+
+  // Other static assets (images / fonts / manifest) → cache-first SWR.
   event.respondWith(
     caches.match(req).then((cached) => {
       const network = fetch(req).then((res) => {
