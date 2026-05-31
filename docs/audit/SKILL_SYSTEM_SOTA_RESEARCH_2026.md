@@ -169,19 +169,77 @@
 
 ---
 
+## ⑫ 自主调用（autonomous invocation）—— 用户点名为「最重要」，单独深挖
+
+> 问题:怎么让 agent **自己决定**何时、调用哪个技能(不靠用户点名)。这不是单一
+> 开关,而是一条 5 段流水线;**任何一段断了,自主调用就垮**。XMclaw 的瓶颈精确地
+> 卡在第 1 段(发现)。
+
+### 流水线 5 段 + 头部做法 + XMclaw 现状
+
+| 段 | 作用 | 头部做法(论文/源码) | XMclaw 现状 | 评级 |
+|---|---|---|---|---|
+| 1. **发现/surfacing** | agent 这一轮**能看到**哪些技能 | **RAG-of-tools / 语义路由**:把每个工具的 desc 嵌入向量,按 query 召回(RAG-MCP:741 工具 token 降 99%、准确率 3.2×;>100 工具不做语义选择就「不可用」) | **token-overlap prefilter**(404→~12),其自述「**CJK query 对英文 desc 命中归零**」 | 🔴 **瓶颈** |
+| 2. **是否该调** | 决定用技能还是直接答 | **model-invoked**(Anthropic Skills:只把 name+desc 进系统提示,模型据 desc 自己决定;简单任务不触发,复杂/专门任务才触发)。ReAct(Thought→Action)、Toolformer(把「何时调」训进权重) | 同样 model-invoked:`skill_browse` desc 提示「没看到专门技能就先 browse,别急着 bash/web」+ per-skill 工具进列表 | 🟢 模式对,但**受限于第 1 段召回** |
+| 3. **多选一** | 一堆相似技能里选对的 | ToolLLM:神经 API retriever + DFS 决策树(16K API);语义路由器 | prefilter top-k + **UCB1 选最佳版本** | 🟢/🟡 |
+| 4. **无用户触发** | 没人发话也能自己用 | 自主 agent 循环 / 主动触发 | CognitiveDaemon + HTN planner + `goal-from-percept-*` 自主会话(turn 内有技能工具访问) | 🟢 基础设施在 |
+| 5. **别滥调** | 控制过度/乱调用 | OTC / ToolRL:奖励塑形惩罚过度调用;>10 相似工具→幻觉+成本爆炸 | prefilter 收窄 + `unified` 披露模式(超阈值砍 per-skill 工具,只留 `skill_run`) | 🟢 |
+
+### 关键诊断:瓶颈在第 1 段，且对你(中文用户)尤其致命
+
+XMclaw 的 prefilter 是 **token 重叠**匹配。它的 docstring 自己写明:**「DROPS to zero
+on CJK queries against English skill descriptions」**。也就是说——你用中文说需求、技能
+描述是英文时,相关的 `skill_<id>` 工具**这一轮根本不会出现在 agent 的工具列表里**。
+于是 agent「看不见」那个技能,自然无法自主调用,只能退回 bash / web_search / 直接
+回答。第 2 段的 model-invoked 决策再聪明也没用——**它决策的前提是先看得见**。
+
+`skill_browse` 是兜底:即使 prefilter 漏了,agent 仍可主动 browse。但这要求 agent
+**每次都想起来**去 browse——而 LLM 经常直接用通用工具糊弄过去。所以现状是「能自主调用,
+但召回不稳、对中文掉得厉害」。
+
+### 头部的答案:把发现层换成「语义召回」（RAG-of-tools）
+
+ReAct/Toolformer/Anthropic 都假设**该看到的工具已经在上下文里**——真正的工程难点是
+**大规模工具下的「发现」**,2025 的共识答案是 **embedding 语义召回**(RAG-MCP、语义
+路由器):给每个技能的 description 算向量,按用户 query 向量召回 top-k。好处正中要害:
+- **语言无关** → 彻底解决「中文 query 漏掉英文技能」(向量不看字面 token);
+- 准确率 3.2×、token 降 99%(RAG-MCP benchmark);
+- **XMclaw 已经有现成的 `EmbeddingService`(记忆系统在用)**,把它接到 prefilter 几乎
+  零新依赖。
+
+这是「让他自主调用」**ROI 最高、最直接**的一步:agent 看得见对的技能,model-invoked
+决策(第 2 段,本就对齐 Anthropic)立刻生效。配套再把 `skill_browse` 的 desc 写得更
+硬一点(「**每个非平凡任务开始前都先 browse 一次**」),双保险。
+
+### 自主调用的建议(按 ROI)
+
+1. **🔴 发现层换/加 embedding 语义召回**(RAG-of-tools)—— 复用 `EmbeddingService`,
+   给技能 desc 建向量索引,按 query 召回;token-overlap 留作兜底第二路(hybrid,
+   跟记忆系统 BM25+向量同思路)。**直接解决中文漏召回 = 自主调用不稳的根因。**
+2. **🟡 强化 model-invoked 提示** —— 系统提示/`skill_browse` desc 明确「非平凡任务
+   先 browse」,把「该不该用技能」的触发律写清楚(Anthropic 的经验:desc 是唯一信号)。
+3. **🟡 无用户自主触发接技能** —— 让 CognitiveDaemon/proactive 的 goal→plan 在执行步
+   里显式走技能召回(而非只用通用工具),把「自主使用技能」从 chat 扩到后台。
+4. **🟢 保留 UCB1 + unified 披露 + OTC 式克制** —— 已对齐 SOTA,别动。
+
+---
+
 ## 总结:给决策的优先级
 
-按"打通生态 + 补短板,且不碰护城河"排序:
+按"先让自主调用真的稳(用户点名的最重要),再打通生态,且不碰护城河"排序:
 
-1. **🔴 ① SKILL.md adapter** — 把 Anthropic 开放标准(已被全行业采纳)的技能目录
+1. **🔴🔴 ⑫ 自主调用:发现层换/加 embedding 语义召回(RAG-of-tools)** — **最高优先,
+   用户点名的核心**。token-overlap prefilter 对中文 query 命中归零 → agent 看不见技能 →
+   无法自主调用。复用现成 `EmbeddingService` 给技能 desc 建向量索引做语义召回(token
+   兜底),**直接根治「中文场景 agent 不会自己用技能」**。RAG-MCP 实测准确率 3.2×。
+2. **🔴 ① SKILL.md adapter** — 把 Anthropic 开放标准(已被全行业采纳)的技能目录
    映射进 XMclaw 的 prefilter/registry/runtime。一步同时改善 ①(表示)、⑩(生态)、
-   ②(可直接 consume 社区技能)。**最高 ROI**。
-2. **🟡 ② 轨迹→技能归纳(Voyager 路线)** — 成功且 HonestGrader 认可的多步轨迹 →
-   LLM 抽成带 description 的新 skill 候选 → 进现有 staging+证据门。补"无中生有"。
-3. **🟡 ⑩→MCP 客户端接入(Alita 路线)** — 让 agent 能调用/复用外部 MCP 工具,
-   缺能力时按需生成。中期。
-4. **🟡 ⑧ 复合技能** + **⑦ archive stepping-stones** — 轻量增强,顺带做。
-5. **⑨ 自动课程** — 低优先,reactive 进化对个人助理已够。
+   ②(可直接 consume 社区技能)。
+3. **🟡 ②⑫ 模型触发律 + 轨迹→技能归纳** — 强化 model-invoked 提示(非平凡任务先
+   browse);成功且 HonestGrader 认可的轨迹 → 抽成新 skill 候选走证据门。
+4. **🟡 ⑩→MCP 客户端接入(Alita 路线)** — 调用/复用外部 MCP 工具,缺能力按需生成。
+5. **🟡 ⑧ 复合技能** + **⑦ archive stepping-stones** — 轻量增强,顺带做。
+6. **⑨ 自动课程** — 低优先,reactive 进化对个人助理已够。
 
 > **一句话**:XMclaw 的技能**进化引擎**(诚实评估⑥ + GEPA 变异⑤ + UCB1 选择④ +
 > 证据门晋升⑦)是**研究级、且在"诚实评估"上领先头部**,这是护城河,别动。短板全在
@@ -200,3 +258,4 @@
 - DSPy — arXiv:2310.03714(NeurIPS 2023)/ Stanford NLP
 - GEPA — 反思式 prompt 进化(XMclaw reflective_mutator 的来源)
 - Self-evolving agents survey — arXiv:2507.21046(What/When/How/Where to Evolve)、arXiv:2508.07407(Comprehensive Survey)/ `github.com/EvoAgentX/Awesome-Self-Evolving-Agents`
+- 自主调用 / 工具选择:ReAct(arXiv:2210.03629)、Toolformer(arXiv:2302.04761)、ToolLLM/ToolBench(arXiv:2307.16789,ICLR'24)、Gorilla(arXiv:2305.15334)、RAG-MCP / 语义路由(RAG-of-tools,2025-26:741 工具 token −99% / 准确率 3.2×;>100 工具无语义选择即不可用)、OTC/ToolRL(过度调用惩罚)、Anthropic Skills「model-invoked」(desc 是触发唯一信号)
