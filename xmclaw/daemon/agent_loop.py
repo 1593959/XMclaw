@@ -38,6 +38,7 @@ objects produced by the provider's translator. A response whose
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -102,6 +103,74 @@ def _is_internal_session(session_id: str) -> bool:
     if ":to:" in session_id:
         return True
     return any(session_id.startswith(p) for p in _INTERNAL_SESSION_PREFIXES)
+
+
+# ── Autonomous subagent trigger heuristic ────────────────────────
+
+
+# Markers that indicate one step DEPENDS on another — when these are
+# present the steps should run sequentially (tool parallelism), NOT as
+# independent subagents.
+_STEP_DEPENDENCY_MARKERS: frozenset[str] = frozenset({
+    "然后", "之后", "再", "接着", "最后", "下一步",
+    "after", "then", "next", "subsequently", "finally",
+    "once", "upon completion", "when done",
+})
+
+# Task verbs that make a step "complex enough" to merit its own
+# subagent.  A step with 0-1 verbs is usually a single tool call
+# (read / search / write) — tool parallelism handles that fine.
+#
+# Split into two patterns because \b word boundaries don't work on
+# CJK characters.
+_EN_STEP_VERB_RE = re.compile(
+    r"\b(search|find|read|write|edit|create|delete|analy[sz]e|"
+    r"summari[sz]e|compare|test|verify|review|generate|build|"
+    r"fetch|download|upload|run|execute|install|deploy|fix|debug|"
+    r"refactor|implement|extract|convert|migrate|optimi[sz]e)"
+    r"\b",
+    re.IGNORECASE,
+)
+_CN_STEP_VERB_RE = re.compile(
+    r"(查找|搜索|读取|写入|编辑|创建|删除|分析|汇总|对比|测试|"
+    r"验证|审查|修复|调试|安装|部署|下载|执行|运行|总结|检查|"
+    r"输出|生成|构建|重构|实现|提取|转换|迁移|优化)",
+)
+
+
+def _count_step_verbs(step: str) -> int:
+    """Return the number of distinct task verbs in a plan step."""
+    en = set(_EN_STEP_VERB_RE.findall(step))
+    cn = set(_CN_STEP_VERB_RE.findall(step))
+    return len(en | cn)
+
+
+def _steps_warrant_subagents(steps: list[str]) -> bool:
+    """Heuristic: do these plan steps merit parallel subagents?
+
+    Subagents are expensive — each gets its own context window and
+    hop budget. We only fan out when the plan looks like genuinely
+    independent complex subtasks:
+
+    1. At least 3 steps (2-step plans → tool parallelism is enough).
+    2. No step contains strong dependency markers ("then", "after",
+       "然后"…) — those imply sequential execution.
+    3. At least 2/3 of steps contain >=2 distinct task verbs —
+       meaning each step is itself multi-step work worth a mini
+       agent loop.
+    """
+    if len(steps) < 3:
+        return False
+
+    independent_complex = 0
+    for step in steps:
+        lower = step.lower()
+        if any(m in lower for m in _STEP_DEPENDENCY_MARKERS):
+            continue
+        if _count_step_verbs(step) >= 2:
+            independent_complex += 1
+
+    return independent_complex >= max(2, len(steps) * 2 // 3)
 
 
 @dataclass
@@ -2370,6 +2439,17 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                                 if (getattr(s, "name", "") or "")
                                 .startswith("skill_")
                             ]
+                            # Warm the description embeddings in the
+                            # BACKGROUND (only when there's new/changed
+                            # work) so the hot path never blocks on
+                            # embedding hundreds of descriptions. The
+                            # first skill turn scores token-only (cache
+                            # cold); semantic kicks in once warm finishes.
+                            if _idx.has_pending(_skill_only):
+                                import asyncio as _sem_aio
+                                _sem_aio.create_task(
+                                    _idx.warm(list(_skill_only))
+                                )
                             semantic_scores = await _idx.scores(
                                 user_message, _skill_only,
                                 floor=float(
@@ -2724,6 +2804,29 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                             "steps_count": len(_steps),
                             "user_msg_len": len(user_message),
                         })
+                        # 2026-05-30: autonomous subagent trigger.
+                        # Not every multi-step plan needs subagents — tool
+                        # parallelism handles 2-step tasks fine. We upgrade
+                        # to swarm ONLY when the plan looks like genuinely
+                        # independent complex subtasks (≥3 steps, no obvious
+                        # dependency chains, each step is non-trivial).
+                        if self._active_run_mode != "swarm":
+                            try:
+                                if _steps_warrant_subagents(_steps):
+                                    self._active_run_mode = "swarm"
+                                    await publish(
+                                        EventType.INNER_MONOLOGUE,
+                                        {
+                                            "kind": "auto_swarm_upgraded",
+                                            "reason": (
+                                                "PlanFirst steps look like "
+                                                "independent complex subtasks"
+                                            ),
+                                            "steps_count": len(_steps),
+                                        },
+                                    )
+                            except Exception:  # noqa: BLE001
+                                pass
                         # Jarvis Phase 6.4: complex query → auto plan mode.
                         # When the query is complex enough to warrant
                         # decomposition, it's complex enough to warrant

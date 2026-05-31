@@ -69,6 +69,7 @@ async def test_semantic_index_cross_language_match():
         _Spec("skill_git-commit", "Create a git commit with a message"),
         _Spec("skill_weather", "Get the weather forecast"),
     ]
+    await idx.warm(specs)  # populate the description cache first
     # Chinese query, English descriptions — token overlap would be ZERO.
     scores = await idx.scores("帮我提交代码", specs, floor=0.3)
     assert scores.get("skill_git-commit", 0.0) > 0.3
@@ -92,8 +93,11 @@ async def test_semantic_index_embed_failure_is_silent():
             raise RuntimeError("provider down")
 
     idx = SkillSemanticIndex(_BoomEmbedder())
-    # Must degrade to {} — never raise into the turn.
-    assert await idx.scores("提交代码", [_Spec("skill_git", "git commit")]) == {}
+    specs = [_Spec("skill_git", "git commit")]
+    # warm() swallows the provider error (cache stays empty)…
+    await idx.warm(specs)
+    # …and scores() degrades to {} — never raises into the turn.
+    assert await idx.scores("提交代码", specs) == {}
 
 
 @pytest.mark.asyncio
@@ -109,8 +113,10 @@ async def test_semantic_index_caches_descriptions():
     emb.embed_batch = _counting_batch  # type: ignore[method-assign]
     idx = SkillSemanticIndex(emb)
     specs = [_Spec("skill_git-commit", "Create a git commit")]
-    await idx.scores("提交", specs)
-    await idx.scores("代码", specs)  # same specs → no re-embed
+    assert idx.has_pending(specs) is True
+    await idx.warm(specs)
+    assert idx.has_pending(specs) is False  # all cached now
+    await idx.warm(specs)  # same specs → no re-embed
     assert calls["batch"] == 1
 
 

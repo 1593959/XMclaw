@@ -71,30 +71,52 @@ class SkillSemanticIndex:
         # rebuilt for skills whose description changed.
         self._vecs: dict[str, tuple[str, tuple[float, ...]]] = {}
 
-    async def _ensure(self, specs: list[Any]) -> None:
-        """Embed any skill descriptions not yet cached (or changed).
-        Batched in a single provider call; cache hits are free."""
-        todo_names: list[str] = []
-        todo_descs: list[str] = []
-        live: set[str] = set()
+    def has_pending(self, specs: list[Any]) -> bool:
+        """Cheap sync check: is any skill description not yet embedded
+        (or changed since)? Lets the caller schedule :meth:`warm` in the
+        BACKGROUND only when there's actually work, so a per-turn call is
+        free once the index is hot."""
         for spec in specs:
             name = getattr(spec, "name", "") or ""
             desc = (getattr(spec, "description", "") or "").strip()
             if not name or not desc:
                 continue
-            live.add(name)
             cached = self._vecs.get(name)
             if cached is None or cached[0] != desc:
-                todo_names.append(name)
-                todo_descs.append(desc)
-        # Prune embeddings for skills no longer present (uninstalled).
-        for stale in [n for n in self._vecs if n not in live]:
-            self._vecs.pop(stale, None)
-        if not todo_descs:
-            return
-        vecs = await self._embedder.embed_batch(todo_descs)
-        for n, d, v in zip(todo_names, todo_descs, vecs):
-            self._vecs[n] = (d, tuple(v))
+                return True
+        return False
+
+    async def warm(self, specs: list[Any]) -> None:
+        """Embed any skill descriptions not yet cached (or changed).
+        Batched in a single provider call; cache hits are free. Intended
+        to run in the BACKGROUND (fire-and-forget) so the per-turn hot
+        path never blocks on embedding ~hundreds of descriptions — the
+        FIRST skill turn scores token-only (cache cold), and semantic
+        recall kicks in a beat later once this completes. Never raises."""
+        try:
+            todo_names: list[str] = []
+            todo_descs: list[str] = []
+            live: set[str] = set()
+            for spec in specs:
+                name = getattr(spec, "name", "") or ""
+                desc = (getattr(spec, "description", "") or "").strip()
+                if not name or not desc:
+                    continue
+                live.add(name)
+                cached = self._vecs.get(name)
+                if cached is None or cached[0] != desc:
+                    todo_names.append(name)
+                    todo_descs.append(desc)
+            # Prune embeddings for skills no longer present (uninstalled).
+            for stale in [n for n in self._vecs if n not in live]:
+                self._vecs.pop(stale, None)
+            if not todo_descs:
+                return
+            vecs = await self._embedder.embed_batch(todo_descs)
+            for n, d, v in zip(todo_names, todo_descs, vecs):
+                self._vecs[n] = (d, tuple(v))
+        except Exception as exc:  # noqa: BLE001 — warming is best-effort
+            _log.debug("skill_semantic_index.warm_failed err=%s", exc)
 
     async def scores(
         self,
@@ -104,12 +126,17 @@ class SkillSemanticIndex:
         floor: float = DEFAULT_SEMANTIC_FLOOR,
     ) -> dict[str, float]:
         """Return ``{skill_name: cosine}`` for skills with cosine ≥
-        ``floor`` against ``query``. Empty dict when there's no embedder,
-        no query, or nothing clears the floor. Never raises."""
+        ``floor`` against ``query``, scored over the ALREADY-WARMED
+        cache (call :meth:`warm` to populate it). Empty dict when the
+        cache is cold, there's no embedder, no query, or nothing clears
+        the floor. Never raises — discovery is strictly best-effort."""
         if not query or not query.strip():
             return {}
+        # Cold cache → no query embed (save the call); token-only this
+        # turn. warm() populates it for the next turn.
+        if not self._vecs:
+            return {}
         try:
-            await self._ensure(specs)
             qvec = tuple(await self._embedder.embed(query))
         except Exception as exc:  # noqa: BLE001 — discovery is best-effort
             _log.debug("skill_semantic_index.embed_failed err=%s", exc)
