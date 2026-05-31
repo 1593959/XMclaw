@@ -2745,17 +2745,19 @@ def make_lifespan(
         # the agent can try them, but flagged untrusted + never
         # auto-promoted to HEAD without the grader — anti-req #12).
         #
-        # Default OFF: auto-writing skill files is consequential, so it's
-        # opt-in (set skills.induction.enabled=true). The synthesis core
-        # (SkillInductor) + trajectory extraction + writer are all unit-
-        # tested; this loop is the thin glue. Config:
+        # Default ON (user decision 2026-05-31): induced skills are
+        # written UNTRUSTED (.proposed) and NEVER auto-promote to HEAD
+        # (anti-req #12), so the blast radius is bounded — worst case is
+        # an untrusted proposal in skill_browse that the grader gates.
+        # Conservative knobs keep it gentle (max_per_pass=1, daily, LLM
+        # skips when unsure). Config:
         #   skills.induction.{enabled, interval_s, check_interval_s,
         #                     warmup_s, max_per_pass, announce}
         _induction_cfg = (
             (config.get("skills", {}) or {}).get("induction", {})
             if isinstance(config, dict) else {}
         ) or {}
-        if _induction_cfg.get("enabled", False) and agent is not None:
+        if _induction_cfg.get("enabled", True) and agent is not None:
             try:
                 from xmclaw.memory.v2.curator import (
                     is_curation_due,

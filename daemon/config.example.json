@@ -33,9 +33,9 @@
       "enabled": true,
       "floor": 0.30
     },
-    "_comment_induction": "§② 技能归纳 (Voyager add_new_skill, 2026-05-31)。保守的后台 pass:把 agent 最近**成功完成**的多步任务轨迹(从 session_store 读)抽象成一个**全新技能候选**——这是 XMclaw 之前缺的能力(以前只会改良已有技能,不会无中生有)。流程:读近期非内部会话→trajectory_from_messages 提取(目标/工具序列/结果/成功标志)→SkillInductor 让 LLM 判断是否值得固化+是否已有技能覆盖(skip)→合成 name/description/when_to_use/body→写成**未信任**的 .proposed SKILL.md(proposed_by=induction)。**关键安全**:induced 技能带 .proposed.json 未信任标记,出现在 skill_browse 让 agent 可试用,但**永不自动晋升为 HEAD**(走 HonestGrader 证据门, anti-req #12);LLM 宁缺毋滥(拿不准就 skip)+ 硬去重(名字冲突跳过)。**默认 OFF**:自动写技能文件较敏感,合成核心已单测覆盖,但这条后台 loop 设为 opt-in——设 enabled=true 开启。interval_s=两次归纳的 wall-clock 间隔(默认每天);max_per_pass=每次最多产出几个候选(默认 1,极保守);announce=真induce出技能才主动告知用户(默认 true)。研究依据见 docs/audit/SKILL_SYSTEM_SOTA_RESEARCH_2026.md §②。",
+    "_comment_induction": "§② 技能归纳 (Voyager add_new_skill, 2026-05-31)。保守的后台 pass:把 agent 最近**成功完成**的多步任务轨迹(从 session_store 读)抽象成一个**全新技能候选**——这是 XMclaw 之前缺的能力(以前只会改良已有技能,不会无中生有)。流程:读近期非内部会话→trajectory_from_messages 提取(目标/工具序列/结果/成功标志)→SkillInductor 让 LLM 判断是否值得固化+是否已有技能覆盖(skip)→合成 name/description/when_to_use/body→写成**未信任**的 .proposed SKILL.md(proposed_by=induction)。**关键安全**:induced 技能带 .proposed.json 未信任标记,出现在 skill_browse 让 agent 可试用,但**永不自动晋升为 HEAD**(走 HonestGrader 证据门, anti-req #12);LLM 宁缺毋滥(拿不准就 skip)+ 硬去重(名字冲突跳过)。**默认 ON**(2026-05-31 用户决定):因为产出永远是未信任候选、绝不自动上 HEAD,爆炸半径有限;保守参数(max_per_pass=1、每天一次、拿不准就 skip)让它很温和。设 enabled=false 可关。interval_s=两次归纳的 wall-clock 间隔(默认每天);max_per_pass=每次最多产出几个候选(默认 1,极保守);announce=真induce出技能才主动告知用户(默认 true)。研究依据见 docs/audit/SKILL_SYSTEM_SOTA_RESEARCH_2026.md §②。",
     "induction": {
-      "enabled": false,
+      "enabled": true,
       "interval_s": 86400,
       "check_interval_s": 1800,
       "warmup_s": 600,
