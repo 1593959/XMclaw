@@ -312,6 +312,40 @@ def validate_config(cfg: dict[str, Any]) -> list[str]:
                         f"skills.semantic_discovery.floor: must be in "
                         f"[0.0, 1.0], got {fl}"
                     )
+        # skills.induction (§② trajectory→skill)
+        ind = sk.get("induction")
+        if isinstance(ind, dict):
+            for fld in ("enabled", "announce"):
+                v = ind.get(fld)
+                if v is not None and not isinstance(v, bool):
+                    errors.append(
+                        f"skills.induction.{fld}: expected bool, got "
+                        f"{type(v).__name__}"
+                    )
+            for fld in ("interval_s", "check_interval_s", "warmup_s"):
+                v = ind.get(fld)
+                if v is not None:
+                    if isinstance(v, bool) or not isinstance(v, (int, float)):
+                        errors.append(
+                            f"skills.induction.{fld}: expected number, got "
+                            f"{type(v).__name__}"
+                        )
+                    elif v <= 0:
+                        errors.append(
+                            f"skills.induction.{fld}: must be > 0, got {v}"
+                        )
+            mpp = ind.get("max_per_pass")
+            if mpp is not None:
+                if isinstance(mpp, bool) or not isinstance(mpp, int):
+                    errors.append(
+                        f"skills.induction.max_per_pass: expected int, got "
+                        f"{type(mpp).__name__}"
+                    )
+                elif mpp < 1:
+                    errors.append(
+                        f"skills.induction.max_per_pass: must be >= 1, "
+                        f"got {mpp}"
+                    )
 
     return errors
 

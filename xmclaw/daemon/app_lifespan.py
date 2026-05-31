@@ -1740,12 +1740,20 @@ def make_lifespan(
                         _inbox = SuggestionInbox()
                         _app.state.autonomy_policy = _autonomy
                         _app.state.suggestion_inbox = _inbox
+                        # Wire autonomy policy into the primary agent loop
+                        # so run_turn can gate auto-subagent fanout.
+                        _primary_agent = getattr(_app.state, "agent", None)
+                        if _primary_agent is not None:
+                            _primary_agent._autonomy_policy = _autonomy
                     except Exception as exc:  # noqa: BLE001
                         log.warning(
                             "autonomy.build_failed err=%s", exc,
                         )
                         _app.state.autonomy_policy = None
                         _app.state.suggestion_inbox = None
+                        _primary_agent = getattr(_app.state, "agent", None)
+                        if _primary_agent is not None:
+                            _primary_agent._autonomy_policy = None
 
                     _reflection_cycle = ReflectionCycle(
                         llm=_agent_llm,
@@ -2728,6 +2736,179 @@ def make_lifespan(
                     "(daemon continues without v2)", exc,
                 )
 
+        # §② Skill induction (Voyager add_new_skill, 2026-05-31): a
+        # conservative background pass that turns the agent's RECENT
+        # SUCCESSFUL multi-step trajectories into NEW skill candidates —
+        # the capability XMclaw lacked (it could only improve existing
+        # skills, never invent one). Induced skills are written as
+        # UNTRUSTED ``.proposed`` SKILL.md (visible to skill_browse so
+        # the agent can try them, but flagged untrusted + never
+        # auto-promoted to HEAD without the grader — anti-req #12).
+        #
+        # Default OFF: auto-writing skill files is consequential, so it's
+        # opt-in (set skills.induction.enabled=true). The synthesis core
+        # (SkillInductor) + trajectory extraction + writer are all unit-
+        # tested; this loop is the thin glue. Config:
+        #   skills.induction.{enabled, interval_s, check_interval_s,
+        #                     warmup_s, max_per_pass, announce}
+        _induction_cfg = (
+            (config.get("skills", {}) or {}).get("induction", {})
+            if isinstance(config, dict) else {}
+        ) or {}
+        if _induction_cfg.get("enabled", False) and agent is not None:
+            try:
+                from xmclaw.memory.v2.curator import (
+                    is_curation_due,
+                    save_last_curate_ts,
+                )
+                from xmclaw.utils.paths import (
+                    data_dir as _ind_data_dir,
+                )
+
+                _ind_interval = float(
+                    _induction_cfg.get("interval_s", 86400)
+                )
+                _ind_check = float(
+                    _induction_cfg.get("check_interval_s", 1800)
+                )
+                _ind_warmup = float(_induction_cfg.get("warmup_s", 600))
+                _ind_max = max(1, int(_induction_cfg.get("max_per_pass", 1)))
+                _ind_announce = bool(_induction_cfg.get("announce", True))
+                _ind_state = (
+                    _ind_data_dir() / "v2" / "induction_state.json"
+                )
+
+                async def _run_induction_pass() -> int:
+                    from xmclaw.daemon.aux_llm import resolve_aux_llm
+                    from xmclaw.daemon.session_store import (
+                        SessionStore,
+                        is_internal_session,
+                    )
+                    from xmclaw.skills.inductor import (
+                        SkillInductor,
+                        trajectory_from_messages,
+                        write_induced_proposal,
+                    )
+                    from xmclaw.utils.paths import (
+                        default_sessions_db_path,
+                        user_skills_dir,
+                    )
+
+                    _reg = getattr(agent, "_llm_registry", None)
+                    _ind_llm = resolve_aux_llm(
+                        _reg, getattr(agent, "_llm", None),
+                    )
+                    if _ind_llm is None:
+                        return 0
+                    inductor = SkillInductor(_ind_llm)
+                    store = SessionStore(default_sessions_db_path())
+                    recents = await asyncio.to_thread(store.list_recent, 30)
+                    # Existing skills → dedup (LLM hint + hard collision).
+                    existing: list[tuple[str, str]] = []
+                    skreg = getattr(agent, "_skill_registry", None)
+                    if skreg is not None:
+                        try:
+                            for _sid in skreg.list_skill_ids():
+                                _ref = skreg.ref(_sid)
+                                existing.append((
+                                    _sid,
+                                    getattr(_ref.manifest, "description", "")
+                                    or "",
+                                ))
+                        except Exception:  # noqa: BLE001
+                            pass
+                    root = user_skills_dir()
+                    made = 0
+                    for row in recents:
+                        if made >= _ind_max:
+                            break
+                        sid = row.get("session_id", "") if isinstance(row, dict) else ""
+                        if not sid or is_internal_session(sid):
+                            continue
+                        msgs = await asyncio.to_thread(store.load, sid)
+                        traj = trajectory_from_messages(sid, msgs or [])
+                        if traj is None or not traj.ok:
+                            continue
+                        proposal = await inductor.induce(
+                            traj, existing_skills=existing,
+                        )
+                        if proposal is None:
+                            continue
+                        outdir = write_induced_proposal(proposal, root=root)
+                        if outdir is None:
+                            continue
+                        made += 1
+                        existing.append(
+                            (proposal.name, proposal.description),
+                        )
+                        log.info(
+                            "skill_induction.proposed name=%s from=%s",
+                            proposal.name, sid,
+                        )
+                        if _ind_announce:
+                            try:
+                                from xmclaw.core.bus import (
+                                    EventType, make_event,
+                                )
+                                await bus.publish(make_event(
+                                    session_id="proactive",
+                                    agent_id="skill_inductor",
+                                    type=EventType.PROACTIVE_PROPOSAL,
+                                    payload={
+                                        "trigger": "skill_induction",
+                                        "message": (
+                                            f"我从最近一次成功的任务里归纳了一个"
+                                            f"新技能候选「{proposal.name}」"
+                                            f"({proposal.description})。它还是"
+                                            f"未信任状态,要不要看看/试用?"
+                                        ),
+                                        "urgency": "low",
+                                        "ts": time_module.time(),
+                                        "skill_name": proposal.name,
+                                    },
+                                ))
+                            except Exception:  # noqa: BLE001
+                                pass
+                    return made
+
+                async def _skill_induction_loop() -> None:
+                    try:
+                        await asyncio.sleep(_ind_warmup)
+                        while True:
+                            try:
+                                if is_curation_due(_ind_state, _ind_interval):
+                                    n = await _run_induction_pass()
+                                    save_last_curate_ts(
+                                        _ind_state, time_module.time(),
+                                    )
+                                    log.info(
+                                        "skill_induction.pass_done made=%d", n,
+                                    )
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception as exc:  # noqa: BLE001
+                                log.warning(
+                                    "skill_induction.pass_failed err=%s "
+                                    "(loop continues)", exc,
+                                )
+                            await asyncio.sleep(_ind_check)
+                    except asyncio.CancelledError:
+                        return
+
+                _ind_task = asyncio.create_task(
+                    _skill_induction_loop(), name="skill_induction",
+                )
+                _app.state.skill_induction_task = _ind_task
+                log.info(
+                    "skill_induction.loop_started interval_s=%.0f "
+                    "max_per_pass=%d", _ind_interval, _ind_max,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("skill_induction.wire_failed err=%s", exc)
+                _app.state.skill_induction_task = None
+        else:
+            _app.state.skill_induction_task = None
+
         # Sprint 1: ProactiveAgent — periodic trigger evaluator that
         # publishes PROACTIVE_PROPOSAL events when the agent should
         # speak without being asked. Reads cognition.proactive.*
@@ -3290,6 +3471,14 @@ def make_lifespan(
                 _v2_curator.cancel()
                 try:
                     await _v2_curator
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+            # §② (2026-05-31): stop the skill-induction loop.
+            _ind_task = getattr(_app.state, "skill_induction_task", None)
+            if _ind_task is not None and not _ind_task.done():
+                _ind_task.cancel()
+                try:
+                    await _ind_task
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
             # B-294: stop the evaluation trigger BEFORE the observer so
