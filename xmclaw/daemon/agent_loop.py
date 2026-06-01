@@ -2789,8 +2789,22 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # 2026-05-26 cheap-path: a trivial turn (greeting / ack) has
         # nothing to decompose. Skip the PlanFirst LLM call so the
         # user-perceived latency on "hi" is just the main hop.
-        if self._active_run_mode != "instant" and not getattr(
-            self, "_active_is_trivial", False,
+        #
+        # PERF (2026-05-31): also skip plan-first on pure reflection /
+        # system housekeeping sessions (``reflect:`` / ``_system:``).
+        # Those have no user waiting AND no tool-chain to pre-decompose —
+        # firing a 25s-capped planning LLM call there is pure waste
+        # (tokens + event-loop time competing with the user's foreground
+        # turn). Real autonomous task execution (``autonomous:`` /
+        # ``goal-from-percept-``) is NOT skipped — planning helps there.
+        _skip_plan_session = (
+            session_id.startswith(("reflect:", "_system:"))
+            if session_id else False
+        )
+        if (
+            self._active_run_mode != "instant"
+            and not getattr(self, "_active_is_trivial", False)
+            and not _skip_plan_session
         ):
             # B-LATENCY-prep: plan-first decomposition fires a real LLM
             # call before the first hop. Cap at 15s — past that, run
@@ -2811,8 +2825,12 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 )
                 _gate = PlanFirstGate(llm=_plan_llm)
                 if _gate.is_complex(user_message):
+                    # Cap aligned to the B-LATENCY-prep comment's intent
+                    # (15s, not 25s): decomposing a goal into 2-4 bullets
+                    # never legitimately needs more, and a tighter cap
+                    # bounds the worst-case foreground wait.
                     _steps = await asyncio.wait_for(
-                        _gate.plan(user_message), timeout=25.0,
+                        _gate.plan(user_message), timeout=15.0,
                     )
                     if _steps:
                         self._active_plan_steps = _steps
