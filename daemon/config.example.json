@@ -210,6 +210,10 @@
     "_consumer": "lifespan (MCP registry); not in factory.py. On Windows: requires `npx` on PATH for official @modelcontextprotocol/server-* packages — install Node.js first."
   },
   "cognition": {
+    "_comment_memory": "PERF (2026-05-31): cognition.memory.legacy_recall_enabled 控制**老 V1 MemoryManager 在用户回合关键路径上的召回**(prefetch + events.db 上的 hybrid RRF)。在大 events.db(200MB+)上这条会跑 60–195s,而且内层 wait_for 取消不掉阻塞式 DB 调用,于是**整个 daemon 事件循环被冻住**——表现就是『每次回应都要等很久』甚至『刷新页面一直转圈连 /health 都不响应』。V1 用户态 facts 已在 Phase 7 退役,下面 memory_v2.render_for_prompt(硬 2s 上限)已提供记忆注入,所以这条**默认 false(关闭)**。真要找回 V1 跨会话原文召回再设 true(并接受延迟),等 V1 物理移除后此开关作废。",
+    "memory": {
+      "legacy_recall_enabled": false
+    },
     "_comment": "Jarvisification 认知架构 — Epic #25 完成后默认全 ON（autonomy_level 从 0 翻到 50，之前的保守姿态被显式撤销 2026-05-09）。enabled=true 启用 Phase 1-5 mechanics（CognitiveState / MemoryGraph / TaskScheduler / FileWatcher / EvolutionLoop）。continuous_loop.enabled=true 进一步打开 Phase 6/R1-R6（PerceptionBus + AttentionFilter + ReasoningEngine + Planner + GoalGenerator + SelfExperimentLoop + CognitiveDaemon heartbeat + ReflectionCycle + MetaCognitionPass + Multi-modal watchers + SuggestionInbox）。autonomy_level=50 默认 = 主动提示但不替你执行（建议进 SuggestionInbox 待审批）；要自主行动翻 75+（启用 self-experiments）/ 100（full Jarvis，要 double-confirm + audit log）；要回到只观察不动作翻 0。要完全关回 Phase 5 之前行为，把 enabled 设 false。",
     "enabled": true,
     "memory_v2": {

@@ -1570,7 +1570,24 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # even before users wire an embedder.
         memory_ctx_block = ""
         _recall_t0 = time.monotonic()
-        if self._memory_manager is not None:
+        # PERF (2026-05-31): the legacy V1 ``MemoryManager`` hot-path
+        # recall (prefetch + hybrid RRF over events.db) is THE reason the
+        # daemon "always waits a while" before replying — on a fat
+        # events.db (200MB+) it takes 60–195s (real trace:
+        # turn_prep memory_recall=195046ms), and its inner ``wait_for``
+        # guards can't cancel the blocking DB call so the cap is
+        # ineffective. V1 user-facts were retired in Phase 7; the bounded
+        # V2 ``render_for_prompt`` block below (hard 2s cap) already
+        # supplies memory injection. So this leg now defaults OFF —
+        # set ``cognition.memory.legacy_recall_enabled=true`` to opt back
+        # in (and eat the latency) until V1 is physically removed.
+        _legacy_recall_on = bool(
+            (self._cfg or {}).get("cognition", {})
+            .get("memory", {})
+            .get("legacy_recall_enabled", False)
+            if isinstance(self._cfg, dict) else False
+        )
+        if self._memory_manager is not None and _legacy_recall_on:
             try:
                 # B-26: try the prefetch hook first — providers that
                 # maintain a background queue (e.g. hindsight) return a
