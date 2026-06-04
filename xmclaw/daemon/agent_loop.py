@@ -2195,8 +2195,11 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         curriculum_strategies_block = ""
         if self._strategy_bank is not None and user_message:
             try:
-                _strategies = await self._strategy_bank.retrieve(
-                    user_message, limit=self._strategy_top_k,
+                _strategies = await asyncio.wait_for(
+                    self._strategy_bank.retrieve(
+                        user_message, limit=self._strategy_top_k,
+                    ),
+                    timeout=2.0,
                 )
             except Exception as _exc:  # noqa: BLE001 — strategy injection
                 # is purely advisory; never fail the turn over it.
@@ -2830,7 +2833,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     # never legitimately needs more, and a tighter cap
                     # bounds the worst-case foreground wait.
                     _steps = await asyncio.wait_for(
-                        _gate.plan(user_message), timeout=15.0,
+                        _gate.plan(user_message), timeout=8.0,
                     )
                     if _steps:
                         self._active_plan_steps = _steps

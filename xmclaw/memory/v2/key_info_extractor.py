@@ -34,7 +34,7 @@ Returns ``list[ExtractedKey]`` — call sites turn each into a
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from xmclaw.memory.v2.models import (
@@ -701,6 +701,12 @@ async def extract_and_remember(
                     bucket = "user_identity"
             elif key.kind == "preference" and key.scope == "user":
                 bucket = "user_preference"
+            elif key.kind == "correction":
+                bucket = "rules"
+            elif key.kind == "commitment":
+                bucket = "commitment"
+            elif key.kind == "project":
+                bucket = "project_fact"
             fact = await memory_service.remember(
                 key.text,
                 kind=key.kind,

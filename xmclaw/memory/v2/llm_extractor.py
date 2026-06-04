@@ -143,6 +143,7 @@ class LLMCandidate:
     kind: str
     scope: str
     confidence: float
+    bucket: str = ""
 
 
 # ── Extractor ────────────────────────────────────────────────────
@@ -312,11 +313,15 @@ class LLMFactExtractor:
             # higher (0.78-0.95); LLM hits are inherently less sure.
             confidence = max(0.5, min(0.95, confidence))
 
+            bucket = item.get("bucket", "")
+            if not isinstance(bucket, str):
+                bucket = ""
             facts.append({
                 "text": text,
                 "kind": kind,
                 "scope": scope,
                 "confidence": confidence,
+                "bucket": bucket,
             })
 
         self._log.info(
@@ -345,6 +350,7 @@ class LLMFactExtractor:
                 kind=d["kind"],
                 scope=d["scope"],
                 confidence=d["confidence"],
+                bucket=d.get("bucket", ""),
             )
             for d in raw
         ]
