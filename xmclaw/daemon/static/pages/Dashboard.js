@@ -20,6 +20,7 @@ const html = window.__xmc.htm.bind(h);
 import { apiGet } from "../lib/api.js";
 import { Skeleton } from "../components/atoms/skeleton.js";
 import { t } from "../lib/i18n.js";
+import { Vitals, VitalsCell, Readout, Gauge, Sparkbar } from "../components/molecules/Instrument.js";
 
 const REFRESH_INTERVAL_MS = 10_000;
 
@@ -48,6 +49,35 @@ function fmtBytes(n) {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+// 顶部「活体读数条」— 仪表台形态的招牌：关键生命体征（运行时长 / 认知负载 /
+// 今日花费 / 进化脉动）做成读数 + 环形仪表 + 波形，一眼看出 agent 活着。
+function VitalsStrip({ data }) {
+  const up = data.uptime || {};
+  const cog = data.cognition || {};
+  const cost = data.cost_today || {};
+  const goals = cog.goal_count || 0;
+  const attn = cog.attention_count || 0;
+  const load = Math.min(100, (goals + attn) * 12);
+  const hit = cost.cache_hit_rate != null ? cost.cache_hit_rate * 100 : null;
+  const evs = (data.recent_events || []).length;
+  return html`
+    <${Vitals}>
+      <${VitalsCell} icon=${html`<${Sparkbar} live=${true} />`}>
+        <${Readout} label="UPTIME" value=${fmtDuration(up.uptime_s)} unit=${up.version ? "v" + up.version : ""} />
+      </${VitalsCell}>
+      <${VitalsCell} icon=${html`<${Gauge} value=${load} size=${48} />`}>
+        <${Readout} label="COGNITIVE LOAD" value=${goals} unit="目标" />
+      </${VitalsCell}>
+      <${VitalsCell} icon=${html`<${Gauge} value=${hit != null ? hit : 0} size=${48} showVal=${hit != null} />`}>
+        <${Readout} label="今日花费" value=${"$" + (cost.total_usd ?? 0).toFixed(3)} unit=${(cost.call_count || 0) + " 次"} />
+      </${VitalsCell}>
+      <${VitalsCell} icon=${html`<${Sparkbar} live=${evs > 0} />`}>
+        <${Readout} label="EVOLUTION PULSE" value=${evs} unit="24h 事件" />
+      </${VitalsCell}>
+    </${Vitals}>
+  `;
 }
 
 function Card({ title, hint, children }) {
@@ -490,6 +520,7 @@ export function DashboardPage({ token }) {
         <h2 id="dashboard-title">概览</h2>
         <p class="xmc-datapage__subtitle">每 10 秒自动刷新 · 最近一次 ${fmtTs(now)}</p>
       </header>
+      <${VitalsStrip} data=${data} />
       <div class="xmc-dash__grid">
         <${UptimeCard} uptime=${data.uptime} />
         <${ProactiveCard} proactive=${data.proactive} now=${now} />

@@ -1,0 +1,308 @@
+/* ============================================================================
+   instrument.css — XMclaw「仪表台 / 活体控制台」设计语言  (2026-06-05)
+
+   用户拍板的新表现形态。不是配色，是结构性的形态改变：
+     · 卡片 → 四角带刻度括号的仪表面板（corner ticks + 顶部扫描线 + 标题条）
+     · 页头 → 仪表横幅（左侧竖条 + 等宽 kicker + 右侧 ◉ LIVE 状态）
+     · 数值 → 等宽大读数（tabular-nums + 基线刻度）
+     · 列表 → 遥测数据行（点引线 + 等宽 meta）
+     · 标签栏 → 分段仪表选择器
+
+   策略：全部挂在「所有 20 个页面共用的 hook 类」上（xmc-datapage / xmc-h-page /
+   xmc-dash / xmc-h-card …），一次性统一全站形态，无需逐页重写 bespoke 布局。
+   在 index.html 最末加载（unify-fx 之后），自然赢层叠。
+   配合 components/molecules/Instrument.js 在数据页挂真·读数/环形仪表/波形组件。
+   ============================================================================ */
+
+:root {
+  --xi-mono: var(--nb-font-mono, ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace);
+  --xi-tick: var(--nb-accent, #8B5CF6);          /* 刻度/括号主色 */
+  --xi-tick-2: var(--nb-cyan, #06B6D4);          /* 次级刻度 */
+  --xi-panel-bg: var(--nb-bg-surface, #161B26);
+  --xi-panel-border: var(--nb-border, rgba(148,163,184,.12));
+  --xi-fg: var(--nb-fg-primary, #F1F5F9);
+  --xi-fg-dim: var(--nb-fg-muted, #94A3B8);
+  --xi-corner: 11px;                              /* 角刻度臂长 */
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   1. 仪表面板（cards/rows → bracketed panel）
+   四角 L 形刻度（单个 ::before 用 8 层背景渐变画 4 个角）+ 顶部扫描线 + hover 点亮
+   ═══════════════════════════════════════════════════════════════════════ */
+.xmc-h-card,
+.xmc-dash__card,
+.xmc-h-skill-card,
+.xmc-datapage__row,
+.xmc-h-codeblock,
+.xi-panel {
+  position: relative;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--xi-tick) 4%, transparent), transparent 42px),
+    var(--xi-panel-bg) !important;
+  border: 1px solid var(--xi-panel-border) !important;
+  border-radius: 4px !important;          /* 仪表面板用小圆角，更硬朗 */
+}
+/* 四角刻度括号 */
+.xmc-h-card::before,
+.xmc-dash__card::before,
+.xmc-h-skill-card::before,
+.xi-panel::before {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  pointer-events: none;
+  z-index: 1;
+  --c: color-mix(in srgb, var(--xi-tick) 55%, transparent);
+  background:
+    linear-gradient(var(--c),var(--c)) 0 0      / var(--xi-corner) 1.5px no-repeat,
+    linear-gradient(var(--c),var(--c)) 0 0      / 1.5px var(--xi-corner) no-repeat,
+    linear-gradient(var(--c),var(--c)) 100% 0   / var(--xi-corner) 1.5px no-repeat,
+    linear-gradient(var(--c),var(--c)) 100% 0   / 1.5px var(--xi-corner) no-repeat,
+    linear-gradient(var(--c),var(--c)) 0 100%   / var(--xi-corner) 1.5px no-repeat,
+    linear-gradient(var(--c),var(--c)) 0 100%   / 1.5px var(--xi-corner) no-repeat,
+    linear-gradient(var(--c),var(--c)) 100% 100%/ var(--xi-corner) 1.5px no-repeat,
+    linear-gradient(var(--c),var(--c)) 100% 100%/ 1.5px var(--xi-corner) no-repeat;
+  transition: opacity .2s;
+  opacity: .65;
+}
+.xmc-h-card:hover::before,
+.xmc-dash__card:hover::before,
+.xmc-h-skill-card:hover::before,
+.xi-panel:hover::before { opacity: 1; }
+
+/* 顶部扫描线（细，渐隐两端） */
+.xmc-h-card > *:first-child,
+.xmc-dash__card > *:first-child { position: relative; z-index: 2; }
+
+/* ── 面板标题条：标题前加仪表 tick，等宽大写 ── */
+.xmc-dash__card-title,
+.xmc-h-card__title {
+  font-family: var(--xi-mono) !important;
+  text-transform: uppercase;
+  letter-spacing: .12em !important;
+  font-size: .72rem !important;
+  color: var(--xi-fg) !important;
+  display: flex; align-items: center; gap: 7px;
+}
+.xmc-dash__card-title::before,
+.xmc-h-card__title::before {
+  content: "";
+  width: 6px; height: 6px;
+  background: var(--xi-tick);
+  box-shadow: 0 0 7px var(--xi-tick);
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);  /* 菱形 tick */
+  flex: 0 0 auto;
+}
+.xmc-dash__card-hint,
+.xmc-h-card__hint {
+  font-family: var(--xi-mono) !important;
+  font-size: .64rem !important;
+  letter-spacing: .04em;
+  opacity: .6;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   2. 页头 → 仪表横幅
+   左侧竖条 + 等宽 kicker（▌ XMCLAW / <标题>） + 右上 ◉ LIVE
+   ═══════════════════════════════════════════════════════════════════════ */
+.xmc-datapage__header,
+.xmc-h-page__header {
+  position: relative;
+  padding-left: 16px !important;
+  margin-bottom: 1.1rem !important;
+}
+.xmc-datapage__header::before,
+.xmc-h-page__header::before {
+  content: "";
+  position: absolute; left: 0; top: 2px; bottom: 2px;
+  width: 3px; border-radius: 2px;
+  background: linear-gradient(180deg, var(--xi-tick), var(--xi-tick-2));
+  box-shadow: 0 0 10px color-mix(in srgb, var(--xi-tick) 60%, transparent);
+}
+/* 标题大写等宽前缀 kicker */
+.xmc-datapage__header h2,
+.xmc-h-page__title,
+.xmc-h-page__heading {
+  position: relative;
+}
+.xmc-datapage__header h2::before,
+.xmc-h-page__title::before {
+  content: "▌ SYSTEM ╱ ";
+  font-family: var(--xi-mono);
+  font-size: .6em;
+  letter-spacing: .14em;
+  color: var(--xi-tick);
+  opacity: .7;
+  vertical-align: middle;
+  margin-right: 2px;
+}
+.xmc-datapage__subtitle,
+.xmc-h-page__subtitle {
+  font-family: var(--xi-mono) !important;
+  font-size: .68rem !important;
+  letter-spacing: .03em;
+  opacity: .62;
+}
+/* 右上角 LIVE 指示（用 header 的 ::after） */
+.xmc-datapage__header::after,
+.xmc-h-page__header::after {
+  content: "◉ LIVE";
+  position: absolute; right: 0; top: 4px;
+  font-family: var(--xi-mono);
+  font-size: .6rem; letter-spacing: .18em;
+  color: var(--nb-success, #34D399);
+  opacity: .8;
+  animation: xi-live-blink 2.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes xi-live-blink { 0%,100%{opacity:.85} 50%{opacity:.35} }
+}
+@media (max-width: 640px) {
+  .xmc-datapage__header::after, .xmc-h-page__header::after { display: none; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   3. 读数 — 等宽大数字 + tabular-nums + 基线刻度
+   ═══════════════════════════════════════════════════════════════════════ */
+.xmc-dash__stat-value,
+.xi-readout__num {
+  font-family: var(--xi-mono) !important;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600 !important;
+  letter-spacing: -.01em;
+  color: var(--xi-fg) !important;
+  position: relative;
+}
+.xmc-dash__stat-label,
+.xi-readout__label {
+  font-family: var(--xi-mono) !important;
+  text-transform: uppercase;
+  letter-spacing: .1em !important;
+  font-size: .58rem !important;
+  opacity: .55;
+}
+.xmc-dash__stat {
+  border-left: 1.5px solid color-mix(in srgb, var(--xi-tick) 35%, transparent);
+  padding-left: 9px !important;
+}
+.xmc-dash__subhead {
+  font-family: var(--xi-mono) !important;
+  text-transform: uppercase;
+  letter-spacing: .12em !important;
+  font-size: .6rem !important;
+  opacity: .55;
+  display: flex; align-items: center; gap: 6px;
+}
+.xmc-dash__subhead::before {
+  content: ""; flex: 1; height: 1px;
+  background: repeating-linear-gradient(90deg, var(--xi-panel-border) 0 4px, transparent 4px 8px);
+  order: 2;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   4. 遥测数据行 — 点引线 + 等宽 meta
+   ═══════════════════════════════════════════════════════════════════════ */
+.xmc-dash__list-item,
+.xmc-dash__timeline-item {
+  font-family: var(--xi-mono) !important;
+  font-size: .72rem !important;
+}
+.xmc-dash__list-meta,
+.xmc-dash__timeline-meta {
+  font-variant-numeric: tabular-nums;
+  opacity: .6;
+}
+.xmc-dash__tag,
+.xmc-dash__timeline-icon {
+  font-family: var(--xi-mono) !important;
+  border-radius: 3px !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   5. 标签栏 → 分段仪表选择器（容器层；按钮若用 class 也一并处理）
+   ═══════════════════════════════════════════════════════════════════════ */
+[role="tablist"].xmc-mem-tabs,
+.xmc-h-tabs[role="tablist"] {
+  gap: 0 !important;
+  padding: 3px;
+  border: 1px solid var(--xi-panel-border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--xi-panel-bg) 70%, transparent);
+  width: fit-content;
+  max-width: 100%;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   6. Instrument.js 组件样式（数据页挂的真·仪表）
+   ═══════════════════════════════════════════════════════════════════════ */
+/* 读数块 */
+.xi-readout { display: flex; flex-direction: column; gap: 3px; }
+.xi-readout__num { font-size: 1.7rem; line-height: 1; }
+.xi-readout__row { display: flex; align-items: baseline; gap: 6px; }
+.xi-readout__unit { font-family: var(--xi-mono); font-size: .62rem; opacity: .5; text-transform: uppercase; letter-spacing: .1em; }
+.xi-readout__delta { font-family: var(--xi-mono); font-size: .62rem; }
+.xi-readout__delta.up { color: var(--nb-success, #34D399); }
+.xi-readout__delta.down { color: var(--nb-error, #F87171); }
+
+/* 活体读数条（顶部 vitals strip） */
+.xi-vitals {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1px;
+  background: var(--xi-panel-border);
+  border: 1px solid var(--xi-panel-border);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 1.2rem;
+}
+.xi-vitals__cell {
+  background: var(--xi-panel-bg);
+  padding: 13px 16px;
+  display: flex; align-items: center; gap: 12px;
+  position: relative;
+}
+.xi-vitals__cell::after {
+  content: ""; position: absolute; left: 0; top: 10%; height: 80%; width: 2px;
+  background: var(--xi-tick); opacity: .5;
+}
+
+/* 环形仪表 (SVG) */
+.xi-gauge { position: relative; display: inline-grid; place-items: center; flex: 0 0 auto; }
+.xi-gauge__val {
+  position: absolute; font-family: var(--xi-mono); font-weight: 600;
+  font-variant-numeric: tabular-nums; color: var(--xi-fg); font-size: .8rem;
+}
+.xi-gauge svg circle.track { stroke: color-mix(in srgb, var(--xi-fg-dim) 22%, transparent); }
+.xi-gauge svg circle.fill {
+  stroke: url(#xi-grad); stroke-linecap: round;
+  transition: stroke-dashoffset .6s cubic-bezier(.4,0,.2,1);
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--xi-tick) 60%, transparent));
+}
+
+/* 波形 sparkbar */
+.xi-spark { display: inline-flex; align-items: flex-end; gap: 2px; height: 20px; }
+.xi-spark i {
+  width: 3px; border-radius: 1px;
+  background: linear-gradient(180deg, var(--xi-tick), var(--xi-tick-2));
+  opacity: .85;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .xi-spark.live i { animation: xi-spark-pulse 1.3s ease-in-out infinite; }
+  .xi-spark.live i:nth-child(2n) { animation-delay: .18s; }
+  .xi-spark.live i:nth-child(3n) { animation-delay: .36s; }
+  @keyframes xi-spark-pulse { 0%,100%{transform:scaleY(.6)} 50%{transform:scaleY(1)} }
+}
+
+/* 比例条 meter（矛盾 ▓▓░░ 12） */
+.xi-meter { display: flex; align-items: center; gap: 8px; font-family: var(--xi-mono); font-size: .68rem; }
+.xi-meter__label { color: var(--xi-fg-dim); text-transform: uppercase; letter-spacing: .08em; min-width: 48px; }
+.xi-meter__track { flex: 1; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--xi-fg-dim) 16%, transparent); overflow: hidden; }
+.xi-meter__fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--xi-tick), var(--xi-tick-2)); box-shadow: 0 0 8px color-mix(in srgb, var(--xi-tick) 50%, transparent); transition: width .5s ease; }
+.xi-meter__val { font-variant-numeric: tabular-nums; color: var(--xi-fg); min-width: 30px; text-align: right; }
+
+/* 区段标题（仪表面板内的小节） */
+.xi-seclabel {
+  font-family: var(--xi-mono); text-transform: uppercase; letter-spacing: .14em;
+  font-size: .6rem; color: var(--xi-fg-dim); display: flex; align-items: center; gap: 8px;
+}
+.xi-seclabel::after { content: ""; flex: 1; height: 1px; background: repeating-linear-gradient(90deg, var(--xi-panel-border) 0 3px, transparent 3px 7px); }
